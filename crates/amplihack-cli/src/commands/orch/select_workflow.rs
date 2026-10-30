@@ -153,6 +153,50 @@ pub fn select(
     }
 }
 
+/// A run that targets an existing branch or PR (`existing_branch` or
+/// `pr_number` set) cannot use `quick-change`, which always works on a new
+/// `quick/` branch. Such a run gets `default-workflow` instead, with W3 when
+/// the user asked for `quick-change` explicitly.
+pub fn demote_for_existing_target(selection: Selection, targets_existing: bool) -> Selection {
+    if !targets_existing || selection.workflow != QUICK_CHANGE {
+        return selection;
+    }
+    let mut warnings = selection.warnings;
+    if selection.source == "override" {
+        warnings.push(EXISTING_TARGET_WARNING.to_string());
+    }
+    Selection {
+        workflow: DEFAULT_WORKFLOW,
+        source: selection.source,
+        reason: EXISTING_TARGET_REASON.to_string(),
+        warnings,
+    }
+}
+
+/// The `-c workflow=` value that `build-workstreams-config` applies to the
+/// Development workstreams of a parallel decomposition, under the rules
+/// `select` and [`demote_for_existing_target`] apply and log: no override
+/// for a task_type that is not Development (W2), and no `quick-change` when
+/// the run targets an existing branch or PR (W3). `None` leaves every
+/// Development workstream on `default-workflow`.
+pub fn parallel_override(
+    override_value: &str,
+    task_type: &str,
+    targets_existing: bool,
+) -> Option<&'static str> {
+    if super::normalise_type(task_type.trim()) != "Development" {
+        return None;
+    }
+    match valid_override(override_value) {
+        Some(QUICK_CHANGE) if targets_existing => None,
+        other => other,
+    }
+}
+
+/// W3: `-c workflow=quick-change` on a run that targets an existing branch.
+pub const EXISTING_TARGET_WARNING: &str = "[dev-orchestrator] WARNING: workflow override 'quick-change' ignored: existing_branch or pr_number is set";
+const EXISTING_TARGET_REASON: &str = "existing_branch or pr_number set";
+
 /// The fixed log line written to stderr after any warnings.
 pub fn log_line(selection: &Selection) -> String {
     format!(
@@ -356,5 +400,68 @@ mod tests {
             .expect("W1 shape");
         assert_eq!(quoted.chars().count(), 64);
         assert!(!quoted.contains('\x1b'));
+    }
+
+    #[test]
+    fn existing_target_demotes_quick_change_only() {
+        let quick = select("", "Development", &classifier("quick-change", "typo"), 1);
+        let kept = demote_for_existing_target(quick.clone(), false);
+        assert_eq!(kept, quick);
+        let demoted = demote_for_existing_target(quick, true);
+        assert_eq!(demoted.workflow, DEFAULT_WORKFLOW);
+        assert_eq!(demoted.source, "classifier");
+        assert_eq!(demoted.reason, "existing_branch or pr_number set");
+        assert!(demoted.warnings.is_empty());
+
+        let forced = select("quick-change", "Development", "", 1);
+        let demoted = demote_for_existing_target(forced, true);
+        assert_eq!(demoted.workflow, DEFAULT_WORKFLOW);
+        assert_eq!(demoted.warnings, vec![EXISTING_TARGET_WARNING.to_string()]);
+
+        let full = select("", "Development", &classifier("default-workflow", "big"), 1);
+        assert_eq!(demote_for_existing_target(full.clone(), true), full);
+        let none = select("", "Q&A", "", 1);
+        assert_eq!(demote_for_existing_target(none.clone(), true), none);
+    }
+
+    #[test]
+    fn parallel_override_follows_the_logged_selection() {
+        // Each case: the override the parallel builder applies agrees with
+        // the workflow select-workflow logs for a Development override.
+        let cases = [
+            ("quick-change", "Development", false, Some(QUICK_CHANGE)),
+            (
+                " Default-Workflow ",
+                "Development",
+                false,
+                Some(DEFAULT_WORKFLOW),
+            ),
+            ("quick-change", "Development", true, None),
+            (
+                "default-workflow",
+                "Development",
+                true,
+                Some(DEFAULT_WORKFLOW),
+            ),
+            ("quick-change", "Investigation", false, None),
+            ("quick-change", "Q&A", false, None),
+            ("quick-change", "Operations", false, None),
+            ("quick", "Development", false, None),
+            ("", "Development", false, None),
+        ];
+        for (ov, task_type, existing, want) in cases {
+            assert_eq!(
+                parallel_override(ov, task_type, existing),
+                want,
+                "{ov:?} {task_type:?} existing={existing}"
+            );
+            let logged = demote_for_existing_target(select(ov, task_type, "", 2), existing);
+            if let Some(w) = want {
+                assert_eq!(logged.workflow, w, "{ov:?} {task_type:?}");
+                assert_eq!(logged.source, "override");
+            } else {
+                assert_ne!(logged.workflow, QUICK_CHANGE, "{ov:?} {task_type:?}");
+            }
+        }
     }
 }

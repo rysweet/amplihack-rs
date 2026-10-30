@@ -338,7 +338,7 @@ fn recipe_files_with_git_commands_disable_interactive_pagers() {
 
 #[test]
 fn issue_749_prompts_and_dev_orchestrator_docs_state_development_routing_invariant() {
-    let required = "Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`.";
+    let required = "Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.";
 
     for rel in [
         "amplifier-bundle/recipes/smart-classify-route.yaml",
@@ -385,7 +385,7 @@ fn issue_749_routing_hook_prompt_reinforces_development_invariant() {
 
     assert!(
         content.contains(
-            "Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`."
+            "Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`."
         ),
         "routing hook prompt must reinforce the Development routing invariant"
     );
@@ -435,7 +435,11 @@ fn issue_672_workflow_reliability_normalizes_development_recipes() {
 }
 
 #[test]
-fn issue_1740_development_workstreams_keep_quick_change_and_coerce_the_rest() {
+fn issue_1740_parallel_development_workstreams_never_keep_a_model_quick_change() {
+    // build-workstreams-config runs only for a parallel decomposition, and
+    // quick-change needs exactly one workstream (row 6 of the precedence
+    // table in docs/reference/quick-change-recipe.md), so a model-provided
+    // quick-change is coerced like any other value. PR #1758, round 2.
     let entries = build_workstream_entries(serde_json::json!({
         "task_type": "Development",
         "workstreams": [
@@ -462,8 +466,8 @@ fn issue_1740_development_workstreams_keep_quick_change_and_coerce_the_rest() {
 
     assert_eq!(
         recipes(&entries),
-        vec!["quick-change", "default-workflow", "default-workflow"],
-        "Development workstreams may keep quick-change; every other recipe value is coerced to default-workflow"
+        vec!["default-workflow", "default-workflow", "default-workflow"],
+        "without an override, every model-provided recipe value of a Development workstream, quick-change included, is coerced to default-workflow"
     );
 }
 

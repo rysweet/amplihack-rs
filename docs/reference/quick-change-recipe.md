@@ -99,7 +99,7 @@ The run log shows the routing choice on stderr:
 | `issue_number` | `""` | Optional. When it matches `^[1-9][0-9]{0,8}$`, the PR body gets `Refs #N` and the branch name uses it. A `#N` in the task text is used when this is empty. |
 | `quick_change_max_files` | `"3"` | File limit for the diff. Must match `^[0-9]{1,6}$`. |
 | `quick_change_max_lines` | `"150"` | Line limit (additions plus deletions). Must match `^[0-9]{1,6}$`. |
-| `existing_branch` | `""` | Not read by `quick-change`. Set by the recipe when it invokes `default-workflow` on hand-over. |
+| `existing_branch`, `pr_number` | `""` | Not used by `quick-change`, which always creates a new `quick/` branch. Its worktree step passes both as empty, so values inherited from the orchestrator are ignored; the orchestrator does not choose `quick-change` when either is set (see [Precedence](#precedence)). The recipe sets `existing_branch` itself when it invokes `default-workflow` on hand-over. |
 
 No GitHub issue is created by `quick-change`. A hand-over can create one; see [Hand-over to default-workflow](#hand-over-to-default-workflow).
 
@@ -120,13 +120,13 @@ A value that does not match `^[0-9]{1,6}$` fails the `quick-change-diff-limits` 
 
 | # | Step ID | Type | What it does |
 | --- | --- | --- | --- |
-| 1 | `quick-change-worktree` | recipe | Runs `workflow-worktree` with `branch_prefix: quick`. Output `worktree_setup`. |
-| 2 | `quick-change-record-base` | bash | Pins the base commit (`git rev-parse HEAD`) and snapshots the git configuration, hooks and push URL into the state directory. |
+| 1 | `quick-change-worktree` | recipe | Runs `workflow-worktree` with `branch_prefix: quick` and with `existing_branch` and `pr_number` set to empty. Output `worktree_setup`. |
+| 2 | `quick-change-record-base` | bash | Checks the branch (see [Branch name](#branch-name)), pins the base commit (`git rev-parse HEAD`) and snapshots the git configuration, hooks and push URL into the state directory. |
 | 3 | `quick-change-implement` | agent | The only agent step. `amplihack:core:builder` makes the change in the worktree. |
-| 4 | `quick-change-run-checks` | bash | Runs `quick_change_checks.sh`. |
-| 5 | `quick-change-diff-limits` | bash | Runs `quick_change_diff_limits.sh`. Output `quick_change_verdict`: `proceed` or `handover`. Has no condition. Fails the run on git configuration drift or an empty diff. |
-| 6 | `quick-change-write-handover` | bash | On `handover`, writes the patch file and the hand-over note. |
-| 7 | `quick-change-handover` | recipe | On `handover`, runs `default-workflow`. |
+| 4 | `quick-change-diff-limits` | bash | Runs `quick_change_diff_limits.sh`. Output `quick_change_verdict`: `proceed` or `handover`. Has no condition. Fails the run on git configuration drift, an empty diff or a fault in the tool. |
+| 5 | `quick-change-write-handover` | bash | On `handover`, writes the patch file and the hand-over note. |
+| 6 | `quick-change-handover` | recipe | On `handover`, runs `default-workflow`. |
+| 7 | `quick-change-run-checks` | bash | On `proceed`, runs `quick_change_checks.sh`. Output `quick_change_checks`. |
 | 8 | `quick-change-commit` | bash | On `proceed`, runs the artifact guard, stages, runs the guard again, sets the commit identity, commits with `git commit -F` and measures the committed change again. Output `quick_change_commit_repaired`: `yes` when hook repair ran, else `no`. |
 | 9 | `quick-change-push` | bash | On `proceed`, pushes the branch, measures the committed change again and verifies the remote ref. Output `quick_change_push_repaired`: `yes` when hook repair ran, else `no`. |
 | 10 | `quick-change-create-pr` | bash | On `proceed`, opens the PR. Always the last step. |
@@ -142,7 +142,7 @@ quick/issue-1740-route-small-tasks
 quick/issue-0-fix-broken-link
 ```
 
-`issue-0` is used when there is no issue number. The branch must pass `git check-ref-format`, must start with `quick/`, and must not be the default branch or a protected name. A branch that fails any of these stops the recipe before the push.
+`issue-0` is used when there is no issue number. The branch must pass `git check-ref-format`, must start with `quick/`, and must not be the default branch or a protected name. `quick-change-record-base` checks the branch before the agent runs, and the commit and push steps check it again. A branch that fails stops the recipe; this covers a task text that names its own branch with `Branch: <ref>` and the worktree step's `feat/` fallback name.
 
 ### State directory
 
@@ -185,12 +185,14 @@ A path counts as unparseable when a `-z` record is truncated, has a missing NUL 
 **Public interface.** An added or removed line in a `.rs` file counts when it matches:
 
 ```text
-^[[:space:]]*pub[[:space:]]+(async[[:space:]]+)?(unsafe[[:space:]]+)?(fn|struct|enum|trait|type|const|static|mod|use)([^A-Za-z0-9_]|$)
+^[[:space:]]*pub([[:space:]]|$)
 ```
 
-`pub` must be followed by whitespace, so `pub(crate)`, `pub(super)` and `pub(in ...)` do not count. Changing a private function to `pub(crate)` proceeds.
+Any line that starts with `pub` and whitespace counts: items of every kind (`fn`, `struct`, `enum`, `trait`, `type`, `const`, `static`, `mod`, `use`, `extern`, `union`, `macro`), named struct fields such as `    pub name: u32,`, and tuple fields written on their own line. `pub` must be followed by whitespace or the end of the line, so `pub(crate)`, `pub(super)` and `pub(in ...)` do not count. Changing a private function to `pub(crate)` proceeds.
 
-**CLI definitions.** Any changed line in a `.rs` file containing `#[arg`, `#[command` or `#[clap`.
+**CLI definitions.** Any changed line in a `.rs` file containing `#[arg`, `#[command` or `#[clap`. The pattern is written `#[[](arg|command|clap)`, with the `[` inside a bracket expression rather than escaped, and is passed to `awk` through the environment rather than `awk -v`. `awk -v` processes escape sequences, and gawk and busybox turn `\[` into `[`, which does not compile; the form used here means the same in mawk, gawk, busybox and BWK awk.
+
+**Matcher faults.** The public-interface and CLI rules read the `-U0` diff of each changed `.rs` file with `awk`. A failed `git diff`, an `awk` that exits non-zero or cannot compile the pattern, and an `awk` that prints no verdict are faults (exit 2). The verdict is read from what `awk` prints, not from its exit status, so an awk that exits 1 on a bad pattern is not taken as "no match". A fault never yields `proceed`.
 
 **Manifests.** Any changed line in `Cargo.toml`, `package.json` or `pyproject.toml`, at any depth.
 
@@ -236,7 +238,7 @@ QUICK_CHANGE_VERDICT=handover reason=public-interface
 {"verdict":"handover","reason":"public-interface","files":2,"lines":41,"lockfile_lines":0,"max_files":3,"max_lines":150,"base":"093edc996..."}
 ```
 
-`--committed` measures the change after it has been committed, which the commit and push steps do because hook repair can add commits after step 5. The worktree must be clean, so the diff against the base equals `base..HEAD`; otherwise the tool exits 2. Rule 6 (`agent-commit`) is skipped, since the recipe's own commits are expected, and every other rule runs, rule 1 included. A `handover` verdict in this mode exits 5 and prints to stderr:
+`--committed` measures the change after it has been committed, which the commit and push steps do because hook repair can add commits after step 4. The worktree must be clean, so the diff against the base equals `base..HEAD`; otherwise the tool exits 2. Rule 6 (`agent-commit`) is skipped, since the recipe's own commits are expected, and every other rule runs, rule 1 included. A `handover` verdict in this mode exits 5 and prints to stderr:
 
 ```text
 quick-change: hook repair grew the change beyond the quick-change limits; not publishing
@@ -249,7 +251,7 @@ On drift, line 1 is `QUICK_CHANGE_VERDICT=stop reason=git-config-drift`, and the
 | Exit code | Meaning |
 | --- | --- |
 | 0 | Verdict is `proceed`, or `handover` without `--committed` |
-| 2 | Fault: bad arguments, a `--base` that is not an ancestor of `HEAD`, a git failure (a failed configuration read included), `jq` missing, or an unclean worktree with `--committed` |
+| 2 | Fault: bad arguments, a `--base` that is not an ancestor of `HEAD`, a git failure (a failed configuration read included), an `awk` failure while matching Rust lines, `jq` missing, or an unclean worktree with `--committed` |
 | 3 | Empty diff |
 | 4 | Git configuration drift |
 | 5 | Verdict is `handover` with `--committed` |
@@ -274,7 +276,7 @@ A run that hands over skips orchestrator reflection; `default-workflow` has its 
 
 ### Hand-over note
 
-The note is appended to the task description that `default-workflow` receives. It holds no patch content and no agent text, only fixed wording and values produced by the bash steps. `<state dir>` is replaced by the absolute path of the run's state directory:
+The note is appended to the task description that `default-workflow` receives. It holds no patch content and no agent text, only fixed wording and values produced by the bash steps. The reason is read back from the state directory and must be one of the hand-over reasons in the [Rules](#rules) table, or the step stops. `<state dir>` is replaced by the absolute path of the run's state directory:
 
 ```text
 Hand-over from quick-change: the diff exceeded its limits (reason=public-interface).
@@ -290,7 +292,7 @@ The patch is the backup copy. It is needed only if the worktree was changed betw
 
 ## Checks
 
-`quick-change-run-checks` runs the repository's own checks before the diff limits are measured.
+`quick-change-run-checks` runs the repository's own checks after the diff limits are measured, and only on `proceed`. A hand-over does not run them, because `default-workflow` runs its own. The checks may change files (a pre-commit fixer, for example); the commit step measures the committed change again, so such changes are still held to the limits.
 
 ```text
 amplifier-bundle/tools/quick_change_checks.sh <worktree> <base-sha> <table-out-file>
@@ -329,7 +331,7 @@ A skipped check is never counted as passed. Skip reasons come from a closed set:
 | `jq not on PATH` | `package.json` scripts cannot be read |
 | `no "lint" script` / `no "test" script` | The script is absent from `package.json` |
 
-A failing check does not stop the recipe. The PR is opened as a draft and its body says "Checks failed". The tool exits 0 once the checks have run and 2 on a usage error.
+A failing check does not stop the recipe. The PR is opened as a draft and its body says "Checks failed". The PR step takes the checks result from the runner's output of `quick-change-run-checks`, and stops if the copy in the state directory differs from it, so a rewritten summary file cannot turn a failed run into a ready-for-review PR. The tool exits 0 once the checks have run and 2 on a usage error.
 
 ## Pull request
 
@@ -372,7 +374,7 @@ The push uses an explicit refspec, `git push -u origin refs/heads/<branch>:refs/
 
 ### Hook repair
 
-When a `pre-commit` or `pre-push` hook rejects the commit or push, the step uses the hook-repair loop described in [Recipe Commit Hook Repair](./recipe-commit-hook-repair.md). Its fixing agent can change files after step 5 measured the diff, so both steps run `quick_change_diff_limits.sh --committed` against the pinned base once the commit or push has succeeded:
+When a `pre-commit` or `pre-push` hook rejects the commit or push, the step uses the hook-repair loop described in [Recipe Commit Hook Repair](./recipe-commit-hook-repair.md). Its fixing agent can change files after step 4 measured the diff, so both steps run `quick_change_diff_limits.sh --committed` against the pinned base once the commit or push has succeeded:
 
 - In the commit step, a change that now exceeds the limits fails the step (exit 5), and nothing is pushed.
 - In the push step, the loop commits the fix and pushes it itself, so the check runs after the push. A failure leaves the branch on `origin`, but the run stops before a PR is opened.
@@ -382,7 +384,7 @@ When a `pre-commit` or `pre-push` hook rejects the commit or push, the step uses
 
 The routing rule, as stated in the dev-orchestrator skill, the routing prompt and the recipes:
 
-> Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`.
+> Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
 
 ### Where the decision is made
 
@@ -417,7 +419,9 @@ Classifier output with the new fields:
 | 7 | Classifier recommends `default-workflow` | `default-workflow` | `classifier` | |
 | 8 | No recommendation, or any other value | `default-workflow` | `default` | |
 
-A valid override applies however many workstreams there are. With `-c workflow=quick-change` and a parallel decomposition, every Development workstream runs `quick-change` and orchestrator reflection is skipped. Non-Development routing (Q&A, Operations, Investigation) never changes.
+After the table, a `quick-change` result becomes `default-workflow` with `reason=existing_branch or pr_number set` when the run sets `existing_branch` or `pr_number`, because `quick-change` cannot work on an existing branch. The source is kept. When the source is `override`, W3 is printed.
+
+A valid override applies however many workstreams there are. With `-c workflow=quick-change` and a parallel decomposition, every Development workstream runs `quick-change` and orchestrator reflection is skipped. Without an override, every Development workstream of a parallel decomposition runs `default-workflow`, whatever recipe the model gave it, and a non-Development workstream that the model gave `quick-change` runs its classification's own recipe instead; see [Dev-Orchestrator Routing Contract](./dev-orchestrator-routing.md#routing-invariant). The log line therefore names the recipe the workstreams run. Non-Development routing (Q&A, Operations, Investigation) never changes.
 
 Override values are trimmed and lower-cased, then matched against the exact list `quick-change`, `default-workflow`.
 
@@ -426,9 +430,10 @@ Override values are trimmed and lower-cased, then matched against the exact list
 ```text
 [dev-orchestrator] WARNING: unknown workflow override 'quick' ignored
 [dev-orchestrator] WARNING: workflow override 'quick-change' ignored for task_type Q&A
+[dev-orchestrator] WARNING: workflow override 'quick-change' ignored: existing_branch or pr_number is set
 ```
 
-The first is W1, the second W2. The warning text, the `reason=` values (including `quick-change needs one workstream; got N` and `unspecified`) and the eight rows of the precedence table are fixed by this page. The unit tests in `select_workflow.rs` assert them exactly.
+The first is W1, the second W2, the third W3. The warning text, the `reason=` values (including `quick-change needs one workstream; got N` and `unspecified`) and the eight rows of the precedence table are fixed by this page. The unit tests in `select_workflow.rs` assert them exactly.
 
 ### Log line
 
@@ -450,22 +455,22 @@ The reason is sanitised before it is logged: control characters (including ESC a
 
 ### Parallel decompositions
 
-`amplihack orch helper build-workstreams-config` normalises each workstream's `recipe`:
+`amplihack orch helper build-workstreams-config` normalises each workstream's `recipe`. It runs only when there is more than one workstream, so it applies rows 3 to 6 of the [precedence table](#precedence): a valid override is used, and the model never selects `quick-change`, whether through `recommended_workflow` or a workstream's own `recipe` field.
 
 | Workstream classification | Override (`-c workflow=`) | Model `recipe` | Result |
 | --- | --- | --- | --- |
-| Development | `quick-change` or `default-workflow` | any | the override |
-| Development | empty or invalid | `quick-change` | `quick-change` |
-| Development | empty or invalid | `default-workflow` | `default-workflow` |
-| Development | empty or invalid | missing, empty or anything else | `default-workflow` |
-| Non-Development | any | any | unchanged |
+| Development | `quick-change` or `default-workflow`, and the top-level `task_type` is Development | any | the override |
+| Development | `quick-change`, with `existing_branch` or `pr_number` set | any | `default-workflow` |
+| Development | empty or invalid, or the top-level `task_type` is not Development | any, `quick-change` included | `default-workflow` |
+| Non-Development | any | `quick-change` | the classification's own recipe: `investigation-workflow`, `qa-workflow` or `consensus-workflow`, and `default-workflow` for Operations |
+| Non-Development | any | anything else | unchanged |
 
-An invalid override prints W1 to stderr and is otherwise ignored. The blocked-fallback and adaptive execution paths always use `default-workflow`.
+The helper reads the override from `RECIPE_VAR_workflow` and the two targets from `RECIPE_VAR_existing_branch` and `RECIPE_VAR_pr_number`, the same values `select-workflow` receives. The log line that `select-workflow` writes therefore names the recipe every Development workstream runs: `quick-change` only under a valid override, otherwise `default-workflow`, with `reason=quick-change needs one workstream; got N` when the classifier recommended `quick-change`. W1, W2 and W3 are printed by `select-workflow`; the helper prints W1 again for an invalid override. The blocked-fallback and adaptive execution paths always use `default-workflow`.
 
 ## The select-workflow helper
 
 ```text
-amplihack orch helper select-workflow [--override <value>] [--task-type <type>] [--workstream-count <n>] < classifier.json
+amplihack orch helper select-workflow [--override <value>] [--task-type <type>] [--workstream-count <n>] [--existing-branch <ref>] [--pr-number <n>] < classifier.json
 ```
 
 | Input | Source in `select-workflow` step |
@@ -473,6 +478,8 @@ amplihack orch helper select-workflow [--override <value>] [--task-type <type>] 
 | `--override` | `RECIPE_VAR_workflow` |
 | `--task-type` | Normalised `task_type` |
 | `--workstream-count` | `workstream_count` |
+| `--existing-branch` | `RECIPE_VAR_existing_branch`. Any non-blank value rules out `quick-change`. |
+| `--pr-number` | `RECIPE_VAR_pr_number`. Any non-blank value rules out `quick-change`. |
 | stdin | `decomposition_json`, written to a `mktemp` file with `printf` |
 
 | Output | Content |
@@ -517,7 +524,9 @@ Reflection rounds and outside-in validation exist to judge a full workflow run. 
 
 ## Recursion limits
 
-`quick-change.yaml` sets `max_depth: 6` and `max_total_steps: 140`. On the pinned runner, limits are counted from the top-level recipe. The longest path is smart-orchestrator, smart-execute-routing, `quick-change`, then a hand-over into `default-workflow` and its sub-recipes: about 139 of 200 steps and depth 5 of 6. A change to the runner pin can change how these are counted.
+`quick-change.yaml` sets `max_depth: 6` and `max_total_steps: 140`. On the pinned runner, limits are counted from the top-level recipe, and a `recipe` step fails when the depth it runs at has reached `max_depth`. The longest path is smart-orchestrator, smart-execute-routing, `quick-change`, then a hand-over into `default-workflow` and its sub-recipes: about 139 of 200 steps, with the deepest sub-recipe (`workflow-terminal-adjudication`) at depth 5 of 6. A change to the runner pin can change how these are counted.
+
+`issue_1740_quick_change_recipe::handover_nesting_leaves_one_level_spare` walks the `recipe:` steps of the bundled YAML from smart-orchestrator, and from `quick-change` run on its own, through `quick-change` and its hand-over, and fails when any sub-recipe on those paths sits deeper than `max_depth - 1`. A new level of sub-recipe under `default-workflow` would use that spare level, and the test fails before it ships.
 
 ## Security limits
 
@@ -534,7 +543,7 @@ The agent's prompt instructions are not relied on. The controls are in the bash 
 Known limits:
 
 - The public-interface rule covers Rust only. An interface change in another language that fits within the size limits proceeds and is left to PR review.
-- The public-interface pattern does not match `pub extern`, `pub union` or `pub macro`. A change to one of these that fits within the size limits proceeds. `#[macro_export]` macros are also missed, as they are not declared with `pub`.
+- The public-interface rule reads changed lines only. A change to a later line of a multi-line `pub` signature (a parameter on its own line, a where clause) leaves the `pub` line unchanged and proceeds when it fits within the size limits. `#[macro_export]` macros are also missed, as they are not declared with `pub`.
 - Checks run code from the repository. Tokens are removed from the environment, but credential files on disk remain readable.
 - The agent and the check commands run with the user's full privileges and are not sandboxed. The controls above stop changes inside the worktree and to git configuration from weakening the gate, but they cannot stop a process that edits files outside the worktree: the installed tools under `AMPLIHACK_HOME` or `repo_path`, the git configuration snapshot in the state directory, or `~/.ssh/config`. PR review is the control for those cases.
 - An existing lockfile is excluded from the line limit. A large lockfile change, including one that points a package at a different download URL, proceeds when the other limits are met and is left to PR review.

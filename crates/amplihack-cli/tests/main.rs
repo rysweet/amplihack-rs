@@ -150,6 +150,8 @@ mod issue_1707_claim_check_shell_suites;
 mod issue_1740_checks_tool;
 #[path = "issue_1740_diff_limits.rs"]
 mod issue_1740_diff_limits;
+#[path = "issue_1740_diff_limits_awk.rs"]
+mod issue_1740_diff_limits_awk;
 #[path = "issue_1740_diff_limits_guards.rs"]
 mod issue_1740_diff_limits_guards;
 #[path = "issue_1740_quick_change_recipe.rs"]

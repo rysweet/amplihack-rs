@@ -22,6 +22,9 @@ context:
   force_single_workstream: ""
   workflow: ""
   selected_workflow: ""
+  # Inherited from smart-orchestrator; either one rules out quick-change (#1740).
+  existing_branch: ""
+  pr_number: ""
 
 steps:
   # ─────────────────────────────────────────────────────────────────────────
@@ -107,7 +110,7 @@ steps:
         ANY code; OR write/add tests; OR open a PR; OR modify files in
         `src/` / `crates/` / `bins/`. Multi-requirement tasks with numbered
         items `(1)`, `(2)`, `(3)` are almost always Development.
-      - Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`.
+      - Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
       - Hybrid decompositions route each workstream by its own normalized classification.
       - When in doubt between Operations and Development, choose Development.
 
@@ -216,8 +219,9 @@ steps:
     output: "workstream_count"
 
   # select-workflow (#1740): quick-change, default-workflow or none, from the
-  # -c workflow= override, task_type, the classifier's recommended_workflow
-  # and the workstream count. The helper logs the choice and reason to stderr.
+  # -c workflow= override, task_type, the classifier's recommended_workflow,
+  # the workstream count, and existing_branch/pr_number (which rule out
+  # quick-change). The helper logs the choice and reason to stderr.
   - id: "select-workflow"
     type: "bash"
     command: |
@@ -228,6 +232,8 @@ steps:
         --override "${RECIPE_VAR_workflow:-}" \
         --task-type "${RECIPE_VAR_task_type:-}" \
         --workstream-count "${RECIPE_VAR_workstream_count:-1}" \
+        --existing-branch "${RECIPE_VAR_existing_branch:-}" \
+        --pr-number "${RECIPE_VAR_pr_number:-}" \
         < "$_DECOMP_TMPFILE"
     output: "selected_workflow"
 

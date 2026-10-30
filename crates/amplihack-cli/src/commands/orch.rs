@@ -162,6 +162,13 @@ pub enum OrchHelperCommands {
         /// The workstream count. An unreadable value counts as not one.
         #[arg(long, default_value = "1")]
         workstream_count: String,
+        /// The `existing_branch` value. When it or `--pr-number` is set,
+        /// `quick-change` is replaced by `default-workflow`.
+        #[arg(long, default_value = "")]
+        existing_branch: String,
+        /// The `pr_number` value.
+        #[arg(long, default_value = "")]
+        pr_number: String,
     },
 
     /// List deterministic workflow log artifacts by metadata only.
@@ -521,11 +528,22 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
         }
         OrchHelperCommands::BuildWorkstreamsConfig => {
             let input = read_stdin()?;
-            let workflow = std::env::var("RECIPE_VAR_workflow").unwrap_or_default();
+            let var = |name: &str| std::env::var(name).unwrap_or_default();
+            let workflow = var("RECIPE_VAR_workflow");
             if !workflow.trim().is_empty() && select_workflow::valid_override(&workflow).is_none() {
                 eprintln!("{}", select_workflow::unknown_override_warning(&workflow));
             }
-            let path = build_workstreams_config_with_override(&input, &workflow)?;
+            // The rules select-workflow has already applied and logged (W2,
+            // W3), so the workstreams run what its log line says.
+            let targets_existing = !var("RECIPE_VAR_existing_branch").trim().is_empty()
+                || !var("RECIPE_VAR_pr_number").trim().is_empty();
+            let effective = select_workflow::parallel_override(
+                &workflow,
+                &var("RECIPE_VAR_task_type"),
+                targets_existing,
+            )
+            .unwrap_or("");
+            let path = build_workstreams_config_with_override(&input, effective)?;
             println!("{path}");
             Ok(())
         }
@@ -533,10 +551,17 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
             override_value,
             task_type,
             workstream_count,
+            existing_branch,
+            pr_number,
         } => {
             let input = read_bounded_stdin();
             let count = workstream_count.trim().parse::<usize>().unwrap_or(0);
-            let selection = select_workflow::select(&override_value, &task_type, &input, count);
+            let targets_existing =
+                !existing_branch.trim().is_empty() || !pr_number.trim().is_empty();
+            let selection = select_workflow::demote_for_existing_target(
+                select_workflow::select(&override_value, &task_type, &input, count),
+                targets_existing,
+            );
             for warning in &selection.warnings {
                 eprintln!("{warning}");
             }
@@ -751,10 +776,15 @@ fn normalise_workstream_classification(raw: &str) -> &'static str {
     normalise_type(raw)
 }
 
-/// Development workstreams run `quick-change` or `default-workflow` only: a
-/// valid override wins, an exact `quick-change` or `default-workflow` from
-/// the model is kept, and anything else is coerced to `default-workflow`
-/// (#1740). Non-Development recipes are left unchanged.
+/// Recipe for one workstream of a parallel decomposition (#1740). This
+/// builder runs only when there is more than one workstream, and
+/// `quick-change` needs exactly one (row 6 of the precedence table), so the
+/// model's `recipe` never selects it:
+///
+/// - Development: a valid `-c workflow=` override, else `default-workflow`.
+/// - Any other classification: the model's recipe is kept, except that
+///   `quick-change` (which commits, pushes and opens a PR) becomes the
+///   classification's own recipe; see [`non_development_recipe`].
 fn normalise_workstream_recipe(
     ws: &serde_json::Value,
     top_level_task_type: Option<&str>,
@@ -764,19 +794,33 @@ fn normalise_workstream_recipe(
         .get("recipe")
         .and_then(|v| v.as_str())
         .unwrap_or(select_workflow::DEFAULT_WORKFLOW);
+    let classification =
+        workstream_classification(ws, top_level_task_type).map(normalise_workstream_classification);
 
-    let is_development = workstream_classification(ws, top_level_task_type)
-        .map(normalise_workstream_classification)
-        == Some("Development");
-
-    if !is_development {
-        return raw_recipe.to_string();
+    if classification == Some("Development") {
+        return override_workflow
+            .unwrap_or(select_workflow::DEFAULT_WORKFLOW)
+            .to_string();
     }
-    let kept = match raw_recipe {
-        select_workflow::QUICK_CHANGE => select_workflow::QUICK_CHANGE,
+    if raw_recipe
+        .trim()
+        .eq_ignore_ascii_case(select_workflow::QUICK_CHANGE)
+    {
+        return non_development_recipe(classification).to_string();
+    }
+    raw_recipe.to_string()
+}
+
+/// The recipe a non-Development workstream gets in place of `quick-change`.
+/// Operations has no recipe of its own, so it gets `default-workflow`, as an
+/// Operations workstream with no `recipe` field does.
+fn non_development_recipe(classification: Option<&str>) -> &'static str {
+    match classification {
+        Some("Investigation") => "investigation-workflow",
+        Some("Q&A") => "qa-workflow",
+        Some("Consensus") => "consensus-workflow",
         _ => select_workflow::DEFAULT_WORKFLOW,
-    };
-    override_workflow.unwrap_or(kept).to_string()
+    }
 }
 
 /// Build the workstreams-config tempfile from a decomposition JSON blob and
@@ -789,7 +833,8 @@ pub fn build_workstreams_config_to_tempfile(decomp: &str) -> Result<String> {
 
 /// [`build_workstreams_config_to_tempfile`] with the `-c workflow=` value.
 /// A valid override (`quick-change` or `default-workflow`) applies to every
-/// Development workstream; an empty or invalid one is ignored.
+/// Development workstream; an empty or invalid one is ignored, and every
+/// Development workstream gets `default-workflow`.
 pub fn build_workstreams_config_with_override(
     decomp: &str,
     override_value: &str,
@@ -1544,22 +1589,27 @@ mod tests {
     }
 
     #[test]
-    fn development_workstream_keeps_quick_change_recipe() {
+    fn development_workstream_quick_change_becomes_default_workflow_without_override() {
+        // Row 6: quick-change needs one workstream, and this builder only
+        // runs for parallel decompositions.
         let parsed = workstreams_config_from(
             r#"{
                 "task_type": "Development",
                 "workstreams": [
-                    {"name": "typo", "classification": "Development", "recipe": "quick-change"}
+                    {"name": "typo", "classification": "Development", "recipe": "quick-change"},
+                    {"name": "docs", "classification": "Development", "recipe": "quick-change"}
                 ]
             }"#,
         );
 
-        assert_eq!(parsed[0]["recipe"], "quick-change");
+        assert_eq!(parsed[0]["recipe"], "default-workflow");
+        assert_eq!(parsed[1]["recipe"], "default-workflow");
     }
 
     #[test]
-    fn development_quick_change_recipe_is_matched_exactly() {
+    fn development_recipe_values_never_select_quick_change() {
         for near_miss in [
+            "quick-change",
             "Quick-Change",
             " quick-change",
             "quick_change",
@@ -1577,17 +1627,53 @@ mod tests {
     }
 
     #[test]
-    fn non_development_quick_change_recipe_is_left_unchanged() {
+    fn non_development_quick_change_becomes_the_classification_recipe() {
         let parsed = workstreams_config_from(
             r#"{
                 "task_type": "Development",
                 "workstreams": [
-                    {"name": "q", "classification": "Investigation", "recipe": "quick-change"}
+                    {"name": "i", "classification": "Investigation", "recipe": "quick-change"},
+                    {"name": "q", "classification": "Q&A", "recipe": " Quick-Change"},
+                    {"name": "c", "classification": "Consensus", "recipe": "quick-change"},
+                    {"name": "o", "classification": "Operations", "recipe": "quick-change"},
+                    {"name": "kept", "classification": "Investigation", "recipe": "qa-workflow"}
                 ]
             }"#,
         );
+        let got: Vec<&str> = parsed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["recipe"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                "investigation-workflow",
+                "qa-workflow",
+                "consensus-workflow",
+                "default-workflow",
+                "qa-workflow",
+            ]
+        );
+    }
 
-        assert_eq!(parsed[0]["recipe"], "quick-change");
+    #[test]
+    fn non_development_quick_change_is_replaced_whatever_the_override() {
+        for ov in ["", "quick-change", "default-workflow"] {
+            let decomp = r#"{
+                "task_type": "Investigation",
+                "workstreams": [
+                    {"name": "a", "classification": "Investigation", "recipe": "quick-change"},
+                    {"name": "b", "classification": "Investigation", "recipe": "investigation-workflow"}
+                ]
+            }"#;
+            assert_eq!(
+                recipes_with_override(decomp, ov),
+                vec!["investigation-workflow", "investigation-workflow"],
+                "override {ov:?}"
+            );
+        }
     }
 
     #[test]
@@ -1595,7 +1681,7 @@ mod tests {
         assert_eq!(
             recipes_with_override(MIXED_DECOMP, ""),
             vec![
-                "quick-change",
+                "default-workflow",
                 "default-workflow",
                 "default-workflow",
                 "default-workflow",

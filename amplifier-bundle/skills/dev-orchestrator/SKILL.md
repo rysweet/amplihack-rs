@@ -77,9 +77,9 @@ in amplihack. It replaces the `ultrathink-orchestrator` skill.
 
 ## Development Routing Invariant
 
-Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`.
+Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
 
-The classifier selects `quick-change` only for a single workstream it judges small; `-c workflow=quick-change` or `-c workflow=default-workflow` forces either recipe.
+The classifier selects `quick-change` only for a single workstream it judges small; `-c workflow=quick-change` or `-c workflow=default-workflow` forces either recipe. In a parallel decomposition every Development workstream runs `default-workflow` unless `-c workflow=` forces a recipe, so the workflow named in the run log is the one the workstreams run.
 
 Hybrid decompositions route each workstream by its own normalized classification.
 

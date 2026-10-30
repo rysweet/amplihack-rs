@@ -18,7 +18,9 @@
 #      interface, 8 CLI attribute, 9 manifest, 10 sensitive path,
 #      11 mode or symlink change                            handover
 # Faults (bad arguments, a base that is not an ancestor of HEAD, a git
-# failure, jq missing, a missing snapshot) exit 2.
+# failure, an awk failure while matching Rust lines, a snapshot line with
+# no checksum, jq missing, a missing snapshot) exit 2. A fault never yields
+# proceed.
 #
 # --committed re-measures BASE..HEAD after hook repair may have committed a
 # fixing agent's changes. The worktree must be clean (else exit 2), rule 6
@@ -31,14 +33,20 @@
 # Each line is `<name>\t<checksum>`; names never carry configuration values,
 # so a drift report can name what changed without printing it.
 #
-# Written for bash 3.2: no associative arrays, mapfile or ${v,,}.
+# Written for bash 3.2: no associative arrays, no array readers and no case-folding expansions.
 
 set -euo pipefail
 export GIT_PAGER=cat PAGER=cat LESS=FRX
 
 LOCKFILES=" Cargo.lock package-lock.json yarn.lock pnpm-lock.yaml uv.lock poetry.lock "
-PUB_RE='^[[:space:]]*pub[[:space:]]+(async[[:space:]]+)?(unsafe[[:space:]]+)?(fn|struct|enum|trait|type|const|static|mod|use)([^A-Za-z0-9_]|$)'
-CLI_RE='#\[(arg|command|clap)'
+# Any line that starts with `pub` and whitespace: items, `pub extern`,
+# `pub union`, named and tuple struct fields. `pub(crate)` and the other
+# restricted forms do not match.
+PUB_RE='^[[:space:]]*pub([[:space:]]|$)'
+# `[[]` is a literal `[` with no backslash, so the pattern means the same in
+# mawk, gawk, busybox and BWK awk. It reaches awk through ENVIRON, never
+# `awk -v`, which processes escape sequences differently in each awk.
+CLI_RE='#[[](arg|command|clap)'
 # Keys that redirect the push or its transport, or run a program during
 # git add, commit or push. Global and system values are covered here; the
 # local and worktree files are also checksummed whole below.
@@ -65,7 +73,23 @@ config_group() {
   printf '%s\t%s\n' "$1" "$(printf '%s\n' "$CONFIG_ENTRIES" | LC_ALL=C grep -E "$2" | LC_ALL=C sort | cksum_of)"
 }
 
+# Every checksum in a snapshot line comes from cksum_of. When cksum or awk
+# fails inside a command substitution the checksum is left empty and the
+# line is still printed, so snapshot checks each line against this form.
+SNAPSHOT_LINE_RE=$'^[^[:space:]]+\t((link|file):)?[0-9]+-[0-9]+(:x)?$'
+
 snapshot() {
+  local out line
+  out="$(snapshot_lines)" || fault "cannot take the git configuration snapshot"
+  # Two snapshots taken with the same broken cksum or awk would compare
+  # equal and hide drift, so a malformed line is a fault, not a snapshot.
+  while IFS= read -r line; do
+    [[ "$line" =~ $SNAPSHOT_LINE_RE ]] || fault "snapshot line without a checksum; cksum or awk failed"
+  done <<< "$out"
+  printf '%s\n' "$out"
+}
+
+snapshot_lines() {
   local hooks entry key value name matched cfg
   CONFIG_ENTRIES=""
   # A failed read must stop the run: two equally empty snapshots would
@@ -141,15 +165,29 @@ emit() {
   exit "$code"
 }
 
-# rust_lines_match <path> <regex>: true when an added or removed line of
-# <path> matches <regex>. Only lines after the first hunk header are content.
+# rust_lines_match <path> <regex>: return 0 when an added or removed line of
+# <path> matches <regex> and 1 when none does. Only lines after the first
+# hunk header are content. Anything else is a fault (exit 2): a git failure,
+# an awk that fails or cannot compile the pattern (the BEGIN probe compiles
+# it even when there are no lines), or a missing verdict. The answer is read
+# from awk's output, not its exit status, because some awks exit 1 on a bad
+# regex, which would otherwise read as "no match" and let the change proceed.
 rust_lines_match() {
+  local answer
   qgit --literal-pathspecs diff --no-renames --no-ext-diff --no-textconv --no-color -U0 "$BASE" -- "$1" \
-    | LC_ALL=C awk -v re="$2" '
-        /^diff --git / { in_hunk = 0; next }
-        /^@@/ { in_hunk = 1; next }
-        in_hunk && /^[-+]/ { if (substr($0, 2) ~ re) found = 1 }
-        END { exit found ? 0 : 1 }'
+    > "$WORK/hunks" || fault "git diff failed while matching a Rust file"
+  answer="$(QC_MATCH_RE="$2" LC_ALL=C awk '
+      BEGIN { re = ENVIRON["QC_MATCH_RE"]; probe = ("" ~ re) }
+      /^diff --git / { in_hunk = 0; next }
+      /^@@/ { in_hunk = 1; next }
+      in_hunk && /^[-+]/ { if (substr($0, 2) ~ re) found = 1 }
+      END { print (found ? "match" : "no-match") }' "$WORK/hunks")" \
+    || fault "awk failed while matching a Rust file"
+  case "$answer" in
+    match) return 0 ;;
+    no-match) return 1 ;;
+  esac
+  fault "awk gave no verdict while matching a Rust file"
 }
 
 is_sensitive() {

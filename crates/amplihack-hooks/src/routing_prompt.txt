@@ -52,7 +52,7 @@ Actions:
   OPS → Execute directly. No workflow needed.
   SKIP → Respect the bypass.
 
-Downstream invariant: Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`.
+Downstream invariant: Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
 
 When in doubt, choose DEV. False positive costs minutes. False negative costs quality.
 </system-reminder>

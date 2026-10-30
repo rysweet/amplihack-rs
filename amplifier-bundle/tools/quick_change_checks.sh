@@ -64,11 +64,12 @@ run_check() {
   [ "$rc" -eq 0 ] || FAILED=$((FAILED + 1))
 }
 
-# Changed paths against the base, plus untracked non-ignored files.
+# Changed paths against the base, plus untracked non-ignored files. fsmonitor
+# is off, as in the diff-limits tool, so a configured monitor never runs here.
 CHANGED=()
 while IFS= read -r -d '' path; do
   CHANGED+=("$path")
-done < <(git -C "$WT" -c core.quotepath=off diff --no-renames --name-only -z "$BASE"; git -C "$WT" ls-files -z -o --exclude-standard)
+done < <(git -C "$WT" -c core.fsmonitor=false -c core.quotepath=off diff --no-renames --name-only -z "$BASE"; git -C "$WT" -c core.fsmonitor=false ls-files -z -o --exclude-standard)
 
 # crate_of <path>: the [package] name of the nearest ancestor Cargo.toml.
 crate_of() {

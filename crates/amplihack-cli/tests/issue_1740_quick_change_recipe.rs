@@ -1,8 +1,8 @@
 //! Issue #1740: the structure of `amplifier-bundle/recipes/quick-change.yaml`.
 //!
-//! One agent session, the repository's checks, a diff-limit step decided by
-//! bash, an optional hand-over to `default-workflow`, then commit, push and
-//! PR, and nothing after the PR. These tests parse the live YAML and the
+//! One agent session, a diff-limit step decided by bash, an optional
+//! hand-over to `default-workflow`, then the repository's checks, commit,
+//! push and PR, and nothing after the PR. These tests parse the live YAML and the
 //! shared tool script; no recipe runs.
 
 use std::path::PathBuf;
@@ -14,10 +14,10 @@ const STEPS: &[&str] = &[
     "quick-change-worktree",
     "quick-change-record-base",
     "quick-change-implement",
-    "quick-change-run-checks",
     "quick-change-diff-limits",
     "quick-change-write-handover",
     "quick-change-handover",
+    "quick-change-run-checks",
     "quick-change-commit",
     "quick-change-push",
     "quick-change-create-pr",
@@ -182,9 +182,12 @@ fn handover_runs_default_workflow_on_the_quick_branch() {
 }
 
 #[test]
-fn publish_steps_run_only_on_proceed() {
+fn checks_and_publish_steps_run_only_on_proceed() {
+    // The checks run after the verdict, so a hand-over never pays for them
+    // before default-workflow runs its own.
     let r = recipe();
     for id in [
+        "quick-change-run-checks",
         "quick-change-commit",
         "quick-change-push",
         "quick-change-create-pr",
@@ -366,4 +369,24 @@ fn title_strips_leading_markdown_from_the_task() {
         let title = String::from_utf8_lossy(&o.stdout);
         assert_eq!(title, want, "task {task:?}");
     }
+}
+
+#[test]
+fn worktree_step_ignores_inherited_branch_targets_and_branch_is_checked_before_the_agent() {
+    let r = recipe();
+    let ctx = &step(&r, "quick-change-worktree")["context"];
+    assert_eq!(ctx["branch_prefix"].as_str(), Some("quick"));
+    assert_eq!(ctx["existing_branch"].as_str(), Some(""));
+    assert_eq!(ctx["pr_number"].as_str(), Some(""));
+    let cmd = command(&r, "quick-change-record-base");
+    let check = cmd
+        .find("qc_branch")
+        .expect("record-base must call qc_branch");
+    let pin = cmd
+        .find("rev-parse HEAD")
+        .expect("record-base pins the base");
+    assert!(
+        check < pin,
+        "the branch is checked before the base is pinned"
+    );
 }

@@ -28,12 +28,12 @@ This document defines the routing contract. Rust-helper enforcement runs before 
 
 Any workstream whose normalized classification is `Development` must run `default-workflow` or `quick-change`. No other recipe is allowed.
 
-A valid `-c workflow=` override (`quick-change` or `default-workflow`) sets the recipe for every Development workstream. Without one, a model-provided `quick-change` or `default-workflow` is kept, and the recipe is coerced to `default-workflow` when it is:
+For a single workstream, `select-workflow` chooses between the two and logs the choice and its reason.
 
-- missing
-- an empty string after trimming
-- whitespace only
-- any recipe other than `quick-change` or `default-workflow`
+For a parallel decomposition, `build-workstreams-config` sets each workstream's recipe. The model's `recipe` field never selects `quick-change`, because `quick-change` needs exactly one workstream (row 6 of the [precedence table](./quick-change-recipe.md#precedence)):
+
+- A Development workstream runs `default-workflow`, unless a valid `-c workflow=` override (`quick-change` or `default-workflow`) is set. The override applies only when the top-level `task_type` is Development, and `quick-change` is not applied when `existing_branch` or `pr_number` is set. These are the same rules `select-workflow` applies and logs (W2, W3), so the log line names the recipe the workstreams run.
+- A workstream with any other classification keeps the model's recipe, except that `quick-change`, which commits, pushes and opens a PR, becomes the classification's own recipe: `investigation-workflow`, `qa-workflow` or `consensus-workflow`, and `default-workflow` for Operations. The override never changes these workstreams.
 
 How the single-workstream route chooses between the two is described in [Quick-Change Recipe: Routing from smart-orchestrator](./quick-change-recipe.md#routing-from-smart-orchestrator).
 
@@ -68,14 +68,16 @@ The deterministic normalization rule is:
 | `Development` | missing | `default-workflow` |
 | `Development` | `""` or whitespace | `default-workflow` |
 | `Development` | `investigation-workflow` | `default-workflow` |
-| `Development` | any value other than `quick-change` or `default-workflow` | `default-workflow` |
 | `Development` | `default-workflow` | `default-workflow` |
-| `Development` | `quick-change` | `quick-change` |
-| `Development`, valid `-c workflow=` override | any value | the override |
-| Non-Development, any override | any value | Existing route is preserved |
-| Non-Development | any value | Existing route is preserved |
+| `Development` | `quick-change` | `default-workflow` |
+| `Development` | any other value | `default-workflow` |
+| `Development`, valid `-c workflow=` override, top-level `task_type` Development | any value | the override, except that `quick-change` becomes `default-workflow` when `existing_branch` or `pr_number` is set |
+| Non-Development, any override | `quick-change` | the classification's own recipe (`investigation-workflow`, `qa-workflow`, `consensus-workflow`, or `default-workflow` for Operations) |
+| Non-Development, any override | any other value | Existing route is preserved |
 
-Non-Development classifications must not be rewritten by the Development invariant. Their existing route selection remains in force:
+This table applies to parallel decompositions, the only case in which `build-workstreams-config` runs. A model-provided `quick-change` is not kept, because `quick-change` needs exactly one workstream; only a valid override selects it, which matches the workflow that `select-workflow` logs. Single-workstream runs use `selected_workflow` from `select-workflow` instead.
+
+Non-Development classifications must not be rewritten by the Development invariant. Apart from the `quick-change` replacement above, their existing route selection remains in force:
 
 | Classification | Existing routing behavior |
 | --- | --- |
@@ -140,7 +142,7 @@ There is no configuration flag that disables the Development routing invariant.
 
 | Setting | Effect on routing |
 | --- | --- |
-| `workflow=quick-change` | Forces `quick-change` for every Development workstream. Ignored, with a warning, for non-Development tasks |
+| `workflow=quick-change` | Forces `quick-change` for every Development workstream. Ignored, with a warning, for non-Development tasks and when `existing_branch` or `pr_number` is set |
 | `workflow=default-workflow` | Forces `default-workflow` for every Development workstream, even when the classifier recommends `quick-change` |
 | `workflow=<anything else>` | Ignored with `[dev-orchestrator] WARNING: unknown workflow override '<value>' ignored` |
 | `force_single_workstream=true` | Prevents parallel decomposition; a single `Development` workstream runs `default-workflow` or `quick-change` |
@@ -150,7 +152,7 @@ There is no configuration flag that disables the Development routing invariant.
 
 Prompt text in `dev-orchestrator`, `smart-classify-route`, `smart-execute-routing`, and the routing hook should state the same rule for model guidance:
 
-> Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`.
+> Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
 
 That prompt text is supportive documentation for the model. The Rust helper is authoritative.
 
@@ -307,10 +309,10 @@ The routing helper must:
 
 - trim recipe strings before checking whether they are empty
 - normalize classification before comparing it to `Development`
-- allow raw recipe strings to choose only between `quick-change` and `default-workflow` for Development workstreams
+- never let a raw recipe string select `quick-change`: a Development workstream gets `default-workflow` unless a valid override is set, and a non-Development `quick-change` becomes the classification's own recipe
 - accept a `-c workflow=` override only from the exact list `quick-change`, `default-workflow`
 - avoid building shell commands from model-provided recipe values
-- preserve non-Development behavior without broad fallback logic that masks malformed plans
+- preserve non-Development behavior, apart from the `quick-change` replacement, without broad fallback logic that masks malformed plans
 
 ## Related
 

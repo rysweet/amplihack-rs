@@ -14,7 +14,9 @@
 #   - sets and exports QUICK_CHANGE_STATE_DIR, an absolute directory outside
 #     the worktree created with umask 077 (S9).
 # The caller sets QC_STEP to its step id first. qc_branch and qc_write are
-# defined for the publish steps; qc_base for every step after the agent.
+# defined for the publish steps; qc_base for every step after the agent;
+# qc_handover_reason, qc_checks_summary and qc_checks_table read state files
+# only after checking them against fixed forms or the runner's outputs.
 
 set -euo pipefail
 export GIT_PAGER=cat PAGER=cat LESS=FRX
@@ -70,6 +72,59 @@ qc_base() {
   [ -n "${RECIPE_VAR_quick_change_base:-}" ] || qc_die "runner did not provide quick_change_base"
   [ "$base" = "$RECIPE_VAR_quick_change_base" ] || qc_die "pinned base in the state directory differs from the recorded base; not continuing"
   printf '%s' "$base"
+}
+
+# qc_handover_reason: the reason from line 1 of the stored diff-limits
+# verdict, checked against the fixed list of hand-over reasons, so that text
+# written to the state directory never reaches the hand-over prompt.
+qc_handover_reason() {
+  local file="$QUICK_CHANGE_STATE_DIR/diff-limits" line1 reason
+  local re='^(unparseable-path|files>[0-9]{1,6}|lines>[0-9]{1,6}|agent-commit|public-interface|cli-definition|manifest|sensitive-path|mode-or-symlink)$'
+  [ -f "$file" ] && [ ! -L "$file" ] || qc_die "stored diff-limits verdict is missing"
+  line1="$(sed -n 1p "$file")"
+  case "$line1" in
+    "QUICK_CHANGE_VERDICT=handover reason="*) reason="${line1#QUICK_CHANGE_VERDICT=handover reason=}" ;;
+    *) qc_die "stored diff-limits verdict is not a hand-over" ;;
+  esac
+  [[ "$reason" =~ $re ]] || qc_die "hand-over reason in the state directory is not a known reason"
+  printf '%s' "$reason"
+}
+
+# qc_checks_summary: the checks summary from the runner's output of
+# quick-change-run-checks (RECIPE_VAR_quick_change_checks), after checking
+# its form and that the stored copy is the same. The runner's copy decides
+# draft or ready, so a rewritten file cannot turn failed into passed.
+qc_checks_summary() {
+  local summary="${RECIPE_VAR_quick_change_checks:-}" file="$QUICK_CHANGE_STATE_DIR/checks-summary"
+  local re='^QUICK_CHANGE_CHECKS=(passed|failed|none) ran=[0-9]{1,4} failed=[0-9]{1,4} skipped=[0-9]{1,4}$'
+  [ -n "$summary" ] || qc_die "runner did not provide quick_change_checks"
+  [[ "$summary" =~ $re ]] || qc_die "checks summary is not in the expected form"
+  [ -f "$file" ] && [ ! -L "$file" ] && [ "$(cat "$file")" = "$summary" ] \
+    || qc_die "checks summary in the state directory differs from the runner's output"
+  printf '%s' "$summary"
+}
+
+# qc_checks_table <summary>: print the stored checks table after checking
+# every row against the form quick_change_checks.sh writes (a code-span label
+# with no backtick, pipe or control character, then `exit N` or a skip
+# reason from the closed set) and the row counts against <summary>. Any
+# other content stops the step, so the PR body gets nothing else from it.
+qc_checks_table() {
+  local file="$QUICK_CHANGE_STATE_DIR/checks-table.md" line ran=0 failed=0 skipped=0 want
+  local skip_re='skipped [(]((cargo|pre-commit|npm|jq) not on PATH|no [.]rs files changed|no "(lint|test)" script)[)]'
+  local row_re='^[|] `[^`|[:cntrl:]]*` [|] (exit [0-9]{1,3}|'"$skip_re"') [|]$'
+  [ -f "$file" ] && [ ! -L "$file" ] || qc_die "checks table is missing"
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" =~ $row_re ]] || qc_die "checks table row is not in the expected form"
+    case "$line" in
+      *" | exit 0 |") ran=$((ran + 1)) ;;
+      *" | exit "*) ran=$((ran + 1)); failed=$((failed + 1)) ;;
+      *) skipped=$((skipped + 1)) ;;
+    esac
+  done < "$file"
+  want="${1#QUICK_CHANGE_CHECKS=* }"
+  [ "ran=$ran failed=$failed skipped=$skipped" = "$want" ] || qc_die "checks table does not match the checks summary"
+  cat "$file"
 }
 
 # qc_branch: print the worktree's branch after checking that it is valid,

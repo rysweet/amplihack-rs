@@ -69,6 +69,8 @@ fn select_workflow_step_follows_activate_workflow_and_reads_only_recipe_vars() {
         "orch helper select-workflow",
         "--override",
         "RECIPE_VAR_workflow",
+        "--existing-branch \"${RECIPE_VAR_existing_branch:-}\"",
+        "--pr-number \"${RECIPE_VAR_pr_number:-}\"",
         "mktemp",
     ] {
         assert!(

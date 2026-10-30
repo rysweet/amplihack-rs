@@ -19,6 +19,9 @@ context:
   adaptive_recipe: ""
   workflow: ""
   selected_workflow: ""
+  # Inherited from smart-orchestrator; either one rules out quick-change (#1740).
+  existing_branch: ""
+  pr_number: ""
 
 steps:
   # ─────────────────────────────────────────────────────────────────────────
@@ -105,7 +108,7 @@ steps:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 2c: Single dev/investigation workstream -- round 1
-  # Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`.
+  # Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
   # Hybrid decompositions route each workstream by its own normalized classification.
   # NOTE: workstream_count may be stored as a Number (int) by the Rust
   # recipe runner's parse_context_value (which auto-detects "1" → Number).
@@ -178,7 +181,8 @@ steps:
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
       # FIX (heredoc-bulletproof): use env var — no heredoc needed.
       printf '%s' "${RECIPE_VAR_decomposition_json:-}" > "$_DECOMP_TMPFILE"
-      # #1740: the helper reads the -c workflow= override from RECIPE_VAR_workflow.
+      # #1740: the helper reads the -c workflow= override from RECIPE_VAR_workflow,
+      # and RECIPE_VAR_existing_branch and RECIPE_VAR_pr_number, which rule out quick-change.
       amplihack orch helper build-workstreams-config < "$_DECOMP_TMPFILE"
     output: "workstreams_file"
 

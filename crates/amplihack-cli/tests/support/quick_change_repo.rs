@@ -127,6 +127,22 @@ impl Repo {
         self.run(&args, true)
     }
 
+    /// [`Repo::measure`] with `dir` first on `PATH`, so a shim there (an
+    /// `awk`, say) replaces the real program for the tool.
+    pub fn measure_with_path(&self, dir: &Path) -> Output {
+        let path = std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(
+            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
+        ))
+        .unwrap();
+        let mut c = crate::isolated_amplihack::isolated("bash");
+        c.arg(tool())
+            .args([self.wt.to_str().unwrap(), "--base", self.base.as_str()])
+            .env("HOME", self.tmp.path())
+            .env("QUICK_CHANGE_STATE_DIR", &self.state)
+            .env("PATH", path);
+        c.output().expect("run quick_change_diff_limits.sh")
+    }
+
     /// Commits everything in the worktree, as the recipe's commit step and
     /// hook repair would.
     pub fn commit_all(&self, message: &str) {

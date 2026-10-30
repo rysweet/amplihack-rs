@@ -196,7 +196,9 @@ Expected output:
 
 Per-workstream classification wins when present. Top-level `task_type` is used only when the workstream has no own classification, so an unclassified workstream under top-level `Development` routes to `default-workflow`.
 
-## Verify that a quick-change recipe is kept
+## Verify that a model quick-change recipe is not kept
+
+`build-workstreams-config` runs only for a parallel decomposition, and `quick-change` needs exactly one workstream, so the model's `recipe` field never selects it:
 
 ```bash
 cat > /tmp/dev-routing-quick-change.json <<'JSON'
@@ -208,33 +210,41 @@ cat > /tmp/dev-routing-quick-change.json <<'JSON'
       "classification": "Development",
       "description": "Fix the broken link in docs/index.md",
       "recipe": "quick-change"
+    },
+    {
+      "name": "fix-typo",
+      "classification": "Development",
+      "description": "Correct the misspelt word in the orch.rs doc comment",
+      "recipe": "quick-change"
     }
   ]
 }
 JSON
 WS_FILE=$(amplihack orch helper build-workstreams-config < /tmp/dev-routing-quick-change.json)
-jq '.[0].recipe' "$WS_FILE"
+jq -c '[.[].recipe]' "$WS_FILE"
 ```
 
 Expected output:
 
 ```json
-"quick-change"
+["default-workflow","default-workflow"]
 ```
 
-Force the full workflow with the override that `-c workflow=` sets:
+Force `quick-change` with the override that `-c workflow=` sets. The helper applies it only for a Development task, as `select-workflow` does:
 
 ```bash
-WS_FILE=$(RECIPE_VAR_workflow=default-workflow \
+WS_FILE=$(RECIPE_VAR_workflow=quick-change RECIPE_VAR_task_type=Development \
   amplihack orch helper build-workstreams-config < /tmp/dev-routing-quick-change.json)
-jq '.[0].recipe' "$WS_FILE"
+jq -c '[.[].recipe]' "$WS_FILE"
 ```
 
 Expected output:
 
 ```json
-"default-workflow"
+["quick-change","quick-change"]
 ```
+
+With `RECIPE_VAR_existing_branch` or `RECIPE_VAR_pr_number` also set, both workstreams get `default-workflow` again, because `quick-change` cannot work on an existing branch.
 
 ## Verify the workflow selection and log line
 
@@ -296,7 +306,8 @@ NODE_OPTIONS=--max-old-space-size=32768 cargo test -p amplihack-cli --test cli_i
 | --- | --- | --- |
 | Development workstream keeps `investigation-workflow` | An old binary or stale installed bundle is being used | Run `cargo build -p amplihack-cli`, then run the intended binary explicitly or refresh the install |
 | Every workstream becomes `default-workflow` | Top-level classification is being applied too broadly | Ensure each hybrid workstream that should keep a non-Development route carries its own `classification`, `task_type`, or `type` |
-| Development workstream with `recipe: "quick-change"` becomes `default-workflow` | `RECIPE_VAR_workflow=default-workflow` is set in the shell, or the binary predates #1740 | Unset `RECIPE_VAR_workflow`, or rebuild the CLI |
+| `RECIPE_VAR_workflow=quick-change` leaves Development workstreams on `default-workflow` | `RECIPE_VAR_task_type` is not `Development`, or `RECIPE_VAR_existing_branch` or `RECIPE_VAR_pr_number` is set | Expected: the override applies only to a Development task that does not target an existing branch or PR (W2 and W3) |
+| Development workstream with `recipe: "quick-change"` becomes `default-workflow` | Expected in a parallel decomposition: the model's `recipe` never selects `quick-change` | Use `-c workflow=quick-change` to force it |
 | `WARNING: unknown workflow override` | `-c workflow=` holds a value other than `quick-change` or `default-workflow` | Correct the value; it is matched after trimming and lower-casing |
 | `amplihack orch helper` is missing | The installed CLI is too old | Rebuild or reinstall amplihack |
 | `jq` is missing | The examples use `jq` for display only | Inspect the workstreams file with another JSON viewer |
