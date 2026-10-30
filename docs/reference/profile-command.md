@@ -287,7 +287,7 @@ falls back to `/usage` in the time left:
 | `response.response` is missing or not an object | The answer has no payload. |
 | `rate_limits_available` is not `true`, or `rate_limits` is not an object (`null`, for example) | `claude` has no figures, for example because the profile is not logged in. `/usage` can then report `not_logged_in`. |
 | Neither the session nor the all-models week has a valid `utilization` | Nothing usable was read. |
-| `extra_usage`, at the top of the payload or at `rate_limits.extra_usage`, is not absent, `null` or an object with `"is_enabled": false`; for example `{"is_enabled": true}` | The account has usage credits turned on, or the answer reports `extra_usage` in a form amplihack does not recognise. The payload has no spend-limit field, and `/usage` shows a used-up spend limit as `spend_limit`. |
+| `extra_usage`, at the top of the payload or at `rate_limits.extra_usage`, is not absent, `null` or an object with `"is_enabled": false`; for example `{"is_enabled": true}` | The account has usage credits turned on, or the answer reports `extra_usage` in a form amplihack does not recognise. amplihack does not read the payload's spend fields (Claude Code 2.1.314 sends `rate_limits.extra_usage.spend_limit_reached` and `rate_limits.spend`), because they can disagree with `/usage`; `/usage` shows a used-up spend limit as `spend_limit`. |
 | `claude` could not be started, written to, read or waited for | The attempt failed. |
 
 Profiles marked as overflow are probed with `/usage` only. They never get
@@ -525,7 +525,7 @@ result is a reading: the account answered, and a window is at 100% or more.
 | Result | `profile usage` table | `--json` | Rotator cycle line | Rotator decision | Next probe |
 |--------|-----------------------|----------|--------------------|------------------|------------|
 | `timeout` | state `timeout`, `-` in every percentage and reset | `"state": "timeout"`, `session`, `week_all` and `error` `null`, `week_models` empty | `<name>:failed` | Unknown: never a target, never counted as exhausted; a plan candidate in this state blocks a move onto [overflow](#overflow-decision) | Next run or cycle; no failed result is kept |
-| `error` | state `error`, `-` in every percentage and reset; reason on stderr | `"state": "error"`, `session` and `week_all` `null`, `week_models` empty, reason in `error` | `<name>:failed` | As for `timeout`, except `profile directory refused`, which does not block a move onto overflow (see [Overflow decision](#overflow-decision)) | As for `timeout` |
+| `error` | state `error`, `-` in every percentage and reset; reason on stderr | `"state": "error"`, `session` and `week_all` `null`, `week_models` empty, reason in `error` | `<name>:failed` | As for `timeout`, `profile directory refused` included (see [Overflow decision](#overflow-decision)) | As for `timeout` |
 | `session_exhausted`, `weekly_exhausted` | the percentages read | the windows read | `<name>:s=100%,w=100%`, whatever the windows read | Headroom `0`: never a target | Next run or cycle |
 
 `spend_limit`, `not_logged_in` and `unparsed` are also shown as
@@ -3449,8 +3449,9 @@ at once, and the `overflow: on` line reads `next plan reset unknown`. Turn
 it on only if you would rather pay than wait for a reset nobody reported.
 
 One known reset is enough. A plan candidate whose probe timed out or could
-not run blocks the move anyway (see [Overflow decision](#overflow-decision)),
-but one that read `not_logged_in`, `unparsed` or `spend_limit` does not. With
+not run, a refused profile directory included, blocks the move anyway (see
+[Overflow decision](#overflow-decision)), but one that read
+`not_logged_in`, `unparsed` or `spend_limit` does not. With
 an expired login, for example, another login's known reset decides, and the
 rotator can move onto overflow even though the expired login would have had
 capacity again within `--overflow-wait`. Reset times are the `resets_at`
@@ -3471,7 +3472,7 @@ plan candidate with capacity always stands:
 | Condition | Outcome |
 |-----------|---------|
 | Live probe failed | As without overflow. A failed live probe never moves work onto credits. |
-| A plan candidate's probe in this cycle ended in `timeout` or `error` | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity. That login might have capacity, so a failed measurement never moves work onto credits. It is probed again on the next cycle. |
+| A plan candidate's probe in this cycle ended in `timeout` or `error` (`claude` could not be started, written to, read or waited for, or the profile directory was refused just before the spawn) | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity. That login might have capacity, so such a probe never moves work onto credits. It is probed again on the next cycle. |
 | A plan candidate has capacity (it is below both thresholds but short of `--margin`) | ALERT `no-capacity`, as without overflow. Credits are never used while a plan login has capacity. |
 | `earliest plan reset - now > overflow-wait`, and an overflow candidate is eligible | Swap to the first eligible one, `reason=overflow-in`. The `--hold` does not apply. |
 | `earliest plan reset - now <= overflow-wait` | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity, which costs nothing. |
@@ -3490,14 +3491,16 @@ stays. With `--overflow-wait 0` the rotator moves onto overflow as soon as
 every plan profile is out of capacity and the earliest reset is known and in
 the future.
 
-A plan candidate that reads `not_logged_in`, `unparsed` or `spend_limit`
-does not block the move, so a login that has expired cannot keep the rotator
-off credits for good. Nor does a plan candidate whose directory fails the
-check just before the spawn: it reads `error` (`profile directory refused`)
-on every cycle, not once, so it is a lasting state like those, not an
-unknown probe. It is never a target, and `amplihack profile usage <name>`
-shows the same `error` row; fix the directory, or exclude or remove the
-profile.
+A plan candidate that reads `not_logged_in`, `unparsed` or `spend_limit`,
+or `ok` with no week figure, does not block the move, so a login that has
+expired cannot keep the rotator off credits for good. A plan profile whose
+directory fails the ownership and mode check is not a candidate at all: the
+[candidate list](#rotate-candidates) skips it as `no login` before any probe,
+so it does not block the move either. Only a directory that changes between
+that check and the spawn reads `error` (`profile directory refused`) in the
+cycle, and it blocks the move for that cycle. `amplihack profile usage
+<name>` shows the `error` row whenever the directory is refused; fix the
+directory to bring the profile back into rotation.
 
 An unknown plan probe stops only a move from a plan login onto an overflow
 profile. It does not stop these moves:
@@ -3710,7 +3713,7 @@ set of skipped profiles changes, and by the one-shot command on every run.
 | Skip reason | Condition |
 |-------------|-----------|
 | `live` | It is the live profile. |
-| `no login` | `<root>/<name>/.credentials.json` is missing, a symlink, not a regular file, not owned by you, readable by other users, or has more than one link. |
+| `no login` | The profile directory fails the ownership and mode check (it is a symlink, not a directory, not owned by you, or open to group or other users), or `<root>/<name>/.credentials.json` is missing, a symlink, not a regular file, not owned by you, readable by other users, or has more than one link. |
 | `excluded` | It is in the auto-switch `exclude` list. |
 | `session running` | A running process has `CLAUDE_CONFIG_DIR=<root>/<name>` (the same `/proc` scan auto-switch uses). If `/proc` cannot be scanned, every profile is skipped and `skip: cannot see running sessions; no candidates` is logged once. |
 | `leased` | Its login is on loan to another profile's session in the auto-switch ledger. |

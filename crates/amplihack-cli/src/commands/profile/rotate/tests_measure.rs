@@ -121,12 +121,12 @@ fn reading_marks_timeouts_and_transient_errors_unknown() {
 }
 
 #[test]
-fn a_refused_profile_directory_is_failed_but_not_unknown() {
-    // It stays refused until someone fixes it, so it must not hold overflow
-    // back on every cycle.
+fn a_refused_profile_directory_is_failed_and_unknown() {
+    // The login behind it may have capacity, so it holds a move onto
+    // overflow back in this cycle (issue #1698).
     let p = reading("odd", &failed_with(ErrorReason::ProfileRefused));
     assert_eq!(p.reading, Reading::Failed);
-    assert!(!p.unknown);
+    assert!(p.unknown);
 }
 
 #[test]

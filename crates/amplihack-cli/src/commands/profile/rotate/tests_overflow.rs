@@ -49,10 +49,12 @@
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Win, Windows, decide};
 use super::ledger::OverflowBlock;
+use super::measure::reading;
 use super::overflow::{OverflowInput, Tag, Verdict, decide_overflow, gate};
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{Gate, OverflowEntry};
+use crate::commands::profile::usage_cmd::{ErrorReason, Probe};
 use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow};
 use std::collections::BTreeMap;
 
@@ -660,6 +662,27 @@ fn a_lasting_plan_failure_does_not_block_overflow() {
         assert_eq!(v.decision, swap("cred", Reason::OverflowIn), "{state:?}");
         assert_eq!(v.tag, Some(Tag::In));
     }
+}
+
+#[test]
+fn a_refused_plan_profile_directory_blocks_overflow() {
+    // A directory refused just before the spawn reads `error`; that login
+    // may have capacity, so the move onto credits is held in this cycle.
+    let refused = Probe {
+        report: UsageReport::empty(UsageState::Error),
+        error: Some(ErrorReason::ProfileRefused),
+        raw: None,
+    };
+    let spare = reading("spare", &refused);
+    assert!(spare.unknown);
+    let v = Case::new("work", exhausted(FAR, FAR))
+        .cand("spare", spare)
+        .cand("cred", exhausted(None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, Decision::Alert);
+    assert_eq!(v.tag, None);
+    assert!(v.new_blocks.is_empty());
 }
 
 #[test]

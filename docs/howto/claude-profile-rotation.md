@@ -636,8 +636,7 @@ cycle line, never as `s=100%,w=100%`, and writes
 count or record it as exhausted, and probes it again on the next cycle.
 While a plan profile's usage is unknown this way, the rotator does not move
 onto
-[usage credits](#use-usage-credits-when-every-plan-login-is-exhausted).
-A profile whose directory is refused is the exception: see
+[usage credits](#use-usage-credits-when-every-plan-login-is-exhausted); see
 [When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured).
 `s=100%,w=100%` means the probe answered and the account reached its
 session or weekly limit.
@@ -1074,9 +1073,10 @@ unknown`.
 
 ### When a plan login cannot be measured
 
-If a plan profile's probe times out, or its `claude` cannot be started or
-read, the rotator cannot tell whether that login has capacity, so it does
-not move onto credits in that cycle, however far away the known resets are. It writes the no-capacity
+If a plan profile's probe times out, its `claude` cannot be started or
+read, or its directory is refused just before the spawn, the rotator cannot
+tell whether that login has capacity, so it does not move onto credits in
+that cycle, however far away the known resets are. It writes the no-capacity
 ALERT (or makes the free swap onto a plan login at a threshold) as it would
 with no overflow profile, and probes again on the next cycle:
 
@@ -1085,15 +1085,22 @@ with no overflow profile, and probes again on the next cycle:
 2026-10-24T09:00:05Z ALERT: no profile has capacity live=work s=97% w=91% (candidates: 1 failed, 1 exhausted)
 ```
 
-A failed measurement never spends money. If the probes keep timing out, see
+A plan probe that timed out or could not run never moves work onto
+credits. If the probes keep timing out, see
 [When the host is heavily loaded](#when-the-host-is-heavily-loaded).
 
-A profile that is not logged in does not block credits, and neither does a
-profile whose directory is refused (it shows `error` with
-`profile directory refused` in `amplihack profile usage`). Both are refused
-on every cycle until someone fixes them, so they would otherwise keep the
-rotator off credits for good. Neither is ever chosen; fix the profile or
-remove it.
+A plan profile whose directory fails the ownership and mode check
+(`amplihack profile usage` shows `error` with `profile directory refused`)
+is skipped before any probe, as `no login`, so it is never chosen and does
+not block credits. Only a directory that changes between that check and the
+probe reads `error` in the cycle line; it holds credits back for that cycle,
+and on the next cycle the profile is skipped. Fix the directory to bring the
+profile back into rotation.
+
+A profile that is not logged in, whose `/usage` output cannot be read
+(`unparsed`) or that is at its spend limit does not block credits: the
+login reported that state, and it would otherwise keep the rotator off
+credits for good. Such a profile is never chosen; fix it or remove it.
 
 The rule stops only a move from a plan login onto credits. If the overflow
 profile you are on hits its spend limit, the rotator still moves to the next

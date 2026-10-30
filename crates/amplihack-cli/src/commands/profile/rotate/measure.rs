@@ -9,7 +9,7 @@ use crate::binary_finder::BinaryInfo;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::{self, ProbeMode};
 use crate::commands::profile::store::ProfileStore;
-use crate::commands::profile::usage_cmd::{self, ErrorReason, Probe};
+use crate::commands::profile::usage_cmd::{self, Probe};
 use crate::commands::profile::usage_parse::UsageState;
 use std::time::Duration;
 
@@ -33,18 +33,16 @@ impl Live<'_> {
 /// The reading for `p`. A failed or timed-out probe counts as "swap needed",
 /// so its cause goes to stderr (the daemon's `rotate.err`); the text is fixed
 /// and never Claude's output. Both read `Failed`: never a target and never
-/// exhausted, and probed again next cycle. They are also unknown, which
-/// blocks a move onto overflow, except a refused profile directory: that
-/// stays refused until someone fixes it, like a logged-out login, so it does
-/// not hold overflow back on every cycle.
+/// exhausted, and probed again next cycle. Both are also unknown, which
+/// blocks a move onto overflow. A refused profile directory is no exception
+/// (issue #1698): that login may have capacity. A directory that stays
+/// refused is skipped as `no login` before the next cycle's probes, so the
+/// hold lasts one cycle.
 pub(super) fn reading(who: &str, p: &Probe) -> Probed {
     if p.error.is_some() || p.report.state == UsageState::Error {
         let why = p.error.map_or("unreadable /usage output", |e| e.as_str());
         eprintln!("warning: rotate: probe of {who} failed: {why}");
-        return Probed {
-            unknown: p.error != Some(ErrorReason::ProfileRefused),
-            ..Probed::failed()
-        };
+        return Probed::failed();
     }
     if p.report.state == UsageState::Timeout {
         eprintln!("warning: rotate: probe of {who} timed out");

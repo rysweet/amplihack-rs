@@ -248,8 +248,11 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
                 .any(|c| &c.name == to && plan_usable(s, &c.reading)),
             _ => false,
         };
-        // A plan login whose probe timed out or could not run might have
-        // capacity: a failed measurement never moves work onto credits.
+        // A failed live probe holds the move onto credits, and so does an
+        // unknown plan probe: a timeout, a `claude` that could not be
+        // started, read or waited for, or a refused profile directory. That
+        // login might have capacity. A plan login that read `not_logged_in`,
+        // `unparsed`, `spend_limit`, or `ok` with no week figure, does not.
         if i.overflow.is_empty()
             || !moving_without_capacity
             || i.live.reading == Reading::Failed
