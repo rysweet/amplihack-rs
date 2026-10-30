@@ -173,8 +173,15 @@ const VERSION_DETECTION_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Run `binary --version` and extract a version string.
 fn detect_version(path: &Path) -> Option<String> {
+    detect_version_with(path, &|_| {})
+}
+
+/// [`detect_version`] with `configure` applied to the probe just before it is
+/// spawned. Tests use it to set the child's environment (issue #1765).
+fn detect_version_with(path: &Path, configure: &dyn Fn(&mut Command)) -> Option<String> {
     let mut cmd = Command::new(path);
     cmd.arg("--version");
+    configure(&mut cmd);
     // SEC-3 — `path` is an arbitrary candidate from `$PATH` or `$HOME`, so its
     // stdout is attacker-influenced and its volume is attacker-chosen. This is
     // the one place in this module that probes untrusted binaries, and it used
@@ -731,26 +738,37 @@ mod tests {
         );
     }
 
+    /// Issue #1765: the fake prints a version and then outlives the bound by
+    /// far, so a pass means the timeout fired and the version it printed was
+    /// discarded. It ends in `exec` because only the direct child is killed.
     #[cfg(target_os = "linux")]
     #[test]
     fn detect_version_is_bounded_for_hanging_binaries() {
         let temp = tempfile::tempdir().unwrap();
         let fake_tool = temp.path().join("hanging-version-tool");
-        std::fs::write(&fake_tool, "#!/bin/sh\n/bin/sleep 2\nprintf 'v9.9.9\\n'\n").unwrap();
+        std::fs::write(
+            &fake_tool,
+            "#!/bin/sh\nprintf 'v9.9.9\\n'\nexec /bin/sleep 60\n",
+        )
+        .unwrap();
         let mut perms = std::fs::metadata(&fake_tool).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&fake_tool, perms).unwrap();
 
         let started = std::time::Instant::now();
-        let version = detect_version(&fake_tool);
+        let version = detect_version_with(&fake_tool, &|cmd: &mut Command| {
+            cmd.env("HOME", temp.path())
+                .env_remove(crate::rotator_status::ROOT_ENV);
+        });
+        let elapsed = started.elapsed();
 
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "version detection must not wait for an unbounded child process"
+            elapsed < Duration::from_secs(30),
+            "version detection must not wait for an unbounded child process, elapsed {elapsed:?}"
         );
         assert!(
             version.is_none(),
-            "timed-out version probes should not report a stale version"
+            "timed-out version probes should not report a stale version, got {version:?}"
         );
     }
 
