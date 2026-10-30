@@ -853,11 +853,12 @@ fn claude_does_not_get_allow_all_injected() {
 }
 
 #[test]
-fn copilot_gets_remote_injected_by_default() {
+fn copilot_default_launch_has_no_remote() {
+    // Issue #1744: Copilot CLI 1.0.105 removed `--remote` and refuses to start
+    // when it is given. amplihack must never add it; remote sessions are
+    // started inside Copilot with `/remote on`.
     with_uvx_detection_disabled(|| {
-        unsafe {
-            std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
-        }
+        let _no_proxy = EnvGuard::unset(PROXY_ENV_VARS);
         let binary = BinaryInfo {
             name: "copilot".to_string(),
             path: PathBuf::from("/usr/bin/copilot"),
@@ -869,24 +870,31 @@ fn copilot_gets_remote_injected_by_default() {
             .map(|s| s.to_string_lossy().into_owned())
             .collect();
         assert!(
-            args.iter().any(|a| a == "--remote"),
-            "copilot launch must include --remote by default; got {args:?}"
+            !args.iter().any(|a| a == "--remote"),
+            "amplihack must not add --remote to a Copilot launch (#1744); got {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "--no-remote"),
+            "an unrouted Copilot launch must not gain --no-remote either; got {args:?}"
         );
     });
 }
 
 #[test]
-fn copilot_skips_remote_when_user_already_passed_it() {
+fn copilot_passes_user_remote_through_once() {
     with_uvx_detection_disabled(|| {
-        unsafe {
-            std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
-        }
+        let _no_proxy = EnvGuard::unset(PROXY_ENV_VARS);
         let binary = BinaryInfo {
             name: "copilot".to_string(),
             path: PathBuf::from("/usr/bin/copilot"),
             version: None,
         };
-        let extra = vec!["--remote".to_string()];
+        let extra = vec![
+            "--model".to_string(),
+            "gpt-5".to_string(),
+            "--remote".to_string(),
+            "USER_TRAILING_ARG".to_string(),
+        ];
         let cmd = build_command(&binary, false, false, false, &extra);
         let args: Vec<String> = cmd
             .get_args()
@@ -895,33 +903,11 @@ fn copilot_skips_remote_when_user_already_passed_it() {
         let remote_count = args.iter().filter(|a| a.as_str() == "--remote").count();
         assert_eq!(
             remote_count, 1,
-            "should not duplicate --remote when user already supplied it; got {args:?}"
+            "a user's --remote must be passed through exactly once; got {args:?}"
         );
-    });
-}
-
-#[test]
-fn copilot_skips_remote_when_env_opt_out() {
-    with_uvx_detection_disabled(|| {
-        unsafe {
-            std::env::set_var("AMPLIHACK_COPILOT_NO_REMOTE", "1");
-        }
-        let binary = BinaryInfo {
-            name: "copilot".to_string(),
-            path: PathBuf::from("/usr/bin/copilot"),
-            version: None,
-        };
-        let cmd = build_command(&binary, false, false, false, &[]);
-        let args: Vec<String> = cmd
-            .get_args()
-            .map(|s| s.to_string_lossy().into_owned())
-            .collect();
-        unsafe {
-            std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
-        }
         assert!(
-            !args.iter().any(|a| a == "--remote"),
-            "opt-out must suppress --remote; got {args:?}"
+            args.ends_with(&extra),
+            "user arguments must reach Copilot unchanged and in order, last in argv; got {args:?}"
         );
     });
 }
@@ -1079,17 +1065,14 @@ fn claude_does_not_get_remote_injected() {
 }
 
 #[test]
-fn copilot_skips_remote_when_user_passes_no_remote() {
+fn copilot_passes_user_no_remote_through() {
     with_uvx_detection_disabled(|| {
-        unsafe {
-            std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
-        }
+        let _no_proxy = EnvGuard::unset(PROXY_ENV_VARS);
         let binary = BinaryInfo {
             name: "copilot".to_string(),
             path: PathBuf::from("/usr/bin/copilot"),
             version: None,
         };
-        // User explicitly opted out via --no-remote; we must NOT inject --remote.
         let extra = vec!["--no-remote".to_string()];
         let cmd = build_command(&binary, false, false, false, &extra);
         let args: Vec<String> = cmd
@@ -1098,7 +1081,17 @@ fn copilot_skips_remote_when_user_passes_no_remote() {
             .collect();
         assert!(
             !args.iter().any(|a| a == "--remote"),
-            "must not inject --remote when user passed --no-remote; got {args:?}"
+            "must not add --remote when the user passed --no-remote; got {args:?}"
+        );
+        let no_remote_count = args.iter().filter(|a| a.as_str() == "--no-remote").count();
+        assert_eq!(
+            no_remote_count, 1,
+            "a user's --no-remote must be passed through exactly once; got {args:?}"
+        );
+        assert_eq!(
+            args.last().map(String::as_str),
+            Some("--no-remote"),
+            "the user's --no-remote must stay at the position the user gave; got {args:?}"
         );
     });
 }
