@@ -279,3 +279,5 @@ output:
     | 1. build (default-workflow) | {{build_result}} |
     | 2. crusty loop | {{autodrive_summary.crusty_loop}} |
     | 3. merge-ready loop + merge gate | {{autodrive_summary.merge_result}} |
+
+    Phase 1 terminal state: {{build_result.terminal_state}} (handed off: {{build_result.handed_off}})

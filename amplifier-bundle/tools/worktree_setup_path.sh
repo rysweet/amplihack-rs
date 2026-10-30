@@ -36,8 +36,8 @@
 #   repo_path  workflow-publish step-14b, step-14c, step-14g and step-16: exit 3
 #              falls back to repo_path (they stage nothing, #684); any other
 #              failure stops.
-#   skip       workflow-finalize step-20a and step-20b: never run in REPO_PATH
-#              (#1528).
+#   skip       workflow-finalize step-20-sync-pr-head, step-20a and step-20b:
+#              never run in REPO_PATH (#1528).
 #   REPO_PATH  workflow-finalize step-21 and step-22b, workflow-pr-review
 #              step-19c: read-only status and scans. Final status in REPO_PATH
 #              is safe because the #1596 branch lookup in
