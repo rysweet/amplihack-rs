@@ -236,6 +236,7 @@ nav:
       - Troubleshooting: troubleshooting/README.md
       - Code Review: CODE_REVIEW.md
       - Rust Code Quality: reference/rust-code-quality.md
+      - Pre-commit Build Cache: reference/pre-commit-build-cache.md
       - CLI Reference: reference/cli.md
       - install Command: reference/install-command.md
       - Install/Update PATH Conflicts: reference/install-update-path-conflicts.md

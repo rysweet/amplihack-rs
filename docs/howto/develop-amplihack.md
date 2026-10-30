@@ -160,6 +160,10 @@ The project uses pre-commit hooks. If they fail:
 pre-commit run --all-files
 ```
 
+The cargo hooks keep a build cache for each checkout under `~/.cache/amplihack`;
+[Pre-commit Build Cache](../reference/pre-commit-build-cache.md) explains when
+those caches are removed and how to reclaim the space by hand.
+
 ## Related
 
 - [Prerequisites](../reference/prerequisites.md) — detailed tool installation

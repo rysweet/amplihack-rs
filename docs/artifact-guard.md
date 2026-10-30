@@ -1115,6 +1115,9 @@ forms above set it inline because they are run by hand; the checked-in hook
 instead runs through `scripts/git-hook-cargo.sh`, which defaults it to a
 per-checkout directory under `${XDG_CACHE_HOME:-$HOME/.cache}/amplihack` (issues
 #1381 and #1440) and leaves an explicitly set `CARGO_TARGET_DIR` alone.
+[Pre-commit Build Cache](reference/pre-commit-build-cache.md) describes how
+those caches are tagged and reclaimed, including caches that are symbolic links
+to another volume (issue #1771).
 
 ## Output isolation
 

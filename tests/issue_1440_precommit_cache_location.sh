@@ -197,23 +197,26 @@ fresh="$CACHE_ROOT/${PREFIX}fresh0000abcd"
 locked="$CACHE_ROOT/${PREFIX}locked000abc"
 foreign="$CACHE_ROOT/some-other-directory"
 mkdir -p "$stale/debug" "$fresh/debug" "$locked/debug" "$foreign"
-: > "$locked/.cargo-lock"
+: > "$locked/debug/.cargo-lock"
 mkdir -p "$dir_one"
 : > "$dir_one/.cargo-lock"
 
+# The age rule (#1771) also reads debug/, which cargo writes on every build, so
+# a stale fixture ages its debug/ as well as the directory itself.
 age_ok=1
-for d in "$stale" "$locked" "$foreign" "$dir_one"; do
+for d in "$stale/debug" "$stale" "$locked/debug" "$locked" "$foreign" "$dir_one"; do
     touch -d '30 days ago' "$d" 2>/dev/null || age_ok=0
 done
 
 if [ "$age_ok" -eq 1 ]; then
-    # A live build holds an exclusive flock on <target>/.cargo-lock for the whole
-    # build. Hold it here on our own fd: the sweep runs in a child process whose
-    # own flock(1) opens the file fresh, so it sees genuine contention. No
-    # sleeps, no races.
+    # A live build holds an exclusive flock on <target>/debug/.cargo-lock for the
+    # whole build. Hold it here on our own fd: the sweep runs in a child process
+    # whose own flock(1) opens the file fresh, so it sees genuine contention. No
+    # sleeps, no races. The file already exists, so opening it leaves debug/
+    # stale.
     holding=0
     if command -v flock >/dev/null 2>&1; then
-        exec 9>"$locked/.cargo-lock"
+        exec 9>"$locked/debug/.cargo-lock"
         if flock --nonblock --exclusive 9; then
             holding=1
         fi
