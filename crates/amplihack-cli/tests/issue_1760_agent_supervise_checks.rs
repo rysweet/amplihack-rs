@@ -27,8 +27,10 @@ fn result_of(fx: &Fx, name: &str) -> Option<String> {
     line.split_once(" result=").map(|(_, r)| r.to_string())
 }
 
+/// A high restart limit: failed launches count as restarts (P6), and these
+/// tests repeat passes without testing the limit.
 fn pass(fx: &Fx) -> String {
-    let out = fx.supervise_once(&["--gap", "0"]);
+    let out = fx.supervise_once(&["--gap", "0", "--max-restarts", "20"]);
     expect_code(&out, 0);
     stdout(&out)
 }
@@ -129,23 +131,21 @@ fn no_conversation_id_and_a_missing_directory_fail_in_that_order() {
 }
 
 #[test]
-fn a_tmux_refusal_is_logged_with_its_first_line_and_is_not_a_restart() {
+fn a_tmux_refusal_is_logged_with_its_first_line_and_counts_as_a_restart() {
     let fx = Fx::new();
     let d = fx.dir("coord");
     fx.transcript(&d, CONV_A);
     fx.tmux_fail_new("create window failed: index 0 in use\nsecond line");
     fx.write_agents(&[("coord", fx.entry("coord", &d, Some(CONV_A)))]);
     pass(&fx);
-    assert_eq!(fx.new_sessions().len(), 1, "one attempt");
+    assert!(!fx.new_sessions().is_empty(), "attempted");
     assert_eq!(
         result_of(&fx, "coord").as_deref(),
         Some("failed: tmux: create window failed: index 0 in use")
     );
     let e = fx.agent("coord");
-    assert_eq!(
-        (e["state"].clone(), e["restarts"].clone()),
-        (json!("active"), json!([]))
-    );
+    assert_eq!(e["state"], "active");
+    assert_eq!(e["restarts"].as_array().map(Vec::len), Some(1), "P6: {e}");
     assert_eq!(
         e["last_recovery"]["result"],
         "failed: tmux: create window failed: index 0 in use"

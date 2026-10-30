@@ -151,7 +151,7 @@ fn env_flag_parsing() {
         parse_flag("ANTHROPIC_MODEL").unwrap_err(),
         "--env: expected KEY=VALUE"
     );
-    let rule = "--env: value must be at most 4096 bytes, with no newline or NUL";
+    let rule = "--env: value must be at most 4096 bytes, with no control characters";
     assert_eq!(parse_flag("ANTHROPIC_MODEL=a\nb").unwrap_err(), rule);
     assert_eq!(
         parse_flag(&format!("ANTHROPIC_MODEL={}", "v".repeat(4097))).unwrap_err(),

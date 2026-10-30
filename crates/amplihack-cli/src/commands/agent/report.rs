@@ -5,6 +5,7 @@
 //! Everything shown or logged passes through [`sanitize`].
 
 use super::registry::{EndedBy, Entry, LastRecovery, Registry, State, fmt_ts, restarts_within};
+use super::validate;
 use amplihack_utils::secure_files::open_private_nofollow;
 use serde_json::{Value, json};
 use std::fmt;
@@ -16,12 +17,13 @@ const MAX_TEXT: usize = 200;
 /// Longer than any line the supervisor builds; only a bound on hostile text.
 const MAX_LINE: usize = 4096;
 
-/// Control characters become `?`; at most `max` characters, cut on a
+/// Control characters and the format characters of
+/// [`validate::unsafe_char`] become `?`; at most `max` characters, cut on a
 /// character boundary.
 pub fn sanitize(s: &str, max: usize) -> String {
     s.chars()
         .take(max)
-        .map(|c| if c.is_control() { '?' } else { c })
+        .map(|c| if validate::unsafe_char(c) { '?' } else { c })
         .collect()
 }
 

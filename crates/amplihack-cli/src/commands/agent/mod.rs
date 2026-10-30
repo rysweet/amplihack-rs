@@ -270,5 +270,8 @@ mod tests_tmux;
 #[path = "tests_validate.rs"]
 mod tests_validate;
 #[cfg(test)]
+#[path = "tests_validate_hardening.rs"]
+mod tests_validate_hardening;
+#[cfg(test)]
 #[path = "tests_wrapper.rs"]
 mod tests_wrapper;

@@ -378,7 +378,7 @@ the pass writes one of these lines:
 | `failed: no conversation id` | The agent has no conversation id to resume. | Register it again with `--conversation`. |
 | `failed: launch directory missing` | The recorded directory no longer exists. | Restore the directory, or register the agent again with `--dir`. |
 | `failed: no transcript` | The conversation's transcript is not in the config directory the resume would use. A recorded profile whose directory no longer exists gives the same result. | Check the recorded profile, or register the agent again with the right `--profile`. |
-| `failed: tmux: MESSAGE` | tmux refused to create the session. | Read MESSAGE. The attempt does not count towards the restart limit. |
+| `failed: tmux: MESSAGE` | tmux refused to create the session. | Read MESSAGE. The attempt counts towards the restart limit, so a launch that keeps failing ends with the agent `stopped`. |
 
 Each of these lines is written once. The same result for the same agent and
 conversation is not written again at every pass; a resume is always written.
@@ -451,8 +451,9 @@ To supervise an ended agent again, start it with
 
 ## Crash loops
 
-Every resume counts towards a limit of 3 per agent in any hour. When an agent
-is lost again after 3 resumes in the last hour, the supervisor does not
+Every resume, and every launch that tmux refuses, counts towards a limit of 3
+per agent in any hour. When an agent is lost again after 3 such attempts in
+the last hour, the supervisor does not
 resume it. It marks the agent `stopped` and writes an alert:
 
 ```text

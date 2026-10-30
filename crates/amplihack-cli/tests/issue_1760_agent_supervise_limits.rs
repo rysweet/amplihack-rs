@@ -137,6 +137,33 @@ fn max_restarts_sets_the_limit() {
     );
 }
 
+/// P6: a failed launch counts as a restart, so an agent whose launch keeps
+/// failing is stopped by the limit instead of being retried every pass.
+#[test]
+fn failed_launches_reach_the_restart_limit() {
+    let fx = Fx::new();
+    let e = lost_with_restarts(&fx, "coord", CONV_A, &[]);
+    fx.write_agents(&[("coord", e)]);
+    fx.tmux_fail_new("server exited unexpectedly");
+    for n in 1..=2 {
+        pass(&fx, &["--gap", "0", "--max-restarts", "2"]);
+        let e = fx.agent("coord");
+        assert_eq!(e["state"], "active", "pass {n}: {e}");
+        assert_eq!(e["restarts"].as_array().map(Vec::len), Some(n), "{e}");
+    }
+    let tried = fx.new_sessions().len();
+    let out = pass(&fx, &["--gap", "0", "--max-restarts", "2"]);
+    assert_eq!(fx.new_sessions().len(), tried, "no launch over the limit");
+    let e = fx.agent("coord");
+    assert_eq!(e["state"], "stopped", "{e}");
+    let alert = "stopped: restart limit (2 restarts in the last hour)";
+    assert_eq!(e["alert"], alert);
+    assert!(
+        out.contains(&format!("ALERT: agent coord {alert}")),
+        "{out}"
+    );
+}
+
 /// R9.2(5): `--batch 2 --gap 1`, four lost agents, dirtiest first and ties
 /// by name; the third resume starts at least a second after the second.
 #[test]

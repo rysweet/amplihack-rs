@@ -60,7 +60,8 @@ There are no other `agent` subcommands.
   field or path and states the rule; for a value read from a process it gives
   the value's length in bytes instead. File contents are never quoted.
 - Text that comes from outside amplihack, such as paths and tmux error lines,
-  is printed and logged with control characters replaced by `?`.
+  is printed and logged with control characters and the
+  [format characters](#value-rules) replaced by `?`.
 - No `agent` command writes under `~/.claude` or a profile directory. They
   only read `sessions/` and `projects/` there.
 - `agent` commands do not restage amplihack's framework files before they
@@ -72,6 +73,12 @@ Each value is checked where it enters (a flag, a running process, tmux
 output, a hook), again when the registry is loaded, and again before every
 registry write.
 
+In this table, *control characters* also covers the Unicode format
+characters that can make shown text differ from what it holds: the
+direction embeddings, overrides and isolates (U+202A to U+202E and U+2066 to
+U+2069), the zero-width characters and direction marks (U+200B to U+200F)
+and the byte-order mark (U+FEFF).
+
 | Value | Rule |
 |-------|------|
 | NAME | `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$` |
@@ -80,7 +87,7 @@ registry write.
 | tmux window | 1 to 64 characters; no `#` or control characters. |
 | tmux socket | Absolute UTF-8 path, at most 107 bytes, no control characters. |
 | Launch directory | Absolute UTF-8 path to an existing directory, with no `#` or control characters. Existence is checked by `register` and `claude --supervise`, not on load. |
-| `--add-dir` | Made absolute against the launch directory; no control characters. |
+| `--add-dir` | Made absolute against the launch directory; no `#` or control characters. |
 | `--model`, `--effort`, `--permission-mode` | 1 to 256 bytes; no control characters; must not start with `-`. |
 | `--profile` | The [profile name rules](profile-command.md#name-rules): the pattern `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`, no `..`, no trailing `.`, and no reserved name such as `CON` or `LPT1`. `register` and `claude --supervise` also require the profile's directory under the profile root to exist and not be a symlink. |
 | `--env` | See [Recorded environment](#recorded-environment). |
@@ -204,7 +211,7 @@ Only these variables are ever recorded, matched by exact name:
 | `AMPLIHACK_DEFAULT_MODEL` |
 | `AMPLIHACK_AGENT_BINARY` |
 
-- A value must be at most 4096 bytes, with no newline or NUL.
+- A value must be at most 4096 bytes, with no control characters.
   `AMPLIHACK_AGENT_BINARY` must also be `amplifier`, `claude`, `codex` or
   `copilot`.
 - Every other variable is left out. That includes credentials and variables
@@ -521,7 +528,11 @@ digit replaced by `-` is accepted as well.
 
 ### Restart limit
 
-Only a `resumed` result counts. Before an agent is resumed, its `restarts`
+Every launch attempt counts: a `resumed` result and a `failed: tmux: LINE`
+result each append the attempt's time to `restarts`, so an agent whose launch
+keeps failing is stopped by the limit instead of being retried every pass.
+Skips and the other failures start nothing and do not count. Before an agent
+is resumed, its `restarts`
 entries from the last 3600 seconds are counted (entries up to 300 seconds in
 the future count too, and later ones are dropped, so a clock change cannot
 block an agent for long). When the count is `--max-restarts` or more, the
@@ -553,7 +564,10 @@ highest first, then by name. git runs with `GIT_OPTIONAL_LOCKS=0` and
 `GIT_TERMINAL_PROMPT=0`, without `GIT_DIR`, `GIT_WORK_TREE`,
 `GIT_INDEX_FILE` or `GIT_COMMON_DIR`, with stdin closed, a 10-second timeout
 and output capped at 1 MiB. A directory that is not a repository, or any
-error, counts as 0.
+error, counts as 0. `git status` can still run a clean filter
+(`filter.NAME.clean`) set in the repository's own configuration. That
+configuration belongs to you, and git's `safe.directory` check refuses a
+repository that another user owns, so this runs nothing you did not set up.
 
 The agents are resumed `--batch` at a time, with `--gap` seconds between
 batches. Immediately before each resume, the supervisor:
@@ -622,7 +636,7 @@ is running.
 | tmux outcome | Effect |
 |--------------|--------|
 | Exit 0 | The resume time is appended to `restarts`, `last_recovery` is set, `lost_at` is cleared, and a `resumed` line is written with the old `lost_at`. The resumed `amplihack claude --supervise` writes its own `launch_id` and `launched_at`. |
-| Anything else | `failed: tmux: LINE`, where LINE is tmux's first stderr line, at most 200 characters. No restart is counted. |
+| Anything else | `failed: tmux: LINE`, where LINE is tmux's first stderr line, at most 200 characters. The attempt's time is appended to `restarts`, so it counts towards the [restart limit](#restart-limit), even when the repeated line is not written again. |
 
 #### Resume message
 
@@ -1042,7 +1056,7 @@ Each error is one line, printed as `error: MESSAGE`, with exit 1.
 | Invalid `--profile` | `register`, `claude --supervise` | `--profile: names match [A-Za-z0-9][A-Za-z0-9._-]{0,63}, without '..' or a trailing '.'`. This is the text `amplihack profile` gives; a reserved name such as `CON` gets the same text. |
 | Profile directory missing | `register`, `claude --supervise` | `--profile: the profile's directory must exist under the profile root and must not be a symlink` |
 | `--env` name not allowed | `register` | `--env: only these variables can be recorded: LIST` |
-| `--env` malformed | `register` | `--env: expected KEY=VALUE`, `--env: value must be at most 4096 bytes, with no newline or NUL`, or for `AMPLIHACK_AGENT_BINARY` `--env: value must be one of claude, copilot, codex or amplifier` |
+| `--env` malformed | `register` | `--env: expected KEY=VALUE`, `--env: value must be at most 4096 bytes, with no control characters`, or for `AMPLIHACK_AGENT_BINARY` `--env: value must be one of claude, copilot, codex or amplifier` |
 | `--pid` not usable | `register` | `process PID is not a claude process of this user` |
 | Target in print mode | `register` | `process PID is a claude -p run, not an interactive session` |
 | No process and missing flags | `register` | `no claude process found; pass --session, --window, --dir and --conversation` |

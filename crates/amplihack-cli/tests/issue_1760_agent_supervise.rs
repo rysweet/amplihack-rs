@@ -282,7 +282,8 @@ fn a_failed_resume_still_completes_the_pass() {
     );
     assert_eq!(stdout(&o), format!("{}\n", lines[0]));
     let e = fx.agent("coordinator");
-    assert_eq!(e["restarts"], json!([]), "a failure is not a restart");
+    let restarts = e["restarts"].as_array().map(Vec::len);
+    assert_eq!(restarts, Some(1), "P6: a failed launch is a restart");
     assert!(e.get("lost_at").is_some(), "still lost: {e}");
     assert_eq!(
         e["last_recovery"]["result"],

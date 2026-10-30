@@ -210,11 +210,11 @@ fn malformed_env_flags_are_refused() {
         ("ANTHROPIC_MODEL", "--env: expected KEY=VALUE"),
         (
             long.as_str(),
-            "--env: value must be at most 4096 bytes, with no newline or NUL",
+            "--env: value must be at most 4096 bytes, with no control characters",
         ),
         (
             "ANTHROPIC_MODEL=a\nb",
-            "--env: value must be at most 4096 bytes, with no newline or NUL",
+            "--env: value must be at most 4096 bytes, with no control characters",
         ),
     ] {
         let o = fx.register("a", "s", &d, CONV_A, &["--env", arg]);

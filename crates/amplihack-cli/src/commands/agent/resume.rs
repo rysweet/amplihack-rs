@@ -121,14 +121,14 @@ fn resume_one(
         if e.lost_at.is_none() {
             return Ok(());
         }
-        return settle(dir, name, registered_at, None);
+        return settle(dir, name, registered_at, None, false);
     }
     let held = |id: &str| resumed.contains(id).then_some(Outcome::AlreadyRunning);
     let changed = outcome_of(&obs)
         .or_else(|| precheck(home, e))
         .or_else(|| e.conversation_id.as_deref().and_then(held));
     if let Some(outcome) = changed {
-        return settle(dir, name, registered_at, Some(outcome));
+        return settle(dir, name, registered_at, Some(outcome), false);
     }
     let Some(id) = e.conversation_id.clone() else {
         return Ok(());
@@ -145,7 +145,9 @@ fn resume_one(
         &argv,
     );
     if let Err(line) = started {
-        return settle(dir, name, registered_at, Some(Outcome::Tmux(line)));
+        // P6: a failed launch counts as a restart, so the restart limit
+        // ends an agent whose launch keeps failing.
+        return settle(dir, name, registered_at, Some(Outcome::Tmux(line)), true);
     }
     resumed.insert(id.clone());
     let result = Outcome::Resumed.to_string();
@@ -168,12 +170,14 @@ fn resume_one(
 
 /// Records what the check before a resume found instead: a line for
 /// `outcome` (subject to D13), or, for an agent found healthy, a cleared
-/// `lost_at` and no line.
+/// `lost_at` and no line. `restart` also counts a restart: a launch was
+/// attempted, even if the line repeats and is not written.
 fn settle(
     dir: &AgentsDir,
     name: &str,
     registered_at: &str,
     outcome: Option<Outcome>,
+    restart: bool,
 ) -> anyhow::Result<()> {
     let now = super::registry::now();
     let line = store::update(dir, now, |r| {
@@ -182,6 +186,9 @@ fn settle(
         };
         if e.registered_at != registered_at || e.state != State::Active {
             return Ok(None);
+        }
+        if restart {
+            e.restarts.push(fmt_ts(now));
         }
         Ok(match &outcome {
             Some(o) => record_line(e, name, now, o),

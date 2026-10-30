@@ -171,7 +171,7 @@ fn env_values_and_launch_ids() {
     for bad in ["a\nb", "a\0b", &*over] {
         assert_eq!(
             env_value(bad).unwrap_err(),
-            "value must be at most 4096 bytes, with no newline or NUL"
+            "value must be at most 4096 bytes, with no control characters"
         );
     }
     assert!(launch_id("6f1c0d8e2a4b4f0e9c7d3b5a1e2f4c6d").is_ok());

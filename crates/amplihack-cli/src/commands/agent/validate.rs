@@ -14,7 +14,7 @@ const NAME_RULE: &str =
 const ID_RULE: &str = "must be 1 to 64 letters, digits or '-', starting with a letter or digit";
 const PROFILE_RULE: &str =
     "names match [A-Za-z0-9][A-Za-z0-9._-]{0,63}, without '..' or a trailing '.'";
-const ENV_RULE: &str = "value must be at most 4096 bytes, with no newline or NUL";
+const ENV_RULE: &str = "value must be at most 4096 bytes, with no control characters";
 const MAX_SOCKET_BYTES: usize = 107;
 const MAX_OPTION_BYTES: usize = 256;
 const MAX_ENV_BYTES: usize = 4096;
@@ -34,6 +34,15 @@ pub fn conversation_id(s: &str) -> Result<(), String> {
     is_conversation_id(s)
         .then_some(())
         .ok_or_else(|| ID_RULE.to_string())
+}
+
+/// A control character, or a Unicode format character that can make shown
+/// text differ from what it holds: the bidirectional embeddings, overrides
+/// and isolates (U+202A to U+202E, U+2066 to U+2069), the zero-width and
+/// direction marks (U+200B to U+200F) and the byte-order mark (U+FEFF).
+pub fn unsafe_char(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
 }
 
 fn leading_alnum(s: &str, max: usize, rest: impl Fn(char) -> bool) -> bool {
@@ -57,7 +66,7 @@ pub fn window_name(s: &str) -> Result<(), String> {
 
 fn tmux_name(s: &str, banned: &[char]) -> Result<(), ()> {
     let n = s.chars().count();
-    let ok = (1..=64).contains(&n) && !s.chars().any(|c| c.is_control() || banned.contains(&c));
+    let ok = (1..=64).contains(&n) && !s.chars().any(|c| unsafe_char(c) || banned.contains(&c));
     if ok { Ok(()) } else { Err(()) }
 }
 
@@ -76,7 +85,7 @@ pub fn option_value(v: &str) -> Result<(), String> {
     let ok = !v.is_empty()
         && v.len() <= MAX_OPTION_BYTES
         && !v.starts_with('-')
-        && !v.chars().any(char::is_control);
+        && !v.chars().any(unsafe_char);
     if ok {
         Ok(())
     } else {
@@ -87,9 +96,10 @@ pub fn option_value(v: &str) -> Result<(), String> {
     }
 }
 
-/// An allowlisted environment value: at most 4096 bytes, no newline or NUL.
+/// An allowlisted environment value: at most 4096 bytes, no control
+/// character (newline, NUL, carriage return, escape and the rest).
 pub fn env_value(v: &str) -> Result<(), String> {
-    if v.len() <= MAX_ENV_BYTES && !v.contains(['\n', '\0']) {
+    if v.len() <= MAX_ENV_BYTES && !v.chars().any(char::is_control) {
         Ok(())
     } else {
         Err(ENV_RULE.to_string())
@@ -116,7 +126,7 @@ pub fn socket_path(p: &Path) -> Result<(), String> {
             .to_string()
     };
     let s = p.to_str().ok_or_else(rule)?;
-    if p.is_absolute() && s.len() <= MAX_SOCKET_BYTES && !s.chars().any(char::is_control) {
+    if p.is_absolute() && s.len() <= MAX_SOCKET_BYTES && !s.chars().any(unsafe_char) {
         Ok(())
     } else {
         Err(rule())
@@ -128,7 +138,7 @@ pub fn socket_path(p: &Path) -> Result<(), String> {
 fn launch_dir_lexical(p: &Path) -> Result<(), String> {
     let rule = || "must be an absolute UTF-8 path, without '#' or control characters".to_string();
     let s = p.to_str().ok_or_else(rule)?;
-    if p.is_absolute() && !s.chars().any(|c| c == '#' || c.is_control()) {
+    if p.is_absolute() && !s.chars().any(|c| c == '#' || unsafe_char(c)) {
         Ok(())
     } else {
         Err(rule())
@@ -145,8 +155,8 @@ pub fn launch_dir(p: &Path) -> Result<(), String> {
     }
 }
 
-/// An `--add-dir` value: joined to `base` when relative; no control
-/// character; UTF-8.
+/// An `--add-dir` value: joined to `base` when relative; UTF-8, no `#` and
+/// no control character (V4).
 pub fn add_dir(p: &Path, base: &Path) -> Result<PathBuf, String> {
     let full = if p.is_absolute() {
         p.to_path_buf()
@@ -158,9 +168,9 @@ pub fn add_dir(p: &Path, base: &Path) -> Result<PathBuf, String> {
 }
 
 fn add_dir_lexical(p: &Path) -> Result<(), String> {
-    let rule = || "must be a UTF-8 path without control characters".to_string();
+    let rule = || "must be a UTF-8 path without '#' or control characters".to_string();
     let s = p.to_str().ok_or_else(rule)?;
-    if p.is_absolute() && !s.chars().any(char::is_control) {
+    if p.is_absolute() && !s.chars().any(|c| c == '#' || unsafe_char(c)) {
         Ok(())
     } else {
         Err(rule())
