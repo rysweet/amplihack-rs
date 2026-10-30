@@ -57,6 +57,14 @@ fn alias_created_when_caller_on_pushed_clean_branch() {
         run.describe()
     );
     assert_eq!(json["local_branch"], alias.as_str(), "{}", run.describe());
+    // recipe-runner-rs keeps a passing step's output but not its stderr, so the
+    // reason goes in the output too, where the run log has it.
+    assert_eq!(
+        json["local_branch_reason"],
+        "branch_name is checked out in the caller repository (issue #1762)",
+        "the step output must give the reason for the alias\n{}",
+        run.describe()
+    );
     assert_eq!(
         json["created"], false,
         "created describes <B>, which existed"
@@ -330,8 +338,8 @@ fn caller_not_on_branch_is_unchanged() {
     let json = run.json();
     assert_eq!(json["branch_name"], BRANCH);
     assert!(
-        json.get("local_branch").is_none(),
-        "local_branch appears only on the alias path: {json}"
+        json.get("local_branch").is_none() && json.get("local_branch_reason").is_none(),
+        "local_branch and local_branch_reason appear only on the alias path: {json}"
     );
     let path = worktree_path(&run);
     assert_eq!(

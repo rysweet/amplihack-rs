@@ -60,10 +60,12 @@ INFO: Targeting existing branch 'fix/142-band-edge-previous-slice' (issue #342 p
 INFO: branch 'fix/142-band-edge-previous-slice' is checked out in the caller repository at /repo; the task worktree uses local branch 'fix/142-band-edge-previous-slice--wt-1' with upstream origin/fix/142-band-edge-previous-slice (issue #1762).
 ```
 
-and its step output names both branches:
+`recipe-runner-rs` does not keep the stderr of a bash step that succeeds, so
+the run's log has the step output instead, which names both branches and gives
+the reason:
 
 ```json
-{"worktree_path": "/repo/worktrees/fix/142-band-edge-previous-slice--wt-1", "branch_name": "fix/142-band-edge-previous-slice", "base_ref": "", "base_branch": "", "created": false, "local_branch": "fix/142-band-edge-previous-slice--wt-1"}
+{"worktree_path": "/repo/worktrees/fix/142-band-edge-previous-slice--wt-1", "branch_name": "fix/142-band-edge-previous-slice", "base_ref": "", "base_branch": "", "created": false, "local_branch_reason": "branch_name is checked out in the caller repository (issue #1762)", "local_branch": "fix/142-band-edge-previous-slice--wt-1"}
 ```
 
 Publish then runs `git push origin "HEAD:fix/142-band-edge-previous-slice"`
@@ -286,6 +288,7 @@ On the alias path, step 4 prints one JSON line on stdout:
 | `branch_name` | `<B>`, the remote branch |
 | `base_ref`, `base_branch` | `""`, as on every existing-branch run |
 | `created` | `false`. It describes `branch_name`: `<B>` existed before the run, even though the alias branch and its worktree may be new. |
+| `local_branch_reason` | `branch_name is checked out in the caller repository (issue #1762)`. Present only on the alias path. It repeats the reason from the `INFO` line, because the recipe runner does not keep a successful step's stderr. |
 | `local_branch` | The alias. The last key, and present only on the alias path. |
 
 Later steps read `{{worktree_setup.branch_name}}` and

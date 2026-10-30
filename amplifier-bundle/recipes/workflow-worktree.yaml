@@ -237,7 +237,7 @@ steps:
         # Consumers accept worktree_setup.worktree_path only as an already-resolved
         # worktree root (#1561 V4), so emit the physical path.
         WORKTREE_PATH="$(cd -P -- "$WORKTREE_PATH" && pwd -P)" || { echo "ERROR: cannot resolve the worktree path to a physical directory (#1561)" >&2; exit 1; }
-        LB_JSON=""; [ -z "$LOCAL_BRANCH" ] || LB_JSON=", \"local_branch\": \"$(json_escape "$LOCAL_BRANCH")\""
+        LB_JSON=""; [ -z "$LOCAL_BRANCH" ] || LB_JSON=", \"local_branch_reason\": \"branch_name is checked out in the caller repository (issue #1762)\", \"local_branch\": \"$(json_escape "$LOCAL_BRANCH")\""  # the runner drops a passing step's stderr, so the reason is in the output too
         printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "", "base_branch": "", "created": %s%s}\n' \
           "$(json_escape "$WORKTREE_PATH")" "$(json_escape "$BRANCH_NAME")" "$CREATED" "$LB_JSON"
         exit 0
