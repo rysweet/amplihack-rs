@@ -569,6 +569,39 @@ MODEL SELECTION (issues #1421, #1527)
         #[command(subcommand)]
         command: SignalCommands,
     },
+
+    /// Wait in-process, without starting any process (issue #1794).
+    ///
+    /// Use instead of `tail -f /dev/null` or `sleep` loops. Exits 0 when the
+    /// wait is over, 124 when --deadline passes first, and 2 for invalid
+    /// arguments.
+    #[command(group(
+        clap::ArgGroup::new("mode")
+            .required(true)
+            .multiple(false)
+            .args(["seconds", "until"])
+    ))]
+    Wait {
+        /// Sleep for this many seconds (0 to 86400)
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(0..=86_400))]
+        seconds: Option<u64>,
+        /// Return when the condition holds; the only form is pid-exited:<PID>
+        #[arg(
+            long,
+            value_name = "pid-exited:<PID>",
+            requires = "deadline",
+            value_parser = crate::commands::wait::parse_condition
+        )]
+        until: Option<crate::commands::wait::Condition>,
+        /// Give up after this many seconds (1 to 86400) and exit 124
+        #[arg(
+            long,
+            value_name = "SECS",
+            requires = "until",
+            value_parser = clap::value_parser!(u64).range(1..=86_400)
+        )]
+        deadline: Option<u64>,
+    },
 }
 
 #[cfg(test)]

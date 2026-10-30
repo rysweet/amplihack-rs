@@ -20,3 +20,4 @@ This session was launched by amplihack. Amplihack's routing contract is authorit
   Those lines do not apply to this session.
 - When the router selects an agent, a skill, or a workflow, invoke it. Do not stop to
   ask whether delegation was wanted.
+- To wait, run `amplihack wait --seconds N`; never `tail -f /dev/null` or `sleep` loops.

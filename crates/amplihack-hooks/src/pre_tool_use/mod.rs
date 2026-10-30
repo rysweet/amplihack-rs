@@ -6,6 +6,7 @@
 //! - Direct commits to main/master branch
 //! - Use of --no-verify flag on git commands
 //! - In an auto-drive run, merges outside the merge gate (#1551)
+//! - `tail -f` on a device that never ends, for every shell tool (#1794)
 //! - XPIA prompt injection attacks (all tools)
 
 mod command;
@@ -13,6 +14,7 @@ mod cwd;
 mod git;
 pub mod launcher;
 mod merge_guard;
+mod tail_guard;
 mod xpia;
 
 use crate::protocol::{FailurePolicy, Hook};
@@ -333,6 +335,16 @@ impl Hook for PreToolUseHook {
             } => (tool_name, tool_input),
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
+
+        // Issue #1794: deny `tail -f /dev/null` and the like for every shell
+        // tool name. It runs before XPIA, whose bare block shape Claude Code
+        // does not enforce, and before the Bash-only return below.
+        if tail_guard::is_shell_tool(&tool_name)
+            && let Some(deny) = tail_guard::check_tool_input(&tool_input)
+        {
+            tracing::warn!(guard = "tail_guard", tool = %tool_name, "denied tail in follow mode on a device");
+            return Ok(deny);
+        }
 
         // XPIA security validation for all tools.
         if let Some(block) = xpia::check_xpia(&tool_name, &tool_input) {

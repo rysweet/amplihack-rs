@@ -182,6 +182,7 @@ steps:
       - [ ] For disagreements, document reasoning
       - [ ] Ensure changes don't introduce new issues
       **Output:** Summary of changes for each feedback item.
+      To wait, use `amplihack wait --seconds N`, or start the work in the background and wait with `amplihack wait --until pid-exited:<PID> --deadline <SECS>`. Never use `tail -f /dev/null` or `sleep` loops to wait.
     output: "pr_feedback_changes"
   - id: "step-18c-push-feedback-changes"
     type: "bash"

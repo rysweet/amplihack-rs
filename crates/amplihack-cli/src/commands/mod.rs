@@ -33,6 +33,7 @@ pub mod rustyclawd;
 pub mod session_tree;
 pub mod signal;
 pub mod uvx_help;
+pub mod wait;
 pub mod workflow;
 
 use crate::{
@@ -526,6 +527,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
             config,
         } => mcp_eval::dispatch(adapter, scenario, mock, output, config),
         Commands::Signal { command } => signal::dispatch(command),
+        Commands::Wait {
+            seconds,
+            until,
+            deadline,
+        } => wait::run(seconds, until, deadline),
     }
 }
 

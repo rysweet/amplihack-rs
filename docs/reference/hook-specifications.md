@@ -242,6 +242,82 @@ Runs when Claude Code stops. Triggers native Rust reflection prompt assembly plu
 
 Runs before every tool call (matcher `*`). Validates Bash commands against the amplihack allow-list and records metrics. No timeout — fail-open so tool calls are never blocked by a slow hook.
 
+#### Tail guard for idle devices (#1794)
+
+The hook denies a shell tool call that would run `tail` in follow mode on a
+device that never ends, because the `tail` process outlives the agent's shell
+and is left orphaned. Agents should wait with
+[`amplihack wait`](wait-command.md) instead.
+
+**Tools checked.** Tool names `bash`, `monitor`, `shell`, `exec_command`,
+`shell_command` and `powershell`, compared case-insensitively. This covers
+Claude Code `Bash`, `Monitor` and `PowerShell`, Copilot `bash` and the Codex
+shell tools. Other tools are not checked. The command is
+read from `tool_input.command` or `tool_input.cmd`, as a string or as an argv
+array; an array is joined with shell quoting before it is parsed. Copilot's
+stringified `toolArgs` is decoded first.
+
+**When a call is denied.** All of these hold for some command the shell would
+run:
+
+- after leading `VAR=value` assignments, the reserved words
+  `if then else do while until ! { time`, and the wrappers `env`, `nohup`,
+  `exec`, `command`, `setsid`, `sudo`, `nice`, `stdbuf` and `timeout` (with
+  their flags, option values and, for `timeout`, its duration), the program's
+  basename is `tail`;
+- a follow flag is present: `-f`, `-F`, `--follow`, `--follow=name` or
+  `--follow=descriptor`, or a short-option cluster containing `f` or `F` such
+  as `-fn0`, `-Fq` or `-qf`. In a cluster, `n`, `c` and `s` take the rest of
+  the cluster as their value, so `-n5` and `-c5f` are not follow flags;
+- an operand is `/dev/null`, `/dev/zero`, `/dev/random` or `/dev/urandom`.
+  Every word after `--` is an operand.
+
+Commands are split on `;`, `&&`, `||`, `|`, `&`, newlines and parentheses, so
+`tail -f /dev/null | cat` and `cd x && tail -f /dev/null` are both denied, as
+is `tail -f app.log /dev/null`.
+
+**What is allowed.** Only words the shell would run as a program are checked:
+
+| Command | Result | Why |
+|---------|--------|-----|
+| `tail -f app.log` | allowed | not a device |
+| `tail -n 5 /dev/null` | allowed | no follow flag |
+| `echo 'tail -f /dev/null'` | allowed | `tail` is an argument to `echo` |
+| `cat > Dockerfile <<'EOF'` … `CMD tail -f /dev/null` … `EOF` | allowed | heredoc bodies are dropped |
+| `printf 'CMD tail -f /dev/null\n' > Dockerfile` | allowed | argument and redirect target |
+| `docker run img tail -f /dev/null` | allowed | `tail` is an argument to `docker` (same for `podman`) |
+| `bash -c "sleep 1 && tail -f /dev/null"` | allowed | `-c` strings are not re-parsed |
+| `timeout --foreground 10 tail -f /dev/null` | denied | `timeout` is seen through |
+| `sudo -u app tail -F /dev/zero` | denied | `sudo` is seen through |
+
+**Response.** A denial uses the same shape as the other PreToolUse guards:
+`block: true`, `message`, `decision: "block"`, `reason`,
+`permissionDecision: "deny"`, `permissionDecisionReason`, and
+`hookSpecificOutput` with `hookEventName: "PreToolUse"`,
+`permissionDecision: "deny"` and `permissionDecisionReason`. Under
+`AMPLIHACK_HOOK_PROTOCOL=codex` only `hookSpecificOutput` is sent. Every
+reason field holds this fixed text, which never includes the command:
+
+```
+`tail -f` on /dev/null (or another device that never ends) leaves an orphaned process. Use `amplihack wait --seconds N`, or run the work in the background and use `amplihack wait --until pid-exited:<PID> --deadline <SECS>`.
+```
+
+**Order and failure.** The guard runs before XPIA validation and before the
+Bash-only checks, so it sees every listed tool name. It reads no environment
+variable and has no setting to turn it off. Input it cannot parse, such as
+unbalanced quotes, is treated as not matching, in line with the hook's
+fail-open policy.
+
+**Limits.** The guard helps agents avoid a mistake; it is not a security
+boundary. It does not look inside `bash -c` strings, variables, `/dev/./null`
+or symlinks to the listed devices, and it does not cover `--retry` alone,
+`/dev/stdin` or other commands that never end.
+A `$(…)` inside double quotes is read as data up to its matching `)`, so a
+quoted heredoc body (`--body "$(cat <<'EOF' … EOF)"`) is never checked. An
+unbalanced `)` inside such a heredoc body, as in `1) first item`, ends the
+substitution early, and a later line of the body can then be read as a
+command. `time -p` hides the command after it.
+
 ### 4. PostToolUse — `post-tool-use`
 
 Runs after every tool call (matcher `*`). Records tool usage metrics. No timeout — fail-open.

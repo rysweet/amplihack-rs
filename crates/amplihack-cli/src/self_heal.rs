@@ -57,6 +57,8 @@ const SKIP_ENV: &str = "AMPLIHACK_SKIP_AUTO_INSTALL";
 ///   of reading a value, and its output would land on the caller's terminal.
 /// - `config`: reads and writes user defaults, often inside `$(...)`
 ///   (issue #1606); the same reasoning as `agent-binary`.
+/// - `wait`: an agent's sleep (issue #1794); it must start no processes and
+///   write no files, and its timing must not include an install.
 const SKIP_SUBCOMMANDS: &[&str] = &[
     "install",
     "uninstall",
@@ -66,6 +68,7 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     "help",
     "agent-binary",
     "config",
+    "wait",
 ];
 
 /// Top-level flags that short-circuit clap and should not pay for an

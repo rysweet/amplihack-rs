@@ -248,6 +248,7 @@ nav:
       - query-code Command: reference/query-code-command.md
       - multitask Command: reference/multitask-command.md
       - doctor Command: reference/doctor-command.md
+      - wait Command: reference/wait-command.md
       - User Configuration: reference/user-config.md
       - AMPLIHACK_* Environment Variable Audit: reference/amplihack-env-vars.md
       - Rust Runner Execution: reference/rust-runner-execution.md

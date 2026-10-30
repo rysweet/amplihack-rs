@@ -255,7 +255,7 @@ steps:
 
       Verify the PR is ready to merge: CI passing, no conflicts, review
       comments addressed, and approval present. If CI fails, diagnose and fix.
-      This is the task completion point. **no_merge:** {{no_merge}}. When it is "true": do not merge; stop at merge-ready.
+      This is the task completion point. **no_merge:** {{no_merge}}. When it is "true": do not merge; stop at merge-ready. To wait, use `amplihack wait --seconds N`, or start the work in the background and wait with `amplihack wait --until pid-exited:<PID> --deadline <SECS>`. Never use `tail -f /dev/null` or `sleep` loops to wait.
     output: "ci_status"
 
   # Issue #1268: the scope match below is a SIGNAL, not the verdict. Collect the
