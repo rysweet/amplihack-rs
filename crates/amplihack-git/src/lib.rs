@@ -20,13 +20,33 @@
 //! production code that spawns git — the conflict detector, the artifact
 //! guard, the recovery stages — inherits exactly the same lie.
 //!
-//! Use [`command`] / [`command_in`] instead of `Command::new("git")` so the
+//! Use [`command`] / [`command_in`] (or, for a git a person may have to
+//! answer, [`interactive_command`]) instead of `Command::new("git")` so the
 //! repository is chosen by the argument you passed, never by ambient state.
 //! For a non-git child that will itself run git (a shell script, the
 //! `amplihack` binary), use [`scrub`].
 //!
 //! `scripts/check-git-command-sanitised.sh` enforces this: a new
 //! `Command::new("git")` anywhere outside this crate fails the build.
+//!
+//! # Credential prompts (issue #1764)
+//!
+//! When a remote asks for a credential and no helper or askpass program
+//! supplies one, git opens `/dev/tty` and asks. Under plain `timeout`, which
+//! moves its command into a background process group, that read stops git on
+//! `SIGTTIN`: nothing fails, and the run waits until something kills it.
+//!
+//! So [`command`], [`command_in`], [`tokio_command`] and [`tokio_command_in`]
+//! also set `GIT_TERMINAL_PROMPT=0`, and git fails at once with
+//! `terminal prompts disabled` instead. Credential helpers and an askpass
+//! program the user has configured run before that check and keep working.
+//! The variable is set with `.env()`, so a later `env_clear()` on the same
+//! command removes it. [`scrub`] does not set it: a non-git child gets only
+//! what its caller gives it.
+//!
+//! [`interactive_command`] scrubs the repository variables but leaves the
+//! prompt variable alone. It is for the one case where a person can answer
+//! the prompt; see its docs.
 
 use std::path::Path;
 use std::process::Command;
@@ -53,6 +73,14 @@ pub const REPOSITORY_ENV_VARS: &[&str] = &[
     "GIT_QUARANTINE_PATH",
     "GIT_WORK_TREE",
 ];
+
+/// The variable that stops git from asking for a credential on the terminal
+/// (issue #1764).
+///
+/// Deliberately outside [`REPOSITORY_ENV_VARS`]: that list names what
+/// [`scrub`] removes, and `tests/issue_1278_git_env_isolation.sh` unsets
+/// every name in it.
+const TERMINAL_PROMPT_VAR: &str = "GIT_TERMINAL_PROMPT";
 
 /// A command builder whose child environment can have variables removed.
 ///
@@ -88,22 +116,42 @@ pub fn scrub<C: Scrubbable>(command: &mut C) -> &mut C {
     command
 }
 
-/// A `git` command that ignores the caller's inherited git environment.
+/// A `git` command that ignores the caller's inherited git environment and
+/// never asks for a credential on the terminal.
 ///
-/// Equivalent to `Command::new("git")` with [`REPOSITORY_ENV_VARS`] cleared.
-/// The repository is then whatever the working directory (or an explicit
-/// `-C` / `--git-dir` argument) selects.
+/// Equivalent to `Command::new("git")` with [`REPOSITORY_ENV_VARS`] cleared
+/// and `GIT_TERMINAL_PROMPT=0` set. The repository is then whatever the
+/// working directory (or an explicit `-C` / `--git-dir` argument) selects.
 pub fn command() -> Command {
-    let mut command = Command::new("git");
-    scrub(&mut command);
+    let mut command = interactive_command();
+    command.env(TERMINAL_PROMPT_VAR, "0");
     command
 }
 
-/// A `git` command that runs in `dir` and ignores the caller's inherited git
-/// environment.
+/// A `git` command that runs in `dir`, ignores the caller's inherited git
+/// environment and never asks for a credential on the terminal.
 pub fn command_in(dir: impl AsRef<Path>) -> Command {
     let mut command = command();
     command.current_dir(dir.as_ref());
+    command
+}
+
+/// A `git` command that ignores the caller's inherited git environment but
+/// may ask for a credential on the terminal.
+///
+/// It neither sets nor removes `GIT_TERMINAL_PROMPT`, `GIT_ASKPASS` or
+/// `SSH_ASKPASS`. Use it only when all three of these hold:
+///
+/// - a person started the command at a terminal;
+/// - the URL comes from that person's own arguments, not from a recipe, an
+///   agent or a config file;
+/// - the child stays in the caller's foreground process group, with stdio
+///   inherited, so the person sees the prompt and can answer it.
+///
+/// Everything else uses [`command`].
+pub fn interactive_command() -> Command {
+    let mut command = Command::new("git");
+    scrub(&mut command);
     command
 }
 
@@ -112,6 +160,7 @@ pub fn command_in(dir: impl AsRef<Path>) -> Command {
 pub fn tokio_command() -> tokio::process::Command {
     let mut command = tokio::process::Command::new("git");
     scrub(&mut command);
+    command.env(TERMINAL_PROMPT_VAR, "0");
     command
 }
 
@@ -126,6 +175,7 @@ pub fn tokio_command_in(dir: impl AsRef<Path>) -> tokio::process::Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsStr;
     use std::process::Stdio;
 
     /// The variables git actually leaks into hooks must be covered.
@@ -257,6 +307,109 @@ mod tests {
                 .find(|(key, _)| *key == std::ffi::OsStr::new(var))
                 .unwrap_or_else(|| panic!("{var} missing from env mutations"));
             assert!(entry.1.is_none(), "{var} survived scrub()");
+        }
+    }
+
+    /// The variables through which git asks for a credential (issue #1764).
+    const PROMPT_VARS: [&str; 3] = ["GIT_TERMINAL_PROMPT", "GIT_ASKPASS", "SSH_ASKPASS"];
+
+    /// What `builder` does to `key` in the child's environment: `None` if it
+    /// leaves the inherited value alone, `Some(None)` if it removes it, and
+    /// `Some(Some(value))` if it sets it.
+    fn env_entry<'a>(builder: &'a Command, key: &str) -> Option<Option<&'a OsStr>> {
+        builder
+            .get_envs()
+            .find(|(name, _)| *name == OsStr::new(key))
+            .map(|(_, value)| value)
+    }
+
+    /// Issue #1764: a git that amplihack starts must fail at once when a
+    /// remote asks for a credential that nothing supplies. Under plain
+    /// `timeout` a terminal prompt stops git on `SIGTTIN` and the run waits
+    /// indefinitely. Only the prompt variable is set: an askpass program the
+    /// user has configured keeps working.
+    #[test]
+    fn default_builders_turn_terminal_prompts_off() {
+        let dir = std::env::temp_dir();
+        for (name, builder) in [("command()", command()), ("command_in()", command_in(&dir))] {
+            assert_eq!(
+                env_entry(&builder, "GIT_TERMINAL_PROMPT"),
+                Some(Some(OsStr::new("0"))),
+                "{name} must set GIT_TERMINAL_PROMPT=0"
+            );
+            for askpass in ["GIT_ASKPASS", "SSH_ASKPASS"] {
+                assert_eq!(
+                    env_entry(&builder, askpass),
+                    None,
+                    "{name} must leave {askpass} alone"
+                );
+            }
+        }
+    }
+
+    /// The async twins make the same promise as [`command`] and
+    /// [`command_in`].
+    #[cfg(feature = "tokio")]
+    #[test]
+    fn tokio_builders_turn_terminal_prompts_off() {
+        let dir = std::env::temp_dir();
+        for (name, builder) in [
+            ("tokio_command()", tokio_command()),
+            ("tokio_command_in()", tokio_command_in(&dir)),
+        ] {
+            assert_eq!(
+                env_entry(builder.as_std(), "GIT_TERMINAL_PROMPT"),
+                Some(Some(OsStr::new("0"))),
+                "{name} must set GIT_TERMINAL_PROMPT=0"
+            );
+        }
+    }
+
+    /// The interactive builder exists for a person at a terminal who can
+    /// answer a prompt, so it neither sets nor removes any prompt variable.
+    #[test]
+    fn interactive_builder_leaves_terminal_prompts_alone() {
+        let builder = interactive_command();
+        assert_eq!(builder.get_program(), "git", "must run git");
+        for var in PROMPT_VARS {
+            assert_eq!(
+                env_entry(&builder, var),
+                None,
+                "interactive_command() must neither set nor remove {var}"
+            );
+        }
+    }
+
+    /// Turning prompts off must not cost the #1278 scrub: every builder,
+    /// interactive or not, removes every repository variable.
+    #[test]
+    fn every_builder_scrubs_the_repository_vars() {
+        fn assert_scrubbed(name: &str, builder: &Command) {
+            for var in REPOSITORY_ENV_VARS {
+                assert_eq!(
+                    env_entry(builder, var),
+                    Some(None),
+                    "{name} must remove {var}"
+                );
+            }
+        }
+
+        let dir = std::env::temp_dir();
+        for (name, builder) in [
+            ("command()", command()),
+            ("command_in()", command_in(&dir)),
+            ("interactive_command()", interactive_command()),
+        ] {
+            assert_scrubbed(name, &builder);
+        }
+        #[cfg(feature = "tokio")]
+        {
+            for (name, builder) in [
+                ("tokio_command()", tokio_command()),
+                ("tokio_command_in()", tokio_command_in(&dir)),
+            ] {
+                assert_scrubbed(name, builder.as_std());
+            }
         }
     }
 }

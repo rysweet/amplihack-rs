@@ -24,12 +24,20 @@
 //! - no `AMPLIHACK_CLAUDE_PROFILE_ROOT` (issue #1699), so an install under the
 //!   temp `HOME` cannot refresh the developer's real profiles. `env_clear()`
 //!   already drops it; the explicit removal holds if the kept list changes.
+//! - `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=true` and `SSH_ASKPASS=true`
+//!   ([`NO_GIT_PROMPT_ENV`], issue #1764) and a null stdin, through
+//!   [`no_git_prompt`], so no git the child starts can wait on a credential
+//!   prompt. `.cargo/config.toml` puts the same variables into the test
+//!   process, but `env_clear()` drops them, so they are set again here. A
+//!   test that calls `.env()` or `.stdin()` afterwards wins, and a test that
+//!   clears another command's environment calls [`no_git_prompt`] itself
+//!   after `env_clear()`.
 
 #![allow(dead_code)]
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 /// Variables carried over from the test process. The temp dir must survive,
@@ -47,6 +55,26 @@ pub const ROTATE_AUTOSTART_ENV: &str = "AMPLIHACK_ROTATE_AUTOSTART";
 
 /// The variable naming the Claude login profile root.
 pub const PROFILE_ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
+
+/// The variables that stop git from asking for a credential (issue #1764),
+/// with their values: the same three that `.cargo/config.toml` sets.
+pub const NO_GIT_PROMPT_ENV: [(&str, &str); 3] = [
+    ("GIT_TERMINAL_PROMPT", "0"),
+    ("GIT_ASKPASS", "true"),
+    ("SSH_ASKPASS", "true"),
+];
+
+/// Set [`NO_GIT_PROMPT_ENV`] and a null stdin on `command`, and return it.
+///
+/// Call it after `env_clear()`, which drops both the values cargo's `[env]`
+/// table gave the test process and any `GIT_TERMINAL_PROMPT=0` an
+/// `amplihack_git` builder set. A later `.env()` or `.stdin()` call wins.
+pub fn no_git_prompt(command: &mut Command) -> &mut Command {
+    for (name, value) in NO_GIT_PROMPT_ENV {
+        command.env(name, value);
+    }
+    command.stdin(Stdio::null())
+}
 
 /// A temp `HOME` for tests that do not make their own: one per test process,
 /// created by `tempfile` (a fresh random name, mode 0700, owned by this user,
@@ -90,6 +118,7 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
         }
     }
     command.env_remove(PROFILE_ROOT_ENV);
+    no_git_prompt(&mut command);
     // The toolchain lives under the real HOME unless these say otherwise; a
     // child that runs cargo must still find it after HOME moves.
     if let Some(home) = std::env::var_os("HOME") {

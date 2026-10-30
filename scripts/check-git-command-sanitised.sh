@@ -7,9 +7,11 @@
 # rather than the one the caller pointed at. That made the pre-push `cargo test`
 # gate unpassable and it makes production code that runs under a hook wrong.
 #
-# `amplihack_git::command()` / `command_in()` / `tokio_command()` clear those
-# variables first. This guard exists because the fix is one a new call site can
-# silently opt out of just by typing the obvious thing.
+# `amplihack_git::command()` / `command_in()` / `tokio_command()` /
+# `tokio_command_in()` clear those variables first, and also set
+# GIT_TERMINAL_PROMPT=0 so a credential prompt fails at once instead of
+# stopping the run (issue #1764). This guard exists because the fix is one a
+# new call site can silently opt out of just by typing the obvious thing.
 set -euo pipefail
 
 # Optional argument: the tree to scan. Defaults to the repository root, and
@@ -37,10 +39,12 @@ if [ -n "$hits" ]; then
     echo "override .current_dir(), so the command operates on the wrong repository." >&2
     echo >&2
     echo "Use instead:" >&2
-    echo "  amplihack_git::command()            // std, cwd-based" >&2
-    echo "  amplihack_git::command_in(dir)      // std, explicit directory" >&2
-    echo "  amplihack_git::tokio_command()      // async callers" >&2
-    echo "  amplihack_git::scrub(&mut cmd)      // non-git child that runs git" >&2
+    echo "  amplihack_git::command()                // std, cwd-based" >&2
+    echo "  amplihack_git::command_in(dir)          // std, explicit directory" >&2
+    echo "  amplihack_git::tokio_command()          // async callers" >&2
+    echo "  amplihack_git::tokio_command_in(dir)    // async, explicit directory" >&2
+    echo "  amplihack_git::interactive_command()    // may prompt: user-invoked only" >&2
+    echo "  amplihack_git::scrub(&mut cmd)          // non-git child that runs git" >&2
     echo >&2
     echo "Add amplihack-git = { workspace = true } to the crate's [dependencies]." >&2
     exit 1
