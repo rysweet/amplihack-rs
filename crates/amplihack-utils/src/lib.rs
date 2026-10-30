@@ -32,6 +32,7 @@ pub mod artifact_guard;
 /// transport retry (issues #1267).
 pub mod backoff;
 pub mod binary_finder;
+pub mod bounded_process;
 pub mod bundle_generator;
 pub mod claude_capacity;
 pub mod claude_md;

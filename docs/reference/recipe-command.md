@@ -12,6 +12,7 @@ inspects, validates, and runs YAML recipe files.
   - [recipe validate](#recipe-validate)
   - [recipe run](#recipe-run)
   - [Detached runs](#detached-runs)
+    - [Run records](#run-records)
   - [recipe stop](#recipe-stop)
 - [Output formats](#output-formats)
 - [Progress and stream contract](#progress-and-stream-contract)
@@ -348,8 +349,85 @@ log: /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261020-10
   start the run, it writes the reason there instead, and the launch prints it
   and fails.
 - **Stopping** — `amplihack recipe stop <session>`, or `tmux kill-session`.
+- **Run record**: a 0600 `<session>.run.json` in the log directory, kept
+  after the run ends. See [Run records](#run-records).
+- **`AMPLIHACK_RUN_ID`**: the run, and everything it starts, gets
+  `AMPLIHACK_RUN_ID=<session>`, so a run launched from inside it records it
+  as its parent.
 
 Needs `tmux` on `PATH`.
+
+#### Run records
+
+`recipe run --detach` writes `<session>.run.json` beside the log once the
+session name is claimed, and rewrites it when the run ends.
+[`amplihack workstreams status`](./workstreams-command.md) reads these
+records to find the runs a session started.
+
+```json
+{
+  "version": 1,
+  "session": "amp-smart-orchestrator-myapp-20261020-101500",
+  "parent": "session:rs-1760954100-48211",
+  "started_at": "2026-10-20T10:15:00Z",
+  "recipe": "smart-orchestrator",
+  "issue_number": 1710,
+  "pr_number": null,
+  "repo": "alice/myapp",
+  "cwd": "/home/alice/src/myapp",
+  "outcome": {
+    "exit_code": 0,
+    "class": "ok",
+    "finished_at": "2026-10-20T12:20:41Z"
+  }
+}
+```
+
+| Field | Content |
+|-------|---------|
+| `version` | `1`. |
+| `session` | The tmux session name. It is also the value of `AMPLIHACK_RUN_ID` inside the run. |
+| `parent` | The launching session's identity, or `null` when it has none. See below. |
+| `started_at` | RFC 3339 UTC time of the launch. |
+| `recipe` | The recipe's name or file stem. |
+| `issue_number`, `pr_number` | The `issue_number` and `pr_number` context values when they are whole numbers, otherwise `null`. |
+| `repo` | The `owner/name` of the launch directory's GitHub `origin`, or `null`. The URL itself is never stored. |
+| `cwd` | The absolute working directory of the run. |
+| `outcome` | `null` while the run is going; then `exit_code`, `class` and `finished_at`. |
+
+`parent` is the first of these variables in the launching environment that is
+set, non-empty, at most 128 bytes and printable ASCII:
+`AMPLIHACK_RUN_ID` (`run:<value>`), `AMPLIHACK_SESSION_ID`
+(`session:<value>`), `AMPLIHACK_TREE_ID` (`tree:<value>`),
+`CLAUDE_CODE_SESSION_ID` (`claude:<value>`). It is read before agent session
+markers are removed from the run's environment.
+
+`outcome.class` comes from the exit code and the last 64 KiB of the log:
+
+1. the `class` of the last failure-class marker line whose `action` is
+   `terminal` or `terminal_budget_exhausted`, when it is a known class,
+   whatever the exit code (a `retry` marker, or one without an `action`, is
+   skipped, so a run that retried and then exited `0` is `ok`);
+2. otherwise `ok` when the exit code is `0`;
+3. otherwise, for a non-zero exit code, the class the failure text in that
+   tail matches;
+4. otherwise `error`.
+
+Failure text alone never changes the class of a run that exited `0`, so a
+successful run whose log mentions a usage limit is still `ok`.
+The runner writes a terminal marker only for a run that fails, but a step
+that runs another recipe copies that recipe's markers into the log, so a run
+that tolerated a failed sub-recipe and exited `0` takes the sub-recipe's
+class.
+
+The record holds no task text, context values other than the two numbers,
+environment values or URLs. It is created 0600 and never replaced with
+looser permissions; the outcome is written to a temporary file and renamed
+over it. Unlike `<session>.context.json`, it is not removed when the run
+ends. A record that cannot be written produces a warning on stderr; the
+launch still goes ahead. A launch that fails before the run starts (tmux
+cannot create the session, the pane reports a start-up error, or the start
+times out) removes the record, so no run that never started is listed.
 
 ### recipe stop
 
@@ -686,6 +764,7 @@ For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../how
 ## Related
 
 - [Run a Recipe End-to-End](../howto/run-a-recipe.md) — Step-by-step guide to executing recipes
+- [`amplihack workstreams` Reference](./workstreams-command.md) - Status table of the detached runs a session started, built from run records
 - [Environment Variables](./environment-variables.md) — `AMPLIHACK_CONTEXT_*`, `AMPLIHACK_TASK_DESCRIPTION`, `RECIPE_RUNNER_RS_PATH`
 - [Recipe Runner Logging](./recipe-runner-logging.md) — stderr progress, heartbeats, snippets, and JSONL logs
 - [Parity Test Scenarios](./parity-test-scenarios.md) — `tier4-recipe-run.yaml` test cases

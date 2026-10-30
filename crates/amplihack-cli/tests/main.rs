@@ -146,6 +146,12 @@ mod issue_1699_isolated_profile_root;
 mod issue_1699_real_root_guard;
 #[path = "issue_1707_claim_check_shell_suites.rs"]
 mod issue_1707_claim_check_shell_suites;
+#[path = "issue_1710_autodrive_parity.rs"]
+mod issue_1710_autodrive_parity;
+#[path = "issue_1710_run_record.rs"]
+mod issue_1710_run_record;
+#[path = "issue_1710_workstreams_smoke.rs"]
+mod issue_1710_workstreams_smoke;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -218,3 +224,5 @@ mod signal_validator_parity;
 mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
+#[path = "workstream_status_skill_present.rs"]
+mod workstream_status_skill_present;

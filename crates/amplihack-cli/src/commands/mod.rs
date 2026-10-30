@@ -34,6 +34,7 @@ pub mod session_tree;
 pub mod signal;
 pub mod uvx_help;
 pub mod workflow;
+pub mod workstreams;
 
 use crate::{
     BuilderCommands, Commands, HygieneCommands, LiteLlmCommands, MemoryCommands, ModeCommands,
@@ -509,6 +510,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Orch { command } => orch::dispatch(command),
         Commands::Pr { command } => pr::run(command),
         Commands::SessionTree { command } => session_tree::run(command),
+        Commands::Workstreams { command } => workstreams::run(command),
         Commands::Reflect { command } => dispatch_reflect(command),
         Commands::Builder { command } => dispatch_builder(command),
         Commands::Hygiene { command } => dispatch_hygiene(command),

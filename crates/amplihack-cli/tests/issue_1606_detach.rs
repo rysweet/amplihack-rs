@@ -37,24 +37,24 @@ steps:
     command: "true"
 "#;
 
-struct Fx {
+pub(crate) struct Fx {
     _tmp: tempfile::TempDir,
     /// Set only when the socket directory had to leave `TMPDIR`.
     _tmux_tmp: Option<tempfile::TempDir>,
-    home: PathBuf,
+    pub(crate) home: PathBuf,
     project: PathBuf,
     tools: PathBuf,
-    records: PathBuf,
+    pub(crate) records: PathBuf,
     tmux_dir: PathBuf,
     recipe: PathBuf,
 }
 
 impl Fx {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_runner(STUB_RUNNER)
     }
 
-    fn with_runner(runner: &str) -> Self {
+    pub(crate) fn with_runner(runner: &str) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         let (tmux_dir, tmux_tmp) = tmux_socket_dir(&root);
@@ -86,7 +86,7 @@ impl Fx {
         fx
     }
 
-    fn cmd(&self, args: &[&str], env: &[(&str, &str)]) -> Command {
+    pub(crate) fn cmd(&self, args: &[&str], env: &[(&str, &str)]) -> Command {
         let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
         c.args(args)
             .current_dir(&self.project)
@@ -114,7 +114,7 @@ impl Fx {
         c
     }
 
-    fn run(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
+    pub(crate) fn run(&self, args: &[&str], env: &[(&str, &str)]) -> Output {
         let mut child = self
             .cmd(args, env)
             .stdout(Stdio::piped())
@@ -125,7 +125,7 @@ impl Fx {
         child.wait_with_output().unwrap()
     }
 
-    fn recipe_run_args(&self) -> Vec<String> {
+    pub(crate) fn recipe_run_args(&self) -> Vec<String> {
         vec![
             "recipe".into(),
             "run".into(),
@@ -137,7 +137,7 @@ impl Fx {
 
     /// False, with a message, when no socket directory short enough was
     /// found, so a test that starts a tmux server cannot run here.
-    fn tmux_socket_usable(&self) -> bool {
+    pub(crate) fn tmux_socket_usable(&self) -> bool {
         let fits = tmux_socket_fits(&self.tmux_dir);
         if !fits {
             eprintln!(
@@ -150,7 +150,7 @@ impl Fx {
         fits
     }
 
-    fn tmux(&self, args: &[&str]) -> Output {
+    pub(crate) fn tmux(&self, args: &[&str]) -> Output {
         Command::new("tmux")
             .args(args)
             .env_clear()
@@ -161,13 +161,13 @@ impl Fx {
             .unwrap()
     }
 
-    fn pid(&self, name: &str) -> i32 {
+    pub(crate) fn pid(&self, name: &str) -> i32 {
         let path = self.records.join(name);
         wait_for(Duration::from_secs(60), || path.is_file(), name);
         fs::read_to_string(path).unwrap().trim().parse().unwrap()
     }
 
-    fn runner_env(&self, key: &str) -> Option<String> {
+    pub(crate) fn runner_env(&self, key: &str) -> Option<String> {
         let body = fs::read_to_string(self.records.join("env.txt")).unwrap();
         body.lines()
             .find_map(|l| l.strip_prefix(&format!("{key}=")).map(str::to_string))
@@ -194,7 +194,7 @@ impl Fx {
         format!("{}/tmux-{uid}/default,1,0", self.tmux_dir.display())
     }
 
-    fn log_dir(&self) -> PathBuf {
+    pub(crate) fn log_dir(&self) -> PathBuf {
         self.home.join(".amplihack").join("recipe-logs")
     }
 
@@ -268,7 +268,7 @@ fn tmux_socket_dir(root: &Path) -> (PathBuf, Option<tempfile::TempDir>) {
     (local, None)
 }
 
-fn tmux_available() -> bool {
+pub(crate) fn tmux_available() -> bool {
     let found = Command::new("tmux")
         .arg("-V")
         .output()
@@ -279,7 +279,7 @@ fn tmux_available() -> bool {
     found
 }
 
-fn wait_for(limit: Duration, mut done: impl FnMut() -> bool, what: &str) {
+pub(crate) fn wait_for(limit: Duration, mut done: impl FnMut() -> bool, what: &str) {
     let start = Instant::now();
     while !done() {
         assert!(start.elapsed() < limit, "timed out waiting for {what}");
@@ -318,7 +318,7 @@ fn assert_gone(pids: &[i32]) {
     );
 }
 
-fn text(bytes: &[u8]) -> String {
+pub(crate) fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 

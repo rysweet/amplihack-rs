@@ -20,7 +20,13 @@
 //!    line to the 0600 log, and copies the run's output to the pane and the
 //!    log. Any failure before that is written to the log instead.
 //! 4. The launcher waits for one of those two lines before it reports
-//!    success, and removes the spec and context files on every way out.
+//!    success, and removes the spec and context files on every way out, and
+//!    the run record too when the run did not start.
+//!
+//! The launcher also writes `<session>.run.json` (issue #1710, see
+//! `run_record.rs`): the launching session as the run's parent, and later
+//! the outcome. The run gets `AMPLIHACK_RUN_ID=<session>`, so a run it
+//! launches records it as that run's parent.
 //!
 //! Killing the session sends SIGHUP to the pane's process group, and `recipe
 //! run` then tears down its runner's tree (`run/stop_signal.rs`);
@@ -42,7 +48,9 @@ use amplihack_utils::agent_binary::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::user_config::safe::read_bounded;
+use super::run_identity::RUN_ID_ENV;
+use super::run_record;
+use crate::user_config::safe::{display_safe, read_bounded};
 
 /// Variables the pane gets from tmux itself, kept from the pane's own
 /// environment rather than the caller's.
@@ -63,6 +71,9 @@ fn start_timeout() -> Duration {
         .map(|secs| Duration::from_secs(secs.min(3600)))
         .unwrap_or(START_TIMEOUT)
 }
+
+/// How long the launch waits for `git` to name the origin.
+const ORIGIN_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// The first line a pane writes once the run is running.
 const STARTED: &str = "amplihack: detached run started";
@@ -110,12 +121,16 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     }
     let cwd = std::env::current_dir().context("cannot read the current directory")?;
     let context = context_object(request.context)?;
+    // Read before `child_env` removes the agent session markers, one of
+    // which may be the only identity the caller has.
+    let parent = super::run_identity::caller_identity_from_env();
+    let started_at = chrono::Utc::now();
     let pattern = crate::user_config::tmux_session_pattern(request.working_dir);
     let base = session_name(
         &pattern,
         &recipe_label(request.recipe_path),
         &repo_label(request.working_dir),
-        &chrono::Utc::now().format("%Y%m%d-%H%M%S").to_string(),
+        &started_at.format("%Y%m%d-%H%M%S").to_string(),
     );
     let log_dir = log_dir()?;
     ensure_private_dir(&log_dir)?;
@@ -123,11 +138,15 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     // interrupted launch still runs the guard below instead of dying.
     crate::commands::recipe::run::stop_signal::arm();
     let (session, log) = claim_session(&base, &log_dir)?;
-    let mut secrets = SecretFiles {
+    let mut secrets = LaunchGuard {
         spec: log_dir.join(format!("{session}.spec.json")),
         context: log_dir.join(format!("{session}.context.json")),
-        keep_context: false,
+        record: None,
+        started: false,
     };
+    secrets.record = record_launch(
+        &log_dir, &session, parent, started_at, &request, &cwd, &context,
+    );
     create_private(&secrets.context)?.write_all(&serde_json::to_vec(&context)?)?;
     let exe = std::env::current_exe().context("cannot find the amplihack executable")?;
     let mut args = request.args;
@@ -136,7 +155,7 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     let spec = Spec {
         args,
         cwd,
-        env: child_env(request.agent_binary),
+        env: child_env(request.agent_binary, &session),
         log: log.clone(),
         context_file: secrets.context.clone(),
     };
@@ -160,8 +179,9 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
 
     match wait_for_start(&log, start_timeout()) {
         Start::Started => {
-            // The run owns the context file now, and removes it when it ends.
-            secrets.keep_context = true;
+            // The run owns the context file now, and removes it when it
+            // ends; it writes the record's outcome.
+            secrets.started = true;
         }
         Start::Failed(reason) => {
             kill_session(&session);
@@ -192,21 +212,62 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     Ok(())
 }
 
-/// The spec and context files of a launch. Both hold secrets (the caller's
-/// environment, the task text), so dropping this removes them on every way
-/// out of [`launch`]: an error, a signal, a timeout. Only a run that started
-/// keeps the context file, which it removes itself.
-struct SecretFiles {
-    spec: PathBuf,
-    context: PathBuf,
-    keep_context: bool,
+/// Write the run record and return its path. A failure is a warning and
+/// `None`: the run still starts.
+fn record_launch(
+    log_dir: &Path,
+    session: &str,
+    parent: Option<String>,
+    started_at: chrono::DateTime<chrono::Utc>,
+    request: &Launch<'_>,
+    cwd: &Path,
+    context: &serde_json::Map<String, serde_json::Value>,
+) -> Option<PathBuf> {
+    let run_dir = cwd.join(request.working_dir);
+    let run_dir = run_dir.canonicalize().unwrap_or(run_dir);
+    let record = run_record::build(
+        session,
+        parent,
+        started_at,
+        &recipe_label(request.recipe_path),
+        context,
+        run_record::origin_repo(&run_dir, ORIGIN_TIMEOUT),
+        &run_dir,
+    );
+    let path = run_record::record_path(log_dir, session);
+    match run_record::write_new(&path, &record) {
+        Ok(()) => Some(path),
+        Err(error) => {
+            eprintln!(
+                "amplihack: warning: the run record was not written: {}",
+                display_safe(&format!("{error:#}"))
+            );
+            None
+        }
+    }
 }
 
-impl Drop for SecretFiles {
+/// The files of a launch. The spec and context files hold secrets (the
+/// caller's environment, the task text), so dropping this removes them on
+/// every way out of [`launch`]: an error, a signal, a timeout. Only a run
+/// that started keeps the context file, which it removes itself, and the run
+/// record, whose outcome it writes; a run that never started leaves no
+/// record that would show it as stopped part-way.
+struct LaunchGuard {
+    spec: PathBuf,
+    context: PathBuf,
+    record: Option<PathBuf>,
+    started: bool,
+}
+
+impl Drop for LaunchGuard {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.spec);
-        if !self.keep_context {
+        if !self.started {
             let _ = fs::remove_file(&self.context);
+            if let Some(record) = &self.record {
+                let _ = fs::remove_file(record);
+            }
         }
     }
 }
@@ -315,8 +376,9 @@ fn session_exists(session: &str) -> bool {
 }
 
 /// The caller's environment for the run: every agent session marker removed,
-/// and the resolved agent binary set with the tag `recipe run` would export.
-fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
+/// the resolved agent binary set with the tag `recipe run` would export, and
+/// `AMPLIHACK_RUN_ID` set to the run's session.
+fn child_env(agent_binary: &Resolution, session: &str) -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
         .filter(|(k, _)| {
@@ -325,6 +387,7 @@ fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
         })
         .collect();
     env.insert(BINARY_ENV.to_string(), agent_binary.binary.clone());
+    env.insert(RUN_ID_ENV.to_string(), session.to_string());
     match export_tag(&agent_binary.binary, agent_binary.source) {
         Some(tag) => env.insert(SOURCE_ENV.to_string(), tag),
         None => env.remove(SOURCE_ENV),
@@ -333,7 +396,7 @@ fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
 }
 
 /// `recipe.log_dir`, or `~/.amplihack/recipe-logs`.
-fn log_dir() -> Result<PathBuf> {
+pub(crate) fn log_dir() -> Result<PathBuf> {
     if let Some(dir) = crate::user_config::recipe_log_dir() {
         return Ok(dir);
     }
@@ -362,7 +425,7 @@ fn ensure_private_dir(dir: &Path) -> Result<()> {
 
 /// Create a new file with mode 0600. Never opens an existing file or follows
 /// a symlink planted at `path`.
-fn create_private(path: &Path) -> Result<File> {
+pub(super) fn create_private(path: &Path) -> Result<File> {
     OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -485,9 +548,46 @@ pub(crate) fn run_detached_child(spec_path: &Path, log_path: &Path) -> Result<i3
         std::thread::sleep(Duration::from_millis(50));
     }
     use std::os::unix::process::ExitStatusExt;
-    Ok(status
+    let code = status
         .code()
-        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0)))
+        .unwrap_or_else(|| 128 + status.signal().unwrap_or(0));
+    record_outcome(log_path, code);
+    Ok(code)
+}
+
+/// Write the run's outcome into the record beside `log_path`. A failure is
+/// written to the run log; a launch that could not write the record has
+/// nothing to update.
+fn record_outcome(log_path: &Path, exit_code: i32) {
+    let (Some(dir), Some(session)) = (
+        log_path.parent(),
+        log_path.file_stem().and_then(|s| s.to_str()),
+    ) else {
+        return;
+    };
+    let path = run_record::record_path(dir, session);
+    if fs::symlink_metadata(&path).is_err() {
+        return;
+    }
+    let tail = run_record::read_tail(log_path);
+    let outcome = run_record::Outcome {
+        exit_code,
+        class: run_record::classify_tail(&tail, Some(exit_code))
+            .unwrap_or("error")
+            .to_string(),
+        finished_at: run_record::rfc3339(chrono::Utc::now()),
+    };
+    if let Err(error) = run_record::write_outcome(&path, outcome)
+        && let Ok(mut log) = OpenOptions::new()
+            .append(true)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(log_path)
+    {
+        let _ = writeln!(
+            log,
+            "amplihack: warning: the run's outcome was not recorded: {error:#}"
+        );
+    }
 }
 
 /// Start the real `recipe run` with the spec's argv, directory and

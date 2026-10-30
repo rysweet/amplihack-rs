@@ -13,14 +13,14 @@ use super::store::ProfileStore;
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
 use super::{default_live, pointer, run};
 use crate::binary_finder::BinaryInfo;
+use amplihack_utils::bounded_process;
 use anyhow::Result;
 use serde::Serialize;
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub(super) const TIMEOUT_ENV: &str = "AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
@@ -33,7 +33,6 @@ const STREAM_CAP: usize = 64 * 1024;
 /// process that left the child's group can still hold them open; it is not
 /// waited for, and the probe fails with [`ErrorReason::ReadFailed`].
 const READ_GRACE: Duration = Duration::from_secs(2);
-const POLL: Duration = Duration::from_millis(25);
 /// Reset text and labels are cut to this many characters in the table.
 const MAX_TEXT: usize = 64;
 /// Set by `profile rotate watch` on SIGTERM or SIGINT: running probes stop.
@@ -582,186 +581,55 @@ pub(super) fn probe_all(
         .collect()
 }
 
-/// One stream, read on a detached thread so a process holding the pipe open
-/// never blocks the caller.
-#[derive(Default)]
-struct Stream {
-    kept: Mutex<Vec<u8>>,
-    done: AtomicBool,
-    failed: AtomicBool,
-}
-
-impl Stream {
-    fn spawn(mut source: impl Read + Send + 'static) -> Arc<Self> {
-        let stream = Arc::new(Self::default());
-        let shared = Arc::clone(&stream);
-        std::thread::spawn(move || {
-            let mut chunk = [0u8; 8192];
-            loop {
-                match source.read(&mut chunk) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        let mut kept = shared.kept.lock().unwrap_or_else(PoisonError::into_inner);
-                        let room = STREAM_CAP.saturating_sub(kept.len());
-                        kept.extend_from_slice(&chunk[..n.min(room)]);
-                    }
-                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                    Err(_) => {
-                        shared.failed.store(true, Ordering::Release);
-                        break;
-                    }
-                }
-            }
-            shared.done.store(true, Ordering::Release);
-        });
-        stream
-    }
-
-    fn done(&self) -> bool {
-        self.done.load(Ordering::Acquire)
-    }
-
-    fn failed(&self) -> bool {
-        self.failed.load(Ordering::Acquire)
-    }
-
-    fn text(&self) -> String {
-        let kept = self.kept.lock().unwrap_or_else(PoisonError::into_inner);
-        String::from_utf8_lossy(&kept).into_owned()
-    }
-}
-
-/// Runs `cmd` with stdin from `/dev/null`, reads up to 64 KiB of each output
-/// stream, and kills it at the deadline. The exit status is not used.
+/// Runs `cmd` through [`bounded_process::run`]: stdin from `/dev/null`, up
+/// to 64 KiB of each output stream, killed at the deadline or when
+/// [`PROBE_CANCEL`] is set. The exit status is not used.
 ///
 /// On Unix the child leads its own process group, and the whole group is
 /// killed when the probe ends, so processes `claude` started (MCP servers,
 /// for example) do not outlive it.
-pub(super) fn probe(mut cmd: Command, timeout: Duration, now: i64, keep_raw: bool) -> Probe {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
-    let start = Instant::now();
-    let Ok(mut child) = cmd.spawn() else {
-        return Probe::failed(ErrorReason::StartFailed, None);
+pub(super) fn probe(cmd: Command, timeout: Duration, now: i64, keep_raw: bool) -> Probe {
+    let limits = bounded_process::Limits {
+        timeout,
+        cap: STREAM_CAP,
+        read_grace: READ_GRACE,
     };
-    let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
-        stop(&mut child);
-        return Probe::failed(ErrorReason::ReadFailed, None);
+    let cancel: &AtomicBool = &PROBE_CANCEL;
+    let out = match bounded_process::run(cmd, limits, Some(cancel)) {
+        Ok(out) => out,
+        Err(bounded_process::Failure::Start) => {
+            return Probe::failed(ErrorReason::StartFailed, None);
+        }
+        Err(bounded_process::Failure::Pipes) => {
+            return Probe::failed(ErrorReason::ReadFailed, None);
+        }
     };
-    let (out, err) = (Stream::spawn(out), Stream::spawn(err));
-    let raw = |out: &Stream, err: &Stream| {
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+    let raw = || {
         keep_raw.then(|| Raw {
-            stdout: out.text(),
-            stderr: err.text(),
+            stdout: stdout.clone(),
+            stderr: stderr.clone(),
         })
     };
-
-    loop {
-        match exited(&mut child) {
-            Ok(true) => {
-                // The child is not reaped yet, so its pid (the group id)
-                // cannot have been reused: anything it left in its group
-                // goes too, then it is reaped.
-                kill_group(&child);
-                let _ = child.wait();
-                break;
-            }
-            Ok(false) if start.elapsed() >= timeout || PROBE_CANCEL.load(Ordering::Relaxed) => {
-                stop(&mut child);
-                return Probe {
-                    report: UsageReport::empty(UsageState::Timeout),
-                    error: None,
-                    raw: raw(&out, &err),
-                };
-            }
-            Ok(false) => std::thread::sleep(POLL),
-            Err(_) => {
-                stop(&mut child);
-                return Probe::failed(ErrorReason::WaitFailed, raw(&out, &err));
-            }
+    match out.ended {
+        bounded_process::Ended::Stopped => Probe {
+            report: UsageReport::empty(UsageState::Timeout),
+            error: None,
+            raw: raw(),
+        },
+        bounded_process::Ended::WaitFailed => Probe::failed(ErrorReason::WaitFailed, raw()),
+        // A pipe still open means the output may be cut short; never parse it.
+        bounded_process::Ended::Exited(_) if !out.complete => {
+            Probe::failed(ErrorReason::ReadFailed, raw())
         }
-    }
-    let exited = Instant::now();
-    while !(out.done() && err.done()) && exited.elapsed() < READ_GRACE {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    // A pipe still open means the output may be cut short; never parse it.
-    if !(out.done() && err.done()) || out.failed() || err.failed() {
-        return Probe::failed(ErrorReason::ReadFailed, raw(&out, &err));
-    }
-    let (stdout, stderr) = (out.text(), err.text());
-    Probe {
-        report: parse_usage(&stdout, &stderr, now),
-        error: None,
-        raw: keep_raw.then_some(Raw { stdout, stderr }),
+        bounded_process::Ended::Exited(_) => Probe {
+            report: parse_usage(&stdout, &stderr, now),
+            error: None,
+            raw: raw(),
+        },
     }
 }
-
-/// Kills the child's process group, then kills and reaps the child. These
-/// fail only when there is nothing left to kill or reap.
-fn stop(child: &mut std::process::Child) {
-    kill_group(child);
-    let _ = child.kill();
-    let _ = child.wait();
-}
-
-/// Whether the child has exited, without reaping it on Unix, so that
-/// [`kill_group`] still targets its own group.
-#[cfg(unix)]
-fn exited(child: &mut std::process::Child) -> std::io::Result<bool> {
-    let pid = libc::id_t::from(child.id());
-    // SAFETY: an all-zero `siginfo_t` is a valid value for waitid to fill.
-    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
-    loop {
-        // SAFETY: `info` is a valid, writable siginfo_t; `pid` is our own
-        // unreaped child. WNOWAIT leaves it waitable for `Child::wait`.
-        let rc = unsafe {
-            libc::waitid(
-                libc::P_PID,
-                pid,
-                &mut info,
-                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
-            )
-        };
-        if rc == 0 {
-            // SAFETY: waitid succeeded, so `si_pid` is initialised; it is 0
-            // when the child has not exited yet (WNOHANG).
-            return Ok(unsafe { info.si_pid() } != 0);
-        }
-        let err = std::io::Error::last_os_error();
-        if err.kind() != std::io::ErrorKind::Interrupted {
-            return Err(err);
-        }
-    }
-}
-
-#[cfg(not(unix))]
-fn exited(child: &mut std::process::Child) -> std::io::Result<bool> {
-    child.try_wait().map(|s| s.is_some())
-}
-
-/// Sends SIGKILL to the process group the child leads (see [`probe`]). The
-/// group id is the child's pid, and every caller runs this before the child
-/// is reaped, so the pid cannot have been reused and this cannot reach
-/// another process group.
-#[cfg(unix)]
-fn kill_group(child: &std::process::Child) {
-    let Ok(pid) = i32::try_from(child.id()) else {
-        return;
-    };
-    // SAFETY: `kill` has no memory-safety preconditions. A negative pid
-    // targets the group; ESRCH (group already empty) is ignored.
-    let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
-}
-
-#[cfg(not(unix))]
-fn kill_group(_child: &std::process::Child) {}
 
 // ---------------------------------------------------------------------------
 // Ordering and marks
