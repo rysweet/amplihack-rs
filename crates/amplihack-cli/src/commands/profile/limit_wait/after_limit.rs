@@ -73,6 +73,9 @@ pub(super) fn check(
             reset,
             rotator,
         },
+        // A reset too far away or unreadable ends the step even with a
+        // rotator running: #1761 kept the #1618 five-hour rule. Waiting for
+        // rotator capacity here is issue #1796.
         WaitFor::Skip(why) => finish(None, Some(Skip::Cannot(why))),
     }
 }

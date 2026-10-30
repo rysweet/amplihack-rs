@@ -996,7 +996,8 @@ so at every limit, within
 and
 [`AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS`](#amplihack_usage_limit_wait_budget_secs).
 A spend limit with no reset, a reset more than five hours away or an
-unreadable reset is not waited for. Overrides the
+unreadable reset is not waited for, even while a rotator runs (see
+[#1796](https://github.com/rysweet/amplihack-rs/issues/1796)). Overrides the
 config files; empty means unset; an invalid value prints one warning and is
 ignored. See the
 [usage-limit wait reference](./profile-command.md#usage-limit-wait).

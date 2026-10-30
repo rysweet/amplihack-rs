@@ -705,7 +705,7 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 | `AMPLIHACK_ROTATE_AUTOSTART` | `0`/`off` stops launches from starting the rotator, and `1`/`on` lets them, overriding `<root>/.auto-switch.d/rotate/autostart`. Empty means unset. See [Rotate autostart](#rotate-autostart). |
 | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true` or `1` turns the [usage-limit wait](#usage-limit-wait) on, `false` or `0` off. Outranks `recipe.usage_limit_wait` in `config.toml`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
 | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | Upper bound on one usage-limit wait, in seconds. Only shortens the wait. Outranks `recipe.usage_limit_max_wait_secs`. |
-| `AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS` | Total seconds all usage-limit waits of one recipe run may take; default 21600. Outranks `recipe.usage_limit_wait_budget_secs`. A nested `amplihack recipe run` has its own budget; see [Gaps in the budget](#gaps-in-the-budget). See [Run budget](#run-budget). |
+| `AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS` | Total seconds all usage-limit waits of one recipe run may take while a rotator runs; default 21600. The single wait of a step with no rotator is exempt. Outranks `recipe.usage_limit_wait_budget_secs`. A nested `amplihack recipe run` has its own budget; see [Gaps in the budget](#gaps-in-the-budget). See [Run budget](#run-budget). |
 | `AMPLIHACK_USAGE_LIMIT_MAX_WAITS_PER_STEP` | Waits one step may make while a rotator runs, 1 to 100; default 5. Outranks `recipe.usage_limit_max_waits_per_step`. See [Waits per step](#waits-per-step). |
 
 ### Seeding
@@ -4754,6 +4754,15 @@ the [per-step rule](#waits-per-step) and the `rotator=` field of `start`.
 It is not repeated during the wait. The wait's 30-second
 [`rotator capacity`](#ending-the-wait-early) poll is separate and
 unchanged.
+
+A rotator does not change which limits can be waited for. A limit whose
+reset is more than five hours away (a weekly limit), or whose message states
+no reset amplihack can read, ends the step at once even while a rotator
+runs: the skip is decided before the rotator check, the per-step count or the
+run budget is consulted. This is a deliberate scope decision for #1761, which
+kept the #1618 rule that only a reset within five hours is waited for. Waiting
+for rotator capacity on such limits is tracked in
+[#1796](https://github.com/rysweet/amplihack-rs/issues/1796).
 
 The check is not a security boundary: any process running as you can write
 a pid file and ledger that pass it. A faked rotator only lets a step wait

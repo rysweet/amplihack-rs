@@ -1667,6 +1667,9 @@ session limit resets is waited out), when the reset is more than five hours
 away (a weekly limit), when Claude's message states no reset amplihack can
 read, or when the prompt came on a pipe (auto-switch then does not rerun it
 under another profile either).
+This holds while a rotator runs too: a weekly limit ends the run even when
+the rotator has another login with capacity. Waiting for the rotator in that
+case is left to [#1796](https://github.com/rysweet/amplihack-rs/issues/1796).
 Model output that merely mentions a usage limit never starts a wait.
 
 The wait stops without a rerun when the run is stopped (Ctrl-C, `SIGTERM`
