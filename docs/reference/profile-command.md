@@ -2792,17 +2792,17 @@ The decision is a swap to `spare`, `third` is not part of it, and the cycle
 logs:
 
 ```
-2026-10-29T20:16:25Z cycle live=work work:s=100%,w=61% spare:s=0%,w=43% third:s=0%,w=50%
-2026-10-29T20:16:31Z swap work->spare live s=100% w=61% target s=0% w=43% reason=threshold
+2026-10-29T20:16:25Z cycle live=work work:s=100%,w=100% spare:s=0%,w=43% third:s=0%,w=50%
+2026-10-29T20:16:31Z swap work->spare live s=100% w=100% target s=0% w=43% reason=threshold
 ```
 
 If instead `spare` starts a session while the cycle measures, the cycle
 reconsiders and takes `third`:
 
 ```
-2026-10-29T20:16:25Z cycle live=work work:s=100%,w=61% spare:s=0%,w=43% third:s=0%,w=50%
+2026-10-29T20:16:25Z cycle live=work work:s=100%,w=100% spare:s=0%,w=43% third:s=0%,w=50%
 2026-10-29T20:16:31Z revalidate: target spare no longer eligible (session running); reconsidered
-2026-10-29T20:16:31Z swap work->third live s=100% w=61% target s=0% w=50% reason=threshold
+2026-10-29T20:16:31Z swap work->third live s=100% w=100% target s=0% w=50% reason=threshold
 ```
 
 With `spare` the only candidate, the same change ends the cycle:
