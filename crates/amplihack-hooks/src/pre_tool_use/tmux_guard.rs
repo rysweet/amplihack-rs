@@ -52,6 +52,13 @@
 //! time with the one-letter printf escapes (`\n`, `\t`, …) as separators, so
 //! `printf 'ls\nkill-server\n' | tmux -C attach` is denied.
 //!
+//! An unscoped tmux counts as reading a kill from stdin, as a `tmux -C`
+//! client does, only when an earlier stage of its pipeline has a word with a
+//! `kill-s` token, or a heredoc in the pipeline mentions one. Stdin flows left
+//! to right, so in `tmux ls -F '#S' | grep '^amp-' | xargs -r -n1 tmux
+//! kill-session -t` the `tmux ls` reads nothing the `xargs` stage holds, and
+//! the targeted kill is allowed.
+//!
 //! Layers 2 and 3 exempt data-only commands such as
 //! `git commit -m "… tmux kill-server …"`. `git` is data-only only with a
 //! subcommand in [`GIT_DATA_SUBCOMMANDS`] (`commit`, `log`, …), none of which
@@ -68,13 +75,19 @@
 //! `--context-from-file` file, which the guard never reads. So a task
 //! description that mentions the guard can be launched inline. As with the
 //! other data-only commands, a `$(` or backtick in the value, or an
-//! evaluator anywhere on the line, removes the exemption.
+//! evaluator anywhere on the line, removes the exemption. This ties the
+//! guard to `recipe run`'s options: if it gains another way to pass context
+//! inline, text passed that way is judged as shell text, and a task
+//! description that mentions the guard is denied, until
+//! [`is_context_value`] learns the new form.
 //!
 //! Heredoc bodies are parsed when a shell evaluator appears anywhere on the
 //! line, so `cat > k.sh <<EOF … EOF` followed by `bash k.sh` is denied.
 //! Uncertain input fails closed: unbalanced quotes, a redirection with no
 //! target, or hitting [`MAX_DEPTH`] or [`MAX_REPARSES`] with a candidate
-//! left deny. So does an unscoped tmux whose subcommand word holds a `$` or
+//! left deny, as does a simple command with more than
+//! [`MAX_TMUX_PER_COMMAND`] tmux words. So does an unscoped tmux whose
+//! subcommand word holds a `$` or
 //! a backtick (`c=kill-server; tmux $c`, `tmux $(echo kill-server)`), since
 //! the expansion may name `kill-server`; expansions in option values
 //! (`tmux new -s "$name"`) and in scoped invocations are allowed.
@@ -86,7 +99,12 @@
 //!   written earlier), or commands assembled at run time from pieces;
 //! - `tmux source-file` (or `source`) reading its commands from a file,
 //!   stdin, a heredoc or a here-string, unless a word with a `kill-s` token
-//!   sits in the same pipeline as the unscoped tmux;
+//!   sits in an earlier stage of the unscoped tmux's pipeline, or in a
+//!   heredoc of that pipeline;
+//! - a `tmux -C` client fed by a subshell, a `{ …; }` group or a process
+//!   substitution (`(echo kill-server) | tmux -C attach`, `tmux -C attach <
+//!   <(echo kill-server)`), which the tokeniser does not read as earlier
+//!   stages of the client's pipeline;
 //! - an `-S` path that is a symlink to the default socket, which only a
 //!   file system lookup could see;
 //! - a variable copied from `$TMUX`, or from tmux's output, other than by
@@ -130,12 +148,18 @@
 //! on any input: the hook fails open on Claude Code and Copilot, so a panic
 //! would allow the command.
 //! For the same reason a harness that times out the hook, for example on a
-//! cold start, lets the command run; the guard's own cost is bounded by
-//! [`MAX_INPUT`] and [`MAX_REPARSES`].
+//! cold start, lets the command run. The guard's own cost grows linearly
+//! with the input: at most [`MAX_TMUX_PER_COMMAND`] tmux invocations are
+//! read per simple command, each reading the rest of that command once;
+//! embedded scripts are parsed again at most [`MAX_REPARSES`] times and
+//! [`MAX_DEPTH`] levels deep; and input over [`MAX_INPUT`] gets only the
+//! text test. `large_inputs_shaped_against_the_cost_bound_finish_quickly`
+//! runs the slowest inputs found, each just under [`MAX_INPUT`]; the slowest
+//! takes about 0.2 s in a release build.
 
 use super::shell::{self, SimpleCommand, basename, program};
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use tracing::warn;
 
 /// The deny reason. The command itself is never echoed. It also covers the
@@ -224,6 +248,11 @@ const MAX_INPUT: usize = 64 * 1024;
 
 /// Most re-parses of embedded scripts for one command.
 const MAX_REPARSES: usize = 256;
+
+/// Most tmux invocations read in one simple command; a command with more is
+/// denied. Each invocation reads the words after it, so without a cap the
+/// cost would grow with the square of the number of `tmux` words.
+const MAX_TMUX_PER_COMMAND: usize = 64;
 
 /// Whether the guard checks a tool named `tool_name`.
 pub(super) fn is_shell_tool(tool_name: &str) -> bool {
@@ -374,10 +403,10 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
     }
     let cmds = &parsed.commands;
     taint_assignments(cmds, &mut ctx.tainted);
-    let pipelines = pipeline_facts(cmds);
-    let evaluator_present = pipelines.values().any(|f| f.evaluator);
+    let facts = line_facts(cmds);
+    let evaluator_present = facts.evaluator;
     let mut out = Scan::default();
-    for cmd in cmds {
+    for (n, cmd) in cmds.iter().enumerate() {
         let words = &cmd.words;
         let start = program_start(words);
         let prog = words.get(start);
@@ -406,17 +435,25 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
         // Layers 1 and 2: every word naming tmux, from the program word on,
         // starts an invocation. Words before it are assignments and wrapper
         // options (the `TMUX` in `env -u TMUX`).
+        let fed_kill_s = facts.fed_kill_s.get(n).copied().unwrap_or(true);
+        let mut invocations = 0usize;
         for (k, word) in words.iter().enumerate().skip(start) {
             if !is_tmux(word) || (k != start && (data_only || context_value(k))) {
                 continue;
             }
-            let inv = invocation(words.get(k + 1..).unwrap_or_default(), &ctx.tainted);
             out.tmux_seen = true;
+            // Each invocation reads the rest of its command, so the count
+            // is capped to keep the check linear in the input.
+            invocations += 1;
+            if invocations > MAX_TMUX_PER_COMMAND {
+                out.dangerous = true;
+                break;
+            }
+            let inv = invocation(words.get(k + 1..).unwrap_or_default(), &ctx.tainted);
             if !inv.scoped {
                 out.unscoped = true;
-                if pipeline_mentions_kill_s(&pipelines, cmd) {
-                    out.dangerous = true;
-                }
+                // An unscoped `tmux -C` runs each line of its stdin.
+                out.dangerous |= fed_kill_s;
             }
             out.dangerous |= inv.dangerous;
         }
@@ -764,46 +801,57 @@ fn git_runs_value(words: &[String], k: usize) -> bool {
             .is_some_and(|prev| prev == "-c")
 }
 
-/// What one pipeline holds, gathered in a single pass so the per-command
-/// checks in [`scan`] stay linear in the number of commands.
-#[derive(Debug, Default, Clone, Copy)]
-struct PipelineFacts {
-    /// A command in the pipeline is a shell evaluator.
+/// What a command line holds that the per-command checks in [`scan`] need,
+/// gathered in two passes over the commands so those checks stay linear in
+/// the number of commands.
+struct LineFacts {
+    /// Some command on the line is a shell evaluator.
     evaluator: bool,
-    /// How many commands in the pipeline have a word starting with `kill-s`.
-    kill_s_commands: usize,
-    /// A heredoc body in the pipeline mentions `kill-s`.
-    heredoc_kill_s: bool,
+    /// For each command, in order: whether its stdin may carry a `kill-s`
+    /// token, so that an unscoped `tmux -C` there would run it.
+    fed_kill_s: Vec<bool>,
 }
 
-fn pipeline_facts(cmds: &[SimpleCommand]) -> HashMap<usize, PipelineFacts> {
-    let mut facts: HashMap<usize, PipelineFacts> = HashMap::new();
+/// Stdin flows left to right through a pipeline (`a | b` connects a's
+/// output to b's input), so a command is fed a `kill-s` token only when an
+/// earlier stage of its pipeline has a word holding one. A `kill-s` word in
+/// the same or a later stage is not input to it: in
+/// `tmux ls | xargs -n1 tmux kill-session -t`, the `tmux ls` reads nothing
+/// the `xargs` stage prints. A heredoc body that mentions `kill-s` counts
+/// for every stage of its pipeline, whichever stage receives it.
+fn line_facts(cmds: &[SimpleCommand]) -> LineFacts {
+    let mut evaluator = false;
+    let mut heredoc_kill_s: HashSet<usize> = HashSet::new();
     for cmd in cmds {
-        let f = facts.entry(cmd.pipeline).or_default();
-        f.evaluator |= is_evaluator(cmd);
-        f.kill_s_commands += usize::from(has_kill_s_word(cmd));
-        f.heredoc_kill_s |= cmd
+        evaluator |= is_evaluator(cmd);
+        if cmd
             .heredocs
             .iter()
-            .any(|b| b.to_ascii_lowercase().contains("kill-s"));
+            .any(|b| b.to_ascii_lowercase().contains("kill-s"))
+        {
+            heredoc_kill_s.insert(cmd.pipeline);
+        }
     }
-    facts
+    // The tokeniser numbers pipelines in text order and keeps each
+    // pipeline's stages together, so one running flag per pipeline is
+    // enough: (pipeline, an earlier stage has a `kill-s` word).
+    let mut upstream: Option<(usize, bool)> = None;
+    let fed_kill_s = cmds
+        .iter()
+        .map(|cmd| {
+            let earlier = upstream.is_some_and(|(p, seen)| p == cmd.pipeline && seen);
+            upstream = Some((cmd.pipeline, earlier || has_kill_s_word(cmd)));
+            earlier || heredoc_kill_s.contains(&cmd.pipeline)
+        })
+        .collect();
+    LineFacts {
+        evaluator,
+        fed_kill_s,
+    }
 }
 
 fn has_kill_s_word(cmd: &SimpleCommand) -> bool {
     cmd.words.iter().any(|w| mentions_kill_s(w))
-}
-
-/// Whether a command other than `cmd` in its pipeline has a word holding a
-/// token that starts with `kill-s`, or a heredoc body in the pipeline
-/// mentions it: an unscoped `tmux -C` reads its commands from stdin.
-fn pipeline_mentions_kill_s(
-    pipelines: &HashMap<usize, PipelineFacts>,
-    cmd: &SimpleCommand,
-) -> bool {
-    pipelines
-        .get(&cmd.pipeline)
-        .is_some_and(|f| f.heredoc_kill_s || f.kill_s_commands > usize::from(has_kill_s_word(cmd)))
 }
 
 /// One tmux invocation's verdict.
@@ -959,12 +1007,26 @@ fn loose_dangerous(rest: &[String]) -> bool {
 
 /// Whether any token is `kill-server`, or `kill-session` with `-a` in the
 /// tokens after it.
+///
+/// A `kill-session` token inside the options already read for an earlier
+/// one can only be that one's `-t` value, and its own options are the rest
+/// of those options, so it is skipped. That reads `kill-session -t
+/// kill-session -t …` once, not once per token.
 fn kills_in(tokens: &[&str]) -> bool {
-    tokens.iter().enumerate().any(|(j, token)| {
-        kills_server(token)
-            || (is_kill_session(token)
-                && kills_all_sessions(tokens.get(j + 1..).unwrap_or_default()))
-    })
+    let mut read_to = 0usize;
+    for (j, token) in tokens.iter().enumerate() {
+        if kills_server(token) {
+            return true;
+        }
+        if j >= read_to && is_kill_session(token) {
+            let (all, taken) = session_flags(tokens.get(j + 1..).unwrap_or_default());
+            if all {
+                return true;
+            }
+            read_to = j.saturating_add(1).saturating_add(taken);
+        }
+    }
+    false
 }
 
 /// `kill-server` or a prefix of it from `kill-s` on (`kill-s` and `kill-se`
@@ -983,6 +1045,11 @@ fn is_kill_session(name: &str) -> bool {
 /// Whether `kill-session`'s flags set `-a`, read getopt-style with spec
 /// `aCt:`. An unknown flag is uncertain, so it counts as `-a`.
 fn kills_all_sessions(flags: &[&str]) -> bool {
+    session_flags(flags).0
+}
+
+/// [`kills_all_sessions`], and how many words of `flags` the options took.
+fn session_flags(flags: &[&str]) -> (bool, usize) {
     let mut all = false;
     let mut i = 0usize;
     while let Some(word) = flags.get(i) {
@@ -1007,12 +1074,12 @@ fn kills_all_sessions(flags: &[&str]) -> bool {
                         .is_empty();
                     break;
                 }
-                _ => return true,
+                _ => return (true, i),
             }
         }
         i = i.saturating_add(if takes_next { 2 } else { 1 });
     }
-    all
+    (all, i.min(flags.len()))
 }
 
 #[cfg(test)]

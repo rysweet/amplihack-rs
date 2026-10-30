@@ -424,7 +424,11 @@ the same conditions. amplihack hands them to the recipe as text, exactly as
 it hands over a `--context-from-file` file, which the guard never reads, so
 `amplihack recipe run default-workflow --detach -c task_description="Follow-up to #1733: tmux kill-server guard"`
 is allowed. A positional argument, another option's value, a value holding
-`$(` or a backtick, or an evaluator anywhere on the line still denies.
+`$(` or a backtick, or an evaluator anywhere on the line still denies. The
+guard knows only these four forms: if `recipe run` gains another way to pass
+context inline, text passed that way is judged as shell text until the guard
+learns the form, so a task description that mentions the guard is denied
+rather than a kill being missed.
 `amplihack recipe stop <session>` and the exact-match
 `tmux kill-session -t '=<session>'` that `recipe stop` and `--detach` use are
 allowed too.
@@ -487,13 +491,17 @@ backtick in the body, so those are checked as commands.
 
 - A program word that starts with `$`, together with any word starting with
   `kill-s`, denies.
-- An unscoped tmux in the same pipeline as a word holding a token that starts
-  with `kill-s` denies, because a `tmux -C` client runs each line of its
-  stdin. Words are split on whitespace and shell punctuation, and read a
-  second time with the one-letter printf escapes (`\n`, `\t`, …) as
-  separators, so `echo kill-server | tmux -C attach`,
-  `echo ' kill-server' | tmux -C attach` and
-  `printf 'list-sessions\nkill-server\n' | tmux -C attach` are all denied.
+- An unscoped tmux denies when an earlier stage of its pipeline has a word
+  holding a token that starts with `kill-s`, or a heredoc in the pipeline
+  mentions one, because a `tmux -C` client runs each line of its stdin.
+  Words are split on whitespace and shell punctuation, and read a second time
+  with the one-letter printf escapes (`\n`, `\t`, …) as separators, so
+  `echo kill-server | tmux -C attach`, `echo ' kill-server' | tmux -C attach`
+  and `printf 'list-sessions\nkill-server\n' | tmux -C attach` are all
+  denied. Stdin flows left to right, so a `kill-s` word in the same or a later
+  stage is not input to the tmux: in
+  `tmux ls -F '#S' | grep '^amp-' | xargs -r -n1 tmux kill-session -t`, the
+  `tmux ls` reads nothing the `xargs` stage holds, and the command is allowed.
 - An unscoped tmux invocation whose subcommand word contains `$` or a
   backtick denies, because the shell decides the subcommand at run time. The
   same rule applies to the words the guard inspects after an unknown global
@@ -505,7 +513,7 @@ backtick in the body, so those are checked as commands.
 - Input over 64 KiB gets only this plain text test, not the full parse, so
   quoting such as `t''mux` inside over-size input is not caught.
 - Reaching the depth limit (4) or the re-parse limit (256) while a candidate
-  remains denies.
+  remains denies, and so does a simple command with more than 64 tmux words.
 
 | Command | Result |
 |---|---|
@@ -576,10 +584,14 @@ sandbox. It does not see through:
   `"kill-"+"server"`;
 - the tmux commands that `tmux source-file` or `tmux source` reads, whether
   from a file, from `-` or `/dev/stdin`, or from a heredoc or here-string. A
-  pipeline that puts a `kill-s` word beside an unscoped tmux is still denied
-  by the [uncertain-input](#uncertain-input) rule, but
-  `tmux source-file k.conf`, after an earlier call wrote `kill-server` into
-  `k.conf`, is allowed;
+  pipeline that puts a `kill-s` word in a stage before an unscoped tmux, or in
+  one of its heredocs, is still denied by the
+  [uncertain-input](#uncertain-input) rule, but `tmux source-file k.conf`,
+  after an earlier call wrote `kill-server` into `k.conf`, is allowed;
+- a `tmux -C` client fed by a subshell, a `{ …; }` group or a process
+  substitution, as in `(echo kill-server) | tmux -C attach` or
+  `tmux -C attach < <(echo kill-server)`. The tokeniser does not read these as
+  earlier stages of the client's pipeline, so they are allowed;
 - an `-S` path that is a symbolic link to the default socket or to the socket
   in `$TMUX`. The guard reads no files and does not resolve links, so
   `tmux -S /tmp/link kill-server` is allowed whatever the link points to;
@@ -613,9 +625,13 @@ It does not guard these commands at all:
 If the host harness times out the hook before it answers, for example on the
 first start of a cold `amplihack-hooks` binary, Claude Code and Copilot run
 the command as though the hook had allowed it. What Codex does when it times
-out a security hook has not been verified. The guard's own cost is bounded by
-the 64 KiB input limit and the 256 re-parse limit; the harness timeout is
-outside its control.
+out a security hook has not been verified. The guard's own cost grows
+linearly with the input: it reads at most 64 tmux invocations per simple
+command (a command with more is denied), each reading the rest of that command
+once; it parses embedded scripts again at most 256 times and 4 levels deep; and
+input over 64 KiB gets only the text test. The slowest inputs found, each just
+under 64 KiB, take about 0.2 s in a release build. The harness timeout is
+outside the guard's control.
 
 It also errs toward false positives. A shell evaluator anywhere on the line
 (including `tmux`, `find`, `docker`, `kubectl` and the git and gh commands

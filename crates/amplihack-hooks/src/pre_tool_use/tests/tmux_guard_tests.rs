@@ -1091,3 +1091,143 @@ fn allows_mentions_in_data_git_subcommands() {
     let wrong: Vec<&&str> = GIT_DATA_ALLOWED.iter().filter(|c| denied(c)).collect();
     assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
 }
+
+// ---------------------------------------------------------------------------
+// Crusty round 3, concern 2: stdin flows left to right through a pipeline,
+// so only a `kill-s` word in an earlier stage is input to an unscoped tmux.
+// Targeted kills fed by `tmux ls` stay allowed.
+// ---------------------------------------------------------------------------
+
+const PIPELINE_ORDER_ALLOWED: &[&str] = &[
+    "tmux ls -F '#S' | grep '^amp-' | xargs -r -n1 tmux kill-session -t",
+    "tmux list-sessions -F '#{session_name}' | grep '^amp-' | xargs -I{} tmux kill-session -t {}",
+    "tmux ls 2>/dev/null | grep -c kill-session",
+    "tmux -C attach | grep kill-server",
+    "tmux ls -F '#S' | grep '^amp-' | while read -r s; do tmux kill-session -t \"$s\"; done",
+];
+
+const PIPELINE_ORDER_DENIED: &[&str] = &[
+    "echo kill-server | tmux -C attach",
+    "printf 'ls\\nkill-server\\n' | tmux -C attach",
+    "printf 'kill-server' | xargs tmux",
+    "echo kill-server | tmux -S /tmp/tx1/a.sock ls | tmux -C attach",
+    "tmux ls | grep amp | xargs -n1 tmux kill-session -a -t",
+    // A heredoc in the pipeline counts for every stage, whichever gets it.
+    "cat <<END | tmux -C attach\nkill-server\nEND",
+    "tmux -C attach <<END\nkill-server\nEND",
+    "tmux -C attach <<< kill-server",
+];
+
+#[test]
+fn a_kill_word_after_an_unscoped_tmux_in_a_pipeline_is_not_its_input() {
+    let wrong: Vec<&&str> = PIPELINE_ORDER_ALLOWED
+        .iter()
+        .filter(|c| denied(c))
+        .collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}
+
+#[test]
+fn a_kill_word_before_an_unscoped_tmux_in_a_pipeline_is_denied() {
+    let missed: Vec<&&str> = PIPELINE_ORDER_DENIED
+        .iter()
+        .filter(|c| !denied(c))
+        .collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 3, concern 3: each tmux invocation reads the rest of its
+// command, so the number read per simple command is capped and the cost
+// stays linear in the input.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn more_tmux_words_in_one_command_than_the_cap_deny() {
+    let at_cap = "tmux ".repeat(MAX_TMUX_PER_COMMAND);
+    assert!(
+        !denied(at_cap.trim_end()),
+        "{MAX_TMUX_PER_COMMAND} words denied"
+    );
+    let over = "tmux ".repeat(MAX_TMUX_PER_COMMAND + 1);
+    assert!(denied(over.trim_end()), "over the cap allowed");
+    // The cap is per simple command, not per line.
+    let split = format!("{}; {}", at_cap.trim_end(), at_cap.trim_end());
+    assert!(!denied(&split), "two commands at the cap denied");
+}
+
+#[test]
+fn large_inputs_shaped_against_the_cost_bound_finish_quickly() {
+    let started = std::time::Instant::now();
+    let fill = MAX_INPUT - 1_000;
+    let tmux64 = "tmux ".repeat(MAX_TMUX_PER_COMMAND);
+    let cases = [
+        // Was quadratic: 13,000 words took 29 s in a release build.
+        "tmux ".repeat(fill / 5),
+        format!("{tmux64}{}", "kill-session -t ".repeat(fill / 16)),
+        format!("{tmux64}{}", "-2 ".repeat(fill / 3)),
+        format!("{tmux64}{}", "if-shell x ".repeat(fill / 11)),
+        format!("{tmux64}{}", "ls \\; ".repeat(fill / 6)),
+        format!(
+            "bash -c \"bash -c '{tmux64}{}kill-session -t a'\"",
+            "-2 ".repeat(fill / 3)
+        ),
+        format!("{}tmux ;", "tmux ".repeat(MAX_TMUX_PER_COMMAND - 1)).repeat(fill / 322),
+    ];
+    for text in &cases {
+        assert!(text.len() <= MAX_INPUT, "case is over MAX_INPUT");
+        let _ = check(text);
+    }
+    // A release build takes about 0.2 s for the slowest of these; the bound
+    // leaves room for a debug build on a loaded host.
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(30),
+        "took {:?}",
+        started.elapsed()
+    );
+}
+
+/// The quadratic-free [`kills_in`] gives the same verdict as reading the
+/// options after every `kill-session` token afresh.
+#[test]
+fn kills_in_matches_reading_every_kill_session_afresh() {
+    fn reference(tokens: &[&str]) -> bool {
+        tokens.iter().enumerate().any(|(j, token)| {
+            kills_server(token)
+                || (is_kill_session(token)
+                    && kills_all_sessions(tokens.get(j + 1..).unwrap_or_default()))
+        })
+    }
+    let atoms = [
+        "kill-session",
+        "kill-ses",
+        "kill-server",
+        "kill-s",
+        "-t",
+        "-a",
+        "-C",
+        "-at",
+        "-ta",
+        "-tx",
+        "-z",
+        "--",
+        "-",
+        "x",
+    ];
+    let mut state: u64 = 0x1733_0003;
+    for _ in 0..20_000 {
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let len = (state >> 60) as usize + 1;
+        let tokens: Vec<&str> = (0..len)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                atoms[(state >> 33) as usize % atoms.len()]
+            })
+            .collect();
+        assert_eq!(kills_in(&tokens), reference(&tokens), "{tokens:?}");
+    }
+}

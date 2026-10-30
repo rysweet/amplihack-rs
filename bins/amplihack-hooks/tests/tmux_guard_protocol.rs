@@ -215,3 +215,24 @@ fn claude_code_allows_amplihack_own_tmux_use() {
         assert_not_denied(&hook(claude_payload(command), "claude"));
     }
 }
+
+/// Crusty round 3, concern 2: a targeted kill fed by `tmux ls` is allowed,
+/// because stdin flows left to right and the `tmux ls` reads nothing the
+/// later stages hold. A kill piped into an unscoped control client is still
+/// denied.
+#[test]
+fn claude_code_judges_pipeline_stages_in_order() {
+    for command in [
+        "tmux ls -F '#S' | grep '^amp-' | xargs -r -n1 tmux kill-session -t",
+        "tmux list-sessions -F '#{session_name}' | grep '^amp-' | xargs -I{} tmux kill-session -t {}",
+        "tmux ls 2>/dev/null | grep -c kill-session",
+    ] {
+        assert_not_denied(&hook(claude_payload(command), "claude"));
+    }
+    for command in [
+        "echo kill-server | tmux -C attach",
+        "printf 'ls\\nkill-server\\n' | tmux -C attach",
+    ] {
+        assert_full_deny(&hook(claude_payload(command), "claude"));
+    }
+}
