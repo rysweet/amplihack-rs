@@ -21,6 +21,9 @@
 //!   detached `profile rotate watch --spawned` daemon that outlives the test.
 //!   The guard above is the stop that still holds when a test clears the
 //!   environment and sets only the guard again.
+//! - no `AMPLIHACK_CLAUDE_PROFILE_ROOT` (issue #1699), so an install under the
+//!   temp `HOME` cannot refresh the developer's real profiles. `env_clear()`
+//!   already drops it; the explicit removal holds if the kept list changes.
 
 #![allow(dead_code)]
 
@@ -41,6 +44,9 @@ pub const HOME_GUARD_ENV: &str = "AMPLIHACK_TEST_HOME_GUARD";
 
 /// The variable that turns the rotator's launch autostart off.
 pub const ROTATE_AUTOSTART_ENV: &str = "AMPLIHACK_ROTATE_AUTOSTART";
+
+/// The variable naming the Claude login profile root.
+pub const PROFILE_ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
 
 /// A temp `HOME` for tests that do not make their own: one per test process,
 /// created by `tempfile` (a fresh random name, mode 0700, owned by this user,
@@ -83,6 +89,7 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
             command.env(&key, value);
         }
     }
+    command.env_remove(PROFILE_ROOT_ENV);
     // The toolchain lives under the real HOME unless these say otherwise; a
     // child that runs cargo must still find it after HOME moves.
     if let Some(home) = std::env::var_os("HOME") {
