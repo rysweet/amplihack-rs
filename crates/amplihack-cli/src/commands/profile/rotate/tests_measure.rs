@@ -6,8 +6,6 @@
 //! - A probe that timed out, or failed with an error, is `Reading::Failed`:
 //!   unknown, never 100%, never a target and never exhausted. Nothing about
 //!   it is kept, so the next cycle probes it again.
-//! - `Reading::Exhausted { session, week }` carries the windows it read and
-//!   still has headroom `Some(0)` when they are missing.
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};
 use super::log::msg;
@@ -155,34 +153,8 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
 #[test]
 fn a_timed_out_probe_is_not_treated_as_exhausted() {
     let slow = reading("slow", &timed_out());
-    assert!(!matches!(slow.reading, Reading::Exhausted { .. }));
+    assert_ne!(slow.reading, Reading::Exhausted);
     // The overflow rule: no known reset, no plan capacity, no regain time.
     assert!(!plan_usable(&settings(), &slow.reading));
     assert_eq!(regains(&settings(), &slow.reading, &slow.windows), None);
-}
-
-#[test]
-fn an_exhausted_reading_with_no_windows_still_has_no_headroom() {
-    let r = Reading::Exhausted {
-        session: None,
-        week: None,
-    };
-    assert_eq!(r.headroom(), Some(0));
-    let p = Probed {
-        reading: r,
-        windows: Windows::default(),
-        spend_limit: false,
-    };
-    assert_eq!(best(&[measured("gone", &p)]), None);
-}
-
-#[test]
-fn the_exhausted_test_constant_reads_one_hundred_in_both_windows() {
-    assert_eq!(
-        Reading::EXHAUSTED,
-        Reading::Exhausted {
-            session: Some(100.0),
-            week: Some(100.0)
-        }
-    );
 }

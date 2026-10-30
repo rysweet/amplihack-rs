@@ -191,7 +191,7 @@ static ONTO_MEASURED: AtomicUsize = AtomicUsize::new(0);
 fn onto_overflow(_: &Ctx, _: &super::observe::Snap) -> Result<Measurement, ProfileError> {
     ONTO_MEASURED.fetch_add(1, Ordering::SeqCst);
     Ok(Measurement {
-        live: Reading::EXHAUSTED,
+        live: Reading::Exhausted,
         others: vec![(
             n("work"),
             Reading::Measured {

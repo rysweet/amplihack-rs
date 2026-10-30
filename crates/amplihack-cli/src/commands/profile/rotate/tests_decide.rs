@@ -1,8 +1,7 @@
 //! `rotate::decide`: the pure decision rule (D1-D5, issue #1592).
 //!
 //! Contract:
-//! - `Reading::{Measured { session: f64, week: f64 }, Exhausted { session:
-//!   Option<f64>, week: Option<f64> }, Failed}`,
+//! - `Reading::{Measured { session: f64, week: f64 }, Exhausted, Failed}`,
 //!   built from a probe with `Reading::from_report(&UsageReport)`.
 //! - `Reading::headroom() -> Option<u8>`: `None` for a failed probe,
 //!   `Some(0)` when exhausted, else `100 - max(session, week)` rounded down
@@ -78,7 +77,7 @@ fn headroom_is_the_worse_window_rounded_down() {
     assert_eq!(r(85.5, 10.0).headroom(), Some(14));
     assert_eq!(r(0.0, 0.0).headroom(), Some(100));
     assert_eq!(r(120.0, 0.0).headroom(), Some(0), "clamped");
-    assert_eq!(Reading::EXHAUSTED.headroom(), Some(0));
+    assert_eq!(Reading::Exhausted.headroom(), Some(0));
     assert_eq!(Reading::Failed.headroom(), None);
 }
 
@@ -93,11 +92,7 @@ fn readings_from_probe_reports() {
     for s in [UsageState::SessionExhausted, UsageState::WeeklyExhausted] {
         assert_eq!(
             Reading::from_report(&report(s, Some(100.0), Some(50.0))),
-            Reading::Exhausted {
-                session: Some(100.0),
-                week: Some(50.0)
-            },
-            "an exhausted reading keeps the windows it read (#1698)"
+            Reading::Exhausted
         );
     }
     for s in [
@@ -191,7 +186,7 @@ fn an_exhausted_live_login_needs_a_swap() {
     assert_eq!(
         decide(
             &settings(),
-            &Reading::EXHAUSTED,
+            &Reading::Exhausted,
             &[c("spare", r(50.0, 50.0))],
             None,
             NOW
@@ -212,7 +207,7 @@ fn no_candidates_at_a_threshold_is_an_alert() {
 fn failed_and_exhausted_candidates_are_never_chosen() {
     let cands = [
         c("a-failed", Reading::Failed),
-        c("b-exhausted", Reading::EXHAUSTED),
+        c("b-exhausted", Reading::Exhausted),
     ];
     assert_eq!(
         decide(&settings(), &r(90.0, 0.0), &cands, None, NOW),

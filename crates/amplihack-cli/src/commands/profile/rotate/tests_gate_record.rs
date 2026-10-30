@@ -342,7 +342,7 @@ fn auto_switch_closes_overflow_while_the_running_rotator_has_no_record() {
 
 fn probed(session: f64, resets_at: i64) -> Probed {
     let reading = if session >= 100.0 {
-        Reading::EXHAUSTED
+        Reading::Exhausted
     } else {
         Reading::Measured {
             session,

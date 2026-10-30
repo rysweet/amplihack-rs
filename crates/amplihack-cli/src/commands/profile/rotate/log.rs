@@ -160,9 +160,33 @@ pub fn open_or_warn(log: &Path, rotated: &Path) -> Option<RotateLog> {
         .ok()
 }
 
-// Kept in `guide`, their main user, to hold this file within its line
-// budget.
-pub use super::guide::{cut, sh_quote};
+/// `p` for a shell command (issue #1693): bare when every byte is in
+/// `A-Za-z0-9/._+-`, else single-quoted with each `'` written as `'\''`.
+/// `None` for a path that is not UTF-8 or has a control or
+/// bidirectional-override character, which no command may show.
+pub fn sh_quote(p: &Path) -> Option<String> {
+    let s = p.to_str()?;
+    if s.chars().any(super::ledger::unprintable) {
+        return None;
+    }
+    let bare = |b: u8| b.is_ascii_alphanumeric() || b"/._+-".contains(&b);
+    if !s.is_empty() && s.bytes().all(bare) {
+        return Some(s.to_string());
+    }
+    Some(format!("'{}'", s.replace('\'', r"'\''")))
+}
+
+/// `s` cut to at most `max` bytes on a character boundary.
+pub fn cut(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
 
 /// The message grammar of docs/reference/profile-command.md, Rotate log.
 pub mod msg {
@@ -178,25 +202,14 @@ pub mod msg {
         }
     }
 
-    /// An exhausted window as read: `<n>%`, or `-` when it was not read or
-    /// is not a usable number.
-    fn window(w: Option<f64>) -> String {
-        match w {
-            Some(p) if p.is_finite() && p >= 0.0 => format!("{}%", pct(p)),
-            _ => "-".to_string(),
-        }
-    }
-
-    /// `s=<n>% w=<n>%` with `sep` between; an exhausted login shows the
-    /// windows it read (`-` for one not read), a failed probe `failed`.
+    /// `s=<n>% w=<n>%` with `sep` between; an exhausted login shows as
+    /// 100%, a failed probe as `failed`.
     pub(in super::super) fn usage(r: &Reading, sep: &str) -> String {
         match r {
             Reading::Measured { session, week } => {
                 format!("s={}%{sep}w={}%", pct(*session), pct(*week))
             }
-            Reading::Exhausted { session, week } => {
-                format!("s={}{sep}w={}", window(*session), window(*week))
-            }
+            Reading::Exhausted => format!("s=100%{sep}w=100%"),
             Reading::Failed => "failed".to_string(),
         }
     }

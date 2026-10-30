@@ -4,10 +4,11 @@
 //! account. Each line fits the ledger's `guidance` limits.
 
 use super::ledger::{MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES};
+use super::log::{cut, sh_quote};
 use crate::commands::profile::auto_switch::kit::CREDS;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::usage_cmd::sanitize_display;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// The paths a `fix` line may name. `manual` is
 /// `<root>/.rejected-logins/manual-<time>`.
@@ -275,32 +276,4 @@ fn refused_fix(m: &ProfileName, fix: Fix, p: &Paths) -> FixLine {
         }),
         Fix::Retry => plain("none needed; the next cycle retries".into()),
     }
-}
-
-/// `p` for a shell command (issue #1693): bare when every byte is in
-/// `A-Za-z0-9/._+-`, else single-quoted with each `'` written as `'\''`.
-/// `None` for a path that is not UTF-8 or has a control or
-/// bidirectional-override character, which no command may show.
-pub fn sh_quote(p: &Path) -> Option<String> {
-    let s = p.to_str()?;
-    if s.chars().any(super::ledger::unprintable) {
-        return None;
-    }
-    let bare = |b: u8| b.is_ascii_alphanumeric() || b"/._+-".contains(&b);
-    if !s.is_empty() && s.bytes().all(bare) {
-        return Some(s.to_string());
-    }
-    Some(format!("'{}'", s.replace('\'', r"'\''")))
-}
-
-/// `s` cut to at most `max` bytes on a character boundary.
-pub fn cut(s: &str, max: usize) -> String {
-    if s.len() <= max {
-        return s.to_string();
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s[..end].to_string()
 }

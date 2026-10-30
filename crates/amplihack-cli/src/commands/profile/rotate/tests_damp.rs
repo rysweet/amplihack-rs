@@ -101,7 +101,7 @@ fn the_counter_counts_failed_live_probes_and_resets_on_anything_else() {
         0,
         "a measured breach resets"
     );
-    assert_eq!(next_failed(5, &Reading::EXHAUSTED), 0);
+    assert_eq!(next_failed(5, &Reading::Exhausted), 0);
 }
 
 #[test]
@@ -265,7 +265,7 @@ fn other_decisions_and_readings_pass_through_unchanged() {
     let cases = [
         // A measured breach and an exhausted live login swap at once.
         (threshold_swap(), r(90.0, 10.0)),
-        (threshold_swap(), Reading::EXHAUSTED),
+        (threshold_swap(), Reading::Exhausted),
         // Upgrades keep their own hold inside `decide`.
         (swap("spare", Reason::Upgrade), r(50.0, 10.0)),
         (swap("spare", Reason::Upgrade), Reading::Failed),
@@ -459,7 +459,7 @@ fn every_account_over_the_threshold_alerts_once_and_never_swaps() {
     let live = name("work");
     let cands = [
         c("spare", r(88.0, 92.0)),
-        c("third", Reading::EXHAUSTED),
+        c("third", Reading::Exhausted),
         c("fourth", Reading::Failed),
     ];
     let mut ledger = RotateLedger::default();
@@ -480,7 +480,7 @@ fn every_account_over_the_threshold_alerts_once_and_never_swaps() {
 #[test]
 fn a_failed_live_probe_with_no_usable_candidate_alerts_and_never_swaps() {
     let s = settings();
-    let cands = [c("spare", Reading::EXHAUSTED), c("third", Reading::Failed)];
+    let cands = [c("spare", Reading::Exhausted), c("third", Reading::Failed)];
     let mut sim = Sim::new();
     for i in 0..6 {
         let d = sim.cycle(&s, &Reading::Failed, &cands, NOW + i * INTERVAL);

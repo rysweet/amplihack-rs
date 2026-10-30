@@ -32,7 +32,7 @@ fn watch_ctx(e: &Env, measure: MeasureFn) -> Ctx {
 /// What a real measurement would decide: `work` is spent, swap to `spare`.
 fn decided(measured_at: i64) -> Measurement {
     Measurement {
-        live: Reading::EXHAUSTED,
+        live: Reading::Exhausted,
         others: vec![(
             n("spare"),
             Reading::Measured {
