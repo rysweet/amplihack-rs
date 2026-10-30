@@ -41,8 +41,6 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
   - [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait)
   - [AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
-  - [AMPLIHACK_SESSIONS_ARCHIVE_DAYS](#amplihack_sessions_archive_days)
-  - [AMPLIHACK_SESSIONS_ARCHIVE_DEST](#amplihack_sessions_archive_dest)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
   - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
@@ -999,46 +997,6 @@ prints one warning and is ignored.
 
 ---
 
-### AMPLIHACK_SESSIONS_ARCHIVE_DAYS
-
-**Type:** string (whole number, at least 1)
-**Default:** `3`
-**Read by:** `amplihack sessions archive` and the rotator's [daily session archive](./profile-command.md#rotate-daily-session-archive)
-
-A session is archived when nothing in it has been written for this many
-days. `--days` overrides it. Empty means unset. Any other invalid value,
-including `0`, stops the command with
-`AMPLIHACK_SESSIONS_ARCHIVE_DAYS must be a whole number of at least 1`, and
-the daily run logs the same line and does not archive. See the
-[`sessions` reference](./sessions-command.md#configuration).
-
-No variable turns the daily run itself off: the background rotator is
-started without the launching shell's `AMPLIHACK_ROTATE*` variables, so the
-switch is the config key `sessions.daily_archive`
-(`amplihack config set sessions.daily_archive false`); see
-[turning the daily run off](./profile-command.md#turning-the-daily-run-off).
-
-```bash
-# Keep a week of sessions in ~/.claude/projects
-export AMPLIHACK_SESSIONS_ARCHIVE_DAYS=7
-```
-
----
-
-### AMPLIHACK_SESSIONS_ARCHIVE_DEST
-
-**Type:** string (directory path)
-**Default:** `~/.amplihack/session-archive`
-**Read by:** `amplihack sessions archive`, `amplihack sessions restore` and the rotator's daily session archive
-
-Directory that holds the session archives, the manifest and the lock.
-`--dest` overrides it. Empty means unset; a relative path is taken from the
-current directory. It must not be, contain, or lie inside
-`~/.claude/projects`, and must be a directory you own that group and others
-cannot write. See [Destination layout](./sessions-command.md#destination-layout).
-
----
-
 ### HOME
 
 **Required:** yes (for most operations)
@@ -1711,7 +1669,6 @@ per-session default is in effect. Setting this alone does **not** enable sharing
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — Why `AMPLIHACK_AGENT_BINARY` exists and how recipe runner uses it
 - [Run amplihack in Non-interactive Mode](../howto/run-in-noninteractive-mode.md) — CI and pipe usage guide
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — How the Rust CLI matches the Python launcher's environment contract
-- [`amplihack sessions` Reference](./sessions-command.md) - `AMPLIHACK_SESSIONS_ARCHIVE_*` and the daily session archive
 - [Memory Backend Reference](./memory-backend.md) — `AMPLIHACK_MEMORY_BACKEND` values, storage paths, schema, and security
 - [Signal Channel](../signal-channel.md) — Full reference for the Signal channel, including the per-session-default group strategy and the opt-in rolling-group variables
 - [Recipe Runner Logging](./recipe-runner-logging.md) — Progress, heartbeat, snippet, and JSONL configuration

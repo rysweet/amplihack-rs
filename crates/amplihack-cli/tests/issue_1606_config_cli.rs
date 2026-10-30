@@ -30,6 +30,8 @@ const SCHEMA_ORDER: &[&str] = &[
     "recipe.usage_limit_max_wait_secs",
     "orchestrator.max_depth",
     "sessions.daily_archive",
+    "sessions.archive_days",
+    "sessions.archive_dest",
 ];
 
 /// Records argv and its environment, then reports success in the runner's
@@ -340,6 +342,8 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "recipe.usage_limit_max_wait_secs = (unset)",
             "orchestrator.max_depth = 3",
             "sessions.daily_archive = true",
+            "sessions.archive_days = 3",
+            "sessions.archive_dest = (unset)",
         ]
     );
 }

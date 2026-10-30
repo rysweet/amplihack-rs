@@ -9,7 +9,9 @@ removes them. The directory grows by several GiB a month, and Claude Code's
 `/usage` reads all of it, so every `amplihack profile usage` probe slows down
 as it grows (#1698). `sessions archive` moves each old session into one
 compressed archive under `~/.amplihack/session-archive`, and
-`sessions restore` brings one back.
+`sessions restore` brings one back. Claude Code cannot resume an archived
+session until it is restored; see
+[Resume an archived session](#resume-an-archived-session).
 
 ## Contents
 
@@ -22,6 +24,7 @@ compressed archive under `~/.amplihack/session-archive`, and
   - [Archive names](#archive-names)
   - [Output](#output)
 - [Restore](#restore)
+- [Resume an archived session](#resume-an-archived-session)
 - [Destination layout](#destination-layout)
 - [Manifest](#manifest)
 - [Lock](#lock)
@@ -48,8 +51,8 @@ amplihack sessions restore <SESSION_ID> [--dest DIR]
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--days N` | `3` | A session is old when nothing in it has been written for `N` days. `N` is a whole number of at least 1; `--days 0` is a usage error. |
-| `--dest DIR` | `~/.amplihack/session-archive` | The archive directory, called DEST below. A relative path is taken from the current directory. |
+| `--days N` | [`sessions.archive_days`](#configuration), else `3` | A session is old when nothing in it has been written for `N` days. `N` is a whole number of at least 1; `--days 0` is a usage error. |
+| `--dest DIR` | [`sessions.archive_dest`](#configuration), else `~/.amplihack/session-archive` | The archive directory, called DEST below. A relative path is taken from the current directory. |
 | `--apply` | off | Archive and remove. Without it nothing changes. |
 
 Both commands refuse to run when the effective user id differs from the real
@@ -300,6 +303,40 @@ The archive and the manifest are left unchanged. When the restored session
 is archived again later, its archive gets a [timestamped name](#archive-names)
 and a new manifest line.
 
+## Resume an archived session
+
+`claude --resume <id>`, and the `/resume` picker inside Claude Code, read
+session logs from `~/.claude/projects`. Once a session has been archived,
+by `sessions archive --apply` or by the
+[daily run](./profile-command.md#rotate-daily-session-archive), its log is no
+longer there, so Claude Code does not list it and cannot resume it.
+
+Restore the session first, then resume it from the directory it ran in:
+
+```
+amplihack sessions restore 4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10
+cd /home/ryan/src/amplihack-rs
+claude --resume 4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10
+```
+
+Claude Code names the project directory after that working directory, for
+example `-home-ryan-src-amplihack-rs` for `/home/ryan/src/amplihack-rs`, and
+the `restored N files to <dir>` line prints it. To find the id of an
+archived session, search the [manifest](#manifest) in DEST, for example by
+project:
+
+```
+grep -- '-home-ryan-src-amplihack-rs' ~/.amplihack/session-archive/MANIFEST.jsonl
+```
+
+A restored session counts as new, so the daily run keeps it for another
+`sessions.archive_days` days (see [Restore](#restore)). To keep every session
+where Claude Code can see it, turn the daily run off:
+
+```
+amplihack config set sessions.daily_archive false
+```
+
 ## Destination layout
 
 ```
@@ -377,32 +414,56 @@ removed.
 
 ## Configuration
 
-| Setting | Flag | Environment variable | Default |
-|---------|------|----------------------|---------|
-| Days | `--days` | [`AMPLIHACK_SESSIONS_ARCHIVE_DAYS`](./environment-variables.md#amplihack_sessions_archive_days) | `3` |
-| Destination | `--dest` | [`AMPLIHACK_SESSIONS_ARCHIVE_DEST`](./environment-variables.md#amplihack_sessions_archive_dest) | `~/.amplihack/session-archive` |
-| Daily run | none | none; the config key [`sessions.daily_archive`](./user-config.md#sessionsdaily_archive) | on |
+| Setting | Flag | Config key | Default |
+|---------|------|------------|---------|
+| Days | `--days` | [`sessions.archive_days`](./user-config.md#sessionsarchive_days-and-sessionsarchive_dest) | `3` |
+| Destination | `--dest` | [`sessions.archive_dest`](./user-config.md#sessionsarchive_days-and-sessionsarchive_dest) | `~/.amplihack/session-archive` |
+| Daily run | none | [`sessions.daily_archive`](./user-config.md#sessionsdaily_archive) | on |
 
-A flag overrides its variable, and the variable overrides the default. An
-empty variable counts as unset. An invalid `AMPLIHACK_SESSIONS_ARCHIVE_DAYS`
-is an error that names the variable without repeating its value:
+A flag overrides its key, and the key overrides the default. Set the keys
+with `amplihack config set`:
 
 ```
-AMPLIHACK_SESSIONS_ARCHIVE_DAYS must be a whole number of at least 1
+amplihack config set sessions.archive_days 7
+amplihack config set sessions.archive_dest /mnt/backup/claude-sessions
+```
+
+The keys live in `~/.amplihack/config.toml` and are user-only: a project's
+`.amplihack/config.toml` cannot set them. `sessions.archive_dest` must be an
+absolute path. `archive`, `restore` and the
+[daily run](./profile-command.md#rotate-daily-session-archive) all read the
+file each time they start, so they always agree on the destination, and a
+rotator that is already running uses a new value from its next run.
+
+There are no environment variables for these settings. The background
+rotator keeps the environment it was started with, so a variable exported
+later in your shell would change where `restore` looks but not where the
+daily run writes, and `restore` would then report `session <id> not found`.
+
+A key is read only when its flag is absent. When the file cannot give a key
+a value, because it cannot be read or parsed, holds an invalid value for the
+key, or is writable by group or others, the command does not fall back to
+the default. It prints one line naming the key, the file and the problem,
+never the value, and exits 1:
+
+```
+cannot read sessions.archive_days (/home/ryan/.amplihack/config.toml: sessions.archive_days: must be an integer from 1 to 4294967295)
 ```
 
 `HOME` must be set; otherwise the command prints `HOME is not set` and
 exits 1.
 
-To archive sessions older than a week into a directory on another disk:
+To archive sessions older than a week into a directory on another disk, for
+one run:
 
 ```
 amplihack sessions archive --days 7 --dest /mnt/backup/claude-sessions
 amplihack sessions archive --days 7 --dest /mnt/backup/claude-sessions --apply
 ```
 
-The [daily run](./profile-command.md#rotate-daily-session-archive) uses the
-same days and destination, read from the rotator's environment.
+A session archived with `--dest` is restored with the same `--dest`. To use
+that directory for the daily run and for `restore` as well, set
+`sessions.archive_dest` instead.
 
 ## Exit status
 
@@ -441,13 +502,13 @@ Every message below goes to stderr. The tests check these strings exactly.
 | `cannot read live sessions in <path> (<kind>); nothing archived` | The [live check](#live-sessions) failed closed. |
 | `cannot prepare <path> (<kind>)` | DEST, its lock or its manifest could not be created or opened. |
 | `cannot remove <path> (<kind>)` | A crash leftover could not be removed. The run goes on. |
-| `cannot read the current directory for a relative destination` | `--dest` or the variable is relative and the current directory is gone. Nothing read. |
+| `cannot read the current directory for a relative destination` | `--dest` is relative and the current directory is gone. Nothing read. |
 | `another sessions archive run is in progress (lock: <path>)` | The [lock](#lock) is held. Nothing changed. |
 | `destination <DEST> overlaps <root>; nothing changed` | DEST is, contains or lies inside the projects root. |
 | `destination <DEST> is not private (must be your own directory, not writable by group or others)` | DEST failed the [privacy check](#destination-layout). |
 | `refusing to run with an effective user id different from the real user id` | The command runs setuid or similar. Nothing read. |
 | `HOME is not set` | The home directory is unknown. Nothing read. |
-| `AMPLIHACK_SESSIONS_ARCHIVE_DAYS must be a whole number of at least 1` | The variable is set to an invalid value. Nothing read. |
+| `cannot read <key> (<why>)` | `<key>` is `sessions.archive_days` or `sessions.archive_dest`. The user config file cannot give it a value, and its flag was not given; see [Configuration](#configuration). `<why>` names the file and the problem, never the value. Nothing read. |
 | `session <id> not found in <DEST>/MANIFEST.jsonl` | `restore`: no manifest line for `<id>`, or no manifest. |
 | `refused session <id>: bad session id` | `restore`: the id breaks the [id rules](#what-a-session-is). Nothing read. |
 | `refused session <id>: bad manifest line` | `restore`: the line's `project` or `archive` field breaks the [rules](#restore). Nothing written. |
@@ -503,4 +564,5 @@ outside those is not seen as live there.
 
 - [`amplihack profile` reference: daily session archive](./profile-command.md#rotate-daily-session-archive) - How the rotator runs the archive once a day
 - [Shared session directories](./profile-command.md#shared-session-directories) - Why every profile's `projects/` is the same directory
-- [Environment variables](./environment-variables.md#amplihack_sessions_archive_days) - The three variables in full
+- [User config: `sessions.archive_days` and `sessions.archive_dest`](./user-config.md#sessionsarchive_days-and-sessionsarchive_dest) - The days and destination keys in full
+- [User config: `sessions.daily_archive`](./user-config.md#sessionsdaily_archive) - The switch for the daily run

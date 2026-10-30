@@ -217,7 +217,7 @@ fn symlinked_project_is_skipped_and_not_counted() {
 }
 
 #[test]
-fn days_flag_and_env_var_set_the_cutoff_flag_wins() {
+fn days_flag_and_config_key_set_the_cutoff_flag_wins() {
     let fx = Fx::new();
     fx.session("aaaa", 5, &[]);
     fx.session("bbbb", 10, &[]);
@@ -226,39 +226,61 @@ fn days_flag_and_env_var_set_the_cutoff_flag_wins() {
     ok(&out);
     assert_stdout(&out, &dry("1", 7, 0));
 
-    let dest = fx.dest.to_str().unwrap().to_string();
-    let mut c = fx.cmd(&["sessions", "archive", "--dest", &dest]);
-    c.env("AMPLIHACK_SESSIONS_ARCHIVE_DAYS", "4");
-    let out = fx.run_cmd(c);
+    ok(&fx.run_cmd(fx.cmd(&["config", "set", "sessions.archive_days", "4"])));
+    let out = fx.archive(&[]);
     ok(&out);
     assert_stdout(&out, &dry("2", 4, 0));
 
-    let mut c = fx.cmd(&["sessions", "archive", "--days", "7", "--dest", &dest]);
-    c.env("AMPLIHACK_SESSIONS_ARCHIVE_DAYS", "4");
-    let out = fx.run_cmd(c);
+    let out = fx.archive(&["--days", "7"]);
     assert_stdout(&out, &dry("1", 7, 0));
 
-    // An empty variable counts as unset: the default 3.
-    let mut c = fx.cmd(&["sessions", "archive", "--dest", &dest]);
-    c.env("AMPLIHACK_SESSIONS_ARCHIVE_DAYS", "");
-    let out = fx.run_cmd(c);
+    // Unset: the default 3.
+    ok(&fx.run_cmd(fx.cmd(&["config", "unset", "sessions.archive_days"])));
+    let out = fx.archive(&[]);
     assert_stdout(&out, &dry("2", 3, 0));
 }
 
 #[test]
-fn invalid_days_env_names_the_variable_without_echoing_it() {
+fn an_invalid_days_key_names_the_key_without_echoing_it() {
     let fx = Fx::new();
-    for bad in ["0", "abc", "-3", "1.5", "99999999999999999999"] {
-        let mut c = fx.cmd(&["sessions", "archive"]);
-        c.env("AMPLIHACK_SESSIONS_ARCHIVE_DAYS", bad);
-        let out = fx.run_cmd(c);
+    let file = fx.user_config(&[]);
+    for bad in ["0", "-3", "4294967296", "\"SECRET-VALUE\"", "1.5"] {
+        fx.user_config(&[&format!("archive_days = {bad}")]);
+        let out = fx.run_cmd(fx.cmd(&["sessions", "archive"]));
         assert_eq!(exit_code(&out), 1, "{bad}");
         assert_stderr_line(
             &out,
-            "AMPLIHACK_SESSIONS_ARCHIVE_DAYS must be a whole number of at least 1",
+            &format!(
+                "cannot read sessions.archive_days ({}: sessions.archive_days: must be an integer from 1 to 4294967295)",
+                file.display()
+            ),
         );
         assert!(text(&out.stdout).is_empty());
+        assert!(!text(&out.stderr).contains("SECRET"), "{bad}");
     }
+    // The flag wins, so the key is never read.
+    let out = fx.archive(&["--days", "5"]);
+    ok(&out);
+    assert_stdout(&out, &dry("0", 5, 0));
+}
+
+#[test]
+fn an_invalid_dest_key_stops_archive_and_restore_instead_of_using_the_default() {
+    let fx = Fx::new();
+    fx.session("aaaa", 10, &[]);
+    let file = fx.user_config(&["archive_dest = \"relative/dir\""]);
+    let line = format!(
+        "cannot read sessions.archive_dest ({}: sessions.archive_dest: must be an absolute path without '..', control characters or NUL, at most 4096 bytes)",
+        file.display()
+    );
+    let out = fx.run_cmd(fx.cmd(&["sessions", "archive", "--apply"]));
+    assert_eq!(exit_code(&out), 1);
+    assert_stderr_line(&out, &line);
+    assert!(fx.project_dir().join("aaaa.jsonl").is_file());
+    assert!(!fx.home.join(".amplihack/session-archive").exists());
+    let out = fx.run_cmd(fx.cmd(&["sessions", "restore", "aaaa"]));
+    assert_eq!(exit_code(&out), 1);
+    assert_stderr_line(&out, &line);
 }
 
 #[test]
@@ -276,14 +298,46 @@ fn days_zero_and_bad_flags_are_usage_errors() {
 }
 
 #[test]
-fn dest_env_var_is_used_when_no_flag() {
+fn dest_key_is_used_by_archive_and_restore_when_no_flag() {
     let fx = Fx::new();
-    fx.session("aaaa", 10, &[]);
-    let mut c = fx.cmd(&["sessions", "archive", "--apply"]);
-    c.env("AMPLIHACK_SESSIONS_ARCHIVE_DEST", &fx.dest);
-    let out = fx.run_cmd(c);
+    let session = fx.session("aaaa", 10, &[]);
+    let dest = fx.dest.to_str().unwrap().to_string();
+    ok(&fx.run_cmd(fx.cmd(&["config", "set", "sessions.archive_dest", &dest])));
+    let out = fx.run_cmd(fx.cmd(&["sessions", "archive", "--apply"]));
     ok(&out);
     assert!(fx.dest.join(PROJECT).join("aaaa.tar.gz").is_file());
+    assert!(!session.exists());
+    let out = fx.run_cmd(fx.cmd(&["sessions", "restore", "aaaa"]));
+    ok(&out);
+    assert!(
+        session.is_file(),
+        "restore found the archive through the key"
+    );
+}
+
+#[test]
+fn the_old_variables_are_ignored() {
+    // Days and DEST were briefly AMPLIHACK_SESSIONS_ARCHIVE_DAYS and _DEST.
+    // The background rotator keeps the environment it was started with, so
+    // a variable could send the daily run and `restore` to different
+    // places; only the config keys and the flags count now.
+    let fx = Fx::new();
+    fx.session("aaaa", 10, &[]);
+    let elsewhere = fx.base.join("elsewhere");
+    let mut c = fx.cmd(&["sessions", "archive", "--apply"]);
+    c.env("AMPLIHACK_SESSIONS_ARCHIVE_DAYS", "30");
+    c.env("AMPLIHACK_SESSIONS_ARCHIVE_DEST", &elsewhere);
+    let out = fx.run_cmd(c);
+    ok(&out);
+    assert_stdout(&out, &applied("1", 3, 0, 0));
+    assert!(
+        fx.home
+            .join(".amplihack/session-archive")
+            .join(PROJECT)
+            .join("aaaa.tar.gz")
+            .is_file()
+    );
+    assert!(!elsewhere.exists());
 }
 
 #[test]

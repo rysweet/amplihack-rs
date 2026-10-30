@@ -228,6 +228,19 @@ impl Fx {
         self.run_cmd(self.cmd(&["sessions", "restore", id, "--dest", &dest]))
     }
 
+    /// Writes `[sessions]` with `lines` to `HOME/.amplihack/config.toml`
+    /// (directory `0700`, file `0600`, as `config set` leaves them) and
+    /// returns its path. For values `config set` would refuse.
+    pub fn user_config(&self, lines: &[&str]) -> PathBuf {
+        let dir = self.home.join(".amplihack");
+        fs::create_dir_all(&dir).unwrap();
+        chmod(&dir, 0o700);
+        let file = dir.join("config.toml");
+        fs::write(&file, format!("[sessions]\n{}\n", lines.join("\n"))).unwrap();
+        chmod(&file, 0o600);
+        file
+    }
+
     /// Every manifest line, parsed.
     pub fn manifest_lines(&self) -> Vec<serde_json::Value> {
         fs::read_to_string(self.manifest())

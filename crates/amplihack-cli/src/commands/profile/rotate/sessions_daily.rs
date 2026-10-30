@@ -1,15 +1,18 @@
 //! The daily session archive (issue #1746): once a day the watch loop runs
-//! `amplihack sessions archive --apply` in-process, with the days and
-//! destination from `AMPLIHACK_SESSIONS_ARCHIVE_DAYS` / `_DEST`. Separate
-//! from the cycle: it runs after it, outside the paused check, and never
-//! returns an error.
+//! `amplihack sessions archive --apply` in-process. Separate from the
+//! cycle: it runs after it, outside the paused check, and never returns an
+//! error.
 //!
-//! The switch is the user config key `sessions.daily_archive`, read from
-//! `<home>/.amplihack/config.toml` when a run is due. It is not a variable:
-//! `daemon::spawn` starts the background rotator without the launching
-//! shell's `AMPLIHACK_ROTATE_*` variables, so a variable would never reach
-//! the rotator that `rotate start` and autostart launch. The file reaches
-//! every rotator, including one already running.
+//! The switch, the days and the destination are the user config keys
+//! `sessions.daily_archive`, `sessions.archive_days` and
+//! `sessions.archive_dest`, read from `<home>/.amplihack/config.toml` each
+//! time a run is due. None is a variable: `daemon::spawn` starts the
+//! background rotator without the launching shell's `AMPLIHACK_ROTATE_*`
+//! variables, and a rotator keeps the environment it was started with, so
+//! a variable set later in a shell would never reach it, and `sessions
+//! restore` in that shell would look in a different destination from the
+//! one the run wrote to. The file reaches every rotator, including one
+//! already running, and every command.
 //!
 //! The run time is recorded in `<state>/sessions-archive.last` before the
 //! run starts, so a crash, a held lock or an error waits a day rather than
@@ -28,7 +31,6 @@ use crate::commands::sessions::archive::{self, Report};
 use crate::commands::sessions::config::{self, Opts};
 use crate::commands::sessions::live::SystemProbe;
 use crate::user_config::{SESSIONS_DAILY_ARCHIVE, sessions_daily_archive};
-use std::ffi::OsString;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
@@ -58,7 +60,6 @@ pub(super) fn tick(rs: &RotateState, home: &Path, now: i64, stop: &AtomicBool) {
     if stop.load(Ordering::Relaxed) {
         return;
     }
-    let env = |k: &str| std::env::var_os(k);
     let mut log = |line: &str| super::daemon::log_line(rs, line);
     let mut run = |opts: &Opts| {
         let mut warn = |line: &str| super::daemon::log_line(rs, &format!("{PREFIX}{line}"));
@@ -68,7 +69,7 @@ pub(super) fn tick(rs: &RotateState, home: &Path, now: i64, stop: &AtomicBool) {
             .map_err(|e| e.to_string())?;
         Ok(ran(&report, opts, stop.load(Ordering::Relaxed)))
     };
-    tick_with(rs, home, now, &env, &mut log, &mut run);
+    tick_with(rs, home, now, &mut log, &mut run);
 }
 
 /// The outcome of one run: the summary line, with why it stopped early if
@@ -95,13 +96,12 @@ pub(super) fn ran(report: &Report, opts: &Opts, requested: bool) -> Ran {
     }
 }
 
-/// [`tick`] with its environment, log and run injected. The switch is
+/// [`tick`] with its log and run injected. The switch, days and DEST are
 /// always read from the user config file under `home`.
 pub(super) fn tick_with(
     rs: &RotateState,
     home: &Path,
     now: i64,
-    env: &dyn Fn(&str) -> Option<OsString>,
     log: &mut dyn FnMut(&str),
     run: &mut dyn FnMut(&Opts) -> Result<Ran, String>,
 ) {
@@ -124,9 +124,9 @@ pub(super) fn tick_with(
             "{PREFIX}cannot read {SESSIONS_DAILY_ARCHIVE} ({why}); not run"
         ));
     }
-    let opts = match config::resolve(None, None, true, env, Some(home.to_path_buf())) {
+    let opts = match config::resolve(None, None, true, Some(home.to_path_buf())) {
         Ok(o) => o,
-        Err(e) => return log(&format!("{PREFIX}{e}")),
+        Err(e) => return log(&format!("{PREFIX}{e}; not run")),
     };
     match run(&opts) {
         Ok(Ran { line, more }) => {

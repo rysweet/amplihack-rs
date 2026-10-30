@@ -20,6 +20,7 @@ files.
   - [recipe.usage_limit_wait and recipe.usage_limit_max_wait_secs](#recipeusage_limit_wait)
   - [orchestrator.max_depth](#orchestratormax_depth)
   - [sessions.daily_archive](#sessionsdaily_archive)
+  - [sessions.archive_days and sessions.archive_dest](#sessionsarchive_days-and-sessionsarchive_dest)
 - [The config command](#the-config-command)
   - [config get](#config-get)
   - [config set](#config-set)
@@ -61,6 +62,8 @@ recipe.usage_limit_wait = true  # default
 recipe.usage_limit_max_wait_secs = (unset)  # default
 orchestrator.max_depth = 3  # default
 sessions.daily_archive = true  # default
+sessions.archive_days = 3  # default
+sessions.archive_dest = (unset)  # default
 ```
 
 `amplihack agent-binary` now answers `claude (user_config)`, even inside a tmux
@@ -118,7 +121,7 @@ For each key, the first layer that sets it wins:
 
 | Rank | Origin label | Source |
 |------|--------------|--------|
-| 1 | `flag` | A command-line flag, for the keys that have one (`--verbose`, `--step-timeout`) |
+| 1 | `flag` | A command-line flag, for the keys that have one (`--verbose`, `--step-timeout`, `sessions archive --days`, `--dest`) |
 | 2 | `env` | The key's environment variable, for the keys that have one |
 | 3 | `project` | The project file |
 | 4 | `user` | The user file |
@@ -150,6 +153,8 @@ command, so it never prints `flag`.
 | `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | (unset) | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
 | `sessions.daily_archive` | bool | `true` | — | — | user only |
+| `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | — | `--days` | user only |
+| `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | — | `--dest` | user only |
 
 Any other key is an error for `config set` and a diagnostic when found in a
 file. A user-only key in a project file is reported and ignored.
@@ -372,6 +377,37 @@ as off for that day, not as the default: a file that cannot be read or
 parsed, a value that is not `true` or `false`, or a file that group or
 others can write. The rotator log then says
 `sessions archive: cannot read sessions.daily_archive (<why>); not run`.
+
+### sessions.archive_days and sessions.archive_dest
+
+The days and the destination for
+[`amplihack sessions archive`](./sessions-command.md#configuration),
+`sessions restore` and the rotator's
+[daily session archive](./profile-command.md#rotate-daily-session-archive).
+A session is archived when nothing in it has been written for
+`sessions.archive_days` days. Archives, the manifest and the lock go in
+`sessions.archive_dest`, which must be an absolute path to a directory you
+own that group and others cannot write, outside `~/.claude/projects`.
+`--days` and `--dest` override the keys for one command.
+
+```sh
+amplihack config set sessions.archive_days 7
+amplihack config set sessions.archive_dest /mnt/backup/claude-sessions
+```
+
+The command and the rotator read the keys from the user file each time
+they start a run, so a rotator that is already running uses a new value
+from its next run, and `sessions restore` looks in the directory the daily
+run wrote to. They have no environment variables: a rotator keeps the
+environment it was started with, so a variable exported later in a shell
+would reach `restore` but not the rotator. Both are user-only; a project
+file's value is reported and ignored.
+
+As with `sessions.daily_archive`, a user file that cannot give a key a
+value is not replaced by the default. The command prints
+`cannot read <key> (<why>)` and exits 1, and the daily run logs
+`sessions archive: cannot read <key> (<why>); not run`. A flag still works,
+because the key is then not read.
 
 ## The config command
 

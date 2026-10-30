@@ -3,7 +3,7 @@
 //!
 //! Contract:
 //! - `tick_with(rs: &RotateState, home: &Path, now: i64,
-//!   env: &dyn Fn(&str) -> Option<OsString>, log: &mut dyn FnMut(&str),
+//!   log: &mut dyn FnMut(&str),
 //!   run: &mut dyn FnMut(&Opts) -> Result<Ran, String>)`: `run` stands in
 //!   for `archive::run` plus `ran` and returns the log line, with `more`
 //!   set when the run stopped early after archiving something, or the
@@ -26,15 +26,16 @@
 //!   `last > now`. Written (0600) before `run`; if that write fails, `run`
 //!   is not called.
 //! - Every outcome is logged as `sessions archive: <line>`.
-//! - Days and DEST come from `config::resolve` with the injected `env`
-//!   (no flags), `apply` on.
+//! - Days and DEST come from `config::resolve` with no flags, `apply` on:
+//!   the keys `sessions.archive_days` and `sessions.archive_dest` in the
+//!   same file, read on each due pass. A key the file cannot give a value
+//!   is logged as `sessions archive: cannot read <key> (<why>); not run`,
+//!   after the record is written.
 
 use super::ledger::RotateState;
 use super::sessions_daily::{RUN_LIMIT, Ran, ran, tick_with};
 use crate::commands::sessions::archive::Report;
 use crate::commands::sessions::config::Opts;
-use std::collections::HashMap;
-use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -66,25 +67,12 @@ fn setup() -> T {
     }
 }
 
-fn env(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
-    let m: HashMap<String, OsString> = pairs
-        .iter()
-        .map(|(k, v)| (k.to_string(), OsString::from(v)))
-        .collect();
-    move |k| m.get(k).cloned()
-}
-
 fn record(t: &T) -> PathBuf {
     t.rs.dir.join("sessions-archive.last")
 }
 
 /// Runs one tick; returns (log lines, opts passed to each run).
-fn tick(
-    t: &T,
-    now: i64,
-    e: &dyn Fn(&str) -> Option<OsString>,
-    result: Result<&str, &str>,
-) -> (Vec<String>, Vec<Opts>) {
+fn tick(t: &T, now: i64, result: Result<&str, &str>) -> (Vec<String>, Vec<Opts>) {
     let mut logs = Vec::new();
     let mut runs = Vec::new();
     let mut log = |l: &str| logs.push(l.to_string());
@@ -92,7 +80,7 @@ fn tick(
         runs.push(o.clone());
         result.map(done).map_err(str::to_string)
     };
-    tick_with(&t.rs, &t.home, now, e, &mut log, &mut run);
+    tick_with(&t.rs, &t.home, now, &mut log, &mut run);
     (logs, runs)
 }
 
@@ -114,7 +102,7 @@ fn tick_ran(t: &T, now: i64, ran: Ran) -> (Vec<String>, bool) {
         called = true;
         Ok(ran.clone())
     };
-    tick_with(&t.rs, &t.home, now, &env(&[]), &mut log, &mut run);
+    tick_with(&t.rs, &t.home, now, &mut log, &mut run);
     (logs, called)
 }
 
@@ -124,7 +112,7 @@ const SUMMARY: &str =
 #[test]
 fn first_tick_runs_logs_and_writes_the_record() {
     let t = setup();
-    let (logs, runs) = tick(&t, NOW, &env(&[]), Ok(SUMMARY));
+    let (logs, runs) = tick(&t, NOW, Ok(SUMMARY));
     assert_eq!(runs.len(), 1);
     assert!(runs[0].apply);
     assert_eq!(runs[0].days, 3);
@@ -140,18 +128,18 @@ fn first_tick_runs_logs_and_writes_the_record() {
 #[test]
 fn runs_at_most_once_a_day() {
     let t = setup();
-    tick(&t, NOW, &env(&[]), Ok(SUMMARY));
-    let (logs, runs) = tick(&t, NOW + DAY - 1, &env(&[]), Ok(SUMMARY));
+    tick(&t, NOW, Ok(SUMMARY));
+    let (logs, runs) = tick(&t, NOW + DAY - 1, Ok(SUMMARY));
     assert!(runs.is_empty() && logs.is_empty());
-    let (_, runs) = tick(&t, NOW + DAY, &env(&[]), Ok(SUMMARY));
+    let (_, runs) = tick(&t, NOW + DAY, Ok(SUMMARY));
     assert_eq!(runs.len(), 1);
 }
 
 #[test]
 fn clock_moved_back_is_due() {
     let t = setup();
-    tick(&t, NOW, &env(&[]), Ok(SUMMARY));
-    let (_, runs) = tick(&t, NOW - 10, &env(&[]), Ok(SUMMARY));
+    tick(&t, NOW, Ok(SUMMARY));
+    let (_, runs) = tick(&t, NOW - 10, Ok(SUMMARY));
     assert_eq!(runs.len(), 1);
     assert_eq!(
         fs::read_to_string(record(&t)).unwrap().trim(),
@@ -173,13 +161,13 @@ fn garbage_or_extreme_records_are_due_and_never_panic() {
         let t = setup();
         fs::write(record(&t), raw).unwrap();
         fs::set_permissions(record(&t), fs::Permissions::from_mode(0o600)).unwrap();
-        let (_, runs) = tick(&t, NOW, &env(&[]), Ok(SUMMARY));
+        let (_, runs) = tick(&t, NOW, Ok(SUMMARY));
         assert_eq!(runs.len(), 1, "record {raw:?}");
     }
     for now in [i64::MIN, i64::MAX, 0, -1] {
         let t = setup();
         fs::write(record(&t), "100").unwrap();
-        tick(&t, now, &env(&[]), Ok(SUMMARY));
+        tick(&t, now, Ok(SUMMARY));
     }
 }
 
@@ -199,7 +187,7 @@ fn config(t: &T, body: &str, mode: u32) -> PathBuf {
 fn config_false_does_nothing() {
     let t = setup();
     config(&t, "[sessions]\ndaily_archive = false\n", 0o600);
-    let (logs, runs) = tick(&t, NOW, &env(&[]), Ok(SUMMARY));
+    let (logs, runs) = tick(&t, NOW, Ok(SUMMARY));
     assert!(runs.is_empty() && logs.is_empty(), "{logs:?}");
     assert!(!record(&t).exists());
 }
@@ -213,7 +201,7 @@ fn config_true_or_no_key_runs() {
     ] {
         let t = setup();
         config(&t, body, 0o600);
-        let (logs, runs) = tick(&t, NOW, &env(&[]), Ok(SUMMARY));
+        let (logs, runs) = tick(&t, NOW, Ok(SUMMARY));
         assert_eq!(runs.len(), 1, "{body:?}: {logs:?}");
     }
 }
@@ -222,13 +210,13 @@ fn config_true_or_no_key_runs() {
 fn turning_it_off_reaches_a_running_rotator() {
     // The same process, the same state directory: only the file changes.
     let t = setup();
-    let (_, runs) = tick(&t, NOW, &env(&[]), Ok(SUMMARY));
+    let (_, runs) = tick(&t, NOW, Ok(SUMMARY));
     assert_eq!(runs.len(), 1);
     config(&t, "[sessions]\ndaily_archive = false\n", 0o600);
-    let (logs, runs) = tick(&t, NOW + DAY, &env(&[]), Ok(SUMMARY));
+    let (logs, runs) = tick(&t, NOW + DAY, Ok(SUMMARY));
     assert!(runs.is_empty() && logs.is_empty(), "{logs:?}");
     config(&t, "[sessions]\ndaily_archive = true\n", 0o600);
-    let (_, runs) = tick(&t, NOW + DAY + 60, &env(&[]), Ok(SUMMARY));
+    let (_, runs) = tick(&t, NOW + DAY + 60, Ok(SUMMARY));
     assert_eq!(runs.len(), 1, "back on at the next pass");
 }
 
@@ -252,7 +240,7 @@ fn an_unusable_config_fails_closed_and_waits_a_day() {
     for (body, mode, why) in cases {
         let t = setup();
         let file = config(&t, body, mode);
-        let (logs, runs) = tick(&t, NOW, &env(&[]), Ok(SUMMARY));
+        let (logs, runs) = tick(&t, NOW, Ok(SUMMARY));
         assert!(runs.is_empty(), "{body:?}");
         assert_eq!(logs.len(), 1, "{logs:?}");
         let line = &logs[0];
@@ -269,61 +257,68 @@ fn an_unusable_config_fails_closed_and_waits_a_day() {
             record(&t).exists(),
             "{body:?}: retried a day later, not every pass"
         );
-        let (logs, runs) = tick(&t, NOW + 60, &env(&[]), Ok(SUMMARY));
+        let (logs, runs) = tick(&t, NOW + 60, Ok(SUMMARY));
         assert!(runs.is_empty() && logs.is_empty(), "{logs:?}");
     }
 }
 
 #[test]
-fn the_old_variable_is_not_a_switch() {
-    // AMPLIHACK_ROTATE_SESSIONS_ARCHIVE never reached the background
-    // rotator (daemon::spawn removes AMPLIHACK_ROTATE_*), so it is gone.
+fn days_and_dest_come_from_the_config_file_on_each_run() {
     let t = setup();
-    let (_, runs) = tick(
+    config(
         &t,
-        NOW,
-        &env(&[("AMPLIHACK_ROTATE_SESSIONS_ARCHIVE", "0")]),
-        Ok(SUMMARY),
+        "[sessions]\narchive_days = 9\narchive_dest = \"/var/archive\"\n",
+        0o600,
     );
-    assert_eq!(runs.len(), 1);
-}
-
-#[test]
-fn days_and_dest_variables_are_used() {
-    let t = setup();
-    let e = env(&[
-        ("AMPLIHACK_SESSIONS_ARCHIVE_DAYS", "9"),
-        ("AMPLIHACK_SESSIONS_ARCHIVE_DEST", "/var/archive"),
-    ]);
-    let (_, runs) = tick(&t, NOW, &e, Ok(SUMMARY));
+    let (_, runs) = tick(&t, NOW, Ok(SUMMARY));
     assert_eq!(runs[0].days, 9);
     assert_eq!(runs[0].dest, Path::new("/var/archive"));
+    // The same rotator, a day later: the file changed, nothing restarted.
+    config(&t, "[sessions]\narchive_days = 4\n", 0o600);
+    let (_, runs) = tick(&t, NOW + DAY, Ok(SUMMARY));
+    assert_eq!(runs[0].days, 4);
+    assert_eq!(runs[0].dest, t.home.join(".amplihack/session-archive"));
 }
 
 #[test]
-fn bad_days_variable_is_logged_and_still_postpones() {
-    let t = setup();
-    let (logs, runs) = tick(
-        &t,
-        NOW,
-        &env(&[("AMPLIHACK_SESSIONS_ARCHIVE_DAYS", "zero")]),
-        Ok(SUMMARY),
-    );
-    assert!(runs.is_empty());
-    assert_eq!(
-        logs,
-        ["sessions archive: AMPLIHACK_SESSIONS_ARCHIVE_DAYS must be a whole number of at least 1"]
-    );
-    assert!(record(&t).exists(), "a config error retries every tick");
+fn an_unusable_days_or_dest_key_is_logged_and_still_postpones() {
+    for (body, key, why) in [
+        (
+            "[sessions]\narchive_days = 0\n",
+            "sessions.archive_days",
+            "must be an integer from 1 to 4294967295",
+        ),
+        (
+            "[sessions]\narchive_dest = \"relative\"\n",
+            "sessions.archive_dest",
+            "must be an absolute path",
+        ),
+    ] {
+        let t = setup();
+        let file = config(&t, body, 0o600);
+        let (logs, runs) = tick(&t, NOW, Ok(SUMMARY));
+        assert!(runs.is_empty(), "{body:?}: never the default instead");
+        assert_eq!(logs.len(), 1, "{logs:?}");
+        let line = &logs[0];
+        assert!(
+            line.starts_with(&format!(
+                "sessions archive: cannot read {key} ({}: {key}: {why}",
+                file.display()
+            )),
+            "{line}"
+        );
+        assert!(line.ends_with("); not run"), "{line}");
+        assert!(record(&t).exists(), "a config error waits a day");
+    }
 }
 
 #[test]
 fn failure_is_logged_and_the_next_try_is_a_day_later() {
     let t = setup();
     let lock = "another sessions archive run is in progress (lock: /d/.archive.lock)";
-    let (logs, _) = tick(&t, NOW, &env(&[]), Err(lock));
+    let (logs, _) = tick(&t, NOW, Err(lock));
     assert_eq!(logs, [format!("sessions archive: {lock}")]);
-    let (_, runs) = tick(&t, NOW + 60, &env(&[]), Ok(SUMMARY));
+    let (_, runs) = tick(&t, NOW + 60, Ok(SUMMARY));
     assert!(runs.is_empty());
 }
 
@@ -337,7 +332,7 @@ fn record_is_written_before_the_run() {
         seen = fs::read_to_string(&path).ok();
         Ok(done(SUMMARY))
     };
-    tick_with(&t.rs, &t.home, NOW, &env(&[]), &mut log, &mut run);
+    tick_with(&t.rs, &t.home, NOW, &mut log, &mut run);
     assert_eq!(
         seen.as_deref().map(str::trim),
         Some(NOW.to_string().as_str())
@@ -350,7 +345,7 @@ fn record_write_failure_means_no_run() {
     // A directory where the record goes: the atomic write cannot replace it.
     fs::create_dir_all(record(&t)).unwrap();
     fs::write(record(&t).join("keep"), b"x").unwrap();
-    let (_, runs) = tick(&t, NOW, &env(&[]), Ok(SUMMARY));
+    let (_, runs) = tick(&t, NOW, Ok(SUMMARY));
     assert!(runs.is_empty());
 }
 
@@ -360,7 +355,7 @@ fn symlinked_record_is_not_followed() {
     let victim = t.home.join("victim");
     fs::write(&victim, b"keep").unwrap();
     std::os::unix::fs::symlink(&victim, record(&t)).unwrap();
-    tick(&t, NOW, &env(&[]), Ok(SUMMARY));
+    tick(&t, NOW, Ok(SUMMARY));
     assert_eq!(fs::read(&victim).unwrap(), b"keep");
 }
 
@@ -491,7 +486,7 @@ fn a_record_that_cannot_be_removed_is_logged() {
             more: true,
         })
     };
-    tick_with(&t.rs, &t.home, NOW, &env(&[]), &mut log, &mut run);
+    tick_with(&t.rs, &t.home, NOW, &mut log, &mut run);
     fs::set_permissions(&t.rs.dir, fs::Permissions::from_mode(0o700)).unwrap();
     if nix_root() {
         return; // root ignores the mode

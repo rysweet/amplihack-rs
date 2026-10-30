@@ -42,9 +42,11 @@ pub enum SessionsCommands {
     /// Archive old Claude Code sessions (a dry run unless --apply)
     Archive {
         /// A session is old when nothing in it was written for N days
+        /// (default: sessions.archive_days, else 3)
         #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..))]
         days: Option<u32>,
-        /// Archive directory (default ~/.amplihack/session-archive)
+        /// Archive directory (default: sessions.archive_dest, else
+        /// ~/.amplihack/session-archive)
         #[arg(long, value_name = "DIR")]
         dest: Option<PathBuf>,
         /// Archive and remove the originals; without it nothing changes
@@ -55,7 +57,8 @@ pub enum SessionsCommands {
     Restore {
         /// The session id to restore
         session_id: String,
-        /// Archive directory (default ~/.amplihack/session-archive)
+        /// Archive directory (default: sessions.archive_dest, else
+        /// ~/.amplihack/session-archive)
         #[arg(long, value_name = "DIR")]
         dest: Option<PathBuf>,
     },
@@ -76,7 +79,7 @@ pub fn run_sessions(cmd: SessionsCommands) -> anyhow::Result<()> {
     let mut warn = |l: &str| eprintln!("{l}");
     match cmd {
         SessionsCommands::Archive { days, dest, apply } => {
-            let opts = config::resolve(days, dest, apply, &env, home_from_env())
+            let opts = config::resolve(days, dest, apply, home_from_env())
                 .unwrap_or_else(|e| fail(&e.to_string()));
             // Without the profile root the live check cannot see every
             // profile's sessions, so it fails closed.
@@ -101,7 +104,7 @@ pub fn run_sessions(cmd: SessionsCommands) -> anyhow::Result<()> {
             }
         }
         SessionsCommands::Restore { session_id, dest } => {
-            let opts = config::resolve(Some(1), dest, true, &env, home_from_env())
+            let opts = config::resolve(Some(1), dest, true, home_from_env())
                 .unwrap_or_else(|e| fail(&e.to_string()));
             let report = restore::run(&session_id, &opts.home, &opts.dest, &mut warn)
                 .unwrap_or_else(|e| fail(&e.to_string()));

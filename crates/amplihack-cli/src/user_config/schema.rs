@@ -280,6 +280,33 @@ pub(crate) static KEYS: &[KeyDef] = &[
         default: Some("true"),
         lower_only: false,
     },
+    KeyDef {
+        name: "sessions.archive_days",
+        // Read by the rotator's daily run as well as `sessions archive`, so
+        // it has no variable, for the same reason as the switch: a rotator
+        // keeps the environment it was started with, and the two would
+        // disagree (issue #1746). A test pins the default to
+        // `sessions::config::DEFAULT_DAYS`.
+        scope: Scope::UserOnly,
+        kind: ValueKind::Int {
+            min: 1,
+            max: u32::MAX as u64,
+        },
+        env: None,
+        default: Some("3"),
+        lower_only: false,
+    },
+    KeyDef {
+        name: "sessions.archive_dest",
+        // A path, so user-only; no variable, as above, so `sessions
+        // restore` in a shell looks where the daily run wrote. Unset means
+        // `~/.amplihack/session-archive`.
+        scope: Scope::UserOnly,
+        kind: ValueKind::AbsPath,
+        env: None,
+        default: None,
+        lower_only: false,
+    },
 ];
 
 /// The schema entry for `name`.
