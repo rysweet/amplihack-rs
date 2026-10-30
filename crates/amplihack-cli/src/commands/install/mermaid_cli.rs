@@ -140,29 +140,35 @@ mod tests {
     #[cfg_attr(not(target_os = "linux"), allow(unused_imports))] // the tests are Linux only
     use super::*;
 
-    /// The probe must give up on a binary that never finishes. The fake runs
-    /// for 60 s and the bound is 30 s, so the test proves the timeout fired
-    /// without depending on host speed: on a host with thousands of
-    /// processes the timeout path's `/proc` walks alone can take a second
-    /// (#1765). The fake is named by its absolute path, so the test changes
-    /// no environment shared with tests running in parallel.
     #[cfg(target_os = "linux")]
     #[test]
     fn version_probe_is_bounded_for_hanging_binaries() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let fake_bin = temp.path().join("mmdc");
-        std::fs::write(&fake_bin, "#!/bin/sh\n/bin/sleep 60\nexit 0\n").unwrap();
+        std::fs::write(&fake_bin, "#!/bin/sh\n/bin/sleep 2\nexit 0\n").unwrap();
         let mut perms = std::fs::metadata(&fake_bin).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&fake_bin, perms).unwrap();
 
+        let previous_path = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", temp.path());
+        }
+
         let started = std::time::Instant::now();
-        let result = version_probe_succeeds(fake_bin.to_str().unwrap());
+        let result = version_probe_succeeds("mmdc");
+
+        match previous_path {
+            Some(value) => unsafe { std::env::set_var("PATH", value) },
+            None => unsafe { std::env::remove_var("PATH") },
+        }
 
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(30),
-            "version probes must not hang on a stuck binary (took {:?})",
-            started.elapsed()
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "version probes must not hang on a stuck binary"
         );
         assert!(!result, "timed-out version probes must fail closed");
     }

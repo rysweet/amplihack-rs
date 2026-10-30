@@ -226,6 +226,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_TEST_NONEXISTENT_456` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_789` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_GET_ERR` | test-only |  | `EnvVar` unit test name. |
+| `AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS` | test-only |  | Shortens the workflow provider timeout in tests. |
 | `AMPLIHACK_TEST_ROOT_SANDBOX_PROBE` | test-only |  | Root-sandbox spawn test probe. |
 | `AMPLIHACK_TEST_SECURITY_MODE` | test-only |  | Hook protocol test mode. |
 | `AMPLIHACK_TEST_SECURITY_TRANSPORT` | test-only |  | Hook protocol test transport. |
