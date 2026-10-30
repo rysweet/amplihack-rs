@@ -368,8 +368,9 @@ and its two restore lines in `poll_tmux_sessions_parses_multiple_sessions`
 in `crates/amplihack-cli/src/commands/fleet/tests.rs`. In both tests only
 the child needed the temporary `HOME`, so the hook now sets it there.
 
-The remaining sites are listed, with a reason for each, in
-[the follow-up issue](https://github.com/rysweet/amplihack-rs/issues?q=is%3Aissue%20%22deferred%20from%20%231765%22).
+The remaining sites are listed by file, with line numbers and the group
+each falls into, in
+[#1787](https://github.com/rysweet/amplihack-rs/issues/1787).
 They fall into three groups:
 
 | Group | Why the site stays |
@@ -377,6 +378,13 @@ They fall into three groups:
 | `PATH` read outside the called file | The lookup happens in another file or crate, the test drives a whole command flow or the binary, or the fix would change a `pub` signature used outside the crate. |
 | `HOME` read in process | The code under test reads `HOME` itself, so no child is involved. The function must take the home directory as a parameter before the test can stop setting it. |
 | Helper bodies | `set_home`, `EnvGuard`, `HomeGuard` and similar helpers stay while any test calls them. |
+
+Until those sites are fixed, a test in the same binary can still start a
+program while another test has `PATH` set to a temporary directory. Fakes
+that call every program by absolute path are not affected. The `azlin`
+stub in `crates/amplihack-cli/src/commands/fleet/tests_issue_1570_admiral.rs`
+called a bare `cat`, and the admiral tests failed whenever they ran beside
+the `fleet/tests.rs` tests that set `PATH`; it now calls `/bin/cat`.
 
 Not every remaining test meets the following requirements yet. When you
 change one of these tests, make sure that it:
@@ -404,7 +412,8 @@ git grep -nE '\b(set_home|HomeGuard::set|IsolatedHome::new|EnvGuard::set|EnvVarG
   -- crates bins | grep -vE '\bfn '
 ```
 
-The follow-up issue is the complete list. Do not add a new call of either
+[#1787](https://github.com/rysweet/amplihack-rs/issues/1787) is the
+complete list. Do not add a new call of either
 kind for `PATH` or `HOME`. A new test that needs a different `PATH` or
 `HOME` uses one of the forms in
 [Set the value on the child](#set-the-value-on-the-child).
