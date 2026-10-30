@@ -144,6 +144,8 @@ Execute via Bash:
 fleet <command> [options]
 ```
 
+**tmux:** run `kill-server` and `kill-session -a` only with `-S <private socket>` or `-L <name>`, for a server you started; inside a tmux pane `$TMUX` overrides `TMUX_TMPDIR`, so without them the command reaches the user's own server, and a PreToolUse hook denies it.
+
 ## Presenting Results
 
 After running `fleet scout` or `fleet advance`, present the output to the user as:
