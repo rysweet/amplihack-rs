@@ -56,7 +56,7 @@ use blarify::{
     resolve_blarify_index_action, save_blarify_consent, should_prompt_blarify_indexing,
 };
 #[cfg(test)]
-use checkout::{parse_github_repo_uri, resolve_checkout_repo_in};
+use checkout::{parse_github_repo_uri, resolve_checkout_repo_in_with};
 #[cfg(test)]
 use command::{COPILOT_HOME_ENV, build_command};
 #[cfg(test)]

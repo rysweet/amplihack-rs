@@ -691,28 +691,21 @@ fn poll_tmux_sessions_parses_multiple_sessions() {
     );
 
     let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_path = env::var_os("PATH");
-    let previous_home = env::var_os("HOME");
     unsafe {
         env::set_var("AZLIN_PATH", &azlin);
-        env::set_var("PATH", dir.path());
-        env::set_var("HOME", home.path());
     }
 
-    let state = FleetState::new(azlin.clone());
-    let sessions = state.poll_tmux_sessions("test-vm");
+    // Issue #1765: the stub is started by absolute path and gets the test
+    // HOME on its own environment; the process PATH and HOME are never
+    // changed, and no local tmux server is involved.
+    let sessions = FleetState::poll_tmux_sessions_with(&azlin, "test-vm", &|cmd: &mut Command| {
+        cmd.env("HOME", home.path())
+            .env_remove(crate::commands::profile::ROOT_ENV);
+    });
 
     match previous_azlin {
         Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
         None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_path {
-        Some(value) => unsafe { env::set_var("PATH", value) },
-        None => unsafe { env::remove_var("PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
     }
 
     assert_eq!(sessions.len(), 2);
