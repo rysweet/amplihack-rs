@@ -30,8 +30,9 @@ use super::autostart::{
 use super::cycle::prototype_guard;
 use super::ledger::RotateState;
 use super::settings::Settings;
+use super::tests_swap::hold_state_lock;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{State, euid};
+use crate::commands::profile::auto_switch::kit::euid;
 use crate::commands::profile::root_config::{ROTATE_ROOT_FILE, config_dir};
 use crate::commands::profile::store::{ProfileStore, ROOT_ENV};
 use crate::test_support::{EnvGuard, env_lock};
@@ -590,8 +591,7 @@ fn a_prototype_lock_that_is_not_a_file_is_refused() {
 #[test]
 fn a_busy_state_lock_returns_at_once() {
     let f = fx();
-    let state = State::new(&f.root).unwrap();
-    let _held = state.try_lock(Duration::ZERO).unwrap().unwrap();
+    let _held = hold_state_lock(&f.root);
     let t = std::time::Instant::now();
     let (o, err) = f.run();
     assert_eq!(o, Outcome::Busy);
@@ -616,7 +616,18 @@ fn invalid_tuning_variables_fail_without_spawning() {
     assert!(log.contains("autostart: failed: "), "{log:?}");
     assert!(log.contains("AMPLIHACK_ROTATE_HOLD"), "{log:?}");
     // The lock was released: the next launch with valid settings starts it.
-    assert_eq!(f.run().0, Outcome::Started(FAKE_PID));
+    // A child process that another test thread is spawning can share the
+    // lock the failed launch dropped until that child reaches exec (#1774),
+    // so `Busy` is retried for up to 10 s. A lock left held stays busy.
+    let start = std::time::Instant::now();
+    let next = loop {
+        let (o, _) = f.run();
+        if o != Outcome::Busy || start.elapsed() >= Duration::from_secs(10) {
+            break o;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    assert_eq!(next, Outcome::Started(FAKE_PID));
 }
 
 #[test]

@@ -33,15 +33,14 @@ use super::pin::{self, PinState};
 use super::settings;
 use super::swap::DOCUMENTED;
 use super::switch::{Switched, release, switch_live};
-use super::tests_swap::{Env, NOW, env, ino_at, json, n};
+use super::tests_swap::{Env, NOW, env, hold_state_lock, ino_at, json, n};
 use super::{FOREIGN_IGNORES_HOLD, foreign_note_for};
-use crate::commands::profile::auto_switch::kit::{State, now};
+use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::pointer;
 use amplihack_utils::rotator_status::parse_cycle;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::Duration;
 
 fn log(e: &Env) -> String {
     fs::read_to_string(&e.rs.log).unwrap_or_default()
@@ -393,8 +392,7 @@ fn a_rotator_whose_build_cannot_be_checked_gets_the_warning() {
 fn release_without_a_pin_is_refused_under_a_held_lock() {
     let e = env();
     pointer::write(&e.root, &n("work")).unwrap();
-    let state = State::new(&e.root).unwrap();
-    let _held = state.try_lock(Duration::ZERO).unwrap().unwrap();
+    let _held = hold_state_lock(&e.root);
     assert!(
         release(&e.store).is_err(),
         "the check for a pin is made under the lock"
@@ -426,8 +424,7 @@ fn release_under_a_held_lock_leaves_pin_and_pointer_alone() {
     let e = env();
     switch_to(&e, "spare");
     let pin_bytes = fs::read(&e.rs.pin).unwrap();
-    let state = State::new(&e.root).unwrap();
-    let _held = state.try_lock(Duration::ZERO).unwrap().unwrap();
+    let _held = hold_state_lock(&e.root);
     assert!(release(&e.store).is_err());
     assert_eq!(fs::read(&e.rs.pin).unwrap(), pin_bytes);
     assert_eq!(pointer::read(&e.root).unwrap(), Some(n("spare")));
