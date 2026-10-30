@@ -211,6 +211,8 @@ not skip reconciliation when the client arrives later. Auto-install opt-out and
 noninteractive/subprocess restrictions remain effective. Claude/Copilot retain
 their existing preparation order and discovery behavior.
 
+Before registration, the installer probes the native plugin inventory with a longer time limit than other native calls. If the probe fails and Codex is the selected provider, a separate capability check decides whether the failure is reported as missing plugin support or as the probe's own failure. When another provider is selected, the check does not run and the optional plugin is skipped with a warning. See the [native plugin probe reference](../reference/codex-native-plugin-probe.md).
+
 Installation and launch do not choose a model, grant hook trust, or add implicit
 permissions or directory access. See [Codex installation and usage](../howto/install-codex-plugin.md)
 and [runner delivery validation](../reference/recipe-runner-validation.md).
