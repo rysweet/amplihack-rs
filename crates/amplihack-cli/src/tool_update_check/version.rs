@@ -220,47 +220,60 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn run_npm_with_timeout_terminates_child_after_timeout() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        let sentinel = temp.path().join("npm-still-ran");
+        let pid_file = temp.path().join("npm-pid");
+        let pid_text = pid_file.to_str().expect("temporary paths are UTF-8");
+        assert!(
+            !pid_text.contains(['\'', '\n']),
+            "cannot single-quote {pid_text:?} for /bin/sh"
+        );
+        // The fake npm records its pid and then sleeps for 30 seconds, far
+        // longer than a thread descheduled on a loaded host can stall, so
+        // only the timeout's termination ends it before the checks below.
+        // A one-second sleep let the fake finish on its own between the
+        // poll that saw the timeout and the SIGTERM.
         let fake_npm = temp.path().join("npm");
         std::fs::write(
             &fake_npm,
-            "#!/bin/sh\n\
-             /bin/sleep 1\n\
-             printf 'late' > \"$AMPLIHACK_NPM_SENTINEL\"\n\
-             printf '1.2.3\\n'\n",
+            format!("#!/bin/sh\nprintf '%s' \"$$\" > '{pid_text}'\nexec /bin/sleep 30\n"),
         )
         .unwrap();
         let mut perms = std::fs::metadata(&fake_npm).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&fake_npm, perms).unwrap();
 
-        let previous_sentinel = std::env::var_os("AMPLIHACK_NPM_SENTINEL");
-        unsafe {
-            std::env::set_var("AMPLIHACK_NPM_SENTINEL", &sentinel);
-        }
-
-        // The fake npm needs a full second, so a poll thread descheduled on
-        // a loaded host still finds it running when the timeout expires.
         let result = run_npm_with_timeout(
             &["--version"],
             Duration::from_millis(50),
             &hermetic_npm(temp.path()),
         );
-
-        match previous_sentinel {
-            Some(value) => unsafe { std::env::set_var("AMPLIHACK_NPM_SENTINEL", value) },
-            None => unsafe { std::env::remove_var("AMPLIHACK_NPM_SENTINEL") },
-        }
-        // Wait past the point where a surviving child would have written it.
-        std::thread::sleep(Duration::from_millis(1500));
-
         assert!(result.is_none(), "timeout should return no npm output");
+
+        // The shell may be terminated before it records its pid. One left
+        // running records it shortly afterwards, so wait a little for it.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let pid = loop {
+            let recorded = std::fs::read_to_string(&pid_file)
+                .ok()
+                .and_then(|text| text.trim().parse::<libc::pid_t>().ok());
+            if recorded.is_some() || std::time::Instant::now() >= deadline {
+                break recorded;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let Some(pid) = pid else {
+            return;
+        };
+        // The timeout path reaps the child before returning, so its pid no
+        // longer exists unless the process was left running.
+        // SAFETY: signal 0 only checks that the process exists.
+        let still_running = unsafe { libc::kill(pid, 0) } == 0;
+        if still_running {
+            // SAFETY: the fake npm is this test's own child; do not leak it.
+            unsafe { libc::kill(pid, libc::SIGKILL) };
+        }
         assert!(
-            !sentinel.exists(),
+            !still_running,
             "timed-out npm subprocess must be terminated, not left running in a background thread"
         );
     }

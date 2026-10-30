@@ -136,7 +136,6 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_NO_RUST_BOOTSTRAP` | user preference |  | Skips the Rust toolchain bootstrap. |
 | `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND` | user preference |  | Skips the system-prompt append. |
 | `AMPLIHACK_NO_UPDATE_CHECK` | user preference |  | Skips the startup update check. |
-| `AMPLIHACK_NPM_SENTINEL` | test-only |  | Sentinel path for the npm update-check test script. |
 | `AMPLIHACK_NPM_VERSION` | test-only |  | Not an env var: placeholder in the plugin-manifest test. |
 | `AMPLIHACK_ORCHESTRATION_BOOTSTRAP` | test-only |  | Codex front-door contract fixture. |
 | `AMPLIHACK_ORIGINAL_CWD` | internal |  | Original directory handed to an auto-mode child. |
