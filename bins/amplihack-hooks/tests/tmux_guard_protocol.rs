@@ -114,6 +114,17 @@ fn claude_payload(command: &str) -> Value {
     })
 }
 
+/// Claude Code's `Monitor` tool: its `command` is a shell command or script
+/// run in the same shell environment as `Bash`.
+fn claude_monitor_payload(command: &str) -> Value {
+    json!({
+        "hook_event_name": "PreToolUse", "session_id": "s-1733",
+        "tool_name": "Monitor",
+        "tool_input": {"command": command, "description": "wait for the run"},
+        "transcript_path": null
+    })
+}
+
 fn copilot_payload(command: &str) -> Value {
     json!({
         "sessionId": "copilot-1733", "timestamp": 1_700_000_000u64, "cwd": "/repo",
@@ -146,6 +157,22 @@ fn claude_code_denies_the_incident_command() {
 #[test]
 fn claude_code_allows_a_scoped_kill_server() {
     assert_not_denied(&hook(claude_payload(SCOPED), "claude"));
+}
+
+/// Crusty round 6, concern 1: the `Monitor` tool reaches the guard.
+#[test]
+fn claude_code_monitor_denies_the_incident_command() {
+    for command in [
+        INCIDENT,
+        "until [ -f done ]; do sleep 1; done; tmux kill-session -a",
+    ] {
+        assert_full_deny(&hook(claude_monitor_payload(command), "claude"));
+    }
+}
+
+#[test]
+fn claude_code_monitor_allows_a_scoped_kill_server() {
+    assert_not_denied(&hook(claude_monitor_payload(SCOPED), "claude"));
 }
 
 #[test]

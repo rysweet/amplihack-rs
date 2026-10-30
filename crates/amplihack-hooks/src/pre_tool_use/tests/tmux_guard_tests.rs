@@ -731,9 +731,20 @@ fn powershell_is_a_shell_tool() {
     }
 }
 
+/// Crusty round 6, concern 1: Claude Code's `Monitor` runs its `command` in
+/// the same shell environment as `Bash`.
+#[test]
+fn monitor_is_a_shell_tool() {
+    for name in ["Monitor", "monitor", "MONITOR"] {
+        assert!(is_shell_tool(name), "{name}");
+    }
+}
+
 #[test]
 fn shell_tool_names_are_matched_exactly() {
-    for name in ["Read", "Write", "Edit", "pwsh-ish", "bashful", ""] {
+    for name in [
+        "Read", "Write", "Edit", "pwsh-ish", "bashful", "Monitors", "",
+    ] {
         assert!(!is_shell_tool(name), "{name}");
     }
 }
@@ -1324,4 +1335,49 @@ fn a_variable_naming_another_socket_and_targeted_cleanup_are_allowed() {
 #[test]
 fn a_directory_variable_ending_in_default_is_not_scope() {
     assert!(denied("D=/srv/default; tmux -S \"$D/qa.sock\" kill-server"));
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 6, concern 2: the tokeniser reads an arithmetic `<<` as a
+// heredoc. Its delimiter line never appears, so the parse is incomplete and
+// the text test applies instead of the following lines being read as data.
+// ---------------------------------------------------------------------------
+
+const ARITHMETIC_SHIFT_DENIED: &[&str] = &[
+    // The four rows crusty found allowed at `79c3632ab`.
+    "(( x = 1 << 2 ))\ntmux kill-server",
+    "(( count <<= 1 ))\ntmux kill-server",
+    "x=4; (( x = x << 1 )); echo $x\ntmux kill-server",
+    "echo $[1<<2]\ntmux kill-server",
+    // Any other heredoc that runs to the end of the input.
+    "cat <<EOF\nnotes\ntmux kill-server",
+    "cat <<EOF\nnotes\nEOF \ntmux kill-session -a",
+];
+
+const ARITHMETIC_SHIFT_ALLOWED: &[&str] = &[
+    // No kill on the following lines: the text test does not fire.
+    "(( x = 1 << 2 ))\necho \"$x\"",
+    "(( count <<= 1 ))\ntmux ls",
+    // `$((…))` closes on the line of its `<<`, so the next line is a command.
+    "n=$(( 1 << 3 ))\ntmux kill-session -t amp-x",
+    // A heredoc ended by its delimiter line is still data.
+    "cat <<'EOF' > notes.md\nrun tmux kill-server here\nEOF\nls",
+];
+
+#[test]
+fn lines_after_an_arithmetic_shift_are_not_taken_as_data() {
+    let missed: Vec<&&str> = ARITHMETIC_SHIFT_DENIED
+        .iter()
+        .filter(|c| !denied(c))
+        .collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+#[test]
+fn an_arithmetic_shift_with_no_kill_after_it_is_allowed() {
+    let wrong: Vec<&&str> = ARITHMETIC_SHIFT_ALLOWED
+        .iter()
+        .filter(|c| denied(c))
+        .collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
 }

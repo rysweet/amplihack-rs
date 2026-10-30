@@ -213,6 +213,45 @@ fn a_here_string_is_an_ordinary_word_not_a_heredoc() {
     assert!(cmds[0].words.iter().any(|w| w == "tmux kill-server"));
 }
 
+/// Crusty round 6, concern 2: a heredoc whose delimiter line never appears
+/// ran to the end of the input with the parse still complete, so the lines
+/// after an arithmetic `<<` were taken as data although bash runs them.
+#[test]
+fn an_unterminated_heredoc_is_incomplete() {
+    for text in [
+        "cat <<EOF\nbody",
+        "cat <<EOF\nbody\nEO",
+        "cat <<EOF\n",
+        "cat <<EOF",
+        "cat <<A; cat <<B\na\nA\nb",
+        "cat <<EOF\nbody\nEOF \nls",
+        // Bash reads these `<<` as arithmetic shifts and runs the next line.
+        "(( x = 1 << 2 ))\ntmux kill-server",
+        "(( count <<= 1 ))\ntmux kill-server",
+        "x=4; (( x = x << 1 )); echo $x\ntmux kill-server",
+        "echo $[1<<2]\ntmux kill-server",
+    ] {
+        assert!(!tokenise(text).complete, "{text:?} should be incomplete");
+    }
+}
+
+#[test]
+fn a_heredoc_ended_by_its_delimiter_line_is_complete() {
+    for text in [
+        "cat <<EOF\nbody\nEOF",
+        "cat <<EOF\nbody\nEOF\n",
+        "cat <<'EOF' > notes.md\ntmux kill-server\nEOF\nls",
+        "cat <<-EOF\n\tbody\n\tEOF\nls",
+        "cat <<A; cat <<B\na\nA\nb\nB",
+        "cat <<EOF\nEOF",
+        "gh pr comment 1 --body \"$(cat <<'EOF'\ntext\nEOF\n)\"",
+        // A `$((…))` closes before its line ends, so its `<<` reads no body.
+        "n=$(( 1 << 3 ))\necho $n",
+    ] {
+        assert!(tokenise(text).complete, "{text:?} should be complete");
+    }
+}
+
 /// 1 000 nested `$(` must not overflow a 2 MiB stack: `subst_end` is bounded
 /// or iterative.
 #[test]

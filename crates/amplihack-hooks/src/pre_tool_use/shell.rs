@@ -7,6 +7,16 @@
 //! decide whether they are data or code. Redirections and their targets are
 //! kept apart from the words, and `$'…'` escapes are decoded as bash does.
 //! Named-fd redirections (`{fd}>file`) are not recognised.
+//!
+//! Every unquoted `<<` outside a `$(…)` is read as a heredoc, including the
+//! shift operator in `(( x = 1 << 2 ))`, `(( n <<= 1 ))` and `$[1<<2]`,
+//! which bash reads as arithmetic. The "delimiter" (`2`, `=`) then seldom
+//! appears on a line of its own, so the body runs to the end of the input
+//! and [`Parsed::complete`] is false: the following lines are not taken as
+//! data. When a line equal to the operand does follow, the lines before it
+//! are read as the body; the tmux guard lists this among its limits. A
+//! `$((…))` that closes on the line of its `<<` does no harm, because the
+//! substitution ends before the line does.
 
 /// Programs that run the command after them: `(name, options that take a
 /// value, positional arguments before the command)`.
@@ -59,8 +69,9 @@ pub(super) struct SimpleCommand {
 pub(super) struct Parsed {
     pub(super) commands: Vec<SimpleCommand>,
     /// False when the text has an unclosed quote, `$'…'`, `$(…)` or
-    /// backtick, a `<<` with no delimiter, or a redirection with no target:
-    /// the words are a guess.
+    /// backtick, a `<<` with no delimiter, a heredoc whose delimiter line
+    /// never appears, or a redirection with no target: the words are a
+    /// guess.
     pub(super) complete: bool,
 }
 
@@ -350,7 +361,10 @@ pub(super) fn tokenise(text: &str) -> Parsed {
                 }
                 let pending = std::mem::take(&mut heredocs);
                 let specs = pending.iter().map(|(d, s, _, _)| (d.clone(), *s)).collect();
-                let bodies = read_heredoc_bodies(&chars, &mut i, specs);
+                let (bodies, terminated) = read_heredoc_bodies(&chars, &mut i, specs);
+                // A body that reached the end of the input without its
+                // delimiter line may have taken commands the shell runs.
+                complete &= terminated;
                 for ((_, _, expands, owner), body) in pending.into_iter().zip(bodies) {
                     if let Some(cmd) = out.get_mut(owner) {
                         cmd.heredocs.push(body);
@@ -391,7 +405,10 @@ pub(super) fn tokenise(text: &str) -> Parsed {
     }
     end_word(&mut word, &mut in_word, &mut target, &mut out);
     end_command(&mut target, &mut complete);
-    // A heredoc whose line never ended has no body.
+    // A heredoc whose line never ended has no body and no delimiter line.
+    if !heredocs.is_empty() {
+        complete = false;
+    }
     for (_, _, expands, owner) in heredocs {
         if let Some(cmd) = out.get_mut(owner) {
             cmd.heredocs.push(String::new());
@@ -608,21 +625,26 @@ pub(super) fn heredoc_delim(chars: &[char], i: &mut usize) -> (String, bool) {
 }
 
 /// With `*i` at a newline, skips the bodies of `heredocs` in order, leaving
-/// `*i` at the newline that ends the last delimiter line.
+/// `*i` at the newline that ends the last delimiter line. An unterminated
+/// body runs to the end of the input, so a `$(…)` holding one is unclosed.
 pub(super) fn skip_heredoc_bodies(chars: &[char], i: &mut usize, heredocs: Vec<(String, bool)>) {
     read_heredoc_bodies(chars, i, heredocs);
 }
 
 /// [`skip_heredoc_bodies`], returning each body (lines joined by `\n`, with
-/// leading tabs stripped for `<<-`). An unterminated body runs to the end.
+/// leading tabs stripped for `<<-`) and whether every body ended at its
+/// delimiter line. An unterminated body runs to the end of the input, as
+/// bash reads it (with a warning).
 pub(super) fn read_heredoc_bodies(
     chars: &[char],
     i: &mut usize,
     heredocs: Vec<(String, bool)>,
-) -> Vec<String> {
+) -> (Vec<String>, bool) {
     let mut bodies = Vec::with_capacity(heredocs.len());
+    let mut terminated = true;
     for (delim, strip_tabs) in heredocs {
         let mut body: Vec<String> = Vec::new();
+        let mut found = false;
         loop {
             let start = *i + 1;
             if start >= chars.len() {
@@ -639,13 +661,15 @@ pub(super) fn read_heredoc_bodies(
                 line
             };
             if line == delim {
+                found = true;
                 break;
             }
             body.push(line);
         }
+        terminated &= found;
         bodies.push(body.join("\n"));
     }
-    bodies
+    (bodies, terminated)
 }
 
 #[cfg(test)]

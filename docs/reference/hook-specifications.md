@@ -258,7 +258,14 @@ uses the socket named in `$TMUX` whenever no `-S` or `-L` is given, and ignores
 server and every session on it (#1733).
 
 **Tools it checks.** Tool names `bash`, `shell`, `shell_command`,
-`exec_command` and `powershell`, compared case-insensitively. It runs after
+`exec_command`, `powershell` and `monitor`, compared case-insensitively.
+Claude Code's `Monitor` tool takes a `command` that is a shell command or
+script, run in the same shell environment as `Bash`, so it is checked like
+`Bash`; a `Monitor` call that watches a WebSocket (`ws`) has no `command` and
+is not. In Claude Code 2.1.314 the tools that run code and take a `command`
+are `Bash`, `PowerShell` and `Monitor`; the list in `SHELL_TOOLS` needs
+checking against each new release, since a shell tool missing from it skips
+the guard. It runs after
 the XPIA check and the Skill redirect, beside the merge guard, and before the
 non-Bash early return. It checks both `tool_input.command` and
 `tool_input.cmd`, and either one can deny, so a harmless `command` does not
@@ -532,9 +539,14 @@ backtick in the body, so those are checked as commands.
   same rule applies to the words the guard inspects after an unknown global
   option. An expansion in an option value, as in `tmux new -s "$name"`, and
   any expansion in a scoped invocation are still allowed.
-- Unbalanced quotes, an unterminated `$(`, a `<<` with no delimiter, or a
-  redirection with no target fall back to a text test: the command is denied
-  when its text contains both `tmux` and `kill-s`.
+- Unbalanced quotes, an unterminated `$(`, a `<<` with no delimiter, a
+  heredoc whose delimiter line never appears, or a redirection with no target
+  fall back to a text test: the command is denied when its text contains both
+  `tmux` and `kill-s`. The tokeniser reads every unquoted `<<` outside a
+  `$(…)` as a heredoc, including an arithmetic shift such as
+  `(( x = 1 << 2 ))` or `$[1<<2]`; its "delimiter" (`2`) seldom appears on a
+  line of its own, so the whole command gets the text test, and the lines
+  after the shift are not read as heredoc data.
 - Input over 64 KiB gets only this plain text test, not the full parse, so
   quoting such as `t''mux` inside over-size input is not caught.
 - Reaching the depth limit (4) or the re-parse limit (256) while a candidate
@@ -547,6 +559,7 @@ backtick in the body, so those are checked as commands.
 | `tmux $(echo kill-server)` | denied |
 | ``tmux `echo kill-server` `` | denied |
 | `tmux kill-server 'unterminated` | denied |
+| `(( x = 1 << 2 ))`, newline, `tmux kill-server` | denied |
 | `tmux -S /p $cmd` | allowed |
 | `tmux -L x "$c"` | allowed |
 | `tmux new -s "$name"` | allowed |
@@ -644,6 +657,11 @@ sandbox. It does not see through:
   data-only;
 - quoting tricks in input over 64 KiB, which gets only the plain text test;
 - named-fd redirections (`{fd}>file`), whose `{fd}` is read as a word;
+- an arithmetic shift followed, on a later line, by a line equal to its right
+  operand, as in `(( x = 1 << 2 ))`, `tmux kill-server`, then `2` on separate
+  lines: the lines between are read as heredoc data;
+- a shell tool whose name is not in the list above, such as one a new Claude
+  Code, Copilot or Codex release adds;
 - shell text stored by one tool call and run by a later one, such as a git
   alias, a git pager or a tmux `command-alias` set in one call and used in
   the next.

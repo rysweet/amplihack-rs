@@ -88,8 +88,8 @@
 //!
 //! Heredoc bodies are parsed when a shell evaluator appears anywhere on the
 //! line, so `cat > k.sh <<EOF … EOF` followed by `bash k.sh` is denied.
-//! Uncertain input fails closed: unbalanced quotes, a redirection with no
-//! target, or hitting [`MAX_DEPTH`] or [`MAX_REPARSES`] with a candidate
+//! Uncertain input fails closed: unbalanced quotes, a heredoc whose
+//! delimiter line never appears, a redirection with no target, or hitting [`MAX_DEPTH`] or [`MAX_REPARSES`] with a candidate
 //! left deny, as does a simple command with more than
 //! [`MAX_TMUX_PER_COMMAND`] tmux words. So does an unscoped tmux whose
 //! subcommand word holds a `$` or
@@ -136,6 +136,13 @@
 //!   `tmux` and `kill-s` (so quoting tricks such as `t''mux` get past it),
 //!   not the full parse;
 //! - named-fd redirections (`{fd}>file`), whose `{fd}` is read as a word;
+//! - an arithmetic shift (`(( x = 1 << 2 ))`, `$[1<<2]`) followed, on a
+//!   later line, by a line equal to its right operand: the tokeniser reads
+//!   every unquoted `<<` as a heredoc, so the lines between are its body.
+//!   Without such a line the heredoc never ends, the parse is incomplete and
+//!   the text test applies;
+//! - a shell tool whose name is not in [`SHELL_TOOLS`], such as one a new
+//!   harness release adds;
 //! - `tmux kill-session` without `-a`, `kill-window`, `kill-pane`, and
 //!   signals sent by other programs (`pkill tmux`, `killall tmux`);
 //! - shell text stored by an earlier tool call and run by a later one, such
@@ -192,11 +199,19 @@ use tracing::warn;
 pub(super) const BLOCK_MESSAGE: &str = "Blocked: this command looks like a tmux kill-server or kill-session -a with no -S or -L, which acts on the tmux server named in $TMUX (normally the user's own server, with all of their sessions). TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket; a socket path taken from $TMUX or from tmux itself (`#{socket_path}`) is the user's server. A socket file named `default`, or `-L default`, also counts as the user's server, even under a sandbox directory: give a private server another name (`-S \"$SB/tmux.sock\"`), and end one already running on a `default` path with `tmux -S <path> kill-session -t <name>` for each of its sessions, since by default a server exits when its last session ends. If the command only mentions these words as text, such as a commit message or a task description, pass the text in a file (`git commit -F`, `--body-file`, `--context-from-file`) or run that command in its own tool call.";
 
 /// Tool names the guard checks, compared case-insensitively: Claude Code's
-/// `Bash` and `PowerShell`, Copilot's `bash` and `powershell`, and Codex's
-/// shell tools in case a host skips the Codex normalisation.
+/// `Bash`, `PowerShell` and `Monitor`, Copilot's `bash` and `powershell`, and
+/// Codex's shell tools in case a host skips the Codex normalisation.
+///
+/// Claude Code's `Monitor` takes a `command` that is a shell command or
+/// script, run in the same shell environment as `Bash`, so it is a shell
+/// tool; its other form, a WebSocket `ws` with no `command`, is not checked.
+/// In Claude Code 2.1.314 the tools that run code and take a `command` are
+/// `Bash`, `PowerShell` and `Monitor`. Check this list against each new
+/// Claude Code release: a shell tool missing from it skips the guard.
 pub(super) const SHELL_TOOLS: &[&str] = &[
     "bash",
     "powershell",
+    "monitor",
     "shell",
     "exec_command",
     "shell_command",

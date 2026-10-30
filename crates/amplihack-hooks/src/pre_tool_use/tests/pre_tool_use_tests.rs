@@ -960,7 +960,15 @@ fn assert_tmux_denied(result: &serde_json::Value) {
 fn tmux_guard_denies_for_every_shell_tool_name_without_the_merge_marker() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
-    for tool in ["Bash", "bash", "BASH", "shell", "Shell", "exec_command"] {
+    for tool in [
+        "Bash",
+        "bash",
+        "BASH",
+        "shell",
+        "Shell",
+        "exec_command",
+        "Monitor",
+    ] {
         let result = PreToolUseHook
             .process(shell_tool_input(
                 tool,
@@ -1015,6 +1023,36 @@ fn tmux_guard_skips_non_shell_tools() {
         ))
         .unwrap();
     assert!(result.as_object().unwrap().is_empty(), "{result}");
+}
+
+/// Crusty round 6, concern 1: Claude Code's `Monitor` runs its `command` as
+/// shell text, so the guard checks it; a WebSocket watch has no `command`
+/// and a command that kills nothing is allowed.
+#[test]
+fn tmux_guard_checks_the_monitor_tool() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    for command in [
+        TMUX_INCIDENT,
+        "until [ -f done ]; do sleep 1; done; tmux kill-session -a",
+    ] {
+        let result = PreToolUseHook
+            .process(shell_tool_input(
+                "Monitor",
+                serde_json::json!({"command": command, "description": "wait"}),
+            ))
+            .unwrap();
+        assert_tmux_denied(&result);
+    }
+    for input in [
+        serde_json::json!({"ws": "wss://example.invalid/events", "description": "watch"}),
+        serde_json::json!({"command": "tail -f build.log | grep --line-buffered error", "description": "watch"}),
+    ] {
+        let result = PreToolUseHook
+            .process(shell_tool_input("Monitor", input))
+            .unwrap();
+        assert!(result.as_object().unwrap().is_empty(), "{result}");
+    }
 }
 
 #[test]
