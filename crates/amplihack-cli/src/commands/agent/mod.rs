@@ -198,11 +198,10 @@ fn run_status(json: bool, home: &std::path::Path) -> anyhow::Result<()> {
         Some(dir) => store::load(&dir).map_err(|e| e.into_error(&dir))?,
         None => registry::Registry::new(),
     };
-    let now = registry::now();
     if json {
-        println!("{}", report::status_json(&reg, now));
+        println!("{}", report::status_json(&reg, registry::now()));
     } else {
-        print!("{}", report::status_text(&reg, now));
+        print!("{}", report::status_text(&reg));
     }
     Ok(())
 }
@@ -225,6 +224,9 @@ mod tests_markers;
 #[cfg(test)]
 #[path = "tests_pass.rs"]
 mod tests_pass;
+#[cfg(test)]
+#[path = "tests_pass_io.rs"]
+mod tests_pass_io;
 #[cfg(test)]
 #[path = "tests_proc_tree.rs"]
 mod tests_proc_tree;
@@ -250,6 +252,9 @@ mod tests_scan_observe;
 #[path = "tests_sessions.rs"]
 mod tests_sessions;
 #[cfg(test)]
+#[path = "tests_sessions_for_process.rs"]
+mod tests_sessions_for_process;
+#[cfg(test)]
 #[path = "tests_socket_check.rs"]
 mod tests_socket_check;
 #[cfg(test)]
@@ -264,3 +269,6 @@ mod tests_tmux;
 #[cfg(test)]
 #[path = "tests_validate.rs"]
 mod tests_validate;
+#[cfg(test)]
+#[path = "tests_wrapper.rs"]
+mod tests_wrapper;

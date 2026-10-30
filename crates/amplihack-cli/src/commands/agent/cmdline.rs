@@ -135,54 +135,62 @@ pub fn resume_as_conversation(o: &ClaudeOpts) -> Option<&str> {
 }
 
 /// amplihack's own flags from an `amplihack claude` (or `launch`) command
-/// line, and the arguments it hands on to Claude.
+/// line.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AmplihackClaude {
     pub profile: Option<String>,
     pub subprocess_safe: bool,
     pub no_reflection: bool,
-    pub supervise: Option<String>,
-    pub user_args: Vec<String>,
 }
 
-/// Options of `amplihack claude` that take a value and are not recorded.
-const SKIPPED_VALUES: [&str; 4] = [
-    "--checkout-repo",
-    "--append",
-    "--max-turns",
-    "--prompt-file",
-];
-/// Flags of `amplihack claude` that are not recorded.
+/// Options of `amplihack claude` and `launch` that take a value and are not
+/// recorded.
+const SKIPPED_VALUES: [&str; 3] = ["--checkout-repo", "--append", "--max-turns"];
+/// The same, for options only `amplihack claude` has.
+const CLAUDE_VALUES: [&str; 2] = ["--prompt-file", "--supervise"];
+/// Flags of both that are not recorded.
 const SKIPPED_FLAGS: [&str; 3] = ["--docker", "--auto", "--ui"];
+/// Flags only `amplihack launch` has; `claude` hands them to Claude.
+const LAUNCH_FLAGS: [&str; 4] = [
+    "--resume",
+    "--continue-session",
+    "--skip-permissions",
+    "--skip-update-check",
+];
 
 /// `None` unless `argv[0]`'s basename is `amplihack` and `argv[1]` is
-/// `claude` or `launch`. User arguments start after `--`, or at the first
-/// argument that is not one of amplihack's options (clap's trailing
-/// arguments). A profile or name that fails its rule is not recorded (S8).
+/// `claude` or `launch`. Parsing stops at `--`, or at the first argument
+/// that is not one of that subcommand's options (clap's trailing
+/// arguments). A profile that fails its rule is not recorded (S8).
 pub fn parse_amplihack_claude(argv: &[String]) -> Option<AmplihackClaude> {
     let program = argv.first()?;
     if program.rsplit('/').next() != Some("amplihack") {
         return None;
     }
-    if !matches!(argv.get(1).map(String::as_str), Some("claude" | "launch")) {
-        return None;
-    }
+    let launch = match argv.get(1).map(String::as_str) {
+        Some("claude") => false,
+        Some("launch") => true,
+        _ => return None,
+    };
     let mut a = AmplihackClaude::default();
     let args = &argv[2..];
     let mut i = 0;
     while i < args.len() {
         let arg = args[i].as_str();
         if arg == "--" {
-            i += 1;
             break;
         }
         let (flag, inline) = match arg.split_once('=') {
             Some((f, v)) if f.starts_with("--") => (f, Some(v)),
             _ => (arg, None),
         };
-        let takes_value =
-            matches!(flag, "--profile" | "--supervise") || SKIPPED_VALUES.contains(&flag);
-        if !takes_value && !(inline.is_none() && is_flag(flag)) {
+        let takes_value = flag == "--profile"
+            || SKIPPED_VALUES.contains(&flag)
+            || (!launch && CLAUDE_VALUES.contains(&flag));
+        let is_flag = matches!(flag, "--subprocess-safe" | "--no-reflection")
+            || SKIPPED_FLAGS.contains(&flag)
+            || (launch && LAUNCH_FLAGS.contains(&flag));
+        if !takes_value && !(inline.is_none() && is_flag) {
             break;
         }
         i += 1;
@@ -200,16 +208,8 @@ pub fn parse_amplihack_claude(argv: &[String]) -> Option<AmplihackClaude> {
             "--profile" => {
                 a.profile = value.filter(|v| validate::profile_name(v).is_ok());
             }
-            "--supervise" => {
-                a.supervise = value.filter(|v| validate::agent_name(v).is_ok());
-            }
             _ => {}
         }
     }
-    a.user_args = args.get(i..).unwrap_or(&[]).to_vec();
     Some(a)
-}
-
-fn is_flag(flag: &str) -> bool {
-    matches!(flag, "--subprocess-safe" | "--no-reflection") || SKIPPED_FLAGS.contains(&flag)
 }

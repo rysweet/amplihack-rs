@@ -1,8 +1,8 @@
 //! Issue #1760: registry safety (R2.1, R2.2, R5.1, S20, C1, C9).
 //!
 //! - A `~/.amplihack` other users can write to, or a symlink, is refused.
-//! - A corrupt, too-new or unsafe registry is never overwritten, and every
-//!   command that needs it exits 1 with the documented text.
+//! - A corrupt, too-new, too-large or unsafe registry is never overwritten,
+//!   and every command that needs it exits 1 with the documented text.
 //! - A second supervisor is refused while the first holds `supervisor.lock`.
 //! - `supervisor.log` is opened without following symlinks and must have one
 //!   link; a failed append is a warning and changes no other file.
@@ -70,8 +70,8 @@ fn a_registry_that_fails_to_load_is_never_overwritten() {
         // C9: an unknown state at version 1 is corrupt; line and column only.
         (
             r#"{"version":1,"agents":{"x":{"state":"paused"}}}"#,
-            "registry.json: ",
-            &["line ", "column ", "; it was not changed"],
+            "registry.json: does not match the registry format (line 1, column ",
+            &["; it was not changed"],
         ),
         (
             r#"{"agents":{}}"#,
@@ -105,6 +105,20 @@ fn a_registry_that_fails_to_load_is_never_overwritten() {
             assert_eq!(fs::read_to_string(fx.registry_path()).unwrap(), raw);
         }
     }
+}
+
+/// Review issue 7: a registry over 8 MiB is named as too large, not as a
+/// permissions problem, and is left as it is.
+#[test]
+fn a_registry_over_8_mib_is_named_as_too_large() {
+    let fx = Fx::new();
+    fx.write_registry_raw(&" ".repeat(8 * 1024 * 1024 + 1));
+    let o = fx.run(&["agent", "status"]);
+    expect_code(&o, 1);
+    let want = "registry.json: larger than 8 MiB; it was not changed";
+    assert!(stderr(&o).contains(want), "{}", stderr(&o));
+    let len = fs::metadata(fx.registry_path()).unwrap().len();
+    assert_eq!(len, 8 * 1024 * 1024 + 1);
 }
 
 #[test]

@@ -7,9 +7,9 @@
 //! API under test:
 //! - `resume::schedule<T>(items: Vec<T>, batch: usize, gap: Duration,
 //!   sleep: &dyn Fn(Duration, &AtomicBool) -> bool, stop: &AtomicBool,
-//!   each: impl FnMut(T))`: checks `stop` before each item; sleeps `gap`
-//!   between batches, never after the last; a sleeper returning `false`
-//!   (stopped) ends the schedule
+//!   each: impl FnMut(T) -> ControlFlow<()>)`: checks `stop` before each
+//!   item; sleeps `gap` between batches, never after the last; a sleeper
+//!   returning `false` (stopped) or an item returning `Break` ends it
 //! - `dirty::order(cands: Vec<(String, usize)>) -> Vec<String>`: count
 //!   descending, then name in byte order
 //! - `dirty::command(dir: &Path) -> std::process::Command`: not spawned here
@@ -19,6 +19,7 @@ use super::dirty::*;
 use super::resume::schedule;
 use std::cell::RefCell;
 use std::ffi::OsStr;
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -39,6 +40,7 @@ fn events(n: usize, batch: usize, stop_after: Option<usize>, sleeper_ok: bool) -
         if stop_after == Some(i) {
             stop.store(true, Ordering::SeqCst);
         }
+        ControlFlow::Continue(())
     });
     log.into_inner()
 }
@@ -75,7 +77,10 @@ fn the_stop_flag_ends_the_schedule_between_items() {
         GAP,
         &|_: Duration, _: &AtomicBool| true,
         &stop,
-        |_: i32| ran += 1,
+        |_: i32| {
+            ran += 1;
+            ControlFlow::Continue(())
+        },
     );
     assert_eq!(ran, 0, "stopped before the first item");
 }
@@ -83,6 +88,23 @@ fn the_stop_flag_ends_the_schedule_between_items() {
 #[test]
 fn a_stopped_sleep_ends_the_schedule() {
     assert_eq!(events(5, 2, None, false), ["0", "1", "sleep 7"]);
+}
+
+/// Review issue 4: a failed resume is reported without sleeping first.
+#[test]
+fn a_break_ends_the_schedule_before_the_next_sleep() {
+    let slept = RefCell::new(0);
+    let sleep = |_: Duration, _: &AtomicBool| {
+        *slept.borrow_mut() += 1;
+        true
+    };
+    let mut ran = Vec::new();
+    let stop = AtomicBool::new(false);
+    schedule(vec![1, 2, 3], 1, GAP, &sleep, &stop, |i: i32| {
+        ran.push(i);
+        ControlFlow::Break(())
+    });
+    assert_eq!((ran, *slept.borrow()), (vec![1], 0));
 }
 
 #[test]
@@ -93,7 +115,9 @@ fn the_sleeper_gets_the_stop_flag() {
         *seen.borrow_mut() = std::ptr::eq(s, &stop);
         true
     };
-    schedule(vec![1, 2], 1, GAP, &sleep, &stop, |_: i32| {});
+    schedule(vec![1, 2], 1, GAP, &sleep, &stop, |_: i32| {
+        ControlFlow::Continue(())
+    });
     assert!(*seen.borrow());
 }
 

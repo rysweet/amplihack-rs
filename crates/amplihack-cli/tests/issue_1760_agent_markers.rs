@@ -4,7 +4,8 @@
 //! writes no log line, and is deleted, so a later tmux loss is not resumed.
 //! A stale marker is deleted and ignored; an unmatched one is kept for 7
 //! days; a marker is kept while the recorded Claude process still runs (A6);
-//! a marker that fails the S14 checks is ignored and removed only when old.
+//! a marker that fails the S14 checks is ignored and removed only when old;
+//! an `ended/` that is a symlink is not followed.
 
 #![cfg(target_os = "linux")]
 
@@ -174,4 +175,32 @@ fn invalid_markers_are_ignored_and_removed_only_when_old() {
         !old_junk.exists(),
         "an invalid file older than 7 days is deleted"
     );
+}
+
+/// Security review finding 1: nothing in the target of a symlinked `ended/`
+/// is applied or deleted, and the pass warns once.
+#[test]
+fn a_symlinked_ended_directory_is_not_followed() {
+    let fx = Fx::new();
+    fx.tmux_session("coord", "main");
+    fx.write_agents(&[("coord", lost(&fx, "coord", CONV_A, 7200))]);
+    let target = fx.root.join("elsewhere");
+    std::fs::create_dir(&target).unwrap();
+    chmod(&target, 0o700);
+    let old = target.join("notes.txt");
+    std::fs::write(&old, "keep me").unwrap();
+    chmod(&old, 0o600);
+    age(&old, 8 * DAY as u64);
+    let marker = target.join(CONV_A);
+    let body = json!({ "session_id": CONV_A, "reason": "logout", "at": now() - 60 });
+    std::fs::write(&marker, body.to_string()).unwrap();
+    chmod(&marker, 0o600);
+    std::os::unix::fs::symlink(&target, fx.ended_dir()).unwrap();
+    let out = fx.supervise_once(&["--gap", "0"]);
+    expect_code(&out, 0);
+    assert!(old.exists() && marker.exists(), "the target is left alone");
+    assert_eq!(fx.agent("coord")["state"], "active");
+    let warning =
+        "warning: ~/.amplihack/agents/ended: is not a real directory; no markers were read";
+    assert_eq!(stderr(&out).matches(warning).count(), 1, "{}", stderr(&out));
 }

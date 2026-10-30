@@ -10,9 +10,6 @@ use anyhow::{anyhow, bail};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-const SOCKET_NOT_PRIVATE: &str =
-    "tmux socket: its directory must be owned by you and closed to other users";
-
 /// The launch fields that `register` and the wrapper record, validated.
 pub(super) struct Launch {
     pub socket: Option<PathBuf>,
@@ -85,10 +82,12 @@ fn path_string(p: PathBuf) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// S12 before any use of a socket: its directory must be private.
+/// The socket-path rule, then S12 before any use of a socket: its directory
+/// must be private.
 pub(super) fn check_socket(socket: &Path) -> anyhow::Result<()> {
+    subject(validate::socket_path(socket), "tmux socket")?;
     match socket_check::check(socket) {
-        SocketCheck::NotPrivate => bail!(SOCKET_NOT_PRIVATE),
+        SocketCheck::NotPrivate => bail!(socket_check::REFUSED),
         SocketCheck::Ok | SocketCheck::MissingParent => Ok(()),
     }
 }

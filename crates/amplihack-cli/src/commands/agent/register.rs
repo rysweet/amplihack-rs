@@ -75,7 +75,6 @@ pub fn run_register(args: RegisterArgs, home: &Path) -> anyhow::Result<()> {
         .and_then(|v| tmux::socket_from_env(&v));
     let pane_socket = args.tmux_socket.clone().or(caller);
     if let (Target::Pane(_), Some(s)) = (&target, &pane_socket) {
-        subject(validate::socket_path(s), "tmux socket")?;
         check_socket(s)?;
     }
     let pane_tmux = Tmux::new(pane_socket.as_deref());
@@ -89,16 +88,9 @@ pub fn run_register(args: RegisterArgs, home: &Path) -> anyhow::Result<()> {
         (_, None) => args.tmux_socket.clone(),
     };
     if let Some(s) = &socket {
-        subject(validate::socket_path(s), "tmux socket")?;
         check_socket(s)?;
     }
-    let (session, window) = names(
-        &args,
-        &target,
-        found.as_ref(),
-        socket.as_deref(),
-        &pane_tmux,
-    )?;
+    let (session, window) = names(&args, &target, found.as_ref(), &pane_tmux)?;
     let launch_dir = args.dir.clone().or_else(|| found_dir(found.as_ref()));
     let found_conversation = found.as_ref().and_then(|f| f.conversation.clone());
     let conversation = args.conversation.clone().or(found_conversation);
@@ -141,12 +133,13 @@ pub fn run_register(args: RegisterArgs, home: &Path) -> anyhow::Result<()> {
 }
 
 /// The tmux session and window: the flags, and tmux for any not given,
-/// asked about the pane (`--pane`, or the process's `TMUX_PANE`).
+/// asked about the pane: `--pane` on its server, or the process's
+/// `TMUX_PANE` on the server in its own `$TMUX`, whatever `--tmux-socket`
+/// says. Without both of those, tmux is not asked.
 fn names(
     args: &RegisterArgs,
     target: &Target,
     found: Option<&Discovered>,
-    socket: Option<&Path>,
     pane_tmux: &Tmux,
 ) -> anyhow::Result<(Option<String>, Option<String>)> {
     let (s, w) = (args.session.clone(), args.window.clone());
@@ -154,19 +147,17 @@ fn names(
         return Ok((s, w));
     }
     let (pane, asked) = match target {
-        Target::Pane(t) => (Some(t.clone()), None),
-        _ => (
-            found.and_then(|f| f.tmux_pane.clone()),
-            Some(Tmux::new(socket)),
-        ),
-    };
-    let Some(pane) = pane else {
-        return Ok((s, w));
+        Target::Pane(t) => (t.clone(), None),
+        _ => {
+            let own = found.and_then(|f| Some((f.tmux_pane.clone()?, f.tmux_socket.clone()?)));
+            let Some((pane, socket)) = own else {
+                return Ok((s, w));
+            };
+            (pane, Some(Tmux::new(Some(&socket))))
+        }
     };
     let tmux = asked.as_ref().unwrap_or(pane_tmux);
     let (ds, dw) = tmux.names(&pane).map_err(|e| anyhow!(e))?;
-    subject(validate::session_name(&ds), "tmux session name")?;
-    subject(validate::window_name(&dw), "tmux window name")?;
     Ok((s.or(Some(ds)), w.or(Some(dw))))
 }
 
@@ -238,11 +229,10 @@ fn merge(
             (None, true) => (None, true),
             (None, false) => (opts.permission_mode.clone(), opts.skip_permissions),
         };
-    let profile = args
-        .profile
-        .or(amp.profile)
-        .map(|p| check_profile(home, &p))
-        .transpose()?;
+    let profile = match args.profile {
+        Some(p) => Some(check_profile(home, &p)?),
+        None => amp.profile.and_then(|p| found_profile(home, found?, p)),
+    };
     Ok(Launch {
         socket,
         session,
@@ -261,6 +251,21 @@ fn merge(
         },
         env: found.map(|f| f.env.clone()).unwrap_or_default(),
     })
+}
+
+/// The `amplihack claude` ancestor's profile, when its directory still
+/// exists; otherwise a warning with its length only, so that no error names
+/// a `--profile` that was not given.
+fn found_profile(home: &Path, f: &Discovered, p: String) -> Option<String> {
+    match sessions::profile_config_dir(home, Some(&p)) {
+        Ok(_) => Some(p),
+        Err(e) => {
+            let why = e.strip_prefix("--profile: ").unwrap_or(&e);
+            let (pid, n) = (f.claude_pid, p.len());
+            eprintln!("warning: ignored the profile of process {pid} ({n} bytes): {why}");
+            None
+        }
+    }
 }
 
 /// `agent unregister NAME`: removes the entry in one locked write.

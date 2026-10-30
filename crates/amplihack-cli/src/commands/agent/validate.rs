@@ -6,6 +6,7 @@
 
 use super::env_record;
 use super::registry::{Entry, parse_ts};
+use amplihack_utils::agent_marker::is_conversation_id;
 use std::path::{Path, PathBuf};
 
 const NAME_RULE: &str =
@@ -27,10 +28,10 @@ pub fn agent_name(s: &str) -> Result<(), String> {
     .ok_or_else(|| NAME_RULE.to_string())
 }
 
-/// `^[A-Za-z0-9][A-Za-z0-9-]{0,63}$` (S7): a leading `-` would make the id a
-/// Claude flag after `--resume`.
+/// [`is_conversation_id`] (S7), the rule the SessionEnd hook applies too,
+/// with its rule text.
 pub fn conversation_id(s: &str) -> Result<(), String> {
-    leading_alnum(s, 64, |c| c.is_ascii_alphanumeric() || c == '-')
+    is_conversation_id(s)
         .then_some(())
         .ok_or_else(|| ID_RULE.to_string())
 }

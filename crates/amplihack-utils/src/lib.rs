@@ -26,6 +26,8 @@
 
 /// Single source of truth for resolving the active agent binary identifier.
 pub mod agent_binary;
+/// The SessionEnd marker contract shared by the hook and `amplihack agent`.
+pub mod agent_marker;
 pub mod artifact_guard;
 /// Exponential-with-jitter retry backoff bounded by a wall-clock budget.
 /// Shared by the Azure remote pipeline and the recipe runner's transient

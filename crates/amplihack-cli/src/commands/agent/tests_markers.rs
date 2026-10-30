@@ -3,11 +3,11 @@
 //! of design 4.14 with the "active agent wins" rule (data model section 9.3).
 //!
 //! API under test:
-//! - `struct Marker { session_id: String, reason: String, at: i64, path: PathBuf }`
-//! - `markers::read(dir: &Path, now: i64) -> Vec<Marker>`: valid markers only;
-//!   an invalid direct entry (including a symlink) is unlinked once its
-//!   `lstat` mtime is more than 7 days before `now`, and left otherwise;
-//!   names starting with `.` are skipped; nothing is followed or recursed
+//! - `struct Marker { session_id: String, at: i64, path: PathBuf }`
+//! - `markers::read(dir: &Path, now: i64) -> Result<Vec<Marker>, String>`:
+//!   valid markers only; an invalid entry (a symlink, say) is unlinked once
+//!   its `lstat` mtime is over 7 days before `now`, and left otherwise; names
+//!   starting with `.` are skipped; nothing is followed or recursed
 //! - `enum Disposition { End(String), Delete, Keep }` (`Debug`, `PartialEq`)
 //! - `markers::decide(m: &Marker, reg: &Registry, alive: &dyn Fn(u32, u64) -> bool,
 //!   now: i64) -> Disposition`
@@ -79,16 +79,13 @@ fn a_valid_marker_is_read() {
         &valid(ID, "prompt_input_exit", 1_793_400_000),
         0o600,
     );
-    let got = read(&d, now());
+    let got = read(&d, now()).unwrap();
     assert_eq!(got.len(), 1);
     let m = &got[0];
-    assert_eq!(
-        (m.session_id.as_str(), m.reason.as_str()),
-        (ID, "prompt_input_exit")
-    );
+    assert_eq!(m.session_id, ID);
     assert_eq!((m.at, m.path.as_path()), (1_793_400_000, p.as_path()));
     write(&d, ID, &valid(ID, "logout", 5), 0o600);
-    assert_eq!(read(&d, now())[0].reason, "logout");
+    assert_eq!(read(&d, now()).unwrap()[0].at, 5);
 }
 
 #[test]
@@ -112,7 +109,7 @@ fn invalid_files_are_ignored_and_kept_while_young() {
             0o600,
         ),
     ];
-    assert!(read(&d, now()).is_empty());
+    assert!(read(&d, now()).unwrap().is_empty());
     for p in &cases {
         assert!(p.exists(), "{} was deleted while young", p.display());
     }
@@ -128,7 +125,7 @@ fn invalid_files_are_deleted_after_seven_days() {
     set_mtime(&loose, t - 8 * DAY);
     let young = write(&d, "a4", "not json", 0o600);
     set_mtime(&young, t - 6 * DAY);
-    assert!(read(&d, t).is_empty());
+    assert!(read(&d, t).unwrap().is_empty());
     assert!(!old.exists() && !loose.exists());
     assert!(young.exists());
 }
@@ -140,10 +137,10 @@ fn symlinks_are_never_followed_and_removed_only_when_old() {
     let link = d.join(ID);
     std::os::unix::fs::symlink(&target, &link).unwrap();
     let t = now();
-    assert!(read(&d, t).is_empty(), "a symlinked marker is not accepted");
+    assert!(read(&d, t).unwrap().is_empty(), "symlinks are refused");
     assert!(link.symlink_metadata().is_ok(), "a young symlink is left");
     set_mtime(&link, t - 8 * DAY);
-    assert!(read(&d, t).is_empty());
+    assert!(read(&d, t).unwrap().is_empty());
     assert!(
         link.symlink_metadata().is_err(),
         "an old symlink is unlinked"
@@ -165,7 +162,7 @@ fn hidden_names_and_directories_are_skipped() {
     fs::create_dir(&sub).unwrap();
     let inner = write(&sub, "a6", &valid("a6", "logout", 1), 0o600);
     set_mtime(&sub, t - 8 * DAY);
-    assert!(read(&d, t).is_empty());
+    assert!(read(&d, t).unwrap().is_empty());
     assert!(tmpfile.exists(), "a write in progress is not touched");
     assert!(inner.exists(), "no recursion into a directory");
 }
@@ -204,7 +201,6 @@ fn entry(state: &str, recorded: Option<(u32, u64)>) -> serde_json::Value {
 fn marker(at: i64) -> Marker {
     Marker {
         session_id: ID.into(),
-        reason: "prompt_input_exit".into(),
         at,
         path: PathBuf::from(format!("/nonexistent/ended/{ID}")),
     }

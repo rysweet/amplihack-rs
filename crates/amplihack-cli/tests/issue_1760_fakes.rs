@@ -3,8 +3,9 @@
 //! - The fake `tmux` records each call's argv, environment, working
 //!   directory, time and open file descriptors; keeps `session<TAB>window`
 //!   lines for `has-session`; answers `display-message` from `panes`; fails
-//!   `new-session` while `fail_new` exists; fails everything while `broken`
-//!   exists. It never runs the pane command.
+//!   `new-session` while `fail_new` exists, `has-session` without `-S` while
+//!   `no_default` does, and everything while `broken` does. It never runs the
+//!   pane command.
 //! - The fake `git` records argv and environment, and for `status` prints as
 //!   many lines as `<dir>/.fake-dirty` says.
 //! - The fake `claude` records argv, environment and pid, prints
@@ -31,7 +32,7 @@ env -0 > "$d/env.$n"
 pwd -P > "$d/cwd.$n"
 for f in /proc/$$/fd/*; do readlink "$f"; done > "$d/fds.$n" 2>/dev/null
 [ -e "$d/broken" ] && { echo "fake tmux: broken" >&2; exit 2; }
-[ "$1" = "-S" ] && shift 2
+sock=""; [ "$1" = "-S" ] && { sock="$2"; shift 2; }
 cmd="$1"; shift
 target=""; sname=""; wname=""; fmt=""
 while [ $# -gt 0 ]; do
@@ -49,6 +50,7 @@ touch "$d/sessions" "$d/panes"
 case "$cmd" in
   has-session)
     s="${target#=}"
+    [ -z "$sock" ] && [ -e "$d/no_default" ] && { echo "error connecting to $TMUX_TMPDIR/tmux-$(id -u)/default (No such file or directory)" >&2; exit 1; }
     cut -f1 "$d/sessions" | grep -qxF -- "$s" && exit 0
     if [ -s "$d/sessions" ]; then echo "can't find session: $s" >&2
     else echo "no server running on /fake/socket" >&2; fi
@@ -205,6 +207,11 @@ impl Fx {
     /// `new-session` fails with `line` on stderr.
     pub fn tmux_fail_new(&self, line: &str) {
         fs::write(self.tmux_state.join("fail_new"), format!("{line}\n")).unwrap();
+    }
+    /// `has-session` without `-S` fails as tmux 3.7b does when no server
+    /// has started on the default socket.
+    pub fn tmux_no_default_server(&self) {
+        fs::write(self.tmux_state.join("no_default"), "").unwrap();
     }
     /// Every tmux call exits 2 with `fake tmux: broken`.
     pub fn tmux_broken(&self) {

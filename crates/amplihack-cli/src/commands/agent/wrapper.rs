@@ -11,7 +11,7 @@ use super::fields::{Launch, check_profile, check_socket, subject};
 use super::registry::{self, AmplihackFlags, EndedBy, State};
 use super::store::{self, AgentsDir};
 use super::tmux::{self, Tmux};
-use super::{cmdline, env_record, procfs, sessions, validate};
+use super::{cmdline, env_record, procfs, report, sessions, validate};
 use anyhow::{anyhow, bail};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -44,14 +44,11 @@ pub fn run_wrapped(
     }
     let socket = tmux::socket_from_env(&tmux_var);
     if let Some(s) = &socket {
-        subject(validate::socket_path(s), "tmux socket")?;
         check_socket(s)?;
     }
     let (session, window) = Tmux::new(socket.as_deref())
         .names(&pane)
         .map_err(|e| anyhow!(e))?;
-    subject(validate::session_name(&session), "tmux session name")?;
-    subject(validate::window_name(&window), "tmux window name")?;
     let cwd = std::env::current_dir()
         .map_err(|e| anyhow!("cannot read the current directory: {}", e.kind()))?;
     subject(validate::launch_dir(&cwd), "current directory")?;
@@ -147,43 +144,70 @@ fn mark_ended(dir: &AgentsDir, name: &str, launch_id: &str) -> anyhow::Result<()
     })
 }
 
-/// A detached, silent thread: every second for up to two minutes it looks
-/// for the Claude process below this one and its sessions file, and records
-/// both once found (D4). Errors are logged at debug level only (B4).
+/// A detached thread: every second for up to two minutes it looks for the
+/// Claude process below this one and its sessions file, and records both
+/// once found (D4). Giving up, or failing to record them, appends one
+/// `WARNING:` line to the supervisor log with the last reason; nothing is
+/// written to the terminal (B4).
 fn watch_for_claude(dir: AgentsDir, home: PathBuf, name: String, launch_id: String) {
     let spawned = std::thread::Builder::new()
         .name("agent-id-watch".into())
         .spawn(move || {
             let root = procfs::proc_root();
+            let dirs = || sessions::config_dirs_from(&home, |k| std::env::var_os(k));
+            let mut last_error = None;
             for _ in 0..ID_WATCH_SECS {
                 std::thread::sleep(Duration::from_secs(1));
-                let Some(found) = find_claude(&root, &home) else {
-                    continue;
-                };
-                if let Err(e) = record_claude(&dir, &name, &launch_id, found) {
-                    tracing::debug!("agent {name}: could not record the claude process: {e:#}");
+                match find_claude(&root, dirs) {
+                    Ok(Some(found)) => {
+                        if let Err(e) = record_claude(&dir, &name, &launch_id, found) {
+                            not_recorded(&dir, &name, &format!("{e:#}"));
+                        }
+                        return;
+                    }
+                    Ok(None) => {}
+                    Err(e) => last_error = Some(e),
                 }
-                return;
             }
+            let reason = last_error.unwrap_or_else(|| {
+                format!(
+                    "no claude process with a session file found within {ID_WATCH_SECS} seconds"
+                )
+            });
+            not_recorded(&dir, &name, &reason);
         });
     if let Err(e) = spawned {
         tracing::debug!("agent: could not start the id thread: {e}");
     }
 }
 
+/// Appends the id thread's warning to the supervisor log.
+fn not_recorded(dir: &AgentsDir, name: &str, reason: &str) {
+    let line = report::not_recorded_line(registry::now(), name, reason);
+    if let Err(e) = report::append(&dir.log(), &line) {
+        tracing::debug!("agent {name}: could not log that its conversation was not recorded: {e}");
+    }
+}
+
 /// The nearest Claude process below this one, its start time, and the
-/// conversation in its sessions file.
-fn find_claude(root: &Path, home: &Path) -> Option<(u32, u64, String)> {
-    let snap = procfs::snapshot(root, amplihack_utils::secure_files::euid()).ok()?;
-    let pid = snap
+/// conversation in its sessions file; `dirs` lists the config directories
+/// once a process is found. `Ok(None)` until both exist; an error is why
+/// they cannot be found.
+pub(super) fn find_claude(
+    root: &Path,
+    dirs: impl FnOnce() -> Result<Vec<PathBuf>, String>,
+) -> Result<Option<(u32, u64, String)>, String> {
+    let snap = procfs::snapshot(root, amplihack_utils::secure_files::euid())?;
+    let found = snap
         .descendants(snap.self_pid)
         .into_iter()
-        .find(|&p| snap.readable_claude(p))?;
-    let start = snap.procs.get(&pid)?.starttime;
-    let dirs = sessions::config_dirs(home).ok()?;
-    let file = sessions::for_process(&dirs, pid, start)?;
-    validate::conversation_id(&file.session_id).ok()?;
-    Some((pid, start, file.session_id))
+        .find(|&p| snap.readable_claude(p))
+        .and_then(|pid| Some((pid, snap.procs.get(&pid)?.starttime)));
+    let Some((pid, start)) = found else {
+        return Ok(None);
+    };
+    let file = sessions::for_process(&dirs()?, pid, start)?;
+    Ok(file.map(|f| (pid, start, f.session_id)))
 }
 
 /// Records what the id thread found, unless the entry is no longer this

@@ -4,8 +4,8 @@
 //!
 //! Every test passes its own temp home; the environment is never changed.
 //!
-//! API under test:
-//! - `CLEAN_REASONS: &[&str]`
+//! API under test (the reasons and the id rule are tested in
+//! `amplihack_utils::agent_marker`):
 //! - `record_clean_end(home: Option<&Path>, session_id: Option<&str>,
 //!   extra: &serde_json::Value, now: u64)`: writes
 //!   `home/.amplihack/agents/ended/<session_id>` (0600, directory 0700) as
@@ -57,11 +57,6 @@ fn markers(home: &Path) -> Vec<String> {
 
 fn mode(p: &Path) -> u32 {
     fs::symlink_metadata(p).unwrap().permissions().mode() & 0o7777
-}
-
-#[test]
-fn the_clean_reasons() {
-    assert_eq!(CLEAN_REASONS, ["prompt_input_exit", "logout"]);
 }
 
 #[test]

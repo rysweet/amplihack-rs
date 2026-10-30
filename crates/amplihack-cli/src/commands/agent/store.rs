@@ -149,6 +149,11 @@ impl LoadError {
 /// Reads the registry without the lock (whole-file reads are safe because
 /// every write is an atomic rename). A missing file is an empty registry.
 pub fn load(dir: &AgentsDir) -> Result<Registry, LoadError> {
+    read(dir).map(|(reg, _)| reg)
+}
+
+/// [`load`], with the bytes it parsed; `None` for a missing file.
+fn read(dir: &AgentsDir) -> Result<(Registry, Option<Vec<u8>>), LoadError> {
     let path = dir.registry();
     let shown = path.display();
     let unsafe_file = || {
@@ -158,21 +163,30 @@ pub fn load(dir: &AgentsDir) -> Result<Registry, LoadError> {
     };
     let (bytes, meta) = match read_bounded_nofollow(&path, MAX_BYTES as u64) {
         Ok(Some(read)) => read,
-        Ok(None) => return Ok(Registry::new()),
-        Err(e) if e.kind() == io::ErrorKind::InvalidData => return Err(unsafe_file()),
+        Ok(None) => return Ok((Registry::new(), None)),
+        Err(e) if e.kind() == io::ErrorKind::InvalidData => {
+            let big = fs::symlink_metadata(&path)
+                .is_ok_and(|m| m.is_file() && m.len() > MAX_BYTES as u64);
+            if big {
+                let msg = format!("{shown}: larger than 8 MiB; {KEPT}");
+                return Err(LoadError::Corrupt(msg));
+            }
+            return Err(unsafe_file());
+        }
         Err(e) => return Err(LoadError::Io(e)),
     };
     if !owned_by_euid(&meta) || meta.mode() & 0o077 != 0 {
         return Err(unsafe_file());
     }
-    let position = |e: serde_json::Error| {
+    let at = |what: &str, e: serde_json::Error| {
         LoadError::Corrupt(format!(
-            "{shown}: not valid JSON (line {}, column {}); {KEPT}",
+            "{shown}: {what} (line {}, column {}); {KEPT}",
             e.line(),
             e.column()
         ))
     };
-    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(position)?;
+    let value: serde_json::Value =
+        serde_json::from_slice(&bytes).map_err(|e| at("not valid JSON", e))?;
     match value.get("version").and_then(serde_json::Value::as_u64) {
         Some(VERSION) => {}
         Some(n) if n > VERSION => return Err(LoadError::TooNew(n)),
@@ -182,7 +196,8 @@ pub fn load(dir: &AgentsDir) -> Result<Registry, LoadError> {
             )));
         }
     }
-    let reg: Registry = serde_json::from_slice(&bytes).map_err(position)?;
+    let reg: Registry =
+        serde_json::from_slice(&bytes).map_err(|e| at("does not match the registry format", e))?;
     for (name, entry) in &reg.agents {
         if let Err(fe) = validate::entry(name, entry) {
             let msg = if fe.field == "name" {
@@ -193,12 +208,14 @@ pub fn load(dir: &AgentsDir) -> Result<Registry, LoadError> {
             return Err(LoadError::Corrupt(msg));
         }
     }
-    Ok(reg)
+    Ok((reg, Some(bytes)))
 }
 
 /// Loads the registry under `registry.lock`, applies `f`, prunes restarts
 /// against `now`, checks every entry and the size, and writes the file
-/// atomically. If any step fails, nothing is written.
+/// atomically. If any step fails, nothing is written. Nor is it when the
+/// result is byte for byte the file already there: a result repeated every
+/// pass (D13) would otherwise cost a rename and two fsyncs each minute.
 pub fn update<T>(
     dir: &AgentsDir,
     now: i64,
@@ -217,7 +234,7 @@ pub fn update<T>(
             anyhow!("{}: {e}", lock_path.display())
         }
     })?;
-    let mut reg = load(dir).map_err(|e| e.into_error(dir))?;
+    let (mut reg, on_disk) = read(dir).map_err(|e| e.into_error(dir))?;
     let out = f(&mut reg)?;
     let path = dir.registry();
     for (name, entry) in reg.agents.iter_mut() {
@@ -243,6 +260,9 @@ pub fn update<T>(
             "{}: the registry would exceed 8 MiB; {KEPT}",
             path.display()
         ));
+    }
+    if on_disk.as_deref() == Some(bytes.as_slice()) {
+        return Ok(out);
     }
     write_private_atomic(&dir.root, REGISTRY, &bytes)
         .map_err(|e| anyhow!("{}: {e}", path.display()))?;

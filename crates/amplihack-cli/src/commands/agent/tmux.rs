@@ -5,7 +5,7 @@
 //! server, session or pane.
 
 use super::report::sanitize;
-use super::socket_check::{self, NOT_PRIVATE, SocketCheck};
+use super::socket_check::{self, NOT_PRIVATE, REFUSED, SocketCheck};
 use super::validate;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -15,8 +15,6 @@ use std::time::Duration;
 const TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_OUTPUT: usize = 64 * 1024;
 const MAX_LINE: usize = 200;
-const SOCKET_REFUSED: &str =
-    "tmux socket: its directory must be owned by you and closed to other users";
 const UNEXPECTED: &str = "tmux display-message returned an unexpected answer";
 const NO_SERVER: &str = "tmux display-message failed: no tmux server is running on the socket";
 
@@ -63,9 +61,12 @@ impl Tmux {
     }
 
     /// `has-session -t =SESSION`, read as A8: the socket rows first, then
-    /// tmux's exit status and stderr.
+    /// tmux's exit status and stderr. Without a recorded socket the rows use
+    /// tmux's default, which a client without `-S` connects to because
+    /// `TMUX` is removed from its environment.
     pub fn has_session(&self, session: &str) -> SessionState {
-        if let Some(state) = self.socket.as_deref().and_then(classify_socket) {
+        let socket = self.socket.clone().unwrap_or_else(default_socket);
+        if let Some(state) = classify_socket(&socket) {
             return state;
         }
         let mut cmd = self.command();
@@ -81,7 +82,7 @@ impl Tmux {
     pub fn display(&self, target: &str, format: &str) -> Result<String, String> {
         if let Some(socket) = &self.socket {
             match socket_check::check(socket) {
-                SocketCheck::NotPrivate => return Err(SOCKET_REFUSED.into()),
+                SocketCheck::NotPrivate => return Err(REFUSED.into()),
                 SocketCheck::MissingParent => return Err(NO_SERVER.into()),
                 SocketCheck::Ok => {}
             }
@@ -170,8 +171,8 @@ fn failure_or_status(out: &Output) -> String {
     }
 }
 
-/// A8 rows 1 to 3 for a recorded socket, decided without tmux; `None`
-/// means tmux must be asked.
+/// A8 rows 1 to 3 for a socket, decided without tmux; `None` means tmux
+/// must be asked.
 pub fn classify_socket(socket: &Path) -> Option<SessionState> {
     match socket_check::check(socket) {
         SocketCheck::NotPrivate => Some(SessionState::Unknown(NOT_PRIVATE.into())),

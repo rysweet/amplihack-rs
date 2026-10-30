@@ -1,6 +1,7 @@
 //! What the supervisor writes and `agent status` prints: the recovery and
-//! ALERT lines (R7.1, R7.2), the closed set of result texts, the repeat rule
-//! (D13), the log append (S20) and both status forms (R7.4, R7.5, B7).
+//! ALERT lines (R7.1, R7.2), the wrapper's WARNING line, the closed set of
+//! result texts, the repeat rule (D13), the log append (S20) and both status
+//! forms (R7.4, R7.5, B7).
 //! Everything shown or logged passes through [`sanitize`].
 
 use super::registry::{EndedBy, Entry, LastRecovery, Registry, State, fmt_ts, restarts_within};
@@ -14,11 +15,6 @@ use std::path::Path;
 const MAX_TEXT: usize = 200;
 /// Longer than any line the supervisor builds; only a bound on hostile text.
 const MAX_LINE: usize = 4096;
-
-/// `%Y-%m-%dT%H:%M:%SZ` in UTC, the format of `rotate/log.rs`.
-pub fn timestamp(t: i64) -> String {
-    fmt_ts(t)
-}
 
 /// Control characters become `?`; at most `max` characters, cut on a
 /// character boundary.
@@ -76,7 +72,7 @@ pub fn recovery_line(
 ) -> String {
     let line = format!(
         "{} agent={name} conversation={} lost={} resumed={} result={result}",
-        timestamp(now),
+        fmt_ts(now),
         conv.unwrap_or("-"),
         lost.unwrap_or("-"),
         resumed.unwrap_or("-"),
@@ -91,7 +87,17 @@ pub fn alert_text(n: usize) -> String {
 
 /// `<ts> ALERT: agent <name> stopped: restart limit (<n> restarts in the last hour)`.
 pub fn alert_line(now: i64, name: &str, n: usize) -> String {
-    let line = format!("{} ALERT: agent {name} {}", timestamp(now), alert_text(n));
+    let line = format!("{} ALERT: agent {name} {}", fmt_ts(now), alert_text(n));
+    sanitize(&line, MAX_LINE)
+}
+
+/// `<ts> WARNING: agent <name> conversation not recorded: <reason>`, logged
+/// by the wrapper when its id thread gives up or cannot record what it found.
+pub fn not_recorded_line(now: i64, name: &str, reason: &str) -> String {
+    let line = format!(
+        "{} WARNING: agent {name} conversation not recorded: {reason}",
+        fmt_ts(now)
+    );
     sanitize(&line, MAX_LINE)
 }
 
@@ -105,7 +111,7 @@ pub fn last_recovery(
     result: &str,
 ) -> LastRecovery {
     LastRecovery {
-        logged_at: timestamp(now),
+        logged_at: fmt_ts(now),
         conversation_id: conv.map(str::to_string),
         lost: lost.map(str::to_string),
         resumed: resumed.map(str::to_string),
@@ -119,6 +125,13 @@ pub fn suppressed(last: Option<&LastRecovery>, conv: Option<&str>, result: &str)
     last.is_some_and(|l| {
         result != "resumed" && l.conversation_id.as_deref() == conv && l.result == result
     })
+}
+
+/// Whether a stored result is cleared once its agent is seen healthy: a
+/// skip or a failure, which would otherwise suppress its own recurrence and
+/// stay in `status` after the agent recovered.
+pub fn clears_when_healthy(result: &str) -> bool {
+    result.starts_with("skipped:") || result.starts_with("failed:")
 }
 
 /// Appends `line` and a newline to the log in one write. The log is opened
@@ -148,9 +161,8 @@ fn state_text(e: &Entry) -> String {
 }
 
 /// The text form: a padded table sorted by name, then one `ALERT` line per
-/// agent with an alert. Ends with a newline. The time is not shown; it is
-/// taken so both forms have the same arguments.
-pub fn status_text(reg: &Registry, _now: i64) -> String {
+/// agent with an alert. Ends with a newline.
+pub fn status_text(reg: &Registry) -> String {
     if reg.agents.is_empty() {
         return "no agents registered\n".to_string();
     }

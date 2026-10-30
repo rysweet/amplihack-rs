@@ -11,7 +11,7 @@ use std::path::Path;
 pub const VERSION: u64 = 1;
 /// Restarts are kept for a day; a few minutes ahead are tolerated (S25).
 const DAY: i64 = 24 * 60 * 60;
-pub(crate) const FUTURE_SLACK: i64 = 300;
+const FUTURE_SLACK: i64 = 300;
 const TS_FORMAT: &str = "%Y-%m-%dT%H:%M:%SZ";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -19,6 +19,7 @@ pub struct Registry {
     pub version: u64,
     #[serde(default)]
     pub agents: BTreeMap<String, Entry>,
+    /// Keys a newer amplihack added without a version bump; `VERSION` covers incompatible ones.
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
@@ -103,6 +104,7 @@ pub struct Entry {
     pub last_recovery: Option<LastRecovery>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alert: Option<String>,
+    /// As [`Registry::extra`], for one entry.
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }

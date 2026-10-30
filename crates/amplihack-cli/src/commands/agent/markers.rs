@@ -5,8 +5,8 @@
 //! reader and deleter.
 
 use super::registry::{Registry, State, parse_ts};
-use super::validate;
-use amplihack_utils::secure_files::{owned_by_euid, read_bounded_nofollow};
+use amplihack_utils::agent_marker::{CLEAN_REASONS, is_conversation_id};
+use amplihack_utils::secure_files::{check_private_dir, owned_by_euid, read_bounded_nofollow};
 use serde::Deserialize;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -15,14 +15,11 @@ use std::path::{Path, PathBuf};
 const MARKER_LIMIT: u64 = 4 * 1024;
 /// How long an unmatched or invalid marker is kept.
 const KEEP_SECS: i64 = 7 * 24 * 60 * 60;
-/// The SessionEnd reasons of a deliberate exit; Claude Code has no `exit`.
-const CLEAN_REASONS: &[&str] = &["prompt_input_exit", "logout"];
 
 /// One valid marker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Marker {
     pub session_id: String,
-    pub reason: String,
     /// Unix seconds.
     pub at: i64,
     pub path: PathBuf,
@@ -38,11 +35,16 @@ struct Raw {
 /// The valid markers directly in `dir`. Names starting with `.` (writes in
 /// progress) are skipped. Any other entry that fails the S14 checks is
 /// unlinked once its `lstat` mtime is more than 7 days before `now`, and
-/// left otherwise. Nothing is followed or recursed into.
-pub fn read(dir: &Path, now: i64) -> Vec<Marker> {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return Vec::new();
-    };
+/// left otherwise. Nothing is followed or recursed into. A missing `dir`
+/// holds no markers; one that is not a private directory of this user (a
+/// symlink, say) is an error, and nothing in it is read or removed.
+pub fn read(dir: &Path, now: i64) -> Result<Vec<Marker>, String> {
+    match check_private_dir(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.to_string()),
+    }
+    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
@@ -55,14 +57,14 @@ pub fn read(dir: &Path, now: i64) -> Vec<Marker> {
             None => remove_if_old(&path, now),
         }
     }
-    out
+    Ok(out)
 }
 
 /// A marker named `name` at `path`: a valid id, a regular private file of
 /// this user of at most 4 KiB, and JSON naming the same id with a clean
 /// reason.
 fn parse(path: &Path, name: &str) -> Option<Marker> {
-    validate::conversation_id(name).ok()?;
+    is_conversation_id(name).then_some(())?;
     let (bytes, meta) = read_bounded_nofollow(path, MARKER_LIMIT).ok()??;
     if !owned_by_euid(&meta) || meta.mode() & 0o077 != 0 {
         return None;
@@ -71,7 +73,6 @@ fn parse(path: &Path, name: &str) -> Option<Marker> {
     let valid = raw.session_id == name && CLEAN_REASONS.contains(&raw.reason.as_str());
     valid.then(|| Marker {
         session_id: raw.session_id,
-        reason: raw.reason,
         at: raw.at,
         path: path.to_path_buf(),
     })

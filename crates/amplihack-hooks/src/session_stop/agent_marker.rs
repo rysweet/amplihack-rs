@@ -5,6 +5,7 @@
 //! exists, through private directories and an atomic rename. Every failure is
 //! logged at debug level and ignored: the hook never fails because of it.
 
+use amplihack_utils::agent_marker::{CLEAN_REASONS, is_conversation_id};
 use amplihack_utils::secure_files::{
     check_private_dir, ensure_private_dir, owned_by_euid, writable_by_others, write_private_atomic,
 };
@@ -12,12 +13,8 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 
-/// The SessionEnd reasons that mean the user ended the session. A lost
-/// terminal sends `other`; `clear` and `resume` keep the session running.
-pub(super) const CLEAN_REASONS: &[&str] = &["prompt_input_exit", "logout"];
-
-/// Writes the marker for `session_id` when `extra["reason"]` is a clean
-/// reason, the id passes the conversation-id rule and
+/// Writes the marker for `session_id` when `extra["reason"]` is one of
+/// [`CLEAN_REASONS`], the id passes [`is_conversation_id`] and
 /// `home/.amplihack/agents/registry.json` exists.
 pub(super) fn record_clean_end(
     home: Option<&Path>,
@@ -32,20 +29,12 @@ pub(super) fn record_clean_end(
         tracing::debug!(reason, "SessionEnd reason does not end an agent");
         return;
     }
-    let (Some(home), Some(id)) = (home, session_id.filter(|id| valid_id(id))) else {
+    let (Some(home), Some(id)) = (home, session_id.filter(|id| is_conversation_id(id))) else {
         return;
     };
     if let Err(e) = write_marker(home, id, reason, now) {
         tracing::debug!("no agent SessionEnd marker written: {e}");
     }
-}
-
-/// `^[A-Za-z0-9][A-Za-z0-9-]{0,63}$`, the supervisor's conversation-id rule.
-fn valid_id(id: &str) -> bool {
-    let mut bytes = id.bytes();
-    bytes.next().is_some_and(|b| b.is_ascii_alphanumeric())
-        && id.len() <= 64
-        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 fn write_marker(home: &Path, id: &str, reason: &str, now: u64) -> Result<(), String> {

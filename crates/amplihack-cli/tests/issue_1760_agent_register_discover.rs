@@ -276,3 +276,19 @@ fn an_ancestor_with_an_unknown_conversation_is_not_used() {
         stderr(&o)
     );
 }
+
+/// Review issue 8: a discovered profile whose directory is gone is dropped
+/// with a warning, and no error names `--profile`, which was not given.
+#[test]
+fn a_discovered_profile_without_its_directory_is_dropped() {
+    let fx = Fx::new();
+    let d = tree(&fx, OPTIONS);
+    fx.sessions_file(&fx.claude_dir, CLAUDE_PID, CONV_A, START, &d);
+    std::fs::remove_dir(fx.profiles.join("work")).unwrap();
+    let o = fx.run(&["agent", "register", "coordinator"]);
+    expect_code(&o, 0);
+    let err = stderr(&o);
+    let want = "warning: ignored the profile of process 5000 (4 bytes): the profile's directory";
+    assert!(err.contains(want) && !err.contains("--profile"), "{err}");
+    assert!(fx.agent("coordinator")["amplihack_flags"]["profile"].is_null());
+}

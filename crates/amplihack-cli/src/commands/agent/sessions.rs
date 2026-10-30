@@ -18,23 +18,35 @@ const SESSION_LIMIT: u64 = 64 * 1024;
 /// The liveness-unknown reason for any S10 failure.
 pub const NOT_PRIVATE: &str = "Claude config directory is not private";
 const PRIVATE_RULE: &str = "it must be owned by you and not writable by other users";
+const UNREADABLE: &str = "a Claude sessions directory cannot be read";
 const PROFILE_MISSING: &str = "--profile: the profile's directory must exist under the profile \
                                root and must not be a symlink";
 
-/// Why the config directories could not be listed.
+/// Why a config or sessions directory could not be used.
 enum DirsError {
     /// An S10 failure, naming the directory by `~/.claude` or profile name.
     Private(String),
     Other(String),
 }
 
+/// The supervisor's form: an S10 failure is [`NOT_PRIVATE`].
+fn brief(e: DirsError) -> String {
+    match e {
+        DirsError::Private(_) => NOT_PRIVATE.to_string(),
+        DirsError::Other(m) => m,
+    }
+}
+
+/// The form that names the directory, for `register` and the log.
+fn detailed(e: DirsError) -> String {
+    let (DirsError::Private(m) | DirsError::Other(m)) = e;
+    m
+}
+
 /// [`config_dirs_from`] for this process's environment. An S10 failure is
 /// reported as [`NOT_PRIVATE`], the reason the supervisor prints.
 pub fn config_dirs(home: &Path) -> Result<Vec<PathBuf>, String> {
-    collect(home, |k| std::env::var_os(k)).map_err(|e| match e {
-        DirsError::Private(_) => NOT_PRIVATE.to_string(),
-        DirsError::Other(m) => m,
-    })
+    collect(home, |k| std::env::var_os(k)).map_err(brief)
 }
 
 /// `home/.claude`, then each real directory directly inside the profile
@@ -46,9 +58,7 @@ pub fn config_dirs_from(
     home: &Path,
     env: impl Fn(&str) -> Option<OsString>,
 ) -> Result<Vec<PathBuf>, String> {
-    collect(home, env).map_err(|e| match e {
-        DirsError::Private(m) | DirsError::Other(m) => m,
-    })
+    collect(home, env).map_err(detailed)
 }
 
 fn collect(home: &Path, env: impl Fn(&str) -> Option<OsString>) -> Result<Vec<PathBuf>, DirsError> {
@@ -186,18 +196,14 @@ pub struct Index {
 }
 
 /// Reads `<dir>/sessions/*.json` in each directory (64 KiB each, symlinks
-/// not followed, unparsable files skipped). A missing `sessions/` is empty;
-/// one that cannot be listed or fails S10 is an error.
+/// not followed, other users' and unparsable files skipped). A missing
+/// `sessions/` is empty; one that cannot be listed or fails S10 is an error.
 pub fn index(dirs: &[PathBuf]) -> Result<Index, String> {
     let mut idx = Index::default();
     for dir in dirs {
-        let sessions = dir.join("sessions");
-        match fs::symlink_metadata(&sessions) {
-            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-            Err(_) => return Err("a Claude sessions directory cannot be read".into()),
-            Ok(m) if !m.is_dir() || !private(&m) => return Err(NOT_PRIVATE.into()),
-            Ok(_) => {}
-        }
+        let Some(sessions) = sessions_dir(dir).map_err(brief)? else {
+            continue;
+        };
         let entries = fs::read_dir(&sessions)
             .map_err(|_| "a Claude sessions directory cannot be listed".to_string())?;
         for entry in entries.flatten() {
@@ -216,17 +222,49 @@ pub fn index(dirs: &[PathBuf]) -> Result<Index, String> {
     Ok(idx)
 }
 
+/// `<dir>/sessions` when it exists and passes S10; `None` when missing.
+fn sessions_dir(dir: &Path) -> Result<Option<PathBuf>, DirsError> {
+    let sessions = dir.join("sessions");
+    let m = match fs::symlink_metadata(&sessions) {
+        Ok(m) => m,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(DirsError::Other(UNREADABLE.into())),
+    };
+    if m.is_dir() && private(&m) {
+        return Ok(Some(sessions));
+    }
+    let shown = match dir.file_name().and_then(|n| n.to_str()) {
+        Some(".claude") | None => "~/.claude/sessions".to_string(),
+        Some(profile) => format!("the sessions directory of profile {profile}"),
+    };
+    let msg = format!("{shown} is not private: {PRIVATE_RULE}");
+    Err(DirsError::Private(msg))
+}
+
 fn read_session(path: &Path) -> Option<SessionFile> {
-    let (bytes, _) = read_bounded_nofollow(path, SESSION_LIMIT).ok()??;
-    parse_session_file(&bytes)
+    let (bytes, meta) = read_bounded_nofollow(path, SESSION_LIMIT).ok()??;
+    owned_session(&bytes, &meta)
+}
+
+/// A sessions file's content, only when the file belongs to this user.
+pub(super) fn owned_session(raw: &[u8], meta: &fs::Metadata) -> Option<SessionFile> {
+    owned_by_euid(meta).then(|| parse_session_file(raw))?
 }
 
 /// The sessions file of one process: only `<dir>/sessions/<pid>.json` is
 /// read in each directory, and the first whose `pid` and `procStart` match.
-pub fn for_process(dirs: &[PathBuf], pid: u32, start: u64) -> Option<SessionFile> {
-    dirs.iter()
-        .filter_map(|d| read_session(&d.join("sessions").join(format!("{pid}.json"))))
-        .find(|s| s.pid == pid && s.proc_start == start)
+/// A `sessions/` that fails S10 is an error naming it, as in [`index`].
+pub fn for_process(dirs: &[PathBuf], pid: u32, start: u64) -> Result<Option<SessionFile>, String> {
+    for dir in dirs {
+        let Some(sessions) = sessions_dir(dir).map_err(detailed)? else {
+            continue;
+        };
+        let file = read_session(&sessions.join(format!("{pid}.json")));
+        if let Some(s) = file.filter(|s| s.pid == pid && s.proc_start == start) {
+            return Ok(Some(s));
+        }
+    }
+    Ok(None)
 }
 
 /// The `projects/` directory names Claude may use for `launch_dir` (A4):

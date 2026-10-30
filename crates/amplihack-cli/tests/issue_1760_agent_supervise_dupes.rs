@@ -5,7 +5,8 @@
 //! `proc_start` (C5: only when that process is Claude). So does an existing
 //! tmux session. Doubt counts as running (R4.2, D21, B5), two entries sharing
 //! one id are resumed once (C3), and an unsafe socket directory is never
-//! handed to tmux (S12).
+//! handed to tmux (S12). A missing default socket is no session, whatever
+//! tmux would say about it.
 
 #![cfg(target_os = "linux")]
 
@@ -261,4 +262,26 @@ fn a_socket_in_a_directory_open_to_others_is_never_contacted() {
         result_of(&fx, "coord").as_deref(),
         Some("skipped: tmux session exists (tmux state unknown: socket directory is not private)")
     );
+}
+
+/// Review issue 1: an entry registered without `--tmux-socket`, after a
+/// reboot. No tmux server has started, so tmux would print `error connecting
+/// to ...`, which is not one of its "absent" messages; the missing default
+/// socket decides first, and the agent is resumed.
+#[test]
+fn a_missing_default_socket_means_the_session_is_gone() {
+    let fx = Fx::new();
+    let d = lost_dir(&fx, "coord", CONV_A);
+    expect_code(&fx.register("coord", "coord", &d, CONV_A, &[]), 0);
+    assert!(fx.agent("coord")["tmux_socket"].is_null());
+    let empty = fx.root.join("empty-tt");
+    std::fs::create_dir(&empty).unwrap();
+    chmod(&empty, 0o700);
+    fx.tmux_no_default_server();
+    let mut cmd = fx.cmd(&["agent", "supervise", "--once", "--gap", "0"]);
+    expect_code(&fx.output(cmd.env("TMUX_TMPDIR", &empty)), 0);
+    assert_eq!(result_of(&fx, "coord").as_deref(), Some("resumed"));
+    let started = fx.new_sessions();
+    assert_eq!(started.len(), 1, "{started:?}");
+    assert_eq!(started[0].socket(), None);
 }

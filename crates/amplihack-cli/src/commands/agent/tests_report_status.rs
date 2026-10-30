@@ -3,11 +3,11 @@
 //! `restarts_last_hour` with the S25 future window.
 //!
 //! API under test:
-//! - `report::status_text(reg: &Registry, now: i64) -> String`
+//! - `report::status_text(reg: &Registry) -> String`
 //! - `report::status_json(reg: &Registry, now: i64) -> serde_json::Value`
 //! - `registry::Registry` (deserialised from its JSON form)
 
-use super::registry::Registry;
+use super::registry::{Registry, fmt_ts};
 use super::report::*;
 use serde_json::{Value, json};
 
@@ -15,10 +15,6 @@ const A: &str = "0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c";
 const C: &str = "4c1d9e2f-0a1b-4c2d-8e3f-5a6b7c8d9e0f";
 /// 2026-10-30T12:00:00Z.
 const NOW: i64 = 1_793_361_600;
-
-fn ts(t: i64) -> String {
-    timestamp(t)
-}
 
 fn base(dir: &str, session: &str) -> Value {
     json!({
@@ -32,11 +28,11 @@ fn registry() -> Registry {
     let mut coord = base("/srv/project", "coord");
     coord["conversation_id"] = json!(A);
     coord["restarts"] = json!([
-        ts(NOW - 3601),
-        ts(NOW - 3599),
-        ts(NOW - 100),
-        ts(NOW + 200),
-        ts(NOW + 400)
+        fmt_ts(NOW - 3601),
+        fmt_ts(NOW - 3599),
+        fmt_ts(NOW - 100),
+        fmt_ts(NOW + 200),
+        fmt_ts(NOW + 400)
     ]);
     coord["last_recovery"] = json!({
         "logged_at": "2026-10-30T10:02:11Z", "conversation_id": A,
@@ -62,7 +58,7 @@ fn registry() -> Registry {
 #[test]
 fn an_empty_registry() {
     let reg: Registry = serde_json::from_value(json!({ "version": 1, "agents": {} })).unwrap();
-    assert_eq!(status_text(&reg, NOW).trim_end(), "no agents registered");
+    assert_eq!(status_text(&reg).trim_end(), "no agents registered");
     assert_eq!(status_json(&reg, NOW), json!({ "agents": [] }));
 }
 
@@ -104,7 +100,7 @@ fn the_text_form() {
         ),
         "ALERT area-ci: stopped: restart limit (3 restarts in the last hour)".to_string(),
     ];
-    let got: Vec<String> = status_text(&registry(), NOW)
+    let got: Vec<String> = status_text(&registry())
         .lines()
         .map(|l| l.trim_end().to_string())
         .collect();
@@ -119,7 +115,7 @@ fn a_session_end_shows_its_spelling() {
     e["ended_by"] = json!("session-end");
     let reg: Registry =
         serde_json::from_value(json!({ "version": 1, "agents": { "a": e } })).unwrap();
-    let text = status_text(&reg, NOW);
+    let text = status_text(&reg);
     assert!(
         text.contains("ended 2026-10-30T08:00:00Z (session-end)"),
         "{text}"
@@ -133,7 +129,7 @@ fn text_from_outside_is_sanitised() {
         json!({ "logged_at": "2026-10-30T10:00:00Z", "result": "failed: tmux: a\u{1b}b" });
     let reg: Registry =
         serde_json::from_value(json!({ "version": 1, "agents": { "a": e } })).unwrap();
-    let text = status_text(&reg, NOW);
+    let text = status_text(&reg);
     assert!(text.contains("failed: tmux: a?b"), "{text}");
     assert!(!text.chars().any(|c| c.is_control() && c != '\n'));
 }

@@ -15,7 +15,7 @@
 //!   `--resume` id, or `None` under `--fork-session`
 //! - `parse_amplihack_claude(argv: &[String]) -> Option<AmplihackClaude>`,
 //!   `AmplihackClaude { profile: Option<String>, subprocess_safe: bool,
-//!   no_reflection: bool, supervise: Option<String>, user_args: Vec<String> }`
+//!   no_reflection: bool }`
 
 use super::cmdline::*;
 
@@ -212,18 +212,19 @@ fn amplihack_ancestors() {
     .expect("an amplihack claude process");
     assert_eq!(a.profile.as_deref(), Some("work"));
     assert!(a.subprocess_safe && a.no_reflection);
-    assert_eq!(a.supervise.as_deref(), Some("coord"));
-    assert_eq!(
-        a.user_args,
-        ["--dangerously-skip-permissions", "--model", "m"]
-    );
 
     let a = parse_amplihack_claude(&v(&["amplihack", "launch", "--profile=w2"])).expect("launch");
     assert_eq!(a.profile.as_deref(), Some("w2"));
-    assert!(a.user_args.is_empty() && !a.subprocess_safe && a.supervise.is_none());
+    assert!(!a.subprocess_safe && !a.no_reflection);
 
     let a = parse_amplihack_claude(&v(&["amplihack", "claude", "--", "--profile", "x"])).unwrap();
     assert_eq!(a.profile, None, "--profile after -- belongs to claude");
+
+    for (sub, want) in [("launch", Some("work")), ("claude", None)] {
+        let argv = v(&["amplihack", sub, "--skip-update-check", "--profile=work"]);
+        let a = parse_amplihack_claude(&argv).unwrap();
+        assert_eq!(a.profile.as_deref(), want, "a launch-only flag under {sub}");
+    }
 
     let a = parse_amplihack_claude(&v(&[
         "amplihack",
@@ -232,21 +233,25 @@ fn amplihack_ancestors() {
         "o/r",
         "--max-turns",
         "5",
+        "--supervise",
+        "coord",
+        "--no-reflection",
         "--model",
         "m",
+        "--subprocess-safe",
     ]))
     .unwrap();
-    assert_eq!(
-        a.user_args,
-        ["--model", "m"],
+    assert!(
+        a.no_reflection,
         "value options are skipped with their value"
+    );
+    assert!(
+        !a.subprocess_safe,
+        "parsing stops at the first argument that is not amplihack's"
     );
 
     let a = parse_amplihack_claude(&v(&["amplihack", "claude", "--profile", "../x"])).unwrap();
-    assert_eq!(
-        a.profile, None,
-        "S8: a discovered profile must pass the name rule"
-    );
+    assert_eq!(a.profile, None, "S8: the profile name rule");
 
     for not in [
         &["amplihack", "recipe", "run"][..],
@@ -256,4 +261,38 @@ fn amplihack_ancestors() {
     ] {
         assert!(parse_amplihack_claude(&v(not)).is_none(), "{not:?}");
     }
+}
+
+/// After any option of `amplihack claude` or `launch`, under either, the
+/// profile is clap's own; lines clap refuses are skipped.
+#[test]
+fn the_profile_agrees_with_clap_after_every_option() {
+    use clap::CommandFactory;
+    let cli = crate::Cli::command();
+    let options: Vec<(String, bool)> = ["claude", "launch"]
+        .iter()
+        .flat_map(|s| cli.find_subcommand(s).unwrap().get_arguments())
+        .filter_map(|a| Some((a.get_long()?.to_string(), a.get_action().takes_values())))
+        .filter(|(long, _)| long != "profile" && long != "help")
+        .collect();
+    let mut compared = 0;
+    for sub in ["claude", "launch"] {
+        for (long, takes_value) in &options {
+            let mut argv = v(&["amplihack", sub, &format!("--{long}")]);
+            argv.extend(takes_value.then(|| "5".to_string()));
+            argv.push("--profile=work".into());
+            let Ok(parsed) = crate::Cli::try_parse_from(argv.clone()) else {
+                continue;
+            };
+            let want = match parsed.command {
+                crate::Commands::Claude { profile, .. }
+                | crate::Commands::Launch { profile, .. } => profile,
+                other => panic!("{other:?}"),
+            };
+            let got = parse_amplihack_claude(&argv).unwrap().profile;
+            assert_eq!(got, want, "{argv:?}");
+            compared += 1;
+        }
+    }
+    assert!(compared >= 40, "only {compared} command lines compared");
 }

@@ -8,7 +8,6 @@ use super::procfs::{ClaudeNames, Snapshot, is_claude_with};
 use super::registry::Registry;
 use super::sessions::{Index, for_process};
 use super::tmux::SessionState;
-use super::validate;
 use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -106,9 +105,10 @@ pub fn observe(live: &Liveness, session: &SessionState) -> Observation {
 }
 
 /// D5: the conversation the recorded process now holds, when the process is
-/// alive with its recorded start time, its sessions file names a valid id
-/// that differs from `current`, and no other `active` agent holds that id
-/// (C3).
+/// alive with its recorded start time, its sessions file (whose id is
+/// validated when parsed) names an id that differs from `current`, and no
+/// other `active` agent holds that id (C3). A sessions directory that fails
+/// S10 changes nothing.
 pub fn refreshed_id(
     snap: &Snapshot,
     dirs: &[PathBuf],
@@ -121,9 +121,7 @@ pub fn refreshed_id(
     if !snap.alive(pid, start) {
         return None;
     }
-    let id = for_process(dirs, pid, start)?.session_id;
-    let fresh = validate::conversation_id(&id).is_ok()
-        && current != Some(id.as_str())
-        && reg.active_with_conversation(&id, name).is_none();
+    let id = for_process(dirs, pid, start).ok().flatten()?.session_id;
+    let fresh = current != Some(id.as_str()) && reg.active_with_conversation(&id, name).is_none();
     fresh.then_some(id)
 }

@@ -209,6 +209,28 @@ fn a_healthy_agent_writes_no_line_and_clears_lost_at() {
     assert!(e.get("last_recovery").is_none_or(Value::is_null), "{e}");
 }
 
+/// Review issue 10: a healthy pass clears a stored skip, so the same skip
+/// after the agent recovered is written again.
+#[test]
+fn a_skip_is_written_again_after_the_agent_was_healthy() {
+    let fx = Fx::new();
+    let d = fx.dir("coord");
+    fx.transcript(&d, CONV_A);
+    fx.tmux_session("coord", "main");
+    fx.write_agents(&[("coord", fx.entry("coord", &d, Some(CONV_A)))]);
+    pass(&fx);
+    let p = crate::issue_1760_fake_proc::Proc::new(5600, 1, &["claude", "--resume", CONV_A], &d);
+    fx.add_proc(&p);
+    pass(&fx);
+    let e = fx.agent("coord");
+    assert!(e.get("last_recovery").is_none_or(Value::is_null), "{e}");
+    fx.remove_proc(5600);
+    pass(&fx);
+    let skipped = "skipped: tmux session exists";
+    assert_eq!(result_of(&fx, "coord").as_deref(), Some(skipped));
+    assert_eq!(lines_for(&fx, "coord").len(), 2, "{:?}", fx.log_lines());
+}
+
 /// A log line as the `last_recovery` object, `-` read as null.
 fn parse_line(line: &str) -> Value {
     let (head, result) = line.split_once(" result=").unwrap();

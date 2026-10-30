@@ -155,7 +155,7 @@ fn unsafe_files_are_refused() {
 
     let (_h, dir) = with_registry(&" ".repeat(8 * 1024 * 1024 + 1));
     let over = load(&dir);
-    assert!(matches!(over, Err(LoadError::Unsafe(_))), "over 8 MiB");
+    assert!(matches!(over, Err(LoadError::Corrupt(_))), "over 8 MiB");
 }
 
 #[test]

@@ -116,9 +116,17 @@ fn refresh_ids(dir: &AgentsDir, reg: &Registry, view: &View, now: i64) -> anyhow
 }
 
 /// Ends the agents that SessionEnd markers name (R6.3, A6), then deletes
-/// the markers that were applied or are stale. Ending writes no line.
+/// the markers that were applied or are stale. Ending writes no line. An
+/// `ended/` that is not a private directory gives one warning and no
+/// markers.
 fn apply_markers(dir: &AgentsDir, view: &View, now: i64) -> anyhow::Result<()> {
-    let found = markers::read(&dir.ended(), now);
+    let found = match markers::read(&dir.ended(), now) {
+        Ok(found) => found,
+        Err(e) => {
+            eprintln!("warning: ~/.amplihack/agents/ended: {e}; no markers were read");
+            return Ok(());
+        }
+    };
     if found.is_empty() {
         return Ok(());
     }
@@ -185,7 +193,8 @@ struct Plan {
 
 /// Steps 5 to 7: classification (one `has-session` per socket and session),
 /// then one write that clears or sets `lost_at`, records each line and
-/// applies the restart limit. Returns the agents to resume.
+/// applies the restart limit. A healthy agent also loses a stored skip or
+/// failure, so its recurrence is logged again. Returns the agents to resume.
 fn classify(
     dir: &AgentsDir,
     home: &Path,
@@ -196,6 +205,7 @@ fn classify(
 ) -> anyhow::Result<Vec<Candidate>> {
     let mut sessions: HashMap<(Option<String>, String), SessionState> = HashMap::new();
     let mut plans = Vec::new();
+    // Skips even the lock on a healthy pass; `store::update` only skips an unchanged write.
     let mut write = false;
     for (name, e) in active(reg) {
         let live = view.liveness(e);
@@ -204,7 +214,10 @@ fn classify(
             Tmux::new(e.tmux_socket.as_deref().map(Path::new)).has_session(&e.tmux_session)
         });
         let obs = scan::observe(&live, state);
-        write |= obs != Observation::Healthy || e.lost_at.is_some();
+        let last = e.last_recovery.as_ref().map(|l| l.result.as_str());
+        write |= obs != Observation::Healthy
+            || e.lost_at.is_some()
+            || last.is_some_and(report::clears_when_healthy);
         let pre = (obs == Observation::Lost)
             .then(|| precheck(home, e))
             .flatten();
@@ -236,6 +249,10 @@ fn classify(
             }
             if p.obs == Observation::Healthy {
                 e.lost_at = None;
+                let last = e.last_recovery.as_ref().map(|l| l.result.as_str());
+                if last.is_some_and(report::clears_when_healthy) {
+                    e.last_recovery = None;
+                }
                 continue;
             }
             let n = restarts_within(&e.restarts, now, HOUR);

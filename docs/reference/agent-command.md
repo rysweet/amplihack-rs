@@ -125,6 +125,10 @@ flag keeps the value found.
 | Neither, with `--conversation ID` | The nearest `claude` ancestor, only when its conversation is known and equals ID. Its conversation is found as in [Fields read from the process](#fields-read-from-the-process). When it differs or cannot be found, no process is used: the ancestor is read only for that comparison, and nothing from it is recorded. This lets one session register another session that is already gone. |
 | Neither, and no `claude` ancestor | No process. |
 
+With `--pane`, and when it looks for an ancestor, `register` fails with
+`cannot read the process table` when `/proc` cannot be read. With `--pid` that
+is the `--pid` message above.
+
 With no process, `--session`, `--window`, `--dir` and `--conversation` are
 required; otherwise `register` fails with
 `no claude process found; pass --session, --window, --dir and --conversation`.
@@ -145,13 +149,13 @@ the process is treated as not found.
 
 | Field | Source |
 |-------|--------|
-| `conversation_id` | `sessionId` from `sessions/<pid>.json` in `~/.claude` or in any profile directory, used only when the file's `pid` is the process and its `procStart` equals the process's start time (field 22 of `/proc/<pid>/stat`). Without such a file, the `--resume` value on the `claude` command line, unless `--fork-session` is also there: a forked session writes a new conversation. |
+| `conversation_id` | `sessionId` from `sessions/<pid>.json` in `~/.claude` or in any profile directory, used only when the file is yours, its `pid` is the process and its `procStart` equals the process's start time (field 22 of `/proc/<pid>/stat`). A `sessions/` directory that fails the [privacy check](#liveness) is an error that names it. Without such a file, the `--resume` value on the `claude` command line, unless `--fork-session` is also there: a forked session writes a new conversation. |
 | `launch_dir` | The session file's `cwd`, else the process's working directory. |
 | `model`, `effort`, `add_dirs`, `permission_mode`, `skip_permissions` | The `claude` command line; see [Command-line parsing](#command-line-parsing). |
-| `amplihack_flags` | `--profile`, `--subprocess-safe` and `--no-reflection` before `--` on the command line of the nearest ancestor that is `amplihack claude` or `amplihack launch`. |
+| `amplihack_flags` | `--profile`, `--subprocess-safe` and `--no-reflection` on the command line of the nearest ancestor that is `amplihack claude` or `amplihack launch`. Every other option of that subcommand is skipped with its value, and reading stops at `--` or at the first argument that is not one of its options, as clap does. A profile whose directory no longer exists is not recorded, with a [warning](#warnings). |
 | `env` | Allowlisted variables from that ancestor's environment, or from the `claude` process's when there is no such ancestor. |
 | `tmux_socket` | The first comma-separated field of `TMUX` in the `claude` process's environment. With `--pane`, the socket tmux was asked on; when that was tmux's default server, its path `TMUX_TMPDIR/tmux-UID/default`, with `TMUX_TMPDIR` taken from `register`'s environment and `/tmp` when it is unset or empty. |
-| `tmux_session`, `tmux_window` | `tmux display-message -p -t PANE '#{session_name}<TAB>#{window_name}'`, where PANE is `TMUX_PANE` from the process's environment, or TARGET with `--pane`. tmux is not asked when both `--session` and `--window` are given. The answer must be exactly the two fields and a newline; anything else is an error. |
+| `tmux_session`, `tmux_window` | `tmux display-message -p -t PANE '#{session_name}<TAB>#{window_name}'`. With `--pane`, PANE is TARGET, asked on the same server. Otherwise PANE is `TMUX_PANE` from the process's environment, asked on the server named by the first field of its `TMUX`, whatever `--tmux-socket` says; without both variables tmux is not asked. tmux is not asked when both `--session` and `--window` are given. The answer must be exactly the two fields and a newline; anything else is `tmux display-message returned an unexpected answer`. |
 | `claude_pid`, `proc_start` | The process's pid and start time. |
 
 When a process is found but a required field cannot be read, `register`
@@ -240,12 +244,10 @@ In one locked registry write, `register`:
    conflict with itself;
 2. replaces any record with the same NAME by a new one: state `active`;
    `restarts`, `last_recovery`, `alert`, `lost_at`, `ended_at` and `ended_by`
-   cleared; a new `launch_id`; `registered_at` set to the later of now and
-   the previous `registered_at` plus one second; `launched_at` set to the
-   same time; `claude_pid` and `proc_start` from the process, or none.
-
-A supervisor write already in progress for the old record is dropped,
-because its `registered_at` no longer matches.
+   cleared; a new `launch_id`; a new `registered_at`, and `launched_at`
+   equal to it; `claude_pid` and `proc_start` from the process, or none. A
+   supervisor pass that was working on the old record leaves the new one
+   alone.
 
 Before the write, `register` checks that the Claude config directories are
 private (see [Liveness](#liveness)) and, when a socket is recorded, that its
@@ -326,29 +328,33 @@ For each agent, `last_recovery` holds the fields of the agent's latest
 recovery line in the [supervisor log](#supervisor-log), with `-` read as
 `null`.
 
-The `custodian` object from the example above, formatted with `jq`:
+The `custodian` object from the example above, as
+`amplihack agent status --json | jq '.agents[] | select(.name == "custodian")'`
+prints it:
 
 ```json
 {
-  "name": "custodian",
-  "state": "stopped",
-  "conversation_id": "3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57",
-  "launch_dir": "/home/alex/src/mistt",
-  "tmux_session": "custodian",
-  "tmux_window": "main",
-  "restarts_last_hour": 3,
-  "last_recovery": {
-    "logged_at": "2026-10-30T00:41:40Z",
-    "conversation_id": "3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57",
-    "lost": "2026-10-30T00:41:40Z",
-    "resumed": null,
-    "result": "stopped: restart limit"
-  },
   "alert": "stopped: restart limit (3 restarts in the last hour)",
+  "conversation_id": "3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57",
   "ended_at": null,
-  "ended_by": null
+  "ended_by": null,
+  "last_recovery": {
+    "conversation_id": "3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57",
+    "logged_at": "2026-10-30T00:41:40Z",
+    "lost": "2026-10-30T00:41:40Z",
+    "result": "stopped: restart limit",
+    "resumed": null
+  },
+  "launch_dir": "/home/alex/src/mistt",
+  "name": "custodian",
+  "restarts_last_hour": 3,
+  "state": "stopped",
+  "tmux_session": "custodian",
+  "tmux_window": "main"
 }
 ```
+
+Keys are printed in alphabetical order.
 
 ## Supervise
 
@@ -405,7 +411,8 @@ problem does not put the service into a restart loop.
 3. Refresh conversation ids: for each active agent whose recorded process is
    still alive (same pid and start time), take `sessionId` from that
    process's session file. When it differs, for example after `/clear`, it
-   replaces the recorded id, unless another active agent has it.
+   replaces the recorded id, unless another active agent has it. A
+   `sessions/` directory that fails the privacy check changes nothing.
 4. Apply [SessionEnd markers](#sessionend-markers).
 5. [Classify](#classification) each `active` agent. `ended` and `stopped`
    agents are not looked at.
@@ -413,11 +420,9 @@ problem does not put the service into a restart loop.
    [restart limit](#restart-limit).
 7. [Order the rest and resume them in batches](#order-and-batches).
 
-Every registry write in a pass is made under the registry lock and applies
-only while the agent's `registered_at` is unchanged and, where the write
-changes the state, while the agent is still `active`. The registry lock is
-never held while tmux, git or a wait runs. A line is written to the log after
-the registry write it belongs to.
+A pass never changes an agent that was registered again, or that stopped
+being `active`, while the pass was working on it. A line is written to the
+log after the registry write it belongs to.
 
 ### Liveness
 
@@ -457,15 +462,20 @@ not writable by other users (group write is accepted for your own private
 group); `~/.claude` and the root may be symlinks to directories that pass. If
 any fails, liveness is unknown with the reason
 `Claude config directory is not private`, and nothing is resumed. Session
-files are read without following symlinks, at most 64 KiB each, and only
-`pid`, `sessionId`, `procStart` and `cwd` are used.
+files are read without following symlinks, at most 64 KiB each; files owned
+by another user are skipped, and only `pid`, `sessionId`, `procStart` and
+`cwd` are used.
 
 ### tmux session state
 
 The supervisor asks `tmux [-S SOCKET] has-session -t =SESSION`, once for each
 distinct socket and session in a pass. `-S` is passed when a socket is
 recorded. The rows below are tried in order, and the first that applies
-decides. Rows 1 to 3 apply only when a socket is recorded.
+decides. Without a recorded socket, rows 1 to 3 look at tmux's default
+socket, `TMUX_TMPDIR/tmux-UID/default` for the supervisor's environment
+(`/tmp` when `TMUX_TMPDIR` is unset or empty), which is the one tmux uses
+without `-S`. So after a reboot, with no tmux server started yet, the
+session is absent rather than unknown.
 
 | Order | Outcome | State |
 |-------|---------|-------|
@@ -485,7 +495,7 @@ even when no socket file is in it.
 
 | Conversation | tmux session | Outcome | Line written |
 |--------------|--------------|---------|--------------|
-| running or unknown | present or unknown | healthy; `lost_at` cleared | none |
+| running or unknown | present or unknown | healthy; `lost_at` cleared, and a `skipped:` or `failed:` result in `last_recovery` cleared | none |
 | running | absent | skipped | `skipped: already running` |
 | unknown | absent | skipped | `skipped: already running (liveness unknown: REASON)` |
 | not running | present | skipped | `skipped: tmux session exists` |
@@ -500,7 +510,7 @@ Each lost agent is checked in this order; the first failure decides.
 |-------|--------|
 | The agent has a conversation id | `failed: no conversation id` |
 | The launch directory exists | `failed: launch directory missing` |
-| The transcript exists | `failed: no transcript` |
+| The transcript exists | `failed: no transcript`; also when the recorded profile's directory no longer exists |
 | The [restart limit](#restart-limit) is not reached | `stopped: restart limit`, followed by the ALERT line |
 
 The transcript is `CONFIG/projects/ENCODED/ID.jsonl`, where CONFIG is the
@@ -662,7 +672,9 @@ run:
   resume `failed: tmux: socket directory is not private`, and makes
   `register` and `claude --supervise` exit 1 with
   `tmux socket: its directory must be owned by you and closed to other users`.
-  Without `-S`, tmux makes its own check on its default directory.
+  Without `-S`, `has-session` first makes these checks on tmux's default
+  socket, as in [tmux session state](#tmux-session-state); other commands
+  leave it to tmux's own check of its default directory.
 
 No command kills a tmux server, session, window or pane, sends keys, or uses
 `remain-on-exit`.
@@ -692,8 +704,10 @@ Each of these exits 1 before Claude Code starts:
 | NAME fails the [value rules](#value-rules) | `NAME: RULE` |
 | `-p` or `--print` in CLAUDE_ARGS | `amplihack claude --supervise needs an interactive session; -p and --print are not supported` |
 | The socket from `$TMUX` fails the [checks](#tmux-calls) | `tmux socket: its directory must be owned by you and closed to other users` |
-| tmux cannot name the pane's session and window | `tmux display-message failed: LINE` |
-| The current directory or a tmux name fails the value rules | `SUBJECT: RULE` |
+| tmux cannot name the pane's session and window | `tmux display-message failed: LINE`, or `tmux display-message returned an unexpected answer` |
+| A tmux name fails the value rules | `tmux session name RULE` or `tmux window name RULE` |
+| The current directory cannot be read | `cannot read the current directory: KIND` |
+| The current directory fails the value rules | `current directory: RULE` |
 | `--profile` fails the name rules, its directory is missing, or the profile root cannot be worked out | the [`--profile` and profile root errors](#errors) |
 | Another active agent has the same socket and tmux session, or the conversation id from `--resume` | the [register conflict messages](#register-effects) |
 | The registry cannot be loaded or locked | the [error](#errors) for its cause |
@@ -726,7 +740,11 @@ background it looks, every second for up to 120 seconds, for the `claude`
 process it started and that process's session file. When it finds them it
 records `claude_pid`, `proc_start` and the conversation id, unless the id
 belongs to another active agent or the record no longer carries this
-launch's `launch_id`.
+launch's `launch_id`. If it finds nothing in that time, or cannot record what
+it found, it appends one `WARNING:` line to the
+[supervisor log](#supervisor-log) with the last reason, such as a config or
+`sessions/` directory that fails the privacy check, or
+`no claude process with a session file found within 120 seconds`.
 
 ### Clean exit
 
@@ -771,7 +789,7 @@ The directory `ended/` is created with mode `0700`, and the file is written
 atomically with mode `0600`:
 
 ```json
-{"session_id":"3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57","reason":"prompt_input_exit","at":1793322100}
+{"at":1793322100,"reason":"prompt_input_exit","session_id":"3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57"}
 ```
 
 `at` is the time in Unix seconds. Any failure is logged at debug level and
@@ -793,11 +811,15 @@ marker.
 
 ### Applying a marker
 
-At the start of each pass the supervisor reads `ended/`. It skips names that
-start with `.`, and accepts a file only when its name passes the conversation
-id rule, it is a regular file owned by you with no group or other permission
-bits, it is at most 4 KiB, its `session_id` equals the file name, and its
-`reason` is `prompt_input_exit` or `logout`. Symlinks are never followed.
+At the start of each pass the supervisor reads `ended/`. When `ended/` is a
+symlink, or not a directory owned by you with no group or other permission
+bits, nothing in it is read or deleted, and the pass prints
+`warning: ~/.amplihack/agents/ended: REASON; no markers were read`. In a
+private `ended/`, it skips names that start with `.`, and accepts a file only
+when its name passes the conversation id rule, it is a regular file owned by
+you with no group or other permission bits, it is at most 4 KiB, its
+`session_id` equals the file name, and its `reason` is `prompt_input_exit` or
+`logout`. Symlinks are never followed.
 
 | Marker | Effect |
 |--------|--------|
@@ -900,9 +922,9 @@ in name order.
 | `skip_permissions` | boolean | `--dangerously-skip-permissions` recorded. |
 | `amplihack_flags` | object | `subprocess_safe` and `no_reflection` (booleans) and `profile` (string, optional). |
 | `env` | object | [Recorded variables](#recorded-environment), name to value. |
-| `registered_at` | time | Set by `agent register`, or when `claude --supervise` creates the record. Supervisor writes apply only while it is unchanged. |
+| `registered_at` | time | Set by `agent register`, or when `claude --supervise` creates the record. |
 | `launched_at` | time | The latest launch. SessionEnd markers older than this are ignored. |
-| `launch_id` | string | 32 lowercase hexadecimal characters, new for each launch. The `claude --supervise` writes apply only while it is unchanged. |
+| `launch_id` | string | 32 lowercase hexadecimal characters, new for each launch. |
 | `lost_at` | time, optional | When the supervisor first found the agent lost. |
 | `ended_at`, `ended_by` | time and `wrapper` or `session-end`, optional | Present only when `state` is `ended`. |
 | `restarts` | array of times | Resumes in the last 24 hours, oldest first. |
@@ -940,8 +962,8 @@ Every load checks, in order:
 
 1. the file's type, owner, mode and size, as in [Files](#files);
 2. `version`: above 1 fails as written by a newer amplihack; missing or 0
-   fails as corrupt;
-3. the JSON structure, including the `state` and `ended_by` values;
+   fails as not valid;
+3. the registry format, including the `state` and `ended_by` values;
 4. every field against the [value rules](#value-rules) (without the
    existence checks), every agent name, every time, and every `env` name
    against the allowlist.
@@ -950,11 +972,11 @@ A registry that fails any check is never written. Every command that needs
 it fails with the [error](#errors) for the cause until you fix or remove the
 file.
 
-Every write takes `registry.lock` (waiting at most 10 seconds), loads the
-file, applies the change, drops `restarts` entries older than 24 hours or
-more than 300 seconds in the future, checks every record again, and replaces
-the file atomically. A write that would leave an invalid record, or a file
-larger than 8 MiB, is refused and the file is left as it was.
+Every write loads the file again, applies the change, drops `restarts`
+entries older than 24 hours or more than 300 seconds in the future, checks
+every record again, and replaces the file atomically. A write that would
+leave an invalid record, or a file larger than 8 MiB, is refused and the file
+is left as it was.
 
 ## Supervisor log
 
@@ -964,31 +986,29 @@ stdout, so the journal of the [service](#service-unit) holds the same lines.
 ```text
 TIME agent=NAME conversation=ID|- lost=TIME|- resumed=TIME|- result=RESULT
 TIME ALERT: agent NAME stopped: restart limit (N restarts in the last hour)
+TIME WARNING: agent NAME conversation not recorded: REASON
 ```
 
 - TIME is UTC, such as `2026-10-29T23:27:41Z`.
 - `lost` is the agent's `lost_at` when set. `resumed` is set only when RESULT
   is `resumed`.
 - RESULT is always last and runs to the end of the line. Every other field
-  contains no spaces.
-
-| RESULT | When |
-|--------|------|
-| `resumed` | tmux created the session. |
-| `skipped: already running` | The conversation is running and the tmux session is gone, or the conversation was already resumed in this pass. |
-| `skipped: already running (liveness unknown: REASON)` | Liveness unknown and the tmux session is gone. |
-| `skipped: tmux session exists` | The conversation is not running and the tmux session is present. |
-| `skipped: tmux session exists (tmux state unknown: REASON)` | The conversation is not running and the tmux state is unknown. |
-| `failed: no conversation id` | [Pre-check](#pre-checks). |
-| `failed: launch directory missing` | Pre-check. |
-| `failed: no transcript` | Pre-check. |
-| `failed: tmux: LINE` | tmux refused the session. No restart is counted. |
-| `stopped: restart limit` | [Restart limit](#restart-limit); followed by the ALERT line. |
+  contains no spaces. It is `resumed`, a skip from
+  [Classification](#classification) (or `skipped: already running` for a
+  conversation already resumed in this pass), a failed
+  [pre-check](#pre-checks), `failed: tmux: LINE` when tmux refused to
+  [create the session](#resume), or `stopped: restart limit`, which the ALERT
+  line follows.
+- The WARNING line is written only to the log, by
+  [`claude --supervise`](#what-it-records) when it cannot record the
+  conversation of the session it started. It is not stored in
+  `last_recovery`.
 
 A healthy agent writes no line. A line with the same agent, conversation and
 RESULT as the agent's previous line is not written again, except `resumed`,
-which is always written. Each written line is also stored in the agent's
-`last_recovery`.
+which is always written. A healthy agent's stored `skipped:` or `failed:`
+result is cleared, so the same result is written again if it comes back.
+Each written recovery line is also stored in the agent's `last_recovery`.
 
 The log is opened without following symlinks and appended to. If the append
 fails, the supervisor prints
@@ -1006,31 +1026,41 @@ Each error is one line, printed as `error: MESSAGE`, with exit 1.
 | `agents/` unsafe | all, including `status` | `PATH: is not a real directory` (a symlink or not a directory), or `PATH: is not private (owner-only mode 0700)` (another owner, or any group or other permission bit) |
 | Lock file unsafe | `registry.lock`: `register`, `unregister`, `supervise`, `claude --supervise`; `supervisor.lock`: `supervise` | `PATH: is a symlink`, `PATH: is not a regular file`, `PATH: is owned by another user`, `PATH: has more than one hard link` or `PATH: is not private (owner-only mode 0600)` |
 | Registry file unsafe | all | `PATH: must be a regular file owned by you with mode 0600; it was not changed` |
+| Registry larger than 8 MiB | all | `PATH: larger than 8 MiB; it was not changed` |
 | Registry not valid JSON | all | `PATH: not valid JSON (line L, column C); it was not changed` |
+| Registry `version` missing or not a known number | all | `PATH: field version is not valid; it was not changed` |
+| Registry JSON not in the registry format | all | `PATH: does not match the registry format (line L, column C); it was not changed` |
+| Registry agent name invalid on load | all | `PATH: an agent name is not valid; it was not changed` |
 | Registry field invalid on load | all | `PATH: agent NAME: field FIELD is not valid; it was not changed` |
 | Registry from a newer amplihack | all | `PATH: written by a newer amplihack (registry version N); upgrade amplihack. It was not changed` |
 | Registry lock busy | `register`, `unregister`, `supervise`, `claude --supervise` | `PATH: the registry lock was held for 10 s by another amplihack process; try again` |
-| Write would leave an invalid field | `register`, `unregister`, `supervise`, `claude --supervise` | `PATH: refusing to write agent NAME: field FIELD is not valid; it was not changed` |
+| Write would leave an invalid field | `register`, `unregister`, `supervise`, `claude --supervise` | `PATH: refusing to write agent NAME: field FIELD is not valid; it was not changed`, or `PATH: refusing to write an agent with an invalid name; it was not changed` |
 | Write would exceed 8 MiB | as above | `PATH: the registry would exceed 8 MiB; it was not changed` |
-| Invalid NAME, flag or tmux name | `register`, `unregister`, `claude --supervise` | `SUBJECT: RULE`, for example `--conversation: must be 1 to 64 letters, digits or '-', starting with a letter or digit` |
+| Invalid NAME, flag or directory | `register`, `unregister`, `claude --supervise` | `SUBJECT: RULE`, for example `--conversation: must be 1 to 64 letters, digits or '-', starting with a letter or digit` |
+| Invalid tmux name from tmux | `register`, `claude --supervise` | `tmux session name RULE` or `tmux window name RULE` |
+| Unexpected answer from tmux | `register`, `claude --supervise` | `tmux display-message returned an unexpected answer` |
 | Invalid `--profile` | `register`, `claude --supervise` | `--profile: names match [A-Za-z0-9][A-Za-z0-9._-]{0,63}, without '..' or a trailing '.'`. This is the text `amplihack profile` gives; a reserved name such as `CON` gets the same text. |
 | Profile directory missing | `register`, `claude --supervise` | `--profile: the profile's directory must exist under the profile root and must not be a symlink` |
 | `--env` name not allowed | `register` | `--env: only these variables can be recorded: LIST` |
-| `--env` malformed | `register` | `--env: expected KEY=VALUE`, or `--env: value must be at most 4096 bytes, with no newline or NUL` |
+| `--env` malformed | `register` | `--env: expected KEY=VALUE`, `--env: value must be at most 4096 bytes, with no newline or NUL`, or for `AMPLIHACK_AGENT_BINARY` `--env: value must be one of claude, copilot, codex or amplifier` |
 | `--pid` not usable | `register` | `process PID is not a claude process of this user` |
 | Target in print mode | `register` | `process PID is a claude -p run, not an interactive session` |
 | No process and missing flags | `register` | `no claude process found; pass --session, --window, --dir and --conversation` |
 | Fields not found | `register` | `claude process PID found, but ITEMS could not be discovered; pass FLAGS` |
+| No `claude` process in the pane | `register --pane` | `no claude process runs in that tmux pane` |
+| `/proc` cannot be read | `register` without `--pid` | `cannot read the process table`, or `cannot list the process table: REASON` |
 | `--pid` or `--pane` off Linux | `register` | `--pid and --pane need Linux /proc; pass --session, --window, --dir and --conversation` |
 | tmux could not name the pane | `register`, `claude --supervise` | `tmux display-message failed: LINE` |
 | Socket directory unsafe | `register`, `claude --supervise` | `tmux socket: its directory must be owned by you and closed to other users` |
-| Config directory unsafe | `register` | `~/.claude is not private: it must be owned by you and not writable by other users`, or `the directory of profile NAME is not private: it must be owned by you and not writable by other users` |
-| Profile root unusable | `register`; `claude --supervise` with `--profile` | `cannot list profile directories: ` followed by `AMPLIHACK_CLAUDE_PROFILE_ROOT is not a valid absolute path`, `HOME is not set` or `FILE: REASON`. A profile root that does not exist is not an error. |
+| Config directory unsafe | `register` | `DIRECTORY is not private: it must be owned by you and not writable by other users`, where DIRECTORY is `~/.claude`, `the profile root`, `the directory of profile NAME`, `~/.claude/sessions` or `the sessions directory of profile NAME`. A `sessions/` directory is checked only when a running process is read. |
+| Config directory unreadable | `register` | `~/.claude is not a directory`, `~/.claude cannot be read`, or `a Claude sessions directory cannot be read` |
+| Profile root unusable | `register`; `claude --supervise` with `--profile` | `cannot list profile directories: ` followed by `AMPLIHACK_CLAUDE_PROFILE_ROOT is not a valid absolute path`, `HOME is not set`, `FILE: REASON`, `the profile root cannot be read` or `the profile root is not a directory`. A profile root that does not exist is not an error. |
 | tmux session in use | `register`, `claude --supervise` | `tmux session S is already used by registered agent OTHER` |
 | Conversation in use | `register`, `claude --supervise` | `this conversation is already used by registered agent OTHER` |
 | Unknown NAME | `unregister` | `no registered agent named NAME` |
 | Supervisor already running | `supervise` | `another amplihack agent supervisor is running (pid N)`, or `(pid unknown)` |
 | Not Linux | `supervise` | `amplihack agent supervise needs Linux /proc; nothing was started` |
+| Executable path unknown | `supervise` | `cannot find the amplihack binary: REASON; nothing was started` |
 | Unusable executable path: not absolute, not UTF-8, or containing `=` or a control character | `supervise` | `the amplihack binary path must be absolute and UTF-8, without '=' or control characters, for env to run it; nothing was started` |
 | Not Linux, no tmux, print mode | `claude --supervise` | see [Preconditions](#preconditions) |
 
@@ -1046,6 +1076,10 @@ Warnings go to stderr and do not change the exit status.
 | A value on the `claude` command line fails the value rules | `warning: ignored FLAG from the claude command line (N bytes): RULE` |
 | An allowlisted variable fails the value rules | `warning: ignored NAME from the environment of process PID: RULE` |
 | The process's environment cannot be read | `warning: could not read the environment of process PID; no variables were recorded` |
+| `register`: the process's directory fails the value rules | `warning: ignored the directory of process PID (N bytes): RULE` |
+| `register`: the `amplihack claude` ancestor's profile has no directory, or the profile root cannot be worked out | `warning: ignored the profile of process PID (N bytes): REASON` |
+| `supervise`: `ended/` is not a private directory | `warning: ~/.amplihack/agents/ended: REASON; no markers were read` |
+| `supervise`: an applied or stale marker cannot be deleted | `warning: PATH: REASON; the marker was not removed` |
 | A log line cannot be appended | `warning: PATH: REASON; the line was printed but not logged`. REASON is the I/O error, or one of the lock file texts in [Errors](#errors) when the log is a symlink, not a regular file, owned by another user, hard-linked or not private. |
 | `claude --supervise` cannot record a clean exit | `warning: could not mark agent NAME as ended: REASON; the supervisor may resume it` |
 
@@ -1091,7 +1125,7 @@ loginctl enable-linger "$USER"
 | `ExecStart` | The absolute path of `amplihack`. Adjust it to the install path, and add [supervise flags](#supervise-flags) here. |
 | `Environment=PATH=` | Absolute directories only, with no empty entries, covering `tmux`, `git`, `claude` and `amplihack`. A tmux server the supervisor starts takes this environment as its global environment, so resumed sessions see the same `PATH`. |
 | `Restart=always`, `RestartSec=10` | systemd starts the supervisor again if it exits for any reason. |
-| `KillMode=process` | The tmux servers the supervisor starts, and every resumed agent in them, live in the service's control group. With systemd's default, `control-group`, stopping or restarting the service would end all of them. With `process`, only the supervisor stops. Recent systemd versions log a warning about this setting when they load the unit; it is expected. |
+| `KillMode=process` | The tmux servers the supervisor starts, and every resumed agent in them, live in the service's control group. With systemd's default, `control-group`, stopping or restarting the service would end all of them. With `process`, only the supervisor stops, and each later start logs `Found left-over process ... in control group while starting unit` for every process still running there. That is expected. |
 | `WantedBy=default.target` | `enable` starts the service with your user manager. |
 
 Leave out:

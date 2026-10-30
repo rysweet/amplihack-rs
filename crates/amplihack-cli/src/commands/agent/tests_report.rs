@@ -5,7 +5,6 @@
 //! `tests_report_status.rs`.
 //!
 //! API under test:
-//! - `report::timestamp(t: i64) -> String` (`%Y-%m-%dT%H:%M:%SZ`, UTC)
 //! - `report::sanitize(s: &str, max: usize) -> String`: control characters
 //!   become `?`; at most `max` characters
 //! - `enum Outcome { Resumed, AlreadyRunning, LivenessUnknown(String),
@@ -15,12 +14,14 @@
 //!   lost: Option<&str>, resumed: Option<&str>, result: &str) -> String`
 //! - `report::alert_text(n: usize) -> String`, `report::alert_line(now: i64,
 //!   name: &str, n: usize) -> String`
+//! - `report::not_recorded_line(now: i64, name: &str, reason: &str) -> String`
 //! - `report::last_recovery(now: i64, conv: Option<&str>, lost: Option<&str>,
 //!   resumed: Option<&str>, result: &str) -> LastRecovery`
 //! - `report::suppressed(last: Option<&LastRecovery>, conv: Option<&str>, result: &str) -> bool`
+//! - `report::clears_when_healthy(result: &str) -> bool`
 //! - `report::append(log: &Path, line: &str) -> std::io::Result<()>`
 
-use super::registry::LastRecovery;
+use super::registry::{LastRecovery, fmt_ts};
 use super::report::*;
 use serde_json::json;
 use std::fs;
@@ -29,12 +30,6 @@ use std::os::unix::fs::PermissionsExt;
 const ID: &str = "0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c";
 /// 2026-10-29T23:28:10Z.
 const NOW: i64 = 1_793_316_490;
-
-#[test]
-fn timestamps_are_utc() {
-    assert_eq!(timestamp(NOW), "2026-10-29T23:28:10Z");
-    assert_eq!(timestamp(0), "1970-01-01T00:00:00Z");
-}
 
 #[test]
 fn the_recovery_line_format() {
@@ -92,8 +87,33 @@ fn the_alert_line_format() {
     );
     assert_eq!(
         alert_line(NOW, "x", 1),
-        format!("{} ALERT: agent x {}", timestamp(NOW), alert_text(1))
+        format!("{} ALERT: agent x {}", fmt_ts(NOW), alert_text(1))
     );
+}
+
+/// Review issue 10: a healthy pass clears a skip or a failure, after which
+/// the same result is no longer a repeat; a resume is kept.
+#[test]
+fn a_healthy_pass_clears_skips_and_failures() {
+    for r in ["skipped: tmux session exists", "failed: no transcript"] {
+        assert!(clears_when_healthy(r), "{r}");
+        let last = last_recovery(NOW, Some(ID), None, None, r);
+        assert!(suppressed(Some(&last), Some(ID), r));
+        assert!(!suppressed(None, Some(ID), r), "after clearing");
+    }
+    for r in ["resumed", "stopped: restart limit"] {
+        assert!(!clears_when_healthy(r), "{r}");
+    }
+}
+
+#[test]
+fn the_warning_line_format() {
+    assert_eq!(
+        not_recorded_line(NOW, "coord", "no claude process found"),
+        "2026-10-29T23:28:10Z WARNING: agent coord conversation not recorded: no claude process found"
+    );
+    let line = not_recorded_line(NOW, "coord", "bad\nreason\u{1b}[31m");
+    assert!(line.ends_with(": bad?reason?[31m"), "{line}");
 }
 
 #[test]

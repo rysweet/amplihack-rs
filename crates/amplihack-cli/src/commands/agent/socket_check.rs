@@ -13,6 +13,9 @@ use std::path::Path;
 
 /// The reason given whenever a check fails.
 pub const NOT_PRIVATE: &str = "socket directory is not private";
+/// The refusal of a socket a command was asked to use.
+pub const REFUSED: &str =
+    "tmux socket: its directory must be owned by you and closed to other users";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SocketCheck {

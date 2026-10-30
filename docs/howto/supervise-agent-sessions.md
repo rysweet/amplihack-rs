@@ -113,9 +113,10 @@ amplihack does not install the service. Write the unit yourself.
 
 `KillMode=process` keeps resumed agents alive when the service stops or
 restarts. The tmux servers that the supervisor starts belong to the service's
-control group, and systemd's default would end them with it. Recent systemd
-versions log a warning about `KillMode=process` when they load the unit; the
-warning is expected.
+control group, and systemd's default would end them with it. Because they are
+left running, each restart of the service logs
+`Found left-over process ... in control group while starting unit` for each
+of them. This is expected with `KillMode=process`.
 
 The login rotator has the same need to outlive a tmux server. Issue #1759
 covers running it as its own user service, `amplihack-rotator.service`, and an
@@ -157,7 +158,9 @@ Before Claude Code starts, `--supervise` records:
 Then Claude Code starts as `amplihack claude` always starts it. The
 conversation id is recorded as soon as Claude Code writes its session file,
 usually within seconds. With `--resume ID` after `--`, it is recorded at
-once.
+once. If the id cannot be recorded within two minutes, a `WARNING:` line in
+`~/.amplihack/agents/supervisor.log` gives the reason; nothing is printed in
+the session.
 
 `--supervise` needs Linux and tmux. It refuses `-p` and `--print`, and it
 cannot be combined with `--auto`, `--append`, `--docker` or `--checkout-repo`.
@@ -184,22 +187,23 @@ From any other shell, name the tmux pane the session runs in:
 amplihack agent register area-search --pane area-search:main
 ```
 
-`--pane` asks the tmux server of the shell you run it in, or tmux's default
-server outside tmux. For a pane on another server, add
-`--tmux-socket` with that server's socket.
-
 or the `claude` process id, if you know it:
 
 ```bash
 amplihack agent register area-search --pid 41237
 ```
 
+`--pane` asks the tmux server of the shell you run it in, or tmux's default
+server outside tmux. For a pane on another server, add
+`--tmux-socket` with that server's socket.
+
 `register` reads the conversation id and directory from the process's session
 file, the Claude Code options from its command line, `--profile`,
 `--subprocess-safe` and `--no-reflection` from the `amplihack claude` that
-started it, and the tmux names from tmux. A flag you give replaces the value
-it found. A `warning:` line on stderr means a value was found but not
-recorded; read it before you rely on the registration.
+started it, and the tmux names from the tmux server in the process's own
+environment. A flag you give replaces the value it found. A `warning:` line
+on stderr means a value was found but not recorded; read it before you rely
+on the registration.
 
 ### Register a session that is already gone
 
@@ -228,7 +232,8 @@ amplihack agent register area-reports \
   on. Inside any tmux session on that server,
   `tmux display-message -p '#{socket_path}'` prints it. Without
   `--tmux-socket`, the supervisor uses tmux's default server for its own
-  environment.
+  environment; when that server's socket does not exist, for example after a
+  reboot, the session counts as gone.
 - **Environment.** Only the variables you give with `--env KEY=VALUE` are
   recorded.
 
@@ -331,11 +336,11 @@ and the interval has passed.
 ### Order and batches
 
 Agents with uncommitted changes to tracked files in their launch directory go
-first, most changed lines first; the rest follow by name. The supervisor
-resumes 6 agents, waits 60 seconds, resumes the next 6, and so on, so that a
-mass restart does not use up a login's capacity at once. Before each resume it
-checks the agent again, in case you resumed the session yourself during the
-wait.
+first, those with the most changed tracked files first; the rest follow by
+name. The supervisor resumes 6 agents, waits 60 seconds, resumes the next 6,
+and so on, so that a mass restart does not use up a login's capacity at
+once. Before each resume it checks the agent again, in case you resumed the
+session yourself during the wait.
 
 Here `area-billing` and `coordinator` had uncommitted work, and `custodian`
 and `writer` were in the second batch:
@@ -372,11 +377,13 @@ the pass writes one of these lines:
 | `skipped: tmux session exists (tmux state unknown: REASON)` | tmux did not answer clearly, so the supervisor assumes the session exists. | Fix REASON. `socket directory is not private` is explained in [Unattended resumes and other users](#unattended-resumes-and-other-users). |
 | `failed: no conversation id` | The agent has no conversation id to resume. | Register it again with `--conversation`. |
 | `failed: launch directory missing` | The recorded directory no longer exists. | Restore the directory, or register the agent again with `--dir`. |
-| `failed: no transcript` | The conversation's transcript is not in the config directory the resume would use. | Check the recorded profile, or register the agent again with the right `--profile`. |
+| `failed: no transcript` | The conversation's transcript is not in the config directory the resume would use. A recorded profile whose directory no longer exists gives the same result. | Check the recorded profile, or register the agent again with the right `--profile`. |
 | `failed: tmux: MESSAGE` | tmux refused to create the session. | Read MESSAGE. The attempt does not count towards the restart limit. |
 
 Each of these lines is written once. The same result for the same agent and
 conversation is not written again at every pass; a resume is always written.
+Once the agent is seen healthy again, a stored skip or failure is cleared, so
+the same result is written again if it comes back.
 
 ### Read the log
 
@@ -508,10 +515,11 @@ amplihack claude --profile work --supervise custodian -- \
   --resume 3d8a6f2b-1e5c-4b7a-9d2e-6c4f8a1b3e57 --model opus --effort high
 ```
 
-Claude Code's error stays on screen. Once the session starts cleanly, the
-agent is `active` again and its alert is cleared. Its restart history is
-kept, so if it is lost again within the hour the supervisor stops it again
-instead of resuming it.
+Claude Code's error stays on screen. `amplihack claude --supervise` makes the
+agent `active` again and clears its alert as it starts, before Claude Code
+runs, so the agent is supervised again even if Claude Code then fails. Its
+restart history is kept, so if it is lost again within the hour the
+supervisor stops it again instead of resuming it.
 
 To clear the restart history as well, register the agent again with
 `amplihack agent register`. Registering replaces the whole record, so give
@@ -600,8 +608,15 @@ processes are left alone. Earlier lines in the log are kept.
     directory below them is not owned by you, or other users can write to
     it, every lost agent is skipped with
     `skipped: already running (liveness unknown: Claude config directory is not private)`.
-    `amplihack agent register` names the directory in its error; remove the
+    `amplihack agent register` fails with an error that names the directory,
+    for a `sessions/` directory when it reads a running session; remove the
     write bits with `chmod go-w`.
+  - When `~/.amplihack/agents/ended` is a symlink, or is not a directory of
+    yours that only you can open, the supervisor reads no
+    [SessionEnd markers](#clean-exits-stay-ended) from it, deletes nothing in
+    it, and prints
+    `warning: ~/.amplihack/agents/ended: REASON; no markers were read` at
+    each pass. Remove it; the hook creates it again.
   - Before it talks to a tmux socket, the supervisor checks the socket's
     directory, for example `/tmp/tmux-1000`. If it is not yours, or other
     users can open it, the agent is skipped with

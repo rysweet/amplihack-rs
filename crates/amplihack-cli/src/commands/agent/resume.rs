@@ -14,6 +14,7 @@ use super::store::{self, AgentsDir};
 use super::supervise::sleep_unless_stopped;
 use super::tmux::Tmux;
 use std::collections::{HashMap, HashSet};
+use std::ops::ControlFlow;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -27,14 +28,15 @@ pub(super) struct Candidate {
 
 /// Runs `each` over `items`, `batch` at a time, sleeping `gap` between
 /// batches and never after the last. The stop flag is checked before each
-/// item; a sleeper that returns `false` (stopped) ends the schedule.
+/// item; a sleeper that returns `false` (stopped) or an item that returns
+/// `Break` ends the schedule, without another sleep.
 pub fn schedule<T>(
     items: Vec<T>,
     batch: usize,
     gap: Duration,
     sleep: &dyn Fn(Duration, &AtomicBool) -> bool,
     stop: &AtomicBool,
-    mut each: impl FnMut(T),
+    mut each: impl FnMut(T) -> ControlFlow<()>,
 ) {
     let batch = batch.max(1);
     for (i, item) in items.into_iter().enumerate() {
@@ -44,13 +46,15 @@ pub fn schedule<T>(
         if i > 0 && i % batch == 0 && !sleep(gap, stop) {
             return;
         }
-        each(item);
+        if each(item).is_break() {
+            return;
+        }
     }
 }
 
 /// Orders the candidates by `git status` line count, then name, and resumes
-/// them in batches. The first error ends the remaining resumes and is
-/// returned.
+/// them in batches. The first error ends the pass at once, without waiting
+/// for the next batch, and is returned.
 pub(super) fn run(
     dir: &AgentsDir,
     home: &Path,
@@ -77,12 +81,14 @@ pub(super) fn run(
         stop,
         |name| {
             let Some(registered_at) = registered.get(&name) else {
-                return;
+                return ControlFlow::Continue(());
             };
-            if failure.is_none()
-                && let Err(e) = resume_one(dir, home, cfg, &name, registered_at, &mut resumed)
-            {
-                failure = Some(e);
+            match resume_one(dir, home, cfg, &name, registered_at, &mut resumed) {
+                Ok(()) => ControlFlow::Continue(()),
+                Err(e) => {
+                    failure = Some(e);
+                    ControlFlow::Break(())
+                }
             }
         },
     );
@@ -143,14 +149,14 @@ fn resume_one(
     }
     resumed.insert(id.clone());
     let result = Outcome::Resumed.to_string();
-    let fields = (Some(id.as_str()), lost.as_deref(), Some(now_ts.as_str()));
-    let line = report::recovery_line(now, name, fields.0, fields.1, fields.2, &result);
+    let (conv, lost, at) = (Some(id.as_str()), lost.as_deref(), Some(now_ts.as_str()));
+    let line = report::recovery_line(now, name, conv, lost, at, &result);
     let written = store::update(dir, now, |r| {
         if let Some(e) = r.agents.get_mut(name)
             && e.registered_at == registered_at
             && e.state == State::Active
         {
-            let rec = report::last_recovery(now, fields.0, fields.1, fields.2, &result);
+            let rec = report::last_recovery(now, conv, lost, at, &result);
             e.record_resume(now, rec);
         }
         Ok(())

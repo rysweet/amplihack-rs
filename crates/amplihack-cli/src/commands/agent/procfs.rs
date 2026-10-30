@@ -3,16 +3,21 @@
 //! this user's live processes per pass (A11), and the test seam (S27).
 
 pub use super::claude_names::{CLAUDE, ClaudeNames, is_claude, is_claude_with};
-use amplihack_utils::secure_files::{read_bounded, writable_by_others};
+use amplihack_utils::secure_files::writable_by_others;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs;
+use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 const STAT_LIMIT: u64 = 64 * 1024;
 const CMDLINE_LIMIT: u64 = 256 * 1024;
 const ENVIRON_LIMIT: u64 = 16 * 1024 * 1024;
+/// The first buffer for a `/proc` file. `/proc` reports a size of 0, so an
+/// empty buffer would grow from 32 bytes and take eight reads for a
+/// `status`; one page holds a whole `stat`, `status` or typical `cmdline`.
+const FIRST_READ: usize = 4096;
 
 /// `/proc`, or the synthetic root a test names in `AMPLIHACK_TEST_PROC_ROOT`
 /// when every condition of [`proc_root_from`] holds.
@@ -283,7 +288,10 @@ pub fn start_time(root: &Path, pid: u32) -> Option<u64> {
 /// At most `limit` bytes of `path`; a longer file is an error.
 fn read_limited(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     let file = fs::File::open(path).map_err(|e| e.kind().to_string())?;
-    let buf = read_bounded(file, limit).map_err(|e| e.kind().to_string())?;
+    let mut buf = Vec::with_capacity(FIRST_READ);
+    file.take(limit + 1)
+        .read_to_end(&mut buf)
+        .map_err(|e| e.kind().to_string())?;
     if buf.len() as u64 > limit {
         return Err("too large".into());
     }

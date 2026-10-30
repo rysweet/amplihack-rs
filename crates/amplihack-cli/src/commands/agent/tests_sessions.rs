@@ -1,7 +1,8 @@
 //! Unit tests for `sessions.rs`: Claude's `sessions/<pid>.json` files, the
 //! config directories (`~/.claude` and every profile directory) with their
 //! privacy rule (S10) and profile-root errors (B6), and the transcript path
-//! with both encodings (A4, D12).
+//! with both encodings (A4, D12). `for_process` is tested in
+//! `tests_sessions_for_process.rs`.
 //!
 //! API under test (`env` stands for the process environment, so tests never
 //! change it; `config_dirs(home)` is `config_dirs_from(home, |k|
@@ -16,7 +17,6 @@
 //!   Option<PathBuf> }`
 //! - `index(dirs: &[PathBuf]) -> Result<Index, String>`, `Index { by_id: map
 //!   String -> Vec<(u32, u64)> }`
-//! - `for_process(dirs: &[PathBuf], pid: u32, start: u64) -> Option<SessionFile>`
 //! - `project_dir_names(launch_dir: &Path) -> Vec<String>`,
 //!   `transcript_exists(config_dir: &Path, launch_dir: &Path, id: &str) -> bool`
 
@@ -211,33 +211,6 @@ fn the_index_reads_every_sessions_directory() {
         idx.by_id.get(ID2).cloned().unwrap_or_default(),
         [(30, 300)],
         "no symlink, no 64 KiB+"
-    );
-}
-
-#[test]
-fn for_process_matches_pid_and_start() {
-    let (_t, home, root) = layout();
-    let (claude, a) = (home.join(".claude"), root.join("a"));
-    write_session(
-        &a,
-        "20.json",
-        &json!({"pid": 20, "sessionId": ID, "procStart": "200", "cwd": "/w"}),
-    );
-    write_session(
-        &claude,
-        "other.json",
-        &json!({"pid": 30, "sessionId": ID2, "procStart": "300"}),
-    );
-    let dirs = [claude, a];
-    let s = for_process(&dirs, 20, 200).expect("found in the second directory");
-    assert_eq!(
-        (s.session_id.as_str(), s.cwd),
-        (ID, Some(PathBuf::from("/w")))
-    );
-    assert!(for_process(&dirs, 20, 201).is_none(), "pid reused");
-    assert!(
-        for_process(&dirs, 30, 300).is_none(),
-        "only <pid>.json is read"
     );
 }
 
