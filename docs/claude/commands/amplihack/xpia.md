@@ -13,6 +13,26 @@ triggers:
 
 XPIA (Cross-Platform Injection Attack) Defense system management and health monitoring.
 
+## XPIA is off by default
+
+XPIA scanning runs only when the agent CLI starts with `XPIA_ENABLED` set to
+`1`, `true` or `yes` (any case). Unset, `false`, `0`, `no` or any other value
+leaves it off:
+
+```bash
+export XPIA_ENABLED=true
+amplihack claude
+```
+
+With XPIA off, the pre-tool-use hook still blocks deletion or renaming of the
+working directory, `git commit` on `main` or `master`, and `--no-verify`.
+
+The health check passes in both states. When XPIA is off its `xpia_enabled`
+line reads `XPIA defense is disabled (default; set XPIA_ENABLED=true to opt in)`.
+
+Do not edit the installed Codex hook wrapper to change this setting. See the
+[XPIA Configuration Reference](../../../reference/xpia-configuration.md).
+
 ## Usage
 
 When you run `/amplihack:xpia [subcommand]`, the system will execute the corresponding XPIA operation.
