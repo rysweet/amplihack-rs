@@ -285,6 +285,18 @@ fn rotate_revalidation_log_rows_are_documented() {
             "reference is missing label {label}"
         );
     }
+    // `Snap::account` is read from ~/.claude.json and `Snap::home_no_oauth`
+    // from the login file, so the `live` row has to name both files.
+    let live_row = REFERENCE
+        .lines()
+        .find(|l| l.ends_with("| `live` | Every decision |"))
+        .expect("the revalidation table has a `live` row");
+    for file in ["`~/.claude.json`", "`~/.claude/.credentials.json`"] {
+        assert!(
+            live_row.contains(file),
+            "the `live` row does not name {file}"
+        );
+    }
 }
 
 /// Rotator autostart and failed-probe damping: the reference names the

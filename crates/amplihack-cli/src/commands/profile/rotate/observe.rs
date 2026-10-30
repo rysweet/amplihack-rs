@@ -41,7 +41,7 @@ pub struct Snap {
     pub pin: PinState,
     /// API-key profiles listed in `overflow=`, which are ignored there.
     pub ignored: Vec<ProfileName>,
-    /// `~/.claude` holds a readable login without OAuth.
+    /// `~/.claude/.credentials.json` is a readable login without OAuth (API key).
     pub home_no_oauth: bool,
     /// Each candidate's account; step 6 compares the target's (#1721).
     pub candidate_accounts: Vec<(ProfileName, Option<Account>)>,

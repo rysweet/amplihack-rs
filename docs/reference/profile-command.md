@@ -2731,11 +2731,22 @@ different target, a stay or an ALERT.
 | Change since step 3 | Label | Applies to |
 |---------------------|-------|------------|
 | The rotate journal exists | `journal` | Every decision |
-| The live profile, the account in `~/.claude.json`, the prototype ledger state, or whether `~/.claude.json` holds a readable OAuth account, differs | `live` | Every decision |
+| The live profile, the account in `~/.claude.json`, the prototype ledger state, or whether `~/.claude/.credentials.json` is a readable login without OAuth (an API-key login), differs | `live` | Every decision |
 | The [rotation pin](#rotate-pin) differs | `pin` | Every decision |
 | The [overflow](#rotate-overflow) list or its ignored entries differ | `overflow` | Every decision |
 | The swap target is no longer a candidate | `target eligibility: <reason>` | Swap only |
 | The swap target is still a candidate, but the account in its `.claude.json` is not the one it had in step 3 | `target identity` | Swap only |
+
+The last of the `live` fields is read from the login file,
+`~/.claude/.credentials.json`, not from `~/.claude.json`. It holds only when
+the login file is a readable JSON object without a `claudeAiOauth` key, the
+[API-key](#api-key-profiles) case. A login file that is missing, cannot be
+read or trusted, or holds an OAuth login does not satisfy it, so this field
+changes only when the live login becomes or stops being an API-key login. A
+login file that was readable in step 3 but cannot be read in step 6 leaves
+no profile live, so it shows as a change in the live profile. That change
+on its own is not read again: the second read described below is made only
+when `~/.claude.json` has lost its account.
 
 For the target, `<reason>` is the [skip reason](#rotate-candidates) it now
 has, such as `no login`, `excluded`, `session running`, `parked` or
