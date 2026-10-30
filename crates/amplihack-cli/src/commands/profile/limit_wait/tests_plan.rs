@@ -1,8 +1,9 @@
-//! `wait_for` and `plan` (issue #1618): which limits are waited out (real
-//! messages, spend limits, unparsed and far resets, model prose), and the
-//! deadline table. The earliest applicable row wins, a tie is named by the
-//! earlier row, a reset at or before now means now, and no input can push
-//! the deadline past now + 5 h + 120 s.
+//! `wait_for` and `plan` (issues #1618, #1761): which limits are waited out
+//! (real messages, spend limits, unparsed and far resets, model prose), and
+//! the deadline table. The earliest applicable row wins, a tie is named by
+//! the earlier row, a reset at or before now means now, and no input can
+//! push the deadline past now + 5 h + 120 s. The run budget's row comes
+//! last.
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_plan;`.
 
@@ -24,7 +25,12 @@ const WEEKLY: &str = "You've hit your weekly limit · resets Oct 8, 12am (Americ
 const SESSION: &str = "You've hit your session limit · resets 1pm (America/Los_Angeles)";
 
 fn p(reset: i64, max: Option<u64>, step: Option<(i64, u64)>) -> Plan {
-    plan(NOW, reset, max, step)
+    plan(NOW, reset, max, step, None)
+}
+
+/// [`p`] with `left` seconds of the run budget left.
+fn pb(reset: i64, max: Option<u64>, step: Option<(i64, u64)>, left: u64) -> Plan {
+    plan(NOW, reset, max, step, Some(left))
 }
 
 // --- wait_for ------------------------------------------------------------
@@ -161,9 +167,15 @@ fn extreme_inputs_saturate_without_panicking() {
     assert_eq!(got.until, NOW + CEILING);
     let got = p(i64::MIN, None, Some((i64::MIN, u64::MAX)));
     assert_eq!(got.until, NOW);
-    let got = plan(i64::MAX - 10, i64::MAX, Some(u64::MAX), None);
+    let got = plan(
+        i64::MAX - 10,
+        i64::MAX,
+        Some(u64::MAX),
+        None,
+        Some(u64::MAX),
+    );
     assert!(got.until >= i64::MAX - 10);
-    let got = plan(i64::MIN, i64::MIN, None, Some((i64::MIN, 1)));
+    let got = plan(i64::MIN, i64::MIN, None, Some((i64::MIN, 1)), Some(0));
     assert_eq!(got.until, i64::MIN, "never earlier than now");
 }
 
@@ -186,15 +198,92 @@ fn until_is_always_between_now_and_the_ceiling() {
         Some((i64::MIN, u64::MAX)),
         Some((i64::MAX, u64::MAX)),
     ];
+    let budgets = [None, Some(0), Some(1), Some(21_600), Some(u64::MAX)];
     for r in resets {
         for m in maxes {
             for s in steps {
-                let got = p(r, m, s);
-                assert!(
-                    got.until >= NOW && got.until - NOW <= CEILING,
-                    "reset {r} max {m:?} step {s:?}"
-                );
+                for b in budgets {
+                    let got = plan(NOW, r, m, s, b);
+                    assert!(
+                        got.until >= NOW && got.until - NOW <= CEILING,
+                        "reset {r} max {m:?} step {s:?} budget {b:?}"
+                    );
+                }
             }
         }
     }
+}
+
+// --- the budget row (issue #1761) -----------------------------------------
+
+#[test]
+fn the_budget_row_prints_as_budget() {
+    assert_eq!(Bound::Budget.as_str(), "budget");
+}
+
+#[test]
+fn the_budget_left_ends_the_wait_when_it_is_the_earliest_row() {
+    let got = pb(NOW + 1800, None, None, 600);
+    assert_eq!(
+        (got.until, got.bound, got.reset),
+        (NOW + 600, Bound::Budget, NOW + 1800)
+    );
+    let got = pb(NOW + 1800, Some(900), Some((NOW, 3600)), 300);
+    assert_eq!((got.until, got.bound), (NOW + 300, Bound::Budget));
+}
+
+#[test]
+fn nothing_left_gives_a_zero_wait_named_by_the_budget() {
+    let got = pb(NOW + 1800, None, None, 0);
+    assert_eq!((got.until, got.bound), (NOW, Bound::Budget));
+}
+
+#[test]
+fn a_tie_with_the_budget_row_keeps_the_earlier_rows_name() {
+    // reset + margin = now + 600.
+    let got = pb(NOW + 480, None, None, 600);
+    assert_eq!((got.until, got.bound), (NOW + 600, Bound::ResetMargin));
+    let got = pb(NOW + 1800, Some(600), None, 600);
+    assert_eq!((got.until, got.bound), (NOW + 600, Bound::MaxWait));
+    let got = pb(NOW + 1800, None, Some((NOW, 660)), 600);
+    assert_eq!((got.until, got.bound), (NOW + 600, Bound::StepTimeout));
+    // A passed reset ties with an empty budget at now.
+    let got = pb(NOW - 1, None, None, 0);
+    assert_eq!((got.until, got.bound), (NOW, Bound::ResetMargin));
+}
+
+#[test]
+fn the_default_budget_never_shortens_a_first_wait() {
+    // 21600 s is more than the 18120 s ceiling of any one wait.
+    for reset in [NOW + 1, NOW + 1800, LA_1300, NOW + FIVE_HOURS + 1, i64::MAX] {
+        assert_eq!(
+            pb(reset, None, None, 21_600),
+            p(reset, None, None),
+            "{reset}"
+        );
+    }
+    let got = pb(LA_1300, None, None, 21_600);
+    assert_eq!((got.until, got.bound), (NOW + CEILING, Bound::ResetMargin));
+}
+
+#[test]
+fn no_budget_changes_nothing() {
+    for (r, m, s) in [
+        (NOW + 1800, None, None),
+        (NOW + 1800, Some(600), None),
+        (NOW + 1800, None, Some((NOW - 100, 1000))),
+        (NOW - 300, Some(0), None),
+    ] {
+        let a = plan(NOW, r, m, s, None);
+        let b = p(r, m, s);
+        assert_eq!(a, b);
+        assert_ne!(a.bound, Bound::Budget);
+    }
+}
+
+#[test]
+fn a_huge_budget_left_saturates_without_panicking() {
+    let got = plan(i64::MAX - 5, i64::MAX, None, None, Some(u64::MAX));
+    assert!(got.until >= i64::MAX - 5);
+    assert_ne!(got.bound, Bound::Budget);
 }

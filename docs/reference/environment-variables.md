@@ -41,6 +41,8 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
   - [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait)
   - [AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
+  - [AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS](#amplihack_usage_limit_wait_budget_secs)
+  - [AMPLIHACK_USAGE_LIMIT_MAX_WAITS_PER_STEP](#amplihack_usage_limit_max_waits_per_step)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
   - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
@@ -486,7 +488,8 @@ env -u AMPLIHACK_NONINTERACTIVE \
 
 **Type:** UUID string
 **Set by:** `amplihack recipe run` centralized subprocess environment
-**Read by:** `recipe-runner-rs`, recipe steps, child tools, and log consumers
+**Read by:** `recipe-runner-rs`, recipe steps, child tools, log consumers, and
+the usage-limit wait's run budget
 
 Stable correlation identity for one `amplihack recipe run` invocation. The CLI
 generates this UUID before spawning `recipe-runner-rs`, injects it into the child
@@ -510,6 +513,18 @@ an identity.
 
 See [Recipe Run Correlation Reference](./recipe-run-correlation.md) for the
 pointer event schema and final result fields.
+
+**Usage-limit wait budget:** every agent step of the run adds its usage-limit
+waits to `~/.amplihack/rerun/wait-budget-<run id>`, so all steps that wait
+with a login rotator running share one
+[`AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS`](#amplihack_usage_limit_wait_budget_secs).
+A step with no rotator is not limited by it.
+A transport retry by the runner and a nested `amplihack recipe run` each get
+a new id, and so a new budget. A value that is not 1 to 64 bytes of letters,
+digits and `-` is not used for a path or printed; the step then keeps a
+budget for itself alone and, when a rotator runs, prints one `warning:`
+line. See
+[Per-step fallback](./profile-command.md#per-step-fallback).
 
 ---
 
@@ -975,8 +990,14 @@ backend configuration reference.
 
 Turns the usage-limit wait on or off: a recipe agent step that fails on a
 Claude usage limit waits for the reset, or for a login with capacity, and
-runs once more instead of ending the run. A spend limit with no reset, a
-reset more than five hours away or an unreadable reset is not waited for. Overrides the
+runs again instead of ending the run. While a login rotator runs, it does
+so at every limit, within
+[`AMPLIHACK_USAGE_LIMIT_MAX_WAITS_PER_STEP`](#amplihack_usage_limit_max_waits_per_step)
+and
+[`AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS`](#amplihack_usage_limit_wait_budget_secs).
+A spend limit with no reset, a reset more than five hours away or an
+unreadable reset is not waited for, even while a rotator runs (see
+[#1796](https://github.com/rysweet/amplihack-rs/issues/1796)). Overrides the
 config files; empty means unset; an invalid value prints one warning and is
 ignored. See the
 [usage-limit wait reference](./profile-command.md#usage-limit-wait).
@@ -990,10 +1011,57 @@ ignored. See the
 **Config key:** `recipe.usage_limit_max_wait_secs` in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
-Upper bound on one usage-limit wait. It only shortens the wait; `0` means
-no wait but one more attempt. No wait lasts longer than five hours and 120
-seconds. Overrides the config file; empty means unset; an invalid value
-prints one warning and is ignored.
+Upper bound on each usage-limit wait. It only shortens the wait; `0` means
+no wait but another attempt, which still counts as a wait for
+[`AMPLIHACK_USAGE_LIMIT_MAX_WAITS_PER_STEP`](#amplihack_usage_limit_max_waits_per_step).
+No wait lasts longer than five hours and 120 seconds. Overrides the config
+file; empty means unset; an invalid value prints one warning and is
+ignored.
+
+---
+
+### AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS
+
+**Type:** string (non-negative integer, seconds)
+**Default:** `21600` (six hours)
+**Config key:** [`recipe.usage_limit_wait_budget_secs`](./user-config.md#recipeusage_limit_wait) in `config.toml`
+**Read by:** `amplihack claude -p` when it runs as a recipe agent step
+
+Total time the usage-limit waits of one recipe run may take while a login
+rotator runs. Every step of the run adds its waits to a record named by
+[`AMPLIHACK_RECIPE_RUN_ID`](#amplihack_recipe_run_id). When it is spent, a
+step that hits a limit with a rotator running writes
+`skipped reason=budget_spent` and a line naming the setting, and the run
+ends with the usage-limit failure. `0` means no step with a rotator waits
+or retries after a limit. A step with no rotator keeps its single wait to
+the reset, whatever the budget. A step that runs `amplihack recipe run` itself starts a
+nested run with its own run id and its own whole budget, which the outer
+run's budget does not count. Overrides the config files; a
+project file can only lower it; empty means unset; an invalid value prints
+one warning and is ignored. See the
+[run budget reference](./profile-command.md#run-budget).
+
+```sh
+AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS=3600 amplihack recipe run default-workflow \
+  -c task_description="Fix flaky retry tests" -c repo_path=.
+```
+
+---
+
+### AMPLIHACK_USAGE_LIMIT_MAX_WAITS_PER_STEP
+
+**Type:** string (integer, 1 to 100)
+**Default:** `5`
+**Config key:** [`recipe.usage_limit_max_waits_per_step`](./user-config.md#recipeusage_limit_wait) in `config.toml`
+**Read by:** `amplihack claude -p` when it runs as a recipe agent step
+
+How many times one step may wait for a usage limit while a login rotator is
+running for `~/.claude`. At the next limit the step writes
+`skipped reason=step_waits_spent` and a line naming the setting. Without a
+rotator a step waits once, whatever this says. Overrides the config files;
+a project file can only lower it; empty means unset; an invalid value
+prints one warning and is ignored. See
+[Waits per step](./profile-command.md#waits-per-step).
 
 ---
 

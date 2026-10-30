@@ -823,6 +823,16 @@ once, prints nothing, and reads only the saved root and the toggle. To keep rota
 the resume, delete the `StopFailure` entry from `~/.claude/settings.json`.
 `amplihack install` adds it again.
 
+### Recipe steps
+
+A recipe agent step runs `claude -p`, which exits on a usage limit, so the
+hook does not apply to it. The step's own
+[usage-limit wait](claude-profiles.md#waiting-for-a-usage-limit-reset) does
+the same job: while the rotator runs, a step that uses `~/.claude` waits for
+the rotator's next cycle that leaves a login with capacity and runs again,
+at every limit in the run. Five waits per step and six hours of waiting per
+run are the defaults. Without a running rotator, a step waits once.
+
 ## When no account has capacity
 
 When the `ALERT: no profile has capacity` line is written, the rotator has

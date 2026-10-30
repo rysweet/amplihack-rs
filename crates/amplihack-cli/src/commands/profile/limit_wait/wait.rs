@@ -44,6 +44,8 @@ pub(crate) enum End {
     RotatorCapacity,
     SessionEnded,
     Signal(i32),
+    /// The recipe run's wait budget ran out (issue #1761).
+    BudgetSpent,
 }
 
 impl End {
@@ -56,6 +58,7 @@ impl End {
             End::RotatorCapacity => "rotator capacity",
             End::SessionEnded => "session ended",
             End::Signal(_) => "signal",
+            End::BudgetSpent => "budget spent",
         }
     }
 
@@ -64,6 +67,7 @@ impl End {
             Bound::ResetMargin => End::ResetReached,
             Bound::MaxWait => End::MaxReached,
             Bound::StepTimeout => End::StepTimeout,
+            Bound::Budget => End::BudgetSpent,
         }
     }
 }

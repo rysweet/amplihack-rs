@@ -2,8 +2,9 @@
 //! #1618). A wait needs the harness's own limit message with a reset at most
 //! five hours away; anything else is skipped, because no amount of waiting
 //! is known to help. The deadline is the earliest row of the deadline table
-//! that applies, a tie named by the earlier row. All arithmetic saturates,
-//! and the result always lies in `now ..= now + 5 h + 120 s`.
+//! that applies, a tie named by the earlier row; the run budget's row
+//! (issue #1761) comes last. All arithmetic saturates, and the result always
+//! lies in `now ..= now + 5 h + 120 s`.
 
 use crate::commands::recipe::run::limit_patterns::{self, Harness};
 
@@ -83,6 +84,8 @@ pub(crate) enum Bound {
     ResetMargin,
     MaxWait,
     StepTimeout,
+    /// What is left of the recipe run's wait budget.
+    Budget,
 }
 
 impl Bound {
@@ -91,6 +94,7 @@ impl Bound {
             Bound::ResetMargin => "reset+margin",
             Bound::MaxWait => "max_wait",
             Bound::StepTimeout => "step_timeout",
+            Bound::Budget => "budget",
         }
     }
 }
@@ -106,7 +110,15 @@ pub(crate) struct Plan {
 /// The deadline for a wait starting at `now` for `reset`, which
 /// [`wait_for`] has kept within five hours. `step` is the step's start and
 /// its `AMPLIHACK_STEP_TIMEOUT` in seconds; a timeout of 0 does not apply.
-pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>, step: Option<(i64, u64)>) -> Plan {
+/// `budget_left` is the seconds left of the run's wait budget, if one
+/// applies.
+pub(crate) fn plan(
+    now: i64,
+    reset: i64,
+    max: Option<u64>,
+    step: Option<(i64, u64)>,
+    budget_left: Option<u64>,
+) -> Plan {
     let ceiling = now.saturating_add(FIVE_HOURS);
     let mut until = if reset <= now {
         now
@@ -128,6 +140,9 @@ pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>, step: Option<(i64, u6
             .saturating_add(secs(timeout))
             .saturating_sub(STEP_TIMEOUT_LEAD);
         consider(end.max(now), Bound::StepTimeout);
+    }
+    if let Some(left) = budget_left {
+        consider(now.saturating_add(secs(left)), Bound::Budget);
     }
     Plan {
         until,

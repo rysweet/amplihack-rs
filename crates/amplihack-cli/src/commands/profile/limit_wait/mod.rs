@@ -1,14 +1,21 @@
-//! The usage-limit wait for recipe agent steps (issue #1618).
+//! The usage-limit wait for recipe agent steps (issues #1618, #1761).
 //!
 //! When a supervised `-p` step fails on a usage limit and no auto-switch
-//! rerun is left, the step waits once for the reset (or for the login to
-//! change), then runs once more with the same inputs. See
+//! rerun is left, the step waits for the reset (or for the login to
+//! change), then runs once more with the same inputs. Without a login
+//! rotator a step waits once; while one runs for `$HOME/.claude` it waits
+//! again at each limit, up to `recipe.usage_limit_max_waits_per_step`
+//! waits. All waits of one recipe run share
+//! `recipe.usage_limit_wait_budget_secs` (`budget`). See
 //! docs/reference/profile-command.md#usage-limit-wait.
 //!
-//! `Waiter` decides what happens after a limit; the one supervisor loop,
-//! `auto_switch::rerun::run`, runs the attempts with or without auto-switch.
-//! Log lines are built only from static text, integers and parsed instants.
+//! `Waiter` decides what happens after a limit (`after_limit`); the one
+//! supervisor loop, `auto_switch::rerun::run`, runs the attempts with or
+//! without auto-switch. Log lines are built only from static text,
+//! integers, parsed instants and checked profile names.
 
+mod after_limit;
+mod budget;
 pub(crate) mod claude_args;
 mod clock;
 mod events;
@@ -19,13 +26,25 @@ pub(crate) mod settings;
 pub(crate) mod wait;
 
 #[cfg(test)]
+mod tests_after_limit;
+#[cfg(test)]
+mod tests_budget;
+#[cfg(test)]
+mod tests_budget_refused;
+#[cfg(test)]
+mod tests_budget_sweep;
+#[cfg(test)]
 mod tests_claude_args;
 #[cfg(test)]
 mod tests_fingerprint;
 #[cfg(test)]
 mod tests_fingerprint_ledgers;
 #[cfg(test)]
+mod tests_fingerprint_rotator;
+#[cfg(test)]
 mod tests_log;
+#[cfg(test)]
+mod tests_notes;
 #[cfg(test)]
 mod tests_plan;
 #[cfg(test)]
@@ -39,16 +58,14 @@ mod tests_wait;
 #[cfg(test)]
 mod tests_wait_ends;
 
-use super::attempt::Signals;
 use anyhow::Result;
+use budget::Budget;
 use clock::Clock;
 use events::{Event, Skip, log};
-use fingerprint::{Fingerprint, Watch};
-use plan::{NoWait, WaitFor, plan};
+use fingerprint::Watch;
+use plan::{NoWait, WaitFor};
 pub(crate) use settings::WaitSettings;
 use std::path::PathBuf;
-use std::time::Duration;
-use wait::{End, WaitDeps};
 
 const STEP_TIMEOUT_ENV: &str = "AMPLIHACK_STEP_TIMEOUT";
 
@@ -60,52 +77,16 @@ pub(crate) enum AfterLimit {
     Retry,
 }
 
-struct RealDeps<'a> {
-    clock: &'a mut Clock,
-    watch: &'a Watch,
-    signals: &'a Signals,
-    parent: libc::pid_t,
-}
-
-impl WaitDeps for RealDeps<'_> {
-    type Print = Fingerprint;
-
-    fn now(&mut self) -> i64 {
-        self.clock.now()
-    }
-
-    fn sleep(&mut self, d: Duration) {
-        self.clock.sleep(d);
-    }
-
-    fn fingerprint(&mut self) -> Option<Fingerprint> {
-        self.watch.probe()
-    }
-
-    fn signal(&mut self) -> Option<i32> {
-        self.signals.received()
-    }
-
-    fn session_ended(&mut self) -> bool {
-        // SAFETY: getppid(2) has no preconditions. A parent that exits
-        // re-parents this process, so the id changes.
-        unsafe { libc::getppid() != self.parent }
-    }
-
-    fn rotator_capacity(&mut self, start: i64) -> bool {
-        self.watch.rotator_capacity(start)
-    }
-
-    fn log(&mut self, line: &str) {
-        eprintln!("{line}");
-    }
-}
-
-/// The wait's state for one step: at most one wait per step.
+/// The wait's state for one step.
 pub(crate) struct Waiter {
     /// `None` when `AMPLIHACK_NONINTERACTIVE` is not exactly `1`.
     settings: Option<WaitSettings>,
-    used: bool,
+    /// Waits started in this step, whatever ended them.
+    waits: u32,
+    /// The recipe run's wait budget, as this step sees it.
+    budget: Budget,
+    /// The step id on log lines: this supervisor's process id.
+    step: u32,
     clock: Clock,
     step_start: i64,
     step_timeout: Option<u64>,
@@ -131,7 +112,9 @@ impl Waiter {
             .and_then(|v| v.parse().ok());
         Self {
             settings,
-            used: false,
+            waits: 0,
+            budget: Budget::from_env(),
+            step: std::process::id(),
             clock,
             step_start,
             step_timeout,
@@ -148,8 +131,9 @@ impl Waiter {
         self.settings.is_some_and(|s| s.enabled)
     }
 
+    /// This step has waited at least once.
     pub(crate) fn used(&self) -> bool {
-        self.used
+        self.waits > 0
     }
 
     /// Never wait for this step, for `why`.
@@ -179,78 +163,15 @@ impl Waiter {
     pub(crate) fn not_supervised(&self) {
         not_supervised(self.settings);
     }
-
-    /// After attempt `n` hit its usage limit and no auto-switch rerun is
-    /// left: pass the result up, or wait once and ask for a retry. `inherited`
-    /// is the inherited profile's own limit: the retry runs under that
-    /// profile, so other profiles' limits do not time or cancel the wait.
-    pub(crate) fn after_limit(
-        &mut self,
-        inherited: WaitFor,
-        n: u32,
-        signals: &Signals,
-    ) -> AfterLimit {
-        let Some(settings) = self.settings else {
-            return AfterLimit::Finish(None);
-        };
-        if let Some(sig) = signals.received() {
-            return AfterLimit::Finish(Some(128 + sig));
-        }
-        if !settings.enabled {
-            log(&Event::Skipped(if settings.off_in_ci {
-                Skip::Ci
-            } else {
-                Skip::Disabled
-            }));
-            return AfterLimit::Finish(None);
-        }
-        if self.used {
-            log(&Event::Skipped(Skip::AlreadyWaited));
-            return AfterLimit::Finish(None);
-        }
-        let wait = self.blocked.map_or(inherited, WaitFor::Skip);
-        let (harness, reset) = match wait {
-            WaitFor::Reset { harness, reset } => (harness, reset),
-            WaitFor::Skip(why) => {
-                log(&Event::Skipped(Skip::Cannot(why)));
-                return AfterLimit::Finish(None);
-            }
-        };
-        self.used = true;
-        let now = self.clock.now();
-        let step = self.step_timeout.map(|t| (self.step_start, t));
-        let p = plan(now, reset, settings.max_wait_secs, step);
-        log(&Event::Start {
-            harness,
-            reset: p.reset,
-            until: p.until,
-            bound: p.bound,
-        });
-        let mut deps = RealDeps {
-            clock: &mut self.clock,
-            watch: &self.watch,
-            signals,
-            parent: self.parent,
-        };
-        let end = wait::wait(&p, &mut deps);
-        log(&Event::End(end));
-        match end {
-            End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),
-            End::StepTimeout | End::SessionEnded => AfterLimit::Finish(None),
-            End::ResetReached | End::MaxReached | End::LoginChanged | End::RotatorCapacity => {
-                log(&Event::Resume {
-                    attempt: n.saturating_add(1),
-                });
-                AfterLimit::Retry
-            }
-        }
-    }
 }
 
 /// `skipped reason=not_supervised`, when `settings` enable the wait.
 pub(crate) fn not_supervised(settings: Option<WaitSettings>) {
     if settings.is_some_and(|s| s.enabled) {
-        log(&Event::Skipped(Skip::NotSupervised));
+        log(&Event::Skipped {
+            skip: Skip::NotSupervised,
+            step: std::process::id(),
+        });
     }
 }
 

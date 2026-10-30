@@ -28,6 +28,8 @@ const SCHEMA_ORDER: &[&str] = &[
     "recipe.log_dir",
     "recipe.usage_limit_wait",
     "recipe.usage_limit_max_wait_secs",
+    "recipe.usage_limit_wait_budget_secs",
+    "recipe.usage_limit_max_waits_per_step",
     "orchestrator.max_depth",
 ];
 
@@ -337,6 +339,8 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "recipe.log_dir = (unset)",
             "recipe.usage_limit_wait = true",
             "recipe.usage_limit_max_wait_secs = (unset)",
+            "recipe.usage_limit_wait_budget_secs = 21600",
+            "recipe.usage_limit_max_waits_per_step = 5",
             "orchestrator.max_depth = 3",
         ]
     );

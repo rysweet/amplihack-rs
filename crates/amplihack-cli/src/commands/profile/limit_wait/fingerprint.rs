@@ -14,13 +14,17 @@
 //!
 //! Every read error counts as absent and is never reported. A fingerprint
 //! is only compared: it has no `Debug`, `Display` or `Clone`.
+//!
+//! Issue #1761: [`Watch::rotator_running`] says whether a rotator serves the
+//! watched directory, and [`Watch::login`] names the profile a retry
+//! resumes on. Both only read files; neither signals a process.
 
 use super::super::auto_switch::{self, CREDS};
 use super::super::fsx;
 use super::super::name::ProfileName;
 use super::super::rotate::identify::Account;
 use super::super::store::ProfileStore;
-use amplihack_utils::rotator_status::{CycleStatus, read_cycle};
+use amplihack_utils::rotator_status::{CycleStatus, read_cycle, rotator_down};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -122,6 +126,30 @@ impl Watch {
     /// [`CycleStatus::fresh_capacity`], shared with the limit-resume hook.
     pub(crate) fn rotator_capacity(&self, start: i64) -> bool {
         self.cycle().is_some_and(|c| c.fresh_capacity(start))
+    }
+
+    /// A rotator runs for the watched directory: only `$HOME/.claude` with a
+    /// known profile root, whose pid file names a running rotator of this
+    /// user and whose rotate ledger is readable or absent
+    /// ([`rotator_down`]). Not a security boundary: the same user can fake
+    /// one, and the wait's caps still hold.
+    pub(crate) fn rotator_running(&self) -> bool {
+        match &self.kind {
+            Kind::Home {
+                root: Some(root), ..
+            } => !rotator_down(root, fsx::now()),
+            _ => false,
+        }
+    }
+
+    /// The profile a retry resumes on: an inherited profile's own name, the
+    /// rotate ledger's live profile for `$HOME/.claude`, else `None`.
+    pub(crate) fn login(&self) -> Option<String> {
+        match &self.kind {
+            Kind::Profile { name, .. } => Some(name.clone()),
+            Kind::Home { .. } => self.cycle().and_then(|c| c.live),
+            Kind::ConfigDir => None,
+        }
     }
 }
 

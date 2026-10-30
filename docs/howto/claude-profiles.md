@@ -1281,8 +1281,10 @@ or `permission denied`, is not treated as a usage limit and is not rerun.
 `credit balance is too low` and `disk quota exceeded` count as environment
 problems, so they are not rerun either.
 Each profile is tried at most once per step. When none is left, the step
-waits for the limit to reset and runs once more, as described in
-[Waiting for a usage-limit reset](#waiting-for-a-usage-limit-reset). With
+waits for the limit to reset and runs again, as described in
+[Waiting for a usage-limit reset](#waiting-for-a-usage-limit-reset). A step
+under a profile waits once: the rotator never swaps logins into a profile
+directory. With
 that wait turned off, the last attempt's output and exit code are passed
 back, and the recipe run stops with the usual usage-limit message. With the
 switch off, the wait still applies; with both off, a usage limit ends the
@@ -1612,9 +1614,12 @@ override says otherwise.
 ## Waiting for a usage-limit reset
 
 When a recipe agent step fails because the Claude account reached its usage
-limit, amplihack waits for the limit to reset and then runs that step once
-more, instead of ending the recipe run. Steps that already finished are not
-repeated. The wait is **on by default** and needs no profiles.
+limit, amplihack waits for the limit to reset and then runs that step again,
+instead of ending the recipe run. Steps that already finished are not
+repeated. While the [login rotator](claude-profile-rotation.md) is running,
+this happens at every limit in the run, not only the first, within a
+per-step count and a time budget for the whole run. The wait is **on by
+default** and needs no profiles.
 
 It applies to the `amplihack claude -p` launch of a recipe step
 (`amplihack recipe run` sets `AMPLIHACK_NONINTERACTIVE=1`), without
@@ -1636,10 +1641,25 @@ to turn it on there). A failure that is not a usage limit is passed back at once
      [login rotator](claude-profile-rotation.md) recording a fresh cycle
      with capacity;
    - the configured maximum;
-   - one minute before the step's timeout.
-3. The step runs once more with the same arguments, environment and input.
-   If it hits the limit again, the run ends with the usual usage-limit
-   message.
+   - one minute before the step's timeout;
+   - the end of the run's [wait budget](#set-the-wait-budget), only while
+     the rotator is running.
+3. The step runs again with the same arguments, environment and input.
+4. If it hits a limit again:
+   - **with the rotator running**, it waits again, for the rotator's next
+     cycle that leaves a login with capacity in `~/.claude` or for the
+     reset, and runs again. By default this repeats up to five waits per
+     step and six hours of waiting per recipe run;
+   - **with no rotator**, it does not wait a second time, as before: the run
+     ends with the usual usage-limit message, and the log records that no
+     rotator was seen.
+
+Only a step that uses `~/.claude` can see the rotator, because the rotator
+swaps logins into `~/.claude` and nowhere else. A step under a profile
+(inherited, or from the `.default` pointer) or under another
+`CLAUDE_CONFIG_DIR` waits at most once. The
+[reference](../reference/profile-command.md#rotator-check) lists the exact
+check.
 
 It does not wait, and the run ends as before, when the limit is an
 organisation spend limit with no reset (one that also says when your
@@ -1647,30 +1667,62 @@ session limit resets is waited out), when the reset is more than five hours
 away (a weekly limit), when Claude's message states no reset amplihack can
 read, or when the prompt came on a pipe (auto-switch then does not rerun it
 under another profile either).
+This holds while a rotator runs too: a weekly limit ends the run even when
+the rotator has another login with capacity. Waiting for the rotator in that
+case is left to [#1796](https://github.com/rysweet/amplihack-rs/issues/1796).
 Model output that merely mentions a usage limit never starts a wait.
 
 The wait stops without a rerun when the run is stopped (Ctrl-C, `SIGTERM`
-or `SIGHUP`), when the process that started the step exits, or when the
-step's timeout is about to run out.
+or `SIGHUP`), when the process that started the step exits, when the
+step's timeout is about to run out, or, while the rotator runs, when the
+run's wait budget runs out.
 
-The rerun starts the step from the beginning, so anything the failed
-attempt already did, such as a push or a comment, may happen again. Keep
-agent steps safe to run twice.
+Once the budget or the per-step count is spent, the step does not wait
+again: its result is passed back and the run ends with the usual usage-limit
+message, after a line that names the setting (see
+[What the log shows](#what-the-log-shows)).
+
+Each rerun starts the step from the beginning, so anything a failed attempt
+already did, such as a push or a comment, may happen again, once per wait.
+Keep agent steps safe to run more than once.
 
 ### What the log shows
 
 Each line goes to the step's standard error and starts with
-`amplihack.recipe.usage_limit_wait`:
+`amplihack.recipe.usage_limit_wait`. Every wait records the step (its
+process id), the attempt, whether a rotator was seen, how long it waited
+and the profile it resumed on:
 
 ```
-amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin step=48213 attempt=1 rotator=running
 amplihack.recipe.usage_limit_wait progress remaining=3540s
-amplihack.recipe.usage_limit_wait end reason=rotator capacity
-amplihack.recipe.usage_limit_wait resume attempt=2
+amplihack.recipe.usage_limit_wait end reason=rotator capacity waited=412s
+amplihack.recipe.usage_limit_wait resume attempt=2 step=48213 waited=412s login=team
 ```
 
-The [reference](../reference/profile-command.md#usage-limit-wait) lists every
-event and reason.
+`login=` is a profile name, or `unknown` when amplihack cannot tell which
+profile is live. With no rotator, a second limit in the step gives:
+
+```
+amplihack.recipe.usage_limit_wait skipped reason=already_waited step=48213 rotator=none
+```
+
+When the run's budget is spent, a plain line follows the log line:
+
+```
+amplihack.recipe.usage_limit_wait skipped reason=budget_spent step=48213
+amplihack: this recipe run's usage-limit wait budget (recipe.usage_limit_wait_budget_secs = 21600 s) is spent; not waiting again
+```
+
+And when a step has used all its waits:
+
+```
+amplihack.recipe.usage_limit_wait skipped reason=step_waits_spent step=48213
+amplihack: this step's usage-limit waits (recipe.usage_limit_max_waits_per_step = 5) are used up; not waiting again
+```
+
+The [reference](../reference/profile-command.md#log-lines) lists every
+event, field and reason.
 
 ### Turn it off or shorten it
 
@@ -1688,7 +1740,38 @@ export AMPLIHACK_USAGE_LIMIT_WAIT=0
 export AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=3600
 ```
 
-A maximum only shortens the wait; `0` means no wait but one more attempt.
+A maximum only shortens each wait; `0` means no wait but another attempt.
+Each such attempt still counts toward the per-step count.
+
+### Set the wait budget
+
+The waits a recipe run makes while the rotator runs share a budget of six
+hours by default. A step with no rotator keeps its single wait to the reset
+whatever the budget, as before. Change the budget, or the number of waits
+one step may make while the rotator runs:
+
+```bash
+amplihack config set recipe.usage_limit_wait_budget_secs 28800   # 8 hours per run
+amplihack config set recipe.usage_limit_max_waits_per_step 3
+```
+
+Or for one run:
+
+```bash
+AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS=3600 amplihack recipe run default-workflow \
+  -c task_description="Fix flaky retry tests" -c repo_path=.
+```
+
+With a budget of `0`, a step that hits a usage limit with the rotator
+running neither waits nor runs again; with no rotator it still waits once. The waits per step are 1 to 100. A project `config.toml` can lower
+both values but not raise them.
+
+The budget belongs to one `amplihack recipe run`. Amplihack keeps the
+seconds waited so far in `~/.amplihack/rerun/wait-budget-<run id>`,
+including waits made with no rotator, so they count against later waits
+with the rotator. When a
+step reads or adds to its run's record, it deletes other runs' records
+that have not changed for more than 7 days.
 
 ### Limits of the wait
 
@@ -1703,6 +1786,29 @@ A maximum only shortens the wait; `0` means no wait but one more attempt.
   `~/.amplihack/rerun/` (or `<root>/.auto-switch.d/rerun/` with
   auto-switch on). If `~/.amplihack` is not owned by you or others can
   write it, the step writes `skipped reason=not_supervised` and runs once.
+- **The budget is per run attempt.** When the recipe runner retries a
+  [transient transport failure](../reference/transient-failure-retry.md),
+  the retry is a new run with a new budget. A nested `amplihack recipe run`
+  inside a step has its own budget too.
+- **Parallel steps can overrun the budget.** Steps that wait at the same
+  time each wait up to what was left when they started, so together they
+  can pass it. The next limit after that finds the budget spent.
+- **A step that loses the record counts for itself.** If a step cannot
+  read or add to the record part way through a run, it goes on from what
+  it last read, minus its own waits since. It no longer sees other steps'
+  waits, and they do not see its waits after that, so the run can wait
+  longer than the budget.
+- **Outside a recipe run, the budget is per step.** A supervised step with
+  the rotator running and no `AMPLIHACK_RECIPE_RUN_ID` (or one amplihack
+  cannot use) counts only its own waits against the whole budget and
+  prints one warning:
+
+  ```
+  warning: the usage-limit wait budget applies to this step only (AMPLIHACK_RECIPE_RUN_ID is not set)
+  ```
+- **The rotator check can be fooled.** Anything running as you can make a
+  rotator appear to run. That only allows more waits, and the per-step count
+  and the budget still stop them.
 - **Claude Code and Unix only.**
 
 ## Limits
@@ -1827,6 +1933,30 @@ PATH="$d:$PATH" AMPLIHACK_NONINTERACTIVE=1 AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=5
   amplihack claude -p < "$HOME/prompt"
 ```
 
-The launch writes a `start` line with `bound=max_wait`, waits five seconds,
-writes `end reason=max reached` and `resume attempt=2`, and then prints
+No rotator runs in the temporary `HOME`, so the run budget does not apply
+and no budget warning is written. The launch writes a `start` line with `bound=max_wait` and `rotator=none`,
+waits five seconds, writes `end reason=max reached waited=5s` and
+`resume attempt=2 step=<pid> waited=5s login=unknown`, and prints
 `summarise CHANGELOG.md`: the retry reads the file from the start again.
+
+To see that a step with no rotator keeps its single wait whatever the run
+budget, give the launch a run id and a budget of 0:
+
+```bash
+rm "$HOME/calls"
+PATH="$d:$PATH" AMPLIHACK_NONINTERACTIVE=1 AMPLIHACK_RECIPE_RUN_ID=demo-run-1 \
+  AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=5 AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS=0 \
+  amplihack claude -p < "$HOME/prompt"
+echo "exit $?"
+```
+
+It waits five seconds and runs again as before, then `exit 0`; no
+`budget_spent` line is written. The wait's seconds still go to the run's
+record, `$HOME/.amplihack/rerun/wait-budget-demo-run-1`, which now holds
+`5`. With a rotator running for `$HOME/.claude`, the same launch would write
+`skipped reason=budget_spent step=<pid>` and the plain line
+`amplihack: this recipe run's usage-limit wait budget (recipe.usage_limit_wait_budget_secs = 0 s) is spent; not waiting again`
+instead (see the
+[run budget reference](../reference/profile-command.md#run-budget)). The
+record stays behind until another
+run opens its own record more than 7 days later and deletes it.

@@ -234,8 +234,9 @@ pub fn describe(out: &Output) -> String {
     )
 }
 
-/// The usage-limit wait log lines on stderr, prefix removed.
-pub fn wait_lines(out: &Output) -> Vec<String> {
+/// The usage-limit wait log lines on stderr, prefix removed, exactly as
+/// written.
+pub fn raw_wait_lines(out: &Output) -> Vec<String> {
     text(&out.stderr)
         .lines()
         .filter_map(|l| l.strip_prefix(WAIT_PREFIX))
@@ -243,12 +244,39 @@ pub fn wait_lines(out: &Output) -> Vec<String> {
         .collect()
 }
 
-/// `wait_lines` without the `progress` lines, whose count depends on timing.
-pub fn events(out: &Output) -> Vec<String> {
-    wait_lines(out)
+/// `raw_wait_lines` without the `progress` lines, whose count depends on
+/// timing.
+pub fn raw_events(out: &Output) -> Vec<String> {
+    raw_wait_lines(out)
         .into_iter()
         .filter(|l| !l.starts_with("progress "))
         .collect()
+}
+
+/// `line` without the fields issue #1761 added: `step=`, `waited=`,
+/// `rotator=` and `login=` anywhere, and `attempt=` on `start`. The #1618
+/// assertions are about the fields they name, not about these.
+pub fn normalise(line: &str) -> String {
+    let start = line.starts_with("start ");
+    line.split(' ')
+        .filter(|t| {
+            !(["step=", "waited=", "rotator=", "login="]
+                .iter()
+                .any(|k| t.starts_with(k))
+                || (start && t.starts_with("attempt=")))
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The usage-limit wait log lines on stderr, prefix removed, normalised.
+pub fn wait_lines(out: &Output) -> Vec<String> {
+    raw_wait_lines(out).iter().map(|l| normalise(l)).collect()
+}
+
+/// `wait_lines` without the `progress` lines, whose count depends on timing.
+pub fn events(out: &Output) -> Vec<String> {
+    raw_events(out).iter().map(|l| normalise(l)).collect()
 }
 
 /// Every `progress` line has exactly the documented shape.

@@ -1,6 +1,7 @@
-//! `wait` (issue #1618), continued from `tests_wait.rs` (whose `Fake`
-//! `WaitDeps` this uses): a stop signal, which end wins when several hold
-//! at once, the end of the step's session, and fresh rotator capacity.
+//! `wait` (issues #1618, #1761), continued from `tests_wait.rs` (whose
+//! `Fake` `WaitDeps` this uses): a stop signal, which end wins when several
+//! hold at once, the end of the step's session, fresh rotator capacity, and
+//! the run budget's deadline.
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_wait_ends;`.
 
@@ -66,4 +67,30 @@ fn fresh_rotator_capacity_ends_the_wait_at_the_next_poll() {
         End::RotatorCapacity
     );
     assert_eq!(f.elapsed(), 60);
+}
+
+#[test]
+fn the_budget_deadline_ends_the_wait_with_budget_spent() {
+    let mut f = Fake::new();
+    assert_eq!(wait(&plan_in(600, Bound::Budget), &mut f), End::BudgetSpent);
+    assert_eq!(f.elapsed(), 600);
+    assert_eq!(End::BudgetSpent.as_str(), "budget spent");
+}
+
+#[test]
+fn an_empty_budget_ends_the_wait_at_once() {
+    let mut f = Fake::new();
+    assert_eq!(wait(&plan_in(0, Bound::Budget), &mut f), End::BudgetSpent);
+    assert_eq!(f.elapsed(), 0);
+}
+
+#[test]
+fn rotator_capacity_still_ends_a_budget_bound_wait_at_the_next_poll() {
+    let mut f = Fake::new();
+    f.capacity_from = Some(10);
+    assert_eq!(
+        wait(&plan_in(600, Bound::Budget), &mut f),
+        End::RotatorCapacity
+    );
+    assert_eq!(f.elapsed(), 30);
 }

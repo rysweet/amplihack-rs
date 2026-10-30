@@ -4,8 +4,10 @@
 //! runner's own classifier calls a usage limit, reruns it under the next
 //! eligible profile while auto-switch is on (#1569). When none is left, or
 //! auto-switch is off or no profile was inherited, the usage-limit wait may
-//! run the step once more in the inherited environment (#1618). Only the
-//! final attempt's stdout is printed.
+//! wait and run the step again in the inherited environment (#1618): once
+//! per step without a login rotator, and at each limit up to the per-step
+//! cap while one runs, all within the recipe run's wait budget (#1761).
+//! Only the final attempt's stdout is printed.
 
 use super::candidate::{self, Pool};
 use super::config::{self, Config};
@@ -280,9 +282,10 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // Set when the step was moved off the inherited profile only for being
     // over the auto-switch threshold (no window at 100%). That profile still
     // has capacity, so when the candidate is limited the step goes back to
-    // it as an auto-switch rerun, not a wait: the step's single wait stays
-    // free for the inherited profile's own limit, which is the likelier one
-    // on a nearly-empty window (#1618).
+    // it as an auto-switch rerun, not a wait: the step's waits stay free for
+    // the inherited profile's own limit, which is the likelier one on a
+    // nearly-empty window (#1618). Without a rotator a step has one wait.
+    // With one it has up to `max_waits_per_step` waits (#1761).
     let mut inherited_has_capacity = false;
     if let Some(sw) = &switch {
         let eff = config::effective(sw.store.root());
@@ -462,7 +465,8 @@ fn unsupervised(waiter: &Waiter, on: bool, why: &dyn std::fmt::Display) -> Resul
 }
 
 /// Records the limit for the account live in `profile`, then the next
-/// eligible profile, unless the wait was already used for this step.
+/// eligible profile, unless this step has already waited: after a wait the
+/// retry stays on the inherited profile.
 fn next_profile(
     store: &ProfileStore,
     state: &State,
