@@ -621,6 +621,10 @@ script -qec 'timeout --kill-after=60 5400 cargo test --workspace --locked; rc=$?
   `git remote set-head origin -a` and
   `tests/outside-in/scripts/scenario8-checks.sh`. They now fail at once
   instead of prompting.
+- A test that reads its own stdin is stopped in the same way when the suite
+  runs at a terminal, or under `script` as above, behind plain `timeout`.
+  Give such a test its answer as an argument instead of reading stdin, as
+  the power-steering tests in `amplihack-utils` do.
 - Nothing here works around uutils `timeout`. On a host where it is installed,
   a plain `timeout` that is stopped still waits indefinitely, so use the
   commands in
