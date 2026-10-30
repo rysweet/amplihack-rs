@@ -2735,6 +2735,7 @@ different target, a stay or an ALERT.
 | The [rotation pin](#rotate-pin) differs | `pin` | Every decision |
 | The [overflow](#rotate-overflow) list or its ignored entries differ | `overflow` | Every decision |
 | The swap target is no longer a candidate | `target eligibility: <reason>` | Swap only |
+| The swap target is still a candidate, but the account in its `.claude.json` is not the one it had in step 3 | `target identity` | Swap only |
 
 For the target, `<reason>` is the [skip reason](#rotate-candidates) it now
 has, such as `no login`, `excluded`, `session running`, `parked` or
@@ -2745,40 +2746,64 @@ ahead. Whether `/proc` can be scanned is not compared in its own right: a
 change in it shows only through the target's skip reason, so it has no
 label of its own and never affects a stay or an ALERT.
 
+The target's account is the `oauthAccount` in `<root>/<name>/.claude.json`,
+compared by the [account identity](#account-identity) rule that every other
+account comparison in amplihack uses. A `profile login <name>` to another
+account during step 4 is a `target identity` change, so the cycle never
+moves in a login whose usage it did not measure. A rewrite of that file that keeps the account, such as the
+probe itself updating it, is not a change. No other profile's account is
+compared, and the login file's inode is not compared at all, because a
+probe may refresh the OAuth token and rewrite it.
+
 Exclusion is checked for the target only. The live profile is always
 skipped as `live` before the `exclude` list is read, so adding the live
 profile to `exclude` while a cycle measures has no effect on a swap away
 from it.
 
-A `journal`, `live`, `pin` or `overflow` change always ends the cycle with a
-skip. One of these means a person or another process has acted, for example
-with [`profile switch`](#rotate-switch) or `auto-switch` settings, and the
-rotator does not act against it. The next cycle measures again. A
-`~/.claude.json` that cannot be read for a moment counts as a `live` change
-and is not retried within the cycle.
+A `journal`, `live`, `pin` or `overflow` change ends the cycle with a skip.
+One of these means a person or another process has acted, for example with
+[`profile switch`](#rotate-switch) or `auto-switch` settings, and the
+rotator does not act against it. The next cycle measures again.
 
-When the only changes are to the target's eligibility, the cycle
-reconsiders once:
+There is one exception. Running Claude Code sessions rewrite
+`~/.claude.json`, and a read during a rewrite can find no account. When
+`~/.claude.json` held an account in step 3 and holds none in step 6, and the
+only other changes are to the target, the cycle logs
+`revalidate: ~/.claude.json held no account; read again`, waits 500
+milliseconds with the lock still held, and makes the comparison once more.
+The cycle then acts on the second comparison alone: it goes ahead,
+reconsiders the target as below, or skips with the labels the second
+comparison found. There is at most one second read per cycle. A
+`~/.claude.json` that names a different account is never read again: the
+next cycle identifies the live login afresh, and
+[hand-change recovery](#rotate-hand-change-recovery) acts when the ledger
+names another account. A `journal`, `pin` or `overflow` change is never
+read again either.
+
+When the only changes are to the target's eligibility or identity, the
+cycle reconsiders once:
 
 1. The failed-live-probe count is put back to its value before this cycle,
    so a failed live probe is not counted twice (see
    [Failed live probes](#rotate-failed-live-probes)).
 2. The step 4 readings are kept, minus those of profiles that are no longer
-   candidates. Nothing is probed again, so the lock is held throughout and
-   the readings are as recent as those of the first decision.
+   candidates or whose account has changed since step 3. Nothing is probed
+   again, so the lock is held throughout and the readings are as recent as
+   those of the first decision.
 3. The [decision rule](#rotate-decision-rule) runs again on the fresh state
    and those readings, recorded with the time of the original measurement.
    Damping and spend-limit blocks are judged against the current time.
-4. If it gives a swap to a profile that is a candidate in the fresh state,
-   the cycle logs
+4. If it gives a swap to a profile that is a candidate in the fresh state
+   with its step 3 account, the cycle logs
    `revalidate: target <old> no longer eligible (<reason>); reconsidered`,
    where `<reason>` is the old target's bare skip reason, such as
-   `session running`, or `gone`, without the `target eligibility: ` text
-   used in the skip line. It then swaps to the new target and records the
-   cycle from the fresh state and the new decision. Any other result,
-   including a stay or an ALERT,
-   ends the cycle with
-   `skip: state changed during measurement (target eligibility: <reason>)`.
+   `session running`, `gone`, or `account changed` for a
+   `target identity` change, without the `target eligibility: ` text used
+   in the skip line. It then swaps to the new target and records the cycle
+   from the fresh state and the new decision. Any other result, including
+   a stay or an ALERT, ends the cycle with
+   `skip: state changed during measurement (target eligibility: <reason>)`
+   or `skip: state changed during measurement (target identity)`.
 
 There is at most one reconsideration per cycle. The [swap](#rotate-swap)
 still makes its own checks on the target's login and on `~/.claude` before it
@@ -2814,7 +2839,23 @@ With `spare` the only candidate, the same change ends the cycle:
 A [held cycle](#pin-and-overflow) that records a spend-limit block makes the
 same comparison with the rules for a stay: it stops only on a `journal`,
 `live`, `pin` or `overflow` change, logs the same skip line, and never
-reconsiders.
+reads again or reconsiders.
+
+These related problems are known and tracked in their own issues:
+
+- The live account and the target's account are read from `.claude.json`.
+  A running session that writes the previous account back into
+  `~/.claude.json` after a swap is not detected by step 6, and it can make
+  [hand-change recovery](#rotate-hand-change-recovery) act on false
+  evidence. Reading the account from data that moves with the login is
+  [#1753](https://github.com/rysweet/amplihack-rs/issues/1753).
+- Nothing checks after a swap that `~/.claude` holds the account the
+  ledger records:
+  [#1755](https://github.com/rysweet/amplihack-rs/issues/1755).
+- An exhausted reading is logged as `s=100% w=100%` whatever the other
+  window's figure, and a profile has been seen read as exhausted after its
+  reset time:
+  [#1754](https://github.com/rysweet/amplihack-rs/issues/1754).
 
 ### Rotate decision rule
 
@@ -3956,8 +3997,9 @@ stdout only, without the time.
 | `ALERT: auto-switch recovery is inconsistent; no swap` | Auto-switch state needs `auto-switch repair`. |
 | `recovery: rolled back an interrupted swap <from>-><to>` / `recovery: finished an interrupted swap <from>-><to>` | Recovery acted. |
 | `skip: state lock busy` / `skip: <name> (<reason>)` / `skip: cannot see running sessions; no candidates` | The cycle or a candidate was skipped. |
-| `skip: state changed during measurement (<labels>)` | Step 6 found a change that affects the decision; see [Rotate revalidation](#rotate-revalidation). `<labels>` lists one or more of `journal`, `live`, `pin`, `overflow` and `target eligibility: <reason>`, separated by `, `. The labels are fixed text and [skip reasons](#rotate-candidates) only. Older readers that match the prefix `skip: state changed during measurement` still match. |
-| `revalidate: target <name> no longer eligible (<reason>); reconsidered` | The swap target became ineligible while the cycle measured, and the cycle decided again under the lock. `<reason>` is the target's bare [skip reason](#rotate-candidates), such as `session running`, or `gone`; it never begins with `target eligibility: `. The next line is the new `swap` line, or `ALERT: swap refused: <reason>` when a [pre-swap check](#rotate-swap) refuses the new target. |
+| `skip: state changed during measurement (<labels>)` | Step 6 found a change that affects the decision; see [Rotate revalidation](#rotate-revalidation). `<labels>` lists one or more of `journal`, `live`, `pin`, `overflow`, `target eligibility: <reason>` and `target identity`, separated by `, `. The labels are fixed text and [skip reasons](#rotate-candidates) only. Older readers that match the prefix `skip: state changed during measurement` still match. |
+| `revalidate: ~/.claude.json held no account; read again` | Step 6 found no account in `~/.claude.json`, which held one in step 3, and read the state once more after 500 milliseconds; see [Rotate revalidation](#rotate-revalidation). The next line comes from the second comparison. |
+| `revalidate: target <name> no longer eligible (<reason>); reconsidered` | The swap target became ineligible, or its account changed, while the cycle measured, and the cycle decided again under the lock. `<reason>` is the target's bare [skip reason](#rotate-candidates), such as `session running`, `gone`, or `account changed`; it never begins with `target eligibility: `. The next line is the new `swap` line, or `ALERT: swap refused: <reason>` when a [pre-swap check](#rotate-swap) refuses the new target. |
 | `skip: the external rotator is running` / `skip: <error>` | `watch` only: the cycle failed with that error and the rotator carries on. |
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |

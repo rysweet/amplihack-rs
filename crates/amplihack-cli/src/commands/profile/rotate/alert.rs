@@ -1,9 +1,12 @@
 //! ALERT de-duplication for the rotate cycle: the key an ALERT is stored
-//! under in `ledger.alert`, and whether a line is written or only printed.
+//! under in `ledger.alert`, whether a line is written or only printed, and
+//! recording a cycle that ends on an ALERT.
 
+use super::cycle::{Ctx, CycleOutcome, save};
 use super::ledger::RotateLedger;
 use super::log::Sink;
 use crate::commands::profile::ProfileError;
+use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::name::ProfileName;
 
 pub fn alert_key(kind: &str, live: Option<&ProfileName>) -> String {
@@ -32,6 +35,20 @@ pub fn alert_once(out: &mut Sink, l: &mut RotateLedger, key: &str, t: i64, line:
     } else {
         out.print(t, line);
     }
+}
+
+/// Writes an ALERT once per key and records the cycle as alerted.
+pub(super) fn alert(
+    ctx: &Ctx,
+    out: &mut Sink,
+    kind: &str,
+    live: Option<&ProfileName>,
+    line: &str,
+) -> Result<(), ProfileError> {
+    let t = now();
+    let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+    alert_once(out, &mut l, &alert_key(kind, live), t, line);
+    save(ctx, &mut l, CycleOutcome::Alerted, t, None, None)
 }
 
 /// The ALERT key kind for a refused swap: its reason, without control

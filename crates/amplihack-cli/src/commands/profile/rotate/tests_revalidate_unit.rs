@@ -3,17 +3,20 @@
 //! Contract:
 //! - `revalidate::changed(first: &Snap, fresh: &Snap, decision: &Decision,
 //!   journal: bool) -> Vec<Changed>`, with `Changed::{Journal, Live, Pin,
-//!   Overflow, Target(Option<Skip>)}` and `Changed::label(&self) -> String`.
+//!   Overflow, Target(Option<Skip>), TargetIdentity}` and
+//!   `Changed::label(&self) -> String`.
 //!   `Live` covers `live`, `account`, `proto` and `home_no_oauth`; `Overflow`
 //!   covers `overflow` and `ignored`; `Target` applies to a swap only, and
-//!   only to its target. `candidates`, `skips` and `sees_sessions` of any
-//!   other profile are not compared.
+//!   only to its target. `TargetIdentity` is a swap's target that is still a
+//!   candidate with another account in `candidate_accounts`, by
+//!   `Account::same`. `candidates`, `skips`, `sees_sessions` and
+//!   `candidate_accounts` of any other profile are not compared.
 //! - `msg::changed(&[Changed])`, `msg::reconsidered(&ProfileName, &str)` and
 //!   `msg::alert_no_capacity_for(live, reading, others)`.
 //! - `Measurement::probed` holds the probes `decide_measured` decided on.
 
 use super::decide::{Decision, Reading, Reason};
-use super::identify::{LiveId, Skip};
+use super::identify::{Account, LiveId, Skip};
 use super::log::msg;
 use super::observe::{Snap, decide_measured, snapshot};
 use super::pin::PinState;
@@ -35,7 +38,27 @@ fn base() -> Snap {
         pin: PinState::None,
         ignored: Vec::new(),
         home_no_oauth: false,
+        candidate_accounts: ["spare", "spare2", "third"]
+            .iter()
+            .map(|c| (n(c), acct(&format!("u-{c}"), &format!("{c}@example.com"))))
+            .collect(),
     }
+}
+
+/// An account with this uuid and e-mail.
+fn acct(uuid: &str, email: &str) -> Option<Account> {
+    let raw = serde_json::json!({"oauthAccount": {"accountUuid": uuid, "emailAddress": email}});
+    Account::from_claude_json(raw.to_string().as_bytes())
+}
+
+/// `s` with `name`'s account replaced by `account`.
+fn with_account(mut s: Snap, name: &str, account: Option<Account>) -> Snap {
+    for (c, a) in &mut s.candidate_accounts {
+        if c == &n(name) {
+            *a = account.clone();
+        }
+    }
+    s
 }
 
 fn to_spare() -> Decision {
@@ -155,6 +178,75 @@ fn a_swap_target_in_neither_list_is_gone() {
 }
 
 #[test]
+fn a_swap_target_with_another_account_is_a_target_identity_change() {
+    let other = acct("u-intruder", "intruder@example.com");
+    for (what, account) in [("another account", other), ("no account", None)] {
+        let fresh = with_account(base(), "spare", account);
+        assert_eq!(
+            changed(&base(), &fresh, &to_spare(), false),
+            [Changed::TargetIdentity],
+            "{what}"
+        );
+    }
+    let first = with_account(base(), "spare", None);
+    assert_eq!(
+        changed(&first, &base(), &to_spare(), false),
+        [Changed::TargetIdentity],
+        "an account where there was none"
+    );
+}
+
+#[test]
+fn the_same_account_read_again_is_not_a_change() {
+    // `Account::same` decides: the uuid (and organisation), not the e-mail.
+    let renamed = with_account(base(), "spare", acct("u-spare", "new@example.com"));
+    assert_eq!(changed(&base(), &renamed, &to_spare(), false), []);
+    // An API-key profile may have no account at either read.
+    let none = with_account(base(), "spare", None);
+    assert_eq!(changed(&none, &none, &to_spare(), false), []);
+}
+
+#[test]
+fn a_target_that_left_the_candidates_is_not_also_an_identity_change() {
+    let fresh = with_account(skipped(base(), "spare", Skip::NoAccount), "spare", None);
+    assert_eq!(
+        changed(&base(), &fresh, &to_spare(), false),
+        [Changed::Target(Some(Skip::NoAccount))]
+    );
+}
+
+#[test]
+fn only_the_swap_target_account_is_compared() {
+    let other = acct("u-intruder", "intruder@example.com");
+    let fresh = with_account(base(), "spare2", other.clone());
+    for d in all_decisions() {
+        assert_eq!(changed(&base(), &fresh, &d, false), [], "{d:?}");
+    }
+    let target = with_account(base(), "spare", other);
+    for d in [Decision::Stay, Decision::Alert] {
+        assert_eq!(changed(&base(), &target, &d, false), [], "{d:?}");
+    }
+}
+
+#[test]
+fn the_snapshot_records_each_candidate_account() {
+    let (e, _, _) = env3();
+    let ctx = ctx_with(&e, |_, _| unreachable!());
+    let state = State::new(ctx.store.root()).unwrap();
+    let snap = snapshot(&ctx, &state).unwrap();
+    let names: Vec<_> = snap
+        .candidate_accounts
+        .iter()
+        .map(|(c, _)| c.clone())
+        .collect();
+    assert_eq!(names, snap.candidates, "one entry per candidate, in order");
+    for (c, a) in &snap.candidate_accounts {
+        let key = format!("u-{c}");
+        assert!(a.as_ref().is_some_and(|a| a.matches_key(&key)), "{c}");
+    }
+}
+
+#[test]
 fn other_profiles_churn_is_never_a_change() {
     let mut added = base();
     added.candidates.push(n("newcomer"));
@@ -214,6 +306,7 @@ fn labels_are_fixed_text_or_a_skip_reason() {
     assert_eq!(Changed::Pin.label(), "pin");
     assert_eq!(Changed::Overflow.label(), "overflow");
     assert_eq!(Changed::Target(None).label(), "target eligibility: gone");
+    assert_eq!(Changed::TargetIdentity.label(), "target identity");
     for why in [
         Skip::SessionRunning,
         Skip::Excluded,
@@ -251,6 +344,10 @@ fn the_reconsidered_line_is_exact() {
     assert_eq!(
         msg::reconsidered(&n("spare"), "gone"),
         "revalidate: target spare no longer eligible (gone); reconsidered"
+    );
+    assert_eq!(
+        msg::reconsidered(&n("spare"), "account changed"),
+        "revalidate: target spare no longer eligible (account changed); reconsidered"
     );
 }
 

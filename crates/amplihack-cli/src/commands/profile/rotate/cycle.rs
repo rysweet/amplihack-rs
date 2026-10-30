@@ -2,12 +2,12 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::alert::{alert_key, alert_once, clear_alert, refusal_kind};
+use super::alert::{alert, alert_key, alert_once, clear_alert, refusal_kind};
 use super::decide::Decision;
 use super::held::held_cycle;
 use super::identify::{LiveId, Skip};
 use super::ledger::{LastCycle, RotateLedger, RotateState, SWITCHED};
-use super::log::{Sink, msg};
+use super::log::msg;
 use super::observe::{
     Measurement, Snap, dry_run, live_name, measure_and_decide, platform_block_reason, reading_of,
 };
@@ -94,6 +94,8 @@ pub struct Ctx {
     pub(super) measure: Option<MeasureFn>,
     /// Replaces a held cycle's spend-limit probe when set; only tests do.
     pub(super) probe_held: Option<super::held::HeldProbeFn>,
+    /// Waits before step 6 reads the state again; tests act in it instead.
+    pub(super) pause: fn(&Ctx),
 }
 
 impl Ctx {
@@ -112,6 +114,7 @@ impl Ctx {
             scan: scan_system,
             measure: None,
             probe_held: None,
+            pause: |_| std::thread::sleep(revalidate::REREAD_PAUSE),
         }
     }
 
@@ -151,20 +154,6 @@ pub fn prototype_guard(root: &Path) -> Result<(), ProfileError> {
     }
 }
 
-/// Writes an ALERT once per key and records the cycle as alerted.
-fn alert(
-    ctx: &Ctx,
-    out: &mut Sink,
-    kind: &str,
-    live: Option<&ProfileName>,
-    line: &str,
-) -> Result<(), ProfileError> {
-    let t = now();
-    let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-    alert_once(out, &mut l, &alert_key(kind, live), t, line);
-    save(ctx, &mut l, CycleOutcome::Alerted, t, None, None)
-}
-
 /// Records the cycle as ended at `t`, after measuring from `measured_at`,
 /// with its overflow tag; see [`overflow_record::record`].
 pub(super) fn save(
@@ -192,7 +181,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // Step 3: recover and identify under the lock.
     let (mut out, prelude) = locked_prelude(ctx, mode == Mode::OneShot, true)?;
     let (lock, state, mut first) = match prelude {
-        Prelude::Ready { lock, state, first } => (lock, state, first),
+        Prelude::Ready { lock, state, first } => (lock, state, *first),
         Prelude::LockBusy => {
             out.emit(now(), msg::LOCK_BUSY);
             return Ok(CycleOutcome::Skipped);
@@ -278,14 +267,17 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // The external rotator may have started while this one measured.
     prototype_guard(ctx.store.root())?;
     let t = now();
-    let m = match revalidate::check(ctx, &state, &first, &m, failed_before)? {
+    let checked = revalidate::check(ctx, &state, &first, &m, failed_before)?;
+    if checked.reread {
+        out.emit(t, revalidate::REREAD);
+    }
+    let m = match checked.verdict {
         Verdict::Proceed => m,
-        // Issue #1721: only the target left the candidates, and the probes
-        // already taken chose another; from here the cycle is that one.
-        // `ctx.failed_live` is left as it is: a retry needs a target-only
-        // change, so the live probe, `failed_before`, live name and overflow
-        // entries are unchanged and `retry.failed == m.failed`. If the retry
-        // conditions are ever widened, assign `ctx.failed_live` here again.
+        // Issue #1721: only the target changed, and the probes already taken
+        // chose another; from here the cycle is that one. `ctx.failed_live`
+        // stays: a target-only change leaves the live probe, live name and
+        // overflow entries as they were, so `retry.failed == m.failed`. If
+        // the retry rule is ever widened, assign `ctx.failed_live` here.
         Verdict::Reconsidered { m, fresh, line } => {
             out.emit(t, &line);
             first = *fresh;

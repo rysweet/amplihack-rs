@@ -43,6 +43,8 @@ pub struct Snap {
     pub ignored: Vec<ProfileName>,
     /// `~/.claude` holds a readable login without OAuth.
     pub home_no_oauth: bool,
+    /// Each candidate's account; step 6 compares the target's (#1721).
+    pub candidate_accounts: Vec<(ProfileName, Option<Account>)>,
 }
 
 impl Snap {
@@ -87,6 +89,7 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         identify::login_kind(&ctx.home.join(".claude").join(CREDS)) == LoginKind::NoOAuth;
     Ok(Snap {
         account: Account::of_dir(&ctx.home).map(|a| a.key().to_string()),
+        candidate_accounts: super::revalidate::accounts(&ctx.store, &candidates),
         live,
         proto,
         candidates,

@@ -7,10 +7,18 @@
 //!   or a rotate journal skips the cycle with
 //!   `skip: state changed during measurement (<labels>)`, and never retries.
 //! - For a swap, the target leaving the candidates is
-//!   `target eligibility: <skip reason>` (or `gone`). The cycle re-decides
-//!   once under the lock, on the probes it already has, limited to the fresh
-//!   candidates; a swap to a fresh candidate goes ahead after
-//!   `revalidate: target <old> no longer eligible (<reason>); reconsidered`.
+//!   `target eligibility: <skip reason>` (or `gone`), and the target still a
+//!   candidate with another account in its `.claude.json` is
+//!   `target identity`. The cycle re-decides once under the lock, on the
+//!   probes it already has, limited to the fresh candidates whose account is
+//!   unchanged; a swap to such a candidate goes ahead after
+//!   `revalidate: target <old> no longer eligible (<reason>); reconsidered`,
+//!   where `<reason>` is the skip reason, `gone` or `account changed`.
+//! - When `~/.claude.json` held an account in step 3 and none in step 6, and
+//!   nothing but the live login and the target changed, the cycle logs
+//!   `revalidate: ~/.claude.json held no account; read again`, calls
+//!   `Ctx::pause` once and compares again. A different account, a journal,
+//!   a pin or an overflow change is never read again.
 //! - Any other profile's churn (parked, a session, a lost login) never
 //!   cancels a swap, a stay or an ALERT.
 //!
@@ -21,10 +29,12 @@
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::damp::FAILED_PROBE_LIMIT;
 use super::decide::{Decision, Probed};
-use super::ledger::{Phase, RotateJournal, SWITCHED};
+use super::identify::{self, LiveId};
+use super::ledger::{Phase, RotateJournal, RotateLedger, SWITCHED};
 use super::log::msg;
 use super::observe::{Measurement, Snap, decide_measured};
 use super::pin::{self, PinState};
+use super::revalidate::REREAD;
 use super::switch::{Switched, switch_live};
 use super::tests_revalidate_cause::{ctx_with, env3, log_of, ok, park, probes_for, spent};
 use super::tests_swap::{CREDS, env, ino_at, json, n, private};
@@ -35,7 +45,7 @@ use crate::commands::profile::overflow::OverflowEntry;
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// The labels of the last `skip: state changed during measurement` line.
 fn changed_labels(log: &str) -> Vec<String> {
@@ -535,4 +545,288 @@ fn a_pinned_spend_limit_is_blocked_despite_an_unrelated_profile_parking() {
         ledger["overflow_blocked"]["spare"]["reason"], "spend_limit",
         "{ledger}"
     );
+}
+
+// --- Target identity: the target holds another account (#1721 review) -------
+
+/// Gives `name`'s `.claude.json` the account `uuid`, keeping its other keys,
+/// as `profile login` or a replaced profile directory would.
+fn relog(root: &Path, name: &str, uuid: &str) {
+    let path = root.join(name).join(".claude.json");
+    let mut v = json(&path);
+    v["oauthAccount"] =
+        serde_json::json!({"accountUuid": uuid, "emailAddress": format!("{uuid}@example.com")});
+    private(&path, &v.to_string());
+}
+
+fn spare_relogged(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let at = now();
+    let probes = probes_for(snap, &[("spare", ok(0.0, 43.0))]);
+    relog(ctx.store.root(), "spare", "u-intruder");
+    decide_measured(ctx, snap, spent(), probes, at)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_target_logged_in_to_another_account_during_measurement_is_not_swapped_in() {
+    let e = env();
+    let mut ctx = ctx_with(&e, spare_relogged);
+    let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
+    let log = log_of(&e);
+    assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
+    assert_eq!(changed_labels(&log), ["target identity"]);
+    assert!(!log.contains("intruder"), "no account in the log:\n{log}");
+    assert_no_retry(&log);
+    e.assert_unchanged();
+    assert_eq!(last_outcome(&e), "skipped");
+}
+
+/// A probe may rewrite the target's `.claude.json` with the same account
+/// (a counter, a refreshed token elsewhere): a new file, not a new account.
+fn spare_rewritten_same_account(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let at = now();
+    let probes = probes_for(snap, &[("spare", ok(0.0, 43.0))]);
+    let path = ctx.store.root().join("spare").join(".claude.json");
+    let mut v = json(&path);
+    v["numStartups"] = serde_json::json!(4);
+    fs::remove_file(&path).unwrap();
+    private(&path, &v.to_string());
+    decide_measured(ctx, snap, spent(), probes, at)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_target_whose_claude_json_is_rewritten_with_the_same_account_still_swaps() {
+    let e = env();
+    let mut ctx = ctx_with(&e, spare_rewritten_same_account);
+    let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
+    let log = log_of(&e);
+    assert_eq!(outcome, CycleOutcome::Swapped, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.t), "spare's login is live");
+    assert!(!log.contains(msg::CHANGED), "{log}");
+}
+
+fn spare_relogged_spare2_kept(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let at = now();
+    let probes = probes_for(
+        snap,
+        &[
+            ("spare", ok(0.0, 10.0)),
+            ("spare2", ok(0.0, 43.0)),
+            ("third", spent()),
+        ],
+    );
+    relog(ctx.store.root(), "spare", "u-intruder");
+    decide_measured(ctx, snap, spent(), probes, at)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_relogged_target_is_reconsidered_to_a_candidate_whose_account_is_unchanged() {
+    let (e, s2, _) = env3();
+    let mut ctx = ctx_with(&e, spare_relogged_spare2_kept);
+    let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
+    let log = log_of(&e);
+    assert_eq!(outcome, CycleOutcome::Swapped, "{log}");
+    let line = "revalidate: target spare no longer eligible (account changed); reconsidered";
+    assert!(log.contains(line), "{log}");
+    assert!(log.contains("swap work->spare2 "), "{log}");
+    assert_eq!(ino_at(&e.live()), Some(s2), "spare2's login is live");
+    assert_eq!(ino_at(&e.slot("spare")), Some(e.t), "spare was not touched");
+}
+
+/// `spare` and `spare2` are both logged in to other accounts; `third` is a
+/// candidate but was never probed.
+fn both_relogged(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let at = now();
+    let probes = probes_for(snap, &[("spare", ok(0.0, 10.0)), ("spare2", ok(0.0, 43.0))]);
+    relog(ctx.store.root(), "spare", "u-intruder");
+    relog(ctx.store.root(), "spare2", "u-intruder2");
+    decide_measured(ctx, snap, spent(), probes, at)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_retry_never_swaps_to_a_candidate_whose_account_changed_too() {
+    let (e, s2, th) = env3();
+    let mut ctx = ctx_with(&e, both_relogged);
+    let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
+    let log = log_of(&e);
+    assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
+    assert_eq!(changed_labels(&log), ["target identity"]);
+    assert_no_retry(&log);
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    for (p, i) in [("spare", e.t), ("spare2", s2), ("third", th)] {
+        assert_eq!(ino_at(&e.slot(p)), Some(i), "{p} was not touched");
+    }
+}
+
+// --- An unreadable `~/.claude.json` is read once more (#1721 review) --------
+
+/// Moves `~/.claude.json` aside and leaves a cut-short copy in its place,
+/// which is what a read during a non-atomic rewrite finds.
+fn cut_home_short(home: &Path) {
+    fs::rename(home.join(".claude.json"), home.join("claude.json.aside")).unwrap();
+    private(&home.join(".claude.json"), "{");
+}
+
+fn put_home_back(home: &Path) {
+    fs::rename(home.join("claude.json.aside"), home.join(".claude.json")).unwrap();
+}
+
+fn home_cut_short(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let at = now();
+    let probes = probes_for(snap, &[("spare", ok(0.0, 43.0))]);
+    cut_home_short(&ctx.home);
+    decide_measured(ctx, snap, spent(), probes, at)
+}
+
+fn never_paused(_: &Ctx) {
+    panic!("this change must not be read again")
+}
+
+/// The live profile `identify::live` reports right now.
+fn live_now(ctx: &Ctx) -> LiveId {
+    identify::live(&ctx.store, &ctx.rs, &ctx.home).unwrap().0
+}
+
+fn assert_read_again_then_swapped(e: &super::tests_swap::Env, log: &str) {
+    assert_eq!(log.matches(REREAD).count(), 1, "one reread:\n{log}");
+    assert!(log.contains("swap work->spare "), "{log}");
+    assert!(
+        log.find(REREAD) < log.find("swap work->spare "),
+        "the reread line comes before the swap line:\n{log}"
+    );
+    assert!(!log.contains(msg::CHANGED), "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.t), "spare's login is live");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_home_cut_short_during_measurement_is_read_again_and_the_swap_goes_ahead() {
+    // The steady state: the ledger names `work` and its account, so the cut
+    // file reads as `HomeUnreadable`.
+    let e = env();
+    let ledger = RotateLedger {
+        live: Some("work".into()),
+        account: Some("u-work".into()),
+        ..RotateLedger::default()
+    };
+    e.rs.save_ledger(&ledger).unwrap();
+    let mut ctx = ctx_with(&e, home_cut_short);
+    ctx.pause = |ctx| {
+        assert_eq!(live_now(ctx), LiveId::HomeUnreadable(n("work")));
+        put_home_back(&ctx.home);
+    };
+    let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
+    let log = log_of(&e);
+    assert_eq!(outcome, CycleOutcome::Swapped, "{log}");
+    assert_read_again_then_swapped(&e, &log);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_home_cut_short_before_any_ledger_is_read_again_too() {
+    // No ledger yet: the cut file reads as a login to adopt.
+    let e = env();
+    let mut ctx = ctx_with(&e, home_cut_short);
+    ctx.pause = |ctx| {
+        assert_eq!(live_now(ctx), LiveId::Adopt);
+        put_home_back(&ctx.home);
+    };
+    let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
+    let log = log_of(&e);
+    assert_eq!(outcome, CycleOutcome::Swapped, "{log}");
+    assert_read_again_then_swapped(&e, &log);
+}
+
+static PAUSES_STAYS_CUT: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_home_that_stays_cut_short_is_read_once_more_then_skips() {
+    let e = env();
+    let mut ctx = ctx_with(&e, home_cut_short);
+    ctx.pause = |_| {
+        PAUSES_STAYS_CUT.fetch_add(1, Ordering::SeqCst);
+    };
+    let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
+    let log = log_of(&e);
+    assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
+    assert_eq!(PAUSES_STAYS_CUT.load(Ordering::SeqCst), 1, "one pause");
+    assert_eq!(log.matches(REREAD).count(), 1, "{log}");
+    assert_eq!(changed_labels(&log), ["live"]);
+    assert_eq!(ino_at(&e.live()), Some(e.l), "nothing was moved");
+    assert_eq!(ino_at(&e.slot("spare")), Some(e.t));
+    assert_eq!(last_outcome(&e), "skipped");
+}
+
+fn home_to_another_account(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let at = now();
+    let probes = probes_for(snap, &[("spare", ok(0.0, 43.0))]);
+    let path = ctx.home.join(".claude.json");
+    let mut v = json(&path);
+    v["oauthAccount"] = serde_json::json!({"accountUuid": "u-other"});
+    private(&path, &v.to_string());
+    decide_measured(ctx, snap, spent(), probes, at)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_home_with_another_account_is_not_read_again() {
+    let e = env();
+    let mut ctx = ctx_with(&e, home_to_another_account);
+    ctx.pause = never_paused;
+    let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
+    let log = log_of(&e);
+    assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
+    assert_eq!(changed_labels(&log), ["live"]);
+    assert!(!log.contains(REREAD), "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.l), "nothing was moved");
+}
+
+fn home_cut_short_and_journal(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let m = journal_appears(ctx, snap)?;
+    cut_home_short(&ctx.home);
+    Ok(m)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_journal_is_never_read_again_even_with_a_home_cut_short() {
+    let e = env();
+    let mut ctx = ctx_with(&e, home_cut_short_and_journal);
+    ctx.pause = never_paused;
+    let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
+    let log = log_of(&e);
+    assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
+    assert_eq!(changed_labels(&log), ["journal", "live"]);
+    assert!(!log.contains(REREAD), "{log}");
+}
+
+static SPARE_SESSION_RR: AtomicBool = AtomicBool::new(false);
+
+fn home_cut_short_and_spare_busy(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let at = now();
+    let probes = probes_for(snap, &[("spare", ok(0.0, 10.0)), ("spare2", ok(0.0, 43.0))]);
+    SPARE_SESSION_RR.store(true, Ordering::SeqCst);
+    cut_home_short(&ctx.home);
+    decide_measured(ctx, snap, spent(), probes, at)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn after_a_reread_a_target_change_is_still_reconsidered_once() {
+    let (e, s2, _) = env3();
+    let mut ctx = ctx_with(&e, home_cut_short_and_spare_busy);
+    ctx.scan = |_| sessions(&SPARE_SESSION_RR, &["spare"]);
+    ctx.pause = |ctx| put_home_back(&ctx.home);
+    let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
+    let log = log_of(&e);
+    assert_eq!(outcome, CycleOutcome::Swapped, "{log}");
+    assert_eq!(log.matches(REREAD).count(), 1, "{log}");
+    let line = "revalidate: target spare no longer eligible (session running); reconsidered";
+    assert!(log.contains(line), "{log}");
+    assert!(log.find(REREAD) < log.find(line), "{log}");
+    assert_eq!(ino_at(&e.live()), Some(s2), "spare2's login is live");
 }

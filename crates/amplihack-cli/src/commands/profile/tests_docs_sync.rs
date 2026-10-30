@@ -258,13 +258,14 @@ fn rotate_log_grammar_is_documented() {
     }
 }
 
-/// Rotate revalidation (#1721): the labelled skip line, the `revalidate:`
-/// line and the no-capacity ALERT suffix each have a log-grammar row.
+/// Rotate revalidation (#1721): the labelled skip line, both `revalidate:`
+/// lines and the no-capacity ALERT suffix each have a log-grammar row.
 #[test]
 fn rotate_revalidation_log_rows_are_documented() {
     for row in [
         "| `skip: state changed during measurement (<labels>)` |",
         "| `revalidate: target <name> no longer eligible (<reason>); reconsidered` |",
+        "| `revalidate: ~/.claude.json held no account; read again` |",
         "`ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`",
         "#### Rotate revalidation",
     ] {
@@ -276,6 +277,8 @@ fn rotate_revalidation_log_rows_are_documented() {
         "`pin`",
         "`overflow`",
         "`target eligibility: <reason>`",
+        "`target identity`",
+        "`account changed`",
     ] {
         assert!(
             REFERENCE.contains(label),

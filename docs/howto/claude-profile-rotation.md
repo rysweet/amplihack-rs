@@ -834,7 +834,7 @@ When some candidates could not be measured, the ALERT ends with a count,
 for example:
 
 ```
-2026-10-29T20:36:58Z ALERT: no profile has capacity live=work s=100% w=61% (candidates: 2 failed, 0 exhausted)
+2026-10-29T20:36:58Z ALERT: no profile has capacity live=work s=100% w=100% (candidates: 2 failed, 0 exhausted)
 ```
 
 A candidate whose probe failed is never chosen, but it does not stop a swap
