@@ -151,17 +151,26 @@ fn unmarked_status_gets_router_with_calibration() {
     assert_eq!(classified_turn(&state), Some(5));
 }
 
+/// A marked work request is throttled like the same text without the marker
+/// (review round 6 of PR #1752). Inside the window it gets the note, which
+/// tells the agent to use dev-orchestrator for a code change, where the
+/// unmarked text gets nothing. Outside it, it is routed.
 #[test]
-fn coord_explicit_request_ignores_throttle() {
+fn coord_explicit_request_is_throttled_like_the_unmarked_text() {
     let iso = Isolated::new();
     iso.seed_classified("s-build", 10);
 
     let out = run_hook(Some("s-build"), Some(11), "[coord] build #1740");
-    assert_router(&out);
+    assert_note(&out);
+    let state = iso.read_state("s-build").unwrap();
+    assert_eq!(last_rule(&state), Some("coordination_throttled"));
+    assert_eq!(classified_turn(&state), Some(10), "nothing was classified");
 
+    let out = run_hook(Some("s-build"), Some(14), "[coord] build #1740");
+    assert_router(&out);
     let state = iso.read_state("s-build").unwrap();
     assert_eq!(last_rule(&state), Some("coordination_explicit_dev"));
-    assert_eq!(classified_turn(&state), Some(11));
+    assert_eq!(classified_turn(&state), Some(14));
 }
 
 #[test]
@@ -195,9 +204,10 @@ fn coord_dev_command_is_silent() {
 }
 
 /// Marked code requests worded the way a coordinator would word them reach
-/// the routing prompt, and through it dev-orchestrator and default-workflow.
-/// Before round 1 of the #1752 review these got the note, which told the agent
-/// to skip every recipe and change the code directly.
+/// the routing prompt on a new topic, and through it dev-orchestrator and
+/// default-workflow. Before round 1 of the #1752 review these got the note,
+/// which told the agent to skip every recipe and change the code directly.
+/// Turn 14 is outside the window of the classification at turn 10.
 #[test]
 fn coord_change_requests_are_routed() {
     let iso = Isolated::new();
@@ -212,7 +222,7 @@ fn coord_change_requests_are_routed() {
     for (i, prompt) in prompts.iter().enumerate() {
         let session = format!("s-change-{i}");
         iso.seed_classified(&session, 10);
-        let out = run_hook(Some(&session), Some(11), prompt);
+        let out = run_hook(Some(&session), Some(14), prompt);
         assert_router(&out);
         let state = iso.read_state(&session).unwrap();
         assert_eq!(
@@ -220,7 +230,7 @@ fn coord_change_requests_are_routed() {
             Some("coordination_explicit_dev"),
             "prompt {prompt:?}"
         );
-        assert_eq!(classified_turn(&state), Some(11), "prompt {prompt:?}");
+        assert_eq!(classified_turn(&state), Some(14), "prompt {prompt:?}");
     }
 }
 

@@ -18,6 +18,7 @@ The marker is read by code. The hook does not infer coordination traffic from wo
 - [Sending a coordination message](#sending-a-coordination-message)
 - [Marker rules](#marker-rules)
 - [Explicit work requests](#explicit-work-requests)
+  - [Work requests and the throttle](#work-requests-and-the-throttle)
 - [Reports that start with a verb](#reports-that-start-with-a-verb)
 - [The coordination note](#the-coordination-note)
 - [Routing prompt calibration](#routing-prompt-calibration)
@@ -36,11 +37,14 @@ Put `[coord]` at the start of the text you type or paste into another session:
 [coord] CI passed on PR 1739, nothing for you to do
 [coord] handing PR 1741 over to you
 [coord] fix landed on PR 1739
+[coord] build #1740 failed on main
 [coord] build #1740
 [coord] fix the parser for #12
 ```
 
-The first four receive the coordination note. The fourth starts with a change verb, but uses it as a noun in a report (see [Reports that start with a verb](#reports-that-start-with-a-verb)). The last two start with a change verb used as a request, so they are work requests and receive the routing prompt (see [Explicit work requests](#explicit-work-requests)).
+The first five receive the coordination note. The fourth and fifth start with a change verb, but use it as a noun in a report (see [Reports that start with a verb](#reports-that-start-with-a-verb)). The last two start with a change verb used as a request, so they are work requests. Each receives the routing prompt when the same text without the marker would, and the note while the throttle holds (see [Explicit work requests](#explicit-work-requests)).
+
+Start a report with its subject, not with a change verb: `PR 12 merged`, not `fix #12 merged`. A report that does not start with a change verb always receives the note. A report that does start with one receives the note only when the hook can tell it is a report: it must state its outcome with `is`, `was`, `are`, `were`, `has` or `had`, or with one of the [outcome words](#reports-that-start-with-a-verb). `fix #12 rolled back` uses neither, so it is taken for a work request and receives what the same text without the marker would: the routing prompt on a new topic, and the note while the throttle holds. `PR 12 rolled back` receives the note at any turn.
 
 amplihack has no dedicated send command. Any tool that types into a session, such as `tmux send-keys`, works:
 
@@ -76,7 +80,7 @@ An unmarked prompt passes the same gates as before this feature and receives the
 
 ## Explicit work requests
 
-A marked body that asks for work is not treated as coordination traffic. It receives the routing prompt, and the agent classifies it as usual. The rule is `is_explicit_work_request`, applied to the body only. A body is a work request when it starts with a change verb, then whitespace, then any text:
+A marked body that asks for work is not treated as coordination traffic. It is decided as the same text without the marker would be (see [Work requests and the throttle](#work-requests-and-the-throttle)), and on a new topic it receives the routing prompt and the agent classifies it as usual. The rule is `is_explicit_work_request`, applied to the body only. A body is a work request when it starts with a change verb, then whitespace, then any text:
 
 ```text
 (?i)^(build|fix|implement|develop|add|create|refactor|update|write|work\s+on|start)\s+\S
@@ -95,10 +99,14 @@ The verbs are the routing prompt's IMPLEMENT signal (build, fix, add, create, re
 | `refactor #57` | Yes |
 | `update PR 57` | Yes |
 | `implement retry in installer.rs` | Yes |
-| `fix failed tests on PR 12` | Yes: `failed` is followed by a noun |
-| `fix for #12 landed` | Yes, although it is a report; see [Reports that start with a verb](#reports-that-start-with-a-verb) |
+| `fix failed tests on PR 12` | Yes: `failed` follows the verb and is followed by a noun |
 | `fix landed on PR 12` | No: a report |
 | `build failed on PR 12` | No: a report |
+| `fix #12 merged` | No: a report that names its object before its outcome |
+| `fix for #12 landed` | No: a report that names its object before its outcome |
+| `build #1740 is green` | No: a report |
+| `fix the tests that failed` | No: taken for a report; see [Errors fall towards the note](#errors-fall-towards-the-note) |
+| `fix #12 rolled back` | Yes: a report, but `rolled back` is not an outcome word; see [Sending a coordination message](#sending-a-coordination-message) |
 | `update: CI passed on PR 12` | No: the verb is not followed by whitespace |
 | `building #1740` | No: only the listed verbs count |
 | `fixes #3` | No |
@@ -106,33 +114,63 @@ The verbs are the routing prompt's IMPLEMENT signal (build, fix, add, create, re
 | `report your lane status` | No |
 | `handing PR 57 over to you` | No |
 
-A code request that the rule misses, such as `please build #1740` or `can you fix the parser`, receives the note. The note does not forbid the workflow for code changes: it tells the agent to use dev-orchestrator when the message asks for one. See [The coordination note](#the-coordination-note).
-
-A work request is routed even when the throttle would otherwise suppress the routing prompt. It records `last_classified_turn`, so the throttle then applies to the following unmarked prompts as usual.
+A code request that the rule misses, such as `please build #1740`, `can you fix the parser` or `fix the tests that failed`, receives the note. The note does not forbid the workflow for code changes: it tells the agent to use dev-orchestrator when the message asks for one. See [The coordination note](#the-coordination-note).
 
 A marked body that is an explicit `/dev` command, such as `[coord] /dev fix the parser`, behaves like an unmarked `/dev` command: the hook emits nothing and the command runs.
 
+### Work requests and the throttle
+
+A work request passes through the same topic decision as an unmarked prompt, applied to the body: the explicit `/dev` check, the rule that routes turns 0 and 1, the new-topic and follow-up wording checks, and the three-turn window after the last classification.
+
+- On a new topic it receives the routing prompt, records `coordination_explicit_dev` and sets `last_classified_turn`, so the window then applies to the following prompts as usual.
+- When the throttle holds it back, it receives the coordination note and records `coordination_throttled`. The same text without the marker would receive nothing. The note's last sentence tells the agent to use dev-orchestrator for a code change, so a throttled request still reaches the workflow.
+
+A marked message therefore never receives the routing prompt when the same text without the marker would not. This holds whatever the wording rules get wrong: a report that they take for a request, such as `fix #12 rolled back`, is throttled like the unmarked report. A unit test sends each of a set of bodies with and without the marker to two sessions in the same state and checks this.
+
+The follow-up wording check looks for words such as `and` and `also` in the first three words of the body, so `[coord] fix and test the parser` receives the note from turn 2 on, where `fix and test the parser` would receive nothing.
+
 ## Reports that start with a verb
 
-A coordinator's report often opens with a change verb used as a noun: `build failed on PR 12`, `fix landed on PR 12`. These bodies match the work-request pattern, but they are reports and receive the note. The rule is a second pattern, `VERB_LED_REPORT_PATTERN` in `coordination.rs`, applied only to bodies that match the first:
+A coordinator's report often opens with a change verb used as a noun: `build failed on PR 12`, `fix #12 merged`, `build #1740 is green`. These bodies match the work-request pattern, but they are reports and receive the note. The rule is `VERB_LED_REPORT_PATTERNS` in `coordination.rs`: four patterns, applied only to bodies that match the work-request pattern. A body is a report when any of them matches:
 
 ```text
-(?i)^(?:update\s+on\b|\S+\s+(?:(?:is|was|are|were|has|had)(?:\s|$)|(?:passed|failed|landed|merged|succeeded|shipped|finished|completed|started|worked|done)(?:\s*$|\s*[.,;:!?]|\s+(?:on|in|for|at|to|into|with|after|again|and|but)\b)))
+(?i)^update\s+on\b
+(?is)^(?:build|fix|implement|develop|add|create|refactor|update|write|work\s+on|start)\s.*\b(?:is|was|are|were|has|had)(?:[\s.,;:!?]|$)
+(?i)^(?:build|fix|implement|develop|add|create|refactor|update|write|work\s+on|start)\s+(?:passed|failed|landed|merged|succeeded|shipped|finished|completed|started|worked|done|reverted|deployed|released|pushed|broke|broken|green|red)(?:\s*$|\s*[.,;:!?]|\s+(?:on|in|for|at|to|into|with|after|again|and|but)\b)
+(?is)^(?:build|fix|implement|develop|add|create|refactor|update|write|work\s+on|start)\s+\S+\s.*\b(?:passed|failed|landed|merged|succeeded|shipped|finished|completed|started|worked|done|reverted|deployed|released|pushed|broke|broken|green|red)(?:[\s.,;:!?]|$)
 ```
 
-A body is a report when one of these holds:
+The patterns, in the order shown, match a body when:
 
-- It opens with `update on`, as in `update on PR 57: merged`.
-- The second word is `is`, `was`, `are`, `were`, `has` or `had`, followed by whitespace or the end of the body: `build is green on #1740`, `fix has landed`.
-- The second word is `passed`, `failed`, `landed`, `merged`, `succeeded`, `shipped`, `finished`, `completed`, `started`, `worked` or `done`, and it ends the body or is followed by punctuation (`.,;:!?`) or by `on`, `in`, `for`, `at`, `to`, `into`, `with`, `after`, `again`, `and` or `but`: `build failed on PR 12`, `fix landed.`
+1. It opens with `update on`, as in `update on PR 57: merged`.
+2. A word after the change verb is `is`, `was`, `are`, `were`, `has` or `had`, followed by whitespace, punctuation or the end of the body: `build is green`, `build #1740 is green`, `fix for #12 has landed`.
+3. The word straight after the change verb is an outcome word that ends the body or is followed by punctuation (`.,;:!?`) or by `on`, `in`, `for`, `at`, `to`, `into`, `with`, `after`, `again`, `and` or `but`: `build failed on PR 12`, `fix landed.`
+4. An outcome word comes later than the word after the change verb, and is followed by whitespace, punctuation or the end of the body. Such a report names its object before its outcome: `fix #12 merged`, `build #1740 failed on main`, `fix for #12 landed`, `build #1740 passed CI`.
 
-An outcome word followed by a noun is an adjective in a request, so `fix failed tests` and `update merged branches` remain work requests. A copula joined to more word characters, as in `fix is_valid`, is part of an identifier and does not count.
+The outcome words are `passed`, `failed`, `landed`, `merged`, `succeeded`, `shipped`, `finished`, `completed`, `started`, `worked`, `done`, `reverted`, `deployed`, `released`, `pushed`, `broke`, `broken`, `green` and `red`. The list is closed: a report that starts with a change verb and states its outcome in other words, such as `fix #12 rolled back`, is taken for a work request. The change verbs in patterns 2 to 4 are the same list as in the work-request pattern, so `work on` counts as one verb, and in `work on failed tests` the word after the verb is `failed`. Patterns 2 and 4 read across line breaks.
+
+An outcome word straight after the change verb and followed by a noun is an adjective in a request, so `fix failed tests` and `update merged branches` remain work requests. A copula or outcome word followed directly by another character, such as the `_` in `fix is_valid` or the `-` in `fix passed-in args`, is part of an identifier and does not count.
 
 The hook makes this decision because the routing prompt would decide these reports the other way. The routing prompt applies the first rule that matches. Rule 4, `FILE_EDIT or IMPLEMENT present (no UNDERSTAND) → **DEV**`, comes before rule 8 and its exception for result reports, and the IMPLEMENT signal lists the verbs these reports start with. A verb-led report that reached the routing prompt would usually be classified as DEV and start dev-orchestrator. A unit test checks that rule 4 still comes before rule 8.
 
-Errors fall towards routing. A report that the pattern misses, such as `fix for #12 landed`, receives the routing prompt, and rule 4 will usually classify it as DEV. To keep such a report out of the routing prompt, start it with something other than a change verb, for example `PR 12: fix for #12 landed`. The opposite error would give a code change the note, which leaves the routing to the agent's reading of the note's last sentence.
+### Errors fall towards the note
 
-`update on` counts as a report at the start of any body, so a request worded `[coord] update on main and rerun` receives the note. The note still tells the agent to use dev-orchestrator if the message asks for a code change.
+The patterns cannot separate every report from every request, so they are written to err in one direction.
+
+A request that the patterns take for a report receives the note. The note ends "If it asks for a code change, use dev-orchestrator as usual.", so the agent still reaches dev-orchestrator, through the note's last sentence instead of the routing prompt.
+
+A report that the patterns take for a request is decided as the same report without the marker would be: it receives the note while the throttle holds, and the routing prompt on a new topic (see [Work requests and the throttle](#work-requests-and-the-throttle)). On a new topic, rule 4 classifies it as DEV, and the routing prompt tells a DEV classification "Do not answer inline", so the agent would usually start a recipe for a status line, which is what the marker is meant to prevent.
+
+The first mistake is the milder one, so patterns 2 and 4 look at the whole body and not only at the second word. These marked requests receive the note, and a unit test pins them:
+
+- `fix the tests that failed`, `fix the failed tests` and `update the list of merged branches`, by pattern 4.
+- `add a getting started guide`, by pattern 4, because `started` is an outcome word.
+- `fix the broken build` and `fix the red test on main`, by pattern 4, because `broken` and `red` are outcome words.
+- `fix the case where the list is empty` and `start #12 once #11 has merged`, by pattern 2.
+
+To keep the note away from such a request, send it as an explicit `/dev` command, as in `[coord] /dev fix the tests that failed`, which runs with no hook text, or word it as the change verb and its object without a clause, as in `fix failed tests on PR 12`, which receives the routing prompt on a new topic.
+
+`update on` counts as a report at the start of any body, so a request worded `[coord] update on main and rerun` receives the note as well.
 
 ## The coordination note
 
@@ -144,7 +182,7 @@ The note is the constant `COORDINATION_NOTE`. Its full text is:
 
 The note keeps recipes away from replies, reports, acknowledgements and single commands such as retrying an install. It does not keep them away from code changes. The routing prompt's downstream invariant is that development work always runs through `default-workflow`, and a marked request for a code change that the work-request rule does not recognise must still meet it.
 
-The note is emitted on every marked prompt that is not a work request or `/dev` command. It is not throttled. It never contains `auto-intent-router`, `launching dev-orchestrator`, `Invoke Skill(skill="dev-orchestrator")` or `[auto-routed]`. The body of the message is never copied into the hook output.
+The note is emitted on every marked prompt that is not a work request or `/dev` command, at every turn, and on a marked work request that the throttle holds back. It never contains `auto-intent-router`, `launching dev-orchestrator`, `Invoke Skill(skill="dev-orchestrator")` or `[auto-routed]`. The body of the message is never copied into the hook output.
 
 The note uses the same output shape as the routing prompt, with the text at the top level for the Copilot CLI and under `hookSpecificOutput` for Claude Code:
 
@@ -208,11 +246,11 @@ A local override at `.claude/tools/amplihack/hooks/templates/routing_prompt.txt`
 2. Turn resolution: use the runtime's `turnCount` or `turn_count`, or the session's own `observed_turns` counter when none is reported.
 3. Provenance: if `AMPLIHACK_RECIPE_RUN_ID` is set and non-empty, the prompt was written by a recipe step. Emit nothing and record no outcome.
 4. Nested session or active workflow: emit nothing and record no outcome.
-5. Marker: apply the marked rows of the table below.
-6. Topic decision for unmarked prompts: explicit `/dev` command, new topic or throttled.
+5. Marker: a marked body that is neither an explicit `/dev` command nor a work request receives the note.
+6. Topic decision, for unmarked prompts and for the remaining marked bodies, applied to the body: explicit `/dev` command, new topic or throttled. A throttled marked body receives the note.
 7. Emit the result.
 
-Provenance takes precedence over the marker. A marked prompt inside a recipe run, including `[coord] build #1740`, produces `{}`. The marker can only replace the routing prompt with the note, or bypass the throttle for a work request; it never starts a recipe itself.
+Provenance takes precedence over the marker. A marked prompt inside a recipe run, including `[coord] build #1740`, produces `{}`. The marker can only replace the routing prompt, or the empty output of the throttle, with the note. It never adds a routing prompt and never starts a recipe itself.
 
 Turn resolution runs before the provenance gate. When the runtime reports no turn number, step 2 increments `observed_turns` and saves the state file, so a prompt stopped at step 3 or 4 can still raise `observed_turns` by one. It never changes `last_rule` or `last_classified_turn`. When the runtime does report a turn number, these gates leave the state file untouched.
 
@@ -225,7 +263,8 @@ Each outcome is recorded in the state file's `last_rule` field. These values are
 | Path | Output | `last_rule` | `last_classified_turn` |
 | --- | --- | --- | --- |
 | Marked; body is an explicit `/dev` command | `{}` | `explicit_dev_command` | unchanged |
-| Marked; body is a work request (starts with a change verb, not a report) | routing prompt, throttle ignored | `coordination_explicit_dev` | set to the current turn |
+| Marked; body is a work request (starts with a change verb, not a report), new topic | routing prompt | `coordination_explicit_dev` | set to the current turn |
+| Marked; body is a work request, not a new topic | coordination note | `coordination_throttled` | unchanged |
 | Marked; anything else | coordination note, every turn | `coordination_marker` | unchanged |
 | Unmarked explicit `/dev` command | `{}` | `explicit_dev_command` | unchanged |
 | Unmarked new topic | routing prompt | `classification` | set to the current turn |
@@ -279,7 +318,7 @@ State writes are best-effort. A write failure is logged at debug level with the 
 
 ## Security properties
 
-- The marker is advisory. No marked prompt leads directly to a recipe; the strongest effect, for a work request, is the same routing prompt that an unmarked new topic receives.
+- The marker is advisory. No marked prompt leads directly to a recipe; the strongest effect, for a work request, is the routing prompt, and only when the same text without the marker would receive it.
 - The provenance, nested-session and workflow-active gates run before the marker is read.
 - The prefix comparison cannot panic on short, whitespace-only or multibyte input.
 - The work-request and report patterns are literal regexes, each compiled once. The `regex` crate matches in linear time.

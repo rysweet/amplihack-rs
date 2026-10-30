@@ -6,7 +6,9 @@
 //!
 //! A prompt that starts with the [`COORDINATION_PREFIX`] marker is coordination
 //! traffic between sessions (issue #1742). It gets [`COORDINATION_NOTE`] instead
-//! of the routing prompt, unless its body starts with a change verb. See
+//! of the routing prompt, unless its body is a work request that starts with a
+//! change verb. A work request is decided as the same body without the marker
+//! would be, throttle included, so the marker never adds a routing prompt. See
 //! `docs/reference/coordination-messages.md`.
 //!
 //! The marker rule is in `coordination`, the per-session state file in `state`.
@@ -37,11 +39,13 @@ mod rule {
     pub(super) const EXPLICIT_DEV: &str = "explicit_dev_command";
     pub(super) const COORD_EXPLICIT_DEV: &str = "coordination_explicit_dev";
     pub(super) const COORD_MARKER: &str = "coordination_marker";
+    pub(super) const COORD_THROTTLED: &str = "coordination_throttled";
     pub(super) const CLASSIFICATION: &str = "classification";
     pub(super) const THROTTLED: &str = "throttled";
 }
 
-/// What the topic logic decided for an unmarked prompt.
+/// What the topic logic decided for an unmarked prompt, or for the body of a
+/// marked one that is an explicit `/dev` command or a work request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TopicDecision {
     /// The user typed an explicit `/dev` command; the skill handles routing.
@@ -114,37 +118,45 @@ impl Hook for WorkflowClassificationReminderHook {
         // Issue #1742: a leading `[coord]` marker means another session typed
         // this message. It runs after every gate above, so it can never make a
         // recipe step or a nested session receive routing text.
-        if let Some(body) = strip_coordination_prefix(&prompt) {
-            if is_explicit_dev_command(body) {
+        let marked_body = strip_coordination_prefix(&prompt);
+        if let Some(body) = marked_body
+            && !is_explicit_dev_command(body)
+            && !is_explicit_work_request(body)
+        {
+            record_outcome(&dirs, &session_id, turn_count, rule::COORD_MARKER, false);
+            return Ok(context_output(COORDINATION_NOTE));
+        }
+
+        // Every other prompt goes through the same topic decision, and a
+        // marked one is decided on its body, exactly as the same text without
+        // the marker would be. So the marker never adds a routing prompt,
+        // whatever the work-request rule gets wrong: a report it takes for a
+        // request is throttled like the unmarked report (review rounds 3 to 6
+        // of PR #1752). A marked work request that the throttle holds back
+        // gets the note, whose last sentence sends a code change to
+        // dev-orchestrator, where the unmarked text gets nothing.
+        let marked = marked_body.is_some();
+        let text = marked_body.unwrap_or(&prompt);
+        match topic_decision(&dirs, &session_id, turn_count, text) {
+            TopicDecision::ExplicitDev => {
                 record_outcome(&dirs, &session_id, turn_count, rule::EXPLICIT_DEV, false);
                 return Ok(Value::Object(serde_json::Map::new()));
             }
-            if !is_explicit_work_request(body) {
-                record_outcome(&dirs, &session_id, turn_count, rule::COORD_MARKER, false);
+            TopicDecision::Throttled if marked => {
+                record_outcome(&dirs, &session_id, turn_count, rule::COORD_THROTTLED, false);
                 return Ok(context_output(COORDINATION_NOTE));
             }
-            // A body that starts with a change verb is classified as usual,
-            // without the throttle: the sender asked for work.
-            record_outcome(
-                &dirs,
-                &session_id,
-                turn_count,
-                rule::COORD_EXPLICIT_DEV,
-                true,
-            );
-        } else {
-            match topic_decision(&dirs, &session_id, turn_count, &prompt) {
-                TopicDecision::ExplicitDev => {
-                    record_outcome(&dirs, &session_id, turn_count, rule::EXPLICIT_DEV, false);
-                    return Ok(Value::Object(serde_json::Map::new()));
-                }
-                TopicDecision::Throttled => {
-                    record_outcome(&dirs, &session_id, turn_count, rule::THROTTLED, false);
-                    return Ok(Value::Object(serde_json::Map::new()));
-                }
-                TopicDecision::NewTopic => {
-                    record_outcome(&dirs, &session_id, turn_count, rule::CLASSIFICATION, true);
-                }
+            TopicDecision::Throttled => {
+                record_outcome(&dirs, &session_id, turn_count, rule::THROTTLED, false);
+                return Ok(Value::Object(serde_json::Map::new()));
+            }
+            TopicDecision::NewTopic => {
+                let rule = if marked {
+                    rule::COORD_EXPLICIT_DEV
+                } else {
+                    rule::CLASSIFICATION
+                };
+                record_outcome(&dirs, &session_id, turn_count, rule, true);
             }
         }
 

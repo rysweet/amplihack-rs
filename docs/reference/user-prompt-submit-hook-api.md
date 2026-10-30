@@ -73,7 +73,7 @@ bash tests/issue_1483_memory_injection_outside_in.sh target/release/amplihack-ho
 
 `amplihack-hooks workflow-classification-reminder` is a separate UserPromptSubmit hook in `crates/amplihack-hooks/src/workflow_classification.rs`. On a new topic it injects the routing prompt, which tells the agent to classify the request and launch dev-orchestrator for development work. It emits nothing for prompts written by a recipe step (`AMPLIHACK_RECIPE_RUN_ID` set), inside nested sessions or active workflows, for explicit `/dev` commands and for follow-up turns.
 
-A prompt that starts with `[coord]` is coordination traffic between sessions and receives a short note instead of the routing prompt, unless its body is a work request that starts with a change verb such as `fix` or `build`. A report such as `fix landed on PR 12` receives the note. See [Coordination Messages](./coordination-messages.md) for the marker rules, the note text and the `last_rule` values recorded in the state file.
+A prompt that starts with `[coord]` is coordination traffic between sessions and receives a short note instead of the routing prompt, unless its body is a work request that starts with a change verb such as `fix` or `build`. A work request is throttled like the same text without the marker, and receives the note while the throttle holds. A report such as `fix landed on PR 12` or `fix #12 merged` receives the note. See [Coordination Messages](./coordination-messages.md) for the marker rules, the note text and the `last_rule` values recorded in the state file.
 
 ## Hook Signature
 

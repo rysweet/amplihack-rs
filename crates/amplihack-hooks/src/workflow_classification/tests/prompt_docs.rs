@@ -4,7 +4,7 @@
 use super::support::*;
 use super::*;
 use crate::workflow_classification::coordination::{
-    EXPLICIT_WORK_REQUEST_PATTERN, VERB_LED_REPORT_PATTERN,
+    EXPLICIT_WORK_REQUEST_PATTERN, VERB_LED_REPORT_PATTERNS,
 };
 
 // ---- routing prompt ----
@@ -58,7 +58,7 @@ fn routing_prompt_has_the_coordination_calibration_lines() {
     );
 }
 
-/// `VERB_LED_REPORT_PATTERN` and the docs rest on this order: the routing
+/// `VERB_LED_REPORT_PATTERNS` and the docs rest on this order: the routing
 /// prompt applies the first matching rule, and rule 4 sends an IMPLEMENT verb
 /// to DEV before rule 8's exception for result reports is reached. A report
 /// that starts with a change verb therefore has to be caught by the hook, not
@@ -119,10 +119,12 @@ fn docs_quote_the_note_and_calibration_verbatim() {
         docs.contains(EXPLICIT_WORK_REQUEST_PATTERN),
         "docs must quote the work-request pattern"
     );
-    assert!(
-        docs.contains(VERB_LED_REPORT_PATTERN),
-        "docs must quote the verb-led report pattern"
-    );
+    for pattern in VERB_LED_REPORT_PATTERNS {
+        assert!(
+            docs.contains(pattern),
+            "docs must quote every verb-led report pattern: {pattern}"
+        );
+    }
     assert!(docs.contains(COORDINATION_PREFIX));
 }
 
@@ -160,6 +162,7 @@ fn docs_list_every_last_rule_value() {
         "explicit_dev_command",
         "coordination_explicit_dev",
         "coordination_marker",
+        "coordination_throttled",
         "classification",
         "throttled",
     ] {

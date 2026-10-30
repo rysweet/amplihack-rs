@@ -37,7 +37,7 @@ The override applies when the workstream recipe is:
 
 The invariant applies per workstream. A top-level hybrid task can contain multiple workstreams with different classifications, and each workstream must be routed from its own normalized classification.
 
-Prompts that start with `[coord]` are coordination messages between sessions. The workflow classification reminder gives them a short note instead of the routing prompt, unless the body is a work request that starts with a change verb, as in `build #1740` or `fix the parser for #12`. A report that starts with a verb used as a noun, such as `fix landed on PR 12`, receives the note. The note still tells the agent to use dev-orchestrator when the message asks for a code change, so the invariant above holds for marked messages too. See [Coordination Messages](./coordination-messages.md).
+Prompts that start with `[coord]` are coordination messages between sessions. The workflow classification reminder gives them a short note instead of the routing prompt, unless the body is a work request that starts with a change verb, as in `build #1740` or `fix the parser for #12`. A work request is throttled like the same text without the marker, and receives the note while the throttle holds. A report that starts with a verb used as a noun, such as `fix landed on PR 12` or `fix #12 merged`, receives the note. The note still tells the agent to use dev-orchestrator when the message asks for a code change, so the invariant above holds for marked messages too. See [Coordination Messages](./coordination-messages.md).
 
 ## Classification authority
 
