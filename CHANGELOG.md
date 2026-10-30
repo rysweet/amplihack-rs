@@ -20,10 +20,10 @@ Unreleased changes appear at the top under `[Unreleased]`.
 ### Fixed
 
 - **Copilot launch failed with Copilot CLI 1.0.105 (#1744)**: amplihack no
-  longer adds `--remote` to Copilot launches. Copilot removed the flag; start
-  remote sessions inside Copilot with `/remote on`. A user's `--remote` or
-  `--no-remote` is passed through unchanged, but Copilot 1.0.105 rejects both;
-  use `/remote on` or `/remote off` inside a session. Routed (LiteLLM proxy)
+  longer adds `--remote` to Copilot launches, because Copilot removed the
+  flag. A user's `--remote` or `--no-remote` is passed through unchanged, but
+  Copilot 1.0.105 rejects both; use `/remote on` or `/remote off` inside a
+  session. Routed (LiteLLM proxy)
   launches still add `--no-remote` and `--no-remote-export`, so they fail to
   start on Copilot 1.0.105 until #1747 is resolved.
   `AMPLIHACK_COPILOT_NO_REMOTE` is removed and has no effect. See
