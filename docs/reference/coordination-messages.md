@@ -92,6 +92,7 @@ The verb must come first and the reference must follow it directly. A reference 
 | `building #1740` | No: only the listed verbs count |
 | `fixes #3` | No |
 | `build 1740` | No: no `#`, `issue` or `PR` |
+| `fix issue#12` | No: `issue` must be followed by a space |
 | `report your lane status` | No |
 
 An explicit work request is routed even when the throttle would otherwise suppress the routing prompt. It records `last_classified_turn`, so the throttle then applies to the following unmarked prompts as usual.
