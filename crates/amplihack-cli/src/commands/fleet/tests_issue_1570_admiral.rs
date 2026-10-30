@@ -19,13 +19,17 @@ struct StubAzlin {
 impl StubAzlin {
     /// `stage1_stdout` is what stage 1 prints; `stage2_exit` is the exit
     /// status of the `send-keys` call. Only stage 1 reads stdin, so a call
-    /// that inherits the test runner's stdin cannot block.
+    /// that inherits the test runner's stdin cannot block. The stub sets its
+    /// own `PATH`: tests in `fleet/tests.rs` point `PATH` at an empty or stub
+    /// directory for the whole test process, and a stub that inherited it
+    /// would find no `cat` (#1765).
     fn new(stage1_stdout: &str, stage2_exit: i32) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let out = temp.path();
         fs::write(out.join("stage1_out"), stage1_stdout).unwrap();
         let script = format!(
             r#"#!/bin/sh
+PATH=/usr/bin:/bin; export PATH
 out='{out}'
 n=$(cat "$out/count" 2>/dev/null || echo 0); n=$((n+1)); printf '%s' "$n" > "$out/count"
 printf '%s\0' "$@" > "$out/call$n.argv"

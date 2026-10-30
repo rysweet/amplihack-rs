@@ -647,9 +647,17 @@ fn publish_azdo_change_request(
 }
 
 fn run_provider_command(binary: &str, args: &[&str]) -> std::io::Result<Output> {
+    run_provider_command_with_timeout(binary, args, PROVIDER_COMMAND_TIMEOUT)
+}
+
+fn run_provider_command_with_timeout(
+    binary: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> std::io::Result<Output> {
     let mut cmd = Command::new(binary);
     cmd.args(args);
-    run_output_with_timeout(cmd, provider_command_timeout()).map_err(|err| {
+    run_output_with_timeout(cmd, timeout).map_err(|err| {
         let kind = err
             .chain()
             .find_map(|cause| cause.downcast_ref::<io::Error>().map(io::Error::kind))
@@ -662,16 +670,6 @@ fn run_provider_command(binary: &str, args: &[&str]) -> std::io::Result<Output> 
             });
         io::Error::new(kind, err.to_string())
     })
-}
-
-fn provider_command_timeout() -> Duration {
-    #[cfg(test)]
-    if let Ok(ms) = std::env::var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS")
-        && let Ok(ms) = ms.parse::<u64>()
-    {
-        return Duration::from_millis(ms);
-    }
-    PROVIDER_COMMAND_TIMEOUT
 }
 
 fn provider_cli_missing(
@@ -979,39 +977,36 @@ mod tests {
         );
     }
 
+    /// The provider helper must stop a provider CLI that never finishes. The
+    /// fake runs for 60 s and the bound is 30 s, so the test proves the
+    /// timeout fired without depending on host speed (#1765). The timeout is
+    /// passed in, so the test changes no environment shared with tests
+    /// running in parallel.
     #[cfg(target_os = "linux")]
     #[test]
     fn provider_command_execution_is_bounded() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let fake_provider = temp.path().join("fake-gh");
         std::fs::write(
             &fake_provider,
-            "#!/bin/sh\n/bin/sleep 2\nprintf 'done\\n'\n",
+            "#!/bin/sh\n/bin/sleep 60\nprintf 'done\\n'\n",
         )
         .unwrap();
         let mut perms = std::fs::metadata(&fake_provider).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&fake_provider, perms).unwrap();
 
-        let previous_timeout = std::env::var_os("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS");
-        unsafe {
-            std::env::set_var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS", "50");
-        }
         let started = std::time::Instant::now();
-        let result = run_provider_command(fake_provider.to_str().unwrap(), &[]);
-        match previous_timeout {
-            Some(value) => unsafe {
-                std::env::set_var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS", value)
-            },
-            None => unsafe { std::env::remove_var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS") },
-        }
+        let result = run_provider_command_with_timeout(
+            fake_provider.to_str().unwrap(),
+            &[],
+            Duration::from_millis(50),
+        );
 
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "provider command helper must enforce an explicit timeout"
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "provider command helper must enforce an explicit timeout (took {:?})",
+            started.elapsed()
         );
         assert!(
             result.is_err(),
