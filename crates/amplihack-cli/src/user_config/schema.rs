@@ -257,6 +257,26 @@ pub(crate) static KEYS: &[KeyDef] = &[
         lower_only: true,
     },
     KeyDef {
+        name: "recipe.usage_limit_wait_budget_secs",
+        scope: Scope::UserAndProject,
+        kind: ValueKind::Int {
+            min: 0,
+            max: u64::MAX,
+        },
+        env: Some("AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS"),
+        default: Some("21600"),
+        lower_only: true,
+    },
+    KeyDef {
+        // 1..=100 is a safety limit: every wait can last 5 h + 120 s.
+        name: "recipe.usage_limit_max_waits_per_step",
+        scope: Scope::UserAndProject,
+        kind: ValueKind::Int { min: 1, max: 100 },
+        env: Some("AMPLIHACK_USAGE_LIMIT_MAX_WAITS_PER_STEP"),
+        default: Some("5"),
+        lower_only: true,
+    },
+    KeyDef {
         name: "orchestrator.max_depth",
         scope: Scope::UserAndProject,
         kind: ValueKind::Int {

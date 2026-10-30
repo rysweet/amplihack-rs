@@ -24,6 +24,8 @@ fn keys_are_in_documented_order() {
             "recipe.log_dir",
             "recipe.usage_limit_wait",
             "recipe.usage_limit_max_wait_secs",
+            "recipe.usage_limit_wait_budget_secs",
+            "recipe.usage_limit_max_waits_per_step",
             "orchestrator.max_depth",
         ]
     );
@@ -112,6 +114,14 @@ fn env_vars_match_existing_consumers() {
     assert_eq!(env("orchestrator.max_depth"), Some("AMPLIHACK_MAX_DEPTH"));
     assert_eq!(env("node.heap_consent"), None);
     assert_eq!(env("recipe.verbose"), None);
+    assert_eq!(
+        env("recipe.usage_limit_wait_budget_secs"),
+        Some("AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS")
+    );
+    assert_eq!(
+        env("recipe.usage_limit_max_waits_per_step"),
+        Some("AMPLIHACK_USAGE_LIMIT_MAX_WAITS_PER_STEP")
+    );
 }
 
 #[test]
@@ -135,6 +145,13 @@ fn invalid_values_are_usage_errors() {
         ("node.max_old_space_mb", "8191"),
         ("node.max_old_space_mb", "32769"),
         ("recipe.step_timeout", "0"),
+        ("recipe.usage_limit_wait_budget_secs", "-1"),
+        (
+            "recipe.usage_limit_wait_budget_secs",
+            "18446744073709551616",
+        ),
+        ("recipe.usage_limit_max_waits_per_step", "0"),
+        ("recipe.usage_limit_max_waits_per_step", "101"),
         ("recipe.verbose", "TRUE1"),
         ("agent.binary", "claude;id"),
         ("paths.home", "rel"),
@@ -158,4 +175,33 @@ fn agent_binary_is_canonicalised() {
 fn paths_home_rejects_overlong_values() {
     let long = format!("/{}", "a".repeat(4096));
     assert!(parse_cli("paths.home", &long).is_err());
+}
+
+/// Issue #1761: the run budget and the waits per step. Both may be set in a
+/// project file, which can only lower them; the 1..=100 range of the waits
+/// per step is a safety limit.
+#[test]
+fn the_usage_limit_budget_keys_are_lower_only_with_their_ranges_and_defaults() {
+    let budget = key_def("recipe.usage_limit_wait_budget_secs").unwrap();
+    let waits = key_def("recipe.usage_limit_max_waits_per_step").unwrap();
+    for k in [budget, waits] {
+        assert_eq!(k.scope, Scope::UserAndProject, "{}", k.name);
+        assert!(k.lower_only, "{} must be lower only", k.name);
+    }
+    assert_eq!(budget.default_value(), Some(Value::Int(21_600)));
+    assert_eq!(waits.default_value(), Some(Value::Int(5)));
+    assert_eq!(
+        budget.kind,
+        ValueKind::Int {
+            min: 0,
+            max: u64::MAX
+        }
+    );
+    assert_eq!(waits.kind, ValueKind::Int { min: 1, max: 100 });
+    for raw in ["0", "21600", "18446744073709551615"] {
+        assert!(parse_cli(budget.name, raw).is_ok(), "{raw}");
+    }
+    for raw in ["1", "5", "100"] {
+        assert!(parse_cli(waits.name, raw).is_ok(), "{raw}");
+    }
 }

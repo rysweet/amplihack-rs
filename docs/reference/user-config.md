@@ -17,7 +17,7 @@ files.
   - [recipe.verbose](#recipeverbose)
   - [recipe.step_timeout](#recipestep_timeout)
   - [recipe.detach, recipe.tmux_session_pattern and recipe.log_dir](#recipedetach)
-  - [recipe.usage_limit_wait and recipe.usage_limit_max_wait_secs](#recipeusage_limit_wait)
+  - [recipe.usage_limit_wait and the other usage-limit keys](#recipeusage_limit_wait)
   - [orchestrator.max_depth](#orchestratormax_depth)
 - [The config command](#the-config-command)
   - [config get](#config-get)
@@ -58,6 +58,8 @@ recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
 recipe.log_dir = (unset)  # default
 recipe.usage_limit_wait = true  # default
 recipe.usage_limit_max_wait_secs = (unset)  # default
+recipe.usage_limit_wait_budget_secs = 21600  # default
+recipe.usage_limit_max_waits_per_step = 5  # default
 orchestrator.max_depth = 3  # default
 ```
 
@@ -123,9 +125,9 @@ For each key, the first layer that sets it wins:
 | 5 | `legacy` | `~/.amplihack/config`, only while a migration could not complete |
 | 6 | `default` | The built-in default, or `(unset)` when the key has none |
 
-Two keys bend this order so that a cloned repository cannot raise your limits:
-the project file can only lower `orchestrator.max_depth` and
-`recipe.step_timeout`. See [Trust rules](#trust-rules).
+Some keys bend this order so that a cloned repository cannot raise your
+limits: the project file can only lower the keys marked "lower only" in the
+[keys table](#keys). See [Trust rules](#trust-rules).
 
 `config get --show-origin`, `config list --show-origin` and `amplihack doctor`
 print the labels from rank 2 down. `config` cannot see the flags of another
@@ -146,6 +148,8 @@ command, so it never prints `flag`.
 | `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
 | `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
 | `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | (unset) | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
+| `recipe.usage_limit_wait_budget_secs` | integer seconds, at least 0 | `21600` | `AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS` | — | user, project (lower only) |
+| `recipe.usage_limit_max_waits_per_step` | integer, 1 to 100 | `5` | `AMPLIHACK_USAGE_LIMIT_MAX_WAITS_PER_STEP` | — | user, project (lower only) |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
 
 Any other key is an error for `config set` and a diagnostic when found in a
@@ -319,18 +323,35 @@ like every path.
 ### recipe.usage_limit_wait
 
 Whether a recipe agent step that fails on a Claude usage limit waits for the
-reset and runs once more, instead of ending the run. See the
+reset and runs again, instead of ending the run. See the
 [usage-limit wait](./profile-command.md#usage-limit-wait). With no setting
 in the environment or a file, it is on, except in CI: any `CI` that is
 not, after trimming, empty, `0` or `false` in any case. Setting it in a file or the variable turns it on
 in CI too. The environment variable also accepts `1` and `0`.
 
-`recipe.usage_limit_max_wait_secs` caps one wait; it only shortens it, and
-`0` means one more attempt with no wait.
+`recipe.usage_limit_max_wait_secs` caps each wait; it only shortens it, and
+`0` means another attempt with no wait. Each such attempt still counts as a
+wait for `recipe.usage_limit_max_waits_per_step`.
+
+`recipe.usage_limit_wait_budget_secs` is the total time, in seconds, that
+all usage-limit waits of one recipe run may take: 21600 (six hours) by
+default. `0` means no step waits or retries after a limit. See
+[Run budget](./profile-command.md#run-budget).
+
+`recipe.usage_limit_max_waits_per_step` is how many times one step may wait
+while a login rotator is running: 1 to 100, 5 by default. Without a rotator
+a step waits once, whatever this says. See
+[Waits per step](./profile-command.md#waits-per-step).
+
+A project file can only lower the last three. A project
+`recipe.usage_limit_max_waits_per_step = 50` with the default of 5 gives 5
+and a diagnostic.
 
 ```sh
 amplihack config set recipe.usage_limit_wait false
 amplihack config set recipe.usage_limit_max_wait_secs 3600
+amplihack config set recipe.usage_limit_wait_budget_secs 28800
+amplihack config set recipe.usage_limit_max_waits_per_step 3
 ```
 
 ### orchestrator.max_depth
@@ -540,10 +561,12 @@ have just cloned, so it is trusted less.
 - **`config set --project` and `config edit --project` refuse a project
   `config.toml` that is a symlink, or whose directory resolves outside the git
   repository**, and exit 1.
-- **The project file can only lower `orchestrator.max_depth` and
-  `recipe.step_timeout`.** The result is the smaller of the project value and
-  the user value (or the default). A higher project value is ignored and
-  reported:
+- **The project file can only lower `orchestrator.max_depth`,
+  `recipe.step_timeout`, `recipe.usage_limit_max_wait_secs`,
+  `recipe.usage_limit_wait_budget_secs` and
+  `recipe.usage_limit_max_waits_per_step`.** The result is the smaller of
+  the project value and the user value (or the default). A higher project
+  value is ignored and reported:
 
   ```text
   warning: /home/alice/src/myapp/.amplihack/config.toml: orchestrator.max_depth: 8 is above the user value 3; a project file can only lower it

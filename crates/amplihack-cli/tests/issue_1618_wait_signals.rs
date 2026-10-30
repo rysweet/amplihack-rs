@@ -9,7 +9,7 @@
 
 #![cfg(unix)]
 
-use crate::issue_1618_fixture::{Fixture, WAIT_PREFIX, claude_stdout, describe, text};
+use crate::issue_1618_fixture::{Fixture, WAIT_PREFIX, claude_stdout, describe, normalise, text};
 use crate::support::quiet_process::in_quiet_process;
 use std::fs;
 use std::io::{BufRead, BufReader, Read};
@@ -92,10 +92,12 @@ fn assert_signal_ends_the_step(sig: i32) {
     assert_eq!(out.status.code(), Some(128 + sig), "{}", describe(&out));
     assert_eq!(f.count("0"), 1, "no retry after a signal");
     let stderr = text(&out.stderr);
-    let events: Vec<&str> = stderr
+    // Without the #1761 fields (`step=`, `waited=`, …): see `normalise`.
+    let events: Vec<String> = stderr
         .lines()
         .filter_map(|l| l.strip_prefix(WAIT_PREFIX))
         .filter(|l| !l.starts_with("progress "))
+        .map(normalise)
         .collect();
     assert_eq!(events.len(), 2, "{events:?}");
     assert!(events[0].starts_with("start "), "{events:?}");

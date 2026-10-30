@@ -146,6 +146,14 @@ mod issue_1699_isolated_profile_root;
 mod issue_1699_real_root_guard;
 #[path = "issue_1707_claim_check_shell_suites.rs"]
 mod issue_1707_claim_check_shell_suites;
+#[path = "issue_1761_budget.rs"]
+mod issue_1761_budget;
+#[path = "issue_1761_fixture.rs"]
+mod issue_1761_fixture;
+#[path = "issue_1761_no_rotator.rs"]
+mod issue_1761_no_rotator;
+#[path = "issue_1761_repeat_waits.rs"]
+mod issue_1761_repeat_waits;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

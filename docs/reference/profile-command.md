@@ -705,6 +705,8 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 | `AMPLIHACK_ROTATE_AUTOSTART` | `0`/`off` stops launches from starting the rotator, and `1`/`on` lets them, overriding `<root>/.auto-switch.d/rotate/autostart`. Empty means unset. See [Rotate autostart](#rotate-autostart). |
 | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true` or `1` turns the [usage-limit wait](#usage-limit-wait) on, `false` or `0` off. Outranks `recipe.usage_limit_wait` in `config.toml`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
 | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | Upper bound on one usage-limit wait, in seconds. Only shortens the wait. Outranks `recipe.usage_limit_max_wait_secs`. |
+| `AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS` | Total seconds all usage-limit waits of one recipe run may take; default 21600. Outranks `recipe.usage_limit_wait_budget_secs`. See [Run budget](#run-budget). |
+| `AMPLIHACK_USAGE_LIMIT_MAX_WAITS_PER_STEP` | Waits one step may make while a rotator runs, 1 to 100; default 5. Outranks `recipe.usage_limit_max_waits_per_step`. See [Waits per step](#waits-per-step). |
 
 ### Seeding
 
@@ -4425,9 +4427,13 @@ always decides before Claude Code stops it.
 
 When a recipe agent step fails on a usage limit and no auto-switch rerun is
 left, the step's supervisor waits for the limit to reset, or for a login
-with capacity to become live, and then runs the step once more. It is on by
-default and does not need auto-switch or profiles. Task-oriented guidance is
-in the [how-to](../howto/claude-profiles.md#waiting-for-a-usage-limit-reset).
+with capacity to become live, and then runs the step again. While a
+[login rotator](#rotator-check) is running, a step waits again at each
+later limit, up to [`max_waits_per_step`](#waits-per-step) waits; without
+one it waits once. All waits of one recipe run share a
+[time budget](#run-budget). It is on by default and does not need
+auto-switch or profiles. Task-oriented guidance is in the
+[how-to](../howto/claude-profiles.md#waiting-for-a-usage-limit-reset).
 
 ### Gate
 
@@ -4494,30 +4500,47 @@ hours, then a rerun with no prompt.
 After an attempt hits a usage limit, in this order:
 
 1. a stop signal already received ends the step with `128` plus the signal;
-2. auto-switch on, the wait unused, and an eligible profile left: rerun
-   under that profile at once;
+2. auto-switch on, no wait yet in this step, and an eligible profile left:
+   rerun under that profile at once;
 3. auto-switch moved the step off the inherited profile before the first
    attempt only because that profile is over the threshold (no window at
    100%), and no eligible profile is left: rerun under the inherited
    profile at once. This is an auto-switch rerun, made at most once per
-   step: no `start` or `end` is written and the wait stays unused, so a
-   limit on that rerun still goes through steps 4 to 7. With a piped
-   prompt this rerun is refused (`auto-switch: no rerun under profile …`)
-   and the step goes on to step 4: the log gets `skipped reason=disabled`
-   (or `ci`) from step 4 when the wait is off, else
-   `skipped reason=piped_prompt` from step 6;
+   step: no `start` or `end` is written and the step's wait count stays at
+   0, so a limit on that rerun still goes through steps 4 to 9. With a
+   piped prompt this rerun is refused (`auto-switch: no rerun under
+   profile …`) and the step goes on to step 4: the log gets
+   `skipped reason=disabled` (or `ci`) from step 4 when the wait is off,
+   else `skipped reason=piped_prompt` from step 7;
 4. the wait disabled: `skipped reason=disabled` (or `ci`), and the result
    is passed up;
-5. the wait already used: `skipped reason=already_waited`, and the result
-   is passed up;
-6. the limit is not one a wait can outlast (see [Reset time](#reset-time)):
+5. the [rotator check](#rotator-check), made once for this limit. It writes
+   nothing by itself; its answer decides step 6 and fills the `rotator=`
+   field of `start`;
+6. the [per-step rule](#waits-per-step): with no rotator and one wait
+   already made in this step,
+   `skipped reason=already_waited step=<id> rotator=none`; with a rotator
+   and `max_waits_per_step` waits already made,
+   `skipped reason=step_waits_spent step=<id>` and its
+   [plain line](#plain-lines). The result is passed up;
+7. the limit is not one a wait can outlast (see [Reset time](#reset-time)):
    `skipped reason=<why>`, and the result is passed up;
-7. otherwise `start`, the wait, and `end`. After `end reason=signal` the
-   step exits with `128` plus the signal; after `step timeout` or
-   `session ended` the failed attempt's result is passed up; after any
-   other reason `resume` is written and the step runs once more.
+8. the [run budget](#run-budget) is read; with nothing left,
+   `skipped reason=budget_spent` and its plain line, and the result is
+   passed up;
+9. otherwise `start`, the wait, and `end`, and the wait's seconds are added
+   to the budget record. After `end reason=signal` the step exits with
+   `128` plus the signal; after `step timeout`, `session ended` or
+   `budget spent` the failed attempt's result is passed up (after
+   `budget spent` with its plain line); after any other reason `resume` is
+   written and the step runs again.
 
-Steps 6 and 7 read the inherited profile's limit, not the last attempt's.
+A wait counts toward the step's wait count from the moment it starts,
+whatever ends it, including a wait of 0 seconds. Once the step has waited,
+step 2 no longer applies, as before: auto-switch does not move a step to
+another profile after a wait.
+
+Steps 7 and 9 read the inherited profile's limit, not the last attempt's.
 The retry runs under the inherited profile, so only that profile's reset
 says when it can work again. When auto-switch ran the step under other
 profiles before running out, their limits only steer auto-switch's choice
@@ -4532,12 +4555,70 @@ the inherited profile still has capacity and no wait is built: when the
 candidates are limited, the step goes back to the inherited profile through
 step 3, with no `start` or `end` event, and the wait is kept for a limit on
 that profile itself. A candidate's limit never times it. If that move is
-refused (a piped prompt), step 4 or 6 still writes the `skipped` event.
+refused (a piped prompt), step 4 or 7 still writes the `skipped` event.
 
-There is at most one wait per step. The retry runs the step **from the
-start** with the same prompt, so anything the failed attempt already did (a
-commit, a push, a comment) may happen again. Write agent steps so that
-running one twice is harmless.
+Every retry runs the step **from the start** with the same prompt, so
+anything a failed attempt already did (a commit, a push, a comment) may
+happen again, once per wait. Write agent steps so that running one several
+times is harmless.
+
+### Rotator check
+
+A rotator is seen at a limit when all of these hold:
+
+1. the step uses `$HOME/.claude`: it has no inherited profile, no profile
+   from the `.default` pointer, and `CLAUDE_CONFIG_DIR` is unset or set to
+   `$HOME/.claude`. A `.default` profile that is the rotator's live profile
+   runs in `~/.claude` (see [Gate](#gate)) and counts. A rotator swaps
+   logins into `~/.claude` and nowhere else, so a step under any other
+   profile or config directory has no rotator, even while one runs;
+2. the [profile root](#profile-root) is known;
+3. `<root>/.auto-switch.d/rotate/rotate.pid` names a running process of the
+   current user whose arguments hold `profile rotate watch`, checked in
+   `/proc`. Without `/proc`, the pid file alone is enough; and
+4. the rotate ledger can be read, when it exists (one written by a newer
+   version, for example, cannot).
+
+Checks 3 and 4 are the ones behind the [limit-resume hook](#resume-log)'s
+`rotator-down` outcome, so the hook and the wait agree on whether a rotator
+runs. The check only reads files; it never signals a process.
+
+The check runs once per limit, after the disabled check (step 5 of the
+[order of attempts](#order-of-attempts)), and its one answer decides both
+the [per-step rule](#waits-per-step) and the `rotator=` field of `start`.
+It is not repeated during the wait. The wait's 30-second
+[`rotator capacity`](#ending-the-wait-early) poll is separate and
+unchanged.
+
+The check is not a security boundary: any process running as you can write
+a pid file and ledger that pass it. A faked rotator only lets a step wait
+more often, and the per-step count and the run budget still bound every
+wait.
+
+### Waits per step
+
+A step counts every wait it starts, whatever ends it: a wait of 0 seconds
+(`max_wait_secs = 0`), one ended by a signal or by the step timeout, and one
+that ran its full length all count. At each limit, the rotator check for
+that limit picks the rule:
+
+| Rotator at this limit | Waits so far in the step | Result |
+|-----------------------|--------------------------|--------|
+| none | 0 | wait |
+| none | 1 or more | `skipped reason=already_waited step=<id> rotator=none` |
+| running | fewer than `max_waits_per_step` | wait |
+| running | `max_waits_per_step` | `skipped reason=step_waits_spent` and its [plain line](#plain-lines) |
+
+`max_waits_per_step` is `recipe.usage_limit_max_waits_per_step`, 1 to 100,
+default 5 (see [Usage-limit wait settings](#usage-limit-wait-settings)).
+
+Each limit is judged on its own check, so a step can change mode between
+limits. A step that waited once with no rotator waits again at its next
+limit if a rotator has started since. A step that waited with a rotator
+ends with `already_waited` at a limit where none is seen. With
+`max_waits_per_step = 1` a step waits once either way, and a second limit
+with a rotator gives `step_waits_spent`. `already_waited` is written only
+when no rotator is seen.
 
 ### Reset time
 
@@ -4585,9 +4666,16 @@ earlier row):
 | reset + 120 s, or now when the reset has passed | always | `reset+margin` |
 | now + `max_wait_secs` | a maximum is set | `max_wait` |
 | step start + `AMPLIHACK_STEP_TIMEOUT` − 60 s, never before now | the step timeout is set and above 0 | `step_timeout` |
+| now + the budget left | always; see [Run budget](#run-budget) | `budget` |
 
-No input can make a wait longer than five hours and 120 seconds.
-`max_wait_secs = 0` does not wait but still retries once.
+No input can make a wait longer than five hours and 120 seconds (18120 s).
+The default budget, 21600 s, is longer than that, so the `budget` row
+never shortens a run's first wait; it decides a later wait only once
+earlier waits in the run have used part of the budget.
+
+`max_wait_secs = 0` does not wait but still retries. Each such retry counts
+as a wait: without a rotator the step retries once, and with one it retries
+`max_waits_per_step` times and then writes `step_waits_spent`.
 
 ### Ending the wait early
 
@@ -4600,6 +4688,7 @@ The wait sleeps in slices of at most one second and stops at the first of:
 | `reset reached` | the `reset+margin` deadline passed | yes |
 | `max reached` | the `max_wait` deadline passed | yes |
 | `step timeout` | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no |
+| `budget spent` | the `budget` deadline passed: the run's wait budget is used up | no; the [plain line](#plain-lines) follows |
 | `login changed` | two probes in a row, 30 s apart, agree on a fingerprint that differs from the baseline | yes |
 | `rotator capacity` | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle with capacity (`swapped`, `stayed` or `switched`, no alert) whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
 
@@ -4627,29 +4716,207 @@ differing probe followed by a matching one is ignored, so a torn read while
 another session rewrites `.claude.json` does not end the wait. The
 fingerprint is never printed, logged or written.
 
+### Run budget
+
+All waits in one recipe run draw on one time budget,
+`recipe.usage_limit_wait_budget_secs` (default 21600 s, six hours). A run
+is one `amplihack recipe run` invocation, named by
+[`AMPLIHACK_RECIPE_RUN_ID`](./environment-variables.md#amplihack_recipe_run_id),
+which every agent step inherits.
+
+- **Read.** At step 8 of the [order of attempts](#order-of-attempts), the
+  supervisor reads the seconds the run has already waited. The budget left
+  is the budget minus those seconds, never below 0. With nothing left the
+  step writes `skipped reason=budget_spent` and its
+  [plain line](#plain-lines). Otherwise the budget left becomes the
+  `budget` row of the [deadline](#deadline). The record is not read again
+  during the wait.
+- **Write.** When the wait returns, whatever its end reason, its seconds
+  (the number in `waited=`) are appended to the record before the step
+  goes on. If the append fails, the step moves to the
+  [per-step fallback](#per-step-fallback).
+- **Budget 0.** Every limit that reaches the budget check writes
+  `budget_spent`: no wait and no retry. To retry at once without waiting,
+  set `max_wait_secs = 0` instead.
+- **Scope.** The budget belongs to one attempt of `amplihack recipe run`.
+  When the runner retries a
+  [transient transport failure](./transient-failure-retry.md), the retry
+  gets a new run id and so a new budget. A step that starts a nested
+  `amplihack recipe run` gives that run its own id and its own budget.
+- **Only at the budget check.** Nothing is read or created before it.
+  A limit refused at an earlier step (disabled, the per-step rule, a spend
+  limit, a reset too far away) touches no record.
+
+#### Budget record
+
+The record is `$HOME/.amplihack/rerun/wait-budget-<run id>`, in the same
+directory, with the same checks, as held-back output without auto-switch
+(see [Gate](#gate)). It is used whether auto-switch is on or off, so every
+step of a run shares one file.
+
+- It is created the first time a step of the run reaches the budget check,
+  even when no wait follows, at mode `0600` and opened without following
+  symlinks. It must be a regular file owned by you, with one link and no
+  group or other permissions.
+- It holds one ASCII line per finished wait: that wait's seconds in
+  decimal. Lines are only ever appended. The total is their sum, held at
+  the largest 64-bit value rather than overflowing.
+- Each read and each append takes an exclusive lock for that one operation,
+  never across a wait. Taking the lock gives up after 2 s.
+- It cannot be used when it cannot be opened, or locked within 2 s; when it
+  is larger than 64 KiB; when a non-empty line is not 1 to 20 ASCII digits
+  that fit in an unsigned 64-bit number; or when it fails the file checks
+  above. A record that cannot be used is never repaired, rewritten,
+  `chmod`ed or deleted; the step uses the
+  [per-step fallback](#per-step-fallback) instead.
+
+**Clean-up.** Each time a step opens its run's record, for a read or for
+an append, old records of other runs in the same directory are deleted. A
+file is deleted only when all of these hold: its name is `wait-budget-`
+followed by a valid run id; it is a regular file (a symlink is never
+followed) owned by you; its modification time is more than 7 days in the
+past (a time in the future keeps it); and it is not this run's record. At
+most 1024 directory entries are looked at, subdirectories are not entered,
+and errors are ignored. Nothing is cleaned in the per-step fallback.
+Held-back output files in the same directory keep their own clean-up.
+
+A record's modification time is set when it is created and at each
+append, not when it is read. A run that goes more than 7 days without
+either can lose its record to another run's clean-up. Its next budget check
+then creates an empty record, and the run's budget starts again in full.
+
+#### Per-step fallback
+
+When a step cannot use the run's record, it keeps count of the budget
+itself from then on. The budget left is the amount left at the step's last
+successful read of the record, minus the seconds the step has waited since
+that read, never below 0. A step that has not read the record successfully
+starts from the whole budget instead. Losing the record therefore never
+gives a step more than the record last showed: a step that read 3600 s
+left, waited 600 s and then could not append that wait goes on with
+3000 s. It does not see what other steps wait after that read (see
+[Gaps in the budget](#gaps-in-the-budget)).
+
+| Cause | `<cause>` in the warning |
+|-------|--------------------------|
+| `AMPLIHACK_RECIPE_RUN_ID` is unset or empty | `AMPLIHACK_RECIPE_RUN_ID is not set` |
+| The run id is not 1 to 64 bytes, each a letter `A`–`Z` or `a`–`z`, a digit or `-` | `AMPLIHACK_RECIPE_RUN_ID is not a valid run id` |
+| `HOME` is unset, empty or relative; `~/.amplihack/rerun` fails its checks; the record cannot be used; or an append fails | `the budget record cannot be used` |
+
+With no run id or an invalid one, no file is opened or created, and the
+value is never printed.
+
+Once a step falls back, it stays in the fallback until it ends. It writes
+one warning to stderr when it falls back: at the budget check that finds no
+usable run id or cannot read the record, or after the append that fails:
+
+```
+warning: the usage-limit wait budget applies to this step only (AMPLIHACK_RECIPE_RUN_ID is not set)
+```
+
+A step that never reaches the budget check writes no warning. A
+supervised step outside a recipe run, such as `amplihack claude -p` started
+by hand with `AMPLIHACK_NONINTERACTIVE=1`, has no run id, so it uses the
+fallback and writes this warning at its first budget check.
+
+#### Gaps in the budget
+
+- Parallel steps that wait at the same time each cap their deadline at the
+  budget left when their wait started, so together they can wait longer
+  than the budget. The next limit after that finds nothing left.
+- A wait whose append failed is missing from the record, so other steps of
+  the run do not count it. A step in the
+  [per-step fallback](#per-step-fallback) does not count what other steps
+  wait after its last successful read.
+- A supervisor killed with `SIGKILL` records nothing for the wait it was
+  in.
+- A record left unchanged for 7 days can be deleted by another run's
+  [clean-up](#budget-record); the run's next budget check then starts again
+  from the whole budget.
+
+Each wait is still capped at five hours and 120 seconds, and each step at
+its [wait count](#waits-per-step), so no gap lets waiting go on without
+end.
+
 ### Log lines
 
 Each line goes to stderr and starts with `amplihack.recipe.usage_limit_wait`,
 then the event and `key=value` fields. Times are local,
-`%Y-%m-%d %H:%M:%S %:z`. New fields are only ever added at the end.
+`%Y-%m-%d %H:%M:%S %:z`. Fields are written in the order shown, and new
+fields are only ever added at the end.
 
 | Event | Fields |
 |-------|--------|
-| `start` | `reason=usage_limit harness=claude reset=<time> until=<time> bound=<bound>` |
+| `start` | `reason=usage_limit harness=claude reset=<time> until=<time> bound=<bound> step=<id> attempt=<n> rotator=running\|none` |
 | `progress` | `remaining=<secs>s`, every 60 s |
-| `end` | `reason=<end reason>` from the table above |
-| `resume` | `attempt=<n>`, counting every attempt in the step |
-| `skipped` | `reason=disabled\|ci\|already_waited\|not_supervised\|spend_limit\|reset_too_far\|no_reset\|no_limit_message\|piped_prompt` |
+| `end` | `reason=<end reason> waited=<secs>s`, the reason from the table above |
+| `resume` | `attempt=<n> step=<id> waited=<secs>s login=<profile>\|unknown` |
+| `skipped` | `reason=<reason> step=<id>`; for `already_waited` only, `reason=already_waited step=<id> rotator=none` |
+
+`skipped` reasons are `disabled`, `ci`, `already_waited`,
+`step_waits_spent`, `budget_spent`, `not_supervised`, `spend_limit`,
+`reset_too_far`, `no_reset`, `no_limit_message` and `piped_prompt`.
+
+| Field | Meaning |
+|-------|---------|
+| `step=<id>` | The process id of the step's `amplihack claude` launch, which runs the supervisor. Every `start`, `resume` and `skipped` line of one step, `not_supervised` included, has the same id, so those lines of parallel steps can be told apart. `progress` and `end` have no id; they belong to the `start` written before them on the same step's stderr. |
+| `attempt=<n>` | On `start`, the attempt that hit the limit. On `resume`, the attempt about to run. Attempts are counted across the step, auto-switch reruns included. |
+| `rotator=` | Whether the [rotator check](#rotator-check) for this limit saw a rotator. |
+| `waited=<secs>s` | This wait's own length in whole seconds, from the wait's clock, never below 0. It is the number added to the [budget record](#budget-record). |
+| `login=` | The profile the retry runs on, read when `resume` is written. For `$HOME/.claude`, the rotate ledger's `live` profile; for a step under a profile, that profile's name. `unknown` for any other config directory, when the profile root is not known, when the ledger cannot be read or names no one, and when the name is not a valid profile name. |
+
+A step that hits two limits while the rotator runs:
 
 ```
-amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin step=48213 attempt=1 rotator=running
 amplihack.recipe.usage_limit_wait progress remaining=1740s
-amplihack.recipe.usage_limit_wait end reason=login changed
-amplihack.recipe.usage_limit_wait resume attempt=2
+amplihack.recipe.usage_limit_wait end reason=rotator capacity waited=412s
+amplihack.recipe.usage_limit_wait resume attempt=2 step=48213 waited=412s login=team
+amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 13:00:00 -07:00 until=2026-10-18 13:02:00 -07:00 bound=reset+margin step=48213 attempt=2 rotator=running
+amplihack.recipe.usage_limit_wait end reason=rotator capacity waited=95s
+amplihack.recipe.usage_limit_wait resume attempt=3 step=48213 waited=95s login=personal
 ```
 
-No line contains credentials, account names, config content or text copied
-from Claude's output.
+A step with no rotator that hits a second limit:
+
+```
+amplihack.recipe.usage_limit_wait skipped reason=already_waited step=48213 rotator=none
+```
+
+No line contains credentials, e-mail addresses, account names, the run id,
+paths, config content, error text or text copied from Claude's output. A
+profile name in `login=` is the only login identity printed, and only when
+it is a valid profile name; anything else prints `unknown`.
+
+### Plain lines
+
+When the wait stops for good because a cap is reached, the step also writes
+a plain line to stderr directly after the log line, so the reason is
+readable in the runner's failure output without knowing the log format:
+
+| Case | Line |
+|------|------|
+| `skipped reason=budget_spent` or `end reason=budget spent` | `amplihack: this recipe run's usage-limit wait budget (recipe.usage_limit_wait_budget_secs = <budget> s) is spent; not waiting again` |
+| The same, in the [per-step fallback](#per-step-fallback) | the same line with `this step's` in place of `this recipe run's` |
+| `skipped reason=step_waits_spent` | `amplihack: this step's usage-limit waits (recipe.usage_limit_max_waits_per_step = <max>) are used up; not waiting again` |
+| `skipped reason=already_waited` | none |
+
+`<budget>` is the configured budget, not the amount left. For example:
+
+```
+amplihack.recipe.usage_limit_wait skipped reason=budget_spent step=48213
+amplihack: this recipe run's usage-limit wait budget (recipe.usage_limit_wait_budget_secs = 21600 s) is spent; not waiting again
+```
+
+`<max>` is the configured `max_waits_per_step`, which is also the number of
+waits the step made.
+
+These lines add to the attempt's own stderr, which is passed up unchanged.
+None of them contains a
+[usage-limit marker](./transient-failure-retry.md#usage-limit-markers):
+each writes `usage-limit` with a hyphen. The runner classifies the step as
+`usage_limit` as before, and its signal and reset hint still come from
+Claude's own message.
 
 ### Usage-limit wait settings
 
@@ -4657,13 +4924,20 @@ from Claude's output.
 |---------|-------------------|----------------------|---------|
 | Enabled | `recipe.usage_limit_wait` | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true`; `false` in CI |
 | Maximum wait, seconds | `recipe.usage_limit_max_wait_secs` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | none |
+| Run budget, seconds, 0 or more | `recipe.usage_limit_wait_budget_secs` | `AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS` | `21600` (six hours) |
+| Waits per step with a rotator, 1 to 100 | `recipe.usage_limit_max_waits_per_step` | `AMPLIHACK_USAGE_LIMIT_MAX_WAITS_PER_STEP` | `5` |
 
-Both are ordinary [user-config](./user-config.md#recipeusage_limit_wait)
+All four are ordinary [user-config](./user-config.md#recipeusage_limit_wait)
 keys: set them with `amplihack config set recipe.usage_limit_wait false`, in
 the user or project `config.toml`, or with the variable, which outranks the
-files. The variable takes `true`, `false`, `1` or `0`; an invalid value is
-reported by the config loader and ignored. A project file may only lower
-the maximum. With no setting in the environment or a file, the wait is off
+files. The enable variable takes `true`, `false`, `1` or `0`; the others
+take a whole number in the key's range. An invalid value is reported by the
+config loader with one `warning:` line and ignored, so the file value or
+the default applies. A project file may only lower the maximum wait, the
+budget and the waits per step: a project
+`recipe.usage_limit_max_waits_per_step = 50` with the default of 5 gives 5
+and a diagnostic. The upper bound of 100 waits per step is a safety limit.
+With no setting in the environment or a file, the wait is off
 in CI, meaning any `CI` that is not, after trimming, empty, `0` or `false`
 in any case: a CI job has no
 second login to wait for, and its own timeout bounds it better. A limit

@@ -69,11 +69,20 @@ its table there.
 
 - **A usage limit is waited out before the runner sees it.** A Claude agent
   step that hits a usage limit inside a recipe run first waits for the reset,
-  or for the login to change, and runs once more, inside the step's own
-  `amplihack claude -p` launch. The runner classifies only that last
-  attempt, so `usage_limit` here means the step still failed after the wait,
-  or the wait was turned off. See the
+  or for the login to change, and runs again, inside the step's own
+  `amplihack claude -p` launch. While a login rotator runs, it does this at
+  every limit, up to a per-step count and a time budget for the run. The
+  runner classifies only the last attempt, so `usage_limit` here means the
+  step still failed after its waits, the wait was turned off, or the budget
+  or the per-step count was spent. In the last two cases the step's stderr
+  ends with a line that names the setting, such as
+  `amplihack: this recipe run's usage-limit wait budget (recipe.usage_limit_wait_budget_secs = 21600 s) is spent; not waiting again`,
+  which the runner prints with the failure's stderr snippet. See the
   [usage-limit wait](./profile-command.md#usage-limit-wait).
+- **A transport retry starts a new wait budget.** Each retry of the
+  `recipe-runner-rs` invocation gets a new `AMPLIHACK_RECIPE_RUN_ID`, and
+  the usage-limit wait's [run budget](./profile-command.md#run-budget) is
+  kept per run id, so the retry starts with the full budget.
 
 - **Why `spend limit` is listed.** `monthly limit` alone does not match Claude
   Code's `monthly spend limit` message, so both are markers (#1546).
