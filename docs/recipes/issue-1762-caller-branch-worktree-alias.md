@@ -254,6 +254,20 @@ than a number, and when a candidate alias does not survive
 `git check-ref-format --branch` unchanged. In each case it cannot prove the
 caller's checkout is safe, so it does not go on.
 
+Step 4 also stops when the alias branch exists but is not checked out at
+`<main>/worktrees/<B>--wt-<n>`:
+
+```text
+ERROR: alias '<alias>' exists but is not checked out at <main>/worktrees/<alias>; another run may be creating it. Wait for that run to finish, then re-run (issue #1762).
+```
+
+The planner never chooses an alias in that state, so this happens only while
+another run is creating that alias. Step 4 exits 1 with nothing on stdout and
+removes nothing: the other run's branch, directory and worktree stay as they
+are. Wait for the other run to finish, then re-run. This stop comes from step
+4, not the planner, so the `cannot set up an alias worktree` line does not
+follow it.
+
 ### Default branch
 
 When `<B>` is the default branch, the planner prints an `INFO` line saying that
@@ -475,11 +489,28 @@ push the alias name whatever `push.default` says. Reinstall the bundle with
 - **Concurrent runs.** The reuse pass does not check whether another run is
   using an alias worktree, so two runs for `<B>` from the same caller can work
   in the same worktree at once. Two runs that reach the create pass at the same
-  moment choose the same `n` and both try `git worktree add -b`. The second
-  fails on git's ref lock, and its step 4 exits 1 without removing anything. A
-  re-run does not take the next `n`: the first run's alias now meets the reuse
-  conditions, so the re-run reuses it and shares the worktree with the first
-  run. Wait for the first run to finish before re-running.
+  moment choose the same `n`. What the second run's step 4 does depends on how
+  far the first run has got:
+  - the first has not yet created the alias ref: both try
+    `git worktree add -b`, the second fails on git's ref lock, and its step 4
+    exits 1;
+  - the first has created the alias ref but its worktree is not yet on the
+    alias: the second run's step 4 stops with the message under
+    [Stops](#stops);
+  - the first run's worktree is already on the alias: the second run reuses it.
+
+  None of these removes anything. A re-run does not take the next `n`: the
+  first run's alias now meets the reuse conditions, so the re-run reuses it and
+  shares the worktree with the first run. Wait for the first run to finish
+  before re-running.
+- **Auto-drive rounds.** Auto-drive does not yet support alias worktrees.
+  Before a crusty or merge-ready round stages anything, it runs
+  `autodrive_worktree_guard.sh commit-dir`, which requires
+  `git branch --show-current` to equal the PR's `headRefName` and otherwise
+  stops with "this worktree is not on the PR head branch". An alias worktree
+  is on `<B>--wt-<n>`, so a round run there stops and commits and pushes
+  nothing. To use auto-drive on `<B>`, start it from a checkout that is not on
+  `<B>`.
 - **Nested runs from an alias worktree.** A run started from inside an alias
   worktree of `<B>` and targeting `<B>` finds `<B>` checked out in the original
   caller's checkout. That checkout is not the new run's caller, so the existing
@@ -530,9 +561,9 @@ The fixture branch is `feat/issue-1762-fixture`, so its alias directory is
 
 | Group | Tests |
 |---|---|
-| Step 4 | `alias_created_when_caller_on_pushed_clean_branch` (with a snapshot showing the caller is untouched), `rerun_reuses_alias_worktree`, `alias_shaped_branch_with_other_upstream_is_skipped`, `caller_behind_origin_alias_starts_at_origin`, `caller_not_on_branch_is_unchanged`, `default_branch_keeps_858_refusal`, `missing_planner_warns_then_refuses`, `concurrent_create_does_not_remove_existing_worktree` |
+| Step 4 | `alias_created_when_caller_on_pushed_clean_branch` (with a snapshot showing the caller is untouched), `rerun_reuses_alias_worktree`, `alias_shaped_branch_with_other_upstream_is_skipped`, `caller_behind_origin_alias_starts_at_origin`, `caller_not_on_branch_is_unchanged`, `default_branch_keeps_858_refusal`, `missing_planner_warns_then_refuses`, `concurrent_create_does_not_remove_existing_worktree`, `alias_ref_made_by_other_run_is_not_removed` |
 | Stops | `stops_on_uncommitted_tracked_change`, `stops_when_branch_not_on_origin`, `stops_on_unpushed_commit`, `reports_only_first_cause` |
-| Consumers | `publish_pushes_alias_head_to_original_remote_branch`, `open_pr_check_looks_up_remote_branch`, `final_status_branch_lookup_uses_remote_branch`, `terminal_state_probe_accepts_alias` (with a `FAILED_WRONG_BRANCH` control on an alias-shaped branch with another upstream), `remote_branch_resolver_contract` |
+| Consumers | `publish_pushes_alias_head_to_original_remote_branch`, `open_pr_check_looks_up_remote_branch`, `final_status_branch_lookup_uses_remote_branch`, `terminal_state_probe_accepts_alias` (with a `FAILED_WRONG_BRANCH` control on an alias-shaped branch with another upstream), `remote_branch_resolver_contract`, `planner_and_resolver_agree_on_default_branches` |
 | Security | `step16b_prompt_does_not_template_branch_name`, `planner_writes_nothing`, `planner_rejects_previous_branch_syntax`, `planner_status_unreadable_fails_closed`, `planner_ignores_inherited_git_dir`, `push_fallback_keeps_alias_mapping`, `step15_refuses_unbound_push_target`, `helpers_contain_no_write_commands` |
 
 `tests/integration/workflow_worktree_caller_refusal_test.rs` keeps the #858

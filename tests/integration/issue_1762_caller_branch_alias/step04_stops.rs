@@ -321,3 +321,77 @@ fn concurrent_create_does_not_remove_existing_worktree() {
         "the other run's worktree stays on its branch"
     );
 }
+
+/// F1: another run has created the alias ref, but its worktree is still
+/// locked and not yet on the alias. Step 4 stops instead of removing that
+/// directory, and leaves the ref and the lock as they were.
+#[test]
+fn alias_ref_made_by_other_run_is_not_removed() {
+    let fx = Fx::new();
+    fx.on_pushed_branch();
+    let taken = fx.caller.join("worktrees").join(alias(1));
+    let taken_str = taken.to_str().unwrap();
+    fx.git(
+        &fx.caller,
+        &[
+            "branch",
+            "-q",
+            "--track",
+            &alias(1),
+            &format!("origin/{BRANCH}"),
+        ],
+    );
+    fx.git(
+        &fx.caller,
+        &["worktree", "add", "-q", "--detach", "--", taken_str, "main"],
+    );
+    fx.git(
+        &fx.caller,
+        &[
+            "worktree",
+            "lock",
+            "--reason",
+            "initializing",
+            "--",
+            taken_str,
+        ],
+    );
+    fx.write_in(&taken, "other-run-work.txt", "in progress\n");
+    let bundle = fx.bundle_with_planner(
+        "#!/usr/bin/env bash\n# Answers as the real planner did before the other run won.\nprintf '%s--wt-1\\n' \"$3\"\n",
+    );
+
+    let run = fx.step4(BRANCH, &[("AMPLIHACK_HOME", bundle.to_str().unwrap())]);
+
+    assert_ne!(run.code, Some(0), "step 4 must stop\n{}", run.describe());
+    assert!(run.stdout.trim().is_empty(), "{}", run.describe());
+    assert!(
+        run.stderr_line_with(&["ERROR:", "not checked out", "#1762"])
+            .is_some(),
+        "one ERROR line names the cause and #1762\n{}",
+        run.describe()
+    );
+    assert!(
+        !run.stderr.contains("Removing stale worktree"),
+        "the other run's worktree is never treated as stale\n{}",
+        run.describe()
+    );
+    assert_eq!(
+        fs::read_to_string(taken.join("other-run-work.txt")).unwrap_or_default(),
+        "in progress\n",
+        "the other run's worktree and its work must survive"
+    );
+    assert!(
+        fx.local_branch_exists(&alias(1)),
+        "the other run's alias ref is kept"
+    );
+    let worktrees = fx.git(&fx.caller, &["worktree", "list", "--porcelain"]);
+    assert!(
+        worktrees.split("\n\n").any(|entry| {
+            let mut lines = entry.lines();
+            lines.next() == Some(&format!("worktree {taken_str}"))
+                && lines.any(|l| l.starts_with("locked"))
+        }),
+        "the other run's worktree is still registered and locked\n{worktrees}"
+    );
+}

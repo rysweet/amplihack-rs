@@ -220,3 +220,83 @@ fn planner_ignores_inherited_git_dir() {
         "the other repository is not touched"
     );
 }
+
+/// P4: the planner and the resolver each carry the default-branch rule. The
+/// planner exits 3 for `name` exactly when the resolver leaves `<name>--wt-1`,
+/// tracking origin/<name>, unchanged.
+#[test]
+fn planner_and_resolver_agree_on_default_branches() {
+    // (branch, target of origin/HEAD, whether it is a default branch)
+    let cases = [
+        ("main", Some("main"), true),
+        ("master", Some("main"), true),
+        ("trunk", Some("trunk"), true),
+        ("develop", Some("main"), false),
+        ("develop", None, true),
+        (BRANCH, Some("main"), false),
+    ];
+    for (name, origin_head, default) in cases {
+        let fx = Fx::new();
+        match origin_head {
+            Some("main") => {}
+            Some(target) => {
+                fx.git(
+                    &fx.caller,
+                    &["push", "-q", "origin", &format!("main:{target}")],
+                );
+                fx.git(&fx.caller, &["remote", "set-head", "origin", target]);
+            }
+            None => {
+                fx.git(&fx.caller, &["remote", "set-head", "origin", "-d"]);
+            }
+        }
+        let why = format!("`{name}`, origin/HEAD {origin_head:?}");
+        let alias_name = format!("{name}--wt-1");
+        let dir = fx.root.join("checkouts").join(alias_name.replace('/', "_"));
+        fx.git(
+            &fx.caller,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                &alias_name,
+                "--",
+                dir.to_str().unwrap(),
+                "main",
+            ],
+        );
+        fx.git(
+            &fx.caller,
+            &["config", &format!("branch.{alias_name}.remote"), "origin"],
+        );
+        fx.git(
+            &fx.caller,
+            &[
+                "config",
+                &format!("branch.{alias_name}.merge"),
+                &format!("refs/heads/{name}"),
+            ],
+        );
+
+        let planned = plan(&fx, name, &[]);
+        let resolved = fx.tool(RESOLVER, &fx.root, &[dir.to_str().unwrap()], &[]);
+
+        assert_eq!(resolved.code, Some(0), "{why}\n{}", resolved.describe());
+        let planner_default = planned.code == Some(3);
+        let resolver_default = resolved.stdout == format!("{alias_name}\n");
+        assert_eq!(
+            planner_default,
+            resolver_default,
+            "{why}: the planner and the resolver disagree\nplanner:\n{}\nresolver:\n{}",
+            planned.describe(),
+            resolved.describe()
+        );
+        assert_eq!(
+            planner_default,
+            default,
+            "{why}: both helpers got the default-branch rule wrong\n{}",
+            planned.describe()
+        );
+    }
+}

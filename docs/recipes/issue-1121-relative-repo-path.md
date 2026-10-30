@@ -217,9 +217,10 @@ This fix is surgical. It does **not** change:
   when the target branch is checked out there, step-04 creates the task worktree
   on a local alias branch `<branch>--wt-<n>` that tracks `origin/<branch>`,
   instead of stopping. A new alias worktree is created with
-  `git worktree add --track -b`, not through `wt_add_idempotent`, so a concurrent
-  run fails on git's ref lock and nothing is removed. An existing alias worktree
-  is reused with `wt_add_idempotent attach`.
+  `git worktree add --track -b`, not through `wt_add_idempotent`. An existing
+  alias is reused only when it is already checked out at its path; otherwise
+  step-04 stops. A concurrent create therefore fails on git's ref lock, stops,
+  or reuses the other run's worktree. Nothing is removed.
 - The **#200 cleanliness resets** — a dirty worktree or a branch with commits
   ahead of `BASE_REF` is still `reset --hard "${BASE_REF}"` before reuse.
 - The **#829 / #840 foreign-worktree deconfliction** and the orphan

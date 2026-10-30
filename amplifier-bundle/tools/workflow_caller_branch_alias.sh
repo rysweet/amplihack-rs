@@ -84,8 +84,7 @@ git -C "$caller" rev-parse --verify -q "refs/remotes/origin/$branch^{commit}" >/
   || stop "$at_caller but origin/$branch does not exist. The task worktree tracks origin/$branch and would not see the branch's commits. Push the branch with 'git push -u origin $branch', or work from a checkout that is not on '$branch', then re-run"
 
 # 4. Local commits missing from origin/<branch>.
-ahead="$(git -C "$caller" rev-list --count "refs/remotes/origin/$branch..refs/heads/$branch" 2>/dev/null)" \
-  || stop "cannot compare branch '$branch' in the caller repository at $caller with origin/$branch; refusing to choose an alias worktree"
+ahead="$(git -C "$caller" rev-list --count "refs/remotes/origin/$branch..refs/heads/$branch" 2>/dev/null)" || ahead="" # empty or non-numeric stops at the case below
 case "$ahead" in
   ''|*[!0-9]*) stop "cannot compare branch '$branch' in the caller repository at $caller with origin/$branch; refusing to choose an alias worktree" ;;
 esac
@@ -141,7 +140,6 @@ for n in $(printf '%s' "$numbers" | LC_ALL=C sort -n); do
   [ "$(git -C "$main" config --get "branch.$alias_name.remote" 2>/dev/null || true)" = "origin" ] || continue
   [ "$(git -C "$main" config --get "branch.$alias_name.merge" 2>/dev/null || true)" = "refs/heads/$branch" ] || continue
   want="$(physical "$main_real/worktrees/$alias_name")" || continue
-  [ -n "$want" ] || continue
   have="$(checked_out_at "$alias_name")"
   [ -n "$have" ] && [ "$(physical "$have")" = "$want" ] || continue
   announce "$alias_name"
