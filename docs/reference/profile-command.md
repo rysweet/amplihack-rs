@@ -130,7 +130,7 @@ same two settings.
 | `--timeout-secs <n>` (hidden flag, `profile usage` only) | `1` to `600` | none |
 | `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | `1` to `600` | `120` |
 
-The default of 120 seconds allows about 1.7 times the 70 seconds one probe
+The default of 120 seconds allows about 1.7 times the 71.5 seconds one probe
 was measured to take on a 72-CPU host at a load average of 194.
 
 The flag wins over the variable. A flag value out of range is a usage error
@@ -142,8 +142,9 @@ escaped and cut to 32 characters, then uses `120`:
 warning: ignored AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS "soon" (use 1 to 600); using 120
 ```
 
-The rotator reads the variable at the start of every cycle. It has no flag,
-and it ignores an invalid value without a warning, using `120`.
+The rotator reads the variable at the start of every cycle. It has no flag.
+For an invalid value it prints the same warning once per cycle (to
+`rotate.err` for a background rotator) and uses `120`.
 
 #### Probe parallelism
 

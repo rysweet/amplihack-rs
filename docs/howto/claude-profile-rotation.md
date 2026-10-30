@@ -662,9 +662,9 @@ amplihack profile rotate start --interval 120 --session-at 70
 `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` takes `1` to `600` seconds and
 `AMPLIHACK_PROFILE_USAGE_PARALLEL` takes `1` to `16`. On an idle host with
 many profiles, a higher `AMPLIHACK_PROFILE_USAGE_PARALLEL` makes each cycle
-shorter. An empty value is treated as unset. An invalid parallelism value is
-reported once per cycle in `rotate.err` beside the log, and the derived value
-is used instead.
+shorter. An empty value is treated as unset. An invalid value of either
+variable is reported once per cycle in `rotate.err` beside the log, and the
+default is used instead: `120` seconds, or the derived parallelism.
 
 A slow cycle can take longer than `--interval`. Cycles do not overlap: the
 next one starts `--interval` seconds after the previous one ends.

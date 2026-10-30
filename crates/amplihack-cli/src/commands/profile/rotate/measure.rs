@@ -1,8 +1,8 @@
 //! Measuring: `claude -p /usage` for the live login and every candidate, in
-//! parallel, with the `profile usage` probe and its limits (`probe_limits`). The live login is probed with
-//! `CLAUDE_CONFIG_DIR` removed, so `claude` uses `~/.claude`. Claude's text
-//! is parsed and dropped; only percentages, reset times and states leave
-//! this module.
+//! parallel, with the `profile usage` probe and its limits (`probe_limits`).
+//! The live login is probed with `CLAUDE_CONFIG_DIR` removed, so `claude`
+//! uses `~/.claude`. Claude's text is parsed and dropped; only percentages,
+//! reset times and states leave this module.
 
 use super::decide::Probed;
 use crate::binary_finder::BinaryInfo;
@@ -36,9 +36,13 @@ pub(super) fn reading(who: &str, p: &Probe) -> Probed {
 }
 
 /// The probe deadline, as `profile usage` resolves it without a flag. A bad
-/// variable falls back to the default without a warning here.
+/// variable falls back to the default and warns on stderr, once per cycle,
+/// as a bad parallelism variable does.
 fn timeout() -> Duration {
-    let (secs, _) = probe_limits::timeout_from_env(None);
+    let (secs, warning) = probe_limits::timeout_from_env(None);
+    if let Some(w) = warning {
+        eprintln!("{w}");
+    }
     Duration::from_secs(secs)
 }
 
