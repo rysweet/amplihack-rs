@@ -16,11 +16,14 @@
 //! - On Linux it is armed before `main`, so changes made by any test are
 //!   seen; elsewhere it is armed when the guard test runs.
 //! - At exit a `libc::atexit` handler takes a second snapshot. If they differ
-//!   the changed paths are printed and the process ends with `_exit(1)`. The
-//!   one exception (see [`split_by_origin`]) is a `settings.json` whose hooks
-//!   path lies under another process's temp directory, which is what an
-//!   unfixed checkout's test run writes; such paths are printed as a warning.
-//!   Every other change fails the run, as issue #1699 asks.
+//!   the changed paths are printed and the process ends with `_exit(1)`. Two
+//!   exceptions (see [`split_by_origin`]) are printed as a warning instead:
+//!   a `settings.json` whose hooks path lies under another process's temp
+//!   directory, which is what an unfixed checkout's test run writes; and a
+//!   `settings.json` naming only a real home's installed `amplihack-hooks`
+//!   that was replaced during the run, which is what a real
+//!   `amplihack install` from another session writes. Every other change
+//!   fails the run, as issue #1699 asks.
 //!
 //! It is read-only: files are opened with `O_NOFOLLOW`, must be regular files,
 //! at most 1 MiB of each is hashed, and only lengths and hashes are kept.
@@ -62,6 +65,24 @@ struct Baseline {
     own_temp: Vec<String>,
     /// Every temp directory base (see `temp_bases`), canonical.
     temp_bases: Vec<String>,
+    /// Each real home's installed hooks binary and its stamp at baseline.
+    installed: Vec<(PathBuf, Option<Stamp>)>,
+}
+
+/// Device, inode, length and modification time of a file, not following a
+/// symlink. A new install replaces the file, so the stamp changes.
+type Stamp = (u64, u64, u64, i64, i64);
+
+fn stamp(path: &Path) -> Option<Stamp> {
+    use std::os::unix::fs::MetadataExt;
+    let meta = std::fs::symlink_metadata(path).ok()?;
+    Some((
+        meta.dev(),
+        meta.ino(),
+        meta.len(),
+        meta.mtime(),
+        meta.mtime_nsec(),
+    ))
 }
 
 static BASELINE: OnceLock<Baseline> = OnceLock::new();
@@ -111,6 +132,44 @@ fn real_roots() -> Vec<PathBuf> {
     keep_real_roots(explicit, &homes, &temp_bases())
 }
 
+/// `<home>/.local/bin/amplihack-hooks` for each of `homes` that exists and
+/// is not under any of `temp_bases`. Canonical homes, de-duplicated.
+fn installed_hooks_bins(homes: &[PathBuf], temp_bases: &[PathBuf]) -> Vec<PathBuf> {
+    let mut bins: Vec<PathBuf> = homes
+        .iter()
+        .filter(|h| h.is_absolute())
+        .filter_map(|h| h.canonicalize().ok())
+        .filter(|h| !temp_bases.iter().any(|base| h.starts_with(base)))
+        .map(|h| h.join(".local/bin").join(HOOKS_BIN))
+        .collect();
+    bins.sort();
+    bins.dedup();
+    bins
+}
+
+/// The installed hooks binaries of this user's real homes.
+fn real_installed_hooks_bins() -> Vec<PathBuf> {
+    let homes: Vec<PathBuf> = std::env::var_os("HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .into_iter()
+        .chain(passwd_home())
+        .collect();
+    installed_hooks_bins(&homes, &temp_bases())
+}
+
+/// The binaries in `installed` that exist now with a stamp other than the
+/// baseline one: replaced by an install during the run.
+fn replaced_since(installed: &[(PathBuf, Option<Stamp>)]) -> Vec<String> {
+    installed
+        .iter()
+        .filter_map(|(path, before)| {
+            let now = stamp(path)?;
+            (Some(now) != *before).then(|| path.to_string_lossy().into_owned())
+        })
+        .collect()
+}
+
 /// Length and first [`MAX_HASHED`] bytes of `path` if it is a regular file,
 /// opened without following a symlink.
 fn read_head(path: &Path) -> Option<(u64, Vec<u8>)> {
@@ -157,13 +216,29 @@ const HOOKS_BIN: &str = "amplihack-hooks";
 /// Paths are read as the tokens between quotes, backslashes and whitespace,
 /// which is how `settings.json` stores the hooks command.
 fn names_temp_hooks_path(text: &str, bases: &[String]) -> bool {
+    hooks_paths(text).into_iter().any(|token| {
+        bases
+            .iter()
+            .any(|base| token.starts_with(&format!("{base}/")))
+    })
+}
+
+/// The `amplihack-hooks` paths `text` names: the tokens between quotes,
+/// backslashes and whitespace that end in `/amplihack-hooks`.
+fn hooks_paths(text: &str) -> Vec<&str> {
     text.split(|c: char| c == '"' || c == '\\' || c == '\'' || c.is_whitespace())
         .filter(|token| token.ends_with(&format!("/{HOOKS_BIN}")))
-        .any(|token| {
-            bases
-                .iter()
-                .any(|base| token.starts_with(&format!("{base}/")))
-        })
+        .collect()
+}
+
+/// Whether `text` is what a real install writes: it names at least one
+/// `amplihack-hooks` path, every one of them is in `replaced`, and it names
+/// nothing under any of `bases`.
+fn written_by_real_install(text: &str, replaced: &[String], bases: &[String]) -> bool {
+    let paths = hooks_paths(text);
+    !paths.is_empty()
+        && paths.iter().all(|p| replaced.iter().any(|r| r == p))
+        && !bases.iter().any(|base| text.contains(&format!("{base}/")))
 }
 
 /// Whether `text` names anything under `own_temp`, as a whole path component.
@@ -187,27 +262,39 @@ fn base_strings(bases: &[PathBuf]) -> Vec<String> {
 ///
 /// Issue #1699 asks that a run changing any file under the real root fails,
 /// so a change is put down to another process only on positive evidence of
-/// the one pattern seen from an unfixed sibling checkout: a `settings.json`
-/// that still exists, is readable, names an `amplihack-hooks` path under one
-/// of `temp_bases`, and names nothing under `own_temp`. Everything else fails:
-/// `.auto-switch.d/rotate/root`, a `settings.json` with no temp hooks path, a
-/// removed or unreadable file, and any change when `own_temp` is empty. With
-/// `TMPDIR` unset `own_temp` is `/tmp`, so every temp hooks path is this
-/// run's and nothing is exempt.
+/// one of two patterns, both in a `settings.json` that still exists and is
+/// readable:
+/// - an unfixed sibling checkout's test run: it names an `amplihack-hooks`
+///   path under one of `temp_bases` and nothing under `own_temp`;
+/// - a real `amplihack install` from another session: every hooks path it
+///   names is a real home's installed binary in `replaced` (replaced during
+///   this run), and it names nothing under any temp base. This binary's tests
+///   install only under temp homes, so they cannot replace those binaries.
+///
+/// Everything else fails: `.auto-switch.d/rotate/root`, any other
+/// `settings.json` content, a removed or unreadable file. With `own_temp`
+/// empty, or `TMPDIR` unset (`own_temp` is `/tmp`), no temp hooks path is
+/// exempt.
 fn split_by_origin(
     changed: &[PathBuf],
     own_temp: &[String],
     temp_bases: &[String],
+    replaced: &[String],
 ) -> (Vec<PathBuf>, Vec<PathBuf>) {
     changed.iter().cloned().partition(|path| {
-        if own_temp.is_empty() || path.file_name() != Some("settings.json".as_ref()) {
+        if path.file_name() != Some("settings.json".as_ref()) {
             return true;
         }
         let Some((_, head)) = read_head(path) else {
             return true;
         };
         let text = String::from_utf8_lossy(&head);
-        names_own_temp(&text, own_temp) || !names_temp_hooks_path(&text, temp_bases)
+        if written_by_real_install(&text, replaced, temp_bases) {
+            return false;
+        }
+        own_temp.is_empty()
+            || names_own_temp(&text, own_temp)
+            || !names_temp_hooks_path(&text, temp_bases)
     })
 }
 
@@ -265,7 +352,7 @@ fn report(changed: &[PathBuf]) -> String {
 /// The warning for changes put down to another process.
 fn report_foreign(foreign: &[PathBuf], own_temp: &[String]) -> String {
     let mut text = format!(
-        "issue_1699 real-root guard: warning: changed by another process (hooks under another temp directory, nothing under {} named), not failing:\n",
+        "issue_1699 real-root guard: warning: changed by another process (hooks under another temp directory with nothing under {} named, or only an installed hooks binary replaced during this run), not failing:\n",
         own_temp.join(" or ")
     );
     for path in foreign {
@@ -279,11 +366,12 @@ fn verdict(
     changed: &[PathBuf],
     own_temp: &[String],
     temp_bases: &[String],
+    replaced: &[String],
 ) -> Option<(String, bool)> {
     if changed.is_empty() {
         return None;
     }
-    let (own, foreign) = split_by_origin(changed, own_temp, temp_bases);
+    let (own, foreign) = split_by_origin(changed, own_temp, temp_bases, replaced);
     let mut text = String::new();
     if !foreign.is_empty() {
         text.push_str(&report_foreign(&foreign, own_temp));
@@ -305,7 +393,13 @@ extern "C" fn check_at_exit() {
     let result = std::panic::catch_unwind(|| {
         let baseline = BASELINE.get()?;
         let changed = diff_snapshots(&baseline.files, &snapshot(&baseline.roots));
-        verdict(&changed, &baseline.own_temp, &baseline.temp_bases)
+        let replaced = replaced_since(&baseline.installed);
+        verdict(
+            &changed,
+            &baseline.own_temp,
+            &baseline.temp_bases,
+            &replaced,
+        )
     });
     use std::io::Write;
     match result {
@@ -336,6 +430,13 @@ fn arm() -> Option<&'static Baseline> {
         let files = snapshot(&roots);
         let own_temp = temp_prefixes(&std::env::temp_dir());
         let temp_bases = base_strings(&temp_bases());
+        let installed = real_installed_hooks_bins()
+            .into_iter()
+            .map(|path| {
+                let print = stamp(&path);
+                (path, print)
+            })
+            .collect();
         // SAFETY: registering a plain `extern "C"` function has no
         // preconditions; it runs once, at normal process exit.
         unsafe { libc::atexit(check_at_exit) };
@@ -344,6 +445,7 @@ fn arm() -> Option<&'static Baseline> {
             files,
             own_temp,
             temp_bases,
+            installed,
         }
     }))
 }
@@ -363,7 +465,13 @@ static ARM_BEFORE_MAIN: extern "C" fn() = {
 fn real_profile_roots_unchanged_by_this_run() {
     let Some(baseline) = arm() else { return };
     let changed = diff_snapshots(&baseline.files, &snapshot(&baseline.roots));
-    if let Some((text, fails)) = verdict(&changed, &baseline.own_temp, &baseline.temp_bases) {
+    let replaced = replaced_since(&baseline.installed);
+    if let Some((text, fails)) = verdict(
+        &changed,
+        &baseline.own_temp,
+        &baseline.temp_bases,
+        &replaced,
+    ) {
         assert!(!fails, "{text}");
         eprint!("{text}");
     }
@@ -542,7 +650,8 @@ mod fixture {
         let t = temps(&d);
         let path = root.join("a/settings.json");
         fs::write(&path, hooks_at(&t.own.join(".tmpXYZ"))).unwrap();
-        let (text, fails) = verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases).unwrap();
+        let (text, fails) =
+            verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases, &[]).unwrap();
         assert!(fails);
         assert!(text.contains(&format!("  {}\n", path.display())), "{text}");
         assert!(!text.contains("warning"), "{text}");
@@ -554,7 +663,8 @@ mod fixture {
         let t = temps(&d);
         let path = root.join("a/settings.json");
         fs::write(&path, hooks_at(&t.other.join(".tmp1417Cj"))).unwrap();
-        let (text, fails) = verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases).unwrap();
+        let (text, fails) =
+            verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases, &[]).unwrap();
         assert!(!fails, "{text}");
         assert!(text.contains("changed by another process"), "{text}");
         assert!(text.contains(&format!("  {}\n", path.display())), "{text}");
@@ -567,11 +677,12 @@ mod fixture {
         let path = root.join(".auto-switch.d/rotate/root");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, root.display().to_string()).unwrap();
-        let (text, fails) = verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases).unwrap();
+        let (text, fails) =
+            verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases, &[]).unwrap();
         assert!(fails, "{text}");
         // Even a temp hooks path in it does not exempt the rotator pointer.
         fs::write(&path, hooks_at(&t.other)).unwrap();
-        let (_, fails) = verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases).unwrap();
+        let (_, fails) = verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases, &[]).unwrap();
         assert!(fails);
     }
 
@@ -589,7 +700,7 @@ mod fixture {
         ] {
             fs::write(&path, &content).unwrap();
             let (text, fails) =
-                verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases).unwrap();
+                verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases, &[]).unwrap();
             assert!(fails, "{content}: {text}");
             assert!(!text.contains("warning"), "{text}");
         }
@@ -602,7 +713,7 @@ mod fixture {
         let path = root.join("a/settings.json");
         let both = format!("{}{}", hooks_at(&t.other), hooks_at(&t.own));
         fs::write(&path, both).unwrap();
-        let (_, fails) = verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases).unwrap();
+        let (_, fails) = verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases, &[]).unwrap();
         assert!(fails);
     }
 
@@ -614,7 +725,7 @@ mod fixture {
         let own_temp = temp_prefixes(&t.base);
         let path = root.join("a/settings.json");
         fs::write(&path, hooks_at(&t.other)).unwrap();
-        let (_, fails) = verdict(std::slice::from_ref(&path), &own_temp, &t.bases).unwrap();
+        let (_, fails) = verdict(std::slice::from_ref(&path), &own_temp, &t.bases, &[]).unwrap();
         assert!(fails);
     }
 
@@ -629,7 +740,7 @@ mod fixture {
         ));
         fs::write(&path, hooks_at(&sibling)).unwrap();
         let (own_changes, foreign) =
-            split_by_origin(std::slice::from_ref(&path), &t.own_temp, &t.bases);
+            split_by_origin(std::slice::from_ref(&path), &t.own_temp, &t.bases, &[]);
         assert!(own_changes.is_empty());
         assert_eq!(foreign, vec![path]);
     }
@@ -640,13 +751,144 @@ mod fixture {
         let t = temps(&d);
         let removed = root.join("a/settings.json");
         fs::remove_file(&removed).unwrap();
-        let (_, fails) = verdict(std::slice::from_ref(&removed), &t.own_temp, &t.bases).unwrap();
+        let (_, fails) =
+            verdict(std::slice::from_ref(&removed), &t.own_temp, &t.bases, &[]).unwrap();
         assert!(fails);
         let kept = root.join("b/settings.json");
         fs::write(&kept, hooks_at(&t.other)).unwrap();
-        let (_, fails) = verdict(std::slice::from_ref(&kept), &[], &t.bases).unwrap();
+        let (_, fails) = verdict(std::slice::from_ref(&kept), &[], &t.bases, &[]).unwrap();
         assert!(fails);
-        assert!(verdict(&[], &t.own_temp, &t.bases).is_none());
+        assert!(verdict(&[], &t.own_temp, &t.bases, &[]).is_none());
+    }
+
+    /// A real home with an installed hooks binary, outside the temp base.
+    fn real_home(d: &tempfile::TempDir) -> (PathBuf, PathBuf) {
+        let home = d.path().canonicalize().unwrap().join("home/user");
+        let bin = home.join(".local/bin").join(HOOKS_BIN);
+        fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        fs::write(&bin, "old").unwrap();
+        (home, bin)
+    }
+
+    #[test]
+    fn a_real_install_during_the_run_only_warns() {
+        let (d, root) = root();
+        let t = temps(&d);
+        let (home, bin) = real_home(&d);
+        let path = root.join("a/settings.json");
+        fs::write(&path, hooks_at(&home)).unwrap();
+        let replaced = vec![bin.to_string_lossy().into_owned()];
+        let (text, fails) = verdict(
+            std::slice::from_ref(&path),
+            &t.own_temp,
+            &t.bases,
+            &replaced,
+        )
+        .unwrap();
+        assert!(!fails, "{text}");
+        assert!(text.contains("changed by another process"), "{text}");
+        // Without the binary replaced the same content fails.
+        let (_, fails) = verdict(std::slice::from_ref(&path), &t.own_temp, &t.bases, &[]).unwrap();
+        assert!(fails);
+        // So does it with no own temp: the install rule does not need one.
+        let (_, fails) = verdict(std::slice::from_ref(&path), &[], &t.bases, &replaced).unwrap();
+        assert!(!fails);
+    }
+
+    #[test]
+    fn a_replaced_binary_does_not_cover_other_or_temp_paths() {
+        let (d, root) = root();
+        let t = temps(&d);
+        let (home, bin) = real_home(&d);
+        let replaced = vec![bin.to_string_lossy().into_owned()];
+        let path = root.join("a/settings.json");
+        let other_home = d.path().canonicalize().unwrap().join("home/other");
+        for content in [
+            // Another hooks binary than the replaced one.
+            format!("{}{}", hooks_at(&home), hooks_at(&other_home)),
+            // A hooks path under this run's temp directory.
+            format!("{}{}", hooks_at(&home), hooks_at(&t.own)),
+            // Anything else under a temp base.
+            format!(
+                "{}{{\"x\":\"{}/notes\"}}",
+                hooks_at(&home),
+                t.other.display()
+            ),
+            // No hooks path at all.
+            "{\"statusLine\":{\"command\":\"rotator status\"}}".to_string(),
+        ] {
+            fs::write(&path, &content).unwrap();
+            let (text, fails) = verdict(
+                std::slice::from_ref(&path),
+                &t.own_temp,
+                &t.bases,
+                &replaced,
+            )
+            .unwrap();
+            assert!(fails, "{content}: {text}");
+        }
+        // The rotator pointer is never exempt.
+        let pointer = root.join(".auto-switch.d/rotate/root");
+        fs::create_dir_all(pointer.parent().unwrap()).unwrap();
+        fs::write(&pointer, hooks_at(&home)).unwrap();
+        let (_, fails) = verdict(
+            std::slice::from_ref(&pointer),
+            &t.own_temp,
+            &t.bases,
+            &replaced,
+        )
+        .unwrap();
+        assert!(fails);
+    }
+
+    #[test]
+    fn replaced_since_reports_only_replaced_binaries() {
+        let d = tempfile::tempdir().unwrap();
+        let (_home, bin) = real_home(&d);
+        let kept = d.path().canonicalize().unwrap().join("kept");
+        fs::write(&kept, "same").unwrap();
+        let missing = d.path().join("missing");
+        let added = d.path().canonicalize().unwrap().join("added");
+        let installed = vec![
+            (bin.clone(), stamp(&bin)),
+            (kept.clone(), stamp(&kept)),
+            (missing.clone(), stamp(&missing)),
+            (added.clone(), stamp(&added)),
+        ];
+        assert!(replaced_since(&installed).is_empty());
+        // An install writes a new file and renames it over the old one.
+        let staged = bin.with_extension("new");
+        fs::write(&staged, "new").unwrap();
+        fs::rename(&staged, &bin).unwrap();
+        fs::write(&added, "new").unwrap();
+        assert_eq!(
+            replaced_since(&installed),
+            vec![
+                bin.to_string_lossy().into_owned(),
+                added.to_string_lossy().into_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn installed_hooks_bins_skip_temp_and_relative_homes() {
+        let d = tempfile::tempdir().unwrap();
+        let base = d.path().canonicalize().unwrap();
+        let tmp = base.join("tmp");
+        let real = base.join("real");
+        for home in [&real, &tmp.join("home")] {
+            fs::create_dir_all(home).unwrap();
+        }
+        let bins = installed_hooks_bins(
+            &[
+                real.clone(),
+                tmp.join("home"),
+                PathBuf::from("relative"),
+                real.clone(),
+            ],
+            std::slice::from_ref(&tmp),
+        );
+        assert_eq!(bins, vec![real.join(".local/bin").join(HOOKS_BIN)]);
     }
 
     #[test]

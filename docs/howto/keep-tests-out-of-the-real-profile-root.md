@@ -32,7 +32,7 @@ a test that exercises the refresh, and what to do when the guard fails.
 |---------|-------|--------------|
 | Refusal | `refresh_profile_settings` in `crates/amplihack-cli/src/commands/profile/settings_refresh.rs` | Refuses the refresh when the hooks binary is missing; when `HOME` is not the account's passwd home and the profile root is outside `HOME`, wherever the binary lies; and when the binary is under a temp directory, unless the profile root is under `HOME` and itself under a temp directory. See [the profile reference](../reference/profile-command.md#seeding). |
 | Isolation | `tests/support/isolated_amplihack.rs` | `isolated(..)` clears the environment and also calls `.env_remove(PROFILE_ROOT_ENV)`, so no child inherits `AMPLIHACK_CLAUDE_PROFILE_ROOT`. |
-| Guard | `crates/amplihack-cli/tests/issue_1699_real_root_guard.rs` | Hashes the real profiles' `settings.json` files before `main` on Linux (when the guard test runs on other Unix systems) and again when the test process exits. It fails the run on any change, with one exception: a `settings.json` whose hooks path lies under another process's temp directory is printed as a warning. |
+| Guard | `crates/amplihack-cli/tests/issue_1699_real_root_guard.rs` | Hashes the real profiles' `settings.json` files before `main` on Linux (when the guard test runs on other Unix systems) and again when the test process exits. It fails the run on any change, with two exceptions printed as a warning: a `settings.json` whose hooks path lies under another process's temp directory, and one naming only a real home's installed `amplihack-hooks` that was replaced during the run (another session's `amplihack install`). |
 
 The refusal is the only one that protects users. It is enforced in
 `refresh_profile_settings`, the single production entry point; `refresh_in`
@@ -108,9 +108,12 @@ uses this layout.
 ## When the real-root guard fails
 
 Issue #1699 asks that a test run which changes any file under the real
-profile root fails, and the guard keeps that rule. It makes one exception,
-and only on positive evidence that another process made the change. An
-unfixed checkout's test run on the same host rewrites every profile so that
+profile root fails, and the guard keeps that rule. It makes two exceptions,
+each only on positive evidence that another process made the change.
+
+### Hooks under another process's temp directory
+
+An unfixed checkout's test run on the same host rewrites every profile so that
 its hooks point at `amplihack-hooks` under that run's temp directory (on
 2026-10-29 at 15:30:37 every real profile on the development host was
 rewritten to `/tmp/amplihack-workflow-2vXScw/...`). A changed `settings.json`
@@ -123,15 +126,43 @@ run, only when all of these hold:
   (`temp_dir()`, `$TMPDIR`, `/tmp`);
 - it names nothing under this process's `temp_dir()`.
 
+### A real `amplihack install` from another session
+
+`amplihack install` replaces `~/.local/bin/amplihack-hooks` and then
+rewrites every profile's hooks to point at it. On the development host this
+happens every few minutes while other sessions work (on 2026-10-29 the
+binary was replaced at 16:38:08 and all 17 profiles were rewritten at
+16:38:13, in the middle of a 30-minute QA run). The guard records the
+device, inode, length and modification time of
+`<home>/.local/bin/amplihack-hooks` for `$HOME` and the passwd home (homes
+under a temp directory are skipped) before the tests start, and again at
+exit. A changed `settings.json` is put down to that install only when all of
+these hold:
+
+- the file still exists and can be read;
+- one of those installed binaries was replaced (or first appeared) during
+  the run;
+- every `amplihack-hooks` path the file names is such a replaced binary,
+  and it names at least one;
+- it names nothing under any temp base.
+
+The tests in these binaries install only under temp homes, so they cannot
+replace those binaries.
+
+Either exception prints the path under a warning and does not fail the run:
+
 ```text
-issue_1699 real-root guard: warning: changed by another process (hooks under another temp directory, nothing under /home/user/.amplihack/work/tmp named), not failing:
+issue_1699 real-root guard: warning: changed by another process (hooks under another temp directory with nothing under /home/user/.amplihack/work/tmp named, or only an installed hooks binary replaced during this run), not failing:
   /home/user/.claude-profiles/work/settings.json
 ```
 
+### Every other change fails
+
 Every other change fails the run: `.auto-switch.d/rotate/root`, a
-`settings.json` without a temp hooks path (for example a `profile add`,
-seeding or status-line write leaked by a test), a removed or unreadable
-file, and a file naming this process's temp directory. The guard then prints
+`settings.json` without a temp hooks path or a replaced installed binary
+(for example a `profile add`, seeding or status-line write leaked by a
+test), a removed or unreadable file, and a file naming this process's temp
+directory. The guard then prints
 those paths and a hint to re-run, and exits the test process with status 1.
 This happens after libtest prints `test result: ok`, and no test is named as
 the failure:
@@ -171,15 +202,22 @@ nothing and passes.
 
 ## Limits
 
-- The exception needs a temp directory of its own. When `TMPDIR` is unset
+- The temp-directory exception needs a temp directory of its own. When `TMPDIR` is unset
   or `/tmp`, a temp hooks path written by any process names this process's
   temp directory too, so every change fails the run. With a `TMPDIR` of its
   own, a change made by this run is still caught unless another process
   later rewrites the same file with hooks under its own temp directory; only
   the later content is judged.
-- Changes made legitimately during the run by another process (an
-  `amplihack install`, `profile add` or rotator restart) fail the run, as
-  the issue asks; re-run the tests.
+- Other changes made legitimately during the run by another process (a
+  `profile add`, a rotator restart, an `amplihack install` from a checkout
+  whose hooks binary is not in `~/.local/bin`) fail the run, as the issue
+  asks; re-run the tests.
+- A test that ran a real install with the real `HOME` would replace the
+  installed binary too, and its profile rewrite would only warn. The guard
+  cannot tell that apart from another session's install. Every test that
+  runs an install must set a temp `HOME`; the `grep` in step 2 of
+  [When the real-root guard fails](#when-the-real-root-guard-fails) lists
+  the tests that set one.
 
 - The guard takes its baseline in `.init_array` before `main` on Linux, and
   when the guard test runs on other Unix systems, so it does not see changes
