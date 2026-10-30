@@ -119,6 +119,13 @@ export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HOME="$WORK/home"
 # lookups came back empty in CI on PR #1588; T23 now prints the resolver's
 # stderr if they fail again. The fixtures need recipe resolution only.
 export AMPLIHACK_SKIP_AUTO_INSTALL=1
+# recipe-runner-rs asks GitHub for its latest release at startup and prints a
+# notice on stderr when that release is newer than itself. The fresh HOME holds
+# no saved answer, so every run of the pinned runner asked; once v0.5.1 was
+# released (2026-10-30), the notice reached T20/T21's output and their JSON no
+# longer parsed (#1772). The result must not depend on the network or on which
+# runner release is the newest.
+export RECIPE_RUNNER_NO_UPDATE_CHECK=1
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid
 export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 unset GIT_DIR GIT_WORK_TREE AMPLIHACK_HOME MERGE_GATE_RESULT BUILD_RESULT CRUSTY_LOOP_RESULT
@@ -942,12 +949,24 @@ steps:
 STUB
 }
 # e2e_run [-c key=value]... — run the composed recipe from the main checkout.
-E2E_OUT="" E2E_RC=0
+# E2E_OUT holds the runner's stdout, the JSON summary() reads; its stderr goes
+# to E2E_ERR, so a notice or log line there cannot break the parse (#1772).
+E2E_OUT="" E2E_ERR="" E2E_RC=0
 e2e_run() {
+  E2E_ERR="$E2E_HOME/runner.stderr"
   E2E_OUT="$(cd "$MAIN" && env -u AMPLIHACK_CONTEXT_FILE AMPLIHACK_HOME="$E2E_HOME" \
     STUB_PR_EXISTS="$E2E_LOG/built" "$RUNNER" "$E2E_HOME/amplifier-bundle/recipes/auto-drive-to-merge.yaml" \
     -R "$E2E_HOME/amplifier-bundle/recipes" -C "$MAIN" --no-auto-stage --output-format json \
-    -c repo_path="$MAIN" -c task_description="drive PR 7" "$@" 2>&1)"; E2E_RC=$?
+    -c repo_path="$MAIN" -c task_description="drive PR 7" "$@" 2>"$E2E_ERR")"; E2E_RC=$?
+}
+# e2e_explain — print both runner streams when the run failed or its stdout is
+# not JSON. tail -c, because ${E2E_OUT: -3000} is empty for shorter output.
+e2e_explain() {
+  if [[ "$E2E_RC" -ne 0 ]] \
+    || ! printf '%s' "$E2E_OUT" | python3 -c 'import json, sys; json.loads(sys.stdin.read())' 2>/dev/null; then
+    { echo "--- runner stdout (last 3000 bytes, rc=$E2E_RC) ---"; printf '%s' "$E2E_OUT" | tail -c 3000; echo
+      echo "--- runner stderr (last 3000 bytes) ---"; tail -c 3000 "$E2E_ERR" 2>/dev/null; echo; } >&2
+  fi
 }
 argv_after() { awk -v k="$2" 'p{print; exit} $0==k{p=1}' "$1" 2>/dev/null; }
 # summary <field> — the autodrive-report output the runner returned for the run.
@@ -972,7 +991,7 @@ e2e_setup t20
 E2E_BUILD_CMD=""
 e2e_run -c autodrive_state_dir="$WORK/state-t20"
 check_eq T20-rc "the composed recipe runs to the end" 0 "$E2E_RC"
-[[ "$E2E_RC" -eq 0 ]] || echo "${E2E_OUT: -3000}" >&2
+e2e_explain
 if [[ -e "$E2E_LOG/built" ]]; then pass T20-built "phase 1 ran default-workflow (fresh build)"; else fail T20-built "default-workflow did not run"; fi
 CRUSTY_REPO="$(argv_after "$E2E_LOG/loop-crusty.argv" --repo)"
 MERGE_REPO="$(argv_after "$E2E_LOG/loop-merge-ready.argv" --repo)"
@@ -993,7 +1012,7 @@ e2e_setup t21
   || harness_error "cannot mark the crusty loop done in the T21 state directory"
 e2e_run -c pr_number=7 -c existing_branch=feat/x -c autodrive_state_dir="$WORK/state-t21"
 check_eq T21-rc "the composed recipe runs to the end" 0 "$E2E_RC"
-[[ "$E2E_RC" -eq 0 ]] || echo "${E2E_OUT: -3000}" >&2
+e2e_explain
 if [[ -e "$E2E_LOG/built" ]]; then fail T21-build "default-workflow ran although PR #7 is open"; else pass T21-build "phase 1 was skipped: PR #7 is already open"; fi
 if [[ -e "$E2E_LOG/loop-crusty.argv" ]]; then fail T21-crusty "the crusty loop ran although it was recorded done"; else pass T21-crusty "phase 2 was skipped as already done"; fi
 check_eq T21-merge-repo "the merge loop ran in the PR worktree" "$WT" "$(real "$(argv_after "$E2E_LOG/loop-merge-ready.argv" --repo)")"
