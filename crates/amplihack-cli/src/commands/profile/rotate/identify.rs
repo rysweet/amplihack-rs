@@ -24,7 +24,7 @@ use crate::commands::profile::store::ProfileStore;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-pub use super::candidates::{CandidateInput, Skip, candidates};
+pub use super::candidates::{CandidateInput, Skip, candidates, refused_dirs};
 pub use super::holders::{Holders, home_holders, home_key, home_still_matches};
 
 /// The largest login or settings file read for its keys; the top-level key

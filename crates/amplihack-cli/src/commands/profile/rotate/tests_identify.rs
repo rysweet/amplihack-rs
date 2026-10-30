@@ -15,7 +15,7 @@
 //!   Vec<(ProfileName, Skip)>), ProfileError>`; a root that cannot be listed
 //!   is an error. `Skip::as_str()` gives the documented reason.
 
-use super::identify::{Account, CandidateInput, LiveId, Skip, candidates, live};
+use super::identify::{Account, CandidateInput, LiveId, Skip, candidates, live, refused_dirs};
 use super::ledger::{RotateLedger, RotateState};
 use crate::commands::profile::auto_switch::kit::{Ledger, Liveness};
 use crate::commands::profile::name::ProfileName;
@@ -486,6 +486,39 @@ fn every_documented_exclusion_applies() {
     ] {
         assert_eq!(skipped(&skips, name), Some(why), "{name}");
     }
+}
+
+#[test]
+fn a_refused_directory_is_skipped_as_directory_refused_not_no_login() {
+    // Issue #1698: a directory open to other users fails the check, so its
+    // login cannot be looked at. That is not a missing login: the overflow
+    // rule holds a move onto credits while a plan profile is refused.
+    let e = env();
+    for p in ["g-open", "h-excl"] {
+        e.store.add(&n(p)).unwrap();
+        private(
+            &e.root().join(p).join(".claude.json"),
+            &acct(p, "x@example.com"),
+        );
+        login(&e.root().join(p).join(".credentials.json"));
+        fs::set_permissions(e.root().join(p), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut input = e.input(None);
+    input.exclude = vec![n("h-excl")];
+    let (c, skips) = candidates(&e.store, &input).unwrap();
+    assert_eq!(c, vec![n("extra"), n("spare")]);
+    assert_eq!(skipped(&skips, "g-open"), Some("directory refused"));
+    // Out of rotation anyway, so it holds nothing.
+    assert_eq!(skipped(&skips, "h-excl"), Some("excluded"));
+    // A missing login is still `no login`, and is not refused.
+    assert_eq!(skipped(&skips, "work"), Some("no login"));
+    assert_eq!(refused_dirs(&skips), vec![n("g-open")]);
+
+    // Fixed, it is a candidate again.
+    fs::set_permissions(e.root().join("g-open"), fs::Permissions::from_mode(0o700)).unwrap();
+    let (c, skips) = candidates(&e.store, &input).unwrap();
+    assert_eq!(c, vec![n("extra"), n("g-open"), n("spare")]);
+    assert!(refused_dirs(&skips).is_empty());
 }
 
 #[test]

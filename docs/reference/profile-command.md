@@ -3449,8 +3449,8 @@ at once, and the `overflow: on` line reads `next plan reset unknown`. Turn
 it on only if you would rather pay than wait for a reset nobody reported.
 
 One known reset is enough. A plan candidate whose probe timed out or could
-not run, a refused profile directory included, blocks the move anyway (see
-[Overflow decision](#overflow-decision)), but one that read
+not run, or a plan profile skipped as `directory refused`, blocks the move
+anyway (see [Overflow decision](#overflow-decision)), but one that read
 `not_logged_in`, `unparsed` or `spend_limit` does not. With
 an expired login, for example, another login's known reset decides, and the
 rotator can move onto overflow even though the expired login would have had
@@ -3473,6 +3473,7 @@ plan candidate with capacity always stands:
 |-----------|---------|
 | Live probe failed | As without overflow. A failed live probe never moves work onto credits. |
 | A plan candidate's probe in this cycle ended in `timeout` or `error` (`claude` could not be started, written to, read or waited for, or the profile directory was refused just before the spawn) | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity. That login might have capacity, so such a probe never moves work onto credits. It is probed again on the next cycle. |
+| A plan profile is skipped as [`directory refused`](#rotate-candidates) | As without overflow. Its login cannot be checked and might have capacity. The skip, and so the hold, comes back on every cycle until the directory is fixed. |
 | A plan candidate has capacity (it is below both thresholds but short of `--margin`) | ALERT `no-capacity`, as without overflow. Credits are never used while a plan login has capacity. |
 | `earliest plan reset - now > overflow-wait`, and an overflow candidate is eligible | Swap to the first eligible one, `reason=overflow-in`. The `--hold` does not apply. |
 | `earliest plan reset - now <= overflow-wait` | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity, which costs nothing. |
@@ -3494,13 +3495,16 @@ the future.
 A plan candidate that reads `not_logged_in`, `unparsed` or `spend_limit`,
 or `ok` with no week figure, does not block the move, so a login that has
 expired cannot keep the rotator off credits for good. A plan profile whose
-directory fails the ownership and mode check is not a candidate at all: the
-[candidate list](#rotate-candidates) skips it as `no login` before any probe,
-so it does not block the move either. Only a directory that changes between
-that check and the spawn reads `error` (`profile directory refused`) in the
-cycle, and it blocks the move for that cycle. `amplihack profile usage
-<name>` shows the `error` row whenever the directory is refused; fix the
-directory to bring the profile back into rotation.
+directory fails the ownership and mode check is different: its login cannot
+be checked at all. The [candidate list](#rotate-candidates) skips it as
+`directory refused` before any probe, so it is never chosen, and the skip
+blocks the move on every cycle until the directory is fixed. A directory
+that changes between that check and the spawn reads `error` (`profile
+directory refused`) in the cycle and blocks the move in the same way.
+`amplihack profile usage <name>` shows the `error` row whenever the
+directory is refused. An overflow profile skipped as `directory refused`
+blocks nothing, and an excluded profile is skipped as `excluded` whatever
+its directory.
 
 An unknown plan probe stops only a move from a plan login onto an overflow
 profile. It does not stop these moves:
@@ -3713,7 +3717,8 @@ set of skipped profiles changes, and by the one-shot command on every run.
 | Skip reason | Condition |
 |-------------|-----------|
 | `live` | It is the live profile. |
-| `no login` | The profile directory fails the ownership and mode check (it is a symlink, not a directory, not owned by you, or open to group or other users), or `<root>/<name>/.credentials.json` is missing, a symlink, not a regular file, not owned by you, readable by other users, or has more than one link. |
+| `directory refused` | The profile directory fails the ownership and mode check: it is a symlink, not a directory, not owned by you, or open to group or other users. A profile in the auto-switch `exclude` list is skipped as `excluded` instead. While a plan profile has this reason, the rotator does not move onto an overflow profile (see [Overflow decision](#overflow-decision)). |
+| `no login` | `<root>/<name>/.credentials.json` is missing, a symlink, not a regular file, not owned by you, readable by other users, or has more than one link. |
 | `excluded` | It is in the auto-switch `exclude` list. |
 | `session running` | A running process has `CLAUDE_CONFIG_DIR=<root>/<name>` (the same `/proc` scan auto-switch uses). If `/proc` cannot be scanned, every profile is skipped and `skip: cannot see running sessions; no candidates` is logged once. |
 | `leased` | Its login is on loan to another profile's session in the auto-switch ledger. |
@@ -4136,6 +4141,7 @@ changes nothing but `.default`.
 
    | Reason | Detail |
    |--------|--------|
+   | `directory refused` | `its directory is a symlink, not owned by you, or open to group or other users` |
    | `no login`, file missing | The whole message is ``profile <name> has no stored login; run `amplihack profile login <name>` first``. |
    | `no login`, file present | `a login file is not a private regular file with one link` |
    | `excluded` | ``it is in the auto-switch exclude list; set the list without it with `amplihack profile auto-switch exclude` first`` |
@@ -5430,8 +5436,8 @@ Overflow spends real money, so every uncertain case fails towards not
 spending: a corrupt `.auto-switch` gives no overflow profiles, an unreadable
 rotate ledger stops the cycle, a failed live probe never moves onto credits,
 a plan candidate whose probe timed out or could not run blocks the move onto
-credits (a profile whose directory is refused does so on every cycle, so fix
-or remove it), a reset more than 8 days away counts as unknown, an answer to
+credits, and so does a plan profile skipped as `directory refused`, on every
+cycle until the directory is fixed or the profile removed, a reset more than 8 days away counts as unknown, an answer to
 the usage request that reports credits on, or reports them in a form
 amplihack does not recognise, is not accepted,
 profiles marked as overflow are probed with `/usage` only so a spend limit

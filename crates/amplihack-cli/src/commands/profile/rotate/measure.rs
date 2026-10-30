@@ -34,10 +34,10 @@ impl Live<'_> {
 /// so its cause goes to stderr (the daemon's `rotate.err`); the text is fixed
 /// and never Claude's output. Both read `Failed`: never a target and never
 /// exhausted, and probed again next cycle. Both are also unknown, which
-/// blocks a move onto overflow. A refused profile directory is no exception
-/// (issue #1698): that login may have capacity. A directory that stays
-/// refused is skipped as `no login` before the next cycle's probes, so the
-/// hold lasts one cycle.
+/// blocks a move onto overflow. A profile directory refused just before the
+/// spawn is no exception (issue #1698): that login may have capacity. From
+/// the next cycle the profile is skipped as `directory refused` before any
+/// probe, and that skip holds the move until the directory is fixed.
 pub(super) fn reading(who: &str, p: &Probe) -> Probed {
     if p.error.is_some() || p.report.state == UsageState::Error {
         let why = p.error.map_or("unreadable /usage output", |e| e.as_str());

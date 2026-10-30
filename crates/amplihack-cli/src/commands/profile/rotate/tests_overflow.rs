@@ -21,8 +21,9 @@
 //!   `unknown_reset` (`--overflow-unknown-reset 1`; default off).
 //! - `overflow::decide_overflow(&OverflowInput) -> Verdict` where
 //!   `OverflowInput { settings, live_name: Option<&ProfileName>, live:
-//!   &Probed, candidates: &[Measured], overflow: &[OverflowEntry], blocks:
-//!   &BTreeMap<String, OverflowBlock>, swapped_at, now }` and
+//!   &Probed, candidates: &[Measured], refused: &[ProfileName], overflow:
+//!   &[OverflowEntry], blocks: &BTreeMap<String, OverflowBlock>, swapped_at,
+//!   now }` and
 //!   `Verdict { decision: Decision, tag: Option<Tag>, new_blocks:
 //!   Vec<ProfileName> }`.
 //!
@@ -34,7 +35,8 @@
 //!   login has capacity, and the earliest plan reset is more than
 //!   `overflow_wait` away (unknown: only with the opt-in). A failed live
 //!   probe never moves onto overflow, and neither does a plan candidate's
-//!   unknown probe (issue #1698). This replaces the ALERT and also a
+//!   unknown probe or a plan profile skipped as `directory refused` (issue
+//!   #1698). This replaces the ALERT and also a
 //!   threshold swap onto a plan login without capacity; that swap stands
 //!   when the gate does not allow overflow.
 //! - Overflow profiles are tried by tier, then by the order given.
@@ -162,6 +164,7 @@ struct Case<'a> {
     live_name: &'a str,
     live: Probed,
     candidates: Vec<Measured>,
+    refused: Vec<ProfileName>,
     overflow: Vec<&'a str>,
     blocks: BTreeMap<String, OverflowBlock>,
     swapped_at: Option<i64>,
@@ -174,6 +177,7 @@ impl<'a> Case<'a> {
             live_name,
             live,
             candidates: Vec::new(),
+            refused: Vec::new(),
             overflow: Vec::new(),
             blocks: BTreeMap::new(),
             swapped_at: None,
@@ -183,6 +187,11 @@ impl<'a> Case<'a> {
 
     fn cand(mut self, name: &str, p: Probed) -> Self {
         self.candidates.push(cand(name, &p));
+        self
+    }
+
+    fn refused(mut self, names: &[&str]) -> Self {
+        self.refused = names.iter().map(|x| n(x)).collect();
         self
     }
 
@@ -208,6 +217,7 @@ impl<'a> Case<'a> {
             live_name: Some(&live_name),
             live: &self.live,
             candidates: &self.candidates,
+            refused: &self.refused,
             overflow: &overflow,
             blocks: &self.blocks,
             platform_block: None,
@@ -683,6 +693,36 @@ fn a_refused_plan_profile_directory_blocks_overflow() {
     assert_eq!(v.decision, Decision::Alert);
     assert_eq!(v.tag, None);
     assert!(v.new_blocks.is_empty());
+}
+
+#[test]
+fn a_plan_profile_skipped_as_directory_refused_blocks_overflow() {
+    // Its login cannot be checked, so it may have capacity. The skip comes
+    // back every cycle until the directory is fixed, and so does the hold.
+    let case = || {
+        Case::new("work", exhausted(FAR, FAR))
+            .cand("cred", exhausted(None, None))
+            .overflow(&["cred"])
+    };
+    let v = case().refused(&["odd"]).run();
+    assert_eq!(v.decision, Decision::Alert);
+    assert_eq!(v.tag, None);
+    assert!(v.new_blocks.is_empty());
+    // Fixed (no longer skipped as refused): the move goes ahead.
+    let v = case().run();
+    assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
+    assert_eq!(v.tag, Some(Tag::In));
+}
+
+#[test]
+fn an_overflow_profile_skipped_as_directory_refused_holds_nothing() {
+    let v = Case::new("work", exhausted(FAR, FAR))
+        .cand("cred", exhausted(None, None))
+        .overflow(&["cred", "odd:2"])
+        .refused(&["odd"])
+        .run();
+    assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
+    assert_eq!(v.tag, Some(Tag::In));
 }
 
 #[test]

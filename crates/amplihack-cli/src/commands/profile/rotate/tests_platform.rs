@@ -178,6 +178,7 @@ impl Case {
             live_name: Some(&live_name),
             live: &self.live,
             candidates: &self.candidates,
+            refused: &[],
             overflow: &overflow,
             blocks: &self.blocks,
             platform_block: self.platform_block.as_ref(),

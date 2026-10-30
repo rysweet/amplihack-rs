@@ -272,6 +272,7 @@ then refuses. Without a pending recovery, a refusal changes nothing but
 | `profile spare is not a rotate candidate (leased): ...`, `(hosting)`, `(parked)` | Auto-switch has lent `spare`'s login to another session, or `spare`'s directory holds another account's login. Wait for that session to end; auto-switch then returns the logins. |
 | `profile spare is not a rotate candidate (excluded): ...` | `spare` is in the auto-switch exclude list, which keeps it out of rotation; a switch is a rotation done by hand. Set the list without it with `amplihack profile auto-switch exclude`, then switch. |
 | `profile spare is not a rotate candidate (no account): ...` | `spare/.claude.json` has no `oauthAccount`, so `~/.claude.json` could not be updated. Run `amplihack profile login spare`. |
+| `profile spare is not a rotate candidate (directory refused): ...` | The `spare` directory is a symlink, not yours, or open to group or other users. Run `chmod 700` on it, or recreate it if it is not yours. While it is refused, the rotator does not move onto overflow profiles; see [When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured). |
 | `profile spare is not a rotate candidate (no login): ...` | `spare`'s `.credentials.json` is a symlink, not yours, readable by others or hard-linked. See [Swap refused](#swap-refused). |
 | Any reason in the [Swap refused](#swap-refused) table | As described there. |
 
@@ -1089,13 +1090,23 @@ A plan probe that timed out or could not run never moves work onto
 credits. If the probes keep timing out, see
 [When the host is heavily loaded](#when-the-host-is-heavily-loaded).
 
-A plan profile whose directory fails the ownership and mode check
-(`amplihack profile usage` shows `error` with `profile directory refused`)
-is skipped before any probe, as `no login`, so it is never chosen and does
-not block credits. Only a directory that changes between that check and the
-probe reads `error` in the cycle line; it holds credits back for that cycle,
-and on the next cycle the profile is skipped. Fix the directory to bring the
-profile back into rotation.
+A plan profile whose directory fails the ownership and mode check (it is a
+symlink, is not yours, or is open to group or other users) is skipped
+before any probe:
+
+```
+2026-10-24T09:00:05Z skip: personal (directory refused)
+```
+
+Its login cannot be checked, so it might have capacity. The rotator never
+chooses it, and does not move onto credits on any cycle until the directory
+is fixed. `amplihack profile usage personal` shows `error` with `profile
+directory refused`. Run `chmod 700` on the directory (or recreate it if it
+is not yours) to bring the profile back into rotation and release the hold.
+A directory that changes between that check and the probe reads `error` in
+the cycle line instead, and holds credits back in the same way. An excluded
+profile is skipped as `excluded` whatever its directory, and an overflow
+profile with a refused directory is skipped; neither holds anything back.
 
 A profile that is not logged in, whose `/usage` output cannot be read
 (`unparsed`) or that is at its spend limit does not block credits: the

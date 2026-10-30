@@ -10,6 +10,9 @@
 //! - The live probe counts against `AMPLIHACK_PROFILE_USAGE_PARALLEL`.
 //! - A plan login whose probe timed out holds back the move from a plan
 //!   login onto an overflow profile; the cycle alerts instead.
+//! - A plan profile whose directory fails the ownership and mode check is
+//!   skipped as `directory refused`, never probed, and holds back that move
+//!   on every cycle until the directory is fixed.
 //!
 //! The fake answers no usage request here, so every probe falls back to
 //! `/usage`, the default `auto` path.
@@ -18,6 +21,7 @@
 
 use crate::support::profile_rotate::*;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::process::Output;
 
 const TIMEOUT_ENV: &str = "AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS";
@@ -141,6 +145,53 @@ fn a_timed_out_plan_probe_holds_the_move_onto_overflow() {
     f.usage_resetting("spare", 100, 100, 3);
     let out = rotate(&f, &["profile", "rotate"], &[]);
     let stdout = text(&out.stdout);
+    assert!(
+        stdout.contains("swap work->extra") && stdout.contains("reason=overflow-in"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn a_refused_plan_profile_directory_holds_the_move_onto_overflow_until_fixed() {
+    let f = Fixture::new();
+    f.ok(&["profile", "overflow", "add", "extra"]);
+    // work is out and back in 3 hours, beyond the 30-minute wait. spare's
+    // directory is open to other users, so its login cannot be checked.
+    f.usage_resetting("work", 100, 40, 3);
+    f.usage("extra", 100, 100);
+    let spare = f.root.join("spare");
+    fs::set_permissions(&spare, fs::Permissions::from_mode(0o755)).unwrap();
+    for cycle in 1..=2 {
+        let out = rotate(&f, &["profile", "rotate"], &[]);
+        let stdout = text(&out.stdout);
+        assert!(
+            stdout.contains("skip: spare (directory refused)"),
+            "cycle {cycle}: {stdout}"
+        );
+        assert!(
+            !stdout.contains("reason=overflow-in"),
+            "cycle {cycle}: {stdout}"
+        );
+        assert!(
+            stdout.contains("ALERT: no profile has capacity live=work"),
+            "cycle {cycle}: {stdout}"
+        );
+        assert_eq!(ino(&f.home_login()), Some(f.live_ino), "cycle {cycle}");
+    }
+    assert_eq!(
+        f.usage_probes("spare"),
+        0,
+        "a refused directory is not probed"
+    );
+
+    // Fixed, spare is probed again; it reads exhausted too, so the cycle
+    // moves onto extra.
+    fs::set_permissions(&spare, fs::Permissions::from_mode(0o700)).unwrap();
+    f.usage_resetting("spare", 100, 100, 3);
+    let out = rotate(&f, &["profile", "rotate"], &[]);
+    let stdout = text(&out.stdout);
+    assert!(!stdout.contains("directory refused"), "{stdout}");
+    assert_eq!(f.usage_probes("spare"), 1, "{stdout}");
     assert!(
         stdout.contains("swap work->extra") && stdout.contains("reason=overflow-in"),
         "{stdout}"
