@@ -57,6 +57,9 @@ const SKIP_ENV: &str = "AMPLIHACK_SKIP_AUTO_INSTALL";
 ///   of reading a value, and its output would land on the caller's terminal.
 /// - `config`: reads and writes user defaults, often inside `$(...)`
 ///   (issue #1606); the same reasoning as `agent-binary`.
+/// - `sessions`: housekeeping of `~/.claude/projects` (issue #1746); its dry
+///   run promises to change nothing, and an install would change
+///   `~/.amplihack`.
 const SKIP_SUBCOMMANDS: &[&str] = &[
     "install",
     "uninstall",
@@ -66,6 +69,7 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     "help",
     "agent-binary",
     "config",
+    "sessions",
 ];
 
 /// Top-level flags that short-circuit clap and should not pay for an

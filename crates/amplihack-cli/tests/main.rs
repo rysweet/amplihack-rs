@@ -146,6 +146,14 @@ mod issue_1699_isolated_profile_root;
 mod issue_1699_real_root_guard;
 #[path = "issue_1707_claim_check_shell_suites.rs"]
 mod issue_1707_claim_check_shell_suites;
+#[path = "issue_1746_daily_archive_rotator.rs"]
+mod issue_1746_daily_archive_rotator;
+#[path = "issue_1746_sessions_archive.rs"]
+mod issue_1746_sessions_archive;
+#[path = "issue_1746_sessions_live.rs"]
+mod issue_1746_sessions_live;
+#[path = "issue_1746_sessions_lock_restore.rs"]
+mod issue_1746_sessions_lock_restore;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

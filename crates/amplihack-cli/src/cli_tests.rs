@@ -716,4 +716,71 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
     }
+
+    /// Issue #1746: `sessions archive` / `sessions restore` parse, and bad
+    /// input is a clap usage error (exit 2). Checked through clap's error
+    /// kind, so this compiles before the variant exists.
+    #[cfg(unix)]
+    #[test]
+    fn sessions_commands_parse() {
+        for args in [
+            &["amplihack", "sessions", "archive"][..],
+            &["amplihack", "sessions", "archive", "--apply"],
+            &["amplihack", "sessions", "archive", "--days", "1"],
+            &["amplihack", "sessions", "archive", "--days", "4294967295"],
+            &[
+                "amplihack",
+                "sessions",
+                "archive",
+                "--days",
+                "7",
+                "--dest",
+                "/x",
+                "--apply",
+            ],
+            &["amplihack", "sessions", "restore", "abc"],
+            &["amplihack", "sessions", "restore", "abc", "--dest", "rel"],
+        ] {
+            let got = Cli::try_parse_from(args);
+            assert!(got.is_ok(), "{args:?}: {:?}", got.err().map(|e| e.kind()));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sessions_commands_reject_bad_input() {
+        for args in [
+            &["amplihack", "sessions"][..],
+            &["amplihack", "sessions", "archive", "--days", "0"],
+            &["amplihack", "sessions", "archive", "--days", "-1"],
+            &["amplihack", "sessions", "archive", "--days", "x"],
+            &["amplihack", "sessions", "archive", "--days", "4294967296"],
+            &["amplihack", "sessions", "archive", "--bogus"],
+            &["amplihack", "sessions", "restore"],
+            &["amplihack", "sessions", "restore", "a", "b"],
+            &["amplihack", "sessions", "restore", "abc", "--apply"],
+        ] {
+            let err = match Cli::try_parse_from(args) {
+                Ok(_) => panic!("{args:?} parsed"),
+                Err(e) => e,
+            };
+            assert_eq!(err.exit_code(), 2, "{args:?}: {:?}", err.kind());
+            assert!(
+                !matches!(err.kind(), clap::error::ErrorKind::InvalidSubcommand),
+                "{args:?}: no sessions command"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sessions_help_lists_archive_and_restore() {
+        let mut cmd = Cli::command();
+        let sessions = cmd
+            .find_subcommand_mut("sessions")
+            .expect("sessions command should exist");
+        for sub in ["archive", "restore"] {
+            assert!(sessions.find_subcommand(sub).is_some(), "{sub}");
+        }
+    }
 }

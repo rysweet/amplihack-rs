@@ -77,6 +77,9 @@ pub use cli::AutoSwitchCommand;
 /// File helpers `default_live` reuses for its read-only checks.
 #[cfg(unix)]
 pub(super) use fsx::{check_root_private, euid, exists, read_bounded_nofollow, writable_by_others};
+/// For the session archive's live check (issue #1746).
+#[cfg(unix)]
+pub(crate) use liveness::claude_config_dirs;
 /// For the shared-session liveness tests (issue #1634).
 #[cfg(all(test, unix))]
 pub(super) use liveness::scan;
