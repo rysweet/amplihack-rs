@@ -265,11 +265,23 @@ script, run in the same shell environment as `Bash`, so it is checked like
 is not. In Claude Code 2.1.314 the tools that run code and take a `command`
 are `Bash`, `PowerShell` and `Monitor`; the list in `SHELL_TOOLS` needs
 checking against each new release, since a shell tool missing from it skips
-the guard. It runs after
-the XPIA check and the Skill redirect, beside the merge guard, and before the
-non-Bash early return. It checks both `tool_input.command` and
-`tool_input.cmd`, and either one can deny, so a harmless `command` does not
-hide a `cmd` that kills the user's server.
+the guard. It checks both `tool_input.command` and `tool_input.cmd`, and
+either one can deny, so a harmless `command` does not hide a `cmd` that kills
+the user's server.
+
+**Position.** The guard is the first check `PreToolUseHook::process` makes for
+a shell tool: it runs before the XPIA check, the Skill redirect, the merge
+guard and the non-Bash early return. The checks after it answer with a bare
+`{"block": true, "message": …}`, which Claude Code does not act on (#1773).
+XPIA is on unless `XPIA_ENABLED=false`, and its command-injection pattern
+matches a separator or newline followed by `rm`, `kill` and similar words. If
+XPIA ran first, it would answer for `TMUX_TMPDIR=$SB/tmuxsock tmux
+kill-server; rm -rf "$SB"`, for a `tmux -C attach <<EOF` heredoc whose body is
+`kill-server`, and for `tmux new -d 'sleep 1' \; kill-server`, and on Claude
+Code the command would run. Running the guard first gives those commands the
+deny shown under **Response** below. The guard only ever denies, so running
+it first cannot let through a command that a later check refuses: a command
+the guard allows goes on to XPIA and the other checks unchanged.
 
 On Codex, `normalize_codex_input` in `protocol/codex.rs` has already renamed
 the `shell`, `exec_command` and `shell_command` tools to `Bash`, and copied

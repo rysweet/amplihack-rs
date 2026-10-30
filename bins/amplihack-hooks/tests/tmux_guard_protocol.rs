@@ -263,3 +263,52 @@ fn claude_code_judges_pipeline_stages_in_order() {
         assert_full_deny(&hook(claude_payload(command), "claude"));
     }
 }
+
+/// Kill commands that XPIA's command-injection pattern also matches: a
+/// separator or newline followed by `rm` or `kill…`. The first is the
+/// incident command with the usual sandbox clean-up after it; the heredoc is
+/// the second incident's form.
+const KILLS_XPIA_ALSO_MATCHES: &[&str] = &[
+    "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server; rm -rf \"$SB\"",
+    "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server && rm -rf \"$SB\"",
+    "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server\nrm -rf \"$SB\"",
+    "tmux -C attach <<EOF\nkill-server\nEOF",
+    "tmux new -d 'sleep 1' \\; kill-server",
+    "tmux kill-session -a; rm -f /tmp/qa.log",
+];
+
+/// Crusty round 7, concern 1: with XPIA at its defaults (the harness clears
+/// the environment, so no `XPIA_ENABLED=false` reaches the hook), these
+/// commands get the guard's deny, not XPIA's bare `{"block": true}`, which
+/// Claude Code does not enforce (#1773). Claude Code acts on
+/// `hookSpecificOutput.permissionDecision == "deny"` (or
+/// `decision == "block"`), so that is what is asserted; a `block` key alone
+/// would not count.
+#[test]
+fn every_host_gets_the_guard_deny_where_xpia_also_matches() {
+    // Control: XPIA is on in this harness and answers a command the guard
+    // allows, so each case below would reach XPIA if the guard did not run
+    // first.
+    let control = hook(claude_payload("echo done; rm -rf \"$SB\""), "claude");
+    assert!(
+        control["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("XPIA")),
+        "XPIA is not active in this harness: {control}"
+    );
+
+    for command in KILLS_XPIA_ALSO_MATCHES {
+        for output in [
+            hook(claude_payload(command), "claude"),
+            hook(claude_monitor_payload(command), "claude"),
+            hook(copilot_payload(command), "copilot"),
+        ] {
+            assert_eq!(
+                output["hookSpecificOutput"]["permissionDecision"], "deny",
+                "{command:?}: {output}"
+            );
+            assert_full_deny(&output);
+        }
+        assert_codex_deny(&hook(codex_exec_payload(command), "codex"));
+    }
+}

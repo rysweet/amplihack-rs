@@ -1084,6 +1084,92 @@ fn tmux_guard_allows_a_scoped_kill_server_for_the_powershell_tool_name() {
 }
 
 // ---------------------------------------------------------------------------
+// Crusty round 7, concern 1: XPIA answers with a bare `{"block": true}` that
+// Claude Code does not enforce (#1773), and its command-injection pattern
+// matches `; rm`, `\; kill…` and a line starting `kill…`. The guard runs
+// first, so these commands get its enforceable deny with XPIA at its
+// defaults. Every `XPIA_*` variable that could switch XPIA off or change what
+// it blocks is cleared, because a session (this host's included) may export
+// `XPIA_ENABLED=false`, which would hide the ordering.
+// ---------------------------------------------------------------------------
+
+const XPIA_VARS: &[&str] = &[
+    "XPIA_ENABLED",
+    "XPIA_SECURITY_LEVEL",
+    "XPIA_BLOCK_HIGH_RISK",
+    "XPIA_BLOCK_CRITICAL",
+    "XPIA_VALIDATE_BASH",
+];
+
+/// Kill commands that XPIA's patterns also match.
+const KILLS_XPIA_ALSO_MATCHES: &[&str] = &[
+    "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server; rm -rf \"$SB\"",
+    "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server && rm -rf \"$SB\"",
+    "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server\nrm -rf \"$SB\"",
+    "tmux -C attach <<EOF\nkill-server\nEOF",
+    "tmux new -d 'sleep 1' \\; kill-server",
+    "tmux kill-session -a; rm -f /tmp/qa.log",
+];
+
+#[test]
+fn tmux_guard_answers_before_xpia_at_its_defaults() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    let _xpia: Vec<EnvRestore> = XPIA_VARS.iter().map(|k| EnvRestore::unset(k)).collect();
+
+    // Control: XPIA is on and answers a command the guard allows, so the
+    // cases below would reach XPIA if the guard did not run first.
+    let control = PreToolUseHook
+        .process(make_bash_input("echo done; rm -rf \"$SB\""))
+        .unwrap();
+    assert!(
+        control["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("XPIA")),
+        "XPIA is not active in this test: {control}"
+    );
+
+    for command in KILLS_XPIA_ALSO_MATCHES {
+        for tool in ["Bash", "bash", "Monitor"] {
+            let result = PreToolUseHook
+                .process(shell_tool_input(
+                    tool,
+                    serde_json::json!({"command": command}),
+                ))
+                .unwrap();
+            assert_tmux_denied(&result);
+            assert!(
+                !result["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("XPIA"),
+                "{tool} {command:?}: {result}"
+            );
+        }
+    }
+}
+
+/// The guard runs first but only denies, so XPIA still answers a command the
+/// guard allows.
+#[test]
+fn xpia_still_answers_what_the_guard_allows() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _xpia: Vec<EnvRestore> = XPIA_VARS.iter().map(|k| EnvRestore::unset(k)).collect();
+    for command in [
+        "env -u TMUX tmux -S \"$SB/tmux.sock\" kill-server; rm -rf \"$SB\"",
+        "tmux kill-session -t amp-x; rm -f /tmp/qa.log",
+    ] {
+        let result = PreToolUseHook.process(make_bash_input(command)).unwrap();
+        assert!(
+            result["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("XPIA")),
+            "{command:?}: {result}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Crusty round 5, concern 4: the shell tokeniser this PR shares with the
 // #1551 merge guard changes that guard as well. It now refuses forms that the
 // 1.2.59 build allowed, and no form found that 1.2.59 refused is now

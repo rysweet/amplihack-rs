@@ -338,6 +338,26 @@ impl Hook for PreToolUseHook {
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
 
+        // Issue #1733: refuse a tmux command that would kill the user's own
+        // server (or every session on it) because no -S or -L was given. Not
+        // gated by any environment variable.
+        //
+        // This runs first, above XPIA and the merge guard. Those checks
+        // answer with a bare `{"block": true, "message": …}`, which Claude
+        // Code does not enforce (#1773), and XPIA, on by default, matches
+        // `; rm`, `\; kill…` and a `kill…` line, so it would answer first for
+        // `tmux kill-server; rm -rf "$SB"` or a `tmux -C attach <<EOF` heredoc
+        // and the command would run. The guard only ever denies, so running
+        // it first cannot let through anything the later checks refuse. It
+        // must also stay above the `tool_name != "Bash"` return below:
+        // Copilot's `bash` and Codex's un-normalised shell tool names would
+        // otherwise skip it.
+        if tmux_guard::is_shell_tool(&tool_name)
+            && let Some(block) = tmux_guard::check_tool_input(&tool_input)
+        {
+            return Ok(block);
+        }
+
         // XPIA security validation for all tools.
         if let Some(block) = xpia::check_xpia(&tool_name, &tool_input) {
             return Ok(block);
@@ -363,17 +383,6 @@ impl Hook for PreToolUseHook {
                 .get("command")
                 .and_then(Value::as_str)
                 .and_then(merge_guard::check)
-        {
-            return Ok(block);
-        }
-
-        // Issue #1733: refuse a tmux command that would kill the user's own
-        // server (or every session on it) because no -S or -L was given. Not
-        // gated by any environment variable. This must stay above the
-        // `tool_name != "Bash"` return below: Copilot's `bash` and Codex's
-        // un-normalised shell tool names would otherwise skip it.
-        if tmux_guard::is_shell_tool(&tool_name)
-            && let Some(block) = tmux_guard::check_tool_input(&tool_input)
         {
             return Ok(block);
         }
