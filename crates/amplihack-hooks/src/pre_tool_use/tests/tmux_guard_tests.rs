@@ -1209,7 +1209,7 @@ fn large_inputs_shaped_against_the_cost_bound_finish_quickly() {
         assert!(text.len() <= MAX_INPUT, "case is over MAX_INPUT");
         let _ = check(text);
     }
-    // A release build takes about 0.2 s for the slowest of these; the bound
+    // A release build takes about 0.3 s for the slowest of these; the bound
     // leaves room for a debug build on a loaded host.
     assert!(
         started.elapsed() < std::time::Duration::from_secs(30),
@@ -1380,4 +1380,205 @@ fn an_arithmetic_shift_with_no_kill_after_it_is_allowed() {
         .filter(|c| denied(c))
         .collect();
     assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 8, concern 1: layer 3 parses an embedded script again when
+// its text names tmux through a parameter expansion's fallback
+// (`${TMUX_BIN:-tmux}`) or with quoting the shell removes (`t''mux`,
+// `t\mux`), as the same spelling is denied at top level. The text test for
+// uncertain or over-size input undoes the same quoting.
+// ---------------------------------------------------------------------------
+
+const SPELT_TMUX_NESTED_DENIED: &[&str] = &[
+    // The four rows crusty found allowed at `f66c7c460`.
+    "bash -c '${TMUX_BIN:-tmux} kill-server'",
+    "echo \"$(${TMUX_BIN:-tmux} kill-server)\"",
+    "bash -c \"t''mux kill-server\"",
+    "bash -c 't\\mux kill-session -a'",
+    // Crusty's controls, denied before and after.
+    "${TMUX_BIN:-tmux} kill-server",
+    "t''mux kill-server",
+    // Other fallbacks: without the colon, as a path, quoted.
+    "bash -c '${T-tmux} kill-server'",
+    "bash -c '${T:-/usr/bin/tmux} kill-server'",
+    "bash -c '${T:-\"tmux\"} kill-server'",
+    "bash -c '${T:=tmux} kill-server'",
+    "x=$(${T:-tmux} kill-server)",
+    "ssh vm1 '${T:-tmux} kill-session -a'",
+    // Other quoting the shell removes, in the tmux word or the kill word.
+    "bash -c 't\"mu\"x kill-server'",
+    "bash -c 'tmux kill-se\"\"rver'",
+    "bash -c 'tmux kill\\-server'",
+    "bash -c \"\\$'\\\\x74mux' kill-server\"",
+    "ssh vm1 't\\mux kill-session -a'",
+    // Rows from crusty's differential, each run by bash against the fake
+    // tmux with no `-S` or `-L`.
+    "bash -c 'set -e; t\\mux -f /dev/null -C attach <<< kill-server'",
+    "script -qc 'set -e; t\\mux -u kill-server' /dev/null",
+    "bash <<'EOS'\nt\\mux -f /dev/null kill-session -at x\nEOS",
+    "bash -lc 'L=default; t\\mux -f /dev/null kill-session -a'",
+    "echo \"$(L=qa; ${T:-tmux} -f /dev/null kill-serv)\"",
+    "x=$(${T:-tmux} -L default kill-server)",
+    "python3 -c 'import os; os.system(\"${T:-tmux} kill-session -a -t x\")'",
+    "python3 -c 'import os; os.system(\"if true; then ${T:-tmux} kill-session -Ca; fi\")'",
+    "xargs -0 bash -c < /dev/null; script -qc 'L=qa; ${T:-tmux} -f /dev/null ls \\; kill-server' /dev/null",
+    // A tmux spelt as an expansion beside a subcommand that is one, nested
+    // and at top level, as `tmux $c` is.
+    "bash -c '${T:-tmux} $c'",
+    "\"$(command -v tmux)\" $c",
+    // The socket taken from tmux's output, with tmux spelt as an expansion.
+    "tmux -S \"$(${T:-tmux} display -p '#{socket_path}')\" kill-server",
+];
+
+const SPELT_TMUX_NESTED_ALLOWED: &[&str] = &[
+    // The same spellings with scope or a targeted kill get the verdict of
+    // the command unwrapped.
+    "bash -c 't\\mux -S /tmp/tx1/a.sock kill-server'",
+    "bash -c \"t''mux kill-session -t amp-x\"",
+    "bash -c '${TMUX_BIN:-tmux} -S \"$SB/tmux.sock\" ls'",
+    "\"$(command -v tmux)\" ls",
+    "\"$(command -v tmux)\" new -d -s \"$name\"",
+    "${TMUX_BIN:-tmux} -L qa-1733 new -d",
+    // A lone word naming tmux is not parsed again into itself until the
+    // depth limit: at `f66c7c460`, `tmux -S "$SB/tmux" ls` was denied.
+    "tmux -S \"$SB/tmux\" ls",
+    "${TMUX_BIN:-tmux} ls",
+    // A sandbox made by a substitution that only names the letters.
+    "tmux -S \"$(mktemp -d /tmp/qa-tmux.XXXXXX)/s\" kill-server",
+    // Text that mentions the forms, in a data-only command.
+    "git commit -m \"deny bash -c '\\${T:-tmux} kill-server'\"",
+];
+
+#[test]
+fn an_embedded_script_naming_tmux_through_an_expansion_or_quoting_is_parsed() {
+    let missed: Vec<&&str> = SPELT_TMUX_NESTED_DENIED
+        .iter()
+        .filter(|c| !denied(c))
+        .collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+#[test]
+fn spelt_tmux_with_scope_or_a_targeted_kill_is_allowed() {
+    let wrong: Vec<&&str> = SPELT_TMUX_NESTED_ALLOWED
+        .iter()
+        .filter(|c| denied(c))
+        .collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}
+
+/// The text test undoes the same quoting: input the tokeniser cannot read,
+/// and input over [`MAX_INPUT`], is denied for `t''mux` and `t\mux`.
+#[test]
+fn the_text_test_reads_through_quoting() {
+    assert!(denied("t''mux kill-server 'unterminated"));
+    assert!(denied("t\\mux kill-ser\"\"ver <<EOF\nno delimiter line"));
+    let pad = "x".repeat(70 * 1024);
+    assert!(denied(&format!("echo {pad}; t''mux kill-server")));
+    assert!(denied(&format!("echo {pad}; t\\mux kill-server")));
+    assert!(!denied(&format!("echo {pad}; t''mux ls")));
+}
+
+/// [`is_tmux_token`]: a fallback's `-` stays joined to `tmux`. The cost,
+/// listed in the module documentation, is that `qa-tmux` counts too.
+#[test]
+fn a_token_ending_in_dash_tmux_names_tmux() {
+    for token in [
+        "tmux",
+        "TMUX",
+        "/usr/bin/tmux",
+        "-tmux",
+        "T-tmux",
+        "-/usr/bin/tmux",
+        "qa-tmux",
+    ] {
+        assert!(is_tmux_token(token), "{token}");
+    }
+    for token in [
+        "tmux-qa",
+        "tmux.sock",
+        "qa-tmux.XXXXXX",
+        "xtmux",
+        "tmuxinator",
+        "TMUX_BIN",
+    ] {
+        assert!(!is_tmux_token(token), "{token}");
+    }
+    assert!(denied("bash -c 'ls ~/qa-tmux; echo kill-server'"));
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 8, concern 2: a program word that is an expansion is read as
+// an unscoped tmux for the stdin rule, so a kill piped or heredoc-fed into
+// it is denied, as it is for a literal `tmux -C` client.
+// ---------------------------------------------------------------------------
+
+const EXPANDED_PROGRAM_FED_A_KILL_DENIED: &[&str] = &[
+    // The three rows crusty found allowed, or given only XPIA's bare
+    // block, at `f66c7c460`.
+    "echo kill-server | \"$(command -v tmux)\" -C attach",
+    "\"$(command -v tmux)\" -C attach <<EOF\nkill-server\nEOF",
+    "${TMUX_BIN:-tmux} -C attach <<EOF\nkill-server\nEOF",
+    // Other spellings and feeds.
+    "printf 'ls\\nkill-server\\n' | $T -C attach",
+    "echo kill-server | `command -v tmux` -C attach",
+    "echo kill-server | $(echo tmux) -C attach",
+    "$(echo tmux) -C attach <<< kill-server",
+    "echo kill-server |\n${T:-tmux} -C attach",
+    "echo kill-server | /usr/bin/$T -C attach",
+    "cat <<'EOF' | \"$TMUX_BIN\" -C attach\nlist-sessions\nkill-server\nEOF",
+    // Rows from crusty's differential.
+    "coproc cd \"$SB\"; echo kill-server |\n${T:-tmux} -C attach\nwait",
+    "[ -n \"$TMUX\" ] && while true; do L=qa; printf 'ls\\nkill-server\\n' | `echo tmux` -C attach; break; done",
+    "echo start; T=tmux; $(echo tmux) -C attach <<'EOF'\nlist-sessions\nkill-server\nEOF",
+    "coproc x=$(printf 'ls\\nkill-server\\n' | ${T:-tmux} -C attach)\nwait",
+    "${T:-tmux} -f /dev/null -C attach <<'EOF'\nlist-sessions\nkill-server\nEOF",
+    "S=/tmp/tmux-1000/default; printf 'ls\\nkill-server\\n' | $(echo tmux) -C attach",
+    "xargs -0 bash -c < /dev/null; set -e; echo kill-server | `echo tmux` -C attach",
+];
+
+const EXPANDED_PROGRAM_ALLOWED: &[&str] = &[
+    // Nothing on stdin, or stdin without a kill.
+    "\"$(command -v tmux)\" -C attach </dev/null",
+    "echo list-sessions | \"$(command -v tmux)\" -C attach",
+    "printf '%s\\n' notes | \"$PAGER\"",
+    // A `kill-s` word after the expansion's stage is not its input.
+    "\"$(command -v tmux)\" ls | grep -c kill-session",
+];
+
+#[test]
+fn a_kill_fed_to_a_program_word_that_is_an_expansion_is_denied() {
+    let missed: Vec<&&str> = EXPANDED_PROGRAM_FED_A_KILL_DENIED
+        .iter()
+        .filter(|c| !denied(c))
+        .collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+#[test]
+fn a_program_word_that_is_an_expansion_without_a_fed_kill_is_allowed() {
+    let wrong: Vec<&&str> = EXPANDED_PROGRAM_ALLOWED
+        .iter()
+        .filter(|c| denied(c))
+        .collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}
+
+/// The cost the module documentation lists: any program word that is an
+/// expansion counts, since the guard cannot tell which program it names.
+#[test]
+fn a_kill_word_piped_to_any_expanded_program_is_denied() {
+    assert!(denied("echo kill-server | $PAGER"));
+    assert!(denied("grep kill-session log.txt | \"$PAGER\""));
+}
+
+/// A false positive the module documentation lists: layer 2 starts an
+/// invocation at any later word whose last path component is `tmux`, so a
+/// socket named `tmux` followed by a kill reads as an unscoped tmux. The deny
+/// message's `tmux.sock` name avoids it.
+#[test]
+fn a_socket_named_tmux_with_a_kill_is_denied() {
+    assert!(denied("env -u TMUX tmux -S \"$SB/tmux\" kill-server"));
+    assert!(!denied("env -u TMUX tmux -S \"$SB/tmux.sock\" kill-server"));
 }

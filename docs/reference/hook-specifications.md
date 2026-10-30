@@ -355,7 +355,8 @@ These still deny, because they name the user's own server:
   `tmux -S "$(tmux display -p '#{socket_path}')" kill-server` and
   `sock=$(tmux display -p '#{socket_path}'); env -u TMUX tmux -S "$sock" kill-server`
   are denied. A substitution runs tmux when its body has a `tmux` word, such
-  as `tmux`, `/usr/bin/tmux` or `command tmux`. A sandbox path that only
+  as `tmux`, `/usr/bin/tmux`, `command tmux` or `${T:-tmux}`, read the three
+  ways described under layer 3 below. A sandbox path that only
   contains the letters, as in `SB=$(mktemp -d /tmp/tmux-qa.XXXXXX)`, is
   still a private socket.
 - A `TMUX=…` prefix or `env TMUX=…`. Setting `TMUX` is never scope.
@@ -408,7 +409,11 @@ continuations are joined. Three layers are checked:
    (case-insensitive). Assignments, shell reserved words such as `if`, `then`
    and `{`, a leading backslash (`\tmux`) and the wrappers `env`, `command`,
    `exec`, `nice`, `nohup`, `timeout`, `time` and `sudo`, with their options,
-   are seen through to find the program word.
+   are seen through to find the program word. A program word that is an
+   expansion naming tmux, such as `"$(command -v tmux)"` or
+   `${TMUX_BIN:-tmux}`, is read as tmux too, so `"$(command -v tmux)" $c` is
+   denied like `tmux $c`. Any program word that is an expansion also gets
+   the stricter rule under [Uncertain input](#uncertain-input).
 2. **Embedded tmux word.** In any other command, a later word with basename
    `tmux` starts a tmux invocation, as in `xargs tmux …`, `ssh host tmux …`,
    `setsid tmux …`, `watch tmux …` or `stdbuf -oL tmux …`.
@@ -424,6 +429,19 @@ continuations are joined. Three layers are checked:
    `ssh vm1 "tmux kill-session -a"` is denied. The token test keeps a tmux
    call that the shell tokeniser cannot read as one, such as the argv list in
    `python3 -c 'subprocess.run(["tmux", "kill-server"])'`, from passing.
+   The shell has not yet removed the quoting inside such a word, so its
+   tokens are read three ways: as written; with the one-letter printf escapes
+   (`\n`, `\t`, …) as separators; and with each `$'…'` decoded and every
+   `'`, `"` and `\` removed. A token counts as `tmux` when its last path
+   component is `tmux` or ends in `-tmux`, which a parameter expansion's
+   fallback leaves joined to its operator. So `bash -c "t''mux kill-server"`,
+   `bash -c 't\mux kill-session -a'`, `bash -c '${TMUX_BIN:-tmux} kill-server'`,
+   `bash -c '${T-tmux} kill-server'` and `echo "$(${TMUX_BIN:-tmux} kill-server)"`
+   are parsed again and denied, as the same spellings are at top level. A
+   word with no `kill-s` token that would parse back into the very text being
+   checked, such as a lone `${TMUX_BIN:-tmux}`, is not parsed again, since
+   layers 1 and 2 have already read it. A single word that holds both tokens
+   is still parsed again, and reaching the depth limit denies it.
    The body of each `$( )` or backtick substitution in the word runs as shell
    code wherever it appears, so it is judged the same way. Its output may be
    run too, as in `bash -c "$(echo tmux kill-server)"`,
@@ -529,8 +547,14 @@ backtick in the body, so those are checked as commands.
 <a id="uncertain-input"></a>
 **Uncertain input.** The guard prefers a false positive to a missed kill:
 
-- A program word that starts with `$`, together with any word starting with
-  `kill-s`, denies.
+- A program word that is an expansion (it, or its last path component,
+  starts with `$` or a backtick: `$T`, `"$(command -v tmux)"`,
+  `` `echo tmux` ``, `/usr/bin/$T`) may be tmux and may split into several
+  words, so it is treated as an unscoped tmux whose arguments are unknown.
+  Any later word holding a token that starts with `kill-s` denies, and so
+  does a `kill-s` token on its stdin, by the next rule:
+  `echo kill-server | "$(command -v tmux)" -C attach` and
+  `${TMUX_BIN:-tmux} -C attach <<EOF` with a `kill-server` body are denied.
 - An unscoped tmux denies when an earlier stage of its pipeline has a word
   holding a token that starts with `kill-s`, or a heredoc in the pipeline
   mentions one, because a `tmux -C` client runs each line of its stdin.
@@ -553,14 +577,16 @@ backtick in the body, so those are checked as commands.
   any expansion in a scoped invocation are still allowed.
 - Unbalanced quotes, an unterminated `$(`, a `<<` with no delimiter, a
   heredoc whose delimiter line never appears, or a redirection with no target
-  fall back to a text test: the command is denied when its text contains both
-  `tmux` and `kill-s`. The tokeniser reads every unquoted `<<` outside a
+  fall back to a text test: the command is denied when its text, with every
+  `'`, `"` and `\` removed, contains both `tmux` and `kill-s`. Removing
+  them undoes quoting such as `t''mux` and `t\mux`. The tokeniser reads every unquoted `<<` outside a
   `$(…)` as a heredoc, including an arithmetic shift such as
   `(( x = 1 << 2 ))` or `$[1<<2]`; its "delimiter" (`2`) seldom appears on a
   line of its own, so the whole command gets the text test, and the lines
   after the shift are not read as heredoc data.
-- Input over 64 KiB gets only this plain text test, not the full parse, so
-  quoting such as `t''mux` inside over-size input is not caught.
+- Input over 64 KiB gets only this text test, not the full parse, so a
+  word spelt through an escape (`$'\x74mux'`) or assembled from pieces
+  inside over-size input is not caught.
 - Reaching the depth limit (4) or the re-parse limit (256) while a candidate
   remains denies, and so does a simple command with more than 64 tmux words.
 
@@ -571,10 +597,17 @@ backtick in the body, so those are checked as commands.
 | `tmux $(echo kill-server)` | denied |
 | ``tmux `echo kill-server` `` | denied |
 | `tmux kill-server 'unterminated` | denied |
+| `t''mux kill-server 'unterminated` | denied |
 | `(( x = 1 << 2 ))`, newline, `tmux kill-server` | denied |
+| `"$(command -v tmux)" $c` | denied |
+| `echo kill-server \| "$(command -v tmux)" -C attach` | denied |
+| `"$(command -v tmux)" -C attach <<EOF`, `kill-server`, `EOF` on separate lines | denied |
+| `echo kill-server \| $PAGER` | denied |
 | `tmux -S /p $cmd` | allowed |
 | `tmux -L x "$c"` | allowed |
 | `tmux new -s "$name"` | allowed |
+| `"$(command -v tmux)" -C attach </dev/null` | allowed |
+| `${TMUX_BIN:-tmux} -L qa-1733 new -d` | allowed |
 
 The guard never panics on any input. On Claude Code and Copilot a panic or
 error in the handler fails open: the hook returns `{}` and the command is
@@ -632,6 +665,12 @@ sandbox. It does not see through:
 - shell aliases or functions, script files written by an earlier command
   (`bash script.sh`), or commands assembled at run time from pieces such as
   `"kill-"+"server"`;
+- a tmux named by an expansion after the program word, as in
+  `xargs "$T" kill-server`, `xargs ${T:-tmux} kill-server` or
+  `ssh vm1 "$T" kill-server`. Layer 2 starts an invocation only at a word
+  whose basename is `tmux`. The wrappers that layer 1 sees through leave the
+  expansion as the program word, so `sudo "$T" kill-server` and
+  `nohup "$(command -v tmux)" kill-server` are denied;
 - the tmux commands that `tmux source-file` or `tmux source` reads, whether
   from a file, from `-` or `/dev/stdin`, or from a heredoc or here-string. A
   pipeline that puts a `kill-s` word in a stage before an unscoped tmux, or in
@@ -667,7 +706,9 @@ sandbox. It does not see through:
   outside the command line, and gh subcommands other than `gh alias` that run
   commands (`gh codespace ssh`, `gh extension exec`): `gh` is otherwise
   data-only;
-- quoting tricks in input over 64 KiB, which gets only the plain text test;
+- in input over 64 KiB, which gets only the text test, a word spelt through
+  an escape (`$'\x74mux'`) or assembled from pieces. The text test removes
+  `'`, `"` and `\` first, so `t''mux` and `t\mux` are caught;
 - named-fd redirections (`{fd}>file`), whose `{fd}` is read as a word;
 - an arithmetic shift followed, on a later line, by a line equal to its right
   operand, as in `(( x = 1 << 2 ))`, `tmux kill-server`, then `2` on separate
@@ -694,7 +735,7 @@ linearly with the input: it reads at most 64 tmux invocations per simple
 command (a command with more is denied), each reading the rest of that command
 once; it parses embedded scripts again at most 256 times and 4 levels deep; and
 input over 64 KiB gets only the text test. The slowest inputs found, each just
-under 64 KiB, take about 0.2 s in a release build. The harness timeout is
+under 64 KiB, take about 0.3 s in a release build. The harness timeout is
 outside the guard's control.
 
 It also errs toward false positives. A shell evaluator anywhere on the line
@@ -713,6 +754,23 @@ Put such commands in separate tool calls, or pass the text in a file. A
 sandbox socket named `default`, and a variable whose value ends in `default`
 used anywhere in an `-S` value (`D=/srv/default; tmux -S "$D/qa.sock" …`), are
 denied as well; see [What counts as scoped](#tmux-server-guard).
+
+Three more false positives come from reading tmux where the text alone cannot
+rule it out:
+
+- A `kill-s` word piped or heredoc-fed to any program word that is an
+  expansion, since it may be a `tmux -C` client: `echo kill-server | $PAGER`
+  and `grep kill-session log | "$PAGER"` are denied. So is
+  `$T -S "$SB/t.sock" -C attach` fed a kill, because a program word that is
+  an expansion may split into several words, and the guard cannot trust the
+  scope that follows it.
+- A token ending in `-tmux` next to a `kill-s` token in an embedded script
+  that holds no tmux invocation, such as
+  `bash -c 'ls ~/qa-tmux; echo kill-server'`, or a `--no-tmux` flag, since
+  the token may be the fallback in `${T-tmux}`.
+- A socket file named `tmux` followed by a kill. Layer 2 reads the `-S`
+  value in `env -u TMUX tmux -S "$SB/tmux" kill-server` as a second, unscoped
+  tmux. Name the socket `tmux.sock`, as the deny message does.
 
 **Safe form for agents.** `TMUX_TMPDIR` alone is not enough while `$TMUX` is
 set. Start, use and kill a private server on its own socket, with `TMUX`

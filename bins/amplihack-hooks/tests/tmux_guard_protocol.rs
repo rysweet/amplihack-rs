@@ -264,6 +264,30 @@ fn claude_code_judges_pipeline_stages_in_order() {
     }
 }
 
+/// Crusty round 8: tmux spelt as an expansion or with quoting, inside an
+/// embedded script (concern 1) or as a program word fed a kill on stdin
+/// (concern 2), gets the guard's enforceable deny, as the literal spelling
+/// does, and the same spellings with a targeted kill or no fed kill are
+/// allowed.
+#[test]
+fn claude_code_denies_tmux_spelt_as_an_expansion_or_with_quoting() {
+    for command in [
+        "bash -c '${TMUX_BIN:-tmux} kill-server'",
+        "echo \"$(${TMUX_BIN:-tmux} kill-server)\"",
+        "bash -c \"t''mux kill-server\"",
+        "bash -c 't\\mux kill-session -a'",
+        "echo kill-server | \"$(command -v tmux)\" -C attach",
+    ] {
+        assert_full_deny(&hook(claude_payload(command), "claude"));
+    }
+    for command in [
+        "bash -c \"t''mux kill-session -t amp-x\"",
+        "\"$(command -v tmux)\" -C attach </dev/null",
+    ] {
+        assert_not_denied(&hook(claude_payload(command), "claude"));
+    }
+}
+
 /// Kill commands that XPIA's command-injection pattern also matches: a
 /// separator or newline followed by `rm` or `kill…`. The first is the
 /// incident command with the usual sandbox clean-up after it; the heredoc is
@@ -275,6 +299,11 @@ const KILLS_XPIA_ALSO_MATCHES: &[&str] = &[
     "tmux -C attach <<EOF\nkill-server\nEOF",
     "tmux new -d 'sleep 1' \\; kill-server",
     "tmux kill-session -a; rm -f /tmp/qa.log",
+    // Crusty round 8, concern 2: the second incident's heredoc with tmux
+    // spelt as an expansion, which got only XPIA's bare block at
+    // `f66c7c460`.
+    "\"$(command -v tmux)\" -C attach <<EOF\nkill-server\nEOF",
+    "${TMUX_BIN:-tmux} -C attach <<EOF\nkill-server\nEOF",
 ];
 
 /// Crusty round 7, concern 1: with XPIA at its defaults (the harness clears

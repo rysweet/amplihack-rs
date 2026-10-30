@@ -32,11 +32,23 @@
 //!
 //! tmux is found three ways, using the shared tokeniser in [`super::shell`]:
 //!
-//! 1. as the program word of a simple command;
+//! 1. as the program word of a simple command, including a program word that
+//!    is an expansion naming tmux (`"$(command -v tmux)" $c` reads like
+//!    `tmux $c`);
 //! 2. as a later word of another command (`xargs tmux …`, `ssh host tmux …`);
 //! 3. inside a word that holds both a `tmux` and a `kill-s` token
 //!    (`bash -c '…'`, `ssh host '…'`, `python -c "…"`, `$(…)`, backticks),
-//!    parsed again up to [`MAX_DEPTH`] levels. The word is cleared when the
+//!    parsed again up to [`MAX_DEPTH`] levels. The shell has not yet removed
+//!    the word's own quoting, so its tokens are also read with that quoting
+//!    undone ([`any_reading`]: `t''mux`, `t\mux` and `$'\x74mux'` read as
+//!    `tmux`), and a token whose last path component is `tmux` or ends in
+//!    `-tmux` counts as `tmux` ([`is_tmux_token`]), so a parameter
+//!    expansion's fallback (`${TMUX_BIN:-tmux}`, `${T-tmux}`) counts. A word
+//!    with a `tmux` token and an expansion but no `kill-s` token that would
+//!    parse back into the very text being scanned (a lone
+//!    `${TMUX_BIN:-tmux}`) is not parsed again, since layers 1 and 2 have
+//!    read it; one with a `kill-s` token still is, and reaching
+//!    [`MAX_DEPTH`] denies it. The word is cleared when the
 //!    parse finds at least one tmux invocation, none of them kills, and
 //!    either every one is scoped or no run of tokens anywhere in the word
 //!    would kill (`kill-server`, or `kill-session` with `-a`). So
@@ -54,10 +66,12 @@
 //! (`tmux $'\x6bill-server'` is denied); both are done by the tokeniser.
 //! Words are split on whitespace and shell punctuation, and read a second
 //! time with the one-letter printf escapes (`\n`, `\t`, …) as separators, so
-//! `printf 'ls\nkill-server\n' | tmux -C attach` is denied.
+//! `printf 'ls\nkill-server\n' | tmux -C attach` is denied, and a third time
+//! with quoting undone, as described for layer 3.
 //!
-//! An unscoped tmux counts as reading a kill from stdin, as a `tmux -C`
-//! client does, only when an earlier stage of its pipeline has a word with a
+//! An unscoped tmux, or a program word that is an expansion, counts as
+//! reading a kill from stdin, as a `tmux -C` client does, only when an
+//! earlier stage of its pipeline has a word with a
 //! `kill-s` token, or a heredoc in the pipeline mentions one. Stdin flows left
 //! to right, so in `tmux ls -F '#S' | grep '^amp-' | xargs -r -n1 tmux
 //! kill-session -t` the `tmux ls` reads nothing the `xargs` stage holds, and
@@ -97,11 +111,27 @@
 //! the expansion may name `kill-server`; expansions in option values
 //! (`tmux new -s "$name"`) and in scoped invocations are allowed.
 //!
+//! A program word that is an expansion ([`unknown_program`]: `$T`,
+//! `"$(command -v tmux)"`, `` `echo tmux` ``, `/usr/bin/$T`) may be tmux,
+//! and may split into several words, so its scope cannot be read. It is
+//! treated as an unscoped tmux whose arguments are unknown: any later word
+//! with a `kill-s` token denies, and so does a `kill-s` token on its stdin
+//! by the stdin rule below, so `echo kill-server | "$(command -v tmux)" -C
+//! attach` and `${TMUX_BIN:-tmux} -C attach <<EOF` with a `kill-server`
+//! body are denied.
+//!
 //! This is a guard rail against agent mistakes, not a sandbox. It does not
 //! cover:
 //!
 //! - shell aliases or functions, script files (`bash script.sh` for a file
 //!   written earlier), or commands assembled at run time from pieces;
+//! - a tmux named by an expansion after the program word, as in
+//!   `xargs "$T" kill-server`, `xargs ${T:-tmux} kill-server` or
+//!   `ssh vm1 "$T" kill-server`: layer 2 starts an invocation only at a word
+//!   whose last path component is `tmux`. The wrappers the tokeniser sees
+//!   through (`env`, `sudo`, `nohup`, `command`, `exec`, `nice`, `timeout`,
+//!   `time`) leave the expansion as the program word, so
+//!   `sudo "$T" kill-server` is denied;
 //! - `tmux source-file` (or `source`) reading its commands from a file,
 //!   stdin, a heredoc or a here-string, unless a word with a `kill-s` token
 //!   sits in an earlier stage of the unscoped tmux's pipeline, or in a
@@ -133,8 +163,9 @@
 //! - gh subcommands other than `gh alias` that run commands (`gh codespace
 //!   ssh`, `gh extension exec`): gh is otherwise data-only;
 //! - input over [`MAX_INPUT`] bytes, which gets only a plain text check for
-//!   `tmux` and `kill-s` (so quoting tricks such as `t''mux` get past it),
-//!   not the full parse;
+//!   `tmux` and `kill-s` with `'`, `"` and `\` removed, not the full parse:
+//!   `t''mux` and `t\mux` are caught, but a word spelt through an escape
+//!   (`$'\x74mux'`) or assembled from pieces gets past it;
 //! - named-fd redirections (`{fd}>file`), whose `{fd}` is read as a word;
 //! - an arithmetic shift (`(( x = 1 << 2 ))`, `$[1<<2]`) followed, on a
 //!   later line, by a line equal to its right operand: the tokeniser reads
@@ -163,6 +194,22 @@
 //! (`git commit -F`, `--body-file`, `--context-from-file`) or run the
 //! command in its own tool call.
 //!
+//! Three more false positives come from reading tmux where the text alone
+//! cannot rule it out:
+//!
+//! - a `kill-s` word piped or heredoc-fed to any program word that is an
+//!   expansion, since it may be a `tmux -C` client: `echo kill-server |
+//!   $PAGER` and `grep kill-session log | "$PAGER"` are denied, and so is
+//!   `$T -S "$SB/t.sock" -C attach` fed a kill, whose scope the guard cannot
+//!   trust while the program word may split into several words;
+//! - a token ending in `-tmux` beside a `kill-s` token in an embedded script
+//!   that holds no tmux invocation, such as `bash -c 'ls ~/qa-tmux; echo
+//!   kill-server'` or a `--no-tmux` flag, since the token may be the
+//!   fallback of `${T-tmux}`;
+//! - a socket file named `tmux` followed by a kill: layer 2 reads the `-S`
+//!   value of `env -u TMUX tmux -S "$SB/tmux" kill-server` as a second,
+//!   unscoped tmux. Name the socket `tmux.sock`, as [`BLOCK_MESSAGE`] does.
+//!
 //! A socket file named `default` is refused even when it belongs to a
 //! sandbox (`tmux -S "$SB/tmuxsock/tmux-1000/default" kill-server`, the
 //! server `TMUX_TMPDIR=$SB/tmuxsock` starts), because from the text alone it
@@ -186,7 +233,7 @@
 //! [`MAX_DEPTH`] levels deep; and input over [`MAX_INPUT`] gets only the
 //! text test. `large_inputs_shaped_against_the_cost_bound_finish_quickly`
 //! runs the slowest inputs found, each just under [`MAX_INPUT`]; the slowest
-//! takes about 0.2 s in a release build.
+//! takes about 0.3 s in a release build.
 
 use super::shell::{self, SimpleCommand, basename, program};
 use serde_json::Value;
@@ -356,9 +403,17 @@ fn is_dangerous(text: &str) -> bool {
     scan(text, 0, &mut ctx).dangerous
 }
 
-/// The fallback for input the tokeniser cannot read with confidence.
+/// The fallback for input the tokeniser cannot read with confidence: the
+/// text, with every `'`, `"` and `\` removed, contains both `tmux` and
+/// `kill-s`. Removing them undoes quoting such as `t''mux` and `t\mux`; it
+/// cannot hide a `tmux` or `kill-s` that is already there, since neither
+/// holds those characters.
 fn text_test(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
+    let lower: String = text
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"' | '\\'))
+        .map(|c| c.to_ascii_lowercase())
+        .collect();
     lower.contains("tmux") && lower.contains("kill-s")
 }
 
@@ -429,14 +484,15 @@ fn taint_assignments(cmds: &[SimpleCommand], tainted: &mut HashSet<String>) {
 }
 
 /// Whether `value` holds a `$(…)` or backtick substitution whose body has a
-/// `tmux` token. Inside a pane, `tmux display -p '#{socket_path}'` prints
-/// the socket of the user's own server, so such a value is not scope.
+/// `tmux` token ([`is_tmux_token`]). Inside a pane,
+/// `tmux display -p '#{socket_path}'` prints the socket of the user's own
+/// server, so such a value is not scope.
 fn substitutes_tmux_output(value: &str) -> bool {
     (value.contains("$(") || value.contains('`'))
         && substitutions(value)
             .0
             .iter()
-            .any(|body| either_reading(body, |t| t.iter().any(|w| is_tmux(w))))
+            .any(|body| any_reading(body, |t| t.iter().any(|w| is_tmux_token(w))))
 }
 
 fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
@@ -470,21 +526,28 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
         let context_value = |k: usize| recipe_run && is_context_value(words, k);
         out.data_mention |= (data_only || recipe_run) && has_candidate(&words.join(" "));
 
-        // A program word that is a variable or substitution could be tmux.
-        // Its own body is judged by layer 3, so only the words after it count.
-        if prog.is_some_and(|p| p.starts_with('$') || p.starts_with('`'))
-            && words.iter().skip(start + 1).any(|w| mentions_kill_s(w))
+        // A program word that is an expansion could be an unscoped tmux
+        // (`"$(command -v tmux)"`, `${TMUX_BIN:-tmux}`), and could split into
+        // several words, so its scope cannot be read. Its own body is judged
+        // by layer 3; what counts here is a later word holding a `kill-s`
+        // token, or one on its stdin, which a `tmux -C` client would run.
+        let fed_kill_s = facts.fed_kill_s.get(n).copied().unwrap_or(true);
+        if prog.is_some_and(|p| unknown_program(p))
+            && (fed_kill_s || words.iter().skip(start + 1).any(|w| mentions_kill_s(w)))
         {
             out.dangerous = true;
         }
 
         // Layers 1 and 2: every word naming tmux, from the program word on,
-        // starts an invocation. Words before it are assignments and wrapper
-        // options (the `TMUX` in `env -u TMUX`).
-        let fed_kill_s = facts.fed_kill_s.get(n).copied().unwrap_or(true);
+        // starts an invocation, and so does a program word that is an
+        // expansion naming tmux, so `"$(command -v tmux)" $c` reads like
+        // `tmux $c`. Words before the program word are assignments and
+        // wrapper options (the `TMUX` in `env -u TMUX`).
         let mut invocations = 0usize;
         for (k, word) in words.iter().enumerate().skip(start) {
-            if !is_tmux(word) || (k != start && (data_only || context_value(k))) {
+            let names_tmux =
+                is_tmux(word) || (k == start && unknown_program(word) && expands_near_tmux(word));
+            if !names_tmux || (k != start && (data_only || context_value(k))) {
                 continue;
             }
             out.tmux_seen = true;
@@ -510,7 +573,7 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
             let exempt = data && !word.contains("$(") && !word.contains('`');
             if !has_candidate(word) {
                 if !exempt && expands_near_tmux(word) {
-                    out.dangerous |= expansion_dangerous(word, depth, ctx);
+                    out.dangerous |= expansion_dangerous(word, text, depth, ctx);
                 }
                 continue;
             }
@@ -625,11 +688,17 @@ fn cleared(inner: &Scan, text: &str) -> bool {
 /// `kill-s` token, such as the script in `bash -c 'tmux $c'`. Each
 /// substitution body and the rest of the word are judged on their own, so
 /// `x=$(tmux ls)` stays allowed.
-fn expansion_dangerous(word: &str, depth: usize, ctx: &mut Ctx) -> bool {
+///
+/// A piece that is the whole of `scanned`, the text whose scan found the
+/// word, is skipped: it is one word that parses back into that same scan,
+/// whose layers 1 and 2 have already read it. Without this a lone word such
+/// as `${TMUX_BIN:-tmux}` or the `-S "$SB/tmux"` value would be parsed again
+/// until [`MAX_DEPTH`] and denied.
+fn expansion_dangerous(word: &str, scanned: &str, depth: usize, ctx: &mut Ctx) -> bool {
     let (bodies, rest) = substitutions(word);
     let mut dangerous = false;
     for text in bodies.iter().chain(std::iter::once(&rest)) {
-        if needs_reparse(text) {
+        if text.trim() != scanned.trim() && needs_reparse(text) {
             dangerous |= reparse(text, depth, ctx).dangerous;
         }
     }
@@ -682,31 +751,32 @@ fn substitutions(text: &str) -> (Vec<String>, String) {
     (bodies, rest)
 }
 
-/// Whether `text` holds both a `tmux` token and a `kill-s` token, separated
-/// by whitespace or shell punctuation.
+/// Whether `text` holds both a `tmux` token ([`is_tmux_token`]) and a
+/// `kill-s` token, separated by whitespace or shell punctuation, in any of
+/// the readings of [`any_reading`].
 fn has_candidate(text: &str) -> bool {
-    either_reading(text, |t| {
-        t.iter().any(|w| is_tmux(w)) && t.iter().any(|w| starts_kill_s(basename(w)))
+    any_reading(text, |t| {
+        t.iter().any(|w| is_tmux_token(w)) && t.iter().any(|w| starts_kill_s(basename(w)))
     })
 }
 
-/// Whether `text` holds a `tmux` token and a `$` or backtick that could
-/// expand to its subcommand.
+/// Whether `text` holds a `tmux` token ([`is_tmux_token`]) and a `$` or
+/// backtick that could expand to its subcommand.
 fn expands_near_tmux(text: &str) -> bool {
-    is_expansion(text) && tokens(text).any(is_tmux)
+    is_expansion(text) && any_reading(text, |t| t.iter().any(|w| is_tmux_token(w)))
 }
 
 /// Whether `word` holds a token starting with `kill-s`, wherever it sits in
 /// the word: `printf 'ls\nkill-server'` and `echo ' kill-server'` each
 /// print a line that a `tmux -C` client would run.
 fn mentions_kill_s(word: &str) -> bool {
-    either_reading(word, |t| t.iter().any(|w| starts_kill_s(w)))
+    any_reading(word, |t| t.iter().any(|w| starts_kill_s(w)))
 }
 
 /// Whether some run of tokens in `text` would kill: `kill-server` or a
 /// prefix of it, or `kill-session` with `-a` in the tokens after it.
 fn text_kills(text: &str) -> bool {
-    either_reading(text, kills_in)
+    any_reading(text, kills_in)
 }
 
 /// The words of `text` split on whitespace and shell punctuation.
@@ -715,18 +785,32 @@ fn tokens(text: &str) -> impl Iterator<Item = &str> {
         .filter(|t| !t.is_empty())
 }
 
-/// Whether `test` holds for the [`tokens`] of `text`, or, when `text` has a
-/// backslash, for the tokens of `text` with each one-letter printf escape
-/// (`\n`, `\t`, …) read as a separator. The first reading keeps the letter
-/// after a backslash, as a shell does (`tmux \kill-server`); the second
-/// drops it, as `printf` and `echo -e` do (`ls\nkill-server`).
-fn either_reading(text: &str, test: impl Fn(&[&str]) -> bool) -> bool {
+/// Whether `test` holds for the [`tokens`] of any of three readings of
+/// `text`. Each reading only adds tokens to test, so a word that one reading
+/// finds is never hidden by another.
+///
+/// 1. The text as written. A backslash separates tokens and the letter after
+///    it is kept, as a shell keeps it (`tmux \kill-server`).
+/// 2. When the text has a backslash: each one-letter printf escape (`\n`,
+///    `\t`, …) read as a separator, as `printf` and `echo -e` read it
+///    (`ls\nkill-server`).
+/// 3. When the text has a quote or a backslash: the quoting a shell removes
+///    from a word undone. Each `$'…'` is decoded, then every `'`, `"` and
+///    `\` is dropped, so `t''mux`, `t\mux`, `kill-se""rver` and
+///    `$'\x74mux'` read as `tmux` and `kill-server` in an embedded script,
+///    where the shell tokeniser has not yet run.
+fn any_reading(text: &str, test: impl Fn(&[&str]) -> bool) -> bool {
     if test(&tokens(text).collect::<Vec<_>>()) {
         return true;
     }
-    if !text.contains('\\') {
-        return false;
+    if text.contains('\\') && test(&tokens(&printf_split(text)).collect::<Vec<_>>()) {
+        return true;
     }
+    text.contains(['\'', '"', '\\']) && test(&tokens(&unquoted(text)).collect::<Vec<_>>())
+}
+
+/// `text` with each one-letter printf escape replaced by a space.
+fn printf_split(text: &str) -> String {
     let mut split = String::with_capacity(text.len());
     let mut chars = text.chars();
     while let Some(c) = chars.next() {
@@ -743,7 +827,32 @@ fn either_reading(text: &str, test: impl Fn(&[&str]) -> bool) -> bool {
             None => split.push(c),
         }
     }
-    test(&tokens(&split).collect::<Vec<_>>())
+    split
+}
+
+/// `text` with each `$'…'` decoded as bash decodes it and every other `'`,
+/// `"` and `\` removed: the third reading of [`any_reading`].
+fn unquoted(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    while let Some(&c) = chars.get(i) {
+        if c == '$'
+            && chars.get(i + 1) == Some(&'\'')
+            && let Some(close) = shell::ansi_c_close(&chars, i + 1)
+        {
+            out.push_str(&shell::ansi_c_decode(
+                chars.get(i + 2..close).unwrap_or_default(),
+            ));
+            i = close.saturating_add(1);
+            continue;
+        }
+        if !matches!(c, '\'' | '"' | '\\') {
+            out.push(c);
+        }
+        i += 1;
+    }
+    out
 }
 
 /// Whether `text` needs a re-parse: it holds a tmux candidate or a tmux
@@ -764,6 +873,30 @@ fn starts_kill_s(word: &str) -> bool {
 
 fn is_tmux(word: &str) -> bool {
     basename(word).eq_ignore_ascii_case("tmux")
+}
+
+/// Whether a token cut from text that a shell has not yet read names tmux:
+/// its last path component is `tmux` or ends in `-tmux`. [`tokens`] keeps a
+/// `-` inside a token, so a parameter expansion's fallback stays joined to
+/// its operator: `${TMUX_BIN:-tmux}` gives `-tmux`, and `${T-tmux}` gives
+/// `T-tmux`. The cost is that a token such as `qa-tmux` or `--no-tmux`
+/// counts as well.
+fn is_tmux_token(token: &str) -> bool {
+    let last = basename(token);
+    is_tmux(last)
+        || last
+            .rsplit_once('-')
+            .is_some_and(|(_, tail)| tail.eq_ignore_ascii_case("tmux"))
+}
+
+/// Whether a program word is an expansion, so the program it runs is not
+/// known here: the word, or its last path component, starts with `$` or a
+/// backtick (`$T`, `"$(command -v tmux)"`, `` `echo tmux` ``,
+/// `/usr/bin/$T`).
+fn unknown_program(word: &str) -> bool {
+    [word, basename(word)]
+        .iter()
+        .any(|w| w.starts_with('$') || w.starts_with('`'))
 }
 
 /// The index of the program word in `words` (or `words.len()` if none).
