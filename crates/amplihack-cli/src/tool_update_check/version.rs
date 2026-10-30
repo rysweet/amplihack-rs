@@ -221,26 +221,29 @@ mod tests {
     #[test]
     fn run_npm_with_timeout_terminates_child_after_timeout() {
         let temp = tempfile::tempdir().unwrap();
-        let pid_file = temp.path().join("npm-pid");
-        let pid_text = pid_file.to_str().expect("temporary paths are UTF-8");
+        let marker = temp.path().join("npm-finished");
+        let marker_text = marker.to_str().expect("temporary paths are UTF-8");
         assert!(
-            !pid_text.contains(['\'', '\n']),
-            "cannot single-quote {pid_text:?} for /bin/sh"
+            !marker_text.contains(['\'', '\n']),
+            "cannot single-quote {marker_text:?} for /bin/sh"
         );
-        // The fake npm records its pid and then sleeps for 30 seconds, far
-        // longer than a thread descheduled on a loaded host can stall, so
-        // only the timeout's termination ends it before the checks below.
-        // A one-second sleep let the fake finish on its own between the
-        // poll that saw the timeout and the SIGTERM.
+        // The fake npm writes a marker 5 s after it starts, far beyond the
+        // 50 ms timeout and longer than a thread descheduled on a loaded host
+        // stalls. The marker is written by the fake's own shell, so it
+        // appears only if that process was left running past the timeout.
+        // Checking a marker instead of probing a recorded pid means the test
+        // never signals a pid the kernel may have given to another process,
+        // and it does not depend on the shell starting before the timeout.
         let fake_npm = temp.path().join("npm");
         std::fs::write(
             &fake_npm,
-            format!("#!/bin/sh\nprintf '%s' \"$$\" > '{pid_text}'\nexec /bin/sleep 30\n"),
+            format!("#!/bin/sh\n/bin/sleep 5\nprintf done > '{marker_text}'\n"),
         )
         .unwrap();
         let mut perms = std::fs::metadata(&fake_npm).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&fake_npm, perms).unwrap();
+        let start = std::time::Instant::now();
 
         let result = run_npm_with_timeout(
             &["--version"],
@@ -249,31 +252,14 @@ mod tests {
         );
         assert!(result.is_none(), "timeout should return no npm output");
 
-        // The shell may be terminated before it records its pid. One left
-        // running records it shortly afterwards, so wait a little for it.
-        let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        let pid = loop {
-            let recorded = std::fs::read_to_string(&pid_file)
-                .ok()
-                .and_then(|text| text.trim().parse::<libc::pid_t>().ok());
-            if recorded.is_some() || std::time::Instant::now() >= deadline {
-                break recorded;
-            }
-            std::thread::sleep(Duration::from_millis(20));
-        };
-        let Some(pid) = pid else {
-            return;
-        };
-        // The timeout path reaps the child before returning, so its pid no
-        // longer exists unless the process was left running.
-        // SAFETY: signal 0 only checks that the process exists.
-        let still_running = unsafe { libc::kill(pid, 0) } == 0;
-        if still_running {
-            // SAFETY: the fake npm is this test's own child; do not leak it.
-            unsafe { libc::kill(pid, libc::SIGKILL) };
+        // Wait until a fake left running would have written its marker.
+        let check_at = start + Duration::from_secs(7);
+        let now = std::time::Instant::now();
+        if check_at > now {
+            std::thread::sleep(check_at - now);
         }
         assert!(
-            !still_running,
+            !marker.exists(),
             "timed-out npm subprocess must be terminated, not left running in a background thread"
         );
     }

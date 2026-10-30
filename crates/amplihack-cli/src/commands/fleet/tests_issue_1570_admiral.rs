@@ -22,10 +22,13 @@ impl StubAzlin {
     /// that inherits the test runner's stdin cannot block.
     ///
     /// The stub calls `/bin/cat` by absolute path and uses only shell
-    /// builtins otherwise. It inherits the test process's `PATH`, which
-    /// other tests in this binary still set to a temporary directory for a
-    /// moment (the deferred `fleet/tests.rs` sites from #1765); a bare `cat`
-    /// then failed to start and the call count came back wrong.
+    /// builtins otherwise. The admiral tests used to fail when they ran
+    /// beside `fleet/tests.rs` tests that set the test process's `PATH` to a
+    /// temporary directory: a bare `cat` failed to start and the call count
+    /// came back wrong. Those tests now pass their `PATH` through
+    /// `AzlinLookup` instead (#1765), which removes the cause; the absolute
+    /// path stays so that a later process-wide `PATH` change cannot break
+    /// this stub the same way.
     fn new(stage1_stdout: &str, stage2_exit: i32) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let out = temp.path();

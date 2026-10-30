@@ -369,6 +369,18 @@ and its two restore lines in `poll_tmux_sessions_parses_multiple_sessions`
 in `crates/amplihack-cli/src/commands/fleet/tests.rs`. In both tests only
 the child needed the temporary `HOME`, so the hook now sets it there.
 
+`fleet/tests.rs` no longer changes `PATH` anywhere. Its eight `PATH` sites,
+and the `HOME` and `AZLIN_PATH` changes in the same tests, went through
+`get_azlin_path`, which read all three from the process. The fleet module
+now has an `AzlinLookup` value holding them. `get_azlin_path` builds one
+with `AzlinLookup::from_env()`, and the tests call the `_with` forms of
+`run_setup`, `run_status`, `run_snapshot` and `run_watch` with values
+pointing at their own temporary directories. The TUI dry-run test passes
+its reasoner backend in through `run_tui_dry_run_with` instead of placing a
+fake `claude` on `PATH`. The `HOME` sites still in that file are in tests
+of code that reads `HOME` itself to find `~/.amplihack/fleet`; they are in
+the second group below.
+
 The remaining sites are listed by file, with line numbers and the group
 each falls into, in
 [#1787](https://github.com/rysweet/amplihack-rs/issues/1787).
@@ -385,7 +397,9 @@ program while another test has `PATH` set to a temporary directory. Fakes
 that call every program by absolute path are not affected. The `azlin`
 stub in `crates/amplihack-cli/src/commands/fleet/tests_issue_1570_admiral.rs`
 called a bare `cat`, and the admiral tests failed whenever they ran beside
-the `fleet/tests.rs` tests that set `PATH`; it now calls `/bin/cat`.
+the `fleet/tests.rs` tests that set `PATH`. Those tests no longer set it,
+which removes the cause; the stub still calls `/bin/cat`, so that a test
+added later with a process-wide `PATH` cannot break it in the same way.
 
 Not every remaining test meets the following requirements yet. When you
 change one of these tests, make sure that it:

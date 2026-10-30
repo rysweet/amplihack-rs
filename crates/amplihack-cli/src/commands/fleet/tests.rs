@@ -11,6 +11,17 @@ fn restore_var(name: &str, previous: Option<std::ffi::OsString>) {
     }
 }
 
+/// The lookup values a test passes to the `*_with` seams in place of the
+/// process environment, so no test changes `PATH`, `HOME` or `AZLIN_PATH`
+/// for the whole test process (issue #1765).
+fn azlin_lookup(azlin: Option<&Path>, path: &Path, home: Option<&Path>) -> AzlinLookup {
+    AzlinLookup {
+        azlin_path: azlin.map(|p| p.as_os_str().to_owned()),
+        path: Some(path.as_os_str().to_owned()),
+        home: home.map(|p| p.as_os_str().to_owned()),
+    }
+}
+
 fn write_executable(path: &Path, content: &str) {
     use std::io::Write as _;
     let mut file = fs::File::create(path).unwrap();
@@ -550,94 +561,63 @@ fn empty_and_help_fleet_commands_bypass_subcommand_parsing() {
 
 #[test]
 fn azlin_path_prefers_environment_override() {
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let azlin = dir.path().join("custom-azlin");
     write_executable(&azlin, "#!/bin/sh\nexit 0\n");
+    // An azlin on PATH as well, so the test shows AZLIN_PATH wins over it.
+    write_executable(&dir.path().join("azlin"), "#!/bin/sh\nexit 0\n");
 
-    let previous = env::var_os("AZLIN_PATH");
-    unsafe { env::set_var("AZLIN_PATH", &azlin) };
-
-    let found = get_azlin_path().unwrap();
-
-    match previous {
-        Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
-        None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
+    let found = get_azlin_path_in(&azlin_lookup(Some(&azlin), dir.path(), None)).unwrap();
 
     assert_eq!(found, azlin);
 }
 
 #[test]
+fn azlin_path_falls_back_to_path_then_home_dev_checkout() {
+    let path_dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let on_path = path_dir.path().join("azlin");
+    write_executable(&on_path, "#!/bin/sh\nexit 0\n");
+    let dev = home.path().join("src/azlin/.venv/bin/azlin");
+    fs::create_dir_all(dev.parent().unwrap()).unwrap();
+    write_executable(&dev, "#!/bin/sh\nexit 0\n");
+
+    let found = get_azlin_path_in(&azlin_lookup(None, path_dir.path(), Some(home.path())));
+    assert_eq!(found.unwrap(), on_path);
+
+    let empty_path = tempfile::tempdir().unwrap();
+    let found = get_azlin_path_in(&azlin_lookup(None, empty_path.path(), Some(home.path())));
+    assert_eq!(found.unwrap(), dev);
+
+    let empty_home = tempfile::tempdir().unwrap();
+    assert!(
+        get_azlin_path_in(&azlin_lookup(
+            None,
+            empty_path.path(),
+            Some(empty_home.path())
+        ))
+        .is_err()
+    );
+}
+
+#[test]
 fn run_setup_succeeds_with_stubbed_azlin() {
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let azlin = dir.path().join("azlin");
     write_executable(&azlin, "#!/bin/sh\necho 'azlin 1.2.3'\n");
 
-    let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_path = env::var_os("PATH");
-    let previous_home = env::var_os("HOME");
-    unsafe {
-        env::set_var("AZLIN_PATH", &azlin);
-        env::set_var("PATH", dir.path());
-        env::set_var("HOME", home.path());
-    }
-
-    let result = run_setup();
-
-    match previous_azlin {
-        Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
-        None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_path {
-        Some(value) => unsafe { env::set_var("PATH", value) },
-        None => unsafe { env::remove_var("PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
+    let result = run_setup_with(&azlin_lookup(Some(&azlin), dir.path(), Some(home.path())));
 
     assert!(result.is_ok());
 }
 
 #[test]
 fn run_setup_returns_exit_error_when_azlin_missing() {
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let empty_path = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
 
-    let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_path = env::var_os("PATH");
-    let previous_home = env::var_os("HOME");
-    unsafe {
-        env::remove_var("AZLIN_PATH");
-        env::set_var("PATH", empty_path.path());
-        env::set_var("HOME", home.path());
-    }
-
-    let result = run_setup();
-
-    match previous_azlin {
-        Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
-        None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_path {
-        Some(value) => unsafe { env::set_var("PATH", value) },
-        None => unsafe { env::remove_var("PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
+    let result = run_setup_with(&azlin_lookup(None, empty_path.path(), Some(home.path())));
 
     let err = result.expect_err("missing azlin should fail");
     assert_eq!(command_error::exit_code(&err), Some(1));
@@ -1624,35 +1604,10 @@ fn render_report_matches_python_shape() {
 
 #[test]
 fn run_status_returns_exit_error_when_azlin_missing() {
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let empty_path = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
 
-    let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_path = env::var_os("PATH");
-    let previous_home = env::var_os("HOME");
-    unsafe {
-        env::remove_var("AZLIN_PATH");
-        env::set_var("PATH", empty_path.path());
-        env::set_var("HOME", home.path());
-    }
-
-    let result = run_status();
-
-    match previous_azlin {
-        Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
-        None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_path {
-        Some(value) => unsafe { env::set_var("PATH", value) },
-        None => unsafe { env::remove_var("PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
+    let result = run_status_with(&azlin_lookup(None, empty_path.path(), Some(home.path())));
 
     let err = result.expect_err("missing azlin should fail");
     assert_eq!(command_error::exit_code(&err), Some(1));
@@ -1660,9 +1615,6 @@ fn run_status_returns_exit_error_when_azlin_missing() {
 
 #[test]
 fn run_status_succeeds_with_stubbed_azlin() {
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let azlin = dir.path().join("azlin");
@@ -1671,38 +1623,13 @@ fn run_status_succeeds_with_stubbed_azlin() {
         "#!/bin/sh\nif [ \"$1\" = list ] && [ \"$2\" = \"--json\" ]; then\n  echo '[{\"name\":\"vm-1\",\"status\":\"Running\",\"region\":\"westus2\"}]'\nelif [ \"$1\" = connect ]; then\n  printf \"work|||1|||1\\n\";\nelse\n  exit 1\nfi\n",
     );
 
-    let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_path = env::var_os("PATH");
-    let previous_home = env::var_os("HOME");
-    unsafe {
-        env::set_var("AZLIN_PATH", &azlin);
-        env::set_var("PATH", dir.path());
-        env::set_var("HOME", home.path());
-    }
-
-    let result = run_status();
-
-    match previous_azlin {
-        Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
-        None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_path {
-        Some(value) => unsafe { env::set_var("PATH", value) },
-        None => unsafe { env::remove_var("PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
+    let result = run_status_with(&azlin_lookup(Some(&azlin), dir.path(), Some(home.path())));
 
     assert!(result.is_ok());
 }
 
 #[test]
 fn run_snapshot_succeeds_with_stubbed_azlin() {
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let azlin = dir.path().join("azlin");
@@ -1729,21 +1656,7 @@ exit 1
 "#,
     );
 
-    let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_home = env::var_os("HOME");
-    unsafe { env::set_var("AZLIN_PATH", &azlin) };
-    unsafe { env::set_var("HOME", home.path()) };
-
-    let result = run_snapshot();
-
-    match previous_azlin {
-        Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
-        None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
+    let result = run_snapshot_with(&azlin_lookup(Some(&azlin), dir.path(), Some(home.path())));
 
     assert!(result.is_ok());
 }
@@ -3382,11 +3295,7 @@ fn render_tui_detail_view_shows_reasoner_notice_alongside_proposal() {
 
 #[test]
 fn run_tui_dry_run_surfaces_reasoner_api_key_failure_notice() {
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let home = tempfile::tempdir().unwrap();
     let azlin = dir.path().join("azlin");
     let claude = dir.path().join("claude");
     write_executable(&azlin, "#!/bin/sh\nexit 0\n");
@@ -3424,27 +3333,13 @@ fn run_tui_dry_run_surfaces_reasoner_api_key_failure_notice() {
     let mut ui_state = FleetTuiUiState::default();
     ui_state.sync_to_state(&state);
 
-    let previous_path = env::var_os("PATH");
-    let previous_home = env::var_os("HOME");
-    let previous_reasoner = env::var_os("AMPLIHACK_FLEET_REASONER_BINARY_PATH");
-    unsafe {
-        env::set_var("PATH", dir.path());
-        env::set_var("HOME", home.path());
-        env::set_var("AMPLIHACK_FLEET_REASONER_BINARY_PATH", &claude);
-    }
-    let result = run_tui_dry_run(&azlin, &state, &mut ui_state);
-    match previous_path {
-        Some(value) => unsafe { env::set_var("PATH", value) },
-        None => unsafe { env::remove_var("PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
-    match previous_reasoner {
-        Some(value) => unsafe { env::set_var("AMPLIHACK_FLEET_REASONER_BINARY_PATH", value) },
-        None => unsafe { env::remove_var("AMPLIHACK_FLEET_REASONER_BINARY_PATH") },
-    }
+    // The backend is passed in rather than found through PATH, so the test
+    // does not change PATH or HOME for the test process (issue #1765).
+    let result = run_tui_dry_run_with(&azlin, &state, &mut ui_state, || {
+        Ok(NativeReasonerBackend::Claude(claude.clone(), || {
+            amplihack_utils::root_sandbox::SkipPermissionsEnv::NotRoot
+        }))
+    });
 
     assert!(result.is_ok());
     assert_eq!(ui_state.tab, FleetTuiTab::Detail);
@@ -4571,9 +4466,6 @@ exit 1
 
 #[test]
 fn run_watch_succeeds_with_stubbed_azlin() {
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let azlin = dir.path().join("azlin");
@@ -4582,29 +4474,12 @@ fn run_watch_succeeds_with_stubbed_azlin() {
         "#!/bin/sh\nif [ \"$1\" = connect ]; then\n  printf \"agent output line 1\\nagent output line 2\\n\";\nelse\n  exit 1\nfi\n",
     );
 
-    let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_path = env::var_os("PATH");
-    let previous_home = env::var_os("HOME");
-    unsafe {
-        env::set_var("AZLIN_PATH", &azlin);
-        env::set_var("PATH", dir.path());
-        env::set_var("HOME", home.path());
-    }
-
-    let result = run_watch("test-vm", "session-1", 30);
-
-    match previous_azlin {
-        Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
-        None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_path {
-        Some(value) => unsafe { env::set_var("PATH", value) },
-        None => unsafe { env::remove_var("PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
+    let result = run_watch_with(
+        &azlin_lookup(Some(&azlin), dir.path(), Some(home.path())),
+        "test-vm",
+        "session-1",
+        30,
+    );
 
     assert!(result.is_ok());
 }
@@ -4684,9 +4559,6 @@ fn run_tui_refresh_detail_capture_reads_fresh_tmux_output() {
 
 #[test]
 fn run_watch_failure_is_nonfatal() {
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let azlin = dir.path().join("azlin");
@@ -4695,29 +4567,12 @@ fn run_watch_failure_is_nonfatal() {
         "#!/bin/sh\nprintf 'connection refused' >&2\nexit 1\n",
     );
 
-    let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_path = env::var_os("PATH");
-    let previous_home = env::var_os("HOME");
-    unsafe {
-        env::set_var("AZLIN_PATH", &azlin);
-        env::set_var("PATH", dir.path());
-        env::set_var("HOME", home.path());
-    }
-
-    let result = run_watch("test-vm", "session-1", 30);
-
-    match previous_azlin {
-        Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
-        None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_path {
-        Some(value) => unsafe { env::set_var("PATH", value) },
-        None => unsafe { env::remove_var("PATH") },
-    }
-    match previous_home {
-        Some(value) => unsafe { env::set_var("HOME", value) },
-        None => unsafe { env::remove_var("HOME") },
-    }
+    let result = run_watch_with(
+        &azlin_lookup(Some(&azlin), dir.path(), Some(home.path())),
+        "test-vm",
+        "session-1",
+        30,
+    );
 
     assert!(result.is_ok());
 }
@@ -4744,27 +4599,15 @@ fn run_watch_timeout_is_nonfatal() {
 
 #[test]
 fn run_watch_rejects_invalid_vm_name() {
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let empty_path = tempfile::tempdir().unwrap();
-    let previous_azlin = env::var_os("AZLIN_PATH");
-    let previous_path = env::var_os("PATH");
-    unsafe {
-        env::remove_var("AZLIN_PATH");
-        env::set_var("PATH", empty_path.path());
-    }
 
-    let err = run_watch("bad vm!@#", "session-1", 30).expect_err("invalid VM should fail");
-
-    match previous_azlin {
-        Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
-        None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
-    match previous_path {
-        Some(value) => unsafe { env::set_var("PATH", value) },
-        None => unsafe { env::remove_var("PATH") },
-    }
+    let err = run_watch_with(
+        &azlin_lookup(None, empty_path.path(), None),
+        "bad vm!@#",
+        "session-1",
+        30,
+    )
+    .expect_err("invalid VM should fail");
 
     assert_eq!(command_error::exit_code(&err), None);
     assert!(err.to_string().contains("Invalid VM name"));
