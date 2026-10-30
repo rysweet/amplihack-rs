@@ -11,6 +11,7 @@ use super::ledger::{Phase, spend_reset};
 use super::log::{Sink, msg, timestamp};
 use super::measure::{self, Live};
 use super::overflow::{OverflowInput, Tag, decide_overflow};
+use super::overflow_record::alert_line;
 use super::pin::{self, Gate as PinGate, PinState};
 use super::swap;
 use crate::commands::profile::ProfileError;
@@ -40,8 +41,10 @@ pub struct Snap {
     pub pin: PinState,
     /// API-key profiles listed in `overflow=`, which are ignored there.
     pub ignored: Vec<ProfileName>,
-    /// `~/.claude` holds a readable login without OAuth.
+    /// `~/.claude/.credentials.json` is a readable login without OAuth (API key).
     pub home_no_oauth: bool,
+    /// Each candidate's account; step 6 compares the target's (#1721).
+    pub candidate_accounts: Vec<(ProfileName, Option<Account>)>,
 }
 
 impl Snap {
@@ -86,6 +89,7 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         identify::login_kind(&ctx.home.join(".claude").join(CREDS)) == LoginKind::NoOAuth;
     Ok(Snap {
         account: Account::of_dir(&ctx.home).map(|a| a.key().to_string()),
+        candidate_accounts: super::revalidate::accounts(&ctx.store, &candidates),
         live,
         proto,
         candidates,
@@ -132,6 +136,9 @@ pub fn reading_of(others: &[(ProfileName, Reading)], name: &ProfileName) -> Read
         .map_or(Reading::Failed, |(_, r)| *r)
 }
 
+/// The live profile's probe and each candidate's.
+pub type Probes = (Probed, Vec<(ProfileName, Probed)>);
+
 /// One cycle's measurements and its decision, after the overflow policy
 /// and failed-probe damping.
 pub struct Measurement {
@@ -150,6 +157,10 @@ pub struct Measurement {
     pub next_plan_reset: Option<i64>,
     /// When measuring started, epoch seconds.
     pub measured_at: i64,
+    /// The probes decided on, for step 6 to re-decide a swap whose target
+    /// left the candidates (#1721); `None` from a stub, which disables that.
+    /// `Probed` must never hold a token or an account identifier.
+    pub probed: Option<Probes>,
 }
 
 pub fn measure_and_decide(
@@ -237,9 +248,11 @@ pub(super) fn decide_measured(
         (Decision::Stay, Some(Tag::Out)) => Some(Tag::On),
         (_, tag) => tag,
     };
+    let others = probes.iter().map(|(n, p)| (n.clone(), p.reading)).collect();
     Ok(Measurement {
         live: probe.reading,
-        others: probes.into_iter().map(|(n, p)| (n, p.reading)).collect(),
+        others,
+        probed: Some((probe, probes)),
         decision,
         note,
         failed,
@@ -356,12 +369,8 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             None => out.emit(0, "would stay"),
         },
         Decision::Alert => {
-            let line = match name {
-                Some(n) if tag == Some(Tag::On) && snap.platform_live() => {
-                    msg::alert_platform_stuck(&platform_block_reason(ctx), n)
-                }
-                _ => msg::alert_no_capacity_for(name.map_or("-", ProfileName::as_str), &live),
-            };
+            let reason = || platform_block_reason(ctx);
+            let (_, line) = alert_line(&snap, tag, &live, &others, reason);
             out.emit(
                 0,
                 &format!(
