@@ -53,7 +53,7 @@ steps:
     type: "bash"
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-record-base; . "${QC:?quick_change_common.sh not found}"
-      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null || qc_die "$QC_WT is not a git work tree"
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"
       BASE="$(git -C "$QC_WT" rev-parse HEAD)"
       SNAP="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" --snapshot "$QC_WT")"
       printf '%s\n' "$SNAP" | qc_write git-config.snapshot
@@ -137,7 +137,7 @@ steps:
     condition: "quick_change_verdict == 'handover'"
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-write-handover; . "${QC:?quick_change_common.sh not found}"
-      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null || qc_die "$QC_WT is not a git work tree"
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"
       BASE="$(qc_base)"
       BRANCH="$(git -C "$QC_WT" symbolic-ref -q --short HEAD)" || qc_die "the worktree is not on a branch"
       LINE1="$(sed -n 1p "$QUICK_CHANGE_STATE_DIR/diff-limits")"
@@ -179,7 +179,7 @@ steps:
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-commit; . "${QC:?quick_change_common.sh not found}"
       # Only the step output goes to stdout (fd 3); git and the helpers write to stderr.
       exec 3>&1 1>&2
-      cd "$QC_WT"
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"; cd "$QC_WT"
       qc_branch >/dev/null
       BASE="$(qc_base)"
       for helper in git-identity.sh workflow_hook_repair.sh; do
@@ -225,7 +225,7 @@ steps:
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-push; . "${QC:?quick_change_common.sh not found}"
       exec 3>&1 1>&2
-      cd "$QC_WT"
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"; cd "$QC_WT"
       BRANCH="$(qc_branch)"
       BASE="$(qc_base)"
       for helper in workflow_hook_repair.sh verify_pushed_ref.sh; do
@@ -261,7 +261,7 @@ steps:
     condition: "quick_change_verdict == 'proceed'"
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-create-pr; . "${QC:?quick_change_common.sh not found}"
-      cd "$QC_WT"
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"; cd "$QC_WT"
       BRANCH="$(qc_branch)"
       [ -f "$QC_TOOLS/workflow_gh_retry.sh" ] || qc_die "workflow_gh_retry.sh is missing from $QC_TOOLS"
       BASE="$(qc_base)"
