@@ -212,8 +212,14 @@ No combination results in exit 128 or an `already exists` abort.
 
 This fix is surgical. It does **not** change:
 
-- The **#858 caller-checkout refusal** — a run never reuses the caller's own
-  repository as its task worktree.
+- The **#858 caller-checkout rule**: a run never uses the caller's own checkout
+  as its task worktree. Since [#1762](issue-1762-caller-branch-worktree-alias.md),
+  when the target branch is checked out there, step-04 creates the task worktree
+  on a local alias branch `<branch>--wt-<n>` that tracks `origin/<branch>`,
+  instead of stopping. A new alias worktree is created with
+  `git worktree add --track -b`, not through `wt_add_idempotent`, so a concurrent
+  run fails on git's ref lock and nothing is removed. An existing alias worktree
+  is reused with `wt_add_idempotent attach`.
 - The **#200 cleanliness resets** — a dirty worktree or a branch with commits
   ahead of `BASE_REF` is still `reset --hard "${BASE_REF}"` before reuse.
 - The **#829 / #840 foreign-worktree deconfliction** and the orphan

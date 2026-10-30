@@ -13,6 +13,8 @@ PR_URL_RESULT=""
 PR_NUMBER_RESULT=""
 BRANCH_DIFF_STATUS="unknown"
 MESSAGE="not classified"
+# #1762: set to <B> when the worktree is on an alias of <B>; `gh pr create` then names it.
+PR_HEAD_ARG=""
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"
 # workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
@@ -177,7 +179,7 @@ gh_pr_create_with_retry() {
     return 1
   fi
   # WRITE path: no REST fallback (never blind-create); rate limits wait for reset.
-  _gh_retry_core "pr create" pr create --draft --title "$PR_TITLE" --body-file "$body_file" || status=$?
+  _gh_retry_core "pr create" pr create --draft ${PR_HEAD_ARG:+--head="$PR_HEAD_ARG"} --title "$PR_TITLE" --body-file "$body_file" || status=$?
   rm -f -- "$body_file"
   [ "$status" -eq 0 ] && return 0
   echo "ERROR: gh pr create failed (exit $status) — PR may already exist for this branch or GitHub API is unavailable" >&2
@@ -351,7 +353,9 @@ if [ -n "${WORKFLOW_PUBLISH_PR_LIB_ONLY:-}" ] && [ "${BASH_SOURCE[0]}" != "${0}"
 fi
 
 HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-CURRENT_BRANCH=$(git branch --show-current)
+# #1762: in an alias worktree (<B>--wt-<n> tracking origin/<B>) the PR head is <B>.
+CURRENT_BRANCH="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" . 2>/dev/null)" || CURRENT_BRANCH="$(git branch --show-current)"
+[ "$CURRENT_BRANCH" = "$(git branch --show-current)" ] || PR_HEAD_ARG="$CURRENT_BRANCH"
 ISSUE_NUM="$ISSUE_NUMBER"
 if ! [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]]; then echo "ERROR: issue_number is not numeric: $ISSUE_NUM" >&2; exit 1; fi
 [ -n "$CURRENT_BRANCH" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "current branch is empty; cannot publish from detached HEAD" 1

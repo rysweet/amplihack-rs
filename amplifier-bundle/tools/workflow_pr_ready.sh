@@ -72,7 +72,8 @@ validate_pr_identity_before_mutation() {
     echo "ERROR: refusing to mutate PR '$pr_url'; workflow_pr_ready.sh is not running inside a git worktree" >&2
     return 1
   }
-  current_branch="$(git branch --show-current 2>/dev/null || true)"
+  # #1762: an alias worktree (<B>--wt-<n> tracking origin/<B>) is on <B>.
+  current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" . 2>/dev/null)" || current_branch="$(git branch --show-current 2>/dev/null || true)"
   [ -n "$current_branch" ] || {
     echo "ERROR: refusing to mutate PR '$pr_url'; current branch is empty" >&2
     return 1
@@ -138,7 +139,7 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   echo "INFO: [skip] not a git repo — skipping gh pr ready" >&2
   exit 0
 fi
-current_branch=$(git branch --show-current 2>/dev/null || true)
+current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" . 2>/dev/null)" || current_branch="$(git branch --show-current 2>/dev/null || true)"
 local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
 repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
 expected_base="$(resolve_expected_base_branch || true)"
