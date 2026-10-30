@@ -56,7 +56,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_CLAUDE_AUTO_SWITCH` | user preference |  | Enables Claude profile auto-switch. |
 | `AMPLIHACK_CLAUDE_BINARY_PATH` | user preference |  | Path to the `claude` executable. |
 | `AMPLIHACK_CLAUDE_PROFILE` | user preference |  | Claude profile to launch with. |
-| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | user preference |  | Directory that holds Claude profiles. |
+| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | user preference |  | Directory that holds Claude profiles. The test helper `isolated(..)` removes it from every child; see [Keep Tests out of the Real Profile Root](../howto/keep-tests-out-of-the-real-profile-root.md). |
 | `AMPLIHACK_CLI_INTEGRATION_QUIET_CHILD` | test-only |  | Test-support child-process switch. |
 | `AMPLIHACK_CODEX_BINARY_PATH` | test-only |  | Set only by install tests; the lookup itself is `AMPLIHACK_<TOOL>_BINARY_PATH`. |
 | `AMPLIHACK_CODEX_TERMINAL_TEST_FIXTURE` | test-only |  | Launcher test fixture switch. |
