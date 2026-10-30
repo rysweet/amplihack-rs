@@ -206,6 +206,7 @@ fn snap_with(skip: Skip, sees_sessions: bool) -> Snap {
         pin: PinState::None,
         ignored: Vec::new(),
         home_no_oauth: false,
+        candidate_accounts: Vec::new(),
     }
 }
 

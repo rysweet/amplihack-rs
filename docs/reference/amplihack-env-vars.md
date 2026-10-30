@@ -67,7 +67,6 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_COPILOT` | test-only |  | Not an env var: fixture string in the #1481 test. |
 | `AMPLIHACK_COPILOT_BINARY_PATH` | test-only |  | Set only by prompt-delivery tests; the lookup itself is `AMPLIHACK_<TOOL>_BINARY_PATH`. |
 | `AMPLIHACK_COPILOT_NO_ALLOW_ALL` | user preference |  | Stops `amplihack copilot` from passing `--allow-all-*`. |
-| `AMPLIHACK_COPILOT_NO_REMOTE` | user preference |  | Stops `amplihack copilot` from enabling remote access. |
 | `AMPLIHACK_DATABASE_PASSWORD` | internal |  | Example secret the Docker launcher must not forward; named in its test. |
 | `AMPLIHACK_DEBUG` | internal |  | Not read: example name in `amplihack-state` `EnvVar` docs. |
 | `AMPLIHACK_DEFAULT_MODEL` | user preference |  | Default model for launched agents. |

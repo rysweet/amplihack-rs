@@ -248,18 +248,30 @@ fn exited_probe_with_inherited_pipe_is_bounded_and_cleans_its_group() {
     failure(f.run("codex", false, &f.binary()), "RUNNER_PROBE_FAILED");
     assert!(started.elapsed() < std::time::Duration::from_secs(13));
     let pid = fs::read_to_string(f.path().join("descendant")).unwrap();
+    // The group SIGKILL is delivered asynchronously, so under load the
+    // descendant can still read as sleeping just after the probe returns
+    // (#1748). Poll for a bounded period well under the descendant's 60 s.
     #[cfg(target_os = "linux")]
-    if let Ok(stat) = fs::read_to_string(format!("/proc/{}/stat", pid.trim())) {
-        let state = stat
-            .rsplit_once(") ")
-            .unwrap()
-            .1
-            .split_whitespace()
-            .next()
-            .unwrap();
-        assert!(
-            state == "Z" || state == "X",
-            "probe descendant still running"
-        );
+    {
+        let stat_path = format!("/proc/{}/stat", pid.trim());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while let Ok(stat) = fs::read_to_string(&stat_path) {
+            let state = stat
+                .rsplit_once(") ")
+                .unwrap()
+                .1
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .to_owned();
+            if state == "Z" || state == "X" {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "probe descendant still running (state {state}) 5 s after the probe returned"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 }
