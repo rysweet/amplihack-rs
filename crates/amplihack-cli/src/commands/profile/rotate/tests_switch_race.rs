@@ -50,6 +50,7 @@ fn decided(measured_at: i64) -> Measurement {
         new_blocks: Vec::new(),
         next_plan_reset: None,
         measured_at,
+        probed: None,
     }
 }
 

@@ -838,11 +838,24 @@ run are the defaults. Without a running rotator, a step waits once.
 When the `ALERT: no profile has capacity` line is written, the rotator has
 nowhere to move the login, so it stays put. With an
 [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted)
-marked, it moves there instead when the next plan reset is far enough away. The log is not the only place you
-hear about it. When a cycle gets as far as deciding to swap, stay or raise
-the ALERT, the rotator updates the shared capacity state from that cycle's
-measurements, and the status line, Claude Code, `amplihack claude` and
-`amplihack recipe run` show a warning such as:
+marked, it moves there instead when the next plan reset is far enough away.
+
+When some candidates could not be measured, the ALERT ends with a count,
+for example:
+
+```
+2026-10-29T20:36:58Z ALERT: no profile has capacity live=work s=100% w=100% (candidates: 2 failed, 0 exhausted)
+```
+
+A candidate whose probe failed is never chosen, but it does not stop a swap
+to another candidate that measured with enough headroom. If every candidate
+is counted as failed, the probes are at fault rather than the accounts: run
+`amplihack profile usage` to see each profile's state.
+
+The log is not the only place you hear about it. When a cycle gets as far
+as deciding to swap, stay or raise the ALERT, the rotator updates the shared
+capacity state from that cycle's measurements, and the status line, Claude
+Code, `amplihack claude` and `amplihack recipe run` show a warning such as:
 
 ```
 ⚠ all Claude accounts ≥90% · next reset Oct 22 2am
@@ -863,8 +876,9 @@ amplihack profile auto-switch on
 ```
 
 A cycle that stops early, for example on `skip: state lock busy` or
-`skip: state changed during measurement`, does not update the warning; the
-next full cycle does.
+`skip: state changed during measurement (live)`, does not update the
+warning; the next full cycle does. The text in brackets names what changed;
+see [Rotate revalidation](../reference/profile-command.md#rotate-revalidation).
 
 The warning clears by itself when the first account resets. Where it
 appears and how it is deduplicated is in

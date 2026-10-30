@@ -204,7 +204,7 @@ pub mod msg {
 
     /// `s=<n>% w=<n>%` with `sep` between; an exhausted login shows as
     /// 100%, a failed probe as `failed`.
-    fn usage(r: &Reading, sep: &str) -> String {
+    pub(in super::super) fn usage(r: &Reading, sep: &str) -> String {
         match r {
             Reading::Measured { session, week } => {
                 format!("s={}%{sep}w={}%", pct(*session), pct(*week))
@@ -249,19 +249,6 @@ pub mod msg {
         out
     }
 
-    #[cfg(test)]
-    pub fn alert_no_capacity(live: &ProfileName, reading: &Reading) -> String {
-        alert_no_capacity_for(live.as_str(), reading)
-    }
-
-    /// As [`alert_no_capacity`], with `-` for a login no profile owns.
-    pub fn alert_no_capacity_for(live: &str, reading: &Reading) -> String {
-        format!(
-            "ALERT: no profile has capacity live={live} {}",
-            usage(reading, " ")
-        )
-    }
-
     pub const NO_LOGIN: &str = "ALERT: no login in ~/.claude; no swap";
     pub const AMBIGUOUS: &str =
         "ALERT: more than one profile matches the account in ~/.claude; no swap";
@@ -302,6 +289,9 @@ pub mod msg {
     }
 
     pub use super::super::overflow_msg::*;
+    pub use super::super::revalidate::changed_line as changed;
+    #[cfg(test)]
+    pub use super::super::revalidate::reconsidered;
 
     /// A cycle stopped by the rotation pin (issue #1691).
     pub fn held(name: &ProfileName) -> String {
