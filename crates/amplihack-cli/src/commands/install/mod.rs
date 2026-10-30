@@ -78,6 +78,27 @@ pub(crate) enum InstallMode {
     Implicit,
 }
 
+/// The `statusLine` command an install writes, if any (issue #1745): only
+/// an explicit install into `~/.claude`, never an implicit re-stage or a
+/// repo's settings (auto-repair passes none either). `cmd` is asked only
+/// then; when it fails, install prints a warning and writes no entry.
+pub(super) fn status_line_command(
+    mode: InstallMode,
+    scope: interactive::HookScope,
+    cmd: impl FnOnce() -> Result<String>,
+) -> Option<String> {
+    if mode != InstallMode::Explicit || scope != interactive::HookScope::Global {
+        return None;
+    }
+    match cmd() {
+        Ok(cmd) => Some(cmd),
+        Err(e) => {
+            println!("  ⚠️  statusLine not installed: {e}");
+            None
+        }
+    }
+}
+
 pub fn run_install(local: Option<PathBuf>, interactive: bool, force_refresh: bool) -> Result<()> {
     run_install_scoped(
         local,
@@ -414,7 +435,7 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     tracing::warn!("hooks not registered in settings.json — auto-repairing");
     let timestamp = unix_timestamp();
     let (settings_ok, _events) =
-        ensure_settings_json(&settings_path, &staging_dir, timestamp, &hooks_bin)?;
+        ensure_settings_json(&settings_path, &staging_dir, timestamp, &hooks_bin, None)?;
     if !settings_ok {
         bail!(
             "failed to configure ~/.claude/settings.json for amplihack hooks.\n\
@@ -777,8 +798,18 @@ fn local_install_scoped(
                 effective_scope.display_name(),
                 settings_target.display()
             );
-            let configured =
-                ensure_settings_json(&settings_target, &claude_dir, timestamp, &durable_hooks_bin)?;
+            let status_line = status_line_command(
+                mode,
+                effective_scope,
+                crate::commands::profile::home_statusline_command,
+            );
+            let configured = ensure_settings_json(
+                &settings_target,
+                &claude_dir,
+                timestamp,
+                &durable_hooks_bin,
+                status_line.as_deref(),
+            )?;
             // Profiles copy the user's settings, not a repo's (issue #1661).
             if effective_scope == interactive::HookScope::Global {
                 refresh_profile_hooks(&durable_hooks_bin);

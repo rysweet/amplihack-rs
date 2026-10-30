@@ -19,6 +19,10 @@ use std::path::Path;
 /// parent-directory creation, and atomic-write semantics are keyed off
 /// `settings_path.parent()`.
 ///
+/// `status_line`: the `statusLine` command to install (issue #1745); only
+/// the explicit install into `~/.claude` passes one. With `None` an existing
+/// entry is left as it is.
+///
 /// Returns `(success, registered_event_names)` where `registered_event_names`
 /// is a deduplicated list of event names that were configured.
 pub(super) fn ensure_settings_json(
@@ -26,6 +30,7 @@ pub(super) fn ensure_settings_json(
     staging_dir: &Path,
     timestamp: u64,
     hooks_bin: &Path,
+    status_line: Option<&str>,
 ) -> Result<(bool, Vec<String>)> {
     if let Some(parent) = settings_path.parent() {
         fs::create_dir_all(parent)
@@ -81,6 +86,7 @@ pub(super) fn ensure_settings_json(
     }
     let limit_resume = old_claude.is_none();
     register_hooks(&mut settings, hooks_bin, with_xpia, limit_resume);
+    let status_line = status_line.map(|cmd| ensure_status_line(&mut settings, cmd));
 
     fs::write(
         settings_path,
@@ -88,6 +94,9 @@ pub(super) fn ensure_settings_json(
     )
     .with_context(|| format!("failed to write {}", settings_path.display()))?;
     println!("  ✅ settings.json configured");
+    if let Some(outcome) = status_line {
+        println!("  {outcome}");
+    }
 
     let hook_contract_drift = validate_amplihack_native_hook_contract(&settings, limit_resume);
     if hook_contract_drift.is_empty() {
@@ -113,6 +122,66 @@ pub(super) fn ensure_settings_json(
     };
 
     Ok((true, registered_events))
+}
+
+/// What [`ensure_status_line`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatusLineOutcome {
+    Installed,
+    Updated,
+    Unchanged,
+    /// The entry is the user's and was left byte for byte.
+    KeptUser,
+}
+
+impl std::fmt::Display for StatusLineOutcome {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Installed => "statusLine: installed",
+            Self::Updated => "statusLine: updated",
+            Self::Unchanged => "statusLine: unchanged",
+            Self::KeptUser => "statusLine: kept your existing entry in ~/.claude/settings.json",
+        })
+    }
+}
+
+/// Points `settings.statusLine` at `cmd` (issue #1745). An entry is
+/// amplihack's when it is an object whose `command` runs `profile
+/// statusline` without `--owner` (a profile's wrapper the user copied is
+/// theirs) or runs `~/.amplihack/.claude/tools/statusline.sh`; amplihack's
+/// entry is replaced, keeping its `padding`. Any other entry is the user's
+/// and is not touched.
+pub(crate) fn ensure_status_line(settings: &mut Value, cmd: &str) -> StatusLineOutcome {
+    let Some(obj) = settings.as_object_mut() else {
+        return StatusLineOutcome::KeptUser;
+    };
+    let want = |padding: Option<Value>| {
+        let mut sl = Map::new();
+        sl.insert("type".into(), "command".into());
+        sl.insert("command".into(), cmd.into());
+        if let Some(p) = padding {
+            sl.insert("padding".into(), p);
+        }
+        Value::Object(sl)
+    };
+    let Some(current) = obj.get("statusLine") else {
+        obj.insert("statusLine".into(), want(None));
+        return StatusLineOutcome::Installed;
+    };
+    let Some(command) = current.get("command").and_then(Value::as_str) else {
+        return StatusLineOutcome::KeptUser;
+    };
+    let ours = crate::commands::profile::is_home_statusline_command(command)
+        || command.contains(".amplihack/.claude/tools/statusline.sh");
+    if !ours {
+        return StatusLineOutcome::KeptUser;
+    }
+    let updated = want(current.get("padding").cloned());
+    if *current == updated {
+        return StatusLineOutcome::Unchanged;
+    }
+    obj.insert("statusLine".into(), updated);
+    StatusLineOutcome::Updated
 }
 
 /// The first Claude Code the limit-resume hook (`StopFailure` with

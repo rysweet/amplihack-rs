@@ -94,6 +94,20 @@ pub(super) fn live_name(
     detect(store, home).0.map(|l| l.name)
 }
 
+/// The live profile by the rotator ledgers alone, for the status line in
+/// `~/.claude` (issue #1745): the same trust rules as [`detect`], including
+/// the rotate ledger's `account` check against `~/.claude.json`, but no
+/// account match when no ledger names anyone, no profile listing, no
+/// profile's `.claude.json` read and no warning. `None` when no trusted
+/// ledger names a usable profile.
+#[cfg(unix)]
+pub(super) fn ledger_live_name(
+    store: &ProfileStore,
+    home: Option<&Path>,
+) -> Option<super::name::ProfileName> {
+    unix::detect_with(store, home?, false).0.map(|l| l.name)
+}
+
 /// The live profile, if any, and at most one warning to print. `home` is
 /// `$HOME`; `None` when it is unset or empty.
 pub(super) fn detect(
@@ -103,7 +117,7 @@ pub(super) fn detect(
     #[cfg(unix)]
     {
         match home {
-            Some(home) => unix::detect(store, home),
+            Some(home) => unix::detect_with(store, home, true),
             None => (None, None),
         }
     }
@@ -175,15 +189,25 @@ mod unix {
         Valid(RotatorLedger),
     }
 
-    pub(super) fn detect(
+    /// `infer_from_account`: whether, when no ledger names anyone, the
+    /// profiles' accounts may be matched against `~/.claude.json`. Without
+    /// it only the ledgers decide.
+    pub(super) fn detect_with(
         store: &ProfileStore,
         home: &Path,
+        infer_from_account: bool,
     ) -> (Option<Live>, Option<&'static str>) {
         let creds = home.join(".claude").join(CREDS);
         if !fs::symlink_metadata(&creds).is_ok_and(|m| m.is_file()) {
             return (None, None);
         }
-        let proto = || from(store, home, prototype(store.root()), Evidence::Ledger);
+        let decide = |l: Ledger, evidence: fn(Option<serde_json::Value>) -> Evidence| {
+            if !infer_from_account && matches!(l, Ledger::Absent) {
+                return (None, None);
+            }
+            from(store, home, l, evidence)
+        };
+        let proto = || decide(prototype(store.root()), Evidence::Ledger);
         // A rotate ledger that names nobody (an alert, an idle cycle) says
         // nothing about who is live, so it counts as absent.
         // So does one whose account is not the one in `~/.claude.json`: a
@@ -209,9 +233,9 @@ mod unix {
                 // The later `since` wins; a tie goes to the rotate ledger, and
                 // a ledger without `since` is older.
                 Ledger::Valid(p) if since(&p) > since(&r) => {
-                    from(store, home, Ledger::Valid(p), Evidence::Ledger)
+                    decide(Ledger::Valid(p), Evidence::Ledger)
                 }
-                _ => from(store, home, Ledger::Valid(r), Evidence::Rotate),
+                _ => decide(Ledger::Valid(r), Evidence::Rotate),
             },
         }
     }

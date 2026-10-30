@@ -1122,6 +1122,24 @@ steps:
     }
 
     #[test]
+    fn profile_statusline_without_args_skips_startup_self_heal() {
+        // Issue #1745: the command in `~/.claude/settings.json` has no
+        // `--root` or `--owner`.
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "profile", "statusline"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+        assert_eq!(calls.get(), 0);
+        assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+    }
+
+    #[test]
     fn help_flag_skips() {
         let tmp = TempDir::new().unwrap();
         let _g = EnvGuard::new(tmp.path(), None);

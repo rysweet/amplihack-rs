@@ -1904,7 +1904,8 @@ The original `statusLine` object is saved in
 | the canonical wrapper | does not write | does not write |
 | missing | installs the wrapper; uses a saved original if one exists | same as `install` |
 | another command | saves it as the original, then installs the wrapper | same as `install` |
-| an old, moved, edited or doubly wrapped wrapper (contains `profile statusline`) | does not write; reports `stale` | rewrites it to the canonical wrapper, keeping the saved original (never saving a wrapper as the original) |
+| `amplihack profile statusline` without `--owner` (the `~/.claude` entry) | saves it as the original, then installs the wrapper | same as `install` |
+| an old, moved, edited or doubly wrapped wrapper (contains `profile statusline --owner`) | does not write; reports `stale` | rewrites it to the canonical wrapper, keeping the saved original (never saving a wrapper as the original) |
 
 The original `padding` is kept. A missing `settings.json` is created at
 `0600`. Writes use a temp file, `rename` and a directory sync. Other keys and

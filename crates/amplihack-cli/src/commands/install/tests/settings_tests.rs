@@ -23,7 +23,8 @@ fn ensure_settings_json_returns_registered_event_names() {
     }
 
     let settings_path = temp.path().join(".claude/settings.json");
-    let result = settings::ensure_settings_json(&settings_path, &staging_dir, 99999, &hooks_bin);
+    let result =
+        settings::ensure_settings_json(&settings_path, &staging_dir, 99999, &hooks_bin, None);
 
     if let Some(v) = prev_hooks {
         unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
@@ -64,8 +65,9 @@ fn ensure_settings_json_succeeds_without_legacy_python_hook_files() {
     let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
 
     let settings_path = temp.path().join(".claude/settings.json");
-    let result = settings::ensure_settings_json(&settings_path, &staging_dir, 99999, &hooks_bin)
-        .expect("settings setup should not depend on legacy python hook files");
+    let result =
+        settings::ensure_settings_json(&settings_path, &staging_dir, 99999, &hooks_bin, None)
+            .expect("settings setup should not depend on legacy python hook files");
 
     assert!(
         result.0,
@@ -91,8 +93,9 @@ fn ensure_settings_json_with_xpia_dir_keeps_unified_native_wrappers() {
     let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
 
     let settings_path = temp.path().join(".claude/settings.json");
-    let result = settings::ensure_settings_json(&settings_path, &staging_dir, 99999, &hooks_bin)
-        .expect("settings setup should succeed with xpia dir present (no script files needed)");
+    let result =
+        settings::ensure_settings_json(&settings_path, &staging_dir, 99999, &hooks_bin, None)
+            .expect("settings setup should succeed with xpia dir present (no script files needed)");
     assert!(result.0, "settings setup must succeed");
 
     let settings_raw = fs::read_to_string(temp.path().join(".claude/settings.json")).unwrap();
@@ -209,7 +212,8 @@ fn backup_metadata_is_always_valid_json() {
 
     let timestamp = 1_700_000_000_u64;
     let settings_path = temp.path().join(".claude/settings.json");
-    let _ = settings::ensure_settings_json(&settings_path, &staging_dir, timestamp, &hooks_bin);
+    let _ =
+        settings::ensure_settings_json(&settings_path, &staging_dir, timestamp, &hooks_bin, None);
 
     crate::test_support::restore_home(previous);
 
@@ -427,8 +431,9 @@ fn ensure_settings_json_writes_to_repo_local_path_and_leaves_global_untouched() 
     fs::create_dir_all(&staging_dir).unwrap();
     let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
 
-    let result = settings::ensure_settings_json(&repo_settings, &staging_dir, 99999, &hooks_bin)
-        .expect("repo-local settings write should succeed");
+    let result =
+        settings::ensure_settings_json(&repo_settings, &staging_dir, 99999, &hooks_bin, None)
+            .expect("repo-local settings write should succeed");
 
     crate::test_support::restore_home(previous);
 
@@ -465,8 +470,9 @@ fn ensure_settings_json_repo_local_backup_is_owner_only() {
     let hooks_bin = create_exe_stub(temp.path(), "amplihack-hooks");
 
     let timestamp = 1_700_000_042_u64;
-    let _ = settings::ensure_settings_json(&repo_settings, &staging_dir, timestamp, &hooks_bin)
-        .expect("repo-local settings write should succeed");
+    let _ =
+        settings::ensure_settings_json(&repo_settings, &staging_dir, timestamp, &hooks_bin, None)
+            .expect("repo-local settings write should succeed");
 
     crate::test_support::restore_home(previous);
 
@@ -529,4 +535,257 @@ fn hooks_registered_in_settings_reports_malformed_json_as_unparseable() {
         hooks_registered_in_settings(&path).unwrap(),
         HookRegistration::Missing
     );
+}
+
+// ─── Issue #1745: the `statusLine` entry in ~/.claude/settings.json ──────────
+
+mod status_line {
+    use super::*;
+    use crate::commands::install::settings::{StatusLineOutcome, ensure_status_line};
+    use serde_json::{Value, json};
+    use std::path::Path;
+
+    const CMD: &str = "'/usr/local/bin/amplihack' profile statusline";
+
+    fn entry(cmd: &str) -> Value {
+        json!({"type": "command", "command": cmd})
+    }
+
+    #[test]
+    fn no_entry_is_installed() {
+        let mut v = json!({"theme": "dark"});
+        assert_eq!(
+            ensure_status_line(&mut v, CMD),
+            StatusLineOutcome::Installed
+        );
+        assert_eq!(v, json!({"theme": "dark", "statusLine": entry(CMD)}));
+    }
+
+    #[test]
+    fn an_older_amplihack_entry_is_updated_keeping_padding() {
+        for old in [
+            "'/old/bin/amplihack' profile statusline",
+            "/old/bin/amplihack profile statusline --root '/r'",
+            "bash ~/.amplihack/.claude/tools/statusline.sh",
+            "/home/u/.amplihack/.claude/tools/statusline.sh",
+        ] {
+            let mut v = json!({
+                "statusLine": {"type": "command", "command": old, "padding": 2},
+                "theme": "dark",
+            });
+            assert_eq!(
+                ensure_status_line(&mut v, CMD),
+                StatusLineOutcome::Updated,
+                "{old}"
+            );
+            assert_eq!(
+                v,
+                json!({
+                    "statusLine": {"type": "command", "command": CMD, "padding": 2},
+                    "theme": "dark",
+                }),
+                "{old}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_update_keeps_padding_and_drops_other_fields() {
+        let mut v = json!({"statusLine": {
+            "type": "command",
+            "command": "'/old/bin/amplihack' profile statusline",
+            "padding": 1,
+            "refreshInterval": 5,
+        }});
+        assert_eq!(ensure_status_line(&mut v, CMD), StatusLineOutcome::Updated);
+        assert_eq!(
+            v,
+            json!({"statusLine": {"type": "command", "command": CMD, "padding": 1}})
+        );
+    }
+
+    #[test]
+    fn only_an_explicit_global_install_asks_for_the_command() {
+        use crate::commands::install::interactive::HookScope;
+        use crate::commands::install::{InstallMode, status_line_command};
+        for (mode, scope, want) in [
+            (
+                InstallMode::Explicit,
+                HookScope::Global,
+                Some(CMD.to_string()),
+            ),
+            (InstallMode::Explicit, HookScope::RepoLocal, None),
+            (InstallMode::Implicit, HookScope::Global, None),
+            (InstallMode::Implicit, HookScope::RepoLocal, None),
+        ] {
+            let mut asked = false;
+            let got = status_line_command(mode, scope, || {
+                asked = true;
+                Ok(CMD.to_string())
+            });
+            assert_eq!(got, want, "{mode:?} {scope:?}");
+            assert_eq!(asked, want.is_some(), "{mode:?} {scope:?}");
+        }
+    }
+
+    #[test]
+    fn a_failed_command_lookup_installs_no_entry() {
+        use crate::commands::install::interactive::HookScope;
+        use crate::commands::install::{InstallMode, status_line_command};
+        let got = status_line_command(InstallMode::Explicit, HookScope::Global, || {
+            anyhow::bail!("binary is writable by others")
+        });
+        assert_eq!(got, None);
+    }
+
+    #[test]
+    fn the_current_entry_is_unchanged() {
+        let mut v = json!({"statusLine": entry(CMD)});
+        let before = v.clone();
+        assert_eq!(
+            ensure_status_line(&mut v, CMD),
+            StatusLineOutcome::Unchanged
+        );
+        assert_eq!(v, before);
+    }
+
+    #[test]
+    fn a_user_entry_is_kept() {
+        for user in [
+            entry("$CLAUDE_PROJECT_DIR/.claude/tools/statusline.sh"),
+            entry("printf 'mine'"),
+            entry("'/x/amplihack' profile statusline --root '/r' --owner 'work'"),
+            json!("a string"),
+            json!(null),
+            json!(42),
+            json!({"type": "command"}),
+            json!({"type": "command", "command": 5}),
+            json!([CMD]),
+        ] {
+            let mut v = json!({"statusLine": user.clone(), "theme": "dark"});
+            let before = v.clone();
+            assert_eq!(
+                ensure_status_line(&mut v, CMD),
+                StatusLineOutcome::KeptUser,
+                "{user}"
+            );
+            assert_eq!(v, before, "{user}");
+        }
+    }
+
+    #[test]
+    fn running_twice_is_idempotent() {
+        let mut v = json!({});
+        ensure_status_line(&mut v, CMD);
+        let once = v.clone();
+        assert_eq!(
+            ensure_status_line(&mut v, CMD),
+            StatusLineOutcome::Unchanged
+        );
+        assert_eq!(v, once);
+    }
+
+    #[test]
+    fn outcomes_print_one_line_each() {
+        assert_eq!(
+            StatusLineOutcome::Installed.to_string(),
+            "statusLine: installed"
+        );
+        assert_eq!(
+            StatusLineOutcome::Updated.to_string(),
+            "statusLine: updated"
+        );
+        assert_eq!(
+            StatusLineOutcome::Unchanged.to_string(),
+            "statusLine: unchanged"
+        );
+        assert_eq!(
+            StatusLineOutcome::KeptUser.to_string(),
+            "statusLine: kept your existing entry in ~/.claude/settings.json"
+        );
+    }
+
+    // ── Through ensure_settings_json ────────────────────────────────────────
+
+    /// Runs `ensure_settings_json` on `settings_path` under a temp `HOME`
+    /// and returns the parsed result.
+    fn run(temp: &Path, settings_path: &Path, status_line: Option<&str>) -> Value {
+        let staging_dir = temp.join(".amplihack/.claude");
+        fs::create_dir_all(&staging_dir).unwrap();
+        let hooks_bin = create_exe_stub(temp, "amplihack-hooks");
+        settings::ensure_settings_json(settings_path, &staging_dir, 99999, &hooks_bin, status_line)
+            .expect("settings write should succeed");
+        serde_json::from_slice(&fs::read(settings_path).unwrap()).unwrap()
+    }
+
+    fn with_home<T>(f: impl FnOnce(&Path) -> T) -> T {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let temp = tempfile::tempdir().unwrap();
+        let previous = crate::test_support::set_home(temp.path());
+        let out = f(temp.path());
+        crate::test_support::restore_home(previous);
+        out
+    }
+
+    #[test]
+    fn explicit_install_writes_one_entry_and_is_idempotent() {
+        with_home(|home| {
+            let path = home.join(".claude/settings.json");
+            let first = run(home, &path, Some(CMD));
+            assert_eq!(first["statusLine"], entry(CMD));
+            let second = run(home, &path, Some(CMD));
+            assert_eq!(first, second);
+            let raw = fs::read_to_string(&path).unwrap();
+            assert_eq!(raw.matches("\"statusLine\"").count(), 1, "{raw}");
+        });
+    }
+
+    #[test]
+    fn a_user_entry_and_other_keys_survive_install() {
+        with_home(|home| {
+            let path = home.join(".claude/settings.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let mine = json!({"type": "command", "command": "printf 'mine'", "padding": 0});
+            fs::write(
+                &path,
+                json!({"statusLine": mine, "model": "opus", "env": {"A": "1"}}).to_string(),
+            )
+            .unwrap();
+            let after = run(home, &path, Some(CMD));
+            assert_eq!(after["statusLine"], mine);
+            assert_eq!(after["model"], "opus");
+            assert_eq!(after["env"], json!({"A": "1"}));
+        });
+    }
+
+    #[test]
+    fn the_repair_path_keeps_an_amplihack_entry() {
+        with_home(|home| {
+            let path = home.join(".claude/settings.json");
+            run(home, &path, Some(CMD));
+            let after = run(home, &path, None);
+            assert_eq!(after["statusLine"], entry(CMD), "None never removes it");
+        });
+    }
+
+    #[test]
+    fn the_repair_path_never_adds_an_entry() {
+        with_home(|home| {
+            let path = home.join(".claude/settings.json");
+            let after = run(home, &path, None);
+            assert!(after.get("statusLine").is_none(), "{after}");
+        });
+    }
+
+    #[test]
+    fn a_repo_local_target_gains_no_entry() {
+        with_home(|home| {
+            let path = home.join("project/.claude/settings.json");
+            let after = run(home, &path, None);
+            assert!(after.get("statusLine").is_none(), "{after}");
+            assert!(!home.join(".claude/settings.json").exists());
+        });
+    }
 }

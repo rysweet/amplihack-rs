@@ -14,11 +14,15 @@ mod candidate;
 #[cfg(unix)]
 pub(super) mod capacity;
 #[cfg(unix)]
+mod capacity_line;
+#[cfg(unix)]
 mod cli;
 #[cfg(unix)]
 pub(super) mod config;
 #[cfg(unix)]
 pub(super) mod fsx;
+#[cfg(unix)]
+mod home_line;
 #[cfg(unix)]
 pub(super) mod kit;
 #[cfg(unix)]
@@ -43,11 +47,15 @@ mod tests_candidate;
 #[cfg(all(test, unix))]
 mod tests_capacity;
 #[cfg(all(test, unix))]
+mod tests_capacity_line;
+#[cfg(all(test, unix))]
 mod tests_config;
 #[cfg(test)]
 mod tests_contract;
 #[cfg(all(test, unix))]
 mod tests_exhausted_reset;
+#[cfg(all(test, unix))]
+mod tests_home_line;
 #[cfg(all(test, unix))]
 mod tests_liveness;
 #[cfg(all(test, unix))]
@@ -122,8 +130,9 @@ pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> anyhow::Result<()
     }
 }
 
-/// The hidden `profile statusline` command; returns the exit code.
-pub fn statusline(root: &str, owner: &str) -> i32 {
+/// The hidden `profile statusline` command; returns the exit code. Without
+/// `owner` it is the command in `~/.claude` (issue #1745).
+pub fn statusline(root: Option<&str>, owner: Option<&str>) -> i32 {
     #[cfg(unix)]
     return statusline::run(root, owner);
     #[cfg(not(unix))]
@@ -131,6 +140,26 @@ pub fn statusline(root: &str, owner: &str) -> i32 {
         let _ = (root, owner);
         0
     }
+}
+
+/// What every `profile statusline` command contains.
+const MARKER: &str = "profile statusline";
+
+/// Whether `cmd` is the no-owner command (issue #1745). Copied into a
+/// profile by the shared settings keys, it is an original to wrap, never a
+/// stale wrapper; in `~/.claude` it is amplihack's entry, which install may
+/// replace.
+pub fn is_home_command(cmd: &str) -> bool {
+    cmd.contains(MARKER) && !cmd.contains("--owner")
+}
+
+/// The `statusLine` command `amplihack install` writes into
+/// `~/.claude/settings.json`: `'<exe>' profile statusline` (issue #1745).
+pub fn home_statusline_command() -> anyhow::Result<String> {
+    #[cfg(unix)]
+    return Ok(statusline::home_command(&statusline::installed_binary()?)?);
+    #[cfg(not(unix))]
+    anyhow::bail!("the status line is not supported on this platform")
 }
 
 /// Refuses an action on `name` while its login is away from home, after
