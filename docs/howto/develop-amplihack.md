@@ -145,6 +145,12 @@ bash scripts/check-leaked-rotators.sh
 
 See [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md).
 
+### Real Profile Root Changed by a Test Run
+
+`cargo test -p amplihack-cli` fails with `real profile root changed during
+this test run` when a test rewrote a real profile's `settings.json`. See
+[Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md).
+
 ### Pre-commit Hook Issues
 
 The project uses pre-commit hooks. If they fail:
@@ -160,3 +166,4 @@ pre-commit run --all-files
 - [Create Your Own Tools](../howto/create-your-own-tools.md) — building custom tools
 - [Code Review](../reference/code-review.md) — code review practices
 - [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md) — test stops and the leak check for `rotate watch` daemons
+- [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md) — profile-root isolation and the real-root guard
