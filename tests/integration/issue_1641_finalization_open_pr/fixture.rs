@@ -7,7 +7,9 @@
 //! - `bin/gh`: a stub that logs argv to `gh-calls.log`, refuses every mutating
 //!   or `api` call with exit 99, and answers `pr view` / `pr list` from canned
 //!   files;
-//! - `home/`, `scratch/`: private HOME and TMPDIR for the child.
+//! - `home/`, `scratch/`: private HOME and TMPDIR for the child;
+//! - `remotes/`: every `https://github.com/` fetch is rewritten here, so the
+//!   open-PR check's fetch (#1714) never leaves the machine.
 //!
 //! The child runs with `env_clear()`, so no ambient recipe context
 //! (`RECIPE_VAR_*`, `PR_URL`, `BRANCH_NAME`, ...) from an enclosing workflow run
@@ -117,7 +119,7 @@ impl Fixture {
         let tmp = TempDir::new().expect("tempdir under $TMPDIR");
         let repo = tmp.path().join("repo");
         fs::create_dir_all(&repo).expect("repo dir");
-        for dir in ["home", "scratch", "bin"] {
+        for dir in ["home", "scratch", "bin", "remotes"] {
             fs::create_dir_all(tmp.path().join(dir)).expect("fixture dir");
         }
         let gh = tmp.path().join("bin/gh");
@@ -147,7 +149,7 @@ impl Fixture {
         fixture
     }
 
-    fn isolate(&self, command: &mut Command) {
+    pub(crate) fn isolate(&self, command: &mut Command) {
         let parent_path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into());
         command
             .env_clear()
@@ -158,6 +160,12 @@ impl Fixture {
             .env("GH_CONFIG_DIR", self.tmp.path().join("home/.config/gh"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_COUNT", "1")
+            .env(
+                "GIT_CONFIG_KEY_0",
+                format!("url.{}/.insteadOf", self.remotes().display()),
+            )
+            .env("GIT_CONFIG_VALUE_0", "https://github.com/")
             .env("GH_FIXTURE_DIR", self.tmp.path())
             .env("GH_LEAK_MARKER", LEAK_MARKER)
             .env(
@@ -176,6 +184,11 @@ impl Fixture {
             String::from_utf8_lossy(&output.stderr)
         );
         String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    /// Where `https://github.com/<owner>/<repo>` fetches are redirected.
+    pub fn remotes(&self) -> PathBuf {
+        self.tmp.path().join("remotes")
     }
 
     pub fn repo_path(&self) -> String {
@@ -267,29 +280,6 @@ impl Fixture {
         let output = command
             .output()
             .expect("run workflow_agentic_finalization.sh");
-        Outcome {
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-            output,
-        }
-    }
-
-    /// Call `finalization_open_pr_signal <dir> <branch> [<ref>]` directly.
-    pub fn signal(&self, branch: &str, pr_ref: Option<&str>) -> Outcome {
-        let mut command = Command::new("bash");
-        self.isolate(&mut command);
-        command
-            .arg("-c")
-            .arg(r#"set -u; . "$1"; . "$2"; shift 2; finalization_open_pr_signal "$@""#)
-            .arg("signal")
-            .arg(tool_path("workflow_gh_retry.sh"))
-            .arg(tool_path("workflow_finalization_pr_signal.sh"))
-            .arg(&self.repo)
-            .arg(branch);
-        if let Some(pr_ref) = pr_ref {
-            command.arg(pr_ref);
-        }
-        let output = command.output().expect("run finalization_open_pr_signal");
         Outcome {
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),

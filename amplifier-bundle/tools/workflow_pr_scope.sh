@@ -28,6 +28,7 @@ EXPECTED_PR_TITLE_PREFIX=""
 CREATED_AFTER=""
 HEAD_SHA=""
 ALLOW_HEAD_BEHIND="false"
+ALLOW_HEAD_AHEAD="false"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -45,6 +46,7 @@ Scope options:
   --created-after RFC3339_TIME
   --head-sha SHA
   --allow-head-behind   accept an OPEN named PR whose head is an ancestor of --head-sha (#1467)
+  --allow-head-ahead    accept an OPEN named PR whose head is a fast-forward of --head-sha (#1714)
 USAGE
 }
 
@@ -64,6 +66,7 @@ while [ "$#" -gt 0 ]; do
     --created-after) CREATED_AFTER="${2:-}"; shift 2 ;;
     --head-sha) HEAD_SHA="${2:-}"; shift 2 ;;
     --allow-head-behind) ALLOW_HEAD_BEHIND="true"; shift ;;
+    --allow-head-ahead) ALLOW_HEAD_AHEAD="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
       jq -nc --arg reason "invalid_arg" --arg arg "$1" '{ok:false,reason:$reason,arg:$arg}'
@@ -286,6 +289,24 @@ if [ -n "$PR_NUMBER" ] || [ -n "$PR_URL" ]; then
       echo "INFO: workflow_pr_scope.sh: PR head $behind_oid is behind local HEAD $HEAD_SHA; treating it as unpushed work, not stale (#1467)" >&2
       matches="$(HEAD_SHA="$behind_oid" apply_discriminators "$primary")"
       match_count="$(array_length "$matches")"
+    fi
+  fi
+  # Issue #1714, opt-in (--allow-head-ahead; only the terminal-state probe in
+  # workflow-finalize): a named PR that is OPEN and whose head is a
+  # fast-forward of local HEAD (a merge of main pushed from elsewhere) holds
+  # every local commit, so it is the same PR. The test, and the one bounded,
+  # non-interactive fetch it may need, are workflow_pr_head_fetch.sh's, shared
+  # with the open-PR check. A diverged or rewritten head is still no match.
+  if [ "$ALLOW_HEAD_AHEAD" = "true" ] && [ "$match_count" -eq 0 ] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    ahead_oid="$(open_candidates "$primary" | jq -r 'if length == 1 then (.[0].headRefOid // "") else "" end')"
+    if [[ "$ahead_oid" =~ ^[0-9a-f]{40}$ ]] && [ -f "$SCRIPT_DIR/workflow_pr_head_fetch.sh" ]; then
+      # shellcheck source=workflow_pr_head_fetch.sh
+      . "$SCRIPT_DIR/workflow_pr_head_fetch.sh"
+      if _finalization_pr_head_descends . "$HEAD_REF" "$HEAD_SHA" "$ahead_oid"; then
+        echo "INFO: workflow_pr_scope.sh: PR head $ahead_oid is a fast-forward of local HEAD $HEAD_SHA; treating it as the same PR (#1714)" >&2
+        matches="$(HEAD_SHA="$ahead_oid" apply_discriminators "$primary")"
+        match_count="$(array_length "$matches")"
+      fi
     fi
   fi
   if [ "$match_count" -eq 0 ]; then
