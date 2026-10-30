@@ -56,6 +56,8 @@ here="$(dirname "${BASH_SOURCE[0]}")"
 . "$here/workflow_finalization_collect.sh"
 . "$here/workflow_gh_retry.sh"
 . "$here/workflow_finalization_pr_signal.sh"
+. "$here/workflow_finalization_open_pr.sh"
+. "$here/workflow_finalization_handoff.sh"
 . "$here/workflow_finalization_validate.sh"
 . "$here/workflow_finalization_complete.sh"
 

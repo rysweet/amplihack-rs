@@ -27,6 +27,8 @@ inputs:
     description: "Failure behavior for terminal probe blockers. `exit` preserves standalone fail-closed behavior; `report` emits blocker JSON with exit 0 so workflow-finalize can classify and validate it agentically."
   - name: task_description
     description: "Original task description. Retained for context/plumbing; no-merge intent is no longer scraped from this prose (issue #1062 finding B) — see the structured `no_merge` flag emitted by the classifier."
+  - name: accept_pr_head_ahead
+    description: "Issue #1714: when exactly 'true', an OPEN same-repo PR on the run branch whose head is a fast-forward of the local HEAD (the local HEAD is its ancestor; the PR head commit is fetched non-interactively if missing) is the run's PR, not stale metadata. Only workflow-finalize sets it: its push step pulls before pushing. Other callers keep the exact-head rule."
   - name: no_merge
     description: "Structured no-merge flag ('true'/'1'/'yes') emitted by the classifier (smart-classify-route `no_merge` field, issue #929/#1062). When truthy it forces should_merge='false'; absent it preserves the auto-merge default."
 
@@ -41,6 +43,7 @@ context:
   terminal_fail_mode: "exit"
   task_description: ""
   no_merge: ""
+  accept_pr_head_ahead: "false"
   # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
   worktree_setup: ""
   issue_number: ""
@@ -242,6 +245,9 @@ steps:
       PR_NUMBER_INPUT="${RECIPE_VAR_pr_number:-}"
       PR_URL_INPUT="${RECIPE_VAR_pr_url:-}"
       GOAL_ALREADY_MET_INPUT="${RECIPE_VAR_goal_already_met:-}"
+      # #1714: exactly "true", nothing else, turns on the fast-forward arm below.
+      ACCEPT_PR_HEAD_AHEAD="false"
+      [ "${RECIPE_VAR_accept_pr_head_ahead:-}" != "true" ] || ACCEPT_PR_HEAD_AHEAD="true"
       case "$BRANCH_INPUT" in ""|"''") BRANCH_INPUT="" ;; esac
       case "$BASE_INPUT" in ""|"''") BASE_INPUT="" ;; esac
       case "$PR_NUMBER_INPUT" in ""|"''") PR_NUMBER_INPUT="" ;; esac
@@ -368,6 +374,18 @@ steps:
       [ -f "$PR_SCOPE_HELPER" ] || PR_SCOPE_HELPER="$(pwd)/amplifier-bundle/tools/workflow_pr_scope.sh"
       [ -f "$PR_SCOPE_HELPER" ] || PR_SCOPE_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_pr_scope.sh"
       [ -f "$PR_SCOPE_HELPER" ] || PR_SCOPE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_pr_scope.sh"
+      # #1714: the fast-forward test lives next to the scope helper and is shared
+      # with it and the open-PR check. Missing, the arm stays off: fail closed.
+      PR_HEAD_FETCH_HELPER="$(dirname "$PR_SCOPE_HELPER")/workflow_pr_head_fetch.sh"
+      if [ "$ACCEPT_PR_HEAD_AHEAD" = "true" ]; then
+        if [ -f "$PR_HEAD_FETCH_HELPER" ]; then
+          # shellcheck source=/dev/null
+          . "$PR_HEAD_FETCH_HELPER"
+        else
+          echo "WARNING: workflow-terminal-state: $PR_HEAD_FETCH_HELPER not found; a PR head ahead of local HEAD stays stale metadata" >&2
+          ACCEPT_PR_HEAD_AHEAD="false"
+        fi
+      fi
 
       pr_json=""
       pr_target=""
@@ -405,6 +423,8 @@ steps:
           # #1467: this probe runs before the push steps, so a PR behind HEAD is unpushed work.
           --allow-head-behind
         )
+        # #1714: workflow-finalize only; its push step pulls the PR head first.
+        [ "$ACCEPT_PR_HEAD_AHEAD" != "true" ] || scope_args+=(--allow-head-ahead)
         title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-}}"
         [ -n "$title_prefix" ] && scope_args+=(--expected-pr-title-prefix "$title_prefix")
         [ -n "$PR_URL_INPUT" ] && scope_args+=(--pr-url "$PR_URL_INPUT")
@@ -462,6 +482,20 @@ steps:
           # or closed PR, a head that is not an ancestor, or a remote branch
           # rewound behind any value origin/<branch> held here (current or in
           # its reflog, so a fetched rewind counts too), still fails.
+          # Issue #1714 (accept_pr_head_ahead, workflow-finalize only): an open
+          # same-repo PR whose head is a fast-forward of local HEAD, such as a
+          # merge of main pushed from another checkout or by GitHub's "Update
+          # branch" button, holds every local commit and is the same PR. The
+          # test may fetch the PR head commit once, so it runs only after the
+          # branch check above and the repo checks here, and before the rewind
+          # check, which needs that commit. A diverged head is still stale.
+          pr_head_ahead="false"
+          if [ "$ACCEPT_PR_HEAD_AHEAD" = "true" ] && [ "$pr_state" = "OPEN" ] && [[ "$pr_head_oid" =~ ^[0-9a-f]{40}$ ]] \
+              && [ "$pr_cross_repo" != "true" ] && [ "$pr_head_owner/$pr_head_repo" = "$repo_owner/$repo_name" ] \
+              && [ "$pr_base_identity" = "$repo_owner/$repo_name" ] \
+              && _finalization_pr_head_descends . "$BRANCH_INPUT" "$local_head" "$pr_head_oid"; then
+            pr_head_ahead="true"
+          fi
           remote_rewound="false"
           for seen_oid in $(git rev-parse --verify --quiet "refs/remotes/origin/${BRANCH_INPUT}^{commit}" 2>/dev/null || true) \
               $(git reflog -n 50 --format=%H "refs/remotes/origin/${BRANCH_INPUT}" -- 2>/dev/null || true); do
@@ -471,6 +505,8 @@ steps:
               && git merge-base --is-ancestor "$pr_head_oid" "$local_head" 2>/dev/null; then
             pr_behind="true"
             echo "INFO: workflow-terminal-state: local HEAD is $(git rev-list --count "${pr_head_oid}..${local_head}") commit(s) ahead of open PR head '$pr_head_oid'; the next push step pushes them (#1467)" >&2
+          elif [ "$pr_head_ahead" = "true" ] && [ "$remote_rewound" = "false" ]; then
+            echo "INFO: workflow-terminal-state: open PR head '$pr_head_oid' is $(git rev-list --count "${local_head}..${pr_head_oid}") commit(s) ahead of local HEAD, a fast-forward of it; same PR (#1714)" >&2
           elif [ "$remote_rewound" = "true" ]; then
             fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head', and origin/$BRANCH_INPUT has held a commit that is not an ancestor of the PR head (history rewritten or rewound; #1467)"
           else
