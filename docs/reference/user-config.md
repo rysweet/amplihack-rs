@@ -334,8 +334,11 @@ in CI too. The environment variable also accepts `1` and `0`.
 wait for `recipe.usage_limit_max_waits_per_step`.
 
 `recipe.usage_limit_wait_budget_secs` is the total time, in seconds, that
-all usage-limit waits of one recipe run may take: 21600 (six hours) by
-default. `0` means no step waits or retries after a limit. See
+the usage-limit waits of one recipe run may take while a login rotator is
+running: 21600 (six hours) by default. `0` means no step with a rotator
+waits or retries after a limit. A step with no rotator keeps its single
+wait to the reset whatever this says; its wait still counts toward the
+total. See
 [Run budget](./profile-command.md#run-budget).
 
 `recipe.usage_limit_max_waits_per_step` is how many times one step may wait

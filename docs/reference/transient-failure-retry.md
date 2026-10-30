@@ -71,7 +71,8 @@ its table there.
   step that hits a usage limit inside a recipe run first waits for the reset,
   or for the login to change, and runs again, inside the step's own
   `amplihack claude -p` launch. While a login rotator runs, it does this at
-  every limit, up to a per-step count and a time budget for the run. The
+  every limit, up to a per-step count and a time budget for the run; with no
+rotator it waits once, and the budget does not limit that wait. The
   runner classifies only the last attempt, so `usage_limit` here means the
   step still failed after its waits, the wait was turned off, or the budget
   or the per-step count was spent. In the last two cases the step's stderr

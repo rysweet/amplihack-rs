@@ -4593,8 +4593,9 @@ left, the step's supervisor waits for the limit to reset, or for a login
 with capacity to become live, and then runs the step again. While a
 [login rotator](#rotator-check) is running, a step waits again at each
 later limit, up to [`max_waits_per_step`](#waits-per-step) waits; without
-one it waits once. All waits of one recipe run share a
-[time budget](#run-budget). It is on by default and does not need
+one it waits once, as before #1761. The waits made while a rotator runs
+share a [time budget](#run-budget) for the recipe run; a wait with no
+rotator is never refused or shortened by it. It is on by default and does not need
 auto-switch or profiles. Task-oriented guidance is in the
 [how-to](../howto/claude-profiles.md#waiting-for-a-usage-limit-reset).
 
@@ -4688,9 +4689,10 @@ After an attempt hits a usage limit, in this order:
    [plain line](#plain-lines). The result is passed up;
 7. the limit is not one a wait can outlast (see [Reset time](#reset-time)):
    `skipped reason=<why>`, and the result is passed up;
-8. the [run budget](#run-budget) is read; with nothing left,
-   `skipped reason=budget_spent` and its plain line, and the result is
-   passed up;
+8. with a rotator, the [run budget](#run-budget) is read; with nothing
+   left, `skipped reason=budget_spent` and its plain line, and the result
+   is passed up. Without a rotator this step is skipped: the run budget
+   neither refuses the step's single wait nor shortens it;
 9. otherwise `start`, the wait, and `end`, and the wait's seconds are added
    to the budget record. After `end reason=signal` the step exits with
    `128` plus the signal; after `step timeout`, `session ended` or
@@ -4829,12 +4831,14 @@ earlier row):
 | reset + 120 s, or now when the reset has passed | always | `reset+margin` |
 | now + `max_wait_secs` | a maximum is set | `max_wait` |
 | step start + `AMPLIHACK_STEP_TIMEOUT` − 60 s, never before now | the step timeout is set and above 0 | `step_timeout` |
-| now + the budget left | always; see [Run budget](#run-budget) | `budget` |
+| now + the budget left | a rotator is seen at this limit; see [Run budget](#run-budget) | `budget` |
 
 No input can make a wait longer than five hours and 120 seconds (18120 s).
 The default budget, 21600 s, is longer than that, so the `budget` row
 never shortens a run's first wait; it decides a later wait only once
-earlier waits in the run have used part of the budget.
+earlier waits in the run have used part of the budget. A wait with no
+rotator has no `budget` row, so `bound=budget` and `end reason=budget spent`
+only ever follow a `start` with `rotator=running`.
 
 `max_wait_secs = 0` does not wait but still retries. Each such retry counts
 as a wait: without a rotator the step retries once, and with one it retries
@@ -4881,34 +4885,48 @@ fingerprint is never printed, logged or written.
 
 ### Run budget
 
-All waits in one recipe run draw on one time budget,
-`recipe.usage_limit_wait_budget_secs` (default 21600 s, six hours). A run
-is one `amplihack recipe run` invocation, named by
+The waits one recipe run makes while a [rotator](#rotator-check) runs
+draw on one time budget, `recipe.usage_limit_wait_budget_secs` (default
+21600 s, six hours). A run is one `amplihack recipe run` invocation, named
+by
 [`AMPLIHACK_RECIPE_RUN_ID`](./environment-variables.md#amplihack_recipe_run_id),
 which every agent step inherits.
 
-- **Read.** At step 8 of the [order of attempts](#order-of-attempts), the
-  supervisor reads the seconds the run has already waited. The budget left
+- **No rotator, no budget check.** A step with no rotator at a limit keeps
+  the single wait it had before #1761: it waits to the reset however much
+  of the budget other steps have spent, never writes `budget_spent` and
+  never ends with `budget spent`. This covers steps under an inherited
+  profile or another `CLAUDE_CONFIG_DIR`, which never see a rotator. Its
+  wait's seconds are still appended to the record (see **Write**), so a
+  later wait with a rotator counts the time the run has already waited.
+  With the default 21600 s budget, two such steps can wait five hours each
+  in one run, and a third step with a rotator then finds nothing left.
+
+- **Read.** At step 8 of the [order of attempts](#order-of-attempts), with
+  a rotator, the supervisor reads the seconds the run has already waited. The budget left
   is the budget minus those seconds, never below 0. With nothing left the
   step writes `skipped reason=budget_spent` and its
   [plain line](#plain-lines). Otherwise the budget left becomes the
   `budget` row of the [deadline](#deadline). The record is not read again
   during the wait.
-- **Write.** When the wait returns, whatever its end reason, its seconds
+- **Write.** When any wait returns, with a rotator or without, whatever
+  its end reason, its seconds
   (the number in `waited=`) are appended to the record before the step
   goes on. If the append fails, the step moves to the
   [per-step fallback](#per-step-fallback).
-- **Budget 0.** Every limit that reaches the budget check writes
-  `budget_spent`: no wait and no retry. To retry at once without waiting,
+- **Budget 0.** Every limit that reaches the budget check (one with a
+  rotator) writes `budget_spent`: no wait and no retry. A limit with no
+  rotator still gets its single wait. To retry at once without waiting,
   set `max_wait_secs = 0` instead.
 - **Scope.** The budget belongs to one attempt of `amplihack recipe run`.
   When the runner retries a
   [transient transport failure](./transient-failure-retry.md), the retry
   gets a new run id and so a new budget. A step that starts a nested
   `amplihack recipe run` gives that run its own id and its own budget.
-- **Only at the budget check.** Nothing is read or created before it.
-  A limit refused at an earlier step (disabled, the per-step rule, a spend
-  limit, a reset too far away) touches no record.
+- **Only at the budget check or a wait's append.** Nothing is read or
+  created before one of them. A limit refused at an earlier step
+  (disabled, the per-step rule, a spend limit, a reset too far away)
+  touches no record.
 
 #### Budget record
 
@@ -4918,7 +4936,7 @@ directory, with the same checks, as held-back output without auto-switch
 step of a run shares one file.
 
 - It is created the first time a step of the run reaches the budget check,
-  even when no wait follows, at mode `0600` and opened without following
+  even when no wait follows, or appends a wait made with no rotator, at mode `0600` and opened without following
   symlinks. It must be a regular file owned by you, with one link and no
   group or other permissions.
 - It holds one ASCII line per finished wait: that wait's seconds in
@@ -4977,10 +4995,14 @@ usable run id or cannot read the record, or after the append that fails:
 warning: the usage-limit wait budget applies to this step only (AMPLIHACK_RECIPE_RUN_ID is not set)
 ```
 
-A step that never reaches the budget check writes no warning. A
-supervised step outside a recipe run, such as `amplihack claude -p` started
-by hand with `AMPLIHACK_NONINTERACTIVE=1`, has no run id, so it uses the
-fallback and writes this warning at its first budget check.
+A step that never reaches the budget check writes no warning, except after
+a failed append. A step with no rotator does not read the budget, so with
+no run id or an invalid one it writes no warning at all; with a valid run
+id whose record cannot be used, it writes `the budget record cannot be
+used` after its wait. A supervised step outside a recipe run, such as
+`amplihack claude -p` started by hand with `AMPLIHACK_NONINTERACTIVE=1`,
+has no run id, so with a rotator it uses the fallback and writes this
+warning at its first budget check.
 
 #### Gaps in the budget
 

@@ -6,8 +6,10 @@
 //! per-step rule, and a limit no wait can outlast. Without a rotator a step
 //! waits once (`already_waited`); with one it waits up to
 //! `max_waits_per_step` times (`step_waits_spent`).
-//! Then [`Waiter::after_limit`] reads the run budget, waits for at most
-//! what is left of it, adds the wait to the budget and asks for a retry.
+//! Then [`Waiter::after_limit`] waits and asks for a retry. With a rotator
+//! it first reads the run budget and waits for at most what is left of it;
+//! without one the run budget neither refuses nor shortens the single wait.
+//! Either way the wait's seconds are added to the run's budget record.
 //! The budget's lock is never held across a wait.
 
 use super::super::attempt::Signals;
@@ -157,21 +159,32 @@ impl Waiter {
                 return AfterLimit::Finish(code);
             }
         };
-        let left = self.budget.left(settings.budget_secs, &mut warn);
+        // Only a wait with a rotator draws on the run budget. Without one
+        // the step keeps the #1618 single wait to the reset, whatever other
+        // steps of the run have waited (#1761: "keep today's behaviour").
+        // Its seconds are still added below, so a later wait with a
+        // rotator sees time the run already spent.
+        let left = if rotator {
+            let left = self.budget.left(settings.budget_secs, &mut warn);
+            if left == 0 {
+                log(&Event::Skipped {
+                    skip: Skip::BudgetSpent,
+                    step,
+                });
+                let per_step = self.budget.per_step();
+                eprintln!("{}", budget_spent_note(settings.budget_secs, per_step));
+                return AfterLimit::Finish(None);
+            }
+            Some(left)
+        } else {
+            None
+        };
         let per_step = self.budget.per_step();
-        if left == 0 {
-            log(&Event::Skipped {
-                skip: Skip::BudgetSpent,
-                step,
-            });
-            eprintln!("{}", budget_spent_note(settings.budget_secs, per_step));
-            return AfterLimit::Finish(None);
-        }
         // Every wait started counts, whatever ends it, so the cap holds.
         self.waits = self.waits.saturating_add(1);
         let now = self.clock.now();
         let step_bound = self.step_timeout.map(|t| (self.step_start, t));
-        let p = plan(now, reset, settings.max_wait_secs, step_bound, Some(left));
+        let p = plan(now, reset, settings.max_wait_secs, step_bound, left);
         log(&Event::Start {
             harness,
             reset: p.reset,

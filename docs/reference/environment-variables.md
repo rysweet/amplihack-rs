@@ -515,12 +515,15 @@ See [Recipe Run Correlation Reference](./recipe-run-correlation.md) for the
 pointer event schema and final result fields.
 
 **Usage-limit wait budget:** every agent step of the run adds its usage-limit
-waits to `~/.amplihack/rerun/wait-budget-<run id>`, so all steps share one
+waits to `~/.amplihack/rerun/wait-budget-<run id>`, so all steps that wait
+with a login rotator running share one
 [`AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS`](#amplihack_usage_limit_wait_budget_secs).
+A step with no rotator is not limited by it.
 A transport retry by the runner and a nested `amplihack recipe run` each get
 a new id, and so a new budget. A value that is not 1 to 64 bytes of letters,
 digits and `-` is not used for a path or printed; the step then keeps a
-budget for itself alone and prints one `warning:` line. See
+budget for itself alone and, when a rotator runs, prints one `warning:`
+line. See
 [Per-step fallback](./profile-command.md#per-step-fallback).
 
 ---
@@ -1023,12 +1026,14 @@ ignored.
 **Config key:** [`recipe.usage_limit_wait_budget_secs`](./user-config.md#recipeusage_limit_wait) in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
-Total time all usage-limit waits of one recipe run may take. Every step of
-the run draws on it, through a record named by
+Total time the usage-limit waits of one recipe run may take while a login
+rotator runs. Every step of the run adds its waits to a record named by
 [`AMPLIHACK_RECIPE_RUN_ID`](#amplihack_recipe_run_id). When it is spent, a
-step that hits a limit writes `skipped reason=budget_spent` and a line
-naming the setting, and the run ends with the usage-limit failure. `0`
-means no step waits or retries after a limit. Overrides the config files; a
+step that hits a limit with a rotator running writes
+`skipped reason=budget_spent` and a line naming the setting, and the run
+ends with the usage-limit failure. `0` means no step with a rotator waits
+or retries after a limit. A step with no rotator keeps its single wait to
+the reset, whatever the budget. Overrides the config files; a
 project file can only lower it; empty means unset; an invalid value prints
 one warning and is ignored. See the
 [run budget reference](./profile-command.md#run-budget).
