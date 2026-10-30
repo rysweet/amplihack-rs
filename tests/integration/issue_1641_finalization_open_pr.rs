@@ -11,13 +11,13 @@
 #[path = "issue_1641_finalization_open_pr/blocked_ci.rs"]
 mod blocked_ci;
 #[path = "issue_1641_finalization_open_pr/builders.rs"]
-mod builders;
+pub(crate) mod builders;
 #[path = "issue_1641_finalization_open_pr/contracts.rs"]
 mod contracts;
 #[path = "issue_1641_finalization_open_pr/fail_closed.rs"]
 mod fail_closed;
 #[path = "issue_1641_finalization_open_pr/fixture.rs"]
-mod fixture;
+pub(crate) mod fixture;
 #[path = "issue_1641_finalization_open_pr/head_and_fallback.rs"]
 mod head_and_fallback;
 #[path = "issue_1641_finalization_open_pr/metadata.rs"]

@@ -282,6 +282,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-19d-verification-gate",
     // Phase 8: workflow-finalize (terminal gate + steps 20-22b + complete)
     "finalize-terminal-state",
+    // Issue #1714: fast-forward to an accepted PR head before any agent edits.
+    "step-20-sync-pr-head",
     "step-20-final-cleanup",
     // Issue #1467: the audit runs before the guard and push, so its fixes are pushed.
     "step-20c-quality-audit",
