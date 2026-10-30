@@ -201,7 +201,7 @@ mod tests {
         std::fs::write(
             &fake_npm,
             "#!/bin/sh\n\
-             /bin/sleep 1\n\
+             /bin/sleep 5\n\
              printf 'late' > \"$AMPLIHACK_NPM_SENTINEL\"\n\
              printf '1.2.3\\n'\n",
         )
@@ -217,7 +217,7 @@ mod tests {
             std::env::set_var("AMPLIHACK_NPM_SENTINEL", &sentinel);
         }
 
-        // The fake npm needs a full second, so a poll thread descheduled on
+        // The fake npm needs five seconds, so a poll thread descheduled on
         // a loaded host still finds it running when the timeout expires.
         let result = run_npm_with_timeout(&["--version"], Duration::from_millis(50));
 
@@ -230,7 +230,7 @@ mod tests {
             None => unsafe { std::env::remove_var("AMPLIHACK_NPM_SENTINEL") },
         }
         // Wait past the point where a surviving child would have written it.
-        std::thread::sleep(Duration::from_millis(1500));
+        std::thread::sleep(Duration::from_millis(5500));
 
         assert!(result.is_none(), "timeout should return no npm output");
         assert!(
