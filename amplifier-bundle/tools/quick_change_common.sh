@@ -16,7 +16,8 @@
 # The caller sets QC_STEP to its step id first. qc_branch and qc_write are
 # defined for the publish steps; qc_base for every step after the agent;
 # qc_handover_reason, qc_checks_summary and qc_checks_table read state files
-# only after checking them against fixed forms or the runner's outputs.
+# only after checking them against fixed forms or the runner's outputs;
+# qc_handover_note writes the note default-workflow receives on hand-over.
 
 set -euo pipefail
 export GIT_PAGER=cat PAGER=cat LESS=FRX
@@ -88,6 +89,29 @@ qc_handover_reason() {
   esac
   [[ "$reason" =~ $re ]] || qc_die "hand-over reason in the state directory is not a known reason"
   printf '%s' "$reason"
+}
+
+# qc_handover_note <reason> <branch> <base> <patch>: the hand-over note,
+# fixed wording and these values only. Whether the agent committed is read
+# from git, not from the reason: agent-commit always means commits after the
+# base, and unparseable-path, files>N and lines>N, which rules 2, 4 and 5
+# decide before rule 6, can come with commits too. `git diff <base>` shows
+# the whole change in both cases; `git status` misses committed work.
+qc_handover_note() {
+  local reason="$1" branch="$2" base="$3" patch="$4" commits
+  commits="$(git -C "$QC_WT" rev-list --count "$base..HEAD")" || qc_die "git rev-list failed"
+  [[ "$commits" =~ ^[0-9]+$ ]] || qc_die "git rev-list printed '$commits'"
+  printf '%s\n' "Hand-over from quick-change: the change needs the full workflow (reason=$reason)."
+  if [ "$commits" -eq 0 ]; then
+    printf '%s\n' "The changes are uncommitted in this worktree on branch $branch."
+  else
+    printf '%s\n' "The changes are on branch $branch in this worktree: $commits commit(s) after the base commit, and possibly uncommitted changes as well."
+  fi
+  printf '%s\n' "Base commit: $base" \
+    "Patch of the whole change against the base commit: $patch" \
+    "Before you start, run \`git diff $base\` to see the whole change, committed and uncommitted; \`git status\` does not show committed changes." \
+    "Apply the patch only if that diff is empty: git apply --index $patch" \
+    'Continue from these changes; do not start again from the base commit.'
 }
 
 # qc_checks_summary: the checks summary from the runner's output of

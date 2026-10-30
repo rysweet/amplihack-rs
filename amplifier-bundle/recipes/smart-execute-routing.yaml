@@ -181,8 +181,9 @@ steps:
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
       # FIX (heredoc-bulletproof): use env var — no heredoc needed.
       printf '%s' "${RECIPE_VAR_decomposition_json:-}" > "$_DECOMP_TMPFILE"
-      # #1740: the helper reads the -c workflow= override from RECIPE_VAR_workflow,
-      # and RECIPE_VAR_existing_branch and RECIPE_VAR_pr_number, which rule out quick-change.
+      # #1740: the helper reads the -c workflow= override from RECIPE_VAR_workflow, and
+      # RECIPE_VAR_existing_branch, RECIPE_VAR_pr_number and a `Branch: <ref>` line in
+      # RECIPE_VAR_task_description, which rule out quick-change.
       amplihack orch helper build-workstreams-config < "$_DECOMP_TMPFILE"
     output: "workstreams_file"
 

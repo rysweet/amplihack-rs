@@ -153,22 +153,60 @@ pub fn select(
     }
 }
 
-/// A run that targets an existing branch or PR (`existing_branch` or
-/// `pr_number` set) cannot use `quick-change`, which always works on a new
-/// `quick/` branch. Such a run gets `default-workflow` instead, with W3 when
-/// the user asked for `quick-change` explicitly.
-pub fn demote_for_existing_target(selection: Selection, targets_existing: bool) -> Selection {
-    if !targets_existing || selection.workflow != QUICK_CHANGE {
+/// Why a run cannot use `quick-change`, which always works on a new
+/// `quick/` branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExistingTarget {
+    /// `existing_branch` or `pr_number` is set.
+    BranchOrPr,
+    /// The task text names its branch (`Branch: <ref>`), which
+    /// `workflow-worktree` uses ahead of the `quick/` prefix (#1426).
+    NamedInTask,
+}
+
+/// The target a run already has, checked in the order `workflow-worktree`
+/// uses: `existing_branch` and `pr_number` first, and the task text only
+/// when both are blank.
+pub fn existing_target(
+    existing_branch: &str,
+    pr_number: &str,
+    task_description: &str,
+) -> Option<ExistingTarget> {
+    if !existing_branch.trim().is_empty() || !pr_number.trim().is_empty() {
+        Some(ExistingTarget::BranchOrPr)
+    } else if super::named_branch::task_names_branch(task_description) {
+        Some(ExistingTarget::NamedInTask)
+    } else {
+        None
+    }
+}
+
+/// A run with an [`ExistingTarget`] cannot use `quick-change`: its branch
+/// check stops the run once `workflow-worktree` has given it a branch that
+/// does not start with `quick/`. Such a run gets `default-workflow`
+/// instead, with W3 or W4 when the user asked for `quick-change` explicitly.
+pub fn demote_for_existing_target(
+    selection: Selection,
+    target: Option<ExistingTarget>,
+) -> Selection {
+    let Some(target) = target else {
+        return selection;
+    };
+    if selection.workflow != QUICK_CHANGE {
         return selection;
     }
+    let (warning, reason) = match target {
+        ExistingTarget::BranchOrPr => (EXISTING_TARGET_WARNING, EXISTING_TARGET_REASON),
+        ExistingTarget::NamedInTask => (NAMED_BRANCH_WARNING, NAMED_BRANCH_REASON),
+    };
     let mut warnings = selection.warnings;
     if selection.source == "override" {
-        warnings.push(EXISTING_TARGET_WARNING.to_string());
+        warnings.push(warning.to_string());
     }
     Selection {
         workflow: DEFAULT_WORKFLOW,
         source: selection.source,
-        reason: EXISTING_TARGET_REASON.to_string(),
+        reason: reason.to_string(),
         warnings,
     }
 }
@@ -177,7 +215,7 @@ pub fn demote_for_existing_target(selection: Selection, targets_existing: bool) 
 /// Development workstreams of a parallel decomposition, under the rules
 /// `select` and [`demote_for_existing_target`] apply and log: no override
 /// for a task_type that is not Development (W2), and no `quick-change` when
-/// the run targets an existing branch or PR (W3). `None` leaves every
+/// the run has an [`ExistingTarget`] (W3, W4). `None` leaves every
 /// Development workstream on `default-workflow`.
 pub fn parallel_override(
     override_value: &str,
@@ -196,6 +234,10 @@ pub fn parallel_override(
 /// W3: `-c workflow=quick-change` on a run that targets an existing branch.
 pub const EXISTING_TARGET_WARNING: &str = "[dev-orchestrator] WARNING: workflow override 'quick-change' ignored: existing_branch or pr_number is set";
 const EXISTING_TARGET_REASON: &str = "existing_branch or pr_number set";
+/// W4: `-c workflow=quick-change` on a run whose task names its branch.
+pub const NAMED_BRANCH_WARNING: &str =
+    "[dev-orchestrator] WARNING: workflow override 'quick-change' ignored: the task names a branch";
+const NAMED_BRANCH_REASON: &str = "task names a branch";
 
 /// The fixed log line written to stderr after any warnings.
 pub fn log_line(selection: &Selection) -> String {
@@ -404,24 +446,64 @@ mod tests {
 
     #[test]
     fn existing_target_demotes_quick_change_only() {
+        let bp = Some(ExistingTarget::BranchOrPr);
         let quick = select("", "Development", &classifier("quick-change", "typo"), 1);
-        let kept = demote_for_existing_target(quick.clone(), false);
+        let kept = demote_for_existing_target(quick.clone(), None);
         assert_eq!(kept, quick);
-        let demoted = demote_for_existing_target(quick, true);
+        let demoted = demote_for_existing_target(quick, bp);
         assert_eq!(demoted.workflow, DEFAULT_WORKFLOW);
         assert_eq!(demoted.source, "classifier");
         assert_eq!(demoted.reason, "existing_branch or pr_number set");
         assert!(demoted.warnings.is_empty());
 
         let forced = select("quick-change", "Development", "", 1);
-        let demoted = demote_for_existing_target(forced, true);
+        let demoted = demote_for_existing_target(forced, bp);
         assert_eq!(demoted.workflow, DEFAULT_WORKFLOW);
         assert_eq!(demoted.warnings, vec![EXISTING_TARGET_WARNING.to_string()]);
 
         let full = select("", "Development", &classifier("default-workflow", "big"), 1);
-        assert_eq!(demote_for_existing_target(full.clone(), true), full);
+        assert_eq!(demote_for_existing_target(full.clone(), bp), full);
         let none = select("", "Q&A", "", 1);
-        assert_eq!(demote_for_existing_target(none.clone(), true), none);
+        assert_eq!(demote_for_existing_target(none.clone(), bp), none);
+    }
+
+    #[test]
+    fn a_task_that_names_its_branch_demotes_quick_change_with_w4() {
+        let named = Some(ExistingTarget::NamedInTask);
+        let quick = select("", "Development", &classifier("quick-change", "typo"), 1);
+        let demoted = demote_for_existing_target(quick, named);
+        assert_eq!(
+            (demoted.workflow, demoted.source),
+            (DEFAULT_WORKFLOW, "classifier")
+        );
+        assert_eq!(demoted.reason, "task names a branch");
+        assert!(demoted.warnings.is_empty());
+
+        let forced = select("quick-change", "Development", "", 1);
+        let demoted = demote_for_existing_target(forced, named);
+        assert_eq!(
+            (demoted.workflow, demoted.source),
+            (DEFAULT_WORKFLOW, "override")
+        );
+        assert_eq!(demoted.warnings, vec![NAMED_BRANCH_WARNING.to_string()]);
+    }
+
+    #[test]
+    fn existing_target_checks_the_task_text_only_when_no_target_is_set() {
+        let task = "Fix the typo.\nBranch: feat/issue-9-typo\n";
+        assert_eq!(existing_target("", "", "Fix the typo"), None);
+        assert_eq!(
+            existing_target("", " ", task),
+            Some(ExistingTarget::NamedInTask)
+        );
+        assert_eq!(
+            existing_target("feat/x", "", task),
+            Some(ExistingTarget::BranchOrPr)
+        );
+        assert_eq!(
+            existing_target("", "42", "Fix the typo"),
+            Some(ExistingTarget::BranchOrPr)
+        );
     }
 
     #[test]
@@ -455,7 +537,8 @@ mod tests {
                 want,
                 "{ov:?} {task_type:?} existing={existing}"
             );
-            let logged = demote_for_existing_target(select(ov, task_type, "", 2), existing);
+            let target = existing.then_some(ExistingTarget::BranchOrPr);
+            let logged = demote_for_existing_target(select(ov, task_type, "", 2), target);
             if let Some(w) = want {
                 assert_eq!(logged.workflow, w, "{ov:?} {task_type:?}");
                 assert_eq!(logged.source, "override");

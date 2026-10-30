@@ -8,10 +8,11 @@ tags: ["development", "small-change", "single-session"]
 #
 # One builder session makes the change; a bash step measures the diff against
 # the base pinned before the agent ran. Over the limits the work is handed
-# over, uncommitted, to default-workflow on the same branch, before any check
-# runs. Within the limits the repository's checks run and the change is
-# committed, pushed and opened as a PR, and the recipe stops there: no review,
-# merge, CI repair or finalisation. The verdict comes from git output only.
+# over, as it stands in the worktree, to default-workflow on the same branch,
+# before any check runs. Within the limits the repository's checks run and
+# the change is committed, pushed and opened as a PR, and the recipe stops
+# there: no review, merge, CI repair or finalisation. The verdict comes from
+# git output only.
 #
 # Every bash step sources tools/quick_change_common.sh, found from
 # AMPLIHACK_HOME, repo_path or the $HOME install locations, never from the
@@ -31,6 +32,9 @@ context:
   existing_branch: ""
   quick_change_max_files: "3"
   quick_change_max_lines: "150"
+  # "true" (exactly) from smart-classify-route for docs-only, audit and meta
+  # tasks: an empty diff then finishes the run with verdict empty, no PR.
+  allow_no_op: "false"
   worktree_setup: ""
   quick_change_base: ""
   quick_change_checks: ""
@@ -91,7 +95,9 @@ steps:
     output: "quick_change_implementation"
 
   # Step 4: the deterministic verdict. No condition: nothing skips it. Exit 3
-  # (empty diff), 4 (git configuration drift) and 2 (fault) fail the run.
+  # (empty diff), 4 (git configuration drift) and 2 (fault) fail the run;
+  # with allow_no_op "true" an empty diff gives verdict empty, which skips
+  # every later step, as default-workflow passes a no-op run (#425).
   - id: "quick-change-diff-limits"
     type: "bash"
     command: |
@@ -104,21 +110,22 @@ steps:
       printf '%s\n' "$OUT" >&2
       case "$rc" in
         0) ;;
-        3) exit 3 ;;
+        3) [ "${RECIPE_VAR_allow_no_op:-}" = true ] || exit 3
+           echo "quick-change: allow_no_op is true; finishing with no commit, push or PR" >&2 ;;
         4) exit 4 ;;
         *) echo "ERROR: quick-change-diff-limits: the diff-limits tool failed (exit $rc)" >&2; exit 2 ;;
       esac
       printf '%s\n' "$OUT" | qc_write diff-limits
       LINE1="${OUT%%$'\n'*}"; VERDICT="${LINE1#QUICK_CHANGE_VERDICT=}"; VERDICT="${VERDICT%% *}"
-      case "$VERDICT" in
-        proceed|handover) printf '%s' "$VERDICT" ;;
+      case "$rc:$VERDICT" in
+        0:proceed|0:handover|3:empty) printf '%s' "$VERDICT" ;;
         *) echo "ERROR: quick-change-diff-limits: unexpected verdict line '$LINE1'" >&2; exit 2 ;;
       esac
     output: "quick_change_verdict"
 
-  # Step 5: on hand-over, keep a patch of the uncommitted work and write the
-  # note for default-workflow. The note holds fixed wording and values from
-  # the bash steps only, never agent text or patch content.
+  # Step 5: on hand-over, keep a patch of the change against the base and
+  # write the note for default-workflow (qc_handover_note): fixed wording and
+  # bash-step values only, never agent text or patch content.
   - id: "quick-change-write-handover"
     type: "bash"
     condition: "quick_change_verdict == 'handover'"
@@ -131,14 +138,7 @@ steps:
       PATCH="$QUICK_CHANGE_STATE_DIR/quick-change-handover.patch"
       # Untracked files were marked intent-to-add by the diff-limits tool.
       git -C "$QC_WT" -c core.fsmonitor=false diff --binary --no-ext-diff --no-textconv "$BASE" | qc_write quick-change-handover.patch
-      NOTE="$(printf '%s\n' \
-        "Hand-over from quick-change: the diff exceeded its limits (reason=$REASON)." \
-        "The uncommitted changes are already in this worktree on branch $BRANCH." \
-        "Base commit: $BASE" \
-        "Patch: $PATCH" \
-        'Before you start, run `git status`. If the changes listed in the patch are missing,' \
-        "apply them with: git apply --index $PATCH" \
-        'Continue from these changes; do not start again from the base commit.')"
+      NOTE="$(qc_handover_note "$REASON" "$BRANCH" "$BASE" "$PATCH")"
       printf '%s\n' "$NOTE" | qc_write handover-note
       echo "quick-change: handing over to default-workflow (reason=$REASON); patch at $PATCH" >&2
       printf '%s' "$NOTE"

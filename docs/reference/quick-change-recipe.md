@@ -1,7 +1,7 @@
 ---
 title: Quick-Change Recipe
 description: The single-session recipe for small changes, the diff limits that hand work over to default-workflow, and how smart-orchestrator selects it.
-last_updated: 2026-10-29
+last_updated: 2026-10-30
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
@@ -46,7 +46,7 @@ smart-orchestrator selects `quick-change` for a `Development` task with exactly 
 
 The prompt tells the classifier to choose `default-workflow` when in doubt, and never to recommend `quick-change` for a feature, a behaviour change visible to users, or a task with more than one workstream.
 
-Everything else, including every non-Development task, routes as before. See [Routing from smart-orchestrator](#routing-from-smart-orchestrator).
+A task that targets a branch it already has, through `existing_branch`, `pr_number` or a `Branch: <ref>` line in the task text, gets `default-workflow` instead. Everything else, including every non-Development task, routes as before. See [Routing from smart-orchestrator](#routing-from-smart-orchestrator).
 
 ## Running it
 
@@ -99,7 +99,8 @@ The run log shows the routing choice on stderr:
 | `issue_number` | `""` | Optional. When it matches `^[1-9][0-9]{0,8}$`, the PR body gets `Refs #N` and the branch name uses it. A `#N` in the task text is used when this is empty. |
 | `quick_change_max_files` | `"3"` | File limit for the diff. Must match `^[0-9]{1,6}$`. |
 | `quick_change_max_lines` | `"150"` | Line limit (additions plus deletions). Must match `^[0-9]{1,6}$`. |
-| `existing_branch`, `pr_number` | `""` | Not used by `quick-change`, which always creates a new `quick/` branch. Its worktree step passes both as empty, so values inherited from the orchestrator are ignored; the orchestrator does not choose `quick-change` when either is set (see [Precedence](#precedence)). The recipe sets `existing_branch` itself when it invokes `default-workflow` on hand-over. |
+| `allow_no_op` | `"false"` | When exactly `"true"`, an empty diff finishes the run with verdict `empty` and no commit, push or PR, in place of failing it. smart-classify-route sets it for docs-only, audit, orchestration and meta tasks, and smart-execute-routing passes it on, as it does to `default-workflow`. See [Empty diff](#empty-diff). |
+| `existing_branch`, `pr_number` | `""` | Not used by `quick-change`, which always creates a new `quick/` branch. Its worktree step passes both as empty, so values inherited from the orchestrator are ignored; the orchestrator does not choose `quick-change` when either is set, or when the task text names a branch (see [Precedence](#precedence)). The recipe sets `existing_branch` itself when it invokes `default-workflow` on hand-over. |
 
 No GitHub issue is created by `quick-change`. A hand-over can create one; see [Hand-over to default-workflow](#hand-over-to-default-workflow).
 
@@ -123,7 +124,7 @@ A value that does not match `^[0-9]{1,6}$` fails the `quick-change-diff-limits` 
 | 1 | `quick-change-worktree` | recipe | Runs `workflow-worktree` with `branch_prefix: quick` and with `existing_branch` and `pr_number` set to empty. Output `worktree_setup`. |
 | 2 | `quick-change-record-base` | bash | Checks the branch (see [Branch name](#branch-name)), pins the base commit (`git rev-parse HEAD`) and snapshots the git configuration, hooks and push URL into the state directory. |
 | 3 | `quick-change-implement` | agent | The only agent step. `amplihack:core:builder` makes the change in the worktree. |
-| 4 | `quick-change-diff-limits` | bash | Runs `quick_change_diff_limits.sh`. Output `quick_change_verdict`: `proceed` or `handover`. Has no condition. Fails the run on git configuration drift, an empty diff or a fault in the tool. |
+| 4 | `quick-change-diff-limits` | bash | Runs `quick_change_diff_limits.sh`. Output `quick_change_verdict`: `proceed`, `handover`, or `empty` when the diff is empty and `allow_no_op` is `"true"`. Has no condition. Fails the run on git configuration drift, an empty diff without `allow_no_op`, or a fault in the tool. |
 | 5 | `quick-change-write-handover` | bash | On `handover`, writes the patch file and the hand-over note. |
 | 6 | `quick-change-handover` | recipe | On `handover`, runs `default-workflow`. |
 | 7 | `quick-change-run-checks` | bash | On `proceed`, runs `quick_change_checks.sh`. Output `quick_change_checks`. |
@@ -142,7 +143,9 @@ quick/issue-1740-route-small-tasks
 quick/issue-0-fix-broken-link
 ```
 
-`issue-0` is used when there is no issue number. The branch must pass `git check-ref-format`, must start with `quick/`, and must not be the default branch or a protected name. `quick-change-record-base` checks the branch before the agent runs, and the commit and push steps check it again. A branch that fails stops the recipe; this covers a task text that names its own branch with `Branch: <ref>` and the worktree step's `feat/` fallback name.
+`issue-0` is used when there is no issue number. The branch must pass `git check-ref-format`, must start with `quick/`, and must not be the default branch or a protected name. `quick-change-record-base` checks the branch before the agent runs, and the commit and push steps check it again. A branch that fails stops the recipe; this covers the worktree step's `feat/` fallback name.
+
+A task text that names its own branch (`Branch: <ref>` and the other directive forms of #1426) gets that branch from `workflow-worktree`, ahead of the `quick/` prefix, so `quick-change` cannot run it. smart-orchestrator therefore never selects `quick-change` for such a task; see [Precedence](#precedence). Run on its own with `amplihack recipe run quick-change`, such a task still stops at `quick-change-record-base`, after `workflow-worktree` has created the branch.
 
 ### State directory
 
@@ -256,19 +259,30 @@ On drift, line 1 is `QUICK_CHANGE_VERDICT=stop reason=git-config-drift`, and the
 | 4 | Git configuration drift |
 | 5 | Verdict is `handover` with `--committed` |
 
-The recipe step fails on exit 2, 3 or 4, and neither a PR nor a hand-over happens. An empty diff stops the run with `quick-change: no changes produced`; drift stops it with the message above. On exit 0 the step's output is the verdict word only.
+The recipe step fails on exit 2 or 4, and on exit 3 unless `allow_no_op` is `"true"`; neither a PR nor a hand-over happens. An empty diff stops the run with `quick-change: no changes produced`; drift stops it with the message above. Otherwise the step's output is the verdict word only: `proceed` or `handover` on exit 0, `empty` on exit 3.
+
+### Empty diff
+
+A task where the agent rightly finds nothing to change, such as a documentation audit, produces an empty diff. `default-workflow` treats that as success when `allow_no_op` is `"true"`, and `quick-change` does the same:
+
+| `allow_no_op` | Empty diff |
+| --- | --- |
+| `"true"` | Verdict `empty`. Every later step runs only on `proceed` or `handover`, so none runs: no checks, commit, push, PR or hand-over. The run finishes successfully. |
+| anything else, including `"True"` and `"1"` | The step exits 3 and the run fails. |
+
+Only the exact value `"true"` counts, as in `default-workflow`'s own no-op check, so a value that happens to look true cannot turn an agent that did nothing into a successful run. The `quick/` branch that `workflow-worktree` created is left in place; `default-workflow` leaves its branch the same way in this case. `allow_no_op` changes nothing else: a non-empty diff gets `proceed` or `handover` as usual, and git configuration drift still stops the run.
 
 ## Hand-over to default-workflow
 
 When the verdict is `handover`:
 
 1. `quick-change-write-handover` writes the full diff against the pinned base, untracked files included, to `<state dir>/quick-change-handover.patch`, and writes the hand-over note described below.
-2. Nothing is committed or pushed by `quick-change`. The worktree and branch are left as they are.
+2. Nothing is committed or pushed by `quick-change`. The worktree and branch are left as they are, including any commit the agent made against its instructions.
 3. `quick-change-handover` runs `default-workflow` with the original task, the note appended, and `existing_branch` set from `worktree_setup.branch_name`.
 
 `default-workflow` then reuses the `quick/` branch through its own steps:
 
-- Step 04 (`workflow-worktree`) finds the worktree already registered for the `quick/` branch and reuses it as it is. It does not reset, clean or check out anything on that path, so the uncommitted changes from `quick-change` are still in the worktree when the builder starts.
+- Step 04 (`workflow-worktree`) finds the worktree already registered for the `quick/` branch and reuses it as it is. It does not reset, clean or check out anything on that path, so the changes from `quick-change`, committed by the agent or not, are still in the worktree when the builder starts.
 - `workflow-prep` creates a tracking issue, because `quick-change` did not. This is a second issue when the task already had one.
 - The branch ref is pushed before any commit exists on it, so the remote briefly has an empty `quick/` branch.
 
@@ -276,19 +290,33 @@ A run that hands over skips orchestrator reflection; `default-workflow` has its 
 
 ### Hand-over note
 
-The note is appended to the task description that `default-workflow` receives. It holds no patch content and no agent text, only fixed wording and values produced by the bash steps. The reason is read back from the state directory and must be one of the hand-over reasons in the [Rules](#rules) table, or the step stops. `<state dir>` is replaced by the absolute path of the run's state directory:
+The note is appended to the task description that `default-workflow` receives. It holds no patch content and no agent text, only fixed wording and values produced by the bash steps (`qc_handover_note` in `quick_change_common.sh`). The reason is read back from the state directory and must be one of the hand-over reasons in the [Rules](#rules) table, or the step stops. `<state dir>` is replaced by the absolute path of the run's state directory.
+
+The second line depends on whether the branch has commits after the base, which the step reads with `git rev-list --count <base>..HEAD`. Without commits:
 
 ```text
-Hand-over from quick-change: the diff exceeded its limits (reason=public-interface).
-The uncommitted changes are already in this worktree on branch quick/issue-1740-route-small-tasks.
+Hand-over from quick-change: the change needs the full workflow (reason=public-interface).
+The changes are uncommitted in this worktree on branch quick/issue-1740-route-small-tasks.
 Base commit: 093edc996...
-Patch: <state dir>/quick-change-handover.patch
-Before you start, run `git status`. If the changes listed in the patch are missing,
-apply them with: git apply --index <state dir>/quick-change-handover.patch
+Patch of the whole change against the base commit: <state dir>/quick-change-handover.patch
+Before you start, run `git diff 093edc996...` to see the whole change, committed and uncommitted; `git status` does not show committed changes.
+Apply the patch only if that diff is empty: git apply --index <state dir>/quick-change-handover.patch
 Continue from these changes; do not start again from the base commit.
 ```
 
-The patch is the backup copy. It is needed only if the worktree was changed between the hand-over and the builder step, for example by a person working in it.
+When the agent committed:
+
+```text
+Hand-over from quick-change: the change needs the full workflow (reason=agent-commit).
+The changes are on branch quick/issue-1740-route-small-tasks in this worktree: 1 commit(s) after the base commit, and possibly uncommitted changes as well.
+...
+```
+
+The line is chosen from git, not from the reason. `agent-commit` always comes with commits, but rules 2, 4 and 5 are decided before rule 6, so an agent that committed a large change hands over with `files>N`, `lines>N` or `unparseable-path`, and its commits are still on the branch.
+
+The instruction is the same in both cases. `git diff <base>` compares the worktree with the base, so it shows committed and uncommitted changes, and the files the diff-limits tool marked intent-to-add. The patch is the same diff, so it applies cleanly only to a tree at the base. When the agent committed, `git status` can show a clean tree while the change is in `HEAD`; an instruction keyed on `git status` would have the next agent apply the patch a second time.
+
+The patch is the backup copy. It is needed only if the worktree was changed between the hand-over and the builder step, for example by a person resetting it.
 
 ## Checks
 
@@ -332,6 +360,8 @@ A skipped check is never counted as passed. Skip reasons come from a closed set:
 | `no "lint" script` / `no "test" script` | The script is absent from `package.json` |
 
 A failing check does not stop the recipe. The PR is opened as a draft and its body says "Checks failed". The PR step takes the checks result from the runner's output of `quick-change-run-checks`, and stops if the copy in the state directory differs from it, so a rewritten summary file cannot turn a failed run into a ready-for-review PR. The tool exits 0 once the checks have run and 2 on a usage error.
+
+The PR step also checks every row of the stored table against the form the tool writes (a code-span label, then `exit N` or one of the skip reasons above) and the row counts against the summary, so the table cannot carry other text into the PR body. These patterns in `quick_change_common.sh` repeat strings that `quick_change_checks.sh` and `quick_change_diff_limits.sh` produce. `issue_1740_state_gates` feeds `qc_checks_summary`, `qc_checks_table` and `qc_handover_reason` what the two tools print, covering every skip reason and every hand-over reason, and reads both tools' source: a new skip reason or hand-over rule fails that test until the gate accepts it, rather than failing a run after the branch is pushed or the agent's work is done.
 
 ## Pull request
 
@@ -419,7 +449,14 @@ Classifier output with the new fields:
 | 7 | Classifier recommends `default-workflow` | `default-workflow` | `classifier` | |
 | 8 | No recommendation, or any other value | `default-workflow` | `default` | |
 
-After the table, a `quick-change` result becomes `default-workflow` with `reason=existing_branch or pr_number set` when the run sets `existing_branch` or `pr_number`, because `quick-change` cannot work on an existing branch. The source is kept. When the source is `override`, W3 is printed.
+After the table, a `quick-change` result becomes `default-workflow` when the run already has a branch, because `quick-change` works only on a new `quick/` branch and its branch check would stop the run. The source is kept. The checks are made in the order `workflow-worktree` uses:
+
+| Condition | `reason=` | Warning when the source is `override` |
+| --- | --- | --- |
+| `existing_branch` or `pr_number` is set | `existing_branch or pr_number set` | W3 |
+| Neither is set, and the task text names a branch | `task names a branch` | W4 |
+
+"Names a branch" uses the directive rules of `workflow_branch_name.sh explicit` (#1426), which `workflow-worktree` runs: a line starting `Branch:`, `Branch name:`, `Branch ref:` or `Branch =` (any case) with the value on the same line or the next non-blank one, or `Branch`, a dash (`-`, `–` or `—`), any text and a final `:`, with the value on the next non-blank line. The value must be a valid ref containing `/` or `-`, not a base branch name and not starting with `origin/`, `refs/` or `heads/`. Prose such as "Branch coverage is low in: src/foo-bar.rs" does not count. Whether the branch exists does not matter. The helper reads the task text from `RECIPE_VAR_task_description`; `crates/amplihack-cli/src/commands/orch/named_branch.rs` repeats the shell tool's patterns, a unit test there fails when the shell tool's patterns or bounds change, and `issue_1740_select_workflow` runs both on each directive form and fails when they disagree.
 
 A valid override applies however many workstreams there are. With `-c workflow=quick-change` and a parallel decomposition, every Development workstream runs `quick-change` and orchestrator reflection is skipped. Without an override, every Development workstream of a parallel decomposition runs `default-workflow`, whatever recipe the model gave it, and a non-Development workstream that the model gave `quick-change` runs its classification's own recipe instead; see [Dev-Orchestrator Routing Contract](./dev-orchestrator-routing.md#routing-invariant). The log line therefore names the recipe the workstreams run. Non-Development routing (Q&A, Operations, Investigation) never changes.
 
@@ -431,9 +468,10 @@ Override values are trimmed and lower-cased, then matched against the exact list
 [dev-orchestrator] WARNING: unknown workflow override 'quick' ignored
 [dev-orchestrator] WARNING: workflow override 'quick-change' ignored for task_type Q&A
 [dev-orchestrator] WARNING: workflow override 'quick-change' ignored: existing_branch or pr_number is set
+[dev-orchestrator] WARNING: workflow override 'quick-change' ignored: the task names a branch
 ```
 
-The first is W1, the second W2, the third W3. The warning text, the `reason=` values (including `quick-change needs one workstream; got N` and `unspecified`) and the eight rows of the precedence table are fixed by this page. The unit tests in `select_workflow.rs` assert them exactly.
+The first is W1, the second W2, the third W3, the fourth W4. The warning text, the `reason=` values (including `quick-change needs one workstream; got N`, `task names a branch` and `unspecified`) and the eight rows of the precedence table are fixed by this page. The unit tests in `select_workflow.rs` assert them exactly.
 
 ### Log line
 
@@ -460,12 +498,12 @@ The reason is sanitised before it is logged: control characters (including ESC a
 | Workstream classification | Override (`-c workflow=`) | Model `recipe` | Result |
 | --- | --- | --- | --- |
 | Development | `quick-change` or `default-workflow`, and the top-level `task_type` is Development | any | the override |
-| Development | `quick-change`, with `existing_branch` or `pr_number` set | any | `default-workflow` |
+| Development | `quick-change`, with `existing_branch` or `pr_number` set, or a task text that names a branch | any | `default-workflow` |
 | Development | empty or invalid, or the top-level `task_type` is not Development | any, `quick-change` included | `default-workflow` |
 | Non-Development | any | `quick-change` | the classification's own recipe: `investigation-workflow`, `qa-workflow` or `consensus-workflow`, and `default-workflow` for Operations |
 | Non-Development | any | anything else | unchanged |
 
-The helper reads the override from `RECIPE_VAR_workflow` and the two targets from `RECIPE_VAR_existing_branch` and `RECIPE_VAR_pr_number`, the same values `select-workflow` receives. The log line that `select-workflow` writes therefore names the recipe every Development workstream runs: `quick-change` only under a valid override, otherwise `default-workflow`, with `reason=quick-change needs one workstream; got N` when the classifier recommended `quick-change`. W1, W2 and W3 are printed by `select-workflow`; the helper prints W1 again for an invalid override. The blocked-fallback and adaptive execution paths always use `default-workflow`.
+The helper reads the override from `RECIPE_VAR_workflow`, the two targets from `RECIPE_VAR_existing_branch` and `RECIPE_VAR_pr_number`, and the task text from `RECIPE_VAR_task_description`: the same values `select-workflow` receives. The log line that `select-workflow` writes therefore names the recipe every Development workstream runs: `quick-change` only under a valid override, otherwise `default-workflow`, with `reason=quick-change needs one workstream; got N` when the classifier recommended `quick-change`. W1 to W4 are printed by `select-workflow`; the helper prints W1 again for an invalid override. The blocked-fallback and adaptive execution paths always use `default-workflow`.
 
 ## The select-workflow helper
 
@@ -480,6 +518,7 @@ amplihack orch helper select-workflow [--override <value>] [--task-type <type>] 
 | `--workstream-count` | `workstream_count` |
 | `--existing-branch` | `RECIPE_VAR_existing_branch`. Any non-blank value rules out `quick-change`. |
 | `--pr-number` | `RECIPE_VAR_pr_number`. Any non-blank value rules out `quick-change`. |
+| `RECIPE_VAR_task_description` (environment) | The task text, read by the helper itself so it never goes through argv. A `Branch: <ref>` line rules out `quick-change`. |
 | stdin | `decomposition_json`, written to a `mktemp` file with `printf` |
 
 | Output | Content |
@@ -516,7 +555,7 @@ When `selected_workflow` is `quick-change`, these smart-orchestrator steps do no
 | `smart-reflect-loop` | `reflect-round-1`, `execute-round-2`, `reflect-round-2`, `execute-round-3`, `reflect-final` |
 | `smart-validate-summarize` | `validate-outside-in-testing` |
 
-`summarize` and `complete-session` still run.
+`summarize` and `complete-session` still run, including after a run that finished with verdict `empty`.
 
 Reflection rounds and outside-in validation exist to judge a full workflow run. Outside-in validation looks for Step 13 and qa-team evidence that `quick-change` never produces, so running it would start extra rounds and remove the saving the recipe is for. A run that hands over also skips these steps; `default-workflow` reviews the work itself.
 

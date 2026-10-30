@@ -32,7 +32,7 @@ For a single workstream, `select-workflow` chooses between the two and logs the 
 
 For a parallel decomposition, `build-workstreams-config` sets each workstream's recipe. The model's `recipe` field never selects `quick-change`, because `quick-change` needs exactly one workstream (row 6 of the [precedence table](./quick-change-recipe.md#precedence)):
 
-- A Development workstream runs `default-workflow`, unless a valid `-c workflow=` override (`quick-change` or `default-workflow`) is set. The override applies only when the top-level `task_type` is Development, and `quick-change` is not applied when `existing_branch` or `pr_number` is set. These are the same rules `select-workflow` applies and logs (W2, W3), so the log line names the recipe the workstreams run.
+- A Development workstream runs `default-workflow`, unless a valid `-c workflow=` override (`quick-change` or `default-workflow`) is set. The override applies only when the top-level `task_type` is Development, and `quick-change` is not applied when `existing_branch` or `pr_number` is set or the task text names its branch with a `Branch: <ref>` line. These are the same rules `select-workflow` applies and logs (W2, W3, W4), so the log line names the recipe the workstreams run.
 - A workstream with any other classification keeps the model's recipe, except that `quick-change`, which commits, pushes and opens a PR, becomes the classification's own recipe: `investigation-workflow`, `qa-workflow` or `consensus-workflow`, and `default-workflow` for Operations. The override never changes these workstreams.
 
 How the single-workstream route chooses between the two is described in [Quick-Change Recipe: Routing from smart-orchestrator](./quick-change-recipe.md#routing-from-smart-orchestrator).
@@ -71,7 +71,7 @@ The deterministic normalization rule is:
 | `Development` | `default-workflow` | `default-workflow` |
 | `Development` | `quick-change` | `default-workflow` |
 | `Development` | any other value | `default-workflow` |
-| `Development`, valid `-c workflow=` override, top-level `task_type` Development | any value | the override, except that `quick-change` becomes `default-workflow` when `existing_branch` or `pr_number` is set |
+| `Development`, valid `-c workflow=` override, top-level `task_type` Development | any value | the override, except that `quick-change` becomes `default-workflow` when `existing_branch` or `pr_number` is set or the task names its branch |
 | Non-Development, any override | `quick-change` | the classification's own recipe (`investigation-workflow`, `qa-workflow`, `consensus-workflow`, or `default-workflow` for Operations) |
 | Non-Development, any override | any other value | Existing route is preserved |
 
@@ -142,7 +142,7 @@ There is no configuration flag that disables the Development routing invariant.
 
 | Setting | Effect on routing |
 | --- | --- |
-| `workflow=quick-change` | Forces `quick-change` for every Development workstream. Ignored, with a warning, for non-Development tasks and when `existing_branch` or `pr_number` is set |
+| `workflow=quick-change` | Forces `quick-change` for every Development workstream. Ignored, with a warning, for non-Development tasks, when `existing_branch` or `pr_number` is set, and when the task text names its branch (`Branch: <ref>`) |
 | `workflow=default-workflow` | Forces `default-workflow` for every Development workstream, even when the classifier recommends `quick-change` |
 | `workflow=<anything else>` | Ignored with `[dev-orchestrator] WARNING: unknown workflow override '<value>' ignored` |
 | `force_single_workstream=true` | Prevents parallel decomposition; a single `Development` workstream runs `default-workflow` or `quick-change` |

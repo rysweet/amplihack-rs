@@ -156,10 +156,14 @@ mod issue_1740_diff_limits_awk;
 mod issue_1740_diff_limits_guards;
 #[path = "issue_1740_quick_change_recipe.rs"]
 mod issue_1740_quick_change_recipe;
+#[path = "issue_1740_quick_change_steps.rs"]
+mod issue_1740_quick_change_steps;
 #[path = "issue_1740_routing_recipes.rs"]
 mod issue_1740_routing_recipes;
 #[path = "issue_1740_select_workflow.rs"]
 mod issue_1740_select_workflow;
+#[path = "issue_1740_state_gates.rs"]
+mod issue_1740_state_gates;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

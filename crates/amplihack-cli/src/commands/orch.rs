@@ -21,6 +21,7 @@ use std::path::PathBuf;
 
 use crate::commands::multitask;
 
+mod named_branch;
 mod select_workflow;
 mod workflow_log_inventory;
 
@@ -151,6 +152,8 @@ pub enum OrchHelperCommands {
     /// unreadable input is treated as empty). Prints the bare value with no
     /// trailing newline, writes any warnings and then one
     /// `[dev-orchestrator] Workflow:` log line to stderr, and always exits 0.
+    /// Reads the task text from `RECIPE_VAR_task_description`: a task that
+    /// names its branch (`Branch: <ref>`) cannot use `quick-change`.
     /// See `docs/reference/quick-change-recipe.md` for the precedence table.
     SelectWorkflow {
         /// The `-c workflow=` value: `quick-change` or `default-workflow`.
@@ -534,13 +537,16 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
                 eprintln!("{}", select_workflow::unknown_override_warning(&workflow));
             }
             // The rules select-workflow has already applied and logged (W2,
-            // W3), so the workstreams run what its log line says.
-            let targets_existing = !var("RECIPE_VAR_existing_branch").trim().is_empty()
-                || !var("RECIPE_VAR_pr_number").trim().is_empty();
+            // W3, W4), so the workstreams run what its log line says.
+            let target = select_workflow::existing_target(
+                &var("RECIPE_VAR_existing_branch"),
+                &var("RECIPE_VAR_pr_number"),
+                &var("RECIPE_VAR_task_description"),
+            );
             let effective = select_workflow::parallel_override(
                 &workflow,
                 &var("RECIPE_VAR_task_type"),
-                targets_existing,
+                target.is_some(),
             )
             .unwrap_or("");
             let path = build_workstreams_config_with_override(&input, effective)?;
@@ -556,11 +562,14 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
         } => {
             let input = read_bounded_stdin();
             let count = workstream_count.trim().parse::<usize>().unwrap_or(0);
-            let targets_existing =
-                !existing_branch.trim().is_empty() || !pr_number.trim().is_empty();
+            // The task text is read from the runner's environment, as
+            // build-workstreams-config reads its inputs, so it never goes
+            // through argv.
+            let task = std::env::var("RECIPE_VAR_task_description").unwrap_or_default();
+            let target = select_workflow::existing_target(&existing_branch, &pr_number, &task);
             let selection = select_workflow::demote_for_existing_target(
                 select_workflow::select(&override_value, &task_type, &input, count),
-                targets_existing,
+                target,
             );
             for warning in &selection.warnings {
                 eprintln!("{warning}");

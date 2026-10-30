@@ -244,7 +244,7 @@ Expected output:
 ["quick-change","quick-change"]
 ```
 
-With `RECIPE_VAR_existing_branch` or `RECIPE_VAR_pr_number` also set, both workstreams get `default-workflow` again, because `quick-change` cannot work on an existing branch.
+With `RECIPE_VAR_existing_branch` or `RECIPE_VAR_pr_number` also set, or a `Branch: <ref>` line in `RECIPE_VAR_task_description`, both workstreams get `default-workflow` again, because `quick-change` cannot work on an existing or named branch.
 
 ## Verify the workflow selection and log line
 
@@ -278,6 +278,20 @@ Expected stdout is `none`, and stderr starts with:
 [dev-orchestrator] WARNING: workflow override 'quick-change' ignored for task_type Q&A
 ```
 
+A task that names its branch never gets `quick-change`, because `workflow-worktree` would give it that branch in place of a `quick/` one. The helper reads the task text from `RECIPE_VAR_task_description`, where the recipe runner puts it:
+
+```bash
+printf '%s' '{"recommended_workflow":"quick-change","workflow_reason":"comment typo"}' \
+  | RECIPE_VAR_task_description=$'Fix the typo.\nBranch: feat/issue-9-typo' \
+    amplihack orch helper select-workflow --task-type Development --workstream-count 1
+```
+
+Expected stdout is `default-workflow`, and stderr is:
+
+```text
+[dev-orchestrator] Workflow: default-workflow source=classifier reason=task names a branch
+```
+
 The full precedence table is in [Quick-Change Recipe: Routing from smart-orchestrator](../reference/quick-change-recipe.md#routing-from-smart-orchestrator).
 
 ## Verify with focused tests
@@ -306,7 +320,7 @@ NODE_OPTIONS=--max-old-space-size=32768 cargo test -p amplihack-cli --test cli_i
 | --- | --- | --- |
 | Development workstream keeps `investigation-workflow` | An old binary or stale installed bundle is being used | Run `cargo build -p amplihack-cli`, then run the intended binary explicitly or refresh the install |
 | Every workstream becomes `default-workflow` | Top-level classification is being applied too broadly | Ensure each hybrid workstream that should keep a non-Development route carries its own `classification`, `task_type`, or `type` |
-| `RECIPE_VAR_workflow=quick-change` leaves Development workstreams on `default-workflow` | `RECIPE_VAR_task_type` is not `Development`, or `RECIPE_VAR_existing_branch` or `RECIPE_VAR_pr_number` is set | Expected: the override applies only to a Development task that does not target an existing branch or PR (W2 and W3) |
+| `RECIPE_VAR_workflow=quick-change` leaves Development workstreams on `default-workflow` | `RECIPE_VAR_task_type` is not `Development`, `RECIPE_VAR_existing_branch` or `RECIPE_VAR_pr_number` is set, or `RECIPE_VAR_task_description` names a branch | Expected: the override applies only to a Development task that does not target an existing or named branch or a PR (W2, W3 and W4) |
 | Development workstream with `recipe: "quick-change"` becomes `default-workflow` | Expected in a parallel decomposition: the model's `recipe` never selects `quick-change` | Use `-c workflow=quick-change` to force it |
 | `WARNING: unknown workflow override` | `-c workflow=` holds a value other than `quick-change` or `default-workflow` | Correct the value; it is matched after trimming and lower-casing |
 | `amplihack orch helper` is missing | The installed CLI is too old | Rebuild or reinstall amplihack |
