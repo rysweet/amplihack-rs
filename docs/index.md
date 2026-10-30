@@ -161,6 +161,7 @@ amplihack copilot
 - [Claude Profiles How-To](howto/claude-profiles.md) - Separate Claude logins per profile, shared sessions, and what a new profile inherits
 - [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`, and resume sessions stopped by a usage limit
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
+- [Keep Tests out of the Real Profile Root](howto/keep-tests-out-of-the-real-profile-root.md) - How tests avoid writing real profiles' `settings.json`, and the guard that fails the run when one changes
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
 - [`amplihack sessions` Reference](reference/sessions-command.md) - Archive old Claude Code session logs out of `~/.claude/projects`, restore one, and the rotator's daily run
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
