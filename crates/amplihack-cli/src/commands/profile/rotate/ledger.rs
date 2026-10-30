@@ -21,7 +21,13 @@ pub use super::hand_fields::{
 };
 use super::hand_fields::{valid_guidance, valid_lost_login};
 pub use super::older_readers::for_older_readers;
-pub use super::spend_blocks::{active_blocks, prune_blocks, spend_reset};
+#[cfg(test)]
+pub use super::spend_blocks::KEY_REASONS;
+use super::spend_blocks::valid_overflow;
+pub use super::spend_blocks::{
+    KEY_EXHAUSTED, KEY_RATE_LIMITED, KEY_REVOKED, LIVE_KIND_PLATFORM, active_blocks, prune_blocks,
+    spend_reset,
+};
 const VERSION: u32 = 1;
 const MAX_STATE: u64 = 64 * 1024;
 /// The longest account value accepted (an e-mail address is at most 320).
@@ -70,6 +76,15 @@ pub struct OverflowBlock {
 }
 
 impl OverflowBlock {
+    /// An API-key block for `reason`, from `at` until `until`.
+    pub fn key(reason: &str, at: i64, until: i64) -> Self {
+        Self {
+            at,
+            until,
+            reason: reason.to_string(),
+        }
+    }
+
     /// A spend-limit block recorded at `at`.
     pub fn spend_limit(at: i64) -> Self {
         Self {
@@ -119,6 +134,15 @@ pub struct RotateLedger {
     /// Profiles recorded as live that lost their login to a manual `/login`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lost_login: Vec<String>,
+    /// `"platform"` while `live` is an API-key profile (issue #1700);
+    /// absent for a subscription login. Readers that cannot detect kinds,
+    /// such as the limit-resume hook, use it; the rotator repairs it on
+    /// every cycle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_kind: Option<String>,
+    /// The API-key block (issue #1700): it covers every API-key profile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_block: Option<OverflowBlock>,
 }
 
 impl Default for RotateLedger {
@@ -136,6 +160,8 @@ impl Default for RotateLedger {
             guidance: None,
             home_unreadable_since: None,
             lost_login: Vec::new(),
+            live_kind: None,
+            platform_block: None,
         }
     }
 }
@@ -222,30 +248,6 @@ pub fn safe_account(v: &str) -> bool {
 
 fn valid_name(v: Option<&str>) -> bool {
     v.is_none_or(|n| ProfileName::parse(n).is_ok())
-}
-
-/// The overflow fields of a loaded ledger: a known tag, at most
-/// [`MAX_BLOCKS`] blocks, each keyed by a profile name, for a spend limit,
-/// recorded at a positive time and ending after it but within
-/// [`MAX_BLOCK_SECS`], so no block can be made to last for ever. An end
-/// that cannot be computed counts as invalid.
-fn valid_overflow(l: &RotateLedger) -> bool {
-    let tag_ok = l
-        .last_cycle
-        .as_ref()
-        .and_then(|c| c.overflow.as_deref())
-        .is_none_or(|t| OVERFLOW_TAGS.contains(&t));
-    tag_ok
-        && l.overflow_blocked.len() <= MAX_BLOCKS
-        && l.overflow_blocked.iter().all(|(name, b)| {
-            ProfileName::parse(name).is_ok()
-                && b.reason == SPEND_LIMIT
-                && b.at > 0
-                && b.at < b.until
-                && b.at
-                    .checked_add(MAX_BLOCK_SECS)
-                    .is_some_and(|max| b.until <= max)
-        })
 }
 
 impl RotateState {

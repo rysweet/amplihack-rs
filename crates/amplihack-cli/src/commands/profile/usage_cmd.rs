@@ -111,6 +111,10 @@ pub(super) struct Row {
     /// The `~/.claude` row: a login no profile holds (issue #1693). Shown,
     /// never recorded.
     pub(super) live_in_home: bool,
+    /// An API-key profile (issue #1700): not probed, billed per token.
+    pub(super) api_key: bool,
+    /// The API-key block on an API-key row: its reason and end.
+    pub(super) api_key_blocked: Option<(String, i64)>,
     pub(super) report: UsageReport,
     pub(super) error: Option<ErrorReason>,
     pub(super) raw: Option<Raw>,
@@ -141,6 +145,11 @@ pub(super) fn run(
     let binary = run::resolve_claude_binary()?;
     let home = home_dir();
     let (live, home_row) = detect_live(store, home.as_deref(), &profiles);
+    // Issue #1700: API-key profiles are never probed; a probe costs tokens
+    // or times out, and there are no plan limits to read.
+    let keys = ApiKeys::load(store, home.as_deref(), &profiles);
+    let (keyed, profiles): (Vec<ProfileName>, Vec<ProfileName>) =
+        profiles.into_iter().partition(|p| keys.names.contains(p));
     let live_name = live.as_ref().map(|l| l.name.clone());
     // Read before probing: the account each row is recorded under must be
     // the one live when its probe started, so that a swap during the probe
@@ -161,6 +170,7 @@ pub(super) fn run(
     // numbers are shown but not recorded against the profile.
     let swapped = swapped_live(store, home.as_deref(), live);
     let mut rows = build_rows(&marks, &profiles, probes, live_name.as_ref());
+    rows.extend(keys.rows(&marks, &keyed));
     // Only when every profile is listed: naming profiles asks about those.
     if home_row && names.is_empty() {
         let cmd = run::build_home_command(&binary, &["-p".into(), "/usage".into()]);
@@ -230,6 +240,8 @@ fn home_row_of(p: Probe) -> Row {
         overflow: false,
         overflow_blocked_until: None,
         live_in_home: true,
+        api_key: false,
+        api_key_blocked: None,
         report: p.report,
         error: p.error,
         raw: p.raw,
@@ -314,6 +326,80 @@ fn overflow_blocks(
     Default::default()
 }
 
+/// The selected API-key profiles (issue #1700), which of them is live in
+/// `~/.claude`, and the API-key block.
+#[derive(Default)]
+struct ApiKeys {
+    names: Vec<ProfileName>,
+    live: Option<ProfileName>,
+    block: Option<(String, i64)>,
+}
+
+impl ApiKeys {
+    #[cfg(unix)]
+    fn load(
+        store: &ProfileStore,
+        home: Option<&std::path::Path>,
+        selected: &[ProfileName],
+    ) -> Self {
+        let names: Vec<ProfileName> = super::kind::Ctx::load(store, home)
+            .platform_profiles(store)
+            .into_iter()
+            .filter(|p| selected.contains(p))
+            .collect();
+        if names.is_empty() {
+            return Self::default();
+        }
+        let live = names
+            .iter()
+            .find(|n| super::rotate::is_live(store, home, n))
+            .cloned();
+        let ledger = super::rotate::ledger::RotateState::new(store.root())
+            .load_ledger()
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "warning: could not read the rotate ledger ({e}); no API-key block shown"
+                );
+                None
+            });
+        let block = ledger.and_then(|l| {
+            super::rotate::platform_block::active(&l, now_secs())
+                .map(|b| (b.reason.clone(), b.until))
+        });
+        Self { names, live, block }
+    }
+
+    #[cfg(not(unix))]
+    fn load(_: &ProfileStore, _: Option<&std::path::Path>, _: &[ProfileName]) -> Self {
+        Self::default()
+    }
+
+    /// One row per API-key profile, with no reading.
+    fn rows(&self, marks: &Marks, names: &[ProfileName]) -> Vec<Row> {
+        names
+            .iter()
+            .map(|name| {
+                let n = name.as_str();
+                Row {
+                    profile: n.to_string(),
+                    account: n.to_string(),
+                    default: marks.default.as_ref() == Some(name),
+                    leased_to: None,
+                    live_in: self.live.as_ref() == Some(name),
+                    overflow: false,
+                    overflow_blocked_until: None,
+                    api_key: true,
+                    api_key_blocked: self.block.clone(),
+                    live_in_home: false,
+                    report: UsageReport::empty(UsageState::Ok),
+                    error: None,
+                    raw: None,
+                }
+            })
+            .collect()
+    }
+}
+
 /// One row per probe, with the default, lease and `~/.claude` marks.
 fn build_rows(
     marks: &Marks,
@@ -347,6 +433,8 @@ fn build_rows(
                     .then(|| blocked.get(n).copied())
                     .flatten(),
                 live_in_home: false,
+                api_key: false,
+                api_key_blocked: None,
                 report: p.report,
                 error: p.error,
                 raw: p.raw,
@@ -684,11 +772,23 @@ fn kill_group(_child: &std::process::Child) {}
 /// then unavailable rows by state; ties by name.
 pub(super) fn order(rows: &mut [Row], now: i64) {
     rows.sort_by(|a, b| {
-        let (ga, gb) = (sort_key(&a.report, now), sort_key(&b.report, now));
+        let (ga, gb) = (row_key(a, now), row_key(b, now));
         ga.0.cmp(&gb.0)
             .then(ga.1.total_cmp(&gb.1))
             .then_with(|| a.profile.cmp(&b.profile))
     });
+}
+
+/// [`sort_key`], with API-key rows (issue #1700) after every usable and
+/// exhausted row and before the unavailable ones.
+fn row_key(r: &Row, now: i64) -> (u8, f64) {
+    if r.api_key {
+        return (2, 0.0);
+    }
+    match sort_key(&r.report, now) {
+        (g, m) if g >= 2 => (g + 1, m),
+        k => k,
+    }
 }
 
 /// `(group, metric)`; a smaller metric sorts first within the group.
@@ -750,6 +850,9 @@ pub(super) fn marks(row: &Row) -> String {
     if row.live_in {
         // The wording auto-switch uses for a login live in another directory.
         parts.push(format!("live in {}", default_live::LABEL));
+    }
+    if let Some((reason, until)) = &row.api_key_blocked {
+        parts.push(format!("blocked until {} ({reason})", utc_time(*until)));
     }
     if row.overflow {
         parts.push(match row.overflow_blocked_until {
@@ -835,8 +938,12 @@ pub(super) fn render_table(rows: &[Row]) -> String {
             [
                 sanitize_display(&r.profile, false),
                 sanitize_display(&marks(r), false),
-                r.report.state.as_str().to_string(),
-                pct(&r.report.session),
+                state_label(r).to_string(),
+                if r.api_key {
+                    API_KEY_CELL.to_string()
+                } else {
+                    pct(&r.report.session)
+                },
                 resets(&r.report.session),
                 pct(&r.report.week_all),
                 resets(&r.report.week_all),
@@ -877,7 +984,28 @@ pub(super) fn render_table(rows: &[Row]) -> String {
             sanitize_display(&r.profile, false)
         ));
     }
+    if rows.iter().any(|r| r.api_key && r.live_in) {
+        out.push_str("live: work is running on the API key (billed per token)\n");
+    }
+    if let Some((reason, until)) = rows.iter().find_map(|r| r.api_key_blocked.as_ref()) {
+        out.push_str(&format!(
+            "blocked: the API key until {} ({reason})\n",
+            utc_time(*until)
+        ));
+    }
     out
+}
+
+/// The `SESSION` cell of an API-key row.
+const API_KEY_CELL: &str = "api-key (billed per token)";
+
+/// The `STATE` of a row: `api_key` for an API-key profile.
+fn state_label(r: &Row) -> &'static str {
+    if r.api_key {
+        "api_key"
+    } else {
+        r.report.state.as_str()
+    }
 }
 
 /// The row's own probe in this run shows a plan limit reached: an
@@ -911,6 +1039,12 @@ fn raw_block(out: &mut String, name: &str, text: &str) {
 }
 
 #[derive(Serialize)]
+struct ApiKeyBlock<'a> {
+    reason: &'a str,
+    until: i64,
+}
+
+#[derive(Serialize)]
 struct JsonRow<'a> {
     profile: &'a str,
     account: &'a str,
@@ -919,7 +1053,9 @@ struct JsonRow<'a> {
     live_in: Option<&'static str>,
     overflow: bool,
     overflow_blocked_until: Option<i64>,
-    state: UsageState,
+    kind: &'static str,
+    api_key_blocked: Option<ApiKeyBlock<'a>>,
+    state: &'static str,
     session: Option<&'a UsageWindow>,
     week_all: Option<&'a UsageWindow>,
     week_models: &'a [UsageWindow],
@@ -941,7 +1077,15 @@ pub(super) fn render_json(rows: &[Row]) -> String {
             live_in: r.live_in.then_some(default_live::LABEL),
             overflow: r.overflow,
             overflow_blocked_until: r.overflow_blocked_until,
-            state: r.report.state,
+            kind: if r.api_key { "api-key" } else { "subscription" },
+            api_key_blocked: r
+                .api_key_blocked
+                .as_ref()
+                .map(|(reason, until)| ApiKeyBlock {
+                    reason,
+                    until: *until,
+                }),
+            state: state_label(r),
             session: r.report.session.as_ref(),
             week_all: r.report.week_all.as_ref(),
             week_models: &r.report.week_models,
@@ -982,6 +1126,7 @@ pub(super) fn observations(rows: &[Row]) -> Vec<Observation> {
         })
     };
     rows.iter()
+        .filter(|r| !r.api_key)
         .filter(|r| {
             !r.live_in_home
                 && matches!(

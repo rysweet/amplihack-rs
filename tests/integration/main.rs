@@ -457,6 +457,14 @@ mod auto_drive_to_merge;
 // real validator against a private git repo and a stub gh.
 #[path = "issue_1641_finalization_open_pr.rs"]
 mod issue_1641_finalization_open_pr;
+
+// Issue #1714: under auto-drive, a default-workflow build that finalizes
+// BLOCKED_CI with a published open PR hands that PR to the crusty and
+// merge-ready loops; a standalone run and every other failure still fail
+// closed. Runs the real validator and autodrive-build step-03 against stubs.
+#[path = "issue_1714_finalization_handoff.rs"]
+mod issue_1714_finalization_handoff;
+
 #[path = "issue_1642_github_origin_parsing.rs"]
 mod issue_1642_github_origin_parsing;
 

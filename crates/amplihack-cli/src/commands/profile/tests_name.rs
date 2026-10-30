@@ -17,6 +17,15 @@ fn accepts_valid_names() {
 }
 
 #[test]
+fn rejects_the_kind_line_separators() {
+    // Issue #1700: `kind=NAME:KIND,NAME:KIND` in `.auto-switch` relies on
+    // a name never holding `:` or `,`.
+    for n in ["a:b", "a,b", "api-key:platform", ":", ","] {
+        assert!(ProfileName::parse(n).is_err(), "{n:?} must be rejected");
+    }
+}
+
+#[test]
 fn rejects_malicious_and_invalid_names() {
     let too_long = "a".repeat(65);
     for n in [

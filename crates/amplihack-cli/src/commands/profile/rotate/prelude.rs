@@ -12,6 +12,7 @@ use super::handfix;
 use super::identify::Skip;
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{Snap, live_alert, live_name, snapshot};
+use super::overflow_record::log_ignored;
 use super::swap::{self, RecoverOutcome};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Lock, State, now, recover_auto_switch};
@@ -83,7 +84,7 @@ pub fn locked_prelude(
     }
     let first = snapshot(ctx, &state)?;
     log_skips(ctx, &mut out, &first);
-    if let Some((kind, line)) = live_alert(&first.live) {
+    if let Some((kind, line)) = live_alert(&first) {
         let live = live_name(&first.live).cloned();
         return Ok((out, Prelude::LiveUnusable { kind, live, line }));
     }
@@ -91,9 +92,11 @@ pub fn locked_prelude(
 }
 
 /// Logs the skipped profiles and the ignored prototype ledger when they
-/// differ from what this process last logged.
+/// differ from what this process last logged, and each API-key profile
+/// ignored in `overflow=` once per process.
 fn log_skips(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
     let t = now();
+    log_ignored(out, snap, t);
     if snap.proto != ctx.last_proto {
         if let Some(reason) = snap.proto {
             out.emit(t, &format!("skip: prototype ledger ignored ({reason})"));

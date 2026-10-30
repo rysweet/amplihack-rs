@@ -22,7 +22,10 @@ fn list_marks_default_with_star() {
     s.add(&n("alpha")).unwrap();
     s.add(&n("beta")).unwrap();
     pointer::write(s.root(), &n("beta")).unwrap();
-    assert_eq!(render_list(&s).unwrap(), "  alpha\n* beta\n");
+    assert_eq!(
+        render_list(&s).unwrap(),
+        "  NAME   KIND\n  alpha  subscription\n* beta   subscription\n"
+    );
 }
 
 #[test]
@@ -158,10 +161,22 @@ fn profile_flag_with_env_activated_docker_is_an_error() {
 // Order: --profile flag > inherited name > default pointer > none.
 // ---------------------------------------------------------------------------
 
+const OAUTH_LOGIN: &str = r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#;
+
 fn store_with(names: &[&str]) -> (tempfile::TempDir, ProfileStore) {
     let (d, s) = store();
     for name in names {
-        s.add(&n(name)).unwrap();
+        let dir = s.add(&n(name)).unwrap();
+        // Issue #1700: an OAuth login, so the launch guard lets it start;
+        // private, as Claude writes it, since one group or others could
+        // write counts as unreadable whatever the umask.
+        let login = dir.join(".credentials.json");
+        fs::write(&login, r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&login, fs::Permissions::from_mode(0o600)).unwrap();
+        }
     }
     (d, s)
 }
@@ -637,12 +652,14 @@ mod live_launch {
         PathBuf,
     ) {
         let (d, s) = store_with(&["team", "work"]);
+        // `team`'s login is the one in ~/.claude (issue #1700: OAuth logins).
+        fs::remove_file(s.root().join("team/.credentials.json")).unwrap();
         let home = d.path().join("home");
-        private(&home.join(".claude/.credentials.json"), "{}");
+        private(&home.join(".claude/.credentials.json"), super::OAUTH_LOGIN);
         private(&home.join(".claude.json"), &acct("u-team", "o1"));
         private(&s.root().join("team/.claude.json"), &acct("u-team", "o1"));
         private(&s.root().join("work/.claude.json"), &acct("u-work", "o1"));
-        private(&s.root().join("work/.credentials.json"), "{}");
+        private(&s.root().join("work/.credentials.json"), super::OAUTH_LOGIN);
         (d, s, home)
     }
 
@@ -696,18 +713,26 @@ mod live_launch {
             &acct("u-team", "o-other"),
         );
         pointer::write(s.root(), &n("team")).unwrap();
-        let want = s.resolve(&n("team")).unwrap();
         let got = launch_profile_dir_with(None, None, false, false, false, Some(&home), || Ok(s));
-        assert_eq!(got.unwrap(), Some(want));
+        // Not redirected, and `team` has no login of its own: the launch
+        // guard (issue #1700) refuses it rather than bill the API key.
+        assert!(
+            matches!(got, Err(super::ProfileError::SubscriptionNoLogin(ref p)) if p == "team"),
+            "{got:?}"
+        );
     }
 
     #[test]
     fn without_home_nothing_is_redirected() {
         let (_d, s, _home) = env();
         pointer::write(s.root(), &n("team")).unwrap();
-        let want = s.resolve(&n("team")).unwrap();
         let got = launch_profile_dir_with(None, None, false, false, false, None, || Ok(s));
-        assert_eq!(got.unwrap(), Some(want));
+        // Not redirected, and `team` has no login of its own: the launch
+        // guard (issue #1700) refuses it rather than bill the API key.
+        assert!(
+            matches!(got, Err(super::ProfileError::SubscriptionNoLogin(ref p)) if p == "team"),
+            "{got:?}"
+        );
     }
 
     #[test]
@@ -716,9 +741,13 @@ mod live_launch {
         s.add(&n("twin")).unwrap();
         private(&s.root().join("twin/.claude.json"), &acct("u-team", "o1"));
         pointer::write(s.root(), &n("team")).unwrap();
-        let want = s.resolve(&n("team")).unwrap();
         let got = launch_profile_dir_with(None, None, false, false, false, Some(&home), || Ok(s));
-        assert_eq!(got.unwrap(), Some(want));
+        // Not redirected, and `team` has no login of its own: the launch
+        // guard (issue #1700) refuses it rather than bill the API key.
+        assert!(
+            matches!(got, Err(super::ProfileError::SubscriptionNoLogin(ref p)) if p == "team"),
+            "{got:?}"
+        );
     }
 
     #[test]

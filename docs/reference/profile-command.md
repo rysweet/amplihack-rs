@@ -28,6 +28,9 @@ amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N]
 amplihack profile rotate start|watch [<tuning flags>] [--interval SECS]
 amplihack profile rotate stop|status
 amplihack profile rotate autostart [on|off]
+amplihack profile kind list
+amplihack profile kind set <name> <subscription|api-key|auto>
+amplihack profile overflow clear --platform
 amplihack launch|claude --profile <name> [...]
 ```
 
@@ -48,9 +51,12 @@ amplihack launch|claude --profile <name> [...]
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
 | `overflow …` | Mark or unmark a credit-backed profile that the rotator may use when every plan login is exhausted, list the marks, or lift a spend-limit block. See [Overflow commands](#overflow-commands). |
 | `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
+| `kind list`, `kind set <name> <kind>` | Show whether each profile is a subscription or an [API-key profile](#api-key-profiles), and set or remove an override. See [Kind override](#kind-override). |
 
 `remove` and `login` are also refused while auto-switch has an account's
-login away from home; see [Leases](#leases).
+login away from home; see [Leases](#leases). `run`, `switch` and
+`--profile` launches refuse a subscription profile with no OAuth login of
+its own on Unix; see [No silent billing](#no-silent-billing).
 
 ### Usage command
 
@@ -725,6 +731,51 @@ Rules:
   (never a symlink), is rewritten atomically with mode `0600` only when it
   changes, and is never created. A file that cannot be read, parsed or
   written is reported and skipped; the install still succeeds.
+- Before it opens any profile's `settings.json`, the refresh checks the hooks
+  path it is about to write (issue #1699). It refuses the whole refresh when
+  the `amplihack-hooks` binary does not exist or is not a regular file (a
+  symlink to a regular file is accepted). It also refuses it, wherever the
+  binary lies, when `$HOME` is not the account's home directory from the
+  passwd database and the profile root is outside `$HOME`: such a `HOME` is a
+  scratch one, whether under `/tmp` or under a work directory such as
+  `~/.amplihack/work`, and the profiles belong to the account. This check is
+  skipped when the account has no passwd entry, and on Windows. Otherwise it
+  refuses when the binary's canonical path
+  lies under a temporary directory (`/tmp`, an absolute `$TMPDIR`, or the
+  platform temp dir), unless the profile root lies both under `$HOME` and
+  under a temporary directory. That exception is the layout of an isolated
+  test install, where `HOME` and the profile root are both temporary. Two
+  cases are refused in particular: a test or scratch install with a
+  throwaway `HOME` that inherited a real `AMPLIHACK_CLAUDE_PROFILE_ROOT`
+  (for example `HOME=~/.amplihack/work/x/home amplihack install`), and a
+  real install whose
+  hooks binary is a temporary build (deploying the binary failed, so install
+  fell back to a source binary such as one named by
+  `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` under `/tmp`). `$HOME` unset also
+  refuses a temporary hooks path. The path as written is
+  checked as well, so a symlink placed in a temporary directory is refused
+  even when it points elsewhere. A refusal writes nothing; each profile is
+  reported with one line, and the install still succeeds:
+
+  ```text
+  Profile work: settings.json not refreshed (HOME /home/user/.amplihack/work/x/home is not the account's home /home/user; profile root /home/user/.claude-profiles is outside HOME)
+  Profile work: settings.json not refreshed (hooks binary /tmp/.tmpQ3x9/home/.local/bin/amplihack-hooks is under temporary directory /tmp; profile root /home/user/.claude-profiles is outside HOME)
+  Profile work: settings.json not refreshed (hooks binary /tmp/build/amplihack-hooks is under temporary directory /tmp; profile root /home/user/.claude-profiles is not under a temporary directory)
+  Profile work: settings.json not refreshed (hooks binary /nonexistent/amplihack-hooks does not exist or is not a regular file)
+  ```
+
+  Paths are canonicalised and compared component-wise, so `/tmpfoo` is not
+  under `/tmp`. The `~/.claude/settings.json` registration and `statusLine`
+  are not affected. The second line appears when no passwd home is known;
+  otherwise a temp `HOME` gets the first. If you run with `HOME` set to a
+  directory other than your account's home on purpose, keep the profile root
+  under that `HOME`, or set `HOME` back before `amplihack install`. If your
+  real `HOME` is under `/tmp` and your profile root
+  is outside it, move the root under `HOME` (see [Root command](#root-command))
+  and run `amplihack install` again; changing `TMPDIR` does not help. If the
+  hooks binary is a temporary build, fix the deploy failure that install
+  reported, or point `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` at a binary
+  outside the temporary directories, and run `amplihack install` again.
 - On Unix, directories are created `0700` and files `0600`; Windows uses
   inherited ACLs. Files use `create_new` (`O_EXCL` on Unix), so nothing is
   overwritten and no destination symlink is followed.
@@ -3467,6 +3518,9 @@ changes nothing but `.default`.
 5. Run auto-switch [recovery](#session-end-and-recovery), then
    [rotate recovery](#rotate-recovery). Either one finding an inconsistent
    state is refused.
+   Then, when `<name>` is an [API-key profile](#switching-onto-an-api-key-profile) and the
+   [API-key block](#api-key-block) is active, the switch is refused with
+   `PlatformBlocked`. A ledger that cannot be read fails the switch.
 6. [Identify](#rotate-live-profile) the live login:
 
    | Live login | Action |
@@ -3816,7 +3870,7 @@ stdout only, without the time.
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. A profile whose probe failed shows `<name>:failed`, an exhausted one `s=100%,w=100%`; a skipped one is not listed. A login no profile owns is shown as `-`. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. A profile whose probe failed shows `<name>:failed`, an exhausted one `s=100%,w=100%`; a skipped one is not listed. A login no profile owns is shown as `-`. The API-key profile is never probed and shows as `<name>:per-token`, live or not. |
 | `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|overflow-in\|overflow-out` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `overflow: on <name>; no plan profile has capacity, next plan reset <time\|unknown>` | Written after an `overflow-in` swap. |
 | `overflow: staying on <name>; no plan profile has capacity, next plan reset <time\|unknown>` | A cycle stayed on overflow profile `<name>` and the previous recorded cycle did not: its `last_cycle.overflow` was absent or `out`, or the ledger's `live` named another profile. So it is written once when the rotator finds itself on credits without having moved there, for example after a login was put in `~/.claude` by hand, and not again while it stays. After `overflow-in` the `overflow: on` line is written instead. |
@@ -4980,3 +5034,522 @@ Rotation released; the rotator picks the best login on its next cycle.
 There is no `switch default` alias: `default` is a
 valid [profile name](#name-rules), so `switch default` selects the profile
 called `default`.
+
+## API-key profiles
+
+An *API-key profile* runs Claude Code on the Claude Platform API, which is
+billed per token, instead of on a claude.ai subscription login, which is
+billed by plan. Every other profile is a *subscription profile*. The code
+calls the API-key kind `platform`; every command prints it as `api-key`. The
+how-tos explain when to use one:
+[Use an API key as the last resort](../howto/claude-profile-rotation.md#use-an-api-key-as-the-last-resort)
+and [API-key profiles and usage limits](../howto/claude-profiles.md#api-key-profiles-and-usage-limits).
+
+### Where the platform credential lives
+
+An API-key profile's login file, `<root>/<name>/.credentials.json`, holds
+`{}` or another JSON object with no `claudeAiOauth` key. With no OAuth login
+in its config directory, Claude Code falls back to the Claude Platform
+credential stored under the real home directory, for example in
+`~/.config/anthropic/`. That credential is per home directory, not per
+profile, so:
+
+- every API-key profile on a machine uses the same Platform account;
+- moving the profile's `{}` login file into `~/.claude` makes plain `claude`
+  use that account, which is how the [rotator](#api-key-rotation) makes an
+  API-key profile live;
+- any config directory with no OAuth login falls back to the same paid
+  credential, which is why launches of a subscription profile with no login
+  are [refused](#no-silent-billing).
+
+`amplihack` never opens, reads, lists, copies or names a file under
+`~/.config/anthropic/`. It does not create, change or test API keys, never
+runs `apiKeyHelper`, and never prints, logs or stores any part of a key.
+
+### Kind detection
+
+The kind is worked out again on every read and never stored. Only key names
+and file presence are used; no value is read. All inspection of
+`.credentials.json`, `settings.json` and `.claude.json` happens in
+`rotate/identify.rs`.
+
+The first rule that matches wins. `kind list` prints the source shown:
+
+| Order | Evidence | Kind | Source shown |
+|-------|----------|------|--------------|
+| 1 | A `kind=` entry for the profile in `<root>/.auto-switch` | as set | `override` |
+| 2 | The login file is a readable JSON object with a `claudeAiOauth` key | `subscription` | `detected: oauth login` |
+| 2 | The login file is a readable JSON object that is `{}` or has no `claudeAiOauth` key | `api-key` | `detected: login file has no oauth login` |
+| 2 | The login file exists but is [unreadable](#unreadable-login-file) | `subscription`, with no login | `detected: login file unreadable` |
+| 3 | The login file is missing, the rotate ledger names the profile as `live`, and `~/.claude/.credentials.json` has a `claudeAiOauth` key | `subscription` | `detected: live in ~/.claude (oauth login)` |
+| 3 | As above, and `~/.claude/.credentials.json` is a readable object with no `claudeAiOauth` key | `api-key` | `detected: live in ~/.claude (no oauth login)` |
+| 3 | As above, and `~/.claude/.credentials.json` is missing or unreadable | `subscription`, with no login | `detected: live in ~/.claude (login file unreadable)` |
+| 4 | The login file is missing and the profile names an API-key setting | `api-key` | `detected: api key setting` |
+| 5 | None of the above | `subscription`, with no login | `detected: no login` |
+
+Only a readable `{}` file, or an object without `claudeAiOauth`, is evidence
+of the platform credential. A missing login file is not: on its own it
+resolves to `detected: no login`, a subscription profile with no login,
+which `run`, `launch` and `switch` [refuse](#no-silent-billing). A damaged or
+unreadable file is not either. Every doubtful case therefore refuses a launch
+instead of billing per token.
+
+An *API-key setting* is any of these names, checked for presence only:
+
+- `ANTHROPIC_API_KEY` under `env` in `settings.json`;
+- `apiKeyHelper` in `settings.json`;
+- `primaryApiKey` in `.claude.json`.
+
+**Key settings count only when the profile has no login file** (rule 4).
+They give one source, `detected: api key setting`, however many of them are
+present. A profile whose login file has a `claudeAiOauth` key stays a
+subscription profile whatever settings it names; `list` and `show` then
+print one warning on stderr, because Claude may prefer the key:
+
+```
+warning: profile ryan-mistt has an oauth login and an API-key setting is also configured; Claude may bill per token. Set the kind to confirm: amplihack profile kind set ryan-mistt subscription
+```
+
+An override silences the warning. Nothing is refused.
+
+What counts as evidence:
+
+- <a id="unreadable-login-file"></a>A login file is *unreadable* when it
+  exists but cannot be read, is a symlink, is not a regular file owned by
+  you, is over 64 KiB, is not valid JSON, or is valid JSON that is not an
+  object.
+- A `settings.json` or `.claude.json` that fails the same checks, or is
+  writable by group or others, counts as naming no setting.
+- The `oauthAccount` block in `.claude.json` plays no part.
+- Rule 3 reads `~/.claude/.credentials.json` only when the rotate ledger
+  names the profile as `live`. An unreadable ledger names no profile.
+- When `.auto-switch` is corrupt, no override is trusted and only detection
+  is used.
+
+### Kind override
+
+```
+amplihack profile kind list
+amplihack profile kind set <name> <subscription|api-key|auto>
+```
+
+The override is one `kind` line in `<root>/.auto-switch`, after the
+`overflow` line, and absent when no profile has an override:
+
+```
+kind=api-key:platform,spare:subscription
+```
+
+An override wins over detection in both directions. `api-key` and `platform`
+are both accepted, on the command line and in the file; the file is always
+written with `platform`. `auto` removes the entry. A file with no override
+is byte-identical to one written before kinds existed.
+
+A `kind` line with an invalid profile name or a kind other than
+`subscription`, `platform` or `api-key` makes the whole file corrupt, as does
+a second `kind` line. Overrides are read only from a trusted `.auto-switch`,
+under the same rules as the other [settings](#settings-file).
+
+| Command | Behaviour |
+|---------|-----------|
+| `kind list` | **Read-only.** One line per profile, sorted by name: the name, the kind (`subscription` or `api-key`) and, in brackets, the source from the [detection table](#kind-detection). When `.auto-switch` is corrupt, first prints `warning: .auto-switch is unreadable or invalid; no kind override is used` on stderr. Takes no lock. |
+| `kind set <name> api-key` | Writes `kind=<name>:platform`. Prints `kind: <name> is api-key (override)` and the cost note below. |
+| `kind set <name> subscription` | Writes `kind=<name>:subscription`. Prints `kind: <name> is subscription (override)`. |
+| `kind set <name> auto` | Removes the override. Prints `kind: removed the override on <name>; detected <kind> (<source>)`, or `kind: <name> has no override` when there was none, and exits 0. |
+
+The name must pass the [name rules](#name-rules) and, except for `auto`, be
+an existing profile directory under the root; `auto` accepts any valid name
+so that a stale override can be removed. Any other kind is a usage error
+(status 2). `kind set` uses the same locked write as
+[`overflow add`](#overflow-commands), with the same `AutoSwitchConfig`
+errors.
+
+```
+$ amplihack profile kind list
+api-key         api-key       (detected: login file has no oauth login)
+ryan-mistt      subscription  (detected: oauth login)
+ryan-mistt-org  subscription  (detected: live in ~/.claude (oauth login))
+ryan-ryansweet  subscription  (detected: oauth login)
+```
+
+Setting the API-key kind prints a cost note:
+
+```
+$ amplihack profile kind set api-key api-key
+kind: api-key is api-key (override)
+note: api-key is billed per token on the Claude Platform API key, which is stored outside the profile directory; the rotator uses it only after every plan and credit profile.
+```
+
+When the running rotator comes from an older `amplihack`, `kind set` also
+prints, on stderr:
+
+```
+warning: the running rotator (pid 48213) is from an older amplihack and will read <root>/.auto-switch as corrupt; upgrade it, then run 'amplihack profile rotate stop' and 'amplihack profile rotate start'
+```
+
+`profile login` on an API-key profile works as before and first prints:
+
+```
+note: this profile uses a Claude Platform credential stored outside the profile directory, which amplihack does not manage.
+```
+
+A completed OAuth login gives the profile a `claudeAiOauth` key, so with no
+override it is detected as `subscription` from then on. Run
+`kind set <name> auto` after a login if an old override should no longer
+apply.
+
+### Held logins
+
+A subscription profile's login can be away from its directory without
+anything being wrong. The login is *held* for the profile when either:
+
+- rotate [live profile](#rotate-live-profile) detection names the profile:
+  the ledger and the account in `~/.claude.json` agree; or
+- auto-switch records a [lease](#leases) or hosting record for it.
+
+A `hand-change`, `ambiguous` or adopt result does not count. A held profile
+keeps the `subscription` kind and its launches are allowed.
+
+### No silent billing
+
+`profile run`, `claude --profile`, `launch --profile` (including a profile
+taken from `AMPLIHACK_CLAUDE_PROFILE` or the default pointer) and
+`profile switch` refuse a profile when all of these hold:
+
+- its kind is `subscription`;
+- its own login file has no OAuth login (missing, unreadable, or without a
+  `claudeAiOauth` key);
+- its login is not [held](#held-logins) elsewhere.
+
+While `.auto-switch` is corrupt, every profile whose own login file has no
+OAuth login is checked as a subscription profile. The refusal comes before
+any variable is set, any process is spawned, or any pointer, journal or
+rename is written. The command exits 1:
+
+```
+$ amplihack profile run old-team -- -p "reply with OK"
+error: profile old-team is a subscription profile with no login of its own; launching it would bill the Claude Platform API key per token. Run 'amplihack profile login old-team', or run 'amplihack profile kind set old-team api-key' if per-token billing is intended.
+hint: amplihack profile login <name>, or: amplihack profile kind set <name> api-key
+```
+
+The error is `SubscriptionNoLogin`.
+
+| Case | Result |
+|------|--------|
+| API-key profile | Allowed. Work is billed per token. |
+| Subscription profile with its own OAuth login | Allowed, as before. |
+| Subscription profile whose login is the rotator's live login | `launch` and `claude` are [redirected](#live-profile-launch) to `~/.claude`; `switch` is allowed. |
+| Subscription profile whose login is leased to another session | Refused with `Leased`, as before. |
+| Subscription profile with no login held anywhere | Refused with `SubscriptionNoLogin`. |
+
+Plain `amplihack launch` with no profile, and plain `claude`, are not
+checked. For those the rotator's [swap check](#api-key-rotation) is the
+safeguard: it never leaves `~/.claude` without an OAuth login unless an
+API-key profile is moved there.
+
+The refusal exists only on Unix; see
+[API-key platform support](#api-key-platform-support).
+
+### API-key platform support
+
+Kind detection, `profile kind`, the `SubscriptionNoLogin` refusal and the
+rotator's swap check exist only on Unix. They are compiled out on Windows
+and other non-Unix platforms, as are the rotator and auto-switch they build
+on.
+
+On those platforms `profile run`, `claude --profile` and `launch --profile`
+start Claude with `CLAUDE_CONFIG_DIR=<root>/<name>` and no kind check, and
+`profile kind` is not a command. Claude Code's own fallback still applies:
+a profile with no OAuth login runs on the Claude Platform credential when
+one is configured, and that work is billed per token. On Windows, run
+`amplihack profile login <name>` before launching a profile, and do not keep
+a Platform credential on a machine where per-token billing is not wanted.
+
+### API-key profiles in commands
+
+| Command | Behaviour for an API-key profile |
+|---------|----------------------------------|
+| `list`, `show` | As for any profile. |
+| `run`, `claude --profile`, `launch --profile` | Launch with `CLAUDE_CONFIG_DIR=<root>/<name>`, so Claude uses the platform credential. No refusal. |
+| `usage` | Runs no `/usage` probe. See [API-key usage](#api-key-usage). |
+| `switch` | See [Switching onto an API-key profile](#switching-onto-an-api-key-profile). |
+| `login` | Unchanged apart from the note in [Kind override](#kind-override). |
+| `overflow add` | Refused; see [API-key errors](#api-key-errors). |
+| `overflow list` | After the marked profiles, one line per API-key profile: the name and `api-key tier`, then `blocked until <time> (<reason>)` while the [API-key block](#api-key-block) is active, or `not used (<first> comes first)` for each API-key profile after the first by name. |
+| `overflow clear --platform` | Clears the [API-key block](#api-key-block). |
+| Duplicate-login check | Skips every API-key profile: they all share one credential by design. |
+
+### API-key usage
+
+`profile usage` gives an API-key profile a row with no reading. Its `STATE`
+is `api_key` and its `SESSION` cell is `api-key (billed per token)`; the
+other usage cells are `-`. The `MARKS` cell adds `live in ~/.claude` when
+its login file is live, and `blocked until <time> (<reason>)` while the
+[API-key block](#api-key-block) is active. The row never shows `unparsed`,
+`timeout` or `failed`. API-key rows sort after every usable and exhausted
+plan row and before the rows with no reading.
+
+Below the table, `usage` prints
+`live: work is running on the API key (billed per token)` when an API-key
+profile is live in `~/.claude`, and `blocked: the API key until <time>
+(<reason>)` while a block is active:
+
+```
+$ amplihack profile usage
+PROFILE         MARKS              STATE              SESSION                     SESSION RESETS                  WEEK  WEEK RESETS
+ryan-mistt      -                  session_exhausted  100%                        Oct 28, 4:50pm (Europe/London)  64%   Nov 1, 2am (Europe/London)
+ryan-ryansweet  -                  session_exhausted  100%                        Oct 28, 5:20pm (Europe/London)  71%   Nov 1, 2am (Europe/London)
+api-key         live in ~/.claude  api_key            api-key (billed per token)  -                               -     -
+live: work is running on the API key (billed per token)
+```
+
+In `--json` output every row gains `"kind"`, `"subscription"` or `"api-key"`,
+and `"api_key_blocked"`, an object with `reason` and `until` (epoch seconds)
+while the block is active and `null` otherwise. An API-key row has
+`"state": "api_key"` and `null` usage windows.
+
+### Switching onto an API-key profile
+
+`profile switch <name>` onto an API-key profile is allowed, because it is an
+explicit choice to pay per token. It runs the kind check, then the normal
+[switch steps](#rotate-switch): the `{}` login file is moved into `~/.claude`
+by the journalled rename swap, rotation is [pinned](#rotate-pin) to the
+profile and the default pointer is written. Then it prints:
+
+```
+note: api-key is an API-key profile; work in ~/.claude is billed per token until you run: amplihack profile switch --none
+```
+
+While the pin stands, the rotator does not move off the API-key profile even
+when a plan login has capacity, as with any [pinned overflow
+profile](#pin-and-overflow). `profile switch` refuses an API-key profile
+while the [API-key block](#api-key-block) is active, with `PlatformBlocked`.
+The check runs after recovery and before the live login is identified, so it
+also applies when `~/.claude` cannot be used. The refusal writes nothing,
+`.default` included, since a launch of the default would otherwise use the
+blocked key directly:
+
+```
+error: profile api-key: the API key is blocked (key_exhausted) until 2026-12-29T10:14:03Z
+hint: amplihack profile overflow clear --platform
+```
+
+### API-key rotation
+
+API-key profiles are the last tier, below every credit
+[overflow tier](#overflow-tiers). Nothing has to be marked: every profile
+whose kind is `api-key` belongs to the tier, and `overflow list` shows it as
+`api-key tier`. The full order is:
+
+1. plan (subscription) logins;
+2. credit overflow profiles, by tier;
+3. the API-key profile.
+
+An API-key profile listed in `overflow=` is ignored there and still belongs
+to the API-key tier. The rotator logs one line per process:
+
+```
+skip: API-key profile api-key ignored in overflow=; API-key profiles are always the last tier
+```
+
+An API-key profile is never probed with `/usage`. Its reading is usable
+unless the API key is blocked. It never counts as plan capacity and never
+takes part in the headroom comparison. The `exclude` list and the
+[candidate](#rotate-candidates) skip reasons apply to it, except
+`no account`.
+
+**Moving onto the API key.** The rotator swaps `~/.claude` onto the
+API-key profile, with `reason=overflow-in`, only when all of these hold:
+
+- no plan login has [plan capacity](#plan-pool);
+- no credit overflow profile can be used: each is blocked, excluded, not a
+  candidate or failed its probe;
+- the [earliest plan reset](#earliest-plan-reset) is further away than
+  `--overflow-wait`, or unknown with `--overflow-unknown-reset 1`;
+- the API key is not [blocked](#api-key-block).
+
+If the reset falls inside the wait, the rotator waits, as for credits.
+
+**Moving off the API key.** While the API-key profile is live, these rules
+apply in order on every cycle. `--hold`, `--margin` and `--upgrade-margin`
+do not apply to them:
+
+| Condition | Outcome |
+|-----------|---------|
+| A plan candidate has capacity | Swap to the plan candidate with capacity that has the most headroom, `reason=overflow-out`. A failed plan probe is not capacity. |
+| No plan candidate has capacity, and a credit overflow candidate can be used | Swap to the first by tier, `reason=overflow-out`. Credits cost less than the API key. |
+| The API key is blocked, and a plan or credit candidate can be used | Swap to the best one: a plan candidate that is not exhausted and whose probe did not fail, then a credit candidate. |
+| The API key is blocked, and nothing can be used | One ALERT and stay. No swap is attempted. |
+| Otherwise | Stay on the API key. |
+
+From a credit profile the [overflow rules](#rotate-overflow) apply
+unchanged; the rotator never moves from credits to the API key while a
+credit profile can be used, or from a plan login to credits or the API key
+while a plan login has capacity.
+
+**How the swap works.** The API-key profile's `{}` login file is moved into
+`~/.claude` by the same [journalled rename swap](#rotate-swap) as any login,
+and the outgoing login goes back to its own profile. Nothing is copied, an
+interrupted swap is recovered from the journal, and `~/.claude` always holds
+a login file. A profile with no login file cannot be swapped in; no empty
+file is created for it.
+
+Before the journal is written, the swap is refused when it would leave
+`~/.claude` without an OAuth login and the incoming profile does not resolve
+as `api-key`. A refusal leaves no journal, renames nothing and logs:
+
+```
+ALERT: swap refused: ryan-ryansweet has no oauth login and is not an API-key profile
+```
+
+**Log lines.** A swap onto or off the API key logs the ordinary
+[swap line](#rotate-log), then one of:
+
+```
+moved ~/.claude onto API key profile api-key (billed per token)
+moved ~/.claude off API key profile api-key to ryan-mistt
+```
+
+### Several API-key profiles
+
+All API-key profiles share one credential, so they form one pool: the
+rotator and auto-switch use the first by name and never move from one
+API-key profile to another. Keep one API-key profile per root. One
+[block](#api-key-block) covers every API-key profile, including ones added
+later.
+
+When the live login in `~/.claude` has no OAuth login, more than one
+API-key profile exists and the ledger names none of them, the live profile
+is ambiguous. The rotator logs once, and makes no swap until the ledger
+names one:
+
+```
+ALERT: more than one API-key profile could be live in ~/.claude; no swap
+```
+
+### API-key block
+
+When an agent step run under the [usage-limit wait](#usage-limit-wait)
+fails because the key cannot be used, the whole API-key tier is blocked.
+The output is checked only when the attempt ran under an API-key profile,
+or under `~/.claude` while an API-key profile was live there. Matching
+ignores case. The text is matched and dropped: it is never stored, logged
+or printed.
+
+| Reason | Matching text | Block lasts |
+|--------|---------------|-------------|
+| `key_exhausted` | `credit balance is too low`, `insufficient funds` | until cleared by hand |
+| `key_revoked` | `invalid x-api-key`, `authentication_error` | until cleared by hand |
+| `key_rate_limited` | `rate_limit_error`, or `429` with `rate limit` | until the reset or `retry-after` time the error gives, at most 62 days; one hour when it gives none or one in the past |
+
+*Until cleared by hand* is stored as 62 days after the block, the longest
+block a ledger may hold. When that passes, the key is tried once more and,
+if it still fails, blocked again.
+
+`authentication_error` means "not logged in" for a subscription profile. It
+blocks the API key only for attempts under an API-key profile.
+
+A block is one `platform_block` record in the
+[ledger](#rotate-state-directory), written under the rotate state lock and
+only when no block is active, so two sessions failing at once record one
+block. Only a new block writes an ALERT:
+
+```
+ALERT: the API key is blocked (key_exhausted) until 2026-12-29T10:14:03Z; API-key profiles are not used
+```
+
+When the API-key profile is live, blocked, and no plan or credit profile can
+be used, the rotator stays and logs once:
+
+```
+ALERT: the API key is blocked (key_exhausted) and no plan or credit profile can be used; staying on api-key
+```
+
+If the state lock cannot be taken, the session logs
+`platform block not recorded: <error kind>` and carries on.
+
+Clear a block once the key is funded, replaced or no longer limited:
+
+```
+$ amplihack profile overflow clear --platform
+overflow: cleared the API-key block (key_exhausted)
+```
+
+With no block it prints `overflow: the API key is not blocked` and exits 0.
+`overflow clear --platform` cannot be combined with a profile name.
+
+Bare `claude` sessions that amplihack does not supervise are not read. The
+rotator does not probe the key, because a probe costs tokens.
+
+### API-key status
+
+`rotate status` and `auto-switch status` print one line while the ledger's
+`live_kind` is `platform`:
+
+```
+~/.claude is on API key profile api-key: work is billed per token (since 2026-10-28T14:02:11Z)
+```
+
+The ledger is the only evidence; nothing is probed. The `on overflow` line
+reads `yes (<name>)` while an API-key profile is live. A block is shown by
+`profile usage` and `overflow list`.
+
+### API-key log lines
+
+Every line the rotator writes to the [rotate log](#rotate-log) about the
+API-key tier. Each ALERT is written once per change of state.
+
+| Line | When |
+|------|------|
+| `moved ~/.claude onto API key profile <name> (billed per token)` | After a swap onto the API-key profile. |
+| `moved ~/.claude off API key profile <name> to <target>` | After a swap off it. |
+| `ALERT: the API key is blocked (<reason>) until <time>; API-key profiles are not used` | A new [API-key block](#api-key-block). |
+| `ALERT: the API key is blocked (<reason>) and no plan or credit profile can be used; staying on <name>` | The live API-key profile is blocked and there is nowhere to go. |
+| `ALERT: more than one API-key profile could be live in ~/.claude; no swap` | The live API-key profile is [ambiguous](#several-api-key-profiles). |
+| `ALERT: swap refused: <name> has no oauth login and is not an API-key profile` | The swap check refused a target. |
+| `skip: API-key profile <name> ignored in overflow=; API-key profiles are always the last tier` | An API-key profile is listed in `overflow=`; once per rotator process. |
+| `platform block not recorded: <error kind>` | A session saw a key error but could not take the state lock. |
+
+### API-key ledger fields
+
+The [rotate ledger](#rotate-state-directory) keeps `version: 1` and gains
+these optional fields. Older ledgers load unchanged.
+
+| Field | Contents |
+|-------|----------|
+| `live_kind` | `"platform"` while `live` is an API-key profile; absent means subscription. Only present with `live`. The rotator checks and repairs it on every cycle; it is kept for readers, such as the limit-resume hook, that cannot detect kinds. |
+| `platform_block` | `{"reason", "at", "until"}`, with `reason` one of `key_exhausted`, `key_revoked` or `key_rate_limited`, and `0 < at < until <= at + 62 days`; absent when there is no block. Expired blocks are removed the next time the rotator records a cycle. |
+
+The limit-resume hook reads both fields without failing on a missing or
+wrongly typed field, and treats a live API-key profile as on the API key,
+not as plan capacity.
+
+### API-key profiles and auto-switch
+
+Auto-switch uses the same tier order, wait gate and move-back rules as the
+rotator, taken from the same function, so the two agree on which profile is
+the API-key candidate. It never chooses a credit or API-key profile while any
+plan profile has capacity.
+
+The platform login is never lent to another profile's session, and an
+API-key profile's directory never hosts another account's login, because
+the credential is shared across the home directory. Auto-switch therefore
+uses an API-key profile only for a new nested launch or a usage-limit rerun,
+which runs in that profile's own directory, and never swaps it into a
+running session. A session started in the API-key profile's directory is
+not moved mid-session; once plan capacity returns, its next nested launch or
+rerun goes back to a plan profile. Sessions in `~/.claude` leave the API key
+when the rotator moves the login.
+
+### API-key errors
+
+| Condition | Message | Hint |
+|-----------|---------|------|
+| `SubscriptionNoLogin`: `run`, `claude`, `launch` or `switch` named a subscription profile with no OAuth login of its own that is not held | `profile <name> is a subscription profile with no login of its own; launching it would bill the Claude Platform API key per token. ...` (in full under [No silent billing](#no-silent-billing)) | `amplihack profile login <name>, or: amplihack profile kind set <name> api-key` |
+| `PlatformNotMarkable`: `overflow add` named an API-key profile | `profile <name> is an API-key profile; API-key profiles are always the last overflow tier and cannot be marked` | `` run `amplihack profile kind list` `` |
+| `PlatformBlocked`: `switch` named an API-key profile while the API-key block is active | `profile <name>: the API key is blocked (<reason>) until <time>` | `amplihack profile overflow clear --platform` |
+| `AutoSwitchConfig` from `kind set`: `.auto-switch` is corrupt, a symlink, untrusted or busy | as for the other [settings commands](#settings-file) | as for the other settings commands |
+
+Messages hold profile names, kinds, reasons and times only. No message, log
+line, ALERT or ledger field holds a byte read from a login, settings or
+`.claude.json` file.

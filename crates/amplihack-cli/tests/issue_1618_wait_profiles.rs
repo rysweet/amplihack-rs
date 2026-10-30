@@ -219,6 +219,14 @@ fn with_a_default_pointer_the_wait_watches_that_profiles_login() {
     // X's login arrives during the wait (the stub creates the file in the
     // directory it runs with); nothing changes in CLAUDE_CONFIG_DIR.
     std::fs::remove_file(f.profiles.join("X").join(".credentials.json")).unwrap();
+    // Without a login of its own X is refused by the launch guard (issue
+    // #1700); an explicit API-key kind is the documented way to launch it.
+    let out = f.run(&mut f.cmd(&["profile", "kind", "set", "X", "api-key"]));
+    assert!(
+        out.status.success(),
+        "profile kind set X: {}",
+        describe(&out)
+    );
     let mut c = f.step();
     c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "100")
         .env("CHANGE_LOGIN_AFTER", "1");

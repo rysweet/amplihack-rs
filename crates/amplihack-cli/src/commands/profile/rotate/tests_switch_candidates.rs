@@ -204,6 +204,8 @@ fn snap_with(skip: Skip, sees_sessions: bool) -> Snap {
         sees_sessions,
         overflow: Vec::new(),
         pin: PinState::None,
+        ignored: Vec::new(),
+        home_no_oauth: false,
     }
 }
 
