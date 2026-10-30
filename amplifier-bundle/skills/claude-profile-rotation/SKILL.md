@@ -181,7 +181,7 @@ grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log | 
 
 | ALERT | What to tell the user |
 |-------|-----------------------|
-| `no profile has capacity` | Every account is near its limit. Wait for a reset or add a profile. |
+| `no profile has capacity` | Every account is near its limit. Wait for a reset or add a profile. If it ends with `(candidates: <F> failed, ...)` and every candidate failed, the probes failed rather than the accounts: run `amplihack profile usage`. |
 | `no login in ~/.claude` | Log in with plain `claude` first. |
 | `the account in ~/.claude is not the one the ledger names` | Someone ran `/login` in `~/.claude`. Log the named profile in again with `amplihack profile login <name>`, then delete `<root>/.auto-switch.d/rotate/ledger.json`. |
 | `rotate recovery is inconsistent` | Follow manual recovery below. |

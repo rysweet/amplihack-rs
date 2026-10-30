@@ -30,7 +30,9 @@ use super::pin::{self, Gate, PinState};
 use super::settings;
 use super::swap::{DOCUMENTED, Source, swap};
 use super::switch::{Switched, release, switch_live};
-use super::tests_swap::{CREDS, Env, LOCK, NOW, env, ino_at, json, login, n, private};
+use super::tests_swap::{
+    CREDS, Env, LOCK, NOW, env, hold_state_lock, ino_at, json, login, n, private,
+};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::State;
 use crate::commands::profile::name::ProfileName;
@@ -344,8 +346,7 @@ fn the_no_stored_login_reason_is_documented() {
 #[test]
 fn a_held_state_lock_is_refused_within_the_bounded_wait() {
     let e = env();
-    let state = State::new(&e.root).unwrap();
-    let _held = state.try_lock(Duration::ZERO).unwrap().unwrap();
+    let _held = hold_state_lock(&e.root);
     let start = std::time::Instant::now();
     assert_refused_untouched(&e, "spare", "lock busy");
     assert!(start.elapsed() < Duration::from_secs(10), "bounded wait");
@@ -572,8 +573,7 @@ fn release_under_a_held_lock_is_refused_and_removes_nothing() {
     pin::write(&e.rs, &n("spare")).unwrap();
     pointer::write(&e.root, &n("spare")).unwrap();
     let before = fs::read(&e.rs.pin).unwrap();
-    let state = State::new(&e.root).unwrap();
-    let _held = state.try_lock(Duration::ZERO).unwrap().unwrap();
+    let _held = hold_state_lock(&e.root);
     assert!(matches!(
         release(&e.store),
         Err(ProfileError::RotateRefused(_))
@@ -588,8 +588,7 @@ fn release_without_a_pin_still_waits_for_the_lock() {
     // between writing its pin and its pointer.
     let e = env();
     pointer::write(&e.root, &n("spare")).unwrap();
-    let state = State::new(&e.root).unwrap();
-    let _held = state.try_lock(Duration::ZERO).unwrap().unwrap();
+    let _held = hold_state_lock(&e.root);
     assert!(matches!(
         release(&e.store),
         Err(ProfileError::RotateRefused(_))
