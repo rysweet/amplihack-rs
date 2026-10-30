@@ -1,6 +1,7 @@
 //! Issue #1740: the temporary repository and tool runner shared by
 //! `issue_1740_diff_limits` and `issue_1740_diff_limits_guards`, which test
-//! `amplifier-bundle/tools/quick_change_diff_limits.sh`.
+//! `amplifier-bundle/tools/quick_change_diff_limits.sh`, and by the tests
+//! that source `quick_change_common.sh`.
 //!
 //! Each test builds a temporary repository (with a bare `origin`), pins the
 //! base, makes the change an agent would make, and runs the real tool through
@@ -124,6 +125,34 @@ impl Repo {
         let mut args = vec![self.wt.to_str().unwrap(), "--base", self.base.as_str()];
         args.extend_from_slice(extra);
         self.run(&args, true)
+    }
+
+    /// Commits everything in the worktree, as the recipe's commit step and
+    /// hook repair would.
+    pub fn commit_all(&self, message: &str) {
+        git(&self.wt, &["add", "-A"]);
+        git(&self.wt, &["commit", "-q", "-m", message]);
+    }
+
+    /// Runs `script` in bash after sourcing the real `quick_change_common.sh`
+    /// with this repository as the run's worktree. `$1` in the script is the
+    /// common file; `vars` are extra environment variables.
+    pub fn common(&self, script: &str, vars: &[(&str, &str)]) -> Output {
+        let common = tool().with_file_name("quick_change_common.sh");
+        let wt = std::fs::canonicalize(&self.wt).unwrap();
+        let setup = serde_json::json!({ "worktree_path": wt }).to_string();
+        let mut c = crate::isolated_amplihack::isolated("bash");
+        c.arg("-c")
+            .arg(format!(". \"$1\"\n{script}"))
+            .arg("bash")
+            .arg(common)
+            .env("HOME", self.tmp.path())
+            .env("RECIPE_VAR_worktree_setup", setup)
+            .env("QC_STEP", "test-step");
+        for (k, v) in vars {
+            c.env(k, v);
+        }
+        c.output().expect("run quick_change_common.sh")
     }
 }
 

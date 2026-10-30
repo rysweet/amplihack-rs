@@ -3,7 +3,7 @@
 # a PR or is handed over to default-workflow (issue #1740).
 #
 # Usage:
-#   quick_change_diff_limits.sh <worktree> [--base <sha>] [--max-files N] [--max-lines N]
+#   quick_change_diff_limits.sh <worktree> [--base <sha>] [--committed] [--max-files N] [--max-lines N]
 #   quick_change_diff_limits.sh --snapshot <worktree>
 #
 # The verdict is taken from git output alone, never from agent text. Line 1 of
@@ -20,6 +20,12 @@
 # Faults (bad arguments, a base that is not an ancestor of HEAD, a git
 # failure, jq missing, a missing snapshot) exit 2.
 #
+# --committed re-measures BASE..HEAD after hook repair may have committed a
+# fixing agent's changes. The worktree must be clean (else exit 2), rule 6
+# is skipped because the recipe's own commits are expected, every other rule
+# runs, and a handover verdict exits 5: it is too late to hand over, so the
+# caller must not publish.
+#
 # --snapshot prints the git configuration and hooks snapshot that
 # quick-change-record-base stores as $QUICK_CHANGE_STATE_DIR/git-config.snapshot.
 # Each line is `<name>\t<checksum>`; names never carry configuration values,
@@ -33,7 +39,10 @@ export GIT_PAGER=cat PAGER=cat LESS=FRX
 LOCKFILES=" Cargo.lock package-lock.json yarn.lock pnpm-lock.yaml uv.lock poetry.lock "
 PUB_RE='^[[:space:]]*pub[[:space:]]+(async[[:space:]]+)?(unsafe[[:space:]]+)?(fn|struct|enum|trait|type|const|static|mod|use)([^A-Za-z0-9_]|$)'
 CLI_RE='#\[(arg|command|clap)'
-CONFIG_KEY_RE='^(remote\.|url\.|core\.hookspath$|core\.sshcommand$|core\.fsmonitor$|credential\.|include\.|includeif\.)'
+# Keys that redirect the push or its transport, or run a program during
+# git add, commit or push. Global and system values are covered here; the
+# local and worktree files are also checksummed whole below.
+CONFIG_KEY_RE='^(remote\.|url\.|core\.hookspath$|core\.sshcommand$|core\.fsmonitor$|credential\.|include\.|includeif\.|http\.|core\.gitproxy$|core\.askpass$|core\.attributesfile$|protocol\.|filter\.|gpg\.|commit\.gpgsign$)'
 
 fault() {
   echo "quick_change_diff_limits.sh: $1" >&2
@@ -57,18 +66,28 @@ config_group() {
 }
 
 snapshot() {
-  local hooks entry key value name
+  local hooks entry key value name matched cfg
   CONFIG_ENTRIES=""
+  # A failed read must stop the run: two equally empty snapshots would
+  # compare equal and hide drift. The list goes through a file because a
+  # fault inside a process substitution would only end that subshell.
+  cfg="$(mktemp)" || fault "mktemp failed"
+  git -C "$WT" config -z --list > "$cfg" || { rm -f "$cfg"; fault "git config --list failed"; }
   # -z: each entry is `key\nvalue\0`, so values with newlines stay whole.
   while IFS= read -r -d '' entry; do
     key="${entry%%$'\n'*}"
     value="${entry#*$'\n'}"
     [ "$value" != "$entry" ] || value=""
+    # Match case-insensitively in bash first: most entries do not match, and
+    # forking tr per entry made the snapshot take seconds on a long config.
+    shopt -s nocasematch
+    if [[ "$key" =~ $CONFIG_KEY_RE ]]; then matched=1; else matched=0; fi
+    shopt -u nocasematch
+    [ "$matched" -eq 1 ] || continue
     key="$(printf '%s' "$key" | tr '[:upper:]' '[:lower:]')"
-    if printf '%s' "$key" | LC_ALL=C grep -Eq "$CONFIG_KEY_RE"; then
-      CONFIG_ENTRIES="${CONFIG_ENTRIES}${key}=$(printf '%s' "$value" | cksum_of)"$'\n'
-    fi
-  done < <(git -C "$WT" config -z --list 2>/dev/null || true)
+    CONFIG_ENTRIES="${CONFIG_ENTRIES}${key}=$(printf '%s' "$value" | cksum_of)"$'\n'
+  done < "$cfg"
+  rm -f "$cfg"
   {
     config_group remote-urls '^remote\.[^=]*\.(url|pushurl)='
     config_group remote-other '^remote\.'
@@ -78,6 +97,10 @@ snapshot() {
     config_group core.fsmonitor '^core\.fsmonitor='
     config_group credential '^credential\.'
     config_group include '^(include|includeif)\.'
+    config_group http '^http\.'
+    config_group transport-programs '^(core\.gitproxy|core\.askpass|protocol\.)'
+    config_group filters-attributes '^(filter\.|core\.attributesfile=)'
+    config_group signing '^(gpg\.|commit\.gpgsign=)'
     printf 'config-local\t%s\n' "$(git -C "$WT" config --local -z --list 2>/dev/null | cksum_of)"
     printf 'config-worktree\t%s\n' "$(git -C "$WT" config --worktree -z --list 2>/dev/null | cksum_of)"
     printf 'push-url\t%s\n' "$(git -C "$WT" remote get-url --push origin 2>/dev/null | cksum_of)"
@@ -100,9 +123,13 @@ snapshot() {
 
 # emit <verdict> <reason> <exit> [changed-names]: print both lines and exit.
 emit() {
-  local changed_json="[]"
+  local changed_json="[]" code="$3"
   if [ -n "${4:-}" ]; then
     changed_json="$(printf '%s' "$4" | jq -R -s -c 'split("\n") | map(select(length > 0))')"
+  fi
+  if [ "$1" = handover ] && [ "$COMMITTED" -eq 1 ]; then
+    echo "quick-change: hook repair grew the change beyond the quick-change limits; not publishing" >&2
+    code=5
   fi
   printf 'QUICK_CHANGE_VERDICT=%s reason=%s\n' "$1" "$2"
   jq -n -c --arg verdict "$1" --arg reason "$2" --arg base "$BASE" \
@@ -111,7 +138,7 @@ emit() {
     '{verdict: $verdict, reason: $reason, files: $files, lines: $lines, lockfile_lines: $lockfile_lines,
       max_files: $max_files, max_lines: $max_lines, base: $base}
      + (if ($changed | length) > 0 then {changed: $changed} else {} end)'
-  exit "$3"
+  exit "$code"
 }
 
 # rust_lines_match <path> <regex>: true when an added or removed line of
@@ -136,7 +163,7 @@ is_sensitive() {
 }
 
 # --- arguments -------------------------------------------------------------
-[ $# -ge 1 ] || fault "usage: <worktree> [--base <sha>] [--max-files N] [--max-lines N] | --snapshot <worktree>"
+[ $# -ge 1 ] || fault "usage: <worktree> [--base <sha>] [--committed] [--max-files N] [--max-lines N] | --snapshot <worktree>"
 command -v jq >/dev/null 2>&1 || fault "jq is not on PATH"
 
 if [ "$1" = "--snapshot" ]; then
@@ -148,9 +175,10 @@ if [ "$1" = "--snapshot" ]; then
 fi
 
 WT="$1"; shift
-BASE=""; MAX_FILES=3; MAX_LINES=150
+BASE=""; MAX_FILES=3; MAX_LINES=150; COMMITTED=0
 FILES=0; LINES=0; LOCK_LINES=0
 while [ $# -gt 0 ]; do
+  if [ "$1" = "--committed" ]; then COMMITTED=1; shift; continue; fi
   [ $# -ge 2 ] || fault "$1 needs a value"
   case "$1" in
     --base) BASE="$2" ;;
@@ -191,14 +219,23 @@ else
   echo "WARNING: QUICK_CHANGE_STATE_DIR is unset; git configuration drift is not checked" >&2
 fi
 
-# --- measure -----------------------------------------------------------------
-# Untracked, non-ignored files are marked intent-to-add so the diff counts them.
-while IFS= read -r -d '' path; do
-  qgit add -N -- "$path" || fault "git add -N failed"
-done < <(qgit ls-files -z -o --exclude-standard)
+# In --committed mode a clean worktree makes `git diff BASE` equal BASE..HEAD.
+if [ "$COMMITTED" -eq 1 ]; then
+  STATUS="$(qgit status --porcelain --untracked-files=normal)" || fault "git status failed"
+  [ -z "$STATUS" ] || fault "worktree not clean in --committed mode"
+fi
 
+# --- measure -----------------------------------------------------------------
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+# Untracked, non-ignored files are marked intent-to-add so the diff counts
+# them, in one git call however many there are.
+qgit ls-files -z -o --exclude-standard > "$WORK/untracked" || fault "git ls-files failed"
+if [ -s "$WORK/untracked" ]; then
+  qgit --literal-pathspecs add -N --pathspec-from-file="$WORK/untracked" --pathspec-file-nul \
+    || fault "git add -N failed"
+fi
 qgit diff --no-renames --no-ext-diff --no-textconv --numstat -z "$BASE" > "$WORK/numstat" || fault "git diff --numstat failed"
 qgit diff --no-renames --no-ext-diff --raw -z "$BASE" > "$WORK/raw" || fault "git diff --raw failed"
 
@@ -249,8 +286,10 @@ if [ "$FILES" -eq 0 ]; then
 fi
 [ "$FILES" -le "$MAX_FILES" ] || emit handover "files>$MAX_FILES" 0
 [ "$LINES" -le "$MAX_LINES" ] || emit handover "lines>$MAX_LINES" 0
-COMMITS="$(qgit rev-list --count "$BASE..HEAD")" || fault "git rev-list failed"
-[ "$COMMITS" -eq 0 ] || emit handover agent-commit 0
+if [ "$COMMITTED" -eq 0 ]; then
+  COMMITS="$(qgit rev-list --count "$BASE..HEAD")" || fault "git rev-list failed"
+  [ "$COMMITS" -eq 0 ] || emit handover agent-commit 0
+fi
 
 PUBLIC=0; CLI=0; MANIFEST=0; SENSITIVE=0
 while IFS= read -r -d '' path; do

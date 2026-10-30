@@ -36,6 +36,8 @@ context:
   quick_change_checks: ""
   quick_change_verdict: ""
   quick_change_handover_note: ""
+  quick_change_commit_repaired: ""
+  quick_change_push_repaired: ""
 
 steps:
   # Step 1: worktree and branch from workflow-worktree, quick/ prefix.
@@ -51,6 +53,7 @@ steps:
     type: "bash"
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-record-base; . "${QC:?quick_change_common.sh not found}"
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null || qc_die "$QC_WT is not a git work tree"
       BASE="$(git -C "$QC_WT" rev-parse HEAD)"
       SNAP="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" --snapshot "$QC_WT")"
       printf '%s\n' "$SNAP" | qc_write git-config.snapshot
@@ -93,7 +96,7 @@ steps:
     type: "bash"
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-run-checks; . "${QC:?quick_change_common.sh not found}"
-      BASE="$(cat "$QUICK_CHANGE_STATE_DIR/base")"
+      BASE="$(qc_base)"
       SUMMARY="$(bash "$QC_TOOLS/quick_change_checks.sh" "$QC_WT" "$BASE" "$QUICK_CHANGE_STATE_DIR/checks-table.md")"
       printf '%s\n' "$SUMMARY" | qc_write checks-summary
       echo "quick-change: $SUMMARY" >&2
@@ -106,7 +109,7 @@ steps:
     type: "bash"
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-diff-limits; . "${QC:?quick_change_common.sh not found}"
-      BASE="$(cat "$QUICK_CHANGE_STATE_DIR/base")"
+      BASE="$(qc_base)"
       rc=0
       OUT="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" "$QC_WT" --base "$BASE" \
         --max-files "${RECIPE_VAR_quick_change_max_files:-3}" \
@@ -134,7 +137,8 @@ steps:
     condition: "quick_change_verdict == 'handover'"
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-write-handover; . "${QC:?quick_change_common.sh not found}"
-      BASE="$(cat "$QUICK_CHANGE_STATE_DIR/base")"
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null || qc_die "$QC_WT is not a git work tree"
+      BASE="$(qc_base)"
       BRANCH="$(git -C "$QC_WT" symbolic-ref -q --short HEAD)" || qc_die "the worktree is not on a branch"
       LINE1="$(sed -n 1p "$QUICK_CHANGE_STATE_DIR/diff-limits")"
       REASON="${LINE1##*reason=}"
@@ -166,38 +170,64 @@ steps:
       repo_path: "{{repo_path}}"
     output: "quick_change_handover_result"
 
-  # Step 8: stage, guard, set the identity and commit with -F (#1570).
+  # Step 8: stage, guard, set the identity and commit with -F (#1570), then
+  # re-measure the committed change. Prints yes when hook repair ran.
   - id: "quick-change-commit"
     type: "bash"
     condition: "quick_change_verdict == 'proceed'"
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-commit; . "${QC:?quick_change_common.sh not found}"
+      # Only the step output goes to stdout (fd 3); git and the helpers write to stderr.
+      exec 3>&1 1>&2
       cd "$QC_WT"
       qc_branch >/dev/null
+      BASE="$(qc_base)"
       for helper in git-identity.sh workflow_hook_repair.sh; do
         [ -f "$QC_TOOLS/$helper" ] || qc_die "$helper is missing from $QC_TOOLS"
         . "$QC_TOOLS/$helper"
       done
-      amplihack hygiene artifact-guard --repo . --mode pre-publish
+      # quick_change_common.sh already set this; repeated so the guard and
+      # the staging below visibly run under it (#1528).
+      set -euo pipefail
+      # Guard, stage, guard again (#1528): the run after staging is the one
+      # that sees gitlinks the broad add creates.
+      amplihack hygiene artifact-guard --repo . --mode pre-publish || { echo "STOP: artifact guard refused" >&2; exit 1; }
       git add -A
-      amplihack hygiene artifact-guard --repo . --mode pre-publish
+      amplihack hygiene artifact-guard --repo . --mode pre-publish || { echo "STOP: artifact guard refused" >&2; exit 1; }
       ! git diff --cached --quiet || qc_die "nothing staged to commit"
       ISSUE="$(qc_issue)"
-      { printf '%s\n\n%s\n' "$(qc_title)" "$(qc_summary)"; [ -z "$ISSUE" ] || printf '\nRefs #%s\n' "$ISSUE"; } | qc_write commit-message
+      { printf '%s\n\n%s\n' "$(qc_title)" "$(qc_request)"; [ -z "$ISSUE" ] || printf '\nRefs #%s\n' "$ISSUE"; } | qc_write commit-message
       amplihack_prepare_git_commit_identity
       [ -n "${GIT_AUTHOR_EMAIL:-}" ] || qc_die "no commit identity (user.email) resolved"
       hook_repair_run commit quick-change-commit -- git commit -F "$QUICK_CHANGE_STATE_DIR/commit-message"
-      git rev-parse HEAD
+      REPAIRED=no; [ "${HOOK_REPAIR_ROUNDS:-0}" -eq 0 ] || REPAIRED=yes
+      # Hook repair may have committed a fixing agent's changes after step 5
+      # measured the diff, so the committed change is measured again (D6).
+      OUT="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" "$QC_WT" --base "$BASE" --committed \
+        --max-files "${RECIPE_VAR_quick_change_max_files:-3}" \
+        --max-lines "${RECIPE_VAR_quick_change_max_lines:-150}")" || { rc=$?; printf '%s\n' "$OUT"; exit "$rc"; }
+      printf '%s\n' "$OUT"
+      case "${OUT%%$'\n'*}" in
+        "QUICK_CHANGE_VERDICT=proceed "*) ;;
+        *) qc_die "unexpected verdict line after re-measuring the committed change" ;;
+      esac
+      echo "quick-change: committed $(git rev-parse HEAD)"
+      printf '%s' "$REPAIRED" >&3
+    output: "quick_change_commit_repaired"
 
-  # Step 9: push the branch to the URL recorded in the snapshot, with an
-  # explicit refspec, then check the remote ref (#1269).
+  # Step 9: push the branch to origin once the snapshot (push URL included)
+  # still matches, with an explicit refspec, re-measure what hook repair may
+  # have added, then check the remote ref (#1269). Prints yes when hook
+  # repair ran.
   - id: "quick-change-push"
     type: "bash"
     condition: "quick_change_verdict == 'proceed'"
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-push; . "${QC:?quick_change_common.sh not found}"
+      exec 3>&1 1>&2
       cd "$QC_WT"
       BRANCH="$(qc_branch)"
+      BASE="$(qc_base)"
       for helper in workflow_hook_repair.sh verify_pushed_ref.sh; do
         [ -f "$QC_TOOLS/$helper" ] || qc_die "$helper is missing from $QC_TOOLS"
       done
@@ -207,11 +237,25 @@ steps:
         || qc_die "git configuration, hooks or the push URL changed since the base was recorded; not pushing"
       hook_repair_run push quick-change-push --fix-message "fix: address {hook_ids} pre-push rejection" \
         -- git push -u origin "refs/heads/$BRANCH:refs/heads/$BRANCH"
+      REPAIRED=no; [ "${HOOK_REPAIR_ROUNDS:-0}" -eq 0 ] || REPAIRED=yes
+      # Push repair commits the fixing agent's changes and pushes them inside
+      # hook_repair_run, so they are measured here, after the push (D6). A
+      # failure leaves the branch on origin but stops the run before any PR.
+      OUT="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" "$QC_WT" --base "$BASE" --committed \
+        --max-files "${RECIPE_VAR_quick_change_max_files:-3}" \
+        --max-lines "${RECIPE_VAR_quick_change_max_lines:-150}")" || { rc=$?; printf '%s\n' "$OUT"; exit "$rc"; }
+      printf '%s\n' "$OUT"
+      case "${OUT%%$'\n'*}" in
+        "QUICK_CHANGE_VERDICT=proceed "*) ;;
+        *) qc_die "unexpected verdict line after re-measuring the committed change" ;;
+      esac
       SHA="$(git rev-parse HEAD)"
       bash "$QC_TOOLS/verify_pushed_ref.sh" origin "$BRANCH" "$SHA"
-      printf '%s' "$SHA"
+      printf '%s' "$REPAIRED" >&3
+    output: "quick_change_push_repaired"
 
-  # Step 10: open the PR; a draft when the checks failed. Always the last step.
+  # Step 10: open the PR; a draft when the checks failed or hook repair
+  # changed the code after they ran. Always the last step.
   - id: "quick-change-create-pr"
     type: "bash"
     condition: "quick_change_verdict == 'proceed'"
@@ -220,16 +264,28 @@ steps:
       cd "$QC_WT"
       BRANCH="$(qc_branch)"
       [ -f "$QC_TOOLS/workflow_gh_retry.sh" ] || qc_die "workflow_gh_retry.sh is missing from $QC_TOOLS"
-      BASE="$(cat "$QUICK_CHANGE_STATE_DIR/base")"
+      BASE="$(qc_base)"
       CHECKS="$(cat "$QUICK_CHANGE_STATE_DIR/checks-summary")"
       DEFAULT="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
       DEFAULT="${DEFAULT#origin/}"; [ -n "$DEFAULT" ] || DEFAULT=main
       ISSUE="$(qc_issue)"
+      # Runner outputs, not state files: the agent can write to the state dir.
+      REPAIRED=no
+      for r in "${RECIPE_VAR_quick_change_commit_repaired:-}" "${RECIPE_VAR_quick_change_push_repaired:-}"; do
+        case "$r" in
+          yes) REPAIRED=yes ;;
+          no) ;;
+          *) qc_die "runner did not provide the hook-repair outputs" ;;
+        esac
+      done
+      FAILED=no
+      case "$CHECKS" in QUICK_CHANGE_CHECKS=failed*) FAILED=yes ;; esac
       set --
-      case "$CHECKS" in QUICK_CHANGE_CHECKS=failed*) set -- --draft ;; esac
+      [ "$FAILED" = no ] && [ "$REPAIRED" = no ] || set -- --draft
       {
-        [ $# -eq 0 ] || printf 'Checks failed\n\n'
-        printf '## Summary\n\n%s\n' "$(qc_summary)"
+        [ "$FAILED" = no ] || printf 'Checks failed\n\n'
+        [ "$REPAIRED" = no ] || printf 'Hook repair changed the code after the checks ran; the checks table describes the pre-repair tree.\n\n'
+        printf '## Request\n\n%s\n' "$(qc_request)"
         [ -z "$ISSUE" ] || printf '\nRefs #%s\n' "$ISSUE"
         printf '\n## Diff\n\n```\n%s\n```\n' "$(git diff --stat "$BASE" HEAD)"
         printf '\n## Checks\n\n| Command | Result |\n| --- | --- |\n'

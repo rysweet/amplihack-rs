@@ -338,7 +338,7 @@ fn recipe_files_with_git_commands_disable_interactive_pagers() {
 
 #[test]
 fn issue_749_prompts_and_dev_orchestrator_docs_state_development_routing_invariant() {
-    let required = "Development classification routes to `default-workflow` unless the classifier or `-c workflow=` selects `quick-change` for a small single-workstream task; any other model-provided recipe value is coerced to `default-workflow`.";
+    let required = "Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`.";
 
     for rel in [
         "amplifier-bundle/recipes/smart-classify-route.yaml",
@@ -385,7 +385,7 @@ fn issue_749_routing_hook_prompt_reinforces_development_invariant() {
 
     assert!(
         content.contains(
-            "Development classification routes to `default-workflow` unless the classifier or `-c workflow=` selects `quick-change` for a small single-workstream task; any other model-provided recipe value is coerced to `default-workflow`."
+            "Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`."
         ),
         "routing hook prompt must reinforce the Development routing invariant"
     );

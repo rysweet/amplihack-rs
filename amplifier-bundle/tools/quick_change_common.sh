@@ -14,7 +14,7 @@
 #   - sets and exports QUICK_CHANGE_STATE_DIR, an absolute directory outside
 #     the worktree created with umask 077 (S9).
 # The caller sets QC_STEP to its step id first. qc_branch and qc_write are
-# defined for the publish steps.
+# defined for the publish steps; qc_base for every step after the agent.
 
 set -euo pipefail
 export GIT_PAGER=cat PAGER=cat LESS=FRX
@@ -57,6 +57,21 @@ qc_write() {
   mv -f "$tmp" "$QUICK_CHANGE_STATE_DIR/$1"
 }
 
+# qc_base: print the base pinned by quick-change-record-base. The state
+# directory is outside the worktree but still writable by the agent and by
+# check code, so the stored value must equal the runner's in-memory output
+# (RECIPE_VAR_quick_change_base). Step 2 always sets that output, so an
+# empty value means it was not passed on, and the step stops (S2).
+qc_base() {
+  local base
+  [ -f "$QUICK_CHANGE_STATE_DIR/base" ] && [ ! -L "$QUICK_CHANGE_STATE_DIR/base" ] || qc_die "pinned base is missing"
+  base="$(cat "$QUICK_CHANGE_STATE_DIR/base")"
+  [[ "$base" =~ ^[0-9a-f]{40}$ ]] || qc_die "pinned base is not a 40-character hex SHA"
+  [ -n "${RECIPE_VAR_quick_change_base:-}" ] || qc_die "runner did not provide quick_change_base"
+  [ "$base" = "$RECIPE_VAR_quick_change_base" ] || qc_die "pinned base in the state directory differs from the recorded base; not continuing"
+  printf '%s' "$base"
+}
+
 # qc_branch: print the worktree's branch after checking that it is valid,
 # starts with quick/ and is not a default or protected name (S4).
 qc_branch() {
@@ -74,18 +89,20 @@ qc_branch() {
   printf '%s' "$branch"
 }
 
-# qc_title: the task text as one line with control characters removed, cut
-# to 72 characters (S7).
+# qc_title: the task text as one line with control characters and backticks
+# removed and leading markdown markers (#, >, *, _, -) stripped, cut to 72
+# characters (S7).
 qc_title() {
   local t
-  t="$(printf '%s' "${RECIPE_VAR_task_description:-}" | LC_ALL=C tr '[:cntrl:]' ' ' | sed -e 's/  */ /g' -e 's/^ //' -e 's/ $//')"
+  t="$(printf '%s' "${RECIPE_VAR_task_description:-}" | LC_ALL=C tr '[:cntrl:]`' ' ' \
+    | sed -E -e 's/^[#>*_[:space:]-]+//' -e 's/  +/ /g' -e 's/ $//')"
   t="${t:0:72}"
   printf '%s' "${t:-quick change}"
 }
 
-# qc_summary: the task text with control characters other than newline and
+# qc_request: the task text with control characters other than newline and
 # tab removed, cut to 4000 bytes on a UTF-8 boundary (S7).
-qc_summary() {
+qc_request() {
   local s
   s="$(printf '%s' "${RECIPE_VAR_task_description:-}" | LC_ALL=C tr -d '\000-\010\013-\037\177')"
   s="$(LC_ALL=C; printf '%s' "${s:0:4000}")"

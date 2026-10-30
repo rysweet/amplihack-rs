@@ -291,3 +291,79 @@ fn common_preamble_never_resolves_tools_from_the_worktree() {
         }
     }
 }
+
+#[test]
+fn commit_and_push_re_measure_after_hook_repair() {
+    let r = recipe();
+    for (id, output) in [
+        ("quick-change-commit", "quick_change_commit_repaired"),
+        ("quick-change-push", "quick_change_push_repaired"),
+    ] {
+        let cmd = command(&r, id);
+        let repair = cmd
+            .find("hook_repair_run")
+            .unwrap_or_else(|| panic!("{id} must use hook_repair_run"));
+        let measure = cmd
+            .find("--committed")
+            .unwrap_or_else(|| panic!("{id} must re-measure with --committed"));
+        assert!(
+            repair < measure,
+            "{id}: --committed must follow hook_repair_run"
+        );
+        assert!(
+            cmd.contains("BASE=\"$(qc_base)\""),
+            "{id} must read the pinned base"
+        );
+        assert!(
+            cmd.contains("HOOK_REPAIR_ROUNDS"),
+            "{id} must report repair"
+        );
+        assert_eq!(step(&r, id)["output"].as_str(), Some(output));
+        assert!(
+            r["context"].get(output).is_some(),
+            "context must declare {output}"
+        );
+    }
+    let push = command(&r, "quick-change-push");
+    assert!(
+        push.find("--committed").unwrap() < push.rfind("verify_pushed_ref.sh").unwrap(),
+        "the push step re-measures before verifying the remote ref"
+    );
+    let commit = command(&r, "quick-change-commit");
+    let add = commit.find("git add -A").unwrap();
+    let guard = |from: usize| commit[from..].find("artifact-guard").map(|i| i + from);
+    assert!(guard(0).unwrap() < add, "a guard run before git add -A");
+    assert!(guard(add).is_some(), "a guard run after git add -A (#1528)");
+}
+
+#[test]
+fn create_pr_reads_both_repair_outputs_from_the_runner() {
+    let r = recipe();
+    let pr = command(&r, "quick-change-create-pr");
+    for var in [
+        "RECIPE_VAR_quick_change_commit_repaired",
+        "RECIPE_VAR_quick_change_push_repaired",
+    ] {
+        assert!(pr.contains(var), "create-pr must read {var}");
+    }
+    assert!(pr.contains("Hook repair changed the code after the checks ran"));
+    assert!(pr.contains("## Request") && !pr.contains("## Summary"));
+}
+
+#[test]
+fn title_strips_leading_markdown_from_the_task() {
+    let r = crate::support::quick_change_repo::Repo::new();
+    for (task, want) in [
+        (
+            "# Fix issue #1742 on main\n\nDetails",
+            "Fix issue #1742 on main Details",
+        ),
+        ("> **`Fix`** the link", "Fix ** the link"),
+        ("###", "quick change"),
+    ] {
+        let o = r.common("qc_title", &[("RECIPE_VAR_task_description", task)]);
+        assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+        let title = String::from_utf8_lossy(&o.stdout);
+        assert_eq!(title, want, "task {task:?}");
+    }
+}

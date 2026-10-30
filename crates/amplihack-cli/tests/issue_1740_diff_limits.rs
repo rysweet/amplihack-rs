@@ -2,9 +2,10 @@
 //! `amplifier-bundle/tools/quick_change_diff_limits.sh`, run against a
 //! temporary repository from [`crate::support::quick_change_repo`]. The
 //! guards that fail closed (drift, empty diff, faults) are in
-//! `issue_1740_diff_limits_guards`.
+//! `issue_1740_diff_limits_guards`. The `--committed` tests cover the
+//! re-measure that runs after hook repair may have added commits.
 
-use crate::support::quick_change_repo::{Repo, handover, verdict};
+use crate::support::quick_change_repo::{Repo, handover, stderr, verdict};
 
 #[test]
 fn one_doc_file_proceeds_and_reports_the_counts() {
@@ -163,4 +164,49 @@ fn paths_with_tabs_and_newlines_parse_as_one_file() {
         "QUICK_CHANGE_VERDICT=proceed reason=within-limits",
     );
     assert_eq!(j["files"], 1);
+}
+
+#[test]
+fn committed_change_within_limits_proceeds_after_several_commits() {
+    let r = Repo::new();
+    r.write("README.md", "# demo\n\nFixed link.\n");
+    r.commit_all("quick change");
+    r.write("docs/fix.md", "hook repair fix\n");
+    r.commit_all("fix: address hook rejection");
+    let j = verdict(
+        &r.measure(&["--committed"]),
+        0,
+        "QUICK_CHANGE_VERDICT=proceed reason=within-limits",
+    );
+    assert_eq!(j["files"], 2);
+}
+
+#[test]
+fn committed_change_over_the_line_limit_exits_5() {
+    let r = Repo::new();
+    r.write("README.md", "# demo, fixed\n");
+    r.commit_all("quick change");
+    r.write("docs/long.md", &"line\n".repeat(200));
+    r.commit_all("fix: address hook rejection");
+    let o = r.measure(&["--committed"]);
+    let j = verdict(&o, 5, "QUICK_CHANGE_VERDICT=handover reason=lines>150");
+    assert_eq!(j["verdict"], "handover");
+    assert!(
+        stderr(&o).contains("hook repair grew the change beyond the quick-change limits"),
+        "{}",
+        stderr(&o)
+    );
+}
+
+#[test]
+fn committed_mode_needs_a_clean_worktree() {
+    for (path, body) in [("README.md", "# dirty\n"), ("NEW.md", "untracked\n")] {
+        let r = Repo::new();
+        r.write("docs/fix.md", "x\n");
+        r.commit_all("quick change");
+        r.write(path, body);
+        let o = r.measure(&["--committed"]);
+        assert_eq!(o.status.code(), Some(2), "{path}: {}", stderr(&o));
+        assert!(stderr(&o).contains("worktree not clean"), "{}", stderr(&o));
+    }
 }

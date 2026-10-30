@@ -105,7 +105,7 @@ steps:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 2c: Single dev/investigation workstream -- round 1
-  # Development classification routes to `default-workflow` unless the classifier or `-c workflow=` selects `quick-change` for a small single-workstream task; any other model-provided recipe value is coerced to `default-workflow`.
+  # Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`.
   # Hybrid decompositions route each workstream by its own normalized classification.
   # NOTE: workstream_count may be stored as a Number (int) by the Rust
   # recipe runner's parse_context_value (which auto-detects "1" → Number).

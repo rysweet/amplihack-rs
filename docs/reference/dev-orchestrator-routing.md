@@ -150,7 +150,7 @@ There is no configuration flag that disables the Development routing invariant.
 
 Prompt text in `dev-orchestrator`, `smart-classify-route`, `smart-execute-routing`, and the routing hook should state the same rule for model guidance:
 
-> Development classification routes to `default-workflow` unless the classifier or `-c workflow=` selects `quick-change` for a small single-workstream task; any other model-provided recipe value is coerced to `default-workflow`.
+> Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`.
 
 That prompt text is supportive documentation for the model. The Rust helper is authoritative.
 

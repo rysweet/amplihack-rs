@@ -127,8 +127,8 @@ A value that does not match `^[0-9]{1,6}$` fails the `quick-change-diff-limits` 
 | 5 | `quick-change-diff-limits` | bash | Runs `quick_change_diff_limits.sh`. Output `quick_change_verdict`: `proceed` or `handover`. Has no condition. Fails the run on git configuration drift or an empty diff. |
 | 6 | `quick-change-write-handover` | bash | On `handover`, writes the patch file and the hand-over note. |
 | 7 | `quick-change-handover` | recipe | On `handover`, runs `default-workflow`. |
-| 8 | `quick-change-commit` | bash | On `proceed`, stages, runs the artifact guard, sets the commit identity and commits with `git commit -F`. |
-| 9 | `quick-change-push` | bash | On `proceed`, pushes the branch and verifies the remote ref. |
+| 8 | `quick-change-commit` | bash | On `proceed`, runs the artifact guard, stages, runs the guard again, sets the commit identity, commits with `git commit -F` and measures the committed change again. Output `quick_change_commit_repaired`: `yes` when hook repair ran, else `no`. |
+| 9 | `quick-change-push` | bash | On `proceed`, pushes the branch, measures the committed change again and verifies the remote ref. Output `quick_change_push_repaired`: `yes` when hook repair ran, else `no`. |
 | 10 | `quick-change-create-pr` | bash | On `proceed`, opens the PR. Always the last step. |
 
 The agent works under the leaf-step constraints of #1333: it does not start an orchestrator, recipe or workflow. It is also told not to commit, and not to change git configuration, hooks, remotes or refs. These instructions are guidance; the controls that enforce them are the bash steps listed under [Security limits](#security-limits).
@@ -205,7 +205,7 @@ A path counts as unparseable when a `-z` record is truncated, has a missing NUL 
 | `amplifier-bundle/tools/`, `amplifier-bundle/recipes/` | Change the recipe that is running |
 | `.gitmodules`, `.gitattributes` | Change how git fetches and filters content |
 
-**Git configuration snapshot.** Taken by `quick-change-record-base` before the agent runs. It covers the remotes and their URLs, `url.*.insteadOf`, `core.hooksPath`, `core.sshCommand`, `core.fsmonitor`, `credential.helper` and the contents of the hooks directory.
+**Git configuration snapshot.** Taken by `quick-change-record-base` before the agent runs. The keys it covers are listed under [Security limits](#security-limits); it also covers the contents of the hooks directory. A configuration read that fails is a fault (exit 2), so two empty snapshots can never compare equal.
 
 **Git configuration drift stops the run.** Any difference from the snapshot gives verdict `stop`. There is no hand-over and no push, because `default-workflow` would otherwise run its own commit and push steps in a worktree whose hooks, `insteadOf` rules or push URL the agent has changed. The snapshot is not restored automatically: a restore covers only the keys in the snapshot, and a change outside them would pass unnoticed. The run fails with:
 
@@ -223,7 +223,7 @@ git branch -D quick/issue-0-fix-broken-link
 ### The diff-limits tool
 
 ```text
-amplifier-bundle/tools/quick_change_diff_limits.sh <worktree> [--base <sha>] [--max-files N] [--max-lines N]
+amplifier-bundle/tools/quick_change_diff_limits.sh <worktree> [--base <sha>] [--committed] [--max-files N] [--max-lines N]
 amplifier-bundle/tools/quick_change_diff_limits.sh --snapshot <worktree>
 ```
 
@@ -236,14 +236,23 @@ QUICK_CHANGE_VERDICT=handover reason=public-interface
 {"verdict":"handover","reason":"public-interface","files":2,"lines":41,"lockfile_lines":0,"max_files":3,"max_lines":150,"base":"093edc996..."}
 ```
 
+`--committed` measures the change after it has been committed, which the commit and push steps do because hook repair can add commits after step 5. The worktree must be clean, so the diff against the base equals `base..HEAD`; otherwise the tool exits 2. Rule 6 (`agent-commit`) is skipped, since the recipe's own commits are expected, and every other rule runs, rule 1 included. A `handover` verdict in this mode exits 5 and prints to stderr:
+
+```text
+quick-change: hook repair grew the change beyond the quick-change limits; not publishing
+```
+
+A hand-over is not possible at that point, so the step fails instead.
+
 On drift, line 1 is `QUICK_CHANGE_VERDICT=stop reason=git-config-drift`, and the JSON carries `"verdict":"stop"` with the names of the keys or hook files that differ. Their values are not printed.
 
 | Exit code | Meaning |
 | --- | --- |
-| 0 | Verdict is `proceed` or `handover` |
-| 2 | Fault: bad arguments, a `--base` that is not an ancestor of `HEAD`, a git failure, or `jq` missing |
+| 0 | Verdict is `proceed`, or `handover` without `--committed` |
+| 2 | Fault: bad arguments, a `--base` that is not an ancestor of `HEAD`, a git failure (a failed configuration read included), `jq` missing, or an unclean worktree with `--committed` |
 | 3 | Empty diff |
 | 4 | Git configuration drift |
+| 5 | Verdict is `handover` with `--committed` |
 
 The recipe step fails on exit 2, 3 or 4, and neither a PR nor a hand-over happens. An empty diff stops the run with `quick-change: no changes produced`; drift stops it with the message above. On exit 0 the step's output is the verdict word only.
 
@@ -327,7 +336,7 @@ A failing check does not stop the recipe. The PR is opened as a draft and its bo
 The PR body is built in a file and passed with `--body-file`. The commit message is passed with `git commit -F`. Neither goes through argv (#1570).
 
 ```markdown
-## Summary
+## Request
 
 Fix the broken link to the recipe CLI reference in docs/index.md
 
@@ -350,18 +359,30 @@ Refs #1740
 
 | Item | Rule |
 | --- | --- |
-| Title | Task text with control characters removed, cut to 72 characters |
-| Summary | Cut to 4000 bytes on a UTF-8 boundary |
+| Title | Task text with control characters and backticks removed and leading markdown markers (`#`, `>`, `*`, `_`, `-`) stripped, cut to 72 characters; `quick change` when nothing is left |
+| Request | The task text, cut to 4000 bytes on a UTF-8 boundary |
 | `Refs #N` | Only when the issue number matches `^[1-9][0-9]{0,8}$` |
-| Draft | When `QUICK_CHANGE_CHECKS=failed`; the body then starts with "Checks failed" |
+| Draft | When `QUICK_CHANGE_CHECKS=failed`, or when hook repair ran in the commit or push step |
 
-The push uses an explicit refspec, `git push -u origin refs/heads/<branch>:refs/heads/<branch>`, to the push URL recorded in the snapshot, and is followed by `verify_pushed_ref.sh`. `gh pr create` runs through `workflow_gh_retry.sh` under an outer timeout. When a `pre-commit` or `pre-push` hook rejects the commit or push, the step uses the hook-repair loop described in [Recipe Commit Hook Repair](./recipe-commit-hook-repair.md), which can start further agent sessions.
+The body's first section is headed "Request" because it holds the task text as given, not a summary of the change: no agent-written text reaches the PR (S8). The commit message body is the same text.
+
+When the checks failed, the body starts with "Checks failed". When hook repair ran, it also says "Hook repair changed the code after the checks ran; the checks table describes the pre-repair tree." The create-PR step reads `quick_change_commit_repaired` and `quick_change_push_repaired` from the runner's outputs, never from the state directory, and fails when either is missing.
+
+The push uses an explicit refspec, `git push -u origin refs/heads/<branch>:refs/heads/<branch>`, only after the snapshot (which holds a checksum of the push URL) still matches, and is followed by `verify_pushed_ref.sh`. `gh pr create` runs through `workflow_gh_retry.sh` under an outer timeout.
+
+### Hook repair
+
+When a `pre-commit` or `pre-push` hook rejects the commit or push, the step uses the hook-repair loop described in [Recipe Commit Hook Repair](./recipe-commit-hook-repair.md). Its fixing agent can change files after step 5 measured the diff, so both steps run `quick_change_diff_limits.sh --committed` against the pinned base once the commit or push has succeeded:
+
+- In the commit step, a change that now exceeds the limits fails the step (exit 5), and nothing is pushed.
+- In the push step, the loop commits the fix and pushes it itself, so the check runs after the push. A failure leaves the branch on `origin`, but the run stops before a PR is opened.
+- When the change is still within the limits, the PR is opened as a draft, because the checks table describes the tree before the repair.
 
 ## Routing from smart-orchestrator
 
 The routing rule, as stated in the dev-orchestrator skill, the routing prompt and the recipes:
 
-> Development classification routes to `default-workflow` unless the classifier or `-c workflow=` selects `quick-change` for a small single-workstream task; any other model-provided recipe value is coerced to `default-workflow`.
+> Development classification routes to `default-workflow`, or to `quick-change` for small single-session changes; any other model-provided recipe value is coerced to `default-workflow`.
 
 ### Where the decision is made
 
@@ -504,7 +525,10 @@ The agent's prompt instructions are not relied on. The controls are in the bash 
 
 - Tools are resolved from `AMPLIHACK_HOME`, `RECIPE_VAR_repo_path` or the two `$HOME` install locations, never from the current directory. A tools path inside the agent's worktree is refused.
 - The diff base is pinned before the agent runs. An agent commit forces a hand-over. Git configuration drift and hook changes stop the run with no hand-over and no push.
-- The push goes to the URL in the snapshot, with an explicit refspec and no force, mirror, tags or delete. No step merges.
+- Changes made by hook repair are measured again after the commit and after the push; a change that no longer fits the limits is not opened as a PR.
+- The diff-limit step and the push step compare git configuration, hooks and the push URL with the snapshot taken before the agent ran, and refuse to continue when any of them differ. The snapshot covers remotes, URL rewrites, `http.*`, credential helpers, `core.hooksPath`, `core.sshCommand`, `core.fsmonitor`, `core.gitProxy`, `core.askPass`, `protocol.*`, includes, clean and smudge filters, `core.attributesFile` and commit signing, at every configuration level, plus the whole local and worktree configuration files and the hooks directory.
+- Every step after the agent reads the pinned base from the state directory and checks it against the value the runner holds in memory (`quick_change_base`), so rewriting the stored base stops the run.
+- The push goes to `origin` with an explicit refspec and no force, mirror, tags or delete, and only after the snapshot comparison passes. No step merges.
 - Untrusted text reaches bash only through `RECIPE_VAR_*` variables; no `command:` block contains `{{`. No step uses `eval`, `bash -c "$VAR"` or `set -x`.
 
 Known limits:
@@ -512,6 +536,11 @@ Known limits:
 - The public-interface rule covers Rust only. An interface change in another language that fits within the size limits proceeds and is left to PR review.
 - The public-interface pattern does not match `pub extern`, `pub union` or `pub macro`. A change to one of these that fits within the size limits proceeds. `#[macro_export]` macros are also missed, as they are not declared with `pub`.
 - Checks run code from the repository. Tokens are removed from the environment, but credential files on disk remain readable.
+- The agent and the check commands run with the user's full privileges and are not sandboxed. The controls above stop changes inside the worktree and to git configuration from weakening the gate, but they cannot stop a process that edits files outside the worktree: the installed tools under `AMPLIHACK_HOME` or `repo_path`, the git configuration snapshot in the state directory, or `~/.ssh/config`. PR review is the control for those cases.
+- An existing lockfile is excluded from the line limit. A large lockfile change, including one that points a package at a different download URL, proceeds when the other limits are met and is left to PR review.
+- Changed file names are passed to `pre-commit run --files` as they are. An agent-created file whose name starts with `-` is read by pre-commit as an option.
+- A new file created with the executable bit is counted like any other new file; only a mode change to an existing file, or a symlink, forces a hand-over.
+- When hook repair during the push grows the change beyond the limits, the branch is already on `origin` and no PR is opened. Delete the remote branch by hand if it is not wanted.
 - `.gitignore` is the boundary for secrets. An ignored file is neither counted nor committed; a secret in a tracked or new unignored file is caught only by the artifact guard before the commit.
 
 ## Out of scope
