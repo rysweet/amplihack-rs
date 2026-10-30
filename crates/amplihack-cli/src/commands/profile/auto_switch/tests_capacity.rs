@@ -51,6 +51,7 @@ fn cfg(threshold: u8, exclude: &[&str]) -> Config {
         threshold,
         exclude: names(exclude),
         overflow: Vec::new(),
+        kind: Default::default(),
     }
 }
 
@@ -94,6 +95,7 @@ fn compute(
         order: &[],
         blocked: &[],
         gate: None,
+        platform: None,
     };
     super::capacity::compute(profiles, evidence, cfg, &none, now, writer)
 }
@@ -232,6 +234,7 @@ fn overflow_case_cred(
         order: &order,
         blocked,
         gate,
+        platform: None,
     };
     super::capacity::compute(
         &names(&["a", "b", "cred"]),
@@ -301,6 +304,7 @@ fn file_and_selection(threshold: u8, a: Reading, b: Reading, cred_pct: f64) -> (
         order: &order,
         blocked: &[],
         gate: Some(GATE),
+        platform: None,
     };
     let profiles = names(&["a", "b", "cred"]);
     let cred = reading(win(cred_pct, T + HOUR), None, T);

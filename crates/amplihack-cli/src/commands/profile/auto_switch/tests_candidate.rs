@@ -264,6 +264,7 @@ impl Over {
             order: &self.order,
             blocked: &self.blocked,
             gate: self.gate,
+            platform: None,
         }
     }
 
@@ -481,6 +482,7 @@ fn the_rerun_candidate_follows_the_overflow_rule() {
         threshold: 90,
         exclude: Vec::new(),
         overflow: vec![OverflowEntry::new(n("cred"), 1)],
+        kind: Default::default(),
     };
     let mut readings = BTreeMap::new();
     readings.insert("work".to_string(), live(95.0, 4 * 3600));

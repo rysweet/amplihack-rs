@@ -16,14 +16,16 @@ use super::cycle::{Ctx, LOCK_WAIT, prototype_guard};
 use super::identify::{LiveId, Skip};
 use super::ledger::{LastCycle, RotateState, SWITCHED, active_blocks};
 use super::log::msg;
-use super::observe::{Snap, live_alert};
+use super::observe::{Snap, live_alert_for};
 use super::pin;
+use super::platform_block;
 use super::prelude::{Prelude, locked_prelude};
 use super::settings;
 use super::swap::{self, LOGIN_NOT_MOVABLE, NO_STORED_LOGIN_HINT, Source};
 use super::{Released, TuneFlags};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{CREDS, State, exists, now};
+use crate::commands::profile::kind::{self, Kind};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::pointer;
 use crate::commands::profile::shared_dirs;
@@ -75,9 +77,10 @@ fn lock_busy() -> ProfileError {
 
 /// Moves `name`'s login into `~/.claude` and pins rotation to it. A refusal
 /// before the lock is held and recovery has settled (lock busy, prototype,
-/// inconsistent recovery) is `RotateRefused` and writes nothing. A refusal
-/// after that, about the live login or `name` itself (`LiveUnusable`, a
-/// candidate skip reason, a swap refusal, which moves nothing), still writes
+/// inconsistent recovery), or a platform block on `name` (issue #1700), is
+/// an error and writes nothing. Any other refusal after that, about the live
+/// login or `name` (`LiveUnusable`, a candidate skip reason, a swap refusal,
+/// which moves nothing), still writes
 /// `.default` under the lock and returns [`Switched::DefaultOnly`]: setting
 /// the default for new launches does not depend on moving the live login
 /// (issue #1691, "keeps the `.default` pointer behaviour"). No refusal writes
@@ -102,8 +105,15 @@ pub(super) fn switch_in(
     let store = &ctx.store.clone();
     let home = &ctx.home.clone();
     let (mut out, prelude) = locked_prelude(&mut ctx, false, false)?;
+    // Issue #1700: a pinned API key that cannot work would hold the login
+    // there, and `.default` would launch it directly, so a blocked key
+    // refuses the whole switch and writes nothing, before any of the
+    // `.default`-only exits below.
+    if !matches!(prelude, Prelude::LockBusy) {
+        platform_blocked(&ctx.rs, store, home, name)?;
+    }
     let (lock, first) = match prelude {
-        Prelude::Ready { lock, first, .. } => (lock, first),
+        Prelude::Ready { lock, first, .. } => (lock, *first),
         Prelude::LockBusy => return Err(lock_busy()),
         Prelude::AutoSwitchInconsistent => return Err(refused(msg::AUTO_SWITCH_INCONSISTENT)),
         Prelude::Inconsistent(reason) => return Err(refused(&msg::inconsistent(&reason))),
@@ -120,7 +130,8 @@ pub(super) fn switch_in(
         LiveId::Adopt => Some(Source::Adopt),
         // The prelude already refuses these as `LiveUnusable`.
         other => {
-            let line = live_alert(other).map_or_else(|| msg::NO_LOGIN.to_string(), |a| a.1);
+            let line = live_alert_for(other, first.home_no_oauth)
+                .map_or_else(|| msg::NO_LOGIN.to_string(), |a| a.1);
             return default_only(&ctx.rs, store, name, reason_of(&line));
         }
     };
@@ -237,6 +248,7 @@ pub(super) fn not_a_candidate(
             ));
         }
         Skip::NoLogin => LOGIN_NOT_MOVABLE.to_string(),
+        Skip::NotOAuth => "its login file holds no subscription login".to_string(),
         Skip::SessionRunning if !snap.sees_sessions => {
             "running sessions cannot be seen here, so its login may be in use".to_string()
         }
@@ -274,6 +286,32 @@ pub(super) fn spend_blocked(
     Ok(active_blocks(&l, now())
         .get(name.as_str())
         .map(|b| msg::switch_spend_blocked(name, b.until)))
+}
+
+/// `PlatformBlocked` when `name` is an API-key profile and the API-key
+/// block is active (issue #1700). One block covers every API-key profile,
+/// since they share the one Claude Platform credential. A ledger that
+/// cannot be read fails the switch, since the block is then unknown.
+fn platform_blocked(
+    rs: &RotateState,
+    store: &ProfileStore,
+    home: &Path,
+    name: &ProfileName,
+) -> Result<(), ProfileError> {
+    if kind::kind_of(store, name, home) != Kind::Platform {
+        return Ok(());
+    }
+    let Some(l) = rs.load_ledger()? else {
+        return Ok(());
+    };
+    match platform_block::active(&l, now()) {
+        Some(b) => Err(ProfileError::PlatformBlocked {
+            name: name.to_string(),
+            reason: b.reason.clone(),
+            until: b.until,
+        }),
+        None => Ok(()),
+    }
 }
 
 /// Records the switch as the ledger's last cycle: outcome

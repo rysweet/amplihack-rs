@@ -42,10 +42,8 @@ fn private(path: &Path, body: &str) {
 }
 
 fn login(path: &Path) {
-    private(path, "SENTINEL");
-    if super::auto_switch::euid() != 0 {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
-    }
+    // Issue #1700: an OAuth login (its top-level keys are read for the kind).
+    private(path, r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#);
 }
 
 fn acct(uuid: &str, org: Option<&str>) -> String {

@@ -9,6 +9,7 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ### Added
 
+- **API-key (Claude Platform) profiles as the last overflow tier (#1700)**: a profile whose login file is `{}` or another object with no OAuth login, or which has no login file and names `ANTHROPIC_API_KEY`, `apiKeyHelper` or `primaryApiKey` in its settings, is detected as an API-key profile from key names and file presence only. A profile with no login file and no such setting is a subscription profile with no login. `amplihack profile kind list|set` shows and overrides the kind (`kind=` in `<root>/.auto-switch`). `profile usage` shows state `api_key` with `api-key (billed per token)` and runs no probe. The rotator uses an API-key profile only after every plan login and every credit overflow profile, behind the overflow wait, and moves `~/.claude` off it on the first cycle after plan capacity returns. Auto-switch uses it only for a new nested launch or a usage-limit rerun; that session's next nested launch or rerun goes back to a plan profile. Out-of-funds, revoked and rate-limited keys block every API-key profile with one ALERT; `profile overflow clear --platform` clears the block. Behaviour change: `profile run`, `switch` and `--profile` launches now refuse a subscription profile with no OAuth login of its own (`SubscriptionNoLogin`), and the rotator refuses a swap that would leave `~/.claude` with no OAuth login, because Claude would otherwise bill the API key. Kind detection, `profile kind` and the launch guard are Unix-only, like the rotator and auto-switch; see `docs/reference/profile-command.md#api-key-platform-support`. See `docs/reference/profile-command.md#api-key-profiles`.
 - **Claude login profiles (#1555)** — `amplihack profile <add|list|show|switch|remove|login|run>` and `--profile <name>` on `launch`/`claude` manage named, isolated Claude Code logins via `CLAUDE_CONFIG_DIR`. Manual only: no token vault, refresh, usage probing or auto-rotation. See `docs/howto/claude-profiles.md`.
 
 ### Changed
@@ -17,6 +18,62 @@ Unreleased changes appear at the top under `[Unreleased]`.
 - **Saved Claude profile root (#1592)**: `amplihack profile root [<dir>]` shows or saves the profile root in `~/.amplihack/profile-root`, so cron, `tmux -d` and `env -i` find profiles without `~/.bashrc`; the first `profile add` records the root it used. An empty `AMPLIHACK_CLAUDE_PROFILE_ROOT` now counts as unset, and a non-empty value with a control character or a `..` component is now refused with `InvalidRoot`. `profile list` and `profile rotate status` now print a `root:` line first, and `profile root <dir>` refuses a value with leading or trailing whitespace. See `docs/reference/profile-command.md#profile-root`.
 
 ### Fixed
+
+- **Copilot launch failed with Copilot CLI 1.0.105 (#1744)**: amplihack no
+  longer adds `--remote` to Copilot launches, because Copilot removed the
+  flag. A user's `--remote` or `--no-remote` is passed through unchanged, but
+  Copilot 1.0.105 rejects both; use `/remote on` or `/remote off` inside a
+  session. Routed (LiteLLM proxy)
+  launches still add `--no-remote` and `--no-remote-export`, so they fail to
+  start on Copilot 1.0.105 until #1747 is resolved.
+  `AMPLIHACK_COPILOT_NO_REMOTE` is removed and has no effect. See
+  [flag injection rules](docs/reference/flag-matrix.md#flag-injection-rules).
+- **Intermittent `exited_probe_with_inherited_pipe_is_bounded_and_cleans_its_group`
+  failure (#1748)**: the test read the probe descendant's state once, straight
+  after the probe returned, but the group `SIGKILL` arrives asynchronously, so
+  under load the descendant could still read as sleeping. The test now polls
+  for up to 5 seconds before failing.
+- **Intermittent `hostile_root_round_trips_through_bash_without_running_anything`
+  failure (#1730, #1731)**: the test spawned `bash` from `PATH` without the
+  crate-wide env lock, while other tests point `PATH` at an empty directory
+  under that lock, so the spawn could fail with `ENOENT`. The test now holds
+  the lock for the spawn.
+- **Intermittent `version_probe_is_bounded_for_hanging_binaries` failure
+  (#1765)**: the test pointed the process-wide `PATH` at a temporary
+  directory and required the probe of a fake `mmdc` that sleeps 2 seconds to
+  return within 1 second, which a loaded host can miss although the probe is
+  bounded. The test now runs the fake by absolute path, leaving `PATH` alone,
+  and requires the probe of a fake that sleeps 60 seconds to return within
+  30 seconds and report failure.
+- **`issue_1543_pr_head_worktree_shell_test_passes` failed in CI once
+  recipe-runner-rs v0.5.1 was released (#1772)**: at startup, the pinned
+  runner asks GitHub for its latest release and prints a notice on stderr
+  when that release is newer than itself. The test captured the runner's
+  stdout and stderr together and parsed them as one JSON document, so T20 and
+  T21 reported `<runner output is not JSON>`. The test now sets
+  `RECIPE_RUNNER_NO_UPDATE_CHECK=1`, parses only the runner's stdout, and
+  prints both streams when a run fails or returns no JSON.
+- **Intermittent `release_under_a_held_lock_leaves_pin_and_pointer_alone`
+  failure (#1774)**: six rotate tests took the rotate state lock with no
+  wait, and one autostart test expected a launch straight after a failed one
+  to find it free. While another test thread spawns a child process, the
+  child shares a lock file this test has just closed until it reaches
+  `exec`, so the lock could read as held. The six tests now use one helper
+  that waits up to 10 seconds for the lock, and the autostart test retries
+  its final launch while it reports `Busy`, for up to 10 seconds.
+- **Intermittent `home_command_child_sees_no_config_dir` failure (#1777)**:
+  two profile tests ran a script they had just written without retrying
+  `ETXTBSY`, which a child process spawned by another test thread can cause
+  while it still shares the script's write descriptor. All three such runs in
+  `tests_run.rs` now share one helper that retries for up to 5 seconds.
+- **Intermittent `downgrade_guard_tests` failures in `freshness.rs` (#1780)**:
+  the tests run each case in a child copy of the test binary, which started
+  in whatever directory the test process was in. Other tests move the process
+  into a temporary directory and then delete it, and git cannot start in a
+  deleted directory, so the child's runner ancestry check answered
+  `Unverifiable` instead of `Newer`. Both worker helpers in `freshness.rs` now
+  start the child in a directory the test owns.
+- **Auto-drive ended at phase 1 although its build had an open PR (#1714)**: when `default-workflow` ran inside `auto-drive-to-merge` and finalization failed while a published, open PR existed, the whole auto-drive run ended at phase 1, although its crusty and merge-ready loops exist to review that PR and fix what keeps it from merging. Two cases were reported. (1) Red checks, classified `BLOCKED_CI`. (2) A merge of main pushed to the PR from another checkout, so the PR head was a fast-forward of the local HEAD; the open-PR check required the two to be equal, found no signal and the run ended `FAILED_IMPLEMENTATION`. The open-PR check (`workflow_finalization_pr_signal.sh`) now accepts a PR head whose ancestor is the local HEAD, fetching the PR head once without writing refs when it is not local (only after the PR passes the open, same-repo, branch, number and URL checks, and without prompting: ssh runs with `BatchMode=yes` and connection time limits, HTTPS with a stall limit, so the fetch cannot hang where `timeout` is missing, as on macOS), and fails closed when the commit is missing or the heads diverged. The terminal-state probe that `workflow-finalize` runs before the validator applies the same rule (`accept_pr_head_ahead: "true"`, `workflow_pr_scope.sh --allow-head-ahead`), through one shared test in `workflow_pr_head_fetch.sh`, so a merge that reached the PR before finalization started is no longer reported as stale metadata (`FAILED_INVALID_INPUT`); a diverged head or a rewound remote still is. `workflow-finalize` then runs `step-20-sync-pr-head` (`workflow_pr_head_sync.sh`), which fetches the branch, sets a missing upstream and fast-forwards the worktree to that PR head before the cleanup and quality-audit agents edit it; step-20b runs the same tool after its cleanup commit, so it fetches and sets a missing upstream and pulls before it pushes instead of a bare `git push -u` that a remote ahead would reject. `autodrive-build` step-02 sets `finalization_handoff: "true"`; with it, finalization emits its usual `BLOCKED_CI` result, or a `FAILED_IMPLEMENTATION` or `FAILED_REPORTING` result on a PR the open-PR check confirmed (on a reporting failure the check runs only under auto-drive and can only hand the PR off, never classify success), with `terminal_success=false`, `handoff=merge_ready_loop` and exit `0`. Step-03 then checks that the PR is the one it resolved and is open, and records `terminal_state` and `handed_off` in `build_result`. Every other failure still ends the run. A standalone `default-workflow` declares the flag `""` and still fails closed. The allow-list lives in `amplifier-bundle/tools/workflow_finalization_handoff.sh`. See `docs/reference/auto-drive-to-merge.md#finalization-hand-off-from-phase-1-1714`.
 
 - **Workflow cleanup deleted other runs' worktrees and uncommitted work
   (#1494, #1560)** — when a run started from the main checkout, the runtime

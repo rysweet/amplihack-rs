@@ -99,6 +99,21 @@ impl Probed {
         }
     }
 
+    /// The synthetic reading of an API-key profile (issue #1700), which is
+    /// never probed: usable, 0% of no plan windows, never a spend limit. It
+    /// is never a plan reading: an API-key profile is always in the overflow
+    /// order, so its 0/0 never counts as plan capacity.
+    pub fn platform() -> Self {
+        Self {
+            reading: Reading::Measured {
+                session: 0.0,
+                week: 0.0,
+            },
+            windows: Windows::default(),
+            spend_limit: false,
+        }
+    }
+
     /// A probe that failed before any output was read.
     pub fn failed() -> Self {
         Self {
