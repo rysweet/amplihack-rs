@@ -11,10 +11,14 @@
 //! `kill-session -a` (and the prefixes of `kill-session`), anywhere in a tmux
 //! command sequence, unless `-S <path>` or `-L <name>` appears among tmux's
 //! global options. `-L default`, an empty `-S`/`-L` value, a value that
-//! refers to `$TMUX` or to a variable assigned from it anywhere in the
-//! command (`S=$TMUX; tmux -S "$S" …`), and a socket path ending in
-//! `default` are not scope. Nor is a value holding a `$(…)` or backtick
-//! substitution that runs tmux, or a variable assigned one: inside a pane
+//! refers to `$TMUX`, and a socket path ending in `default` (or in
+//! `default}`, as in `"${S:-/tmp/tmux-1000/default}"`) are not scope. Nor is
+//! a value that refers to a variable assigned, anywhere in the command, a
+//! value that is not scope: `S=$TMUX; tmux -S "$S" …`,
+//! `S=/tmp/tmux-$(id -u)/default; tmux -S "$S" …` and
+//! `L=default; tmux -L "$L" …` are denied. Nor is a value holding a `$(…)`
+//! or backtick substitution that runs tmux, or a variable assigned one
+//! (which the rule above already covers): inside a pane
 //! `tmux display -p '#{socket_path}'` prints the user's own socket, so
 //! `tmux -S "$(tmux display -p '#{socket_path}')" kill-server` is denied. A
 //! substitution "runs tmux" when its body has a `tmux` token, so a sandbox
@@ -106,11 +110,20 @@
 //!   substitution (`(echo kill-server) | tmux -C attach`, `tmux -C attach <
 //!   <(echo kill-server)`), which the tokeniser does not read as earlier
 //!   stages of the client's pipeline;
+//! - a `tmux -C` client inside a compound command (`if`, `while`, `until`,
+//!   `for`, `case`, `{ …; }`) that receives a pipe or heredoc, as in
+//!   `echo kill-server | if true; then tmux -C attach; fi` or
+//!   `printf kill-server | { true; tmux -C attach; }`: the tokeniser ends a
+//!   stage at the first `;` or `)`, so the client starts a new pipeline and
+//!   reads no earlier stage;
 //! - an `-S` path that is a symlink to the default socket, which only a
 //!   file system lookup could see;
-//! - a variable copied from `$TMUX`, or from tmux's output, other than by
-//!   assignment (`read`, `printf -v`, `declare -n`, a `for` loop), or in an
-//!   earlier tool call;
+//! - a variable copied from `$TMUX`, from tmux's output or from a default
+//!   socket path other than by assignment (`read`, `printf -v`,
+//!   `declare -n`, a `for` loop), or in an earlier tool call;
+//! - a `default` name assembled from pieces, or given only as a parameter
+//!   expansion's fallback other than at the end of the value
+//!   (`-S "/tmp/tmux-1000/${N}ault"`, `-L "${L:-default}"`);
 //! - an `-S` value that is a glob or a file read at run time (`-S
 //!   /tmp/tmux-*/*`, `-S "$(cat sock.txt)"`);
 //! - a command glued to a short option with no separator, as in
@@ -143,6 +156,16 @@
 //! (`git commit -F`, `--body-file`, `--context-from-file`) or run the
 //! command in its own tool call.
 //!
+//! A socket file named `default` is refused even when it belongs to a
+//! sandbox (`tmux -S "$SB/tmuxsock/tmux-1000/default" kill-server`, the
+//! server `TMUX_TMPDIR=$SB/tmuxsock` starts), because from the text alone it
+//! cannot be told apart from the user's. [`BLOCK_MESSAGE`] says so, and names
+//! the way out: name a private server something else, and end one already
+//! running on a `default` path with `tmux -S <path> kill-session -t <name>`
+//! for each session. A variable whose value ends in `default` is not scope
+//! anywhere in an `-S` value, so `D=/srv/default; tmux -S "$D/qa.sock"
+//! kill-server` is denied as well.
+//!
 //! The guard always runs and reads no environment variables, so nothing in
 //! the environment can turn it off; `guard_source_reads_no_environment`
 //! checks the source of this module and of the tokeniser. It never panics
@@ -166,7 +189,7 @@ use tracing::warn;
 /// The deny reason. The command itself is never echoed. It also covers the
 /// false-positive case, a command that only mentions the words as text, so
 /// an agent is told the supported way out rather than guessing at one.
-pub(super) const BLOCK_MESSAGE: &str = "Blocked: this command looks like a tmux kill-server or kill-session -a with no -S or -L, which acts on the tmux server named in $TMUX (normally the user's own server, with all of their sessions). TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket; a socket path taken from $TMUX or from tmux itself (`#{socket_path}`) is the user's server. If the command only mentions these words as text, such as a commit message or a task description, pass the text in a file (`git commit -F`, `--body-file`, `--context-from-file`) or run that command in its own tool call.";
+pub(super) const BLOCK_MESSAGE: &str = "Blocked: this command looks like a tmux kill-server or kill-session -a with no -S or -L, which acts on the tmux server named in $TMUX (normally the user's own server, with all of their sessions). TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket; a socket path taken from $TMUX or from tmux itself (`#{socket_path}`) is the user's server. A socket file named `default`, or `-L default`, also counts as the user's server, even under a sandbox directory: give a private server another name (`-S \"$SB/tmux.sock\"`), and end one already running on a `default` path with `tmux -S <path> kill-session -t <name>` for each of its sessions, since by default a server exits when its last session ends. If the command only mentions these words as text, such as a commit message or a task description, pass the text in a file (`git commit -F`, `--body-file`, `--context-from-file`) or run that command in its own tool call.";
 
 /// Tool names the guard checks, compared case-insensitively: Claude Code's
 /// `Bash` and `PowerShell`, Copilot's `bash` and `powershell`, and Codex's
@@ -358,17 +381,24 @@ struct Scan {
 struct Ctx {
     /// Re-parses left before the check fails closed.
     budget: usize,
-    /// `TMUX` and every variable assigned from it, directly or through
-    /// another tainted variable, in the text seen so far. An `-S` or `-L`
-    /// value that refers to one of these is not scope.
+    /// `TMUX` and every variable assigned, in the text seen so far, a value
+    /// that is not scope: one taken from `TMUX` or tmux's output, directly
+    /// or through another tainted variable, one naming the default socket,
+    /// or an empty one. An `-S` or `-L` value that refers to one of these is
+    /// not scope.
     tainted: HashSet<String>,
 }
 
 /// Adds to `tainted` each variable assigned, in any word of `cmds`, a value
-/// that refers to a tainted variable or substitutes tmux's output
-/// (`sock=$(tmux display -p '#{socket_path}')`). One pass in text order,
-/// which is the order the shell assigns in, keeps the cost linear.
-/// Assignment position is not checked: over-tainting only denies more.
+/// that would not be scope if written as the `-S` or `-L` value itself
+/// ([`scope_value_ok`]): one that refers to a tainted variable, substitutes
+/// tmux's output (`sock=$(tmux display -p '#{socket_path}')`), names the
+/// default socket (`S=/tmp/tmux-$(id -u)/default`, `L=default`) or is empty.
+/// One pass in text order, which is the order the shell assigns in, keeps
+/// the cost linear. Assignment position is not checked, and a value that
+/// refers to a tainted variable anywhere is not scope: over-tainting only
+/// denies more, so `D=/srv/default; tmux -S "$D/qa.sock" kill-server` is
+/// denied too.
 fn taint_assignments(cmds: &[SimpleCommand], tainted: &mut HashSet<String>) {
     for word in cmds.iter().flat_map(|c| &c.words) {
         if !shell::is_assignment(word) {
@@ -377,7 +407,7 @@ fn taint_assignments(cmds: &[SimpleCommand], tainted: &mut HashSet<String>) {
         let Some((name, value)) = word.split_once('=') else {
             continue;
         };
-        if refers_to_any(value, tainted) || substitutes_tmux_output(value) {
+        if !scope_value_ok(value, tainted) {
             tainted.insert(name.to_string());
         }
     }
@@ -944,13 +974,17 @@ fn global_scope(args: &[String], tainted: &HashSet<String>) -> Global {
 
 /// Whether an `-S` or `-L` value names a private server: not empty, not
 /// `default` (as a name or a socket file), not a reference to `$TMUX` or to
-/// a variable assigned from it or from tmux's output, and not itself a
-/// substitution of tmux's output (`"$(tmux display -p '#{socket_path}')"`).
+/// a variable assigned a value that is not scope ([`taint_assignments`]),
+/// and not itself a substitution of tmux's output
+/// (`"$(tmux display -p '#{socket_path}')"`). Trailing `/` and `}` are
+/// ignored when the final component is read, so the default path given as a
+/// parameter expansion's fallback (`"${S:-/tmp/tmux-1000/default}"`) is not
+/// scope either.
 fn scope_value_ok(value: &str, tainted: &HashSet<String>) -> bool {
     !value.is_empty()
         && !refers_to_any(value, tainted)
         && !substitutes_tmux_output(value)
-        && !basename(value.trim_end_matches('/')).eq_ignore_ascii_case("default")
+        && !basename(value.trim_end_matches(['/', '}'])).eq_ignore_ascii_case("default")
 }
 
 /// Whether `value` expands a variable in `names`: `$NAME` or `${NAME…}`,

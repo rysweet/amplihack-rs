@@ -394,6 +394,11 @@ fn block_message_carries_the_required_guidance() {
         "TMUX_TMPDIR alone does not redirect tmux while $TMUX is set",
         // A socket path read from tmux is the user's server (crusty round 1).
         "#{socket_path}",
+        // A `default` socket under a sandbox is refused too, so the message
+        // says why and how to end such a server (crusty round 5).
+        "named `default`",
+        "-L default",
+        "-S <path> kill-session -t <name>",
         // The way out when the command only mentions the words as text.
         "--context-from-file",
         "--body-file",
@@ -1245,4 +1250,78 @@ fn kills_in_matches_reading_every_kill_session_afresh() {
             .collect();
         assert_eq!(kills_in(&tokens), reference(&tokens), "{tokens:?}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 5, concern 1: a variable assigned the default socket, by path
+// or by name, is not scope, exactly as the literal value is not. Concern 2:
+// the cleanup the deny message names for a sandbox server on a `default`
+// path is allowed.
+// ---------------------------------------------------------------------------
+
+const DEFAULT_SOCKET_VARIABLE_DENIED: &[&str] = &[
+    // The three rows crusty found allowed at `8eb3a811d`.
+    "S=/tmp/tmux-$(id -u)/default; tmux -S \"$S\" kill-server",
+    "SOCK=\"${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/default\"\ntmux -S \"$SOCK\" kill-server",
+    "L=default; tmux -L \"$L\" kill-server",
+    // The same through `export`, a chain of variables, a trailing `/`, a
+    // brace reference and `env -u TMUX`.
+    "export S=/tmp/tmux-1000/default; tmux -S \"$S\" kill-server",
+    "D=/tmp/tmux-1000; S=$D/default; tmux -S \"$S\" kill-server",
+    "S=/tmp/tmux-1000/default/; tmux -S \"${S}\" kill-session -a",
+    "L=DEFAULT; env -u TMUX tmux -L\"$L\" kill-server",
+    "N=default; tmux -S \"/tmp/tmux-1000/$N\" kill-server",
+    // A sandbox server on a `default` path is refused by name, as the
+    // literal path is (the deny message gives the way out).
+    "S=\"$SB/tmuxsock/tmux-1000/default\"; tmux -S \"$S\" kill-server",
+    "tmux -S \"$SB/tmuxsock/tmux-1000/default\" kill-server",
+    // The default path as a parameter expansion's fallback, literal or
+    // assigned.
+    "tmux -S \"${SOCK:-/tmp/tmux-1000/default}\" kill-server",
+    "S=${X:-/tmp/tmux-$(id -u)/default}; tmux -S \"$S\" kill-server",
+    // An empty value is not scope, through a variable or literally.
+    "S=; tmux -S \"$S\" kill-server",
+    // Inside an embedded script.
+    "bash -c 'S=/tmp/tmux-1000/default; tmux -S \"$S\" kill-server'",
+];
+
+const DEFAULT_SOCKET_VARIABLE_ALLOWED: &[&str] = &[
+    // A variable naming another socket is still scope.
+    "S=/tmp/tmux-$(id -u)/qa.sock; tmux -S \"$S\" kill-server",
+    "L=qa-1733; tmux -L \"$L\" kill-server",
+    "L=my-default; tmux -L \"$L\" kill-server",
+    "SB=$(mktemp -d); tmux -S \"$SB/tmux.sock\" kill-server",
+    "S=${X:-/tmp/qa/tmux.sock}; tmux -S \"$S\" kill-server",
+    // The cleanup the deny message names for a server already running on a
+    // `default` path: a targeted kill-session for each session.
+    "tmux -S \"$SB/tmuxsock/tmux-1000/default\" kill-session -t qa",
+    "env -u TMUX tmux -S \"$SB/tmuxsock/tmux-1000/default\" ls -F '#S' | xargs -r -n1 env -u TMUX tmux -S \"$SB/tmuxsock/tmux-1000/default\" kill-session -t",
+    // A variable holding the default path that no `-S` or `-L` reads.
+    "S=/tmp/tmux-1000/default; ls -l \"$S\"; tmux -L qa kill-server",
+];
+
+#[test]
+fn a_variable_naming_the_default_socket_is_not_scope() {
+    let missed: Vec<&&str> = DEFAULT_SOCKET_VARIABLE_DENIED
+        .iter()
+        .filter(|c| !denied(c))
+        .collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+#[test]
+fn a_variable_naming_another_socket_and_targeted_cleanup_are_allowed() {
+    let wrong: Vec<&&str> = DEFAULT_SOCKET_VARIABLE_ALLOWED
+        .iter()
+        .filter(|c| denied(c))
+        .collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}
+
+/// Over-tainting only denies more: a variable whose value ends in `default`
+/// is not scope anywhere in an `-S` value, even as a directory. The module
+/// documentation lists this as a false positive.
+#[test]
+fn a_directory_variable_ending_in_default_is_not_scope() {
+    assert!(denied("D=/srv/default; tmux -S \"$D/qa.sock\" kill-server"));
 }

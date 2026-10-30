@@ -314,14 +314,22 @@ These still deny, because they name the user's own server:
 
 - `-L default`, or an empty or missing `-L` or `-S` value.
 - An `-S` value that refers to `TMUX`, matches `/tmp/tmux-*/default`, or has
-  `default` as its final component. A value refers to `TMUX` when it contains
-  `$TMUX` or `${TMUX` not followed by a letter, digit or `_`, as in `${TMUX}`,
-  `${TMUX%%,*}` or `${TMUX:-x}`. `$TMUX_TMPDIR` and `${TMUX_TMPDIR}` do not
-  refer to `TMUX`.
+  `default` as its final component, ignoring a trailing `/` or `}` (so
+  `"${S:-/tmp/tmux-1000/default}"` is the default socket). A value refers to
+  `TMUX` when it contains `$TMUX` or `${TMUX` not followed by a letter, digit
+  or `_`, as in `${TMUX}`, `${TMUX%%,*}` or `${TMUX:-x}`. `$TMUX_TMPDIR` and
+  `${TMUX_TMPDIR}` do not refer to `TMUX`.
 - An `-S` or `-L` value that refers, in the same way, to a variable assigned
-  from `TMUX` anywhere in the command, directly or through another such
-  variable: `S=$TMUX; tmux -S "$S" kill-server` and
-  `s=${TMUX%%,*}; tmux -S "$s" kill-server` are denied.
+  anywhere in the command a value that this list denies, directly or through
+  another such variable. That covers a value taken from `TMUX` or from tmux's
+  output, a value naming the default socket, and an empty value:
+  `S=$TMUX; tmux -S "$S" kill-server`,
+  `s=${TMUX%%,*}; tmux -S "$s" kill-server`,
+  `S=/tmp/tmux-$(id -u)/default; tmux -S "$S" kill-server`,
+  `SOCK="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/default"; tmux -S "$SOCK" kill-server`
+  and `L=default; tmux -L "$L" kill-server` are denied. A value that refers
+  to such a variable anywhere is denied, so
+  `D=/srv/default; tmux -S "$D/qa.sock" kill-server` is denied too.
 - An `-S` or `-L` value that holds a `$( )` or backtick substitution running
   tmux, or refers to a variable assigned one. Inside a pane,
   `tmux display -p '#{socket_path}'` prints the user's own socket, so
@@ -332,6 +340,15 @@ These still deny, because they name the user's own server:
   contains the letters, as in `SB=$(mktemp -d /tmp/tmux-qa.XXXXXX)`, is
   still a private socket.
 - A `TMUX=…` prefix or `env TMUX=…`. Setting `TMUX` is never scope.
+
+A socket file named `default` is denied even under a sandbox directory, such
+as `tmux -S "$SB/tmuxsock/tmux-1000/default" kill-server` for the server that
+`TMUX_TMPDIR=$SB/tmuxsock` starts, because the text alone cannot tell it from
+the user's own socket. The deny message says so and gives the way out: give a
+private server another name (`-S "$SB/tmux.sock"`), and end a server already
+running on a `default` path with `tmux -S <path> kill-session -t <name>` for
+each of its sessions. `kill-session -t` is not guarded, and with the default
+`exit-empty` option a tmux server exits when its last session ends.
 
 | Command | Result |
 |---|---|
@@ -348,6 +365,9 @@ These still deny, because they name the user's own server:
 | `tmux -L default kill-server` | denied |
 | `tmux -S "$TMUX" kill-server` | denied |
 | `tmux -S "$(tmux display -p '#{socket_path}')" kill-server` | denied |
+| `S=/tmp/tmux-$(id -u)/default; tmux -S "$S" kill-server` | denied |
+| `L=default; tmux -L "$L" kill-server` | denied |
+| `tmux -S "$SB/tmuxsock/tmux-1000/default" kill-server` | denied |
 | `tmux new -d 'sleep 1' \; kill-server` | denied |
 | `tmux -L x kill-server` | allowed |
 | `tmux -S /p kill-server` | allowed |
@@ -358,6 +378,7 @@ These still deny, because they name the user's own server:
 | `tmux -S "$(mktemp -d)/s" kill-server` | allowed |
 | `tmux -L qa-1733 kill-server` | allowed |
 | `tmux kill-session -t foo` | allowed |
+| `tmux -S "$SB/tmuxsock/tmux-1000/default" kill-session -t qa` | allowed |
 | `tmux ls` | allowed |
 
 **Where tmux is found.** Commands are split by the shared shell tokeniser in
@@ -572,7 +593,7 @@ flush:
 
 `<M>` is this fixed message. The command itself is never echoed.
 
-> Blocked: this command looks like a tmux kill-server or kill-session -a with no -S or -L, which acts on the tmux server named in $TMUX (normally the user's own server, with all of their sessions). TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket; a socket path taken from $TMUX or from tmux itself (`#{socket_path}`) is the user's server. If the command only mentions these words as text, such as a commit message or a task description, pass the text in a file (`git commit -F`, `--body-file`, `--context-from-file`) or run that command in its own tool call.
+> Blocked: this command looks like a tmux kill-server or kill-session -a with no -S or -L, which acts on the tmux server named in $TMUX (normally the user's own server, with all of their sessions). TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket; a socket path taken from $TMUX or from tmux itself (`#{socket_path}`) is the user's server. A socket file named `default`, or `-L default`, also counts as the user's server, even under a sandbox directory: give a private server another name (`-S "$SB/tmux.sock"`), and end one already running on a `default` path with `tmux -S <path> kill-session -t <name>` for each of its sessions, since by default a server exits when its last session ends. If the command only mentions these words as text, such as a commit message or a task description, pass the text in a file (`git commit -F`, `--body-file`, `--context-from-file`) or run that command in its own tool call.
 
 The last sentence covers the false positives listed below, so an agent that
 was only writing about the guard is told the supported way out.
@@ -599,9 +620,18 @@ sandbox. It does not see through:
 - an `-S` path that is a symbolic link to the default socket or to the socket
   in `$TMUX`. The guard reads no files and does not resolve links, so
   `tmux -S /tmp/link kill-server` is allowed whatever the link points to;
-- a variable copied from `$TMUX`, or from tmux's output, other than by
-  assignment (`read`, `printf -v`, `declare -n`, a `for` loop), or in an
-  earlier tool call;
+- a `tmux -C` client inside a compound command (`if`, `while`, `until`,
+  `for`, `case` or a `{ …; }` group) that receives a pipe or heredoc, as in
+  `echo kill-server | if true; then tmux -C attach; fi` or
+  `printf kill-server | { true; tmux -C attach; }`. The tokeniser ends a stage
+  at the first `;` or `)`, so the client starts a new pipeline, reads no
+  earlier stage and is allowed;
+- a variable copied from `$TMUX`, from tmux's output or from a default socket
+  path other than by assignment (`read`, `printf -v`, `declare -n`, a `for`
+  loop), or in an earlier tool call;
+- a `default` name assembled from pieces, or given only as a parameter
+  expansion's fallback other than at the end of the value, as in
+  `-S "/tmp/tmux-1000/${N}ault"` or `-L "${L:-default}"`;
 - an `-S` value that is a glob or a file read at run time, such as
   `-S /tmp/tmux-*/*` or `-S "$(cat sock.txt)"`;
 - a command glued to a short option with no separator, as in
@@ -649,7 +679,10 @@ command in any argument, as in `tmux send-keys 'tmux kill-server'`. A
 hand-written `tmux new-session -d "$(amplihack agent-binary --shell) amplihack recipe run … -c task_description='… tmux kill-server …'"`
 is denied as well, because tmux runs that argument as a shell command; use
 `amplihack recipe run --detach`, or `--context-from-file`, for such a task.
-Put such commands in separate tool calls, or pass the text in a file.
+Put such commands in separate tool calls, or pass the text in a file. A
+sandbox socket named `default`, and a variable whose value ends in `default`
+used anywhere in an `-S` value (`D=/srv/default; tmux -S "$D/qa.sock" …`), are
+denied as well; see [What counts as scoped](#tmux-server-guard).
 
 **Safe form for agents.** `TMUX_TMPDIR` alone is not enough while `$TMUX` is
 set. Start, use and kill a private server on its own socket, with `TMUX`

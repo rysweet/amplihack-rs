@@ -1044,3 +1044,45 @@ fn tmux_guard_allows_a_scoped_kill_server_for_the_powershell_tool_name() {
         .unwrap();
     assert!(result.get("block").is_none(), "{result}");
 }
+
+// ---------------------------------------------------------------------------
+// Crusty round 5, concern 4: the shell tokeniser this PR shares with the
+// #1551 merge guard changes that guard as well. It now refuses forms that the
+// 1.2.59 build allowed, and no form found that 1.2.59 refused is now
+// allowed. `merge_guard_tests.rs` stays byte-identical to main (D8), so the
+// change is pinned here.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shared_tokeniser_makes_the_merge_guard_refuse_more_forms() {
+    for command in [
+        // A backslash-newline is removed and adds no empty word.
+        "gh pr \\\n  merge 38",
+        "gh \\\n  pr merge 38",
+        // Redirections are not words, before or among gh's arguments.
+        "gh 2>/dev/null pr merge 38",
+        ">out gh pr merge 38",
+        "2>&1 gh pr merge 38",
+        "</dev/null gh pr merge 38",
+        // `$'…'` escapes are decoded.
+        "gh $'\\x70r' merge 38",
+        "gh api $'repos/o/r/pulls/1/\\x6derge' -X PUT",
+    ] {
+        assert!(
+            merge_guard::check(command).is_some(),
+            "not refused: {command:?}"
+        );
+    }
+    for command in [
+        "gh pr view 38 > merge",
+        "gh pr view 38 2>&1 >merge",
+        "echo 'gh pr merge 38'",
+        "git commit -m 'gh pr merge 38'",
+        "cat <<'EOF'\ngh pr merge 38\nEOF",
+    ] {
+        assert!(
+            merge_guard::check(command).is_none(),
+            "wrongly refused: {command:?}"
+        );
+    }
+}
