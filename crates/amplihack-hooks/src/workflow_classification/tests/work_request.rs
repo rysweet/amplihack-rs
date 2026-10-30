@@ -415,3 +415,56 @@ fn the_marker_never_adds_a_routing_prompt() {
         }
     }
 }
+
+/// The follow-up wording check matches substrings of the first three words,
+/// not whole words, so `command`, `handler` and `standalone` count as `and`
+/// (review round 7 of PR #1752). The check is older than the marker and
+/// decides the unmarked text the same way. The docs list this as a known
+/// misread and give the two ways round it that are pinned here.
+#[test]
+fn the_followup_check_matches_inside_words() {
+    let iso = Isolated::new();
+    let fresh_at_turn_5 = |session: &str, prompt: &str| run_hook(Some(session), Some(5), prompt);
+
+    // No follow-up string in the first three words: a new topic.
+    assert_router(&fresh_at_turn_5("s-sub-control", "[coord] fix the parser"));
+
+    for (i, body) in [
+        "fix the command parser",
+        "update the handler",
+        "build the standalone installer",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(is_explicit_work_request(body), "{body:?}");
+
+        let marked = format!("s-sub-m-{i}");
+        assert_note(&fresh_at_turn_5(&marked, &format!("[coord] {body}")));
+        let state = iso.read_state(&marked).unwrap();
+        assert_eq!(
+            last_rule(&state),
+            Some("coordination_throttled"),
+            "{body:?}"
+        );
+
+        let plain = format!("s-sub-p-{i}");
+        assert_eq!(fresh_at_turn_5(&plain, body), empty(), "{body:?}");
+        let state = iso.read_state(&plain).unwrap();
+        assert_eq!(last_rule(&state), Some("throttled"), "{body:?}");
+
+        // Turns 0 and 1 are routed before the wording is read.
+        let first = format!("s-sub-first-{i}");
+        assert_router(&run_hook(Some(&first), Some(1), &format!("[coord] {body}")));
+    }
+
+    // The two ways round it that the docs give.
+    assert_eq!(
+        fresh_at_turn_5("s-sub-dev", "[coord] /dev fix the command parser"),
+        empty()
+    );
+    assert_router(&fresh_at_turn_5(
+        "s-sub-reworded",
+        "[coord] fix the parser for the command line",
+    ));
+}

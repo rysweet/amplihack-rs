@@ -1,7 +1,7 @@
 ---
 title: Coordination Messages
 description: The [coord] marker, which stops the workflow classification reminder from routing session-to-session messages into a recipe.
-last_updated: 2026-10-29
+last_updated: 2026-10-30
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
@@ -127,7 +127,14 @@ A work request passes through the same topic decision as an unmarked prompt, app
 
 A marked message therefore never receives the routing prompt when the same text without the marker would not. This holds whatever the wording rules get wrong: a report that they take for a request, such as `fix #12 rolled back`, is throttled like the unmarked report. A unit test sends each of a set of bodies with and without the marker to two sessions in the same state and checks this.
 
-The follow-up wording check looks for words such as `and` and `also` in the first three words of the body, so `[coord] fix and test the parser` receives the note from turn 2 on, where `fix and test the parser` would receive nothing.
+The follow-up wording check looks for these strings in the first three words of the body: `also`, `what about`, `and`, `additionally`, `furthermore`, `i meant`, `to clarify`, `how's it going`, `what's the status` and `what's the progress`. It matches substrings, not whole words, so a word that contains one of them counts as well: `command`, `handler` and `standalone` all count as `and`. From turn 2 on, a body that matches is never a new topic, even outside the three-turn window, unless it also contains a new-topic phrase such as `new task`. So these marked requests receive the note with `coordination_throttled` from turn 2 on, where the same text without the marker receives nothing:
+
+- `[coord] fix and test the parser`
+- `[coord] fix the command parser`, `[coord] update the handler` and `[coord] build the standalone installer`, because of the `and` inside `command`, `handler` and `standalone`
+
+At turns 0 and 1 they receive the routing prompt, like any work request. The note's last sentence still sends a code change to dev-orchestrator. To have such a request routed after turn 1, send it as an explicit `/dev` command, as in `[coord] /dev fix the command parser`, which runs with no hook text, or keep the word out of the first three, as in `[coord] fix the parser for the command line`, which is a new topic outside the window.
+
+This check is older than the marker and decides unmarked prompts the same way. Matching whole words would change which unmarked prompts are routed, so it is left to issue #1789.
 
 ## Reports that start with a verb
 
@@ -161,12 +168,13 @@ A request that the patterns take for a report receives the note. The note ends "
 
 A report that the patterns take for a request is decided as the same report without the marker would be: it receives the note while the throttle holds, and the routing prompt on a new topic (see [Work requests and the throttle](#work-requests-and-the-throttle)). On a new topic, rule 4 classifies it as DEV, and the routing prompt tells a DEV classification "Do not answer inline", so the agent would usually start a recipe for a status line, which is what the marker is meant to prevent.
 
-The first mistake is the milder one, so patterns 2 and 4 look at the whole body and not only at the second word. These marked requests receive the note, and a unit test pins them:
+The first mistake is the milder one, so patterns 2 and 4 look at the whole body and not only at the second word. These marked requests receive the note, and unit tests pin them:
 
 - `fix the tests that failed`, `fix the failed tests` and `update the list of merged branches`, by pattern 4.
 - `add a getting started guide`, by pattern 4, because `started` is an outcome word.
 - `fix the broken build` and `fix the red test on main`, by pattern 4, because `broken` and `red` are outcome words.
 - `fix the case where the list is empty` and `start #12 once #11 has merged`, by pattern 2.
+- `fix the command parser`, `update the handler` and `build the standalone installer`, from turn 2 on. The patterns read these as requests; the follow-up wording check holds them back because `command`, `handler` and `standalone` contain `and`. See [Work requests and the throttle](#work-requests-and-the-throttle).
 
 To keep the note away from such a request, send it as an explicit `/dev` command, as in `[coord] /dev fix the tests that failed`, which runs with no hook text, or word it as the change verb and its object without a clause, as in `fix failed tests on PR 12`, which receives the routing prompt on a new topic.
 
@@ -182,7 +190,7 @@ The note is the constant `COORDINATION_NOTE`. Its full text is:
 
 The note keeps recipes away from replies, reports, acknowledgements and single commands such as retrying an install. It does not keep them away from code changes. The routing prompt's downstream invariant is that development work always runs through `default-workflow`, and a marked request for a code change that the work-request rule does not recognise must still meet it.
 
-The note is emitted on every marked prompt that is not a work request or `/dev` command, at every turn, and on a marked work request that the throttle holds back. It never contains `auto-intent-router`, `launching dev-orchestrator`, `Invoke Skill(skill="dev-orchestrator")` or `[auto-routed]`. The body of the message is never copied into the hook output.
+The note is emitted on every marked prompt that is not a work request or `/dev` command, at every turn, and on a marked work request that the throttle holds back or whose classification cannot be written to the [state file](#state-file). It never contains `auto-intent-router`, `launching dev-orchestrator`, `Invoke Skill(skill="dev-orchestrator")` or `[auto-routed]`. The body of the message is never copied into the hook output.
 
 The note uses the same output shape as the routing prompt, with the text at the top level for the Copilot CLI and under `hookSpecificOutput` for Claude Code:
 
@@ -248,7 +256,8 @@ A local override at `.claude/tools/amplihack/hooks/templates/routing_prompt.txt`
 4. Nested session or active workflow: emit nothing and record no outcome.
 5. Marker: a marked body that is neither an explicit `/dev` command nor a work request receives the note.
 6. Topic decision, for unmarked prompts and for the remaining marked bodies, applied to the body: explicit `/dev` command, new topic or throttled. A throttled marked body receives the note.
-7. Emit the result.
+7. Record the outcome. A new topic whose classification cannot be written is held back like a throttled prompt; see [State file](#state-file).
+8. Emit the result.
 
 Provenance takes precedence over the marker. A marked prompt inside a recipe run, including `[coord] build #1740`, produces `{}`. The marker can only replace the routing prompt, or the empty output of the throttle, with the note. It never adds a routing prompt and never starts a recipe itself.
 
@@ -272,7 +281,7 @@ Each outcome is recorded in the state file's `last_rule` field. These values are
 
 The note path leaves `last_classified_turn` unchanged because no classification took place, so a note never starts or extends the three-turn throttle window. A note still counts as a turn. The next unmarked prompt is judged at its own turn number, so after two notes in a fresh session it is at turn 2: past the rule that routes turns 0 and 1 unconditionally, and subject to the follow-up wording check like any later prompt. In a session where nothing has been classified, `last_classified_turn` is absent and the window does not apply, so a new topic after the notes receives the routing prompt.
 
-The provenance, nested-session and workflow-active gates record no outcome: `last_rule` and `last_classified_turn` keep their previous values. Only `observed_turns` can change on those paths, as described under [Gate order](#gate-order). If a custom routing prompt is blank, the hook emits `{}`, but the outcome has already been recorded.
+The provenance, nested-session and workflow-active gates record no outcome: `last_rule` and `last_classified_turn` keep their previous values. Only `observed_turns` can change on those paths, as described under [Gate order](#gate-order). If a custom routing prompt is blank, the hook emits `{}`, but the outcome has already been recorded. If a new topic's outcome cannot be written, the hook emits `{}` for an unmarked prompt and the note for a marked one, and nothing is recorded; see [State file](#state-file).
 
 ## State file
 
@@ -314,7 +323,9 @@ Files written before this feature have no `last_rule` field and always hold `las
 
 Before this feature, a state file created by turn resolution held `last_classified_turn: 0` although nothing had been classified, and the throttle read that as a classification at turn 0. In a session whose first two prompts classified nothing (coordination notes, explicit `/dev` commands or prompts stopped by a gate), a new topic at turn 2 or 3 was throttled. It now receives the routing prompt. This applies to unmarked sessions as well.
 
-State writes are best-effort. A write failure is logged at debug level with the error and path, never the prompt, and the hook still returns its output. An unreadable or malformed file is treated as empty, which leans towards emitting the routing prompt, not suppressing it.
+State writes are best-effort. A write failure is logged at debug level with the error and path, never the prompt, and does not fail the hook. An unreadable or malformed file is treated as empty, which leans towards emitting the routing prompt, not suppressing it.
+
+A failed write on a new topic is the exception: the hook does not emit the routing prompt. The prompt is held back like a throttled one, so an unmarked prompt receives `{}` and a marked one the note. The throttle cannot see a classification that was never written. Under a runtime that sends no turn number, the hook's own `observed_turns` counter cannot advance either, so every prompt stays at turn 0, which is always a new topic. Emitting the routing prompt after a failed write would therefore route every prompt in every session of the project. This happens when the project directory cannot be written or the disk is full. Before this feature, the failed write returned an error and the hook emitted `{}`; unmarked prompts are handled the same way now. A single failed write followed by successful ones costs at most one extra or one missed reminder.
 
 ## Security properties
 

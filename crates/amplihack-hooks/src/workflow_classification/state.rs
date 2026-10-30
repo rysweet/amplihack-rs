@@ -65,7 +65,9 @@ pub(super) fn load_state(path: &Path, session_id: &str) -> ClassificationState {
 /// `turnCount` would send, so downstream logic needs no special case.
 ///
 /// A write failure returns the un-incremented count rather than failing the
-/// hook. The cost is one extra reminder, not a broken prompt.
+/// hook. While writes keep failing, every prompt gets the same turn number, and
+/// [`record_outcome`] fails as well, so the hook emits no routing prompt. A
+/// single failed write costs at most one extra reminder.
 pub(super) fn next_observed_turn(dirs: &ProjectDirs, session_id: &str) -> u64 {
     let path = state_file(dirs, session_id);
     let mut state = load_state(&path, session_id);
@@ -84,16 +86,20 @@ pub(super) fn next_observed_turn(dirs: &ProjectDirs, session_id: &str) -> u64 {
 ///
 /// Keeps `observed_turns` and the other fields of the existing state, and sets
 /// `last_classified_turn` only when `mark_classified` is true. Unreadable state
-/// falls back to the defaults. A write failure is logged and ignored: the cost
-/// is one extra reminder later, not a broken prompt. No prompt text is ever
-/// written or logged.
+/// falls back to the defaults. No prompt text is ever written or logged.
+///
+/// Returns whether the state was written. A failure is logged at debug level.
+/// The caller must not emit the routing prompt after a failed write: the
+/// throttle cannot see a classification that was never written, and while
+/// writes keep failing [`next_observed_turn`] cannot advance either, so every
+/// later prompt would be a new topic and would be routed.
 pub(super) fn record_outcome(
     dirs: &ProjectDirs,
     session_id: &str,
     turn_count: u64,
     rule: &str,
     mark_classified: bool,
-) {
+) -> bool {
     let path = state_file(dirs, session_id);
     let mut state = load_state(&path, session_id);
     state.last_rule = Some(rule.to_string());
@@ -108,10 +114,14 @@ pub(super) fn record_outcome(
         fs::write(&path, serde_json::to_vec(&state)?)?;
         Ok(())
     };
-    if let Err(err) = write() {
-        tracing::debug!(
-            "workflow classification: could not record outcome at {}: {err}",
-            path.display()
-        );
+    match write() {
+        Ok(()) => true,
+        Err(err) => {
+            tracing::debug!(
+                "workflow classification: could not record outcome at {}: {err}",
+                path.display()
+            );
+            false
+        }
     }
 }

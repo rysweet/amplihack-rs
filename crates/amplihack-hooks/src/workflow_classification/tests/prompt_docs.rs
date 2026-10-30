@@ -170,3 +170,29 @@ fn docs_list_every_last_rule_value() {
     }
     assert!(docs.contains(".claude/runtime/classification_state/"));
 }
+
+/// Review round 7 of PR #1752: the follow-up check matches substrings, and
+/// the docs said it looked for words. They must quote every follow-up string
+/// and say how it is matched.
+#[test]
+fn docs_say_the_followup_check_matches_substrings() {
+    let docs = coordination_docs();
+    for keyword in FOLLOWUP_KEYWORDS {
+        assert!(
+            docs.contains(&format!("`{keyword}`")),
+            "docs omit the follow-up string `{keyword}`"
+        );
+    }
+    assert!(!docs.contains("looks for words such as"));
+    assert!(docs.contains("It matches substrings, not whole words"));
+}
+
+/// Review round 7 of PR #1752: a failed state write on a new topic emits no
+/// routing prompt, and the docs must not say the hook "still returns its
+/// output" there.
+#[test]
+fn docs_say_a_failed_write_holds_the_routing_prompt_back() {
+    let docs = coordination_docs();
+    assert!(!docs.contains("and the hook still returns its output"));
+    assert!(docs.contains("A failed write on a new topic is the exception"));
+}

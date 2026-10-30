@@ -142,13 +142,14 @@ impl Hook for WorkflowClassificationReminderHook {
                 record_outcome(&dirs, &session_id, turn_count, rule::EXPLICIT_DEV, false);
                 return Ok(Value::Object(serde_json::Map::new()));
             }
-            TopicDecision::Throttled if marked => {
-                record_outcome(&dirs, &session_id, turn_count, rule::COORD_THROTTLED, false);
-                return Ok(context_output(COORDINATION_NOTE));
-            }
             TopicDecision::Throttled => {
-                record_outcome(&dirs, &session_id, turn_count, rule::THROTTLED, false);
-                return Ok(Value::Object(serde_json::Map::new()));
+                let rule = if marked {
+                    rule::COORD_THROTTLED
+                } else {
+                    rule::THROTTLED
+                };
+                record_outcome(&dirs, &session_id, turn_count, rule, false);
+                return Ok(held_back_output(marked));
             }
             TopicDecision::NewTopic => {
                 let rule = if marked {
@@ -156,7 +157,17 @@ impl Hook for WorkflowClassificationReminderHook {
                 } else {
                     rule::CLASSIFICATION
                 };
-                record_outcome(&dirs, &session_id, turn_count, rule, true);
+                // The throttle can hold back the next prompts only if it can
+                // read this classification. When the state cannot be written,
+                // a runtime that reports no turn number also leaves every
+                // prompt at turn 0, which is always a new topic, so routing
+                // here would route every prompt in the session for good
+                // (review round 7 of PR #1752). Such a prompt gets what a
+                // throttled one gets. Before #1742 the failed write returned an
+                // error and the failure policy emitted `{}`.
+                if !record_outcome(&dirs, &session_id, turn_count, rule, true) {
+                    return Ok(held_back_output(marked));
+                }
             }
         }
 
@@ -166,6 +177,19 @@ impl Hook for WorkflowClassificationReminderHook {
         }
 
         Ok(context_output(&reminder))
+    }
+}
+
+/// The output for a prompt whose routing prompt is held back, by the throttle or
+/// because its classification could not be recorded.
+///
+/// A marked body gets the note, whose last sentence sends a code change to
+/// dev-orchestrator. An unmarked prompt gets nothing.
+fn held_back_output(marked: bool) -> Value {
+    if marked {
+        context_output(COORDINATION_NOTE)
+    } else {
+        Value::Object(serde_json::Map::new())
     }
 }
 
@@ -232,6 +256,25 @@ fn is_explicit_dev_command(user_prompt: &str) -> bool {
         || prompt_lower.starts_with("/.claude:amplihack:dev")
 }
 
+/// Strings that make a prompt after turn 1 a follow-up, which is not routed
+/// unless it also contains one of the new-topic phrases checked before these.
+///
+/// They are matched as substrings of the prompt's first three words, not as
+/// whole words, so `command`, `handler` and `standalone` count as `and`. The
+/// docs quote this list and say so; whole-word matching is issue #1789.
+const FOLLOWUP_KEYWORDS: [&str; 10] = [
+    "also",
+    "what about",
+    "and",
+    "additionally",
+    "furthermore",
+    "i meant",
+    "to clarify",
+    "how's it going",
+    "what's the status",
+    "what's the progress",
+];
+
 fn topic_decision(
     dirs: &ProjectDirs,
     session_id: &str,
@@ -263,24 +306,12 @@ fn topic_decision(
         return TopicDecision::NewTopic;
     }
 
-    let followup_keywords = [
-        "also",
-        "what about",
-        "and",
-        "additionally",
-        "furthermore",
-        "i meant",
-        "to clarify",
-        "how's it going",
-        "what's the status",
-        "what's the progress",
-    ];
     let first_words = prompt_lower
         .split_whitespace()
         .take(3)
         .collect::<Vec<_>>()
         .join(" ");
-    if followup_keywords
+    if FOLLOWUP_KEYWORDS
         .iter()
         .any(|keyword| first_words.contains(keyword))
     {

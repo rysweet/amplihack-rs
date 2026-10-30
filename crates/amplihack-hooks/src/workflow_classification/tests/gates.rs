@@ -83,17 +83,75 @@ fn active_workflow_wins_over_the_marker() {
 
 // ---- robustness and security (S3 to S11) ----
 
+/// Put a file where the state directory should be, so every state write fails.
+fn make_state_unwritable(iso: &Isolated) {
+    fs::create_dir_all(iso.dir.path().join(".claude/runtime")).unwrap();
+    fs::write(iso.state_dir(), "not a directory").unwrap();
+}
+
 #[test]
 fn state_write_failure_does_not_fail_hook() {
     let iso = Isolated::new();
-    // A file where the state directory should be makes every write fail.
-    fs::create_dir_all(iso.dir.path().join(".claude/runtime")).unwrap();
-    fs::write(iso.state_dir(), "not a directory").unwrap();
+    make_state_unwritable(&iso);
 
+    // A new topic whose classification cannot be recorded is held back like a
+    // throttled prompt: nothing when unmarked, the note when marked. Before
+    // #1742 the failed write returned an error and the hook emitted `{}`.
     assert_note(&run_hook(Some("s-ro"), Some(0), "[coord] status?"));
-    assert_router(&run_hook(Some("s-ro"), Some(0), "Please investigate this"));
-    assert_router(&run_hook(Some("s-ro"), Some(0), "[coord] build #1740"));
+    assert_eq!(
+        run_hook(Some("s-ro"), Some(0), "Please investigate this"),
+        empty()
+    );
+    assert_note(&run_hook(Some("s-ro"), Some(0), "[coord] build #1740"));
     assert_eq!(run_hook(Some("s-ro"), Some(0), "/dev fix it"), empty());
+}
+
+/// Review round 7 of PR #1752. Live sessions send no `turnCount`. When the
+/// state cannot be written, the hook's own turn counter cannot advance, so
+/// every prompt is at turn 0, and no classification is ever recorded for the
+/// throttle to see. A hook that still emitted the routing prompt would route
+/// every prompt in the session.
+#[test]
+fn state_write_failure_does_not_route_every_prompt() {
+    let prompts = [
+        "Please investigate the install flow",
+        "Please look at the docs build",
+        "Please check the release notes",
+        "Please review the parser",
+        "[coord] build #1740",
+        "[coord] report your lane status",
+    ];
+    let replay = |unwritable: bool| -> Vec<Value> {
+        let iso = Isolated::new();
+        if unwritable {
+            make_state_unwritable(&iso);
+        }
+        prompts
+            .iter()
+            .map(|prompt| run_hook(Some("u1"), None, prompt))
+            .collect()
+    };
+
+    // A writable state directory: turns 0 and 1 are routed, and the throttle
+    // holds back turns 2 to 4, inside three turns of the classification at 1.
+    let writable = replay(false);
+    assert_router(&writable[0]);
+    assert_router(&writable[1]);
+    assert_eq!(writable[2], empty(), "{:?}", prompts[2]);
+    assert_eq!(writable[3], empty(), "{:?}", prompts[3]);
+    assert_note(&writable[4]);
+    assert_note(&writable[5]);
+
+    // An unwritable one: no prompt receives the routing prompt. Unmarked
+    // prompts receive nothing and marked ones the note.
+    let unwritable = replay(true);
+    for (prompt, out) in prompts.iter().zip(&unwritable) {
+        if prompt.starts_with("[coord]") {
+            assert_note(out);
+        } else {
+            assert_eq!(out, &empty(), "{prompt:?}");
+        }
+    }
 }
 
 #[test]
