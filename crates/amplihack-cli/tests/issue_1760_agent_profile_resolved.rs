@@ -7,6 +7,11 @@
 //! command both use the directory that holds the conversation, and the pane
 //! passes `--profile NAME`.
 //!
+//! Crusty round 3: the same holds with an explicit `--profile`. A
+//! `--profile NAME` naming the rotator's live login runs against
+//! `~/.claude`, so no profile is recorded, and the resume still finds the
+//! conversation there after the rotator has moved on.
+//!
 //! The pre-check resolves a missing profile the way the pane's launch does:
 //! the pane removes `AMPLIHACK_CLAUDE_PROFILE` and passes no `--profile`, so
 //! the launch reads the default pointer, and so does the check.
@@ -40,10 +45,32 @@ fn set_pointer(fx: &Fx, name: &str) {
     chmod(&p, 0o600);
 }
 
+/// `<root>/.rotator/ledger.json` naming `live` (or nobody, for `None`) as
+/// the rotator's live login, and a login in `~/.claude`.
+fn set_live(fx: &Fx, live: Option<&str>) {
+    let creds = fx.claude_dir.join(".credentials.json");
+    fs::write(&creds, "{}").unwrap();
+    chmod(&creds, 0o600);
+    let d = fx.profiles.join(".rotator");
+    fs::create_dir_all(&d).unwrap();
+    chmod(&d, 0o700);
+    let f = d.join("ledger.json");
+    fs::write(&f, json!({ "live": live, "since": now() }).to_string()).unwrap();
+    chmod(&f, 0o600);
+}
+
 /// `amplihack claude --supervise NAME` with no `--profile`, in pane `%7`.
 fn wrapped(fx: &Fx, dir: &Path) -> Command {
+    wrapped_with(fx, dir, &[])
+}
+
+/// `amplihack claude PRE --supervise NAME`, in pane `%7`.
+fn wrapped_with(fx: &Fx, dir: &Path, pre: &[&str]) -> Command {
     fx.tmux_pane("%7", "area", "main", 4321);
-    let mut c = fx.cmd(&["claude", "--supervise", NAME, "--", "--model", "opus"]);
+    let mut args = vec!["claude"];
+    args.extend(pre);
+    args.extend(["--supervise", NAME, "--", "--model", "opus"]);
+    let mut c = fx.cmd(&args);
     c.current_dir(dir)
         .env("TMUX", fx.tmux_env())
         .env("TMUX_PANE", "%7")
@@ -188,4 +215,67 @@ fn with_no_recorded_profile_the_precheck_follows_the_pointer() {
     let last = fx.log_lines().pop().expect("a recovery line");
     assert!(last.ends_with(" result=resumed"), "{last}");
     assert_eq!(fx.new_sessions().len(), 1);
+}
+
+/// Crusty round 3: `--profile x` while x is the rotator's live login runs
+/// against `~/.claude`, so the conversation is there and no profile is
+/// recorded. After the rotator moves on and x has its own login back, the
+/// resume and its pre-check still use `~/.claude`, not x's directory.
+#[test]
+fn an_explicit_live_profile_records_none_and_resumes_after_rotation() {
+    let fx = Fx::new();
+    let dir = fx.dir("docs");
+    fx.profile_dir("x");
+    set_live(&fx, Some("x"));
+    fx.transcript(&dir, CONV_C);
+    let claude_dir = fx.claude_dir.clone();
+    let c = wrapped_with(&fx, &dir, &["--profile", "x"]);
+    let e = launch_and_lose(&fx, &dir, &claude_dir, c);
+    assert!(e["amplihack_flags"]["profile"].is_null(), "{e}");
+
+    // The rotator moves on: nobody is live and x has its own login again.
+    set_live(&fx, None);
+    let creds = fx.profiles.join("x").join(".credentials.json");
+    fs::write(&creds, "{}").unwrap();
+    chmod(&creds, 0o600);
+
+    expect_code(&fx.supervise_once(&["--gap", "0"]), 0);
+    let last = fx.log_lines().pop().expect("a recovery line");
+    assert!(last.ends_with(" result=resumed"), "{last}");
+    let started = fx.new_sessions();
+    assert_eq!(started.len(), 1, "{started:?}");
+    let argv = started[0].pane_argv();
+    assert!(!argv.iter().any(|a| a == "--profile"), "{argv:?}");
+    assert!(
+        argv.windows(2).any(|w| w == ["--resume", CONV_C]),
+        "{argv:?}"
+    );
+}
+
+/// `agent register --profile x` whose process's sessions file is in
+/// `~/.claude` records no profile and says why: the conversation is there.
+#[test]
+fn register_with_a_profile_records_where_the_sessions_file_is() {
+    let fx = Fx::new();
+    let dir = fx.dir("mistt");
+    logged_in_profile(&fx, "x");
+    let claude = Proc::new(5000, 1, &["claude"], &dir)
+        .start(START)
+        .env("TMUX", &fx.tmux_env())
+        .env("TMUX_PANE", "%3");
+    fx.add_proc(&claude);
+    fx.set_self_parent(5000);
+    fx.tmux_pane("%3", "coord", "main", 5000);
+    let claude_dir = fx.claude_dir.clone();
+    fx.sessions_file(&claude_dir, 5000, CONV_C, START, &dir);
+    let o = fx.run(&["agent", "register", "coordinator", "--profile", "x"]);
+    expect_code(&o, 0);
+    assert!(
+        stderr(&o).contains("note: --profile x not recorded; the conversation is in ~/.claude"),
+        "{}",
+        stderr(&o)
+    );
+    let e = fx.agent("coordinator");
+    assert_eq!(e["conversation_id"], CONV_C);
+    assert!(e["amplihack_flags"]["profile"].is_null(), "{e}");
 }

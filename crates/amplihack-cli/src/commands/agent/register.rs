@@ -204,7 +204,8 @@ fn missing(found: Option<&Discovered>, gaps: [bool; 4]) -> anyhow::Error {
     )
 }
 
-/// The recorded options: each flag replaces what was found (R3.4).
+/// The recorded options: each flag replaces what was found (R3.4), except
+/// the profile, which follows the directory holding the sessions file.
 fn merge(
     args: RegisterArgs,
     found: Option<&Discovered>,
@@ -229,16 +230,26 @@ fn merge(
             (None, true) => (None, true),
             (None, false) => (opts.permission_mode.clone(), opts.skip_permissions),
         };
-    // `--profile`, else the ancestor's `--profile`, else the profile whose
-    // directory held the process's sessions file: a launch under an
-    // inherited `AMPLIHACK_CLAUDE_PROFILE` or the default pointer has no
-    // `--profile` on any command line, but its conversation is still there.
-    let profile = match (args.profile, amp.profile) {
-        (Some(p), _) => Some(check_profile(home, &p)?),
-        (None, Some(p)) => found.and_then(|f| found_profile(home, f, p)),
-        (None, None) => found
-            .and_then(|f| f.config_dir.as_deref())
-            .and_then(|d| sessions::profile_of_config_dir(home, d)),
+    // The profile whose directory held the sessions file, as the conversation
+    // is there: a `--profile` naming the rotator's live login ran against
+    // `~/.claude`. Without one, `--profile`, else the ancestor's `--profile`.
+    let given = args.profile.map(|p| check_profile(home, &p)).transpose()?;
+    let profile = match found.and_then(|f| f.config_dir.as_deref()) {
+        Some(d) => {
+            let p = sessions::profile_of_config_dir(home, d);
+            if let Some(g) = given.as_deref().filter(|g| p.as_deref() != Some(*g)) {
+                eprintln!(
+                    "note: --profile {g} not recorded; the conversation is in {}",
+                    p.as_deref()
+                        .map_or("~/.claude".to_string(), |p| format!("profile {p}"))
+                );
+            }
+            p
+        }
+        None => given.or_else(|| {
+            amp.profile
+                .and_then(|p| found.and_then(|f| found_profile(home, f, p)))
+        }),
     };
     Ok(Launch {
         socket,

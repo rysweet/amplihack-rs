@@ -227,11 +227,14 @@ pub(super) struct Found {
 
 /// Records what the id thread found, unless the entry is no longer this
 /// launch's or the conversation belongs to another active agent (C3).
-/// Without `--profile`, the launch may still have run under a profile (an
-/// inherited `AMPLIHACK_CLAUDE_PROFILE`, possibly redirected by auto-switch,
-/// or the default pointer); the profile is then taken from the directory
-/// the sessions file was in, so the resume uses the directory that holds
-/// the conversation. An explicit `--profile` is kept as given.
+/// The profile recorded is the one whose directory held the sessions file,
+/// with or without `--profile`: without it the launch may still have run
+/// under a profile (an inherited `AMPLIHACK_CLAUDE_PROFILE`, possibly
+/// redirected by auto-switch, or the default pointer), and with
+/// `--profile NAME` naming the rotator's live login it ran against
+/// `~/.claude`, so no profile is recorded. Either way the resume uses the
+/// directory that holds the conversation, not one the rotator may since
+/// have given back its own login.
 fn record_claude(
     dir: &AgentsDir,
     home: &Path,
@@ -251,9 +254,7 @@ fn record_claude(
         {
             e.set_process(Some((found.pid, found.start)));
             e.conversation_id = Some(found.conversation.clone());
-            if e.amplihack_flags.profile.is_none() {
-                e.amplihack_flags.profile = profile.clone();
-            }
+            e.amplihack_flags.profile = profile.clone();
         }
         Ok(())
     })

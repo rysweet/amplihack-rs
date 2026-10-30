@@ -94,7 +94,7 @@ fn assert_discovered(fx: &Fx, e: &Value, d: &std::path::Path) {
 fn the_claude_ancestor_is_read() {
     let fx = Fx::new();
     let d = tree(&fx, OPTIONS);
-    fx.sessions_file(&fx.claude_dir, CLAUDE_PID, CONV_A, START, &d);
+    fx.sessions_file(&fx.profiles.join("work"), CLAUDE_PID, CONV_A, START, &d);
     let o = fx.run(&["agent", "register", "coordinator"]);
     expect_code(&o, 0);
     assert_eq!(
@@ -124,7 +124,7 @@ fn the_claude_ancestor_is_read() {
 fn pid_names_the_process() {
     let fx = Fx::new();
     let d = tree(&fx, OPTIONS);
-    fx.sessions_file(&fx.claude_dir, CLAUDE_PID, CONV_A, START, &d);
+    fx.sessions_file(&fx.profiles.join("work"), CLAUDE_PID, CONV_A, START, &d);
     fx.set_self_parent(1);
     let o = fx.run(&["agent", "register", "coordinator", "--pid", "5000"]);
     expect_code(&o, 0);
@@ -142,6 +142,9 @@ fn without_a_matching_session_file_the_resume_value_and_cwd_are_used() {
     let e = fx.agent("coordinator");
     assert_eq!(e["conversation_id"], CONV_B);
     assert_eq!(e["launch_dir"], json!(d));
+    // No sessions file says where the conversation is: the ancestor's
+    // `--profile` is recorded.
+    assert_eq!(e["amplihack_flags"]["profile"], "work", "{e}");
 }
 
 #[test]
@@ -198,7 +201,7 @@ fn pids_that_cannot_be_read_get_one_message() {
 fn a_matching_conversation_uses_the_ancestor() {
     let fx = Fx::new();
     let d = tree(&fx, OPTIONS);
-    fx.sessions_file(&fx.claude_dir, CLAUDE_PID, CONV_A, START, &d);
+    fx.sessions_file(&fx.profiles.join("work"), CLAUDE_PID, CONV_A, START, &d);
     let o = fx.run(&["agent", "register", "coordinator", "--conversation", CONV_A]);
     expect_code(&o, 0);
     assert_discovered(&fx, &fx.agent("coordinator"), &d);
@@ -279,11 +282,12 @@ fn an_ancestor_with_an_unknown_conversation_is_not_used() {
 
 /// Review issue 8: a discovered profile whose directory is gone is dropped
 /// with a warning, and no error names `--profile`, which was not given.
+/// The ancestor's profile is only read when no sessions file matched.
 #[test]
 fn a_discovered_profile_without_its_directory_is_dropped() {
     let fx = Fx::new();
-    let d = tree(&fx, OPTIONS);
-    fx.sessions_file(&fx.claude_dir, CLAUDE_PID, CONV_A, START, &d);
+    let d = tree(&fx, &["--resume", CONV_B]);
+    fx.sessions_file(&fx.claude_dir, CLAUDE_PID, CONV_A, START + 1, &d);
     std::fs::remove_dir(fx.profiles.join("work")).unwrap();
     let o = fx.run(&["agent", "register", "coordinator"]);
     expect_code(&o, 0);

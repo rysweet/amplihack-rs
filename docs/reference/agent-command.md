@@ -532,25 +532,36 @@ even when no socket file is in it.
 
 `amplihack claude` picks its config directory from `--profile`, else an
 inherited `AMPLIHACK_CLAUDE_PROFILE` (which auto-switch may redirect to
-another profile), else the default profile pointer, else `~/.claude`. Only
-the first appears on a command line, so the profile recorded is the one the
-launch actually used:
+another profile), else the default profile pointer, else `~/.claude`. A
+profile that is the login rotator's live login at launch is not used as a
+directory: its login is in `~/.claude`, so the launch runs against
+`~/.claude`. A `--profile` on the command line therefore does not say where
+the conversation is written. The profile recorded is taken from the
+directory that holds the process's sessions file, whichever way the launch
+chose it:
 
 | How the launch chose its directory | `amplihack_flags.profile` |
 |------------------------------------|---------------------------|
-| `--profile NAME` given to `register` or `claude --supervise` | NAME |
-| `--profile NAME` on the `amplihack claude` ancestor (`register`) | NAME |
-| No `--profile`, session file in a profile directory (inherited `AMPLIHACK_CLAUDE_PROFILE`, after any auto-switch, or the default pointer) | that directory's profile name |
-| No `--profile`, session file in `~/.claude` (no profile, or the rotator's live profile) | not recorded |
-| No `--profile` and no session file found | not recorded |
+| Session file in a profile directory (`--profile NAME`, an inherited `AMPLIHACK_CLAUDE_PROFILE` after any auto-switch, or the default pointer) | that directory's profile name |
+| Session file in `~/.claude` (no profile, or a profile that was the rotator's live login at launch, including one named by `--profile`) | not recorded |
+| No session file found, `--profile NAME` given to `register` or `claude --supervise` | NAME |
+| No session file found, `--profile NAME` on the `amplihack claude` ancestor (`register`) | NAME |
+| No session file found and no `--profile` | not recorded |
+
+`agent register --profile NAME` whose process's session file is in another
+directory records that directory's profile, or none for `~/.claude`, and
+prints `note: --profile NAME not recorded; the conversation is in ...`.
+`claude --supervise` records the profile when its id thread finds the
+session file, replacing the `--profile` recorded at launch.
 
 Because a profile found this way is recorded, the
 [resume command](#resume) passes `--profile NAME` for it, and a later
-change of the default pointer or of the inherited variable does not move
-the resume to another directory. With no profile recorded, the resume and
-the [pre-check](#pre-checks) both follow the default pointer as it is at
-the time of the resume; a conversation in `~/.claude` is then not resumed
-while the pointer names a profile other than the rotator's live one.
+change of the default pointer, of the inherited variable or of the
+rotator's live login does not move the resume to another directory. With
+no profile recorded, the resume and the [pre-check](#pre-checks) both
+follow the default pointer as it is at the time of the resume; a
+conversation in `~/.claude` is then not resumed while the pointer names a
+profile other than the rotator's live one.
 
 ### Pre-checks
 
