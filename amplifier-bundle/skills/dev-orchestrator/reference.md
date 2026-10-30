@@ -54,6 +54,8 @@ log: /home/you/.amplihack/recipe-logs/amp-smart-orchestrator-repo-20261020-10150
   the file, so it needs no shell quoting at all.
 - Monitor with: `tail -f <log>` or `tmux attach -t <session>`
 
+**tmux in tests and sandboxes:** pass `-S <private socket>` (or use `env -u TMUX tmux -S <private socket>`) on every tmux command. When `$TMUX` is set, as it is inside any tmux pane, tmux uses that socket and ignores `TMUX_TMPDIR`, so `TMUX_TMPDIR=… tmux kill-server` kills the user's own server. Never run `kill-server` or `kill-session -a` without `-S`/`-L`; a PreToolUse hook denies them.
+
 **Stopping a run**: `amplihack recipe stop <session>` ends the whole tree:
 `amplihack recipe run`, the recipe runner and every agent it started, and
 waits for it. Killing the session (`tmux kill-session`) sends `recipe run` the

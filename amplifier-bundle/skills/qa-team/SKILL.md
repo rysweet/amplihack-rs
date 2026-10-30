@@ -152,6 +152,8 @@ QA Team is the renamed primary skill for what used to be `outside-in-testing`. U
 5. Use `--ssh-target <host>` when parity must happen on a remote environment such as `azlin`.
 6. Use `--shadow-mode --shadow-log <file>` during rollout to log divergences without blocking execution.
 
+**tmux in tests and sandboxes:** pass `-S <private socket>` (or use `env -u TMUX tmux -S <private socket>`) on every tmux command. When `$TMUX` is set, as it is inside any tmux pane, tmux uses that socket and ignores `TMUX_TMPDIR`, so `TMUX_TMPDIR=… tmux kill-server` kills the user's own server. Never run `kill-server` or `kill-session -a` without `-S`/`-L`; a PreToolUse hook denies them.
+
 ### Command pattern to reuse
 
 For Rust CLI repos, extend native integration tests instead of reintroducing a
