@@ -184,3 +184,31 @@ fn a_limit_no_wait_can_outlast_is_passed_up_after_the_per_step_rule() {
         (finish(None, Some(Skip::Cannot(NoWait::PipedPrompt))), 1)
     );
 }
+
+#[test]
+fn a_weekly_or_unreadable_reset_is_judged_after_the_rotator_and_per_step_rule() {
+    // #1796 scope: such a limit ends the step even with a rotator, but the
+    // rotator check and the per-step rule come first, so a step that has
+    // used its waits logs `already_waited` or `step_waits_spent`, not the
+    // limit's own reason. docs/reference/profile-command.md states this.
+    for why in [NoWait::ResetTooFar, NoWait::NoReset] {
+        for rotator in [false, true] {
+            assert_eq!(
+                run(ON, None, 0, WaitFor::Skip(why), rotator),
+                (finish(None, Some(Skip::Cannot(why))), 1)
+            );
+        }
+        assert_eq!(
+            run(ON, None, 1, WaitFor::Skip(why), true),
+            (finish(None, Some(Skip::Cannot(why))), 1)
+        );
+        assert_eq!(
+            run(ON, None, 1, WaitFor::Skip(why), false),
+            (finish(None, Some(Skip::AlreadyWaited)), 1)
+        );
+        assert_eq!(
+            run(ON, None, 5, WaitFor::Skip(why), true),
+            (finish(None, Some(Skip::StepWaitsSpent)), 1)
+        );
+    }
+}

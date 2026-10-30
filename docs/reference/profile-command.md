@@ -4758,8 +4758,12 @@ unchanged.
 A rotator does not change which limits can be waited for. A limit whose
 reset is more than five hours away (a weekly limit), or whose message states
 no reset amplihack can read, ends the step at once even while a rotator
-runs: the skip is decided before the rotator check, the per-step count or the
-run budget is consulted. This is a deliberate scope decision for #1761, which
+runs. The skip is decided after the rotator check and the
+[per-step rule](#waits-per-step), and before the run budget is consulted.
+A step that has not used its waits logs `skipped reason=reset_too_far` or
+`skipped reason=no_reset`. A step that has used them logs the per-step
+reason instead: `already_waited` with no rotator after one wait, or
+`step_waits_spent` with a rotator after `max_waits_per_step` waits. This is a deliberate scope decision for #1761, which
 kept the #1618 rule that only a reset within five hours is waited for. Waiting
 for rotator capacity on such limits is tracked in
 [#1796](https://github.com/rysweet/amplihack-rs/issues/1796).
