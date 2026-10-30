@@ -160,7 +160,7 @@ fn watch_for_claude(dir: AgentsDir, home: PathBuf, name: String, launch_id: Stri
                 std::thread::sleep(Duration::from_secs(1));
                 match find_claude(&root, dirs) {
                     Ok(Some(found)) => {
-                        if let Err(e) = record_claude(&dir, &name, &launch_id, found) {
+                        if let Err(e) = record_claude(&dir, &home, &name, &launch_id, found) {
                             not_recorded(&dir, &name, &format!("{e:#}"));
                         }
                         return;
@@ -196,7 +196,7 @@ fn not_recorded(dir: &AgentsDir, name: &str, reason: &str) {
 pub(super) fn find_claude(
     root: &Path,
     dirs: impl FnOnce() -> Result<Vec<PathBuf>, String>,
-) -> Result<Option<(u32, u64, String)>, String> {
+) -> Result<Option<Found>, String> {
     let snap = procfs::snapshot(root, amplihack_utils::secure_files::euid())?;
     let found = snap
         .descendants(snap.self_pid)
@@ -206,27 +206,54 @@ pub(super) fn find_claude(
     let Some((pid, start)) = found else {
         return Ok(None);
     };
-    let file = sessions::for_process(&dirs()?, pid, start)?;
-    Ok(file.map(|f| (pid, start, f.session_id)))
+    let file = sessions::for_process_in(&dirs()?, pid, start)?;
+    Ok(file.map(|(f, config_dir)| Found {
+        pid,
+        start,
+        conversation: f.session_id,
+        config_dir,
+    }))
+}
+
+/// What the id thread found: the Claude process, its start time, its
+/// conversation and the config directory whose `sessions/` named it.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Found {
+    pub pid: u32,
+    pub start: u64,
+    pub conversation: String,
+    pub config_dir: PathBuf,
 }
 
 /// Records what the id thread found, unless the entry is no longer this
 /// launch's or the conversation belongs to another active agent (C3).
+/// Without `--profile`, the launch may still have run under a profile (an
+/// inherited `AMPLIHACK_CLAUDE_PROFILE`, possibly redirected by auto-switch,
+/// or the default pointer); the profile is then taken from the directory
+/// the sessions file was in, so the resume uses the directory that holds
+/// the conversation. An explicit `--profile` is kept as given.
 fn record_claude(
     dir: &AgentsDir,
+    home: &Path,
     name: &str,
     launch_id: &str,
-    (pid, start, id): (u32, u64, String),
+    found: Found,
 ) -> anyhow::Result<()> {
+    let profile = sessions::profile_of_config_dir(home, &found.config_dir);
     store::update(dir, registry::now(), |reg| {
-        let held = reg.active_with_conversation(&id, name).is_some();
+        let held = reg
+            .active_with_conversation(&found.conversation, name)
+            .is_some();
         if let Some(e) = reg.agents.get_mut(name)
             && e.state == State::Active
             && e.launch_id == launch_id
             && !held
         {
-            e.set_process(Some((pid, start)));
-            e.conversation_id = Some(id);
+            e.set_process(Some((found.pid, found.start)));
+            e.conversation_id = Some(found.conversation.clone());
+            if e.amplihack_flags.profile.is_none() {
+                e.amplihack_flags.profile = profile.clone();
+            }
         }
         Ok(())
     })

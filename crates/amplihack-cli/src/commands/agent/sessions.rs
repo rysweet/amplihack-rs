@@ -14,13 +14,15 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
+pub use super::profile_dir::profile_config_dir_from;
+pub use super::profile_dir::{profile_config_dir, profile_of_config_dir};
+
 const SESSION_LIMIT: u64 = 64 * 1024;
 /// The liveness-unknown reason for any S10 failure.
 pub const NOT_PRIVATE: &str = "Claude config directory is not private";
 const PRIVATE_RULE: &str = "it must be owned by you and not writable by other users";
 const UNREADABLE: &str = "a Claude sessions directory cannot be read";
-const PROFILE_MISSING: &str = "--profile: the profile's directory must exist under the profile \
-                               root and must not be a symlink";
 
 /// Why a config or sessions directory could not be used.
 enum DirsError {
@@ -119,7 +121,7 @@ fn collect(home: &Path, env: impl Fn(&str) -> Option<OsString>) -> Result<Vec<Pa
 
 /// The B6 text for a profile-root error; the variable's value is never
 /// repeated.
-fn root_error(e: &RootError) -> String {
+pub(super) fn root_error(e: &RootError) -> String {
     match e {
         RootError::Env(_) => "AMPLIHACK_CLAUDE_PROFILE_ROOT is not a valid absolute path".into(),
         RootError::NoHome => "HOME is not set".into(),
@@ -131,32 +133,6 @@ fn root_error(e: &RootError) -> String {
 /// group may write).
 fn private(m: &fs::Metadata) -> bool {
     owned_by_euid(m) && !writable_by_others(m)
-}
-
-/// [`profile_config_dir_from`] for this process's environment.
-pub fn profile_config_dir(home: &Path, profile: Option<&str>) -> Result<PathBuf, String> {
-    profile_config_dir_from(home, profile, |k| std::env::var_os(k))
-}
-
-/// The config directory a resume with `profile` uses (D12): `~/.claude`
-/// without a profile, otherwise `root/<profile>`, which must be a real
-/// directory. Errors are whole messages for the `--profile` flag.
-pub fn profile_config_dir_from(
-    home: &Path,
-    profile: Option<&str>,
-    env: impl Fn(&str) -> Option<OsString>,
-) -> Result<PathBuf, String> {
-    let Some(p) = profile else {
-        return Ok(home.join(".claude"));
-    };
-    validate::profile_name(p).map_err(|rule| format!("--profile: {rule}"))?;
-    let (root, _) = locate_root(env, Some(home))
-        .map_err(|e| format!("cannot list profile directories: {}", root_error(&e)))?;
-    let dir = root.join(p);
-    match fs::symlink_metadata(&dir) {
-        Ok(m) if m.is_dir() => Ok(dir),
-        _ => Err(PROFILE_MISSING.to_string()),
-    }
 }
 
 /// The fields of Claude's `sessions/<pid>.json` that are used.
@@ -255,13 +231,23 @@ pub(super) fn owned_session(raw: &[u8], meta: &fs::Metadata) -> Option<SessionFi
 /// read in each directory, and the first whose `pid` and `procStart` match.
 /// A `sessions/` that fails S10 is an error naming it, as in [`index`].
 pub fn for_process(dirs: &[PathBuf], pid: u32, start: u64) -> Result<Option<SessionFile>, String> {
+    Ok(for_process_in(dirs, pid, start)?.map(|(file, _)| file))
+}
+
+/// [`for_process`] with the config directory the file was found in, which
+/// is the directory that holds the conversation's transcript.
+pub fn for_process_in(
+    dirs: &[PathBuf],
+    pid: u32,
+    start: u64,
+) -> Result<Option<(SessionFile, PathBuf)>, String> {
     for dir in dirs {
         let Some(sessions) = sessions_dir(dir).map_err(detailed)? else {
             continue;
         };
         let file = read_session(&sessions.join(format!("{pid}.json")));
         if let Some(s) = file.filter(|s| s.pid == pid && s.proc_start == start) {
-            return Ok(Some(s));
+            return Ok(Some((s, dir.clone())));
         }
     }
     Ok(None)

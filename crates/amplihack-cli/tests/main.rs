@@ -148,6 +148,8 @@ mod issue_1699_real_root_guard;
 mod issue_1707_claim_check_shell_suites;
 #[path = "issue_1760_agent_markers.rs"]
 mod issue_1760_agent_markers;
+#[path = "issue_1760_agent_profile_resolved.rs"]
+mod issue_1760_agent_profile_resolved;
 #[path = "issue_1760_agent_register_discover.rs"]
 mod issue_1760_agent_register_discover;
 #[path = "issue_1760_agent_register_env.rs"]

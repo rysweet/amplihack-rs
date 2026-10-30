@@ -3,13 +3,14 @@
 //!
 //! API under test:
 //! - `wrapper::find_claude(root: &Path, dirs: impl FnOnce() -> Result<Vec<PathBuf>,
-//!   String>) -> Result<Option<(u32, u64, String)>, String>`: `Ok(None)` until
+//!   String>) -> Result<Option<Found>, String>`: `Ok(None)` until
 //!   a Claude process below `/proc/self` and its sessions file both exist;
 //!   an error, kept as the reason of the log line, for an unreadable process
-//!   table, a config-directory failure or a sessions directory failing S10
+//!   table, a config-directory failure or a sessions directory failing S10.
+//!   `Found` names the config directory whose `sessions/` held the file.
 
 use super::tests_proc_tree::*;
-use super::wrapper::find_claude;
+use super::wrapper::{Found, find_claude};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
@@ -24,7 +25,34 @@ fn the_claude_process_below_and_its_conversation_are_found() {
     add(&t, 200, 100, "claude", &["claude"], 77, 'S');
     session_file(&t, 200, ID, "77");
     let got = find_claude(&t.proc_root, || Ok(vec![t.config.clone()]));
-    assert_eq!(got, Ok(Some((200, 77, ID.to_string()))));
+    let want = Found {
+        pid: 200,
+        start: 77,
+        conversation: ID.to_string(),
+        config_dir: t.config.clone(),
+    };
+    assert_eq!(got, Ok(Some(want)));
+}
+
+/// The config directory that held the sessions file is reported, so a
+/// launch under an inherited or default-pointer profile records it.
+#[test]
+fn the_config_directory_holding_the_sessions_file_is_reported() {
+    let t = tree();
+    add(&t, 200, 100, "claude", &["claude"], 77, 'S');
+    let other = t.config.parent().unwrap().join("other-config");
+    fs::create_dir_all(other.join("sessions")).unwrap();
+    for d in [&other, &other.join("sessions")] {
+        fs::set_permissions(d, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    session_file(&t, 200, ID, "77");
+    fs::rename(
+        t.config.join("sessions").join("200.json"),
+        other.join("sessions").join("200.json"),
+    )
+    .unwrap();
+    let got = find_claude(&t.proc_root, || Ok(vec![t.config.clone(), other.clone()]));
+    assert_eq!(got.unwrap().map(|f| f.config_dir), Some(other));
 }
 
 #[test]

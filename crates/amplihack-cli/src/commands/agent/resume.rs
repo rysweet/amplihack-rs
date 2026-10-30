@@ -6,6 +6,7 @@
 use super::dirty;
 use super::launch;
 use super::pass::{PassCfg, View, load};
+use super::profile_dir;
 use super::registry::{Entry, State, fmt_ts};
 use super::report::{self, Outcome};
 use super::scan::{self, Observation};
@@ -233,8 +234,7 @@ pub(super) fn precheck(home: &Path, e: &Entry) -> Option<Outcome> {
     if !launch_dir.is_dir() {
         return Some(Outcome::NoLaunchDir);
     }
-    let config = sessions::profile_config_dir(home, e.amplihack_flags.profile.as_deref());
-    match config {
+    match profile_dir::resume_config_dir(home, e.amplihack_flags.profile.as_deref()) {
         Ok(c) if sessions::transcript_exists(&c, launch_dir, id) => None,
         _ => Some(Outcome::NoTranscript),
     }

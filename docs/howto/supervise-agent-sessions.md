@@ -434,7 +434,8 @@ The supervisor resumes an agent when all of these hold:
 - its tmux session does not exist;
 - it has a conversation id, its launch directory exists, and the
   conversation's transcript is in the config directory the resume uses (the
-  recorded profile's directory, or `~/.claude`);
+  recorded profile's directory, else the default profile pointer's, else
+  `~/.claude`);
 - it has been resumed fewer than 3 times in the last hour.
 
 For each one, it creates the tmux session and window again in the recorded
@@ -498,7 +499,7 @@ the pass writes one of these lines:
 | `skipped: tmux session exists (tmux state unknown: REASON)` | tmux did not answer clearly, so the supervisor assumes the session exists. | Fix REASON. `socket directory is not private` is explained in [Unattended resumes and other users](#unattended-resumes-and-other-users). |
 | `failed: no conversation id` | The agent has no conversation id to resume. | Register it again with `--conversation`. |
 | `failed: launch directory missing` | The recorded directory no longer exists. | Restore the directory, or register the agent again with `--dir`. |
-| `failed: no transcript` | The conversation's transcript is not in the config directory the resume would use. A recorded profile whose directory no longer exists gives the same result. | Check the recorded profile, or register the agent again with the right `--profile`. |
+| `failed: no transcript` | The conversation's transcript is not in the config directory the resume would use. A recorded profile whose directory no longer exists, or a default profile pointer that cannot be read, gives the same result. | Check `amplihack_flags.profile` in `agent status --json`. A launch under an inherited `AMPLIHACK_CLAUDE_PROFILE` or the default pointer records its profile once its session file is found; if none was recorded and the conversation is in `~/.claude`, clear or change the default pointer, or register the agent again with the right `--profile`. |
 | `failed: tmux: MESSAGE` | tmux refused to create the session. | Read MESSAGE. The attempt counts towards the restart limit, so a launch that keeps failing ends with the agent `stopped`. |
 
 Each of these lines is written once. The same result for the same agent and

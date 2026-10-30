@@ -19,6 +19,7 @@
 //!   String -> Vec<(u32, u64)> }`
 //! - `project_dir_names(launch_dir: &Path) -> Vec<String>`,
 //!   `transcript_exists(config_dir: &Path, launch_dir: &Path, id: &str) -> bool`
+//! - `profile_of_config_dir(home: &Path, config_dir: &Path) -> Option<String>`
 
 use super::sessions::*;
 use serde_json::json;
@@ -260,4 +261,18 @@ fn transcripts_are_found_under_either_encoding() {
         "A4 second encoding"
     );
     assert!(!transcript_exists(tmp.path(), launch, ID2));
+}
+
+/// The profile a launch ran under, read from the directory its sessions
+/// file was in: `~/.claude` is no profile, a profile directory is its name.
+#[test]
+fn the_profile_of_a_config_directory() {
+    let home = Path::new("/home/alex");
+    assert_eq!(profile_of_config_dir(home, &home.join(".claude")), None);
+    let root = Path::new("/home/alex/.amplihack/profiles");
+    assert_eq!(
+        profile_of_config_dir(home, &root.join("work")),
+        Some("work".to_string())
+    );
+    assert_eq!(profile_of_config_dir(home, &root.join("..")), None);
 }

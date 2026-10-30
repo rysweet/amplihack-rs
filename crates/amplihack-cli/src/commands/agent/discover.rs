@@ -38,6 +38,9 @@ pub struct Discovered {
     pub conversation: Option<String>,
     /// The sessions file's `cwd`, else the `cwd` link; not yet validated.
     pub launch_dir: Option<PathBuf>,
+    /// The config directory whose `sessions/` held the process's file:
+    /// where its transcript is, whichever way its profile was chosen.
+    pub config_dir: Option<PathBuf>,
     pub opts: ClaudeOpts,
     /// The nearest `amplihack claude` ancestor's flags.
     pub amplihack: Option<AmplihackClaude>,
@@ -139,7 +142,8 @@ fn read(
     if opts.print {
         bail!("process {pid} is a claude -p run, not an interactive session");
     }
-    let session = sessions::for_process(dirs, pid, p.starttime).map_err(|e| anyhow!(e))?;
+    let session = sessions::for_process_in(dirs, pid, p.starttime).map_err(|e| anyhow!(e))?;
+    let (session, config_dir) = session.unzip();
     let conversation = match &session {
         Some(file) => Some(file.session_id.clone()),
         None => cmdline::resume_as_conversation(&opts).map(String::from),
@@ -171,6 +175,7 @@ fn read(
         proc_start: p.starttime,
         conversation,
         launch_dir,
+        config_dir,
         opts,
         amplihack,
         env,

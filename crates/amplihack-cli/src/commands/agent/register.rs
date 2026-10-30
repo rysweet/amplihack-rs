@@ -229,9 +229,16 @@ fn merge(
             (None, true) => (None, true),
             (None, false) => (opts.permission_mode.clone(), opts.skip_permissions),
         };
-    let profile = match args.profile {
-        Some(p) => Some(check_profile(home, &p)?),
-        None => amp.profile.and_then(|p| found_profile(home, found?, p)),
+    // `--profile`, else the ancestor's `--profile`, else the profile whose
+    // directory held the process's sessions file: a launch under an
+    // inherited `AMPLIHACK_CLAUDE_PROFILE` or the default pointer has no
+    // `--profile` on any command line, but its conversation is still there.
+    let profile = match (args.profile, amp.profile) {
+        (Some(p), _) => Some(check_profile(home, &p)?),
+        (None, Some(p)) => found.and_then(|f| found_profile(home, f, p)),
+        (None, None) => found
+            .and_then(|f| f.config_dir.as_deref())
+            .and_then(|d| sessions::profile_of_config_dir(home, d)),
     };
     Ok(Launch {
         socket,

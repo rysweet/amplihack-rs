@@ -159,7 +159,7 @@ the process is treated as not found.
 | `conversation_id` | `sessionId` from `sessions/<pid>.json` in `~/.claude` or in any profile directory, used only when the file is yours, its `pid` is the process and its `procStart` equals the process's start time (field 22 of `/proc/<pid>/stat`). A `sessions/` directory that fails the [privacy check](#liveness) is an error that names it. Without such a file, the `--resume` value on the `claude` command line, unless `--fork-session` is also there: a forked session writes a new conversation. |
 | `launch_dir` | The session file's `cwd`, else the process's working directory. |
 | `model`, `effort`, `add_dirs`, `permission_mode`, `skip_permissions` | The `claude` command line; see [Command-line parsing](#command-line-parsing). |
-| `amplihack_flags` | `--profile`, `--subprocess-safe` and `--no-reflection` on the command line of the nearest ancestor that is `amplihack claude` or `amplihack launch`. Every other option of that subcommand is skipped with its value, and reading stops at `--` or at the first argument that is not one of its options, as clap does. A profile whose directory no longer exists is not recorded, with a [warning](#warnings). |
+| `amplihack_flags` | `--profile`, `--subprocess-safe` and `--no-reflection` on the command line of the nearest ancestor that is `amplihack claude` or `amplihack launch`. Every other option of that subcommand is skipped with its value, and reading stops at `--` or at the first argument that is not one of its options, as clap does. A profile whose directory no longer exists is not recorded, with a [warning](#warnings). With no `--profile` there, the profile is the one whose directory holds the process's session file; see [Which profile is recorded](#which-profile-is-recorded). |
 | `env` | Allowlisted variables from that ancestor's environment, or from the `claude` process's when there is no such ancestor. |
 | `tmux_socket` | The first comma-separated field of `TMUX` in the `claude` process's environment. With `--pane`, the socket tmux was asked on; when that was tmux's default server, its path `TMUX_TMPDIR/tmux-UID/default`, with `TMUX_TMPDIR` taken from `register`'s environment and `/tmp` when it is unset or empty. |
 | `tmux_session`, `tmux_window` | `tmux display-message -p -t PANE '#{session_name}<TAB>#{window_name}'`. With `--pane`, PANE is TARGET, asked on the same server. Otherwise PANE is `TMUX_PANE` from the process's environment, asked on the server named by the first field of its `TMUX`, whatever `--tmux-socket` says; without both variables tmux is not asked. tmux is not asked when both `--session` and `--window` are given. The answer must be exactly the two fields and a newline; anything else is `tmux display-message returned an unexpected answer`. |
@@ -528,6 +528,30 @@ even when no socket file is in it.
 | not running | unknown | skipped | `skipped: tmux session exists (tmux state unknown: REASON)` |
 | not running | absent | lost: `lost_at` set if empty | see [Pre-checks](#pre-checks) |
 
+### Which profile is recorded
+
+`amplihack claude` picks its config directory from `--profile`, else an
+inherited `AMPLIHACK_CLAUDE_PROFILE` (which auto-switch may redirect to
+another profile), else the default profile pointer, else `~/.claude`. Only
+the first appears on a command line, so the profile recorded is the one the
+launch actually used:
+
+| How the launch chose its directory | `amplihack_flags.profile` |
+|------------------------------------|---------------------------|
+| `--profile NAME` given to `register` or `claude --supervise` | NAME |
+| `--profile NAME` on the `amplihack claude` ancestor (`register`) | NAME |
+| No `--profile`, session file in a profile directory (inherited `AMPLIHACK_CLAUDE_PROFILE`, after any auto-switch, or the default pointer) | that directory's profile name |
+| No `--profile`, session file in `~/.claude` (no profile, or the rotator's live profile) | not recorded |
+| No `--profile` and no session file found | not recorded |
+
+Because a profile found this way is recorded, the
+[resume command](#resume) passes `--profile NAME` for it, and a later
+change of the default pointer or of the inherited variable does not move
+the resume to another directory. With no profile recorded, the resume and
+the [pre-check](#pre-checks) both follow the default pointer as it is at
+the time of the resume; a conversation in `~/.claude` is then not resumed
+while the pointer names a profile other than the rotator's live one.
+
 ### Pre-checks
 
 Each lost agent is checked in this order; the first failure decides.
@@ -536,12 +560,16 @@ Each lost agent is checked in this order; the first failure decides.
 |-------|--------|
 | The agent has a conversation id | `failed: no conversation id` |
 | The launch directory exists | `failed: launch directory missing` |
-| The transcript exists | `failed: no transcript`; also when the recorded profile's directory no longer exists |
+| The transcript exists | `failed: no transcript`; also when the recorded profile's directory no longer exists, or the default profile pointer cannot be read |
 | The [restart limit](#restart-limit) is not reached | `stopped: restart limit`, followed by the ALERT line |
 
 The transcript is `CONFIG/projects/ENCODED/ID.jsonl`, where CONFIG is the
-recorded profile's directory, or `~/.claude` with no profile: the directory
-the resume will use. ENCODED is the launch directory with every `/` and `.`
+directory the resume will use. That is the directory `amplihack claude`
+resolves for the [resume command](#resume), which removes
+`AMPLIHACK_CLAUDE_PROFILE` and passes `--profile` only when one is recorded:
+the recorded profile's directory, else the default profile pointer's, else
+`~/.claude`. A profile that is the login rotator's live login resolves to
+`~/.claude`, as it does for the launch. ENCODED is the launch directory with every `/` and `.`
 replaced by `-`; the name with every character other than an ASCII letter or
 digit replaced by `-` is accepted as well.
 
@@ -827,7 +855,7 @@ in place:
 | `launch_dir` | The current directory. |
 | `conversation_id` | `--resume ID` in CLAUDE_ARGS, unless `--fork-session` is also there. Otherwise cleared, and found later; see below. |
 | `model`, `effort`, `add_dirs`, `permission_mode`, `skip_permissions` | CLAUDE_ARGS, [parsed](#command-line-parsing) as for `register`. |
-| `amplihack_flags` | This command's `--profile`, `--subprocess-safe` and `--no-reflection`. |
+| `amplihack_flags` | This command's `--profile`, `--subprocess-safe` and `--no-reflection`. Without `--profile`, the profile is recorded later, with the conversation id; see below and [Which profile is recorded](#which-profile-is-recorded). |
 | `env` | The [allowlisted variables](#recorded-environment) in the current environment. |
 | `state` | `active`. |
 | `launch_id`, `launched_at` | A new id, and now. |
@@ -843,7 +871,9 @@ background it looks, every second for up to 120 seconds, for the `claude`
 process it started and that process's session file. When it finds them it
 records `claude_pid`, `proc_start` and the conversation id, unless the id
 belongs to another active agent or the record no longer carries this
-launch's `launch_id`. If it finds nothing in that time, or cannot record what
+launch's `launch_id`. When no `--profile` was given, it also records the
+profile whose directory held the session file, as `amplihack_flags.profile`;
+a session file in `~/.claude` records no profile. If it finds nothing in that time, or cannot record what
 it found, it appends one `WARNING:` line to the
 [supervisor log](#supervisor-log) with the last reason, such as a config or
 `sessions/` directory that fails the privacy check, or

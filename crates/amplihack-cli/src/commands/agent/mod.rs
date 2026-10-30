@@ -135,6 +135,8 @@ mod pass;
 #[cfg(unix)]
 mod procfs;
 #[cfg(unix)]
+mod profile_dir;
+#[cfg(unix)]
 mod register;
 #[cfg(unix)]
 mod registry;
