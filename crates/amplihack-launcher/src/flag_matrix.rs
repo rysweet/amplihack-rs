@@ -64,7 +64,11 @@ pub struct FlagSet {
     pub supports_print: bool,
     /// Supports `--allow-all-tools` (Copilot-specific).
     pub supports_allow_all_tools: bool,
-    /// Supports `--remote` (Copilot-specific — offload to GitHub cloud).
+    /// Accepts a `--remote` launch flag. False for every binary, Copilot
+    /// included: Copilot CLI 1.0.105 removed `--remote` and `--no-remote` and
+    /// refuses to start when given either, so a remote session is turned on
+    /// inside Copilot with `/remote on` and off with `/remote off` (issue
+    /// #1744). Gating a launch flag on this field must never add `--remote`.
     pub supports_remote: bool,
     /// Supports structured argv task-prompt delivery.
     pub supports_prompt_argv: bool,
@@ -114,7 +118,7 @@ pub fn flags_for(binary: AgentBinary) -> FlagSet {
             supports_resume: false,
             supports_print: false,
             supports_allow_all_tools: true,
-            supports_remote: true,
+            supports_remote: false,
             supports_prompt_argv: true,
             supports_prompt_tempfile: false,
             supports_prompt_stdin: false,
@@ -327,10 +331,12 @@ mod tests {
         assert!(flags.supports_allow_all_tools);
     }
 
+    /// Issue #1744: Copilot CLI 1.0.105 removed `--remote`; a matrix entry of
+    /// `true` would let a future flag gate add it back to every launch.
     #[test]
-    fn copilot_supports_remote() {
+    fn copilot_does_not_support_remote() {
         let flags = flags_for(AgentBinary::Copilot);
-        assert!(flags.supports_remote);
+        assert!(!flags.supports_remote);
     }
 
     #[test]

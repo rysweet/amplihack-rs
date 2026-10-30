@@ -182,11 +182,11 @@ site could answer the gate before paying for a disk read; the fragment is
 `true`.
 
 Pure — no I/O, no environment reads inside. This is a deliberate divergence from
-its neighbours `should_inject_copilot_allow_all` and `should_inject_copilot_remote`,
-which read `std::env` internally. The environment read is hoisted to the call
-site here so the function is directly testable without mutating process
-environment, which is `unsafe` under edition 2024. The doc comment says so, so
-that nobody moves the read back inside.
+its neighbour `should_inject_copilot_allow_all`, which reads `std::env`
+internally. The environment read is hoisted to the call site here so the
+function is directly testable without mutating process environment, which is
+`unsafe` under edition 2024. The doc comment says so, so that nobody moves the
+read back inside.
 
 Double-injection is detected across all four user-supplied spellings:
 
