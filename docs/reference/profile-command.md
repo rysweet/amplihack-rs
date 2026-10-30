@@ -4988,9 +4988,10 @@ fallback and writes this warning at its first budget check.
   budget left when their wait started, so together they can wait longer
   than the budget. The next limit after that finds nothing left.
 - A wait whose append failed is missing from the record, so other steps of
-  the run do not count it. A step in the
-  [per-step fallback](#per-step-fallback) does not count what other steps
-  wait after its last successful read.
+  the run do not count it, nor any later wait of a step after it falls
+  back: a step in the [per-step fallback](#per-step-fallback) appends
+  nothing more, even once the record can be used again. That step in turn
+  does not count what other steps wait after its last successful read.
 - A supervisor killed with `SIGKILL` records nothing for the wait it was
   in.
 - A record left unchanged for 7 days can be deleted by another run's

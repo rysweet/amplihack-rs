@@ -246,6 +246,15 @@ fn a_failed_read_falls_back_from_the_last_good_read_less_the_waits_since() {
     assert!(b.per_step());
     assert_eq!(left(&mut b, 21_600), (3000, vec![]), "one warning");
     assert_eq!(fs::read_to_string(&rec).unwrap(), "18000\n600\ntorn");
+    // Once fallen back, none of the step's later waits reach the record,
+    // even after it is usable again, so other steps of the run do not
+    // count them.
+    fs::write(&rec, "18000\n600\n").unwrap();
+    assert!(add(&mut b, 1000).is_empty());
+    assert_eq!(left(&mut b, 21_600), (2000, vec![]));
+    assert_eq!(fs::read_to_string(&rec).unwrap(), "18000\n600\n");
+    let mut other = budget(RUN, &home);
+    assert_eq!(left(&mut other, 21_600), (3000, vec![]), "1000 not counted");
 }
 
 #[test]
