@@ -7,7 +7,7 @@ use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileExt as _, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -163,11 +163,20 @@ impl Dest {
     }
 
     /// Appends one line with `O_APPEND` in a single write, then syncs it.
+    /// A line torn by an earlier failed write is ended first, so it cannot
+    /// run into this one.
     pub fn append(&self, entry: &Entry) -> io::Result<()> {
         let mut line = serde_json::to_vec(entry).map_err(|_| io::ErrorKind::InvalidData)?;
         line.push(b'\n');
-        let mut f = open_opts(true, true, true).open(self.manifest())?;
+        let mut f = open_opts(true, true, true)
+            .read(true)
+            .open(self.manifest())?;
         own_regular(&f)?;
+        let len = f.metadata()?.len();
+        let mut last = [0u8; 1];
+        if len > 0 && f.read_at(&mut last, len - 1)? == 1 && last[0] != b'\n' {
+            line.insert(0, b'\n');
+        }
         f.write_all(&line)?;
         f.sync_all()
     }

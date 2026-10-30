@@ -7,6 +7,7 @@
 //! and `<CLAUDE_CONFIG_DIR>/sessions` of this user's processes. The build
 //! fails closed: only a missing directory counts as empty.
 
+use super::fmt::esc;
 use super::scan::valid_name;
 use crate::commands::profile::{ProfileError, ProfileStore};
 use amplihack_utils::secure_files::read_bounded_nofollow;
@@ -62,11 +63,21 @@ impl Probe for SystemProbe {
 #[derive(Debug, Default, Clone)]
 pub struct LiveSet {
     ids: HashSet<String>,
+    /// Pid files whose body did not parse or named no valid session.
+    pub ignored: BTreeSet<PathBuf>,
 }
 
 impl LiveSet {
     pub fn contains(&self, id: &str) -> bool {
         self.ids.contains(id)
+    }
+
+    /// One line per ignored pid file. Called after the first build of a
+    /// run only, so a refresh does not repeat the lines.
+    pub fn report_ignored(&self, warn: &mut dyn FnMut(&str)) {
+        for p in &self.ignored {
+            warn(&format!("ignored unreadable pid file {}", esc(p)));
+        }
     }
 }
 
@@ -137,20 +148,27 @@ fn read_dir_into(
             Err(e) if e.kind() == io::ErrorKind::InvalidData => continue,
             Err(e) => return Err((entry.path(), e.kind())),
         };
-        if let Some(id) = live_id(&raw, stem, probe) {
-            set.ids.insert(id);
+        match live_id(&raw, stem, probe) {
+            Ok(Some(id)) => {
+                set.ids.insert(id);
+            }
+            Ok(None) => {}
+            Err(()) => {
+                set.ignored.insert(shown.join(&name));
+            }
         }
     }
     Ok(())
 }
 
 /// The session id of a pid file whose body pid or numeric stem is alive.
-/// A body that does not parse protects nothing.
-fn live_id(raw: &[u8], stem: &str, probe: &dyn Probe) -> Option<String> {
-    let v: serde_json::Value = serde_json::from_slice(raw).ok()?;
-    let id = v.get("sessionId")?.as_str()?;
+/// A body that does not parse, or names no valid session, protects nothing
+/// and is `Err`.
+fn live_id(raw: &[u8], stem: &str, probe: &dyn Probe) -> Result<Option<String>, ()> {
+    let v: serde_json::Value = serde_json::from_slice(raw).map_err(|_| ())?;
+    let id = v.get("sessionId").and_then(|i| i.as_str()).ok_or(())?;
     if !valid_name(id) {
-        return None;
+        return Err(());
     }
     let body = v
         .get("pid")
@@ -161,9 +179,10 @@ fn live_id(raw: &[u8], stem: &str, probe: &dyn Probe) -> Option<String> {
         .flatten();
     let mut pids: Vec<i32> = body.into_iter().chain(from_stem).collect();
     pids.dedup();
-    pids.into_iter()
+    Ok(pids
+        .into_iter()
         .any(|p| probe.alive(p))
-        .then(|| id.to_string())
+        .then(|| id.to_string()))
 }
 
 fn in_range(pid: i64) -> Option<i32> {

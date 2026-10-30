@@ -43,7 +43,7 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
   - [AMPLIHACK_SESSIONS_ARCHIVE_DAYS](#amplihack_sessions_archive_days)
   - [AMPLIHACK_SESSIONS_ARCHIVE_DEST](#amplihack_sessions_archive_dest)
-  - [AMPLIHACK_SESSIONS_ARCHIVE_DAILY](#amplihack_sessions_archive_daily)
+  - [AMPLIHACK_ROTATE_SESSIONS_ARCHIVE](#amplihack_rotate_sessions_archive)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
   - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
@@ -1034,7 +1034,7 @@ cannot write. See [Destination layout](./sessions-command.md#destination-layout)
 
 ---
 
-### AMPLIHACK_SESSIONS_ARCHIVE_DAILY
+### AMPLIHACK_ROTATE_SESSIONS_ARCHIVE
 
 **Type:** string (switch)
 **Values:** `1` or `on` | `0` or `off`
@@ -1051,8 +1051,8 @@ time. A running rotator does not see later changes.
 
 ```bash
 # Turn the daily archive off for every rotator started from now on
-echo 'export AMPLIHACK_SESSIONS_ARCHIVE_DAILY=0' >> ~/.bashrc
-export AMPLIHACK_SESSIONS_ARCHIVE_DAILY=0
+echo 'export AMPLIHACK_ROTATE_SESSIONS_ARCHIVE=0' >> ~/.bashrc
+export AMPLIHACK_ROTATE_SESSIONS_ARCHIVE=0
 amplihack profile rotate stop
 amplihack profile rotate start
 ```

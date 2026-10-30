@@ -185,7 +185,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_SAFE_HEREDOC_V2_TMPWRITE` | test-only |  | Not an env var: heredoc delimiter in a recipe test. |
 | `AMPLIHACK_SAFE_HEREDOC_V3_TMPWRITE` | test-only |  | Not an env var: heredoc delimiter in a recipe test. |
 | `AMPLIHACK_SEND_INPUT_ALLOWLIST` | user preference |  | Allowlist for sending input to sessions. |
-| `AMPLIHACK_SESSIONS_ARCHIVE_DAILY` | user preference |  | `0`/`off` turns off the rotator's daily `sessions archive` run; on by default. Read from the rotator's environment; see [daily session archive](profile-command.md#rotate-daily-session-archive). |
+| `AMPLIHACK_ROTATE_SESSIONS_ARCHIVE` | user preference |  | `0`/`off` turns off the rotator's daily `sessions archive` run; on by default. Read from the rotator's environment; see [daily session archive](profile-command.md#rotate-daily-session-archive). |
 | `AMPLIHACK_SESSIONS_ARCHIVE_DAYS` | user preference |  | Default for `amplihack sessions archive --days` and the rotator's daily run (default `3`); see [`sessions` configuration](sessions-command.md#configuration). |
 | `AMPLIHACK_SESSIONS_ARCHIVE_DEST` | user preference |  | Default for `amplihack sessions archive --dest` and `restore --dest` (default `~/.amplihack/session-archive`). |
 | `AMPLIHACK_SESSION_DEPTH` | internal |  | Session-tree depth exported to children. |

@@ -31,7 +31,7 @@ mod tests_store;
 
 pub(crate) use fmt::kind_word;
 
-use crate::commands::profile::store_from_env;
+use crate::commands::profile::{ROOT_ENV, store_from_env};
 use amplihack_utils::rotator_status::home_from_env;
 use clap::Subcommand;
 use std::io::ErrorKind;
@@ -82,13 +82,14 @@ pub fn run_sessions(cmd: SessionsCommands) -> anyhow::Result<()> {
             // profile's sessions, so it fails closed.
             let profile_root = match store_from_env() {
                 Ok((store, _)) => store.root().to_path_buf(),
-                Err(_) => fail(
-                    &archive::ArchiveError::LiveUnreadable(
-                        opts.home.join(".amplihack"),
-                        ErrorKind::InvalidData,
+                Err(_) => {
+                    let root =
+                        env(ROOT_ENV).map_or_else(|| opts.home.join(".amplihack"), PathBuf::from);
+                    fail(
+                        &archive::ArchiveError::LiveUnreadable(root, ErrorKind::InvalidData)
+                            .to_string(),
                     )
-                    .to_string(),
-                ),
+                }
             };
             let report = archive::run(&opts, &profile_root, &live::SystemProbe, &mut warn)
                 .unwrap_or_else(|e| fail(&e.to_string()));

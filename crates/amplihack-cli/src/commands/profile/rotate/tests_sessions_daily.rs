@@ -7,10 +7,10 @@
 //!   run: &mut dyn FnMut(&Opts) -> Result<String, String>)`: `run` stands
 //!   in for `archive::run_default` and returns the summary line or the
 //!   error line. Never panics, never returns an error.
-//! - Switch: `AMPLIHACK_SESSIONS_ARCHIVE_DAILY` through
+//! - Switch: `AMPLIHACK_ROTATE_SESSIONS_ARCHIVE` through
 //!   `autostart::parse_env`; off (`0`/`off`) means nothing runs and nothing
 //!   is written. An invalid value runs, and logs
-//!   `sessions archive: ignored AMPLIHACK_SESSIONS_ARCHIVE_DAILY value (use
+//!   `sessions archive: ignored AMPLIHACK_ROTATE_SESSIONS_ARCHIVE value (use
 //!   on, off, 1 or 0); running` (at most once per process).
 //! - Record: `<rs.dir>/sessions-archive.last`, decimal epoch seconds. Due
 //!   when missing or garbage, when `now − last ≥ 86400`, or when
@@ -158,7 +158,7 @@ fn switch_off_does_nothing() {
         let (logs, runs) = tick(
             &t,
             NOW,
-            &env(&[("AMPLIHACK_SESSIONS_ARCHIVE_DAILY", off)]),
+            &env(&[("AMPLIHACK_ROTATE_SESSIONS_ARCHIVE", off)]),
             Ok(SUMMARY),
         );
         assert!(runs.is_empty() && logs.is_empty(), "{off}");
@@ -173,7 +173,7 @@ fn switch_on_or_empty_runs() {
         let (_, runs) = tick(
             &t,
             NOW,
-            &env(&[("AMPLIHACK_SESSIONS_ARCHIVE_DAILY", on)]),
+            &env(&[("AMPLIHACK_ROTATE_SESSIONS_ARCHIVE", on)]),
             Ok(SUMMARY),
         );
         assert_eq!(runs.len(), 1, "{on:?}");
@@ -186,7 +186,7 @@ fn invalid_switch_runs_and_says_so_without_the_value() {
     let (logs, runs) = tick(
         &t,
         NOW,
-        &env(&[("AMPLIHACK_SESSIONS_ARCHIVE_DAILY", "maybe-SECRET")]),
+        &env(&[("AMPLIHACK_ROTATE_SESSIONS_ARCHIVE", "maybe-SECRET")]),
         Ok(SUMMARY),
     );
     assert_eq!(runs.len(), 1);
@@ -194,7 +194,7 @@ fn invalid_switch_runs_and_says_so_without_the_value() {
     for l in &logs {
         assert!(!l.contains("SECRET"), "{l}");
     }
-    let ignored = "sessions archive: ignored AMPLIHACK_SESSIONS_ARCHIVE_DAILY value (use on, off, 1 or 0); running";
+    let ignored = "sessions archive: ignored AMPLIHACK_ROTATE_SESSIONS_ARCHIVE value (use on, off, 1 or 0); running";
     assert!(
         logs.iter()
             .all(|l| l == ignored || l == &format!("sessions archive: {SUMMARY}")),

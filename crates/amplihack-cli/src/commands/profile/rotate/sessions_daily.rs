@@ -1,7 +1,7 @@
 //! The daily session archive (issue #1746): once a day the watch loop runs
 //! `amplihack sessions archive --apply` in-process, with the days and
 //! destination from `AMPLIHACK_SESSIONS_ARCHIVE_DAYS` / `_DEST`. Turned off
-//! with `AMPLIHACK_SESSIONS_ARCHIVE_DAILY=0`. Separate from the cycle: it
+//! with `AMPLIHACK_ROTATE_SESSIONS_ARCHIVE=0`. Separate from the cycle: it
 //! runs after it, outside the paused check, and never returns an error.
 //!
 //! The run time is recorded in `<state>/sessions-archive.last` before the
@@ -17,7 +17,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-const SWITCH_ENV: &str = "AMPLIHACK_SESSIONS_ARCHIVE_DAILY";
+const SWITCH_ENV: &str = "AMPLIHACK_ROTATE_SESSIONS_ARCHIVE";
 const RECORD: &str = "sessions-archive.last";
 const MAX_RECORD: u64 = 64;
 const DAY: i64 = 86_400;

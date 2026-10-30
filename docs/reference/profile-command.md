@@ -4168,12 +4168,12 @@ Each session the archive skips or fails also gets its own line, such as
 [`sessions` messages](./sessions-command.md#messages). No error from the
 archive stops or changes the rotation cycle.
 
-To turn the daily run off, set `AMPLIHACK_SESSIONS_ARCHIVE_DAILY=0` (or
+To turn the daily run off, set `AMPLIHACK_ROTATE_SESSIONS_ARCHIVE=0` (or
 `off`) where the rotator is started, then restart it:
 
 ```
 amplihack profile rotate stop
-AMPLIHACK_SESSIONS_ARCHIVE_DAILY=0 amplihack profile rotate start
+AMPLIHACK_ROTATE_SESSIONS_ARCHIVE=0 amplihack profile rotate start
 ```
 
 The three `AMPLIHACK_SESSIONS_ARCHIVE_*` variables do not start with
@@ -4186,7 +4186,7 @@ rather than on one command line.
 
 `1` or `on`, or an empty or unset variable, means on. Any other value also
 means on, and the rotator logs
-`sessions archive: ignored AMPLIHACK_SESSIONS_ARCHIVE_DAILY value (use on, off, 1 or 0); running`
+`sessions archive: ignored AMPLIHACK_ROTATE_SESSIONS_ARCHIVE value (use on, off, 1 or 0); running`
 once, without repeating the value.
 
 ### Rotate prototype coexistence

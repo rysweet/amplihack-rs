@@ -2,7 +2,7 @@
 //! member rules, and the byte budget that stops extraction. The end-to-end
 //! refusals are in `tests/issue_1746_sessions_lock_restore.rs`.
 
-use super::{Extract, RestoreError, RestoreReport, line_ok, member_ok};
+use super::{Extract, RestoreError, RestoreReport, check_members, line_ok, member_ok};
 use crate::commands::sessions::store::Entry;
 use std::path::{Path, PathBuf};
 use tar::EntryType;
@@ -117,4 +117,31 @@ fn summary_line() {
         r(0, 2).summary(),
         "restored 0 files to /h/.claude/projects/-p; 2 conflicts kept"
     );
+}
+
+#[test]
+fn pass_one_stops_once_a_member_exceeds_the_manifest_bytes() {
+    // The first member alone is over the manifest's one byte, so pass 1
+    // stops there and never reaches the symlink behind it, which would
+    // otherwise be refused as a bad member.
+    let t = tempfile::tempdir().unwrap();
+    let path = t.path().join("abc.tar.gz");
+    let gz = flate2::write::GzEncoder::new(
+        std::fs::File::create(&path).unwrap(),
+        flate2::Compression::default(),
+    );
+    let mut tar = tar::Builder::new(gz);
+    let mut h = tar::Header::new_gnu();
+    h.set_size(10);
+    h.set_mode(0o600);
+    tar.append_data(&mut h, "abc.jsonl", &[0u8; 10][..])
+        .unwrap();
+    let mut h = tar::Header::new_gnu();
+    h.set_entry_type(EntryType::Symlink);
+    h.set_size(0);
+    tar.append_link(&mut h, "abc/link", "/etc/passwd").unwrap();
+    tar.into_inner().unwrap().finish().unwrap();
+    let file = std::fs::File::open(&path).unwrap();
+    let err = check_members(&file, &path, ID, &line("-p", "-p/abc.tar.gz"), u64::MAX).unwrap_err();
+    assert!(matches!(err, RestoreError::Mismatch(_)), "{err:?}");
 }

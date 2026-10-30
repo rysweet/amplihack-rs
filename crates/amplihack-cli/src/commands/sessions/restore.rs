@@ -243,6 +243,10 @@ fn check_members(
         }
         count += 1;
         bytes = bytes.saturating_add(m.size());
+        // Stop before reading more than the manifest allows.
+        if count > entry.parts || bytes > entry.bytes {
+            return Err(RestoreError::Mismatch(archive.to_path_buf()));
+        }
     }
     if count != entry.parts || bytes != entry.bytes {
         return Err(RestoreError::Mismatch(archive.to_path_buf()));

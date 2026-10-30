@@ -28,6 +28,7 @@ compressed archive under `~/.amplihack/session-archive`, and
 - [Configuration](#configuration)
 - [Exit status](#exit-status)
 - [Messages](#messages)
+- [Troubleshooting](#troubleshooting)
 - [Privacy](#privacy)
 - [Platform support](#platform-support)
 - [Related](#related)
@@ -119,13 +120,18 @@ negative pid protects nothing. A pid is alive when `kill(pid, 0)` succeeds or
 fails with `EPERM`; only `ESRCH` means dead.
 
 `sessionId` is matched against session ids in every project. A pid file
-that cannot be parsed protects nothing and is passed over without a
-message, so the daily run does not repeat a line for it in the rotator log
-every day. A dead process's pid file protects nothing.
+that cannot be parsed, or whose `sessionId` is missing, not a string or
+breaks the [id rules](#what-a-session-is), protects nothing. Each run prints
+`ignored unreadable pid file <path>` once for it, the dry run included, so
+the daily run repeats that line in the rotator log every day while the file
+remains. A pid file refused before it is parsed (a symlink, a non-regular
+file or one over 64 KiB) is passed over without a message. A dead process's
+pid file protects nothing.
 
 The check fails closed. A missing `sessions/` directory is empty, but any
 other error reading one, or reading the profile root, stops the command
-before anything is archived:
+before anything is archived. The dry run stops and exits 1 in the same
+way:
 
 ```
 cannot read live sessions in /home/ryan/.claude-profiles/work/sessions (permission denied); nothing archived
@@ -168,7 +174,15 @@ If any of steps 1 to 6 fails, the command removes the temporary file and any
 final archive it made, keeps the originals, reports the session as `failed`
 and goes on to the next one. If step 7 fails part-way, the archive and its
 manifest line stay, and the session is reported as `failed` with the path it
-could not remove.
+could not remove and the archive it was saved as.
+
+`<id>.jsonl` is removed before `<id>/`. If `<id>/` then cannot be removed,
+or is removed only in part, the leftover `<id>/` has no `.jsonl`, so later
+runs do not treat it as a session and never touch it. Its contents are
+already in the archive, and it can be deleted by hand. The order is
+deliberate: removing `<id>/` first would let a part-way failure leave a
+complete-looking session, which a later run would archive again as a
+subset, and `restore` would then pick that subset.
 
 A first run over a large backlog takes a while: on the host that prompted
 this command, about 28,000 sessions and 8 GiB.
@@ -304,6 +318,11 @@ Before it changes anything, `archive --apply` and `restore` check DEST:
 DEST is created with mode `0700` when missing. Archives are not encrypted;
 their privacy rests on these modes.
 
+Only DEST itself is checked, not its parent directories. Do not put DEST in
+a world-writable directory that lacks the sticky bit, where another user
+could replace it after the check. `/tmp` has the sticky bit, and the default
+under `~/.amplihack` is not affected.
+
 ## Manifest
 
 `<DEST>/MANIFEST.jsonl` has one JSON line per archived session, appended
@@ -323,9 +342,11 @@ after the archive is in place and before the originals are removed:
 | `parts` | integer | Files plus directories in the archive. |
 
 The file is opened with `O_APPEND` and without following symlinks, and each
-line is written in one write and flushed. Readers skip lines they cannot
-parse and ignore unknown fields. `restore` refuses a manifest larger than
-64 MiB without reading it; see [Restore](#restore).
+line is written in one write and flushed. If the file does not end in a
+newline, for example after a write that failed part-way, a newline is
+written before the new line so the two do not merge. Readers skip lines
+they cannot parse and ignore unknown fields. `restore` refuses a manifest
+larger than 64 MiB without reading it; see [Restore](#restore).
 
 ## Lock
 
@@ -352,7 +373,7 @@ removed.
 |---------|------|----------------------|---------|
 | Days | `--days` | [`AMPLIHACK_SESSIONS_ARCHIVE_DAYS`](./environment-variables.md#amplihack_sessions_archive_days) | `3` |
 | Destination | `--dest` | [`AMPLIHACK_SESSIONS_ARCHIVE_DEST`](./environment-variables.md#amplihack_sessions_archive_dest) | `~/.amplihack/session-archive` |
-| Daily run | none | [`AMPLIHACK_SESSIONS_ARCHIVE_DAILY`](./environment-variables.md#amplihack_sessions_archive_daily) | on |
+| Daily run | none | [`AMPLIHACK_ROTATE_SESSIONS_ARCHIVE`](./environment-variables.md#amplihack_rotate_sessions_archive) | on |
 
 A flag overrides its variable, and the variable overrides the default. An
 empty variable counts as unset. An invalid `AMPLIHACK_SESSIONS_ARCHIVE_DAYS`
@@ -397,6 +418,7 @@ Every message below goes to stderr. The tests check these strings exactly.
 | `skipped <project>/<id>: special file` | The session contains a FIFO, socket or device. Left as it is. |
 | `skipped <project>/<id>: bad name` | The id breaks the [id rules](#what-a-session-is). Left as it is. |
 | `skipped <project>/<id>: unreadable (<kind>)` | Its metadata could not be read. Left as it is. |
+| `skipped <project>/: unreadable (<kind>)` | The project directory could not be listed, or its listing failed part-way. None of its sessions is archived; the run goes on. |
 | `failed <project>/<id>: write failed (<kind>)` | The archive could not be written. Originals kept. |
 | `failed <project>/<id>: verify mismatch` | The archive read back did not match the session. Originals kept. |
 | `failed <project>/<id>: changed during archive` | A part was written, added, removed or replaced while it was archived. Originals kept. |
@@ -405,7 +427,9 @@ Every message below goes to stderr. The tests check these strings exactly.
 | `failed <project>/<id>: archive directory not private` | `<DEST>/<project>` is not a real directory owned by you. Originals kept. |
 | `failed <project>/<id>: manifest write failed (<kind>)` | The manifest line could not be written. Originals kept. |
 | `failed <project>/<id>: cannot read live sessions (<kind>)` | The live set could not be rebuilt before removal. Originals kept. |
-| `failed <project>/<id>: remove failed (<kind>): <path>` | Archived and recorded, but `<path>` could not be removed. |
+| `failed <project>/<id>: remove failed (<kind>): <path>; session archived as <archive>` | Archived and recorded as `<DEST>/<archive>`, but `<path>` could not be removed. See [Archive steps](#archive-steps). |
+| `failed <project>/<id>: <reason>; archive left at <path>` | After a failure that keeps the originals, the final archive `<path>` could not be removed either. It has no manifest line and can be deleted by hand. |
+| `ignored unreadable pid file <path>` | A pid file could not be parsed or names no valid session; it protects nothing. See [Live sessions](#live-sessions). The run goes on. |
 | `cannot read live sessions in <path> (<kind>); nothing archived` | The [live check](#live-sessions) failed closed. |
 | `cannot prepare <path> (<kind>)` | DEST, its lock or its manifest could not be created or opened. |
 | `cannot remove <path> (<kind>)` | A crash leftover could not be removed. The run goes on. |
@@ -433,12 +457,25 @@ The summary lines `archived …`, `would archive …` and `restored N files to
 <target>`, with its optional conflict ending, go to stdout; see
 [Output](#output) and [Restore](#restore). In the rotator log, the daily run
 also writes
-`sessions archive: ignored AMPLIHACK_SESSIONS_ARCHIVE_DAILY value (use on, off, 1 or 0); running`
+`sessions archive: ignored AMPLIHACK_ROTATE_SESSIONS_ARCHIVE value (use on, off, 1 or 0); running`
 when that variable holds an unknown value; see the
 [daily session archive](./profile-command.md#rotate-daily-session-archive).
 
 On a filesystem without hard links, every session fails with
 `write failed (<kind>)` and every original is kept.
+
+## Troubleshooting
+
+`cannot read live sessions in <path> (<kind>); nothing archived` can come
+from a process of yours whose `CLAUDE_CONFIG_DIR` points at a regular file
+or at a directory that cannot be read. `<path>` is then
+`<CLAUDE_CONFIG_DIR>/sessions` for that process. The run stops on purpose:
+the [live check](#live-sessions) cannot tell whether that process is using
+an old session, so nothing is archived. Fix or unset the variable for that
+process, or end it. The daily run stops in the same way until then.
+
+If the profile root cannot be read, the path is the root you configured
+with `AMPLIHACK_CLAUDE_PROFILE_ROOT`, or `~/.amplihack` when it is unset.
 
 ## Privacy
 

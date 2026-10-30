@@ -9,7 +9,7 @@
 //! originals. Any failure before removal keeps the originals.
 
 use super::config::Opts;
-use super::fmt::{esc, gib, kind_word, thousands};
+use super::fmt::{esc, gib, kind_word, remove_failed, thousands};
 use super::live::{self, LiveSet, Probe, SystemProbe};
 use super::scan::{self, Session};
 use super::store::{Dest, Entry, LockError, contains_or_overlaps};
@@ -193,6 +193,7 @@ pub fn run(
         profile_root,
         probe,
     };
+    live.set.report_ignored(warn);
     let canonical = root
         .canonicalize()
         .map_err(|e| ArchiveError::Setup(root.clone(), e.kind()))?;
@@ -256,14 +257,15 @@ fn archive_one(
     let name = match staged.and_then(|()| link_free(&tmp, &pdir, &s.id, ts)) {
         Ok(name) => name,
         Err(reason) => {
+            // If this fails, the next run's temporary-file clean-up takes it.
             let _ = fs::remove_file(&tmp);
             return Err(reason);
         }
     };
     let final_path = pdir.join(&name);
-    let undo = |reason: String| {
-        let _ = fs::remove_file(&final_path);
-        reason
+    let undo = |reason: String| match fs::remove_file(&final_path) {
+        Ok(()) => reason,
+        Err(_) => format!("{reason}; archive left at {}", esc(&final_path)),
     };
     fs::remove_file(&tmp)
         .and_then(|()| amplihack_utils::secure_files::fsync_dir(&pdir))
@@ -291,7 +293,7 @@ fn archive_one(
         Some(d) => fs::remove_dir_all(d).map_err(|e| (d.clone(), e)),
         None => Ok(()),
     });
-    removed.map_err(|(p, e)| format!("remove failed ({}): {}", kind_word(e.kind()), esc(p)))
+    removed.map_err(|(p, e)| remove_failed(e.kind(), &p, &entry.archive))
 }
 
 /// Writes the archive from descriptors opened without following symlinks,

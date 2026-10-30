@@ -34,6 +34,17 @@ pub fn kind_word(kind: ErrorKind) -> &'static str {
     }
 }
 
+/// The reason when removing the originals fails after the manifest line
+/// was written: the session is already archived as `archive`.
+pub fn remove_failed(kind: ErrorKind, path: &Path, archive: &str) -> String {
+    format!(
+        "remove failed ({}): {}; session archived as {}",
+        kind_word(kind),
+        esc(path),
+        esc(archive)
+    )
+}
+
 /// A path or name as text, with every control character escaped (`\n`,
 /// `\u{1b}`). Non-UTF-8 bytes become U+FFFD. Nothing is quoted or cut.
 pub fn esc(p: impl AsRef<Path>) -> String {

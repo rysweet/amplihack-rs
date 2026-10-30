@@ -322,3 +322,44 @@ fn claude_config_dirs_reads_same_uid_processes_only() {
     got.sort();
     assert_eq!(got, [PathBuf::from("/cfg/a")]);
 }
+
+#[test]
+fn unparseable_pid_files_are_recorded_once_each() {
+    let t = setup();
+    let c = t.home.join(".claude");
+    let s = c.join("sessions");
+    pid_file(&c, "900", "not json at all");
+    pid_file(&c, "901", r#"{"pid":901}"#);
+    pid_file(&c, "902", &body("dead", "902"));
+    fs::write(t.home.join("real.json"), "garbage").unwrap();
+    symlink(t.home.join("real.json"), s.join("903.json")).unwrap();
+    let set = build(&t.home, &t.root, &probe(&[])).unwrap();
+    let want: BTreeSet<PathBuf> = [s.join("900.json"), s.join("901.json")].into();
+    assert_eq!(set.ignored, want);
+    let mut lines = Vec::new();
+    set.report_ignored(&mut |l| lines.push(l.to_string()));
+    assert_eq!(
+        lines,
+        [
+            format!(
+                "ignored unreadable pid file {}",
+                s.join("900.json").display()
+            ),
+            format!(
+                "ignored unreadable pid file {}",
+                s.join("901.json").display()
+            ),
+        ]
+    );
+}
+
+#[test]
+fn dead_or_symlinked_pid_files_are_not_recorded() {
+    let t = setup();
+    let c = t.home.join(".claude");
+    pid_file(&c, "902", &body("dead", "902"));
+    fs::write(t.home.join("real.json"), "garbage").unwrap();
+    symlink(t.home.join("real.json"), c.join("sessions/903.json")).unwrap();
+    let set = build(&t.home, &t.root, &probe(&[])).unwrap();
+    assert!(set.ignored.is_empty(), "{:?}", set.ignored);
+}

@@ -233,3 +233,40 @@ fn clean_tmp_is_narrow() {
     assert!(p.join(".dir.tar.gz.tmp-5").is_dir());
     assert!(outside.join(".o.tar.gz.tmp-1").exists());
 }
+
+#[test]
+fn append_ends_a_torn_line_first() {
+    let t = tempfile::tempdir().unwrap();
+    let d = private_dest(t.path());
+    let m = t.path().join("dest/MANIFEST.jsonl");
+    fs::write(&m, "{\"partial").unwrap();
+    fs::set_permissions(&m, fs::Permissions::from_mode(0o600)).unwrap();
+    let e = entry("a", "-p/a.tar.gz");
+    d.append(&e).unwrap();
+    assert_eq!(d.lookup("a").unwrap(), Some(e));
+}
+
+#[test]
+fn append_adds_no_blank_lines() {
+    let t = tempfile::tempdir().unwrap();
+    let d = private_dest(t.path());
+    let m = t.path().join("dest/MANIFEST.jsonl");
+    d.append(&entry("a", "-p/a.tar.gz")).unwrap();
+    let raw = fs::read_to_string(&m).unwrap();
+    assert!(!raw.starts_with('\n'), "leading newline in {raw:?}");
+    d.append(&entry("b", "-p/b.tar.gz")).unwrap();
+    let raw = fs::read_to_string(&m).unwrap();
+    assert_eq!(raw.lines().count(), 2);
+    assert!(!raw.contains("\n\n"), "blank line in {raw:?}");
+}
+
+#[test]
+fn append_to_an_empty_manifest_has_no_leading_newline() {
+    let t = tempfile::tempdir().unwrap();
+    let d = private_dest(t.path());
+    let m = t.path().join("dest/MANIFEST.jsonl");
+    fs::write(&m, "").unwrap();
+    fs::set_permissions(&m, fs::Permissions::from_mode(0o600)).unwrap();
+    d.append(&entry("a", "-p/a.tar.gz")).unwrap();
+    assert!(fs::read_to_string(&m).unwrap().starts_with('{'));
+}

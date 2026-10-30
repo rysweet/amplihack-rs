@@ -98,29 +98,15 @@ pub fn scan(root: &Path) -> io::Result<(Vec<Session>, Vec<Skipped>)> {
                 continue;
             }
         };
-        let mut found = Vec::new();
-        for entry in entries {
-            let entry = entry?;
-            let raw = entry.file_name();
-            let lossy = raw.to_string_lossy();
-            let Some(stem) = lossy.strip_suffix(".jsonl") else {
-                continue;
-            };
-            let ft = entry.file_type()?;
-            if ft.is_dir() {
+        // A listing that fails part-way skips the project rather than
+        // archiving the part that was listed.
+        let mut found = match list_sessions(entries) {
+            Ok(f) => f,
+            Err(e) => {
+                skipped.push((project, String::new(), Skip::Unreadable(e.kind())));
                 continue;
             }
-            let skip = if ft.is_symlink() {
-                Some(Skip::Symlink)
-            } else if !ft.is_file() {
-                Some(Skip::Special)
-            } else if raw.to_str().is_none() || !valid_name(stem) {
-                Some(Skip::BadName)
-            } else {
-                None
-            };
-            found.push((stem.to_string(), skip));
-        }
+        };
         found.sort_by(|a, b| a.0.cmp(&b.0));
         for (id, skip) in found {
             match skip.map_or_else(|| describe(&pdir, &project, &id), Err) {
@@ -130,6 +116,37 @@ pub fn scan(root: &Path) -> io::Result<(Vec<Session>, Vec<Skipped>)> {
         }
     }
     Ok((sessions, skipped))
+}
+
+/// The `<id>.jsonl` names in one project listing, each with the reason it
+/// is skipped, if any.
+pub(super) fn list_sessions(
+    entries: impl Iterator<Item = io::Result<fs::DirEntry>>,
+) -> io::Result<Vec<(String, Option<Skip>)>> {
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let raw = entry.file_name();
+        let lossy = raw.to_string_lossy();
+        let Some(stem) = lossy.strip_suffix(".jsonl") else {
+            continue;
+        };
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            continue;
+        }
+        let skip = if ft.is_symlink() {
+            Some(Skip::Symlink)
+        } else if !ft.is_file() {
+            Some(Skip::Special)
+        } else if raw.to_str().is_none() || !valid_name(stem) {
+            Some(Skip::BadName)
+        } else {
+            None
+        };
+        found.push((stem.to_string(), skip));
+    }
+    Ok(found)
 }
 
 /// Walks one session: `<pdir>/<id>.jsonl` and, if present, `<pdir>/<id>/`.
@@ -156,7 +173,7 @@ pub fn describe(pdir: &Path, project: &str, id: &str) -> Result<Session, Skip> {
         .iter()
         .map(|p| p.mtime)
         .max()
-        .unwrap_or(SystemTime::UNIX_EPOCH);
+        .ok_or(Skip::Unreadable(io::ErrorKind::InvalidData))?;
     Ok(Session {
         project: project.to_string(),
         id: id.to_string(),

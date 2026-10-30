@@ -164,12 +164,12 @@ fn pid_zero_or_negative_protects_nothing_and_does_not_crash() {
 }
 
 #[test]
-fn unparseable_or_oversized_pid_file_protects_nothing_silently() {
+fn unparseable_or_oversized_pid_file_protects_nothing() {
     let fx = Fx::new();
     let a = fx.session("garbled", 10, &[]);
     let b = fx.session("huge", 10, &[]);
     let work = fx.profile("work");
-    fx.pid_file(&work, "notes", &format!("not json {BODY_MARKER}"));
+    let notes = fx.pid_file(&work, "notes", &format!("not json {BODY_MARKER}"));
     let live = alive_pid();
     // Over 64 KiB: not read, even though its pid is alive.
     let big = format!(
@@ -180,11 +180,11 @@ fn unparseable_or_oversized_pid_file_protects_nothing_silently() {
     let out = fx.apply();
     ok(&out);
     assert_stdout(&out, &applied(2, 0));
-    assert!(
-        text(&out.stderr).is_empty(),
-        "stderr: {}",
-        text(&out.stderr)
-    );
+    // B.5: the unparseable file is named once; the oversized one is
+    // refused unread and passed over without a line.
+    let err = text(&out.stderr);
+    let want = format!("ignored unreadable pid file {}", notes.display());
+    assert_eq!(err.lines().collect::<Vec<_>>(), [want.as_str()], "{err}");
     assert!(!a.exists() && !b.exists());
 }
 

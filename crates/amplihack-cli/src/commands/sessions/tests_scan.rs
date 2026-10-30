@@ -9,7 +9,7 @@
 //! - `Session { project, id, jsonl, dir: Option<PathBuf>, bytes, parts,
 //!   newest_mtime, .. }`; `Skip::{Symlink, Special, BadName, Unreadable(_)}`.
 
-use super::scan::{Skip, scan, valid_name};
+use super::scan::{Skip, list_sessions, scan, valid_name};
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::path::Path;
@@ -147,4 +147,18 @@ fn bad_names_are_skipped() {
     let (s, k) = scan(t.path()).unwrap();
     assert!(s.is_empty());
     assert!(matches!(k[0].2, Skip::BadName), "{k:?}");
+}
+
+#[test]
+fn a_listing_error_part_way_fails_the_whole_listing() {
+    let t = tempfile::tempdir().unwrap();
+    fs::write(t.path().join("a.jsonl"), b"{}").unwrap();
+    let entries =
+        fs::read_dir(t.path())
+            .unwrap()
+            .chain(std::iter::once(Err(std::io::Error::from(
+                std::io::ErrorKind::PermissionDenied,
+            ))));
+    let err = list_sessions(entries).unwrap_err();
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
 }
