@@ -47,7 +47,6 @@ pub enum RestoreError {
     NotPrivate(PathBuf),
     LockHeld(PathBuf),
     NotFound(String, PathBuf),
-    ManifestTooLarge(PathBuf),
     BadLine(String),
     ArchiveMissing(PathBuf),
     Symlink(PathBuf),
@@ -74,11 +73,6 @@ impl fmt::Display for RestoreError {
                 esc(p)
             ),
             Self::NotFound(id, m) => write!(f, "session {} not found in {}", esc(id), esc(m)),
-            Self::ManifestTooLarge(m) => write!(
-                f,
-                "manifest {} is larger than 64 MiB; nothing restored",
-                esc(m)
-            ),
             Self::BadLine(id) => write!(f, "refused session {}: bad manifest line", esc(id)),
             Self::ArchiveMissing(p) => write!(f, "archive {} not found", esc(p)),
             Self::Symlink(p) => write!(f, "refused {}: symlink", esc(p)),
@@ -117,7 +111,6 @@ pub fn run(
     let entry = match dest.lookup(id) {
         Ok(Some(e)) => e,
         Ok(None) => return Err(RestoreError::NotFound(id.into(), dest.manifest())),
-        Err(LookupError::TooLarge) => return Err(RestoreError::ManifestTooLarge(dest.manifest())),
         Err(LookupError::Io(k)) => return Err(RestoreError::Setup(dest.manifest(), k)),
     };
     if !line_ok(&entry, id) {
@@ -352,17 +345,34 @@ impl Extract<'_> {
             }
             Err(e) => return Err(RestoreError::Write(path, e.kind())),
         };
+        // This run created the file, so a partial copy is removed: left in
+        // place, the next restore would count it as a conflict and keep it.
+        let copied = self.copy_into(&path, data, &mut out);
+        drop(out);
+        if let Err(e) = copied {
+            // If this fails too, the error below still stops the restore.
+            let _ = fs::remove_file(&path);
+            return Err(e);
+        }
+        self.restored += 1;
+        Ok(())
+    }
+
+    fn copy_into(
+        &mut self,
+        path: &Path,
+        data: &mut impl Read,
+        out: &mut fs::File,
+    ) -> Result<(), RestoreError> {
         let mut limited = data.take(self.budget.saturating_add(1));
-        let written = io::copy(&mut limited, &mut out)
-            .map_err(|e| RestoreError::Write(path.clone(), e.kind()))?;
+        let written = io::copy(&mut limited, out)
+            .map_err(|e| RestoreError::Write(path.to_path_buf(), e.kind()))?;
         if written > self.budget {
             return Err(RestoreError::TooMuchData(self.archive.to_path_buf()));
         }
         self.budget -= written;
         out.flush()
-            .map_err(|e| RestoreError::Write(path.clone(), e.kind()))?;
-        self.restored += 1;
-        Ok(())
+            .map_err(|e| RestoreError::Write(path.to_path_buf(), e.kind()))
     }
 }
 

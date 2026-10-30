@@ -19,6 +19,7 @@ files.
   - [recipe.detach, recipe.tmux_session_pattern and recipe.log_dir](#recipedetach)
   - [recipe.usage_limit_wait and recipe.usage_limit_max_wait_secs](#recipeusage_limit_wait)
   - [orchestrator.max_depth](#orchestratormax_depth)
+  - [sessions.daily_archive](#sessionsdaily_archive)
 - [The config command](#the-config-command)
   - [config get](#config-get)
   - [config set](#config-set)
@@ -59,6 +60,7 @@ recipe.log_dir = (unset)  # default
 recipe.usage_limit_wait = true  # default
 recipe.usage_limit_max_wait_secs = (unset)  # default
 orchestrator.max_depth = 3  # default
+sessions.daily_archive = true  # default
 ```
 
 `amplihack agent-binary` now answers `claude (user_config)`, even inside a tmux
@@ -147,6 +149,7 @@ command, so it never prints `flag`.
 | `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
 | `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | (unset) | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
+| `sessions.daily_archive` | bool | `true` | — | — | user only |
 
 Any other key is an error for `config set` and a diagnostic when found in a
 file. A user-only key in a project file is reported and ignored.
@@ -345,6 +348,30 @@ stays at 2 even with `orchestrator.max_depth = 10` configured. See
 
 A project file can only lower this value: the result is the smaller of the
 project value and the user value (or the default, 3).
+
+### sessions.daily_archive
+
+Whether the Claude login rotator runs its
+[daily session archive](./profile-command.md#rotate-daily-session-archive),
+which moves session logs older than three days out of `~/.claude/projects`.
+On by default.
+
+```sh
+amplihack config set sessions.daily_archive false
+```
+
+The rotator reads the key from the user file each time a run is due, so a
+change reaches a rotator that is already running. It has no environment
+variable: the background rotator does not inherit the launching shell's
+`AMPLIHACK_ROTATE*` variables, so a variable would not reach it. It is
+user-only, because it decides whether files are removed from your home
+directory; a project file's `sessions.daily_archive` is reported and ignored.
+
+Because the run removes files, the rotator treats a user file it cannot use
+as off for that day, not as the default: a file that cannot be read or
+parsed, a value that is not `true` or `false`, or a file that group or
+others can write. The rotator log then says
+`sessions archive: cannot read sessions.daily_archive (<why>); not run`.
 
 ## The config command
 

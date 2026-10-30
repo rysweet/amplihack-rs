@@ -22,8 +22,9 @@ const MAX_PID_FILE: u64 = 64 * 1024;
 pub trait Probe {
     /// Whether `pid` (always in `1..=i32::MAX`) is a running process.
     fn alive(&self, pid: i32) -> bool;
-    /// `CLAUDE_CONFIG_DIR` of this user's running processes.
-    fn config_dirs(&self) -> Vec<PathBuf>;
+    /// `CLAUDE_CONFIG_DIR` of this user's running processes; an error when
+    /// a Claude-like process cannot be read, so the build fails closed.
+    fn config_dirs(&self) -> io::Result<Vec<PathBuf>>;
 }
 
 /// `kill(pid, 0)` and, on Linux, `/proc`.
@@ -43,7 +44,7 @@ impl Probe for SystemProbe {
         io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
     }
 
-    fn config_dirs(&self) -> Vec<PathBuf> {
+    fn config_dirs(&self) -> io::Result<Vec<PathBuf>> {
         #[cfg(target_os = "linux")]
         {
             // SAFETY: getuid has no preconditions.
@@ -55,7 +56,7 @@ impl Probe for SystemProbe {
             )
         }
         #[cfg(not(target_os = "linux"))]
-        Vec::new()
+        Ok(Vec::new())
     }
 }
 
@@ -84,15 +85,32 @@ impl LiveSet {
 /// The directory that could not be read and why.
 pub type LiveError = (PathBuf, io::ErrorKind);
 
-/// Reads every source. Any error but a missing directory fails closed.
-pub fn build(home: &Path, profile_root: &Path, probe: &dyn Probe) -> Result<LiveSet, LiveError> {
+/// The `sessions/` directory of every `CLAUDE_CONFIG_DIR` that this user's
+/// running processes set. This is the costly source (a walk of `/proc`), so
+/// the archive repeats it less often than the others.
+pub fn process_dirs(probe: &dyn Probe) -> Result<Vec<PathBuf>, LiveError> {
+    let dirs = probe
+        .config_dirs()
+        .map_err(|e| (PathBuf::from("/proc"), e.kind()))?;
+    Ok(dirs.into_iter().map(|d| d.join("sessions")).collect())
+}
+
+/// The live set from every source: the home and profile `sessions/`
+/// directories, read now, and `process_dirs` from [`process_dirs`]. Any
+/// error but a missing directory fails closed.
+pub fn build_from(
+    home: &Path,
+    profile_root: &Path,
+    process_dirs: &[PathBuf],
+    probe: &dyn Probe,
+) -> Result<LiveSet, LiveError> {
     let mut dirs = vec![home.join(".claude/sessions")];
     dirs.extend(
         profiles(profile_root)?
             .into_iter()
             .map(|n| profile_root.join(n).join("sessions")),
     );
-    dirs.extend(probe.config_dirs().into_iter().map(|d| d.join("sessions")));
+    dirs.extend(process_dirs.iter().cloned());
     let mut seen = BTreeSet::new();
     let mut set = LiveSet::default();
     for dir in dirs {

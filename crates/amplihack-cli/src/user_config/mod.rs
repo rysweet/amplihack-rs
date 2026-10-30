@@ -343,6 +343,48 @@ pub(crate) fn max_depth(cwd: &Path) -> Option<u32> {
         .and_then(|depth| u32::try_from(depth).ok())
 }
 
+/// The key that turns the rotator's daily session archive on or off.
+pub(crate) const SESSIONS_DAILY_ARCHIVE: &str = "sessions.daily_archive";
+
+/// `sessions.daily_archive` from `<home>/.amplihack/config.toml` (default
+/// `true`), for the rotator's daily `sessions archive --apply` run (issue
+/// #1746). The rotator calls this on every pass, so a running rotator
+/// follows `config set` without a restart.
+///
+/// Fails closed, because the run removes files: `Err` with the reason when
+/// the user file cannot be read or parsed, when it holds an invalid value
+/// for the key or is writable by others, or when the test guard forbids
+/// `home`. The caller then does not run the archive.
+pub(crate) fn sessions_daily_archive(home: &Path) -> Result<bool, String> {
+    if guard_forbids(home) {
+        return Err(format!(
+            "{TEST_HOME_GUARD_ENV} is set and HOME ({}) is outside the temp dir",
+            display_path(home)
+        ));
+    }
+    let effective = load(&LoadCtx {
+        home: Some(home.to_path_buf()),
+        cwd: PathBuf::from("/"),
+        read_project: false,
+        env: &|_| None,
+        migrate: false,
+    });
+    let user = display_path(&files::user_file(home));
+    let problem = effective.diagnostics.iter().find(|d| {
+        d.path == user
+            && d.key
+                .as_deref()
+                .is_none_or(|key| key == SESSIONS_DAILY_ARCHIVE)
+    });
+    if let Some(d) = problem {
+        return Err(d.to_string());
+    }
+    Ok(effective
+        .file_value(SESSIONS_DAILY_ARCHIVE)
+        .and_then(Value::as_bool)
+        .unwrap_or(true))
+}
+
 /// Save `value` for a user-only or user-scoped key in the user file.
 pub(crate) fn set_user_value(name: &str, value: &Value) -> Result<PathBuf, ConfigError> {
     let def = schema::known_key(name)?;

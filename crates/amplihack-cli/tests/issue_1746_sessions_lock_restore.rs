@@ -297,23 +297,38 @@ fn restore_rejects_bad_ids_without_reading_anything() {
 }
 
 #[test]
-fn restore_manifest_over_64_mib_is_not_read() {
+fn restore_reads_a_manifest_past_64_mib() {
+    // Review of #1766: a 64 MiB cap on the manifest ended every restore once
+    // the daily run had grown it that far. Here the session's line comes
+    // after 65 MiB of filler (sparse, one over-long line), and restore still
+    // finds it.
     let fx = Fx::new();
-    archived(&fx);
+    let bodies = archived(&fx);
+    let line = fs::read(fx.manifest()).unwrap();
     let f = fs::OpenOptions::new()
+        .write(true)
+        .open(fx.manifest())
+        .unwrap();
+    f.set_len(0).unwrap();
+    f.set_len(65 * 1024 * 1024).unwrap();
+    drop(f);
+    let mut f = fs::OpenOptions::new()
         .append(true)
         .open(fx.manifest())
         .unwrap();
-    f.set_len(65 * 1024 * 1024).unwrap();
+    f.write_all(b"\n").unwrap();
+    f.write_all(&line).unwrap();
+    drop(f);
+    assert!(fs::metadata(fx.manifest()).unwrap().len() > 65 * 1024 * 1024);
     let out = fx.restore(ID);
-    assert_eq!(exit_code(&out), 1);
-    assert_stderr_line(
-        &out,
-        &format!(
-            "manifest {} is larger than 64 MiB; nothing restored",
-            fx.manifest().display()
-        ),
-    );
+    ok(&out);
+    for (rel, body) in &bodies {
+        assert_eq!(
+            &fs::read(fx.project_dir().join(rel)).unwrap(),
+            body,
+            "{rel}"
+        );
+    }
 }
 
 #[test]

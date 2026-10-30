@@ -43,7 +43,6 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
   - [AMPLIHACK_SESSIONS_ARCHIVE_DAYS](#amplihack_sessions_archive_days)
   - [AMPLIHACK_SESSIONS_ARCHIVE_DEST](#amplihack_sessions_archive_dest)
-  - [AMPLIHACK_ROTATE_SESSIONS_ARCHIVE](#amplihack_rotate_sessions_archive)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
   - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
@@ -1013,6 +1012,12 @@ including `0`, stops the command with
 the daily run logs the same line and does not archive. See the
 [`sessions` reference](./sessions-command.md#configuration).
 
+No variable turns the daily run itself off: the background rotator is
+started without the launching shell's `AMPLIHACK_ROTATE*` variables, so the
+switch is the config key `sessions.daily_archive`
+(`amplihack config set sessions.daily_archive false`); see
+[turning the daily run off](./profile-command.md#turning-the-daily-run-off).
+
 ```bash
 # Keep a week of sessions in ~/.claude/projects
 export AMPLIHACK_SESSIONS_ARCHIVE_DAYS=7
@@ -1031,31 +1036,6 @@ Directory that holds the session archives, the manifest and the lock.
 current directory. It must not be, contain, or lie inside
 `~/.claude/projects`, and must be a directory you own that group and others
 cannot write. See [Destination layout](./sessions-command.md#destination-layout).
-
----
-
-### AMPLIHACK_ROTATE_SESSIONS_ARCHIVE
-
-**Type:** string (switch)
-**Values:** `1` or `on` | `0` or `off`
-**Default:** on
-**Read by:** `amplihack profile rotate watch`
-
-Turns the rotator's [daily session archive](./profile-command.md#rotate-daily-session-archive)
-on or off. Empty means unset. Any other value counts as on, and the rotator
-logs one line saying it was ignored. It does not start with
-`AMPLIHACK_ROTATE`, so the background rotator inherits it from the command
-that starts it. A rotator started by autostart takes it from whichever
-launch started it, so export it in your shell profile to make it apply every
-time. A running rotator does not see later changes.
-
-```bash
-# Turn the daily archive off for every rotator started from now on
-echo 'export AMPLIHACK_ROTATE_SESSIONS_ARCHIVE=0' >> ~/.bashrc
-export AMPLIHACK_ROTATE_SESSIONS_ARCHIVE=0
-amplihack profile rotate stop
-amplihack profile rotate start
-```
 
 ---
 

@@ -267,6 +267,19 @@ pub(crate) static KEYS: &[KeyDef] = &[
         default: Some(DEFAULT_MAX_DEPTH),
         lower_only: true,
     },
+    KeyDef {
+        name: "sessions.daily_archive",
+        // Turns on a job that removes files from ~/.claude/projects; a
+        // cloned repository must not decide that, and the rotator that
+        // reads it has no project. No variable: the background rotator is
+        // started without the launching shell's AMPLIHACK_ROTATE_*
+        // variables, so only the file reaches it (issue #1746).
+        scope: Scope::UserOnly,
+        kind: ValueKind::Bool,
+        env: None,
+        default: Some("true"),
+        lower_only: false,
+    },
 ];
 
 /// The schema entry for `name`.

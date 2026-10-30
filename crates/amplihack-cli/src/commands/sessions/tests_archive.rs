@@ -64,6 +64,7 @@ fn report(archived: u64, bytes: u64, live_kept: u64, failed: u64) -> Report {
         bytes,
         live_kept,
         failed,
+        stopped: false,
     }
 }
 

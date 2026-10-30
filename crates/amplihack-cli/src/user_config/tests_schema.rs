@@ -25,6 +25,7 @@ fn keys_are_in_documented_order() {
             "recipe.usage_limit_wait",
             "recipe.usage_limit_max_wait_secs",
             "orchestrator.max_depth",
+            "sessions.daily_archive",
         ]
     );
 }
@@ -45,7 +46,7 @@ fn no_project_scoped_key_names_a_path() {
 }
 
 #[test]
-fn user_only_keys_are_agent_home_node_and_log_dir() {
+fn user_only_keys_are_agent_home_node_log_dir_and_daily_archive() {
     let user_only: Vec<&str> = KEYS
         .iter()
         .filter(|k| k.scope == Scope::UserOnly)
@@ -58,7 +59,8 @@ fn user_only_keys_are_agent_home_node_and_log_dir() {
             "paths.home",
             "node.heap_consent",
             "node.max_old_space_mb",
-            "recipe.log_dir"
+            "recipe.log_dir",
+            "sessions.daily_archive"
         ]
     );
 }

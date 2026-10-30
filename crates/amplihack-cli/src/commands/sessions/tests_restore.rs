@@ -95,7 +95,50 @@ fn writing_past_the_manifest_bytes_stops_extraction() {
         err.to_string(),
         "refused /d/-p/abc.tar.gz: more data than the manifest records"
     );
-    assert_eq!(x.restored, 1);
+    assert_eq!(x.restored, 1); // The partial file is removed, so a second restore does not see it as
+    // a conflict; the complete one stays.
+    assert!(!t.path().join("abc.more").exists());
+    assert!(t.path().join("abc.jsonl").exists());
+}
+
+/// A reader that fails after its first bytes, like a damaged archive or a
+/// full disk part-way through a file.
+struct FailsMidway(bool);
+
+impl std::io::Read for FailsMidway {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if std::mem::replace(&mut self.0, true) {
+            return Err(std::io::ErrorKind::StorageFull.into());
+        }
+        buf[..2].copy_from_slice(b"ab");
+        Ok(2)
+    }
+}
+
+#[test]
+fn a_failed_write_removes_the_partial_file() {
+    let t = tempfile::tempdir().unwrap();
+    let mut warn = |_: &str| {};
+    let archive = PathBuf::from("/d/-p/abc.tar.gz");
+    let mut x = Extract {
+        archive: &archive,
+        id: ID,
+        target: t.path(),
+        budget: 100,
+        restored: 0,
+        conflicts: 0,
+        cut: Vec::new(),
+        warn: &mut warn,
+    };
+    let err = x
+        .write_file(Path::new("abc.jsonl"), &mut FailsMidway(false))
+        .unwrap_err();
+    assert!(
+        matches!(err, RestoreError::Write(_, std::io::ErrorKind::StorageFull)),
+        "{err:?}"
+    );
+    assert!(!t.path().join("abc.jsonl").exists());
+    assert_eq!((x.restored, x.conflicts), (0, 0));
 }
 
 #[test]

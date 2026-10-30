@@ -142,6 +142,8 @@ mod issue_1690_isolated_autostart;
 mod issue_1691_switch_live;
 #[path = "issue_1707_claim_check_shell_suites.rs"]
 mod issue_1707_claim_check_shell_suites;
+#[path = "issue_1746_daily_archive_rotator.rs"]
+mod issue_1746_daily_archive_rotator;
 #[path = "issue_1746_sessions_archive.rs"]
 mod issue_1746_sessions_archive;
 #[path = "issue_1746_sessions_live.rs"]

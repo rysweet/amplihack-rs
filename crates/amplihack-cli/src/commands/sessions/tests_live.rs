@@ -4,9 +4,10 @@
 //!
 //! Contract:
 //! - `trait Probe { fn alive(&self, pid: i32) -> bool; fn config_dirs(&self)
-//!   -> Vec<PathBuf>; }`; production calls `kill(pid, 0)` and reads `/proc`.
-//! - `build(home: &Path, profile_root: &Path, probe: &dyn Probe)
-//!   -> Result<LiveSet, (PathBuf, io::ErrorKind)>`: reads
+//!   -> io::Result<Vec<PathBuf>>; }`; production calls `kill(pid, 0)` and
+//!   reads `/proc`. A `config_dirs` error fails the build closed.
+//! - `build_from(home, profile_root, &process_dirs(probe)?, probe)
+//!   -> Result<LiveSet, (PathBuf, io::ErrorKind)>` (as `build` here): reads
 //!   `<home>/.claude/sessions`, `<profile>/sessions` for every profile
 //!   listed by `ProfileStore::list`, and `<dir>/sessions` for each of
 //!   `probe.config_dirs()`, each canonical directory once. NotFound is
@@ -17,20 +18,29 @@
 //!   (ASCII digits only), each only in `1..=i32::MAX`. Live if either is
 //!   alive. `sessionId` must pass `scan::valid_name`.
 //! - `crate::commands::profile::claude_config_dirs(proc_root, self_pid,
-//!   uid) -> Vec<PathBuf>`: `CLAUDE_CONFIG_DIR` of same-uid processes.
+//!   uid) -> io::Result<Vec<PathBuf>>`: `CLAUDE_CONFIG_DIR` of same-uid
+//!   processes; an unreadable `proc_root`, or an unreadable environment of
+//!   a process whose cmdline names claude or amplihack, is an error.
 
-use super::live::{Probe, build};
+use super::live::{LiveError, LiveSet, Probe, build_from, process_dirs};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::fs;
+use std::io;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
+
+/// Both steps of a full build, as the archive does it at the start of a run.
+fn build(home: &Path, profile_root: &Path, probe: &dyn Probe) -> Result<LiveSet, LiveError> {
+    build_from(home, profile_root, &process_dirs(probe)?, probe)
+}
 
 /// Alive pids are listed; every pid asked about is recorded.
 #[derive(Default)]
 struct FakeProbe {
     alive: BTreeSet<i32>,
     dirs: Vec<PathBuf>,
+    dirs_error: Option<io::ErrorKind>,
     asked: RefCell<Vec<i32>>,
 }
 
@@ -39,8 +49,11 @@ impl Probe for FakeProbe {
         self.asked.borrow_mut().push(pid);
         self.alive.contains(&pid)
     }
-    fn config_dirs(&self) -> Vec<PathBuf> {
-        self.dirs.clone()
+    fn config_dirs(&self) -> io::Result<Vec<PathBuf>> {
+        match self.dirs_error {
+            Some(kind) => Err(kind.into()),
+            None => Ok(self.dirs.clone()),
+        }
     }
 }
 
@@ -318,7 +331,7 @@ fn claude_config_dirs_reads_same_uid_processes_only() {
     fake_proc(p, 13, 1000, b"CLAUDE_CONFIG_DIR=/cfg/self\0");
     // Unreadable status: skipped silently.
     fs::create_dir_all(p.join("14")).unwrap();
-    let mut got = claude_config_dirs(p, 13, 1000);
+    let mut got = claude_config_dirs(p, 13, 1000).unwrap();
     got.sort();
     assert_eq!(got, [PathBuf::from("/cfg/a")]);
 }
@@ -362,4 +375,43 @@ fn dead_or_symlinked_pid_files_are_not_recorded() {
     symlink(t.home.join("real.json"), c.join("sessions/903.json")).unwrap();
     let set = build(&t.home, &t.root, &probe(&[])).unwrap();
     assert!(set.ignored.is_empty(), "{:?}", set.ignored);
+}
+
+#[test]
+fn unreadable_config_dirs_fail_the_build_closed() {
+    let t = setup();
+    let p = FakeProbe {
+        dirs_error: Some(io::ErrorKind::PermissionDenied),
+        ..Default::default()
+    };
+    let err = build(&t.home, &t.root, &p).unwrap_err();
+    assert_eq!(
+        err,
+        (PathBuf::from("/proc"), io::ErrorKind::PermissionDenied)
+    );
+}
+
+#[test]
+fn claude_config_dirs_fails_closed() {
+    use crate::commands::profile::claude_config_dirs;
+    let t = tempfile::tempdir().unwrap();
+    let p = t.path();
+    assert!(claude_config_dirs(&p.join("missing"), 1, 1000).is_err());
+    // A non-Claude process whose environment cannot be read is skipped.
+    let d = p.join("20");
+    fs::create_dir_all(&d).unwrap();
+    fs::write(
+        d.join("status"),
+        "State:\tS\nUid:\t1000\t1000\t1000\t1000\n",
+    )
+    .unwrap();
+    fs::write(d.join("cmdline"), b"ssh-agent\0").unwrap();
+    fs::create_dir(d.join("environ")).unwrap(); // reading a directory fails
+    assert_eq!(
+        claude_config_dirs(p, 1, 1000).unwrap(),
+        Vec::<PathBuf>::new()
+    );
+    // A Claude process whose environment cannot be read is an error.
+    fs::write(d.join("cmdline"), b"/usr/bin/claude\0--resume\0").unwrap();
+    assert!(claude_config_dirs(p, 1, 1000).is_err());
 }

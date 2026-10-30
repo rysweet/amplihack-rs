@@ -263,7 +263,7 @@ pub fn watch(
             log_line(&rs, msg::IDLE);
             record_idle(&rs, store);
         }
-        super::sessions_daily::tick(&rs, &archive_home, now());
+        super::sessions_daily::tick(&rs, &archive_home, now(), &stop);
         let until = Instant::now() + Duration::from_secs(s.interval);
         while Instant::now() < until && !stop.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_secs(1).min(until - Instant::now()));

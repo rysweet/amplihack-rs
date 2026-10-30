@@ -107,7 +107,7 @@ reads every such directory it can find:
 |--------|-------------------|
 | Home | `~/.claude/sessions` |
 | Profiles | `<profile>/sessions` for every profile in the [profile root](./profile-command.md#profile-root). Profiles share `projects/` with `~/.claude`, but each has its own `sessions/`. |
-| Running processes (Linux) | `<CLAUDE_CONFIG_DIR>/sessions` for each process of the same user whose `/proc/<pid>/environ` sets `CLAUDE_CONFIG_DIR`. Processes that cannot be read are skipped. |
+| Running processes (Linux) | `<CLAUDE_CONFIG_DIR>/sessions` for each process of the same user whose `/proc/<pid>/environ` sets `CLAUDE_CONFIG_DIR`. A process that exited is skipped, and so is one whose environment cannot be read and whose command line does not name `claude` or `amplihack` (such as a non-dumpable `ssh-agent`). If `/proc` cannot be listed, or a Claude or amplihack process's environment or working directory cannot be read, the check fails closed with `cannot read live sessions in /proc (<kind>); nothing archived`. |
 
 The same directory reached twice is read once.
 
@@ -138,8 +138,11 @@ cannot read live sessions in /home/ryan/.claude-profiles/work/sessions (permissi
 ```
 
 The live set is built once at the start. With `--apply`, just before a
-session's originals are removed, the set is rebuilt if it is more than 30
-seconds old and that session is checked again.
+session's originals are removed, every `sessions/` directory listed above is
+read again and that session is checked again, so a session resumed during
+the run counts as live even before it has written anything. Only the walk of
+`/proc` for `CLAUDE_CONFIG_DIR` values is reused, for up to 30 seconds; the
+directories it found are read again each time.
 
 A process that has reused a dead session's pid keeps that session. This
 errs towards keeping logs.
@@ -235,10 +238,11 @@ amplihack sessions restore 4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10
    and exits 1.
 2. Finds the session in `<DEST>/MANIFEST.jsonl`. When the id appears on more
    than one line, the last line wins. An unknown id, or a missing manifest,
-   prints `session <id> not found in <DEST>/MANIFEST.jsonl` and exits 1. A
-   manifest larger than 64 MiB is not read at all: restore prints
-   `manifest <DEST>/MANIFEST.jsonl is larger than 64 MiB; nothing restored`
-   and exits 1.
+   prints `session <id> not found in <DEST>/MANIFEST.jsonl` and exits 1.
+   The manifest is read one line at a time, so its size has no limit: it
+   only grows, one line per archived session. A line longer than 64 KiB is
+   skipped without being held in memory, like a line that cannot be parsed;
+   a real line is under 2 KiB.
 3. Checks the line's fields. `project` must be one valid name. `archive`
    must be relative, contain no `..`, start with the project, and end in
    `.tar.gz`. Anything else prints `refused session <id>: bad manifest line`
@@ -258,8 +262,11 @@ amplihack sessions restore 4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10
    creating that directory if needed. Missing directories are created with
    mode `0700`, and an existing one is used only if it is a real directory.
    Files are created with mode `0600` and never replace an existing file.
-   If the data exceeds the manifest's `bytes`, writing stops, files already
-   written are kept, and restore prints
+   If writing a file fails part-way (for example the disk is full), that
+   file is removed, since restore created it, so the next restore does not
+   count it as a conflict; the error is printed and restore exits 1.
+   If the data exceeds the manifest's `bytes`, writing stops, the file being
+   written is removed, files already complete are kept, and restore prints
    `refused <DEST>/<archive>: more data than the manifest records` and
    exits 1.
 
@@ -345,8 +352,9 @@ The file is opened with `O_APPEND` and without following symlinks, and each
 line is written in one write and flushed. If the file does not end in a
 newline, for example after a write that failed part-way, a newline is
 written before the new line so the two do not merge. Readers skip lines
-they cannot parse and ignore unknown fields. `restore` refuses a manifest
-larger than 64 MiB without reading it; see [Restore](#restore).
+they cannot parse and ignore unknown fields. `restore` reads the file one
+line at a time and skips lines over 64 KiB, so the manifest has no size
+limit; see [Restore](#restore).
 
 ## Lock
 
@@ -373,7 +381,7 @@ removed.
 |---------|------|----------------------|---------|
 | Days | `--days` | [`AMPLIHACK_SESSIONS_ARCHIVE_DAYS`](./environment-variables.md#amplihack_sessions_archive_days) | `3` |
 | Destination | `--dest` | [`AMPLIHACK_SESSIONS_ARCHIVE_DEST`](./environment-variables.md#amplihack_sessions_archive_dest) | `~/.amplihack/session-archive` |
-| Daily run | none | [`AMPLIHACK_ROTATE_SESSIONS_ARCHIVE`](./environment-variables.md#amplihack_rotate_sessions_archive) | on |
+| Daily run | none | none; the config key [`sessions.daily_archive`](./user-config.md#sessionsdaily_archive) | on |
 
 A flag overrides its variable, and the variable overrides the default. An
 empty variable counts as unset. An invalid `AMPLIHACK_SESSIONS_ARCHIVE_DAYS`
@@ -426,7 +434,7 @@ Every message below goes to stderr. The tests check these strings exactly.
 | `failed <project>/<id>: no free archive name` | All eleven [archive names](#archive-names) exist. Originals kept. |
 | `failed <project>/<id>: archive directory not private` | `<DEST>/<project>` is not a real directory owned by you. Originals kept. |
 | `failed <project>/<id>: manifest write failed (<kind>)` | The manifest line could not be written. Originals kept. |
-| `failed <project>/<id>: cannot read live sessions (<kind>)` | The live set could not be rebuilt before removal. Originals kept. |
+| `failed <project>/<id>: cannot read live sessions (<kind>)` | The live set could not be read again before removal. Originals kept. |
 | `failed <project>/<id>: remove failed (<kind>): <path>; session archived as <archive>` | Archived and recorded as `<DEST>/<archive>`, but `<path>` could not be removed. See [Archive steps](#archive-steps). |
 | `failed <project>/<id>: <reason>; archive left at <path>` | After a failure that keeps the originals, the final archive `<path>` could not be removed either. It has no manifest line and can be deleted by hand. |
 | `ignored unreadable pid file <path>` | A pid file could not be parsed or names no valid session; it protects nothing. See [Live sessions](#live-sessions). The run goes on. |
@@ -441,15 +449,14 @@ Every message below goes to stderr. The tests check these strings exactly.
 | `HOME is not set` | The home directory is unknown. Nothing read. |
 | `AMPLIHACK_SESSIONS_ARCHIVE_DAYS must be a whole number of at least 1` | The variable is set to an invalid value. Nothing read. |
 | `session <id> not found in <DEST>/MANIFEST.jsonl` | `restore`: no manifest line for `<id>`, or no manifest. |
-| `manifest <DEST>/MANIFEST.jsonl is larger than 64 MiB; nothing restored` | `restore`: the manifest is too large to read. |
 | `refused session <id>: bad session id` | `restore`: the id breaks the [id rules](#what-a-session-is). Nothing read. |
 | `refused session <id>: bad manifest line` | `restore`: the line's `project` or `archive` field breaks the [rules](#restore). Nothing written. |
 | `archive <DEST>/<archive> not found` | `restore`: the manifest names an archive that does not exist. |
 | `refused <DEST>/<archive>: bad member <member>` | `restore`: a member is not a regular file or directory, or its path is unsafe. Nothing written. |
 | `refused <DEST>/<archive>: member count or size mismatch` | `restore`: the archive does not match the manifest's `parts` or `bytes`. Nothing written. |
 | `refused <DEST>/<archive>: not a readable archive` | `restore`: the file is not a gzip tar, or is truncated or corrupt. Nothing written. |
-| `cannot write <path> (<kind>)` | `restore`: a directory or file could not be created or written. Files already written are kept. |
-| `refused <DEST>/<archive>: more data than the manifest records` | `restore`: extraction stopped. Files already written are kept. |
+| `cannot write <path> (<kind>)` | `restore`: a directory or file could not be created or written. A file restore created but could not finish is removed; files already complete are kept. |
+| `refused <DEST>/<archive>: more data than the manifest records` | `restore`: extraction stopped. The file being written is removed; files already complete are kept. |
 | `refused <path>: symlink` | `restore`: the target project directory is a symlink. Nothing written. |
 | `conflict: <path> already exists; kept` | `restore` did not overwrite `<path>`. |
 
@@ -457,8 +464,8 @@ The summary lines `archived …`, `would archive …` and `restored N files to
 <target>`, with its optional conflict ending, go to stdout; see
 [Output](#output) and [Restore](#restore). In the rotator log, the daily run
 also writes
-`sessions archive: ignored AMPLIHACK_ROTATE_SESSIONS_ARCHIVE value (use on, off, 1 or 0); running`
-when that variable holds an unknown value; see the
+`sessions archive: cannot read sessions.daily_archive (<why>); not run`
+when the user config file cannot be used to decide whether it is on; see the
 [daily session archive](./profile-command.md#rotate-daily-session-archive).
 
 On a filesystem without hard links, every session fails with

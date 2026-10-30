@@ -4,14 +4,23 @@
 //! Contract:
 //! - `tick_with(rs: &RotateState, home: &Path, now: i64,
 //!   env: &dyn Fn(&str) -> Option<OsString>, log: &mut dyn FnMut(&str),
-//!   run: &mut dyn FnMut(&Opts) -> Result<String, String>)`: `run` stands
-//!   in for `archive::run_default` and returns the summary line or the
+//!   run: &mut dyn FnMut(&Opts) -> Result<Ran, String>)`: `run` stands in
+//!   for `archive::run` plus `ran` and returns the log line, with `more`
+//!   set when the run stopped early after archiving something, or the
 //!   error line. Never panics, never returns an error.
-//! - Switch: `AMPLIHACK_ROTATE_SESSIONS_ARCHIVE` through
-//!   `autostart::parse_env`; off (`0`/`off`) means nothing runs and nothing
-//!   is written. An invalid value runs, and logs
-//!   `sessions archive: ignored AMPLIHACK_ROTATE_SESSIONS_ARCHIVE value (use
-//!   on, off, 1 or 0); running` (at most once per process).
+//! - `ran(&Report, &Opts, requested) -> Ran`: the summary line; for a run
+//!   that stopped early, the reason (`rotate stop or a signal` when
+//!   `requested`, else the 60-second `RUN_LIMIT`) and whether the rest
+//!   continues at the next pass (`more`, only if something was archived).
+//! - `more` removes the record, so the next pass is due.
+//! - Switch: the user config key `sessions.daily_archive` in
+//!   `<home>/.amplihack/config.toml`, read through
+//!   `user_config::sessions_daily_archive` only when a run is due. `false`
+//!   means nothing runs and nothing is written; `true` or no file runs. A
+//!   file or value that cannot be used (bad TOML, not a bool, writable by
+//!   others) fails closed: the record is written, nothing runs, and the log
+//!   gets `sessions archive: cannot read sessions.daily_archive (<why>); not
+//!   run`, so the next try is a day later.
 //! - Record: `<rs.dir>/sessions-archive.last`, decimal epoch seconds. Due
 //!   when missing or garbage, when `now − last ≥ 86400`, or when
 //!   `last > now`. Written (0600) before `run`; if that write fails, `run`
@@ -21,7 +30,8 @@
 //!   (no flags), `apply` on.
 
 use super::ledger::RotateState;
-use super::sessions_daily::tick_with;
+use super::sessions_daily::{RUN_LIMIT, Ran, ran, tick_with};
+use crate::commands::sessions::archive::Report;
 use crate::commands::sessions::config::Opts;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -80,10 +90,32 @@ fn tick(
     let mut log = |l: &str| logs.push(l.to_string());
     let mut run = |o: &Opts| {
         runs.push(o.clone());
-        result.map(str::to_string).map_err(str::to_string)
+        result.map(done).map_err(str::to_string)
     };
     tick_with(&t.rs, &t.home, now, e, &mut log, &mut run);
     (logs, runs)
+}
+
+/// A run that reached every session.
+fn done(line: &str) -> Ran {
+    Ran {
+        line: line.to_string(),
+        more: false,
+    }
+}
+
+/// Runs one tick whose run returns `ran`; returns the log lines and
+/// whether `run` was called.
+fn tick_ran(t: &T, now: i64, ran: Ran) -> (Vec<String>, bool) {
+    let mut logs = Vec::new();
+    let mut called = false;
+    let mut log = |l: &str| logs.push(l.to_string());
+    let mut run = |_: &Opts| {
+        called = true;
+        Ok(ran.clone())
+    };
+    tick_with(&t.rs, &t.home, now, &env(&[]), &mut log, &mut run);
+    (logs, called)
 }
 
 const SUMMARY: &str =
@@ -151,55 +183,109 @@ fn garbage_or_extreme_records_are_due_and_never_panic() {
     }
 }
 
-#[test]
-fn switch_off_does_nothing() {
-    for off in ["0", "off", "OFF"] {
-        let t = setup();
-        let (logs, runs) = tick(
-            &t,
-            NOW,
-            &env(&[("AMPLIHACK_ROTATE_SESSIONS_ARCHIVE", off)]),
-            Ok(SUMMARY),
-        );
-        assert!(runs.is_empty() && logs.is_empty(), "{off}");
-        assert!(!record(&t).exists());
-    }
+/// Writes `<home>/.amplihack/config.toml` the way `config set` leaves it:
+/// the directory `0700`, the file `mode`.
+fn config(t: &T, body: &str, mode: u32) -> PathBuf {
+    let dir = t.home.join(".amplihack");
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let file = dir.join("config.toml");
+    fs::write(&file, body).unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(mode)).unwrap();
+    file
 }
 
 #[test]
-fn switch_on_or_empty_runs() {
-    for on in ["1", "on", ""] {
-        let t = setup();
-        let (_, runs) = tick(
-            &t,
-            NOW,
-            &env(&[("AMPLIHACK_ROTATE_SESSIONS_ARCHIVE", on)]),
-            Ok(SUMMARY),
-        );
-        assert_eq!(runs.len(), 1, "{on:?}");
-    }
-}
-
-#[test]
-fn invalid_switch_runs_and_says_so_without_the_value() {
+fn config_false_does_nothing() {
     let t = setup();
-    let (logs, runs) = tick(
+    config(&t, "[sessions]\ndaily_archive = false\n", 0o600);
+    let (logs, runs) = tick(&t, NOW, &env(&[]), Ok(SUMMARY));
+    assert!(runs.is_empty() && logs.is_empty(), "{logs:?}");
+    assert!(!record(&t).exists());
+}
+
+#[test]
+fn config_true_or_no_key_runs() {
+    for body in [
+        "[sessions]\ndaily_archive = true\n",
+        "[recipe]\nverbose = true\n",
+        "",
+    ] {
+        let t = setup();
+        config(&t, body, 0o600);
+        let (logs, runs) = tick(&t, NOW, &env(&[]), Ok(SUMMARY));
+        assert_eq!(runs.len(), 1, "{body:?}: {logs:?}");
+    }
+}
+
+#[test]
+fn turning_it_off_reaches_a_running_rotator() {
+    // The same process, the same state directory: only the file changes.
+    let t = setup();
+    let (_, runs) = tick(&t, NOW, &env(&[]), Ok(SUMMARY));
+    assert_eq!(runs.len(), 1);
+    config(&t, "[sessions]\ndaily_archive = false\n", 0o600);
+    let (logs, runs) = tick(&t, NOW + DAY, &env(&[]), Ok(SUMMARY));
+    assert!(runs.is_empty() && logs.is_empty(), "{logs:?}");
+    config(&t, "[sessions]\ndaily_archive = true\n", 0o600);
+    let (_, runs) = tick(&t, NOW + DAY + 60, &env(&[]), Ok(SUMMARY));
+    assert_eq!(runs.len(), 1, "back on at the next pass");
+}
+
+#[test]
+fn an_unusable_config_fails_closed_and_waits_a_day() {
+    let cases: [(&str, u32, &str); 3] = [
+        (
+            "[sessions]\ndaily_archive = \"no\"\n",
+            0o600,
+            "sessions.daily_archive: must be true or false",
+        ),
+        // Even `false` is not trusted from a file others can write, and
+        // neither is `true`: the run does not happen either way.
+        (
+            "[sessions]\ndaily_archive = true\n",
+            0o622,
+            "sessions.daily_archive: ignored because the file is writable by group or others",
+        ),
+        ("[sessions\n", 0o600, "file ignored"),
+    ];
+    for (body, mode, why) in cases {
+        let t = setup();
+        let file = config(&t, body, mode);
+        let (logs, runs) = tick(&t, NOW, &env(&[]), Ok(SUMMARY));
+        assert!(runs.is_empty(), "{body:?}");
+        assert_eq!(logs.len(), 1, "{logs:?}");
+        let line = &logs[0];
+        assert!(
+            line.starts_with(&format!(
+                "sessions archive: cannot read sessions.daily_archive ({}: ",
+                file.display()
+            )),
+            "{line}"
+        );
+        assert!(line.contains(why), "{line}");
+        assert!(line.ends_with("); not run"), "{line}");
+        assert!(
+            record(&t).exists(),
+            "{body:?}: retried a day later, not every pass"
+        );
+        let (logs, runs) = tick(&t, NOW + 60, &env(&[]), Ok(SUMMARY));
+        assert!(runs.is_empty() && logs.is_empty(), "{logs:?}");
+    }
+}
+
+#[test]
+fn the_old_variable_is_not_a_switch() {
+    // AMPLIHACK_ROTATE_SESSIONS_ARCHIVE never reached the background
+    // rotator (daemon::spawn removes AMPLIHACK_ROTATE_*), so it is gone.
+    let t = setup();
+    let (_, runs) = tick(
         &t,
         NOW,
-        &env(&[("AMPLIHACK_ROTATE_SESSIONS_ARCHIVE", "maybe-SECRET")]),
+        &env(&[("AMPLIHACK_ROTATE_SESSIONS_ARCHIVE", "0")]),
         Ok(SUMMARY),
     );
     assert_eq!(runs.len(), 1);
-    // Logged at most once per process, so another test may have logged it.
-    for l in &logs {
-        assert!(!l.contains("SECRET"), "{l}");
-    }
-    let ignored = "sessions archive: ignored AMPLIHACK_ROTATE_SESSIONS_ARCHIVE value (use on, off, 1 or 0); running";
-    assert!(
-        logs.iter()
-            .all(|l| l == ignored || l == &format!("sessions archive: {SUMMARY}")),
-        "{logs:?}"
-    );
 }
 
 #[test]
@@ -249,7 +335,7 @@ fn record_is_written_before_the_run() {
     let mut log = |_: &str| {};
     let mut run = |_: &Opts| {
         seen = fs::read_to_string(&path).ok();
-        Ok(SUMMARY.to_string())
+        Ok(done(SUMMARY))
     };
     tick_with(&t.rs, &t.home, NOW, &env(&[]), &mut log, &mut run);
     assert_eq!(
@@ -276,4 +362,151 @@ fn symlinked_record_is_not_followed() {
     std::os::unix::fs::symlink(&victim, record(&t)).unwrap();
     tick(&t, NOW, &env(&[]), Ok(SUMMARY));
     assert_eq!(fs::read(&victim).unwrap(), b"keep");
+}
+
+#[test]
+fn a_home_outside_the_temp_dir_is_never_read_in_a_test() {
+    // The test guard: no test reads the developer's real config, and the
+    // run then fails closed rather than defaulting to on.
+    let e = crate::user_config::sessions_daily_archive(Path::new("/")).unwrap_err();
+    assert!(e.contains("AMPLIHACK_TEST_HOME_GUARD"), "{e}");
+}
+
+// ------------------------------------------------- runs that stop early
+
+fn opts() -> Opts {
+    Opts {
+        home: PathBuf::from("/h"),
+        days: 3,
+        dest: PathBuf::from("/d"),
+        apply: true,
+    }
+}
+
+fn report(archived: u64, stopped: bool) -> Report {
+    Report {
+        archived,
+        bytes: 0,
+        live_kept: 0,
+        failed: 0,
+        stopped,
+    }
+}
+
+#[test]
+fn the_limit_is_a_minute() {
+    assert_eq!(RUN_LIMIT.as_secs(), 60);
+}
+
+#[test]
+fn a_run_that_reached_every_session_is_just_its_summary() {
+    let r = ran(&report(3, false), &opts(), false);
+    assert_eq!(r, done(SUMMARY));
+}
+
+#[test]
+fn a_run_stopped_at_the_limit_after_progress_continues() {
+    let r = ran(&report(3, true), &opts(), false);
+    assert_eq!(
+        r.line,
+        format!("{SUMMARY}; stopped at the 60-second limit; the rest continues at the next pass")
+    );
+    assert!(r.more);
+}
+
+#[test]
+fn a_run_stopped_by_rotate_stop_after_progress_continues() {
+    let r = ran(&report(3, true), &opts(), true);
+    assert_eq!(
+        r.line,
+        format!(
+            "{SUMMARY}; stopped by rotate stop or a signal; the rest continues at the next pass"
+        )
+    );
+    assert!(r.more);
+}
+
+#[test]
+fn a_run_stopped_before_archiving_anything_waits_a_day() {
+    // Sessions that keep failing must not be retried, and logged, on every
+    // pass: without progress the run waits a day like any other.
+    let r = ran(&report(0, true), &opts(), false);
+    assert!(
+        r.line.ends_with(
+            "; stopped at the 60-second limit; nothing archived, so the next try is a day later"
+        ),
+        "{}",
+        r.line
+    );
+    assert!(!r.more);
+}
+
+#[test]
+fn more_makes_the_next_pass_due_and_a_full_run_ends_it() {
+    let t = setup();
+    let cut = Ran {
+        line: "partial".into(),
+        more: true,
+    };
+    let (logs, called) = tick_ran(&t, NOW, cut.clone());
+    assert!(called);
+    assert_eq!(logs, ["sessions archive: partial"]);
+    assert!(!record(&t).exists(), "removed, so the next pass is due");
+    let (_, called) = tick_ran(&t, NOW + 60, cut);
+    assert!(called, "the next pass carries on");
+    let (_, called) = tick_ran(&t, NOW + 120, done(SUMMARY));
+    assert!(called);
+    assert_eq!(
+        fs::read_to_string(record(&t)).unwrap().trim(),
+        (NOW + 120).to_string()
+    );
+    let (logs, called) = tick_ran(&t, NOW + 180, done(SUMMARY));
+    assert!(!called && logs.is_empty(), "finished: a day later");
+}
+
+#[test]
+fn without_more_an_early_stop_waits_a_day() {
+    let t = setup();
+    let none = Ran {
+        line: "nothing".into(),
+        more: false,
+    };
+    tick_ran(&t, NOW, none.clone());
+    let (_, called) = tick_ran(&t, NOW + 60, none);
+    assert!(!called);
+}
+
+#[test]
+fn a_record_that_cannot_be_removed_is_logged() {
+    let t = setup();
+    // The state directory is read-only once the record is written, so the
+    // removal fails; the rest of the run then waits a day.
+    let mut logs = Vec::new();
+    let mut log = |l: &str| logs.push(l.to_string());
+    let dir = t.rs.dir.clone();
+    let mut run = |_: &Opts| {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        Ok(Ran {
+            line: "partial".into(),
+            more: true,
+        })
+    };
+    tick_with(&t.rs, &t.home, NOW, &env(&[]), &mut log, &mut run);
+    fs::set_permissions(&t.rs.dir, fs::Permissions::from_mode(0o700)).unwrap();
+    if nix_root() {
+        return; // root ignores the mode
+    }
+    assert_eq!(
+        logs,
+        [
+            "sessions archive: partial",
+            "sessions archive: cannot remove the run record (permission denied); the rest waits a day",
+        ]
+    );
+    assert!(record(&t).exists());
+}
+
+fn nix_root() -> bool {
+    // SAFETY: geteuid has no preconditions.
+    unsafe { libc::geteuid() == 0 }
 }

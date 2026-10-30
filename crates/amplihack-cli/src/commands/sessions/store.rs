@@ -6,14 +6,17 @@ use amplihack_utils::secure_files::{euid, fsync_dir};
 use fs4::fs_std::FileExt;
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Write};
 use std::os::unix::fs::{DirBuilderExt, FileExt as _, MetadataExt, OpenOptionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
 pub const MANIFEST: &str = "MANIFEST.jsonl";
 pub const LOCK: &str = ".archive.lock";
-pub const MAX_MANIFEST: u64 = 64 * 1024 * 1024;
+/// Longest manifest line `lookup` parses; a longer one is skipped like an
+/// unparseable one, without being held in memory. A real line is under
+/// 2 KiB, since names are at most 255 bytes.
+pub const MAX_LINE: usize = 64 * 1024;
 
 static TMP_NAME: LazyLock<regex::Regex> = LazyLock::new(|| {
     regex::Regex::new(r"^\.[^/]+\.tar\.gz\.tmp-[0-9]+$").expect("static regex compiles")
@@ -39,7 +42,6 @@ pub enum LockError {
 
 #[derive(Debug)]
 pub enum LookupError {
-    TooLarge,
     Io(io::ErrorKind),
 }
 
@@ -181,8 +183,10 @@ impl Dest {
         f.sync_all()
     }
 
-    /// The last line for `id`. Unparseable lines are skipped; a missing
-    /// manifest is `None`; one over 64 MiB is refused unread.
+    /// The last line for `id`. Unparseable lines, and lines over
+    /// [`MAX_LINE`], are skipped; a missing manifest is `None`. The file is
+    /// read one line at a time, so its size has no limit: the manifest only
+    /// grows, and a cap on it would end every restore once it was reached.
     pub fn lookup(&self, id: &str) -> Result<Option<Entry>, LookupError> {
         let f = match open_opts(false, false, false).open(self.manifest()) {
             Ok(f) => f,
@@ -190,22 +194,49 @@ impl Dest {
             Err(e) => return Err(LookupError::Io(e.kind())),
         };
         own_regular(&f).map_err(|e| LookupError::Io(e.kind()))?;
-        let len = f.metadata().map_err(|e| LookupError::Io(e.kind()))?.len();
-        if len > MAX_MANIFEST {
-            return Err(LookupError::TooLarge);
+        let mut reader = io::BufReader::new(f);
+        let mut line = Vec::new();
+        let mut found = None;
+        while let Some(fits) = read_line_capped(&mut reader, &mut line, MAX_LINE)
+            .map_err(|e| LookupError::Io(e.kind()))?
+        {
+            if fits
+                && let Ok(e) = serde_json::from_slice::<Entry>(&line)
+                && e.session_id == id
+            {
+                found = Some(e);
+            }
         }
-        let mut raw = Vec::new();
-        f.take(MAX_MANIFEST + 1)
-            .read_to_end(&mut raw)
-            .map_err(|e| LookupError::Io(e.kind()))?;
-        if raw.len() as u64 > MAX_MANIFEST {
-            return Err(LookupError::TooLarge);
-        }
-        Ok(raw
-            .split(|&b| b == b'\n')
-            .filter_map(|l| serde_json::from_slice::<Entry>(l).ok())
-            .rfind(|e| e.session_id == id))
+        Ok(found)
     }
+}
+
+/// Reads the next line into `buf`, without its newline. `None` at the end
+/// of the file; `Some(false)` when the line is longer than `cap`, in which
+/// case the rest of it is skipped without being stored and `buf` is left
+/// empty.
+pub(super) fn read_line_capped(
+    r: &mut impl BufRead,
+    buf: &mut Vec<u8>,
+    cap: usize,
+) -> io::Result<Option<bool>> {
+    use std::io::Read;
+    buf.clear();
+    let limit = u64::try_from(cap).unwrap_or(u64::MAX).saturating_add(1);
+    if r.by_ref().take(limit).read_until(b'\n', buf)? == 0 {
+        return Ok(None);
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+        return Ok(Some(true));
+    }
+    if buf.len() <= cap {
+        // The last line, without a newline.
+        return Ok(Some(true));
+    }
+    buf.clear();
+    r.skip_until(b'\n')?;
+    Ok(Some(false))
 }
 
 /// Whether DEST equals, lies inside, or contains the projects root,

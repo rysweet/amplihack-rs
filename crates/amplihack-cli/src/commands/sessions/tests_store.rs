@@ -12,13 +12,17 @@
 //!   `LockError::Held` when another descriptor holds it.
 //! - `Entry { time, session_id, project, bytes, archive, parts }` (serde,
 //!   unknown fields allowed); `append(&Entry)` writes one 0600 line with
-//!   O_APPEND; `lookup(id) -> Result<Option<Entry>, LookupError>` skips
-//!   unparseable lines, returns the last match, and refuses (`TooLarge`) a
-//!   manifest over 64 MiB without reading it.
+//!   O_APPEND; `lookup(id) -> Result<Option<Entry>, LookupError>` reads
+//!   the manifest one line at a time with no limit on its size, skips
+//!   unparseable lines and lines over `MAX_LINE` (64 KiB), and returns the
+//!   last match.
+//! - `read_line_capped(r, buf, cap) -> io::Result<Option<bool>>`: the next
+//!   line without its newline; `None` at the end, `Some(false)` (and `buf`
+//!   empty) for a line over `cap`, whose rest is consumed.
 //! - `clean_tmp()` removes regular files named `.<id>.tar.gz.tmp-<digits>`
 //!   one level below DEST, in real directories only.
 
-use super::store::{Dest, Entry, LockError, LookupError, contains_or_overlaps};
+use super::store::{Dest, Entry, LockError, MAX_LINE, contains_or_overlaps, read_line_capped};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
@@ -184,17 +188,61 @@ fn missing_manifest_is_none() {
 }
 
 #[test]
-fn manifest_over_64_mib_is_refused() {
+fn a_manifest_past_64_mib_is_still_read() {
+    // The cap this replaces refused every restore once the manifest grew
+    // past 64 MiB (review of #1766). The wanted line here comes after 65 MiB
+    // of NULs with no newline: one over-long line, skipped without being
+    // held in memory. The file is sparse, so the test writes little.
     let t = tempfile::tempdir().unwrap();
     let d = private_dest(t.path());
+    d.append(&entry("b", "-p/b.tar.gz")).unwrap();
+    let path = t.path().join("dest/MANIFEST.jsonl");
+    let f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    f.set_len(65 * 1024 * 1024).unwrap();
+    drop(f);
     d.append(&entry("a", "-p/a.tar.gz")).unwrap();
-    fs::OpenOptions::new()
-        .append(true)
-        .open(t.path().join("dest/MANIFEST.jsonl"))
-        .unwrap()
-        .set_len(64 * 1024 * 1024 + 1)
-        .unwrap();
-    assert!(matches!(d.lookup("a"), Err(LookupError::TooLarge)));
+    assert!(fs::metadata(&path).unwrap().len() > 65 * 1024 * 1024);
+    assert_eq!(d.lookup("a").unwrap(), Some(entry("a", "-p/a.tar.gz")));
+    assert_eq!(d.lookup("b").unwrap(), Some(entry("b", "-p/b.tar.gz")));
+    assert_eq!(d.lookup("c").unwrap(), None);
+}
+
+#[test]
+fn an_over_long_line_is_skipped_and_the_next_one_read() {
+    let t = tempfile::tempdir().unwrap();
+    let d = private_dest(t.path());
+    let mut long = serde_json::to_string(&entry("a", "-p/a.tar.gz")).unwrap();
+    long.insert_str(1, &format!("\"pad\":\"{}\",", "x".repeat(MAX_LINE)));
+    let path = t.path().join("dest/MANIFEST.jsonl");
+    fs::write(&path, format!("{long}\n")).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(d.lookup("a").unwrap(), None, "the long line is not parsed");
+    d.append(&entry("a", "-p/a2.tar.gz")).unwrap();
+    assert_eq!(d.lookup("a").unwrap(), Some(entry("a", "-p/a2.tar.gz")));
+}
+
+#[test]
+fn read_line_capped_splits_caps_and_ends() {
+    // A tiny buffer, so lines and the cap cross buffer boundaries.
+    let data = b"ab\n\nabcd\nabcde\nxyz";
+    let mut r = std::io::BufReader::with_capacity(2, &data[..]);
+    let mut buf = Vec::new();
+    let mut got = Vec::new();
+    while let Some(fits) = read_line_capped(&mut r, &mut buf, 4).unwrap() {
+        got.push((fits, String::from_utf8(buf.clone()).unwrap()));
+    }
+    assert_eq!(
+        got,
+        [
+            (true, "ab".to_string()),
+            (true, String::new()),
+            (true, "abcd".to_string()),
+            (false, String::new()),
+            (true, "xyz".to_string()),
+        ]
+    );
+    let mut empty = std::io::BufReader::new(&b""[..]);
+    assert_eq!(read_line_capped(&mut empty, &mut buf, 4).unwrap(), None);
 }
 
 #[test]

@@ -4,13 +4,14 @@
 //!
 //! Per session, in order: write a temporary archive from descriptors opened
 //! without following symlinks, sync it, read all of it back, hard-link it to
-//! a free final name, sync the directory, check the session is unchanged and
-//! not live, append and sync the manifest line, and only then remove the
-//! originals. Any failure before removal keeps the originals.
+//! a free final name, sync the directory, read every pid file again and
+//! check the session is not live and unchanged, append and sync the
+//! manifest line, and only then remove the originals. Any failure before
+//! removal keeps the originals and leaves no archive behind.
 
 use super::config::Opts;
 use super::fmt::{esc, gib, kind_word, remove_failed, thousands};
-use super::live::{self, LiveSet, Probe, SystemProbe};
+use super::live::{self, LiveSet, Probe};
 use super::scan::{self, Session};
 use super::store::{Dest, Entry, LockError, contains_or_overlaps};
 use flate2::Compression;
@@ -24,8 +25,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime};
 
 const DAY_SECS: u64 = 86_400;
-/// The live set is rebuilt before a removal when older than this.
-const LIVE_MAX_AGE: Duration = Duration::from_secs(30);
+/// The `/proc` walk for `CLAUDE_CONFIG_DIR` is repeated before a removal
+/// when older than this. The pid files themselves are read before every
+/// removal.
+const PROC_MAX_AGE: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Report {
@@ -33,6 +36,8 @@ pub struct Report {
     pub bytes: u64,
     pub live_kept: u64,
     pub failed: u64,
+    /// The run's `stop` turned true before every old session was reached.
+    pub stopped: bool,
 }
 
 #[derive(Debug)]
@@ -117,45 +122,60 @@ pub fn summary(r: &Report, days: u32, apply: bool) -> String {
     }
 }
 
-/// The run with the system probe, as the CLI and the rotator's daily run
-/// use it: the summary line or the error line.
-pub fn run_default(
-    opts: &Opts,
-    profile_root: &Path,
-    warn: &mut dyn FnMut(&str),
-) -> Result<String, String> {
-    run(opts, profile_root, &SystemProbe, warn)
-        .map(|r| summary(&r, opts.days, opts.apply))
-        .map_err(|e| e.to_string())
-}
-
-/// The live set and when it was built.
+/// The live set, and the process directories it was built from.
 struct Live<'a> {
     set: LiveSet,
-    built: Instant,
+    procs: Vec<PathBuf>,
+    procs_read: Instant,
     home: &'a Path,
     profile_root: &'a Path,
     probe: &'a dyn Probe,
 }
 
 impl Live<'_> {
+    /// Called just before a session's originals are removed. Every pid-file
+    /// directory is read again, so a session resumed since the last check
+    /// counts as live even if it has written nothing yet. Only the `/proc`
+    /// walk for `CLAUDE_CONFIG_DIR` values is reused, for up to
+    /// [`PROC_MAX_AGE`].
     fn refresh(&mut self) -> Result<(), String> {
-        if self.built.elapsed() > LIVE_MAX_AGE {
-            self.set = live::build(self.home, self.profile_root, self.probe)
-                .map_err(|(_, k)| format!("cannot read live sessions ({})", kind_word(k)))?;
-            self.built = Instant::now();
+        let unreadable =
+            |(_, k): live::LiveError| format!("cannot read live sessions ({})", kind_word(k));
+        if self.procs_read.elapsed() > PROC_MAX_AGE {
+            self.procs = live::process_dirs(self.probe).map_err(unreadable)?;
+            self.procs_read = Instant::now();
         }
+        self.set = live::build_from(self.home, self.profile_root, &self.procs, self.probe)
+            .map_err(unreadable)?;
         Ok(())
     }
 }
 
+/// Checks a temporary archive against its session before it is kept.
+type Check<'a> = dyn Fn(&Path, &Session) -> Result<(), String> + 'a;
+
 /// One archive run. Skipped and failed sessions are reported through
-/// `warn`; setup problems that stop the run are the error.
+/// `warn`; setup problems that stop the run are the error. When `stop`
+/// turns true the run ends between sessions with the report so far.
 pub fn run(
     opts: &Opts,
     profile_root: &Path,
     probe: &dyn Probe,
     warn: &mut dyn FnMut(&str),
+    stop: &dyn Fn() -> bool,
+) -> Result<Report, ArchiveError> {
+    run_with(opts, profile_root, probe, warn, stop, &verify)
+}
+
+/// [`run`] with the read-back check injected, so a test can make it fail
+/// on a real archive (a simulated member-count mismatch).
+fn run_with(
+    opts: &Opts,
+    profile_root: &Path,
+    probe: &dyn Probe,
+    warn: &mut dyn FnMut(&str),
+    stop: &dyn Fn() -> bool,
+    check: &Check<'_>,
 ) -> Result<Report, ArchiveError> {
     let root = scan::projects_root(&opts.home);
     if contains_or_overlaps(&opts.dest, &root) {
@@ -185,10 +205,12 @@ pub fn run(
     } else {
         None
     };
+    let procs = live::process_dirs(probe).map_err(|(p, k)| ArchiveError::LiveUnreadable(p, k))?;
     let mut live = Live {
-        set: live::build(&opts.home, profile_root, probe)
+        set: live::build_from(&opts.home, profile_root, &procs, probe)
             .map_err(|(p, k)| ArchiveError::LiveUnreadable(p, k))?,
-        built: Instant::now(),
+        procs,
+        procs_read: Instant::now(),
         home: &opts.home,
         profile_root,
         probe,
@@ -206,6 +228,10 @@ pub fn run(
     let ts = chrono::Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
     let mut report = Report::default();
     for s in sessions.iter().filter(|s| is_old(s.newest_mtime, limit)) {
+        if stop() {
+            report.stopped = true;
+            break;
+        }
         if live.set.contains(&s.id) {
             report.live_kept += 1;
             continue;
@@ -215,7 +241,7 @@ pub fn run(
             report.bytes = report.bytes.saturating_add(s.bytes);
             continue;
         }
-        match archive_one(&dest, &canonical, s, &ts, &mut live) {
+        match archive_one(&dest, &canonical, s, &ts, &mut live, check) {
             Ok(()) => {
                 report.archived += 1;
                 report.bytes = report.bytes.saturating_add(s.bytes);
@@ -246,6 +272,7 @@ fn archive_one(
     s: &Session,
     ts: &str,
     live: &mut Live<'_>,
+    check: &Check<'_>,
 ) -> Result<(), String> {
     let pdir = dest.project_dir(&s.project).map_err(|e| match e.kind() {
         io::ErrorKind::InvalidData => "archive directory not private".to_string(),
@@ -253,7 +280,7 @@ fn archive_one(
     })?;
     let src = root.join(&s.project);
     let tmp = pdir.join(format!(".{}.tar.gz.tmp-{}", s.id, std::process::id()));
-    let staged = write_tmp(&tmp, &src, s).and_then(|()| verify(&tmp, s));
+    let staged = write_tmp(&tmp, &src, s).and_then(|()| check(&tmp, s));
     let name = match staged.and_then(|()| link_free(&tmp, &pdir, &s.id, ts)) {
         Ok(name) => name,
         Err(reason) => {

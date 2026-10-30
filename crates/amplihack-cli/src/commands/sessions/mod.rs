@@ -11,7 +11,7 @@
 pub(crate) mod archive;
 pub(crate) mod config;
 mod fmt;
-mod live;
+pub(crate) mod live;
 mod restore;
 mod scan;
 mod store;
@@ -91,8 +91,10 @@ pub fn run_sessions(cmd: SessionsCommands) -> anyhow::Result<()> {
                     )
                 }
             };
-            let report = archive::run(&opts, &profile_root, &live::SystemProbe, &mut warn)
-                .unwrap_or_else(|e| fail(&e.to_string()));
+            let report = archive::run(&opts, &profile_root, &live::SystemProbe, &mut warn, &|| {
+                false
+            })
+            .unwrap_or_else(|e| fail(&e.to_string()));
             println!("{}", archive::summary(&report, opts.days, opts.apply));
             if report.failed > 0 {
                 std::process::exit(1);
