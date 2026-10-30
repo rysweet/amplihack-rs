@@ -12,6 +12,7 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 
 const ID: &str = "amplihack@amplihack-local";

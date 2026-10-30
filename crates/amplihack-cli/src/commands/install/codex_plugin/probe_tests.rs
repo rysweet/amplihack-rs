@@ -1,5 +1,4 @@
-//! #1728: native plugin inventory probe. amplihack waits for Codex to exit;
-//! there is no time limit on any native plugin call.
+//! #1728: native plugin inventory probe and its timeouts.
 use super::*;
 
 /// Help text in the shape printed by codex-cli 0.165.0 for `codex plugin --help`.
@@ -39,10 +38,23 @@ pub(super) fn assert_no_child_output(rendered: &str) {
     );
 }
 
-// A cold `codex plugin list --json` took 32.8 s on one host and was misread
-// as missing plugin support. A slow Codex must still succeed.
 #[test]
-fn native_waits_for_slow_codex() {
+fn probe_timeouts_are_split_by_purpose() {
+    assert_eq!(NATIVE_TIMEOUT, Duration::from_secs(30));
+    assert_eq!(PROBE_TIMEOUT, Duration::from_secs(120));
+    assert_eq!(CAPABILITY_TIMEOUT, Duration::from_secs(10));
+}
+
+// Only a selected Codex gets the longer probe limit.
+#[test]
+fn probe_timeout_is_longer_only_for_selected_codex() {
+    assert_eq!(probe_timeout(true), PROBE_TIMEOUT);
+    assert_eq!(probe_timeout(false), NATIVE_TIMEOUT);
+}
+
+// T1: a probe that outlives its limit reports a timeout, not plugin support.
+#[test]
+fn native_with_timeout_reports_timeout_without_blaming_plugin_support() {
     let _env_lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -50,28 +62,32 @@ fn native_waits_for_slow_codex() {
     let binary = probe_fake(
         dir.path(),
         "codex",
-        "sleep 2\nprintf '{\"installed\":[]}'\nexit 0",
+        "printf 'stdout-canary\\033[31m'\nexec sleep 5",
     );
-    let value = native(&binary, &["plugin", "list", "--json"], dir.path()).unwrap();
-    assert_eq!(value, json!({"installed": []}));
-}
-
-#[test]
-fn plugin_capability_waits_for_slow_codex() {
-    let _env_lock = crate::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    let binary = probe_fake(
+    let started = std::time::Instant::now();
+    let error = native_with_timeout(
+        &binary,
+        &["plugin", "list", "--json"],
         dir.path(),
-        "codex",
-        &format!("sleep 2\n{}", help_body(PLUGIN_HELP, 0)),
+        Duration::from_millis(300),
+    )
+    .unwrap_err();
+    let elapsed = started.elapsed();
+    let rendered = format!("{error:#}");
+    assert!(rendered.contains("timed out after"), "{rendered}");
+    assert!(
+        !rendered.contains("requires native plugin support"),
+        "{rendered}"
     );
-    assert!(plugin_capability(&binary, dir.path()).unwrap());
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "probe not bounded: {elapsed:?}"
+    );
+    assert_no_child_output(&rendered);
 }
 
 #[test]
-fn native_returns_inventory_and_passes_scoped_codex_home() {
+fn native_with_timeout_returns_inventory_and_passes_scoped_codex_home() {
     let _env_lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -87,15 +103,21 @@ fn native_returns_inventory_and_passes_scoped_codex_home() {
             seen.display()
         ),
     );
-    let value = native(&binary, &["plugin", "list", "--json"], &home).unwrap();
+    let value = native_with_timeout(
+        &binary,
+        &["plugin", "list", "--json"],
+        &home,
+        Duration::from_secs(10),
+    )
+    .unwrap();
     assert_eq!(value, json!({"installed": []}));
     assert_eq!(fs::read_to_string(&seen).unwrap(), home.to_str().unwrap());
 }
 
-// V6: a probe with no time limit must not be able to read the user's keystrokes.
+// V6: a long probe must not be able to read the user's keystrokes.
 #[cfg(target_os = "linux")]
 #[test]
-fn native_gives_child_null_stdin() {
+fn native_with_timeout_gives_child_null_stdin() {
     let _env_lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -109,7 +131,13 @@ fn native_gives_child_null_stdin() {
             stdin_target.display()
         ),
     );
-    native(&binary, &["plugin", "list", "--json"], dir.path()).unwrap();
+    native_with_timeout(
+        &binary,
+        &["plugin", "list", "--json"],
+        dir.path(),
+        Duration::from_secs(10),
+    )
+    .unwrap();
     assert_eq!(
         fs::read_to_string(&stdin_target).unwrap().trim(),
         "/dev/null"
@@ -117,13 +145,19 @@ fn native_gives_child_null_stdin() {
 }
 
 #[test]
-fn native_reports_exit_status_without_child_output() {
+fn native_with_timeout_reports_exit_status_without_child_output() {
     let _env_lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let binary = probe_fake(dir.path(), "codex", "printf 'stdout-canary'\nexit 1");
-    let error = native(&binary, &["plugin", "list", "--json"], dir.path()).unwrap_err();
+    let error = native_with_timeout(
+        &binary,
+        &["plugin", "list", "--json"],
+        dir.path(),
+        Duration::from_secs(10),
+    )
+    .unwrap_err();
     let rendered = format!("{error:#}");
     assert!(
         rendered.contains("native plugin command failed"),

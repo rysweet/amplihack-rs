@@ -161,7 +161,7 @@ pub fn run_with_timeout_described(
 
 /// Run a pre-built `Command` with stdout/stderr capture and a hard timeout.
 pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
-    run_output_with_timeout_inner(&mut cmd, Some(timeout), None, None)
+    run_output_with_timeout_inner(&mut cmd, timeout, None, None)
 }
 
 /// [`run_output_with_timeout`] that also owns the child's stdin (issue #1570).
@@ -184,7 +184,7 @@ pub fn run_output_with_timeout_stdin(
     } else {
         Stdio::null()
     });
-    run_output_with_timeout_inner(&mut cmd, Some(timeout), None, stdin_payload)
+    run_output_with_timeout_inner(&mut cmd, timeout, None, stdin_payload)
 }
 
 /// Run a pre-built `Command` with stdout/stderr capture capped per stream.
@@ -196,14 +196,7 @@ pub fn run_output_with_timeout_limited(
     timeout: Duration,
     max_bytes_per_stream: usize,
 ) -> Result<Output> {
-    run_output_with_timeout_inner(&mut cmd, Some(timeout), Some(max_bytes_per_stream), None)
-}
-
-/// [`run_output_with_timeout_limited`] without a time limit: waits for the
-/// child to exit, however long it takes. Stdin is not piped; callers that
-/// need it closed set `Stdio::null()` themselves.
-pub fn run_output_limited(mut cmd: Command, max_bytes_per_stream: usize) -> Result<Output> {
-    run_output_with_timeout_inner(&mut cmd, None, Some(max_bytes_per_stream), None)
+    run_output_with_timeout_inner(&mut cmd, timeout, Some(max_bytes_per_stream), None)
 }
 
 /// How long a finished subprocess's stdin writer may take to end before it is
@@ -212,7 +205,7 @@ const STDIN_WRITER_GRACE: Duration = Duration::from_secs(2);
 
 fn run_output_with_timeout_inner(
     cmd: &mut Command,
-    timeout: Option<Duration>,
+    timeout: Duration,
     max_bytes_per_stream: Option<usize>,
     stdin_payload: Option<Vec<u8>>,
 ) -> Result<Output> {
@@ -243,11 +236,9 @@ fn run_output_with_timeout_inner(
     let stdout_reader = spawn_pipe_reader(stdout, max_bytes_per_stream);
     let stderr_reader = spawn_pipe_reader(stderr, max_bytes_per_stream);
 
-    let exited = match timeout {
-        Some(timeout) => wait_for_child_exit(&mut child, timeout),
-        None => child.wait().map(Some),
-    };
-    if let Some(status) = exited.context("failed to wait for subprocess output")? {
+    if let Some(status) =
+        wait_for_child_exit(&mut child, timeout).context("failed to wait for subprocess output")?
+    {
         // Bounded join: a descendant that inherited stdin and never reads it
         // would otherwise block the writer, and this call, indefinitely.
         let stdin_result = stdin_writer.map(|writer| writer.finish_within(STDIN_WRITER_GRACE));
@@ -263,7 +254,6 @@ fn run_output_with_timeout_inner(
         });
     }
 
-    // Only reachable with `Some(timeout)`: the `None` path waits until the child exits.
     terminate_timed_out_child(&mut child)?;
     // Do not join pipe readers or the stdin writer after timeout: descendants
     // may keep inherited pipe fds open, and this helper must preserve a hard
@@ -274,7 +264,7 @@ fn run_output_with_timeout_inner(
     bail!(
         "subprocess `{}` timed out after {:?} (pid {})",
         cmd.get_program().to_string_lossy(),
-        timeout.unwrap_or_default(),
+        timeout,
         pid
     )
 }
@@ -869,24 +859,6 @@ mod tests {
 
         assert!(output.status.success());
         assert_eq!(output.stdout.len(), 1024);
-    }
-
-    // #1728: the untimed runner keeps the per-stream cap and drains the rest,
-    // so a child writing past the cap still exits cleanly.
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn run_output_limited_caps_retained_stdout_and_drains_the_rest() {
-        let _guard = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let mut cmd = std::process::Command::new("/bin/sh");
-        cmd.args(["-c", "head -c 4096 /dev/zero; head -c 4096 /dev/zero >&2"]);
-
-        let output = run_output_limited(cmd, 1024).unwrap();
-
-        assert!(output.status.success());
-        assert_eq!(output.stdout.len(), 1024);
-        assert_eq!(output.stderr.len(), 1024);
     }
 
     /// The pid a test shell wrote with `echo $! > file`. The shell must have

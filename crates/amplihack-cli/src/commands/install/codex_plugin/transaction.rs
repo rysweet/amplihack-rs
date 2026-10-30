@@ -41,7 +41,12 @@ fn install_scoped(
 ) -> Result<bool> {
     // Scope capture precedes probing and any optional-provider mutations.
     let selected = crate::freshness::codex_selected();
-    let probe = native(binary, &["plugin", "list", "--json"], home);
+    let probe = native_with_timeout(
+        binary,
+        &["plugin", "list", "--json"],
+        home,
+        probe_timeout(selected),
+    );
     path_scope::check()?;
     if let Err(error) = probe {
         if !selected {
