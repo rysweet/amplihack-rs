@@ -113,7 +113,7 @@ pub(super) fn switch_in(
         platform_blocked(&ctx.rs, store, home, name)?;
     }
     let (lock, first) = match prelude {
-        Prelude::Ready { lock, first, .. } => (lock, first),
+        Prelude::Ready { lock, first, .. } => (lock, *first),
         Prelude::LockBusy => return Err(lock_busy()),
         Prelude::AutoSwitchInconsistent => return Err(refused(msg::AUTO_SWITCH_INCONSISTENT)),
         Prelude::Inconsistent(reason) => return Err(refused(&msg::inconsistent(&reason))),

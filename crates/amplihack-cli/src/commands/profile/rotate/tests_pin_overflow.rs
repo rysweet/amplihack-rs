@@ -126,6 +126,7 @@ fn off_overflow(_: &Ctx, _: &super::observe::Snap) -> Result<Measurement, Profil
         new_blocks: Vec::new(),
         next_plan_reset: None,
         measured_at: at,
+        probed: None,
     })
 }
 
@@ -208,6 +209,7 @@ fn onto_overflow(_: &Ctx, _: &super::observe::Snap) -> Result<Measurement, Profi
         new_blocks: Vec::new(),
         next_plan_reset: Some(now() + 4 * 3600),
         measured_at: now(),
+        probed: None,
     })
 }
 

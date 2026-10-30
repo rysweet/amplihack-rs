@@ -21,6 +21,60 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 - **Step 4 stopped when the target branch was checked out in the caller's clone (#1762)**: `default-workflow` step 4 refused the run with the #858 error whenever the branch it was asked to continue (`existing_branch`, `pr_number`, or a `Branch:` line naming an existing branch) was checked out in the caller's own checkout, which left a person or a worker to work around it by hand. Step 4 now creates the task worktree on a local alias branch, `<branch>--wt-<n>`, at `<main>/worktrees/<branch>--wt-<n>`, starting at `origin/<branch>` with `origin/<branch>` as its upstream, and reuses an existing alias worktree on a re-run; if another run is still creating that alias, step 4 stops and removes nothing. The caller's checkout is not touched: no checkout, detach, reset or stash, and its index is not refreshed. The run stops instead, with a message naming the cause and the remedy, when the caller's checkout has uncommitted changes to tracked files, when `origin/<branch>` does not exist, or when the branch has commits not on `origin/<branch>`, because the task worktree would not see them. The default branch gets no alias and keeps the #858 refusal, as does `consensus-issue-worktree.yaml`. The step output keeps `branch_name=<branch>` and `created=false` and adds `local_branch` and `local_branch_reason`, so the run log records the alias and the reason (the recipe runner does not keep a successful step's stderr). A new read-only resolver, `amplifier-bundle/tools/workflow_remote_branch.sh`, maps an alias back to `<branch>`; publish, `step-16b-outside-in-fix-loop`, `step-18c-push-feedback-changes` and `step-20b-push-cleanup` push with `git push origin HEAD:<branch>`, `gh pr create` gets `--head=<branch>`, and the PR lookups in finalization, the open-PR check, `workflow_pr_ready.sh`, `workflow_terminal_evidence.sh` and the terminal-state branch check use `<branch>`. The push steps write at most `refs/heads/<branch>` on `origin` and never push the alias as a branch; only the orphan sweep may push `refs/amplihack-archive/<alias>` for a stale alias worktree with unmerged commits. If the new planner, `workflow_caller_branch_alias.sh`, is missing, step 4 warns and gives the #858 refusal as before. See `docs/recipes/issue-1762-caller-branch-worktree-alias.md`.
 
+- **Copilot launch failed with Copilot CLI 1.0.105 (#1744)**: amplihack no
+  longer adds `--remote` to Copilot launches, because Copilot removed the
+  flag. A user's `--remote` or `--no-remote` is passed through unchanged, but
+  Copilot 1.0.105 rejects both; use `/remote on` or `/remote off` inside a
+  session. Routed (LiteLLM proxy)
+  launches still add `--no-remote` and `--no-remote-export`, so they fail to
+  start on Copilot 1.0.105 until #1747 is resolved.
+  `AMPLIHACK_COPILOT_NO_REMOTE` is removed and has no effect. See
+  [flag injection rules](docs/reference/flag-matrix.md#flag-injection-rules).
+- **Intermittent `exited_probe_with_inherited_pipe_is_bounded_and_cleans_its_group`
+  failure (#1748)**: the test read the probe descendant's state once, straight
+  after the probe returned, but the group `SIGKILL` arrives asynchronously, so
+  under load the descendant could still read as sleeping. The test now polls
+  for up to 5 seconds before failing.
+- **Intermittent `hostile_root_round_trips_through_bash_without_running_anything`
+  failure (#1730, #1731)**: the test spawned `bash` from `PATH` without the
+  crate-wide env lock, while other tests point `PATH` at an empty directory
+  under that lock, so the spawn could fail with `ENOENT`. The test now holds
+  the lock for the spawn.
+- **Intermittent `version_probe_is_bounded_for_hanging_binaries` failure
+  (#1765)**: the test pointed the process-wide `PATH` at a temporary
+  directory and required the probe of a fake `mmdc` that sleeps 2 seconds to
+  return within 1 second, which a loaded host can miss although the probe is
+  bounded. The test now runs the fake by absolute path, leaving `PATH` alone,
+  and requires the probe of a fake that sleeps 60 seconds to return within
+  30 seconds and report failure.
+- **`issue_1543_pr_head_worktree_shell_test_passes` failed in CI once
+  recipe-runner-rs v0.5.1 was released (#1772)**: at startup, the pinned
+  runner asks GitHub for its latest release and prints a notice on stderr
+  when that release is newer than itself. The test captured the runner's
+  stdout and stderr together and parsed them as one JSON document, so T20 and
+  T21 reported `<runner output is not JSON>`. The test now sets
+  `RECIPE_RUNNER_NO_UPDATE_CHECK=1`, parses only the runner's stdout, and
+  prints both streams when a run fails or returns no JSON.
+- **Intermittent `release_under_a_held_lock_leaves_pin_and_pointer_alone`
+  failure (#1774)**: six rotate tests took the rotate state lock with no
+  wait, and one autostart test expected a launch straight after a failed one
+  to find it free. While another test thread spawns a child process, the
+  child shares a lock file this test has just closed until it reaches
+  `exec`, so the lock could read as held. The six tests now use one helper
+  that waits up to 10 seconds for the lock, and the autostart test retries
+  its final launch while it reports `Busy`, for up to 10 seconds.
+- **Intermittent `home_command_child_sees_no_config_dir` failure (#1777)**:
+  two profile tests ran a script they had just written without retrying
+  `ETXTBSY`, which a child process spawned by another test thread can cause
+  while it still shares the script's write descriptor. All three such runs in
+  `tests_run.rs` now share one helper that retries for up to 5 seconds.
+- **Intermittent `downgrade_guard_tests` failures in `freshness.rs` (#1780)**:
+  the tests run each case in a child copy of the test binary, which started
+  in whatever directory the test process was in. Other tests move the process
+  into a temporary directory and then delete it, and git cannot start in a
+  deleted directory, so the child's runner ancestry check answered
+  `Unverifiable` instead of `Newer`. Both worker helpers in `freshness.rs` now
+  start the child in a directory the test owns.
 - **Auto-drive ended at phase 1 although its build had an open PR (#1714)**: when `default-workflow` ran inside `auto-drive-to-merge` and finalization failed while a published, open PR existed, the whole auto-drive run ended at phase 1, although its crusty and merge-ready loops exist to review that PR and fix what keeps it from merging. Two cases were reported. (1) Red checks, classified `BLOCKED_CI`. (2) A merge of main pushed to the PR from another checkout, so the PR head was a fast-forward of the local HEAD; the open-PR check required the two to be equal, found no signal and the run ended `FAILED_IMPLEMENTATION`. The open-PR check (`workflow_finalization_pr_signal.sh`) now accepts a PR head whose ancestor is the local HEAD, fetching the PR head once without writing refs when it is not local (only after the PR passes the open, same-repo, branch, number and URL checks, and without prompting: ssh runs with `BatchMode=yes` and connection time limits, HTTPS with a stall limit, so the fetch cannot hang where `timeout` is missing, as on macOS), and fails closed when the commit is missing or the heads diverged. The terminal-state probe that `workflow-finalize` runs before the validator applies the same rule (`accept_pr_head_ahead: "true"`, `workflow_pr_scope.sh --allow-head-ahead`), through one shared test in `workflow_pr_head_fetch.sh`, so a merge that reached the PR before finalization started is no longer reported as stale metadata (`FAILED_INVALID_INPUT`); a diverged head or a rewound remote still is. `workflow-finalize` then runs `step-20-sync-pr-head` (`workflow_pr_head_sync.sh`), which fetches the branch, sets a missing upstream and fast-forwards the worktree to that PR head before the cleanup and quality-audit agents edit it; step-20b runs the same tool after its cleanup commit, so it fetches and sets a missing upstream and pulls before it pushes instead of a bare `git push -u` that a remote ahead would reject. `autodrive-build` step-02 sets `finalization_handoff: "true"`; with it, finalization emits its usual `BLOCKED_CI` result, or a `FAILED_IMPLEMENTATION` or `FAILED_REPORTING` result on a PR the open-PR check confirmed (on a reporting failure the check runs only under auto-drive and can only hand the PR off, never classify success), with `terminal_success=false`, `handoff=merge_ready_loop` and exit `0`. Step-03 then checks that the PR is the one it resolved and is open, and records `terminal_state` and `handed_off` in `build_result`. Every other failure still ends the run. A standalone `default-workflow` declares the flag `""` and still fails closed. The allow-list lives in `amplifier-bundle/tools/workflow_finalization_handoff.sh`. See `docs/reference/auto-drive-to-merge.md#finalization-hand-off-from-phase-1-1714`.
 
 - **Workflow cleanup deleted other runs' worktrees and uncommitted work

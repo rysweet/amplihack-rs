@@ -524,10 +524,9 @@ fn copilot_subprocess_safe_flags_appear_before_user_trailing_args() {
     let _guard = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
     // Note: do NOT set AMPLIHACK_COPILOT_NO_ALLOW_ALL=1 — after the security
     // MEDIUM fix (PR #623 review), that env var also suppresses the granular
-    // flags. Suppress only --remote, which is unrelated to argv ordering.
+    // flags.
     unsafe {
         std::env::remove_var("AMPLIHACK_COPILOT_NO_ALLOW_ALL");
-        std::env::set_var("AMPLIHACK_COPILOT_NO_REMOTE", "1");
     }
 
     let user_marker = "USER_TRAILING_ARG";
@@ -543,10 +542,6 @@ fn copilot_subprocess_safe_flags_appear_before_user_trailing_args() {
         None,
     );
     let args = arg_strings(&cmd);
-
-    unsafe {
-        std::env::remove_var("AMPLIHACK_COPILOT_NO_REMOTE");
-    }
 
     let tools_pos = args
         .iter()
