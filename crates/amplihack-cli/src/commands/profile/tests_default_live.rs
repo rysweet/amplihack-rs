@@ -1,7 +1,7 @@
 //! `default_live::detect`: the rotator ledger first, then the account match.
 use super::default_live::{
-    AMBIGUOUS_WARNING, LEDGER_WARNING, LIST_WARNING, OWN_LOGIN_WARNING, detect, live_name,
-    still_live,
+    AMBIGUOUS_WARNING, LEDGER_WARNING, LIST_WARNING, OWN_LOGIN_WARNING, detect, ledger_live_name,
+    live_name, still_live,
 };
 use super::name::ProfileName;
 use super::store::ProfileStore;
@@ -626,4 +626,125 @@ mod usage_live {
         assert_eq!(fs::read(&p).unwrap(), before);
         assert_eq!(fs::read_dir(p.parent().unwrap()).unwrap().count(), 1);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1745: `ledger_live_name`, the status line's owner. The ledgers
+// only: no account match, no listing, no warning, and no `.claude.json` read
+// but `~/.claude.json` for the rotate ledger's `account` check.
+// ---------------------------------------------------------------------------
+
+impl Env {
+    fn ledger_live(&self) -> Option<String> {
+        ledger_live_name(&self.store, Some(&self.home)).map(|n| n.as_str().to_string())
+    }
+}
+
+#[test]
+fn ledger_live_name_follows_either_ledger() {
+    let e = env();
+    e.ledger(LEDGER_A);
+    assert_eq!(e.ledger_live(), Some("a".into()));
+    let e = env();
+    e.rotate_ledger(r#"{"version":1,"live":"b","since":10}"#);
+    assert_eq!(e.ledger_live(), Some("b".into()));
+}
+
+#[test]
+fn ledger_live_name_with_both_ledgers_takes_the_later_since() {
+    let e = env();
+    e.ledger(r#"{"live":"a","since":20}"#);
+    e.rotate_ledger(r#"{"version":1,"live":"b","since":10}"#);
+    assert_eq!(e.ledger_live(), Some("a".into()));
+    e.ledger(r#"{"live":"a","since":5}"#);
+    assert_eq!(e.ledger_live(), Some("b".into()));
+}
+
+#[test]
+fn ledger_live_name_never_falls_back_to_the_account_match() {
+    let e = env();
+    e.claude_json("a", &account("u1", "me@example.com"));
+    assert_eq!(
+        e.live(),
+        (Some("a".into()), None),
+        "detect matches accounts"
+    );
+    assert_eq!(e.ledger_live(), None, "the status line does not");
+}
+
+#[test]
+fn ledger_live_name_compares_the_rotate_account() {
+    // `~/.claude.json` holds u1. A rotate ledger recording another account
+    // is a hand change (`claude /login` run in `~/.claude`): no owner.
+    let e = env();
+    e.rotate_ledger(r#"{"version":1,"live":"b","account":"someone-else","since":10}"#);
+    assert_eq!(e.ledger_live(), None, "account differs");
+    e.rotate_ledger(r#"{"version":1,"live":"b","account":"u1","since":10}"#);
+    assert_eq!(e.ledger_live(), Some("b".into()), "account matches");
+    fs::remove_file(e.home.join(".claude.json")).unwrap();
+    assert_eq!(e.ledger_live(), None, "no `~/.claude.json` to compare");
+    e.rotate_ledger(r#"{"version":1,"live":"b","since":10}"#);
+    assert_eq!(e.ledger_live(), Some("b".into()), "no account recorded");
+}
+
+#[test]
+fn ledger_live_name_reads_no_profile_claude_json() {
+    // A profile's `.claude.json` that would match by account changes
+    // nothing: only `~/.claude.json` is read.
+    let e = env();
+    e.claude_json("a", &account("u1", "me@example.com"));
+    e.rotate_ledger(r#"{"version":1,"live":"b","account":"u1","since":10}"#);
+    assert_eq!(e.ledger_live(), Some("b".into()));
+}
+
+#[test]
+fn ledger_live_name_is_none_without_home_or_a_login_in_the_default_dir() {
+    let e = env();
+    e.ledger(LEDGER_A);
+    assert_eq!(ledger_live_name(&e.store, None), None);
+    fs::remove_file(e.home.join(".claude/.credentials.json")).unwrap();
+    assert_eq!(e.ledger_live(), None);
+}
+
+#[test]
+fn ledger_live_name_keeps_the_trust_rules() {
+    let e = env();
+    let p = e.ledger(LEDGER_A);
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o602)).unwrap();
+    assert_eq!(e.ledger_live(), None, "other-writable ledger");
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+    let dir = e.store.root().join(".rotator");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o702)).unwrap();
+    assert_eq!(e.ledger_live(), None, "other-writable directory");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(e.ledger_live(), Some("a".into()));
+    fs::remove_file(&p).unwrap();
+    let target = e.store.root().join("elsewhere.json");
+    private(&target, LEDGER_A);
+    std::os::unix::fs::symlink(&target, &p).unwrap();
+    assert_eq!(e.ledger_live(), None, "symlinked ledger");
+}
+
+#[test]
+fn ledger_live_name_refuses_damaged_idle_or_unknown_names() {
+    let e = env();
+    for body in [
+        "not json",
+        r#"{"live":null}"#,
+        r#"{"since":1}"#,
+        r#"{"live":"nobody","since":1}"#,
+        r#"{"live":"../a","since":1}"#,
+        r#"{"live":7,"since":1}"#,
+    ] {
+        e.ledger(body);
+        assert_eq!(e.ledger_live(), None, "{body}");
+    }
+}
+
+#[test]
+fn ledger_live_name_refuses_a_profile_with_its_own_login() {
+    let e = env();
+    e.ledger(LEDGER_A);
+    private(&e.store.root().join("a/.credentials.json"), "{}");
+    assert_eq!(e.ledger_live(), None);
 }

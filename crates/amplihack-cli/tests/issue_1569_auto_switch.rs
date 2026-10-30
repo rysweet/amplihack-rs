@@ -2555,6 +2555,24 @@ fn auto_switch_never_opens_reads_or_copies_credentials() {
 }
 
 #[test]
+fn source_guards_cover_the_capacity_line_modules() {
+    // Issue #1745: the no-owner status line and its renderer are scanned by
+    // every guard here, and never name a login file at all.
+    let sources = auto_switch_sources();
+    for name in ["capacity_line.rs", "home_line.rs", "statusline.rs"] {
+        let (_, src) = sources
+            .iter()
+            .find(|(p, _)| p.file_name().is_some_and(|f| f == name))
+            .unwrap_or_else(|| panic!("{name} must be among the scanned sources"));
+        if name != "statusline.rs" {
+            assert!(!src.contains(".credentials.json"), "{name}");
+            assert!(!src.contains("CREDS"), "{name}");
+            assert!(!src.contains(".claude.json"), "{name}");
+        }
+    }
+}
+
+#[test]
 fn credential_scan_catches_reads_through_names_and_variables() {
     for bad in [
         "let raw = fs::read(state.live_creds(n))?;",

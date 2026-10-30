@@ -3,12 +3,19 @@
 //!
 //! The wrapper records the `rate_limits` reading, runs the profile's original
 //! status-line command with the same input and passes its output through
-//! unchanged, then runs the swap check. The only thing it writes to stdout
-//! itself is the no-capacity warning line, after the original output, when
-//! every account is over the auto-switch threshold (see `capacity`).
+//! unchanged, then runs the swap check. The only things it writes to stdout
+//! itself come after the original output: the login capacity line when the
+//! original is the no-owner command from `~/.claude` (issue #1745, see
+//! `home_line`), then the no-capacity warning line when every account is
+//! over the auto-switch threshold (see `capacity`).
+//!
+//! Without `--owner` the command is the one in `~/.claude` itself; see
+//! `home_line`.
 
+use super::MARKER;
 use super::config;
 use super::fsx;
+pub use super::is_home_command;
 use super::state::State;
 use super::swap;
 use super::usage::{self, Attribution};
@@ -28,16 +35,24 @@ const MAX_SETTINGS: u64 = 1024 * 1024;
 /// How long a reading waits for the state lock before giving up.
 pub(super) const LOCK_WAIT: Duration = Duration::from_millis(50);
 const SETTINGS: &str = "settings.json";
-const MARKER: &str = "profile statusline";
 
 /// Runs one status-line update and returns the exit code to use.
-pub fn run(root_arg: &str, owner_arg: &str) -> i32 {
+pub fn run(root_arg: Option<&str>, owner_arg: Option<&str>) -> i32 {
     std::panic::set_hook(Box::new(|_| {
         eprintln!("auto-switch: internal error in the status-line wrapper");
     }));
     // fail-quiet: status-line output contract. An unreadable stdin still runs
     // the original status line, with no input.
     let input = fsx::read_bounded(std::io::stdin().lock(), MAX_PASSTHROUGH).unwrap_or_default();
+    let Some(owner_arg) = owner_arg else {
+        return super::home_line::run(root_arg, &input);
+    };
+    // Every installed wrapper names its root; only the no-owner command
+    // resolves one from the environment.
+    let Some(root_arg) = root_arg else {
+        eprintln!("auto-switch: status line disabled: --owner given without --root");
+        return 0;
+    };
     let state = open_state(root_arg);
     let owner = ProfileName::parse(owner_arg).ok();
     let session = match (&state, &owner) {
@@ -57,7 +72,22 @@ pub fn run(root_arg: &str, owner_arg: &str) -> i32 {
             .flatten()
     });
     let code = match (&state, &owner) {
-        (Some(s), Some(o)) => run_original(s, o, &input, notice.as_deref()),
+        (Some(s), Some(o)) => {
+            let original = saved_original(s, o);
+            // The capacity line only stands in for the one the no-owner
+            // command prints outside a profile, so it is added only there.
+            let key = match session {
+                Some((state, owner)) if original.as_deref().is_some_and(is_home_command) => {
+                    std::panic::catch_unwind(|| {
+                        super::home_line::wrapper_line(state, owner, &input, fsx::now())
+                    })
+                    .ok()
+                    .flatten()
+                }
+                _ => None,
+            };
+            stream_command(original.as_deref(), &input, &[key, notice])
+        }
         _ => 0,
     };
 
@@ -170,42 +200,44 @@ fn swap_step(state: &State, owner: &ProfileName, rl: &usage::RateLimits) {
     }
 }
 
-/// Step 2: the profile's original status line, run with `sh -c` like Claude
-/// does, with the same input. Its stdout and stderr are the wrapper's. With a
-/// `notice`, its stdout is streamed through unchanged and the warning line
-/// follows on a line of its own.
-fn run_original(state: &State, owner: &ProfileName, input: &[u8], notice: Option<&str>) -> i32 {
-    let Some(line) = notice else {
-        return spawn_original(state, owner, input, None);
-    };
-    let mut out = super::capacity::Tail::new(std::io::stdout().lock());
-    let code = spawn_original(state, owner, input, Some(&mut out));
-    out.finish_with(line);
-    code
-}
-
-/// The original status line; `piped` receives its stdout instead of the
-/// terminal.
-fn spawn_original(
-    state: &State,
-    owner: &ProfileName,
-    input: &[u8],
-    piped: Option<&mut dyn Write>,
-) -> i32 {
+/// The profile's saved original status-line command, if any.
+fn saved_original(state: &State, owner: &ProfileName) -> Option<String> {
     if !state.exists() {
-        return 0;
+        return None;
     }
     let saved = match state.read_sub_json("statusline", owner.as_str()) {
         Ok(Some(v)) => v,
-        Ok(None) => return 0,
+        Ok(None) => return None,
         Err(e) => {
             eprintln!("auto-switch: {e}; run `amplihack profile auto-switch repair`");
-            return 0;
+            return None;
         }
     };
-    let Some(command) = saved.get("command").and_then(|c| c.as_str()) else {
-        return 0;
-    };
+    saved
+        .get("command")
+        .and_then(|c| c.as_str())
+        .map(str::to_string)
+}
+
+/// Step 2: `cmd` (the profile's original status line, or `statusline.sh`),
+/// run with `sh -c` like Claude does, with the same input. Its stdout and
+/// stderr are ours. With any `tail` line, its stdout is streamed through
+/// unchanged and each line follows on a line of its own. Returns its exit
+/// code, or 0 when there is no command or it cannot start.
+pub(super) fn stream_command(cmd: Option<&str>, input: &[u8], tail: &[Option<String>]) -> i32 {
+    let lines: Vec<&str> = tail.iter().flatten().map(String::as_str).collect();
+    if lines.is_empty() {
+        return cmd.map_or(0, |c| spawn(c, input, None));
+    }
+    let mut out = super::capacity::Tail::new(std::io::stdout().lock());
+    let code = cmd.map_or(0, |c| spawn(c, input, Some(&mut out)));
+    out.finish_with(&lines.join("\n"));
+    code
+}
+
+/// `command` under `sh -c`; `piped` receives its stdout instead of the
+/// terminal.
+fn spawn(command: &str, input: &[u8], piped: Option<&mut dyn Write>) -> i32 {
     let mut child = match Command::new("sh")
         .arg("-c")
         .arg(command)
@@ -249,11 +281,11 @@ fn spawn_original(
 const DIFFERENT_BINARY: &str = "(wrapper pointed at a different binary)";
 const EDITED: &str = "(wrapper command differs from the canonical one)";
 
-fn sh_quote(s: &str) -> String {
+pub(super) fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r"'\''"))
 }
 
-fn quotable(p: &Path) -> Result<&str, ProfileError> {
+pub(super) fn quotable(p: &Path) -> Result<&str, ProfileError> {
     p.to_str()
         .filter(|s| !s.contains(['\0', '\n', '\r']))
         .ok_or_else(|| {
@@ -276,6 +308,12 @@ pub fn wrapper_command(
         sh_quote(quotable(root)?),
         sh_quote(owner.as_str())
     ))
+}
+
+/// The command `amplihack install` writes into `~/.claude/settings.json`
+/// (issue #1745): no `--root`, no `--owner`.
+pub fn home_command(exe: &Path) -> Result<String, ProfileError> {
+    Ok(format!("{} {MARKER}", sh_quote(quotable(exe)?)))
 }
 
 /// The running amplihack binary, refused if anyone but the user (or root) can
@@ -376,7 +414,7 @@ pub fn wrapper_state(store: &ProfileStore, root: &Path, name: &ProfileName) -> W
     let Some(cmd) = settings.get("statusLine").and_then(command_of) else {
         return WrapperState::Missing;
     };
-    if !cmd.contains(MARKER) {
+    if !cmd.contains(MARKER) || is_home_command(cmd) {
         return WrapperState::Missing;
     }
     let Ok(exe) = std::env::current_exe().and_then(|e| e.canonicalize()) else {
@@ -442,7 +480,9 @@ fn install_one(
         {
             return Ok(("unchanged", String::new()));
         }
-        Some(sl) if command_of(sl).is_some_and(|c| c.contains(MARKER)) => {
+        // The no-owner command is not a wrapper: it falls through and is
+        // saved as the original below.
+        Some(sl) if command_of(sl).is_some_and(|c| c.contains(MARKER) && !is_home_command(c)) => {
             // A wrapper, never saved as the original.
             let ours = command_of(sl).is_some_and(|c| {
                 quotable(exe).is_ok_and(|e| c.starts_with(&format!("{} ", sh_quote(e))))

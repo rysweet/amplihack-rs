@@ -168,6 +168,8 @@ mod issue_1740_routing_recipes;
 mod issue_1740_select_workflow;
 #[path = "issue_1740_state_gates.rs"]
 mod issue_1740_state_gates;
+#[path = "issue_1745_home_statusline.rs"]
+mod issue_1745_home_statusline;
 #[path = "issue_1760_agent_markers.rs"]
 mod issue_1760_agent_markers;
 #[path = "issue_1760_agent_profile_resolved.rs"]
