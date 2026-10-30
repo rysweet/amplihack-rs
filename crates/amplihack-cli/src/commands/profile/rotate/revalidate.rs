@@ -145,6 +145,10 @@ pub fn check(
     let retry = decide_measured(ctx, &fresh, probe.clone(), probes, m.measured_at);
     ctx.failed_live = counted;
     let retry = retry?;
+    debug_assert_eq!(
+        retry.failed, m.failed,
+        "a target-only retry must count failed live probes as the first decision did"
+    );
     match &retry.decision {
         Decision::Swap { to, .. } if fresh.candidates.contains(to) => Ok(Verdict::Reconsidered {
             m: Box::new(retry),
