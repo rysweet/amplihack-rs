@@ -1033,7 +1033,9 @@ step that hits a limit with a rotator running writes
 `skipped reason=budget_spent` and a line naming the setting, and the run
 ends with the usage-limit failure. `0` means no step with a rotator waits
 or retries after a limit. A step with no rotator keeps its single wait to
-the reset, whatever the budget. Overrides the config files; a
+the reset, whatever the budget. A step that runs `amplihack recipe run` itself starts a
+nested run with its own run id and its own whole budget, which the outer
+run's budget does not count. Overrides the config files; a
 project file can only lower it; empty means unset; an invalid value prints
 one warning and is ignored. See the
 [run budget reference](./profile-command.md#run-budget).

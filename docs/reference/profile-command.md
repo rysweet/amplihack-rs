@@ -705,7 +705,7 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 | `AMPLIHACK_ROTATE_AUTOSTART` | `0`/`off` stops launches from starting the rotator, and `1`/`on` lets them, overriding `<root>/.auto-switch.d/rotate/autostart`. Empty means unset. See [Rotate autostart](#rotate-autostart). |
 | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true` or `1` turns the [usage-limit wait](#usage-limit-wait) on, `false` or `0` off. Outranks `recipe.usage_limit_wait` in `config.toml`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
 | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | Upper bound on one usage-limit wait, in seconds. Only shortens the wait. Outranks `recipe.usage_limit_max_wait_secs`. |
-| `AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS` | Total seconds all usage-limit waits of one recipe run may take; default 21600. Outranks `recipe.usage_limit_wait_budget_secs`. See [Run budget](#run-budget). |
+| `AMPLIHACK_USAGE_LIMIT_WAIT_BUDGET_SECS` | Total seconds all usage-limit waits of one recipe run may take; default 21600. Outranks `recipe.usage_limit_wait_budget_secs`. A nested `amplihack recipe run` has its own budget; see [Gaps in the budget](#gaps-in-the-budget). See [Run budget](#run-budget). |
 | `AMPLIHACK_USAGE_LIMIT_MAX_WAITS_PER_STEP` | Waits one step may make while a rotator runs, 1 to 100; default 5. Outranks `recipe.usage_limit_max_waits_per_step`. See [Waits per step](#waits-per-step). |
 
 ### Seeding
@@ -5019,6 +5019,13 @@ warning at its first budget check.
 - A record left unchanged for 7 days can be deleted by another run's
   [clean-up](#budget-record); the run's next budget check then starts again
   from the whole budget.
+- A step that itself runs `amplihack recipe run`, as the
+  `drive-red-prs-to-fix` step of `quality-loop` does once for each red pull
+  request, starts a separate run. That run gets its own
+  `AMPLIHACK_RECIPE_RUN_ID` and so its own whole budget, and the outer
+  run's budget does not count its waits. An outer run that starts N nested
+  runs can therefore wait up to N + 1 budgets in total; size unattended
+  work by the number of runs, not by the outer run alone.
 
 Each wait is still capped at five hours and 120 seconds, and each step at
 its [wait count](#waits-per-step), so no gap lets waiting go on without
