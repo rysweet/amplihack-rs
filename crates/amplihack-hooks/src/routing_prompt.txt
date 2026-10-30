@@ -30,7 +30,7 @@ Resolution rules — detect all signals, then apply the FIRST matching rule:
 5. UNDERSTAND present (no IMPLEMENT) → **INVESTIGATE**
 6. SHELL_ONLY present (no FILE_EDIT) → **OPS**
 7. QUESTION present (no FILE_EDIT) → **Q&A**
-8. Ambiguous request for code changes → **DEV** (safe default). A one-line status question, result report, acknowledgement or PR hand-over is not ambiguous: classify it as **Q&A**, or **OPS** when it asks for one direct action such as retrying a command.
+8. Ambiguous → **DEV** (safe default). A one-line status question, result report, acknowledgement or PR hand-over is not ambiguous: classify it as **Q&A**, or **OPS** when it asks for one direct action such as retrying a command.
 
 Calibration examples (use these to resolve edge cases):
   "run tests and fix failures" = HYBRID (SHELL_ONLY + IMPLEMENT → both phases)
@@ -59,5 +59,5 @@ Actions:
 
 Downstream invariant: Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
 
-When a request for code changes is ambiguous, choose DEV. False positive costs minutes. False negative costs quality.
+When in doubt, choose DEV. False positive costs minutes. False negative costs quality.
 </system-reminder>

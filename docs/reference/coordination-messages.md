@@ -9,7 +9,7 @@ doc_type: reference
 
 # Coordination Messages
 
-A prompt that starts with `[coord]` is coordination traffic between sessions. The `workflow-classification-reminder` UserPromptSubmit hook gives it a short note instead of the routing prompt, so the receiving agent answers or acts on it without starting dev-orchestrator, smart-orchestrator or a recipe (issue #1742).
+A prompt that starts with `[coord]` is coordination traffic between sessions. The `workflow-classification-reminder` UserPromptSubmit hook gives it a short note instead of the routing prompt, so the receiving agent answers or acts on it without starting dev-orchestrator, smart-orchestrator or a recipe (issue #1742). A marked message that asks for a code change still goes through dev-orchestrator and `default-workflow`.
 
 The marker is read by code. The hook does not infer coordination traffic from wording, sender or tmux pane.
 
@@ -35,9 +35,10 @@ Put `[coord]` at the start of the text you type or paste into another session:
 [coord] CI passed on PR 1739, nothing for you to do
 [coord] handing PR 1741 over to you
 [coord] build #1740
+[coord] fix the parser for #12
 ```
 
-The first three receive the coordination note. The last one is an explicit work request and receives the routing prompt (see [Explicit work requests](#explicit-work-requests)).
+The first three receive the coordination note. The last two start with a change verb, so they are work requests and receive the routing prompt (see [Explicit work requests](#explicit-work-requests)).
 
 amplihack has no dedicated send command. Any tool that types into a session, such as `tmux send-keys`, works:
 
@@ -47,7 +48,7 @@ tmux send-keys -t lane-3 '[coord] report your lane status' Enter
 
 ## Marker rules
 
-The constant is `COORDINATION_PREFIX` in `crates/amplihack-hooks/src/workflow_classification.rs`, with the value `[coord]`. The only function that reads it is `strip_coordination_prefix`.
+The constant is `COORDINATION_PREFIX` in `crates/amplihack-hooks/src/workflow_classification/coordination.rs`, with the value `[coord]`. The only function that reads it is `strip_coordination_prefix`.
 
 1. Leading whitespace is trimmed from the prompt.
 2. The first seven bytes are compared with `[coord]`, ignoring ASCII case.
@@ -69,33 +70,40 @@ A marker joined to the next word still matches. A marker anywhere other than the
 | `[coo` | No: shorter than the marker | |
 | `[coörd] x` | No | |
 
-An unmarked prompt is classified exactly as it was before this feature.
+An unmarked prompt takes the same path through the hook as before this feature: the same gates, the same throttle and the same routing prompt file. That file has changed, however. The status and hand-over exception added to rule 8, and five new calibration lines, apply to every unmarked new-topic prompt in every session, under Claude Code and the Copilot CLI; see [Routing prompt calibration](#routing-prompt-calibration).
 
 ## Explicit work requests
 
-A marked body that asks for specific work is not treated as coordination traffic. It receives the routing prompt, and the agent classifies it as usual. The rule is `is_explicit_work_request`, applied to the body only:
+A marked body that asks for work is not treated as coordination traffic. It receives the routing prompt, and the agent classifies it as usual. The rule is `is_explicit_work_request`, applied to the body only. A body is a work request when it starts with a change verb, then whitespace, then any text:
 
 ```text
-(?i)^(build|fix|implement|develop|work\s+on|start)\s+(#\d+|issue\s+#?\d+|pr\s+#?\d+)\b
+(?i)^(build|fix|implement|develop|add|create|refactor|update|write|work\s+on|start)\s+\S
 ```
 
-The verb must come first and the reference must follow it directly. A reference needs `#`, `issue` or `PR`.
+The verbs are the routing prompt's IMPLEMENT signal (build, fix, add, create, refactor, update, write) plus implement, develop, work on and start. A unit test reads the IMPLEMENT signal from `routing_prompt.txt` and fails if a verb there is missing from the rule.
 
-| Body | Explicit work request |
+| Body | Work request |
 | --- | --- |
 | `build #1740` | Yes |
 | `fix issue 12` | Yes |
 | `work on PR #57` | Yes |
-| `implement pr 3 now` | Yes |
-| `Start #1742` | Yes |
-| `fix the parser for #12` | No: words between the verb and the reference |
+| `fix the parser for #12` | Yes |
+| `refactor #57` | Yes |
+| `update PR 57` | Yes |
+| `implement retry in installer.rs` | Yes |
+| `fix landed on PR 12` | Yes, although it is a report; see below |
+| `update: CI passed on PR 12` | No: the verb is not followed by whitespace |
 | `building #1740` | No: only the listed verbs count |
 | `fixes #3` | No |
-| `build 1740` | No: no `#`, `issue` or `PR` |
-| `fix issue#12` | No: `issue` must be followed by a space |
+| `please build #1740` | No: the verb is not first; see below |
 | `report your lane status` | No |
+| `handing PR 57 over to you` | No |
 
-An explicit work request is routed even when the throttle would otherwise suppress the routing prompt. It records `last_classified_turn`, so the throttle then applies to the following unmarked prompts as usual.
+The rule errs towards routing. A report that starts with a verb, such as `fix landed on PR 12`, receives the routing prompt, whose rule 8 then classifies a result report as Q&A; the cost is one classification. The opposite error would let a code change bypass `default-workflow`.
+
+A code request that the rule misses, such as `please build #1740` or `can you fix the parser`, receives the note. The note does not forbid the workflow for code changes: it tells the agent to use dev-orchestrator when the message asks for one. See [The coordination note](#the-coordination-note).
+
+A work request is routed even when the throttle would otherwise suppress the routing prompt. It records `last_classified_turn`, so the throttle then applies to the following unmarked prompts as usual.
 
 A marked body that is an explicit `/dev` command, such as `[coord] /dev fix the parser`, behaves like an unmarked `/dev` command: the hook emits nothing and the command runs.
 
@@ -104,10 +112,12 @@ A marked body that is an explicit `/dev` command, such as `[coord] /dev fix the 
 The note is the constant `COORDINATION_NOTE`. Its full text is:
 
 ```text
-[coordination] This message starts with the [coord] marker and is coordination traffic between sessions. Answer it or act on it directly. Do not start dev-orchestrator, smart-orchestrator or any recipe for it.
+[coordination] This message starts with the [coord] marker and is coordination traffic between sessions. Answer it or act on it directly, without dev-orchestrator, smart-orchestrator or a recipe. If it asks for a code change, use dev-orchestrator as usual.
 ```
 
-The note is emitted on every marked prompt that is not an explicit work request or `/dev` command. It is not throttled. It never contains `auto-intent-router`, `launching dev-orchestrator`, `Invoke Skill(skill="dev-orchestrator")` or `[auto-routed]`. The body of the message is never copied into the hook output.
+The note keeps recipes away from replies, reports, acknowledgements and single commands such as retrying an install. It does not keep them away from code changes. The routing prompt's downstream invariant is that development work always runs through `default-workflow`, and a marked request for a code change that the work-request rule does not recognise must still meet it.
+
+The note is emitted on every marked prompt that is not a work request or `/dev` command. It is not throttled. It never contains `auto-intent-router`, `launching dev-orchestrator`, `Invoke Skill(skill="dev-orchestrator")` or `[auto-routed]`. The body of the message is never copied into the hook output.
 
 The note uses the same output shape as the routing prompt, with the text at the top level for the Copilot CLI and under `hookSpecificOutput` for Claude Code:
 
@@ -135,10 +145,12 @@ Removing `[coord]` from the same prompt at turn 0 returns the routing prompt ins
 
 The routing prompt (`crates/amplihack-hooks/src/routing_prompt.txt`) treats short coordination messages that arrive without the marker as Q&A or OPS, not as ambiguous DEV requests.
 
-Rule 8 reads:
+This is a change to the routing prompt itself, so it applies to every unmarked new-topic prompt in every amplihack session, under Claude Code and the Copilot CLI, and not only to coordination traffic. It is kept to the one exception that issue #1742 asked for. Any other ambiguous prompt, such as "the login page looks wrong", still falls to DEV.
+
+Rule 8 keeps its unqualified DEV default and gains one sentence, the exception for status, result and hand-over messages. It reads:
 
 ```text
-8. Ambiguous request for code changes → **DEV** (safe default). A one-line status question, result report, acknowledgement or PR hand-over is not ambiguous: classify it as **Q&A**, or **OPS** when it asks for one direct action such as retrying a command.
+8. Ambiguous → **DEV** (safe default). A one-line status question, result report, acknowledgement or PR hand-over is not ambiguous: classify it as **Q&A**, or **OPS** when it asks for one direct action such as retrying a command.
 ```
 
 These five calibration lines follow the existing ones. The prompt file contains them exactly as shown, including the two-space indent:
@@ -151,10 +163,10 @@ These five calibration lines follow the existing ones. The prompt file contains 
   "build #1740" = DEV. A leading [coord] marker does not change the classification.
 ```
 
-The closing line reads:
+The closing line is unchanged:
 
 ```text
-When a request for code changes is ambiguous, choose DEV. False positive costs minutes. False negative costs quality.
+When in doubt, choose DEV. False positive costs minutes. False negative costs quality.
 ```
 
 A local override at `.claude/tools/amplihack/hooks/templates/routing_prompt.txt` takes precedence over the built-in prompt and does not receive these lines automatically. Copy them into the override by hand. The marker branch does not read the routing prompt, so marked messages receive the note whether or not the override is updated.
@@ -171,7 +183,7 @@ A local override at `.claude/tools/amplihack/hooks/templates/routing_prompt.txt`
 6. Topic decision for unmarked prompts: explicit `/dev` command, new topic or throttled.
 7. Emit the result.
 
-Provenance takes precedence over the marker. A marked prompt inside a recipe run, including `[coord] build #1740`, produces `{}`. The marker can only replace the routing prompt with the note, or bypass the throttle for an explicit work request; it never starts a recipe itself.
+Provenance takes precedence over the marker. A marked prompt inside a recipe run, including `[coord] build #1740`, produces `{}`. The marker can only replace the routing prompt with the note, or bypass the throttle for a work request; it never starts a recipe itself.
 
 Turn resolution runs before the provenance gate. When the runtime reports no turn number, step 2 increments `observed_turns` and saves the state file, so a prompt stopped at step 3 or 4 can still raise `observed_turns` by one. It never changes `last_rule` or `last_classified_turn`. When the runtime does report a turn number, these gates leave the state file untouched.
 
@@ -184,7 +196,7 @@ Each outcome is recorded in the state file's `last_rule` field. These values are
 | Path | Output | `last_rule` | `last_classified_turn` |
 | --- | --- | --- | --- |
 | Marked; body is an explicit `/dev` command | `{}` | `explicit_dev_command` | unchanged |
-| Marked; body is an explicit work request | routing prompt, throttle ignored | `coordination_explicit_dev` | set to the current turn |
+| Marked; body is a work request (starts with a change verb) | routing prompt, throttle ignored | `coordination_explicit_dev` | set to the current turn |
 | Marked; anything else | coordination note, every turn | `coordination_marker` | unchanged |
 | Unmarked explicit `/dev` command | `{}` | `explicit_dev_command` | unchanged |
 | Unmarked new topic | routing prompt | `classification` | set to the current turn |
@@ -226,7 +238,7 @@ State writes are best-effort. A write failure is logged at debug level with the 
 
 ## Security properties
 
-- The marker is advisory. No marked prompt leads directly to a recipe; the strongest effect, for an explicit work request, is the same routing prompt that an unmarked new topic receives.
+- The marker is advisory. No marked prompt leads directly to a recipe; the strongest effect, for a work request, is the same routing prompt that an unmarked new topic receives.
 - The provenance, nested-session and workflow-active gates run before the marker is read.
 - The prefix comparison cannot panic on short, whitespace-only or multibyte input.
 - The work-request pattern is a literal regex compiled once. The `regex` crate matches in linear time.
