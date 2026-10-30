@@ -259,6 +259,47 @@ fn rotate_log_grammar_is_documented() {
     }
 }
 
+/// Rotate revalidation (#1721): the labelled skip line, both `revalidate:`
+/// lines and the no-capacity ALERT suffix each have a log-grammar row.
+#[test]
+fn rotate_revalidation_log_rows_are_documented() {
+    for row in [
+        "| `skip: state changed during measurement (<labels>)` |",
+        "| `revalidate: target <name> no longer eligible (<reason>); reconsidered` |",
+        "| `revalidate: ~/.claude.json held no account; read again` |",
+        "`ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`",
+        "#### Rotate revalidation",
+    ] {
+        assert!(REFERENCE.contains(row), "reference is missing `{row}`");
+    }
+    for label in [
+        "`journal`",
+        "`live`",
+        "`pin`",
+        "`overflow`",
+        "`target eligibility: <reason>`",
+        "`target identity`",
+        "`account changed`",
+    ] {
+        assert!(
+            REFERENCE.contains(label),
+            "reference is missing label {label}"
+        );
+    }
+    // `Snap::account` is read from ~/.claude.json and `Snap::home_no_oauth`
+    // from the login file, so the `live` row has to name both files.
+    let live_row = REFERENCE
+        .lines()
+        .find(|l| l.ends_with("| `live` | Every decision |"))
+        .expect("the revalidation table has a `live` row");
+    for file in ["`~/.claude.json`", "`~/.claude/.credentials.json`"] {
+        assert!(
+            live_row.contains(file),
+            "the `live` row does not name {file}"
+        );
+    }
+}
+
 /// Rotator autostart and failed-probe damping: the reference names the
 /// variable, the command, the status line and the new log lines as the code
 /// prints them, and the how-tos describe autostart.
