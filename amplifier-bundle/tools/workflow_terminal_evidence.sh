@@ -148,7 +148,9 @@ collect() {
   if [ -z "$REPO" ]; then
     REPO="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" 2>/dev/null || true)"
   fi
-  [ -n "$HEAD_REF" ] || HEAD_REF="$(git branch --show-current 2>/dev/null || true)"
+  # #1762: an alias worktree (<B>--wt-<n> tracking origin/<B>) looks up <B>.
+  [ -n "$HEAD_REF" ] || HEAD_REF="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" . 2>/dev/null)" \
+    || HEAD_REF="$(git branch --show-current 2>/dev/null || true)"
   [ -n "$HEAD_SHA" ] || HEAD_SHA="$(git rev-parse --verify HEAD 2>/dev/null || true)"
   [ -n "$BASE_REF" ] || BASE_REF="$(resolve_base_ref 2>/dev/null || true)"
 

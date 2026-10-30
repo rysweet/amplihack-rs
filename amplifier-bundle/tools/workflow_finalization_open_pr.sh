@@ -13,6 +13,10 @@
 #   open_pr_facts_from_signal     print the confirmed PR's evidence facts
 #   remember_confirmed_open_pr    keep the confirmed PR for the auto-drive hand-off
 
+# #1762: the run branch of an alias worktree (<B>--wt-<n> tracking origin/<B>)
+# is <B>. A missing resolver falls back to the checked-out branch.
+_finalization_open_pr_remote_branch="$(dirname "${BASH_SOURCE[0]}")/workflow_remote_branch.sh"
+
 # Open-PR check (#1641, #1714): a branch with an OPEN same-repo PR, confirmed
 # live by gh, whose head is the local HEAD or a fast-forward of it. gh is
 # called only after every blocker, with a publish signal, an explicit target
@@ -45,7 +49,8 @@ confirm_open_pr() {
   [ "$metadata_valid" = "true" ] || { [ "$publish_signal" != "true" ] || echo "WARNING: invalid workflow metadata; not classified as EXISTING_OPEN_PR" >&2; }
   if [ "$publish_signal" = "true" ] && [ "$metadata_valid" = "true" ] && [ "$target_dir_explicit" = "true" ] && [ "$remote_is_github" = "true" ]; then
     run_branch="$(workflow_finalization_metadata branch_name || :)"
-    [ -n "$run_branch" ] || run_branch="$(git -C "$target_dir" branch --show-current 2>/dev/null || :)"
+    [ -n "$run_branch" ] || run_branch="$(bash "$_finalization_open_pr_remote_branch" "$target_dir" 2>/dev/null)" \
+      || run_branch="$(git -C "$target_dir" branch --show-current 2>/dev/null || :)"
     # A canonical pr_number is preferred, so a malformed pr_url (trailing
     # slash, /files suffix) cannot hide it. A bad pr_number with no pr_url is
     # passed as-is so the helper rejects it rather than widening to pr list.

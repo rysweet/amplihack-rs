@@ -53,6 +53,8 @@ unset _finalization_pr_signal_repo_helper
 # When it is missing, _finalization_pr_head_descends is undefined, the call
 # fails, and a PR head that differs from the local HEAD is no signal.
 _finalization_pr_signal_fetch_helper="$(dirname "${BASH_SOURCE[0]}")/workflow_pr_head_fetch.sh"
+# #1762: an alias worktree (<B>--wt-<n> tracking origin/<B>) is on <B>.
+_finalization_pr_signal_remote_branch="$(dirname "${BASH_SOURCE[0]}")/workflow_remote_branch.sh"
 if [ -f "$_finalization_pr_signal_fetch_helper" ] && [ -r "$_finalization_pr_signal_fetch_helper" ]; then
   # shellcheck source=workflow_pr_head_fetch.sh disable=SC1090
   . "$_finalization_pr_signal_fetch_helper"
@@ -158,7 +160,7 @@ _finalization_open_pr_signal_in() {
   case "$branch" in ''|main|master|HEAD|-*) _finalization_no_signal "run branch is empty or a default branch"; return 1 ;; esac
   git check-ref-format "refs/heads/$branch" >/dev/null 2>&1 \
     || { _finalization_no_signal "run branch is not a valid branch name"; return 1; }
-  live="$(git -C "$dir" branch --show-current 2>/dev/null || :)"
+  live="$(bash "$_finalization_pr_signal_remote_branch" "$dir" 2>/dev/null)" || live="$(git -C "$dir" branch --show-current 2>/dev/null || :)"
   if [ -n "$live" ] && [ "$live" != "$branch" ]; then
     _finalization_no_signal "run branch does not match the checked-out branch"
     return 1

@@ -468,6 +468,14 @@ mod issue_1714_finalization_handoff;
 #[path = "issue_1642_github_origin_parsing.rs"]
 mod issue_1642_github_origin_parsing;
 
+// Issue #1762: a target branch checked out in the caller's own checkout gets a
+// task worktree on a local alias (`<B>--wt-<n>`) tracking origin/<B>; every
+// later push and PR lookup uses <B>. Runs step 4, the push steps, the
+// finalization helpers and the two new tools against a bare local origin and
+// a fake gh, all through `isolated(..)`.
+#[path = "issue_1762_caller_branch_alias_test.rs"]
+mod issue_1762_caller_branch_alias;
+
 // Issue #1697: bundled journalistic-writing-style skill — content, trigger
 // separation from documentation-writing, registration, isolated install.
 #[path = "journalistic_writing_style_skill_test.rs"]

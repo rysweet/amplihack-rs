@@ -310,7 +310,8 @@ steps:
       cd "$TARGET_REPO_DIR" 2>/dev/null || fail_terminal_state "FAILED_INVALID_INPUT" "target checkout does not exist or is not accessible: $TARGET_REPO_DIR"
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail_terminal_state "FAILED_INVALID_INPUT" "workflow-terminal-state requires a git repo at target checkout; either git init or rerun from a checkout"
 
-      current_branch="$(git branch --show-current 2>/dev/null || true)"
+      # #1762: an alias worktree (<B>--wt-<n> tracking origin/<B>) is on <B>.
+      current_branch="$(bash "${GITHUB_REPO_HELPER%/*}/workflow_remote_branch.sh" . 2>/dev/null)" || current_branch="$(git branch --show-current 2>/dev/null || true)"
       if [ -z "$BRANCH_INPUT" ] || [ "$BRANCH_INPUT" = "''" ]; then
         BRANCH_INPUT="$current_branch"
       fi

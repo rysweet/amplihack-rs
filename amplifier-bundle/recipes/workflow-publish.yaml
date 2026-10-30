@@ -176,7 +176,7 @@ steps:
       GIT_IDENTITY_HELPER="${RUNTIME_ARTIFACT_HELPER:+${RUNTIME_ARTIFACT_HELPER%/*}/git-identity.sh}"; [ -n "$GIT_IDENTITY_HELPER" ] && [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
       # #1671: stage_workflow_changes is `git add -A` minus build artefacts, and a
       # rejecting git hook goes to a fixing agent before the commit or push is retried.
-      WF_TOOLS="${RUNTIME_ARTIFACT_HELPER%/*}"; [ -f "$WF_TOOLS/workflow_hook_repair.sh" ] || WF_TOOLS="${GIT_IDENTITY_HELPER%/*}"
+      WF_TOOLS="${RUNTIME_ARTIFACT_HELPER%/*}"; [ -f "$WF_TOOLS/workflow_hook_repair.sh" ] || WF_TOOLS="${GIT_IDENTITY_HELPER%/*}"; REMOTE_BRANCH="$(bash "$WF_TOOLS/workflow_remote_branch.sh" . 2>/dev/null)" || REMOTE_BRANCH=""; [ "$REMOTE_BRANCH" != "$(git branch --show-current)" ] || REMOTE_BRANCH=""; SETUP_BRANCH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r '.branch_name // empty' 2>/dev/null)" || SETUP_BRANCH=""; [ -z "$REMOTE_BRANCH" ] || [ "$REMOTE_BRANCH" = "$SETUP_BRANCH" ] || { echo "ERROR: push target '$REMOTE_BRANCH' does not match worktree_setup.branch_name '$SETUP_BRANCH'; refusing to push (issue #1762)." >&2; exit 1; }  # #1762: an alias pushes to <B>
       for wf_helper in "${WORKFLOW_STAGE_CHANGES_HELPER:-$WF_TOOLS/workflow_stage_changes.sh}" "${WORKFLOW_HOOK_REPAIR_HELPER:-$WF_TOOLS/workflow_hook_repair.sh}"; do [ -f "$wf_helper" ] || { echo "ERROR: workflow helper not found: $wf_helper" >&2; exit 2; }; . "$wf_helper"; done
       amplihack hygiene artifact-guard --repo . --mode pre-publish
       stage_workflow_changes; amplihack hygiene artifact-guard --repo . --mode pre-publish
@@ -293,13 +293,13 @@ steps:
         trap "rm -f \"$push_stderr_file\"; _emit_commit_result" EXIT
         if hook_repair_run push step-15-commit-push \
           --fix-message "fix: address {hook_ids} pre-push rejection${ISSUE_NUMBER:+ (#$ISSUE_NUMBER)}" \
-          --output "$push_stderr_file" -- git push; then
+          --output "$push_stderr_file" -- git push ${REMOTE_BRANCH:+origin "HEAD:$REMOTE_BRANCH"}; then
           redact_sensitive_file "$push_stderr_file" >&2  # kept for the step log; never printed raw (#978)
           # FIX (#1269): confirm the published commit is the tested one. A missing
           # helper warns, never fails -- see verify_pushed_ref.sh and #1268.
           V=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/verify_pushed_ref.sh" ] && { V="$c/amplifier-bundle/tools/verify_pushed_ref.sh"; break; }; done || true
           raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-          if [ -n "$V" ]; then bash "$V" origin "$(git rev-parse --abbrev-ref HEAD)" "$raw_sha" || { reason="push-verify-failed"; exit 1; }; else echo "WARNING: verify_pushed_ref.sh not reachable; published commit unverified (#1269)" >&2; fi
+          if [ -n "$V" ]; then bash "$V" origin "${REMOTE_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}" "$raw_sha" || { reason="push-verify-failed"; exit 1; }; else echo "WARNING: verify_pushed_ref.sh not reachable; published commit unverified (#1269)" >&2; fi
           if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then sha="$raw_sha"; fi
           pushed="true"; reason="pushed"  # step-16 gate: only after verification
         else
@@ -389,7 +389,7 @@ steps:
           amplihack hygiene artifact-guard --repo . --mode pre-publish && git add -A && amplihack hygiene artifact-guard --repo . --mode pre-publish || { echo "STOP: artifact guard refused; do not commit" >&2; exit 1; }
           amplihack_prepare_git_commit_identity
           git commit -m "fix: <describe the fix found during outside-in testing>"
-          git pull --rebase && git push
+          rb="$(bash "${GIT_IDENTITY_HELPER%/*}/workflow_remote_branch.sh" . 2>/dev/null)" || rb=""; [ "$rb" != "$(git branch --show-current)" ] || rb=""; git pull --rebase && git push ${rb:+origin "HEAD:$rb"}
           ```
        6. If failures persist after 3 iterations, document them honestly.
 
