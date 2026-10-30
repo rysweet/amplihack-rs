@@ -6,6 +6,11 @@
 //! - A probe that timed out, or failed with an error, is `Reading::Failed`:
 //!   unknown, never 100%, never a target and never exhausted. Nothing about
 //!   it is kept, so the next cycle probes it again.
+//! - `Probed::unknown` is set for a timeout and for an error, except a
+//!   refused profile directory, which is lasting; it is clear for every
+//!   state the login reported (`not_logged_in`, `unparsed`, `spend_limit`,
+//!   an `ok` with no week). `Probed::failed()` is unknown,
+//!   `Probed::platform()` is not, and `Measured::new` copies the flag.
 //! - `measure::measure_with` runs at most `bound` probes at once, the live
 //!   one included, and a slot the live probe frees goes to the next
 //!   candidate (fake `claude` scripts only; never a real one).
@@ -56,6 +61,72 @@ fn errored() -> Probe {
 
 fn measured(n: &str, p: &Probed) -> Measured {
     Measured::new(name(n), p)
+}
+
+fn failed_with(reason: ErrorReason) -> Probe {
+    Probe {
+        report: UsageReport::empty(UsageState::Error),
+        error: Some(reason),
+        raw: None,
+    }
+}
+
+#[test]
+fn a_timeout_or_an_error_report_is_unknown() {
+    for state in [UsageState::Timeout, UsageState::Error] {
+        let p = Probed::from_report(&UsageReport::empty(state));
+        assert!(p.unknown, "{state:?}");
+        assert_eq!(p.reading, Reading::Failed);
+    }
+}
+
+#[test]
+fn what_the_login_reported_is_never_unknown() {
+    for state in [
+        UsageState::NotLoggedIn,
+        UsageState::Unparsed,
+        UsageState::SpendLimit,
+        UsageState::Ok,
+        UsageState::SessionExhausted,
+        UsageState::WeeklyExhausted,
+    ] {
+        let p = Probed::from_report(&UsageReport::empty(state));
+        assert!(!p.unknown, "{state:?}");
+    }
+    // An `ok` with no week reads Failed, but is still what was reported.
+    let no_week = Probed::from_report(&UsageReport::empty(UsageState::Ok));
+    assert_eq!(no_week.reading, Reading::Failed);
+}
+
+#[test]
+fn the_constructors_set_unknown_and_measured_copies_it() {
+    assert!(Probed::failed().unknown);
+    assert!(!Probed::platform().unknown);
+    assert!(measured("slow", &Probed::failed()).unknown);
+    assert!(!measured("api", &Probed::platform()).unknown);
+}
+
+#[test]
+fn reading_marks_timeouts_and_transient_errors_unknown() {
+    assert!(reading("slow", &timed_out()).unknown);
+    for reason in [
+        ErrorReason::StartFailed,
+        ErrorReason::ReadFailed,
+        ErrorReason::WaitFailed,
+    ] {
+        let p = reading("bad", &failed_with(reason));
+        assert_eq!(p.reading, Reading::Failed);
+        assert!(p.unknown, "{reason:?}");
+    }
+}
+
+#[test]
+fn a_refused_profile_directory_is_failed_but_not_unknown() {
+    // It stays refused until someone fixes it, so it must not hold overflow
+    // back on every cycle.
+    let p = reading("odd", &failed_with(ErrorReason::ProfileRefused));
+    assert_eq!(p.reading, Reading::Failed);
+    assert!(!p.unknown);
 }
 
 #[test]
@@ -128,6 +199,7 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
         },
         windows: Windows::default(),
         spend_limit: false,
+        unknown: false,
     };
     // "a-slow" sorts first, so a tie-break bug would pick it.
     let cands = [measured("a-slow", &slow), measured("b-spare", &spare)];
@@ -172,6 +244,7 @@ mod bound {
     use super::super::measure::{Live, measure_with};
     use super::{NOW, name};
     use crate::binary_finder::BinaryInfo;
+    use crate::commands::profile::probe_limits::ProbeMode;
     use crate::commands::profile::store::ProfileStore;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -235,6 +308,16 @@ mod bound {
     }
 
     fn run(h: &Hosts, live: Live<'_>, n: usize, bound: usize) -> (Probed, Vec<Probed>) {
+        run_for(h, live, n, bound, Duration::from_secs(60))
+    }
+
+    fn run_for(
+        h: &Hosts,
+        live: Live<'_>,
+        n: usize,
+        bound: usize,
+        timeout: Duration,
+    ) -> (Probed, Vec<Probed>) {
         let cands: Vec<_> = (0..n).map(|i| name(&format!("p{i}"))).collect();
         let (live, others) = measure_with(
             &h.store,
@@ -242,7 +325,8 @@ mod bound {
             live,
             &cands,
             NOW,
-            Duration::from_secs(60),
+            ProbeMode::Text,
+            timeout,
             bound,
         );
         (live, others.into_iter().map(|(_, p)| p).collect())
@@ -321,6 +405,21 @@ mod bound {
         let (lines, peak) = marks(&h);
         assert_eq!(peak, 1, "{lines:?}");
         assert_eq!(lines[..2], ["S live", "E live"]);
+    }
+
+    #[test]
+    fn a_candidate_past_the_deadline_reads_failed_and_unknown() {
+        // A quick live probe and a candidate that sleeps past a 1 s deadline.
+        let h = hosts_with(1, 5.0, 0.0);
+        let start = Instant::now();
+        let (live, others) = run_for(&h, Live::Unowned, 1, 2, Duration::from_secs(1));
+        assert!(
+            start.elapsed() < Duration::from_secs(4),
+            "killed at the deadline"
+        );
+        assert!(read(&live) && !live.unknown, "{live:?}");
+        assert_eq!(others[0].reading, Reading::Failed);
+        assert!(others[0].unknown, "{:?}", others[0]);
     }
 
     #[test]

@@ -1,11 +1,13 @@
-//! The per-probe deadline and the probe pool size (issue #1698), shared by
-//! `profile usage` and the rotator. The resolvers are pure; the two `*_from_*`
-//! wrappers are the only code that reads the environment or `/proc/loadavg`.
-//! Nothing here prints: each resolver returns the warning for the caller.
+//! The probe method, the per-probe deadline and the probe pool size (issue
+//! #1698), shared by `profile usage` and the rotator. The resolvers are pure;
+//! the three `*_from_*` wrappers are the only code that reads the environment
+//! or `/proc/loadavg`. Nothing here prints: each resolver returns the warning
+//! for the caller.
 
 use std::ffi::OsStr;
 use std::io::Read;
 
+pub(super) const PROBE_ENV: &str = "AMPLIHACK_PROFILE_USAGE_PROBE";
 pub(super) const TIMEOUT_ENV: &str = "AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS";
 pub(super) const PARALLEL_ENV: &str = "AMPLIHACK_PROFILE_USAGE_PARALLEL";
 /// One probe took 71.5 s at load 194 on a 72-CPU host (issue #1698); 120 s
@@ -32,6 +34,35 @@ const SHOWN: usize = 32;
 fn shown(text: &str) -> String {
     let cut: String = text.chars().take(SHOWN).collect();
     format!("{cut:?}")
+}
+
+/// How a probe reads the usage figures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProbeMode {
+    /// The `get_usage` request, then `claude -p /usage` when it gives no
+    /// accepted answer.
+    Auto,
+    /// `claude -p /usage` only.
+    Text,
+}
+
+/// The probe method: `auto` or `text`, matched exactly. An empty variable
+/// counts as unset. Any other value gives the warning to print, and `auto`.
+pub(super) fn probe_mode(env: Option<&OsStr>) -> (ProbeMode, Option<String>) {
+    let Some(raw) = env.filter(|v| !v.is_empty()) else {
+        return (ProbeMode::Auto, None);
+    };
+    match raw.to_str() {
+        Some("auto") => (ProbeMode::Auto, None),
+        Some("text") => (ProbeMode::Text, None),
+        _ => {
+            let warning = format!(
+                "warning: ignored {PROBE_ENV} {} (use auto or text); using auto",
+                shown(&raw.to_string_lossy())
+            );
+            (ProbeMode::Auto, Some(warning))
+        }
+    }
 }
 
 /// The probe deadline: the flag, then the variable (1 to 600), then 120. An
@@ -94,6 +125,11 @@ pub(super) fn parse_load1(text: &str) -> Option<f64> {
         .parse::<f64>()
         .ok()
         .filter(|l| l.is_finite() && *l >= 0.0)
+}
+
+/// [`probe_mode`] with the real environment.
+pub(super) fn probe_mode_from_env() -> (ProbeMode, Option<String>) {
+    probe_mode(std::env::var_os(PROBE_ENV).as_deref())
 }
 
 /// [`timeout_secs`] with the real environment.

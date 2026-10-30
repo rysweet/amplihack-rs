@@ -16,13 +16,17 @@
 //!   value warns with the derived bound before the cap at `n`.
 //! - `parse_load1(text) -> Option<f64>`: the first field of `/proc/loadavg`;
 //!   `None` when empty, negative or not finite.
+//! - `PROBE_ENV` = `AMPLIHACK_PROFILE_USAGE_PROBE`;
+//!   `probe_mode(env) -> (ProbeMode, Option<String>)`: `auto` or `text`,
+//!   matched byte for byte; empty means unset; anything else warns, with the
+//!   value shown as for the other variables, and uses `Auto`.
 //!
 //! Every test calls the pure functions; none reads or changes the process
 //! environment or `/proc`.
 
 use super::probe_limits::{
-    DEFAULT_TIMEOUT_SECS, MAX_PARALLEL, MAX_TIMEOUT_SECS, PARALLEL_ENV, TIMEOUT_ENV, parallel,
-    parse_load1, timeout_secs,
+    DEFAULT_TIMEOUT_SECS, MAX_PARALLEL, MAX_TIMEOUT_SECS, PARALLEL_ENV, PROBE_ENV, ProbeMode,
+    TIMEOUT_ENV, parallel, parse_load1, probe_mode, timeout_secs,
 };
 use std::ffi::OsStr;
 
@@ -36,6 +40,7 @@ fn env(v: &str) -> Option<&OsStr> {
 
 #[test]
 fn constants_are_the_documented_values() {
+    assert_eq!(PROBE_ENV, "AMPLIHACK_PROFILE_USAGE_PROBE");
     assert_eq!(TIMEOUT_ENV, "AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS");
     assert_eq!(PARALLEL_ENV, "AMPLIHACK_PROFILE_USAGE_PARALLEL");
     assert_eq!(DEFAULT_TIMEOUT_SECS, 120);
@@ -244,6 +249,67 @@ fn a_non_utf8_variable_warns_and_uses_the_derived_bound() {
     let (p, warning) = parallel(Some(OsStr::from_bytes(b"\xff")), 72, Some(194.0), 14);
     assert_eq!(p, 2);
     assert!(warning.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// Probe method
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_probe_method_is_auto_unless_text_is_asked_for() {
+    assert_eq!(probe_mode(None), (ProbeMode::Auto, None));
+    assert_eq!(probe_mode(env("")), (ProbeMode::Auto, None));
+    assert_eq!(probe_mode(env("auto")), (ProbeMode::Auto, None));
+    assert_eq!(probe_mode(env("text")), (ProbeMode::Text, None));
+}
+
+#[test]
+fn any_other_probe_method_warns_and_uses_auto() {
+    for bad in ["Text", " auto", "auto ", "AUTO", "txt", "text\n", "0"] {
+        let (mode, warning) = probe_mode(env(bad));
+        assert_eq!(mode, ProbeMode::Auto, "{bad:?}");
+        assert_eq!(
+            warning.as_deref(),
+            Some(
+                format!(
+                    "warning: ignored AMPLIHACK_PROFILE_USAGE_PROBE {bad:?} (use auto or text); using auto"
+                )
+                .as_str()
+            ),
+            "{bad:?}"
+        );
+    }
+}
+
+#[test]
+fn a_hostile_probe_method_is_escaped_and_cut_in_the_warning() {
+    let long = "m".repeat(40);
+    let (_, warning) = probe_mode(env(&long));
+    let warning = warning.unwrap();
+    assert!(
+        warning.contains(&format!("{:?}", "m".repeat(32))),
+        "{warning}"
+    );
+    assert!(!warning.contains(&"m".repeat(33)), "{warning}");
+    let (_, warning) = probe_mode(env("\u{1b}[31m\u{202e}"));
+    let warning = warning.unwrap();
+    assert!(!warning.contains('\u{1b}'), "{warning:?}");
+    assert!(!warning.contains('\u{202e}'), "{warning:?}");
+    assert!(warning.contains("\\u{1b}"), "{warning:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_probe_method_warns_and_uses_auto() {
+    use std::os::unix::ffi::OsStrExt;
+    let (mode, warning) = probe_mode(Some(OsStr::from_bytes(b"\xff")));
+    assert_eq!(mode, ProbeMode::Auto);
+    let warning = warning.unwrap();
+    assert!(warning.contains("\u{fffd}"), "{warning}");
+    assert!(
+        warning.ends_with("(use auto or text); using auto"),
+        "{warning}"
+    );
 }
 
 // ---------------------------------------------------------------------------

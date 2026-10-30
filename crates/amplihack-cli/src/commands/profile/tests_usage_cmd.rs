@@ -872,13 +872,18 @@ fn usage_sources_never_touch_credentials_the_environment_or_a_shell() {
     for (name, src) in [
         ("usage_cmd.rs", include_str!("usage_cmd.rs")),
         ("usage_parse.rs", include_str!("usage_parse.rs")),
+        ("usage_request.rs", include_str!("usage_request.rs")),
+        ("probe_limits.rs", include_str!("probe_limits.rs")),
     ] {
         for needle in [
             "set_var",
             "remove_var",
             "Command::new(\"sh\"",
             ".credentials.json",
+            ".claude.json",
             "CREDS",
+            "oauthAccount",
+            "accessToken",
             "dangerously-skip-permissions",
             "allowedTools",
         ] {
@@ -1085,6 +1090,7 @@ fn no_profile_can_be_named_like_the_home_row() {
 #[cfg(unix)]
 mod under_load {
     use super::super::name::ProfileName;
+    use super::super::probe_limits::ProbeMode;
     use super::super::store::ProfileStore;
     use super::super::usage_cmd::{Row, observations, probe, probe_all, render_json, render_table};
     use super::super::usage_parse::UsageState;
@@ -1256,6 +1262,7 @@ mod under_load {
             &p.bin,
             &p.names,
             None,
+            ProbeMode::Text,
             Duration::from_secs(60),
             NOW,
             false,
@@ -1327,6 +1334,7 @@ mod under_load {
             &bin,
             &p.names,
             None,
+            ProbeMode::Text,
             Duration::from_secs(60),
             NOW,
             false,
@@ -1366,6 +1374,7 @@ mod under_load {
             &bin,
             &p.names,
             None,
+            ProbeMode::Text,
             Duration::from_secs(1),
             NOW,
             false,
@@ -1379,5 +1388,290 @@ mod under_load {
         );
         assert!(probes[1].report.session.is_none());
         assert!(probes[1].report.week_all.is_none());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1698: the `get_usage` request and its `/usage` fallback within one
+// deadline. A script fake switches on `$2 = --input-format`; it records each
+// start and what it read on stdin in its own temporary directory.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod request {
+    use super::super::ProfileError;
+    use super::super::name::ProfileName;
+    use super::super::probe_limits::ProbeMode;
+    use super::super::store::ProfileStore;
+    use super::super::usage_cmd::{Probe, probe_all, probe_with};
+    use super::super::usage_parse::UsageState;
+    use super::super::usage_request::{ARGS, REQUEST_ID, REQUEST_LINE};
+    use super::NOW;
+    use crate::binary_finder::BinaryInfo;
+    use std::cell::Cell;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    const USAGE: &str = "printf 'Current session: 37%% used · resets 4pm (UTC)\\nCurrent week (all models): 61%% used · resets Oct 22, 2am (UTC)\\n'";
+
+    struct Fake {
+        dir: tempfile::TempDir,
+        path: PathBuf,
+    }
+
+    impl Fake {
+        /// A fake that runs `request` for the usage request and `usage` for
+        /// `-p /usage`, after recording its arguments and its stdin.
+        fn new(request: &str, usage: &str) -> Self {
+            let dir = tempfile::tempdir().unwrap();
+            let d = dir.path().display().to_string();
+            let path = dir.path().join("claude");
+            let body = format!(
+                "#!/bin/sh\n\
+                 PATH=/usr/local/bin:/usr/bin:/bin; export PATH\n\
+                 d='{d}'\n\
+                 [ \"$1\" = -p ] || exit 0\n\
+                 echo \"$*\" >> \"$d/starts\"\n\
+                 if [ \"$2\" = --input-format ]; then\n\
+                 {request}\n\
+                 else\n\
+                 cat > \"$d/stdin-usage\"\n\
+                 {usage}\n\
+                 fi\n"
+            );
+            fs::write(&path, body).unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            settle(&path);
+            Self { dir, path }
+        }
+
+        /// The answer the request branch prints with `cat "$d/answer"`.
+        fn answer(self, line: &str) -> Self {
+            fs::write(self.dir.path().join("answer"), format!("{line}\n")).unwrap();
+            self
+        }
+
+        fn command(&self, args: &[String]) -> Command {
+            let mut c = Command::new(&self.path);
+            c.args(args).env("PATH", "/usr/local/bin:/usr/bin:/bin");
+            c
+        }
+
+        fn probe(&self, mode: ProbeMode, secs: u64, keep_raw: bool) -> Probe {
+            let build = |a: &[String]| Ok(self.command(a));
+            probe_with(build, mode, Duration::from_secs(secs), NOW, keep_raw).unwrap()
+        }
+
+        fn starts(&self) -> Vec<String> {
+            fs::read_to_string(self.dir.path().join("starts"))
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        }
+
+        fn read(&self, file: &str) -> Option<String> {
+            fs::read_to_string(self.dir.path().join(file)).ok()
+        }
+    }
+
+    /// Another test thread's fork can hold the fake's write descriptor until
+    /// its exec (ETXTBSY); run the fake with no arguments until it starts.
+    fn settle(path: &Path) {
+        let start = Instant::now();
+        while Command::new(path).status().is_err() {
+            assert!(start.elapsed() < Duration::from_secs(5), "fake never ran");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// An accepted answer: session 20%, week 30%.
+    fn accepted() -> String {
+        serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": REQUEST_ID,
+                "response": {
+                    "rate_limits_available": true,
+                    "rate_limits": {
+                        "five_hour": {"utilization": 20, "resets_at": "2026-10-16T17:00:00Z"},
+                        "seven_day": {"utilization": 30, "resets_at": "2026-10-22T09:00:00Z"}
+                    }
+                }
+            }
+        })
+        .to_string()
+    }
+
+    fn error_answer() -> String {
+        serde_json::json!({
+            "type": "control_response",
+            "response": {"subtype": "error", "request_id": REQUEST_ID, "error": "unknown"}
+        })
+        .to_string()
+    }
+
+    fn session(p: &Probe) -> f64 {
+        p.report.session.as_ref().unwrap().used_percentage
+    }
+
+    const ANSWER: &str = "cat > \"$d/stdin\"; cat \"$d/answer\"";
+
+    #[test]
+    fn an_accepted_answer_is_used_with_one_start() {
+        let f = Fake::new(ANSWER, USAGE).answer(&accepted());
+        let start = Instant::now();
+        let p = f.probe(ProbeMode::Auto, 20, false);
+        // stdin was closed after the line, so the fake did not wait for it.
+        assert!(start.elapsed() < Duration::from_secs(10), "stdin left open");
+        assert_eq!(p.report.state, UsageState::Ok);
+        assert_eq!(session(&p), 20.0);
+        assert_eq!(p.error, None);
+        assert_eq!(p.raw, None);
+        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(f.read("stdin"), Some(format!("{REQUEST_LINE}\n")));
+    }
+
+    #[test]
+    fn an_error_answer_falls_back_to_usage() {
+        let f = Fake::new(ANSWER, USAGE).answer(&error_answer());
+        let p = f.probe(ProbeMode::Auto, 20, true);
+        assert_eq!(p.report.state, UsageState::Ok);
+        assert_eq!(session(&p), 37.0);
+        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        // `--raw` shows the attempt that gave the row.
+        let raw = p.raw.unwrap();
+        assert!(raw.stdout.contains("Current session"), "{raw:?}");
+        assert!(!raw.stdout.contains("control_response"), "{raw:?}");
+        // The fallback reads /dev/null.
+        assert_eq!(f.read("stdin-usage").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn an_answer_then_a_hang_is_still_used() {
+        let f = Fake::new(&format!("{ANSWER}; exec sleep 30"), USAGE).answer(&accepted());
+        let start = Instant::now();
+        let p = f.probe(ProbeMode::Auto, 3, false);
+        assert!(start.elapsed() < Duration::from_secs(8));
+        assert_eq!(p.report.state, UsageState::Ok);
+        assert_eq!(session(&p), 20.0);
+        assert_eq!(f.starts().len(), 1, "no /usage after the deadline");
+    }
+
+    #[test]
+    fn a_silent_hang_times_out_and_never_starts_usage() {
+        let f = Fake::new("exec sleep 30", USAGE);
+        let start = Instant::now();
+        let p = f.probe(ProbeMode::Auto, 1, true);
+        assert!(start.elapsed() < Duration::from_secs(6));
+        assert_eq!(p.report.state, UsageState::Timeout);
+        assert_eq!(p.error, None);
+        assert!(p.report.session.is_none() && p.report.week_all.is_none());
+        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert!(p.raw.is_some(), "the request attempt's output");
+    }
+
+    #[test]
+    fn the_fallback_gets_only_the_time_left() {
+        // The request gives up after 3 s of a 4 s deadline; /usage then
+        // hangs. With a fresh deadline the probe would take 7 s.
+        let f = Fake::new("cat > \"$d/stdin\"; sleep 3; exit 1", "exec sleep 30");
+        let start = Instant::now();
+        let p = f.probe(ProbeMode::Auto, 4, false);
+        let took = start.elapsed();
+        assert_eq!(p.report.state, UsageState::Timeout);
+        assert!(took < Duration::from_secs(6), "took {took:?}");
+        assert!(f.starts().len() <= 2);
+    }
+
+    #[test]
+    fn text_mode_runs_usage_alone_with_no_stdin() {
+        let f = Fake::new(ANSWER, USAGE).answer(&accepted());
+        let p = f.probe(ProbeMode::Text, 20, false);
+        assert_eq!(p.report.state, UsageState::Ok);
+        assert_eq!(session(&p), 37.0);
+        assert_eq!(f.starts(), ["-p /usage"]);
+        assert_eq!(f.read("stdin"), None);
+        assert_eq!(f.read("stdin-usage").as_deref(), Some(""));
+    }
+
+    #[test]
+    fn a_request_that_ignores_stdin_falls_back() {
+        // Whether the write fails depends on timing; only the outcome counts.
+        let f = Fake::new("exit 1", USAGE);
+        let p = f.probe(ProbeMode::Auto, 20, false);
+        assert_eq!(p.report.state, UsageState::Ok);
+        assert_eq!(session(&p), 37.0);
+    }
+
+    #[test]
+    fn a_refused_first_build_starts_nothing() {
+        let f = Fake::new(ANSWER, USAGE).answer(&accepted());
+        let calls = Cell::new(0);
+        let build = |_: &[String]| -> Result<Command, ProfileError> {
+            calls.set(calls.get() + 1);
+            Err(ProfileError::NotFound("p".into()))
+        };
+        let r = probe_with(build, ProbeMode::Auto, Duration::from_secs(5), NOW, false);
+        assert!(r.is_err());
+        assert_eq!(calls.get(), 1);
+        assert!(f.starts().is_empty());
+    }
+
+    #[test]
+    fn the_directory_is_checked_again_before_usage() {
+        let f = Fake::new("exit 1", USAGE);
+        let calls = Cell::new(0);
+        let build = |a: &[String]| {
+            calls.set(calls.get() + 1);
+            if calls.get() == 1 {
+                Ok(f.command(a))
+            } else {
+                Err(ProfileError::NotFound("p".into()))
+            }
+        };
+        let r = probe_with(build, ProbeMode::Auto, Duration::from_secs(20), NOW, false);
+        assert!(r.is_err());
+        assert_eq!(calls.get(), 2);
+        assert_eq!(f.starts(), [ARGS.join(" ")]);
+    }
+
+    #[test]
+    fn an_overflow_profile_is_probed_with_usage_only() {
+        let f = Fake::new(ANSWER, USAGE).answer(&accepted());
+        let store = ProfileStore::new(f.dir.path().join("root"));
+        let names: Vec<ProfileName> = ["cred", "plan"]
+            .iter()
+            .map(|n| ProfileName::parse(n).unwrap())
+            .collect();
+        for n in &names {
+            store.add(n).unwrap();
+        }
+        let toggle = store.root().join(".auto-switch");
+        fs::write(&toggle, "enabled=off\noverflow=cred\n").unwrap();
+        fs::set_permissions(&toggle, fs::Permissions::from_mode(0o600)).unwrap();
+        let bin = BinaryInfo {
+            name: "claude".into(),
+            path: f.path.clone(),
+            version: None,
+        };
+        let probes = probe_all(
+            &store,
+            &bin,
+            &names,
+            None,
+            ProbeMode::Auto,
+            Duration::from_secs(20),
+            NOW,
+            false,
+            1,
+        );
+        assert_eq!(session(&probes[0]), 37.0, "cred read with /usage");
+        assert_eq!(session(&probes[1]), 20.0, "plan read with the request");
+        assert_eq!(f.starts(), ["-p /usage".to_string(), ARGS.join(" ")]);
     }
 }

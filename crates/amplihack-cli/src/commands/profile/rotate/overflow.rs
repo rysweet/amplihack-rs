@@ -12,9 +12,11 @@
 //!   (`candidate::may_return_to`; `tests_gate_record` checks thresholds 70,
 //!   80 and 90 against 85/90).
 //! - Onto overflow only when the live plan login is at a threshold (and its
-//!   probe did not fail), and the shared [`Gate`] allows it: no plan login
-//!   has capacity and the earliest plan reset is more than `overflow_wait`
-//!   away. An unknown reset allows it only with `--overflow-unknown-reset 1`.
+//!   probe did not fail), no plan candidate's probe is unknown (it timed out
+//!   or could not run, issue #1698), and the shared [`Gate`] allows it: no
+//!   plan login has capacity and the earliest plan reset is more than
+//!   `overflow_wait` away. An unknown reset allows it only with
+//!   `--overflow-unknown-reset 1`.
 //!   This replaces the ALERT, and also a threshold swap onto a plan login
 //!   that is itself at a threshold; that swap still happens when the gate
 //!   does not allow overflow. Auto-switch decides in the same order.
@@ -246,7 +248,13 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
                 .any(|c| &c.name == to && plan_usable(s, &c.reading)),
             _ => false,
         };
-        if i.overflow.is_empty() || !moving_without_capacity || i.live.reading == Reading::Failed {
+        // A plan login whose probe timed out or could not run might have
+        // capacity: a failed measurement never moves work onto credits.
+        if i.overflow.is_empty()
+            || !moving_without_capacity
+            || i.live.reading == Reading::Failed
+            || plan.iter().any(|c| c.unknown)
+        {
             return verdict(d, None, None);
         }
         let plan_has_capacity = plan.iter().any(|c| plan_usable(s, &c.reading));

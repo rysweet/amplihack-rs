@@ -33,6 +33,7 @@ mod store;
 mod supervise_gate;
 mod usage_cmd;
 mod usage_parse;
+mod usage_request;
 
 #[cfg(test)]
 mod tests_commands;
@@ -74,6 +75,8 @@ mod tests_store;
 mod tests_usage_cmd;
 #[cfg(test)]
 mod tests_usage_parse;
+#[cfg(test)]
+mod tests_usage_request;
 #[cfg(test)]
 mod tests_verify;
 

@@ -1,15 +1,16 @@
-//! Measuring: `claude -p /usage` for the live login and every candidate, in
-//! parallel, with the `profile usage` probe and its limits (`probe_limits`).
-//! The live login is probed with `CLAUDE_CONFIG_DIR` removed, so `claude`
-//! uses `~/.claude`. Claude's text is parsed and dropped; only percentages,
-//! reset times and states leave this module.
+//! Measuring: the live login and every candidate, in parallel, with the
+//! `profile usage` probe and its settings (`probe_limits`): the method, the
+//! deadline and the bound. The live login is probed with `CLAUDE_CONFIG_DIR`
+//! removed, so `claude` uses `~/.claude`. Claude's output is parsed and
+//! dropped; only percentages, reset times and states leave this module.
 
 use super::decide::Probed;
 use crate::binary_finder::BinaryInfo;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::probe_limits::{self, ProbeMode};
 use crate::commands::profile::store::ProfileStore;
-use crate::commands::profile::usage_cmd::{self, Probe};
-use crate::commands::profile::{probe_limits, run, usage_parse::UsageState};
+use crate::commands::profile::usage_cmd::{self, ErrorReason, Probe};
+use crate::commands::profile::usage_parse::UsageState;
 use std::time::Duration;
 
 /// Whose login is in `~/.claude`.
@@ -22,17 +23,43 @@ pub enum Live<'a> {
     Platform,
 }
 
-/// The reading for `p`. A failed probe counts as "swap needed", so its
-/// cause goes to stderr (the daemon's `rotate.err`); the text is fixed and
-/// never Claude's output. A timed-out probe reads `Failed` too: unknown,
-/// never a target and never exhausted, and probed again next cycle.
+impl Live<'_> {
+    /// Whether the live login is probed: an API-key one never is.
+    pub fn probed(&self) -> bool {
+        !matches!(self, Self::Platform)
+    }
+}
+
+/// The reading for `p`. A failed or timed-out probe counts as "swap needed",
+/// so its cause goes to stderr (the daemon's `rotate.err`); the text is fixed
+/// and never Claude's output. Both read `Failed`: never a target and never
+/// exhausted, and probed again next cycle. They are also unknown, which
+/// blocks a move onto overflow, except a refused profile directory: that
+/// stays refused until someone fixes it, like a logged-out login, so it does
+/// not hold overflow back on every cycle.
 pub(super) fn reading(who: &str, p: &Probe) -> Probed {
     if p.error.is_some() || p.report.state == UsageState::Error {
         let why = p.error.map_or("unreadable /usage output", |e| e.as_str());
         eprintln!("warning: rotate: probe of {who} failed: {why}");
-        return Probed::failed();
+        return Probed {
+            unknown: p.error != Some(ErrorReason::ProfileRefused),
+            ..Probed::failed()
+        };
+    }
+    if p.report.state == UsageState::Timeout {
+        eprintln!("warning: rotate: probe of {who} timed out");
     }
     Probed::from_report(&p.report)
+}
+
+/// The probe method, as `profile usage` resolves it. A bad variable falls
+/// back to `auto` and warns on stderr, once per cycle.
+fn mode() -> ProbeMode {
+    let (mode, warning) = probe_limits::probe_mode_from_env();
+    if let Some(w) = warning {
+        eprintln!("{w}");
+    }
+    mode
 }
 
 /// The probe deadline, as `profile usage` resolves it without a flag. A bad
@@ -47,8 +74,9 @@ fn timeout() -> Duration {
 }
 
 /// The live probe and each candidate's, in the order of `candidates`, with
-/// reset times kept for exhausted readings too. The deadline and the bound
-/// are those `profile usage` uses; the live probe counts against the bound.
+/// reset times kept for exhausted readings too. The method, deadline and
+/// bound are those `profile usage` uses; the live probe counts against the
+/// bound.
 pub fn measure(
     store: &ProfileStore,
     binary: &BinaryInfo,
@@ -56,9 +84,10 @@ pub fn measure(
     candidates: &[ProfileName],
     now: i64,
 ) -> (Probed, Vec<(ProfileName, Probed)>) {
+    let mode = mode();
     let timeout = timeout();
-    let live_probed = usize::from(!matches!(live, Live::Platform));
-    let (bound, warning) = probe_limits::parallel_from_host(candidates.len() + live_probed);
+    let probes = candidates.len() + usize::from(live.probed());
+    let (bound, warning) = probe_limits::parallel_from_host(probes);
     if let Some(w) = warning {
         eprintln!("{w}");
     }
@@ -67,39 +96,36 @@ pub fn measure(
     if let Some(var) = usage_cmd::env_credential_var(|k| std::env::var_os(k)) {
         eprintln!("{}", usage_cmd::env_credential_warning(var));
     }
-    measure_with(store, binary, live, candidates, now, timeout, bound)
+    measure_with(store, binary, live, candidates, now, mode, timeout, bound)
 }
 
-/// [`measure`] with the deadline and bound given. The live probe and the
-/// candidates share one pool of `bound` slots, the live probe first, so at
-/// most `bound` run at once and a slot freed by any probe, the live one
-/// included, goes to the next candidate.
+/// [`measure`] with the method, deadline and bound given. The live probe and
+/// the candidates share one pool of `bound` slots, the live probe first, so
+/// at most `bound` run at once and a slot freed by any probe, the live one
+/// included, goes to the next candidate. Claude's output is never kept.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn measure_with(
     store: &ProfileStore,
     binary: &BinaryInfo,
     live: Live<'_>,
     candidates: &[ProfileName],
     now: i64,
+    mode: ProbeMode,
     timeout: Duration,
     bound: usize,
 ) -> (Probed, Vec<(ProfileName, Probed)>) {
-    let args = ["-p".to_string(), "/usage".to_string()];
     let probe_live = || {
-        let cmd = match live {
+        let p = match live {
             Live::Platform => return Probed::platform(),
-            Live::Profile(name) => run::build_default_dir_command(binary, store, name, &args),
-            Live::Unowned => Ok(run::build_home_command(binary, &args)),
-        };
-        match cmd {
-            Ok(cmd) => reading("~/.claude", &usage_cmd::probe(cmd, timeout, now, false)),
-            Err(e) => {
-                eprintln!("warning: rotate: probe of ~/.claude failed: {e}");
-                Probed::failed()
+            Live::Profile(name) => {
+                usage_cmd::probe_profile(store, binary, name, true, mode, timeout, now, false)
             }
-        }
+            Live::Unowned => usage_cmd::probe_home(binary, mode, timeout, now, false),
+        };
+        reading("~/.claude", &p)
     };
     // Job 0 is the live probe, unless the live login is not probed.
-    let skip = usize::from(!matches!(live, Live::Platform));
+    let skip = usize::from(live.probed());
     let jobs = skip + candidates.len();
     let mut probed = usage_cmd::pooled(jobs, bound, |i| match i.checked_sub(skip) {
         // A panic in the live probe is a bug; it reads as a failed probe.
@@ -107,7 +133,7 @@ pub(super) fn measure_with(
             .unwrap_or_else(|_| Probed::failed()),
         Some(c) => {
             let name = &candidates[c];
-            let p = usage_cmd::probe_profile(store, binary, name, false, timeout, now, false);
+            let p = usage_cmd::probe_profile(store, binary, name, false, mode, timeout, now, false);
             reading(name.as_str(), &p)
         }
     });

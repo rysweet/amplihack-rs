@@ -362,6 +362,7 @@ fn probed(session: f64, resets_at: i64) -> Probed {
             }),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -371,6 +372,7 @@ fn measured(name: &str, p: &Probed) -> Measured {
         reading: p.reading,
         windows: p.windows.clone(),
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -472,6 +474,7 @@ fn probed2(session: f64, week: f64) -> Probed {
             }),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
