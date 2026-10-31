@@ -43,15 +43,39 @@ impl FleetSessionReasoner {
         project_priorities: &str,
         cached_tmux_capture: Option<&str>,
     ) -> Result<SessionAnalysis> {
-        let context = gather_session_context(
+        self.reason_about_session_with(
+            vm_name,
+            session_name,
+            task_prompt,
+            project_priorities,
+            cached_tmux_capture,
+            &|_| {},
+        )
+    }
+
+    /// [`Self::reason_about_session`] with `configure` applied to every child
+    /// it starts (the `azlin` context gather and the reasoner's `claude`), so a
+    /// test can give them their own environment without changing the test
+    /// process's (issue #1765).
+    pub(super) fn reason_about_session_with(
+        &mut self,
+        vm_name: &str,
+        session_name: &str,
+        task_prompt: &str,
+        project_priorities: &str,
+        cached_tmux_capture: Option<&str>,
+        configure: &dyn Fn(&mut Command),
+    ) -> Result<SessionAnalysis> {
+        let context = gather_session_context_with(
             &self.azlin_path,
             vm_name,
             session_name,
             task_prompt,
             project_priorities,
             cached_tmux_capture,
+            configure,
         )?;
-        let (decision, diagnostic) = self.reason(&context);
+        let (decision, diagnostic) = self.reason_with(&context, configure);
         self.decisions.push(decision.clone());
         Ok(SessionAnalysis {
             context,
@@ -60,7 +84,19 @@ impl FleetSessionReasoner {
         })
     }
 
+    /// Test-only: production calls the `_with` form directly (issue #1765).
+    #[cfg(test)]
     pub(super) fn reason(&self, context: &SessionContext) -> (SessionDecision, Option<String>) {
+        self.reason_with(context, &|_| {})
+    }
+
+    /// `reason` with `configure` applied to the reasoner's `claude`
+    /// child (issue #1765).
+    pub(super) fn reason_with(
+        &self,
+        context: &SessionContext,
+        configure: &dyn Fn(&mut Command),
+    ) -> (SessionDecision, Option<String>) {
         if context.agent_status == AgentStatus::Thinking {
             return (
                 SessionDecision {
@@ -117,7 +153,7 @@ impl FleetSessionReasoner {
             SESSION_REASONER_SYSTEM_PROMPT,
             context.to_prompt_context()
         );
-        match self.backend.complete(&prompt) {
+        match self.backend.complete_with(&prompt, configure) {
             Ok(response_text) => {
                 if let Some(decision) = parse_reasoner_response(&response_text, context) {
                     return (decision, None);

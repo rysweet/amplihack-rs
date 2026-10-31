@@ -250,9 +250,22 @@ async fn run_session_loop_processes_an_accepted_instruction_then_stops() {
         (result, session)
     });
 
-    // Deliver one instruction; give the loop time to run + publish the turn.
+    // Deliver one instruction and wait until the loop has run it and published
+    // the turn. `stop` closes the channel ahead of any still-queued prompt, so
+    // sending it after a fixed sleep raced the loop on a loaded host and the
+    // instruction was dropped before it ran.
     fake.enqueue_inbound(&operator_inbound("grp-loop==", "run the tests again"));
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    tokio::time::timeout(HANG_GUARD, async {
+        while !fake
+            .sent()
+            .iter()
+            .any(|(g, b)| g == "grp-loop==" && b == "ran: run the tests again")
+        {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the loop must run and publish the accepted instruction before `stop`");
     // Then stop: the loop must quit the group and return Ok(()).
     fake.enqueue_inbound(&operator_inbound("grp-loop==", "stop"));
 

@@ -203,12 +203,24 @@ fn normalize_url(url: &str) -> String {
 }
 
 pub(crate) fn run_claude_reflection(project_root: &Path, prompt: &str) -> Result<Option<String>> {
+    run_claude_reflection_with(project_root, prompt, &|_| {})
+}
+
+/// [`run_claude_reflection`] with `configure` applied to the reflection
+/// command just before it is spawned. Tests use it to set the child's PATH
+/// and HOME (issue #1765).
+fn run_claude_reflection_with(
+    project_root: &Path,
+    prompt: &str,
+    configure: &dyn Fn(&mut Command),
+) -> Result<Option<String>> {
     let binary = std::env::var("AMPLIHACK_REFLECTION_BINARY")
         .ok()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(active_agent_binary);
 
-    let mut child = Command::new(&binary)
+    let mut command = Command::new(&binary);
+    command
         .args([
             "-p",
             "--permission-mode",
@@ -223,7 +235,9 @@ pub(crate) fn run_claude_reflection(project_root: &Path, prompt: &str) -> Result
         .current_dir(project_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    configure(&mut command);
+    let mut child = command
         .spawn()
         .with_context(|| format!("failed to launch reflection binary '{binary}'"))?;
 
@@ -313,36 +327,37 @@ mod tests {
         let fake_cli = dir.path().join("copilot");
         fs::write(
             &fake_cli,
-            "#!/usr/bin/env bash\ncat >/dev/null\nprintf '## Task Summary\\nReflected via agent binary\\n'\n",
+            "#!/bin/sh\n/bin/cat >/dev/null\nprintf '## Task Summary\\nReflected via agent binary\\n'\n",
         )
         .unwrap();
         let mut perms = fs::metadata(&fake_cli).unwrap().permissions();
         perms.set_mode(0o755);
         fs::set_permissions(&fake_cli, perms).unwrap();
 
-        let previous_path = std::env::var_os("PATH");
         let previous_agent_binary = std::env::var_os("AMPLIHACK_AGENT_BINARY");
         // Issue #1481: a recipe step can inherit a `default:copilot` tag, which
         // would make the resolver skip the value this test sets.
         let previous_agent_source = std::env::var_os("AMPLIHACK_AGENT_BINARY_SOURCE");
         let previous_reflection_binary = std::env::var_os("AMPLIHACK_REFLECTION_BINARY");
-        let temp_path = match previous_path.as_ref() {
-            Some(path) => format!("{}:{}", dir.path().display(), path.to_string_lossy()),
-            None => dir.path().display().to_string(),
-        };
         unsafe {
-            std::env::set_var("PATH", temp_path);
             std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
             std::env::remove_var("AMPLIHACK_AGENT_BINARY_SOURCE");
             std::env::remove_var("AMPLIHACK_REFLECTION_BINARY");
         }
 
-        let result = run_claude_reflection(dir.path(), "reflect now").unwrap();
+        // Issue #1765: the fake `copilot` is reached through the child's PATH
+        // alone, with no parent entries after it, so a missing fake fails to
+        // spawn instead of running an installed agent CLI. The process PATH
+        // and HOME are never changed.
+        let result =
+            run_claude_reflection_with(dir.path(), "reflect now", &|command: &mut Command| {
+                command
+                    .env("PATH", dir.path())
+                    .env("HOME", dir.path())
+                    .env_remove(amplihack_utils::rotator_status::ROOT_ENV);
+            })
+            .unwrap();
 
-        match previous_path {
-            Some(value) => unsafe { std::env::set_var("PATH", value) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
         match previous_agent_binary {
             Some(value) => unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", value) },
             None => unsafe { std::env::remove_var("AMPLIHACK_AGENT_BINARY") },

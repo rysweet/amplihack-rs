@@ -2,7 +2,7 @@
 title: Use Amplihack with Codex
 description: Install native Codex assets, preserve configuration and run recipes.
 type: howto
-updated: 2026-10-08
+updated: 2026-10-28
 ---
 
 # Use Amplihack with Codex
@@ -192,6 +192,8 @@ Managed delivery requires both semantic validation and exact Cargo provenance: p
 ## Migration and troubleshooting
 
 Legacy `config.yaml` with `approval_mode: auto` and legacy JSON are not current Codex configuration. Only positively identified Amplihack-generated files are automatically migrated or removed. Ambiguous files remain for manual review: back them up, translate intended settings into TOML using the official configuration reference, and remove obsolete files yourself after verification. Never replace your TOML wholesale.
+
+If `amplihack codex` stops with `failed native Codex reconciliation`, or `amplihack install` or `amplihack update` stops with `failed native Codex installation`, the rest of the message names the cause: a probe timeout, a non-zero exit, output that is not JSON, or a Codex without plugin support. Only the last case asks you to update Codex. See the [native plugin probe reference](../reference/codex-native-plugin-probe.md) for each message and its fix.
 
 If hooks do not run, inspect plugin enablement, `/hooks` trust, and managed hook policy. If a recipe fails compatibility checks, inspect `RECIPE_RUNNER_RS_PATH` and the capability probe before reinstalling the managed runner. If configuration cannot be edited, repair its syntax or explicitly edit the resolved symlink target; Amplihack preserves the original. Unsupported fresh/resume option combinations fail rather than silently discarding requested settings. See the [mode-specific flag matrix](../reference/flag-matrix.md).
 

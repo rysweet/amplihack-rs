@@ -148,6 +148,46 @@ mod issue_1699_isolated_profile_root;
 mod issue_1699_real_root_guard;
 #[path = "issue_1707_claim_check_shell_suites.rs"]
 mod issue_1707_claim_check_shell_suites;
+#[path = "issue_1760_agent_markers.rs"]
+mod issue_1760_agent_markers;
+#[path = "issue_1760_agent_profile_resolved.rs"]
+mod issue_1760_agent_profile_resolved;
+#[path = "issue_1760_agent_register_discover.rs"]
+mod issue_1760_agent_register_discover;
+#[path = "issue_1760_agent_register_env.rs"]
+mod issue_1760_agent_register_env;
+#[path = "issue_1760_agent_register_pane.rs"]
+mod issue_1760_agent_register_pane;
+#[path = "issue_1760_agent_registry.rs"]
+mod issue_1760_agent_registry;
+#[path = "issue_1760_agent_registry_safety.rs"]
+mod issue_1760_agent_registry_safety;
+#[path = "issue_1760_agent_source_scan.rs"]
+mod issue_1760_agent_source_scan;
+#[path = "issue_1760_agent_supervise.rs"]
+mod issue_1760_agent_supervise;
+#[path = "issue_1760_agent_supervise_checks.rs"]
+mod issue_1760_agent_supervise_checks;
+#[path = "issue_1760_agent_supervise_dupes.rs"]
+mod issue_1760_agent_supervise_dupes;
+#[path = "issue_1760_agent_supervise_limits.rs"]
+mod issue_1760_agent_supervise_limits;
+#[path = "issue_1760_agent_tmux_scope.rs"]
+mod issue_1760_agent_tmux_scope;
+#[path = "issue_1760_agent_wrapper.rs"]
+mod issue_1760_agent_wrapper;
+#[path = "issue_1760_agent_wrapper_refusals.rs"]
+mod issue_1760_agent_wrapper_refusals;
+#[path = "issue_1760_fake_proc.rs"]
+mod issue_1760_fake_proc;
+#[path = "issue_1760_fake_systemd_run.rs"]
+mod issue_1760_fake_systemd_run;
+#[path = "issue_1760_fakes.rs"]
+mod issue_1760_fakes;
+#[path = "issue_1760_fixture.rs"]
+mod issue_1760_fixture;
+#[path = "issue_1760_fixture_files.rs"]
+mod issue_1760_fixture_files;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

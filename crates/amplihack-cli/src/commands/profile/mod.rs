@@ -702,6 +702,30 @@ pub(crate) fn substitute_inherited_profile(inherited: &str) -> Option<String> {
     auto_switch::substitute_name(inherited)
 }
 
+/// `agent supervise` seam (issue #1760): the config directory a launch with
+/// `flag` and no inherited `AMPLIHACK_CLAUDE_PROFILE` resolves to, as a
+/// resumed pane runs it. That is the flag's profile, else the default
+/// pointer's; `None` means `~/.claude` (neither is set, or the profile is the
+/// rotator's live login). Prints nothing, takes no lock and refuses nothing
+/// that only the launch itself checks. An error is a whole sentence.
+pub(crate) fn resume_profile_dir(
+    flag: Option<&str>,
+    home: Option<&std::path::Path>,
+) -> std::result::Result<Option<PathBuf>, String> {
+    let store = ProfileStore::from_env().map_err(|e| e.to_string())?;
+    let Some((name, dir)) =
+        resolve_launch_profile(&store, flag, None).map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+    if default_live::could_be_live(&store, &name)
+        && default_live::live_name(&store, home).is_some_and(|l| l == name)
+    {
+        return Ok(None);
+    }
+    Ok(Some(dir))
+}
+
 /// Profile directory for an interactive `launch`/`claude`: `--profile`, then
 /// an inherited `AMPLIHACK_CLAUDE_PROFILE`, then the default pointer, then
 /// none. Docker and auto launches refuse a non-empty inherited value and skip

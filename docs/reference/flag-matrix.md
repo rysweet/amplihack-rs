@@ -68,7 +68,6 @@ Launcher flag injection behavior is derived from `command.rs`. Codex resume uses
 | `--dangerously-skip-permissions` | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `--model` (auto-inject) | ✅ | ✅ | ✅ | ✅ | ❌ | ❌ |
 | `--allow-all` (auto-inject) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| `--remote` (auto-inject) | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | `--resume` | ✅ | ✅ | ✅ | ✅ | ✅ | Native `resume` subcommand |
 | `--continue` | ✅ | ✅ | ✅ | ✅ | ✅ | Native `resume --last` |
 | `--plugin-dir` (UVX auto-inject only) | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
@@ -83,7 +82,6 @@ The UVX rows describe automatic launcher injection only. Codex accepts explicit 
 |---|---|
 | `AMPLIHACK_DEFAULT_MODEL` | Sets the model passed to Claude-compatible tools. Unset means `claude-opus-5[1m]`; empty or whitespace-only passes no `--model`; a dotted Claude id is rewritten to hyphens. See [`AMPLIHACK_DEFAULT_MODEL`](./environment-variables.md#amplihack_default_model) |
 | `AMPLIHACK_COPILOT_NO_ALLOW_ALL` | Set to `1` to suppress `--allow-all` injection for Copilot |
-| `AMPLIHACK_COPILOT_NO_REMOTE` | Set to `1` to suppress `--remote` injection for Copilot |
 
 ## Flag injection rules
 
@@ -103,9 +101,11 @@ The UVX rows describe automatic launcher injection only. Codex accepts explicit 
 3. **`--allow-all`**: Injected only for `copilot` unless suppressed by env
    var or the user already provided any `--allow-all*` flag.
 
-4. **`--remote`**: Injected only for `copilot` unless suppressed by
-   `AMPLIHACK_COPILOT_NO_REMOTE=1` or the user already passed `--remote`
-   or `--no-remote`.
+4. **`--remote`**: Not injected. A user's `--remote` or `--no-remote` is
+   passed through unchanged; Copilot 1.0.105 rejects both, so use
+   `/remote on` or `/remote off` inside a session (issue #1744). Routed
+   (LiteLLM proxy) launches still add `--no-remote` and `--no-remote-export`;
+   on Copilot 1.0.105 these stop the launch (#1747).
 
 5. **UVX plugin args**: `--plugin-dir` and `--add-dir` are injected only
    for `claude` when running in a UVX deployment.
@@ -168,9 +168,9 @@ its full flag capabilities.
 | Claude default | `claude`, no extra args | `--model claude-opus-5[1m]` |
 | Claude skip-perms | `claude`, `--skip-permissions` | `--dangerously-skip-permissions --model claude-opus-5[1m]` |
 | Claude pinned model | `claude`, `AMPLIHACK_DEFAULT_MODEL=sonnet` | `--model sonnet` |
-| Copilot default | `copilot`, no extra args | `--allow-all --remote` |
-| Copilot suppressed | `copilot`, `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` + `AMPLIHACK_COPILOT_NO_REMOTE=1` | (no flags) |
-| Copilot no-remote | `copilot`, `--no-remote` | `--allow-all` (no `--remote` injected) |
+| Copilot default | `copilot`, no extra args | `--allow-all` |
+| Copilot suppressed | `copilot`, `AMPLIHACK_COPILOT_NO_ALLOW_ALL=1` | (no flags) |
+| Copilot no-remote | `copilot`, `--no-remote` | `--allow-all --no-remote` |
 | Codex default | `codex`, no extra args | (no flags) |
 | User model override | `claude`, `--model sonnet` | `--model sonnet` (no duplicate) |
 
