@@ -21,6 +21,7 @@ use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::Gate;
 use crate::commands::profile::rotate::plan_room::room;
 use crate::commands::profile::store::ProfileStore;
+use crate::commands::profile::{rotate, usage_cmd};
 use amplihack_utils::claude_capacity::{self as cap, CapacityFile, State as Cap};
 use chrono::DateTime;
 use std::collections::BTreeMap;
@@ -152,8 +153,9 @@ fn classify(e: Option<&Evidence>, threshold: u8, now: i64) -> Option<Over> {
 /// A plan profile's evidence as the overflow gate sees it: when it regains
 /// capacity, and whether it has room (issue #1804). The same helpers as
 /// [`super::candidate::select_with_overflow`] ([`regains`], [`has_room`]),
-/// so the file says overflow is usable exactly when the selection would move
-/// onto it. `None` for no reading (none, or a failed probe), which is
+/// so the file says overflow is usable when the selection would move onto it.
+/// The login check is not here: each writer applies it first, through
+/// [`OverflowInputs::refuse_key`]. `None` for no reading (none, or a failed probe), which is
 /// neither a known reset nor room.
 fn gate_view(e: Option<&Evidence>, g: &Gate, now: i64) -> Option<(Option<i64>, bool)> {
     match e? {
@@ -286,10 +288,21 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
             })
             .collect();
         let now = fsx::now();
-        let overflow = OverflowInputs::load(&state.root, &eff.config, now);
+        let mut overflow = OverflowInputs::load(&state.root, &eff.config, now);
         // Kinds unknown: write nothing, and leave any existing file as it is.
         if overflow.kinds_unknown {
             return;
+        }
+        let rotator = || {
+            matches!(
+                rotate::overflow_gate(&state.root).1,
+                rotate::GateSource::Rotator(_)
+            )
+        };
+        if overflow.platform.is_some()
+            && !overflow.key_counts(&state.root, usage_cmd::home_dir().as_deref(), rotator())
+        {
+            overflow.refuse_key();
         }
         write_if_changed(
             state,
@@ -313,11 +326,15 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
 /// (issue #1606), so work can go on whatever the plan readings say. The
 /// result is then `ok`, which replaces an existing file but never creates
 /// one (an `ok` result never does).
+///
+/// `key_usable`: the rotator's login check for the API-key profile passes,
+/// so it could move onto it, and the file agrees with the move (issue #1804).
 pub fn refresh_from_rotation(
     root: &Path,
     readings: &[(ProfileName, Rotated)],
     now: i64,
     on_overflow: bool,
+    key_usable: bool,
 ) {
     // See `refresh` on catch_unwind.
     let _ = catch_unwind(AssertUnwindSafe(|| {
@@ -352,9 +369,12 @@ pub fn refresh_from_rotation(
                 )
             })
             .collect();
-        let overflow = OverflowInputs::load(&state.root, &eff.config, now);
+        let mut overflow = OverflowInputs::load(&state.root, &eff.config, now);
         if overflow.kinds_unknown {
             return;
+        }
+        if !key_usable {
+            overflow.refuse_key();
         }
         let mut file = compute(
             &profiles,

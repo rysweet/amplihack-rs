@@ -6,6 +6,7 @@ use super::alert::{alert_key, should_alert};
 use super::cycle::Ctx;
 use super::decide::Reading;
 use super::identify::LiveId;
+use super::key_check;
 use super::ledger::{
     LIVE_KIND_PLATFORM, LastCycle, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState,
     active_blocks, prune_blocks,
@@ -17,7 +18,6 @@ use super::overflow_msg::CheckNote;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Rotated, capacity_from_rotation, now};
 use crate::commands::profile::name::ProfileName;
-use std::path::Path;
 
 /// Stores a spend block for each of `names` that has no active one, with
 /// one ALERT per block. The block record, not `ledger.alert`, prevents a
@@ -95,6 +95,23 @@ pub fn target_check(ctx: &Ctx, snap: &Snap, to: &ProfileName) -> Result<CheckNot
     } else {
         Ok(CheckNote::Credit)
     }
+}
+
+/// Logs one ALERT when the `$HOME` files hold a key while a plan login is
+/// live, and again if the setting changes (issue #1804). It needs no mark
+/// and no swap: the key is in use from the moment it is there. The cycle goes
+/// on, because no move fixes this, and `ledger.alert` is left alone so that
+/// a stay does not clear it and repeat the line.
+pub fn note_home_key(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
+    let found = (!snap.platform_live())
+        .then(|| key_check::reachable(&ctx.home).ok())
+        .flatten();
+    if let Some(setting) = found
+        && found != ctx.home_key
+    {
+        out.emit(now(), &msg::alert_home_key(setting));
+    }
+    ctx.home_key = found;
 }
 
 /// Writes a failed login check: the `key_check_refused` line and its ALERT
@@ -175,9 +192,11 @@ pub fn stay_note(
 /// Rewrites the no-capacity file from this cycle's readings: the live
 /// profile's and every other candidate's, as measured. On credits it reads
 /// `ok`, since work can go on. The API-key profile's synthetic reading
-/// (issue #1700) is left out: it is never plan capacity.
+/// (issue #1700) is left out: it is never plan capacity. The API key counts
+/// as somewhere to go only when the rotator's login check passes, and a live
+/// API-key profile that fails it is no reason to say `ok` (issue #1804).
 pub fn refresh_capacity(
-    root: &Path,
+    ctx: &Ctx,
     live: Option<&ProfileName>,
     reading: &Reading,
     others: &[(ProfileName, Reading)],
@@ -185,11 +204,14 @@ pub fn refresh_capacity(
     tag: Option<Tag>,
     platform: Option<&ProfileName>,
 ) {
+    let key_usable = platform.is_none() || key_check::reachable(&ctx.home).is_ok();
     let readings: Vec<(ProfileName, Rotated)> = rotated(live, reading, others)
         .into_iter()
         .filter(|(n, _)| Some(n) != platform)
         .collect();
-    capacity_from_rotation(root, &readings, t, Tag::on_overflow(tag));
+    let on_overflow = Tag::on_overflow(tag) && (key_usable || live != platform);
+    let root = ctx.store.root();
+    capacity_from_rotation(root, &readings, t, on_overflow, key_usable);
 }
 
 /// Records the cycle as ended at `t` with `outcome`, after measuring from

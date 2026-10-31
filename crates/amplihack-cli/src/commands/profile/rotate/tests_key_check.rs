@@ -197,6 +197,22 @@ fn a_symlinked_claude_json_fails_and_names_the_file() {
     no_sentinel(&r);
 }
 
+/// What Claude 2.1.316 printed for `-p /usage` with each key setting in
+/// `$HOME` and a plan login live: no reading, so the live login is `Failed`
+/// and the per-token tier is not tried from it. See "API-key login check".
+#[test]
+fn claudes_cost_text_under_a_home_key_is_a_failed_reading() {
+    use super::decide::{Probed, Reading};
+    use crate::commands::profile::usage_parse::parse_usage;
+    let printed = "Total cost:            $0.0000\n\
+                   Total duration (API):  0s\n\
+                   Total duration (wall): 1s\n\
+                   Total code changes:    0 lines added, 0 lines removed\n\
+                   Usage:                 0 input, 0 output, 0 cache read, 0 cache write\n";
+    let report = parse_usage(printed, "", 1_793_389_376);
+    assert_eq!(Probed::from_report(&report).reading, Reading::Failed);
+}
+
 #[test]
 fn the_seam_type_accepts_a_fake_check() {
     // The cycle tests replace the check through `Ctx.key_check`.

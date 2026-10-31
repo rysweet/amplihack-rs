@@ -69,6 +69,15 @@ pub fn key_check_refused(name: &ProfileName, reason: &str) -> String {
     format!("key_check_refused {name}: {reason}")
 }
 
+/// The ALERT for a key in the `$HOME` files while a plan login is live.
+/// `setting` is `key_check`'s fixed detail, never a value.
+pub fn alert_home_key(setting: &str) -> String {
+    format!(
+        "ALERT: home_key ({setting}): {}",
+        super::key_check::HOME_KEY_EFFECT
+    )
+}
+
 /// The ALERT written with [`key_check_refused`], once per profile.
 pub fn alert_key_check(name: &ProfileName, reason: &str) -> String {
     format!("ALERT: API key profile {name} failed its login check ({reason}); not moving onto it")

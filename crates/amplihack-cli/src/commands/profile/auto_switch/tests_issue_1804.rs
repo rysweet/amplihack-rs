@@ -226,6 +226,64 @@ fn an_unmarked_key_never_makes_the_capacity_file_ok() {
     assert_eq!(file.state, Cap::Low, "over: {:?}", file.over);
 }
 
+/// Every plan login at 100%, a far reset, and a marked key: the file reads
+/// `ok` only while the move would really happen. The rotator refuses a key
+/// that fails its login check, and `ok` would silence the no-capacity warning
+/// at the moment nothing can run.
+#[test]
+fn a_marked_key_that_fails_its_login_check_never_makes_the_file_ok() {
+    let _l = lock();
+    let f = fx("enabled=on\noverflow=console\n");
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _unset = EnvGuard::unset([
+        "AMPLIHACK_ROTATE_OVERFLOW_WAIT",
+        "AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET",
+        "AMPLIHACK_ROTATE_SESSION_AT",
+        "AMPLIHACK_ROTATE_WEEK_AT",
+    ]);
+    let now = fsx::now();
+    f.state
+        .save_usage(&UsageFile {
+            version: 1,
+            accounts: used_up(now),
+        })
+        .unwrap();
+    let readings: Vec<(ProfileName, capacity::Rotated)> = ["work", "spare", "cred"]
+        .into_iter()
+        .map(|p| (n(p), capacity::Rotated::Exhausted))
+        .collect();
+    let read = || {
+        let at = chrono::DateTime::from_timestamp(now, 0).unwrap();
+        cap::read_at(&f.root, at).map(|file| file.state)
+    };
+
+    capacity::refresh_from_rotation(&f.root, &readings, now, false, false);
+    assert_eq!(read(), Some(Cap::Exhausted), "refused key, nothing can run");
+    capacity::refresh_from_rotation(&f.root, &readings, now, false, true);
+    assert_eq!(read(), Some(Cap::Ok), "the same state with a passing check");
+}
+
+/// Each writer uses the check of whoever would make the move.
+#[test]
+fn the_capacity_check_follows_who_would_move_onto_the_key() {
+    let f = fx("enabled=on\noverflow=console\n");
+    let c = cfg(&["console"]);
+    let inputs = f.inputs(&c, Some(GATE), 2_000_000_000);
+    assert!(inputs.platform.is_some(), "console is the marked key");
+    let home = f.home.as_path();
+    let key = |path: &Path| {
+        fs::write(path, r#"{"primaryApiKey":"k"}"#).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    assert!(!inputs.key_counts(&f.root, Some(home), false), "no key");
+    key(&f.root.join("console").join(".claude.json"));
+    assert!(inputs.key_counts(&f.root, Some(home), false), "own files");
+    assert!(!inputs.key_counts(&f.root, Some(home), true), "not in HOME");
+    assert!(!inputs.key_counts(&f.root, None, true), "no HOME");
+    key(&home.join(".claude.json"));
+    assert!(inputs.key_counts(&f.root, Some(home), true), "key in HOME");
+}
+
 /// `swap_check` needs the real `/proc` scan and the real gate.
 #[test]
 fn swap_check_moves_nothing_onto_a_key_with_a_mode_600_login() {

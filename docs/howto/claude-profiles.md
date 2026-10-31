@@ -1583,6 +1583,12 @@ ALERT: API key profile api-key failed its login check (no primaryApiKey, ANTHROP
 
 The ALERT is written once, not on every cycle.
 
+A key in `~/.claude.json` or `~/.claude/settings.json` is different: Claude
+uses it ahead of a plan login, so every session on the host bills per token,
+marked or not. `overflow add` warns about it and the rotator logs
+`ALERT: home_key`. See
+[API-key login check](../reference/profile-command.md#api-key-login-check).
+
 If you upgraded from a release that used API-key profiles without a mark,
 run `amplihack profile overflow add <api-key-profile>` to keep that
 behaviour. Nothing is marked for you. If an unmarked API-key profile is

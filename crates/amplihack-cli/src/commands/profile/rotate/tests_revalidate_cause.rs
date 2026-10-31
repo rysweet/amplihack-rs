@@ -210,6 +210,14 @@ fn issue_1721_failed_probes_on_other_candidates_do_not_stop_a_swap_decision() {
 #[test]
 fn issue_1721_a_one_shot_run_swaps_to_the_one_candidate_that_measured() {
     let (e, _, _) = env3();
+    // The shared fixture keeps a key in `$HOME`, which has its own ALERT.
+    private(
+        &e.home.join(".claude.json"),
+        &serde_json::json!({
+            "oauthAccount": {"accountUuid": "u-work", "emailAddress": "work@example.com"}
+        })
+        .to_string(),
+    );
     let mut ctx = ctx_with(&e, some_probes_failed);
     let outcome = run_cycle(&mut ctx, Mode::OneShot).unwrap();
     let log = log_of(&e);

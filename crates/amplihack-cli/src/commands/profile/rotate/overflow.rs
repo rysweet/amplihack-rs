@@ -39,9 +39,14 @@
 //!   and every per-token profile waits for plan logins. Off a plan login
 //!   the order is `decide`, the plan-room swap, then the marked per-token
 //!   profiles by tier, then the ALERT. A threshold swap onto a plan login
-//!   without capacity stands, unless the live login ranks first by
-//!   [`plan_room::choose`]: headroom and that rank differ, and following
-//!   both would swap two logins back and forth.
+//!   without capacity goes where [`plan_room::choose`] ranks first, not to
+//!   the most headroom. When the live login ranks first it is an ALERT, so
+//!   two logins with the same week are not swapped back and forth.
+//! - A key in the `$HOME` files makes the live probe unreadable
+//!   (`key_check`), so the live reading is `Failed` and the per-token tier
+//!   is not tried off a plan login. Nothing is lost: Claude is already
+//!   using that key, the swap would not change the billing, and the cycle
+//!   logs the ALERT. Without a home key the move fails its login check.
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};
 use super::ledger::OverflowBlock;
@@ -255,10 +260,10 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         // The plan login with the most room costs nothing.
         let live_measured = i.live_name.map(|n| Measured::new(n.clone(), i.live));
         let choice = plan_room::choose(s, live_measured.as_ref(), &plan);
-        if d == Decision::Alert
-            && let Some(to) = choice.clone()
-        {
-            return verdict(swap(to, Reason::PlanRoom), None, None);
+        if let Some(to) = choice {
+            let same = matches!(&d, Decision::Swap { to: t, .. } if *t == to);
+            let d = if same { d } else { swap(to, Reason::PlanRoom) };
+            return verdict(d, None, None);
         }
         // Per-token profiles only when no plan login, live included, has
         // room. A failed probe is no room.
@@ -266,8 +271,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
             .chain(plan.iter().map(|c| &c.reading))
             .any(plan_room::has_room);
         if room {
-            let d = if choice.is_some() { d } else { Decision::Alert };
-            return verdict(d, None, None);
+            return verdict(Decision::Alert, None, None);
         }
         let pool = std::iter::once((&i.live.reading, &i.live.windows))
             .chain(plan.iter().map(|c| (&c.reading, &c.windows)));

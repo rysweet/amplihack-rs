@@ -2344,7 +2344,11 @@ rotator's `--session-at` and `--week-at`, so they agree on the state. None
 of them counts an [overflow](#rotate-overflow) profile as eligible: its
 capacity is credit capacity, used only by the rotator's overflow rule. While
 the rotator's last cycle left the live login on credits, its own write sets
-the state to `ok`. The
+the state to `ok`. The API-key profile counts only while its
+[login check](#api-key-login-check) passes: `reachable`, the rotator's check,
+in the rotator's writes and in any write while a rotator runs, and otherwise
+auto-switch's check of the profile's own files. A live API-key profile that
+fails the check does not set the state to `ok`. The
 rotator's own `ALERT` line still follows its own thresholds. All three
 write while holding the global state lock, so writes never interleave and
 the last one wins. A writer that cannot get the lock records nothing and
@@ -3084,9 +3088,10 @@ first step that gives a swap ends the decision:
 1. The [decision rule](#rotate-decision-rule) above: a threshold, upgrade or
    failed-probe swap onto a plan candidate, or a stay. A swap onto a plan
    login with room, or a stay, stands.
-2. When step 1 gives `ALERT no-capacity`: the
-   [plan-room swap](#rotate-plan-room-swap), which ranks the live login
-   with the others.
+2. When step 1 gives `ALERT no-capacity`, or a threshold swap onto a plan
+   login without capacity: the [plan-room swap](#rotate-plan-room-swap), which
+   ranks the live login with the others. When the live login ranks first, it
+   is `ALERT no-capacity`.
 3. Only when no plan login, the live one included, has room, and the
    [overflow gate](#earliest-plan-reset) allows it: the first usable marked
    per-token profile in tier order. That is a credit
@@ -4188,6 +4193,7 @@ stdout only, without the time.
 | `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no plan login below 100%; <gate>; marked overflow tier <N> via profile overflow add; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key. `<gate>` is `overflow_wait elapsed (earliest reset <time>)`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
+| `ALERT: home_key (<detail>): <effect>` | A key is in `~/.claude.json` or `~/.claude/settings.json` while a plan login is live, so sessions bill per token. Written once, and again if the setting changes; see [API-key login check](#api-key-login-check). The cycle carries on. |
 | `overflow: on <name>; no plan login below 100%, next plan reset <time\|unknown>` | Written after an `overflow-in` swap. |
 | `overflow: staying on <name>; no plan login below 100%, next plan reset <time\|unknown>` | A cycle stayed on overflow profile `<name>` and the previous recorded cycle did not: its `last_cycle.overflow` was absent or `out`, or the ledger's `live` named another profile. So it is written once when the rotator finds itself on credits without having moved there, for example after a login was put in `~/.claude` by hand, and not again while it stays. After `overflow-in` the `overflow: on` line is written instead. |
 | `overflow: off <name>; back on plan profile <name>` | Written after an `overflow-out` swap. |
@@ -5820,11 +5826,44 @@ it. Its own check reads the profile's files for that reason.
 
 For the rotator to use an API-key profile, the key must therefore already be
 in `~/.claude.json` or `~/.claude/settings.json`. That key is the one billed,
-even if the profile names a different one. A setting in those files also
-applies while a plan login is live and may take priority over it, so a host
-that bills only plan logins should leave them without a key. The rotator then
-refuses every move onto the API-key profile, which is the outcome such a host
-wants.
+even if the profile names a different one.
+
+A key in those files is host-wide, and every accepted setting is used ahead
+of a plan login. Claude Code 2.1.316 was run in a throwaway `$HOME` holding a
+fake OAuth login and each setting in turn. The last column comes from sending
+a prompt to a local fake endpoint through `ANTHROPIC_BASE_URL`; the other
+columns come from runs without that variable.
+
+| Setting in `$HOME` | `claude auth status` | `claude -p /usage` | Credential sent with a prompt |
+|--------------------|----------------------|--------------------|-------------------------------|
+| `ANTHROPIC_API_KEY` under `env` | `authMethod: api_key` | cost text | The key, in `x-api-key` |
+| `apiKeyHelper` | `authMethod: api_key_helper` | cost text | The key, in `x-api-key` and `Authorization` |
+| `primaryApiKey` | `authMethod: claude.ai`, `apiKeySource: /login managed key` | cost text | The key, in `x-api-key` |
+
+With no setting, `auth status` reports `authMethod: claude.ai` and `/usage`
+prints no cost text. `primaryApiKey` is the case to watch: `auth status` names
+the subscription while the request carries the key.
+
+So, while a plan login is live and one of these is present:
+
+- Every session bills per token. A mark does not change this, and neither
+  does plan-first order, which is decided on plan readings.
+- The live `/usage` probe prints cost text, which is no reading, so the live
+  login reads as a failed probe on every cycle.
+- The rotator does not try the per-token tier from a failed live reading
+  ([decision order](#rotate-decision-order)). That loses nothing: Claude is
+  already using the key, and the move would not change what is billed.
+
+No setting avoids this, so the rotator accepts all three and says so. It logs
+`ALERT: home_key (<detail>): ...` once when it finds a key while a plan login
+is live, and again if the setting changes. The cycle carries on, because no
+move fixes it. `profile overflow add` prints the same text as a warning. A key
+in the rotator's own process environment gets the `profile usage` warning
+instead.
+
+A host that bills only plan logins should leave those files without a key.
+The rotator then refuses every move onto the API-key profile, which is the
+outcome such a host wants.
 
 The check makes no network request and does not run `apiKeyHelper`, so it
 costs nothing. It shows that a key is configured, not that the key works;
@@ -6044,6 +6083,7 @@ API-key tier. Each ALERT is written once per change of state.
 | `skip: API-key profile <name> is not marked; it is never used. To allow per-token billing, run: amplihack profile overflow add <name>` | An API-key profile exists and is not named in `overflow=`; once per rotator process. |
 | `skip: API-key profile <name> is marked but not used; another comes first by name` | More than one API-key profile is marked; written for each one after the first by name, once per rotator process. |
 | `key_check_refused <name>: <reason>` | The [login check](#api-key-login-check) failed; no swap. |
+| `ALERT: home_key (<detail>): <effect>` | A key in the `$HOME` files is billing plan sessions per token; see the [login check](#api-key-login-check). |
 | `ALERT: API key profile <name> failed its login check (<reason>); not moving onto it` | Written with the refusal, once per profile until another ALERT or a passing check. |
 | `platform block not recorded: <error kind>` | A session saw a key error but could not take the state lock. |
 

@@ -204,6 +204,31 @@ impl OverflowInputs {
         }
     }
 
+    /// Whether the capacity file may count the API-key profile (issue
+    /// #1804), by the check of whoever would make the move: `reachable` with
+    /// a rotator running, so the status line and the rotator write the same
+    /// state, else the profile's own files. No home directory fails.
+    pub fn key_counts(&self, root: &Path, home: Option<&Path>, rotator: bool) -> bool {
+        let Some(key) = &self.platform else {
+            return true;
+        };
+        if !rotator {
+            // Not `key_check_passes`: this runs on every status line.
+            let store = ProfileStore::new(root.to_path_buf());
+            return rotate::key_check::configured(&store, key).is_ok();
+        }
+        home.is_some_and(|h| rotate::key_check::reachable(h).is_ok())
+    }
+
+    /// Takes the API-key profile out of what the capacity file counts, as a
+    /// block does. Only the capacity writers call this; the selection runs
+    /// its own check.
+    pub fn refuse_key(&mut self) {
+        if let Some(key) = &self.platform {
+            self.blocked.push(key.to_string());
+        }
+    }
+
     pub fn pool(&self) -> OverflowPool<'_> {
         OverflowPool {
             order: &self.order,

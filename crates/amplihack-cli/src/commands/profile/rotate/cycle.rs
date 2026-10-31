@@ -15,8 +15,8 @@ use super::observe::{
 };
 use super::overflow::Tag;
 use super::overflow_record::{
-    self, alert_line, block_spend_limited, note_live, note_move, note_per_token, refresh_capacity,
-    refuse_key, stay_note, target_check,
+    self, alert_line, block_spend_limited, note_home_key, note_live, note_move, note_per_token,
+    refresh_capacity, refuse_key, stay_note, target_check,
 };
 // Under an alias: `profile::overflow::Gate` (whether credits may be spent)
 // is a different thing from the pin's gate (whether a `profile switch`
@@ -102,6 +102,8 @@ pub struct Ctx {
     /// The login check before a swap onto the API-key profile (issue
     /// #1804); `key_check::reachable` outside tests.
     pub(super) key_check: KeyCheckFn,
+    /// The `$HOME` key setting `note_home_key` last logged.
+    pub(super) home_key: Option<&'static str>,
 }
 
 impl Ctx {
@@ -122,6 +124,7 @@ impl Ctx {
             probe_held: None,
             pause: |_| std::thread::sleep(revalidate::REREAD_PAUSE),
             key_check: key_check::reachable,
+            home_key: None,
         }
     }
 
@@ -237,6 +240,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             first.shown_platform(),
         ),
     );
+    note_home_key(ctx, &mut out, &first);
     if ctx.stopping() {
         out.emit(now(), msg::STOPPED);
         return Ok(CycleOutcome::Stopped);
@@ -302,8 +306,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     let mut swapped = None;
     let outcome = match decision {
         Decision::Swap { to, reason } => 'swap: {
-            // Issue #1804: a key must be where Claude will read it after an
-            // API-key swap. A refusal moves nothing and writes no journal.
+            // Issue #1804: a refusal moves nothing and writes no journal.
             let check = match target_check(ctx, &first, &to) {
                 Ok(check) => check,
                 Err(why) => {
@@ -377,7 +380,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         }
     };
     refresh_capacity(
-        ctx.store.root(),
+        ctx,
         live_name(&first.live),
         &live,
         &others,

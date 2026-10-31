@@ -258,6 +258,16 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                 }
                 Some(old) => println!("overflow: {name} moved from tier {old} to tier {now_tier}"),
             }
+            // Issue #1804: the mark does not decide this, so say so now.
+            if key
+                && let Some(setting) = super::usage_cmd::home_dir()
+                    .and_then(|home| super::rotate::key_check::reachable(&home).ok())
+            {
+                eprintln!(
+                    "warning: {setting}: {}",
+                    super::rotate::key_check::HOME_KEY_EFFECT
+                );
+            }
             if before.is_none() && !key {
                 println!(
                     "note: set a spend limit for the organization at https://claude.ai/settings/usage; the rotator is not a spending cap."

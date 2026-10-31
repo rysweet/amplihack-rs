@@ -29,12 +29,14 @@ use super::decide::{Probed, Reading, Win, Windows};
 use super::identify::LiveId;
 use super::ledger::{RotateLedger, RotateState};
 use super::observe::{Measurement, Snap, decide_measured};
+use super::overflow_record::refresh_capacity;
 use super::settings;
 use super::tests_swap::{ino_at, login, private};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+use amplihack_utils::claude_capacity as cap;
 use std::collections::BTreeSet;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -208,6 +210,118 @@ fn t3_a_passing_login_check_moves_onto_the_api_key_and_logs_why() {
     let l = f.rs.load_ledger().unwrap().unwrap();
     assert_eq!(l.live.as_deref(), Some(KEY));
     assert_eq!(l.last_cycle.unwrap().overflow.as_deref(), Some("in"));
+}
+
+/// `work`'s `~/.claude.json` with a key in it.
+const HOME_WITH_KEY: &str = r#"{"oauthAccount":{"accountUuid":"u-work",
+    "emailAddress":"work@example.com"},"primaryApiKey":"SENTINEL-1804-KEY"}"#;
+
+/// `work` measured well below every threshold, so the cycle stays.
+fn plenty_of_room(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let live = Probed {
+        reading: Reading::Measured {
+            session: 10.0,
+            week: 10.0,
+        },
+        windows: Windows::default(),
+        spend_limit: false,
+    };
+    decide_measured(ctx, snap, live, vec![(n(KEY), Probed::platform())], now())
+}
+
+/// A home key bills a plan session per token with no move at all, so the
+/// ALERT cannot depend on one, and a stay must not repeat it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_home_key_under_a_live_plan_login_alerts_once_and_again_when_it_returns() {
+    let f = fx();
+    let mut c = f.ctx(|_| panic!("a stay runs no login check"));
+    c.measure = Some(plenty_of_room);
+    let home_json = f.home.join(".claude.json");
+    let without_key = fs::read_to_string(&home_json).unwrap();
+    let with_key = HOME_WITH_KEY;
+    private(&home_json, with_key);
+    let alerts = |f: &Fx| {
+        f.logged()
+            .iter()
+            .filter(|l| l.starts_with("ALERT: home_key (primaryApiKey set): "))
+            .count()
+    };
+    for _ in 0..3 {
+        assert_eq!(
+            run_cycle(&mut c, Mode::Watch).unwrap(),
+            CycleOutcome::Stayed
+        );
+    }
+    assert_eq!(alerts(&f), 1, "{:?}", f.logged());
+    private(&home_json, &without_key);
+    assert_eq!(
+        run_cycle(&mut c, Mode::Watch).unwrap(),
+        CycleOutcome::Stayed
+    );
+    assert_eq!(alerts(&f), 1, "{:?}", f.logged());
+    private(&home_json, with_key);
+    assert_eq!(
+        run_cycle(&mut c, Mode::Watch).unwrap(),
+        CycleOutcome::Stayed
+    );
+    assert_eq!(alerts(&f), 2, "{:?}", f.logged());
+    assert!(!f.logged().iter().any(|l| l.contains("SENTINEL-1804-KEY")));
+}
+
+/// On a live API-key profile the key is the login in use, not a surprise.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_live_api_key_raises_no_home_key_alert() {
+    let f = fx();
+    private(&f.home.join(".claude.json"), HOME_WITH_KEY);
+    let mut c = f.ctx(|_| Ok("fake"));
+    let got = run_cycle(&mut c, Mode::Watch).unwrap();
+    assert_eq!(got, CycleOutcome::Swapped);
+    // A later process has no memory of the first ALERT.
+    c.home_key = None;
+    c.measure = Some(plenty_of_room);
+    run_cycle(&mut c, Mode::Watch).unwrap();
+    let log = f.logged();
+    let alerts = log.iter().filter(|l| l.starts_with("ALERT: home_key"));
+    assert_eq!(
+        alerts.count(),
+        1,
+        "only the cycle on the plan login: {log:?}"
+    );
+}
+
+/// The 30 Oct state with the key gone while the API-key profile is live:
+/// being on overflow is no reason to tell consumers work can go on.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_live_api_key_that_fails_its_check_does_not_read_as_ok() {
+    let f = fx();
+    private(
+        &f.root.join(".auto-switch"),
+        "enabled=on\noverflow=api-key\n",
+    );
+    let t = now();
+    let plan = [(n(WORK), Reading::Exhausted)];
+    let key = n(KEY);
+    let write = |c: &Ctx| {
+        let live = Reading::Measured {
+            session: 0.0,
+            week: 0.0,
+        };
+        let tag = Some(super::overflow::Tag::On);
+        refresh_capacity(c, Some(&key), &live, &plan, t, tag, Some(&key));
+    };
+    let read = || {
+        let at = chrono::DateTime::from_timestamp(t, 0).unwrap();
+        cap::read_at(&f.root, at).map(|file| file.state)
+    };
+    let c = f.ctx(|_| panic!("the capacity file uses the real check"));
+    write(&c);
+    assert_eq!(read(), Some(cap::State::Exhausted));
+    private(&f.home.join(".claude.json"), HOME_WITH_KEY);
+    write(&c);
+    assert_eq!(read(), Some(cap::State::Ok), "a passing check keeps `ok`");
 }
 
 #[cfg(target_os = "linux")]

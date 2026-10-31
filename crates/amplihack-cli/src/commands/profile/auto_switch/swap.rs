@@ -529,10 +529,6 @@ pub fn swap_check(
     else {
         return Ok(());
     };
-    // Issue #1804: before the journal, so a refusal moves nothing.
-    if !overflow.key_check_passes(&state.root, &target) {
-        return Ok(());
-    }
     if !ledger.hosts.contains_key(target.as_str()) {
         snapshot_account(state, target.as_str());
     }

@@ -14,11 +14,19 @@
 //!
 //! Both read with the evidence rules of kind detection: no symlink, a size
 //! limit, a regular file of the current user that group and others cannot
-//! write. They
-//! never runs `apiKeyHelper` and makes no network request. No value leaves
-//! this module: the detail is a fixed string, and a reason names only the
-//! setting or the file, so a key can never reach a log, the ledger or a
+//! write. Neither runs `apiKeyHelper` or makes a network request. No value
+//! leaves this module: the detail is a fixed string, and a reason names only
+//! the setting or the file, so a key can never reach a log, the ledger or a
 //! status line.
+//!
+//! A home key is host-wide. Claude reads `~/.claude.json` and
+//! `~/.claude/settings.json` whatever login is live, and each accepted
+//! setting wins over a plan login, so every plan session on the host bills
+//! per token, marked or not, and the live `/usage` probe prints cost text
+//! the rotator cannot read. Claude 2.1.316 was run to confirm this; the
+//! results are under "API-key login check". [`HOME_KEY_EFFECT`] says so at
+//! run time: the cycle logs it as an ALERT (`note_home_key`) and `overflow
+//! add` prints it.
 
 use crate::commands::profile::auto_switch::kit::{
     CLAUDE_JSON, MAX_CLAUDE_JSON, euid, read_bounded_nofollow, writable_by_others,
@@ -37,6 +45,11 @@ pub type KeyCheckFn = fn(&Path) -> Result<&'static str, String>;
 const SETTINGS: &str = "settings.json";
 const MAX_SETTINGS: u64 = 64 * 1024;
 const NONE: &str = "no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting";
+
+/// What a key in the `$HOME` files does while a plan login is live.
+pub const HOME_KEY_EFFECT: &str = "a key in ~/.claude.json or ~/.claude/settings.json is used \
+     ahead of a plan login: every session on this host bills per token whether or not a profile \
+     is marked, and the rotator cannot read the live login's usage. Remove the key to bill plans";
 
 /// A key plain `claude` can read once a swap has made an API-key profile
 /// live: [`names_a_key`] over `<home>/.claude.json` and

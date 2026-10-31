@@ -15,8 +15,9 @@
 //!
 //! Contract (`overflow::decide_overflow`, live on a plan login), D1:
 //! 1. `decide`; a swap onto a plan login with capacity, or a stay, stands.
-//! 2. When step 1 gave `Alert` and the live probe did not fail: plan room
-//!    (`plan_room::choose`, the live login ranked with the others).
+//! 2. When step 1 gave `Alert` or a swap onto a login without capacity, and
+//!    the live probe did not fail: plan room (`plan_room::choose`, the live
+//!    login ranked with the others).
 //! 3. Only when no plan login, live included, has room and the gate allows
 //!    it: the first usable marked per-token profile by tier (credit tiers
 //!    1 to 9, then the marked API key at 10), `OverflowIn`.
@@ -394,6 +395,18 @@ fn a_threshold_swap_that_meets_the_margin_is_not_replaced() {
         .cand("other", measured(0.0, 5.0, FAR))
         .run();
     assert_eq!(v.decision, swap("other", Reason::Threshold), "{v:?}");
+}
+
+/// The issue's cycle with the live login further along. The most headroom is
+/// a tie that the name would give to ccapstone; the plan-room rank is not.
+#[test]
+fn a_threshold_swap_without_capacity_follows_the_plan_room_rank() {
+    let v = Case::new("iivanovich", measured(98.0, 61.0, FAR))
+        .cand("ccapstone", measured(11.0, 92.0, FAR))
+        .cand("ddrumpf", measured(0.0, 92.0, FAR))
+        .cand("eelsworth", measured(98.0, 17.0, FAR))
+        .run();
+    assert_eq!(v.decision, swap("ddrumpf", Reason::PlanRoom), "{v:?}");
 }
 
 #[test]

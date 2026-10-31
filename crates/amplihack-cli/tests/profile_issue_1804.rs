@@ -141,6 +141,24 @@ fn t1_near_the_limits_with_no_mark_the_rotator_swaps_to_the_plan_login_with_room
     each_login_once_with_console(&f, console);
 }
 
+/// The mark is not what bills a home key, so `add` says so when it is made.
+#[test]
+fn overflow_add_warns_about_a_key_in_home_and_not_otherwise() {
+    let warning =
+        "a key in ~/.claude.json or ~/.claude/settings.json is used ahead of a plan login";
+    let f = Fixture::new();
+    add_console(&f);
+    give_home_a_key(&f);
+    let added = f.ok(&["profile", "overflow", "add", "console"]);
+    assert!(text(&added.stderr).contains(warning), "{added:?}");
+    assert!(!text(&added.stderr).contains("SENTINEL-1804-KEY"));
+
+    f.ok(&["profile", "overflow", "remove", "console"]);
+    take_key_from_home(&f);
+    let added = f.ok(&["profile", "overflow", "add", "console"]);
+    assert!(!text(&added.stderr).contains(warning), "{added:?}");
+}
+
 #[test]
 fn t2_near_the_limits_with_the_api_key_marked_the_rotator_still_picks_the_plan_login() {
     let f = Fixture::new();
