@@ -426,3 +426,136 @@ fn a_rs_file_outside_every_package_without_cargo_is_skipped_for_cargo() {
         "{table}"
     );
 }
+
+const LOCK: &str = "version = 3\n";
+
+fn workspace_with_lock() -> Fixture {
+    let f = path_key_workspace(VIRTUAL_ROOT);
+    git(&f.wt, &["checkout", "-q", "README.md"]);
+    f.edit("Cargo.lock", LOCK);
+    git(&f.wt, &["add", "-A"]);
+    git(&f.wt, &["commit", "-q", "--amend", "-m", "base"]);
+    f
+}
+
+fn rebased(mut f: Fixture) -> Fixture {
+    f.base = git(&f.wt, &["rev-parse", "HEAD"]);
+    f
+}
+
+/// A lock update is a named target of the recipe, and `cargo fmt` does not
+/// read the lockfile: the new dependency set has to be compiled.
+#[test]
+fn a_lock_only_change_builds_the_whole_workspace() {
+    let f = rebased(workspace_with_lock());
+    f.edit("Cargo.lock", "version = 4\n");
+    let (o, table) = f.run_with_cargo(&[]);
+    assert_eq!(
+        summary(&o),
+        "QUICK_CHANGE_CHECKS=passed ran=3 failed=0 skipped=0",
+        "{table}"
+    );
+    let record = f.cargo_record();
+    assert!(record.contains("clippy --workspace"), "{record}");
+    assert!(record.contains("test --workspace"), "{record}");
+}
+
+#[test]
+fn a_lock_change_that_does_not_build_fails() {
+    let f = rebased(workspace_with_lock());
+    f.edit("Cargo.lock", "version = 4\n");
+    let (o, _) = f.run_with_cargo(&[("STUB_RC_cargo_test", "101")]);
+    assert_eq!(
+        summary(&o),
+        "QUICK_CHANGE_CHECKS=failed ran=3 failed=1 skipped=0"
+    );
+}
+
+/// `routing_prompt.txt` is compiled in by `include_str!`.
+#[test]
+fn a_non_rust_file_inside_a_member_runs_that_members_checks() {
+    let f = path_key_workspace(VIRTUAL_ROOT);
+    git(&f.wt, &["checkout", "-q", "README.md"]);
+    f.edit("crates/lib/src/prompt.txt", "reworded\n");
+    let (o, table) = f.run_with_cargo(&[]);
+    assert_eq!(
+        summary(&o),
+        "QUICK_CHANGE_CHECKS=passed ran=3 failed=0 skipped=0",
+        "{table}"
+    );
+    assert!(f.cargo_record().contains("test -p lib"));
+}
+
+#[test]
+fn a_file_around_the_root_package_runs_no_rust_build() {
+    let f = Fixture::new(&[(
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+    )]);
+    let (o, table) = f.run_with_cargo(&[]);
+    assert_eq!(
+        summary(&o),
+        "QUICK_CHANGE_CHECKS=passed ran=1 failed=0 skipped=2",
+        "{table}"
+    );
+    assert!(!f.cargo_record().contains("test"));
+}
+
+#[test]
+fn a_non_rust_file_under_the_root_packages_src_runs_its_checks() {
+    let f = Fixture::new(&[
+        (
+            "Cargo.toml",
+            "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n",
+        ),
+        ("src/prompt.txt", "old\n"),
+    ]);
+    f.edit("src/prompt.txt", "new\n");
+    let (o, _) = f.run_with_cargo(&[]);
+    assert_eq!(
+        summary(&o),
+        "QUICK_CHANGE_CHECKS=passed ran=3 failed=0 skipped=0"
+    );
+    assert!(f.cargo_record().contains("test -p demo"));
+}
+
+/// A check that cannot fail on the lockfile is not a pass for it: npm's own
+/// test script is missing here, and only `lint` ran.
+#[test]
+fn a_lockfile_no_check_reads_is_unverified_not_passed() {
+    let pkg = r#"{"name":"demo","scripts":{"lint":"x"}}"#;
+    let f = Fixture::new(&[("package.json", pkg), ("package-lock.json", "{}\n")]);
+    f.edit("package-lock.json", "{ }\n");
+    let (o, _) = f.run(true, &[]);
+    assert_eq!(
+        summary(&o),
+        "QUICK_CHANGE_CHECKS=unverified ran=1 failed=0 skipped=1"
+    );
+
+    let f = Fixture::new(&[("package.json", PKG), ("uv.lock", "a\n")]);
+    f.edit("uv.lock", "b\n");
+    let (o, _) = f.run(true, &[]);
+    assert_eq!(
+        summary(&o),
+        "QUICK_CHANGE_CHECKS=unverified ran=2 failed=0 skipped=0"
+    );
+
+    let f = Fixture::new(&[("package.json", PKG), ("package-lock.json", "{}\n")]);
+    f.edit("package-lock.json", "{ }\n");
+    let (o, _) = f.run(true, &[]);
+    assert_eq!(
+        summary(&o),
+        "QUICK_CHANGE_CHECKS=passed ran=2 failed=0 skipped=0"
+    );
+}
+
+#[test]
+fn a_failure_outranks_unverified() {
+    let f = Fixture::new(&[("package.json", PKG), ("uv.lock", "a\n")]);
+    f.edit("uv.lock", "b\n");
+    let (o, _) = f.run(true, &[("STUB_RC_lint", "1")]);
+    assert_eq!(
+        summary(&o),
+        "QUICK_CHANGE_CHECKS=failed ran=2 failed=1 skipped=0"
+    );
+}

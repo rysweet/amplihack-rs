@@ -18,7 +18,8 @@
 # qc_handover_reason, qc_checks_summary and qc_checks_table read state files
 # only after checking them against fixed forms or the runner's outputs;
 # qc_handover_note writes the note default-workflow receives on hand-over;
-# qc_require_identity runs before the agent; qc_pr_warnings opens the PR body.
+# qc_require_identity runs before the agent; qc_pr_warnings opens the PR body;
+# qc_sweep_state and qc_remove_state bound what the state root keeps.
 
 set -euo pipefail
 export GIT_PAGER=cat PAGER=cat LESS=FRX
@@ -51,6 +52,22 @@ esac
 ( umask 077 && mkdir -p "$QUICK_CHANGE_STATE_DIR" ) || qc_die "cannot create $QUICK_CHANGE_STATE_DIR"
 [ -d "$QUICK_CHANGE_STATE_DIR" ] && [ ! -L "$QUICK_CHANGE_STATE_DIR" ] || qc_die "state directory is not a plain directory"
 export QUICK_CHANGE_STATE_DIR
+
+# qc_sweep_state: remove other runs' state directories untouched for 14 days.
+# A hand-over keeps its patch here for the run that continues it, and a failed
+# run keeps its files for inspection; neither has a later step to remove them.
+# Only names cksum produces, and only real directories; a live run is never
+# that old, and failure here must not stop the run.
+qc_sweep_state() {
+  find "$QC_STATE_ROOT" -mindepth 1 -maxdepth 1 -type d -name '[0-9]*' ! -name '*[!0-9]*' \
+    ! -path "$QUICK_CHANGE_STATE_DIR" -mtime +14 -exec rm -rf {} + 2>/dev/null || true
+}
+
+# qc_remove_state: drop this run's state directory once the PR is open; nothing
+# reads it after that.
+qc_remove_state() {
+  rm -rf -- "$QUICK_CHANGE_STATE_DIR"
+}
 
 # qc_write <name>: stdin to <state dir>/<name> through mktemp and mv, so a
 # symlink planted at the target is replaced, not followed.
@@ -121,7 +138,7 @@ qc_handover_note() {
 # draft or ready, so a rewritten file cannot turn failed into passed.
 qc_checks_summary() {
   local summary="${RECIPE_VAR_quick_change_checks:-}" file="$QUICK_CHANGE_STATE_DIR/checks-summary"
-  local re='^QUICK_CHANGE_CHECKS=(passed|failed|none) ran=[0-9]{1,4} failed=[0-9]{1,4} skipped=[0-9]{1,4}$'
+  local re='^QUICK_CHANGE_CHECKS=(passed|failed|none|unverified) ran=[0-9]{1,4} failed=[0-9]{1,4} skipped=[0-9]{1,4}$'
   [ -n "$summary" ] || qc_die "runner did not provide quick_change_checks"
   [[ "$summary" =~ $re ]] || qc_die "checks summary is not in the expected form"
   [ -f "$file" ] && [ ! -L "$file" ] && [ "$(cat "$file")" = "$summary" ] \
@@ -158,6 +175,7 @@ qc_pr_warnings() {
   case "$1" in
     QUICK_CHANGE_CHECKS=failed*) printf '%s\n\n' 'Checks failed' ;;
     QUICK_CHANGE_CHECKS=none*) printf '%s\n\n' 'No checks ran' ;;
+    QUICK_CHANGE_CHECKS=unverified*) printf '%s\n\n' 'No build or test covered this change; the checks that passed do not read it' ;;
   esac
   [ "$2" = no ] || printf '%s\n' 'Hook repair changed the code after the checks ran; the checks table describes the pre-repair tree.'
 }

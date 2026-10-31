@@ -392,6 +392,7 @@ fn create_pr_repaired(summary: &str, table: &str, repaired: &str) -> (String, St
         ],
     );
     assert!(o.status.success(), "create-pr: {}", stderr(&o));
+    assert!(!state.exists(), "the state directory outlived the PR");
     (
         std::fs::read_to_string(args_file).unwrap(),
         std::fs::read_to_string(body_file).unwrap(),
@@ -403,6 +404,43 @@ fn no_check_found_opens_a_draft_that_says_so() {
     let (args, body) = create_pr("QUICK_CHANGE_CHECKS=none ran=0 failed=0 skipped=0", "");
     assert!(args.lines().any(|l| l == "--draft"), "{args}");
     assert!(body.starts_with("No checks ran\n"), "{body}");
+}
+
+#[test]
+fn unverified_checks_open_a_draft_that_says_so() {
+    let (args, body) = create_pr(
+        "QUICK_CHANGE_CHECKS=unverified ran=1 failed=0 skipped=2",
+        "| `cargo fmt --all -- --check` | exit 0 |\n\
+         | `cargo clippy --workspace --all-targets -- -D warnings` | skipped (cargo not on PATH) |\n\
+         | `cargo test --workspace` | skipped (cargo not on PATH) |\n",
+    );
+    assert!(args.contains("--draft"), "{args}");
+    assert!(body.starts_with("No build or test covered"), "{body}");
+}
+
+#[test]
+fn record_base_sweeps_only_old_state_directories() {
+    let r = quick_repo();
+    let root = r.tmp.path().join(".amplihack/state/quick-change");
+    let dir = |name: &str| {
+        let d = root.join(name);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("quick-change-handover.patch"), "x").unwrap();
+        d
+    };
+    let (old, recent, other) = (dir("123"), dir("456"), dir("not-a-cksum"));
+    for d in [&old, &other] {
+        let o = std::process::Command::new("touch")
+            .args(["-d", "30 days ago"])
+            .arg(d)
+            .output()
+            .unwrap();
+        assert!(o.status.success());
+    }
+    record_base(&r);
+    assert!(!old.exists(), "a directory idle for 30 days is swept");
+    assert!(recent.exists(), "a recent hand-over keeps its patch");
+    assert!(other.exists(), "only names cksum produces are swept");
 }
 
 #[test]

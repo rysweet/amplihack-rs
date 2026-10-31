@@ -225,6 +225,32 @@ fn fallback_paths_correct_a_quick_change_selection_first() {
     }
 }
 
+/// A hand-over runs default-workflow inside quick-change, so the correction
+/// follows the quick-change step and reads the verdict it leaves in context.
+#[test]
+fn a_hand_over_corrects_the_selection_after_quick_change() {
+    let r = recipe("smart-execute-routing");
+    let ids: Vec<&str> = steps(&r).iter().filter_map(|s| s["id"].as_str()).collect();
+    let at = ids
+        .iter()
+        .position(|i| *i == "execute-single-round-1-quick-change")
+        .unwrap();
+    assert_eq!(ids[at + 1], "handover-reselect-workflow", "{ids:?}");
+    assert!(r["context"]["quick_change_verdict"].is_string());
+    assert_eq!(
+        condition(&r, "handover-reselect-workflow").trim(),
+        "quick_change_verdict == 'handover' and selected_workflow == 'quick-change'"
+    );
+    let s = step(&r, "handover-reselect-workflow");
+    assert_eq!(s["output"].as_str(), Some("selected_workflow"));
+    let cmd = s["command"].as_str().unwrap();
+    assert!(cmd.contains("printf 'default-workflow'"), "{cmd}");
+    assert!(
+        cmd.contains("[dev-orchestrator] Workflow: default-workflow source=handover reason="),
+        "{cmd}"
+    );
+}
+
 #[test]
 fn smart_recipes_stay_within_400_lines() {
     for name in [

@@ -1,7 +1,7 @@
 ---
 title: Quick-Change Recipe
 description: The single-session recipe for small changes, the diff limits that hand work over to default-workflow, and how smart-orchestrator selects it.
-last_updated: 2026-10-30
+last_updated: 2026-10-31
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
@@ -123,7 +123,7 @@ A value that does not match `^[0-9]{1,6}$` fails the `quick-change-diff-limits` 
 | # | Step ID | Type | What it does |
 | --- | --- | --- | --- |
 | 1 | `quick-change-worktree` | recipe | Runs `workflow-worktree` with `branch_prefix: quick` and with `existing_branch` and `pr_number` set to empty. Output `worktree_setup`. |
-| 2 | `quick-change-record-base` | bash | Checks the branch (see [Branch name](#branch-name)), checks that a safe commit identity resolves, so a run that could never commit stops before the agent and the checks, pins the base commit (`git rev-parse HEAD`) and snapshots the git configuration, hooks and push URL into the state directory. |
+| 2 | `quick-change-record-base` | bash | Checks the branch (see [Branch name](#branch-name)), checks that a safe commit identity resolves, so a run that could never commit stops before the agent and the checks, removes other runs' state directories that have been idle for 14 days (see [State directory](#state-directory)), pins the base commit (`git rev-parse HEAD`) and snapshots the git configuration, hooks and push URL into the state directory. |
 | 3 | `quick-change-implement` | agent | The only agent step. `amplihack:core:builder` makes the change in the worktree. |
 | 4 | `quick-change-diff-limits` | bash | Runs `quick_change_diff_limits.sh`. Output `quick_change_verdict`: `proceed`, `handover`, or `empty` when the diff is empty and `allow_no_op` is `"true"`. Has no condition. Fails the run on git configuration drift, an empty diff without `allow_no_op`, or a fault in the tool. |
 | 5 | `quick-change-write-handover` | bash | On `handover`, writes the patch file and the hand-over note. |
@@ -131,7 +131,7 @@ A value that does not match `^[0-9]{1,6}$` fails the `quick-change-diff-limits` 
 | 7 | `quick-change-run-checks` | bash | On `proceed`, runs `quick_change_checks.sh`. Output `quick_change_checks`. |
 | 8 | `quick-change-commit` | bash | On `proceed`, runs the artifact guard, stages, runs the guard again, sets the commit identity, commits with `git commit -F` and measures the committed change again. Output `quick_change_commit_repaired`: `yes` when hook repair ran, else `no`. |
 | 9 | `quick-change-push` | bash | On `proceed`, pushes the branch, measures the committed change again and verifies the remote ref. Output `quick_change_push_repaired`: `yes` when hook repair ran, else `no`. |
-| 10 | `quick-change-create-pr` | bash | On `proceed`, opens the PR. Always the last step. |
+| 10 | `quick-change-create-pr` | bash | On `proceed`, opens the PR, then removes the state directory. Always the last step. |
 
 The agent works under the leaf-step constraints of #1333: it does not start an orchestrator, recipe or workflow. It is also told not to commit, and not to change git configuration, hooks, remotes or refs. These instructions are guidance; the controls that enforce them are the bash steps listed under [Security limits](#security-limits).
 
@@ -151,6 +151,8 @@ A task text that names its own branch (`Branch: <ref>` and the other directive f
 ### State directory
 
 Each run keeps its files in `~/.amplihack/state/quick-change/<n>`, where `<n>` is the `cksum` of the worktree path. The directory is absolute, outside the worktree and created with `umask 077`; it is exported to the tools as `QUICK_CHANGE_STATE_DIR`. Files are written with `mktemp` followed by `mv`, so a symlink planted at the target path is replaced rather than followed. The directory holds the pinned base, the git configuration snapshot, the checks table and, on hand-over, the patch and note.
+
+`quick-change-create-pr` removes the directory once the PR is open. Nothing removes it at the end of a hand-over, a run with verdict `empty` or a failed run: a hand-over patch is the backup for the run that continues it, and a failed run's files are there to inspect. Instead, `quick-change-record-base` deletes every other run's directory that has not been modified for 14 days. So a hand-over leaves a full patch of the change under `$HOME` until a later run starts at least 14 days afterwards, readable only by the user.
 
 ## Diff limits
 
@@ -301,9 +303,9 @@ When the verdict is `handover`:
 
 - Step 04 (`workflow-worktree`) finds the worktree already registered for the `quick/` branch and reuses it as it is. It does not reset, clean or check out anything on that path, so the changes from `quick-change`, committed by the agent or not, are still in the worktree when the builder starts.
 - `workflow-prep` creates a tracking issue, because `quick-change` did not. This is a second issue when the task already had one.
-- The branch ref is pushed before any commit exists on it, so the remote briefly has an empty `quick/` branch.
+- Step 04 also runs a best-effort `git push origin <branch>` before the builder starts. When the agent made no commit, nothing but the base is on the branch, so the remote briefly has an empty `quick/` branch. When the agent committed (`agent-commit`, or a size reason decided first), this pushes those commits before any check or review has run. They are not in a PR yet, but anyone with access to the repository can see them.
 
-A run that hands over skips orchestrator reflection; `default-workflow` has its own review steps.
+smart-execute-routing then runs `handover-reselect-workflow`, which sets `selected_workflow` to `default-workflow` and logs the change, so orchestrator reflection and outside-in validation run as for any full workflow. See [Log line](#log-line). This correction is for a run that went through `execute-single-round-1-quick-change`. Each workstream of a parallel run under `-c workflow=quick-change` is a separate process whose outputs do not reach the parent, so such a run still skips those steps after a workstream hands over.
 
 ### Hand-over note
 
@@ -345,11 +347,22 @@ amplifier-bundle/tools/quick_change_checks.sh <worktree> <base-sha> <table-out-f
 
 | Repository has | Checks run |
 | --- | --- |
-| `Cargo.toml` | `cargo fmt --all -- --check`, always. When `.rs` files changed, `cargo clippy -p <crate> --all-targets -- -D warnings` and `cargo test -p <crate>` for each affected crate, or the same two once with `--workspace` (see below). |
+| `Cargo.toml` | `cargo fmt --all -- --check`, always. When the change can affect what is compiled (see below), `cargo clippy -p <crate> --all-targets -- -D warnings` and `cargo test -p <crate>` for each affected crate, or the same two once with `--workspace`. |
 | `.pre-commit-config.yaml` | `pre-commit run --files <changed files>` |
 | `package.json` | `npm run lint` and `npm test`, each only when the script exists |
 
-An affected crate is the nearest ancestor directory of a changed `.rs` file whose `Cargo.toml` has a `[package]` section. When a changed `.rs` file has no such directory, when that `Cargo.toml` is also the workspace root (it has a `[workspace]` section), or when the crate name does not match `^[A-Za-z0-9_-]+$`, clippy and test run once for the whole workspace, and no per-crate check runs:
+These changes count, whatever the file's name says about Rust:
+
+| Changed file | Effect |
+| --- | --- |
+| `.rs` file | Its crate |
+| `Cargo.lock`, at any depth | The whole workspace, because the lockfile decides what every crate compiles against and `cargo fmt` never reads it ([Cargo resolver](https://doc.rust-lang.org/cargo/reference/resolver.html)) |
+| Any other file inside a member crate's directory | That crate, because `include_str!` can compile it in: `crates/amplihack-hooks/src/routing_prompt.txt` is one |
+| Any other file under `src/`, `tests/`, `benches/` or `examples/` at the repository root | The root package, or the whole workspace when the root is also the workspace root |
+
+Other files, such as `docs/index.md` or a root `README.md`, run no clippy or test.
+
+An affected crate is the nearest ancestor directory of the changed file whose `Cargo.toml` has a `[package]` section. When a counted file has no such directory, when that `Cargo.toml` is also the workspace root (it has a `[workspace]` section), or when the crate name does not match `^[A-Za-z0-9_-]+$`, clippy and test run once for the whole workspace, and no per-crate check runs:
 
 ```text
 cargo clippy --workspace --all-targets -- -D warnings
@@ -371,13 +384,16 @@ QUICK_CHANGE_CHECKS=failed ran=3 failed=1 skipped=2
 | `passed` | At least one check ran and none failed |
 | `failed` | At least one check failed |
 | `none` | No check ran. The PR is a draft and its body says "No checks ran" |
+| `unverified` | Checks ran and passed, but none could fail on the change. The PR is a draft and its body says "No build or test covered this change; the checks that passed do not read it" |
+
+`unverified` applies when Rust code or `Cargo.lock` changed and no cargo clippy or test ran, when `package-lock.json`, `yarn.lock` or `pnpm-lock.yaml` changed and `npm test` did not run, and whenever `uv.lock` or `poetry.lock` changed, since this tool has no check that reads them. For example, a `pre-commit` pass with `cargo` missing from `PATH` does not make a lock update ready for review. `failed` takes priority over `unverified`, and `none` applies when nothing ran.
 
 A skipped check is never counted as passed. Skip reasons come from a closed set:
 
 | Reason | When |
 | --- | --- |
 | `cargo not on PATH` | `Cargo.toml` exists but `cargo` does not |
-| `no .rs files changed` | clippy and test, when no `.rs` file changed |
+| `no .rs files changed` | clippy and test, when no changed file counts as Rust (see above) |
 | `pre-commit not on PATH` | `.pre-commit-config.yaml` exists but `pre-commit` does not |
 | `npm not on PATH` | `package.json` exists but `npm` does not |
 | `jq not on PATH` | `package.json` scripts cannot be read |
@@ -424,11 +440,11 @@ The Checks table above is what `quick_change_checks.sh` wrote for a one-line cha
 | Title | Task text with control characters and backticks removed and leading markdown markers (`#`, `>`, `*`, `_`, `-`) stripped, cut to 72 characters; `quick change` when nothing is left |
 | Request | The task text, cut to 4000 bytes on a UTF-8 boundary |
 | `Refs #N` | Only when the issue number matches `^[1-9][0-9]{0,8}$` |
-| Draft | When `QUICK_CHANGE_CHECKS=failed` or `none`, or when hook repair ran in the commit or push step |
+| Draft | When `QUICK_CHANGE_CHECKS=failed`, `none` or `unverified`, or when hook repair ran in the commit or push step |
 
 The body's first section is headed "Request" because it holds the task text as given, not a summary of the change: no agent-written text reaches the PR (S8). The commit message body is the same text.
 
-When the checks failed, the body starts with "Checks failed"; when no check ran, it starts with "No checks ran". When hook repair ran, it also says "Hook repair changed the code after the checks ran; the checks table describes the pre-repair tree." The create-PR step reads `quick_change_commit_repaired` and `quick_change_push_repaired` from the runner's outputs, never from the state directory, and fails when either is missing.
+When the checks failed, the body starts with "Checks failed"; when no check ran, it starts with "No checks ran"; when the status is `unverified`, it starts with "No build or test covered this change; the checks that passed do not read it". When hook repair ran, it also says "Hook repair changed the code after the checks ran; the checks table describes the pre-repair tree." The create-PR step reads `quick_change_commit_repaired` and `quick_change_push_repaired` from the runner's outputs, never from the state directory, and fails when either is missing.
 
 The push uses an explicit refspec, `git push -u origin refs/heads/<branch>:refs/heads/<branch>`, only after the snapshot (which holds a checksum of the push URL) still matches, and is followed by `verify_pushed_ref.sh`. `gh pr create` runs through `workflow_gh_retry.sh` under an outer timeout.
 
@@ -508,14 +524,17 @@ The first is W1, the second W2, the third W3, the fourth W4. The warning text, t
 Every orchestrated run writes one line to stderr after any warnings:
 
 ```text
-[dev-orchestrator] Workflow: <quick-change|default-workflow|none> source=<override|classifier|default> reason=<text>
+[dev-orchestrator] Workflow: <quick-change|default-workflow|none> source=<override|classifier|default|handover> reason=<text>
 ```
 
-One case writes a second line. When `quick-change` was forced on a run that then falls back to `default-workflow`, because the recursion guard blocked the parallel launch or adaptive recovery took over, `blocked-fallback-reselect-workflow` or `adaptive-reselect-workflow` sets `selected_workflow` to `default-workflow` and logs the change. The last line names what ran, and reflection and validation run as for any full workflow:
+Two cases write a second line. When `quick-change` was forced on a run that then falls back to `default-workflow`, because the recursion guard blocked the parallel launch or adaptive recovery took over, `blocked-fallback-reselect-workflow` or `adaptive-reselect-workflow` sets `selected_workflow` to `default-workflow` and logs the change. When a single-workstream `quick-change` hands over, `handover-reselect-workflow` does the same with `source=handover`, as the selection may have come from the classifier or an override. In each case the last line names what ran, and reflection and validation run as for any full workflow:
 
 ```text
 [dev-orchestrator] Workflow: default-workflow source=override reason=parallel launch blocked; the single-session fallback runs default-workflow
+[dev-orchestrator] Workflow: default-workflow source=handover reason=quick-change handed over; default-workflow ran
 ```
+
+The one exception is a parallel run forced to `quick-change`, described under [Hand-over to default-workflow](#hand-over-to-default-workflow).
 
 Examples:
 
@@ -584,7 +603,7 @@ stderr:
 
 ## Steps skipped after a quick change
 
-When `selected_workflow` is `quick-change`, these smart-orchestrator steps do not run:
+When `selected_workflow` is still `quick-change` after execution, these smart-orchestrator steps do not run:
 
 | Recipe | Steps |
 | --- | --- |
@@ -593,13 +612,13 @@ When `selected_workflow` is `quick-change`, these smart-orchestrator steps do no
 
 `summarize` and `complete-session` still run, including after a run that finished with verdict `empty`.
 
-Reflection rounds and outside-in validation exist to judge a full workflow run. Outside-in validation looks for Step 13 and qa-team evidence that `quick-change` never produces, so running it would start extra rounds and remove the saving the recipe is for. A run that hands over also skips these steps; `default-workflow` reviews the work itself.
+Reflection rounds and outside-in validation exist to judge a full workflow run. Outside-in validation looks for Step 13 and qa-team evidence that `quick-change` never produces, so running it would start extra rounds and remove the saving the recipe is for. A run that hands over has run `default-workflow`, which does produce that evidence, so `handover-reselect-workflow` changes the selection and these steps run.
 
 `selected_workflow` is declared in the context of `smart-orchestrator`, `smart-classify-route`, `smart-execute-routing`, `smart-reflect-loop` and `smart-validate-summarize`, so each condition can read it.
 
 ## Recursion limits
 
-`quick-change.yaml` sets `max_depth: 6` and `max_total_steps: 140`. On the pinned runner, limits are counted from the top-level recipe, and a `recipe` step fails when the depth it runs at has reached `max_depth`. The longest path is smart-orchestrator, smart-execute-routing, `quick-change`, then a hand-over into `default-workflow` and its sub-recipes: about 139 of 200 steps, with the deepest sub-recipe (`workflow-terminal-adjudication`) at depth 5 of 6. A change to the runner pin can change how these are counted.
+`quick-change.yaml` sets `max_depth: 6` and `max_total_steps: 140`. On the pinned runner, limits are counted from the top-level recipe, and a `recipe` step fails when the depth it runs at has reached `max_depth`. The longest path is smart-orchestrator, smart-execute-routing, `quick-change`, then a hand-over into `default-workflow` and its sub-recipes: about 146 of 200 steps, counting `handover-reselect-workflow` and the reflection and validation steps that run after a hand-over, with the deepest sub-recipe (`workflow-terminal-adjudication`) at depth 5 of 6. A change to the runner pin can change how these are counted.
 
 `issue_1740_quick_change_recipe::handover_nesting_leaves_one_level_spare` walks the `recipe:` steps of the bundled YAML from smart-orchestrator, and from `quick-change` run on its own, through `quick-change` and its hand-over, and fails when any sub-recipe on those paths sits deeper than `max_depth - 1`. A new level of sub-recipe under `default-workflow` would use that spare level, and the test fails before it ships.
 
@@ -626,6 +645,7 @@ Known limits:
 - A new file created with the executable bit is counted like any other new file; only a mode change to an existing file, or a symlink, forces a hand-over.
 - When hook repair during the push grows the change beyond the limits, the branch is already on `origin` and no PR is opened. Delete the remote branch by hand if it is not wanted.
 - The repository configuration is shared by every worktree. Other branches' entries are left out of the drift check, but any other change another process makes there while a run is in progress, such as adding a remote, stops that run as drift.
+- A file outside every package directory that a crate compiles in through a relative path, such as `include_str!("../../../docs/x.md")`, runs no clippy or test here, because the tool does not read `include_str!` calls. CI builds it.
 - A changed `.rs` file is checked with the package of the nearest `Cargo.toml` that has a `[package]` section and is not the workspace root. A file that a different package compiles through a `path` key or a `#[path]` attribute, but that sits under another member's directory, is checked with that member, whose checks do not build it.
 - `.gitignore` is the boundary for secrets. An ignored file is neither counted nor committed; a secret in a tracked or new unignored file is caught only by the artifact guard before the commit.
 

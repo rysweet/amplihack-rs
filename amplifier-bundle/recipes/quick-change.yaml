@@ -58,6 +58,7 @@ steps:
       git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"
       qc_branch >/dev/null
       qc_require_identity
+      qc_sweep_state
       BASE="$(git -C "$QC_WT" rev-parse HEAD)"
       SNAP="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" --snapshot "$QC_WT")"
       printf '%s\n' "$SNAP" | qc_write git-config.snapshot
@@ -124,9 +125,8 @@ steps:
       esac
     output: "quick_change_verdict"
 
-  # Step 5: on hand-over, keep a patch of the change against the base and
-  # write the note for default-workflow (qc_handover_note): fixed wording and
-  # bash-step values only, never agent text or patch content.
+  # Step 5: on hand-over, keep a patch against the base and write the note for
+  # default-workflow (qc_handover_note): never agent text or patch content.
   - id: "quick-change-write-handover"
     type: "bash"
     condition: "quick_change_verdict == 'handover'"
@@ -255,8 +255,7 @@ steps:
       printf '%s' "$REPAIRED" >&3
     output: "quick_change_push_repaired"
 
-  # Step 10: open the PR; a draft when the checks failed, when no check ran,
-  # or when hook repair changed the code after they ran. Always the last step.
+  # Step 10, always last: open the PR, a draft on any warning from qc_pr_warnings.
   - id: "quick-change-create-pr"
     type: "bash"
     condition: "quick_change_verdict == 'proceed'"
@@ -297,4 +296,5 @@ steps:
       GH_RETRY_TMPDIR="$QUICK_CHANGE_STATE_DIR" timeout 1800 bash -c '. "$1"; shift; _gh_retry_core "pr create" pr create "$@"' _ \
         "$QC_TOOLS/workflow_gh_retry.sh" --base "$DEFAULT" --head "$BRANCH" --title "$(qc_title)" \
         --body-file "$QUICK_CHANGE_STATE_DIR/pr-body.md" "$@"
+      qc_remove_state
     output: "quick_change_pr_url"

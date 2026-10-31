@@ -5,10 +5,11 @@
 # Usage:
 #   quick_change_checks.sh <worktree> <base-sha> <table-out-file>
 #
-#   Cargo.toml               cargo fmt --all -- --check, always; with changed
-#                            .rs files, cargo clippy and cargo test for each
-#                            affected crate, or once with --workspace when a
-#                            changed .rs file has no crate (see crate_of)
+#   Cargo.toml               cargo fmt --all -- --check, always; with a change
+#                            to Rust code or to what it compiles, cargo clippy
+#                            and cargo test for each affected crate, or once
+#                            with --workspace for Cargo.lock or a file with no
+#                            crate (see crate_of)
 #   .pre-commit-config.yaml  pre-commit run --files <changed files>
 #   package.json             npm run lint and npm test, when the script exists
 #
@@ -17,7 +18,9 @@
 # Check output goes to stderr only. Checks run with publishing and model
 # tokens removed from the environment.
 #
-# Stdout is one line: QUICK_CHANGE_CHECKS=<passed|failed|none> ran= failed= skipped=
+# Stdout is one line: QUICK_CHANGE_CHECKS=<passed|failed|none|unverified> ran= failed= skipped=
+# unverified: checks ran and passed, but none of them built or tested a changed
+# lockfile or Rust change, so a pass from them would say nothing about it.
 # <table-out-file> receives Markdown table rows only. Exit 0 once the checks
 # have run, 2 on a usage error. Written for bash 3.2.
 
@@ -37,6 +40,7 @@ git -C "$WT" cat-file -e "${BASE}^{commit}" 2>/dev/null || { echo "ERROR: base $
 WT="$(cd "$WT" && pwd -P)"
 
 RAN=0; FAILED=0; SKIPPED=0; ROWS=""
+RUST_CHANGED=0; CARGO_BUILT=0; NPM_TESTED=0
 
 # display <text>: one line, with no backtick, pipe or control character, so a
 # path cannot break the Markdown table.
@@ -105,18 +109,30 @@ rust_checks() {
   else
     run_check "cargo clippy $* --all-targets -- -D warnings" cargo clippy "$@" --all-targets -- -D warnings
     run_check "cargo test $*" cargo test "$@"
+    CARGO_BUILT=1
   fi
 }
 
 # --- Rust ----------------------------------------------------------------------
 if [ -f "$WT/Cargo.toml" ]; then
   CRATES=""
-  RS_CHANGED=0
   WORKSPACE=0
+  ROOT_PACKAGE="$(crate_of Cargo.toml)"
   for path in ${CHANGED[@]+"${CHANGED[@]}"}; do
-    case "$path" in *.rs) ;; *) continue ;; esac
-    RS_CHANGED=1
     name="$(crate_of "$path")"
+    case "$path" in
+      # The lockfile decides what every crate compiles against, and `cargo fmt`
+      # never reads it.
+      Cargo.lock|*/Cargo.lock) RUST_CHANGED=1; WORKSPACE=1; continue ;;
+      *.rs) ;;
+      # Non-Rust files in these root directories are fixtures, or compiled in
+      # by include_str!.
+      src/*|tests/*|benches/*|examples/*) ;;
+      # Any other file counts when it is inside a member crate, for the same
+      # reason. Files around a root package (docs/, README.md) do not.
+      *) [ -n "$name" ] && [ "$name" != "$ROOT_PACKAGE" ] || continue ;;
+    esac
+    RUST_CHANGED=1
     if [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]]; then
       case $'\n'"$CRATES" in *$'\n'"$name"$'\n'*) ;; *) CRATES="${CRATES}${name}"$'\n' ;; esac
     else
@@ -131,7 +147,7 @@ if [ -f "$WT/Cargo.toml" ]; then
   else
     run_check "cargo fmt --all -- --check" cargo fmt --all -- --check
   fi
-  if [ "$RS_CHANGED" -eq 0 ]; then
+  if [ "$RUST_CHANGED" -eq 0 ]; then
     reason="no .rs files changed"
     command -v cargo >/dev/null 2>&1 || reason="cargo not on PATH"
     skip "cargo clippy --all-targets -- -D warnings" "$reason"
@@ -172,6 +188,7 @@ if [ -f "$WT/package.json" ]; then
       skip "$label" "no \"$script\" script"
     elif [ "$script" = test ]; then
       run_check "$label" npm test
+      NPM_TESTED=1
     else
       run_check "$label" npm run "$script"
     fi
@@ -183,7 +200,20 @@ TABLE_TMP="$(mktemp "${TABLE_OUT}.XXXXXX")"
 printf '%s' "$ROWS" > "$TABLE_TMP"
 mv -f "$TABLE_TMP" "$TABLE_OUT"
 
+# Whether what ran could have failed on the change: a lockfile needs its own
+# package manager's build or tests, and a pre-commit pass does not show that.
+UNVERIFIED=0
+[ "$RUST_CHANGED" -eq 0 ] || [ "$CARGO_BUILT" -eq 1 ] || UNVERIFIED=1
+for path in ${CHANGED[@]+"${CHANGED[@]}"}; do
+  case "${path##*/}" in
+    Cargo.lock) [ "$CARGO_BUILT" -eq 1 ] || UNVERIFIED=1 ;;
+    package-lock.json|yarn.lock|pnpm-lock.yaml) [ "$NPM_TESTED" -eq 1 ] || UNVERIFIED=1 ;;
+    uv.lock|poetry.lock) UNVERIFIED=1 ;;
+  esac
+done
+
 STATUS=none
 [ "$RAN" -eq 0 ] || STATUS=passed
+[ "$RAN" -eq 0 ] || [ "$UNVERIFIED" -eq 0 ] || STATUS=unverified
 [ "$FAILED" -eq 0 ] || STATUS=failed
 printf 'QUICK_CHANGE_CHECKS=%s ran=%s failed=%s skipped=%s\n' "$STATUS" "$RAN" "$FAILED" "$SKIPPED"
