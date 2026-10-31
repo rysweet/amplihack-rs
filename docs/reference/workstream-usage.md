@@ -64,6 +64,8 @@ Conflicting native owners for the same response leave that response counted once
 in the unattributed bucket, regardless of manifest order. Parse diagnostics retain
 the source session/file/line; `incomplete_usage_observation` marks the accounting
 owner separately, and incompleteness propagates through its ancestors.
+Copied records with null or absent usage retain their native owner and response
+metadata so missing observations also mark that owner and its ancestors incomplete.
 No valid observed token counters (including empty usage objects) means `total`,
 session `direct` and `inclusive` are `null`. An explicitly observed zero counter
 produces numeric zero; absent or invalid counters never establish zero. Partial

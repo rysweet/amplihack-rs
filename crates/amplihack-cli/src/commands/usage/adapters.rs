@@ -66,11 +66,27 @@ fn claude(v: &Value, p: &mut Parsed) {
     }
     let msg = &v["message"];
     let u = &msg["usage"];
-    if !u.is_object() {
+    let tokens = if u.is_object() {
+        claude_tokens(u, &mut p.diagnostics)
+    } else {
         p.diagnostics.push("missing_usage");
-        return;
+        None
+    };
+    let key = label(&msg["id"]);
+    if key.is_none() {
+        p.diagnostics.push("missing_message_identity");
     }
-    let d = &mut p.diagnostics;
+    // Missing counters must not discard the owner of a copied response.
+    p.event = Some(Event::Usage {
+        key,
+        native_session: label(&v["sessionId"]),
+        model: label(&msg["model"]),
+        tokens,
+        cumulative: false,
+    });
+}
+
+fn claude_tokens(u: &Value, d: &mut Vec<&'static str>) -> Option<Tokens> {
     let mut observed = false;
     let write = number(u, "cache_creation_input_tokens", d, &mut observed);
     let parts = &u["cache_creation"];
@@ -97,17 +113,7 @@ fn claude(v: &Value, p: &mut Parsed) {
         output: number(u, "output_tokens", d, &mut observed),
         reasoning: 0,
     };
-    let key = label(&msg["id"]);
-    if key.is_none() {
-        d.push("missing_message_identity");
-    }
-    p.event = Some(Event::Usage {
-        key,
-        native_session: label(&v["sessionId"]),
-        model: label(&msg["model"]),
-        tokens: observed.then_some(t),
-        cumulative: false,
-    });
+    observed.then_some(t)
 }
 
 fn codex_tokens(u: &Value, d: &mut Vec<&'static str>) -> Option<Tokens> {
@@ -151,17 +157,19 @@ fn codex(v: &Value, p: &mut Parsed) {
     }
     if v["type"] == "token_usage_record" {
         let native = label(&payload["thread_id"]).or_else(|| label(&payload["session_id"]));
-        if payload["usage"].is_object() {
-            p.event = Some(Event::Usage {
-                key: label(&payload["response_id"]),
-                native_session: native.clone(),
-                model: label(&payload["model"]),
-                tokens: codex_tokens(&payload["usage"], &mut p.diagnostics),
-                cumulative: false,
-            });
+        let tokens = if payload["usage"].is_object() {
+            codex_tokens(&payload["usage"], &mut p.diagnostics)
         } else {
             p.diagnostics.push("missing_usage");
-        }
+            None
+        };
+        p.event = Some(Event::Usage {
+            key: label(&payload["response_id"]),
+            native_session: native.clone(),
+            model: label(&payload["model"]),
+            tokens,
+            cumulative: false,
+        });
         if payload["thread_token_usage"].is_object() {
             p.snapshot = Some(Event::Usage {
                 key: None,

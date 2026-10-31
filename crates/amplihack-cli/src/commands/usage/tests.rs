@@ -767,6 +767,89 @@ fn copied_partial_usage_marks_accounting_owner_and_ancestors_incomplete() {
 }
 
 #[test]
+fn copied_missing_usage_marks_native_owner_incomplete_without_inventing_totals() {
+    for provider in ["claude", "codex"] {
+        for absent in [false, true] {
+            for observed in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let usage = if provider == "claude" {
+                    json!({"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0})
+                } else {
+                    json!({"input_tokens":10,"output_tokens":5,"cached_input_tokens":0,"cache_write_input_tokens":0,"reasoning_output_tokens":0})
+                };
+                for id in ["root", "owner", "holder"] {
+                    let contents = if observed {
+                        native_usage(provider, id, id, usage.clone()).to_string()
+                    } else {
+                        String::new()
+                    };
+                    std::fs::write(dir.path().join(id), contents).unwrap();
+                }
+                let mut copy = native_usage(provider, "owner", "missing-copy", Value::Null);
+                if absent {
+                    let payload = if provider == "claude" {
+                        &mut copy["message"]
+                    } else {
+                        &mut copy["payload"]
+                    };
+                    payload.as_object_mut().unwrap().remove("usage");
+                }
+                std::fs::write(dir.path().join("copy"), copy.to_string()).unwrap();
+                let mut owner = session("owner", provider, json!(["owner"]));
+                owner["parent"] = json!("root");
+                let entries = vec![
+                    session("root", provider, json!(["root"])),
+                    owner,
+                    session("holder", provider, json!(["holder", "copy"])),
+                ];
+                for entries in [entries.clone(), entries.into_iter().rev().collect()] {
+                    let m = manifest(json!(entries));
+                    let r = collect(&m, dir.path()).unwrap();
+                    assert!(
+                        !r.complete,
+                        "{provider}, absent={absent}, observed={observed}"
+                    );
+                    assert_eq!(r.total.map(Tokens::total), observed.then_some(45));
+                    for s in &r.sessions {
+                        assert!(!s.complete, "{provider}: {} with absent={absent}", s.id);
+                        assert_eq!(s.direct.map(Tokens::total), observed.then_some(15));
+                        let inclusive = if s.id == "root" { 30 } else { 15 };
+                        assert_eq!(
+                            s.inclusive.map(Tokens::total),
+                            observed.then_some(inclusive)
+                        );
+                    }
+                    let holder = m.sessions.iter().position(|s| s.id == "holder").unwrap();
+                    assert!(r.diagnostics.iter().any(|d| d.code == "missing_usage"
+                        && d.session == Some(holder)
+                        && d.file == Some(1)
+                        && d.line == Some(1)));
+                    let owner = m.sessions.iter().position(|s| s.id == "owner").unwrap();
+                    assert!(
+                        r.diagnostics
+                            .iter()
+                            .any(|d| d.code == "incomplete_usage_observation"
+                                && d.session == Some(owner)
+                                && d.file.is_none()
+                                && d.line.is_none())
+                    );
+                    if !observed {
+                        assert!(r.models.is_empty());
+                        let json = serde_json::to_value(&r).unwrap();
+                        assert!(json["total"].is_null());
+                        for s in json["sessions"].as_array().unwrap() {
+                            assert!(s["direct"].is_null());
+                            assert!(s["inclusive"].is_null());
+                        }
+                        assert!(summary(&r).contains("Total unknown"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn empty_or_invalid_counters_are_unknown_but_observed_zero_is_numeric() {
     for provider in ["claude", "codex"] {
         for (usage, observed) in [
