@@ -26,7 +26,7 @@ fn json(runner: &impl GhRunner, args: &[&str]) -> Result<Value> {
 /// One marker per workstream/PR, updated only on the authenticated user's comment.
 /// Callers serialize publications for a workstream (the hosting API has no atomic upsert).
 pub fn publish(m: &Manifest, r: &Report, pr: u64, runner: &impl GhRunner) -> Result<&'static str> {
-    super::collect::validate(m)?;
+    super::manifest::validate(m)?;
     if !m.completed
         || !m.prs.contains(&pr)
         || m.workstream.is_none()
