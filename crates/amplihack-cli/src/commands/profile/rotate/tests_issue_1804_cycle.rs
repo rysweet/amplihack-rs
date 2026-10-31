@@ -464,8 +464,8 @@ fn a_move_onto_credits_writes_the_per_token_line_with_its_tier_and_no_login_chec
 }
 
 /// The rotator with a corrupt `.auto-switch`: `tiers_detail` gives no tiers,
-/// so an unmarked-by-corruption credit profile is a candidate like a plan
-/// login. This pins today's behaviour; see the issue linked in the PR.
+/// so a marked credit profile is a candidate like a plan login. This pins
+/// today's behaviour, which issue #1805 tracks; API-key profiles stay out.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_corrupt_auto_switch_file_loses_the_marks_for_the_rotator() {
