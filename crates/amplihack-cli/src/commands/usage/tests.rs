@@ -250,7 +250,6 @@ fn publication_requires_explicit_completion_ready_pr_and_owned_marker() {
 
 #[test]
 fn clap_registers_read_only_and_publish_commands() {
-    use clap::Parser;
     assert!(
         crate::Cli::try_parse_from([
             "amplihack",

@@ -5,7 +5,9 @@ Code and Codex JSONL accounting records without model calls or network access.
 Omit `--format json` for a readable Markdown summary. Source files are opened
 read-only. Only files explicitly listed in the manifest are read; relative paths
 resolve against the manifest's directory. There is no automatic home-directory
-scan, quota governor, daemon, account switching, or pricing download.
+scan, quota governor, daemon, account switching, or pricing download. Usage
+commands also skip generic startup asset repair; reporting needs no installed
+framework assets or external tools.
 
 ## Manifest version 1
 
@@ -147,7 +149,11 @@ checks; this feature does not rewrite recipe acceptance rules.
 
 Unit tests in `commands/usage/tests.rs` use synthetic native fixtures and an
 in-memory hosting runner. Run `cargo test -p amplihack-cli --lib commands::usage::`.
-They make no model or network calls. Fixtures include native stable response
+The actual binary regression in `bins/amplihack/tests/issue_1810_usage_startup.rs`
+checks JSON and summary reporting against empty and stale installations, with
+no external tools on PATH and unchanged input/home state. Run it with
+`cargo test -p amplihack --test amplihack_bin issue_1810_usage_startup::`.
+Tests make no model or network calls. Fixtures include native stable response
 records, cumulative-only fallbacks, cache writes, missing prefixes and unknown
 ownership, and distinguish unobserved/null from non-additive partial evidence.
 
