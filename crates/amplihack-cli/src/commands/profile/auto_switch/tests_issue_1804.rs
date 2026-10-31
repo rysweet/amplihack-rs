@@ -334,3 +334,54 @@ fn a_session_on_an_unmarked_key_never_moves_onto_another_key() {
     let got = g.pick(&cfg(&[]), Some(GATE), &readings, "console", now);
     assert_eq!(got.as_deref(), Some("spare"), "a plan login is a way off");
 }
+
+/// A marked key is still never swapped into a running session: its
+/// `{}` login is no login on its own, so the session would be logged out.
+#[test]
+fn swap_check_never_swaps_a_marked_key_into_a_session() {
+    let _l = lock();
+    let f = fx("enabled=on\noverflow=console\n");
+    // A key the login check accepts, so only the swap rule can refuse.
+    private(
+        &f.root.join("console").join(".claude.json"),
+        r#"{"primaryApiKey":"SENTINEL-1804-KEY"}"#,
+    );
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _unset = EnvGuard::unset([
+        "AMPLIHACK_ROTATE_OVERFLOW_WAIT",
+        "AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET",
+        "AMPLIHACK_ROTATE_SESSION_AT",
+        "AMPLIHACK_ROTATE_WEEK_AT",
+    ]);
+    let now = fsx::now();
+    let c = cfg(&["console"]);
+    assert_eq!(
+        f.pick(&c, Some(GATE), &used_up(now), "work", now)
+            .as_deref(),
+        Some("console"),
+        "the selection itself reaches the key"
+    );
+    f.state
+        .save_usage(&UsageFile {
+            version: 1,
+            accounts: used_up(now),
+        })
+        .unwrap();
+    let window = Some(Window {
+        used_percentage: 100.0,
+        resets_at: now + 4 * 3600,
+    });
+    let rl = RateLimits {
+        five_hour: window,
+        seven_day: window,
+    };
+    let inputs = OverflowInputs::load(&f.root, &c, now);
+    assert!(inputs.gate.is_some(), "the gate must be open for this test");
+    assert!(inputs.key_check_passes(&f.root, &n("console")));
+    swap_check(&f.state, &f.profiles, &n("work"), &rl, &c).unwrap();
+    assert!(
+        f.state.load_ledger().unwrap().hosts.is_empty(),
+        "no login moved"
+    );
+    assert_eq!(fs::read(f.root.join("console").join(CREDS)).unwrap(), b"{}");
+}

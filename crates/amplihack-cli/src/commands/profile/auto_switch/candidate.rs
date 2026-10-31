@@ -110,6 +110,15 @@ pub struct OverflowPool<'a> {
     pub kinds_unknown: bool,
 }
 
+impl OverflowPool<'_> {
+    /// Whether `p` is a plan login: neither overflow nor an API-key profile
+    /// (issue #1804). The one test every auto-switch decision uses, so an
+    /// API-key profile's missing reading never counts as free capacity.
+    pub fn is_plan(&self, p: &ProfileName) -> bool {
+        !self.order.contains(p) && !self.not_plan.contains(p)
+    }
+}
+
 /// A reading's adjusted (session, week) use: five-hour and seven-day, 0 for
 /// a missing or reset window.
 fn session_week(r: &Reading, now: i64) -> (f64, f64) {
@@ -249,8 +258,7 @@ pub fn select_with_overflow<'a>(
         return None;
     }
     let mut plan_exclude = pool.exclude.to_vec();
-    plan_exclude.extend(ov.order.iter().cloned());
-    plan_exclude.extend(ov.not_plan.iter().cloned());
+    plan_exclude.extend(pool.profiles.iter().filter(|p| !ov.is_plan(p)).cloned());
     let plan_pool = Pool {
         profiles: pool.profiles,
         readings: pool.readings,

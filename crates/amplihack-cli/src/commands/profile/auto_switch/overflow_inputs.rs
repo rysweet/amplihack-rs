@@ -50,7 +50,8 @@ struct Order {
 /// (`overflow::tiers_of`): its credit entries, then the first marked
 /// API-key profile by name; that profile; and every API-key profile. An
 /// API-key profile that `overflow=` does not mark is not in the order
-/// (issue #1804). `None` when kinds cannot be read. Parses `.claude.json`
+/// (issue #1804). `None` when kinds cannot be read or the root cannot be
+/// listed. Parses `.claude.json`
 /// only for a profile with no login file, so this stays cheap on the status
 /// line.
 fn order_of(root: &Path, cfg: &Config, home: Option<&Path>) -> Option<Order> {
@@ -59,7 +60,7 @@ fn order_of(root: &Path, cfg: &Config, home: Option<&Path>) -> Option<Order> {
     if kinds.corrupt() {
         return None;
     }
-    let not_plan = kinds.platform_profiles(&store);
+    let not_plan = kinds.try_platform_profiles(&store)?;
     let (tiers, _) = overflow::tiers_of(cfg.overflow_order(), &not_plan);
     let platform = tiers
         .iter()

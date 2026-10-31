@@ -33,9 +33,11 @@ pub(super) use crate::commands::profile::attempt::limit_reset;
 /// overflow profile: not spend-blocked; its own plan reading does not
 /// count), not in `skip`, holding its own login at home, and not hosting
 /// another account. Plan profiles come first; an overflow profile only when
-/// no plan profile has capacity and the overflow gate allows it (issue #1606), and
-/// a launch on an overflow profile gets a plan profile as soon as one has
-/// capacity (see `candidate::select_with_overflow`).
+/// no plan profile has room (both windows below 100%) and the earliest plan
+/// reset is beyond the overflow wait (issues #1606, #1804), and a launch on an
+/// overflow profile gets a plan profile as soon as one has capacity (see
+/// `candidate::select_with_overflow`). An API-key profile is never a plan
+/// profile.
 pub fn nested_candidate(
     state: &State,
     ledger: &Ledger,

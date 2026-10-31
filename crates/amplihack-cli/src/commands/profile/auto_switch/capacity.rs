@@ -192,10 +192,9 @@ pub fn compute(
     now: i64,
     writer: &str,
 ) -> CapacityFile {
-    let is_plan = |p: &ProfileName| !overflow.order.contains(p) && !overflow.not_plan.contains(p);
     let eligible: Vec<&ProfileName> = profiles
         .iter()
-        .filter(|p| !cfg.exclude.contains(p) && is_plan(p))
+        .filter(|p| !cfg.exclude.contains(p) && overflow.is_plan(p))
         .collect();
     let mut over: Vec<(String, Over)> = eligible
         .iter()
@@ -288,6 +287,7 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
             .collect();
         let now = fsx::now();
         let overflow = OverflowInputs::load(&state.root, &eff.config, now);
+        // Kinds unknown: write nothing, and leave any existing file as it is.
         if overflow.kinds_unknown {
             return;
         }

@@ -2291,14 +2291,14 @@ With [overflow](#rotate-overflow) profiles, a state that would be `low` or
 profile now ([Auto-switch and overflow profiles](#auto-switch-and-overflow-profiles)),
 judged by the same functions the selection uses:
 
-- the gate allows it: no eligible account has plan capacity (below
-  `--session-at` and `--week-at`, not the auto-switch threshold), and the
+- the gate allows it: no eligible plan account has room (both windows
+  below 100%; an API-key profile is never a plan account), and the
   earliest plan reset is more than the overflow wait away. The plan reset
   here is the gate's, the reset of the window at the gate's threshold, or the
   later of the two when both are, not the reset of the window over the
   auto-switch threshold;
-- some overflow profile is listed, not excluded, not spend-blocked and not
-  over the threshold.
+- some overflow profile is listed, not excluded and not spend-blocked. Its
+  own plan reading does not count.
 
 For example, an account at 87% session (resetting in two hours) and 95% week
 (resetting in ten minutes) has plan capacity again only in two hours, so with
@@ -5671,13 +5671,17 @@ other switch: "overflow on" means that at least one profile is named in
 the [gate](#earliest-plan-reset) allows the move.
 
 If `.auto-switch` cannot be read while `AMPLIHACK_CLAUDE_AUTO_SWITCH=1` keeps
-auto-switch on, kinds are unknown: auto-switch selects no profile and writes
-no capacity file until the file is fixed.
+auto-switch on, kinds are unknown. Auto-switch then selects no profile and
+writes no capacity file until the file is fixed; a capacity file already
+there is left as it is. The same holds when the profile root cannot be
+listed.
 
-A session you start on an unmarked API-key profile stays there. It does not
-count as overflow, so auto-switch never moves it onto another API-key profile
-and, because a key reports no rate limits, does not move it off the key by
-itself. Move it yourself when you want it back on a plan login.
+A session you start on an unmarked API-key profile does not count as
+overflow, so auto-switch never moves it onto another API-key profile. A key
+reports no rate limits, so the status line never moves it off the key
+either. Only a nested launch or a usage-limit rerun from it can move to a
+plan profile or a marked credit profile. Otherwise the session stays until
+you move it.
 
 ```bash
 amplihack profile overflow add api-key

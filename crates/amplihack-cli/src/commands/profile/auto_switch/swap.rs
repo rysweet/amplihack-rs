@@ -514,10 +514,13 @@ pub fn swap_check(
         now,
     };
     // A candidate's home slot must hold its login; when that slot is its own
-    // directory, no running process may be using the directory.
+    // directory, no running process may be using the directory. An API-key
+    // profile is never swapped into a running session: its `.credentials.json`
+    // is no login on its own, so the session would be logged out (#1804).
     let eligible = |c: &ProfileName| {
         let n = c.as_str();
-        ledger.leased_to(n).is_none()
+        !overflow.not_plan.contains(c)
+            && ledger.leased_to(n).is_none()
             && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
             && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
     };
@@ -623,11 +626,7 @@ pub(super) fn overflow_may_move(
     readings
         .iter()
         .filter_map(|(name, r)| ProfileName::parse(name).ok().map(|n| (n, r)))
-        .filter(|(n, _)| {
-            !overflow.order.contains(n)
-                && !overflow.not_plan.contains(n)
-                && !cfg.exclude.contains(n)
-        })
+        .filter(|(n, _)| overflow.pool().is_plan(n) && !cfg.exclude.contains(n))
         .any(|(_, r)| candidate::way_off(Some(r), overflow.gate.as_ref(), cfg.threshold, now))
 }
 

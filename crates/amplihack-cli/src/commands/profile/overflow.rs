@@ -154,7 +154,7 @@ pub fn overflow_names(root: &Path) -> Vec<ProfileName> {
 /// Every tier the rotator and auto-switch try, in order, and the marked
 /// API-key profiles that are not used because another comes first by name.
 /// See [`tiers_of`] for the order. Both are empty when `.auto-switch` is
-/// corrupt, so a damaged file never spends, on credits or on the API key.
+/// corrupt or the root cannot be listed, so a damaged file never spends, on credits or on the API key.
 /// `home` is the user's home directory.
 #[cfg(unix)]
 pub fn tiers_detail(
@@ -171,7 +171,11 @@ pub fn tiers_detail(
     if kinds.corrupt() {
         return (Vec::new(), Vec::new());
     }
-    tiers_of(marked, &kinds.platform_profiles(store))
+    // A root that cannot be listed would make every marked key a credit tier.
+    match kinds.try_platform_profiles(store) {
+        Some(platforms) => tiers_of(marked, &platforms),
+        None => (Vec::new(), Vec::new()),
+    }
 }
 
 /// The tiers of the entries `marked`, given every API-key profile: the
