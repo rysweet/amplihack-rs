@@ -393,7 +393,7 @@ mod overflow_precheck {
 
     #[test]
     fn a_credit_account_at_its_plan_limit_returns_early() {
-        let r = readings(reading(95.0, 10.0));
+        let r = readings(reading(100.0, 10.0));
         assert!(!overflow_may_move(
             &n("cred"),
             &cfg(90),

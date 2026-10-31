@@ -12,18 +12,16 @@
 //!   (`candidate::may_return_to`; `tests_gate_record` checks thresholds 70,
 //!   80 and 90 against 85/90).
 //! - Onto overflow only when the live plan login is at a threshold (and its
-//!   probe did not fail), and the shared [`Gate`] allows it: no plan login
-//!   has capacity and the earliest plan reset is more than `overflow_wait`
-//!   away. An unknown reset allows it only with `--overflow-unknown-reset 1`.
-//!   This replaces the ALERT, and also a threshold swap onto a plan login
-//!   that is itself at a threshold; that swap still happens when the gate
-//!   does not allow overflow. Auto-switch decides in the same order.
+//!   probe did not fail), no plan login, live included, has room
+//!   ([`plan_room`]) and the shared [`Gate`] allows it: the earliest plan
+//!   reset is more than `overflow_wait` away. An unknown reset allows it
+//!   only with `--overflow-unknown-reset 1`. Auto-switch decides in the same
+//!   order.
 //! - The overflow profile chosen is the first usable one by tier, then by
 //!   file order within a tier.
-//! - Off overflow as soon as a plan login has capacity, ignoring the hold
-//!   (`--hold`, the minimum time after a rotator swap) and both margins.
-//!   Both rules use the same capacity test, so the rotator does not flap
-//!   (P2).
+//! - Off overflow as soon as a plan login has capacity, then as soon as one
+//!   has room, ignoring the hold (`--hold`, the minimum time after a rotator
+//!   swap) and both margins (P2).
 //! - A `profile switch` pin (`rotate::pin`, #1691) is a different thing from
 //!   the hold, and it wins over every rule here: the cycle stops on the pin
 //!   before measuring, so this function never runs while one is in force.
@@ -32,14 +30,22 @@
 //!   with an active block. See `tests_pin_overflow` and "Pin and overflow"
 //!   in docs/reference/profile-command.md.
 //! - A spend-limit reading on an overflow profile blocks it, once per block.
-//! - Issue #1700: the API-key profile is the entry at
-//!   [`PLATFORM_TIER`], after every credit tier, and the API-key block
-//!   covers it. Off the API key, every cycle and ignoring the hold: a plan
-//!   login with capacity, else a usable credit profile; blocked, the best
-//!   usable plan login, else an ALERT that stays (no swap, no loop).
+//! - Issue #1700: the API-key profile is the entry at [`PLATFORM_TIER`],
+//!   after every credit tier, and the API-key block covers it. Off the API
+//!   key with no plan room, every cycle and ignoring the hold: a usable
+//!   credit profile; blocked, the best usable plan login, else an ALERT that
+//!   stays (no swap, no loop).
+//! - Issue #1804: the API-key entry exists only when `overflow=` marks it,
+//!   and every per-token profile waits for plan logins. Off a plan login
+//!   the order is `decide`, the plan-room swap, then the marked per-token
+//!   profiles by tier, then the ALERT. A threshold swap onto a plan login
+//!   without capacity stands, unless the live login ranks first by
+//!   [`plan_room::choose`]: headroom and that rank differ, and following
+//!   both would swap two logins back and forth.
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};
 use super::ledger::OverflowBlock;
+use super::plan_room;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{Gate, OverflowEntry, PLATFORM_TIER};
@@ -213,7 +219,6 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
             })
             .map(|c| c.name.clone())
     };
-    let next_overflow = || next_in(false);
     let plan: Vec<Measured> = i
         .candidates
         .iter()
@@ -230,12 +235,10 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
 
     if !live_over {
         let d = decide(s, &i.live.reading, &plan, i.swapped_at, i.now);
-        // Overflow only replaces a move off a live login at a threshold (an
-        // ALERT, or a threshold swap onto a plan login that is itself
-        // without capacity), and never for a login whose state is unknown.
-        // A threshold swap onto a plan login with capacity stands. This is
-        // auto-switch's order too: plan capacity, then overflow, then a plan
-        // login without capacity.
+        // Everything below replaces only a move off a live login at a
+        // threshold (an ALERT, or a threshold swap onto a plan login that is
+        // itself without capacity), and never for a login whose state is
+        // unknown. A threshold swap onto a plan login with capacity stands.
         let moving_without_capacity = match &d {
             Decision::Alert => true,
             Decision::Swap {
@@ -246,20 +249,36 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
                 .any(|c| &c.name == to && plan_usable(s, &c.reading)),
             _ => false,
         };
-        if i.overflow.is_empty() || !moving_without_capacity || i.live.reading == Reading::Failed {
+        if !moving_without_capacity || i.live.reading == Reading::Failed {
+            return verdict(d, None, None);
+        }
+        // The plan login with the most room costs nothing.
+        let live_measured = i.live_name.map(|n| Measured::new(n.clone(), i.live));
+        let choice = plan_room::choose(s, live_measured.as_ref(), &plan);
+        if d == Decision::Alert
+            && let Some(to) = choice.clone()
+        {
+            return verdict(swap(to, Reason::PlanRoom), None, None);
+        }
+        // Per-token profiles only when no plan login, live included, has
+        // room. A failed probe is no room.
+        let room = plan_room::any_room(
+            std::iter::once(&i.live.reading).chain(plan.iter().map(|c| &c.reading)),
+        );
+        if room {
+            let d = if choice.is_some() { d } else { Decision::Alert };
             return verdict(d, None, None);
         }
         let plan_has_capacity = plan.iter().any(|c| plan_usable(s, &c.reading));
         let pool = std::iter::once((&i.live.reading, &i.live.windows))
             .chain(plan.iter().map(|c| (&c.reading, &c.windows)));
         let earliest = earliest_plan_reset(s, pool);
-        if !gate.allows(plan_has_capacity, earliest, i.now) {
-            return verdict(d, None, None);
+        if gate.allows(plan_has_capacity, earliest, i.now)
+            && let Some(to) = next_in(false)
+        {
+            return verdict(swap(to, Reason::OverflowIn), Some(Tag::In), earliest);
         }
-        return match next_overflow() {
-            Some(to) => verdict(swap(to, Reason::OverflowIn), Some(Tag::In), earliest),
-            None => verdict(d, None, None),
-        };
+        return verdict(d, None, None);
     }
 
     // On overflow: leave as soon as a plan login has capacity.
@@ -270,6 +289,10 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         .collect();
     if let Some((to, _)) = best(&with_capacity) {
         return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
+    }
+    // A plan login below 100% costs nothing (issue #1804).
+    if let Some(to) = plan_room::choose(s, None, &plan) {
+        return verdict(swap(to, Reason::OverflowOut), Some(Tag::Out), None);
     }
     let earliest = earliest_plan_reset(s, plan.iter().map(|c| (&c.reading, &c.windows)));
     if live_platform {
@@ -288,10 +311,11 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         return verdict(Decision::Stay, Some(Tag::On), earliest);
     }
     if i.live_name.is_some_and(blocked) {
-        // The live overflow cannot spend: the next overflow profile if the
-        // wait still holds, else the best plan login, else the ALERT.
+        // The live overflow cannot spend, and no plan login has room: the
+        // next per-token profile by tier if the wait still holds, else the
+        // best plan login, else the ALERT.
         if gate.far(earliest, i.now)
-            && let Some(to) = next_overflow()
+            && let Some(to) = next_in(false)
         {
             return verdict(swap(to, Reason::OverflowIn), Some(Tag::In), earliest);
         }

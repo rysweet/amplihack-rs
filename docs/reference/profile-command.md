@@ -1817,20 +1817,23 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
    plus step 2's spend block: without either, it stops there, whatever the
    overflow profile's own reading, so a session on credits does not run
    recovery or the `/proc` scan on every update.
-2. A session on an overflow profile that is not
+2. A session on an overflow profile moves to the plan profile with the most
+   [room](#rotate-plan-room-swap), by the rotator's plan-room ranking, when
+   any plan profile is below 100% on both windows. Otherwise, a session on an
+   overflow profile that is not
    [spend-blocked](#overflow-spend-limit-block) stays where it is. Its own
    plan reading plays no part: a credit account reads at or near 100% of
    its plan limits while it spends credits, and that is the account
    overflow exists for. Only a spend block moves a session from one
    overflow profile to the next, as in the rotator.
 3. An overflow profile, only when **both** hold:
-   - no plan profile has plan capacity, the current one included, whether
-     or not this session could use it (one leased to another session still
-     counts as capacity, so no money is spent while it exists). A current
-     plan profile at the auto-switch threshold but below the gate's
-     thresholds (for example at 82% with `auto-switch threshold 80`) still
-     has plan capacity: the rotator would not leave it for overflow, so the
-     session stays on it rather than spend, and it cannot move onto
+   - no plan profile has [room](#rotate-plan-room-swap) below 100% on both
+     windows, the current one included, whether or not this session could
+     use it (one leased to another session still counts, so no money is
+     spent while it exists). A plan profile with no reading, or whose probe
+     failed, counts as having no room. A current plan profile at 82%, or at
+     97%, still has room: the rotator would not leave it for overflow, so
+     the session stays on it rather than spend, and it cannot move onto
      overflow only to move straight back;
    - the earliest plan reset is more than the overflow wait away. The plan
      reset of an account is the reset of its window at its threshold, or
@@ -1840,22 +1843,23 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
    The first overflow profile by tier, then by list order within a tier,
    that is not current, not excluded, not spend-blocked and eligible is
    chosen. Its own plan reading is not checked, so a tier 1 credit account
-   at 100% of its plan limits is still chosen before a tier 2 API key at
-   0%.
+   at 100% of its plan limits is still chosen before the API key. The
+   API-key profile is tier 10, after every credit profile, and is a
+   candidate only when it is [marked](#api-key-rotation) and passes its
+   [login check](#api-key-login-check).
 4. Otherwise the best plan profile below the auto-switch threshold, by the
    order above. A plan account between the gate's thresholds and the
    auto-switch threshold (for example at 87% session) is used only here:
    when overflow is not allowed, it beats waiting, and it costs nothing.
 
-The rotator decides in the same order (plan capacity, then overflow, then a
-free swap onto a plan login without capacity), and both use the gate's plan
-capacity test for moving onto and off overflow, so on the same readings the
+The rotator decides in the same order (plan capacity, then plan room, then
+per-token profiles by tier; see [Rotate decision order](#rotate-decision-order)),
+and both use the same room test before spending, so on the same readings the
 two agree on when money is spent, for any auto-switch threshold. The
 auto-switch threshold only decides when a session on a plan profile asks,
-and which plan profiles it may move to from another plan profile. In particular, a plan account at 87%
-session counts as capacity for neither: both move onto an overflow profile
-when the plan reset is beyond the wait, and both use the 87% account when it
-is not.
+and which plan profiles it may move to from another plan profile. In
+particular, a plan account at 87% session has room for both: neither moves
+onto an overflow profile while it exists, whatever the plan reset.
 
 Auto-switch takes the gate from the running rotator. `rotate watch` writes
 its pid and the gate it resolved from its flags to
@@ -2593,9 +2597,9 @@ there gives one source of truth for which profiles are skipped and when.
 
 | Command | Behaviour |
 |---------|-----------|
-| `overflow add <name> [--tier N]` | Appends `<name>` to the `overflow` list in tier `N` (`1` to `9`, default `1`). The name must pass the [name rules](#name-rules) and be an existing profile directory under the root (not a symlink); otherwise the command fails, names the profile and changes nothing. Prints `overflow: added <name> (tier N)` and the cost note below. For a profile already marked, `--tier` moves it (`overflow: <name> moved from tier A to tier B`), and without `--tier` the tier is kept (`overflow: <name> is already marked (tier N)`); both exit 0. Prints a warning when `<name>` is in the `exclude` list, and another when the [default pointer](#clearing-the-default) names it. |
-| `overflow remove <name>` | Removes `<name>` from the list. The name must pass the name rules; it does not have to exist. Prints `overflow: removed <name>`, or `overflow: <name> is not marked` and exits 0. A spend block for the profile is left in the ledger and expires on its own. |
-| `overflow list` | **Read-only.** Prints one line per marked profile, in the order the rotator and auto-switch try them (by tier, then list order within a tier): the name, `tier N`, then `missing` when the root has no profile directory of that name, then `blocked until <time> (spend_limit)` when it has an active block. Prints `overflow: none` when the list is empty. Takes no lock. A rotate ledger that cannot be read prints a warning on stderr and the marks without blocks; the command still exits 0. |
+| `overflow add <name> [--tier N]` | Appends `<name>` to the `overflow` list in tier `N` (`1` to `9`, default `1`). For an [API-key profile](#api-key-rotation) the mark is the consent to per-token billing: it is stored as the bare name and always read as tier 10, after every credit tier, and `--tier` is refused with `PlatformTierFixed` before anything is written. The name must pass the [name rules](#name-rules) and be an existing profile directory under the root (not a symlink); otherwise the command fails, names the profile and changes nothing. Prints `overflow: added <name> (tier N)` and the cost note below. For a profile already marked, `--tier` moves it (`overflow: <name> moved from tier A to tier B`), and without `--tier` the tier is kept (`overflow: <name> is already marked (tier N)`); both exit 0. Prints a warning when `<name>` is in the `exclude` list, and another when the [default pointer](#clearing-the-default) names it. |
+| `overflow remove <name>` | Removes `<name>` from the list. The name must pass the name rules; it does not have to exist. Prints `overflow: removed <name>`, or `overflow: <name> is not marked` and exits 0; `overflow list` agrees with it, showing the profile as `marked` before a successful `remove` and not at all (or, for an API-key profile, as `not marked (not used)`) after it. A spend block for the profile is left in the ledger and expires on its own. |
+| `overflow list` | **Read-only.** Prints one line per marked profile, in the order the rotator and auto-switch try them (by tier, then list order within a tier): the name, `tier N`, `marked`, then `missing` when the root has no profile directory of that name, then `blocked until <time> (spend_limit)` when it has an active block. After them comes one line per [API-key profile](#api-key-profiles-in-commands), marked or not: `<name>  api-key tier  marked` or `<name>  api-key tier  not marked (not used)`. Prints `overflow: none` when there is no line to print. Takes no lock. A rotate ledger that cannot be read prints a warning on stderr and the marks without blocks; the command still exits 0. |
 | `overflow clear <name>` | Removes the spend block for `<name>` from the rotate ledger. Takes the rotate state lock, retrying for up to 10 seconds; if it is still held, fails with `RotateDaemon` and the message `rotator busy, retry`. Prints `overflow: cleared the spend block on <name>`, or `overflow: <name> has no spend block` and exits 0. The name must pass the name rules; it does not have to be marked or exist, so a block left after `overflow remove` can still be cleared. Never creates the ledger. |
 
 What `add` prints for a new mark, with the cost note:
@@ -2616,30 +2620,56 @@ warning: the default profile is ryan-mistt-org; launches use it directly and spe
 `overflow list` with one blocked profile:
 
 ```
-ryan-mistt-org  tier 1  blocked until 2026-11-01T00:00:00Z (spend_limit)
-team-credits  tier 1
-old-credits  tier 1  missing
-api-key  tier 2
+ryan-mistt-org  tier 1  marked  blocked until 2026-11-01T00:00:00Z (spend_limit)
+team-credits  tier 1  marked
+old-credits  tier 1  marked  missing
+api-key  api-key tier  not marked (not used)
+```
+
+What `add` prints for an API-key profile:
+
+```
+overflow: added api-key (api-key tier, tier 10)
+note: api-key is billed per token; it is used only when no plan login is below 100% on both windows, no credit profile can be used, the earliest plan reset is more than --overflow-wait away and its login check passes.
+```
+
+`overflow list` after that `add`:
+
+```
+ryan-mistt-org  tier 1  marked  blocked until 2026-11-01T00:00:00Z (spend_limit)
+team-credits  tier 1  marked
+old-credits  tier 1  marked  missing
+api-key  api-key tier  marked
 ```
 
 #### Overflow tiers
 
-Each overflow mark has a tier from 1 to 9. Tier 1 is tried before tier 2,
-and so on; within a tier, the order the profiles were added decides. Tiers
-rank kinds of overflow by cost, for example usage credits (tier 1) before an
-API key billed per token (tier 2), so the order of names in the file never
-has to carry that meaning. In `.auto-switch` an entry is written
+A credit profile's mark has a tier from 1 to 9. Tier 1 is tried before
+tier 2, and so on; within a tier, the order the profiles were added decides.
+Tiers rank credit profiles by cost, so the order of names in the file never
+has to carry that meaning. A marked [API-key profile](#api-key-rotation) is
+always tier 10, after every credit tier, whatever tier the file gives it.
+Only marked profiles have a tier: an API-key profile that is not marked has
+none and is never used. In `.auto-switch` an entry is written
 `name:tier`, and a tier-1 entry as the bare name, so a file written before
 tiers existed reads the same:
 
 ```
-overflow=ryan-mistt-org,team-credits,api-key:2
+overflow=ryan-mistt-org,team-credits:2,api-key
 ```
+
+Here `team-credits` is tier 2 and `api-key`, an API-key profile, is tier 10
+whatever its position or written tier.
+
+Every tier, credit and API key alike, is billed per token or per credit, so
+none of them is used while a plan login has room below 100% on both windows.
+See [Rotate decision order](#rotate-decision-order).
 
 The rotator and auto-switch move onto an overflow profile only from a plan
 profile, or from an overflow profile that is spend-blocked or exhausted. They
 do not move from a tier-2 profile to a tier-1 profile that becomes usable
-again; they move back to a plan profile as soon as one has capacity.
+again; they move back to a plan profile as soon as one has capacity, or has
+[room](#rotate-plan-room-swap).
 
 `add` and `remove` change only the `overflow` key of `<root>/.auto-switch`,
 through the same locked write as the [auto-switch commands](#auto-switch-commands)
@@ -2970,6 +3000,122 @@ a measured threshold, swaps on an exhausted live login and upgrade swaps
 behave as in the table above. A damped stay counts as a stay without an
 alert, so it clears the stored ALERT key.
 
+#### Rotate plan-room swap
+
+The table above swaps on a threshold only when a candidate beats the live
+login by `--margin`. When every plan login is near its limits, none may, and
+the cycle would end in `ALERT no-capacity` although some plan logins still
+have room below 100%. The plan-room swap moves `~/.claude` to the plan login
+with the most room, because a plan login costs nothing while it has room.
+
+A plan login *has room* when its probe this cycle gave `ok` and both its
+session and week use are below 100%. A failed probe, a login that was not
+measured, an `exhausted` reading and every API-key profile have no room.
+
+While the live login is a plan profile, the rotator considers a plan-room
+swap only when both hold:
+
+- the live login has reached `--session-at` or `--week-at` on a measured
+  reading (a failed live probe is left to the
+  [failed-probe rules](#rotate-failed-live-probes));
+- the table above gives `ALERT no-capacity`.
+
+It never fires while the live login is below both thresholds, so it adds no
+upgrade swaps. `--margin`, `--hold` and `--upgrade-margin` do not apply.
+While the live login is an [overflow profile](#overflow-decision), the same
+ranking chooses the plan login to move back to.
+
+Plan logins with room are ranked by these keys, in order:
+
+1. a login whose session use is below `--session-at` comes before one whose
+   session use is not;
+2. the most weekly room: the lowest week use;
+3. the most session room: the lowest session use;
+4. the profile name, ascending by byte value.
+
+The first key keeps a login whose session window is nearly spent from
+winning on weekly room alone. Ranking by week next keeps the login with the
+most weekly room, which lasts longest.
+
+The live login is ranked by the same keys. A live login that is exhausted,
+or whose probe failed, ranks last. The rotator swaps only when the best
+candidate ranks strictly ahead of the live login; otherwise the cycle ends in
+`ALERT no-capacity` as before, and the ALERT is written once, not every
+cycle. This stops two logins from swapping back and forth: live `ddrumpf` at
+`s=0%,w=92%` stays put rather than moving to `ccapstone` at `s=11%,w=92%`,
+and `ccapstone` would not move back either.
+
+The swap is logged with `reason=plan-room`.
+
+**Example.** With the default `--session-at 85`, this cycle has a live
+login past its session threshold and no candidate that beats it by
+`--margin 5` (the best headroom is 8 against the live login's 13):
+
+```
+2026-10-30T19:42:56Z cycle live=iivanovich iivanovich:s=87%,w=61% aanderson:s=25%,w=95% bbuck:s=50%,w=97% ccapstone:s=11%,w=92% ddrumpf:s=0%,w=92% eelsworth:s=98%,w=17% ggrant:s=100%,w=100% ryan-mistt-personal:s=0%,w=96%
+2026-10-30T19:42:56Z swap iivanovich->ddrumpf live s=87% w=61% target s=0% w=92% reason=plan-room
+```
+
+`aanderson`, `bbuck`, `ccapstone`, `ddrumpf` and `ryan-mistt-personal` have
+session use below 85%, so they rank first. `eelsworth` has the lowest week
+use but ranks after them because its session (98%) is at `--session-at`;
+the live `iivanovich` (87%) ranks after them for the same reason; `ggrant`
+has no room. `ccapstone` and `ddrumpf` tie on week at 92%, and `ddrumpf`
+wins on session. A marked credit or API-key profile is never chosen here,
+and is not used while any of these logins has room.
+
+**Example with no session room.** With every plan login at or above
+`--session-at`, the first key ties and weekly room decides. Live `aanderson`
+at `s=90%,w=80%` and `bbuck` at `s=95%,w=60%`:
+
+```
+2026-10-31T08:10:05Z swap aanderson->bbuck live s=90% w=80% target s=95% w=60% reason=plan-room
+```
+
+On the next cycle, with the same readings, `bbuck` is live and ranks ahead
+of `aanderson`, so there is no swap back; the cycle writes
+`ALERT no-capacity` once.
+
+#### Rotate decision order
+
+While the live login is a plan profile, one cycle decides in this order. The
+first step that gives a swap ends the decision:
+
+1. The [decision rule](#rotate-decision-rule) above: a threshold, upgrade or
+   failed-probe swap onto a plan candidate, or a stay. A swap onto a plan
+   login with room, or a stay, stands.
+2. When step 1 gives `ALERT no-capacity`: the
+   [plan-room swap](#rotate-plan-room-swap), which ranks the live login
+   with the others.
+3. Only when no plan login, the live one included, has room, and the
+   [overflow gate](#earliest-plan-reset) allows it: the first usable marked
+   per-token profile in tier order. That is a credit
+   [overflow profile](#overflow-decision) in tiers 1 to 9, then the marked
+   [API-key profile](#moving-onto-the-api-key) at tier 10, which must also
+   pass its [login check](#api-key-login-check). `reason=overflow-in`.
+4. Otherwise `ALERT no-capacity`.
+
+While the live login is a per-token profile (credit or API key), the order
+is:
+
+1. a plan login with [capacity](#plan-pool), `reason=overflow-out`;
+2. a plan login with room, chosen by the plan-room ranking,
+   `reason=overflow-out`;
+3. a usable marked per-token profile in tier order, under the same gate,
+   when either of these holds:
+   - the live profile is the API key and no plan login has room: the first
+     usable credit profile, `reason=overflow-out`, because credits cost
+     less than the API key;
+   - the live profile is blocked by a spend limit or an
+     [API-key block](#api-key-block): the next usable one after it;
+4. otherwise a stay, or the ALERTs described under
+   [Overflow decision](#overflow-decision) and
+   [Moving off the API key](#moving-off-the-api-key).
+
+Credit profiles are billed too, so they wait for the same condition as the
+API key: no plan login below 100% on both windows. A credit tier is never
+used ahead of a plan login with room, whatever its tier.
+
 ### Rotate overflow
 
 An *overflow profile* is one whose account has usage credits turned on at
@@ -2978,16 +3124,23 @@ session or weekly limit and the extra use is billed to the credits. A
 *plan profile* is any other profile. Profiles are marked with
 [`profile overflow add`](#overflow-commands); with no profile marked, every
 rule in this section is inactive and the rotator behaves exactly as described
-above.
+above, [plan-room swap](#rotate-plan-room-swap) included. The full order of a
+cycle is in [Rotate decision order](#rotate-decision-order).
 
 Credits cost money and plan capacity does not, so the rotator:
 
-- never moves onto an overflow profile while a plan profile has capacity;
+- never moves onto an overflow profile while any plan login, the live one
+  included, has [room](#rotate-plan-room-swap) below 100% on both windows;
 - moves onto one only when the live plan login has reached a threshold, no
-  plan profile has capacity, and the next plan reset is **known** and more
-  than `--overflow-wait` seconds away (an unknown reset spends money only
-  with `--overflow-unknown-reset 1`);
-- moves back to a plan profile in the first cycle in which one has capacity.
+  plan login has room, and the next plan reset is **known** and more than
+  `--overflow-wait` seconds away (an unknown reset spends money only with
+  `--overflow-unknown-reset 1`);
+- moves back to a plan profile in the first cycle in which one has capacity
+  or room.
+
+Reaching `--session-at` or `--week-at` on every plan login is not enough on
+its own: while a plan login is below 100% on both windows, the
+[plan-room swap](#rotate-plan-room-swap) uses it first.
 
 [Auto-switch](#auto-switch-and-overflow-profiles) follows the same rule
 with the running rotator's gate: the wait, the unknown-reset choice, and
@@ -3008,10 +3161,11 @@ A plan candidate *has capacity* when all of these hold:
 
 `--margin`, `--hold` and `--upgrade-margin` play no part in this test. A
 plan login that has capacity is one the rotator would not swap away from
-for reaching a threshold, which is what stops the [overflow decision](#overflow-decision)
-from flapping. For example, with `--session-at 80`, a plan login at `s=85%`
-does not have capacity, so the rotator stays on credits rather than moving
-to it and back.
+for reaching a threshold. A plan login without capacity can still have
+[room](#rotate-plan-room-swap): with `--session-at 80`, a plan login at
+`s=85%,w=40%` has no capacity but has room, so the rotator moves off credits
+onto it. It does not move back onto credits from there while that login, or
+any other, still has room.
 
 #### Overflow candidates
 
@@ -3065,30 +3219,30 @@ exhausted readings too.
 While the live login is a plan profile, the rotator first applies the
 [decision rule](#rotate-decision-rule) and the
 [failed-probe rules](#rotate-failed-live-probes) to the plan pool alone.
-Only when that gives `ALERT no-capacity`, or a `reason=threshold` swap onto
-a plan candidate that does not itself [have capacity](#plan-pool), on a
-measured live reading does it consider overflow. A threshold swap onto a
-plan candidate with capacity always stands:
+A threshold or upgrade swap onto a plan login with room always stands. Only
+when that gives `ALERT no-capacity` on a measured live reading does the
+[plan-room swap](#rotate-plan-room-swap) run, and only when no plan login,
+the live one included, has room does it consider overflow:
 
 | Condition | Outcome |
 |-----------|---------|
 | Live probe failed | As without overflow. A failed live probe never moves work onto credits. |
-| A plan candidate has capacity (it is below both thresholds but short of `--margin`) | ALERT `no-capacity`, as without overflow. Credits are never used while a plan login has capacity. |
-| `earliest plan reset - now > overflow-wait`, and an overflow candidate is eligible | Swap to the first eligible one, `reason=overflow-in`. The `--hold` does not apply. |
-| `earliest plan reset - now <= overflow-wait` | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity, which costs nothing. |
+| A plan login, the live one included, has room below 100% on both windows | No overflow. The [plan-room swap](#rotate-plan-room-swap) moves to the best-ranked plan login, or the cycle stays with `ALERT no-capacity` when the live login ranks first. Neither credits nor the API key are used while a plan login has room. |
+| No plan login has room, `earliest plan reset - now > overflow-wait`, and an overflow candidate is eligible | Swap to the first eligible one by tier, `reason=overflow-in`: credit tiers 1 to 9, then the marked API-key profile at tier 10 if its [login check](#api-key-login-check) passes. The `--hold` does not apply. |
+| `earliest plan reset - now <= overflow-wait` | As without overflow: `ALERT no-capacity`. |
 | Earliest plan reset unknown | As without overflow. With `--overflow-unknown-reset 1`, as for a reset beyond the wait. |
-| No overflow candidate is eligible | As without overflow. |
+| No overflow candidate is eligible | As without overflow: `ALERT no-capacity`. |
 
-For example, with the live login at 95% session and a plan candidate at 87%
-session, the decision rule would swap onto the candidate, but it is at
-`--session-at` itself and would be swapped away from in the next cycle. With
-the plan reset beyond the wait, the rotator moves onto credits instead; with
-the reset near, it makes the free swap. Auto-switch makes the same choice on
-the same readings.
+For example, with the live login at `s=95%,w=60%` and a plan candidate at
+`s=87%,w=50%`, both have room, so the rotator makes the free swap onto the
+candidate whatever the plan reset, and no credits are spent. Only once every
+plan login reads 100% on one of its windows, and the reset is beyond the
+wait, does it move onto credits. Auto-switch makes the same choice on the
+same readings.
 
 The comparison is strict: a reset exactly `--overflow-wait` seconds away
 stays. With `--overflow-wait 0` the rotator moves onto overflow as soon as
-every plan profile is out of capacity and the earliest reset is known and in
+no plan login has room and the earliest reset is known and in
 the future.
 
 While the live login is an overflow profile, these rules apply in order:
@@ -3096,6 +3250,7 @@ While the live login is an overflow profile, these rules apply in order:
 | Condition | Outcome |
 |-----------|---------|
 | A plan candidate has capacity | Swap to the plan candidate that has capacity with the most headroom, `reason=overflow-out`. `--margin`, `--hold` and `--upgrade-margin` do not apply. |
+| A plan candidate has room | Swap to the plan login the [plan-room ranking](#rotate-plan-room-swap) puts first, `reason=overflow-out`. |
 | The live reading is `spend_limit` | [Block](#overflow-spend-limit-block) the live profile, then swap to the next eligible overflow candidate if the wait rule above still holds, else to the plan candidate with the most headroom that is not exhausted and whose probe did not fail, else ALERT `no-capacity`. |
 | Live probe failed | [Failed-probe rules](#rotate-failed-live-probes), with plan candidates as the only targets; otherwise stay on credits. |
 | Otherwise | Stay on credits. |
@@ -3105,13 +3260,12 @@ reaching its plan limit is expected. An overflow profile is never swapped for
 another overflow profile except after a spend limit, and never for a lower
 tier that becomes usable again.
 
-The rules do not flap. `overflow-out` moves only to a plan login that is
-below both thresholds, so the next cycle does not swap away from it. The
-rotator moves back onto credits only once that login reaches a threshold
-again and every rule above holds again.
+The rules do not flap. `overflow-out` moves only to a plan login with room,
+and the rotator moves back onto credits only once no plan login, that one
+included, has room and every rule above holds again.
 
 If an overflow profile's login is live in `~/.claude` while a plan profile
-has capacity, for example after you put it there by hand, the next cycle
+has capacity or room, for example after you put it there by hand, the next cycle
 moves it out with `reason=overflow-out`. To keep running on it, remove the
 mark, stop the rotator, or put it there with `amplihack profile switch <name>`,
 which [pins](#pin-and-overflow) it.
@@ -3222,7 +3376,7 @@ failing. The two ways out behave differently:
 #### Stopping credit use
 
 No `amplihack` command puts a plan login into `~/.claude` when no plan
-login has capacity, so neither `overflow remove` nor `rotate stop` stops
+login has room, so neither `overflow remove` nor `rotate stop` stops
 spending on its own. To stop spending at once, turn off usage credits or
 lower the spend limit at <https://claude.ai/settings/usage>. Claude then
 refuses work on that login, the next probe reads `spend_limit`, and the
@@ -4030,10 +4184,12 @@ stdout only, without the time.
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. A profile whose probe failed shows `<name>:failed`, an exhausted one `s=100%,w=100%`; a skipped one is not listed. A login no profile owns is shown as `-`. The API-key profile is never probed and shows as `<name>:per-token`, live or not. |
-| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|overflow-in\|overflow-out` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
-| `overflow: on <name>; no plan profile has capacity, next plan reset <time\|unknown>` | Written after an `overflow-in` swap. |
-| `overflow: staying on <name>; no plan profile has capacity, next plan reset <time\|unknown>` | A cycle stayed on overflow profile `<name>` and the previous recorded cycle did not: its `last_cycle.overflow` was absent or `out`, or the ledger's `live` named another profile. So it is written once when the rotator finds itself on credits without having moved there, for example after a login was put in `~/.claude` by hand, and not again while it stays. After `overflow-in` the `overflow: on` line is written instead. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. A profile whose probe failed shows `<name>:failed`, an exhausted one `s=100%,w=100%`; a skipped one is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
+| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
+| `per-token <name>: no plan login below 100%; <gate>; marked overflow tier <N> via profile overflow add; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key. `<gate>` is `overflow_wait elapsed (earliest reset <time>)` or, with `--overflow-unknown-reset 1`, `reset unknown`. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile. The line never holds a key value. |
+| `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
+| `overflow: on <name>; no plan login below 100%, next plan reset <time\|unknown>` | Written after an `overflow-in` swap. |
+| `overflow: staying on <name>; no plan login below 100%, next plan reset <time\|unknown>` | A cycle stayed on overflow profile `<name>` and the previous recorded cycle did not: its `last_cycle.overflow` was absent or `out`, or the ledger's `live` named another profile. So it is written once when the rotator finds itself on credits without having moved there, for example after a login was put in `~/.claude` by hand, and not again while it stays. After `overflow-in` the `overflow: on` line is written instead. |
 | `overflow: off <name>; back on plan profile <name>` | Written after an `overflow-out` swap. |
 | `ALERT: overflow profile <name> hit its spend limit; blocked until <time>` | A [spend block](#overflow-spend-limit-block) was recorded. Written once per block. |
 | `ALERT: overflow profile <name> hit its spend limit; not blocked (too many blocks\|no end time)` | A spend-limit reading that could not be stored as a block: the ledger already holds 256 active blocks, or the cycle's time is outside the range for which the next month can be computed. The profile is still not used in that cycle; the ledger is left as it was, so it still loads. |
@@ -4065,7 +4221,7 @@ stdout only, without the time.
 | `skip: pin names missing profile <name>; ignored` | The pin names a removed profile; the cycle runs normally. |
 | `switch <from>-><to>` | A swap made by [`profile switch`](#rotate-switch). It has no readings, because `switch` measures nothing, and it does not start with `swap `, so a search for rotator swaps does not match it. |
 | `skip: <name> is already the live login; nothing moved` | `profile switch` found `<name>` already live. |
-| `would swap ...` / `would block <name> (spend limit) until <time>` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would stay (held by switch to <name>)` / `would stay (pin unreadable)` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` / `would recover: <recovered line>` | `--dry-run` only. |
+| `would swap ...` / `would block <name> (spend limit) until <time>` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would stay (held by switch to <name>)` / `would stay (pin unreadable)` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` / `would recover: <recovered line>` / `would_refuse <name>: <reason>` | `--dry-run` only. `would_refuse` is printed in place of `would swap` when the target is an API-key profile that fails its [login check](#api-key-login-check). |
 
 An ALERT is written only when its key (`no-capacity`, `no-login`,
 `hand-change`, `home-unreadable`, `ambiguous`, `inconsistent`, `auto-switch` or `refused <reason>`
@@ -4970,7 +5126,7 @@ file to start a process for you. The rotator it starts keeps the
 
 Overflow spends real money, so every uncertain case fails towards not
 spending: a corrupt `.auto-switch` gives no overflow profiles, an unreadable
-rotate ledger stops the cycle, a failed live probe never moves onto credits,
+rotate ledger stops the cycle, a failed live probe never moves onto credits or the API key,
 an overflow profile whose probe failed is not used, `exclude` beats
 `overflow`, an unknown plan reset never moves onto overflow without
 `--overflow-unknown-reset 1`, and auto-switch uses an overflow profile only
@@ -5437,8 +5593,9 @@ a Platform credential on a machine where per-token billing is not wanted.
 | `usage` | Runs no `/usage` probe. See [API-key usage](#api-key-usage). |
 | `switch` | See [Switching onto an API-key profile](#switching-onto-an-api-key-profile). |
 | `login` | Unchanged apart from the note in [Kind override](#kind-override). |
-| `overflow add` | Refused; see [API-key errors](#api-key-errors). |
-| `overflow list` | After the marked profiles, one line per API-key profile: the name and `api-key tier`, then `blocked until <time> (<reason>)` while the [API-key block](#api-key-block) is active, or `not used (<first> comes first)` for each API-key profile after the first by name. |
+| `overflow add` | Marks the profile for use as tier 10, the last tier; see [API-key rotation](#api-key-rotation). Prints `overflow: added <name> (api-key tier, tier 10)` and a cost note. `--tier` is refused with `PlatformTierFixed`; see [API-key errors](#api-key-errors). |
+| `overflow remove` | Removes the mark. From the next cycle the profile is never moved onto; if it is live, the rotator moves off it by the [exit rules](#moving-off-the-api-key). |
+| `overflow list` | After the marked credit profiles, one line per API-key profile: `<name>  api-key tier  marked`, or `<name>  api-key tier  not marked (not used)` when it is not named in `overflow=`, then `blocked until <time> (<reason>)` while the [API-key block](#api-key-block) is active, or `not used (<first> comes first)` for each marked API-key profile after the first by name. |
 | `overflow clear --platform` | Clears the [API-key block](#api-key-block). |
 | Duplicate-login check | Skips every API-key profile: they all share one credential by design. |
 
@@ -5499,63 +5656,196 @@ hint: amplihack profile overflow clear --platform
 
 ### API-key rotation
 
-API-key profiles are the last tier, below every credit
-[overflow tier](#overflow-tiers). Nothing has to be marked: every profile
-whose kind is `api-key` belongs to the tier, and `overflow list` shows it as
-`api-key tier`. The full order is:
+An API-key profile is used by the rotator and auto-switch only after you
+mark it with [`profile overflow add <name>`](#overflow-commands). The mark
+is your consent to per-token billing. An API-key profile that is not marked
+is never moved into `~/.claude` and never chosen for a launch or a rerun,
+whatever the readings; `overflow list` shows it as
+`api-key tier  not marked (not used)`. A [kind override](#kind-override) of
+`api-key` does not mark a profile, and neither does its name. There is no
+other switch: "overflow on" means that at least one profile is named in
+`overflow=`, and the API-key profile is used only when it is one of them and
+the [gate](#earliest-plan-reset) allows the move.
 
-1. plan (subscription) logins;
-2. credit overflow profiles, by tier;
-3. the API-key profile.
+```bash
+amplihack profile overflow add api-key
+```
 
-An API-key profile listed in `overflow=` is ignored there and still belongs
-to the API-key tier. The rotator logs one line per process:
+A marked API-key profile is always tier 10, below every credit
+[overflow tier](#overflow-tiers), whatever tier `.auto-switch` holds for it.
+The full order is in [Rotate decision order](#rotate-decision-order):
+
+1. plan (subscription) logins with capacity;
+2. plan logins with [room](#rotate-plan-room-swap) below 100% on both
+   windows, the live one included;
+3. only when no plan login has room: marked credit overflow profiles, tiers
+   1 to 9;
+4. then the marked API-key profile, tier 10.
+
+`overflow add` stores the mark as the bare name, for example
+`overflow=ryan-mistt-org,api-key`, and reads it as tier 10. A hand-written
+`api-key:3` is read as the same mark, at tier 10. When more than one API-key profile is marked, the first by name
+is used and the others are listed as `not used (<first> comes first)`. When
+`.auto-switch` is corrupt, no API-key profile counts as marked.
+
+An unmarked API-key profile is left out of the [candidates](#rotate-candidates):
+it is never probed, never counts as plan capacity or plan room and never
+takes part in the headroom comparison. The rotator logs one line per process
+when one exists:
 
 ```
-skip: API-key profile api-key ignored in overflow=; API-key profiles are always the last tier
+skip: API-key profile api-key is not marked; it is never used. To allow per-token billing, run: amplihack profile overflow add api-key
 ```
 
-An API-key profile is never probed with `/usage`. Its reading is usable
+If an unmarked API-key profile is already live in `~/.claude`, for example
+after a hand change or an upgrade from a release that used the API key
+without a mark, the rotator reports it as `platform_not_marked` and treats it
+as live on the API key for the rules that move work **off** it, below. It
+moves off as soon as a plan login has room, never moves work back **onto**
+it, and never writes a mark for you. It does not probe the profile or give it
+a reading.
+
+A marked API-key profile is never probed with `/usage`. Its reading is usable
 unless the API key is blocked. It never counts as plan capacity and never
 takes part in the headroom comparison. The `exclude` list and the
 [candidate](#rotate-candidates) skip reasons apply to it, except
 `no account`.
 
-**Moving onto the API key.** The rotator swaps `~/.claude` onto the
-API-key profile, with `reason=overflow-in`, only when all of these hold:
+#### Moving onto the API key
 
-- no plan login has [plan capacity](#plan-pool);
+The rotator swaps `~/.claude` onto the API-key profile, with
+`reason=overflow-in`, only when all of these hold:
+
+- the profile is marked in `overflow=` and `.auto-switch` can be read;
+- no plan login has *room*: every plan login with a measured reading, the
+  live one included, is at 100% session or 100% week. A plan login whose
+  probe failed, that was not measured, or that reads exhausted has no room.
+  This is stricter than [plan capacity](#plan-pool): a plan login below
+  100% on both windows is used by the
+  [plan-room swap](#rotate-plan-room-swap) instead;
 - no credit overflow profile can be used: each is blocked, excluded, not a
   candidate or failed its probe;
 - the [earliest plan reset](#earliest-plan-reset) is further away than
   `--overflow-wait`, or unknown with `--overflow-unknown-reset 1`;
-- the API key is not [blocked](#api-key-block).
+- the API key is not [blocked](#api-key-block);
+- the live probe did not fail;
+- the [API-key login check](#api-key-login-check) passes.
 
-If the reset falls inside the wait, the rotator waits, as for credits.
+A failed live probe never moves work onto the API key: the cycle follows
+the [failed-probe rules](#rotate-failed-live-probes) as without overflow.
+Failed or missing probes on other plan logins count as no room, so an outage
+in which every probe fails could otherwise satisfy the room condition. The
+[earliest plan reset](#earliest-plan-reset) gate prevents this: with every
+probe failed, no reset is known, and an unknown reset never opens per-token
+billing unless `--overflow-unknown-reset 1` is set.
 
-**Moving off the API key.** While the API-key profile is live, these rules
-apply in order on every cycle. `--hold`, `--margin` and `--upgrade-margin`
-do not apply to them:
+If the reset falls inside the wait, the rotator waits, as for credits. If
+any other condition fails, the cycle ends as it would with no API-key
+profile: `ALERT no-capacity`, or a stay.
+
+#### Moving off the API key
+
+While the API-key profile is live, these rules apply in order on every
+cycle. `--hold`, `--margin` and `--upgrade-margin` do not apply to them:
 
 | Condition | Outcome |
 |-----------|---------|
 | A plan candidate has capacity | Swap to the plan candidate with capacity that has the most headroom, `reason=overflow-out`. A failed plan probe is not capacity. |
-| No plan candidate has capacity, and a credit overflow candidate can be used | Swap to the first by tier, `reason=overflow-out`. Credits cost less than the API key. |
+| No plan candidate has capacity, and a plan candidate has room | Swap to the plan login the [plan-room ranking](#rotate-plan-room-swap) puts first, `reason=overflow-out`. A plan login below 100% costs nothing. |
+| No plan candidate has room, and a credit overflow candidate can be used | Swap to the first by tier, `reason=overflow-out`. Credits cost less than the API key. |
 | The API key is blocked, and a plan or credit candidate can be used | Swap to the best one: a plan candidate that is not exhausted and whose probe did not fail, then a credit candidate. |
 | The API key is blocked, and nothing can be used | One ALERT and stay. No swap is attempted. |
 | Otherwise | Stay on the API key. |
 
+The same rules apply to an unmarked API-key profile found live in
+`~/.claude`.
+
 From a credit profile the [overflow rules](#rotate-overflow) apply
 unchanged; the rotator never moves from credits to the API key while a
 credit profile can be used, or from a plan login to credits or the API key
-while a plan login has capacity.
+while a plan login has room.
 
-**How the swap works.** The API-key profile's `{}` login file is moved into
-`~/.claude` by the same [journalled rename swap](#rotate-swap) as any login,
-and the outgoing login goes back to its own profile. Nothing is copied, an
-interrupted swap is recovered from the journal, and `~/.claude` always holds
-a login file. A profile with no login file cannot be swapped in; no empty
-file is created for it.
+#### API-key login check
+
+Before every swap onto the API-key profile the rotator checks that the
+profile names a key Claude can use. The check runs in step 6 of the
+[cycle](#rotate-cycle), under the rotate state lock, after
+[revalidation](#rotate-revalidation) and immediately before the journal is
+written. It reads the profile's own files, through the same profile store
+the swap uses, and passes when one of these is a non-empty string after
+trimming:
+
+| Setting | File | Detail logged on success |
+|---------|------|--------------------------|
+| `primaryApiKey` | `<root>/<name>/.claude.json` | `primaryApiKey set` |
+| `ANTHROPIC_API_KEY` under `env` | `<root>/<name>/settings.json` | `ANTHROPIC_API_KEY set` |
+| `apiKeyHelper` | `<root>/<name>/settings.json` | `apiKeyHelper set` |
+
+The check reads those files with the same rules as
+[kind detection](#kind-detection): no symlinks, a size limit, and the file
+must belong to you and not be writable by group or others. An empty,
+whitespace, number, `null` or object value does not pass, and neither does
+a file that cannot be parsed or is not a JSON object.
+
+A login file alone is not enough. A `.credentials.json` with no OAuth login,
+`{}` included, does not pass without one of the three settings, and nor does
+a [kind override](#kind-override) of `api-key`. Claude Code keeps an API key
+in `primaryApiKey` or in `settings.json`, not in `.credentials.json`, so a
+profile that has only the login file would start Claude as "not logged in".
+
+The check makes no network request and does not run `apiKeyHelper`, so it
+costs nothing. It shows that a key is configured, not that the key works;
+an invalid or unfunded key is caught later by the [API-key block](#api-key-block).
+The key value is never logged, printed, stored in the ledger or shown by
+`status`: the detail is one of the fixed strings above, and a failure reason
+names only the setting or the file.
+
+When the check fails:
+
+- no swap is made, no journal is written and `~/.claude` is unchanged;
+- no `per-token`, `swap` or `moved` line is written, and the ledger records
+  no `overflow=in` for the cycle;
+- the cycle logs `key_check_refused` and an ALERT, and ends as `alerted`:
+
+```
+key_check_refused api-key: no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting
+ALERT: API key profile api-key failed its login check (no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting); not moving onto it
+```
+
+The cycle does not try another profile in its place: the API-key profile is
+the last tier, so nothing is left to try. The ALERT is keyed by the profile,
+so a rotator running every 120 seconds writes it once, not every cycle. It is
+written again only when the stored ALERT key changes or is cleared: after a
+different ALERT has been written in between, or after a cycle that swaps or
+stays without an ALERT, since such a cycle clears the key. Other failure reasons are `settings.json is a symlink`,
+`settings.json is writable by group or others`,
+`settings.json is not owned by you`, `settings.json is too large`,
+`settings.json cannot be parsed`, and the same for `.claude.json`. Each
+reason is fixed text and never holds file content.
+
+`--dry-run` runs the same check. The check only reads files, so the dry run
+needs no lock for it. A failed check prints
+
+```
+would_refuse api-key: no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting
+```
+
+in place of the `would swap` line; a passed check prints the `would swap`
+line as usual.
+
+The check runs moments before the swap, not at the same instant. A file
+changed in between is not seen until the next cycle. Only you can write
+those files, since a file others can write fails the check, so no second
+check is made.
+
+#### How the swap works
+
+The API-key profile's `{}` login file is moved into `~/.claude` by the same
+[journalled rename swap](#rotate-swap) as any login, and the outgoing login
+goes back to its own profile. Nothing is copied, an interrupted swap is
+recovered from the journal, and `~/.claude` always holds a login file. A
+profile with no login file cannot be swapped in; no empty file is created
+for it.
 
 Before the journal is written, the swap is refused when it would leave
 `~/.claude` without an OAuth login and the incoming profile does not resolve
@@ -5565,18 +5855,41 @@ as `api-key`. A refusal leaves no journal, renames nothing and logs:
 ALERT: swap refused: ryan-ryansweet has no oauth login and is not an API-key profile
 ```
 
-**Log lines.** A swap onto or off the API key logs the ordinary
-[swap line](#rotate-log), then one of:
+#### Log lines for a move onto the API key
+
+Every move onto a per-token profile writes one `per-token` line first. It
+names, in order, the rule that allowed the move, the gate result, the mark
+and the login check. The ordinary [swap line](#rotate-log) and the `moved`
+line follow it:
 
 ```
+per-token api-key: no plan login below 100%; overflow_wait elapsed (earliest reset 2026-11-01T02:14:00Z); marked overflow tier 10 via profile overflow add; login check passed (primaryApiKey set)
+swap iivanovich->api-key live s=100% w=61% target s=0% w=0% reason=overflow-in
 moved ~/.claude onto API key profile api-key (billed per token)
+```
+
+With `--overflow-unknown-reset 1` and no known reset, the gate part reads
+`reset unknown`. A move onto a credit profile writes the same line, with the
+credit profile's tier and `probe ok, no spend limit` in place of the login
+check:
+
+```
+per-token team-credits: no plan login below 100%; overflow_wait elapsed (earliest reset 2026-11-01T02:14:00Z); marked overflow tier 2 via profile overflow add; probe ok, no spend limit
+```
+
+The line holds profile names, a time, a tier and fixed text only, never a
+key value or a helper command.
+
+A swap off the API key logs:
+
+```
 moved ~/.claude off API key profile api-key to ryan-mistt
 ```
 
 ### Several API-key profiles
 
 All API-key profiles share one credential, so they form one pool: the
-rotator and auto-switch use the first by name and never move from one
+rotator and auto-switch use the first marked one by name and never move from one
 API-key profile to another. Keep one API-key profile per root. One
 [block](#api-key-block) covers every API-key profile, including ones added
 later.
@@ -5653,6 +5966,22 @@ rotator does not probe the key, because a probe costs tokens.
 ~/.claude is on API key profile api-key: work is billed per token (since 2026-10-28T14:02:11Z)
 ```
 
+`rotate status` also prints an `api key:` line: the API-key profile the tier
+uses, followed by ` (marked)` or ` (not marked)`, and the active
+[block](#api-key-block) when there is one; `-` when there is no API-key
+profile. When the live login is an API-key profile that is not marked, the
+line ends with ` platform_not_marked`:
+
+```
+api key: api-key (not marked)
+api key: api-key (marked)
+api key: api-key (marked) (blocked until 2026-12-29T10:14:03Z, key_exhausted)
+api key: api-key (not marked) platform_not_marked
+```
+
+The `overflow:` line lists every marked profile, credit and API key, and
+reads `overflow: -` when nothing is marked.
+
 The ledger is the only evidence; nothing is probed. The `on overflow` line
 reads `yes (<name>)` while an API-key profile is live. A block is shown by
 `profile usage` and `overflow list`.
@@ -5664,13 +5993,17 @@ API-key tier. Each ALERT is written once per change of state.
 
 | Line | When |
 |------|------|
+| `per-token <name>: no plan login below 100%; <gate>; marked overflow tier 10 via profile overflow add; login check passed (<detail>)` | Before the swap line of a move onto the API-key profile. See [Log lines for a move onto the API key](#log-lines-for-a-move-onto-the-api-key). |
 | `moved ~/.claude onto API key profile <name> (billed per token)` | After a swap onto the API-key profile. |
 | `moved ~/.claude off API key profile <name> to <target>` | After a swap off it. |
 | `ALERT: the API key is blocked (<reason>) until <time>; API-key profiles are not used` | A new [API-key block](#api-key-block). |
 | `ALERT: the API key is blocked (<reason>) and no plan or credit profile can be used; staying on <name>` | The live API-key profile is blocked and there is nowhere to go. |
 | `ALERT: more than one API-key profile could be live in ~/.claude; no swap` | The live API-key profile is [ambiguous](#several-api-key-profiles). |
 | `ALERT: swap refused: <name> has no oauth login and is not an API-key profile` | The swap check refused a target. |
-| `skip: API-key profile <name> ignored in overflow=; API-key profiles are always the last tier` | An API-key profile is listed in `overflow=`; once per rotator process. |
+| `skip: API-key profile <name> is not marked; it is never used. To allow per-token billing, run: amplihack profile overflow add <name>` | An API-key profile exists and is not named in `overflow=`; once per rotator process. |
+| `skip: API-key profile <name> is marked but not used; another comes first by name` | More than one API-key profile is marked; written for each one after the first by name, once per rotator process. |
+| `key_check_refused <name>: <reason>` | The [login check](#api-key-login-check) failed; no swap. |
+| `ALERT: API key profile <name> failed its login check (<reason>); not moving onto it` | Written with the refusal, once per profile until another ALERT or a passing check. |
 | `platform block not recorded: <error kind>` | A session saw a key error but could not take the state lock. |
 
 ### API-key ledger fields
@@ -5691,8 +6024,18 @@ not as plan capacity.
 
 Auto-switch uses the same tier order, wait gate and move-back rules as the
 rotator, taken from the same function, so the two agree on which profile is
-the API-key candidate. It never chooses a credit or API-key profile while any
-plan profile has capacity.
+the API-key candidate. An API-key profile that is not marked with
+`overflow add` is left out of that order and never chosen. Auto-switch never
+chooses a credit or API-key profile while any plan profile, the current one
+included, has room below 100% on both windows.
+
+Before it records a move onto the API-key profile, auto-switch runs the
+[login check](#api-key-login-check). When the check fails, nothing is moved,
+no journal entry is written, and the launch or rerun goes ahead on its
+current profile, or on the plan profile it would choose if the current one
+cannot be used. It never falls through to another credit or API-key profile
+in place of the refused one. A warning naming the profile and the reason is
+written to the auto-switch log.
 
 The platform login is never lent to another profile's session, and an
 API-key profile's directory never hosts another account's login, because
@@ -5704,12 +6047,47 @@ not moved mid-session; once plan capacity returns, its next nested launch or
 rerun goes back to a plan profile. Sessions in `~/.claude` leave the API key
 when the rotator moves the login.
 
+### Upgrading from the implicit API-key tier
+
+This release changes two things that a running host notices.
+
+**The API key needs a mark.** Earlier releases used every API-key profile as
+the last tier without a mark. After the upgrade an API-key profile is used
+only once it is marked. A host that relied on the implicit tier keeps its
+API-key profile unused until you run:
+
+```bash
+amplihack profile overflow add api-key
+```
+
+Until then `overflow list` shows `api-key  api-key tier  not marked (not used)`,
+`rotate status` shows `api key: api-key (not marked)`, and the rotator writes
+the `skip:` line in [API-key log lines](#api-key-log-lines) once per process.
+Nothing is marked automatically, no migration runs, and `.auto-switch` is
+not changed by the upgrade.
+
+An unmarked API-key profile that is live in `~/.claude` at the upgrade stays
+live under the [exit rules](#moving-off-the-api-key), and keeps billing per
+token, until a plan login has capacity or room, or a credit overflow profile
+can be used. Once the rotator moves off it, it never moves back onto it.
+`rotate status` reports it as `platform_not_marked` meanwhile. If you do not
+want per-token billing in the meantime, either mark it with `overflow add`
+to accept it, or move off it by hand with [`profile switch`](#rotate-switch)
+to a plan login.
+
+**Credits start later.** Earlier releases moved onto a credit overflow
+profile once every plan login had reached `--session-at` or `--week-at`.
+Credit profiles are billed too, so they now wait for the same condition as
+the API key: no plan login, the live one included, below 100% on both
+windows. Until then the [plan-room swap](#rotate-plan-room-swap) uses the
+plan login with the most room.
+
 ### API-key errors
 
 | Condition | Message | Hint |
 |-----------|---------|------|
 | `SubscriptionNoLogin`: `run`, `claude`, `launch` or `switch` named a subscription profile with no OAuth login of its own that is not held | `profile <name> is a subscription profile with no login of its own; launching it would bill the Claude Platform API key per token. ...` (in full under [No silent billing](#no-silent-billing)) | `amplihack profile login <name>, or: amplihack profile kind set <name> api-key` |
-| `PlatformNotMarkable`: `overflow add` named an API-key profile | `profile <name> is an API-key profile; API-key profiles are always the last overflow tier and cannot be marked` | `` run `amplihack profile kind list` `` |
+| `PlatformTierFixed`: `overflow add --tier N` named an API-key profile | `profile <name> is an API-key profile; the API-key tier is fixed at 10, so --tier cannot be set` | `` run `amplihack profile overflow add <name>` without --tier `` |
 | `PlatformBlocked`: `switch` named an API-key profile while the API-key block is active | `profile <name>: the API key is blocked (<reason>) until <time>` | `amplihack profile overflow clear --platform` |
 | `AutoSwitchConfig` from `kind set`: `.auto-switch` is corrupt, a symlink, untrusted or busy | as for the other [settings commands](#settings-file) | as for the other settings commands |
 

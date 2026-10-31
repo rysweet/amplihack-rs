@@ -315,11 +315,6 @@ pub mod msg {
         format!("skip: {name} is already the live login; nothing moved")
     }
 
-    /// After an `overflow-in` swap onto API-key profile `to` (issue #1700).
-    pub fn onto_platform(to: &ProfileName) -> String {
-        format!("moved ~/.claude onto API key profile {to} (billed per token)")
-    }
-
     /// After a swap off API-key profile `from` onto `to`.
     pub fn off_platform(from: &ProfileName, to: &ProfileName) -> String {
         format!("moved ~/.claude off API key profile {from} to {to}")
@@ -342,13 +337,6 @@ pub mod msg {
 
     pub const AMBIGUOUS_PLATFORM: &str =
         "ALERT: more than one API-key profile could be live in ~/.claude; no swap";
-
-    /// An API-key profile listed in `overflow=`.
-    pub fn platform_ignored_in_overflow(name: &ProfileName) -> String {
-        format!(
-            "skip: API-key profile {name} ignored in overflow=; API-key profiles are always the last tier"
-        )
-    }
 
     /// A session saw a key error but the block could not be stored.
     pub fn platform_block_not_recorded(kind: &str) -> String {

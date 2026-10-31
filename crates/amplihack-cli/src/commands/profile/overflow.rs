@@ -159,16 +159,18 @@ pub fn overflow_names(root: &Path) -> Vec<ProfileName> {
 
 /// Every tier the rotator and auto-switch try, in order: the `overflow=`
 /// entries without API-key profiles, then the first API-key profile by name
-/// at [`PLATFORM_TIER`] (issue #1700). Empty when `.auto-switch` is
-/// corrupt, so a damaged file never spends, on credits or on the API key.
-/// `home` is the user's home directory.
+/// that `overflow=` names, at [`PLATFORM_TIER`] whatever tier is written
+/// (issue #1700). Issue #1804: the mark is the consent to per-token billing,
+/// so an API-key profile that `overflow=` does not name is never a tier.
+/// Empty when `.auto-switch` is corrupt, so a damaged file never spends, on
+/// credits or on the API key. `home` is the user's home directory.
 #[cfg(all(test, unix))]
 pub fn tiers(store: &ProfileStore, home: &Path) -> Vec<OverflowEntry> {
     tiers_detail(store, Some(home)).0
 }
 
-/// [`tiers`], and the API-key profiles that `overflow=` lists, which are
-/// left out of the credit tiers.
+/// [`tiers`], and the marked API-key profiles that are not used because
+/// another comes first by name.
 #[cfg(unix)]
 pub fn tiers_detail(
     store: &ProfileStore,
@@ -180,14 +182,33 @@ pub fn tiers_detail(
         FileState::Missing => Vec::new(),
         FileState::Corrupt => return (Vec::new(), Vec::new()),
     };
-    let platforms = super::kind::Ctx::load(store, home).platform_profiles(store);
-    let (ignored, mut out): (Vec<OverflowEntry>, Vec<OverflowEntry>) = marked
+    tiers_of(store, home, marked)
+}
+
+/// [`tiers_detail`] for the entries `marked`, already read from
+/// `.auto-switch` (auto-switch holds its own copy of the file).
+#[cfg(unix)]
+pub fn tiers_of(
+    store: &ProfileStore,
+    home: Option<&Path>,
+    marked: Vec<OverflowEntry>,
+) -> (Vec<OverflowEntry>, Vec<ProfileName>) {
+    let kinds = super::kind::Ctx::load(store, home);
+    if kinds.corrupt() {
+        return (Vec::new(), Vec::new());
+    }
+    let platforms = kinds.platform_profiles(store);
+    let (keys, mut out): (Vec<OverflowEntry>, Vec<OverflowEntry>) = marked
         .into_iter()
         .partition(|e| platforms.contains(&e.name));
-    if let Some(first) = platforms.first() {
-        out.push(OverflowEntry::platform(first.clone()));
+    let mut keys: Vec<ProfileName> = keys.into_iter().map(|e| e.name).collect();
+    keys.sort();
+    keys.dedup();
+    let mut keys = keys.into_iter();
+    if let Some(first) = keys.next() {
+        out.push(OverflowEntry::platform(first));
     }
-    (out, ignored.into_iter().map(|e| e.name).collect())
+    (out, keys.collect())
 }
 
 #[cfg(unix)]
@@ -200,10 +221,13 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
             // An existing profile directory, not a symlink.
             store.resolve(&name)?;
             let home = super::usage_cmd::home_dir();
-            if super::kind::Ctx::load(store, home.as_deref()).kind(store, &name)
-                == super::kind::Kind::Platform
-            {
-                return Err(ProfileError::PlatformNotMarkable(name.to_string()));
+            let key = super::kind::Ctx::load(store, home.as_deref()).kind(store, &name)
+                == super::kind::Kind::Platform;
+            // Issue #1804: an API-key profile is always the last tier, so
+            // its mark is stored as the bare name and `--tier` is refused
+            // before anything is written.
+            if key && tier.is_some() {
+                return Err(ProfileError::PlatformTierFixed(name.to_string()));
             }
             // `before`: `None` when newly added, else the tier it had. A
             // repeated `add` without `--tier` keeps the tier.
@@ -224,10 +248,17 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                 Ok(())
             })?;
             match before {
+                None if key => {
+                    println!("overflow: added {name} (api-key tier, tier {PLATFORM_TIER})");
+                    println!(
+                        "note: {name} is billed per token; it is used only when no plan login is below 100% on both windows, no credit profile can be used, the earliest plan reset is more than --overflow-wait away and its login check passes."
+                    );
+                }
+                Some(_) if key => println!("overflow: {name} is already marked (api-key tier)"),
                 None => {
                     println!("overflow: added {name} (tier {now_tier})");
                     println!(
-                        "note: {name} is used only when every plan profile is exhausted and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account."
+                        "note: {name} is used only when no plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account."
                     );
                 }
                 Some(old) if old == now_tier => {
@@ -235,7 +266,7 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                 }
                 Some(old) => println!("overflow: {name} moved from tier {old} to tier {now_tier}"),
             }
-            if before.is_none() {
+            if before.is_none() && !key {
                 println!(
                     "note: set a spend limit for the organization at https://claude.ai/settings/usage; the rotator is not a spending cap."
                 );
@@ -287,9 +318,13 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                 .ok()
                 .flatten()
                 .and_then(|l| super::rotate::platform_block::active(&l, now()).cloned());
+            let marked: Vec<&ProfileName> = platforms.iter().filter(|p| c.is_overflow(p)).collect();
             for e in c.overflow_order() {
                 let n = &e.name;
-                let mut line = format!("{n}  tier {}", e.tier);
+                if platforms.contains(n) {
+                    continue;
+                }
+                let mut line = format!("{n}  tier {}  marked", e.tier);
                 if store.resolve(n).is_err() {
                     line.push_str("  missing (no profile directory)");
                 }
@@ -301,10 +336,14 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                 }
                 println!("{line}");
             }
-            for (i, p) in platforms.iter().enumerate() {
-                let mut line = format!("{p}  api-key tier");
-                match (&key_block, platforms.first()) {
-                    (_, Some(first)) if i > 0 => {
+            for p in &platforms {
+                if !marked.contains(&p) {
+                    println!("{p}  api-key tier  not marked (not used)");
+                    continue;
+                }
+                let mut line = format!("{p}  api-key tier  marked");
+                match (&key_block, marked.first()) {
+                    (_, Some(first)) if *first != p => {
                         line.push_str(&format!("  not used ({first} comes first)"));
                     }
                     (Some(b), _) => line.push_str(&format!(

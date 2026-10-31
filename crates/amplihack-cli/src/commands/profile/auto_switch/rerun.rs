@@ -61,6 +61,8 @@ pub fn nested_candidate(
             && ledger.leased_to(n).is_none()
             // macOS keeps logins in the Keychain: no file to look for.
             && (cfg!(target_os = "macos") || fsx::exists(&state.live_creds(n)))
+            // Issue #1804: the API key only with a passing login check.
+            && overflow.key_check_passes(&state.root, c)
     })
     .cloned()
 }

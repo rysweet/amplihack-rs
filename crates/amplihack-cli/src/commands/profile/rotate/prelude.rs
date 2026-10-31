@@ -7,7 +7,7 @@
 //! refuses, so it refuses a hand-changed login as `LiveUnusable` and leaves
 //! recovery to the next cycle, which runs it before reading the ledger.
 
-use super::cycle::{Ctx, LOCK_WAIT, prototype_guard};
+use super::cycle::{Ctx, LOCK_WAIT};
 use super::handfix;
 use super::identify::Skip;
 use super::log::{Sink, msg, open_or_warn};
@@ -17,6 +17,8 @@ use super::swap::{self, RecoverOutcome};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Lock, State, now, recover_auto_switch};
 use crate::commands::profile::name::ProfileName;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::Path;
 
 pub enum Prelude {
     /// Recovered and identified, the lock still held. The snapshot is boxed
@@ -122,5 +124,34 @@ fn log_skips(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
             out.emit(t, &format!("skip: {n} ({})", s.as_str()));
         }
         ctx.last_skips = Some(skips);
+    }
+}
+
+/// Fails with `RotatePrototypeRunning` while the external rotator holds
+/// `<root>/.rotator/lock`. Opens it read-only without following a symlink,
+/// creating it or blocking on a FIFO, and releases the lock at once.
+pub fn prototype_guard(root: &Path) -> Result<(), ProfileError> {
+    use fs4::fs_std::FileExt;
+    let path = root.join(".rotator").join("lock");
+    let refuse = || ProfileError::RotateRefused(".rotator/lock is not a regular file".into());
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(refuse()),
+    };
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Err(refuse());
+    }
+    match FileExt::try_lock_exclusive(&file) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ProfileError::RotatePrototypeRunning),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(ProfileError::RotatePrototypeRunning)
+        }
+        Err(e) => Err(e.into()),
     }
 }

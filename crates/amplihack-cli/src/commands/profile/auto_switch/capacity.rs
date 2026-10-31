@@ -10,7 +10,8 @@
 //! docs/reference/profile-command.md.
 
 use super::candidate::{
-    OverflowPool, adjusted, gate_capacity, is_exhausted, overflow_usable, regains, regains_at,
+    OverflowPool, adjusted, gate_capacity, has_room, is_exhausted, overflow_usable, regains,
+    regains_at,
 };
 use super::config::{self, Config};
 use super::fsx;
@@ -19,6 +20,7 @@ use super::state::{Ledger, State, UsageFile};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::Gate;
+use crate::commands::profile::rotate::plan_room::room;
 use crate::commands::profile::store::ProfileStore;
 use amplihack_utils::claude_capacity::{self as cap, CapacityFile, State as Cap};
 use chrono::DateTime;
@@ -149,17 +151,26 @@ fn classify(e: Option<&Evidence>, threshold: u8, now: i64) -> Option<Over> {
 }
 
 /// A plan profile's evidence as the overflow gate sees it: whether it has
-/// capacity by the gate's test, and when it regains it. The same helpers
-/// as [`super::candidate::select_with_overflow`] ([`gate_capacity`],
-/// [`regains`]), so the file says overflow is usable exactly when the
-/// selection would move onto it. `None` for no reading (none, or a failed
-/// probe), which is neither capacity nor a known reset.
-fn gate_view(e: Option<&Evidence>, g: &Gate, now: i64) -> Option<(bool, Option<i64>)> {
+/// capacity by the gate's test, when it regains it, and whether it has room
+/// (issue #1804). The same helpers as
+/// [`super::candidate::select_with_overflow`] ([`gate_capacity`],
+/// [`regains`], [`has_room`]), so the file says overflow is usable exactly
+/// when the selection would move onto it. `None` for no reading (none, or a
+/// failed probe), which is neither capacity, a known reset nor room.
+fn gate_view(e: Option<&Evidence>, g: &Gate, now: i64) -> Option<(bool, Option<i64>, bool)> {
     match e? {
-        Evidence::Usage(r) => Some((gate_capacity(r, g, now), regains(r, g, now))),
+        Evidence::Usage(r) => Some((
+            gate_capacity(r, g, now),
+            regains(r, g, now),
+            has_room(r, now),
+        )),
         Evidence::Rotation { reading, stored } => match *reading {
             Rotated::Failed => None,
-            Rotated::Exhausted => Some((false, stored.as_ref().and_then(|r| regains(r, g, now)))),
+            Rotated::Exhausted => Some((
+                false,
+                stored.as_ref().and_then(|r| regains(r, g, now)),
+                false,
+            )),
             Rotated::Measured { session, week } => {
                 let reset = |w: Option<&Window>| w.map(|w| w.resets_at);
                 let resets = stored.as_ref().map_or((None, None), |r| {
@@ -168,6 +179,7 @@ fn gate_view(e: Option<&Evidence>, g: &Gate, now: i64) -> Option<(bool, Option<i
                 Some((
                     g.plan_capacity(session, week),
                     regains_at(g, (session, week), resets),
+                    room(session, week),
                 ))
             }
         },
@@ -178,8 +190,8 @@ fn gate_view(e: Option<&Evidence>, g: &Gate, now: i64) -> Option<(bool, Option<i
 /// Excluded profiles never count. The state is decided by the plan profiles
 /// (not overflow): `ok` while one is under the threshold. When every plan
 /// profile is over it, an overflow profile still makes the state `ok` when
-/// auto-switch could move onto it (issue #1606): the overflow gate allows
-/// it, judged on the gate's own capacity test and plan resets
+/// auto-switch could move onto it (issue #1606): no plan profile has room
+/// and the overflow gate allows it, judged on the gate's own capacity test and plan resets
 /// ([`gate_view`], the selection's helpers, not the auto-switch threshold),
 /// and the profile has no spend block ([`overflow_usable`]; its own plan
 /// reading does not count, as in the selection and the rotator). The
@@ -206,13 +218,13 @@ pub fn compute(
         .collect();
     over.sort_by(|a, b| a.0.cmp(&b.0));
     let gate_allows = |g: Gate| {
-        let views: Vec<(bool, Option<i64>)> = eligible
+        let views: Vec<(bool, Option<i64>, bool)> = eligible
             .iter()
             .filter_map(|p| gate_view(evidence.get(p.as_str()), &g, now))
             .collect();
         let plan_has_capacity = views.iter().any(|v| v.0);
         let earliest_plan_reset = views.iter().filter_map(|v| v.1).min();
-        g.allows(plan_has_capacity, earliest_plan_reset, now)
+        !views.iter().any(|v| v.2) && g.allows(plan_has_capacity, earliest_plan_reset, now)
     };
     let overflow_usable = || {
         overflow.gate.is_some_and(gate_allows)

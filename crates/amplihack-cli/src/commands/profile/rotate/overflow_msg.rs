@@ -16,6 +16,77 @@ pub fn switch_platform_note(name: &ProfileName) -> String {
     )
 }
 
+/// What let the plan reset wait pass, for [`per_token_reason`].
+#[derive(Clone, Copy)]
+pub enum GateNote {
+    /// The earliest plan reset, more than `overflow_wait` away.
+    Earliest(i64),
+    /// No reading reports a reset; `--overflow-unknown-reset 1` allowed it.
+    Unknown,
+}
+
+/// What a per-token profile passed, for [`per_token_reason`].
+#[derive(Clone, Copy)]
+pub enum CheckNote {
+    /// An API-key profile's login check, with its fixed detail.
+    Key(&'static str),
+    /// A credit profile's probe.
+    Credit,
+}
+
+/// Why a move onto per-token profile `to` was allowed (issue #1804), written
+/// before the swap line. Everything here is fixed text, a tier or a time, so
+/// nothing from a profile file can reach the log.
+pub fn per_token_reason(to: &ProfileName, tier: u8, gate: GateNote, check: CheckNote) -> String {
+    let gate = match gate {
+        GateNote::Earliest(at) => {
+            format!("overflow_wait elapsed (earliest reset {})", timestamp(at))
+        }
+        GateNote::Unknown => "reset unknown".to_string(),
+    };
+    let check = match check {
+        CheckNote::Key(detail) => format!("login check passed ({detail})"),
+        CheckNote::Credit => "probe ok, no spend limit".to_string(),
+    };
+    format!(
+        "per-token {to}: no plan login below 100%; {gate}; \
+         marked overflow tier {tier} via profile overflow add; {check}"
+    )
+}
+
+/// After an `overflow-in` swap onto API-key profile `to` (issue #1700).
+pub fn onto_platform(to: &ProfileName) -> String {
+    format!("moved ~/.claude onto API key profile {to} (billed per token)")
+}
+
+/// The login check refused a swap onto API-key profile `name`.
+pub fn key_check_refused(name: &ProfileName, reason: &str) -> String {
+    format!("key_check_refused {name}: {reason}")
+}
+
+/// The ALERT written with [`key_check_refused`], once per profile.
+pub fn alert_key_check(name: &ProfileName, reason: &str) -> String {
+    format!("ALERT: API key profile {name} failed its login check ({reason}); not moving onto it")
+}
+
+/// `--dry-run` in place of `would swap` when the login check fails.
+pub fn would_refuse(name: &ProfileName, reason: &str) -> String {
+    format!("would_refuse {name}: {reason}")
+}
+
+/// An API-key profile that `overflow=` does not mark (issue #1804).
+pub fn platform_not_marked(name: &ProfileName) -> String {
+    format!(
+        "skip: API-key profile {name} is not marked; it is never used. \
+         To allow per-token billing, run: amplihack profile overflow add {name}"
+    )
+}
+
+/// A marked API-key profile that another marked one comes before by name.
+pub fn platform_not_used(name: &ProfileName) -> String {
+    format!("skip: API-key profile {name} is marked but not used; another comes first by name")
+}
+
 /// `<time>` for a known reset, else `unknown`.
 fn reset(at: Option<i64>) -> String {
     at.map_or_else(|| "unknown".to_string(), timestamp)
@@ -24,7 +95,7 @@ fn reset(at: Option<i64>) -> String {
 /// After an `overflow-in` swap onto `to`.
 pub fn onto_overflow(to: &ProfileName, next_reset: Option<i64>) -> String {
     format!(
-        "overflow: on {to}; no plan profile has capacity, next plan reset {}",
+        "overflow: on {to}; no plan login below 100%, next plan reset {}",
         reset(next_reset)
     )
 }
@@ -33,7 +104,7 @@ pub fn onto_overflow(to: &ProfileName, next_reset: Option<i64>) -> String {
 /// record as on credits.
 pub fn stay_on_overflow(live: &ProfileName, next_reset: Option<i64>) -> String {
     format!(
-        "overflow: staying on {live}; no plan profile has capacity, next plan reset {}",
+        "overflow: staying on {live}; no plan login below 100%, next plan reset {}",
         reset(next_reset)
     )
 }

@@ -526,6 +526,10 @@ pub fn swap_check(
     else {
         return Ok(());
     };
+    // Issue #1804: before the journal, so a refusal moves nothing.
+    if !overflow.key_check_passes(&state.root, &target) {
+        return Ok(());
+    }
     if !ledger.hosts.contains_key(target.as_str()) {
         snapshot_account(state, target.as_str());
     }
@@ -571,8 +575,8 @@ pub fn swap_check(
 /// check may move it, `Some(false)` when it cannot, `None` when the account
 /// is not an overflow profile (the reading alone decides then). It may move
 /// when the profile has a spend block, or when some plan profile may be
-/// moved back to by [`candidate::may_return_to`]: the tests the selection
-/// applies ([`candidate::overflow_usable`] and `may_return_to`, step 2 of
+/// moved back to ([`candidate::way_off`]): the tests the selection applies
+/// ([`candidate::overflow_usable`] and steps 1 and 2 of
 /// `select_with_overflow`), on the same inputs ([`OverflowInputs`]), so the
 /// check does not pass on readings the selection then refuses, nor stop one
 /// it would act on. The overflow profile's own reading plays no part.
@@ -616,7 +620,7 @@ pub(super) fn overflow_may_move(
         .iter()
         .filter_map(|(name, r)| ProfileName::parse(name).ok().map(|n| (n, r)))
         .filter(|(n, _)| !overflow.order.contains(n) && !cfg.exclude.contains(n))
-        .any(|(_, r)| candidate::may_return_to(Some(r), overflow.gate.as_ref(), cfg.threshold, now))
+        .any(|(_, r)| candidate::way_off(Some(r), overflow.gate.as_ref(), cfg.threshold, now))
 }
 
 // ---------------------------------------------------------------------------

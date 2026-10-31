@@ -11,12 +11,12 @@
 //! Issue #1700: the order is the rotator's (`overflow::tiers`): the credit
 //! profiles, then the first API-key profile, whose block counts as one of
 //! the spend blocks. A corrupt `.auto-switch` gives no order at all.
+//! Issue #1804: only an API-key profile that `overflow=` marks is in it.
 
 use super::candidate::OverflowPool;
 use super::config::Config;
-use crate::commands::profile::kind;
 use crate::commands::profile::name::ProfileName;
-use crate::commands::profile::overflow::Gate;
+use crate::commands::profile::overflow::{self, Gate};
 use crate::commands::profile::rotate;
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd;
@@ -30,28 +30,22 @@ pub struct OverflowInputs {
     pub platform: Option<ProfileName>,
 }
 
-/// The overflow order for `cfg` under `root`: its entries without API-key
-/// profiles, then the first API-key profile by name; and that profile.
+/// The overflow order for `cfg` under `root`, by the rotator's rule
+/// (`overflow::tiers_of`): its credit entries, then the first marked
+/// API-key profile by name; and that profile. An API-key profile that
+/// `overflow=` does not mark is left out (issue #1804).
 fn order_of(
     root: &Path,
     cfg: &Config,
     home: Option<&Path>,
 ) -> (Vec<ProfileName>, Option<ProfileName>) {
     let store = ProfileStore::new(root.to_path_buf());
-    let kinds = kind::Ctx::load(&store, home);
-    if kinds.corrupt() {
-        return (Vec::new(), None);
-    }
-    let platforms = kinds.platform_profiles(&store);
-    let mut order: Vec<ProfileName> = cfg
-        .overflow_order()
-        .into_iter()
-        .map(|e| e.name)
-        .filter(|n| !platforms.contains(n))
-        .collect();
-    let platform = platforms.into_iter().next();
-    order.extend(platform.clone());
-    (order, platform)
+    let (tiers, _) = overflow::tiers_of(&store, home, cfg.overflow_order());
+    let platform = tiers
+        .iter()
+        .find(|e| e.tier == overflow::PLATFORM_TIER)
+        .map(|e| e.name.clone());
+    (tiers.into_iter().map(|e| e.name).collect(), platform)
 }
 
 impl OverflowInputs {
@@ -132,6 +126,27 @@ impl OverflowInputs {
             blocked: Vec::new(),
             gate: None,
             platform: None,
+        }
+    }
+
+    /// Whether a move onto `target` passes the login check (issue #1804):
+    /// always for a profile that is not the API-key one. A failure is
+    /// logged with the profile and the reason, never a value.
+    pub fn key_check_passes(&self, root: &Path, target: &ProfileName) -> bool {
+        if self.platform.as_ref() != Some(target) {
+            return true;
+        }
+        let store = ProfileStore::new(root.to_path_buf());
+        match rotate::key_check::configured(&store, target) {
+            Ok(_) => true,
+            Err(reason) => {
+                tracing::warn!(
+                    profile = %target,
+                    %reason,
+                    "auto-switch: API key profile failed its login check; not moving onto it"
+                );
+                false
+            }
         }
     }
 
