@@ -3,32 +3,57 @@
 //! Injects a short system reminder when a new topic boundary is detected so the
 //! agent classifies the request and routes non-trivial work through the
 //! dev-orchestrator workflow.
+//!
+//! A prompt that starts with the [`COORDINATION_PREFIX`] marker is coordination
+//! traffic between sessions (issue #1742). It gets [`COORDINATION_NOTE`] instead
+//! of the routing prompt, unless its body is a work request that starts with a
+//! change verb. A work request is decided as the same body without the marker
+//! would be, throttle included, so the marker never adds a routing prompt. See
+//! `docs/reference/coordination-messages.md`.
+//!
+//! The marker rule is in `coordination`, the per-session state file in `state`.
+
+mod coordination;
+mod state;
+
+pub use coordination::{COORDINATION_NOTE, COORDINATION_PREFIX};
 
 use crate::prompt_input::extract_user_prompt;
 use crate::protocol::{FailurePolicy, Hook};
 use crate::session_start::{is_nested_recipe_session, is_workflow_active};
-use amplihack_types::{HookInput, ProjectDirs, sanitize_session_id};
-use serde::{Deserialize, Serialize};
+use amplihack_types::{HookInput, ProjectDirs};
+use coordination::{is_explicit_work_request, strip_coordination_prefix};
 use serde_json::{Value, json};
+use state::{ClassificationState, next_observed_turn, record_outcome, state_file};
 use std::fs;
-use std::path::PathBuf;
 
 pub struct WorkflowClassificationReminderHook;
 
 const DEFAULT_ROUTING_PROMPT: &str = include_str!("routing_prompt.txt");
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ClassificationState {
-    last_classified_turn: u64,
-    session_id: String,
-    /// Prompts seen in this session, counted by us.
-    ///
-    /// Only used when the runtime does not report one. The Copilot CLI's
-    /// `userPromptSubmitted` payload is `{prompt}` and carries no turn number,
-    /// so treating a missing count as turn 0 would make `turn_count <= 1`
-    /// permanently true and route every human prompt forever (issue #1333).
-    #[serde(default)]
-    observed_turns: u64,
+/// Values written to `ClassificationState::last_rule`, one per outcome.
+///
+/// These strings are read by people inspecting state files, so renaming one is
+/// a breaking change. The table is in `docs/reference/coordination-messages.md`.
+mod rule {
+    pub(super) const EXPLICIT_DEV: &str = "explicit_dev_command";
+    pub(super) const COORD_EXPLICIT_DEV: &str = "coordination_explicit_dev";
+    pub(super) const COORD_MARKER: &str = "coordination_marker";
+    pub(super) const COORD_THROTTLED: &str = "coordination_throttled";
+    pub(super) const CLASSIFICATION: &str = "classification";
+    pub(super) const THROTTLED: &str = "throttled";
+}
+
+/// What the topic logic decided for an unmarked prompt, or for the body of a
+/// marked one that is an explicit `/dev` command or a work request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TopicDecision {
+    /// The user typed an explicit `/dev` command; the skill handles routing.
+    ExplicitDev,
+    /// A new topic: inject the routing prompt.
+    NewTopic,
+    /// A follow-up or a prompt soon after the last classification.
+    Throttled,
 }
 
 impl Hook for WorkflowClassificationReminderHook {
@@ -48,7 +73,11 @@ impl Hook for WorkflowClassificationReminderHook {
                 extra,
             } => (
                 extract_user_prompt(user_prompt.as_deref(), &extra),
-                session_id.unwrap_or_else(|| "unknown-session".to_string()),
+                // An empty id would reach the non-empty assertion in
+                // `sanitize_session_id` on the state-writing paths.
+                session_id
+                    .filter(|id| !id.is_empty())
+                    .unwrap_or_else(|| "unknown-session".to_string()),
                 extract_turn_count(&extra),
             ),
             _ => return Ok(Value::Object(serde_json::Map::new())),
@@ -59,7 +88,7 @@ impl Hook for WorkflowClassificationReminderHook {
         }
 
         // A runtime that reports no turn number gets one we keep ourselves, so
-        // both runtimes reach `is_new_topic` with the same meaning. Falling back
+        // both runtimes reach `topic_decision` with the same meaning. Falling back
         // to 0 would pin every Copilot prompt at "first turn".
         let dirs_for_turn = ProjectDirs::from_cwd();
         let turn_count = match turn_count {
@@ -86,41 +115,109 @@ impl Hook for WorkflowClassificationReminderHook {
             return Ok(Value::Object(serde_json::Map::new()));
         }
 
-        if !is_new_topic(&dirs, &session_id, turn_count, &prompt) {
-            return Ok(Value::Object(serde_json::Map::new()));
+        // Issue #1742: a leading `[coord]` marker means another session typed
+        // this message. It runs after every gate above, so it can never make a
+        // recipe step or a nested session receive routing text.
+        let marked_body = strip_coordination_prefix(&prompt);
+        if let Some(body) = marked_body
+            && !is_explicit_dev_command(body)
+            && !is_explicit_work_request(body)
+        {
+            record_outcome(&dirs, &session_id, turn_count, rule::COORD_MARKER, false);
+            return Ok(context_output(COORDINATION_NOTE));
         }
 
-        save_classification_state(&dirs, &session_id, turn_count)?;
+        // Every other prompt goes through the same topic decision, and a
+        // marked one is decided on its body, exactly as the same text without
+        // the marker would be. So the marker never adds a routing prompt,
+        // whatever the work-request rule gets wrong: a report it takes for a
+        // request is throttled like the unmarked report (review rounds 3 to 6
+        // of PR #1752). A marked work request that the throttle holds back
+        // gets the note, whose last sentence sends a code change to
+        // dev-orchestrator, where the unmarked text gets nothing.
+        let marked = marked_body.is_some();
+        let text = marked_body.unwrap_or(&prompt);
+        match topic_decision(&dirs, &session_id, turn_count, text) {
+            TopicDecision::ExplicitDev => {
+                record_outcome(&dirs, &session_id, turn_count, rule::EXPLICIT_DEV, false);
+                return Ok(Value::Object(serde_json::Map::new()));
+            }
+            TopicDecision::Throttled => {
+                let rule = if marked {
+                    rule::COORD_THROTTLED
+                } else {
+                    rule::THROTTLED
+                };
+                record_outcome(&dirs, &session_id, turn_count, rule, false);
+                return Ok(held_back_output(marked));
+            }
+            TopicDecision::NewTopic => {
+                let rule = if marked {
+                    rule::COORD_EXPLICIT_DEV
+                } else {
+                    rule::CLASSIFICATION
+                };
+                // The throttle can hold back the next prompts only if it can
+                // read this classification. When the state cannot be written,
+                // a runtime that reports no turn number also leaves every
+                // prompt at turn 0, which is always a new topic, so routing
+                // here would route every prompt in the session for good
+                // (review round 7 of PR #1752). Such a prompt gets what a
+                // throttled one gets. Before #1742 the failed write returned an
+                // error and the failure policy emitted `{}`.
+                if !record_outcome(&dirs, &session_id, turn_count, rule, true) {
+                    return Ok(held_back_output(marked));
+                }
+            }
+        }
 
         let reminder = load_routing_prompt(&dirs);
         if reminder.trim().is_empty() {
             return Ok(Value::Object(serde_json::Map::new()));
         }
 
-        // Two runtimes, two contracts, one gated source.
-        //
-        // Claude Code reads `hookSpecificOutput.additionalContext`. The Copilot
-        // CLI reads a *top-level* `additionalContext` and never looks at
-        // `hookSpecificOutput` -- the string does not appear anywhere in its
-        // binary. So under Copilot this hook's output was discarded in both
-        // directions: it could not route a human, and the provenance gate above
-        // could not suppress anything, because there was nothing to suppress.
-        //
-        // That is why the router still reached recipe steps after #1328: it was
-        // arriving through the repo-root AGENTS.md instead, which is ungated and
-        // is loaded into every leaf agent (issue #1333). Removing that file
-        // without emitting a shape Copilot reads would silently drop human
-        // routing under Copilot altogether.
-        //
-        // Both keys are additive and each runtime ignores the other's.
-        Ok(json!({
-            "additionalContext": reminder,
-            "hookSpecificOutput": {
-                "hookEventName": "UserPromptSubmit",
-                "additionalContext": reminder
-            }
-        }))
+        Ok(context_output(&reminder))
     }
+}
+
+/// The output for a prompt whose routing prompt is held back, by the throttle or
+/// because its classification could not be recorded.
+///
+/// A marked body gets the note, whose last sentence sends a code change to
+/// dev-orchestrator. An unmarked prompt gets nothing.
+fn held_back_output(marked: bool) -> Value {
+    if marked {
+        context_output(COORDINATION_NOTE)
+    } else {
+        Value::Object(serde_json::Map::new())
+    }
+}
+
+/// Build the hook output that injects `text` as additional context.
+fn context_output(text: &str) -> Value {
+    // Two runtimes, two contracts, one gated source.
+    //
+    // Claude Code reads `hookSpecificOutput.additionalContext`. The Copilot
+    // CLI reads a *top-level* `additionalContext` and never looks at
+    // `hookSpecificOutput` -- the string does not appear anywhere in its
+    // binary. So under Copilot this hook's output was discarded in both
+    // directions: it could not route a human, and the provenance gate in `process`
+    // could not suppress anything, because there was nothing to suppress.
+    //
+    // That is why the router still reached recipe steps after #1328: it was
+    // arriving through the repo-root AGENTS.md instead, which is ungated and
+    // is loaded into every leaf agent (issue #1333). Removing that file
+    // without emitting a shape Copilot reads would silently drop human
+    // routing under Copilot altogether.
+    //
+    // Both keys are additive and each runtime ignores the other's.
+    json!({
+        "additionalContext": text,
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": text
+        }
+    })
 }
 
 /// Environment marker set by `recipe::run::execute` on every agent it spawns.
@@ -151,12 +248,6 @@ fn extract_turn_count(extra: &Value) -> Option<u64> {
         .or_else(|| extra.get("turn_count").and_then(Value::as_u64))
 }
 
-fn state_file(dirs: &ProjectDirs, session_id: &str) -> PathBuf {
-    dirs.runtime
-        .join("classification_state")
-        .join(format!("{}.json", sanitize_session_id(session_id)))
-}
-
 fn is_explicit_dev_command(user_prompt: &str) -> bool {
     let prompt_lower = user_prompt.trim().to_lowercase();
     prompt_lower.starts_with("/dev ")
@@ -165,13 +256,37 @@ fn is_explicit_dev_command(user_prompt: &str) -> bool {
         || prompt_lower.starts_with("/.claude:amplihack:dev")
 }
 
-fn is_new_topic(dirs: &ProjectDirs, session_id: &str, turn_count: u64, user_prompt: &str) -> bool {
+/// Strings that make a prompt after turn 1 a follow-up, which is not routed
+/// unless it also contains one of the new-topic phrases checked before these.
+///
+/// They are matched as substrings of the prompt's first three words, not as
+/// whole words, so `command`, `handler` and `standalone` count as `and`. The
+/// docs quote this list and say so; whole-word matching is issue #1789.
+const FOLLOWUP_KEYWORDS: [&str; 10] = [
+    "also",
+    "what about",
+    "and",
+    "additionally",
+    "furthermore",
+    "i meant",
+    "to clarify",
+    "how's it going",
+    "what's the status",
+    "what's the progress",
+];
+
+fn topic_decision(
+    dirs: &ProjectDirs,
+    session_id: &str,
+    turn_count: u64,
+    user_prompt: &str,
+) -> TopicDecision {
     if is_explicit_dev_command(user_prompt) {
-        return false;
+        return TopicDecision::ExplicitDev;
     }
 
     if turn_count <= 1 {
-        return true;
+        return TopicDecision::NewTopic;
     }
 
     let prompt_lower = user_prompt.to_lowercase();
@@ -188,94 +303,32 @@ fn is_new_topic(dirs: &ProjectDirs, session_id: &str, turn_count: u64, user_prom
         .iter()
         .any(|keyword| prompt_lower.contains(keyword))
     {
-        return true;
+        return TopicDecision::NewTopic;
     }
 
-    let followup_keywords = [
-        "also",
-        "what about",
-        "and",
-        "additionally",
-        "furthermore",
-        "i meant",
-        "to clarify",
-        "how's it going",
-        "what's the status",
-        "what's the progress",
-    ];
     let first_words = prompt_lower
         .split_whitespace()
         .take(3)
         .collect::<Vec<_>>()
         .join(" ");
-    if followup_keywords
+    if FOLLOWUP_KEYWORDS
         .iter()
         .any(|keyword| first_words.contains(keyword))
     {
-        return false;
+        return TopicDecision::Throttled;
     }
 
+    // A session with no classification yet has no window to throttle within.
     let path = state_file(dirs, session_id);
     if let Ok(raw) = fs::read_to_string(path)
         && let Ok(state) = serde_json::from_str::<ClassificationState>(&raw)
-        && turn_count.saturating_sub(state.last_classified_turn) <= 3
+        && let Some(last_classified) = state.last_classified_turn
+        && turn_count.saturating_sub(last_classified) <= 3
     {
-        return false;
+        return TopicDecision::Throttled;
     }
 
-    true
-}
-
-/// Read, increment and persist this session's own prompt counter.
-///
-/// Returns the turn number for the prompt being handled now: 0 for the first,
-/// 1 for the second, and so on -- matching what a runtime that reports
-/// `turnCount` would send, so downstream logic needs no special case.
-///
-/// A write failure returns the un-incremented count rather than failing the
-/// hook. The cost is one extra reminder, not a broken prompt.
-fn next_observed_turn(dirs: &ProjectDirs, session_id: &str) -> u64 {
-    let path = state_file(dirs, session_id);
-    let mut state = fs::read_to_string(&path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<ClassificationState>(&raw).ok())
-        .unwrap_or_else(|| ClassificationState {
-            last_classified_turn: 0,
-            session_id: session_id.to_string(),
-            observed_turns: 0,
-        });
-    let current = state.observed_turns;
-    state.observed_turns = current.saturating_add(1);
-    if let Some(parent) = path.parent()
-        && fs::create_dir_all(parent).is_ok()
-        && let Ok(body) = serde_json::to_vec(&state)
-    {
-        let _ = fs::write(&path, body);
-    }
-    current
-}
-
-fn save_classification_state(
-    dirs: &ProjectDirs,
-    session_id: &str,
-    turn_count: u64,
-) -> anyhow::Result<()> {
-    let path = state_file(dirs, session_id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let observed_turns = fs::read_to_string(&path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<ClassificationState>(&raw).ok())
-        .map(|prev| prev.observed_turns)
-        .unwrap_or(0);
-    let state = ClassificationState {
-        last_classified_turn: turn_count,
-        session_id: session_id.to_string(),
-        observed_turns,
-    };
-    fs::write(path, serde_json::to_vec(&state)?)?;
-    Ok(())
+    TopicDecision::NewTopic
 }
 
 fn load_routing_prompt(dirs: &ProjectDirs) -> String {
@@ -288,351 +341,4 @@ fn load_routing_prompt(dirs: &ProjectDirs) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::fs;
-
-    /// Issue #1328: a prompt amplihack wrote for its own recipe step is never a
-    /// human changing topic. This is the case that produced the cascade -- the
-    /// agent's first token was `[auto-routed] ... launching dev-orchestrator`,
-    /// re-orchestrating the step it had just been handed.
-    #[test]
-    fn agent_authored_prompts_are_never_routed() {
-        let _guard = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _run = crate::test_support::EnvVarGuard::set(RECIPE_RUN_ID_ENV, "run-abc");
-        assert!(is_agent_authored_prompt());
-
-        let out = WorkflowClassificationReminderHook
-            .process(HookInput::UserPromptSubmit {
-                user_prompt: Some("Design an exploration strategy for this investigation.".into()),
-                session_id: Some("s-agent".into()),
-                extra: json!({ "turnCount": 0 }),
-            })
-            .expect("hook runs");
-        assert_eq!(
-            out,
-            Value::Object(serde_json::Map::new()),
-            "an agent-authored prompt must receive no routing text at all"
-        );
-    }
-
-    /// The human path must be untouched. A fix that silences routing for everyone
-    /// would satisfy the safety goal and remove the feature.
-    #[test]
-    fn human_prompts_are_still_routed() {
-        let _guard = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
-        let _depth = crate::test_support::EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
-        assert!(!is_agent_authored_prompt());
-    }
-
-    /// An exported-but-empty marker is not a marker. Otherwise a stray
-    /// `export AMPLIHACK_RECIPE_RUN_ID=` would silently disable routing for a human.
-    #[test]
-    fn an_empty_marker_does_not_count_as_agent_authored() {
-        let _guard = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _run = crate::test_support::EnvVarGuard::set(RECIPE_RUN_ID_ENV, "");
-        assert!(!is_agent_authored_prompt());
-    }
-
-    /// The discriminator that failed. Of 22,964 sessions on the affected host,
-    /// 10,972 had zero turns and 11,986 had exactly one -- so `turn_count <= 1` was
-    /// true for essentially every machine-spawned step, which is precisely the case
-    /// it needed to exclude. Provenance must decide regardless of turn count.
-    #[test]
-    fn turn_count_does_not_override_provenance() {
-        let _guard = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _run = crate::test_support::EnvVarGuard::set(RECIPE_RUN_ID_ENV, "run-abc");
-        for turns in [0u64, 1, 2, 50] {
-            let out = WorkflowClassificationReminderHook
-                .process(HookInput::UserPromptSubmit {
-                    user_prompt: Some("Define the scope for this investigation task.".into()),
-                    session_id: Some(format!("s{turns}")),
-                    extra: json!({ "turnCount": turns }),
-                })
-                .expect("hook runs");
-            assert_eq!(
-                out,
-                Value::Object(serde_json::Map::new()),
-                "turnCount={turns} must not resurrect routing for an agent prompt"
-            );
-        }
-    }
-
-    #[test]
-    fn explicit_dev_command_skips_reminder() {
-        let dirs = ProjectDirs::new("/tmp/project");
-        assert!(!is_new_topic(&dirs, "s1", 2, "/dev fix this"));
-    }
-
-    #[test]
-    fn first_turn_is_new_topic() {
-        let dirs = ProjectDirs::new("/tmp/project");
-        assert!(is_new_topic(
-            &dirs,
-            "s1",
-            0,
-            "Please investigate this issue"
-        ));
-    }
-
-    #[test]
-    fn followup_prefix_is_not_new_topic() {
-        let dirs = ProjectDirs::new("/tmp/project");
-        assert!(!is_new_topic(&dirs, "s1", 10, "Also update the tests"));
-    }
-
-    #[test]
-    fn recent_classification_suppresses_followup_turns() {
-        let temp = tempfile::tempdir().unwrap();
-        let dirs = ProjectDirs::from_root(temp.path());
-        save_classification_state(&dirs, "session-1", 4).unwrap();
-        assert!(!is_new_topic(
-            &dirs,
-            "session-1",
-            6,
-            "Please continue on that bug"
-        ));
-        assert!(is_new_topic(
-            &dirs,
-            "session-1",
-            8,
-            "Please continue on that bug"
-        ));
-    }
-
-    #[test]
-    fn transition_keyword_forces_new_topic() {
-        let dirs = ProjectDirs::new("/tmp/project");
-        assert!(is_new_topic(
-            &dirs,
-            "s1",
-            9,
-            "Now let's switch to the install flow"
-        ));
-    }
-
-    #[test]
-    fn load_routing_prompt_mentions_dev_orchestrator() {
-        let dirs = ProjectDirs::new("/tmp/project");
-        let reminder = load_routing_prompt(&dirs);
-        assert!(reminder.contains("dev-orchestrator"));
-        assert!(reminder.contains("parallel signal evaluation"));
-        assert!(reminder.contains("flowchart TD"));
-    }
-
-    #[test]
-    fn default_routing_prompt_matches_richer_parallel_contract() {
-        assert!(DEFAULT_ROUTING_PROMPT.contains("parallel signal evaluation"));
-        assert!(DEFAULT_ROUTING_PROMPT.contains("flowchart TD"));
-        assert!(DEFAULT_ROUTING_PROMPT.contains("UNDERSTAND + IMPLEMENT"));
-        assert!(DEFAULT_ROUTING_PROMPT.contains("False positive costs minutes"));
-    }
-
-    #[test]
-    fn extracts_prompt_from_extra_fields() {
-        let extra = json!({
-            "prompt": "hello",
-            "turnCount": 3
-        });
-        assert_eq!(extract_user_prompt(None, &extra), "hello");
-        assert_eq!(extract_turn_count(&extra), Some(3));
-    }
-
-    #[test]
-    fn load_routing_prompt_uses_amplihack_root_override() {
-        let _guard = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let project = tempfile::tempdir().unwrap();
-        let framework = tempfile::tempdir().unwrap();
-        let dirs = ProjectDirs::new(project.path());
-        let template_dir = framework
-            .path()
-            .join(".claude/tools/amplihack/hooks/templates");
-        fs::create_dir_all(&template_dir).unwrap();
-        fs::write(
-            template_dir.join("routing_prompt.txt"),
-            "<system-reminder source=\"auto-intent-router\">Framework override</system-reminder>",
-        )
-        .unwrap();
-        let previous = std::env::var_os("AMPLIHACK_ROOT");
-        unsafe { std::env::set_var("AMPLIHACK_ROOT", framework.path()) };
-
-        let reminder = load_routing_prompt(&dirs);
-
-        match previous {
-            Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },
-            None => unsafe { std::env::remove_var("AMPLIHACK_ROOT") },
-        }
-
-        assert_eq!(
-            reminder,
-            "<system-reminder source=\"auto-intent-router\">Framework override</system-reminder>"
-        );
-    }
-
-    /// Issue #1333: the Copilot CLI reads a top-level `additionalContext` and
-    /// never looks at `hookSpecificOutput` -- that key appears zero times in its
-    /// binary. Emitting only the Claude shape meant this hook was inert under
-    /// Copilot, so the router had to arrive through the ungated repo-root
-    /// AGENTS.md instead, which reached every leaf agent step.
-    #[test]
-    fn emits_the_copilot_shape_for_a_human_prompt() {
-        // Serialise against every other test that mutates this variable --
-        // an unlocked EnvVarGuard races the ones that do.
-        let _guard = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let temp = tempfile::tempdir().unwrap();
-        let dirs = ProjectDirs::from_root(temp.path());
-        let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
-
-        let out = classify(&dirs, "s-copilot", None, "Please investigate this issue");
-
-        let top = out
-            .get("additionalContext")
-            .and_then(Value::as_str)
-            .expect("top-level additionalContext is the only key Copilot reads");
-        assert!(top.contains("dev-orchestrator"));
-        assert_eq!(
-            out.pointer("/hookSpecificOutput/additionalContext")
-                .and_then(Value::as_str),
-            Some(top),
-            "the Claude shape must carry the same text, not diverge from it"
-        );
-    }
-
-    /// The regression the Copilot shape would otherwise have shipped.
-    ///
-    /// Copilot's `userPromptSubmitted` payload is `{prompt}` and carries no turn
-    /// number. Treating that as turn 0 makes `turn_count <= 1` permanently true,
-    /// so once the output is actually delivered every human prompt gets 3 KB of
-    /// mandatory routing -- including "no, undo that". #1328 and #1330 were spent
-    /// learning not to ship an unbounded router; this asserts it is not shipped
-    /// to a second runtime on the way out.
-    #[test]
-    fn a_runtime_that_reports_no_turn_count_is_still_throttled() {
-        // Serialise against every other test that mutates this variable --
-        // an unlocked EnvVarGuard races the ones that do.
-        let _guard = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let temp = tempfile::tempdir().unwrap();
-        let dirs = ProjectDirs::from_root(temp.path());
-        let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
-
-        // Every prompt below omits turnCount, exactly as Copilot sends it.
-        let routed: Vec<bool> = (0..8)
-            .map(|i| {
-                let out = classify(
-                    &dirs,
-                    "s-no-turncount",
-                    None,
-                    &format!("Please investigate issue number {i}"),
-                );
-                out.get("additionalContext").is_some()
-            })
-            .collect();
-
-        let count = routed.iter().filter(|r| **r).count();
-        assert!(
-            count < routed.len(),
-            "eight prompts, all routed: the router is unbounded under a runtime \
-             that reports no turn count -- {routed:?}"
-        );
-        assert!(
-            routed[0],
-            "the first prompt of a session is a genuine new topic and must route"
-        );
-        assert!(
-            !routed[routed.len() - 1],
-            "by the eighth prompt the throttle must have taken hold -- {routed:?}"
-        );
-    }
-
-    /// A runtime that does report a turn count keeps its old behaviour.
-    #[test]
-    fn a_reported_turn_count_is_used_verbatim() {
-        // Serialise against every other test that mutates this variable --
-        // an unlocked EnvVarGuard races the ones that do.
-        let _guard = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let temp = tempfile::tempdir().unwrap();
-        let dirs = ProjectDirs::from_root(temp.path());
-        let _run = crate::test_support::EnvVarGuard::unset(RECIPE_RUN_ID_ENV);
-
-        let first = classify(&dirs, "s-claude", Some(0), "Please investigate this");
-        assert!(first.get("additionalContext").is_some());
-
-        let follow = classify(&dirs, "s-claude", Some(2), "Please investigate that");
-        assert!(
-            follow.get("additionalContext").is_none(),
-            "turn 2 within three turns of turn 0 must be suppressed"
-        );
-    }
-
-    /// Drive the hook the way a runtime does, with the project dirs pinned to a
-    /// temp root so state never lands in the real one.
-    fn classify(dirs: &ProjectDirs, session: &str, turn: Option<u64>, prompt: &str) -> Value {
-        let extra = match turn {
-            Some(t) => json!({ "turnCount": t }),
-            None => json!({}),
-        };
-        let turn_count = match extract_turn_count(&extra) {
-            Some(reported) => reported,
-            None => next_observed_turn(dirs, session),
-        };
-        if !is_new_topic(dirs, session, turn_count, prompt) {
-            return Value::Object(serde_json::Map::new());
-        }
-        save_classification_state(dirs, session, turn_count).unwrap();
-        let reminder = load_routing_prompt(dirs);
-        json!({
-            "additionalContext": reminder,
-            "hookSpecificOutput": {
-                "hookEventName": "UserPromptSubmit",
-                "additionalContext": reminder
-            }
-        })
-    }
-
-    /// The regression lock for #1328: making the hook visible to Copilot must
-    /// not re-open the hole it closed. An agent-authored recipe step gets
-    /// nothing -- in either shape.
-    #[test]
-    fn emits_neither_shape_for_an_agent_authored_prompt() {
-        // Serialise against every other test that mutates this variable --
-        // an unlocked EnvVarGuard races the ones that do.
-        let _guard = crate::test_support::env_lock()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let _run = crate::test_support::EnvVarGuard::set(RECIPE_RUN_ID_ENV, "run-abc");
-        let hook = WorkflowClassificationReminderHook;
-        let out = hook
-            .process(HookInput::UserPromptSubmit {
-                user_prompt: Some("Please investigate this issue".to_string()),
-                session_id: Some("s-agent".to_string()),
-                extra: json!({"turnCount": 0}),
-            })
-            .unwrap();
-
-        assert!(
-            out.get("additionalContext").is_none(),
-            "a recipe step must not receive the router in the Copilot shape"
-        );
-        assert!(
-            out.get("hookSpecificOutput").is_none(),
-            "nor in the Claude shape"
-        );
-    }
-}
+mod tests;
