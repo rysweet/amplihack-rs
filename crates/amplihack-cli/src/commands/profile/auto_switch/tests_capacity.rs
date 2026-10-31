@@ -96,6 +96,8 @@ fn compute(
         blocked: &[],
         gate: None,
         platform: None,
+        not_plan: &[],
+        kinds_unknown: false,
     };
     super::capacity::compute(profiles, evidence, cfg, &none, now, writer)
 }
@@ -235,12 +237,14 @@ fn overflow_case_cred(
         blocked,
         gate,
         platform: None,
+        not_plan: &[],
+        kinds_unknown: false,
     };
     super::capacity::compute(
         &names(&["a", "b", "cred"]),
         &ev(vec![
-            ("a", usage(95.0, reset + HOUR)),
-            ("b", usage(91.0, reset)),
+            ("a", usage(100.0, reset + HOUR)),
+            ("b", usage(100.0, reset)),
             ("cred", usage(cred_pct, T + HOUR)),
         ]),
         &c,
@@ -257,7 +261,11 @@ fn a_credit_profile_at_its_plan_limit_still_makes_the_file_ok() {
     assert_eq!(f.earliest_reset, None);
     assert!(!f.over.contains(&"cred".to_string()), "cred is not plan");
     let f = overflow_case_cred(T + 2 * HOUR, &["cred".to_string()], Some(GATE), 100.0);
-    assert_eq!(f.state, Cap::Low, "only a spend block makes it unusable");
+    assert_eq!(
+        f.state,
+        Cap::Exhausted,
+        "only a spend block makes it unusable"
+    );
 }
 
 #[test]
@@ -277,7 +285,7 @@ fn an_overflow_profile_does_not_count_while_the_plan_reset_is_inside_the_wait() 
     let f = overflow_case(T + 1800, &[], Some(GATE));
     assert_eq!(
         f.state,
-        Cap::Low,
+        Cap::Exhausted,
         "a reset exactly at the wait keeps the plan"
     );
     assert_eq!(f.over, vec!["a".to_string(), "b".to_string()]);
@@ -287,9 +295,9 @@ fn an_overflow_profile_does_not_count_while_the_plan_reset_is_inside_the_wait() 
 #[test]
 fn a_blocked_overflow_profile_or_a_closed_gate_is_no_capacity() {
     let f = overflow_case(T + 2 * HOUR, &["cred".to_string()], Some(GATE));
-    assert_eq!(f.state, Cap::Low, "spend-blocked");
+    assert_eq!(f.state, Cap::Exhausted, "spend-blocked");
     let f = overflow_case(T + 2 * HOUR, &[], None);
-    assert_eq!(f.state, Cap::Low, "gate unreadable");
+    assert_eq!(f.state, Cap::Exhausted, "gate unreadable");
 }
 
 /// The file and the selection on the same readings (issue #1606, review
@@ -305,6 +313,8 @@ fn file_and_selection(threshold: u8, a: Reading, b: Reading, cred_pct: f64) -> (
         blocked: &[],
         gate: Some(GATE),
         platform: None,
+        not_plan: &[],
+        kinds_unknown: false,
     };
     let profiles = names(&["a", "b", "cred"]);
     let cred = reading(win(cred_pct, T + HOUR), None, T);
@@ -337,13 +347,12 @@ fn file_and_selection(threshold: u8, a: Reading, b: Reading, cred_pct: f64) -> (
 
 #[test]
 fn the_overflow_state_uses_the_gate_s_reset_not_the_threshold_s() {
-    // b: session 87% (at the gate's 85, under the threshold 90) resetting in
-    // two hours, week 95% resetting in ten minutes. b regains capacity by
-    // the gate's test only when both have reset, in two hours: beyond the
-    // 30-minute wait, so auto-switch moves onto cred. The file must say so,
-    // not take the week's reset alone because only the week is over 90.
-    let a = reading(win(95.0, T + 3 * HOUR), win(10.0, T + 100 * HOUR), T);
-    let b = reading(win(87.0, T + 2 * HOUR), win(95.0, T + 600), T);
+    // b: session 100% resetting in two hours, week 95% resetting in ten
+    // minutes. b regains capacity by the gate's test only when both have
+    // reset, in two hours: beyond the 30-minute wait, so auto-switch moves
+    // onto cred. The file must say so, not take the week's reset alone.
+    let a = reading(win(100.0, T + 3 * HOUR), win(10.0, T + 100 * HOUR), T);
+    let b = reading(win(100.0, T + 2 * HOUR), win(95.0, T + 600), T);
     let (state, spends) = file_and_selection(90, a, b, 5.0);
     assert!(spends, "the selection moves onto cred");
     assert_eq!(state, Cap::Ok, "so the file is ok");
@@ -368,15 +377,16 @@ fn the_file_and_the_selection_agree_on_overflow() {
         .flat_map(|t| [(t, 5.0), (t, 100.0)])
     {
         for (bs, bw, bs_reset, bw_reset) in [
+            (100.0, 95.0, 2 * HOUR, 600),
+            (100.0, 95.0, 600, 2 * HOUR),
             (87.0, 95.0, 2 * HOUR, 600),
-            (87.0, 95.0, 600, 2 * HOUR),
             (95.0, 10.0, 600, 100 * HOUR),
             (95.0, 10.0, 2 * HOUR, 100 * HOUR),
             (0.0, 85.0, HOUR, 100 * HOUR),
             (0.0, 92.0, HOUR, 100 * HOUR),
             (82.0, 10.0, HOUR, 100 * HOUR),
         ] {
-            let a = reading(win(95.0, T + 3 * HOUR), win(10.0, T + 100 * HOUR), T);
+            let a = reading(win(100.0, T + 3 * HOUR), win(10.0, T + 100 * HOUR), T);
             let b = reading(win(bs, T + bs_reset), win(bw, T + bw_reset), T);
             let (state, spends) = file_and_selection(threshold, a, b, cred_pct);
             if b_over(threshold, bs, bw) {
@@ -401,7 +411,7 @@ fn an_overflow_profile_is_never_plan_capacity() {
     // Only cred is under the threshold, but it is overflow: with the gate
     // shut, the plan state stands and cred is not listed as over.
     let f = overflow_case(T + 600, &[], Some(GATE));
-    assert_eq!(f.state, Cap::Low);
+    assert_eq!(f.state, Cap::Exhausted);
     assert!(!f.over.contains(&"cred".to_string()));
 }
 

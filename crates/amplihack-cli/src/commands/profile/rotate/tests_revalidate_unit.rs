@@ -37,6 +37,7 @@ fn base() -> Snap {
         overflow: Vec::new(),
         pin: PinState::None,
         ignored: Vec::new(),
+        unmarked: Vec::new(),
         home_no_oauth: false,
         candidate_accounts: ["spare", "spare2", "third"]
             .iter()

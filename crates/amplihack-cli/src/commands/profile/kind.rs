@@ -260,15 +260,22 @@ impl Ctx {
     /// Every API-key profile, sorted by name. A root that cannot be listed
     /// has none.
     pub fn platform_profiles(&self, store: &ProfileStore) -> Vec<ProfileName> {
+        self.try_platform_profiles(store).unwrap_or_default()
+    }
+
+    /// [`Self::platform_profiles`], or `None` when the root cannot be
+    /// listed, for callers that must not read that as "no API-key profile"
+    /// (issue #1804).
+    pub fn try_platform_profiles(&self, store: &ProfileStore) -> Option<Vec<ProfileName>> {
         let mut out: Vec<ProfileName> = store
             .list()
-            .unwrap_or_default()
+            .ok()?
             .iter()
             .filter_map(|n| ProfileName::parse(n).ok())
             .filter(|n| self.kind(store, n) == Kind::Platform)
             .collect();
         out.sort();
-        out
+        Some(out)
     }
 }
 

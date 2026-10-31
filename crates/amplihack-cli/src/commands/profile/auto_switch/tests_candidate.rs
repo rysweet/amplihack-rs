@@ -265,6 +265,8 @@ impl Over {
             blocked: &self.blocked,
             gate: self.gate,
             platform: None,
+            not_plan: &[],
+            kinds_unknown: false,
         }
     }
 
@@ -286,8 +288,8 @@ impl Over {
 /// is overflow with nothing used.
 fn all_plan_out(spare_reset: i64) -> Case {
     Case::new(&["work", "spare", "cred"])
-        .with("work", five_hour(95.0, 4 * 3600))
-        .with("spare", five_hour(99.0, spare_reset))
+        .with("work", five_hour(100.0, 4 * 3600))
+        .with("spare", five_hour(100.0, spare_reset))
         .with("cred", reading(0.0, 0.0))
 }
 
@@ -318,7 +320,7 @@ fn a_plan_reset_inside_the_wait_keeps_overflow_unused() {
     );
     assert_eq!(o.pick(&all_plan_out(60), "work"), None);
     // The live profile's own reset counts too.
-    let c = all_plan_out(4 * 3600).with("work", five_hour(95.0, 600));
+    let c = all_plan_out(4 * 3600).with("work", five_hour(100.0, 600));
     assert_eq!(o.pick(&c, "work"), None);
 }
 
@@ -394,7 +396,7 @@ fn a_plan_exhausted_tier_1_profile_beats_a_fresh_tier_2_profile() {
     // first, then a tier 2 API key that reads 0%.
     let o = Over::new(&["credits", "api-key"]);
     let c = Case::new(&["work", "credits", "api-key"])
-        .with("work", five_hour(95.0, 4 * 3600))
+        .with("work", five_hour(100.0, 4 * 3600))
         .with("credits", credit_used_up())
         .with("api-key", reading(0.0, 0.0));
     assert_eq!(o.pick(&c, "work").as_deref(), Some("credits"));
@@ -406,7 +408,7 @@ fn overflow_profiles_are_tried_in_the_order_given() {
     // The order passed in is tier order (`Config::overflow_order`).
     let o = Over::new(&["low", "high"]);
     let c = Case::new(&["work", "high", "low"])
-        .with("work", five_hour(95.0, 4 * 3600))
+        .with("work", five_hour(100.0, 4 * 3600))
         .with("high", reading(0.0, 0.0))
         .with("low", reading(0.0, 0.0));
     assert_eq!(o.pick(&c, "work").as_deref(), Some("low"));
@@ -485,7 +487,7 @@ fn the_rerun_candidate_follows_the_overflow_rule() {
         kind: Default::default(),
     };
     let mut readings = BTreeMap::new();
-    readings.insert("work".to_string(), live(95.0, 4 * 3600));
+    readings.insert("work".to_string(), live(100.0, 4 * 3600));
     readings.insert("spare".to_string(), live(40.0, 4 * 3600));
     // cred is a credit account at its plan limit: still usable.
     readings.insert("cred".to_string(), live(100.0, 4 * 3600));
@@ -507,19 +509,19 @@ fn the_rerun_candidate_follows_the_overflow_rule() {
         Some("spare"),
         "plan first"
     );
-    readings.insert("spare".to_string(), live(99.0, 4 * 3600));
+    readings.insert("spare".to_string(), live(100.0, 4 * 3600));
     assert_eq!(
         pick(&readings, "work").as_deref(),
         Some("cred"),
         "every plan profile out for longer than the wait"
     );
-    readings.insert("spare".to_string(), live(99.0, 600));
+    readings.insert("spare".to_string(), live(100.0, 600));
     assert_eq!(
         pick(&readings, "work"),
         None,
         "spare is back within the wait"
     );
-    readings.insert("spare".to_string(), live(99.0, 4 * 3600));
+    readings.insert("spare".to_string(), live(100.0, 4 * 3600));
     assert_eq!(pick(&readings, "cred"), None, "stays on cred");
     readings.insert("spare".to_string(), live(20.0, 4 * 3600));
     assert_eq!(

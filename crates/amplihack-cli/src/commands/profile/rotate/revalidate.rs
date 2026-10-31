@@ -122,6 +122,7 @@ pub fn changed(first: &Snap, fresh: &Snap, decision: &Decision, journal: bool) -
         overflow,
         pin,
         ignored,
+        unmarked,
         home_no_oauth,
         // A swap's target only, through `still_eligible` below.
         candidate_accounts: _,
@@ -140,7 +141,7 @@ pub fn changed(first: &Snap, fresh: &Snap, decision: &Decision, journal: bool) -
     if *pin != fresh.pin {
         why.push(Changed::Pin);
     }
-    if *overflow != fresh.overflow || *ignored != fresh.ignored {
+    if *overflow != fresh.overflow || *ignored != fresh.ignored || *unmarked != fresh.unmarked {
         why.push(Changed::Overflow);
     }
     if let Decision::Swap { to, .. } = decision {

@@ -279,7 +279,7 @@ fn sw(five: f64, resets_in: i64) -> SwitchReading {
     }
 }
 
-/// Auto-switch's pick for a session on `work` at 95%, `spare` at
+/// Auto-switch's pick for a session on `work` at 100%, `spare` at
 /// `spare_pct` resetting in `resets_in`, `cred` overflow, with the gate as
 /// auto-switch loads it under `f`.
 fn auto_switch_pick(f: &Fake, spare_pct: f64, resets_in: i64) -> Option<String> {
@@ -293,7 +293,7 @@ fn auto_switch_pick(f: &Fake, spare_pct: f64, resets_in: i64) -> Option<String> 
     let inputs = OverflowInputs::load_with_gate(&f.root, &cfg, f.gate(&[]), NOW);
     let profiles = vec![n("work"), n("spare"), n("cred")];
     let mut readings = BTreeMap::new();
-    readings.insert("work".to_string(), sw(95.0, resets_in));
+    readings.insert("work".to_string(), sw(100.0, resets_in));
     readings.insert("spare".to_string(), sw(spare_pct, resets_in));
     readings.insert("cred".to_string(), sw(0.0, 5 * HOUR));
     let pool = Pool {
@@ -313,19 +313,19 @@ fn auto_switch_applies_the_rotator_s_overflow_wait_not_the_default() {
     // with --overflow-wait 7200, and no variable is set.
     let f = fake();
     assert_eq!(
-        auto_switch_pick(&f, 99.0, HOUR).as_deref(),
+        auto_switch_pick(&f, 100.0, HOUR).as_deref(),
         Some("cred"),
         "no rotator: the default wait"
     );
     f.rotator_runs(PID);
     gate_record::write(&f.rs, PID, &settings(7200, false)).unwrap();
     assert_eq!(
-        auto_switch_pick(&f, 99.0, HOUR),
+        auto_switch_pick(&f, 100.0, HOUR),
         None,
         "the rotator's two-hour wait"
     );
     assert_eq!(
-        auto_switch_pick(&f, 99.0, 3 * HOUR).as_deref(),
+        auto_switch_pick(&f, 100.0, 3 * HOUR).as_deref(),
         Some("cred"),
         "a reset beyond the rotator's wait"
     );
@@ -335,7 +335,7 @@ fn auto_switch_applies_the_rotator_s_overflow_wait_not_the_default() {
 fn auto_switch_closes_overflow_while_the_running_rotator_has_no_record() {
     let f = fake();
     f.rotator_runs(PID);
-    assert_eq!(auto_switch_pick(&f, 99.0, 4 * HOUR), None);
+    assert_eq!(auto_switch_pick(&f, 100.0, 4 * HOUR), None);
 }
 
 // --- Agreement on when money is spent ---------------------------------------
@@ -436,6 +436,8 @@ fn auto_switch_spends_at(threshold: u8, g: Gate, live: f64, spare: f64, resets_i
         blocked: &[],
         gate: Some(g),
         platform: None,
+        not_plan: &[],
+        kinds_unknown: false,
     };
     select_with_overflow(&pool, &ov, "work", |_| true).map(|p| p.to_string())
         == Some("cred".to_string())
@@ -519,13 +521,15 @@ fn auto_switch_returns(threshold: u8, g: Gate, session: f64, week: f64) -> bool 
         blocked: &[],
         gate: Some(g),
         platform: None,
+        not_plan: &[],
+        kinds_unknown: false,
     };
     let picked = select_with_overflow(&pool, &ov, "cred", |_| true).map(|p| p.to_string());
     let back = picked.as_deref() == Some("plan");
     // The status line's pre-check uses the same rule; it must never refuse
     // a move the selection makes, nor pass one the selection refuses.
     assert_eq!(
-        crate::commands::profile::auto_switch::may_return_to(
+        crate::commands::profile::auto_switch::way_off(
             readings.get("plan"),
             Some(&g),
             threshold,
@@ -539,8 +543,8 @@ fn auto_switch_returns(threshold: u8, g: Gate, session: f64, week: f64) -> bool 
 
 /// The review's round-3 case: an auto-switch threshold below the gate's
 /// thresholds. The move back off overflow is the rotator's: a plan profile
-/// with capacity by the gate (below 85% session and 90% week) brings both
-/// back, whatever the auto-switch threshold.
+/// with room (issue #1804: both windows below 100%) brings both back,
+/// whatever the auto-switch threshold.
 #[test]
 fn the_rotator_and_auto_switch_agree_on_the_move_back_for_any_auto_switch_threshold() {
     let s = settings(1800, false);
@@ -568,7 +572,7 @@ fn the_rotator_and_auto_switch_agree_on_the_move_back_for_any_auto_switch_thresh
             );
             assert_eq!(
                 r,
-                session < 85.0 && week < 90.0,
+                session < 100.0 && week < 100.0,
                 "threshold {threshold}, plan {session}/{week}"
             );
         }
@@ -606,9 +610,9 @@ fn the_rotator_and_auto_switch_agree_on_the_move_in_for_any_auto_switch_threshol
 }
 
 /// The case the review raised: a plan login at 87% session. Neither side
-/// counts it as plan capacity (below 85% session is), so both spend when
-/// the plan reset is far, and neither does when it is near; then both use
-/// that plan login rather than an ALERT.
+/// counts it as plan capacity (below 85% session is), but it has room, so
+/// neither spends (issue #1804). Both spend only with every plan login at
+/// 100% and the plan reset far.
 #[test]
 fn the_rotator_and_auto_switch_agree_across_the_85_to_90_band() {
     let s = settings(1800, false);
@@ -622,7 +626,7 @@ fn the_rotator_and_auto_switch_agree_across_the_85_to_90_band() {
                     r, a,
                     "live {live}%, spare {spare}%, reset in {resets_in}s: rotator {r}, auto-switch {a}"
                 );
-                let expected = spare >= 85.0 && resets_in > 1800;
+                let expected = live >= 100.0 && spare >= 100.0 && resets_in > 1800;
                 assert_eq!(
                     r, expected,
                     "live {live}%, spare {spare}%, reset in {resets_in}s"

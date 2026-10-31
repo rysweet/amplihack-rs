@@ -85,7 +85,8 @@ fn the_key_error_table_is_the_classifiers_table() {
         else {
             continue;
         };
-        if !reason.starts_with("key_") || cols.len() < 4 {
+        // `key_check_refused <name>: <reason>` is a log line, not a reason.
+        if !reason.starts_with("key_") || reason.contains(' ') || cols.len() < 4 {
             continue;
         }
         rows += 1;
@@ -111,15 +112,23 @@ fn the_key_error_table_is_the_classifiers_table() {
 #[test]
 fn the_documented_log_lines_and_errors_are_present() {
     for s in [
+        "per-token <name>: no plan login below 100%; <gate>; marked overflow tier <N> via profile overflow add; <check>",
         "moved ~/.claude onto API key profile <name> (billed per token)",
+        "key_check_refused <name>: <reason>",
+        "ALERT: API key profile <name> failed its login check (<reason>); not moving onto it",
+        "would_refuse <name>: <reason>",
+        "reason=plan-room",
         "moved ~/.claude off API key profile <name> to <target>",
         "ALERT: the API key is blocked (<reason>) until <time>; API-key profiles are not used",
         "ALERT: the API key is blocked (<reason>) and no plan or credit profile can be used; staying on <name>",
         "ALERT: more than one API-key profile could be live in ~/.claude; no swap",
         "ALERT: swap refused: <name> has no oauth login and is not an API-key profile",
-        "skip: API-key profile <name> ignored in overflow=; API-key profiles are always the last tier",
+        "skip: API-key profile <name> is not marked; it is never used. To allow per-token billing, run: amplihack profile overflow add <name>",
         "platform block not recorded: <error kind>",
-        "profile <name> is an API-key profile; API-key profiles are always the last overflow tier and cannot be marked",
+        "profile <name> is an API-key profile; the API-key tier is fixed at 10, so --tier cannot be set",
+        "PlatformTierFixed",
+        "api-key  api-key tier  not marked (not used)",
+        "api-key  api-key tier  marked",
         "live: work is running on the API key (billed per token)",
         "api-key (billed per token)",
         "overflow clear --platform",

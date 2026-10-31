@@ -28,6 +28,8 @@ mod damp;
 #[cfg(unix)]
 mod decide;
 #[cfg(unix)]
+mod dry_run;
+#[cfg(unix)]
 mod gate_record;
 #[cfg(unix)]
 mod guide;
@@ -41,6 +43,8 @@ mod held;
 mod holders;
 #[cfg(unix)]
 pub(super) mod identify;
+#[cfg(unix)]
+pub(super) mod key_check;
 #[cfg(unix)]
 pub(super) mod ledger;
 #[cfg(unix)]
@@ -61,6 +65,8 @@ mod overflow_msg;
 mod overflow_record;
 #[cfg(unix)]
 mod pin;
+#[cfg(unix)]
+pub(super) mod plan_room;
 #[cfg(unix)]
 pub(super) mod platform_block;
 #[cfg(unix)]
@@ -106,6 +112,14 @@ mod tests_handfix_overflow;
 mod tests_home_unreadable;
 #[cfg(all(test, unix))]
 mod tests_identify;
+#[cfg(all(test, unix))]
+mod tests_issue_1804;
+#[cfg(all(test, unix))]
+mod tests_issue_1804_cycle;
+#[cfg(all(test, unix))]
+mod tests_issue_1804_msg;
+#[cfg(all(test, unix))]
+mod tests_key_check;
 #[cfg(all(test, unix))]
 mod tests_ledger;
 #[cfg(all(test, unix))]
@@ -165,6 +179,8 @@ pub(super) use control::{clear_overflow_block, overflow_blocks};
 pub(super) use log::timestamp;
 #[cfg(unix)]
 pub(crate) use older_readers::warn_foreign_rotator;
+#[cfg(unix)]
+pub(super) use platform_block::platform_live_line;
 
 // Auto-switch's overflow gate (`gate_record`): the running rotator's own
 // settings, or, when no rotator runs, the `AMPLIHACK_ROTATE_*` variables.
@@ -208,24 +224,6 @@ pub(super) fn is_live(
     };
     let rs = ledger::RotateState::new(store.root());
     matches!(identify::live(store, &rs, home), Ok((identify::LiveId::Known(n), _)) if &n == name)
-}
-
-/// The status line while the rotate ledger says the live login is an
-/// API-key profile (issue #1700), for `rotate status` and `auto-switch
-/// status`. The ledger is the only evidence; nothing is probed.
-#[cfg(unix)]
-pub(super) fn platform_live_line(root: &std::path::Path) -> Option<String> {
-    let l = ledger::RotateState::new(root).load_ledger().ok()??;
-    if l.live_kind.as_deref() != Some(ledger::LIVE_KIND_PLATFORM) {
-        return None;
-    }
-    let live = l.live?;
-    let since = l
-        .since
-        .map_or_else(|| "unknown".to_string(), log::timestamp);
-    Some(format!(
-        "~/.claude is on API key profile {live}: work is billed per token (since {since})"
-    ))
 }
 
 /// After a successful `profile switch NAME`: one line on stderr when the

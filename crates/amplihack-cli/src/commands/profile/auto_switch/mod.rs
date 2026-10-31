@@ -49,6 +49,8 @@ mod tests_contract;
 #[cfg(all(test, unix))]
 mod tests_exhausted_reset;
 #[cfg(all(test, unix))]
+mod tests_issue_1804;
+#[cfg(all(test, unix))]
 mod tests_liveness;
 #[cfg(all(test, unix))]
 mod tests_mv;
@@ -71,7 +73,7 @@ pub const SUPERVISED_ENV: &str = "AMPLIHACK_AUTO_SWITCH_SUPERVISED";
 /// For the rotate tests that check the rotator and auto-switch agree on
 /// when overflow is used (issue #1606).
 #[cfg(all(test, unix))]
-pub(super) use candidate::{OverflowPool, Pool, may_return_to, select_with_overflow};
+pub(super) use candidate::{OverflowPool, Pool, select_with_overflow, way_off};
 #[cfg(unix)]
 pub use cli::AutoSwitchCommand;
 /// File helpers `default_live` reuses for its read-only checks.

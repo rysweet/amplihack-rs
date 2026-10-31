@@ -25,7 +25,9 @@
 //! - `platform_profiles(&ProfileStore, home) -> Vec<ProfileName>`, sorted.
 //! - `profile::overflow::tiers(&ProfileStore, home) -> Vec<OverflowEntry>`:
 //!   the `overflow=` entries without API-key profiles, then one
-//!   `OverflowEntry::platform` for the first API-key profile by name.
+//!   `OverflowEntry::platform` for the first API-key profile by name that
+//!   `overflow=` names (issue #1804: marking is the consent to per-token
+//!   billing; an unmarked API-key profile is never a tier).
 //! - `auto_switch::config::Config.kind: BTreeMap<ProfileName, Kind>`;
 //!   `render` writes `kind=` after `overflow=`, always as `platform` or
 //!   `subscription`, and leaves the line out when the map is empty.
@@ -38,7 +40,7 @@ use super::kind::{
     Ctx, Evidence, Kind, KindSource, Resolved, guard, platform_profiles, resolve, resolve_from,
 };
 use super::name::ProfileName;
-use super::overflow::{OverflowEntry, PLATFORM_TIER, tiers};
+use super::overflow::{OverflowEntry, PLATFORM_TIER, tiers_detail};
 use super::rotate::identify::LoginKind;
 use super::store::ProfileStore;
 use std::fs;
@@ -485,6 +487,10 @@ fn platform_profiles_are_sorted_and_follow_overrides() {
 
 // --- tiers ----------------------------------------------------------------------------------
 
+fn tiers(store: &ProfileStore, home: &Path) -> Vec<OverflowEntry> {
+    tiers_detail(store, Some(home)).0
+}
+
 #[test]
 fn tiers_strip_api_key_profiles_from_overflow_and_append_the_first_at_tier_10() {
     let e = env();
@@ -498,6 +504,65 @@ fn tiers_strip_api_key_profiles_from_overflow_and_append_the_first_at_tier_10() 
         "keyed is an API-key profile too, but only the first is used"
     );
     assert_eq!(tiers(&e.store, &e.home).last().unwrap().tier, PLATFORM_TIER);
+}
+
+#[test]
+fn an_api_key_profile_that_overflow_does_not_name_is_never_a_tier() {
+    // Issue #1804: console and keyed are both API-key profiles, and neither
+    // is marked. Before, the first was added implicitly.
+    let e = env();
+    e.toggle("enabled=off\noverflow=personal\n");
+    assert_eq!(
+        tiers(&e.store, &e.home),
+        vec![OverflowEntry::new(n("personal"), 1)],
+        "no implicit API-key tier"
+    );
+    assert!(
+        tiers(&e.store, &e.home)
+            .iter()
+            .all(|t| t.tier != PLATFORM_TIER)
+    );
+}
+
+#[test]
+fn with_no_toggle_file_there_is_no_api_key_tier() {
+    let e = env();
+    assert!(
+        tiers(&e.store, &e.home).is_empty(),
+        "a missing .auto-switch marks nothing"
+    );
+}
+
+#[test]
+fn a_marked_api_key_profile_is_the_last_tier_whatever_tier_is_written() {
+    let e = env();
+    // keyed is written at tier 1 (bare) and listed first; it is still the
+    // API-key tier, after personal at tier 2.
+    e.toggle("enabled=off\noverflow=keyed,personal:2\n");
+    assert_eq!(
+        tiers(&e.store, &e.home),
+        vec![
+            OverflowEntry::new(n("personal"), 2),
+            OverflowEntry::platform(n("keyed")),
+        ]
+    );
+}
+
+#[test]
+fn only_the_first_marked_api_key_profile_by_name_is_used() {
+    let e = env();
+    // keyed is listed first, but console comes first by name.
+    e.toggle("enabled=off\noverflow=keyed,console\n");
+    assert_eq!(
+        tiers(&e.store, &e.home),
+        vec![OverflowEntry::platform(n("console"))]
+    );
+    // Marking only keyed uses keyed, though console exists.
+    e.toggle("enabled=off\noverflow=keyed\n");
+    assert_eq!(
+        tiers(&e.store, &e.home),
+        vec![OverflowEntry::platform(n("keyed"))]
+    );
 }
 
 #[test]

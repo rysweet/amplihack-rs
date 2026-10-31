@@ -4,7 +4,8 @@
 //! Contract (additions to `tests_overflow`):
 //! - `profile::overflow::PLATFORM_TIER == 10`, and
 //!   `OverflowEntry::platform(name)` is an entry at that tier; `tiers()`
-//!   appends one for the first API-key profile by name.
+//!   appends one for the first API-key profile by name that `overflow=`
+//!   marks (issue #1804). Every case here marks `console`.
 //! - `decide::Probed::platform()`: `Measured { session: 0, week: 0 }`,
 //!   default windows, `spend_limit: false`. It is never a plan reading: a
 //!   profile in the overflow order is never in the plan pool, so its 0/0

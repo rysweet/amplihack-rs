@@ -24,7 +24,7 @@
 //! - With no plan reset known, nothing moves onto overflow unless
 //!   `--overflow-unknown-reset 1` is given.
 //! - `profile overflow add <name> --tier N` sets the tier; `list` prints
-//!   `name  tier N` in tier order.
+//!   `name  tier N  marked` in tier order (issue #1804).
 //! - `rotate status` prints `overflow:` and `on overflow:` lines;
 //!   `profile usage --json` rows carry `overflow` and
 //!   `overflow_blocked_until`.
@@ -109,7 +109,10 @@ fn add_writes_overflow_last_and_is_idempotent() {
         "a repeated add without --tier keeps the tier"
     );
     let list = stdout(&f.ok(&["profile", "overflow", "list"]));
-    assert!(list.starts_with("extra  tier 1\nspare  tier 2"), "{list}");
+    assert!(
+        list.starts_with("extra  tier 1  marked\nspare  tier 2  marked"),
+        "{list}"
+    );
     let out = f.run(&["profile", "overflow", "add", "spare", "--tier", "10"]);
     assert!(!out.status.success(), "tier 10 is out of range");
 }
@@ -299,7 +302,7 @@ fn moves_onto_overflow_when_every_plan_login_is_out() {
     );
     assert_eq!(ino(&f.home_login()), Some(f.extra_ino));
     assert!(
-        s.contains("overflow: on extra; no plan profile has capacity"),
+        s.contains("overflow: on extra; no plan login below 100%"),
         "{s}"
     );
     f.assert_each_login_once();
@@ -339,7 +342,7 @@ fn an_unknown_plan_reset_spends_only_with_the_opt_in() {
     let s = stdout(&f.ok(&["profile", "rotate", "--overflow-unknown-reset", "1"]));
     assert!(s.contains("reason=overflow-in"), "{s}");
     assert!(
-        s.contains("overflow: on extra; no plan profile has capacity, next plan reset unknown"),
+        s.contains("overflow: on extra; no plan login below 100%, next plan reset unknown"),
         "{s}"
     );
     assert_eq!(ino(&f.home_login()), Some(f.extra_ino));

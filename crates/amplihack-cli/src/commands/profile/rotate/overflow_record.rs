@@ -2,6 +2,8 @@
 //! spend blocks with their one ALERT, the `credits:` log lines, and the
 //! no-capacity file, which reads `ok` while the live login runs on credits.
 
+use super::alert::{alert_key, should_alert};
+use super::cycle::Ctx;
 use super::decide::Reading;
 use super::identify::LiveId;
 use super::ledger::{
@@ -11,8 +13,9 @@ use super::ledger::{
 use super::log::{Sink, msg};
 use super::observe::{Snap, live_name};
 use super::overflow::Tag;
+use super::overflow_msg::CheckNote;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{Rotated, capacity_from_rotation};
+use crate::commands::profile::auto_switch::kit::{Rotated, capacity_from_rotation, now};
 use crate::commands::profile::name::ProfileName;
 use std::path::Path;
 
@@ -84,22 +87,71 @@ fn was_on_overflow(l: &RotateLedger, live: Option<&ProfileName>) -> bool {
     matches!(tag, Some("in" | "on")) && live.is_some_and(|n| l.live.as_deref() == Some(n.as_str()))
 }
 
+/// The login check for a swap onto `to` (issue #1804): under the lock, after
+/// revalidation and before the journal. Only the API-key profile has one.
+pub fn target_check(ctx: &Ctx, snap: &Snap, to: &ProfileName) -> Result<CheckNote, String> {
+    if snap.platform() == Some(to) {
+        (ctx.key_check)(&ctx.store, to).map(CheckNote::Key)
+    } else {
+        Ok(CheckNote::Credit)
+    }
+}
+
+/// Writes a failed login check: the `key_check_refused` line and its ALERT
+/// go to the log once per profile; a repeat is only printed.
+pub fn refuse_key(out: &mut Sink, l: &mut RotateLedger, to: &ProfileName, why: &str, t: i64) {
+    let new = should_alert(l, &alert_key("key_check", Some(to)));
+    for line in [
+        msg::key_check_refused(to, why),
+        msg::alert_key_check(to, why),
+    ] {
+        if new {
+            out.emit(t, &line);
+        } else {
+            out.print(t, &line);
+        }
+    }
+}
+
+/// The reason line for a move onto per-token profile `to`, written before
+/// the swap line. Nothing for any other move.
+pub fn note_per_token(
+    out: &mut Sink,
+    snap: &Snap,
+    tag: Option<Tag>,
+    to: &ProfileName,
+    next_plan_reset: Option<i64>,
+    check: CheckNote,
+) {
+    if tag != Some(Tag::In) {
+        return;
+    }
+    if let Some(e) = snap.overflow.iter().find(|e| &e.name == to) {
+        out.emit(
+            now(),
+            &msg::per_token_reason(to, e.tier, next_plan_reset, check),
+        );
+    }
+}
+
 /// The `overflow:` line after a swap from `from` to `to`, if it moved onto
 /// or off overflow; the `moved ~/.claude` line instead when the move was
-/// onto or off the API-key profile `platform` (issue #1700).
+/// onto the API-key profile (`onto_key`) or off a live API-key profile
+/// (`off_platform`, issue #1700).
 pub fn note_move(
     out: &mut Sink,
     tag: Option<Tag>,
     from: &ProfileName,
     to: &ProfileName,
     next_plan_reset: Option<i64>,
-    platform: Option<&ProfileName>,
+    off_platform: bool,
+    onto_key: bool,
 ) {
-    let t = crate::commands::profile::auto_switch::kit::now();
+    let t = now();
     match tag {
-        Some(Tag::In) if Some(to) == platform => out.emit(t, &msg::onto_platform(to)),
-        Some(Tag::Out) if Some(from) == platform => out.emit(t, &msg::off_platform(from, to)),
+        Some(Tag::In) if onto_key => out.emit(t, &msg::onto_platform(to)),
         Some(Tag::In) => out.emit(t, &msg::onto_overflow(to, next_plan_reset)),
+        Some(Tag::Out) if off_platform => out.emit(t, &msg::off_platform(from, to)),
         Some(Tag::Out) => out.emit(t, &msg::off_overflow(from, to)),
         Some(Tag::On) | None => {}
     }
@@ -182,17 +234,23 @@ pub fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
     l.live_kind = snap.platform_live().then(|| LIVE_KIND_PLATFORM.to_string());
 }
 
-/// Logs each API-key profile listed in `overflow=` once per process
-/// (issue #1700): it is ignored there and always the last tier.
+/// Logs, once per process, each API-key profile that `overflow=` does not
+/// mark (issue #1804) and each marked one that is not used because another
+/// comes first by name.
 pub fn log_ignored(out: &mut Sink, snap: &Snap, t: i64) {
     static IGNORED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let Ok(mut seen) = IGNORED.lock() else {
         return;
     };
-    for n in &snap.ignored {
-        if !seen.iter().any(|s| s == n.as_str()) {
-            seen.push(n.to_string());
-            out.emit(t, &msg::platform_ignored_in_overflow(n));
+    let lines = snap
+        .unmarked
+        .iter()
+        .map(msg::platform_not_marked)
+        .chain(snap.ignored.iter().map(msg::platform_not_used));
+    for line in lines {
+        if !seen.contains(&line) {
+            out.emit(t, &line);
+            seen.push(line);
         }
     }
 }

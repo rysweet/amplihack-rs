@@ -154,6 +154,9 @@ pub enum Reason {
     OverflowIn,
     /// A move off an overflow profile onto a plan login with capacity.
     OverflowOut,
+    /// A move to the plan login with the most room when no threshold swap
+    /// meets `--margin` (issue #1804); see `plan_room`.
+    PlanRoom,
 }
 
 impl Reason {
@@ -164,6 +167,7 @@ impl Reason {
             Self::FailedProbe => "failed-probe",
             Self::OverflowIn => "overflow-in",
             Self::OverflowOut => "overflow-out",
+            Self::PlanRoom => "plan-room",
         }
     }
 }

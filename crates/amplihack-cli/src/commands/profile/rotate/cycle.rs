@@ -4,21 +4,25 @@
 
 use super::alert::{alert, alert_key, alert_once, clear_alert, refusal_kind};
 use super::decide::Decision;
+use super::dry_run::dry_run;
 use super::held::held_cycle;
 use super::identify::{LiveId, Skip};
+use super::key_check::{self, KeyCheckFn};
 use super::ledger::{LastCycle, RotateLedger, RotateState, SWITCHED};
 use super::log::msg;
 use super::observe::{
-    Measurement, Snap, dry_run, live_name, measure_and_decide, platform_block_reason, reading_of,
+    Measurement, Snap, live_name, measure_and_decide, platform_block_reason, reading_of,
 };
 use super::overflow::Tag;
 use super::overflow_record::{
-    self, alert_line, block_spend_limited, note_live, note_move, refresh_capacity, stay_note,
+    self, alert_line, block_spend_limited, note_live, note_move, note_per_token, refresh_capacity,
+    refuse_key, stay_note, target_check,
 };
 // Under an alias: `profile::overflow::Gate` (whether credits may be spent)
 // is a different thing from the pin's gate (whether a `profile switch`
 // holds the cycle).
 use super::pin::{self, Gate as PinGate};
+pub use super::prelude::prototype_guard;
 use super::prelude::{Prelude, locked_prelude};
 use super::revalidate::{self, Verdict};
 use super::settings::Settings;
@@ -29,7 +33,6 @@ use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
 use crate::commands::profile::shared_dirs;
 use crate::commands::profile::store::ProfileStore;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -96,6 +99,9 @@ pub struct Ctx {
     pub(super) probe_held: Option<super::held::HeldProbeFn>,
     /// Waits before step 6 reads the state again; tests act in it instead.
     pub(super) pause: fn(&Ctx),
+    /// The login check before a swap onto the API-key profile (issue
+    /// #1804); `key_check::configured` outside tests.
+    pub(super) key_check: KeyCheckFn,
 }
 
 impl Ctx {
@@ -115,6 +121,7 @@ impl Ctx {
             measure: None,
             probe_held: None,
             pause: |_| std::thread::sleep(revalidate::REREAD_PAUSE),
+            key_check: key_check::configured,
         }
     }
 
@@ -122,35 +129,6 @@ impl Ctx {
         self.stop
             .as_ref()
             .is_some_and(|s| s.load(Ordering::Relaxed))
-    }
-}
-
-/// Fails with `RotatePrototypeRunning` while the external rotator holds
-/// `<root>/.rotator/lock`. Opens it read-only without following a symlink,
-/// creating it or blocking on a FIFO, and releases the lock at once.
-pub fn prototype_guard(root: &Path) -> Result<(), ProfileError> {
-    use fs4::fs_std::FileExt;
-    let path = root.join(".rotator").join("lock");
-    let refuse = || ProfileError::RotateRefused(".rotator/lock is not a regular file".into());
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(&path)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) => return Err(refuse()),
-    };
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        return Err(refuse());
-    }
-    match FileExt::try_lock_exclusive(&file) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(ProfileError::RotatePrototypeRunning),
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            Err(ProfileError::RotatePrototypeRunning)
-        }
-        Err(e) => Err(e.into()),
     }
 }
 
@@ -252,7 +230,12 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     let failed_before = std::mem::replace(&mut ctx.failed_live, m.failed);
     out.emit(
         now(),
-        &msg::cycle(live_name(&first.live), &m.live, &m.others, first.platform()),
+        &msg::cycle(
+            live_name(&first.live),
+            &m.live,
+            &m.others,
+            first.shown_platform(),
+        ),
     );
     if ctx.stopping() {
         out.emit(now(), msg::STOPPED);
@@ -304,7 +287,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         others,
         decision,
         note,
-        tag,
+        mut tag,
         new_blocks,
         next_plan_reset,
         measured_at,
@@ -318,7 +301,18 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     }
     let mut swapped = None;
     let outcome = match decision {
-        Decision::Swap { to, reason } => {
+        Decision::Swap { to, reason } => 'swap: {
+            // Issue #1804: an API-key target must name a key. A refusal moves
+            // nothing and writes no journal.
+            let check = match target_check(ctx, &first, &to) {
+                Ok(check) => check,
+                Err(why) => {
+                    refuse_key(&mut out, &mut l, &to, &why, t);
+                    note_live(&mut l, &first, t);
+                    tag = None;
+                    break 'swap CycleOutcome::Alerted;
+                }
+            };
             let source = match &first.live {
                 LiveId::Known(n) => Source::Profile(n.clone()),
                 _ => Source::Adopt,
@@ -345,8 +339,18 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             };
             swapped = Some([to.clone(), from.clone()]);
             let target = reading_of(&others, &to);
+            note_per_token(&mut out, &first, tag, &to, next_plan_reset, check);
             out.emit(now(), &msg::swap(&from, &to, &live, &target, reason));
-            note_move(&mut out, tag, &from, &to, next_plan_reset, first.platform());
+            let (off_key, onto_key) = (first.platform_live(), first.platform() == Some(&to));
+            note_move(
+                &mut out,
+                tag,
+                &from,
+                &to,
+                next_plan_reset,
+                off_key,
+                onto_key,
+            );
             ctx.failed_live = 0;
             l = ctx.rs.load_ledger()?.unwrap_or_default();
             CycleOutcome::Swapped
@@ -379,7 +383,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         &others,
         t,
         tag,
-        first.platform(),
+        first.shown_platform(),
     );
     save(ctx, &mut l, outcome, now(), Some(measured_at), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
