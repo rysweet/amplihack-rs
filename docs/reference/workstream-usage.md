@@ -121,6 +121,10 @@ or certify accounting completeness.
 - Unknown models are retained, and API list-price estimates and price references
   remain `null`. There is no hardcoded price table. Counts are observations,
   distinct from subscription quota percentages, invoices and paid API charges.
+  Codex turn context applies only within its source file and native session;
+  a copied response without applicable context keeps unknown model attribution.
+  Conflicting model names for one response permanently place its deduplicated
+  tokens under `unknown`, even if later copies repeat one of those names.
 
 ## Explicit completion publication
 

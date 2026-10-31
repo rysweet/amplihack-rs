@@ -557,6 +557,154 @@ fn native_usage(provider: &str, native: &str, response: &str, usage: Value) -> V
 }
 
 #[test]
+fn codex_model_context_cannot_cross_files_or_native_sessions() {
+    for boundary in ["file", "explicit-native", "session-meta", "missing-native"] {
+        let dir = tempfile::tempdir().unwrap();
+        let usage = json!({"input_tokens":10,"cached_input_tokens":0,
+            "cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0});
+        let meta_a = json!({"type":"session_meta","payload":{"id":"a"}});
+        let meta_b = json!({"type":"session_meta","payload":{"id":"b"}});
+        let context = json!({"type":"turn_context","timestamp":"2026-01-01T00:00:00Z",
+            "payload":{"model":"model-for-a"}});
+        let mut own = native_usage("codex", "a", "own-a", usage.clone());
+        own["timestamp"] = json!("2026-01-01T00:00:01Z");
+        own["payload"].as_object_mut().unwrap().remove("model");
+        let mut copy = native_usage("codex", "b", "copied-b", usage.clone());
+        copy["timestamp"] = json!("2026-01-01T00:00:02Z");
+        copy["payload"].as_object_mut().unwrap().remove("model");
+        let mut valid = native_usage("codex", "b", "own-b", usage);
+        valid["timestamp"] = json!("2026-01-01T00:00:03Z");
+        valid["payload"]["model"] = json!("model-for-b");
+        std::fs::write(dir.path().join("b"), valid.to_string()).unwrap();
+        let files = match boundary {
+            "file" => {
+                std::fs::write(dir.path().join("a"), format!("{meta_a}\n{context}\n{own}"))
+                    .unwrap();
+                std::fs::write(dir.path().join("copy"), copy.to_string()).unwrap();
+                json!(["a", "copy"])
+            }
+            "explicit-native" => {
+                std::fs::write(
+                    dir.path().join("a"),
+                    format!("{meta_a}\n{context}\n{own}\n{copy}"),
+                )
+                .unwrap();
+                json!(["a"])
+            }
+            "session-meta" => {
+                copy["payload"].as_object_mut().unwrap().remove("thread_id");
+                std::fs::write(
+                    dir.path().join("a"),
+                    format!("{meta_a}\n{context}\n{own}\n{meta_b}\n{copy}"),
+                )
+                .unwrap();
+                json!(["a"])
+            }
+            "missing-native" => {
+                std::fs::write(dir.path().join("a"), format!("{meta_a}\n{context}\n{own}"))
+                    .unwrap();
+                std::fs::write(dir.path().join("copy"), format!("{context}\n{copy}")).unwrap();
+                json!(["a", "copy"])
+            }
+            _ => unreachable!(),
+        };
+        let r = collect(
+            &manifest(json!([
+                session("a", "codex", files),
+                session("b", "codex", json!(["b"]))
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(r.total.unwrap().total(), 45, "{boundary}");
+        assert_eq!(r.sessions[0].direct.unwrap().total(), 15, "{boundary}");
+        assert_eq!(r.sessions[1].direct.unwrap().total(), 30, "{boundary}");
+        assert!(!r.sessions[0].complete, "{boundary}");
+        assert!(!r.sessions[1].complete, "{boundary}");
+        assert!(!r.complete, "{boundary}");
+        assert!(has(&r, "unknown_model"), "{boundary}");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.session == Some(1) && d.code == "incomplete_usage_observation"),
+            "{boundary}"
+        );
+        assert_eq!(r.models.len(), 3, "{boundary}");
+        for model in ["model-for-a", "model-for-b", "unknown"] {
+            let bucket = r.models.iter().find(|m| m.model == model).unwrap();
+            assert_eq!(bucket.tokens.total(), 15, "{boundary}: {model}");
+            assert_eq!(bucket.observed_attempts, 1, "{boundary}: {model}");
+        }
+    }
+}
+
+#[test]
+fn conflicting_response_models_remain_unknown_for_every_copy_order() {
+    for provider in ["claude", "codex"] {
+        let dir = tempfile::tempdir().unwrap();
+        let usage = if provider == "claude" {
+            json!({"input_tokens":10,"cache_read_input_tokens":0,
+                "cache_creation_input_tokens":0,"output_tokens":5})
+        } else {
+            json!({"input_tokens":10,"cached_input_tokens":0,
+                "cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0})
+        };
+        for model in ["a", "b", "missing"] {
+            let mut row = native_usage(provider, "s", "one-response", usage.clone());
+            let object = if provider == "claude" {
+                row["message"].as_object_mut().unwrap()
+            } else {
+                row["payload"].as_object_mut().unwrap()
+            };
+            if model == "missing" {
+                object.remove("model");
+            } else {
+                object.insert("model".into(), json!(model));
+            }
+            std::fs::write(dir.path().join(model), row.to_string()).unwrap();
+        }
+        for order in [
+            ["a", "b", "missing"],
+            ["a", "missing", "b"],
+            ["b", "a", "missing"],
+            ["b", "missing", "a"],
+            ["missing", "a", "b"],
+            ["missing", "b", "a"],
+        ] {
+            // Repeat every copy after conflict to exercise permanent ambiguity.
+            let files: Vec<_> = order.into_iter().cycle().take(6).collect();
+            let r = collect(
+                &manifest(json!([session("s", provider, json!(files))])),
+                dir.path(),
+            )
+            .unwrap();
+            assert!(!r.complete, "{provider}: {order:?}");
+            assert!(!r.sessions[0].complete);
+            assert!(has(&r, "conflicting_message_identity"));
+            assert_eq!(r.total.unwrap().total(), 15);
+            assert_eq!(r.sessions[0].direct.unwrap().total(), 15);
+            assert_eq!(r.models.len(), 1);
+            assert_eq!(r.models[0].model, "unknown", "{provider}: {order:?}");
+            assert_eq!(r.models[0].tokens, r.total.unwrap());
+            assert_eq!(r.models[0].observed_attempts, 1);
+        }
+        // Missing metadata alone must still allow a reliable copy to fill it.
+        for order in [["a", "missing"], ["missing", "a"]] {
+            let r = collect(
+                &manifest(json!([session("s", provider, json!(order))])),
+                dir.path(),
+            )
+            .unwrap();
+            assert!(!has(&r, "conflicting_message_identity"));
+            assert_eq!(r.models.len(), 1);
+            assert_eq!(r.models[0].model, "a");
+            assert_eq!(r.models[0].tokens.total(), 15);
+            assert_eq!(r.models[0].observed_attempts, 1);
+        }
+    }
+}
+
+#[test]
 fn copied_partial_usage_marks_accounting_owner_and_ancestors_incomplete() {
     for provider in ["claude", "codex"] {
         let dir = tempfile::tempdir().unwrap();

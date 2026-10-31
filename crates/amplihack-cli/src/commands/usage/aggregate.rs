@@ -12,6 +12,7 @@ struct Identified {
     owner: Option<usize>,
     native_session: Option<String>,
     ambiguous_owner: bool,
+    ambiguous_model: bool,
     incomplete: bool,
     source: usize,
     model: String,
@@ -77,7 +78,6 @@ pub(super) fn aggregate(
     observations: Vec<Observation>,
     mut ds: BTreeSet<Diagnostic>,
 ) -> Report {
-    let mut contexts = BTreeMap::new();
     let mut snapshots = BTreeMap::<(Provider, String), Snapshots>::new();
     let mut unique = BTreeMap::<(Provider, String), Identified>::new();
     let mut unresolved = Vec::new();
@@ -94,9 +94,6 @@ pub(super) fn aggregate(
             cumulative,
         } = o.event
         else {
-            if let Event::Model(model) = o.event {
-                contexts.insert(o.session, model);
-            }
             continue;
         };
         let owner = native_session.as_ref().and_then(|id| {
@@ -120,9 +117,7 @@ pub(super) fn aggregate(
         if o.incomplete {
             incomplete_owner(&mut ds, owner);
         }
-        let model = model
-            .or_else(|| contexts.get(&o.session).cloned())
-            .unwrap_or_else(|| "unknown".into());
+        let model = model.unwrap_or_else(|| "unknown".into());
         if model == "unknown" {
             diagnostic(&mut ds, Some(o.session), None, None, "unknown_model");
         }
@@ -181,9 +176,9 @@ pub(super) fn aggregate(
                         old.native_session = native_session.clone();
                         old.owner = owner;
                     }
-                    if ownership_conflict
-                        || old.model != model && old.model != "unknown" && model != "unknown"
-                    {
+                    let model_conflict =
+                        old.model != model && old.model != "unknown" && model != "unknown";
+                    if ownership_conflict || model_conflict {
                         old.incomplete = true;
                         incomplete_owner(&mut ds, old.owner);
                         incomplete_owner(&mut ds, owner);
@@ -202,7 +197,12 @@ pub(super) fn aggregate(
                             "conflicting_message_identity",
                         );
                     }
-                    if old.model == "unknown" {
+                    if model_conflict {
+                        // Conflicting copies cannot establish a model, even if
+                        // a later copy repeats one of the conflicting names.
+                        old.ambiguous_model = true;
+                        old.model = "unknown".into();
+                    } else if old.model == "unknown" && !old.ambiguous_model {
                         old.model = model.clone();
                     }
                     if let Some(tokens) = tokens {
@@ -214,6 +214,7 @@ pub(super) fn aggregate(
                     owner,
                     native_session,
                     ambiguous_owner: false,
+                    ambiguous_model: false,
                     incomplete,
                     source: o.session,
                     model,

@@ -103,11 +103,15 @@ pub fn collect(m: &Manifest, base: &Path) -> Result<Report> {
                 for mut event in parsed.event.into_iter().chain(parsed.snapshot) {
                     match &mut event {
                         Event::NativeSession(id) => {
+                            if native.as_ref() != Some(id) {
+                                model = None;
+                            }
                             native = Some(id.clone());
                             continue;
                         }
                         Event::Model(value) => {
                             model = Some(value.clone());
+                            continue;
                         }
                         Event::Usage {
                             native_session,
@@ -117,7 +121,12 @@ pub fn collect(m: &Manifest, base: &Path) -> Result<Report> {
                             if native_session.is_none() {
                                 *native_session = native.clone();
                             }
-                            if event_model.is_none() {
+                            // A turn context belongs to this file's native
+                            // session, never to a copied foreign response.
+                            if event_model.is_none()
+                                && native.is_some()
+                                && *native_session == native
+                            {
                                 *event_model = model.clone();
                             }
                             if native_session.is_none() {
