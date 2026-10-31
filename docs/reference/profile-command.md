@@ -2610,7 +2610,7 @@ What `add` prints for a new mark, with the cost note:
 
 ```
 overflow: added ryan-mistt-org (tier 1)
-note: ryan-mistt-org is used only when every plan profile is exhausted and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account.
+note: ryan-mistt-org is used only when no plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account.
 note: set a spend limit for the organization at https://claude.ai/settings/usage; the rotator is not a spending cap.
 ```
 
@@ -4191,7 +4191,7 @@ stdout only, without the time.
 |---------|---------|
 | `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. A profile whose probe failed shows `<name>:failed`, an exhausted one `s=100%,w=100%`; a skipped one is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
 | `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
-| `per-token <name>: no plan login below 100%; <gate>; marked overflow tier <N> via profile overflow add; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key. `<gate>` is `overflow_wait elapsed (earliest reset <time>)`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile. The line never holds a key value. |
+| `per-token <name>: no plan login below 100%; <gate>; marked overflow tier <N> via profile overflow add; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
 | `ALERT: home_key (<detail>): <effect>` | A key is in `~/.claude.json` or `~/.claude/settings.json` while a plan login is live, so sessions bill per token. Written once, and again if the setting changes; see [API-key login check](#api-key-login-check). The cycle carries on. |
 | `overflow: on <name>; no plan login below 100%, next plan reset <time\|unknown>` | Written after an `overflow-in` swap. |
@@ -5502,7 +5502,17 @@ Setting the API-key kind prints a cost note:
 ```
 $ amplihack profile kind set api-key api-key
 kind: api-key is api-key (override)
-note: api-key is billed per token on the Claude Platform API key, which is stored outside the profile directory; the rotator uses it only after every plan and credit profile.
+note: api-key is billed per token on the Claude Platform API key, which is stored outside the profile directory; the rotator and auto-switch use it only if you mark it with 'amplihack profile overflow add api-key', and then only after every plan and credit profile.
+```
+
+The override alone does not put the profile to use. An `overflow=` mark that is
+already on the profile does: it may have been given for a credit account with a
+spend limit, and on an API-key profile the same mark is the consent to per-token
+billing at tier 10. So a `kind set` that makes a marked profile an API-key
+profile also prints, on stderr:
+
+```
+warning: team-credits is already marked in overflow=; on an API-key profile that mark allows per-token billing on the API key, at tier 10, with no spend limit. If you did not mean that, run: amplihack profile overflow remove team-credits
 ```
 
 When the running rotator comes from an older `amplihack`, `kind set` also
@@ -5671,7 +5681,8 @@ whatever the readings; `overflow list` shows it as
 as a plan login, marked or not: it has no usage reading, so it adds no plan
 capacity or room, and the capacity notice can report `low` or `exhausted`
 with one present. A [kind override](#kind-override) of
-`api-key` does not mark a profile, and neither does its name. There is no
+`api-key` does not mark a profile, and neither does its name, though it does
+change what a mark [already on the profile](#kind-override) allows. There is no
 other switch: "overflow on" means that at least one profile is named in
 `overflow=`, and the API-key profile is used only when it is one of them and
 the [gate](#earliest-plan-reset) allows the move.
@@ -5935,7 +5946,7 @@ and the login check. The ordinary [swap line](#rotate-log) and the `moved`
 line follow it:
 
 ```
-per-token api-key: no plan login below 100%; overflow_wait elapsed (earliest reset 2026-11-01T02:14:00Z); marked overflow tier 10 via profile overflow add; login check passed (primaryApiKey set)
+per-token api-key: no plan login below 100%; earliest reset 2026-11-01T02:14:00Z beyond overflow_wait; marked overflow tier 10 via profile overflow add; login check passed (primaryApiKey set)
 swap iivanovich->api-key live s=100% w=61% target s=0% w=0% reason=overflow-in
 moved ~/.claude onto API key profile api-key (billed per token)
 ```
@@ -5946,7 +5957,7 @@ credit profile's tier and `probe ok, no spend limit` in place of the login
 check:
 
 ```
-per-token team-credits: no plan login below 100%; overflow_wait elapsed (earliest reset 2026-11-01T02:14:00Z); marked overflow tier 2 via profile overflow add; probe ok, no spend limit
+per-token team-credits: no plan login below 100%; earliest reset 2026-11-01T02:14:00Z beyond overflow_wait; marked overflow tier 2 via profile overflow add; probe ok, no spend limit
 ```
 
 A move off the API key onto a credit profile is tagged `overflow-out`, but it

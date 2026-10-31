@@ -11,6 +11,7 @@ use super::candidate::{self, Pool};
 use super::config::{self, Config};
 use super::fsx;
 use super::overflow_inputs::OverflowInputs;
+use super::per_token;
 use super::state::{Ledger, State};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
@@ -29,6 +30,15 @@ use std::path::PathBuf;
 #[cfg(test)]
 pub(super) use crate::commands::profile::attempt::limit_reset;
 
+/// A profile for a nested launch.
+#[derive(Debug, PartialEq)]
+pub struct Pick {
+    pub profile: ProfileName,
+    /// The reason line for a move onto a per-token profile, for
+    /// [`per_token::record`]; `None` for a plan profile.
+    pub per_token: Option<String>,
+}
+
 /// An eligible profile for a nested launch: not excluded, not exhausted (an
 /// overflow profile: not spend-blocked; its own plan reading does not
 /// count), not in `skip`, holding its own login at home, and not hosting
@@ -38,6 +48,9 @@ pub(super) use crate::commands::profile::attempt::limit_reset;
 /// overflow profile gets a plan profile as soon as one has capacity (see
 /// `candidate::select_with_overflow`). An API-key profile is never a plan
 /// profile.
+///
+/// The caller writes [`Pick::per_token`] when it makes the move, not here: a
+/// piped prompt can still refuse the rerun.
 pub fn nested_candidate(
     state: &State,
     ledger: &Ledger,
@@ -46,7 +59,7 @@ pub fn nested_candidate(
     cfg: &Config,
     current: &str,
     skip: &[String],
-) -> Option<ProfileName> {
+) -> Option<Pick> {
     let now = fsx::now();
     let overflow = OverflowInputs::load(&state.root, cfg, now);
     let pool = Pool {
@@ -56,7 +69,7 @@ pub fn nested_candidate(
         exclude: &cfg.exclude,
         now,
     };
-    candidate::select_with_overflow(&pool, &overflow.pool(), current, |c| {
+    let profile = candidate::select_with_overflow(&pool, &overflow.pool(), current, |c| {
         let n = c.as_str();
         !skip.iter().any(|s| s == n)
             && !ledger.hosts.contains_key(n)
@@ -64,9 +77,14 @@ pub fn nested_candidate(
             // macOS keeps logins in the Keychain: no file to look for.
             && (cfg!(target_os = "macos") || fsx::exists(&state.live_creds(n)))
             // Issue #1804: the API key only with a passing login check.
-            && overflow.key_check_passes(&state.root, c)
-    })
-    .cloned()
+            && overflow.check_note(&state.root, c).is_some()
+    })?
+    .clone();
+    // Read again for the detail the reason line gives. A key that went away
+    // since the check above is refused like any other failed check.
+    let check = overflow.check_note(&state.root, &profile)?;
+    let per_token = per_token::reason(&pool, &overflow, cfg, current, &profile, check);
+    Some(Pick { profile, per_token })
 }
 
 pub fn profile_names(store: &ProfileStore) -> Vec<ProfileName> {
@@ -124,6 +142,8 @@ pub struct Substitute {
     /// When the inherited account's used-up windows reset (ledger clock);
     /// `None` when it was passed over only for being over the threshold.
     pub inherited_reset: Option<i64>,
+    /// See [`Pick::per_token`].
+    pub per_token: Option<String>,
 }
 
 /// The profile a nested launch inheriting `inherited` should use, when the
@@ -163,9 +183,10 @@ pub fn substitute(
     let skip = vec![inherited.to_string()];
     nested_candidate(state, &ledger, &profiles, &readings, cfg, &account, &skip).map(|c| {
         Substitute {
-            profile: c,
+            profile: c.profile,
             reason,
             inherited_reset,
+            per_token: c.per_token,
         }
     })
 }
@@ -295,6 +316,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 "{}",
                 substitution_note(&sw.inherited, &sub.reason, &sub.profile)
             );
+            per_token::record(&sw.state.root, sub.per_token.as_deref());
             // The inherited account never runs before the retry, so its
             // reset comes from the readings, moved onto the wait's clock.
             // Without one (no window at 100%) no wait is built at all: see
@@ -365,9 +387,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                     // wait below refuses too, with `piped_prompt`.
                     eprintln!(
                         "auto-switch: no rerun under profile {:?}: this step's prompt came on a pipe, which a rerun cannot read again",
-                        next.as_str()
+                        next.profile.as_str()
                     );
-                    refused = Some(next);
+                    refused = Some(next.profile);
                 } else {
                     if let Some(sig) = signals.received() {
                         eprintln!("auto-switch: no rerun: this step was told to stop");
@@ -376,10 +398,11 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                     eprintln!(
                         "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?} (auto-switch)",
                         current.as_str(),
-                        next.as_str()
+                        next.profile.as_str()
                     );
+                    per_token::record(&sw.state.root, next.per_token.as_deref());
                     attempt.discard();
-                    profile = Some(next).filter(|p| *p != sw.inherited);
+                    profile = Some(next.profile).filter(|p| *p != sw.inherited);
                     continue;
                 }
             }
@@ -475,7 +498,7 @@ fn next_profile(
     tried: &[String],
     lim: &Limited,
     waiter: &Waiter,
-) -> Option<ProfileName> {
+) -> Option<Pick> {
     // Without the ledger the account is unknown: recording the limit under
     // the profile name could mark the wrong account exhausted.
     let account = match state.load_ledger() {

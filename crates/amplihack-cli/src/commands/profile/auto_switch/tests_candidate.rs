@@ -502,7 +502,7 @@ fn the_rerun_candidate_follows_the_overflow_rule() {
             current,
             &skip,
         )
-        .map(|p| p.to_string())
+        .map(|p| p.profile.to_string())
     };
     assert_eq!(
         pick(&readings, "work").as_deref(),

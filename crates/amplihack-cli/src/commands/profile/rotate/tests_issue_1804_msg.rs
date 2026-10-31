@@ -9,7 +9,7 @@
 //!   CheckNote) -> String`, one line:
 //!   `per-token <to>: no plan login below 100%; <gate>; marked overflow
 //!   tier <tier> via profile overflow add; <check>`, where `<gate>` is
-//!   `overflow_wait elapsed (earliest reset <RFC3339>)` or `reset unknown`
+//!   `earliest reset <RFC3339> beyond overflow_wait` or `reset unknown`
 //!   and `<check>` is `login check passed (<detail>)` or `probe ok, no
 //!   spend limit`. It takes no string read from a profile file.
 //! - `onto_platform(to)` is `moved ~/.claude onto API key profile <to>
@@ -58,8 +58,7 @@ fn the_api_key_line_names_the_rule_gate_mark_and_check_in_order() {
     assert_eq!(
         line,
         format!(
-            "per-token api-key: no plan login below 100%; overflow_wait elapsed \
-             (earliest reset {}); marked overflow tier 10 via profile overflow add; \
+            "per-token api-key: no plan login below 100%; earliest reset {} beyond overflow_wait; marked overflow tier 10 via profile overflow add; \
              login check passed (primaryApiKey set)",
             timestamp(at)
         )
@@ -79,7 +78,7 @@ fn an_unknown_reset_is_named_as_such() {
         "per-token api-key: no plan login below 100%; reset unknown; marked overflow \
          tier 10 via profile overflow add; login check passed (apiKeyHelper set)"
     );
-    assert!(!line.contains("overflow_wait elapsed"), "{line}");
+    assert!(!line.contains("beyond overflow_wait"), "{line}");
 }
 
 #[test]
@@ -89,8 +88,7 @@ fn a_credit_line_names_its_tier_and_the_probe_not_a_login_check() {
     assert_eq!(
         line,
         format!(
-            "per-token team-credits: no plan login below 100%; overflow_wait elapsed \
-             (earliest reset {}); marked overflow tier 2 via profile overflow add; \
+            "per-token team-credits: no plan login below 100%; earliest reset {} beyond overflow_wait; marked overflow tier 2 via profile overflow add; \
              probe ok, no spend limit",
             timestamp(at)
         )

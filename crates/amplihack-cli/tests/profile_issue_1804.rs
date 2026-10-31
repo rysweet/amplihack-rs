@@ -342,9 +342,9 @@ fn t3_a_marked_api_key_with_a_key_is_moved_in_with_the_per_token_line_first() {
     let at = |pred: &dyn Fn(&str) -> bool| bodies.iter().position(|b| pred(b));
     let reason = at(&|b| {
         b.starts_with(
-            "per-token console: no plan login below 100%; overflow_wait elapsed (earliest reset ",
+            "per-token console: no plan login below 100%; earliest reset ",
         ) && b.ends_with(
-            "); marked overflow tier 10 via profile overflow add; login check passed (primaryApiKey set)",
+            " beyond overflow_wait; marked overflow tier 10 via profile overflow add; login check passed (primaryApiKey set)",
         )
     })
     .unwrap_or_else(|| panic!("no per-token line: {log}"));
@@ -510,4 +510,34 @@ fn rotate_status_reads_overflow_dash_and_not_marked_with_nothing_marked() {
     let st = stdout(&f.ok(&["profile", "rotate", "status"]));
     assert!(st.lines().any(|l| l == "overflow: -"), "{st}");
     assert!(st.contains("api key: console (not marked)"), "{st}");
+}
+
+// --- `kind set` on a marked profile -----------------------------------------------------
+
+#[test]
+fn kind_set_api_key_names_the_mark_it_needs() {
+    let f = Fixture::new();
+    let out = f.ok(&["profile", "kind", "set", "work", "api-key"]);
+    let said = stdout(&out);
+    assert!(
+        said.contains("use it only if you mark it with 'amplihack profile overflow add work'"),
+        "{said}"
+    );
+    assert!(!stderr(&out).contains("already marked"), "{}", stderr(&out));
+}
+
+#[test]
+fn kind_set_api_key_on_a_marked_profile_says_the_mark_now_allows_key_billing() {
+    let f = Fixture::new();
+    f.ok(&["profile", "overflow", "add", "work"]);
+    let err = stderr(&f.ok(&["profile", "kind", "set", "work", "api-key"]));
+    assert!(
+        err.contains("work is already marked in overflow=")
+            && err.contains("per-token billing on the API key, at tier 10")
+            && err.contains("amplihack profile overflow remove work"),
+        "{err}"
+    );
+    // Setting it again changes nothing, so there is nothing to warn about.
+    let again = stderr(&f.ok(&["profile", "kind", "set", "work", "api-key"]));
+    assert!(!again.contains("already marked"), "{again}");
 }

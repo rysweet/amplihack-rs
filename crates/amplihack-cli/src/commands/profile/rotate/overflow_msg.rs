@@ -23,6 +23,9 @@ pub enum CheckNote {
     Key(&'static str),
     /// A credit profile's probe.
     Credit,
+    /// A credit profile auto-switch chose. It has no probe of its own, so
+    /// all it knows is that the profile has no active spend block.
+    NoSpendBlock,
 }
 
 /// Why a move onto per-token profile `to` was allowed (issue #1804), written
@@ -37,7 +40,7 @@ pub fn per_token_reason(
 ) -> String {
     let gate = earliest.map_or_else(
         || "reset unknown".to_string(),
-        |at| format!("overflow_wait elapsed (earliest reset {})", timestamp(at)),
+        |at| format!("earliest reset {} beyond overflow_wait", timestamp(at)),
     );
     per_token_line(to, tier, &gate, check)
 }
@@ -52,6 +55,7 @@ fn per_token_line(to: &ProfileName, tier: u8, gate: &str, check: CheckNote) -> S
     let check = match check {
         CheckNote::Key(detail) => format!("login check passed ({detail})"),
         CheckNote::Credit => "probe ok, no spend limit".to_string(),
+        CheckNote::NoSpendBlock => "no spend block".to_string(),
     };
     format!(
         "per-token {to}: no plan login below 100%; {gate}; \

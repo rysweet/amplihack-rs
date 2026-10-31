@@ -215,6 +215,26 @@ pub fn overflow_usable(name: &str, blocked: &[String]) -> bool {
     !blocked.iter().any(|b| b == name)
 }
 
+/// When the first plan profile, `current` included unless it is an overflow
+/// profile, regains capacity by `gate`'s test: what the wait is measured
+/// against in [`select_with_overflow`], and what the per-token reason line
+/// reports. `None` when no reading gives a reset.
+pub fn earliest_plan_reset(
+    pool: &Pool<'_>,
+    ov: &OverflowPool<'_>,
+    gate: &Gate,
+    current: &str,
+) -> Option<i64> {
+    let on_overflow = ov.order.iter().any(|o| o.as_str() == current);
+    pool.profiles
+        .iter()
+        .filter(|p| !pool.exclude.contains(p) && ov.is_plan(p))
+        .filter_map(|p| pool.readings.get(p.as_str()))
+        .chain((!on_overflow).then(|| pool.readings.get(current)).flatten())
+        .filter_map(|r| regains(r, gate, pool.now))
+        .min()
+}
+
 /// [`select`] with overflow profiles. With a gate, "plan capacity" is the
 /// gate's test ([`Gate::plan_capacity`], the rotator's `--session-at` and
 /// `--week-at`), so auto-switch and the rotator agree on when money is
@@ -324,12 +344,7 @@ pub fn select_with_overflow<'a>(
         .filter(|p| !plan_exclude.contains(p))
         .collect();
     let current_reading = (!on_overflow).then(|| pool.readings.get(current)).flatten();
-    let earliest = plan
-        .iter()
-        .filter_map(|p| pool.readings.get(p.as_str()))
-        .chain(current_reading)
-        .filter_map(|r| regains(r, &gate, pool.now))
-        .min();
+    let earliest = earliest_plan_reset(pool, ov, &gate, current);
     // Issue #1804: per-token profiles only when no plan profile, the current
     // one included, has room. A missing reading is no room.
     let plan_room = plan

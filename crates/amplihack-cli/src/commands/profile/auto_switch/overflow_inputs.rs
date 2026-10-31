@@ -21,7 +21,7 @@ use super::config::Config;
 use crate::commands::profile::kind::Ctx;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{self, Gate};
-use crate::commands::profile::rotate;
+use crate::commands::profile::rotate::{self, CheckNote};
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd;
 use std::path::Path;
@@ -78,7 +78,13 @@ impl OverflowInputs {
     /// profile must stay out of the plan logins with nothing marked; the gate
     /// and spend blocks are read only with overflow profiles.
     pub fn load(root: &Path, cfg: &Config, now: i64) -> Self {
-        let Some(o) = order_of(root, cfg, usage_cmd::home_dir().as_deref()) else {
+        Self::load_at(root, cfg, now, usage_cmd::home_dir().as_deref())
+    }
+
+    /// [`Self::load`] with the home directory given, for a caller that holds
+    /// its own.
+    pub fn load_at(root: &Path, cfg: &Config, now: i64, home: Option<&Path>) -> Self {
+        let Some(o) = order_of(root, cfg, home) else {
             return Self::unknown();
         };
         if o.order.is_empty() {
@@ -180,26 +186,27 @@ impl OverflowInputs {
         }
     }
 
-    /// Whether a move onto `target` passes the login check (issue #1804):
-    /// always for a profile that is not the API-key one. Auto-switch runs an
-    /// API-key profile only with `CLAUDE_CONFIG_DIR` set to its directory, so
-    /// the profile's own files are the right ones here; the rotator, which
+    /// What a move onto `target` passed, or `None` when the login check
+    /// refuses it (issue #1804). Only the API-key profile has that check: any
+    /// other profile passes, as [`CheckNote::NoSpendBlock`]. Auto-switch runs
+    /// an API-key profile only with `CLAUDE_CONFIG_DIR` set to its directory,
+    /// so the profile's own files are the right ones here; the rotator, which
     /// moves into `~/.claude`, uses `key_check::reachable`. A failure is
     /// logged with the profile and the reason, never a value.
-    pub fn key_check_passes(&self, root: &Path, target: &ProfileName) -> bool {
+    pub fn check_note(&self, root: &Path, target: &ProfileName) -> Option<CheckNote> {
         if self.platform.as_ref() != Some(target) {
-            return true;
+            return Some(CheckNote::NoSpendBlock);
         }
         let store = ProfileStore::new(root.to_path_buf());
         match rotate::key_check::configured(&store, target) {
-            Ok(_) => true,
+            Ok(detail) => Some(CheckNote::Key(detail)),
             Err(reason) => {
                 tracing::warn!(
                     profile = %target,
                     %reason,
                     "auto-switch: API key profile failed its login check; not moving onto it"
                 );
-                false
+                None
             }
         }
     }
@@ -213,7 +220,7 @@ impl OverflowInputs {
             return true;
         };
         if !rotator {
-            // Not `key_check_passes`: this runs on every status line.
+            // Not `check_note`: this runs on every status line.
             let store = ProfileStore::new(root.to_path_buf());
             return rotate::key_check::configured(&store, key).is_ok();
         }

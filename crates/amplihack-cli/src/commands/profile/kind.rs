@@ -279,6 +279,24 @@ impl Ctx {
     }
 }
 
+/// What `kind set <name> api-key` prints: the cost, and that the override
+/// alone does not put the profile to use (issue #1804).
+pub(super) fn platform_note(name: &ProfileName) -> String {
+    format!(
+        "note: {name} is billed per token on the Claude Platform API key, which is stored outside the profile directory; the rotator and auto-switch use it only if you mark it with 'amplihack profile overflow add {name}', and then only after every plan and credit profile."
+    )
+}
+
+/// Printed when `kind set <name> api-key` meets an existing `overflow=` mark.
+/// That mark may have been given for a credit account with a spend limit. On
+/// an API-key profile the same mark is the consent to per-token billing at
+/// tier 10, so the change is said out loud (issue #1804).
+pub(super) fn mark_became_key_consent(name: &ProfileName) -> String {
+    format!(
+        "warning: {name} is already marked in overflow=; on an API-key profile that mark allows per-token billing on the API key, at tier 10, with no spend limit. If you did not mean that, run: amplihack profile overflow remove {name}"
+    )
+}
+
 /// `name`'s kind under `store`, with `home` the user's home directory.
 #[cfg(test)]
 pub fn resolve(store: &ProfileStore, name: &ProfileName, home: &Path) -> Resolved {
@@ -387,8 +405,10 @@ pub fn run(
                 store.resolve(&name)?;
             }
             let mut had = None;
+            let mut marked = false;
             config::update(store.root(), ReadMode::Editable, |c| {
                 had = c.kind.get(&name).copied();
+                marked = c.overflow.iter().any(|e| e.name == name);
                 match want {
                     Some(k) => {
                         c.kind.insert(name.clone(), k);
@@ -403,9 +423,10 @@ pub fn run(
                 Some(k) => {
                     println!("kind: {name} is {} (override)", k.label());
                     if k == Kind::Platform {
-                        println!(
-                            "note: {name} is billed per token on the Claude Platform API key, which is stored outside the profile directory; the rotator uses it only after every plan and credit profile."
-                        );
+                        println!("{}", platform_note(&name));
+                        if marked && had != Some(Kind::Platform) {
+                            eprintln!("{}", mark_became_key_consent(&name));
+                        }
                     }
                     if let Some(pid) = RotateState::new(store.root()).foreign_rotator() {
                         eprintln!(

@@ -9,13 +9,15 @@ use super::capacity::{self, Evidence, refresh};
 use super::config::{self, Config};
 use super::fsx;
 use super::overflow_inputs::OverflowInputs;
-use super::rerun::nested_candidate;
+use super::per_token;
+use super::rerun::{Pick, nested_candidate};
 use super::state::{CREDS, Ledger, State, UsageFile};
 use super::swap::swap_check;
 use super::usage::{RateLimits, Reading, ReadingSource, Window};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{Gate, OverflowEntry};
 use crate::commands::profile::rotate::GateSource;
+use crate::commands::profile::rotate::ledger::{RotateLedger, RotateState};
 use crate::test_support::{EnvGuard, env_lock};
 use amplihack_utils::claude_capacity::{self as cap, State as Cap};
 use std::collections::BTreeMap;
@@ -257,9 +259,9 @@ fn a_marked_key_that_fails_its_login_check_never_makes_the_file_ok() {
         cap::read_at(&f.root, at).map(|file| file.state)
     };
 
-    capacity::refresh_from_rotation(&f.root, &readings, now, false, false);
+    capacity::refresh_from_rotation(&f.root, &readings, now, false, false, None);
     assert_eq!(read(), Some(Cap::Exhausted), "refused key, nothing can run");
-    capacity::refresh_from_rotation(&f.root, &readings, now, false, true);
+    capacity::refresh_from_rotation(&f.root, &readings, now, false, true, None);
     assert_eq!(read(), Some(Cap::Ok), "the same state with a passing check");
 }
 
@@ -435,11 +437,220 @@ fn swap_check_never_swaps_a_marked_key_into_a_session() {
     };
     let inputs = OverflowInputs::load(&f.root, &c, now);
     assert!(inputs.gate.is_some(), "the gate must be open for this test");
-    assert!(inputs.key_check_passes(&f.root, &n("console")));
+    assert!(inputs.check_note(&f.root, &n("console")).is_some());
     swap_check(&f.state, &f.profiles, &n("work"), &rl, &c).unwrap();
     assert!(
         f.state.load_ledger().unwrap().hosts.is_empty(),
         "no login moved"
     );
     assert_eq!(fs::read(f.root.join("console").join(CREDS)).unwrap(), b"{}");
+}
+
+// --- The per-token reason line -----------------------------------------------------------
+
+/// The body of each `per-token` line in the rotate log.
+fn per_token_lines(f: &Fx) -> Vec<String> {
+    let log = RotateState::new(&f.root).log;
+    fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once(' ').map(|(_, b)| b))
+        .filter(|b| b.starts_with("per-token "))
+        .map(str::to_string)
+        .collect()
+}
+
+fn pick(f: &Fx, c: &Config, r: &BTreeMap<String, Reading>, current: &str) -> Option<Pick> {
+    let skip = [current.to_string()];
+    nested_candidate(
+        &f.state,
+        &Ledger::default(),
+        &f.profiles,
+        r,
+        c,
+        current,
+        &skip,
+    )
+}
+
+/// The `rotate::overflow_gate` variables, unset so that the default gate
+/// applies.
+fn default_gate() -> EnvGuard {
+    EnvGuard::unset([
+        "AMPLIHACK_ROTATE_OVERFLOW_WAIT",
+        "AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET",
+        "AMPLIHACK_ROTATE_SESSION_AT",
+        "AMPLIHACK_ROTATE_WEEK_AT",
+    ])
+}
+
+#[test]
+fn a_rerun_onto_credits_gives_its_reason_and_claims_no_probe() {
+    let _l = lock();
+    let f = fx("enabled=on\noverflow=cred:3\n");
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _gate = default_gate();
+    let now = fsx::now();
+    let mut c = cfg(&["cred"]);
+    c.overflow[0].tier = 3;
+    let mut r = used_up(now);
+    r.remove("cred");
+    let got = pick(&f, &c, &r, "work").expect("cred is the only way on");
+    assert_eq!(got.profile, n("cred"));
+    let line = got.per_token.expect("a move onto credits has a reason");
+    assert!(
+        line.starts_with("per-token cred: no plan login below 100%; earliest reset ")
+            && line.ends_with(
+                " beyond overflow_wait; marked overflow tier 3 via profile overflow add; \
+                 no spend block; auto-switch from work"
+            ),
+        "{line}"
+    );
+    assert!(!line.contains("probe"), "auto-switch runs no probe: {line}");
+}
+
+#[test]
+fn a_rerun_onto_a_marked_key_gives_the_login_check_it_passed() {
+    let _l = lock();
+    let f = fx("enabled=on\noverflow=console\n");
+    private(
+        &f.root.join("console").join(".claude.json"),
+        r#"{"primaryApiKey":"SENTINEL-1804-KEY"}"#,
+    );
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _gate = default_gate();
+    let now = fsx::now();
+    let got = pick(&f, &cfg(&["console"]), &used_up(now), "work").expect("the key passes");
+    assert_eq!(got.profile, n("console"));
+    let line = got.per_token.expect("a move onto the key has a reason");
+    assert!(
+        line.contains("marked overflow tier 10 via profile overflow add")
+            && line.contains("login check passed (primaryApiKey set)"),
+        "{line}"
+    );
+    assert!(!line.contains("SENTINEL"), "{line}");
+}
+
+#[test]
+fn a_rerun_off_the_key_says_it_passed_no_wait() {
+    let _l = lock();
+    let f = fx("enabled=on\noverflow=cred,console\n");
+    private(
+        &f.root.join("console").join(".claude.json"),
+        r#"{"primaryApiKey":"SENTINEL-1804-KEY"}"#,
+    );
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _gate = default_gate();
+    let now = fsx::now();
+    let mut r = used_up(now);
+    r.remove("cred");
+    let got = pick(&f, &cfg(&["cred", "console"]), &r, "console").expect("credits cost less");
+    assert_eq!(got.profile, n("cred"));
+    let line = got.per_token.expect("credits still bill per token");
+    assert!(
+        line.contains("; leaving the API key, credits cost less; ")
+            && line.ends_with("; no spend block; auto-switch from console"),
+        "{line}"
+    );
+}
+
+#[test]
+fn a_rerun_onto_a_plan_login_has_no_reason_line() {
+    let _l = lock();
+    let f = fx("enabled=on\noverflow=cred\n");
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _gate = default_gate();
+    let now = fsx::now();
+    let mut r = used_up(now);
+    r.insert("spare".to_string(), reading(10.0, 4 * 3600, now));
+    let got = pick(&f, &cfg(&["cred"]), &r, "work").expect("spare has room");
+    assert_eq!(got.profile, n("spare"));
+    assert_eq!(got.per_token, None);
+}
+
+#[test]
+fn a_recorded_reason_is_in_the_rotate_log() {
+    let f = fx("enabled=on\n");
+    per_token::record(&f.root, Some("per-token cred: why"));
+    per_token::record(&f.root, None);
+    assert_eq!(per_token_lines(&f), ["per-token cred: why"]);
+}
+
+#[test]
+fn swap_check_onto_credits_writes_the_reason_to_the_rotate_log() {
+    let _l = lock();
+    let f = fx("enabled=on\noverflow=cred\n");
+    let _env = EnvGuard::set([("HOME", f.home.to_str().unwrap())]);
+    let _gate = default_gate();
+    let now = fsx::now();
+    let mut accounts = used_up(now);
+    accounts.remove("cred");
+    f.state
+        .save_usage(&UsageFile {
+            version: 1,
+            accounts,
+        })
+        .unwrap();
+    let window = Some(Window {
+        used_percentage: 100.0,
+        resets_at: now + 4 * 3600,
+    });
+    let rl = RateLimits {
+        five_hour: window,
+        seven_day: window,
+    };
+    swap_check(&f.state, &f.profiles, &n("work"), &rl, &cfg(&["cred"])).unwrap();
+    assert!(
+        f.state.load_ledger().unwrap().hosts.contains_key("work"),
+        "the login moved"
+    );
+    let lines = per_token_lines(&f);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    assert!(
+        lines[0].starts_with("per-token cred: no plan login below 100%; earliest reset ")
+            && lines[0].ends_with("; no spend block; auto-switch from work"),
+        "{lines:?}"
+    );
+}
+
+/// The rotator's capacity write takes the kinds from the home it was given,
+/// never from `$HOME`: `ghost` has no login of its own, so the login in
+/// `~/.claude` decides what it is.
+#[test]
+fn the_rotators_capacity_write_reads_the_home_it_is_given() {
+    let _l = lock();
+    let f = fx("enabled=on\n");
+    let elsewhere = f.home.join("elsewhere");
+    for h in [&f.home, &elsewhere] {
+        fs::create_dir_all(h.join(".claude")).unwrap();
+    }
+    // `$HOME` is on an OAuth login, the given home on an API key.
+    private(&elsewhere.join(".claude").join(CREDS), OAUTH);
+    private(&f.home.join(".claude").join(CREDS), "{}");
+    let _env = EnvGuard::set([("HOME", elsewhere.to_str().unwrap())]);
+    let ghost = f.root.join("ghost");
+    fs::create_dir(&ghost).unwrap();
+    fs::set_permissions(&ghost, fs::Permissions::from_mode(0o700)).unwrap();
+    let rs = RotateState::new(&f.root);
+    rs.ensure().unwrap();
+    rs.save_ledger(&RotateLedger {
+        live: Some("ghost".into()),
+        ..RotateLedger::default()
+    })
+    .unwrap();
+    let readings: Vec<(ProfileName, capacity::Rotated)> = ["ghost", "work", "spare", "cred"]
+        .into_iter()
+        .map(|p| (n(p), capacity::Rotated::Exhausted))
+        .collect();
+    capacity::refresh_from_rotation(
+        &f.root,
+        &readings,
+        fsx::now(),
+        false,
+        true,
+        Some(f.home.as_path()),
+    );
+    let file = fs::read_to_string(f.root.join(".auto-switch.d/capacity.json")).unwrap();
+    assert!(file.contains("\"work\""), "{file}");
+    assert!(!file.contains("ghost"), "ghost is an API key here: {file}");
 }

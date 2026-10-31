@@ -9,6 +9,7 @@ use super::fsx;
 use super::liveness::{self, Liveness};
 use super::mv::{self, MoveError, abort_point};
 use super::overflow_inputs::OverflowInputs;
+use super::per_token;
 use super::state::{
     CLAUDE_JSON, CREDS, HostEntry, Journal, Ledger, Lock, MAX_CLAUDE_JSON, Op, PHASE_INCONSISTENT,
     State,
@@ -16,6 +17,7 @@ use super::state::{
 use super::usage::{self, Attribution, RateLimits};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::rotate::CheckNote;
 use crate::commands::profile::rotate::identify::Account;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -538,6 +540,16 @@ pub fn swap_check(
     let Some(ino) = take_refresh_lock(state, owner.as_str()) else {
         return Ok(());
     };
+    // `eligible` keeps every API-key profile out, so no login check applies.
+    let reason = per_token::reason(
+        &pool,
+        &overflow,
+        cfg,
+        &current,
+        &target,
+        CheckNote::NoSpendBlock,
+    );
+    per_token::record(&state.root, reason.as_deref());
     let j = Journal {
         version: 1,
         op: Op::Swap,

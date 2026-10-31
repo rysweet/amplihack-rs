@@ -11,13 +11,14 @@ use super::ledger::{
     LIVE_KIND_PLATFORM, LastCycle, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState,
     active_blocks, prune_blocks,
 };
-use super::log::{Sink, msg};
+use super::log::{RotateLog, Sink, msg};
 use super::observe::{Snap, live_name};
 use super::overflow::Tag;
 use super::overflow_msg::CheckNote;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Rotated, capacity_from_rotation, now};
 use crate::commands::profile::name::ProfileName;
+use std::path::Path;
 
 /// Stores a spend block for each of `names` that has no active one, with
 /// one ALERT per block. The block record, not `ledger.alert`, prevents a
@@ -153,6 +154,23 @@ pub fn note_per_token(
     out.emit(now(), &line);
 }
 
+/// Appends one line to the rotate log from outside a cycle: auto-switch
+/// keeps its per-token reasons there, beside the rotator's, so that every
+/// such move is in one file (issue #1804). A log that cannot be written is a
+/// warning, as it is for a cycle. The appends need no lock: each is one write
+/// on an `O_APPEND` file, and [`RotateLog::write`] copes with a rename by
+/// another process.
+pub fn append_to_log(root: &Path, line: &str) {
+    let rs = RotateState::new(root);
+    let wrote = rs.ensure().map_err(|e| e.to_string()).and_then(|()| {
+        let mut log = RotateLog::open(&rs.log, &rs.log1).map_err(|e| e.to_string())?;
+        log.write(now(), line).map_err(|e| e.to_string())
+    });
+    if let Err(e) = wrote {
+        eprintln!("warning: could not write the rotate log: {e}");
+    }
+}
+
 /// The `overflow:` line after a swap from `from` to `to`, if it moved onto
 /// or off overflow; the `moved ~/.claude` line instead when the move was
 /// onto the API-key profile (`onto_key`) or off a live API-key profile
@@ -211,7 +229,7 @@ pub fn refresh_capacity(
         .collect();
     let on_overflow = Tag::on_overflow(tag) && (key_usable || live != platform);
     let root = ctx.store.root();
-    capacity_from_rotation(root, &readings, t, on_overflow, key_usable);
+    capacity_from_rotation(root, &readings, t, on_overflow, key_usable, Some(&ctx.home));
 }
 
 /// Records the cycle as ended at `t` with `outcome`, after measuring from

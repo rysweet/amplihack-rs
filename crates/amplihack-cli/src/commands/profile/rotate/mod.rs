@@ -91,6 +91,8 @@ mod switch;
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
 pub use super::rotate_args::{RotateAction, RotateArgs, TuneFlags};
+pub use overflow_msg::{CheckNote, per_token_off_key, per_token_reason};
+pub use overflow_record::append_to_log;
 
 #[cfg(all(test, unix))]
 mod tests_autostart;

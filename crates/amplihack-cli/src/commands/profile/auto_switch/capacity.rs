@@ -329,12 +329,16 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
 ///
 /// `key_usable`: the rotator's login check for the API-key profile passes,
 /// so it could move onto it, and the file agrees with the move (issue #1804).
+///
+/// `home`: the rotator's home directory, for the kinds, so that this reads
+/// the same `~/.claude` as the cycle that called it and not `$HOME`.
 pub fn refresh_from_rotation(
     root: &Path,
     readings: &[(ProfileName, Rotated)],
     now: i64,
     on_overflow: bool,
     key_usable: bool,
+    home: Option<&Path>,
 ) {
     // See `refresh` on catch_unwind.
     let _ = catch_unwind(AssertUnwindSafe(|| {
@@ -369,7 +373,7 @@ pub fn refresh_from_rotation(
                 )
             })
             .collect();
-        let mut overflow = OverflowInputs::load(&state.root, &eff.config, now);
+        let mut overflow = OverflowInputs::load_at(&state.root, &eff.config, now, home);
         if overflow.kinds_unknown {
             return;
         }

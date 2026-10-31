@@ -907,7 +907,7 @@ amplihack profile overflow add ryan-mistt-org
 
 ```
 overflow: added ryan-mistt-org
-note: ryan-mistt-org is used only when every plan login is exhausted, and work on it is billed to that account's usage credits.
+note: ryan-mistt-org is used only when no plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account.
 note: set a spend limit for the organization at https://claude.ai/settings/usage; the rotator is not a spending cap.
 ```
 
@@ -1045,11 +1045,13 @@ auto-switch; those are the plan limits the credits cover. Only a
 [spend block](../reference/profile-command.md#overflow-spend-limit-block)
 moves work from one overflow profile to the next.
 
-The log shows each move:
+The log shows each move. Auto-switch writes its own moves onto a per-token
+profile to the same log, as a `per-token` line that ends `auto-switch from
+<profile>`:
 
 ```
 2026-10-24T09:00:05Z cycle live=work work:s=100%,w=91% personal:s=100%,w=100% ryan-mistt-org:s=100%,w=100%
-2026-10-24T09:00:05Z per-token ryan-mistt-org: no plan login below 100%; overflow_wait elapsed (earliest reset 2026-10-24T14:00:00Z); marked overflow tier 1 via profile overflow add; probe ok, no spend limit
+2026-10-24T09:00:05Z per-token ryan-mistt-org: no plan login below 100%; earliest reset 2026-10-24T14:00:00Z beyond overflow_wait; marked overflow tier 1 via profile overflow add; probe ok, no spend limit
 2026-10-24T09:00:05Z swap work->ryan-mistt-org live s=100% w=91% target s=100% w=100% reason=overflow-in
 2026-10-24T09:00:05Z overflow: on ryan-mistt-org; no plan login below 100%, next plan reset 2026-10-24T14:00:00Z
 2026-10-24T14:10:05Z swap ryan-mistt-org->personal live s=100% w=100% target s=0% w=62% reason=overflow-out
@@ -1659,7 +1661,9 @@ amplihack profile overflow add api-key
 `api-key  api-key tier  not marked (not used)` before. An API-key profile is
 always tier 10, after every credit tier, so `--tier` is refused for it with
 `the API-key tier is fixed at 10`. A kind override or the profile's name does
-not mark it.
+not mark it. If the profile already has a mark from when it was a credit
+account, `kind set <name> api-key` warns you: that mark now allows per-token
+billing on the key. Run `overflow remove <name>` if you did not mean that.
 
 Hosts that relied on an earlier release, which used every API-key profile
 without a mark, must run this command once; nothing is marked for you.
@@ -1700,7 +1704,7 @@ so nothing moves unless you set `--overflow-unknown-reset 1`. The log names
 the reason before the swap:
 
 ```
-per-token api-key: no plan login below 100%; overflow_wait elapsed (earliest reset 2026-11-01T02:14:00Z); marked overflow tier 10 via profile overflow add; login check passed (primaryApiKey set)
+per-token api-key: no plan login below 100%; earliest reset 2026-11-01T02:14:00Z beyond overflow_wait; marked overflow tier 10 via profile overflow add; login check passed (primaryApiKey set)
 swap iivanovich->api-key live s=100% w=61% target s=0% w=0% reason=overflow-in
 moved ~/.claude onto API key profile api-key (billed per token)
 ```

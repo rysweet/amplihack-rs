@@ -13,8 +13,7 @@
 //! - `cycle::Ctx.key_check: key_check::KeyCheckFn`, defaulting to
 //!   `key_check::reachable`.
 //! - Pass (T3, D4): the swap runs. Before the `swap` line the log has one
-//!   `per-token api-key: no plan login below 100%; overflow_wait elapsed
-//!   (earliest reset <time>); marked overflow tier 10 via profile overflow
+//!   `per-token api-key: no plan login below 100%; earliest reset <time> beyond overflow_wait; marked overflow tier 10 via profile overflow
 //!   add; login check passed (<detail>)` line, and after it `moved
 //!   ~/.claude onto API key profile api-key (billed per token)`.
 //! - Fail (T4, D3): no swap, no journal, `~/.claude` unchanged, no
@@ -47,10 +46,8 @@ const KEY: &str = "api-key";
 const WORK: &str = "work";
 
 const MOVED: &str = "moved ~/.claude onto API key profile api-key (billed per token)";
-const REASON_HEAD: &str =
-    "per-token api-key: no plan login below 100%; overflow_wait elapsed (earliest reset ";
-const REASON_TAIL: &str =
-    "); marked overflow tier 10 via profile overflow add; login check passed (fake)";
+const REASON_HEAD: &str = "per-token api-key: no plan login below 100%; earliest reset ";
+const REASON_TAIL: &str = " beyond overflow_wait; marked overflow tier 10 via profile overflow add; login check passed (fake)";
 const REFUSED: &str = "key_check_refused api-key: fake failure";
 const ALERT: &str =
     "ALERT: API key profile api-key failed its login check (fake failure); not moving onto it";
@@ -610,10 +607,9 @@ fn a_move_onto_credits_writes_the_per_token_line_with_its_tier_and_no_login_chec
     let pos = |pred: &dyn Fn(&String) -> bool| log.iter().position(pred);
     let reason = pos(&|l| {
         l.starts_with(
-            "per-token team-credits: no plan login below 100%; overflow_wait elapsed \
-             (earliest reset ",
+            "per-token team-credits: no plan login below 100%; earliest reset ",
         ) && l.ends_with(
-            "); marked overflow tier 2 via profile overflow add; probe ok, no spend limit",
+            " beyond overflow_wait; marked overflow tier 2 via profile overflow add; probe ok, no spend limit",
         )
     })
     .unwrap_or_else(|| panic!("no per-token line: {log:?}"));

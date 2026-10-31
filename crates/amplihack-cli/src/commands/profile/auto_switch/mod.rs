@@ -28,6 +28,8 @@ mod mv;
 #[cfg(unix)]
 mod overflow_inputs;
 #[cfg(unix)]
+mod per_token;
+#[cfg(unix)]
 pub(super) mod rerun;
 #[cfg(unix)]
 mod state;
@@ -258,6 +260,7 @@ pub fn substitute_nested(store: &ProfileStore, inherited: &ProfileName) -> Optio
             "{}",
             rerun::substitution_note(inherited, &sub.reason, &sub.profile)
         );
+        per_token::record(&state.root, sub.per_token.as_deref());
         Some(sub.profile)
     }
     #[cfg(not(unix))]
