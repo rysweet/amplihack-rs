@@ -54,8 +54,13 @@ across providers. Missing ancestors are diagnosed; cycles and duplicate session
 IDs are rejected. An absent workstream/repository/branch/PR or run ID leaves
 usage visibly unattributed. Missing, partial, malformed, unidentifiable, or
 unsupported accounting data is diagnosed; absent token fields are lower bounds,
-never proof of zero consumption. Unknown native session IDs are omitted with
-`unmapped_native_session`, rather than assigned to another workstream.
+never proof of zero consumption. Unknown native session IDs are diagnosed with `unmapped_native_session`.
+Reliably deduplicated tokens remain in the unattributed subset; ownership is
+never assigned to another manifest session. Records without reliable deduplication
+identity remain in `unresolved` as non-additive evidence, excluded from totals.
+No reliably observed usage means `total`, session `direct` and `inclusive` are
+`null`, not zero. Partial numeric observations are lower bounds, not actual
+consumption claims.
 
 `complete: true` is an explicit input-coverage assertion by the manifest owner.
 It must only be set when the files cover the whole session. A clean parse cannot
@@ -74,23 +79,38 @@ or certify accounting completeness.
   the partitions are displayed without adding them again. An unpartitioned
   remainder has unknown duration. Claude reasoning remains inside output when
   the native record does not expose a separate count.
-- Codex cumulative counters are ordered across all explicitly supplied resume
-  files. Per-session high-water deltas are taken before subtracting cache-read
-  and reasoning subsets, and before assigning the delta to the current model.
-  Model changes do not reset the cumulative baseline. Repeated total snapshots
-  and repeated `last_token_usage` beside a cumulative snapshot add nothing.
-  Counter regressions remain incomplete lower bounds; no reset epoch is guessed.
-  Last-only observations require a stable request ID; without it the collector
-  omits ambiguous usage and diagnoses it. Prefer complete cumulative rollouts.
+- Current Codex `token_usage_record` records deduplicate globally by
+  `payload.response_id`, using response `usage` and native `thread_id` (or
+  `session_id`) for ownership. `thread_token_usage` and `event_msg/token_count`
+  cumulative snapshots are coverage evidence, never added to those responses.
+  A cumulative prefix missing from identified responses is retained once as an
+  explicitly unknown-model remainder, with unknown attempts and incompleteness.
+  `turn_token_usage` is not added to either response or thread totals.
+- Cumulative-only Codex counters are ordered across all explicitly supplied
+  resume files. Per-native-session high-water deltas are taken before subtracting
+  cache-read/cache-write and reasoning subsets, and before assigning a delta to
+  its model. Model changes do not reset the baseline. Repeated total snapshots
+  and `last_token_usage` alongside cumulative snapshots add nothing. Standalone
+  last-only usage needs a stable request/response ID; otherwise known fields
+  remain non-additive unresolved evidence. Counter regressions remain incomplete
+  lower bounds; no reset epoch is guessed. Delayed cache/reasoning subsets across
+  model changes collapse to unknown model attribution while preserving token
+  conservation; incompatible cumulative remainders stay non-additive evidence. Cache writes are retained with unknown
+  duration when native records do not supply a duration. Older snapshots without
+  a cache-write counter retain an explicit `cache_write_counter_unreported`
+  diagnostic. Codex input includes
+  cached/read/write subsets, so these are subtracted from new input; reasoning is
+  subtracted from output. Unknown subsets stay diagnosed.
 - Direct session totals count owned observations only. Inclusive totals include
   descendants; they overlap and must not be summed. The workstream total sums
   direct totals once. Stream/copy deduplication is global for provider IDs;
   cumulative counters are scoped to native session identity. Copied histories
   that erase original IDs cannot be reliably reconstructed.
-- `observed_attempts` means unique Claude messages or positive Codex cumulative
-  transitions / unique last-only request IDs. Exact provider invocation counts,
+- `observed_attempts` means unique provider responses/messages where available,
+  or positive cumulative-only Codex transitions. Cumulative remainders have unknown
+  attempts; zero observed attempts is not zero actual provider calls. Exact provider invocation counts,
   including unlogged failed calls, are unknown. Models and token buckets remain
-  separate in JSON. Timestamp bounds cover observed usage, not wall-clock work.
+  separate in JSON; `reasoning_in_output` makes Claude's unsplit reasoning explicit. Timestamp bounds cover observed usage, not wall-clock work.
 - Unknown models are retained, and API list-price estimates and price references
   remain `null`. There is no hardcoded price table. Counts are observations,
   distinct from subscription quota percentages, invoices and paid API charges.
@@ -127,7 +147,9 @@ checks; this feature does not rewrite recipe acceptance rules.
 
 Unit tests in `commands/usage/tests.rs` use synthetic native fixtures and an
 in-memory hosting runner. Run `cargo test -p amplihack-cli --lib commands::usage::`.
-They make no model or network calls.
+They make no model or network calls. Fixtures include native stable response
+records, cumulative-only fallbacks, cache writes, missing prefixes and unknown
+ownership, and distinguish unobserved/null from non-additive partial evidence.
 
 The usage collector maintainers own additional provider/schema adapters,
 provider-exact invocation counts, reset-epoch attribution, numerical shared-PR

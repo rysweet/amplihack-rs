@@ -46,8 +46,24 @@ pub fn summary(r: &Report) -> String {
             &m.observed_attempts.to_string(),
         );
     }
-    row(&mut s, "Total (direct, each session once)", r.total, "—");
-    row(&mut s, "Unattributed subset", r.unattributed, "—");
+    if let Some(total) = r.total {
+        row(&mut s, "Observed total (each session once)", total, "—");
+    } else {
+        s.push_str("\n**Total unknown: no reliably deduplicated observations.**\n");
+    }
+    if let Some(unattributed) = r.unattributed {
+        row(&mut s, "Unattributed observed subset", unattributed, "—");
+    }
+    if !r.unresolved.is_empty() {
+        s.push_str("\n**Unresolved observations are non-additive evidence, excluded from totals because identity/deduplication is unknown:**\n\n");
+        for u in &r.unresolved {
+            let _ = writeln!(
+                s,
+                "- {:?}/{}: {:?}; {}.",
+                u.provider, u.model, u.tokens, u.reason
+            );
+        }
+    }
     s.push_str("\nSession direct / inclusive token totals (inclusive rows overlap):\n\n");
     for session in &r.sessions {
         let _ = writeln!(
@@ -56,8 +72,14 @@ pub fn summary(r: &Report) -> String {
             session.id,
             session.run_id.as_deref().unwrap_or("unknown"),
             session.parent.as_deref().unwrap_or("none"),
-            session.direct.total(),
-            session.inclusive.total(),
+            session
+                .direct
+                .map(|t| t.total().to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            session
+                .inclusive
+                .map(|t| t.total().to_string())
+                .unwrap_or_else(|| "unknown".into()),
             if session.complete {
                 "declared inputs complete"
             } else {

@@ -19,6 +19,7 @@ pub(super) struct Parsed {
     pub event: Option<Event>,
     pub timestamp: Option<String>,
     pub diagnostics: Vec<&'static str>,
+    pub snapshot: Option<Event>,
 }
 
 fn label(v: &Value) -> Option<String> {
@@ -40,6 +41,7 @@ pub(super) fn parse(provider: Provider, v: &Value) -> Parsed {
         event: None,
         timestamp: None,
         diagnostics: Vec::new(),
+        snapshot: None,
     };
     p.timestamp = v["timestamp"]
         .as_str()
@@ -104,6 +106,34 @@ fn claude(v: &Value, p: &mut Parsed) {
     });
 }
 
+fn codex_tokens(u: &Value, d: &mut Vec<&'static str>) -> Tokens {
+    let input = number(u, "input_tokens", d);
+    let read = number(u, "cached_input_tokens", d);
+    if u.get("cache_write_input_tokens").is_none() {
+        d.push("cache_write_counter_unreported");
+    }
+    let write = u
+        .get("cache_write_input_tokens")
+        .map(|_| number(u, "cache_write_input_tokens", d))
+        .unwrap_or(0);
+    let output = number(u, "output_tokens", d);
+    let reasoning = number(u, "reasoning_output_tokens", d);
+    if read.saturating_add(write) > input || reasoning > output {
+        d.push("inconsistent_token_subsets");
+    }
+    if write > 0 {
+        d.push("unknown_cache_write_duration");
+    }
+    Tokens {
+        input,
+        cache_read: read,
+        cache_write: write,
+        output,
+        reasoning,
+        ..Tokens::default()
+    }
+}
+
 fn codex(v: &Value, p: &mut Parsed) {
     let payload = &v["payload"];
     if v["type"] == "session_meta" {
@@ -114,11 +144,34 @@ fn codex(v: &Value, p: &mut Parsed) {
         p.event = label(&payload["model"]).map(Event::Model);
         return;
     }
+    if v["type"] == "token_usage_record" {
+        let native = label(&payload["thread_id"]).or_else(|| label(&payload["session_id"]));
+        if payload["usage"].is_object() {
+            p.event = Some(Event::Usage {
+                key: label(&payload["response_id"]),
+                native_session: native.clone(),
+                model: label(&payload["model"]),
+                tokens: codex_tokens(&payload["usage"], &mut p.diagnostics),
+                cumulative: false,
+            });
+        } else {
+            p.diagnostics.push("missing_usage");
+        }
+        if payload["thread_token_usage"].is_object() {
+            p.snapshot = Some(Event::Usage {
+                key: None,
+                native_session: native,
+                model: label(&payload["model"]),
+                tokens: codex_tokens(&payload["thread_token_usage"], &mut p.diagnostics),
+                cumulative: true,
+            });
+        }
+        return;
+    }
     if v["type"] != "event_msg" || payload["type"] != "token_count" {
         return;
     }
     let info = &payload["info"];
-    // Rate-limit-only events carry no accounting snapshot.
     if info.is_null() {
         return;
     }
@@ -133,27 +186,13 @@ fn codex(v: &Value, p: &mut Parsed) {
         p.diagnostics.push("missing_usage");
         return;
     }
-    let d = &mut p.diagnostics;
-    let input = number(u, "input_tokens", d);
-    let read = number(u, "cached_input_tokens", d);
-    let output = number(u, "output_tokens", d);
-    let reasoning = number(u, "reasoning_output_tokens", d);
-    if read > input || reasoning > output {
-        d.push("inconsistent_token_subsets");
-    }
-    // Keep raw inclusive counters until AFTER cumulative differencing.
-    let t = Tokens {
-        input,
-        cache_read: read,
-        output,
-        reasoning,
-        ..Tokens::default()
-    };
     p.event = Some(Event::Usage {
-        key: label(&payload["request_id"]).or_else(|| label(&info["request_id"])),
+        key: label(&payload["response_id"])
+            .or_else(|| label(&payload["request_id"]))
+            .or_else(|| label(&info["request_id"])),
         native_session: None,
         model: label(&payload["model"]),
-        tokens: t,
+        tokens: codex_tokens(u, &mut p.diagnostics),
         cumulative,
     });
 }

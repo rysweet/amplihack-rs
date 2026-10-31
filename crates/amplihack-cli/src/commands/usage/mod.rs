@@ -1,5 +1,7 @@
 //! Workstream usage accounting from explicit, read-only native JSONL inputs.
 mod adapters;
+mod aggregate;
+mod assemble;
 mod collect;
 mod manifest;
 pub mod models;

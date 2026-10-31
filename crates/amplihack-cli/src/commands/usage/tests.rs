@@ -35,13 +35,19 @@ fn streamed_copied_parent_child_history_and_resumes_count_once() {
     ]));
     let r = collect(&m, &fixture_dir()).unwrap();
     assert!(r.complete);
-    assert_eq!(r.total.total(), 210);
-    assert_eq!(r.sessions[0].direct.total(), 195);
-    assert_eq!(r.sessions[0].inclusive.total(), 210);
-    assert_eq!(r.sessions[1].inclusive.total(), 15);
+    assert_eq!(r.total.unwrap().total(), 210);
+    assert_eq!(r.sessions[0].direct.unwrap().total(), 195);
+    assert_eq!(r.sessions[0].inclusive.unwrap().total(), 210);
+    assert_eq!(r.sessions[1].inclusive.unwrap().total(), 15);
     assert_eq!(r.models[0].observed_attempts, 2);
-    assert_eq!(r.total.cache_write, 30);
-    assert_eq!((r.total.cache_write_5m, r.total.cache_write_1h), (20, 10));
+    assert_eq!(r.total.unwrap().cache_write, 30);
+    assert_eq!(
+        (
+            r.total.unwrap().cache_write_5m,
+            r.total.unwrap().cache_write_1h
+        ),
+        (20, 10)
+    );
     assert_eq!(r.api_price_estimate, None);
     assert_eq!(r.price_reference, None);
     assert_eq!(
@@ -62,18 +68,19 @@ fn codex_cumulative_last_repetition_resume_and_model_changes() {
         ])
     )]));
     let r = collect(&m, &fixture_dir()).unwrap();
-    assert!(r.complete, "{:?}", r.diagnostics);
+    assert!(!r.complete);
+    assert!(has(&r, "cache_write_counter_unreported"));
     assert_eq!(
         r.total,
-        Tokens {
+        Some(Tokens {
             input: 130,
             cache_read: 50,
             output: 35,
             reasoning: 15,
             ..Tokens::default()
-        }
+        })
     );
-    assert_eq!(r.total.total(), 230);
+    assert_eq!(r.total.unwrap().total(), 230);
     assert_eq!(r.models.len(), 2);
     assert_eq!(r.models[0].tokens.total(), 130);
     assert_eq!(r.models[1].tokens.total(), 100);
@@ -127,9 +134,9 @@ fn retries_are_separate_and_unattributed_work_remains_visible() {
     let mut m = manifest(json!([session("first", "claude", json!(["first"])), retry]));
     m.workstream = None;
     let r = collect(&m, dir.path()).unwrap();
-    assert_eq!(r.total.total(), 20);
-    assert_eq!(r.unattributed.total(), 20);
-    assert_eq!(r.sessions[0].inclusive.total(), 20);
+    assert_eq!(r.total.unwrap().total(), 20);
+    assert_eq!(r.unattributed.unwrap().total(), 20);
+    assert_eq!(r.sessions[0].inclusive.unwrap().total(), 20);
     assert!(has(&r, "unattributed_workstream_identity"));
 }
 
@@ -202,7 +209,7 @@ fn stable_comment_create_noop_late_update_and_shared_pr_total() {
     let host = Hosting::default();
     assert_eq!(publish::publish(&m, &r, 42, &host).unwrap(), "created");
     assert_eq!(publish::publish(&m, &r, 42, &host).unwrap(), "unchanged");
-    r.total.output += 10;
+    r.total.as_mut().unwrap().output += 10;
     assert_eq!(publish::publish(&m, &r, 42, &host).unwrap(), "updated");
     assert_eq!(host.comments.borrow().len(), 1);
     assert_eq!(*host.methods.borrow(), vec!["POST", "PATCH"]);
@@ -273,7 +280,7 @@ fn clap_registers_read_only_and_publish_commands() {
 fn codex_record(input: u64, read: u64, output: u64, reasoning: u64, second: u32) -> Value {
     json!({"type":"event_msg","timestamp":format!("2026-01-01T00:00:{second:02}Z"),
         "payload":{"type":"token_count","info":{"total_token_usage":{
-            "input_tokens":input,"cached_input_tokens":read,"output_tokens":output,"reasoning_output_tokens":reasoning}}}})
+            "input_tokens":input,"cached_input_tokens":read,"cache_write_input_tokens":0,"output_tokens":output,"reasoning_output_tokens":reasoning}}}})
 }
 
 #[test]
@@ -300,10 +307,10 @@ fn codex_regressions_and_last_only_mixture_never_double_count() {
         dir.path(),
     )
     .unwrap();
-    assert_eq!(r.total.total(), 230);
+    assert_eq!(r.total.unwrap().total(), 230);
     assert!(!r.complete);
     assert!(has(&r, "cumulative_counter_regressed"));
-    assert!(has(&r, "mixed_cumulative_and_last_only_usage"));
+    assert!(has(&r, "unidentified_cumulative_remainder"));
     assert!(r.api_price_estimate.is_none());
 }
 
@@ -311,16 +318,18 @@ fn codex_regressions_and_last_only_mixture_never_double_count() {
 fn codex_last_only_requires_stable_identity_and_deduplicates_copies() {
     let dir = tempfile::tempdir().unwrap();
     let meta = json!({"type":"session_meta","payload":{"id":"s"}});
-    let mut row = json!({"type":"event_msg","timestamp":"2026-01-01T00:00:01Z","payload":{"type":"token_count","model":"model","request_id":"call-1","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"output_tokens":5,"reasoning_output_tokens":1}}}});
+    let mut row = json!({"type":"event_msg","timestamp":"2026-01-01T00:00:01Z","payload":{"type":"token_count","model":"model","request_id":"call-1","info":{"last_token_usage":{"input_tokens":10,"cached_input_tokens":2,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1}}}});
     std::fs::write(dir.path().join("log"), format!("{meta}\n{row}\n{row}\n")).unwrap();
     let m = manifest(json!([session("s", "codex", json!(["log", "log"]))]));
     let r = collect(&m, dir.path()).unwrap();
     assert!(r.complete);
-    assert_eq!(r.total.total(), 15);
+    assert_eq!(r.total.unwrap().total(), 15);
     row["payload"].as_object_mut().unwrap().remove("request_id");
     std::fs::write(dir.path().join("log"), format!("{meta}\n{row}\n")).unwrap();
     let r = collect(&m, dir.path()).unwrap();
-    assert_eq!(r.total.total(), 0);
+    assert!(r.total.is_none());
+    assert_eq!(r.unresolved.len(), 2);
+    assert_eq!(r.unresolved[0].tokens.total(), 15);
     assert!(!r.complete);
     assert!(has(&r, "usage_without_stable_identity"));
 }
@@ -335,7 +344,9 @@ fn manifest_coverage_missing_parent_and_native_mapping_stay_incomplete() {
     s["complete"] = json!(false);
     s["parent"] = json!("missing");
     let r = collect(&manifest(json!([s])), dir.path()).unwrap();
-    assert_eq!(r.total.total(), 0);
+    assert_eq!(r.total.unwrap().total(), 15);
+    assert_eq!(r.unattributed.unwrap().total(), 15);
+    assert!(r.sessions[0].direct.is_none());
     for code in [
         "session_coverage_unconfirmed",
         "missing_parent",
@@ -378,8 +389,149 @@ fn foreign_codex_metadata_keeps_model_and_usage_with_native_owner() {
         session("copy-holder", "codex", json!(["copy"]))
     ]));
     let r = collect(&m, dir.path()).unwrap();
-    assert_eq!(r.sessions[0].direct.total(), 15);
-    assert_eq!(r.sessions[1].direct.total(), 0);
+    assert_eq!(r.sessions[0].direct.unwrap().total(), 15);
+    assert!(r.sessions[1].direct.is_none());
     assert_eq!(r.models[0].model, "copied-model");
     assert!(!r.complete); // The manifest still declares an empty original file list.
+}
+
+#[test]
+fn native_response_ids_override_snapshots_and_preserve_cache_writes() {
+    let m = manifest(json!([session(
+        "native",
+        "codex",
+        json!(["codex-native.jsonl", "codex-native.jsonl"])
+    )]));
+    let r = collect(&m, &fixture_dir()).unwrap();
+    assert_eq!(
+        r.total,
+        Some(Tokens {
+            input: 125,
+            cache_read: 50,
+            cache_write: 5,
+            output: 35,
+            reasoning: 15,
+            ..Tokens::default()
+        })
+    );
+    assert_eq!(r.models.len(), 2);
+    assert_eq!(r.models[0].tokens.total(), 130);
+    assert_eq!(r.models[1].tokens.total(), 100);
+    assert_eq!(r.models.iter().map(|m| m.observed_attempts).sum::<u64>(), 2);
+    assert!(has(&r, "unknown_cache_write_duration"));
+    assert!(!has(&r, "unidentified_cumulative_remainder"));
+    assert!(!has(&r, "cumulative_counter_regressed"));
+    assert!(r.models.iter().all(|m| !m.reasoning_in_output));
+}
+
+#[test]
+fn identified_response_plus_missing_prefix_preserves_unknown_cumulative_remainder() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = json!({"type":"session_meta","payload":{"id":"s"}});
+    let response = json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:03Z","payload":{"thread_id":"s","response_id":"late-response","model":"model-b","usage":{"input_tokens":80,"cached_input_tokens":30,"cache_write_input_tokens":0,"output_tokens":20,"reasoning_output_tokens":5}}});
+    std::fs::write(
+        dir.path().join("log"),
+        format!("{meta}\n{}\n{response}\n", codex_record(180, 50, 50, 15, 2)),
+    )
+    .unwrap();
+    let r = collect(
+        &manifest(json!([session("s", "codex", json!(["log"]))])),
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(r.total.unwrap().total(), 230);
+    assert!(has(&r, "unidentified_cumulative_remainder"));
+    let unknown = r.models.iter().find(|m| m.model == "unknown").unwrap();
+    assert_eq!(unknown.tokens.total(), 130);
+    assert_eq!(unknown.observed_attempts, 0);
+    assert!(!r.complete);
+}
+
+#[test]
+fn no_usage_is_null_and_missing_identity_evidence_is_non_additive() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("empty"), "{}").unwrap();
+    let m = manifest(json!([session("s", "codex", json!(["empty"]))]));
+    let r = collect(&m, dir.path()).unwrap();
+    assert!(r.total.is_none());
+    assert!(r.sessions[0].direct.is_none());
+    assert_eq!(serde_json::to_value(&r).unwrap()["total"], Value::Null);
+    assert!(summary(&r).contains("Total unknown"));
+    let row = json!({"type":"assistant","sessionId":"s","timestamp":"2026-01-01T00:00:00Z","message":{"model":"model","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":5}}});
+    std::fs::write(dir.path().join("empty"), format!("{row}\n{row}\n")).unwrap();
+    let mut m = m;
+    m.sessions[0].provider = Provider::Claude;
+    let r = collect(&m, dir.path()).unwrap();
+    assert!(r.total.is_none());
+    assert_eq!(r.unresolved.len(), 2);
+    assert!(r.unresolved.iter().all(|u| u.tokens.total() == 15));
+    assert!(summary(&r).contains("non-additive evidence"));
+}
+
+#[test]
+fn unmapped_native_responses_are_globally_deduplicated_and_unattributed() {
+    let dir = tempfile::tempdir().unwrap();
+    let row = json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:00Z","payload":{"thread_id":"unmapped","response_id":"global-response","model":"model","usage":{"input_tokens":10,"cached_input_tokens":2,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1}}});
+    std::fs::write(dir.path().join("log"), format!("{row}\n{row}\n")).unwrap();
+    let m = manifest(json!([session("s", "codex", json!(["log", "log"]))]));
+    let r = collect(&m, dir.path()).unwrap();
+    assert_eq!(r.total.unwrap().total(), 15);
+    assert_eq!(r.unattributed.unwrap().total(), 15);
+    assert!(r.sessions[0].direct.is_none());
+    assert_eq!(r.models[0].observed_attempts, 1);
+    assert!(!r.complete);
+}
+
+#[test]
+fn global_response_ids_prevent_duplicate_history_across_session_counters() {
+    let dir = tempfile::tempdir().unwrap();
+    for id in ["a", "b"] {
+        let row = json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:00Z","payload":{"thread_id":id,"response_id":"copied-response","model":"model","usage":{"input_tokens":10,"cached_input_tokens":2,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1},"thread_token_usage":{"input_tokens":10,"cached_input_tokens":2,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1}}});
+        std::fs::write(dir.path().join(id), row.to_string()).unwrap();
+    }
+    let m = manifest(json!([
+        session("a", "codex", json!(["a"])),
+        session("b", "codex", json!(["b"]))
+    ]));
+    let r = collect(&m, dir.path()).unwrap();
+    assert_eq!(r.total.unwrap().total(), 15);
+    assert!(has(&r, "conflicting_message_identity"));
+    assert!(!r.complete);
+}
+
+#[test]
+fn delayed_cumulative_subsets_across_models_preserve_conservation() {
+    let dir = tempfile::tempdir().unwrap();
+    let meta = json!({"type":"session_meta","payload":{"id":"s"}});
+    let context = |model: &str, second: u32| json!({"type":"turn_context","timestamp":format!("2026-01-01T00:00:{second:02}Z"),"payload":{"model":model}});
+    std::fs::write(
+        dir.path().join("log"),
+        format!(
+            "{meta}\n{}\n{}\n{}\n{}\n",
+            context("a", 0),
+            codex_record(100, 0, 30, 0, 1),
+            context("b", 2),
+            codex_record(100, 20, 30, 10, 3)
+        ),
+    )
+    .unwrap();
+    let r = collect(
+        &manifest(json!([session("s", "codex", json!(["log"]))])),
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(r.total.unwrap().total(), 130);
+    assert_eq!(
+        r.total.unwrap(),
+        Tokens {
+            input: 80,
+            cache_read: 20,
+            output: 20,
+            reasoning: 10,
+            ..Tokens::default()
+        }
+    );
+    assert!(has(&r, "ambiguous_cumulative_model_attribution"));
+    assert_eq!(r.models[0].model, "unknown");
+    assert!(!r.complete);
 }

@@ -103,6 +103,8 @@ pub struct ModelUsage {
     pub tokens: Tokens,
     /// Unique observed provider messages / positive cumulative transitions.
     pub observed_attempts: u64,
+    /// Native Claude records include unsplit reasoning in output.
+    pub reasoning_in_output: bool,
 }
 
 #[derive(Serialize)]
@@ -111,8 +113,8 @@ pub struct SessionReport {
     pub run_id: Option<String>,
     pub parent: Option<String>,
     pub provider: Provider,
-    pub direct: Tokens,
-    pub inclusive: Tokens,
+    pub direct: Option<Tokens>,
+    pub inclusive: Option<Tokens>,
     pub models: Vec<ModelUsage>,
     pub complete: bool,
     pub first_observed: Option<String>,
@@ -129,6 +131,14 @@ pub struct Diagnostic {
 }
 
 #[derive(Serialize)]
+pub struct UnresolvedUsage {
+    pub provider: Provider,
+    pub model: String,
+    pub tokens: Tokens,
+    pub reason: &'static str,
+}
+
+#[derive(Serialize)]
 pub struct Report {
     pub version: u8,
     pub workstream: Option<String>,
@@ -136,8 +146,10 @@ pub struct Report {
     pub branch: Option<String>,
     pub prs: Vec<u64>,
     pub allocation: &'static str,
-    pub total: Tokens,
-    pub unattributed: Tokens,
+    pub total: Option<Tokens>,
+    pub unattributed: Option<Tokens>,
+    /// Non-additive evidence: stable identity is missing, so deduplication is impossible.
+    pub unresolved: Vec<UnresolvedUsage>,
     pub models: Vec<ModelUsage>,
     pub sessions: Vec<SessionReport>,
     pub complete: bool,
