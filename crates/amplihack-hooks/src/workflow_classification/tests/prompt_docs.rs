@@ -84,8 +84,11 @@ fn routing_prompt_keeps_its_existing_contract() {
         "False positive costs minutes",
         "dev-orchestrator",
         "auto-intent-router",
-        "Downstream invariant: Development classification always routes to \
-         `default-workflow`; model-provided recipe fields do not override that invariant.",
+        // Issue #1740 added `quick-change` as the second Development route.
+        "Downstream invariant: Development classification routes to `default-workflow`, \
+         or to `quick-change` for a small change in a single workstream or when \
+         `-c workflow=quick-change` forces it; any recipe value the model gives a \
+         workstream is coerced to `default-workflow`.",
     ] {
         assert!(DEFAULT_ROUTING_PROMPT.contains(kept), "lost {kept:?}");
     }
