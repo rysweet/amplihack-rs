@@ -10,9 +10,12 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) type ModelMap = BTreeMap<(Provider, String), ModelUsage>;
 struct Identified {
     owner: Option<usize>,
+    native_session: Option<String>,
+    ambiguous_owner: bool,
+    incomplete: bool,
     source: usize,
     model: String,
-    tokens: Tokens,
+    tokens: Option<Tokens>,
 }
 #[derive(Default)]
 struct Snapshots {
@@ -39,6 +42,13 @@ pub(super) fn add(
     });
     b.tokens.add(tokens);
     b.observed_attempts = b.observed_attempts.saturating_add(attempts);
+}
+// Source diagnostics retain their original session/file/line. This separate
+// marker follows deduplicated usage to its accounting owner and then ancestors.
+fn incomplete_owner(ds: &mut BTreeSet<Diagnostic>, owner: Option<usize>) {
+    if owner.is_some() {
+        diagnostic(ds, owner, None, None, "incomplete_usage_observation");
+    }
 }
 fn invalid_subsets(t: Tokens) -> bool {
     t.cache_read.saturating_add(t.cache_write) > t.input || t.reasoning > t.output
@@ -71,7 +81,7 @@ pub(super) fn aggregate(
     let mut snapshots = BTreeMap::<(Provider, String), Snapshots>::new();
     let mut unique = BTreeMap::<(Provider, String), Identified>::new();
     let mut unresolved = Vec::new();
-    let mut coverage = BTreeMap::<(Provider, String, String), Tokens>::new();
+    let mut coverage = BTreeSet::<(Provider, String, String)>::new();
     let mut first = vec![None; m.sessions.len() + 1];
     let mut last = first.clone();
     for o in observations {
@@ -107,14 +117,24 @@ pub(super) fn aggregate(
                 },
             );
         }
+        if o.incomplete {
+            incomplete_owner(&mut ds, owner);
+        }
         let model = model
             .or_else(|| contexts.get(&o.session).cloned())
             .unwrap_or_else(|| "unknown".into());
         if model == "unknown" {
             diagnostic(&mut ds, Some(o.session), None, None, "unknown_model");
         }
+        let incomplete = o.incomplete
+            || model == "unknown"
+            || (!cumulative && key.is_none())
+            || (source.provider == Provider::Codex && tokens.is_some_and(invalid_subsets));
+        if incomplete {
+            incomplete_owner(&mut ds, owner);
+        }
         let index = owner.unwrap_or(m.sessions.len());
-        if let Some(t) = o.timestamp {
+        if let Some(t) = o.timestamp.filter(|_| tokens.is_some()) {
             if first[index].is_none() {
                 first[index] = Some(t.clone());
             }
@@ -132,6 +152,7 @@ pub(super) fn aggregate(
                     None,
                     "usage_without_stable_identity",
                 );
+                let Some(tokens) = tokens else { continue };
                 unresolved.push(UnresolvedUsage {
                     provider: source.provider,
                     model,
@@ -144,19 +165,28 @@ pub(super) fn aggregate(
                 });
                 continue;
             };
-            coverage
-                .entry((source.provider, group.clone(), key.clone()))
-                .or_default()
-                .max(tokens);
+            coverage.insert((source.provider, group.clone(), key.clone()));
             unique
                 .entry((source.provider, key))
                 .and_modify(|old| {
-                    if old.owner.is_none() && owner.is_some() {
+                    let ownership_conflict = old.native_session.is_some()
+                        && native_session.is_some()
+                        && old.native_session != native_session;
+                    if ownership_conflict {
+                        incomplete_owner(&mut ds, old.owner);
+                        incomplete_owner(&mut ds, owner);
+                        old.ambiguous_owner = true;
+                        old.owner = None;
+                    } else if !old.ambiguous_owner && old.native_session.is_none() {
+                        old.native_session = native_session.clone();
                         old.owner = owner;
                     }
-                    if old.owner != owner && owner.is_some()
+                    if ownership_conflict
                         || old.model != model && old.model != "unknown" && model != "unknown"
                     {
+                        old.incomplete = true;
+                        incomplete_owner(&mut ds, old.owner);
+                        incomplete_owner(&mut ds, owner);
                         diagnostic(
                             &mut ds,
                             Some(o.session),
@@ -175,15 +205,22 @@ pub(super) fn aggregate(
                     if old.model == "unknown" {
                         old.model = model.clone();
                     }
-                    old.tokens.max(tokens);
+                    if let Some(tokens) = tokens {
+                        old.tokens.get_or_insert_default().max(tokens);
+                    }
+                    old.incomplete |= incomplete;
                 })
                 .or_insert(Identified {
                     owner,
+                    native_session,
+                    ambiguous_owner: false,
+                    incomplete,
                     source: o.session,
                     model,
                     tokens,
                 });
         } else {
+            let Some(tokens) = tokens else { continue };
             if native_session.is_none() {
                 unresolved.push(UnresolvedUsage {
                     provider: source.provider,
@@ -212,6 +249,7 @@ pub(super) fn aggregate(
                     None,
                     "cumulative_counter_regressed",
                 );
+                incomplete_owner(&mut ds, owner);
             }
             let delta = difference(tokens, state.highwater);
             state.ambiguous_subsets |= invalid_subsets(delta);
@@ -222,14 +260,24 @@ pub(super) fn aggregate(
     }
     let mut buckets: Vec<ModelMap> = vec![BTreeMap::new(); m.sessions.len() + 1];
     let mut identified_totals = BTreeMap::<(Provider, String), Tokens>::new();
-    for ((provider, group, _), tokens) in coverage {
-        identified_totals
-            .entry((provider, group))
-            .or_default()
-            .add(tokens);
+    for (provider, group, key) in coverage {
+        // A partial copy still identifies the response covered by a snapshot.
+        // Use its globally merged counters so missing fields in that copy do
+        // not become a second cumulative remainder.
+        if let Some(tokens) = unique.get(&(provider, key)).and_then(|u| u.tokens) {
+            identified_totals
+                .entry((provider, group))
+                .or_default()
+                .add(tokens);
+        }
     }
     for ((provider, _), u) in unique {
-        let mut tokens = u.tokens;
+        if u.incomplete {
+            incomplete_owner(&mut ds, u.owner);
+        }
+        // Retain identity and diagnostic evidence even when a streamed/copy
+        // record has no counters, but never turn that absence into numeric zero.
+        let Some(mut tokens) = u.tokens else { continue };
         if tokens.cache_write_5m.saturating_add(tokens.cache_write_1h) > tokens.cache_write {
             diagnostic(
                 &mut ds,
@@ -238,9 +286,13 @@ pub(super) fn aggregate(
                 None,
                 "conflicting_cache_partitions",
             );
+            incomplete_owner(&mut ds, u.owner);
             // Keep the observed aggregate; duration evidence remains visibly inconsistent.
         }
         if provider == Provider::Codex {
+            if invalid_subsets(tokens) {
+                incomplete_owner(&mut ds, u.owner);
+            }
             tokens = disjoint(tokens, &mut ds, u.source);
         }
         add(
@@ -263,6 +315,7 @@ pub(super) fn aggregate(
                     None,
                     "inconsistent_cumulative_remainder",
                 );
+                incomplete_owner(&mut ds, s.owner);
                 unresolved.push(UnresolvedUsage {
                     provider,
                     model: "unknown".into(),
@@ -277,6 +330,7 @@ pub(super) fn aggregate(
                     None,
                     "unidentified_cumulative_remainder",
                 );
+                incomplete_owner(&mut ds, s.owner);
                 add(
                     bucket,
                     provider,
@@ -293,6 +347,7 @@ pub(super) fn aggregate(
                 None,
                 "ambiguous_cumulative_model_attribution",
             );
+            incomplete_owner(&mut ds, s.owner);
             let attempts = s.fallback.values().map(|u| u.observed_attempts).sum();
             add(
                 bucket,
@@ -303,6 +358,9 @@ pub(super) fn aggregate(
             );
         } else {
             for usage in s.fallback.into_values() {
+                if invalid_subsets(usage.tokens) {
+                    incomplete_owner(&mut ds, s.owner);
+                }
                 add(
                     bucket,
                     provider,

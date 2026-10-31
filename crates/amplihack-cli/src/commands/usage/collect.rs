@@ -17,6 +17,7 @@ pub(super) struct Observation {
     pub session: usize,
     pub timestamp: Option<String>,
     pub event: Event,
+    pub incomplete: bool,
 }
 pub(super) fn diagnostic(
     ds: &mut BTreeSet<Diagnostic>,
@@ -95,6 +96,7 @@ pub fn collect(m: &Manifest, base: &Path) -> Result<Report> {
                     continue;
                 };
                 let parsed = adapters::parse(s.provider, &v);
+                let incomplete = !parsed.diagnostics.is_empty();
                 for code in parsed.diagnostics {
                     diagnostic(&mut ds, Some(si), Some(fi), Some(li + 1), code);
                 }
@@ -133,6 +135,7 @@ pub fn collect(m: &Manifest, base: &Path) -> Result<Report> {
                         session: si,
                         timestamp: parsed.timestamp.clone(),
                         event,
+                        incomplete,
                     });
                 }
             }

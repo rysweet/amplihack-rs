@@ -60,9 +60,14 @@ never proof of zero consumption. Unknown native session IDs are diagnosed with `
 Reliably deduplicated tokens remain in the unattributed subset; ownership is
 never assigned to another manifest session. Records without reliable deduplication
 identity remain in `unresolved` as non-additive evidence, excluded from totals.
-No reliably observed usage means `total`, session `direct` and `inclusive` are
-`null`, not zero. Partial numeric observations are lower bounds, not actual
-consumption claims.
+Conflicting native owners for the same response leave that response counted once
+in the unattributed bucket, regardless of manifest order. Parse diagnostics retain
+the source session/file/line; `incomplete_usage_observation` marks the accounting
+owner separately, and incompleteness propagates through its ancestors.
+No valid observed token counters (including empty usage objects) means `total`,
+session `direct` and `inclusive` are `null`. An explicitly observed zero counter
+produces numeric zero; absent or invalid counters never establish zero. Partial
+numeric observations are lower bounds, not actual consumption claims.
 
 `complete: true` is an explicit input-coverage assertion by the manifest owner.
 It must only be set when the files cover the whole session. A clean parse cannot

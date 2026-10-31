@@ -10,7 +10,7 @@ pub(super) enum Event {
         key: Option<String>,
         native_session: Option<String>,
         model: Option<String>,
-        tokens: Tokens,
+        tokens: Option<Tokens>,
         cumulative: bool,
     },
 }
@@ -26,9 +26,12 @@ fn label(v: &Value) -> Option<String> {
     v.as_str().filter(|s| safe_label(s)).map(str::to_owned)
 }
 
-fn number(v: &Value, field: &str, diagnostics: &mut Vec<&'static str>) -> u64 {
+fn number(v: &Value, field: &str, diagnostics: &mut Vec<&'static str>, observed: &mut bool) -> u64 {
     match v[field].as_u64() {
-        Some(n) => n,
+        Some(n) => {
+            *observed = true;
+            n
+        }
         None => {
             diagnostics.push("missing_or_invalid_token_field");
             0
@@ -68,12 +71,13 @@ fn claude(v: &Value, p: &mut Parsed) {
         return;
     }
     let d = &mut p.diagnostics;
-    let write = number(u, "cache_creation_input_tokens", d);
+    let mut observed = false;
+    let write = number(u, "cache_creation_input_tokens", d, &mut observed);
     let parts = &u["cache_creation"];
     let (five, hour) = if parts.is_object() {
         (
-            number(parts, "ephemeral_5m_input_tokens", d),
-            number(parts, "ephemeral_1h_input_tokens", d),
+            number(parts, "ephemeral_5m_input_tokens", d, &mut observed),
+            number(parts, "ephemeral_1h_input_tokens", d, &mut observed),
         )
     } else {
         if write > 0 {
@@ -85,12 +89,12 @@ fn claude(v: &Value, p: &mut Parsed) {
         d.push("inconsistent_cache_partitions");
     }
     let t = Tokens {
-        input: number(u, "input_tokens", d),
+        input: number(u, "input_tokens", d, &mut observed),
         cache_write: write.max(five.saturating_add(hour)),
         cache_write_5m: five,
         cache_write_1h: hour,
-        cache_read: number(u, "cache_read_input_tokens", d),
-        output: number(u, "output_tokens", d),
+        cache_read: number(u, "cache_read_input_tokens", d, &mut observed),
+        output: number(u, "output_tokens", d, &mut observed),
         reasoning: 0,
     };
     let key = label(&msg["id"]);
@@ -101,37 +105,38 @@ fn claude(v: &Value, p: &mut Parsed) {
         key,
         native_session: label(&v["sessionId"]),
         model: label(&msg["model"]),
-        tokens: t,
+        tokens: observed.then_some(t),
         cumulative: false,
     });
 }
 
-fn codex_tokens(u: &Value, d: &mut Vec<&'static str>) -> Tokens {
-    let input = number(u, "input_tokens", d);
-    let read = number(u, "cached_input_tokens", d);
+fn codex_tokens(u: &Value, d: &mut Vec<&'static str>) -> Option<Tokens> {
+    let mut observed = false;
+    let input = number(u, "input_tokens", d, &mut observed);
+    let read = number(u, "cached_input_tokens", d, &mut observed);
     if u.get("cache_write_input_tokens").is_none() {
         d.push("cache_write_counter_unreported");
     }
     let write = u
         .get("cache_write_input_tokens")
-        .map(|_| number(u, "cache_write_input_tokens", d))
+        .map(|_| number(u, "cache_write_input_tokens", d, &mut observed))
         .unwrap_or(0);
-    let output = number(u, "output_tokens", d);
-    let reasoning = number(u, "reasoning_output_tokens", d);
+    let output = number(u, "output_tokens", d, &mut observed);
+    let reasoning = number(u, "reasoning_output_tokens", d, &mut observed);
     if read.saturating_add(write) > input || reasoning > output {
         d.push("inconsistent_token_subsets");
     }
     if write > 0 {
         d.push("unknown_cache_write_duration");
     }
-    Tokens {
+    observed.then_some(Tokens {
         input,
         cache_read: read,
         cache_write: write,
         output,
         reasoning,
         ..Tokens::default()
-    }
+    })
 }
 
 fn codex(v: &Value, p: &mut Parsed) {

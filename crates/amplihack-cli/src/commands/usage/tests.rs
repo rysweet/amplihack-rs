@@ -488,14 +488,25 @@ fn global_response_ids_prevent_duplicate_history_across_session_counters() {
         let row = json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:00Z","payload":{"thread_id":id,"response_id":"copied-response","model":"model","usage":{"input_tokens":10,"cached_input_tokens":2,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1},"thread_token_usage":{"input_tokens":10,"cached_input_tokens":2,"cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":1}}});
         std::fs::write(dir.path().join(id), row.to_string()).unwrap();
     }
-    let m = manifest(json!([
-        session("a", "codex", json!(["a"])),
-        session("b", "codex", json!(["b"]))
-    ]));
-    let r = collect(&m, dir.path()).unwrap();
-    assert_eq!(r.total.unwrap().total(), 15);
-    assert!(has(&r, "conflicting_message_identity"));
-    assert!(!r.complete);
+    // A third copy must not restore an owner after the conflict. Both manifest
+    // orders must conserve tokens and leave all ownership ambiguous.
+    for ids in [["a", "b", "a"], ["b", "a", "b"]] {
+        let m = manifest(json!([
+            session(ids[0], "codex", json!([ids[0]])),
+            session(ids[1], "codex", json!([ids[1], ids[2]]))
+        ]));
+        let r = collect(&m, dir.path()).unwrap();
+        assert_eq!(r.total.unwrap().total(), 15);
+        assert_eq!(r.unattributed, r.total);
+        assert!(
+            r.sessions
+                .iter()
+                .all(|s| s.direct.is_none() && s.inclusive.is_none())
+        );
+        assert_eq!(r.models[0].observed_attempts, 1);
+        assert!(has(&r, "conflicting_message_identity"));
+        assert!(!r.complete);
+    }
 }
 
 #[test]
@@ -533,4 +544,319 @@ fn delayed_cumulative_subsets_across_models_preserve_conservation() {
     assert!(has(&r, "ambiguous_cumulative_model_attribution"));
     assert_eq!(r.models[0].model, "unknown");
     assert!(!r.complete);
+}
+
+fn native_usage(provider: &str, native: &str, response: &str, usage: Value) -> Value {
+    if provider == "claude" {
+        json!({"type":"assistant","sessionId":native,"timestamp":"2026-01-01T00:00:00Z",
+            "message":{"id":response,"model":"model","usage":usage}})
+    } else {
+        json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:00Z",
+            "payload":{"thread_id":native,"response_id":response,"model":"model","usage":usage}})
+    }
+}
+
+#[test]
+fn copied_partial_usage_marks_accounting_owner_and_ancestors_incomplete() {
+    for provider in ["claude", "codex"] {
+        let dir = tempfile::tempdir().unwrap();
+        let usage = if provider == "claude" {
+            json!({"input_tokens":10,"output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0})
+        } else {
+            json!({"input_tokens":10,"output_tokens":5,"cached_input_tokens":0,"cache_write_input_tokens":0,"reasoning_output_tokens":0})
+        };
+        for id in ["root", "owner", "holder"] {
+            std::fs::write(
+                dir.path().join(id),
+                native_usage(provider, id, id, usage.clone()).to_string(),
+            )
+            .unwrap();
+        }
+        let mut partial = usage;
+        partial.as_object_mut().unwrap().remove("output_tokens");
+        let copy = native_usage(provider, "owner", "partial-copy", partial);
+        std::fs::write(dir.path().join("copy"), copy.to_string()).unwrap();
+        let mut owner = session("owner", provider, json!(["owner"]));
+        owner["parent"] = json!("root");
+        let holder = session("holder", provider, json!(["holder", "copy"]));
+        for entries in [
+            json!([
+                session("root", provider, json!(["root"])),
+                owner.clone(),
+                holder.clone()
+            ]),
+            json!([holder, owner, session("root", provider, json!(["root"]))]),
+        ] {
+            let m = manifest(entries);
+            let r = collect(&m, dir.path()).unwrap();
+            let owner = r.sessions.iter().find(|s| s.id == "owner").unwrap();
+            assert_eq!(owner.direct.unwrap().total(), 25);
+            assert!(!owner.complete, "{provider}");
+            let root = r.sessions.iter().find(|s| s.id == "root").unwrap();
+            assert_eq!(root.inclusive.unwrap().total(), 40);
+            assert!(!root.complete, "{provider}");
+            assert!(!r.complete);
+            let source = m.sessions.iter().position(|s| s.id == "holder").unwrap();
+            assert!(
+                r.diagnostics
+                    .iter()
+                    .any(|d| d.code == "missing_or_invalid_token_field"
+                        && d.session == Some(source)
+                        && d.file == Some(1)
+                        && d.line == Some(1))
+            );
+            let owner = m.sessions.iter().position(|s| s.id == "owner").unwrap();
+            assert!(
+                r.diagnostics
+                    .iter()
+                    .any(|d| d.code == "incomplete_usage_observation"
+                        && d.session == Some(owner)
+                        && d.file.is_none()
+                        && d.line.is_none())
+            );
+        }
+    }
+}
+
+#[test]
+fn empty_or_invalid_counters_are_unknown_but_observed_zero_is_numeric() {
+    for provider in ["claude", "codex"] {
+        for (usage, observed) in [
+            (json!({}), false),
+            (
+                json!({"input_tokens":"invalid","output_tokens":null}),
+                false,
+            ),
+            (json!({"unrecognized_tokens":0}), false),
+            (json!({"input_tokens":0}), true),
+            (json!({"output_tokens":0}), true),
+            (
+                json!({"cache_creation_input_tokens":0,"cached_input_tokens":0}),
+                true,
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let row = native_usage(provider, "s", "response", usage);
+            std::fs::write(dir.path().join("log"), row.to_string()).unwrap();
+            let r = collect(
+                &manifest(json!([session("s", provider, json!(["log"]))])),
+                dir.path(),
+            )
+            .unwrap();
+            let expected = observed.then_some(Tokens::default());
+            assert_eq!(r.total, expected, "{provider}: {row}");
+            assert_eq!(r.sessions[0].direct, expected);
+            assert_eq!(r.sessions[0].inclusive, expected);
+            assert_eq!(r.models.len(), usize::from(observed));
+            assert!(!r.complete);
+            if !observed {
+                let json = serde_json::to_value(&r).unwrap();
+                assert!(json["total"].is_null());
+                assert!(json["sessions"][0]["direct"].is_null());
+                assert!(summary(&r).contains("Total unknown"));
+            }
+        }
+    }
+}
+
+#[test]
+fn empty_codex_cumulative_snapshots_do_not_establish_zero_totals() {
+    for usage in [json!({}), json!({"input_tokens":0})] {
+        for native in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let row = if native {
+                json!({"type":"token_usage_record","timestamp":"2026-01-01T00:00:01Z",
+                    "payload":{"thread_id":"s","model":"model","thread_token_usage":usage}})
+            } else {
+                json!({"type":"event_msg","timestamp":"2026-01-01T00:00:01Z",
+                    "payload":{"type":"token_count","model":"model","info":{"total_token_usage":usage}}})
+            };
+            let meta = json!({"type":"session_meta","payload":{"id":"s"}});
+            std::fs::write(dir.path().join("log"), format!("{meta}\n{row}\n")).unwrap();
+            let r = collect(
+                &manifest(json!([session("s", "codex", json!(["log"]))])),
+                dir.path(),
+            )
+            .unwrap();
+            let expected = usage.get("input_tokens").map(|_| Tokens::default());
+            assert_eq!(r.total, expected);
+            assert_eq!(r.sessions[0].direct, expected);
+            assert!(!r.complete);
+        }
+    }
+}
+
+#[test]
+fn partial_copy_without_native_identity_follows_later_identified_owner() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut partial = native_usage("claude", "owner", "response", json!({"input_tokens":10}));
+    partial.as_object_mut().unwrap().remove("sessionId");
+    let full = native_usage(
+        "claude",
+        "owner",
+        "response",
+        json!({"input_tokens":10,
+        "output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}),
+    );
+    std::fs::write(dir.path().join("partial"), partial.to_string()).unwrap();
+    std::fs::write(dir.path().join("full"), full.to_string()).unwrap();
+    let r = collect(
+        &manifest(json!([
+            session("holder", "claude", json!(["partial"])),
+            session("owner", "claude", json!(["full"]))
+        ])),
+        dir.path(),
+    )
+    .unwrap();
+    assert_eq!(r.sessions[1].direct.unwrap().total(), 15);
+    assert!(!r.sessions[1].complete);
+    assert_eq!(r.unattributed, None);
+    assert!(
+        r.diagnostics
+            .iter()
+            .any(|d| d.code == "incomplete_usage_observation" && d.session == Some(1))
+    );
+}
+
+#[test]
+fn conflicting_known_and_unmapped_native_owners_remain_unattributed() {
+    let dir = tempfile::tempdir().unwrap();
+    for native in ["owner", "outside"] {
+        let row = native_usage(
+            "claude",
+            native,
+            "response",
+            json!({"input_tokens":10,
+            "output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}),
+        );
+        std::fs::write(dir.path().join(native), row.to_string()).unwrap();
+    }
+    for files in [
+        json!(["owner", "outside", "owner"]),
+        json!(["outside", "owner", "outside"]),
+    ] {
+        let r = collect(
+            &manifest(json!([session("owner", "claude", files)])),
+            dir.path(),
+        )
+        .unwrap();
+        assert_eq!(r.total.unwrap().total(), 15);
+        assert_eq!(r.unattributed, r.total);
+        assert_eq!(r.sessions[0].direct, None);
+        assert_eq!(r.models[0].observed_attempts, 1);
+        assert!(has(&r, "conflicting_message_identity"));
+    }
+}
+
+#[test]
+fn empty_copies_still_contribute_identity_evidence_without_zero_totals() {
+    for provider in ["claude", "codex"] {
+        let dir = tempfile::tempdir().unwrap();
+        let full = native_usage(
+            provider,
+            "a",
+            "response",
+            json!({"input_tokens":10,
+            "output_tokens":5,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,
+            "cached_input_tokens":0,"cache_write_input_tokens":0,"reasoning_output_tokens":0}),
+        );
+        let mut empty = native_usage(provider, "b", "response", json!({}));
+        if provider == "codex" {
+            empty["payload"]["thread_token_usage"] = full["payload"]["usage"].clone();
+        }
+        std::fs::write(dir.path().join("full"), full.to_string()).unwrap();
+        std::fs::write(dir.path().join("empty"), empty.to_string()).unwrap();
+        for entries in [
+            json!([
+                session("a", provider, json!(["full"])),
+                session("b", provider, json!(["empty"]))
+            ]),
+            json!([
+                session("b", provider, json!(["empty"])),
+                session("a", provider, json!(["full"]))
+            ]),
+        ] {
+            let r = collect(&manifest(entries), dir.path()).unwrap();
+            assert_eq!(r.total.unwrap().total(), 15);
+            assert_eq!(r.unattributed, r.total);
+            assert!(r.sessions.iter().all(|s| s.direct.is_none()));
+            assert_eq!(r.models[0].observed_attempts, 1);
+            assert!(has(&r, "conflicting_message_identity"));
+        }
+    }
+}
+
+#[test]
+fn aggregation_diagnostics_follow_copied_usage_to_its_owner() {
+    for provider in ["claude", "codex"] {
+        let dir = tempfile::tempdir().unwrap();
+        let usage = json!({"input_tokens":5,"output_tokens":0,
+            "cache_creation_input_tokens":0,"cache_read_input_tokens":0,
+            "cached_input_tokens":0,"cache_write_input_tokens":0,"reasoning_output_tokens":0});
+        for id in ["owner", "holder"] {
+            std::fs::write(
+                dir.path().join(id),
+                native_usage(provider, id, id, usage.clone()).to_string(),
+            )
+            .unwrap();
+        }
+        let (copies, code, total) = if provider == "claude" {
+            let first = native_usage(
+                provider,
+                "owner",
+                "copied",
+                json!({"input_tokens":0,"output_tokens":0,
+                "cache_creation_input_tokens":5,"cache_read_input_tokens":0,
+                "cache_creation":{"ephemeral_5m_input_tokens":5,"ephemeral_1h_input_tokens":0}}),
+            );
+            let second = native_usage(
+                provider,
+                "owner",
+                "copied",
+                json!({"input_tokens":0,"output_tokens":0,
+                "cache_creation_input_tokens":5,"cache_read_input_tokens":0,
+                "cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":5}}),
+            );
+            (
+                format!("{first}\n{second}\n"),
+                "conflicting_cache_partitions",
+                10,
+            )
+        } else {
+            let meta = json!({"type":"session_meta","payload":{"id":"owner"}});
+            let snapshot = |input, second| {
+                json!({"type":"event_msg",
+                "timestamp":format!("2026-01-01T00:00:{second:02}Z"),"payload":{"type":"token_count","model":"model",
+                "info":{"total_token_usage":{"input_tokens":input,"output_tokens":0,
+                    "cached_input_tokens":0,"cache_write_input_tokens":0,"reasoning_output_tokens":0}}}})
+            };
+            (
+                format!("{meta}\n{}\n{}\n", snapshot(10, 1), snapshot(9, 2)),
+                "cumulative_counter_regressed",
+                10,
+            )
+        };
+        std::fs::write(dir.path().join("copies"), copies).unwrap();
+        let r = collect(
+            &manifest(json!([
+                session("owner", provider, json!(["owner"])),
+                session("holder", provider, json!(["holder", "copies"]))
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        assert!(has(&r, code), "{provider}");
+        assert_eq!(r.sessions[0].direct.unwrap().total(), total);
+        assert!(!r.sessions[0].complete, "{provider}");
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == code && d.session == Some(1))
+        );
+        assert!(
+            r.diagnostics
+                .iter()
+                .any(|d| d.code == "incomplete_usage_observation" && d.session == Some(0))
+        );
+    }
 }
