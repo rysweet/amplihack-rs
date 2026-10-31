@@ -65,10 +65,12 @@ nav:
       - Uninstall: howto/uninstall.md
       - Claude Login Profiles: howto/claude-profiles.md
       - Claude Login Rotation: howto/claude-profile-rotation.md
+      - Supervise Agent Sessions: howto/supervise-agent-sessions.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
       - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md
       - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md
       - Profile Command Reference: reference/profile-command.md
+      - Agent Command Reference: reference/agent-command.md
       - ccswitch Review: reviews/ccswitch-review.md
   - Core Concepts:
       - Philosophy: claude/context/PHILOSOPHY.md
