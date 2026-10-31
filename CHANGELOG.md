@@ -67,8 +67,9 @@ Unreleased changes appear at the top under `[Unreleased]`.
   `run_npm_with_timeout_terminates_child_after_timeout` now sets the child's
   `PATH` and `HOME` to the fake `npm`'s directory instead of changing them
   for the process, and checks at 7 seconds that the fake, which writes a
-  marker after 5 seconds, was stopped. Both tests replace the versions described under #1735 below. The
-  tests that still change the variables are listed in #1787. See
+  marker after 5 seconds, was stopped. Both tests replace the versions
+  described under #1735 below. The tests that still change the variables
+  are listed in #1787. See
   `docs/howto/keep-tests-from-changing-path-and-home.md`.
 - **`issue_1543_pr_head_worktree_shell_test_passes` failed in CI once
   recipe-runner-rs v0.5.1 was released (#1772)**: at startup, the pinned
