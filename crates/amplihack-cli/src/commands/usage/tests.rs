@@ -639,6 +639,225 @@ fn codex_model_context_cannot_cross_files_or_native_sessions() {
 }
 
 #[test]
+fn invalid_codex_session_metadata_clears_owner_and_model_until_recovery() {
+    for payload in [
+        json!({}),
+        json!({"id":null}),
+        json!({"id":42}),
+        json!({"id":false}),
+        json!({"id":[]}),
+        json!({"id":{}}),
+        json!({"id":""}),
+        json!({"id":"PRIVATE SESSION CONTENT"}),
+        json!({"id":"a".repeat(161)}),
+        Value::Null,
+    ] {
+        for kind in ["cumulative", "response", "last-only"] {
+            let dir = tempfile::tempdir().unwrap();
+            let usage = |input: u64, second: u32| {
+                let tokens = json!({"input_tokens":input,"cached_input_tokens":0,
+                    "cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0});
+                let (record_type, payload) = match kind {
+                    "cumulative" => (
+                        "event_msg",
+                        json!({"type":"token_count",
+                        "info":{"total_token_usage":tokens}}),
+                    ),
+                    "last-only" => (
+                        "event_msg",
+                        json!({"type":"token_count",
+                        "request_id":format!("request-{second}"),"info":{"last_token_usage":tokens}}),
+                    ),
+                    _ => (
+                        "token_usage_record",
+                        json!({"response_id":format!("response-{second}"),
+                        "usage":tokens}),
+                    ),
+                };
+                json!({"type":record_type,"timestamp":format!("2026-01-01T00:00:{second:02}Z"),
+                    "payload":payload})
+            };
+            let mut records = vec![
+                json!({"type":"session_meta","payload":{"id":"s"}}),
+                json!({"type":"turn_context","payload":{"model":"model-a"}}),
+                usage(10, 1),
+                json!({"type":"session_meta","payload":payload}),
+                usage(50, 2),
+                usage(60, 3),
+            ];
+            let m = manifest(json!([session("s", "codex", json!(["log"]))]));
+            // Inspect the invalid boundary before any valid metadata returns.
+            // Then recover the same owner without restoring the previous model.
+            for recovered in [false, true] {
+                if recovered {
+                    records.extend([
+                        json!({"type":"session_meta","payload":{"id":"s"}}),
+                        usage(20, 4),
+                        json!({"type":"turn_context","payload":{"model":"model-b"}}),
+                        usage(30, 5),
+                    ]);
+                }
+                std::fs::write(
+                    dir.path().join("log"),
+                    records
+                        .iter()
+                        .map(Value::to_string)
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+                .unwrap();
+                let r = collect(&m, dir.path()).unwrap();
+                assert!(!r.complete, "{kind}: {payload}, recovered={recovered}");
+                assert!(!r.sessions[0].complete);
+                let owned = if !recovered {
+                    10
+                } else if kind == "cumulative" {
+                    30
+                } else {
+                    60
+                };
+                assert_eq!(
+                    r.sessions[0].direct.unwrap().input,
+                    owned,
+                    "{kind}: {payload}"
+                );
+                assert_eq!(r.sessions[0].inclusive, r.sessions[0].direct);
+                assert_eq!(
+                    r.sessions[0]
+                        .models
+                        .iter()
+                        .find(|m| m.model == "model-a")
+                        .unwrap()
+                        .tokens
+                        .input,
+                    10
+                );
+                assert!(r.diagnostics.iter().any(|d| {
+                    d.code == "missing_or_invalid_session_identity"
+                        && d.session == Some(0)
+                        && d.file == Some(0)
+                        && d.line == Some(4)
+                }));
+                assert_eq!(
+                    r.diagnostics
+                        .iter()
+                        .filter(|d| d.code == "missing_native_session_identity")
+                        .count(),
+                    2
+                );
+                assert!(has(&r, "unknown_model"));
+                if kind == "cumulative" {
+                    assert_eq!(r.total.unwrap().input, owned);
+                    assert_eq!(r.unattributed, None);
+                    assert_eq!(r.unresolved.len(), 2);
+                    for (evidence, input) in r.unresolved.iter().zip([50, 60]) {
+                        assert_eq!(evidence.reason, "missing_native_session_non_additive");
+                        assert_eq!(evidence.model, "unknown");
+                        assert_eq!(evidence.tokens.input, input);
+                    }
+                } else {
+                    assert_eq!(r.total.unwrap().input, owned + 110);
+                    assert_eq!(r.unattributed.unwrap().input, 110);
+                    assert!(r.unresolved.is_empty());
+                    assert_eq!(
+                        r.models
+                            .iter()
+                            .find(|m| m.model == "unknown")
+                            .unwrap()
+                            .tokens
+                            .input,
+                        110 + if recovered { 20 } else { 0 }
+                    );
+                }
+                if recovered {
+                    for (model, input) in if kind == "cumulative" {
+                        [("unknown", 10), ("model-b", 10)]
+                    } else {
+                        [("unknown", 20), ("model-b", 30)]
+                    } {
+                        assert_eq!(
+                            r.sessions[0]
+                                .models
+                                .iter()
+                                .find(|m| m.model == model)
+                                .unwrap()
+                                .tokens
+                                .input,
+                            input
+                        );
+                    }
+                }
+                let output = format!("{}{}", serde_json::to_string(&r).unwrap(), summary(&r));
+                assert!(!output.contains("PRIVATE SESSION CONTENT"));
+            }
+        }
+    }
+}
+
+#[test]
+fn explicit_codex_usage_identity_survives_invalid_metadata_and_new_session_recovery() {
+    for identity_field in ["thread_id", "session_id"] {
+        let dir = tempfile::tempdir().unwrap();
+        let tokens = |input: u64| {
+            json!({"input_tokens":input,"cached_input_tokens":0,
+            "cache_write_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0})
+        };
+        let response = |input: u64, second: u32| {
+            json!({"type":"token_usage_record",
+            "timestamp":format!("2026-01-01T00:00:{second:02}Z"),
+            "payload":{"response_id":format!("response-{second}"),"usage":tokens(input)}})
+        };
+        let mut explicit = response(50, 2);
+        explicit["payload"][identity_field] = json!("s");
+        explicit["payload"]["thread_token_usage"] = tokens(60);
+        let records = [
+            json!({"type":"session_meta","payload":{"id":"s"}}),
+            json!({"type":"turn_context","payload":{"model":"model-a"}}),
+            response(10, 1),
+            json!({"type":"session_meta","payload":{"id":null}}),
+            explicit,
+            json!({"type":"session_meta","payload":{"id":"b"}}),
+            json!({"type":"turn_context","payload":{"model":"model-b"}}),
+            response(20, 3),
+        ];
+        std::fs::write(
+            dir.path().join("log"),
+            records.map(|r| r.to_string()).join("\n"),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("b"), "").unwrap();
+        let r = collect(
+            &manifest(json!([
+                session("s", "codex", json!(["log"])),
+                session("b", "codex", json!(["b"])),
+            ])),
+            dir.path(),
+        )
+        .unwrap();
+        assert!(!r.complete);
+        assert_eq!(r.total.unwrap().input, 80);
+        assert_eq!(r.sessions[0].direct.unwrap().input, 60);
+        assert_eq!(r.sessions[1].direct.unwrap().input, 20);
+        assert!(r.sessions[1].complete);
+        assert_eq!(r.unattributed, None);
+        assert!(r.unresolved.is_empty());
+        assert!(!has(&r, "missing_native_session_identity"));
+        for (model, input) in [("model-a", 10), ("unknown", 50), ("model-b", 20)] {
+            assert_eq!(
+                r.models
+                    .iter()
+                    .find(|m| m.model == model)
+                    .unwrap()
+                    .tokens
+                    .input,
+                input,
+                "{identity_field}: {model}"
+            );
+        }
+    }
+}
+
+#[test]
 fn invalid_codex_turn_context_clears_model_until_valid_context_recovers() {
     for payload in [
         json!({}),

@@ -95,6 +95,12 @@ or certify accounting completeness.
   A cumulative prefix missing from identified responses is retained once as an
   explicitly unknown-model remainder, with unknown attempts and incompleteness.
   `turn_token_usage` is not added to either response or thread totals.
+  Missing or invalid `session_meta.payload.id` emits
+  `missing_or_invalid_session_identity` and clears both session and model context.
+  Later records use only their own native identity until valid session metadata
+  returns. Responses with stable IDs and unknown owners remain unattributed;
+  cumulative snapshots without native identity remain non-additive `unresolved`
+  evidence. Restoring session metadata does not restore the previous model context.
 - Cumulative-only Codex counters are ordered across all explicitly supplied
   resume files. Per-native-session high-water deltas are taken before subtracting
   cache-read/cache-write and reasoning subsets, and before assigning a delta to

@@ -5,7 +5,8 @@ use serde_json::Value;
 #[derive(Clone)]
 pub(super) enum Event {
     Model(Option<String>),
-    NativeSession(String),
+    /// Every metadata boundary replaces the owner, even when its ID is invalid.
+    NativeSession(Option<String>),
     Usage {
         key: Option<String>,
         native_session: Option<String>,
@@ -148,7 +149,11 @@ fn codex_tokens(u: &Value, d: &mut Vec<&'static str>) -> Option<Tokens> {
 fn codex(v: &Value, p: &mut Parsed) {
     let payload = &v["payload"];
     if v["type"] == "session_meta" {
-        p.event = label(&payload["id"]).map(Event::NativeSession);
+        let native = label(&payload["id"]);
+        if native.is_none() {
+            p.diagnostics.push("missing_or_invalid_session_identity");
+        }
+        p.event = Some(Event::NativeSession(native));
         return;
     }
     if v["type"] == "turn_context" {

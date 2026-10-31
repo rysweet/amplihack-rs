@@ -103,10 +103,10 @@ pub fn collect(m: &Manifest, base: &Path) -> Result<Report> {
                 for mut event in parsed.event.into_iter().chain(parsed.snapshot) {
                     match &mut event {
                         Event::NativeSession(id) => {
-                            if native.as_ref() != Some(id) {
+                            if id.is_none() || native != *id {
                                 model = None;
                             }
-                            native = Some(id.clone());
+                            native = id.clone();
                             continue;
                         }
                         Event::Model(value) => {
