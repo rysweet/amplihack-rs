@@ -111,6 +111,7 @@ nav:
       - Multi-Agent Debate: claude/workflow/DEBATE_WORKFLOW.md
       - Fallback Cascade: claude/workflow/CASCADE_WORKFLOW.md
       - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
+      - Quick-Change Recipe: reference/quick-change-recipe.md
       - Recipe CLI Commands: howto/recipe-cli-commands.md
       - Recipe CLI Reference: reference/recipe-cli-reference.md
       - Large Payload Delivery:

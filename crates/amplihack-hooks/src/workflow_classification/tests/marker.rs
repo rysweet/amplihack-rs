@@ -36,7 +36,8 @@ fn coordination_note_contains_no_launch_instructions() {
     assert!(
         COORDINATION_NOTE.contains("If it asks for a code change, use dev-orchestrator as usual."),
         "a marked code request that the work-request rule misses must still reach \
-         default-workflow (routing_prompt.txt, downstream invariant)"
+         dev-orchestrator, which routes it to default-workflow or quick-change \
+         (routing_prompt.txt, downstream invariant)"
     );
     assert!(
         !COORDINATION_NOTE.contains('<'),
