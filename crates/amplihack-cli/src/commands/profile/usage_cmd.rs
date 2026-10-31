@@ -1,5 +1,6 @@
-//! `amplihack profile usage` (issue #1578): runs `claude -p /usage` under
-//! each profile in parallel, prints the session and weekly usage ordered by
+//! `amplihack profile usage` (issue #1578): asks `claude` for its usage under
+//! each profile in parallel (the `get_usage` request, else `claude -p
+//! /usage`; issue #1698), prints the session and weekly usage ordered by
 //! capacity, and records what it read as auto-switch readings.
 //!
 //! Claude's text is kept only with `--raw`; error rows carry one of four
@@ -9,24 +10,20 @@
 
 use super::auto_switch::{self, Observation, ObservedWindow, RecordOutcome};
 use super::name::ProfileName;
+use super::probe_limits::ProbeMode;
 use super::store::ProfileStore;
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
-use super::{default_live, pointer, run};
+use super::{ProfileError, default_live, pointer, probe_limits, run, usage_request};
 use crate::binary_finder::BinaryInfo;
 use anyhow::Result;
 use serde::Serialize;
-use std::ffi::{OsStr, OsString};
-use std::io::Read;
+use std::ffi::OsString;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub(super) const TIMEOUT_ENV: &str = "AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS";
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
-pub(super) const MAX_TIMEOUT_SECS: u64 = 600;
-/// Probes running at once.
-const MAX_PARALLEL: usize = 8;
 /// Bytes kept from each of stdout and stderr; the rest is read and dropped.
 const STREAM_CAP: usize = 64 * 1024;
 /// How long to wait for the pipes to close after the child exits. Only a
@@ -74,7 +71,7 @@ pub(super) struct Raw {
     pub(super) stderr: String,
 }
 
-/// The outcome of one `claude -p /usage` run.
+/// The outcome of one probe.
 #[derive(Debug, Clone, PartialEq)]
 pub(super) struct Probe {
     pub(super) report: UsageReport,
@@ -128,7 +125,11 @@ pub(super) fn run(
     timeout_flag: Option<u64>,
 ) -> Result<()> {
     super::reject_docker_env()?;
-    let (secs, warning) = timeout_secs(timeout_flag, std::env::var_os(TIMEOUT_ENV).as_deref());
+    let (mode, warning) = probe_limits::probe_mode_from_env();
+    if let Some(w) = warning {
+        eprintln!("{w}");
+    }
+    let (secs, warning) = probe_limits::timeout_from_env(timeout_flag);
     if let Some(w) = warning {
         eprintln!("{w}");
     }
@@ -156,15 +157,21 @@ pub(super) fn run(
     // shows up in the check under the lock as a moved account.
     let marks = read_marks(store);
 
+    let (parallel, warning) = probe_limits::parallel_from_host(profiles.len());
+    if let Some(w) = warning {
+        eprintln!("{w}");
+    }
     let now = now_secs();
     let probes = probe_all(
         store,
         &binary,
         &profiles,
         live_name.as_ref(),
+        mode,
         Duration::from_secs(secs),
         now,
         raw,
+        parallel,
     );
     // The login in `~/.claude` may have been swapped during the probe; its
     // numbers are shown but not recorded against the profile.
@@ -173,8 +180,8 @@ pub(super) fn run(
     rows.extend(keys.rows(&marks, &keyed));
     // Only when every profile is listed: naming profiles asks about those.
     if home_row && names.is_empty() {
-        let cmd = run::build_home_command(&binary, &["-p".into(), "/usage".into()]);
-        rows.push(home_row_of(probe(cmd, Duration::from_secs(secs), now, raw)));
+        let p = probe_home(&binary, mode, Duration::from_secs(secs), now, raw);
+        rows.push(home_row_of(p));
     }
     order(&mut rows, now_secs());
     print_output(&rows, json, swapped.as_ref());
@@ -494,28 +501,6 @@ fn now_secs() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// The probe deadline: the flag, then the environment variable, then 30. A
-/// bad variable gives the warning to print, with the value escaped and cut.
-pub(super) fn timeout_secs(flag: Option<u64>, env: Option<&OsStr>) -> (u64, Option<String>) {
-    if let Some(secs) = flag {
-        return (secs, None);
-    }
-    let Some(raw) = env.filter(|v| !v.is_empty()) else {
-        return (DEFAULT_TIMEOUT_SECS, None);
-    };
-    let text = raw.to_string_lossy();
-    match text.parse::<u64>() {
-        Ok(secs) if (1..=MAX_TIMEOUT_SECS).contains(&secs) => (secs, None),
-        _ => {
-            let shown: String = text.chars().take(32).collect();
-            let warning = format!(
-                "warning: ignored {TIMEOUT_ENV} {shown:?} (use 1 to {MAX_TIMEOUT_SECS}); using {DEFAULT_TIMEOUT_SECS}"
-            );
-            (DEFAULT_TIMEOUT_SECS, Some(warning))
-        }
-    }
-}
-
 /// The first credential variable set to a non-empty value, by name only.
 pub(super) fn env_credential_var(get: impl Fn(&str) -> Option<OsString>) -> Option<&'static str> {
     ENV_CREDENTIAL_VARS
@@ -532,42 +517,170 @@ pub(super) fn env_credential_warning(var: &str) -> String {
 // Probing
 // ---------------------------------------------------------------------------
 
-/// Probes every profile, at most [`MAX_PARALLEL`] at once; `live` is probed
-/// against `~/.claude`. Results are in the order of `profiles`.
+/// Probes every profile by `mode`, at most `parallel` at once (at least
+/// one); `live` is probed against `~/.claude`. Results are in the order of
+/// `profiles`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn probe_all(
     store: &ProfileStore,
     binary: &BinaryInfo,
     profiles: &[ProfileName],
     live: Option<&ProfileName>,
+    mode: ProbeMode,
     timeout: Duration,
     now: i64,
     keep_raw: bool,
+    parallel: usize,
 ) -> Vec<Probe> {
+    pooled(profiles.len(), parallel, |i| {
+        let name = &profiles[i];
+        probe_profile(
+            store,
+            binary,
+            name,
+            live == Some(name),
+            mode,
+            timeout,
+            now,
+            keep_raw,
+        )
+    })
+}
+
+/// Probes one profile by `mode`, against `~/.claude` when `live`. A profile
+/// marked as overflow is probed with `/usage` only, the one method that
+/// reports the spend limit. The command is built inside the probe, right
+/// before each spawn, so the directory check is as late as possible.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn probe_profile(
+    store: &ProfileStore,
+    binary: &BinaryInfo,
+    name: &ProfileName,
+    live: bool,
+    mode: ProbeMode,
+    timeout: Duration,
+    now: i64,
+    keep_raw: bool,
+) -> Probe {
+    let build = if live {
+        run::build_default_dir_command
+    } else {
+        run::build_profile_command
+    };
+    let mode = if super::overflow::overflow_names(store.root()).contains(name) {
+        ProbeMode::Text
+    } else {
+        mode
+    };
+    match probe_with(
+        |a| build(binary, store, name, a),
+        mode,
+        timeout,
+        now,
+        keep_raw,
+    ) {
+        Ok(p) => p,
+        // Reported as its fixed reason (and a stderr warning); the detail
+        // can name paths.
+        Err(_) => Probe::failed(ErrorReason::ProfileRefused, None),
+    }
+}
+
+/// Probes the login in `~/.claude` with `CLAUDE_CONFIG_DIR` removed: the
+/// `~/.claude` row of a login no profile holds, and the rotator's live login
+/// when no profile owns it.
+pub(super) fn probe_home(
+    binary: &BinaryInfo,
+    mode: ProbeMode,
+    timeout: Duration,
+    now: i64,
+    keep_raw: bool,
+) -> Probe {
+    probe_with(
+        |a| Ok(run::build_home_command(binary, a)),
+        mode,
+        timeout,
+        now,
+        keep_raw,
+    )
+    // The home command is never refused; mapped as any refusal is.
+    .unwrap_or_else(|_| Probe::failed(ErrorReason::ProfileRefused, None))
+}
+
+/// One login probed by `mode` within one deadline (issue #1698). `build`
+/// makes the command for the given arguments and checks the profile
+/// directory each time it is called; a refusal is returned for the caller
+/// to report.
+///
+/// In `Auto` the `get_usage` request runs first. Its answer is used when
+/// [`usage_request::parse_answer`] accepts it, however the attempt ended.
+/// Otherwise, if the attempt ended before the deadline and nothing cancelled
+/// it, `claude -p /usage` runs with a new command in the time left; else the
+/// probe is `timeout`. At most one `claude` runs at a time, and `--raw`
+/// shows the attempt that gave the row.
+pub(super) fn probe_with(
+    build: impl Fn(&[String]) -> Result<Command, ProfileError>,
+    mode: ProbeMode,
+    timeout: Duration,
+    now: i64,
+    keep_raw: bool,
+) -> Result<Probe, ProfileError> {
+    let text_args = ["-p".to_string(), "/usage".to_string()];
+    if mode == ProbeMode::Text {
+        return Ok(probe(build(&text_args)?, timeout, now, keep_raw));
+    }
+    let cmd = build(&usage_request::ARGS.map(String::from))?;
+    let deadline = Instant::now() + timeout;
+    let line = format!("{}\n", usage_request::REQUEST_LINE);
+    let a = attempt(cmd, Some(line.as_bytes()), deadline);
+    let row = |report, output: Option<Raw>| Probe {
+        report,
+        error: None,
+        raw: output.filter(|_| keep_raw),
+    };
+    let timed_out = UsageReport::empty(UsageState::Timeout);
+    // A cancel is a daemon stopping: its rows are discarded anyway.
+    if matches!(a.ended, Ended::Cancelled) {
+        return Ok(row(timed_out, a.output));
+    }
+    let answer = a
+        .output
+        .as_ref()
+        .and_then(|o| usage_request::parse_answer(&o.stdout, now));
+    if let Some(report) = answer {
+        return Ok(row(report, a.output));
+    }
+    if matches!(a.ended, Ended::Deadline)
+        || PROBE_CANCEL.load(Ordering::Relaxed)
+        || Instant::now() >= deadline
+    {
+        return Ok(row(timed_out, a.output));
+    }
+    let cmd = build(&text_args)?;
+    Ok(text_probe(attempt(cmd, None, deadline), now, keep_raw))
+}
+
+/// `job(0)` to `job(n - 1)`, at most `parallel` at once (at least one).
+/// Jobs start in index order, each on the first worker free, so no worker
+/// sits idle while a job waits. Results are in index order; a panic in a
+/// job propagates.
+pub(super) fn pooled<T: Send>(
+    n: usize,
+    parallel: usize,
+    job: impl Fn(usize) -> T + Sync,
+) -> Vec<T> {
     let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<Option<Probe>>> = Mutex::new(vec![None; profiles.len()]);
-    let args = ["-p".to_string(), "/usage".to_string()];
+    let results: Mutex<Vec<Option<T>>> = Mutex::new((0..n).map(|_| None).collect());
     std::thread::scope(|s| {
-        for _ in 0..profiles.len().min(MAX_PARALLEL) {
+        for _ in 0..n.min(parallel.max(1)) {
             s.spawn(|| {
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(name) = profiles.get(i) else {
+                    if i >= n {
                         break;
-                    };
-                    // Built here, right before the spawn, so the directory
-                    // check is as late as possible.
-                    let build = if live == Some(name) {
-                        run::build_default_dir_command
-                    } else {
-                        run::build_profile_command
-                    };
-                    let p = match build(binary, store, name, &args) {
-                        Ok(cmd) => probe(cmd, timeout, now, keep_raw),
-                        // Reported as its fixed reason (and a stderr
-                        // warning); the detail can name paths.
-                        Err(_) => Probe::failed(ErrorReason::ProfileRefused, None),
-                    };
-                    results.lock().unwrap_or_else(PoisonError::into_inner)[i] = Some(p);
+                    }
+                    let r = job(i);
+                    results.lock().unwrap_or_else(PoisonError::into_inner)[i] = Some(r);
                 }
             });
         }
@@ -578,7 +691,7 @@ pub(super) fn probe_all(
         .into_iter()
         // Each index is taken by exactly one worker, and a worker panic
         // propagates out of the scope, so every slot is filled.
-        .map(|p| p.expect("every profile is probed"))
+        .map(|r| r.expect("every job runs"))
         .collect()
 }
 
@@ -631,14 +744,68 @@ impl Stream {
     }
 }
 
-/// Runs `cmd` with stdin from `/dev/null`, reads up to 64 KiB of each output
-/// stream, and kills it at the deadline. The exit status is not used.
+/// One `claude -p /usage` run of `cmd` with stdin from `/dev/null`, killed
+/// at the deadline. See [`attempt`].
+pub(super) fn probe(cmd: Command, timeout: Duration, now: i64, keep_raw: bool) -> Probe {
+    text_probe(attempt(cmd, None, Instant::now() + timeout), now, keep_raw)
+}
+
+/// The row a `/usage` attempt gives: parsed after a clean exit, `timeout` at
+/// the deadline or on a cancel, and its fixed reason otherwise. Output that
+/// may be cut short is never parsed.
+fn text_probe(a: Attempt, now: i64, keep_raw: bool) -> Probe {
+    let report = match a.ended {
+        Ended::Exited => {
+            let o = a.output.as_ref();
+            parse_usage(
+                o.map_or("", |o| &o.stdout),
+                o.map_or("", |o| &o.stderr),
+                now,
+            )
+        }
+        Ended::Deadline | Ended::Cancelled => UsageReport::empty(UsageState::Timeout),
+        Ended::Failed(reason) => return Probe::failed(reason, a.output.filter(|_| keep_raw)),
+    };
+    Probe {
+        report,
+        error: None,
+        raw: a.output.filter(|_| keep_raw),
+    }
+}
+
+/// How one run of `claude` ended.
+#[derive(Debug, Clone, Copy)]
+enum Ended {
+    /// It exited and both pipes closed within [`READ_GRACE`].
+    Exited,
+    Deadline,
+    /// [`PROBE_CANCEL`] was set.
+    Cancelled,
+    Failed(ErrorReason),
+}
+
+/// One run: how it ended, and up to 64 KiB of each stream; `None` when no
+/// stream was read (a start failure, or pipes that could not be taken).
+struct Attempt {
+    ended: Ended,
+    output: Option<Raw>,
+}
+
+/// Runs `cmd` until it exits or `deadline` passes, reading up to 64 KiB of
+/// each output stream. With `input`, stdin is a pipe that gets those bytes
+/// in one write and is then closed; without, stdin is `/dev/null`, so the
+/// child never reads the terminal. The exit status is not used.
 ///
 /// On Unix the child leads its own process group, and the whole group is
-/// killed when the probe ends, so processes `claude` started (MCP servers,
-/// for example) do not outlive it.
-pub(super) fn probe(mut cmd: Command, timeout: Duration, now: i64, keep_raw: bool) -> Probe {
-    cmd.stdin(Stdio::null())
+/// killed before the child is reaped on every path, so processes `claude`
+/// started (MCP servers, for example) do not outlive it.
+fn attempt(mut cmd: Command, input: Option<&[u8]>, deadline: Instant) -> Attempt {
+    let stdin = if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
+    cmd.stdin(stdin)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(unix)]
@@ -646,24 +813,43 @@ pub(super) fn probe(mut cmd: Command, timeout: Duration, now: i64, keep_raw: boo
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    let start = Instant::now();
+    let failed = |reason, output| Attempt {
+        ended: Ended::Failed(reason),
+        output,
+    };
     let Ok(mut child) = cmd.spawn() else {
-        return Probe::failed(ErrorReason::StartFailed, None);
+        return failed(ErrorReason::StartFailed, None);
     };
     let (Some(out), Some(err)) = (child.stdout.take(), child.stderr.take()) else {
         stop(&mut child);
-        return Probe::failed(ErrorReason::ReadFailed, None);
+        return failed(ErrorReason::ReadFailed, None);
     };
     let (out, err) = (Stream::spawn(out), Stream::spawn(err));
-    let raw = |out: &Stream, err: &Stream| {
-        keep_raw.then(|| Raw {
+    let output = |out: &Stream, err: &Stream| {
+        Some(Raw {
             stdout: out.text(),
             stderr: err.text(),
         })
     };
+    if let Some(bytes) = input {
+        // One write of less than PIPE_BUF into an empty pipe cannot block.
+        // A child that closed stdin gives EPIPE, not a SIGPIPE that would
+        // kill this process, only because the Rust runtime ignores SIGPIPE.
+        // The handle is dropped here, before the poll loop, so `claude`
+        // sees the end of its input. The reason is never shown: in `auto`
+        // a failed request only means the `/usage` fallback.
+        let written = child
+            .stdin
+            .take()
+            .is_some_and(|mut stdin| stdin.write_all(bytes).is_ok());
+        if !written {
+            stop(&mut child);
+            return failed(ErrorReason::StartFailed, output(&out, &err));
+        }
+    }
 
     loop {
-        match exited(&mut child) {
+        let ended = match exited(&mut child) {
             Ok(true) => {
                 // The child is not reaped yet, so its pid (the group id)
                 // cannot have been reused: anything it left in its group
@@ -672,34 +858,33 @@ pub(super) fn probe(mut cmd: Command, timeout: Duration, now: i64, keep_raw: boo
                 let _ = child.wait();
                 break;
             }
-            Ok(false) if start.elapsed() >= timeout || PROBE_CANCEL.load(Ordering::Relaxed) => {
-                stop(&mut child);
-                return Probe {
-                    report: UsageReport::empty(UsageState::Timeout),
-                    error: None,
-                    raw: raw(&out, &err),
-                };
+            Ok(false) if PROBE_CANCEL.load(Ordering::Relaxed) => Ended::Cancelled,
+            Ok(false) if Instant::now() >= deadline => Ended::Deadline,
+            Ok(false) => {
+                std::thread::sleep(POLL);
+                continue;
             }
-            Ok(false) => std::thread::sleep(POLL),
-            Err(_) => {
-                stop(&mut child);
-                return Probe::failed(ErrorReason::WaitFailed, raw(&out, &err));
-            }
-        }
+            Err(_) => Ended::Failed(ErrorReason::WaitFailed),
+        };
+        stop(&mut child);
+        return Attempt {
+            ended,
+            output: output(&out, &err),
+        };
     }
     let exited = Instant::now();
     while !(out.done() && err.done()) && exited.elapsed() < READ_GRACE {
         std::thread::sleep(Duration::from_millis(10));
     }
-    // A pipe still open means the output may be cut short; never parse it.
-    if !(out.done() && err.done()) || out.failed() || err.failed() {
-        return Probe::failed(ErrorReason::ReadFailed, raw(&out, &err));
-    }
-    let (stdout, stderr) = (out.text(), err.text());
-    Probe {
-        report: parse_usage(&stdout, &stderr, now),
-        error: None,
-        raw: keep_raw.then_some(Raw { stdout, stderr }),
+    // A pipe still open means the output may be cut short.
+    let ended = if !(out.done() && err.done()) || out.failed() || err.failed() {
+        Ended::Failed(ErrorReason::ReadFailed)
+    } else {
+        Ended::Exited
+    };
+    Attempt {
+        ended,
+        output: output(&out, &err),
     }
 }
 
@@ -746,7 +931,7 @@ fn exited(child: &mut std::process::Child) -> std::io::Result<bool> {
     child.try_wait().map(|s| s.is_some())
 }
 
-/// Sends SIGKILL to the process group the child leads (see [`probe`]). The
+/// Sends SIGKILL to the process group the child leads (see [`attempt`]). The
 /// group id is the child's pid, and every caller runs this before the child
 /// is reaped, so the pid cannot have been reused and this cannot reach
 /// another process group.

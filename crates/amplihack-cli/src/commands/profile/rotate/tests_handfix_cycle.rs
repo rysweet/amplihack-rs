@@ -44,6 +44,7 @@ pub(super) fn m_spent(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErro
             reading,
             windows: Default::default(),
             spend_limit: false,
+            unknown: false,
         })
         .collect();
     let decision = decide(&ctx.settings, &Reading::Exhausted, &measured, None, now());
