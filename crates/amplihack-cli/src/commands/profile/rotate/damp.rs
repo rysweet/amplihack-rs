@@ -5,9 +5,13 @@
 //! to the hold. See "Rotate failed live probes" in
 //! docs/reference/profile-command.md.
 //!
-//! A key in the `$HOME` files fails every login's probe the same way, so
-//! [`keep_for_home_key`] turns that swap into a stay: it would change neither
-//! the billing nor the next reading.
+//! A key in the `$HOME` files fails the live probe whichever login is live.
+//! Candidates read normally, since each is probed through its own directory,
+//! but the one swapped in would then fail as well. So [`keep_for_home_key`]
+//! turns that swap into a stay: it would change neither the billing nor the
+//! next live reading. The cycle gives it only a key that
+//! [`reachable`](super::key_check::reachable) accepts: a stay on a dead login
+//! costs more than a useless hourly swap, so a doubtful key does not stop one.
 
 use super::decide::{Decision, Reading, Reason, held};
 use super::log::msg;

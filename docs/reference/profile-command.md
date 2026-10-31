@@ -2991,7 +2991,7 @@ consecutive cycles, including this one, whose live probe failed.
 |-----------|---------|----------|
 | `k < 3` | Stay. | `stay: live probe failed (<k>/3)` |
 | `k >= 3` and `now - swapped_at < hold` | Stay. | `stay: live probe failed; held after last swap (<N>s left)`, where `N = hold - (now - swapped_at)`, or `hold` if `swapped_at` is in the future |
-| A key is in the `$HOME` files and the API key is not live | Stay. | `stay: live probe failed; home key (<detail>) fails every login's probe, no swap`; see [API-key login check](#api-key-login-check) |
+| The [API-key login check](#api-key-login-check) passes on the `$HOME` files and the API key is not live | Stay. | `stay: live probe failed; home key (<detail>) applies to every login once live, a swap changes nothing`; see [API-key login check](#api-key-login-check) |
 | Otherwise | Swap to best. | `swap <from>-><to> live failed target s=<n>% w=<n>% reason=failed-probe` |
 
 `k` is kept in memory by `watch`. It is reset to `0` by a cycle whose live
@@ -5866,10 +5866,13 @@ So, while a plan login is live and one of these is present:
   ([decision order](#rotate-decision-order)). That loses nothing: Claude is
   already using the key, and the move would not change what is billed.
 - The rotator makes no [failed-probe swap](#rotate-failed-live-probes). The
-  next login would read as failed too, so the swap would change nothing. The
-  rotator stays on the live login and logs `stay: live probe failed; home key
-  (<detail>) fails every login's probe, no swap`. Swaps resume on the first
-  cycle after the key is removed, because the probes then read normally.
+  other logins still read normally, because each is probed through its own
+  directory and not these files. But the key applies to whichever
+  login is live, so the login swapped in would fail its live probe the same
+  way, and the billing would not change. The rotator stays on the live login
+  and logs `stay: live probe failed; home key (<detail>) applies to every
+  login once live, a swap changes nothing`. Swaps resume on the first cycle
+  after the key is removed, because the live probe then reads normally.
 
 No setting avoids this, so the rotator accepts these effects and says so. It
 logs `ALERT: home_key (<detail>): ...` once when it finds a key while a plan
@@ -5878,12 +5881,17 @@ no move fixes it. `profile overflow add` prints the same text as a warning. A
 key in the rotator's own process environment gets the `profile usage` warning
 instead.
 
-The ALERT, the warning and the failed-probe stay do not use the check above.
-That check decides whether a move is allowed, so it refuses a symlink, a file
-others can write and a file it cannot parse. Claude may still read such a
+The failed-probe stay uses the check above: it needs a key in a file that
+check accepts. With a key only in a file the check rejects, the swap goes
+ahead. It may be useless, but a stay on a login that is really dead would be
+worse.
+
+The ALERT and the warning do not use the check above. That check decides
+whether a move is allowed, so it refuses a symlink, a file others can write
+and a file it cannot parse. Claude may still read such a
 file, so a warning that money is being spent cannot depend on those rules. A
 separate read of the same two files follows a symlink, ignores owner and mode,
-and lets neither file hide the other. It allows no move and returns only the
+and lets neither file hide the other. It decides nothing and returns only the
 setting's name. A file it cannot open or parse, or one over 32 MiB, counts as
 holding no key. It has not been shown that Claude reads a symlinked settings
 file: the Claude 2.1.316 results cover regular files only, so with a symlinked

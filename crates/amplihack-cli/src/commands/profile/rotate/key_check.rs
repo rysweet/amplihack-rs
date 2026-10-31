@@ -32,7 +32,9 @@
 //! being spent. A file that fails the evidence rules must not allow a move,
 //! but Claude may still read it, so a warning cannot depend on them: it
 //! follows a symlink, ignores owner and mode, and reads each file on its own.
-//! It never allows anything, and it returns only the setting's name.
+//! It never allows anything and decides nothing, and it returns only the
+//! setting's name. The failed-probe stay is a decision, so it uses
+//! [`reachable`] (`observe::decide_measured`).
 
 use crate::commands::profile::auto_switch::kit::{
     CLAUDE_JSON, MAX_CLAUDE_JSON, euid, read_bounded_nofollow, writable_by_others,
@@ -79,10 +81,10 @@ pub fn reachable(home: &Path) -> Result<&'static str, String> {
 }
 
 /// The key setting in `<home>/.claude.json` or `<home>/.claude/settings.json`,
-/// for warnings and for knowing that no login reads differently. This is not
-/// evidence for a move: [`reachable`] is. A symlink is followed, owner and
-/// mode are ignored, and a file that cannot be read or parsed, or is over
-/// [`MAX_CLAUDE_JSON`], counts as holding no key without hiding the other.
+/// for warnings only. This is not evidence for any decision: [`reachable`]
+/// is. A symlink is followed, owner and mode are ignored, and a file that
+/// cannot be read or parsed, or is over [`MAX_CLAUDE_JSON`], counts as
+/// holding no key without hiding the other.
 pub fn home_key(home: &Path) -> Option<&'static str> {
     let claude = lenient_object(&home.join(CLAUDE_JSON));
     if claude.is_some_and(|m| in_claude_json(&m)) {

@@ -290,9 +290,9 @@ fn a_symlinked_settings_key_still_alerts() {
     assert!(!log.iter().any(|l| l.contains("SENTINEL-1804-KEY")));
 }
 
-/// `work`'s probe fails and `spare`, a plan login with room, reads well, as
-/// `spare` would never do under a home key: this measures the worst case for
-/// the swap, one that looks useful.
+/// `work`'s probe fails and `spare`, a plan login with room, reads well. A
+/// home key does not change that: `spare` is probed through its own directory
+/// and fails only once it is live. So the swap looks useful, and is not.
 fn live_probe_fails(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let failed = Probed {
         reading: Reading::Failed,
@@ -345,8 +345,8 @@ fn failed_probes_swap_when_no_home_key_explains_them() {
     );
 }
 
-/// A home key fails every login's probe, so the swap changes nothing, however
-/// many cycles pass: no hourly churn between logins.
+/// A home key applies to every login once it is live, so the swap changes
+/// nothing, however many cycles pass: no hourly churn between logins.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_home_key_stops_failed_probe_swaps_for_good() {
@@ -363,10 +363,38 @@ fn a_home_key_stops_failed_probe_swaps_for_good() {
     let log = f.logged();
     assert!(!log.iter().any(|l| l.starts_with("swap ")), "{log:?}");
     let stays = log.iter().filter(|l| {
-        *l == "stay: live probe failed; home key (primaryApiKey set) fails every login's probe, no swap"
+        *l == "stay: live probe failed; home key (primaryApiKey set) applies to every login once live, a swap changes nothing"
     });
     assert_eq!(stays.count(), 4, "{log:?}");
     assert!(c.failed_live >= 6, "the count goes on: {}", c.failed_live);
+}
+
+/// A symlinked key may never reach Claude, so the warning reader's view of it
+/// is no ground to stay. The live login may simply be dead: the swap goes
+/// ahead, and the ALERT still says the key might be billing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_key_the_login_check_rejects_does_not_stop_a_failed_probe_swap() {
+    let f = fx();
+    let target = f.home.join("dotfiles-settings.json");
+    private(&target, r#"{"apiKeyHelper":"echo SENTINEL-1804-KEY"}"#);
+    std::os::unix::fs::symlink(&target, f.home.join(".claude/settings.json")).unwrap();
+    assert!(super::key_check::reachable(&f.home).is_err());
+    assert!(super::key_check::home_key(&f.home).is_some());
+    let mut c = failing(&f);
+    let got = run_cycle(&mut c, Mode::Watch).unwrap();
+    let log = f.logged();
+    assert_eq!(got, CycleOutcome::Swapped, "{log:?}");
+    assert!(
+        log.iter().any(|l| l.ends_with("reason=failed-probe")),
+        "{log:?}"
+    );
+    assert!(!log.iter().any(|l| l.contains("home key (")), "{log:?}");
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("ALERT: home_key (apiKeyHelper set): ")),
+        "{log:?}"
+    );
 }
 
 /// On a live API-key profile the key is the login in use, not a surprise.

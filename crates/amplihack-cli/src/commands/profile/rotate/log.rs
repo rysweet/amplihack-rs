@@ -270,10 +270,13 @@ pub mod msg {
         format!("stay: live probe failed; held after last swap ({secs}s left)")
     }
 
-    /// Failed live probes would swap, but a `$HOME` key fails every login's
-    /// probe, so the swap would fix nothing.
+    /// Failed live probes would swap, but a `$HOME` key applies to whichever
+    /// login is live, so the next one would fail its live probe and bill the
+    /// same. Candidates still read normally: they have their own directory.
     pub fn stay_home_key(setting: &str) -> String {
-        format!("stay: live probe failed; home key ({setting}) fails every login's probe, no swap")
+        format!(
+            "stay: live probe failed; home key ({setting}) applies to every login once live, a swap changes nothing"
+        )
     }
 
     pub fn hand_change(live: &ProfileName) -> String {
