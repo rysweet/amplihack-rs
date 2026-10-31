@@ -17,7 +17,9 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
-context: {}
+context:
+  # Issue #1740: set by select-workflow; quick-change runs skip these steps.
+  selected_workflow: ""
 
 steps:
   # ─────────────────────────────────────────────────────────────────────────
@@ -28,7 +30,7 @@ steps:
   - id: "reflect-round-1"
     type: "agent"
     condition: |
-      'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result
+      'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result and selected_workflow != 'quick-change'
     agent: "amplihack:core:reviewer"
     prompt: |
       Evaluate goal achievement after round 1.
@@ -119,7 +121,7 @@ steps:
   - id: "execute-round-2"
     type: "agent"
     condition: |
-      reflection_1 and (reflection_1.goal_status == 'PARTIAL' or reflection_1.goal_status == 'NOT_ACHIEVED' or reflection_1.goal_status == 'HOLLOW')
+      reflection_1 and (reflection_1.goal_status == 'PARTIAL' or reflection_1.goal_status == 'NOT_ACHIEVED' or reflection_1.goal_status == 'HOLLOW') and selected_workflow != 'quick-change'
     agent: "amplihack:core:builder"
     prompt: |
       Round 1 was incomplete. Continue from where it left off.
@@ -136,7 +138,7 @@ steps:
   - id: "reflect-round-2"
     type: "agent"
     condition: |
-      round_2_result and (reflection_1.goal_status == 'PARTIAL' or reflection_1.goal_status == 'NOT_ACHIEVED')
+      round_2_result and (reflection_1.goal_status == 'PARTIAL' or reflection_1.goal_status == 'NOT_ACHIEVED') and selected_workflow != 'quick-change'
     agent: "amplihack:core:reviewer"
     prompt: |
       Evaluate goal achievement after round 2.
@@ -174,7 +176,7 @@ steps:
   - id: "execute-round-3"
     type: "agent"
     condition: |
-      reflection_2 and (reflection_2.goal_status == 'PARTIAL' or reflection_2.goal_status == 'NOT_ACHIEVED')
+      reflection_2 and (reflection_2.goal_status == 'PARTIAL' or reflection_2.goal_status == 'NOT_ACHIEVED') and selected_workflow != 'quick-change'
     agent: "amplihack:core:builder"
     prompt: |
       Final round. Complete as much remaining work as possible.
@@ -190,7 +192,7 @@ steps:
 
   - id: "reflect-final"
     type: "agent"
-    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result"
+    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and round_1_result and selected_workflow != 'quick-change'"
     agent: "amplihack:core:reviewer"
     prompt: |
       Final assessment after all execution rounds.

@@ -25,8 +25,10 @@ pub const COORDINATION_PREFIX: &str = "[coord]";
 /// not from code changes. A marked request for a code change that
 /// [`is_explicit_work_request`] does not recognise, such as
 /// `please fix the parser` or `fix the tests that failed`, or one that the
-/// throttle holds back, must still reach `default-workflow` through
-/// dev-orchestrator: that is the downstream invariant in `routing_prompt.txt`.
+/// throttle holds back, must still reach dev-orchestrator, which routes it to
+/// `default-workflow` or, for a small single-workstream change or a
+/// `-c workflow=quick-change` override, to `quick-change`: that is the
+/// downstream invariant in `routing_prompt.txt`.
 pub const COORDINATION_NOTE: &str = "[coordination] This message starts with the [coord] marker \
      and is coordination traffic between sessions. Answer it or act on it directly, \
      without dev-orchestrator, smart-orchestrator or a recipe. \

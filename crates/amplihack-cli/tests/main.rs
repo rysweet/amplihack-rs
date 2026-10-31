@@ -146,6 +146,26 @@ mod issue_1699_isolated_profile_root;
 mod issue_1699_real_root_guard;
 #[path = "issue_1707_claim_check_shell_suites.rs"]
 mod issue_1707_claim_check_shell_suites;
+#[path = "issue_1740_checks_tool.rs"]
+mod issue_1740_checks_tool;
+#[path = "issue_1740_diff_limits.rs"]
+mod issue_1740_diff_limits;
+#[path = "issue_1740_diff_limits_awk.rs"]
+mod issue_1740_diff_limits_awk;
+#[path = "issue_1740_diff_limits_guards.rs"]
+mod issue_1740_diff_limits_guards;
+#[path = "issue_1740_diff_limits_shared_config.rs"]
+mod issue_1740_diff_limits_shared_config;
+#[path = "issue_1740_quick_change_recipe.rs"]
+mod issue_1740_quick_change_recipe;
+#[path = "issue_1740_quick_change_steps.rs"]
+mod issue_1740_quick_change_steps;
+#[path = "issue_1740_routing_recipes.rs"]
+mod issue_1740_routing_recipes;
+#[path = "issue_1740_select_workflow.rs"]
+mod issue_1740_select_workflow;
+#[path = "issue_1740_state_gates.rs"]
+mod issue_1740_state_gates;
 #[path = "issue_1760_agent_markers.rs"]
 mod issue_1760_agent_markers;
 #[path = "issue_1760_agent_profile_resolved.rs"]
