@@ -5,8 +5,6 @@
 //! Contract (`rotate::plan_room`):
 //! - `has_room(&Reading) -> bool`: a `Measured` reading with session and
 //!   week both below 100. `Failed` and `Exhausted` never have room.
-//! - `any_room(impl IntoIterator<Item = &Reading>) -> bool`: any of them
-//!   has room.
 //! - `choose(&Settings, live: Option<&Measured>, plan: &[Measured]) ->
 //!   Option<ProfileName>`: pass 1 takes logins with session < `session_at`
 //!   and week < 100; pass 2, only when pass 1 (the live login included) is
@@ -32,7 +30,7 @@
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Win, Windows};
 use super::ledger::OverflowBlock;
 use super::overflow::{OverflowInput, Tag, Verdict, decide_overflow};
-use super::plan_room::{any_room, choose, has_room};
+use super::plan_room::{choose, has_room};
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::OverflowEntry;
@@ -197,7 +195,7 @@ fn the_plan_room_reason_is_logged_as_plan_room() {
     assert_eq!(Reason::PlanRoom.as_str(), "plan-room");
 }
 
-// --- has_room and any_room ---------------------------------------------------------
+// --- has_room ----------------------------------------------------------------------
 
 #[test]
 fn room_means_a_measured_reading_below_100_in_both_windows() {
@@ -216,17 +214,6 @@ fn room_means_a_measured_reading_below_100_in_both_windows() {
     );
     assert!(!has_room(&Reading::Exhausted));
     assert!(!has_room(&Reading::Failed), "a failed probe never has room");
-}
-
-#[test]
-fn any_room_is_false_for_nothing_failed_or_exhausted() {
-    assert!(!any_room(std::iter::empty::<&Reading>()));
-    assert!(!any_room([&Reading::Failed, &Reading::Exhausted]));
-    let roomy = Reading::Measured {
-        session: 99.0,
-        week: 50.0,
-    };
-    assert!(any_room([&Reading::Failed, &roomy]));
 }
 
 // --- choose ------------------------------------------------------------------------

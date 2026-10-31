@@ -96,6 +96,8 @@ fn compute(
         blocked: &[],
         gate: None,
         platform: None,
+        not_plan: &[],
+        kinds_unknown: false,
     };
     super::capacity::compute(profiles, evidence, cfg, &none, now, writer)
 }
@@ -235,6 +237,8 @@ fn overflow_case_cred(
         blocked,
         gate,
         platform: None,
+        not_plan: &[],
+        kinds_unknown: false,
     };
     super::capacity::compute(
         &names(&["a", "b", "cred"]),
@@ -309,6 +313,8 @@ fn file_and_selection(threshold: u8, a: Reading, b: Reading, cred_pct: f64) -> (
         blocked: &[],
         gate: Some(GATE),
         platform: None,
+        not_plan: &[],
+        kinds_unknown: false,
     };
     let profiles = names(&["a", "b", "cred"]);
     let cred = reading(win(cred_pct, T + HOUR), None, T);

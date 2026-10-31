@@ -29,11 +29,6 @@ pub fn has_room(r: &Reading) -> bool {
     }
 }
 
-/// Whether any of `readings` has room.
-pub fn any_room<'a>(readings: impl IntoIterator<Item = &'a Reading>) -> bool {
-    readings.into_iter().any(has_room)
-}
-
 /// The plan login to move to for room, if any. Pass 1 takes the logins with
 /// session below `--session-at` and week below 100; pass 2, only when pass
 /// 1 is empty (the live login included), takes those with room. Each pass

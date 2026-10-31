@@ -315,7 +315,7 @@ fn the_default_check_passes_a_profile_with_a_key_and_never_logs_the_value() {
         "{raw}"
     );
     assert!(!raw.contains("SENTINEL-1804-KEY"), "the key value leaked");
-    let ledger = fs::read_to_string(&f.rs.ledger).unwrap_or_default();
+    let ledger = fs::read_to_string(&f.rs.ledger).unwrap();
     assert!(!ledger.contains("SENTINEL-1804-KEY"));
 }
 
@@ -367,8 +367,11 @@ fn a_failing_check_never_puts_a_key_value_in_the_log_or_ledger() {
     );
     let raw = fs::read_to_string(&f.rs.log).unwrap();
     assert!(!raw.contains("SENTINEL-1804-KEY"));
-    let ledger = fs::read_to_string(&f.rs.ledger).unwrap_or_default();
-    assert!(!ledger.contains("SENTINEL-1804-KEY"));
+    // The refusal writes no journal entry, so the ledger may not exist.
+    match fs::read_to_string(&f.rs.ledger) {
+        Ok(ledger) => assert!(!ledger.contains("SENTINEL-1804-KEY")),
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+    }
 }
 
 // --- A move onto a credit profile (D4) ------------------------------------------------
@@ -458,4 +461,24 @@ fn a_move_onto_credits_writes_the_per_token_line_with_its_tier_and_no_login_chec
     .unwrap_or_else(|| panic!("no overflow: on line: {log:?}"));
     assert!(reason < swap && swap < on, "{log:?}");
     assert!(!log.iter().any(|l| l.starts_with("moved ")), "{log:?}");
+}
+
+/// The rotator with a corrupt `.auto-switch`: `tiers_detail` gives no tiers,
+/// so an unmarked-by-corruption credit profile is a candidate like a plan
+/// login. This pins today's behaviour; see the issue linked in the PR.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_corrupt_auto_switch_file_loses_the_marks_for_the_rotator() {
+    let f = fx_credits();
+    private(&f.root.join(".auto-switch"), "this is not a setting\n");
+    let c = f.ctx(|_, _| panic!("no login check"));
+    let state = crate::commands::profile::auto_switch::kit::State::new(&f.root).unwrap();
+    let snap = super::observe::snapshot(&c, &state).unwrap();
+    assert!(snap.overflow.is_empty(), "{:?}", snap.overflow);
+    assert!(
+        snap.candidates.contains(&n(CREDITS)),
+        "{:?}",
+        snap.candidates
+    );
+    assert!(!snap.candidates.contains(&n(KEY)), "{:?}", snap.candidates);
 }

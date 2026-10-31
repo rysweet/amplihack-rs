@@ -436,6 +436,8 @@ fn auto_switch_spends_at(threshold: u8, g: Gate, live: f64, spare: f64, resets_i
         blocked: &[],
         gate: Some(g),
         platform: None,
+        not_plan: &[],
+        kinds_unknown: false,
     };
     select_with_overflow(&pool, &ov, "work", |_| true).map(|p| p.to_string())
         == Some("cred".to_string())
@@ -519,6 +521,8 @@ fn auto_switch_returns(threshold: u8, g: Gate, session: f64, week: f64) -> bool 
         blocked: &[],
         gate: Some(g),
         platform: None,
+        not_plan: &[],
+        kinds_unknown: false,
     };
     let picked = select_with_overflow(&pool, &ov, "cred", |_| true).map(|p| p.to_string());
     let back = picked.as_deref() == Some("plan");

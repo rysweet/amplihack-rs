@@ -11,10 +11,14 @@
 //! Issue #1700: the order is the rotator's (`overflow::tiers`): the credit
 //! profiles, then the first API-key profile, whose block counts as one of
 //! the spend blocks. A corrupt `.auto-switch` gives no order at all.
-//! Issue #1804: only an API-key profile that `overflow=` marks is in it.
+//! Issue #1804: only an API-key profile that `overflow=` marks is in it, and
+//! every API-key profile is in `not_plan`, so none counts as a plan login.
+//! Kinds that cannot be read mean no profile is known to be free of per-token
+//! billing, so `kinds_unknown` stops every selection and capacity write.
 
 use super::candidate::OverflowPool;
 use super::config::Config;
+use crate::commands::profile::kind::Ctx;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{self, Gate};
 use crate::commands::profile::rotate;
@@ -28,36 +32,59 @@ pub struct OverflowInputs {
     pub gate: Option<Gate>,
     /// The API-key profile, last in `order`.
     pub platform: Option<ProfileName>,
+    /// Every API-key profile, marked or not: none is a plan login.
+    pub not_plan: Vec<ProfileName>,
+    /// Kinds could not be read: `order` and `not_plan` are empty, and
+    /// nothing may be selected.
+    pub kinds_unknown: bool,
+}
+
+/// What [`order_of`] reads from `.auto-switch` and the profiles.
+struct Order {
+    order: Vec<ProfileName>,
+    platform: Option<ProfileName>,
+    not_plan: Vec<ProfileName>,
 }
 
 /// The overflow order for `cfg` under `root`, by the rotator's rule
 /// (`overflow::tiers_of`): its credit entries, then the first marked
-/// API-key profile by name; and that profile. An API-key profile that
-/// `overflow=` does not mark is left out (issue #1804).
-fn order_of(
-    root: &Path,
-    cfg: &Config,
-    home: Option<&Path>,
-) -> (Vec<ProfileName>, Option<ProfileName>) {
+/// API-key profile by name; that profile; and every API-key profile. An
+/// API-key profile that `overflow=` does not mark is not in the order
+/// (issue #1804). `None` when kinds cannot be read. Parses `.claude.json`
+/// only for a profile with no login file, so this stays cheap on the status
+/// line.
+fn order_of(root: &Path, cfg: &Config, home: Option<&Path>) -> Option<Order> {
     let store = ProfileStore::new(root.to_path_buf());
-    let (tiers, _) = overflow::tiers_of(&store, home, cfg.overflow_order());
+    let kinds = Ctx::load(&store, home);
+    if kinds.corrupt() {
+        return None;
+    }
+    let not_plan = kinds.platform_profiles(&store);
+    let (tiers, _) = overflow::tiers_of(cfg.overflow_order(), &not_plan);
     let platform = tiers
         .iter()
         .find(|e| e.tier == overflow::PLATFORM_TIER)
         .map(|e| e.name.clone());
-    (tiers.into_iter().map(|e| e.name).collect(), platform)
+    Some(Order {
+        order: tiers.into_iter().map(|e| e.name).collect(),
+        platform,
+        not_plan,
+    })
 }
 
 impl OverflowInputs {
-    /// Reads what `cfg` needs; reads nothing when it has no overflow
-    /// profiles.
+    /// Reads what `cfg` needs. Kinds are always read, since an API-key
+    /// profile must stay out of the plan logins with nothing marked; the gate
+    /// and spend blocks are read only with overflow profiles.
     pub fn load(root: &Path, cfg: &Config, now: i64) -> Self {
-        let (order, platform) = order_of(root, cfg, usage_cmd::home_dir().as_deref());
-        if order.is_empty() {
-            return Self::none();
+        let Some(o) = order_of(root, cfg, usage_cmd::home_dir().as_deref()) else {
+            return Self::unknown();
+        };
+        if o.order.is_empty() {
+            return Self::without_order(o);
         }
         let (gate, source) = rotate::overflow_gate(root);
-        Self::with_gate(root, order, platform, gate, &source, now)
+        Self::with_gate(root, o, gate, &source, now)
     }
 
     /// [`Self::load`] with the gate already resolved (tests resolve it
@@ -70,17 +97,22 @@ impl OverflowInputs {
         now: i64,
     ) -> Self {
         // Tests: no home, so nothing outside the root is read.
-        let (order, platform) = order_of(root, cfg, None);
-        if order.is_empty() {
-            return Self::none();
+        let Some(o) = order_of(root, cfg, None) else {
+            return Self::unknown();
+        };
+        if o.order.is_empty() {
+            return Self::without_order(o);
         }
-        Self::with_gate(root, order, platform, gate.0, &gate.1, now)
+        Self::with_gate(root, o, gate.0, &gate.1, now)
     }
 
     fn with_gate(
         root: &Path,
-        order: Vec<ProfileName>,
-        platform: Option<ProfileName>,
+        Order {
+            order,
+            platform,
+            not_plan,
+        }: Order,
         gate: Option<Gate>,
         source: &rotate::GateSource,
         now: i64,
@@ -105,6 +137,8 @@ impl OverflowInputs {
                     blocked,
                     gate,
                     platform,
+                    not_plan,
+                    kinds_unknown: false,
                 }
             }
             Err(e) => {
@@ -114,18 +148,34 @@ impl OverflowInputs {
                     blocked: Vec::new(),
                     gate: None,
                     platform,
+                    not_plan,
+                    kinds_unknown: false,
                 }
             }
         }
     }
 
-    /// No overflow profiles.
-    pub fn none() -> Self {
+    /// No overflow profiles, and `o.not_plan` still kept from the plan logins.
+    fn without_order(o: Order) -> Self {
         Self {
             order: Vec::new(),
             blocked: Vec::new(),
             gate: None,
             platform: None,
+            not_plan: o.not_plan,
+            kinds_unknown: false,
+        }
+    }
+
+    /// Kinds could not be read: nothing may be selected.
+    fn unknown() -> Self {
+        Self {
+            order: Vec::new(),
+            blocked: Vec::new(),
+            gate: None,
+            platform: None,
+            not_plan: Vec::new(),
+            kinds_unknown: true,
         }
     }
 
@@ -156,6 +206,8 @@ impl OverflowInputs {
             blocked: &self.blocked,
             gate: self.gate,
             platform: self.platform.as_ref(),
+            not_plan: &self.not_plan,
+            kinds_unknown: self.kinds_unknown,
         }
     }
 }

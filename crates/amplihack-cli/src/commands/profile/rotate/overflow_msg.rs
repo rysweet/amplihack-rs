@@ -16,15 +16,6 @@ pub fn switch_platform_note(name: &ProfileName) -> String {
     )
 }
 
-/// What let the plan reset wait pass, for [`per_token_reason`].
-#[derive(Clone, Copy)]
-pub enum GateNote {
-    /// The earliest plan reset, more than `overflow_wait` away.
-    Earliest(i64),
-    /// No reading reports a reset; `--overflow-unknown-reset 1` allowed it.
-    Unknown,
-}
-
 /// What a per-token profile passed, for [`per_token_reason`].
 #[derive(Clone, Copy)]
 pub enum CheckNote {
@@ -35,15 +26,19 @@ pub enum CheckNote {
 }
 
 /// Why a move onto per-token profile `to` was allowed (issue #1804), written
-/// before the swap line. Everything here is fixed text, a tier or a time, so
-/// nothing from a profile file can reach the log.
-pub fn per_token_reason(to: &ProfileName, tier: u8, gate: GateNote, check: CheckNote) -> String {
-    let gate = match gate {
-        GateNote::Earliest(at) => {
-            format!("overflow_wait elapsed (earliest reset {})", timestamp(at))
-        }
-        GateNote::Unknown => "reset unknown".to_string(),
-    };
+/// before the swap line. `earliest` is the earliest plan reset, `None` when
+/// no reading reports one. Everything here is fixed text, a tier or a time,
+/// so nothing from a profile file can reach the log.
+pub fn per_token_reason(
+    to: &ProfileName,
+    tier: u8,
+    earliest: Option<i64>,
+    check: CheckNote,
+) -> String {
+    let gate = earliest.map_or_else(
+        || "reset unknown".to_string(),
+        |at| format!("overflow_wait elapsed (earliest reset {})", timestamp(at)),
+    );
     let check = match check {
         CheckNote::Key(detail) => format!("login check passed ({detail})"),
         CheckNote::Credit => "probe ok, no spend limit".to_string(),

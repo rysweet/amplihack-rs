@@ -314,18 +314,6 @@ fn an_unknown_reset_is_far_only_with_the_opt_in() {
     assert!(opt_in.far(None, NOW));
 }
 
-#[test]
-fn the_gate_never_allows_overflow_while_a_plan_profile_has_capacity() {
-    let g = Gate {
-        wait: 0,
-        unknown_reset: true,
-        ..gate(&settings())
-    };
-    assert!(!g.allows(true, Some(NOW + 100 * HOUR), NOW));
-    assert!(!g.allows(true, None, NOW));
-    assert!(g.allows(false, Some(NOW + 1), NOW));
-}
-
 // --- P1: no overflow profiles means today's decide() -----------------------
 
 #[test]

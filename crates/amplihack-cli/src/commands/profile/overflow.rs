@@ -6,8 +6,13 @@
 //!
 //! An overflow profile is a login that costs money per use (today: a Claude
 //! account billed to usage credits). The rotator and auto-switch move onto
-//! one only when [`Gate::allows`] says so, and both leave it as soon as a
-//! plan profile has capacity again.
+//! one only when the rotator's and auto-switch's deciders, using [`Gate::far`],
+//! allow it, and both leave it as soon as a plan profile has capacity again.
+//!
+//! An API-key profile is never a plan login, marked or not (issue #1804). It
+//! has no usage reading, and "no reading" must not count as free capacity, so
+//! it is a target only as the one API-key tier from [`tiers_of`]. Every
+//! decider leaves all other API-key profiles out of its plan logins.
 //!
 //! `add` and `remove` change the file through `config::update`, under the
 //! auto-switch state lock, so a concurrent `auto-switch exclude` or `on`, or
@@ -98,17 +103,6 @@ impl Gate {
             Some(t) => t.saturating_sub(now) > i64::try_from(self.wait).unwrap_or(i64::MAX),
         }
     }
-
-    /// Whether work may move onto an overflow profile: no plan profile has
-    /// capacity and [`Self::far`] holds.
-    pub fn allows(
-        &self,
-        plan_has_capacity: bool,
-        earliest_plan_reset: Option<i64>,
-        now: i64,
-    ) -> bool {
-        !plan_has_capacity && self.far(earliest_plan_reset, now)
-    }
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -157,20 +151,11 @@ pub fn overflow_names(root: &Path) -> Vec<ProfileName> {
     overflow_entries(root).into_iter().map(|e| e.name).collect()
 }
 
-/// Every tier the rotator and auto-switch try, in order: the `overflow=`
-/// entries without API-key profiles, then the first API-key profile by name
-/// that `overflow=` names, at [`PLATFORM_TIER`] whatever tier is written
-/// (issue #1700). Issue #1804: the mark is the consent to per-token billing,
-/// so an API-key profile that `overflow=` does not name is never a tier.
-/// Empty when `.auto-switch` is corrupt, so a damaged file never spends, on
-/// credits or on the API key. `home` is the user's home directory.
-#[cfg(all(test, unix))]
-pub fn tiers(store: &ProfileStore, home: &Path) -> Vec<OverflowEntry> {
-    tiers_detail(store, Some(home)).0
-}
-
-/// [`tiers`], and the marked API-key profiles that are not used because
-/// another comes first by name.
+/// Every tier the rotator and auto-switch try, in order, and the marked
+/// API-key profiles that are not used because another comes first by name.
+/// See [`tiers_of`] for the order. Both are empty when `.auto-switch` is
+/// corrupt, so a damaged file never spends, on credits or on the API key.
+/// `home` is the user's home directory.
 #[cfg(unix)]
 pub fn tiers_detail(
     store: &ProfileStore,
@@ -182,22 +167,24 @@ pub fn tiers_detail(
         FileState::Missing => Vec::new(),
         FileState::Corrupt => return (Vec::new(), Vec::new()),
     };
-    tiers_of(store, home, marked)
-}
-
-/// [`tiers_detail`] for the entries `marked`, already read from
-/// `.auto-switch` (auto-switch holds its own copy of the file).
-#[cfg(unix)]
-pub fn tiers_of(
-    store: &ProfileStore,
-    home: Option<&Path>,
-    marked: Vec<OverflowEntry>,
-) -> (Vec<OverflowEntry>, Vec<ProfileName>) {
     let kinds = super::kind::Ctx::load(store, home);
     if kinds.corrupt() {
         return (Vec::new(), Vec::new());
     }
-    let platforms = kinds.platform_profiles(store);
+    tiers_of(marked, &kinds.platform_profiles(store))
+}
+
+/// The tiers of the entries `marked`, given every API-key profile: the
+/// entries that are not API-key profiles, then the first API-key profile by
+/// name that `marked` names, at [`PLATFORM_TIER`] whatever tier is written
+/// (issue #1700). Issue #1804: the mark is the consent to per-token billing,
+/// so an API-key profile that `marked` does not name is never a tier. The
+/// second list is the marked API-key profiles after the first. Pure.
+#[cfg(unix)]
+pub fn tiers_of(
+    marked: Vec<OverflowEntry>,
+    platforms: &[ProfileName],
+) -> (Vec<OverflowEntry>, Vec<ProfileName>) {
     let (keys, mut out): (Vec<OverflowEntry>, Vec<OverflowEntry>) = marked
         .into_iter()
         .partition(|e| platforms.contains(&e.name));
@@ -224,8 +211,9 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
             let key = super::kind::Ctx::load(store, home.as_deref()).kind(store, &name)
                 == super::kind::Kind::Platform;
             // Issue #1804: an API-key profile is always the last tier, so
-            // its mark is stored as the bare name and `--tier` is refused
-            // before anything is written.
+            // its mark is stored as the bare name, `tiers_of` applies the
+            // tier when reading, and `--tier` is refused before anything is
+            // written.
             if key && tier.is_some() {
                 return Err(ProfileError::PlatformTierFixed(name.to_string()));
             }

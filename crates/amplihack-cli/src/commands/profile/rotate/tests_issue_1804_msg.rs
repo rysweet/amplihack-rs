@@ -3,9 +3,9 @@
 //! I/O.
 //!
 //! Contract (`overflow_msg`, re-exported through `log::msg`):
-//! - `GateNote::{Earliest(i64), Unknown}` and
+//! - The earliest plan reset, `None` when unknown, and
 //!   `CheckNote::{Key(&'static str), Credit}`.
-//! - `per_token_reason(to: &ProfileName, tier: u8, gate: GateNote, check:
+//! - `per_token_reason(to: &ProfileName, tier: u8, earliest: Option<i64>, check:
 //!   CheckNote) -> String`, one line:
 //!   `per-token <to>: no plan login below 100%; <gate>; marked overflow
 //!   tier <tier> via profile overflow add; <check>`, where `<gate>` is
@@ -30,7 +30,7 @@ use super::identify::LiveId;
 use super::log::{msg, timestamp};
 use super::observe::Snap;
 use super::overflow::{OverflowInput, Tag, decide_overflow};
-use super::overflow_msg::{CheckNote, GateNote, per_token_reason};
+use super::overflow_msg::{CheckNote, per_token_reason};
 use super::pin::PinState;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
@@ -52,7 +52,7 @@ fn the_api_key_line_names_the_rule_gate_mark_and_check_in_order() {
     let line = per_token_reason(
         &n("api-key"),
         PLATFORM_TIER,
-        GateNote::Earliest(at),
+        Some(at),
         CheckNote::Key("primaryApiKey set"),
     );
     assert_eq!(
@@ -71,7 +71,7 @@ fn an_unknown_reset_is_named_as_such() {
     let line = per_token_reason(
         &n("api-key"),
         PLATFORM_TIER,
-        GateNote::Unknown,
+        None,
         CheckNote::Key("apiKeyHelper set"),
     );
     assert_eq!(
@@ -85,12 +85,7 @@ fn an_unknown_reset_is_named_as_such() {
 #[test]
 fn a_credit_line_names_its_tier_and_the_probe_not_a_login_check() {
     let at = NOW + 3600;
-    let line = per_token_reason(
-        &n("team-credits"),
-        2,
-        GateNote::Earliest(at),
-        CheckNote::Credit,
-    );
+    let line = per_token_reason(&n("team-credits"), 2, Some(at), CheckNote::Credit);
     assert_eq!(
         line,
         format!(
@@ -106,7 +101,7 @@ fn a_credit_line_names_its_tier_and_the_probe_not_a_login_check() {
 #[test]
 fn the_per_token_line_is_a_single_line() {
     for check in [CheckNote::Key("ANTHROPIC_API_KEY set"), CheckNote::Credit] {
-        for gate in [GateNote::Earliest(NOW), GateNote::Unknown] {
+        for gate in [Some(NOW), None] {
             let line = per_token_reason(&n("api-key"), PLATFORM_TIER, gate, check);
             assert!(!line.contains('\n') && !line.contains('\r'), "{line:?}");
         }

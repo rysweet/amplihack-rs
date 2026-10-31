@@ -130,6 +130,8 @@ impl Case {
             blocked: &self.blocked,
             gate: Some(GATE),
             platform: Some(&self.console),
+            not_plan: &[],
+            kinds_unknown: false,
         };
         candidate::select_with_overflow(&pool, &ov, current, eligible).map(|p| p.to_string())
     }

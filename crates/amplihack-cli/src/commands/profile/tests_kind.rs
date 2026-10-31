@@ -40,7 +40,7 @@ use super::kind::{
     Ctx, Evidence, Kind, KindSource, Resolved, guard, platform_profiles, resolve, resolve_from,
 };
 use super::name::ProfileName;
-use super::overflow::{OverflowEntry, PLATFORM_TIER, tiers};
+use super::overflow::{OverflowEntry, PLATFORM_TIER, tiers_detail};
 use super::rotate::identify::LoginKind;
 use super::store::ProfileStore;
 use std::fs;
@@ -486,6 +486,10 @@ fn platform_profiles_are_sorted_and_follow_overrides() {
 }
 
 // --- tiers ----------------------------------------------------------------------------------
+
+fn tiers(store: &ProfileStore, home: &Path) -> Vec<OverflowEntry> {
+    tiers_detail(store, Some(home)).0
+}
 
 #[test]
 fn tiers_strip_api_key_profiles_from_overflow_and_append_the_first_at_tier_10() {

@@ -265,6 +265,8 @@ impl Over {
             blocked: &self.blocked,
             gate: self.gate,
             platform: None,
+            not_plan: &[],
+            kinds_unknown: false,
         }
     }
 

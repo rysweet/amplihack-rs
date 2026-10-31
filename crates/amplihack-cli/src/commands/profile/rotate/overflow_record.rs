@@ -13,7 +13,7 @@ use super::ledger::{
 use super::log::{Sink, msg};
 use super::observe::{Snap, live_name};
 use super::overflow::Tag;
-use super::overflow_msg::{CheckNote, GateNote};
+use super::overflow_msg::CheckNote;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Rotated, capacity_from_rotation, now};
 use crate::commands::profile::name::ProfileName;
@@ -126,9 +126,11 @@ pub fn note_per_token(
     if tag != Some(Tag::In) {
         return;
     }
-    let gate = next_plan_reset.map_or(GateNote::Unknown, GateNote::Earliest);
     if let Some(e) = snap.overflow.iter().find(|e| &e.name == to) {
-        out.emit(now(), &msg::per_token_reason(to, e.tier, gate, check));
+        out.emit(
+            now(),
+            &msg::per_token_reason(to, e.tier, next_plan_reset, check),
+        );
     }
 }
 

@@ -102,6 +102,12 @@ pub struct OverflowPool<'a> {
     /// The API-key profile (issue #1700), also last in `order`. Its block,
     /// when active, is in `blocked`.
     pub platform: Option<&'a ProfileName>,
+    /// Every API-key profile, marked or not (issue #1804). None is a plan
+    /// login: only `order` makes one a target.
+    pub not_plan: &'a [ProfileName],
+    /// Kinds could not be read, so any profile may bill per token: nothing
+    /// is selected.
+    pub kinds_unknown: bool,
 }
 
 /// A reading's adjusted (session, week) use: five-hour and seven-day, 0 for
@@ -228,6 +234,9 @@ pub fn overflow_usable(name: &str, blocked: &[String]) -> bool {
 /// overflow exists for, and the rotator ignores that reading too.
 ///
 /// Without a gate (overflow closed) this is [`select`] on the plan profiles.
+/// With kinds unknown it is `None`. An API-key profile ([`OverflowPool::not_plan`])
+/// is never one of the plan profiles, and a session on an unmarked one never
+/// moves onto the API-key tier.
 /// A plan profile with no reading never counts as capacity or room in steps
 /// 4 and 5; if it is eligible, step 1 has already picked it.
 pub fn select_with_overflow<'a>(
@@ -236,9 +245,12 @@ pub fn select_with_overflow<'a>(
     current: &str,
     eligible: impl Fn(&ProfileName) -> bool,
 ) -> Option<&'a ProfileName> {
-    let is_overflow = |p: &ProfileName| ov.order.contains(p);
+    if ov.kinds_unknown {
+        return None;
+    }
     let mut plan_exclude = pool.exclude.to_vec();
     plan_exclude.extend(ov.order.iter().cloned());
+    plan_exclude.extend(ov.not_plan.iter().cloned());
     let plan_pool = Pool {
         profiles: pool.profiles,
         readings: pool.readings,
@@ -301,13 +313,8 @@ pub fn select_with_overflow<'a>(
     let plan: Vec<&ProfileName> = pool
         .profiles
         .iter()
-        .filter(|p| !is_overflow(p) && !pool.exclude.contains(p))
+        .filter(|p| !plan_exclude.contains(p))
         .collect();
-    let plan_has_capacity = plan.iter().any(|p| {
-        pool.readings
-            .get(p.as_str())
-            .is_some_and(|r| gate_capacity(r, &gate, pool.now))
-    });
     let current_reading = (!on_overflow).then(|| pool.readings.get(current)).flatten();
     let earliest = plan
         .iter()
@@ -330,10 +337,12 @@ pub fn select_with_overflow<'a>(
             };
         return fallback().or_else(|| with_room().filter(beats_current));
     }
-    if gate.allows(plan_has_capacity, earliest, pool.now)
+    let on_key = ov.not_plan.iter().any(|k| k.as_str() == current);
+    if gate.far(earliest, pool.now)
         && let Some(o) = ov.order.iter().find(|o| {
             let n = o.as_str();
             n != current
+                && !(on_key && Some(*o) == ov.platform)
                 && pool.profiles.contains(o)
                 && !pool.exclude.contains(o)
                 && overflow_usable(n, ov.blocked)

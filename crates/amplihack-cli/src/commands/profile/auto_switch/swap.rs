@@ -583,6 +583,10 @@ pub fn swap_check(
 /// Reads the ledger, `usage.json`, the spend blocks and the gate; no
 /// recovery, no `/proc` scan.
 fn overflow_precheck(state: &State, owner: &ProfileName, cfg: &Config, now: i64) -> Option<bool> {
+    // Nothing marked means no overflow account: skip reading every login.
+    if cfg.overflow_order().is_empty() {
+        return None;
+    }
     let ledger = state.load_ledger().ok()?;
     let account = ProfileName::parse(ledger.account_in(owner.as_str())).ok()?;
     // Issue #1700: the API-key profile is in the order too.
@@ -619,7 +623,11 @@ pub(super) fn overflow_may_move(
     readings
         .iter()
         .filter_map(|(name, r)| ProfileName::parse(name).ok().map(|n| (n, r)))
-        .filter(|(n, _)| !overflow.order.contains(n) && !cfg.exclude.contains(n))
+        .filter(|(n, _)| {
+            !overflow.order.contains(n)
+                && !overflow.not_plan.contains(n)
+                && !cfg.exclude.contains(n)
+        })
         .any(|(_, r)| candidate::way_off(Some(r), overflow.gate.as_ref(), cfg.threshold, now))
 }
 

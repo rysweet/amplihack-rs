@@ -262,18 +262,17 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         }
         // Per-token profiles only when no plan login, live included, has
         // room. A failed probe is no room.
-        let room = plan_room::any_room(
-            std::iter::once(&i.live.reading).chain(plan.iter().map(|c| &c.reading)),
-        );
+        let room = std::iter::once(&i.live.reading)
+            .chain(plan.iter().map(|c| &c.reading))
+            .any(plan_room::has_room);
         if room {
             let d = if choice.is_some() { d } else { Decision::Alert };
             return verdict(d, None, None);
         }
-        let plan_has_capacity = plan.iter().any(|c| plan_usable(s, &c.reading));
         let pool = std::iter::once((&i.live.reading, &i.live.windows))
             .chain(plan.iter().map(|c| (&c.reading, &c.windows)));
         let earliest = earliest_plan_reset(s, pool);
-        if gate.allows(plan_has_capacity, earliest, i.now)
+        if gate.far(earliest, i.now)
             && let Some(to) = next_in(false)
         {
             return verdict(swap(to, Reason::OverflowIn), Some(Tag::In), earliest);

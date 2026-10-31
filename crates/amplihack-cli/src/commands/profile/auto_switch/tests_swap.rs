@@ -381,6 +381,8 @@ mod overflow_precheck {
             blocked: blocked.iter().map(|b| b.to_string()).collect(),
             gate: Some(GATE),
             platform: None,
+            not_plan: Vec::new(),
+            kinds_unknown: false,
         }
     }
 

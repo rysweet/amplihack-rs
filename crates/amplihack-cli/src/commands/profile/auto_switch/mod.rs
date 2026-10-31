@@ -49,6 +49,8 @@ mod tests_contract;
 #[cfg(all(test, unix))]
 mod tests_exhausted_reset;
 #[cfg(all(test, unix))]
+mod tests_issue_1804;
+#[cfg(all(test, unix))]
 mod tests_liveness;
 #[cfg(all(test, unix))]
 mod tests_mv;

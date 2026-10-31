@@ -5661,11 +5661,23 @@ mark it with [`profile overflow add <name>`](#overflow-commands). The mark
 is your consent to per-token billing. An API-key profile that is not marked
 is never moved into `~/.claude` and never chosen for a launch or a rerun,
 whatever the readings; `overflow list` shows it as
-`api-key tier  not marked (not used)`. A [kind override](#kind-override) of
+`api-key tier  not marked (not used)`. An API-key profile also never counts
+as a plan login, marked or not: it has no usage reading, so it adds no plan
+capacity or room, and the capacity notice can report `low` or `exhausted`
+with one present. A [kind override](#kind-override) of
 `api-key` does not mark a profile, and neither does its name. There is no
 other switch: "overflow on" means that at least one profile is named in
 `overflow=`, and the API-key profile is used only when it is one of them and
 the [gate](#earliest-plan-reset) allows the move.
+
+If `.auto-switch` cannot be read while `AMPLIHACK_CLAUDE_AUTO_SWITCH=1` keeps
+auto-switch on, kinds are unknown: auto-switch selects no profile and writes
+no capacity file until the file is fixed.
+
+A session you start on an unmarked API-key profile stays there. It does not
+count as overflow, so auto-switch never moves it onto another API-key profile
+and, because a key reports no rate limits, does not move it off the key by
+itself. Move it yourself when you want it back on a plan login.
 
 ```bash
 amplihack profile overflow add api-key

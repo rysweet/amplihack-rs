@@ -10,7 +10,7 @@ use super::observe::{
     Measurement, live_alert, live_name, measure_and_decide, platform_block_reason, reading_of,
     snapshot,
 };
-use super::overflow_record::alert_line;
+use super::overflow_record::{alert_line, target_check};
 use super::pin::{self, Gate as PinGate};
 use super::swap;
 use crate::commands::profile::ProfileError;
@@ -133,9 +133,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             };
             // Issue #1804: the login check only reads files, so the preview
             // runs it too.
-            if snap.platform() == Some(&to)
-                && let Err(why) = (ctx.key_check)(&ctx.store, &to)
-            {
+            if let Err(why) = target_check(ctx, &snap, &to) {
                 out.emit(0, &msg::would_refuse(&to, &why));
                 return Ok(CycleOutcome::Alerted);
             }
