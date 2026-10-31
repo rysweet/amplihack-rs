@@ -538,6 +538,17 @@ fn is_executable_file(path: &Path) -> bool {
 
 /// Run `git clone --depth 1 <REPO_GIT_URL> <destination>`.
 fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
+    git_clone_framework_repo_with(git_path, destination, &|_| {})
+}
+
+/// [`git_clone_framework_repo`] with `configure` applied to the `git`
+/// command after its setup and just before the spawn. Tests use it to set
+/// the child's environment (issue #1765).
+fn git_clone_framework_repo_with(
+    git_path: &Path,
+    destination: &Path,
+    configure: &dyn Fn(&mut Command),
+) -> Result<()> {
     let stdout_file = tempfile::NamedTempFile::new()
         .context("failed to create temporary stdout file for git clone")?;
     let stderr_file = tempfile::NamedTempFile::new()
@@ -576,6 +587,7 @@ fn git_clone_framework_repo(git_path: &Path, destination: &Path) -> Result<()> {
             Ok(())
         });
     }
+    configure(&mut command);
     let mut child = command
         .spawn()
         .with_context(|| format!("failed to spawn git clone for {REPO_GIT_URL}"))?;
@@ -706,6 +718,8 @@ pub(super) fn find_compatible_framework_repo_root(root: &Path, source: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::commands::profile::ROOT_ENV;
 
     /// Accept everything: isolates the *ordering and bound* under test from
     /// the (separately tested) bundle compatibility rules.
@@ -1104,38 +1118,54 @@ mod tests {
         );
     }
 
+    /// Issue #1765: the fake outlives the bound by far and the bound is loose,
+    /// so only a timeout that never fires can fail it. The orphan writes its
+    /// marker 5 s after it starts, long after the 250 ms timeout, so a
+    /// surviving descendant has time to show itself before the check.
     #[cfg(unix)]
     #[test]
     fn git_clone_times_out_and_reaps_child() {
         let temp = tempfile::tempdir().unwrap();
         let marker = temp.path().join("orphan-marker");
+        let marker_text = marker.to_str().expect("temporary paths are UTF-8");
+        assert!(
+            !marker_text.contains(['\'', '\n']),
+            "cannot single-quote {marker_text:?} for /bin/sh"
+        );
         let fake = fake_git(
             temp.path(),
             &format!(
-                "(/bin/sleep 1; echo orphan > '{}') & echo started; /bin/sleep 5",
-                marker.display()
+                "(/bin/sleep 5; echo orphan > '{marker_text}') & echo started; exec /bin/sleep 60"
             ),
         );
         let start = Instant::now();
 
-        let err = git_clone_framework_repo(&fake, &temp.path().join("dest"))
-            .expect_err("hung git clone must time out");
-        let msg = format!("{err:#}");
+        let result = git_clone_framework_repo_with(
+            &fake,
+            &temp.path().join("dest"),
+            &|command: &mut Command| {
+                command.env("HOME", temp.path()).env_remove(ROOT_ENV);
+            },
+        );
+        let elapsed = start.elapsed();
 
         assert!(
-            start.elapsed() < Duration::from_secs(2),
-            "test timeout should be bounded, elapsed {:?}",
-            start.elapsed()
+            elapsed < Duration::from_secs(30),
+            "test timeout should be bounded, elapsed {elapsed:?}"
         );
+        let err = result.expect_err("hung git clone must time out");
+        let msg = format!("{err:#}");
         assert!(msg.contains("timed out"), "error must name timeout: {msg}");
         assert!(
             msg.contains("started"),
             "timeout error must include captured output: {msg}"
         );
-        thread::sleep(Duration::from_millis(1_200));
+        if let Some(remaining) = Duration::from_secs(6).checked_sub(start.elapsed()) {
+            thread::sleep(remaining);
+        }
         assert!(
             !marker.exists(),
-            "timeout cleanup must terminate git clone descendants"
+            "timeout cleanup must terminate git clone descendants (the call took {elapsed:?})"
         );
     }
 }

@@ -69,9 +69,11 @@ The version string comes from the `__version__` attribute in `amplihack/__init__
 | `recipe`     | Run, list, validate, and inspect workflow recipes.                                          |
 | `mode`       | Claude installation mode commands.                                                          |
 | `fleet`      | Manage coding agents across VMs.                                                            |
+| `agent`      | Register long-lived Claude sessions and resume them from their saved conversation after a terminal loss. `amplihack claude --supervise NAME` registers a session as it starts. |
 
 See the documentation for each subcommand:
 
+- [Agent Command Reference](./agent-command.md)
 - [Recipe CLI Reference](./recipe-cli-reference.md)
 - [Memory CLI Reference](./memory-cli-reference.md)
 - [Plugin CLI Reference](#)

@@ -2242,7 +2242,12 @@ deliberate evasion and a [non-goal](#what-this-does-not-stop).
 and inspections alike (`bash -n`, `command -v`, `bash -c '… gate'`).
 
 The program is the first word of each command after splitting at unquoted
-`;`, `&`, `|`, parentheses and newlines. Reserved words (`if`, `then`, `{`,
+`;`, `&`, `|`, parentheses and newlines. A backslash-newline is removed
+first, as the shell removes it, redirections are dropped and `$'…'`
+escapes are decoded, so `gh pr \` followed by `merge 38` on the next line,
+`>out gh pr merge 38` and `gh $'\x70r' merge 38` are refused. Builds
+before #1733, whose tmux guard now shares this tokeniser, allowed those
+three forms. Reserved words (`if`, `then`, `{`,
 `!`, …), `VAR=value` assignments and the wrappers `env`, `exec`, `command`,
 `nohup`, `time`, `nice`, `timeout` and `sudo` (with their options) are
 skipped. Nothing else is read. Quoted text (with `\'` escaped inside
