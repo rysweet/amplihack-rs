@@ -18,13 +18,30 @@
 
 use super::candidate::OverflowPool;
 use super::config::Config;
+use super::fsx;
+use super::state::CREDS;
 use crate::commands::profile::kind::Ctx;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{self, Gate};
+use crate::commands::profile::rotate::ledger::RotateState;
 use crate::commands::profile::rotate::{self, CheckNote};
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd;
 use std::path::Path;
+
+/// Whether a move onto `name` can find a login: its login file is in its
+/// directory, or the rotator has already moved it into `~/.claude`. Selection
+/// asks the first half (`rerun::nested_candidate`) and a swap needs it too.
+/// macOS keeps logins in the Keychain, so there is no file to look for.
+pub fn can_take_login(root: &Path, name: &ProfileName) -> bool {
+    cfg!(target_os = "macos")
+        || fsx::exists(&root.join(name.as_str()).join(CREDS))
+        || RotateState::new(root)
+            .load_ledger()
+            .ok()
+            .flatten()
+            .is_some_and(|l| l.live.as_deref() == Some(name.as_str()))
+}
 
 pub struct OverflowInputs {
     pub order: Vec<ProfileName>,
@@ -234,6 +251,15 @@ impl OverflowInputs {
         if let Some(key) = &self.platform {
             self.blocked.push(key.to_string());
         }
+    }
+
+    /// Takes every overflow profile that [`can_take_login`] rejects out of
+    /// what the capacity file counts, so the file does not say `ok` for a
+    /// profile selection would pass over. Only the capacity writers call this.
+    pub fn refuse_no_login(&mut self, root: &Path) {
+        let missing = self.order.iter().filter(|o| !can_take_login(root, o));
+        let missing: Vec<String> = missing.map(ToString::to_string).collect();
+        self.blocked.extend(missing);
     }
 
     pub fn pool(&self) -> OverflowPool<'_> {

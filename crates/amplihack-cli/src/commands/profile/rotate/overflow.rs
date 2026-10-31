@@ -47,6 +47,8 @@
 //!   is not tried off a plan login. Nothing is lost: Claude is already
 //!   using that key, the swap would not change the billing, and the cycle
 //!   logs the ALERT. Without a home key the move fails its login check.
+//!   `decide`'s swap on that `Failed` reading is also dropped, after this
+//!   function, by `damp::keep_for_home_key`.
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};
 use super::ledger::OverflowBlock;

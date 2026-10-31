@@ -87,6 +87,8 @@ pub(super) use liveness::scan;
 #[cfg(all(test, unix))]
 pub(super) use overflow_inputs::OverflowInputs;
 #[cfg(unix)]
+pub(super) use overflow_inputs::can_take_login;
+#[cfg(unix)]
 pub(super) use state::CREDS;
 #[cfg(unix)]
 pub(super) use swap::read_claude_json;

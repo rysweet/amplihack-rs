@@ -299,6 +299,7 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
                 rotate::GateSource::Rotator(_)
             )
         };
+        overflow.refuse_no_login(&state.root);
         if overflow.platform.is_some()
             && !overflow.key_counts(&state.root, usage_cmd::home_dir().as_deref(), rotator())
         {
@@ -377,6 +378,7 @@ pub fn refresh_from_rotation(
         if overflow.kinds_unknown {
             return;
         }
+        overflow.refuse_no_login(&state.root);
         if !key_usable {
             overflow.refuse_key();
         }

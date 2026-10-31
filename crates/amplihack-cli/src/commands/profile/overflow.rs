@@ -261,11 +261,16 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
             // Issue #1804: the mark does not decide this, so say so now.
             if key
                 && let Some(setting) = super::usage_cmd::home_dir()
-                    .and_then(|home| super::rotate::key_check::reachable(&home).ok())
+                    .and_then(|home| super::rotate::key_check::home_key(&home))
             {
                 eprintln!(
                     "warning: {setting}: {}",
                     super::rotate::key_check::HOME_KEY_EFFECT
+                );
+            }
+            if !super::auto_switch::can_take_login(root, &name) {
+                eprintln!(
+                    "warning: {name} has no login file, so it cannot be used as overflow until it has one: neither the rotator nor auto-switch can move onto it, and the capacity file does not count it"
                 );
             }
             if before.is_none() && !key {

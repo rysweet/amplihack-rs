@@ -2,9 +2,10 @@
 //! measurements and the decision.
 
 use super::cycle::Ctx;
-use super::damp::{damp, next_failed};
+use super::damp::{damp, is_failed_probe_swap, keep_for_home_key, next_failed};
 use super::decide::{Decision, Measured, Probed, Reading};
 use super::identify::{self, Account, CandidateInput, LiveId, LoginKind, Skip};
+use super::key_check;
 use super::log::msg;
 use super::measure::{self, Live};
 use super::overflow::{OverflowInput, Tag, decide_overflow};
@@ -290,6 +291,11 @@ pub(super) fn decide_measured(
         t,
         &ctx.settings,
     );
+    // Only here is the file read: a swap on this ground is rare.
+    let home_key = (is_failed_probe_swap(&decision) && !snap.platform_live())
+        .then(|| key_check::home_key(&ctx.home))
+        .flatten();
+    let (decision, note) = keep_for_home_key(decision, note, home_key);
     // A damped move off credits is a stay on them.
     let tag = match (&decision, verdict.tag) {
         (Decision::Stay, Some(Tag::Out)) => Some(Tag::On),

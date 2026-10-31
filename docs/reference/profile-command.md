@@ -2991,6 +2991,7 @@ consecutive cycles, including this one, whose live probe failed.
 |-----------|---------|----------|
 | `k < 3` | Stay. | `stay: live probe failed (<k>/3)` |
 | `k >= 3` and `now - swapped_at < hold` | Stay. | `stay: live probe failed; held after last swap (<N>s left)`, where `N = hold - (now - swapped_at)`, or `hold` if `swapped_at` is in the future |
+| A key is in the `$HOME` files and the API key is not live | Stay. | `stay: live probe failed; home key (<detail>) fails every login's probe, no swap`; see [API-key login check](#api-key-login-check) |
 | Otherwise | Swap to best. | `swap <from>-><to> live failed target s=<n>% w=<n>% reason=failed-probe` |
 
 `k` is kept in memory by `watch`. It is reset to `0` by a cycle whose live
@@ -5864,13 +5865,29 @@ So, while a plan login is live and one of these is present:
 - The rotator does not try the per-token tier from a failed live reading
   ([decision order](#rotate-decision-order)). That loses nothing: Claude is
   already using the key, and the move would not change what is billed.
+- The rotator makes no [failed-probe swap](#rotate-failed-live-probes). The
+  next login would read as failed too, so the swap would change nothing. The
+  rotator stays on the live login and logs `stay: live probe failed; home key
+  (<detail>) fails every login's probe, no swap`. Swaps resume on the first
+  cycle after the key is removed, because the probes then read normally.
 
-No setting avoids this, so the rotator accepts all three and says so. It logs
-`ALERT: home_key (<detail>): ...` once when it finds a key while a plan login
-is live, and again if the setting changes. The cycle carries on, because no
-move fixes it. `profile overflow add` prints the same text as a warning. A key
-in the rotator's own process environment gets the `profile usage` warning
+No setting avoids this, so the rotator accepts these effects and says so. It
+logs `ALERT: home_key (<detail>): ...` once when it finds a key while a plan
+login is live, and again if the setting changes. The cycle carries on, because
+no move fixes it. `profile overflow add` prints the same text as a warning. A
+key in the rotator's own process environment gets the `profile usage` warning
 instead.
+
+The ALERT, the warning and the failed-probe stay do not use the check above.
+That check decides whether a move is allowed, so it refuses a symlink, a file
+others can write and a file it cannot parse. Claude may still read such a
+file, so a warning that money is being spent cannot depend on those rules. A
+separate read of the same two files follows a symlink, ignores owner and mode,
+and lets neither file hide the other. It allows no move and returns only the
+setting's name. A file it cannot open or parse, or one over 32 MiB, counts as
+holding no key. It has not been shown that Claude reads a symlinked settings
+file: the Claude 2.1.316 results cover regular files only, so with a symlinked
+file the warning may be a false alarm.
 
 A host that bills only plan logins should leave those files without a key.
 The rotator then refuses every move onto the API-key profile, which is the
@@ -5928,7 +5945,10 @@ The API-key profile's `{}` login file is moved into `~/.claude` by the same
 goes back to its own profile. Nothing is copied, an interrupted swap is
 recovered from the journal, and `~/.claude` always holds a login file. A
 profile with no login file cannot be swapped in; no empty file is created
-for it.
+for it. Auto-switch passes over such a profile too, so the capacity file does
+not count it as usable overflow, and `profile overflow add` warns about it. A
+profile the rotator has already made live has its login file in `~/.claude`
+and still counts.
 
 Before the journal is written, the swap is refused when it would leave
 `~/.claude` without an OAuth login and the incoming profile does not resolve

@@ -270,6 +270,12 @@ pub mod msg {
         format!("stay: live probe failed; held after last swap ({secs}s left)")
     }
 
+    /// Failed live probes would swap, but a `$HOME` key fails every login's
+    /// probe, so the swap would fix nothing.
+    pub fn stay_home_key(setting: &str) -> String {
+        format!("stay: live probe failed; home key ({setting}) fails every login's probe, no swap")
+    }
+
     pub fn hand_change(live: &ProfileName) -> String {
         format!(
             "ALERT: the account in ~/.claude is not the one the ledger names (live={live}); no swap"

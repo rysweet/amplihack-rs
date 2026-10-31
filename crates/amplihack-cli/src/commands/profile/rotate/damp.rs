@@ -4,6 +4,10 @@
 //! probe failed needs `FAILED_PROBE_LIMIT` failures in a row and is subject
 //! to the hold. See "Rotate failed live probes" in
 //! docs/reference/profile-command.md.
+//!
+//! A key in the `$HOME` files fails every login's probe the same way, so
+//! [`keep_for_home_key`] turns that swap into a stay: it would change neither
+//! the billing nor the next reading.
 
 use super::decide::{Decision, Reading, Reason, held};
 use super::log::msg;
@@ -59,4 +63,31 @@ pub fn damp(
         },
         None,
     )
+}
+
+/// True when `d` is a swap made only because the live probe kept failing;
+/// the cycle looks for a home key only then.
+pub fn is_failed_probe_swap(d: &Decision) -> bool {
+    matches!(
+        d,
+        Decision::Swap {
+            reason: Reason::FailedProbe,
+            ..
+        }
+    )
+}
+
+/// `d` given the `$HOME` key `setting`, with the log note for the stay. A
+/// failed-probe swap becomes a stay; anything else passes unchanged.
+pub fn keep_for_home_key(
+    d: Decision,
+    note: Option<String>,
+    setting: Option<&str>,
+) -> (Decision, Option<String>) {
+    match setting {
+        Some(setting) if is_failed_probe_swap(&d) => {
+            (Decision::Stay, Some(msg::stay_home_key(setting)))
+        }
+        _ => (d, note),
+    }
 }

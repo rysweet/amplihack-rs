@@ -102,10 +102,12 @@ pub fn target_check(ctx: &Ctx, snap: &Snap, to: &ProfileName) -> Result<CheckNot
 /// live, and again if the setting changes (issue #1804). It needs no mark
 /// and no swap: the key is in use from the moment it is there. The cycle goes
 /// on, because no move fixes this, and `ledger.alert` is left alone so that
-/// a stay does not clear it and repeat the line.
+/// a stay does not clear it and repeat the line. It reads with
+/// [`key_check::home_key`], so a file the login check would reject still
+/// raises it.
 pub fn note_home_key(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
     let found = (!snap.platform_live())
-        .then(|| key_check::reachable(&ctx.home).ok())
+        .then(|| key_check::home_key(&ctx.home))
         .flatten();
     if let Some(setting) = found
         && found != ctx.home_key

@@ -263,6 +263,9 @@ fn a_marked_key_that_fails_its_login_check_never_makes_the_file_ok() {
     assert_eq!(read(), Some(Cap::Exhausted), "refused key, nothing can run");
     capacity::refresh_from_rotation(&f.root, &readings, now, false, true, None);
     assert_eq!(read(), Some(Cap::Ok), "the same state with a passing check");
+    fs::remove_file(f.root.join("console").join(CREDS)).unwrap();
+    capacity::refresh_from_rotation(&f.root, &readings, now, false, true, None);
+    assert_eq!(read(), Some(Cap::Exhausted), "a key, but no login to move");
 }
 
 /// Each writer uses the check of whoever would make the move.
@@ -284,6 +287,37 @@ fn the_capacity_check_follows_who_would_move_onto_the_key() {
     assert!(!inputs.key_counts(&f.root, None, true), "no HOME");
     key(&home.join(".claude.json"));
     assert!(inputs.key_counts(&f.root, Some(home), true), "key in HOME");
+}
+
+/// Selection and the rotator need a login file, so the capacity file must
+/// not call a profile usable overflow without one: both writers, and the
+/// rotator's live profile, whose file is in `~/.claude`, still counts.
+#[test]
+fn capacity_counts_no_overflow_profile_without_a_login_file() {
+    let f = fx("enabled=on\noverflow=console\n");
+    let c = cfg(&["console"]);
+    let console = n("console");
+    let now = 2_000_000_000;
+    let blocked = |f: &Fx| {
+        let mut inputs = f.inputs(&c, Some(GATE), now);
+        inputs.refuse_no_login(&f.root);
+        inputs.blocked.contains(&"console".to_string())
+    };
+    assert!(!blocked(&f), "its login file is there");
+    assert!(super::can_take_login(&f.root, &console));
+
+    fs::remove_file(f.root.join("console").join(CREDS)).unwrap();
+    assert!(blocked(&f), "selection would pass it over");
+    assert!(!super::can_take_login(&f.root, &console));
+
+    let rs = RotateState::new(&f.root);
+    rs.ensure().unwrap();
+    rs.save_ledger(&RotateLedger {
+        live: Some("console".into()),
+        ..RotateLedger::default()
+    })
+    .unwrap();
+    assert!(!blocked(&f), "live: the file is in ~/.claude");
 }
 
 /// `swap_check` needs the real `/proc` scan and the real gate.

@@ -27,6 +27,12 @@
 //! results are under "API-key login check". [`HOME_KEY_EFFECT`] says so at
 //! run time: the cycle logs it as an ALERT (`note_home_key`) and `overflow
 //! add` prints it.
+//!
+//! [`home_key`] is the third reader, and it is only for saying that money is
+//! being spent. A file that fails the evidence rules must not allow a move,
+//! but Claude may still read it, so a warning cannot depend on them: it
+//! follows a symlink, ignores owner and mode, and reads each file on its own.
+//! It never allows anything, and it returns only the setting's name.
 
 use crate::commands::profile::auto_switch::kit::{
     CLAUDE_JSON, MAX_CLAUDE_JSON, euid, read_bounded_nofollow, writable_by_others,
@@ -34,7 +40,9 @@ use crate::commands::profile::auto_switch::kit::{
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use serde_json::{Map, Value};
-use std::os::unix::fs::MetadataExt;
+use std::fs::OpenOptions;
+use std::io::Read;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
 /// The rotator's check, given the home directory: `Ok(detail)` when a key is
@@ -44,6 +52,7 @@ pub type KeyCheckFn = fn(&Path) -> Result<&'static str, String>;
 
 const SETTINGS: &str = "settings.json";
 const MAX_SETTINGS: u64 = 64 * 1024;
+const PRIMARY: &str = "primaryApiKey set";
 const NONE: &str = "no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting";
 
 /// What a key in the `$HOME` files does while a plan login is live.
@@ -69,6 +78,40 @@ pub fn reachable(home: &Path) -> Result<&'static str, String> {
     })
 }
 
+/// The key setting in `<home>/.claude.json` or `<home>/.claude/settings.json`,
+/// for warnings and for knowing that no login reads differently. This is not
+/// evidence for a move: [`reachable`] is. A symlink is followed, owner and
+/// mode are ignored, and a file that cannot be read or parsed, or is over
+/// [`MAX_CLAUDE_JSON`], counts as holding no key without hiding the other.
+pub fn home_key(home: &Path) -> Option<&'static str> {
+    let claude = lenient_object(&home.join(CLAUDE_JSON));
+    if claude.is_some_and(|m| in_claude_json(&m)) {
+        return Some(PRIMARY);
+    }
+    lenient_object(&home.join(".claude").join(SETTINGS)).and_then(|m| in_settings(&m))
+}
+
+/// The JSON object in the regular file `path`, if there is one. `O_NONBLOCK`
+/// keeps a FIFO from hanging the cycle.
+fn lenient_object(path: &Path) -> Option<Map<String, Value>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)
+        .ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut raw = Vec::new();
+    file.take(MAX_CLAUDE_JSON.saturating_add(1))
+        .read_to_end(&mut raw)
+        .ok()?;
+    match serde_json::from_slice::<Value>(&raw) {
+        Ok(Value::Object(m)) => Some(m),
+        _ => None,
+    }
+}
+
 /// A key Claude can read when it runs with `CLAUDE_CONFIG_DIR` set to the
 /// profile's directory: [`names_a_key`] over the profile's own files.
 pub fn configured(store: &ProfileStore, name: &ProfileName) -> Result<&'static str, String> {
@@ -80,20 +123,26 @@ pub fn configured(store: &ProfileStore, name: &ProfileName) -> Result<&'static s
 /// in `settings_json`, each a non-empty string after trimming.
 fn names_a_key(claude_json: &Path, settings_json: &Path) -> Result<&'static str, String> {
     let claude = object(claude_json, CLAUDE_JSON, MAX_CLAUDE_JSON)?;
-    if claude.as_ref().is_some_and(|m| set(m.get("primaryApiKey"))) {
-        return Ok("primaryApiKey set");
+    if claude.as_ref().is_some_and(in_claude_json) {
+        return Ok(PRIMARY);
     }
     let settings = object(settings_json, SETTINGS, MAX_SETTINGS)?;
-    if let Some(m) = &settings {
-        let env = m.get("env").and_then(Value::as_object);
-        if set(env.and_then(|e| e.get("ANTHROPIC_API_KEY"))) {
-            return Ok("ANTHROPIC_API_KEY set");
-        }
-        if set(m.get("apiKeyHelper")) {
-            return Ok("apiKeyHelper set");
-        }
+    settings
+        .as_ref()
+        .and_then(in_settings)
+        .ok_or_else(|| NONE.to_string())
+}
+
+fn in_claude_json(m: &Map<String, Value>) -> bool {
+    set(m.get("primaryApiKey"))
+}
+
+fn in_settings(m: &Map<String, Value>) -> Option<&'static str> {
+    let env = m.get("env").and_then(Value::as_object);
+    if set(env.and_then(|e| e.get("ANTHROPIC_API_KEY"))) {
+        return Some("ANTHROPIC_API_KEY set");
     }
-    Err(NONE.to_string())
+    set(m.get("apiKeyHelper")).then_some("apiKeyHelper set")
 }
 
 /// A string with something in it besides whitespace.

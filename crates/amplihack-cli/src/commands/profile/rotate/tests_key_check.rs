@@ -20,7 +20,7 @@
 //! - `KeyCheckFn` is the seam type stored in `cycle::Ctx.key_check`; it takes
 //!   the home directory.
 
-use super::key_check::{KeyCheckFn, configured, reachable};
+use super::key_check::{KeyCheckFn, configured, home_key, reachable};
 use super::tests_swap::private;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
@@ -272,6 +272,55 @@ fn reachable_keeps_the_evidence_rules_and_never_shows_a_value() {
         Err("settings.json is writable by group or others".to_string())
     );
     no_sentinel(&r);
+}
+
+/// The ALERT's reader: a file that may not allow a move still warns.
+#[test]
+fn home_key_reads_what_the_evidence_rules_reject() {
+    let t = home();
+    assert_eq!(home_key(t.path()), None);
+    let settings = t.path().join(".claude/settings.json");
+    let target = t.path().join("dotfiles.json");
+    private(&target, r#"{"apiKeyHelper":"echo SENTINEL-1804-KEY"}"#);
+    std::os::unix::fs::symlink(&target, &settings).unwrap();
+    assert!(reachable(t.path()).is_err(), "a symlink allows no move");
+    assert_eq!(home_key(t.path()), Some("apiKeyHelper set"));
+    fs::remove_file(&settings).unwrap();
+
+    private(&settings, r#"{"env":{"ANTHROPIC_API_KEY":"k"}}"#);
+    fs::set_permissions(&settings, fs::Permissions::from_mode(0o660)).unwrap();
+    assert!(
+        reachable(t.path()).is_err(),
+        "group-writable allows no move"
+    );
+    assert_eq!(home_key(t.path()), Some("ANTHROPIC_API_KEY set"));
+
+    private(&t.path().join(".claude.json"), "not json");
+    assert!(reachable(t.path()).is_err(), "a bad file ends the check");
+    assert_eq!(
+        home_key(t.path()),
+        Some("ANTHROPIC_API_KEY set"),
+        "a bad ~/.claude.json hides nothing"
+    );
+    private(&t.path().join(".claude.json"), r#"{"primaryApiKey":"k"}"#);
+    assert_eq!(home_key(t.path()), Some("primaryApiKey set"));
+}
+
+#[test]
+fn home_key_finds_nothing_in_what_it_cannot_read() {
+    let t = home();
+    let settings = t.path().join(".claude/settings.json");
+    private(&settings, r#"{"apiKeyHelper":"   "}"#);
+    assert_eq!(home_key(t.path()), None, "blank value");
+    private(&settings, "[1]");
+    assert_eq!(home_key(t.path()), None, "not an object");
+    fs::remove_file(&settings).unwrap();
+    fs::create_dir(&settings).unwrap();
+    assert_eq!(home_key(t.path()), None, "a directory");
+    fs::remove_dir(&settings).unwrap();
+    let fifo = std::ffi::CString::new(settings.to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+    assert_eq!(home_key(t.path()), None, "a FIFO must not hang the cycle");
 }
 
 #[test]

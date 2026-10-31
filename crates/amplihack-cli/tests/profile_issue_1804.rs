@@ -159,6 +159,36 @@ fn overflow_add_warns_about_a_key_in_home_and_not_otherwise() {
     assert!(!text(&added.stderr).contains(warning), "{added:?}");
 }
 
+/// A key in a file the login check rejects bills the same.
+#[test]
+fn overflow_add_warns_about_a_symlinked_settings_key() {
+    let f = Fixture::new();
+    add_console(&f);
+    take_key_from_home(&f);
+    let target = f.home.join("dotfiles-settings.json");
+    private_file(&target, r#"{"apiKeyHelper":"echo SENTINEL-1804-KEY"}"#);
+    std::os::unix::fs::symlink(&target, f.home.join(".claude").join("settings.json")).unwrap();
+    let added = f.ok(&["profile", "overflow", "add", "console"]);
+    let err = text(&added.stderr);
+    assert!(err.contains("warning: apiKeyHelper set: "), "{added:?}");
+    assert!(!err.contains("SENTINEL-1804-KEY"));
+}
+
+/// A mark on a profile nothing can move onto is worth a warning.
+#[test]
+fn overflow_add_warns_about_a_profile_with_no_login_file() {
+    let warning = "console has no login file, so it cannot be used as overflow";
+    let f = Fixture::new();
+    add_console(&f);
+    let added = f.ok(&["profile", "overflow", "add", "console"]);
+    assert!(!text(&added.stderr).contains(warning), "{added:?}");
+
+    f.ok(&["profile", "overflow", "remove", "console"]);
+    fs::remove_file(f.root.join("console").join(CREDS)).unwrap();
+    let added = f.ok(&["profile", "overflow", "add", "console"]);
+    assert!(text(&added.stderr).contains(warning), "{added:?}");
+}
+
 #[test]
 fn t2_near_the_limits_with_the_api_key_marked_the_rotator_still_picks_the_plan_login() {
     let f = Fixture::new();

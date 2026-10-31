@@ -266,6 +266,109 @@ fn a_home_key_under_a_live_plan_login_alerts_once_and_again_when_it_returns() {
     assert!(!f.logged().iter().any(|l| l.contains("SENTINEL-1804-KEY")));
 }
 
+/// A settings file the login check rejects still costs money if Claude reads
+/// it, so the ALERT cannot depend on the check.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_symlinked_settings_key_still_alerts() {
+    let f = fx();
+    let target = f.home.join("dotfiles-settings.json");
+    private(&target, r#"{"apiKeyHelper":"echo SENTINEL-1804-KEY"}"#);
+    std::os::unix::fs::symlink(&target, f.home.join(".claude/settings.json")).unwrap();
+    assert!(super::key_check::reachable(&f.home).is_err());
+    let mut c = f.ctx(|_| panic!("a stay runs no login check"));
+    c.measure = Some(plenty_of_room);
+    assert_eq!(
+        run_cycle(&mut c, Mode::Watch).unwrap(),
+        CycleOutcome::Stayed
+    );
+    let log = f.logged();
+    let alerts = log
+        .iter()
+        .filter(|l| l.starts_with("ALERT: home_key (apiKeyHelper set): "));
+    assert_eq!(alerts.count(), 1, "{log:?}");
+    assert!(!log.iter().any(|l| l.contains("SENTINEL-1804-KEY")));
+}
+
+/// `work`'s probe fails and `spare`, a plan login with room, reads well, as
+/// `spare` would never do under a home key: this measures the worst case for
+/// the swap, one that looks useful.
+fn live_probe_fails(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let failed = Probed {
+        reading: Reading::Failed,
+        windows: Windows::default(),
+        spend_limit: false,
+    };
+    let spare = Probed {
+        reading: Reading::Measured {
+            session: 10.0,
+            week: 10.0,
+        },
+        windows: Windows::default(),
+        spend_limit: false,
+    };
+    decide_measured(ctx, snap, failed, vec![(n("spare"), spare)], now())
+}
+
+/// `f` with a plan login `spare`, and a context three failed cycles in, past
+/// the hold (`fx` swapped two hours ago).
+fn failing(f: &Fx) -> Ctx {
+    let spare = f.root.join("spare");
+    f.store.add(&n("spare")).unwrap();
+    private(
+        &spare.join(".claude.json"),
+        &acct("u-spare", "spare@example.com"),
+    );
+    login(&spare.join(CREDS));
+    let mut c = f.ctx(|_| panic!("no move onto the API key here"));
+    c.measure = Some(live_probe_fails);
+    c.failed_live = 2;
+    c
+}
+
+/// The control for the test below: without the key this swap does happen.
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_probes_swap_when_no_home_key_explains_them() {
+    let f = fx();
+    let mut c = failing(&f);
+    assert_eq!(
+        run_cycle(&mut c, Mode::Watch).unwrap(),
+        CycleOutcome::Swapped,
+        "{:?}",
+        f.logged()
+    );
+    assert!(
+        f.logged()
+            .iter()
+            .any(|l| l.ends_with("reason=failed-probe"))
+    );
+}
+
+/// A home key fails every login's probe, so the swap changes nothing, however
+/// many cycles pass: no hourly churn between logins.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_home_key_stops_failed_probe_swaps_for_good() {
+    let f = fx();
+    private(&f.home.join(".claude.json"), HOME_WITH_KEY);
+    let mut c = failing(&f);
+    for _ in 0..4 {
+        assert_eq!(
+            run_cycle(&mut c, Mode::Watch).unwrap(),
+            CycleOutcome::Stayed
+        );
+    }
+    assert_eq!(f.home_login(), Some(f.live), "work's login stays live");
+    let log = f.logged();
+    assert!(!log.iter().any(|l| l.starts_with("swap ")), "{log:?}");
+    let stays = log.iter().filter(|l| {
+        *l == "stay: live probe failed; home key (primaryApiKey set) fails every login's probe, no swap"
+    });
+    assert_eq!(stays.count(), 4, "{log:?}");
+    assert!(c.failed_live >= 6, "the count goes on: {}", c.failed_live);
+}
+
 /// On a live API-key profile the key is the login in use, not a surprise.
 #[cfg(target_os = "linux")]
 #[test]
