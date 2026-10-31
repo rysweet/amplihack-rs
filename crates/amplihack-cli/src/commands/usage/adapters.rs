@@ -4,7 +4,7 @@ use serde_json::Value;
 
 #[derive(Clone)]
 pub(super) enum Event {
-    Model(String),
+    Model(Option<String>),
     NativeSession(String),
     Usage {
         key: Option<String>,
@@ -152,7 +152,12 @@ fn codex(v: &Value, p: &mut Parsed) {
         return;
     }
     if v["type"] == "turn_context" {
-        p.event = label(&payload["model"]).map(Event::Model);
+        let model = label(&payload["model"]);
+        if model.is_none() {
+            p.diagnostics.push("missing_or_invalid_model");
+        }
+        // Every turn replaces the prior context, including an invalid one.
+        p.event = Some(Event::Model(model));
         return;
     }
     if v["type"] == "token_usage_record" {

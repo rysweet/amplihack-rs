@@ -110,7 +110,7 @@ pub fn collect(m: &Manifest, base: &Path) -> Result<Report> {
                             continue;
                         }
                         Event::Model(value) => {
-                            model = Some(value.clone());
+                            model = value.clone();
                             continue;
                         }
                         Event::Usage {

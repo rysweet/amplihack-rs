@@ -639,6 +639,76 @@ fn codex_model_context_cannot_cross_files_or_native_sessions() {
 }
 
 #[test]
+fn invalid_codex_turn_context_clears_model_until_valid_context_recovers() {
+    for payload in [
+        json!({}),
+        json!({"model":null}),
+        json!({"model":42}),
+        json!({"model":false}),
+        json!({"model":[]}),
+        json!({"model":{}}),
+        json!({"model":""}),
+        json!({"model":"PRIVATE MODEL CONTENT"}),
+        json!({"model":"a".repeat(161)}),
+    ] {
+        for record_type in ["token_usage_record", "event_msg"] {
+            let dir = tempfile::tempdir().unwrap();
+            let usage = json!({"input_tokens":10,"cached_input_tokens":0,
+                "cache_write_input_tokens":0,"output_tokens":5,"reasoning_output_tokens":0});
+            let response = |id: &str, second: u32| {
+                let payload = if record_type == "token_usage_record" {
+                    json!({"response_id":id,"usage":usage})
+                } else {
+                    json!({"type":"token_count","response_id":id,
+                        "info":{"last_token_usage":usage}})
+                };
+                json!({"type":record_type,"timestamp":format!("2026-01-01T00:00:{second:02}Z"),
+                    "payload":payload})
+            };
+            let records = [
+                json!({"type":"session_meta","payload":{"id":"s"}}),
+                json!({"type":"turn_context","payload":{"model":"model-a"}}),
+                response("before", 1),
+                json!({"type":"turn_context","payload":payload}),
+                response("after-invalid", 2),
+                response("still-unknown", 3),
+                json!({"type":"turn_context","payload":{"model":"model-b"}}),
+                response("recovered", 4),
+            ];
+            std::fs::write(
+                dir.path().join("log"),
+                records.map(|r| r.to_string()).join("\n"),
+            )
+            .unwrap();
+            let r = collect(
+                &manifest(json!([session("s", "codex", json!(["log"]))])),
+                dir.path(),
+            )
+            .unwrap();
+            assert!(!r.complete, "{record_type}: {payload}");
+            assert!(!r.sessions[0].complete);
+            assert_eq!(r.total.unwrap().total(), 60);
+            assert_eq!(r.sessions[0].direct, r.total);
+            assert_eq!(r.models.len(), 3);
+            for (model, attempts) in [("model-a", 1), ("unknown", 2), ("model-b", 1)] {
+                let bucket = r.models.iter().find(|m| m.model == model).unwrap();
+                assert_eq!(bucket.tokens.total(), 15 * attempts, "{model}");
+                assert_eq!(bucket.observed_attempts, attempts, "{model}");
+            }
+            assert!(has(&r, "unknown_model"));
+            assert!(r.diagnostics.iter().any(|d| {
+                d.code == "missing_or_invalid_model"
+                    && d.session == Some(0)
+                    && d.file == Some(0)
+                    && d.line == Some(4)
+            }));
+            let output = format!("{}{}", serde_json::to_string(&r).unwrap(), summary(&r));
+            assert!(!output.contains("PRIVATE MODEL CONTENT"));
+        }
+    }
+}
+
+#[test]
 fn conflicting_response_models_remain_unknown_for_every_copy_order() {
     for provider in ["claude", "codex"] {
         let dir = tempfile::tempdir().unwrap();
