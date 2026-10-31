@@ -1,7 +1,9 @@
 //! TDD red-phase tests for issue #828:
 //! "Best-effort installation of the mermaid CLI (mmdc) during `amplihack install`".
 //!
-//! Contract under test: `install::mermaid_cli::ensure_mermaid_cli()`.
+//! Contract under test: `install::mermaid_cli::ensure_mermaid_cli()`, driven
+//! through `ensure_mermaid_cli_with` so each child's environment can be set
+//! (issue #1765).
 //!
 //! The mermaid CLI (`@mermaid-js/mermaid-cli`, binary `mmdc`) lets the
 //! `pr-guide` skill render mermaid diagrams to images locally for Azure
@@ -31,16 +33,24 @@
 //!       Failed,           // npm install attempted but failed / mmdc still absent
 //!   }
 //!   pub(super) fn ensure_mermaid_cli() -> anyhow::Result<Outcome>;  // always Ok
+//!   pub(super) fn ensure_mermaid_cli_with(
+//!       configure: &dyn Fn(&mut Command),
+//!   ) -> anyhow::Result<Outcome>;  // the same, with a hook on every child
 //!
-//! All tests are hermetic: PATH is pinned to a single controlled bin
-//! directory so neither a real `npm` nor a real `mmdc` on the developer/CI
-//! host can leak in, and stubs use an absolute `/bin/sh` shebang so they
-//! exec regardless of the pinned PATH. No test performs a real network
-//! install.
+//! All tests are hermetic without changing the process environment (issue
+//! #1765): every child the flow starts gets PATH set to a single controlled
+//! bin directory and HOME set to a temporary directory, and does not inherit
+//! `AMPLIHACK_CLAUDE_PROFILE_ROOT`. Neither a real `npm` nor a real `mmdc` on
+//! the developer/CI host can be reached, and stubs use an absolute `/bin/sh`
+//! shebang so they exec regardless of the pinned PATH. The only `npm install
+//! -g` any test runs is the stub's. No test contacts the network.
 
-use super::super::mermaid_cli::{Outcome, ensure_mermaid_cli};
+use super::super::mermaid_cli::{Outcome, ensure_mermaid_cli_with};
+use crate::commands::profile::ROOT_ENV;
+use std::cell::Cell;
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 
 // ---------------------------------------------------------------------------
 // Hermetic test scaffolding
@@ -48,9 +58,9 @@ use std::path::Path;
 
 /// Create an executable shell-script stub at `dir/name` with `body`.
 ///
-/// Uses an absolute `#!/bin/sh` shebang on purpose: tests pin PATH to a
-/// single controlled directory, so a relative shebang interpreter (e.g.
-/// `#!/usr/bin/env bash`) would fail to resolve `bash` via the empty PATH.
+/// Uses an absolute `#!/bin/sh` shebang on purpose: tests pin each child's
+/// PATH to a single controlled directory, so a relative shebang interpreter
+/// (e.g. `#!/usr/bin/env bash`) would fail to resolve `bash` via that PATH.
 /// `/bin/sh` is exec'd by the kernel directly without a PATH lookup.
 fn create_script_stub(dir: &Path, name: &str, body: &str) -> std::path::PathBuf {
     fs::create_dir_all(dir).unwrap();
@@ -82,48 +92,68 @@ fn stub_npm_present_install_fails(bin_dir: &Path) {
     );
 }
 
-/// Run `f` with:
-///   * HOME pointed at a fresh tempdir,
-///   * PATH pinned to a single controlled `bin/` directory (so no real
-///     `npm`/`mmdc` on the host can leak in),
-///   * `AMPLIHACK_SKIP_MMDC` cleared (individual tests set it explicitly).
+/// An `npm` stub that reports a version and whose `install` subcommand puts a
+/// working `mmdc` stub into `bin_dir`, so the re-probe finds it.
+fn stub_npm_install_provides_mmdc(bin_dir: &Path) {
+    let mmdc = sh_quoted(&bin_dir.join("mmdc"));
+    create_script_stub(
+        bin_dir,
+        "npm",
+        &format!(
+            "#!/bin/sh\nif [ \"$1\" = \"install\" ]; then\n  printf '#!/bin/sh\\nexit 0\\n' > {mmdc}\n  /bin/chmod 755 {mmdc}\nfi\nexit 0\n"
+        ),
+    );
+}
+
+/// `path` in single quotes for a `/bin/sh` script.
+fn sh_quoted(path: &Path) -> String {
+    let text = path.to_str().expect("temporary paths are UTF-8");
+    assert!(
+        !text.contains(['\'', '\n']),
+        "cannot single-quote {text:?} for /bin/sh"
+    );
+    format!("'{text}'")
+}
+
+/// The hook every test passes to [`ensure_mermaid_cli_with`]: each child
+/// gets PATH set to `bin_dir` alone (so no real `npm`/`mmdc` on the host can
+/// be reached), HOME set to `home`, and no `AMPLIHACK_CLAUDE_PROFILE_ROOT`.
+fn hermetic<'a>(bin_dir: &'a Path, home: &'a Path) -> impl Fn(&mut Command) + 'a {
+    move |cmd: &mut Command| {
+        cmd.env("PATH", bin_dir)
+            .env("HOME", home)
+            .env_remove(ROOT_ENV);
+    }
+}
+
+/// Run `f` with a fresh `bin/` directory and temporary home, and with
+/// `AMPLIHACK_SKIP_MMDC` cleared (individual tests set it explicitly).
 ///
-/// HOME, PATH, and `AMPLIHACK_SKIP_MMDC` are restored on exit, even on panic.
-/// Serialized via the crate-wide HOME/env lock so concurrent env-mutating
-/// tests don't race.
-fn with_mermaid_env<R>(f: impl FnOnce(&Path) -> R) -> R {
+/// PATH and HOME are never changed in the process: tests pass them to each
+/// child through [`hermetic`]. `AMPLIHACK_SKIP_MMDC` is read from the process
+/// environment, so the lock is held for it and it is restored on exit.
+fn with_mermaid_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
 
     let temp = tempfile::tempdir().unwrap();
-    let previous_home = crate::test_support::set_home(temp.path());
-
     let bin_dir = temp.path().join("bin");
     fs::create_dir_all(&bin_dir).unwrap();
 
-    let prev_path = std::env::var_os("PATH");
     let prev_skip = std::env::var_os("AMPLIHACK_SKIP_MMDC");
     unsafe {
-        // Pin PATH to ONLY the controlled bin dir: any `npm`/`mmdc` the impl
-        // probes must come from a stub we placed, never the host.
-        std::env::set_var("PATH", &bin_dir);
         std::env::remove_var("AMPLIHACK_SKIP_MMDC");
     }
 
-    let result = f(&bin_dir);
+    let result = f(&bin_dir, temp.path());
 
     unsafe {
-        match prev_path {
-            Some(v) => std::env::set_var("PATH", v),
-            None => std::env::remove_var("PATH"),
-        }
         match prev_skip {
             Some(v) => std::env::set_var("AMPLIHACK_SKIP_MMDC", v),
             None => std::env::remove_var("AMPLIHACK_SKIP_MMDC"),
         }
     }
-    crate::test_support::restore_home(previous_home);
     result
 }
 
@@ -141,13 +171,13 @@ fn ensure_mermaid_cli_skips_when_opt_out_env_set() {
     // The skip must take precedence over every other probe: even if neither
     // mmdc nor npm is present (or both are), setting the env var yields
     // SkippedByEnv with no install attempt.
-    with_mermaid_env(|_bin_dir| {
+    with_mermaid_env(|bin_dir, home| {
         // SAFETY: env is serialized by with_mermaid_env's lock; restored below.
         unsafe {
             std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
         }
 
-        let outcome = ensure_mermaid_cli()
+        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home))
             .expect("issue #828: ensure_mermaid_cli must never return Err (best-effort)");
 
         assert!(
@@ -166,13 +196,13 @@ fn ensure_mermaid_cli_skips_when_opt_out_env_set() {
 fn ensure_mermaid_cli_opt_out_is_any_nonempty_value() {
     // Requirement #4 (truthiness semantics): the opt-out is a presence flag,
     // not strictly "=1". Any non-empty value disables the attempt.
-    with_mermaid_env(|_bin_dir| {
+    with_mermaid_env(|bin_dir, home| {
         unsafe {
             std::env::set_var("AMPLIHACK_SKIP_MMDC", "yes");
         }
 
-        let outcome =
-            ensure_mermaid_cli().expect("issue #828: must never return Err (best-effort)");
+        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home))
+            .expect("issue #828: must never return Err (best-effort)");
 
         assert!(
             matches!(outcome, Outcome::SkippedByEnv),
@@ -198,10 +228,10 @@ fn ensure_mermaid_cli_skips_when_mmdc_already_present() {
     // We place an `mmdc` stub on PATH but deliberately place NO `npm` stub.
     // If the impl wrongly tried to install, it would have to find npm — and
     // it can't here — proving the present-check short-circuited before npm.
-    with_mermaid_env(|bin_dir| {
+    with_mermaid_env(|bin_dir, home| {
         stub_mmdc_present(bin_dir);
 
-        let outcome = ensure_mermaid_cli()
+        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home))
             .expect("issue #828: ensure_mermaid_cli must never return Err (best-effort)");
 
         assert!(
@@ -221,9 +251,9 @@ fn ensure_mermaid_cli_skips_when_npm_absent() {
     // Requirement #2 + #1: when npm is unavailable, skip with an informative
     // message and DO NOT error. PATH is pinned to an empty bin dir, so
     // neither npm nor mmdc exists.
-    with_mermaid_env(|_bin_dir| {
+    with_mermaid_env(|bin_dir, home| {
         // No mmdc stub, no npm stub: both absent on the pinned PATH.
-        let outcome = ensure_mermaid_cli()
+        let outcome = ensure_mermaid_cli_with(&hermetic(bin_dir, home))
             .expect("issue #828: a missing npm must be handled gracefully, not error");
 
         assert!(
@@ -249,10 +279,10 @@ fn ensure_mermaid_cli_install_failure_does_not_propagate() {
     // We stub an npm that reports a version (probe sees it as present) but
     // fails any `install` subcommand, and we never create an `mmdc`, so the
     // post-install re-probe also fails -> Outcome::Failed.
-    with_mermaid_env(|bin_dir| {
+    with_mermaid_env(|bin_dir, home| {
         stub_npm_present_install_fails(bin_dir);
 
-        let result = ensure_mermaid_cli();
+        let result = ensure_mermaid_cli_with(&hermetic(bin_dir, home));
 
         assert!(
             result.is_ok(),
@@ -284,12 +314,12 @@ fn ensure_mermaid_cli_never_returns_err() {
     // blocking `amplihack install`.
 
     // env-skip branch
-    with_mermaid_env(|_bin_dir| {
+    with_mermaid_env(|bin_dir, home| {
         unsafe {
             std::env::set_var("AMPLIHACK_SKIP_MMDC", "1");
         }
         assert!(
-            ensure_mermaid_cli().is_ok(),
+            ensure_mermaid_cli_with(&hermetic(bin_dir, home)).is_ok(),
             "issue #828: env-skip branch must return Ok"
         );
         unsafe {
@@ -298,28 +328,64 @@ fn ensure_mermaid_cli_never_returns_err() {
     });
 
     // already-present branch
-    with_mermaid_env(|bin_dir| {
+    with_mermaid_env(|bin_dir, home| {
         stub_mmdc_present(bin_dir);
         assert!(
-            ensure_mermaid_cli().is_ok(),
+            ensure_mermaid_cli_with(&hermetic(bin_dir, home)).is_ok(),
             "issue #828: already-present branch must return Ok"
         );
     });
 
     // npm-absent branch
-    with_mermaid_env(|_bin_dir| {
+    with_mermaid_env(|bin_dir, home| {
         assert!(
-            ensure_mermaid_cli().is_ok(),
+            ensure_mermaid_cli_with(&hermetic(bin_dir, home)).is_ok(),
             "issue #828: npm-absent branch must return Ok"
         );
     });
 
     // install-failure branch
-    with_mermaid_env(|bin_dir| {
+    with_mermaid_env(|bin_dir, home| {
         stub_npm_present_install_fails(bin_dir);
         assert!(
-            ensure_mermaid_cli().is_ok(),
+            ensure_mermaid_cli_with(&hermetic(bin_dir, home)).is_ok(),
             "issue #828: install-failure branch must return Ok"
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// (6) The hook reaches every child the flow starts (issue #1765)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ensure_mermaid_cli_with_hooks_every_child_through_install_and_reprobe() {
+    // The flow starts four children on the install path: the `mmdc` probe,
+    // the `npm` probe, `npm install -g` and the re-probe. Each must get the
+    // hook, or it would run with the process PATH and HOME. `Installed` can
+    // only come back if the stub `npm` (reachable through the hook's PATH
+    // alone) ran the install and the re-probe found the `mmdc` it wrote.
+    with_mermaid_env(|bin_dir, home| {
+        stub_npm_install_provides_mmdc(bin_dir);
+        let isolate = hermetic(bin_dir, home);
+        let hooked = Cell::new(0);
+
+        let outcome = ensure_mermaid_cli_with(&|cmd: &mut Command| {
+            hooked.set(hooked.get() + 1);
+            isolate(cmd);
+        })
+        .expect("issue #828: ensure_mermaid_cli must never return Err (best-effort)");
+
+        assert!(
+            matches!(outcome, Outcome::Installed),
+            "issue #1765: an install through the hooked stub npm that provides \
+             mmdc must yield Outcome::Installed, got {outcome:?}"
+        );
+        assert_eq!(
+            hooked.get(),
+            4,
+            "issue #1765: the hook must be applied to the mmdc probe, the npm \
+             probe, npm install -g and the re-probe"
         );
     });
 }

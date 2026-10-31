@@ -838,14 +838,15 @@ fn main_branch_guard_fires_from_copilot_tool_args_payload() {
 }
 
 /// Issue #1551: the hook's direct-form check does not consult PATH, so it
-/// holds even with a fake `gh` in the first PATH entry. This is the hook's
-/// own contract, not the fix for a profile that reorders PATH: that fix is the
-/// runner's `BASH_ENV` re-assertion, tested structurally in
+/// holds whatever `gh` a profile puts first on PATH, including one named by
+/// its absolute path. This is the hook's own contract, not the fix for a
+/// profile that reorders PATH: that fix is the runner's `BASH_ENV`
+/// re-assertion, tested structurally in
 /// `crates/amplihack-cli/tests/issue_1551_merge_guard.rs`
 /// (`agent_login_shell_resolves_gh_to_the_shim_after_a_profile_reorders_path`).
 #[cfg(unix)]
 #[test]
-fn auto_drive_merge_is_refused_when_a_profile_puts_another_gh_first_on_path() {
+fn auto_drive_merge_is_refused_for_bare_and_absolute_gh() {
     use std::os::unix::fs::PermissionsExt;
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let tmp = tempfile::tempdir().unwrap();
@@ -855,19 +856,13 @@ fn auto_drive_merge_is_refused_when_a_profile_puts_another_gh_first_on_path() {
     std::fs::write(&fake_gh, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&fake_gh, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let old_path = std::env::var_os("PATH");
+    // Issue #1765: PATH is not reordered here. The guard reads no PATH, so
+    // the order cannot affect it, and changing the process PATH races every
+    // test that starts a program by name. If the guard ever resolves `gh`
+    // through PATH, give this test a PATH case through a seam, not set_var.
     let old_marker = std::env::var_os("AMPLIHACK_MERGE_GUARD");
-    let reordered = format!(
-        "{}:/opt/amplihack/amplifier-bundle/tools/gh-merge-guard:{}",
-        profile_bin.display(),
-        old_path
-            .as_deref()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    );
     // SAFETY: serialised by env_lock; restored below.
     unsafe {
-        std::env::set_var("PATH", &reordered);
         std::env::set_var("AMPLIHACK_MERGE_GUARD", "1");
     }
 
@@ -900,10 +895,6 @@ fn auto_drive_merge_is_refused_when_a_profile_puts_another_gh_first_on_path() {
 
     // SAFETY: serialised by env_lock.
     unsafe {
-        match old_path {
-            Some(p) => std::env::set_var("PATH", p),
-            None => std::env::remove_var("PATH"),
-        }
         if let Some(v) = old_marker {
             std::env::set_var("AMPLIHACK_MERGE_GUARD", v);
         }

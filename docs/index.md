@@ -164,6 +164,7 @@ amplihack copilot
 - [Bring Agent Sessions Back After a Terminal Loss](howto/supervise-agent-sessions.md) - Register long-lived Claude sessions with `amplihack agent` and let a supervisor service resume them from their saved conversation
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
 - [Keep Tests out of the Real Profile Root](howto/keep-tests-out-of-the-real-profile-root.md) - How tests avoid writing real profiles' `settings.json`, and the guard that fails the run when one changes
+- [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
 - [`amplihack agent` Reference](reference/agent-command.md) - Register flags, `amplihack claude --supervise`, the supervisor pass, result texts, status formats, the registry and the systemd unit
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence

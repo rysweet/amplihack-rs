@@ -20,6 +20,15 @@ impl StubAzlin {
     /// `stage1_stdout` is what stage 1 prints; `stage2_exit` is the exit
     /// status of the `send-keys` call. Only stage 1 reads stdin, so a call
     /// that inherits the test runner's stdin cannot block.
+    ///
+    /// The stub calls `/bin/cat` by absolute path and uses only shell
+    /// builtins otherwise. The admiral tests used to fail when they ran
+    /// beside `fleet/tests.rs` tests that set the test process's `PATH` to a
+    /// temporary directory: a bare `cat` failed to start and the call count
+    /// came back wrong. Those tests now pass their `PATH` through
+    /// `AzlinLookup` instead (#1765), which removes the cause; the absolute
+    /// path stays so that a later process-wide `PATH` change cannot break
+    /// this stub the same way.
     fn new(stage1_stdout: &str, stage2_exit: i32) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let out = temp.path();
@@ -28,12 +37,12 @@ impl StubAzlin {
             r#"#!/bin/sh
 [ "$1" = __probe ] && exit 0
 out='{out}'
-n=$(cat "$out/count" 2>/dev/null || echo 0); n=$((n+1)); printf '%s' "$n" > "$out/count"
+n=$(/bin/cat "$out/count" 2>/dev/null || echo 0); n=$((n+1)); printf '%s' "$n" > "$out/count"
 printf '%s\0' "$@" > "$out/call$n.argv"
 last=""
 for a in "$@"; do last=$a; done
 case "$last" in
-  *mktemp*) cat > "$out/call$n.stdin"; cat "$out/stage1_out"; exit 0 ;;
+  *mktemp*) /bin/cat > "$out/call$n.stdin"; /bin/cat "$out/stage1_out"; exit 0 ;;
   *send-keys*) exit {stage2_exit} ;;
   *) exit 0 ;;
 esac

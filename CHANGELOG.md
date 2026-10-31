@@ -46,6 +46,32 @@ Unreleased changes appear at the top under `[Unreleased]`.
   bounded. The test now runs the fake by absolute path, leaving `PATH` alone,
   and requires the probe of a fake that sleeps 60 seconds to return within
   30 seconds and report failure.
+- **Tests changed `PATH` and `HOME` for the whole test process (#1765)**:
+  libtest runs a binary's tests on parallel threads of one process, so a test
+  that set `PATH` or `HOME` with `std::env::set_var` changed them for every
+  other test running at the same time, which then found the wrong program or
+  wrote under the wrong home. Tests in `amplihack-cli`, `amplihack-hooks` and
+  `amplihack-utils` now set `PATH` and `HOME` on the child process they start
+  and leave the test process alone. To make that possible, the code under
+  test gained seams that take the child's environment from the caller:
+  `configure` hooks on the `npm`, `mmdc` and version probes
+  (`get_latest_version_with`, `detect_version_with`, `version_probe_succeeds`,
+  `ensure_mermaid_cli_with`), `*_with` variants such as
+  `git_clone_framework_repo_with` and `run_claude_reflection_with`, an
+  `AzlinLookup` for the fleet's `azlin` search, and a `PATH` argument for the
+  `rustyclawd` binary search. Production callers pass the process
+  environment, so their behaviour is unchanged. The test-only variable
+  `AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS` is removed:
+  `provider_command_execution_is_bounded` now passes a 500 ms timeout to the
+  provider helper directly and runs a fake that sleeps 60 seconds, so a pass
+  within 30 seconds means the timeout fired.
+  `run_npm_with_timeout_terminates_child_after_timeout` now sets the child's
+  `PATH` and `HOME` to the fake `npm`'s directory instead of changing them
+  for the process, and checks at 7 seconds that the fake, which writes a
+  marker after 5 seconds, was stopped. Both tests replace the versions
+  described under #1735 below. The tests that still change the variables
+  are listed in #1787. See
+  `docs/howto/keep-tests-from-changing-path-and-home.md`.
 - **`issue_1543_pr_head_worktree_shell_test_passes` failed in CI once
   recipe-runner-rs v0.5.1 was released (#1772)**: at startup, the pinned
   runner asks GitHub for its latest release and prints a notice on stderr
@@ -90,7 +116,8 @@ Unreleased changes appear at the top under `[Unreleased]`.
   10 seconds. `run_npm_with_timeout_terminates_child_after_timeout` now gives
   its fake `npm` 5 seconds instead of 1 and waits 5.5 seconds instead of
   1.5 before checking that the child left no output, so the test takes about
-  4 seconds longer. The timeouts under test are unchanged.
+  4 seconds longer. The timeouts under test are unchanged. #1765 has since
+  rewritten the provider and `npm` timeout tests; see its entry above.
 - **Workflow cleanup deleted other runs' worktrees and uncommitted work
   (#1494, #1560)** — when a run started from the main checkout, the runtime
   artifact cleanup ran `rm -rf <repo>/worktrees`, deleting every concurrent

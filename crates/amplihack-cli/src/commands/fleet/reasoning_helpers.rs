@@ -64,6 +64,8 @@ pub(super) fn match_project(repo_url: &str) -> Result<(String, Vec<ProjectObject
     Ok((String::new(), Vec::new()))
 }
 
+/// Test-only: production calls the `_with` form directly (issue #1765).
+#[cfg(test)]
 pub(super) fn gather_session_context(
     azlin_path: &Path,
     vm_name: &str,
@@ -71,6 +73,29 @@ pub(super) fn gather_session_context(
     task_prompt: &str,
     project_priorities: &str,
     cached_tmux_capture: Option<&str>,
+) -> Result<SessionContext> {
+    gather_session_context_with(
+        azlin_path,
+        vm_name,
+        session_name,
+        task_prompt,
+        project_priorities,
+        cached_tmux_capture,
+        &|_| {},
+    )
+}
+
+/// `gather_session_context` with `configure` applied to the `azlin` child
+/// before it starts, so a test can give the child its own environment without
+/// changing the test process's (issue #1765).
+pub(super) fn gather_session_context_with(
+    azlin_path: &Path,
+    vm_name: &str,
+    session_name: &str,
+    task_prompt: &str,
+    project_priorities: &str,
+    cached_tmux_capture: Option<&str>,
+    configure: &dyn Fn(&mut Command),
 ) -> Result<SessionContext> {
     let mut context = SessionContext::new(vm_name, session_name, task_prompt, project_priorities)?;
     let quoted_session = shell_single_quote(session_name);
@@ -122,6 +147,7 @@ pub(super) fn gather_session_context(
 
     let mut cmd = Command::new(azlin_path);
     cmd.args(["connect", vm_name, "--no-tmux", "--yes", "--", &gather_cmd]);
+    configure(&mut cmd);
 
     match run_output_with_timeout(cmd, SUBPROCESS_TIMEOUT) {
         Ok(output) => {
