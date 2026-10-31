@@ -50,13 +50,14 @@ steps:
     recipe: "workflow-worktree"
     context: { branch_prefix: "quick", existing_branch: "", pr_number: "" }
 
-  # Step 2: before the agent: check the branch, pin the base, snapshot git config (S2-S4).
+  # Step 2: before the agent: check the branch and identity, pin the base, snapshot git config (S2-S4).
   - id: "quick-change-record-base"
     type: "bash"
     command: |
       QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-record-base; . "${QC:?quick_change_common.sh not found}"
       git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"
       qc_branch >/dev/null
+      qc_require_identity
       BASE="$(git -C "$QC_WT" rev-parse HEAD)"
       SNAP="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" --snapshot "$QC_WT")"
       printf '%s\n' "$SNAP" | qc_write git-config.snapshot
@@ -254,8 +255,8 @@ steps:
       printf '%s' "$REPAIRED" >&3
     output: "quick_change_push_repaired"
 
-  # Step 10: open the PR; a draft when the checks failed or hook repair
-  # changed the code after they ran. Always the last step.
+  # Step 10: open the PR; a draft when the checks failed, when no check ran,
+  # or when hook repair changed the code after they ran. Always the last step.
   - id: "quick-change-create-pr"
     type: "bash"
     condition: "quick_change_verdict == 'proceed'"
@@ -279,13 +280,12 @@ steps:
           *) qc_die "runner did not provide the hook-repair outputs" ;;
         esac
       done
-      FAILED=no
-      case "$CHECKS" in QUICK_CHANGE_CHECKS=failed*) FAILED=yes ;; esac
+      # Any warning at the top of the body makes the PR a draft.
+      WARNINGS="$(qc_pr_warnings "$CHECKS" "$REPAIRED")"
       set --
-      [ "$FAILED" = no ] && [ "$REPAIRED" = no ] || set -- --draft
+      [ -z "$WARNINGS" ] || set -- --draft
       {
-        [ "$FAILED" = no ] || printf 'Checks failed\n\n'
-        [ "$REPAIRED" = no ] || printf 'Hook repair changed the code after the checks ran; the checks table describes the pre-repair tree.\n\n'
+        [ -z "$WARNINGS" ] || printf '%s\n\n' "$WARNINGS"
         printf '## Request\n\n%s\n' "$(qc_request)"
         [ -z "$ISSUE" ] || printf '\nRefs #%s\n' "$ISSUE"
         printf '\n## Diff\n\n```\n%s\n```\n' "$(git diff --stat "$BASE" HEAD)"

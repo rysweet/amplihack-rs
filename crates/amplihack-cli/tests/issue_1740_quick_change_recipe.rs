@@ -349,7 +349,7 @@ fn create_pr_reads_both_repair_outputs_from_the_runner() {
     ] {
         assert!(pr.contains(var), "create-pr must read {var}");
     }
-    assert!(pr.contains("Hook repair changed the code after the checks ran"));
+    assert!(pr.contains("qc_pr_warnings \"$CHECKS\" \"$REPAIRED\""));
     assert!(pr.contains("## Request") && !pr.contains("## Summary"));
 }
 
@@ -389,4 +389,8 @@ fn worktree_step_ignores_inherited_branch_targets_and_branch_is_checked_before_t
         check < pin,
         "the branch is checked before the base is pinned"
     );
+    let identity = cmd
+        .find("qc_require_identity")
+        .expect("record-base resolves the commit identity before the agent runs");
+    assert!(identity < pin, "the identity is checked before the pin");
 }

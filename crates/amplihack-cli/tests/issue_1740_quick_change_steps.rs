@@ -1,4 +1,4 @@
-//! Issue #1740: steps 2, 4 and 5 of `quick-change.yaml`, run from the live
+//! Issue #1740: steps 2, 4, 5 and 10 of `quick-change.yaml`, run from the live
 //! YAML against a temporary repository on a `quick/` branch.
 //!
 //! - `allow_no_op`: smart-classify-route sets it to `true` for docs-only,
@@ -8,11 +8,14 @@
 //! - The hand-over note: it must say where the change is and how to see it
 //!   whether or not the agent committed, and its instruction to apply the
 //!   patch must be correct in both cases.
+//! - The commit identity: a run that could never commit stops before the
+//!   agent, not after it.
+//! - The PR: a run where no check ran is a draft and says so.
 //!
 //! Each command runs under `bash -c` started by
 //! [`crate::isolated_amplihack::isolated`], with a temp `HOME`, the
 //! repository's own bundle as `AMPLIHACK_HOME` and the runner's values in
-//! `RECIPE_VAR_*`. No agent, `gh` or network is involved.
+//! `RECIPE_VAR_*`. No agent or network is involved, and `gh` is a stub.
 
 use std::path::PathBuf;
 use std::process::Output;
@@ -63,6 +66,17 @@ fn run_step(r: &Repo, id: &str, vars: &[(&str, &str)]) -> Output {
             std::fs::canonicalize(repo_root()).unwrap(),
         )
         .env("RECIPE_VAR_worktree_setup", setup);
+    // Each test states the identity it wants; none comes from the host.
+    for k in [
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "AMPLIHACK_GIT_AUTHOR_NAME",
+        "AMPLIHACK_GIT_AUTHOR_EMAIL",
+    ] {
+        c.env_remove(k);
+    }
     for (k, v) in vars {
         c.env(k, v);
     }
@@ -74,7 +88,14 @@ fn stdout(o: &Output) -> String {
 }
 
 fn record_base(r: &Repo) -> String {
-    let o = run_step(r, "quick-change-record-base", &[]);
+    let o = run_step(
+        r,
+        "quick-change-record-base",
+        &[
+            ("AMPLIHACK_GIT_AUTHOR_NAME", "Test"),
+            ("AMPLIHACK_GIT_AUTHOR_EMAIL", "test@example.com"),
+        ],
+    );
     assert!(o.status.success(), "record-base: {}", stderr(&o));
     let base = stdout(&o);
     assert_eq!(base, r.base, "record-base pins HEAD");
@@ -298,4 +319,133 @@ fn a_size_reason_that_comes_with_a_commit_still_reports_the_commit() {
     let (note, _) = hand_over(&r, &base, "files>3");
     assert!(note.contains("1 commit(s) after the base commit"), "{note}");
     assert!(!note.contains("The changes are uncommitted"), "{note}");
+}
+
+/// The repository's remote is a local path, so no provider identity can be
+/// looked up, and the temp `HOME` holds no git identity.
+#[test]
+fn a_run_that_could_never_commit_stops_before_the_agent() {
+    let r = quick_repo();
+    let o = run_step(&r, "quick-change-record-base", &[]);
+    assert!(!o.status.success(), "{}", stdout(&o));
+    assert!(
+        stderr(&o).contains("no safe commit identity"),
+        "{}",
+        stderr(&o)
+    );
+    assert!(stdout(&o).is_empty(), "no base is output");
+}
+
+#[test]
+fn record_base_outputs_only_the_base_when_an_identity_resolves() {
+    let r = quick_repo();
+    assert_eq!(record_base(&r).len(), 40);
+}
+
+/// Runs `quick-change-create-pr` on a committed change with the given stored
+/// checks results and a stub `gh`; returns its arguments and the PR body.
+fn create_pr(summary: &str, table: &str) -> (String, String) {
+    create_pr_repaired(summary, table, "no")
+}
+
+fn create_pr_repaired(summary: &str, table: &str, repaired: &str) -> (String, String) {
+    let r = quick_repo();
+    let base = record_base(&r);
+    r.write("README.md", "# edited\n");
+    git(&r.wt, &["add", "-A"]);
+    git(&r.wt, &["commit", "-q", "-m", "change"]);
+
+    let bin = r.tmp.path().join("bin");
+    std::fs::create_dir(&bin).unwrap();
+    let args_file = r.tmp.path().join("gh-args");
+    let body_file = r.tmp.path().join("gh-body");
+    let gh = bin.join("gh");
+    let script = format!(
+        "#!/bin/bash\nprintf '%s\\n' \"$@\" > '{a}'\nwhile [ $# -gt 0 ]; do [ \"$1\" = --body-file ] && cp \"$2\" '{b}'; shift; done\necho https://github.com/o/r/pull/1\n",
+        a = args_file.display(),
+        b = body_file.display()
+    );
+    std::fs::write(&gh, script).unwrap();
+    std::fs::set_permissions(&gh, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let root = r.tmp.path().join(".amplihack/state/quick-change");
+    let state = std::fs::read_dir(root)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    std::fs::write(state.join("checks-summary"), format!("{summary}\n")).unwrap();
+    std::fs::write(state.join("checks-table.md"), table).unwrap();
+
+    let path = format!("{}:{}", bin.display(), std::env::var("PATH").unwrap());
+    let o = run_step(
+        &r,
+        "quick-change-create-pr",
+        &[
+            ("PATH", &path),
+            ("RECIPE_VAR_task_description", "Fix the link"),
+            ("RECIPE_VAR_quick_change_base", &base),
+            ("RECIPE_VAR_quick_change_checks", summary),
+            ("RECIPE_VAR_quick_change_commit_repaired", repaired),
+            ("RECIPE_VAR_quick_change_push_repaired", "no"),
+        ],
+    );
+    assert!(o.status.success(), "create-pr: {}", stderr(&o));
+    (
+        std::fs::read_to_string(args_file).unwrap(),
+        std::fs::read_to_string(body_file).unwrap(),
+    )
+}
+
+#[test]
+fn no_check_found_opens_a_draft_that_says_so() {
+    let (args, body) = create_pr("QUICK_CHANGE_CHECKS=none ran=0 failed=0 skipped=0", "");
+    assert!(args.lines().any(|l| l == "--draft"), "{args}");
+    assert!(body.starts_with("No checks ran\n"), "{body}");
+}
+
+#[test]
+fn every_check_skipped_opens_a_draft_that_says_so() {
+    let (args, body) = create_pr(
+        "QUICK_CHANGE_CHECKS=none ran=0 failed=0 skipped=1",
+        "| `cargo fmt --all -- --check` | skipped (cargo not on PATH) |\n",
+    );
+    assert!(args.lines().any(|l| l == "--draft"), "{args}");
+    assert!(body.starts_with("No checks ran\n"), "{body}");
+    assert!(body.contains("skipped (cargo not on PATH)"), "{body}");
+}
+
+#[test]
+fn failed_checks_still_open_a_draft_that_says_so() {
+    let (args, body) = create_pr(
+        "QUICK_CHANGE_CHECKS=failed ran=1 failed=1 skipped=0",
+        "| `cargo fmt --all -- --check` | exit 1 |\n",
+    );
+    assert!(args.lines().any(|l| l == "--draft"), "{args}");
+    assert!(body.starts_with("Checks failed\n\n## Request"), "{body}");
+}
+
+#[test]
+fn hook_repair_opens_a_draft_that_says_so() {
+    let (args, body) = create_pr_repaired(
+        "QUICK_CHANGE_CHECKS=passed ran=1 failed=0 skipped=0",
+        "| `cargo fmt --all -- --check` | exit 0 |\n",
+        "yes",
+    );
+    assert!(args.lines().any(|l| l == "--draft"), "{args}");
+    assert!(
+        body.starts_with("Hook repair changed the code after the checks ran"),
+        "{body}"
+    );
+}
+
+#[test]
+fn passed_checks_open_a_ready_pr() {
+    let (args, body) = create_pr(
+        "QUICK_CHANGE_CHECKS=passed ran=1 failed=0 skipped=0",
+        "| `cargo fmt --all -- --check` | exit 0 |\n",
+    );
+    assert!(!args.lines().any(|l| l == "--draft"), "{args}");
+    assert!(!body.contains("No checks ran"), "{body}");
 }

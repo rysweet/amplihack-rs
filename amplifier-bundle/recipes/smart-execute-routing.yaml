@@ -254,6 +254,17 @@ steps:
   # degradation — the depth-limited banner makes the change visible.
   # ─────────────────────────────────────────────────────────────────────────
 
+  # #1740: the fallback runs default-workflow even under -c workflow=quick-change,
+  # so the selection follows it: the log says so and reflection is not skipped.
+  - id: "blocked-fallback-reselect-workflow"
+    type: "bash"
+    condition: |
+      'Development' in task_type and 'BLOCKED' in recursion_guard and workstream_count != 1 and workstream_count != '1' and workstream_count != '' and selected_workflow == 'quick-change'
+    command: |
+      echo '[dev-orchestrator] Workflow: default-workflow source=override reason=parallel launch blocked; the single-session fallback runs default-workflow' >&2
+      printf 'default-workflow'
+    output: "selected_workflow"
+
   - id: "execute-single-fallback-blocked-development"
     type: "recipe"
     # Fires when blocked from spawning subworkstreams — adapts to single session
@@ -339,6 +350,16 @@ steps:
       [ -n "$T" ] || { echo "WARNING: routing gap report helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): amplifier-bundle/tools/smart_routing_gap_report.sh" >&2; echo "diag:helper-not-found"; exit 0; }
       bash "$T"
     output: "infra_error_details"
+
+  # #1740: as blocked-fallback-reselect-workflow, for the recovery path.
+  - id: "adaptive-reselect-workflow"
+    type: "bash"
+    condition: |
+      adaptive_recipe == 'default-workflow' and selected_workflow == 'quick-change'
+    command: |
+      echo '[dev-orchestrator] Workflow: default-workflow source=override reason=no execution path ran; adaptive recovery runs default-workflow' >&2
+      printf 'default-workflow'
+    output: "selected_workflow"
 
   - id: "adaptive-execute-development"
     type: "recipe"

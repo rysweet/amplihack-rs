@@ -46,6 +46,9 @@ fn classifier_prompt_asks_for_the_workflow_fields_and_small_task_categories() {
         "documentation",
         "lock",
         "typo",
+        "configuration or wording",
+        "single-file fix",
+        "public interface",
         "when in doubt",
     ] {
         assert!(
@@ -184,6 +187,40 @@ fn blocked_fallback_and_adaptive_paths_stay_on_default_workflow() {
                 .unwrap_or("")
                 .contains("quick-change"),
             "{id} must not route on selected_workflow"
+        );
+    }
+}
+
+/// The two steps that run `default-workflow` after `-c workflow=quick-change`
+/// was selected: each must correct the selection first, or the log names the
+/// wrong recipe and reflection and validation are skipped for a full run.
+#[test]
+fn fallback_paths_correct_a_quick_change_selection_first() {
+    let r = recipe("smart-execute-routing");
+    let ids: Vec<&str> = steps(&r).iter().filter_map(|s| s["id"].as_str()).collect();
+    for (reselect, runs) in [
+        (
+            "blocked-fallback-reselect-workflow",
+            "execute-single-fallback-blocked-development",
+        ),
+        ("adaptive-reselect-workflow", "adaptive-execute-development"),
+    ] {
+        let at = ids.iter().position(|i| *i == runs).unwrap();
+        assert_eq!(ids[at - 1], reselect, "{ids:?}");
+        let s = step(&r, reselect);
+        assert_eq!(s["output"].as_str(), Some("selected_workflow"));
+        let cmd = s["command"].as_str().unwrap();
+        assert!(cmd.contains("printf 'default-workflow'"), "{cmd}");
+        assert!(
+            cmd.contains("[dev-orchestrator] Workflow: default-workflow source=override reason="),
+            "{cmd}"
+        );
+        let c = condition(&r, reselect);
+        assert!(c.contains("selected_workflow == 'quick-change'"), "{c}");
+        let run_cond = condition(&r, runs);
+        assert!(
+            c.starts_with(&run_cond),
+            "{reselect} must fire exactly when {runs} does: {c} / {run_cond}"
         );
     }
 }

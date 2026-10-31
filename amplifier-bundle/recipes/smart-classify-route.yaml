@@ -94,9 +94,10 @@ steps:
          workflow_reason: one short sentence (issue #1740). Recommend
          "quick-change" only for a Development task with exactly one
          workstream that is one of: documentation only; a dependency lock
-         update; a comment or typo fix; a small contained fix to one or two
-         files. Never recommend it for a feature, a behaviour change visible
-         to users, or more than one workstream. When in doubt, choose
+         update; a comment or typo fix; a configuration or wording change; a
+         single-file fix with no behaviour change to a public interface.
+         Never recommend it for a feature, a behaviour change visible to
+         users, or more than one workstream. When in doubt, choose
          "default-workflow".
 
       **Classification rules — read carefully (#269)**:

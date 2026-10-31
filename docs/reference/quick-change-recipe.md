@@ -35,14 +35,15 @@ The recipe is `amplifier-bundle/recipes/quick-change.yaml`. It was added for iss
 
 ## When it runs
 
-smart-orchestrator selects `quick-change` for a `Development` task with exactly one workstream when the classifier recommends it, or when the caller forces it with `-c workflow=quick-change`. The classifier is asked to recommend it for four kinds of task:
+smart-orchestrator selects `quick-change` for a `Development` task with exactly one workstream when the classifier recommends it, or when the caller forces it with `-c workflow=quick-change`. The classifier is asked to recommend it for five kinds of task:
 
 | Category | Example task |
 | --- | --- |
 | Documentation only | "Fix the broken link to the recipe CLI reference in docs/index.md" |
 | Dependency lock update | "Update Cargo.lock for the serde patch release" |
 | Comment or typo fix | "Correct the misspelt word in the orch.rs doc comment" |
-| Small contained fix | "Change the default heartbeat interval constant from 30 to 60" |
+| Configuration or wording change | "Set `site_name` in mkdocs.yml to the new project name", "Reword the missing-token error message" |
+| Single-file fix with no behaviour change to a public interface | "Close the file handle the private cache loader leaves open" |
 
 The prompt tells the classifier to choose `default-workflow` when in doubt, and never to recommend `quick-change` for a feature, a behaviour change visible to users, or a task with more than one workstream.
 
@@ -122,7 +123,7 @@ A value that does not match `^[0-9]{1,6}$` fails the `quick-change-diff-limits` 
 | # | Step ID | Type | What it does |
 | --- | --- | --- | --- |
 | 1 | `quick-change-worktree` | recipe | Runs `workflow-worktree` with `branch_prefix: quick` and with `existing_branch` and `pr_number` set to empty. Output `worktree_setup`. |
-| 2 | `quick-change-record-base` | bash | Checks the branch (see [Branch name](#branch-name)), pins the base commit (`git rev-parse HEAD`) and snapshots the git configuration, hooks and push URL into the state directory. |
+| 2 | `quick-change-record-base` | bash | Checks the branch (see [Branch name](#branch-name)), checks that a safe commit identity resolves, so a run that could never commit stops before the agent and the checks, pins the base commit (`git rev-parse HEAD`) and snapshots the git configuration, hooks and push URL into the state directory. |
 | 3 | `quick-change-implement` | agent | The only agent step. `amplihack:core:builder` makes the change in the worktree. |
 | 4 | `quick-change-diff-limits` | bash | Runs `quick_change_diff_limits.sh`. Output `quick_change_verdict`: `proceed`, `handover`, or `empty` when the diff is empty and `allow_no_op` is `"true"`. Has no condition. Fails the run on git configuration drift, an empty diff without `allow_no_op`, or a fault in the tool. |
 | 5 | `quick-change-write-handover` | bash | On `handover`, writes the patch file and the hand-over note. |
@@ -369,7 +370,7 @@ QUICK_CHANGE_CHECKS=failed ran=3 failed=1 skipped=2
 | --- | --- |
 | `passed` | At least one check ran and none failed |
 | `failed` | At least one check failed |
-| `none` | No check ran |
+| `none` | No check ran. The PR is a draft and its body says "No checks ran" |
 
 A skipped check is never counted as passed. Skip reasons come from a closed set:
 
@@ -414,6 +415,8 @@ Refs #1740
 | `npm test` | exit 0 |
 ```
 
+Discovery covers Cargo, pre-commit and npm. In any other repository, or when the tools are missing from `PATH`, no check runs, the table shows at most skipped rows, and the PR opens as a draft that starts with "No checks ran".
+
 The Checks table above is what `quick_change_checks.sh` wrote for a one-line change to `docs/index.md` in this repository, whose root has `Cargo.toml`, `.pre-commit-config.yaml` and a `package.json` with a `test` script and no `lint` script.
 
 | Item | Rule |
@@ -421,11 +424,11 @@ The Checks table above is what `quick_change_checks.sh` wrote for a one-line cha
 | Title | Task text with control characters and backticks removed and leading markdown markers (`#`, `>`, `*`, `_`, `-`) stripped, cut to 72 characters; `quick change` when nothing is left |
 | Request | The task text, cut to 4000 bytes on a UTF-8 boundary |
 | `Refs #N` | Only when the issue number matches `^[1-9][0-9]{0,8}$` |
-| Draft | When `QUICK_CHANGE_CHECKS=failed`, or when hook repair ran in the commit or push step |
+| Draft | When `QUICK_CHANGE_CHECKS=failed` or `none`, or when hook repair ran in the commit or push step |
 
 The body's first section is headed "Request" because it holds the task text as given, not a summary of the change: no agent-written text reaches the PR (S8). The commit message body is the same text.
 
-When the checks failed, the body starts with "Checks failed". When hook repair ran, it also says "Hook repair changed the code after the checks ran; the checks table describes the pre-repair tree." The create-PR step reads `quick_change_commit_repaired` and `quick_change_push_repaired` from the runner's outputs, never from the state directory, and fails when either is missing.
+When the checks failed, the body starts with "Checks failed"; when no check ran, it starts with "No checks ran". When hook repair ran, it also says "Hook repair changed the code after the checks ran; the checks table describes the pre-repair tree." The create-PR step reads `quick_change_commit_repaired` and `quick_change_push_repaired` from the runner's outputs, never from the state directory, and fails when either is missing.
 
 The push uses an explicit refspec, `git push -u origin refs/heads/<branch>:refs/heads/<branch>`, only after the snapshot (which holds a checksum of the push URL) still matches, and is followed by `verify_pushed_ref.sh`. `gh pr create` runs through `workflow_gh_retry.sh` under an outer timeout.
 
@@ -485,7 +488,7 @@ After the table, a `quick-change` result becomes `default-workflow` when the run
 
 "Names a branch" uses the directive rules of `workflow_branch_name.sh explicit` (#1426), which `workflow-worktree` runs: a line starting `Branch:`, `Branch name:`, `Branch ref:` or `Branch =` (any case) with the value on the same line or the next non-blank one, or `Branch`, a dash (`-`, `–` or `—`), any text and a final `:`, with the value on the next non-blank line. The value must be a valid ref containing `/` or `-`, not a base branch name and not starting with `origin/`, `refs/` or `heads/`. Prose such as "Branch coverage is low in: src/foo-bar.rs" does not count. Whether the branch exists does not matter. The helper reads the task text from `RECIPE_VAR_task_description`; `crates/amplihack-cli/src/commands/orch/named_branch.rs` repeats the shell tool's patterns, a unit test there fails when the shell tool's patterns or bounds change, and `issue_1740_select_workflow` runs both on each directive form and fails when they disagree.
 
-A valid override applies however many workstreams there are. With `-c workflow=quick-change` and a parallel decomposition, every Development workstream runs `quick-change` and orchestrator reflection is skipped. Without an override, every Development workstream of a parallel decomposition runs `default-workflow`, whatever recipe the model gave it, and a non-Development workstream that the model gave `quick-change` runs its classification's own recipe instead; see [Dev-Orchestrator Routing Contract](./dev-orchestrator-routing.md#routing-invariant). The log line therefore names the recipe the workstreams run. Non-Development routing (Q&A, Operations, Investigation) never changes.
+A valid override applies however many workstreams there are. With `-c workflow=quick-change` and a parallel decomposition, every Development workstream runs `quick-change` and orchestrator reflection is skipped. Without an override, every Development workstream of a parallel decomposition runs `default-workflow`, whatever recipe the model gave it, and a non-Development workstream that the model gave `quick-change` runs its classification's own recipe instead; see [Dev-Orchestrator Routing Contract](./dev-orchestrator-routing.md#routing-invariant). The log line therefore names the recipe the workstreams run, with the one correction described under [Log line](#log-line). Non-Development routing (Q&A, Operations, Investigation) never changes.
 
 Override values are trimmed and lower-cased, then matched against the exact list `quick-change`, `default-workflow`.
 
@@ -506,6 +509,12 @@ Every orchestrated run writes one line to stderr after any warnings:
 
 ```text
 [dev-orchestrator] Workflow: <quick-change|default-workflow|none> source=<override|classifier|default> reason=<text>
+```
+
+One case writes a second line. When `quick-change` was forced on a run that then falls back to `default-workflow`, because the recursion guard blocked the parallel launch or adaptive recovery took over, `blocked-fallback-reselect-workflow` or `adaptive-reselect-workflow` sets `selected_workflow` to `default-workflow` and logs the change. The last line names what ran, and reflection and validation run as for any full workflow:
+
+```text
+[dev-orchestrator] Workflow: default-workflow source=override reason=parallel launch blocked; the single-session fallback runs default-workflow
 ```
 
 Examples:
@@ -530,7 +539,7 @@ The reason is sanitised before it is logged: control characters (including ESC a
 | Non-Development | any | `quick-change` | the classification's own recipe: `investigation-workflow`, `qa-workflow` or `consensus-workflow`, and `default-workflow` for Operations |
 | Non-Development | any | anything else | unchanged |
 
-The helper reads the override from `RECIPE_VAR_workflow`, the two targets from `RECIPE_VAR_existing_branch` and `RECIPE_VAR_pr_number`, and the task text from `RECIPE_VAR_task_description`: the same values `select-workflow` receives. The log line that `select-workflow` writes therefore names the recipe every Development workstream runs: `quick-change` only under a valid override, otherwise `default-workflow`, with `reason=quick-change needs one workstream; got N` when the classifier recommended `quick-change`. W1 to W4 are printed by `select-workflow`; the helper prints W1 again for an invalid override. The blocked-fallback and adaptive execution paths always use `default-workflow`.
+The helper reads the override from `RECIPE_VAR_workflow`, the two targets from `RECIPE_VAR_existing_branch` and `RECIPE_VAR_pr_number`, and the task text from `RECIPE_VAR_task_description`: the same values `select-workflow` receives. The log line that `select-workflow` writes therefore names the recipe every Development workstream runs: `quick-change` only under a valid override, otherwise `default-workflow`, with `reason=quick-change needs one workstream; got N` when the classifier recommended `quick-change`. W1 to W4 are printed by `select-workflow`; the helper prints W1 again for an invalid override. The blocked-fallback and adaptive execution paths always use `default-workflow`, and correct `selected_workflow` when it said `quick-change`; see [Log line](#log-line).
 
 ## The select-workflow helper
 

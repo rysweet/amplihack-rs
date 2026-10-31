@@ -17,7 +17,8 @@
 # defined for the publish steps; qc_base for every step after the agent;
 # qc_handover_reason, qc_checks_summary and qc_checks_table read state files
 # only after checking them against fixed forms or the runner's outputs;
-# qc_handover_note writes the note default-workflow receives on hand-over.
+# qc_handover_note writes the note default-workflow receives on hand-over;
+# qc_require_identity runs before the agent; qc_pr_warnings opens the PR body.
 
 set -euo pipefail
 export GIT_PAGER=cat PAGER=cat LESS=FRX
@@ -149,6 +150,26 @@ qc_checks_table() {
   want="${1#QUICK_CHANGE_CHECKS=* }"
   [ "ran=$ran failed=$failed skipped=$skipped" = "$want" ] || qc_die "checks table does not match the checks summary"
   cat "$file"
+}
+
+# qc_pr_warnings <summary> <repaired>: the lines that open the PR body, one
+# for each reason the PR is a draft; empty when it can be ready for review.
+qc_pr_warnings() {
+  case "$1" in
+    QUICK_CHANGE_CHECKS=failed*) printf '%s\n\n' 'Checks failed' ;;
+    QUICK_CHANGE_CHECKS=none*) printf '%s\n\n' 'No checks ran' ;;
+  esac
+  [ "$2" = no ] || printf '%s\n' 'Hook repair changed the code after the checks ran; the checks table describes the pre-repair tree.'
+}
+
+# qc_require_identity: stop unless a safe commit identity resolves, so a run
+# that could never commit ends before the agent and checks do their work. The
+# commit step resolves it again and exports it. This resolves in a subshell,
+# in the worktree, because the resolver reads the repository's configuration.
+qc_require_identity() {
+  [ -f "$QC_TOOLS/git-identity.sh" ] || qc_die "git-identity.sh is missing from $QC_TOOLS"
+  ( cd "$QC_WT" && . "$QC_TOOLS/git-identity.sh" && amplihack_resolve_git_identity >/dev/null ) \
+    || qc_die "no safe commit identity; set one before running, as the commit step would fail after the agent's work"
 }
 
 # qc_branch: print the worktree's branch after checking that it is valid,
