@@ -40,6 +40,9 @@ pub enum Commands {
     /// Manage Claude Code login profiles
     #[command(subcommand)]
     Profile(crate::commands::profile::ProfileCommands),
+    /// Report workstream token observations or explicitly publish a PR summary
+    #[command(subcommand)]
+    Usage(crate::commands::usage::UsageCommands),
     /// Register, supervise and report long-lived agent sessions
     #[command(subcommand)]
     Agent(crate::commands::agent::AgentCommands),
