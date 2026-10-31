@@ -67,7 +67,6 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_COPILOT` | test-only |  | Not an env var: fixture string in the #1481 test. |
 | `AMPLIHACK_COPILOT_BINARY_PATH` | test-only |  | Set only by prompt-delivery tests; the lookup itself is `AMPLIHACK_<TOOL>_BINARY_PATH`. |
 | `AMPLIHACK_COPILOT_NO_ALLOW_ALL` | user preference |  | Stops `amplihack copilot` from passing `--allow-all-*`. |
-| `AMPLIHACK_COPILOT_NO_REMOTE` | user preference |  | Stops `amplihack copilot` from enabling remote access. |
 | `AMPLIHACK_DATABASE_PASSWORD` | internal |  | Example secret the Docker launcher must not forward; named in its test. |
 | `AMPLIHACK_DEBUG` | internal |  | Not read: example name in `amplihack-state` `EnvVar` docs. |
 | `AMPLIHACK_DEFAULT_MODEL` | user preference |  | Default model for launched agents. |
@@ -136,7 +135,6 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_NO_RUST_BOOTSTRAP` | user preference |  | Skips the Rust toolchain bootstrap. |
 | `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND` | user preference |  | Skips the system-prompt append. |
 | `AMPLIHACK_NO_UPDATE_CHECK` | user preference |  | Skips the startup update check. |
-| `AMPLIHACK_NPM_SENTINEL` | test-only |  | Sentinel path for the npm update-check test script. |
 | `AMPLIHACK_NPM_VERSION` | test-only |  | Not an env var: placeholder in the plugin-manifest test. |
 | `AMPLIHACK_ORCHESTRATION_BOOTSTRAP` | test-only |  | Codex front-door contract fixture. |
 | `AMPLIHACK_ORIGINAL_CWD` | internal |  | Original directory handed to an auto-mode child. |
@@ -226,7 +224,6 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_TEST_NONEXISTENT_456` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_789` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_GET_ERR` | test-only |  | `EnvVar` unit test name. |
-| `AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS` | test-only |  | Shortens the workflow provider timeout in tests. |
 | `AMPLIHACK_TEST_ROOT_SANDBOX_PROBE` | test-only |  | Root-sandbox spawn test probe. |
 | `AMPLIHACK_TEST_SECURITY_MODE` | test-only |  | Hook protocol test mode. |
 | `AMPLIHACK_TEST_SECURITY_TRANSPORT` | test-only |  | Hook protocol test transport. |

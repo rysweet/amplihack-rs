@@ -47,6 +47,13 @@ static LATEST_VERSION_MEMO: LazyLock<Mutex<HashMap<String, Option<String>>>> =
 /// already treats unknown as "never install", so a cached failure is the safe
 /// direction as well as the fast one.
 pub fn get_latest_version(pkg: &str) -> Option<String> {
+    get_latest_version_with(pkg, &|_| {})
+}
+
+/// [`get_latest_version`] with `configure` applied to the `npm` command just
+/// before it is spawned. Tests use it to set the child's PATH and HOME
+/// (issue #1765). It shares the memo with [`get_latest_version`].
+fn get_latest_version_with(pkg: &str, configure: &dyn Fn(&mut Command)) -> Option<String> {
     let mut memo = LATEST_VERSION_MEMO
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -55,13 +62,13 @@ pub fn get_latest_version(pkg: &str) -> Option<String> {
     }
     // SEC-WS3: pkg is always a &'static str from npm_package_for_tool().
     // It is never a user-controlled runtime string.
-    let latest = query_latest_version(pkg);
+    let latest = query_latest_version(pkg, configure);
     memo.insert(pkg.to_string(), latest.clone());
     latest
 }
 
-fn query_latest_version(pkg: &str) -> Option<String> {
-    let output = run_npm_with_timeout(&["show", pkg, "version"], NPM_TIMEOUT)?;
+fn query_latest_version(pkg: &str, configure: &dyn Fn(&mut Command)) -> Option<String> {
+    let output = run_npm_with_timeout(&["show", pkg, "version"], NPM_TIMEOUT, configure)?;
     let version = output.split_whitespace().next()?.to_string();
     if version.is_empty() {
         return None;
@@ -106,10 +113,19 @@ pub fn sanitize_version(s: &str) -> String {
 /// - The process does not complete within `timeout`
 /// - The process exits with a non-zero status
 /// - stdout is not valid UTF-8
-pub fn run_npm_with_timeout(args: &[&str], timeout: Duration) -> Option<String> {
+///
+/// `configure` is applied after the scrub and arguments, just before the
+/// spawn. Production passes a no-op; tests use it to set the child's PATH
+/// and HOME (issue #1765).
+pub(super) fn run_npm_with_timeout(
+    args: &[&str],
+    timeout: Duration,
+    configure: &dyn Fn(&mut Command),
+) -> Option<String> {
     let mut cmd = Command::new("npm");
     amplihack_utils::litellm_proxy::scrub_inference_environment(&mut cmd);
     cmd.args(args);
+    configure(&mut cmd);
     let output = run_output_with_timeout(cmd, timeout).ok()?;
     if !output.status.success() {
         return None;
@@ -120,6 +136,20 @@ pub fn run_npm_with_timeout(args: &[&str], timeout: Duration) -> Option<String> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
+    use crate::commands::profile::ROOT_ENV;
+    #[cfg(unix)]
+    use std::path::Path;
+
+    /// Issue #1765: the fake `npm` is reached through the child's PATH alone,
+    /// with a temporary HOME and no profile root; the process PATH and HOME
+    /// are never changed.
+    #[cfg(unix)]
+    fn hermetic_npm(dir: &Path) -> impl Fn(&mut Command) + '_ {
+        move |cmd: &mut Command| {
+            cmd.env("PATH", dir).env("HOME", dir).env_remove(ROOT_ENV);
+        }
+    }
 
     #[cfg(unix)]
     #[test]
@@ -147,7 +177,6 @@ mod tests {
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&fake_npm, perms).unwrap();
 
-        let previous_path = std::env::var_os("PATH");
         let names = [
             amplihack_utils::litellm_proxy::ENDPOINT_ENV,
             amplihack_utils::litellm_proxy::API_KEY_ENV,
@@ -158,7 +187,6 @@ mod tests {
         ];
         let previous = names.map(std::env::var_os);
         unsafe {
-            std::env::set_var("PATH", temp.path());
             std::env::set_var(names[0], "https://gateway.example.com");
             std::env::set_var(names[1], "gateway-secret");
             std::env::set_var(names[2], "gateway-model");
@@ -167,13 +195,13 @@ mod tests {
             std::env::set_var(names[5], "operator-secret");
         }
 
-        let result = run_npm_with_timeout(&["show", "pkg", "version"], NPM_TIMEOUT);
+        let result = run_npm_with_timeout(
+            &["show", "pkg", "version"],
+            NPM_TIMEOUT,
+            &hermetic_npm(temp.path()),
+        );
 
         unsafe {
-            match previous_path {
-                Some(value) => std::env::set_var("PATH", value),
-                None => std::env::remove_var("PATH"),
-            }
             for (name, value) in names.into_iter().zip(previous) {
                 match value {
                     Some(value) => std::env::set_var(name, value),
@@ -192,49 +220,46 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn run_npm_with_timeout_terminates_child_after_timeout() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        let sentinel = temp.path().join("npm-still-ran");
+        let marker = temp.path().join("npm-finished");
+        let marker_text = marker.to_str().expect("temporary paths are UTF-8");
+        assert!(
+            !marker_text.contains(['\'', '\n']),
+            "cannot single-quote {marker_text:?} for /bin/sh"
+        );
+        // The fake npm writes a marker 5 s after it starts, far beyond the
+        // 50 ms timeout and longer than a thread descheduled on a loaded host
+        // stalls. The marker is written by the fake's own shell, so it
+        // appears only if that process was left running past the timeout.
+        // Checking a marker instead of probing a recorded pid means the test
+        // never signals a pid the kernel may have given to another process,
+        // and it does not depend on the shell starting before the timeout.
         let fake_npm = temp.path().join("npm");
         std::fs::write(
             &fake_npm,
-            "#!/bin/sh\n\
-             /bin/sleep 1\n\
-             printf 'late' > \"$AMPLIHACK_NPM_SENTINEL\"\n\
-             printf '1.2.3\\n'\n",
+            format!("#!/bin/sh\n/bin/sleep 5\nprintf done > '{marker_text}'\n"),
         )
         .unwrap();
         let mut perms = std::fs::metadata(&fake_npm).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&fake_npm, perms).unwrap();
+        let start = std::time::Instant::now();
 
-        let previous_path = std::env::var_os("PATH");
-        let previous_sentinel = std::env::var_os("AMPLIHACK_NPM_SENTINEL");
-        unsafe {
-            std::env::set_var("PATH", temp.path());
-            std::env::set_var("AMPLIHACK_NPM_SENTINEL", &sentinel);
-        }
-
-        // The fake npm needs a full second, so a poll thread descheduled on
-        // a loaded host still finds it running when the timeout expires.
-        let result = run_npm_with_timeout(&["--version"], Duration::from_millis(50));
-
-        match previous_path {
-            Some(value) => unsafe { std::env::set_var("PATH", value) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
-        match previous_sentinel {
-            Some(value) => unsafe { std::env::set_var("AMPLIHACK_NPM_SENTINEL", value) },
-            None => unsafe { std::env::remove_var("AMPLIHACK_NPM_SENTINEL") },
-        }
-        // Wait past the point where a surviving child would have written it.
-        std::thread::sleep(Duration::from_millis(1500));
-
+        let result = run_npm_with_timeout(
+            &["--version"],
+            Duration::from_millis(50),
+            &hermetic_npm(temp.path()),
+        );
         assert!(result.is_none(), "timeout should return no npm output");
+
+        // Wait until a fake left running would have written its marker.
+        let check_at = start + Duration::from_secs(7);
+        let now = std::time::Instant::now();
+        if check_at > now {
+            std::thread::sleep(check_at - now);
+        }
         assert!(
-            !sentinel.exists(),
+            !marker.exists(),
             "timed-out npm subprocess must be terminated, not left running in a background thread"
         );
     }
@@ -244,37 +269,29 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn get_latest_version_queries_the_registry_once_per_package() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let ledger = temp.path().join("npm-calls");
+        let ledger_text = ledger.to_str().expect("temporary paths are UTF-8");
+        assert!(
+            !ledger_text.contains(['\'', '\n']),
+            "cannot single-quote {ledger_text:?} for /bin/sh"
+        );
         let fake_npm = temp.path().join("npm");
         std::fs::write(
             &fake_npm,
-            format!(
-                "#!/bin/sh\nprintf 'ran\\n' >> \"{ledger}\"\nprintf '7.7.7\\n'\n",
-                ledger = ledger.display()
-            ),
+            format!("#!/bin/sh\nprintf 'ran\\n' >> '{ledger_text}'\nprintf '7.7.7\\n'\n"),
         )
         .unwrap();
         let mut perms = std::fs::metadata(&fake_npm).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&fake_npm, perms).unwrap();
 
-        let previous_path = std::env::var_os("PATH");
-        unsafe { std::env::set_var("PATH", temp.path()) };
-
         // A package name no other test uses, so the process-global memo starts
         // empty for it and this test leaves nothing behind for the others.
         let pkg = "@amplihack-test/memo-probe";
-        let first = get_latest_version(pkg);
-        let second = get_latest_version(pkg);
-
-        match previous_path {
-            Some(value) => unsafe { std::env::set_var("PATH", value) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
+        let hook = hermetic_npm(temp.path());
+        let first = get_latest_version_with(pkg, &hook);
+        let second = get_latest_version_with(pkg, &hook);
 
         assert_eq!(first.as_deref(), Some("7.7.7"));
         assert_eq!(second, first, "the memo must return the same answer");

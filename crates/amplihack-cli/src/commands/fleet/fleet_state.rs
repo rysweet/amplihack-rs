@@ -291,6 +291,17 @@ impl FleetState {
         azlin_path: &Path,
         vm_name: &str,
     ) -> Vec<TmuxSessionInfo> {
+        Self::poll_tmux_sessions_with(azlin_path, vm_name, &|_| {})
+    }
+
+    /// [`Self::poll_tmux_sessions_with_path`] with `configure` applied to the
+    /// `azlin` command just before it is spawned. Tests use it to set the
+    /// child's HOME (issue #1765).
+    pub(super) fn poll_tmux_sessions_with(
+        azlin_path: &Path,
+        vm_name: &str,
+        configure: &dyn Fn(&mut Command),
+    ) -> Vec<TmuxSessionInfo> {
         let mut cmd = Command::new(azlin_path);
         cmd.args([
             "connect",
@@ -299,6 +310,7 @@ impl FleetState {
             "--",
             "tmux list-sessions -F '#{session_name}|||#{session_windows}|||#{session_attached}' 2>/dev/null || echo 'no-tmux'",
         ]);
+        configure(&mut cmd);
 
         match run_output_with_timeout(cmd, TMUX_LIST_TIMEOUT) {
             Ok(output) => {
