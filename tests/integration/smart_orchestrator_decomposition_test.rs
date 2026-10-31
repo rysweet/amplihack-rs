@@ -2,8 +2,8 @@
 //!
 //! These tests assert the v3 composer + 4 phase sub-recipes preserve
 //! the v2 contract verbatim:
-//!   * exact 31-step inventory in exact order (#1740 added select-workflow
-//!     and execute-single-round-1-quick-change)
+//!   * exact step inventory in exact order (#1740 added select-workflow,
+//!     execute-single-round-1-quick-change and the three reselect steps)
 //!   * 4 sub-recipes in 4 calls, in order
 //!   * brick rule (≤400 LOC) on every phase recipe
 //!   * no duplicate step IDs across phases
@@ -37,6 +37,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "derive-recursion-guard",
     "execute-single-round-1-development",
     "execute-single-round-1-quick-change",
+    "handover-reselect-workflow",
     "execute-single-round-1-investigation",
     "create-workstreams-config",
     "launch-parallel-round-1",
