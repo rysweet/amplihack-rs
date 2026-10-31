@@ -311,9 +311,10 @@ below 100% (`reason=plan-room`), then marked credit overflow tiers 1-9, then
 the marked API-key tier (10). The rotator moves onto the API key only under
 the same `--overflow-wait` gate, only when no credit profile can be used and
 no plan login is below 100% on both windows, and only after a login check
-finds a non-empty `primaryApiKey` (`.claude.json`), `env.ANTHROPIC_API_KEY`
-or `apiKeyHelper` (`settings.json`) in the profile. A `.credentials.json`
-alone does not pass. The check never runs the helper or makes a request, so
+finds a non-empty `primaryApiKey` (`~/.claude.json`), `env.ANTHROPIC_API_KEY`
+or `apiKeyHelper` (`~/.claude/settings.json`), where plain `claude` reads after
+the move. The swap moves only `.credentials.json`, so a key in the profile's
+own files does not pass, and nor does a `.credentials.json` alone. The check never runs the helper or makes a request, so
 it confirms a key is configured, not that it works. A failed check moves
 nothing, leaves `~/.claude` unchanged and writes
 `key_check_refused <name>: <reason>` and, once,
@@ -343,7 +344,7 @@ What to tell the user:
 |-------|-----------------------|
 | `the API key is blocked (<reason>) until <time>; API-key profiles are not used` | A supervised agent step failed with a key error: `key_exhausted` (out of funds), `key_revoked` (invalid key) or `key_rate_limited`. The first two last until cleared (stored as 62 days). After fixing the key: `amplihack profile overflow clear --platform`. |
 | `swap refused: <name> has no oauth login and is not an API-key profile` | The profile's login file has no OAuth login. Log it in again, or `kind set <name> api-key` if it is meant to bill per token. |
-| `API key profile <name> failed its login check (<reason>); not moving onto it` | The marked API-key profile names no key in its own files. Ask the user to put the key in `primaryApiKey` (`.claude.json`) or `env.ANTHROPIC_API_KEY` or `apiKeyHelper` (`settings.json`) of that profile; never ask for the key value itself. Or unmark it with `amplihack profile overflow remove <name>`. |
+| `API key profile <name> failed its login check (<reason>); not moving onto it` | No key is where plain `claude` will read it after the move. Report it to the user. On a host that bills only plan logins, unmark the profile with `amplihack profile overflow remove <name>`. Otherwise the user can put the key in `primaryApiKey` (`~/.claude.json`) or `env.ANTHROPIC_API_KEY` or `apiKeyHelper` (`~/.claude/settings.json`), but it then applies to plan logins too; never ask for the key value itself. |
 | `more than one API-key profile could be live in ~/.claude; no swap` | `~/.claude` holds a login without OAuth and the ledger does not say which API-key profile it belongs to. They all share one key, so the user needs only one: suggest `amplihack profile remove <extra> --yes` for the others, after asking. |
 
 To stop using it: `amplihack profile auto-switch exclude <names, including

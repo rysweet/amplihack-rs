@@ -2,9 +2,19 @@
 //! R4): the profile must name a key Claude can use. See "API-key login
 //! check" in docs/reference/profile-command.md and `tests_key_check`.
 //!
-//! The check reads the profile's own `.claude.json` and `settings.json`
-//! with the evidence rules of kind detection: no symlink, a size limit, a
-//! regular file of the current user that group and others cannot write. It
+//! There are two checks, one for each place Claude can run:
+//!
+//! - [`reachable`] is the rotator's. A swap moves only `.credentials.json`
+//!   into `~/.claude`, and plain `claude` then reads `~/.claude.json` and
+//!   `~/.claude/settings.json`, so a key left in the profile's directory
+//!   never reaches it. Only those two files count.
+//! - [`configured`] is auto-switch's. A nested launch or rerun runs with
+//!   `CLAUDE_CONFIG_DIR=<profile>`, so the profile's own files are the ones
+//!   Claude reads.
+//!
+//! Both read with the evidence rules of kind detection: no symlink, a size
+//! limit, a regular file of the current user that group and others cannot
+//! write. They
 //! never runs `apiKeyHelper` and makes no network request. No value leaves
 //! this module: the detail is a fixed string, and a reason names only the
 //! setting or the file, so a key can never reach a log, the ledger or a
@@ -19,24 +29,48 @@ use serde_json::{Map, Value};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-/// The check: `Ok(detail)` when the profile names a key, else the reason.
+/// The rotator's check, given the home directory: `Ok(detail)` when a key is
+/// where Claude will read it after the swap, else the reason.
 /// `cycle::Ctx.key_check` holds one, so tests can replace it.
-pub type KeyCheckFn = fn(&ProfileStore, &ProfileName) -> Result<&'static str, String>;
+pub type KeyCheckFn = fn(&Path) -> Result<&'static str, String>;
 
 const SETTINGS: &str = "settings.json";
 const MAX_SETTINGS: u64 = 64 * 1024;
 const NONE: &str = "no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting";
 
-/// The production check: `primaryApiKey` in `.claude.json`,
-/// `env.ANTHROPIC_API_KEY` or `apiKeyHelper` in `settings.json`, each a
-/// non-empty string after trimming.
+/// A key plain `claude` can read once a swap has made an API-key profile
+/// live: [`names_a_key`] over `<home>/.claude.json` and
+/// `<home>/.claude/settings.json`. A key in the profile's directory does not
+/// count, since the swap does not move it.
+pub fn reachable(home: &Path) -> Result<&'static str, String> {
+    names_a_key(
+        &home.join(CLAUDE_JSON),
+        &home.join(".claude").join(SETTINGS),
+    )
+    .map_err(|why| {
+        if why == NONE {
+            format!("{NONE} in ~/.claude.json or ~/.claude/settings.json")
+        } else {
+            why
+        }
+    })
+}
+
+/// A key Claude can read when it runs with `CLAUDE_CONFIG_DIR` set to the
+/// profile's directory: [`names_a_key`] over the profile's own files.
 pub fn configured(store: &ProfileStore, name: &ProfileName) -> Result<&'static str, String> {
     let dir = store.root().join(name.as_str());
-    let claude = object(&dir.join(CLAUDE_JSON), CLAUDE_JSON, MAX_CLAUDE_JSON)?;
+    names_a_key(&dir.join(CLAUDE_JSON), &dir.join(SETTINGS))
+}
+
+/// `primaryApiKey` in `claude_json`, `env.ANTHROPIC_API_KEY` or `apiKeyHelper`
+/// in `settings_json`, each a non-empty string after trimming.
+fn names_a_key(claude_json: &Path, settings_json: &Path) -> Result<&'static str, String> {
+    let claude = object(claude_json, CLAUDE_JSON, MAX_CLAUDE_JSON)?;
     if claude.as_ref().is_some_and(|m| set(m.get("primaryApiKey"))) {
         return Ok("primaryApiKey set");
     }
-    let settings = object(&dir.join(SETTINGS), SETTINGS, MAX_SETTINGS)?;
+    let settings = object(settings_json, SETTINGS, MAX_SETTINGS)?;
     if let Some(m) = &settings {
         let env = m.get("env").and_then(Value::as_object);
         if set(env.and_then(|e| e.get("ANTHROPIC_API_KEY"))) {

@@ -31,7 +31,8 @@
 use crate::support::profile_rotate::*;
 use std::fs;
 
-const NO_KEY: &str = "no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting";
+const NO_KEY: &str = "no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting \
+                      in ~/.claude.json or ~/.claude/settings.json";
 
 fn stdout(out: &std::process::Output) -> String {
     text(&out.stdout)
@@ -62,6 +63,24 @@ fn console_runs(f: &Fixture) -> usize {
 
 /// Every plan login at 100%, resetting in 3 hours: beyond the default
 /// 30-minute overflow wait.
+/// Puts a key where plain `claude` reads it once `console` is live. The swap
+/// moves only `.credentials.json`, so this is the key the login check counts.
+fn give_home_a_key(f: &Fixture) {
+    let path = f.home.join(".claude.json");
+    let mut home: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    home["primaryApiKey"] = "SENTINEL-1804-KEY".into();
+    private_file(&path, &home.to_string());
+}
+
+/// Takes out the key the shared fixture keeps in `~/.claude.json`: without
+/// this, the login check finds that key and passes.
+fn take_key_from_home(f: &Fixture) {
+    let path = f.home.join(".claude.json");
+    let mut home: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    home.as_object_mut().unwrap().remove("primaryApiKey");
+    private_file(&path, &home.to_string());
+}
+
 fn all_plan_logins_out(f: &Fixture) {
     f.usage_resetting("work", 100, 40, 3);
     f.usage_resetting("spare", 100, 100, 3);
@@ -220,6 +239,7 @@ fn a_dry_run_with_an_unmarked_api_key_never_names_it_as_a_target() {
 #[test]
 fn t4_a_marked_api_key_with_no_key_setting_is_refused_and_alerted_once() {
     let f = Fixture::new();
+    take_key_from_home(&f);
     let console = add_console(&f);
     f.ok(&["profile", "overflow", "add", "console"]);
     all_plan_logins_out(&f);
@@ -262,6 +282,7 @@ fn t4_a_marked_api_key_with_no_key_setting_is_refused_and_alerted_once() {
 #[test]
 fn a_dry_run_reports_that_it_would_refuse_a_failed_login_check() {
     let f = Fixture::new();
+    take_key_from_home(&f);
     add_console(&f);
     f.ok(&["profile", "overflow", "add", "console"]);
     all_plan_logins_out(&f);
@@ -289,10 +310,7 @@ fn rotate_status_says_when_the_api_key_is_marked() {
 fn t3_a_marked_api_key_with_a_key_is_moved_in_with_the_per_token_line_first() {
     let f = Fixture::new();
     let console = add_console(&f);
-    private_file(
-        &f.root.join("console").join(".claude.json"),
-        r#"{"numStartups":3,"primaryApiKey":"SENTINEL-1804-KEY"}"#,
-    );
+    give_home_a_key(&f);
     f.ok(&["profile", "overflow", "add", "console"]);
     all_plan_logins_out(&f);
     f.run(&["profile", "rotate"]);
@@ -324,11 +342,37 @@ fn t3_a_marked_api_key_with_a_key_is_moved_in_with_the_per_token_line_first() {
 }
 
 #[test]
+fn a_key_only_in_the_profile_is_refused_because_the_swap_never_delivers_it() {
+    // The 30 Oct outage: the move would leave plain `claude` with a `{}`
+    // login and no key, "not logged in".
+    let f = Fixture::new();
+    take_key_from_home(&f);
+    let console = add_console(&f);
+    private_file(
+        &f.root.join("console").join(".claude.json"),
+        r#"{"numStartups":3,"primaryApiKey":"SENTINEL-1804-KEY"}"#,
+    );
+    f.ok(&["profile", "overflow", "add", "console"]);
+    all_plan_logins_out(&f);
+    let dry = stdout(&f.ok(&["profile", "rotate", "--dry-run"]));
+    assert!(
+        dry.contains(&format!("would_refuse console: {NO_KEY}")),
+        "{dry}"
+    );
+    f.run(&["profile", "rotate"]);
+    let log = f.log();
+    assert_eq!(ino(&f.home_login()), Some(f.live_ino), "{log}");
+    assert_eq!(ino(&f.root.join("console").join(CREDS)), Some(console));
+    assert!(log.contains(&refused("console")), "{log}");
+    assert!(!log.contains("login check passed"), "{log}");
+}
+
+#[test]
 fn a_dry_run_with_a_key_in_settings_never_prints_the_value() {
     let f = Fixture::new();
     add_console(&f);
     private_file(
-        &f.root.join("console").join("settings.json"),
+        &f.home.join(".claude").join("settings.json"),
         r#"{"env":{"ANTHROPIC_API_KEY":"SENTINEL-1804-KEY"},"apiKeyHelper":"echo SENTINEL-1804-KEY"}"#,
     );
     f.ok(&["profile", "overflow", "add", "console"]);

@@ -30,7 +30,7 @@ use super::identify::LiveId;
 use super::log::{msg, timestamp};
 use super::observe::Snap;
 use super::overflow::{OverflowInput, Tag, decide_overflow};
-use super::overflow_msg::{CheckNote, per_token_reason};
+use super::overflow_msg::{CheckNote, per_token_off_key, per_token_reason};
 use super::pin::PinState;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
@@ -292,5 +292,15 @@ fn with_no_plan_room_the_rotator_holds_the_unmarked_key_and_names_no_target() {
     assert!(
         !matches!(v.decision, Decision::Swap { .. }),
         "no target exists: {v:?}"
+    );
+}
+
+#[test]
+fn a_move_off_the_api_key_onto_credits_names_no_wait_gate_it_did_not_pass() {
+    assert_eq!(
+        per_token_off_key(&n("team-credits"), 2, CheckNote::Credit),
+        "per-token team-credits: no plan login below 100%; \
+         leaving the API key, credits cost less; \
+         marked overflow tier 2 via profile overflow add; probe ok, no spend limit"
     );
 }

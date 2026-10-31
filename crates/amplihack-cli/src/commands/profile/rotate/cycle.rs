@@ -100,7 +100,7 @@ pub struct Ctx {
     /// Waits before step 6 reads the state again; tests act in it instead.
     pub(super) pause: fn(&Ctx),
     /// The login check before a swap onto the API-key profile (issue
-    /// #1804); `key_check::configured` outside tests.
+    /// #1804); `key_check::reachable` outside tests.
     pub(super) key_check: KeyCheckFn,
 }
 
@@ -121,7 +121,7 @@ impl Ctx {
             measure: None,
             probe_held: None,
             pause: |_| std::thread::sleep(revalidate::REREAD_PAUSE),
-            key_check: key_check::configured,
+            key_check: key_check::reachable,
         }
     }
 
@@ -302,8 +302,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     let mut swapped = None;
     let outcome = match decision {
         Decision::Swap { to, reason } => 'swap: {
-            // Issue #1804: an API-key target must name a key. A refusal moves
-            // nothing and writes no journal.
+            // Issue #1804: a key must be where Claude will read it after an
+            // API-key swap. A refusal moves nothing and writes no journal.
             let check = match target_check(ctx, &first, &to) {
                 Ok(check) => check,
                 Err(why) => {

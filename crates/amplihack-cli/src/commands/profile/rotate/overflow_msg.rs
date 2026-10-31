@@ -39,6 +39,16 @@ pub fn per_token_reason(
         || "reset unknown".to_string(),
         |at| format!("overflow_wait elapsed (earliest reset {})", timestamp(at)),
     );
+    per_token_line(to, tier, &gate, check)
+}
+
+/// Why a move off the API key onto per-token profile `to` was allowed. It
+/// passes no wait gate: credits cost less, so the move is made at once.
+pub fn per_token_off_key(to: &ProfileName, tier: u8, check: CheckNote) -> String {
+    per_token_line(to, tier, "leaving the API key, credits cost less", check)
+}
+
+fn per_token_line(to: &ProfileName, tier: u8, gate: &str, check: CheckNote) -> String {
     let check = match check {
         CheckNote::Key(detail) => format!("login check passed ({detail})"),
         CheckNote::Credit => "probe ok, no spend limit".to_string(),

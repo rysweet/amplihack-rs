@@ -11,7 +11,7 @@
 //!
 //! Contract:
 //! - `cycle::Ctx.key_check: key_check::KeyCheckFn`, defaulting to
-//!   `key_check::configured`.
+//!   `key_check::reachable`.
 //! - Pass (T3, D4): the swap runs. Before the `swap` line the log has one
 //!   `per-token api-key: no plan login below 100%; overflow_wait elapsed
 //!   (earliest reset <time>); marked overflow tier 10 via profile overflow
@@ -183,7 +183,7 @@ fn all_plan_logins_out(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
 #[test]
 fn t3_a_passing_login_check_moves_onto_the_api_key_and_logs_why() {
     let f = fx();
-    let mut c = f.ctx(|_, _| Ok("fake"));
+    let mut c = f.ctx(|_| Ok("fake"));
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
     let log = f.logged();
     assert_eq!(got, CycleOutcome::Swapped, "{log:?}");
@@ -225,7 +225,7 @@ fn t4_a_failing_login_check_moves_nothing_and_alerts_once() {
         v
     };
     let home_listing = listing(&f.home.join(".claude"));
-    let mut c = f.ctx(|_, _| Err("fake failure".to_string()));
+    let mut c = f.ctx(|_| Err("fake failure".to_string()));
 
     for cycle in 1..=2 {
         let got = run_cycle(&mut c, Mode::Watch).unwrap();
@@ -288,18 +288,69 @@ fn the_default_check_is_the_real_one_and_refuses_a_profile_with_no_key() {
     assert!(
         log.iter().any(|l| l
             == "key_check_refused api-key: \
-                no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting"),
+                no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting \
+                in ~/.claude.json or ~/.claude/settings.json"),
         "{log:?}"
     );
 }
 
 #[cfg(target_os = "linux")]
 #[test]
-fn the_default_check_passes_a_profile_with_a_key_and_never_logs_the_value() {
+fn the_default_check_refuses_a_key_the_swap_would_not_deliver() {
+    // The outage: the profile names a key, ~/.claude does not. Moving would
+    // leave plain `claude` with a `{}` login and no key: "not logged in".
     let f = fx();
     private(
         &f.root.join(KEY).join(".claude.json"),
         r#"{"primaryApiKey":"SENTINEL-1804-KEY"}"#,
+    );
+    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+    let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
+    c.scan = |_| Liveness::Known(BTreeSet::new());
+    c.measure = Some(all_plan_logins_out);
+    assert_eq!(
+        run_cycle(&mut c, Mode::Watch).unwrap(),
+        CycleOutcome::Alerted
+    );
+    assert_eq!(f.home_login(), Some(f.live));
+    assert!(
+        !f.logged().iter().any(|l| l.contains("login check passed")),
+        "{:?}",
+        f.logged()
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn after_a_swap_onto_an_api_key_the_key_is_where_claude_reads_it() {
+    let f = fx();
+    let mut home: serde_json::Value =
+        serde_json::from_slice(&fs::read(f.home.join(".claude.json")).unwrap()).unwrap();
+    home["primaryApiKey"] = "SENTINEL-1804-KEY".into();
+    private(&f.home.join(".claude.json"), &home.to_string());
+    let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+    let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
+    c.scan = |_| Liveness::Known(BTreeSet::new());
+    c.measure = Some(all_plan_logins_out);
+    assert_eq!(
+        run_cycle(&mut c, Mode::Watch).unwrap(),
+        CycleOutcome::Swapped
+    );
+    assert_eq!(f.home_login(), Some(f.key), "the {{}} login is now live");
+    // Read after the swap, from the paths plain `claude` uses.
+    assert_eq!(
+        super::key_check::reachable(&f.home),
+        Ok("primaryApiKey set")
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_default_check_passes_a_key_in_home_and_never_logs_the_value() {
+    let f = fx();
+    private(
+        &f.home.join(".claude.json"),
+        r#"{"primaryApiKey":"SENTINEL-1804-KEY","oauthAccount":{"accountUuid":"u-work","emailAddress":"work@example.com"}}"#,
     );
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut c = Ctx::new(f.store.clone(), f.home.clone(), s);
@@ -324,7 +375,7 @@ fn the_default_check_passes_a_profile_with_a_key_and_never_logs_the_value() {
 fn a_failing_check_leaves_home_claude_json_byte_for_byte_unchanged() {
     let f = fx();
     let before = fs::read(f.home.join(".claude.json")).unwrap();
-    let mut c = f.ctx(|_, _| Err("fake failure".to_string()));
+    let mut c = f.ctx(|_| Err("fake failure".to_string()));
     assert_eq!(
         run_cycle(&mut c, Mode::Watch).unwrap(),
         CycleOutcome::Alerted
@@ -343,11 +394,11 @@ fn a_failing_check_never_puts_a_key_value_in_the_log_or_ledger() {
     // The real check, with the key in a file it refuses to trust.
     let f = fx();
     private(
-        &f.root.join(KEY).join("settings.json"),
+        &f.home.join(".claude/settings.json"),
         r#"{"apiKeyHelper":"echo SENTINEL-1804-KEY"}"#,
     );
     fs::set_permissions(
-        f.root.join(KEY).join("settings.json"),
+        f.home.join(".claude/settings.json"),
         fs::Permissions::from_mode(0o620),
     )
     .unwrap();
@@ -437,7 +488,7 @@ fn plan_out_credits_usable(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profil
 #[test]
 fn a_move_onto_credits_writes_the_per_token_line_with_its_tier_and_no_login_check() {
     let f = fx_credits();
-    let mut c = f.ctx(|_, _| panic!("no login check for a credit profile"));
+    let mut c = f.ctx(|_| panic!("no login check for a credit profile"));
     c.measure = Some(plan_out_credits_usable);
     let got = run_cycle(&mut c, Mode::Watch).unwrap();
     let log = f.logged();
@@ -471,7 +522,7 @@ fn a_move_onto_credits_writes_the_per_token_line_with_its_tier_and_no_login_chec
 fn a_corrupt_auto_switch_file_loses_the_marks_for_the_rotator() {
     let f = fx_credits();
     private(&f.root.join(".auto-switch"), "this is not a setting\n");
-    let c = f.ctx(|_, _| panic!("no login check"));
+    let c = f.ctx(|_| panic!("no login check"));
     let state = crate::commands::profile::auto_switch::kit::State::new(&f.root).unwrap();
     let snap = super::observe::snapshot(&c, &state).unwrap();
     assert!(snap.overflow.is_empty(), "{:?}", snap.overflow);

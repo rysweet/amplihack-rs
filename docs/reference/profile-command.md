@@ -4186,7 +4186,7 @@ stdout only, without the time.
 |---------|---------|
 | `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. A profile whose probe failed shows `<name>:failed`, an exhausted one `s=100%,w=100%`; a skipped one is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
 | `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
-| `per-token <name>: no plan login below 100%; <gate>; marked overflow tier <N> via profile overflow add; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key. `<gate>` is `overflow_wait elapsed (earliest reset <time>)` or, with `--overflow-unknown-reset 1`, `reset unknown`. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile. The line never holds a key value. |
+| `per-token <name>: no plan login below 100%; <gate>; marked overflow tier <N> via profile overflow add; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key. `<gate>` is `overflow_wait elapsed (earliest reset <time>)`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
 | `overflow: on <name>; no plan login below 100%, next plan reset <time\|unknown>` | Written after an `overflow-in` swap. |
 | `overflow: staying on <name>; no plan login below 100%, next plan reset <time\|unknown>` | A cycle stayed on overflow profile `<name>` and the previous recorded cycle did not: its `last_cycle.overflow` was absent or `out`, or the ledger's `live` named another profile. So it is written once when the rotator finds itself on credits without having moved there, for example after a login was put in `~/.claude` by hand, and not again while it stays. After `overflow-in` the `overflow: on` line is written instead. |
@@ -5783,19 +5783,20 @@ while a plan login has room.
 
 #### API-key login check
 
-Before every swap onto the API-key profile the rotator checks that the
-profile names a key Claude can use. The check runs in step 6 of the
+Before every swap onto the API-key profile the rotator checks that a key is
+where Claude will read it after the swap. The check runs in step 6 of the
 [cycle](#rotate-cycle), under the rotate state lock, after
 [revalidation](#rotate-revalidation) and immediately before the journal is
-written. It reads the profile's own files, through the same profile store
-the swap uses, and passes when one of these is a non-empty string after
+written. A swap moves only `.credentials.json`, and plain `claude` reads
+`~/.claude` and `~/.claude.json`, so the check reads those paths, not the
+profile's directory. It passes when one of these is a non-empty string after
 trimming:
 
 | Setting | File | Detail logged on success |
 |---------|------|--------------------------|
-| `primaryApiKey` | `<root>/<name>/.claude.json` | `primaryApiKey set` |
-| `ANTHROPIC_API_KEY` under `env` | `<root>/<name>/settings.json` | `ANTHROPIC_API_KEY set` |
-| `apiKeyHelper` | `<root>/<name>/settings.json` | `apiKeyHelper set` |
+| `primaryApiKey` | `~/.claude.json` | `primaryApiKey set` |
+| `ANTHROPIC_API_KEY` under `env` | `~/.claude/settings.json` | `ANTHROPIC_API_KEY set` |
+| `apiKeyHelper` | `~/.claude/settings.json` | `apiKeyHelper set` |
 
 The check reads those files with the same rules as
 [kind detection](#kind-detection): no symlinks, a size limit, and the file
@@ -5807,7 +5808,23 @@ A login file alone is not enough. A `.credentials.json` with no OAuth login,
 `{}` included, does not pass without one of the three settings, and nor does
 a [kind override](#kind-override) of `api-key`. Claude Code keeps an API key
 in `primaryApiKey` or in `settings.json`, not in `.credentials.json`, so a
-profile that has only the login file would start Claude as "not logged in".
+`~/.claude` that has only that login file would start Claude as "not logged
+in".
+
+A key in the profile's own `.claude.json` or `settings.json` does not pass
+either. The swap never copies those files or their keys, by design, so the
+key would be left behind in the profile's directory and the session would be
+"not logged in". That key is used only by a run with `CLAUDE_CONFIG_DIR` set
+to the profile, which is how [auto-switch](#api-key-profiles-and-auto-switch) runs
+it. Its own check reads the profile's files for that reason.
+
+For the rotator to use an API-key profile, the key must therefore already be
+in `~/.claude.json` or `~/.claude/settings.json`. That key is the one billed,
+even if the profile names a different one. A setting in those files also
+applies while a plan login is live and may take priority over it, so a host
+that bills only plan logins should leave them without a key. The rotator then
+refuses every move onto the API-key profile, which is the outcome such a host
+wants.
 
 The check makes no network request and does not run `apiKeyHelper`, so it
 costs nothing. It shows that a key is configured, not that the key works;
@@ -5824,8 +5841,8 @@ When the check fails:
 - the cycle logs `key_check_refused` and an ALERT, and ends as `alerted`:
 
 ```
-key_check_refused api-key: no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting
-ALERT: API key profile api-key failed its login check (no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting); not moving onto it
+key_check_refused api-key: no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting in ~/.claude.json or ~/.claude/settings.json
+ALERT: API key profile api-key failed its login check (no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting in ~/.claude.json or ~/.claude/settings.json); not moving onto it
 ```
 
 The cycle does not try another profile in its place: the API-key profile is
@@ -5891,6 +5908,14 @@ check:
 
 ```
 per-token team-credits: no plan login below 100%; overflow_wait elapsed (earliest reset 2026-11-01T02:14:00Z); marked overflow tier 2 via profile overflow add; probe ok, no spend limit
+```
+
+A move off the API key onto a credit profile is tagged `overflow-out`, but it
+still bills per token, so it writes the line too. That move passes no wait
+gate, and the line says why it was made:
+
+```
+per-token team-credits: no plan login below 100%; leaving the API key, credits cost less; marked overflow tier 2 via profile overflow add; probe ok, no spend limit
 ```
 
 The line holds profile names, a time, a tier and fixed text only, never a
@@ -6046,7 +6071,9 @@ chooses a credit or API-key profile while any plan profile, the current one
 included, has room below 100% on both windows.
 
 Before it records a move onto the API-key profile, auto-switch runs the
-[login check](#api-key-login-check). When the check fails, nothing is moved,
+[login check](#api-key-login-check) against the profile's own `.claude.json`
+and `settings.json`, not the `~/` files, because the launch or rerun has
+`CLAUDE_CONFIG_DIR` set to that profile. When the check fails, nothing is moved,
 no journal entry is written, and the launch or rerun goes ahead on its
 current profile, or on the plan profile it would choose if the current one
 cannot be used. It never falls through to another credit or API-key profile

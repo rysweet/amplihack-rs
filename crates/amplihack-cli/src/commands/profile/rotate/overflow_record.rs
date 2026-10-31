@@ -91,7 +91,7 @@ fn was_on_overflow(l: &RotateLedger, live: Option<&ProfileName>) -> bool {
 /// revalidation and before the journal. Only the API-key profile has one.
 pub fn target_check(ctx: &Ctx, snap: &Snap, to: &ProfileName) -> Result<CheckNote, String> {
     if snap.platform() == Some(to) {
-        (ctx.key_check)(&ctx.store, to).map(CheckNote::Key)
+        (ctx.key_check)(&ctx.home).map(CheckNote::Key)
     } else {
         Ok(CheckNote::Credit)
     }
@@ -114,7 +114,9 @@ pub fn refuse_key(out: &mut Sink, l: &mut RotateLedger, to: &ProfileName, why: &
 }
 
 /// The reason line for a move onto per-token profile `to`, written before
-/// the swap line. Nothing for any other move.
+/// the swap line, whatever the tag: a move off the API key onto a credit
+/// profile is `Tag::Out` and still bills per token. Nothing for any other
+/// move.
 pub fn note_per_token(
     out: &mut Sink,
     snap: &Snap,
@@ -123,15 +125,15 @@ pub fn note_per_token(
     next_plan_reset: Option<i64>,
     check: CheckNote,
 ) {
-    if tag != Some(Tag::In) {
+    let Some(e) = snap.overflow.iter().find(|e| &e.name == to) else {
         return;
-    }
-    if let Some(e) = snap.overflow.iter().find(|e| &e.name == to) {
-        out.emit(
-            now(),
-            &msg::per_token_reason(to, e.tier, next_plan_reset, check),
-        );
-    }
+    };
+    let line = if tag == Some(Tag::In) {
+        msg::per_token_reason(to, e.tier, next_plan_reset, check)
+    } else {
+        msg::per_token_off_key(to, e.tier, check)
+    };
+    out.emit(now(), &line);
 }
 
 /// The `overflow:` line after a swap from `from` to `to`, if it moved onto

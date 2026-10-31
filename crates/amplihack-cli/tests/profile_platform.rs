@@ -64,13 +64,19 @@ fn add_console(f: &Fixture) -> u64 {
     ino(&dir.join(CREDS)).unwrap()
 }
 
-/// Gives `console` a key setting, so its login check passes, and marks it
-/// with `overflow add` (issue #1804).
+/// Puts a key in `~/.claude.json`, where plain `claude` reads it after a
+/// swap, so the login check passes, and marks `console` with `overflow add`
+/// (issue #1804). The key in the profile's own file makes it an API-key
+/// profile by setting, whatever becomes of its login file.
 fn mark_console(f: &Fixture) {
     private_file(
         &f.root.join("console").join(".claude.json"),
         &format!(r#"{{"primaryApiKey":"{CANARY}","numStartups":3}}"#),
     );
+    let path = f.home.join(".claude.json");
+    let mut home: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    home["primaryApiKey"] = CANARY.into();
+    private_file(&path, &home.to_string());
     f.ok(&["profile", "overflow", "add", "console"]);
 }
 
@@ -604,6 +610,17 @@ fn rotate_moves_off_the_api_key_to_credits_when_no_plan_login_has_capacity() {
         "{}",
         f.log()
     );
+    // Credits bill per token too, so this move writes its reason first
+    // (issue #1804), naming no wait gate because it passes none.
+    let log = f.log();
+    let reason = log
+        .find(
+            "per-token extra: no plan login below 100%; leaving the API key, credits cost less; \
+             marked overflow tier 1 via profile overflow add; probe ok, no spend limit",
+        )
+        .unwrap_or_else(|| panic!("no per-token line: {log}"));
+    let swap = log.find("swap console->extra").expect("swap line");
+    assert!(reason < swap, "{log}");
 }
 
 #[test]

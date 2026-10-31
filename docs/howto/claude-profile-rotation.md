@@ -1664,12 +1664,19 @@ not mark it.
 Hosts that relied on an earlier release, which used every API-key profile
 without a mark, must run this command once; nothing is marked for you.
 
-Make sure the profile names a key in its own files, because the rotator
-checks for one before every move onto it: a non-empty `primaryApiKey` in
-`.claude.json`, or `ANTHROPIC_API_KEY` under `env` or `apiKeyHelper` in
-`settings.json`. A `.credentials.json` of `{}` alone does not pass. The
-check reads those files only: it does not run the helper or make a request,
-so it confirms that a key is configured, not that it works.
+The rotator checks for a key before every move onto the profile, in the
+files plain `claude` reads after the move: a non-empty `primaryApiKey` in
+`~/.claude.json`, or `ANTHROPIC_API_KEY` under `env` or `apiKeyHelper` in
+`~/.claude/settings.json`. The move carries only `.credentials.json`, so a
+key in the profile's own files does not pass, and neither does a
+`.credentials.json` of `{}`. The check reads those files only: it does not
+run the helper or make a request, so it confirms that a key is configured,
+not that it works.
+
+A key in those files also applies while a plan login is live and may take
+priority over it. Leave them without a key on a host that bills only plan
+logins: the rotator then refuses every move onto the API-key profile. See
+[API-key login check](../reference/profile-command.md#api-key-login-check).
 
 ### The order the rotator follows
 

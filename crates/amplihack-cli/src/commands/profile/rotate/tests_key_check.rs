@@ -14,9 +14,13 @@
 //!   apiKeyHelper setting`, or, when a file may not be read as evidence,
 //!   `<file> is a symlink` / `<file> is writable by group or others`.
 //! - The key value never appears in the detail or the reason.
-//! - `KeyCheckFn` is the seam type stored in `cycle::Ctx.key_check`.
+//! - `reachable(home)` applies the same rules to `<home>/.claude.json` and
+//!   `<home>/.claude/settings.json`, where plain `claude` reads after a swap.
+//!   Its "no key" reason names those two files.
+//! - `KeyCheckFn` is the seam type stored in `cycle::Ctx.key_check`; it takes
+//!   the home directory.
 
-use super::key_check::{KeyCheckFn, configured};
+use super::key_check::{KeyCheckFn, configured, reachable};
 use super::tests_swap::private;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
@@ -27,6 +31,8 @@ use std::os::unix::fs::PermissionsExt;
 /// Anthropic key, so secret scanners do not flag the test source.
 const SENTINEL: &str = "SENTINEL-1804-KEY";
 const NONE: &str = "no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting";
+const NOT_REACHABLE: &str = "no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting \
+                             in ~/.claude.json or ~/.claude/settings.json";
 
 fn n(s: &str) -> ProfileName {
     ProfileName::parse(s).unwrap()
@@ -194,13 +200,62 @@ fn a_symlinked_claude_json_fails_and_names_the_file() {
 #[test]
 fn the_seam_type_accepts_a_fake_check() {
     // The cycle tests replace the check through `Ctx.key_check`.
-    let pass: KeyCheckFn = |_, _| Ok("fake");
-    let fail: KeyCheckFn = |_, _| Err("fake failure".to_string());
-    let e = Env::new();
-    assert_eq!(pass(&e.store, &n("api-key")), Ok("fake"));
-    assert!(fail(&e.store, &n("api-key")).is_err());
-    let real: KeyCheckFn = configured;
-    assert_eq!(real(&e.store, &n("api-key")), Err(NONE.to_string()));
+    let pass: KeyCheckFn = |_| Ok("fake");
+    let fail: KeyCheckFn = |_| Err("fake failure".to_string());
+    let t = tempfile::tempdir().unwrap();
+    assert_eq!(pass(t.path()), Ok("fake"));
+    assert!(fail(t.path()).is_err());
+    let real: KeyCheckFn = reachable;
+    assert_eq!(real(t.path()), Err(NOT_REACHABLE.to_string()));
+}
+
+/// A home directory with the `~/.claude` of a plan login and no key.
+fn home() -> tempfile::TempDir {
+    let t = tempfile::tempdir().unwrap();
+    fs::create_dir(t.path().join(".claude")).unwrap();
+    private(&t.path().join(".claude.json"), r#"{"numStartups":3}"#);
+    t
+}
+
+#[test]
+fn reachable_finds_each_setting_in_the_files_plain_claude_reads() {
+    let t = home();
+    assert_eq!(reachable(t.path()), Err(NOT_REACHABLE.to_string()));
+    let settings = t.path().join(".claude/settings.json");
+    private(&settings, r#"{"apiKeyHelper":"echo SENTINEL-1804-KEY"}"#);
+    assert_eq!(reachable(t.path()), Ok("apiKeyHelper set"));
+    private(
+        &settings,
+        r#"{"env":{"ANTHROPIC_API_KEY":"SENTINEL-1804-KEY"}}"#,
+    );
+    assert_eq!(reachable(t.path()), Ok("ANTHROPIC_API_KEY set"));
+    private(
+        &t.path().join(".claude.json"),
+        r#"{"primaryApiKey":"SENTINEL-1804-KEY"}"#,
+    );
+    assert_eq!(reachable(t.path()), Ok("primaryApiKey set"));
+}
+
+#[test]
+fn reachable_ignores_a_settings_json_at_the_top_of_home() {
+    // `<home>/settings.json` is not a file Claude reads.
+    let t = home();
+    private(&t.path().join("settings.json"), r#"{"apiKeyHelper":"x"}"#);
+    assert_eq!(reachable(t.path()), Err(NOT_REACHABLE.to_string()));
+}
+
+#[test]
+fn reachable_keeps_the_evidence_rules_and_never_shows_a_value() {
+    let t = home();
+    let settings = t.path().join(".claude/settings.json");
+    private(&settings, r#"{"apiKeyHelper":"echo SENTINEL-1804-KEY"}"#);
+    fs::set_permissions(&settings, fs::Permissions::from_mode(0o660)).unwrap();
+    let r = reachable(t.path());
+    assert_eq!(
+        r,
+        Err("settings.json is writable by group or others".to_string())
+    );
+    no_sentinel(&r);
 }
 
 #[test]

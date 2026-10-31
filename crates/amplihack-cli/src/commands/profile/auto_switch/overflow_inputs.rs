@@ -181,7 +181,10 @@ impl OverflowInputs {
     }
 
     /// Whether a move onto `target` passes the login check (issue #1804):
-    /// always for a profile that is not the API-key one. A failure is
+    /// always for a profile that is not the API-key one. Auto-switch runs an
+    /// API-key profile only with `CLAUDE_CONFIG_DIR` set to its directory, so
+    /// the profile's own files are the right ones here; the rotator, which
+    /// moves into `~/.claude`, uses `key_check::reachable`. A failure is
     /// logged with the profile and the reason, never a value.
     pub fn key_check_passes(&self, root: &Path, target: &ProfileName) -> bool {
         if self.platform.as_ref() != Some(target) {
