@@ -1703,8 +1703,7 @@ Profiles with no record are not checked. A profile created before this
 check existed has no record until one of two things happens: its next
 accepted `profile login`, or a swap away from it while the ledger shows the
 outgoing login came from that profile and no other profile holds that
-account. A record written before the organization was stored is not used
-either; it is replaced the same way.
+account.
 
 A record that exists but cannot be read (not valid JSON, no usable
 `account` or `org`, or not a private file) is also treated as no record, so the swap

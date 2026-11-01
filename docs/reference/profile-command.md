@@ -3089,7 +3089,7 @@ profile and never appears in `profile list`.
 | `usage.json` | Readings, as shown in [Readings](#readings). |
 | `parked/<name>/.credentials.json` | The home slot of a profile whose directory is hosting another account. |
 | `accounts/<name>.json` | The profile's saved `oauthAccount` block. No tokens. |
-| `expected/<name>.json` | The profile's [recorded account](#recorded-account): `{"account":"<key>"}` only. No `version` field. A damaged file counts as no record; a swap from that profile prints one warning. |
+| `expected/<name>.json` | The profile's [recorded account](#recorded-account): `{"account":"<key>","org":"<uuid>"|null}`, both keys required (see [Recorded account](#recorded-account)). No `version` field. A damaged file counts as no record; a swap from that profile prints one warning. |
 | `statusline/<name>.json` | The profile's original `statusLine` object. |
 | `rerun/` | Buffered stdout of supervised steps, `<pid>-<n>.out`; see [Usage-limit reruns](#usage-limit-reruns) for how long each is kept. |
 | `capacity.json` | Whether any account has capacity left; see [Capacity file](#capacity-file). Unlike the other state files, it accepts unknown fields and is capped at 16 KiB. |
@@ -6342,22 +6342,22 @@ warning: the recorded account for profile 'work' was not saved: <reason>
 A record that is missing, unreadable, not `0600`, not owned by you, a
 symlink, over 64 KiB, not valid JSON, or whose `account` is not a usable
 string, or whose `org` is missing or neither `null` nor such a string,
-counts as no record, and no command fails because of it. A record written
-before the organization was stored has no `org` and is not used; the next
-accepted `profile login`, or a swap that records the profile, replaces it. A swap
-from that profile is not checked and prints one line to stderr:
+counts as no record, and no command fails because of it. A swap from that
+profile is not checked and prints one line to stderr:
 
 ```
 warning: the recorded account for profile 'work' could not be read; the swap was not checked against it
 ```
 
-Records are compared by the [account identity](#account-identity) rule. A
-record whose `account` is the login's uuid matches only when `org` equals
-the login's `organizationUuid`, both being absent counting as equal: the
-same user in another organization is another account, and is refused. A
-record whose `account` is an e-mail address, written from a login without a
-uuid, matches a login with that e-mail, ignoring case, and the organization
-is not compared, as two logins without a uuid are compared by e-mail.
+A record whose `account` is the login's uuid matches only when `org`
+equals the login's `organizationUuid`, both being absent counting as equal:
+the same user in another organization is another account, and is refused,
+as under the [account identity](#account-identity) rule. A record whose
+`account` is an e-mail address, written from a login without a uuid,
+matches any login with that e-mail, ignoring case, and the organization is
+not compared. This holds even when the current login has a uuid, so such a
+record does not tell one organization from another; the account identity
+rule would. A normal OAuth login has a uuid, so e-mail records are rare.
 
 The backfill in the last row of the table is skipped when another profile
 holds the outgoing account or has it recorded. A profile folder can already

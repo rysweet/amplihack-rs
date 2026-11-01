@@ -461,8 +461,9 @@ fn a_record_without_an_organization_does_not_match_one_with_it() {
 
 #[test]
 fn a_record_without_an_org_entry_or_with_a_bad_one_is_no_record() {
-    // A record from before the organization was stored cannot say which
-    // organization was meant, so it is not used.
+    // A record without a usable `org` cannot say which organization was
+    // meant, so it is not used. No release wrote such a record; this only
+    // checks that a hand-written or damaged file fails safe.
     let e = env();
     for body in [
         serde_json::json!({"account": "u-SENTINEL-work"}),

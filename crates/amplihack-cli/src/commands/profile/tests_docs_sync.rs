@@ -571,6 +571,16 @@ fn docs_quote_the_account_mismatch_refusal_and_alert() {
     assert!(REFERENCE.contains(&row), "reference is missing {row:?}");
     assert!(REFERENCE.contains("`account_mismatch:<from>`"));
     assert!(REFERENCE.contains(".auto-switch.d/expected/<name>.json"));
+    // The state-file table gives the record format the code writes and
+    // requires: both `account` and `org` (issue #1845, round-2 review).
+    let row = REFERENCE
+        .lines()
+        .find(|l| l.starts_with("| `expected/<name>.json` |"))
+        .expect("state-file table row for expected/<name>.json");
+    assert!(
+        row.contains(r#""account":"<key>""#) && row.contains(r#""org":"#),
+        "state-file table row names both record keys: {row}"
+    );
     assert!(
         REFERENCE
             .contains("warning: the recorded account for profile 'work' was not saved: <reason>")
