@@ -8,8 +8,8 @@
 #       [--max-schema N] [--max-recipe-contract N]
 #
 # A stateless measurement of <base>..<head> with git plumbing only. It writes
-# nothing: not to the repository, not to a state directory. The caller records
-# the decision.
+# nothing to the repository or a state directory; each diff goes to a private
+# temporary directory removed on exit. The caller records the decision.
 #
 # Rules, in the order used for `reason` (docs/reference/auto-drive-light.md):
 #
@@ -22,7 +22,8 @@
 #                    ^\s*pub[\s(], except pub(crate), pub(super), pub(in ...)
 #   schema           changed *.schema.json files and files under a schemas/ dir
 #   recipe-contract  modified amplifier-bundle/recipes/*.yaml whose top-level
-#                    context: key set differs between base and head
+#                    context: key set differs between base and head (an
+#                    inline context: {...} map is compared as written)
 #
 # Each rule escalates when its measurement is above its limit; equal passes.
 # Limits must match ^[0-9]{1,6}$ and are read as base 10.
@@ -31,7 +32,7 @@
 #   AUTODRIVE_LIGHT_ELIGIBILITY=<light|escalate> reason=<token>
 #   {"decision":...,"reason":...,"base":...,"head":...,"lines":N,...,"limits":{...}}
 #
-# A fault exits 2, prints nothing on stdout, and prints
+# A fault exits 2 (any failed git diff included), prints nothing on stdout, and prints
 #   AUTODRIVE_LIGHT_ELIGIBILITY=fault reason=<bad-arg|not-a-repo|bad-rev|not-ancestor|jq-missing>
 # on stderr.
 #
@@ -110,8 +111,19 @@ case $? in
 esac
 
 DIFF=(diff --no-ext-diff --no-textconv --no-renames --no-color)
-# A diff that fails must not read as an empty, light change.
-"${G[@]}" "${DIFF[@]}" --numstat -z "$B" "$H" -- >/dev/null 2>&1 || fault bad-rev "git diff failed for base..head"
+# Every diff is written to a private file and its exit status checked: a diff
+# that fails must not read as an empty, light change.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/autodrive-light-elig.XXXXXX")" || fault bad-rev "mktemp failed"
+trap 'rm -rf -- "$WORK"' EXIT
+diff_to() {
+  local out="$1"; shift
+  "${G[@]}" "${DIFF[@]}" "$@" > "$WORK/$out" 2>/dev/null || fault bad-rev "git diff failed for base..head"
+}
+diff_to numstat --numstat -z "$B" "$H" --
+diff_to added --name-only -z --diff-filter=A "$B" "$H" --
+diff_to librs -U0 "$B" "$H" -- ':(glob)crates/*/src/lib.rs'
+diff_to changed --name-only -z "$B" "$H" --
+diff_to modified --name-only -z --diff-filter=M "$B" "$H" -- ':(glob)amplifier-bundle/recipes/*.yaml'
 
 # --- lines -------------------------------------------------------------------
 LINES=0
@@ -125,7 +137,7 @@ while IFS= read -r -d '' rec; do
   [[ "$added" =~ ^[0-9]+$ ]] || added=0
   [[ "$deleted" =~ ^[0-9]+$ ]] || deleted=0
   LINES=$((LINES + 10#$added + 10#$deleted))
-done < <("${G[@]}" "${DIFF[@]}" --numstat -z "$B" "$H" -- 2>/dev/null)
+done < "$WORK/numstat"
 
 # --- new modules -------------------------------------------------------------
 NEW=0
@@ -136,17 +148,17 @@ while IFS= read -r -d '' path; do
      || [[ "$path" == amplifier-bundle/tools/* ]]; then
     NEW=$((NEW + 1))
   fi
-done < <("${G[@]}" "${DIFF[@]}" --name-only -z --diff-filter=A "$B" "$H" -- 2>/dev/null)
+done < "$WORK/added"
 
 # --- public API --------------------------------------------------------------
-API="$("${G[@]}" "${DIFF[@]}" -U0 "$B" "$H" -- ':(glob)crates/*/src/lib.rs' 2>/dev/null | awk '
+API="$(awk '
   /^diff --git / { hunk = 0; next }
   /^@@/ { hunk = 1; next }
   hunk && /^[+-]/ {
     s = substr($0, 2)
     if (s ~ /^[ \t]*pub[ \t(]/ && s !~ /^[ \t]*pub[ \t]*\([ \t]*(crate|super|in[ \t])/) n++
   }
-  END { print n + 0 }')"
+  END { print n + 0 }' "$WORK/librs")"
 [[ "$API" =~ ^[0-9]+$ ]] || API=0
 
 # --- schema ------------------------------------------------------------------
@@ -155,14 +167,18 @@ while IFS= read -r -d '' path; do
   if [[ "$path" == *.schema.json ]] || [[ "$path" == schemas/* ]] || [[ "$path" == */schemas/* ]]; then
     SCHEMA=$((SCHEMA + 1))
   fi
-done < <("${G[@]}" "${DIFF[@]}" --name-only -z "$B" "$H" -- 2>/dev/null)
+done < "$WORK/changed"
 
 # --- recipe contract ---------------------------------------------------------
 # context_keys <rev> <path>: the sorted top-level keys of the recipe's
 # `context:` mapping (block style), one per line.
 context_keys() {
-  "${G[@]}" cat-file blob "$1:$2" 2>/dev/null | awk '
+  "${G[@]}" cat-file blob "$1:$2" > "$WORK/blob" 2>/dev/null || fault bad-rev "a modified recipe could not be read"
+  awk '
     /^context:[ \t]*(#.*)?$/ { inctx = 1; ind = -1; next }
+    # An inline mapping such as `context: {a: 1}` is compared as written, so
+    # any change to it counts as a contract change (fail closed).
+    /^context:[ \t]*[^ \t#]/ { v = $0; sub(/^context:[ \t]*/, "", v); sub(/[ \t]+#.*$/, "", v); if (v != "{}") print "<inline> " v; next }
     inctx {
       if ($0 ~ /^[ \t]*(#.*)?$/) next
       if ($0 !~ /^[ \t]/) { inctx = 0; next }
@@ -173,14 +189,16 @@ context_keys() {
       if (match(line, /^[^:#\t ][^:]*[ \t]*:/)) {
         k = substr(line, 1, RLENGTH - 1); sub(/[ \t]+$/, "", k); print k
       }
-    }' | sort -u
+    }' "$WORK/blob" | sort -u
 }
 CONTRACT=0
 while IFS= read -r -d '' path; do
-  if [ "$(context_keys "$B" "$path")" != "$(context_keys "$H" "$path")" ]; then
+  KB="$(context_keys "$B" "$path")" || exit 2
+  KH="$(context_keys "$H" "$path")" || exit 2
+  if [ "$KB" != "$KH" ]; then
     CONTRACT=$((CONTRACT + 1))
   fi
-done < <("${G[@]}" "${DIFF[@]}" --name-only -z --diff-filter=M "$B" "$H" -- ':(glob)amplifier-bundle/recipes/*.yaml' 2>/dev/null)
+done < "$WORK/modified"
 
 # --- decision ----------------------------------------------------------------
 DECISION=light; REASON=within-limits

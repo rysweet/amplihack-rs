@@ -275,6 +275,69 @@ fn edits_to_existing_recipes_and_tools_that_keep_the_key_set_are_light() {
     assert_eq!(j["new_modules"], 0);
 }
 
+#[test]
+fn a_changed_inline_context_map_escalates() {
+    let mut r = LightRepo::new();
+    let base = "name: inline\ncontext: {alpha: \"1\"}\nsteps: []\n";
+    r.write("amplifier-bundle/recipes/inline.yaml", base);
+    r.base = r.commit("inline base");
+    r.write(
+        "amplifier-bundle/recipes/inline.yaml",
+        "name: inline\ncontext: {alpha: \"1\", beta: \"\"}\nsteps: []\n",
+    );
+    r.commit("inline contract");
+    let j = decision(&r.measure(&[]), &escalate("recipe-contract"));
+    assert_eq!(j["recipe_contract"], 1);
+}
+
+#[test]
+fn a_failed_secondary_diff_is_a_fault_not_a_light_change() {
+    // A git that fails only the added-files diff: before the fix that diff
+    // read as "no new modules" and the change measured light.
+    let r = LightRepo::new();
+    r.write("crates/foo/src/added.rs", "fn x() {}\n");
+    let head = r.commit("new module");
+    let real = crate::isolated_amplihack::isolated("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .expect("find git");
+    let real = String::from_utf8(real.stdout).unwrap().trim().to_string();
+    assert!(!real.is_empty(), "git must be on PATH");
+    let bin = r.tmp.path().join("fakebin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let fake = bin.join("git");
+    std::fs::write(
+        &fake,
+        format!(
+            "#!/bin/sh\nfor a in \"$@\"; do [ \"$a\" = --diff-filter=A ] && exit 128; done\nexec '{real}' \"$@\"\n"
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let o = crate::isolated_amplihack::isolated("bash")
+        .arg(crate::support::auto_drive_light::eligibility_tool())
+        .args([
+            "--repo",
+            r.wt.to_str().unwrap(),
+            "--base",
+            &r.base,
+            "--head",
+            &head,
+        ])
+        .env("HOME", &r.home)
+        .env("PATH", path)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("run autodrive_light_eligibility.sh");
+    fault(&o, "bad-rev");
+}
+
 // --- rule order ------------------------------------------------------------
 
 #[test]

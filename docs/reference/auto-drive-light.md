@@ -174,7 +174,7 @@ An earlier escalation is permanent for the state directory. When `escalation.jso
 
 ## The eligibility tool
 
-`amplifier-bundle/tools/autodrive_light_eligibility.sh` is a stateless measurement. It uses git plumbing only and writes nothing.
+`amplifier-bundle/tools/autodrive_light_eligibility.sh` is a stateless measurement. It uses git plumbing only and writes nothing to the repository or the state directory; each diff goes to a private temporary directory, which is removed on exit. A diff that fails is a `bad-rev` fault, never a zero measurement.
 
 ```text
 autodrive_light_eligibility.sh --repo <dir> --base <rev> --head <rev>
@@ -199,7 +199,7 @@ Faults exit 2 and print one line on stderr, `AUTODRIVE_LIGHT_ELIGIBILITY=fault r
 | --- | --- |
 | `bad-arg` | Unknown option, missing value, or a limit that does not match `^[0-9]{1,6}$`. A base or head beginning with `-` is refused here. |
 | `not-a-repo` | `--repo` is not a git work tree. |
-| `bad-rev` | A revision does not resolve to a commit. |
+| `bad-rev` | A revision does not resolve to a commit, or a `git diff` or recipe read fails. |
 | `not-ancestor` | The base is not an ancestor of the head. |
 | `jq-missing` | `jq` is not on PATH. |
 
@@ -415,7 +415,7 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 - **The CLEAN is a rule, not a review.** A light CLEAN record means crusty raised only minor concerns, and they were deferred to an issue. The record's `verdict_source` and `deferred_ids` show this.
 - **Branch prefix.** New changes use the `quick/` branch prefix from `quick_change_common.sh`. `auto-drive-light` has no equivalent of the `branch_prefix` key that `auto-drive-to-merge` offers (default `feat`). Repositories with other branch-naming conventions need `existing_branch` or `pr_number`.
 - **Eligibility heuristics.** The public API rule reads `lib.rs` only, so a `pub` item added in another module and re-exported through an existing `pub use` is not counted. The recipe contract rule compares top-level `context:` keys only.
-- **Block-style `context:` only.** The recipe contract rule reads `context:` mappings written in block style. A flow-style mapping such as `context: { a: "1" }` yields no keys, so a change to its key set is not detected. No bundled recipe uses flow style.
+- **Inline `context:` mappings.** The recipe contract rule reads the keys of a block-style `context:` mapping. An inline mapping such as `context: { a: "1" }` is compared as written, so any change to it, including a changed default value, counts as a contract change. `context: {}` counts as no keys.
 - **Re-measurement base.** After the head moves, the change is measured from the merge-base with the PR's current base tip. When that tip cannot be read, fetched or checked, the recorded base is used instead, and a head that merged the base branch then usually escalates with `in-loop-lines`.
 - **Rejected side files leave `.findings` empty.** `autodrive_light_round.sh` empties `<record>.findings` before step-06 checks the side files. If step-06 rejects them, the round is recorded as `CONCERNS`, which blocks merge, but the address step of that round has no ids to work on. The next round reviews the PR again.
 
