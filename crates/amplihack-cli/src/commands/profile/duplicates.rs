@@ -197,6 +197,36 @@ pub(super) fn warnings(state: Option<&State>, list: &[(Holder, Account)]) -> Vec
         .collect()
 }
 
+/// Issue #1845: one warning per profile whose login is not the account
+/// recorded for it, in `list` order, whether or not it also forms a
+/// duplicate pair. A session started with `CLAUDE_CONFIG_DIR` on a profile
+/// folder can write another account's login there without a duplicate.
+/// Profiles without a usable record are not checked.
+pub(super) fn record_warnings(state: Option<&State>, list: &[(Holder, Account)]) -> Vec<String> {
+    let Some(state) = state else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|(h, acc)| match h {
+            Holder::Profile(n) if super::expected::mismatched(state, n, acc) == Some(true) => {
+                Some(record_warning(h))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The warning for a profile whose login is not its recorded account,
+/// without a `warning: ` prefix. Names the profile, never an account.
+pub(super) fn record_warning(h: &Holder) -> String {
+    let shown = h.shown();
+    format!(
+        "profile '{shown}' holds a login that is not the account recorded for it; fix: run \
+         'amplihack profile login {shown}' with the browser signed out of claude.ai or in a \
+         private window."
+    )
+}
+
 /// The holder as named in the `profile login` refusal.
 pub(super) fn holder_label(h: &Holder) -> String {
     match h {

@@ -21,11 +21,17 @@
 //!   profile that is mismatched (it has a recorded account its current
 //!   account does not match), and is cannot-tell otherwise; a pair with
 //!   `Home` always names the profile. Without a state, no record is read.
+//! - `record_warnings(Option<&State>, &[(Holder, Account)]) -> Vec<String>`:
+//!   one `record_warning` line per profile whose account is not its
+//!   recorded account (same user and organization), duplicate or not.
 //! - `holder_label(&Holder) -> String`: the D20 holder text.
 //! - `HOME_LABEL == "~/.claude"`.
 
 use super::auto_switch::kit::{Ledger, State};
-use super::duplicates::{HOME_LABEL, Holder, accounts, holder_label, pairs, warning, warnings};
+use super::duplicates::{
+    HOME_LABEL, Holder, accounts, holder_label, pairs, record_warning, record_warnings, warning,
+    warnings,
+};
 use super::name::ProfileName;
 use super::rotate::identify::Account;
 use super::store::ProfileStore;
@@ -107,10 +113,27 @@ impl Env {
         )
     }
 
-    /// Records `uuid` as the account profile `p` is meant to hold.
+    /// Records `uuid` in organization `o1`, the one [`env`] gives every
+    /// login, as the account profile `p` is meant to hold.
     fn record(&self, p: &str, uuid: &str) {
-        let a = Account::from_block(&serde_json::json!({"accountUuid": uuid})).unwrap();
+        self.record_in(p, uuid, "o1");
+    }
+
+    /// Records `uuid` in organization `org` for profile `p`.
+    fn record_in(&self, p: &str, uuid: &str, org: &str) {
+        let a = Account::from_block(&serde_json::json!({
+            "accountUuid": uuid,
+            "organizationUuid": org,
+        }))
+        .unwrap();
         super::expected::record(&self.state(), &n(p), &a).unwrap();
+    }
+
+    fn record_warnings(&self) -> Vec<String> {
+        record_warnings(
+            Some(&self.state()),
+            &accounts(&self.store, Some(&self.home)),
+        )
     }
 }
 
@@ -573,5 +596,61 @@ fn warnings_never_write_a_record() {
     assert!(
         !e.store.root().join(".auto-switch.d/expected").exists(),
         "the warning only reads"
+    );
+}
+
+// --- Organizations and per-profile record checks (#1845 review) -----------
+
+#[test]
+fn the_same_user_in_another_organization_is_mismatched() {
+    // ryan-mistt-org recorded in its team organization, holding the same
+    // user's personal-organization login.
+    let e = dup_a_c();
+    e.record("a", "u-same");
+    e.record_in("c", "u-same", "o-personal");
+    assert_eq!(e.warnings(), vec![names("a", "c", "c")]);
+}
+
+#[test]
+fn a_profile_off_its_record_is_warned_about_without_a_duplicate() {
+    // The #1845 writer: a session with CLAUDE_CONFIG_DIR on `b`'s folder
+    // wrote another account's login there, which no other profile holds.
+    let e = env();
+    e.record("a", "u-a");
+    e.record("b", "u-b");
+    e.profile("b", &acct("u-elsewhere", Some("o1")));
+    assert!(e.warnings().is_empty(), "no duplicate pair");
+    assert_eq!(e.record_warnings(), vec![record_warning(&p("b"))]);
+}
+
+#[test]
+fn a_profile_in_another_organization_than_recorded_is_warned_about() {
+    let e = env();
+    e.record_in("a", "u-a", "o-team");
+    assert_eq!(e.record_warnings(), vec![record_warning(&p("a"))]);
+}
+
+#[test]
+fn record_warnings_skip_matching_and_unrecorded_profiles_and_need_a_state() {
+    let e = env();
+    e.record("a", "u-a");
+    assert!(e.record_warnings().is_empty());
+    e.record("c", "u-c-recorded");
+    let list = accounts(&e.store, Some(&e.home));
+    assert!(
+        record_warnings(None, &list).is_empty(),
+        "no state, no record"
+    );
+    assert_eq!(e.record_warnings(), vec![record_warning(&p("c"))]);
+}
+
+#[test]
+fn the_record_warning_names_the_profile_and_no_account() {
+    let w = record_warning(&p("bbuck"));
+    assert_eq!(
+        w,
+        "profile 'bbuck' holds a login that is not the account recorded for it; fix: run \
+         'amplihack profile login bbuck' with the browser signed out of claude.ai or in a \
+         private window."
     );
 }

@@ -189,7 +189,9 @@ pub(super) fn run(
     {
         let st = super::auto_switch::kit::State::new(store.root()).ok();
         let list = super::duplicates::accounts(store, home.as_deref());
-        for w in super::duplicates::warnings(st.as_ref(), &list) {
+        let mut ws = super::duplicates::warnings(st.as_ref(), &list);
+        ws.extend(super::duplicates::record_warnings(st.as_ref(), &list));
+        for w in ws {
             eprintln!("warning: {w}");
         }
     }

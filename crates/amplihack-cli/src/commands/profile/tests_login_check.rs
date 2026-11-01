@@ -1034,8 +1034,8 @@ fn an_accepted_first_login_records_its_account() {
     let path = record_file(&e, "fresh");
     assert_eq!(
         read_json(&path),
-        serde_json::json!({"account": "user-SENTINEL-new"}),
-        "the key only: no organization, e-mail or token"
+        serde_json::json!({"account": "user-SENTINEL-new", "org": "org-SENTINEL-1"}),
+        "the key and organization only: no e-mail or token"
     );
     assert_eq!(mode(&path), 0o600);
 }

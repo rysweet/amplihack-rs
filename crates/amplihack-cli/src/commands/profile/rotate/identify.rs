@@ -175,6 +175,23 @@ impl Account {
         self.uuid.as_deref().or(self.email.as_deref()).unwrap_or("")
     }
 
+    /// The organization uuid, when the login names one.
+    pub fn org(&self) -> Option<&str> {
+        self.org.as_deref()
+    }
+
+    /// Whether a stored `key` and `org` name this account, by [`Self::same`]
+    /// semantics: a key that is this account's uuid matches only in the same
+    /// organization (both present and equal, or both missing). A key that
+    /// is the e-mail of a login without a uuid matches by e-mail alone, as
+    /// [`Self::same`] compares two such logins.
+    pub fn matches_record(&self, key: &str, org: Option<&str>) -> bool {
+        if self.uuid.as_deref() == Some(key) {
+            return self.org.as_deref() == org;
+        }
+        self.matches_key(key)
+    }
+
     /// Whether a stored key names this account.
     pub fn matches_key(&self, key: &str) -> bool {
         self.uuid.as_deref() == Some(key)

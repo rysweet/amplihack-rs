@@ -342,7 +342,10 @@ fn a_swap_backfills_from_when_the_ledger_shows_the_login_came_from_it() {
         "the incoming side is never recorded"
     );
     let path = expected_dir(&e.root).join("work.json");
-    assert_eq!(json(&path), serde_json::json!({"account": "u-work"}));
+    assert_eq!(
+        json(&path),
+        serde_json::json!({"account": "u-work", "org": null})
+    );
     use std::os::unix::fs::MetadataExt;
     assert_eq!(fs::symlink_metadata(&path).unwrap().mode() & 0o777, 0o600);
 }
@@ -439,7 +442,10 @@ fn an_adopting_swap_records_the_new_profile() {
     assert_eq!(got(&e.root, "default-original").as_deref(), Some("u-work"));
     assert_eq!(got(&e.root, "spare"), None);
     let path = expected_dir(&e.root).join("default-original.json");
-    assert_eq!(json(&path), serde_json::json!({"account": "u-work"}));
+    assert_eq!(
+        json(&path),
+        serde_json::json!({"account": "u-work", "org": null})
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -478,4 +484,93 @@ fn a_failed_record_write_does_not_fail_the_swap() {
     fs::write(expected_dir(&e.root), "in the way").unwrap();
     assert_eq!(e.swap().unwrap(), n("work"));
     e.assert_finished();
+}
+
+// --- Organizations and the backfill gate (#1845 review) -------------------
+
+fn uuid_in(u: &str, org: &str) -> Account {
+    Account::from_block(&serde_json::json!({ "accountUuid": u, "organizationUuid": org })).unwrap()
+}
+
+/// Adds profile `p` signed in to `body`'s account.
+fn add_profile(e: &super::tests_swap::Env, p: &str, body: serde_json::Value) {
+    e.store.add(&n(p)).unwrap();
+    private(
+        &e.root.join(p).join(".claude.json"),
+        &serde_json::json!({ "oauthAccount": body }).to_string(),
+    );
+    login(&e.root.join(p).join(CREDS));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn the_same_user_in_another_organization_is_refused() {
+    // `work` is recorded in its team organization; `~/.claude` holds the
+    // same user's login without it, as in another organization.
+    let e = env();
+    rec(&e.root, "work", &uuid_in("u-work", "o-team"));
+    let before = records(&e.root);
+    let msg = refusal(e.swap());
+    assert_eq!(msg, format!("swap refused: {MISMATCH} work"));
+    assert_eq!(records(&e.root), before, "nothing recorded");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_record_in_the_same_organization_lets_the_swap_through() {
+    let e = env();
+    private(
+        &e.home.join(".claude.json"),
+        &serde_json::json!({ "oauthAccount": {
+            "accountUuid": "u-work", "organizationUuid": "o-team"
+        }})
+        .to_string(),
+    );
+    rec(&e.root, "work", &uuid_in("u-work", "o-team"));
+    e.swap().unwrap();
+    e.assert_finished();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn no_backfill_when_another_profile_holds_the_outgoing_account() {
+    // The #1845 incident: a folder already holds another account's login.
+    // `bbuck` holds `u-work` too, so which of them owns it is not known.
+    let e = env();
+    add_profile(
+        &e,
+        "bbuck",
+        serde_json::json!({"accountUuid": "u-work", "emailAddress": "work@example.com"}),
+    );
+    ledger_says(&e.rs, "work", "u-work");
+    e.swap().unwrap();
+    e.assert_finished();
+    assert_eq!(got(&e.root, "work"), None);
+    assert!(records(&e.root).is_empty(), "{:?}", records(&e.root));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn no_backfill_when_another_profile_has_the_outgoing_account_recorded() {
+    let e = env();
+    rec(&e.root, "spare", &uuid("u-work"));
+    ledger_says(&e.rs, "work", "u-work");
+    e.swap().unwrap();
+    e.assert_finished();
+    assert_eq!(got(&e.root, "work"), None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn another_profile_in_another_organization_does_not_stop_the_backfill() {
+    let e = env();
+    add_profile(
+        &e,
+        "personal",
+        serde_json::json!({"accountUuid": "u-work", "organizationUuid": "o-personal"}),
+    );
+    ledger_says(&e.rs, "work", "u-work");
+    e.swap().unwrap();
+    e.assert_finished();
+    assert_eq!(got(&e.root, "work").as_deref(), Some("u-work"));
 }

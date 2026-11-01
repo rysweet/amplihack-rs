@@ -579,6 +579,27 @@ fn docs_quote_the_account_mismatch_refusal_and_alert() {
     assert!(ROTATE_HOWTO.contains("`amplihack profile login work` does not help here"));
 }
 
+/// Issue #1845 review: the per-profile record warning is quoted as the
+/// code prints it, and the docs no longer say the organization is ignored.
+#[cfg(unix)]
+#[test]
+fn docs_quote_the_record_warning_and_compare_the_organization() {
+    use super::duplicates::{Holder, record_warning};
+    let name = |s: &str| super::name::ProfileName::parse(s).unwrap();
+    let line = format!(
+        "warning: {}",
+        record_warning(&Holder::Profile(name("bbuck")))
+    );
+    assert!(HOWTO.contains(&line), "how-to is missing {line:?}");
+    let generic = line.replace("bbuck", "<name>");
+    assert!(
+        REFERENCE.contains(&generic),
+        "reference is missing {generic:?}"
+    );
+    assert!(!REFERENCE.contains("The organization is not compared."));
+    assert!(REFERENCE.contains("\"org\": \"<organization uuid>\""));
+}
+
 #[test]
 fn the_old_same_account_note_is_gone_from_the_docs() {
     for (name, doc) in [

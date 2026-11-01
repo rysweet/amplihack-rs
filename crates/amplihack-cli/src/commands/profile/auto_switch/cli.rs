@@ -428,6 +428,7 @@ fn notes(
         .collect();
     let accounts = duplicates::accounts_with(state, ledger, &names, home.as_deref(), live_profile);
     notes.extend(duplicates::warnings(Some(state), &accounts));
+    notes.extend(duplicates::record_warnings(Some(state), &accounts));
     notes
 }
 

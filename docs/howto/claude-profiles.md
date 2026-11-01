@@ -1126,6 +1126,17 @@ too, named `~/.claude`; such a pair always names the profile in its fix.
 The rotator's live profile is not compared with `~/.claude`, since that is
 where its own login is.
 
+A profile can also hold the wrong login without forming a duplicate, for
+example when a Claude session started with `CLAUDE_CONFIG_DIR` pointing at
+that profile's folder signed in to another account. `status` and `usage`
+compare every profile that has a record with its record, the same user in
+another organization counting as another account, and print one line for
+each that differs:
+
+```
+warning: profile 'bbuck' holds a login that is not the account recorded for it; fix: run 'amplihack profile login bbuck' with the browser signed out of claude.ai or in a private window.
+```
+
 ## Switch accounts automatically
 
 When one account is close to its five-hour or seven-day usage limit,

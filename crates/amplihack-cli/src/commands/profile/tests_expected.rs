@@ -3,21 +3,23 @@
 //!
 //! Contract:
 //! - `expected::record(&State, &ProfileName, &Account) -> Result<(),
-//!   ProfileError>` writes `{"account": Account::key()}` through
+//!   ProfileError>` writes `{"account": Account::key(), "org": Account::org()}`
+//!   (the organization uuid, or null) through
 //!   `State::write_sub_json("expected", name, ..)`: atomic, mode 0600, never
 //!   through a symlink. A later call overwrites the record.
 //! - `expected::recorded(&State, &ProfileName) -> Option<String>` reads it
 //!   through `State::read_sub_json`. A missing, unreadable, non-0600,
 //!   symlinked, oversized or malformed file, or an `account` that is not a
-//!   string accepted by `ledger::safe_account`, is `None`, silently.
+//!   string accepted by `ledger::safe_account`, or an `org` that is missing
+//!   or neither null nor such a string, is `None`, silently.
 //! - `expected::mismatched(&State, &ProfileName, &Account) -> Option<bool>`:
-//!   `None` without a record, else whether `Account::matches_key(record)`
-//!   fails.
+//!   `None` without a record, else whether `Account::matches_record(account,
+//!   org)` fails: a uuid record matches only in the same organization.
 //! - `expected.rs` holds no identity field literal and does no file I/O of
 //!   its own.
 
 use super::auto_switch::kit::State;
-use super::expected::{mismatched, record, recorded, save};
+use super::expected::{lookup, mismatched, record, recorded, save};
 use super::name::ProfileName;
 use super::rotate::identify::Account;
 use super::store::ProfileStore;
@@ -88,7 +90,7 @@ impl Env {
 // --- Writing ----------------------------------------------------------------
 
 #[test]
-fn a_record_holds_only_the_account_key_in_a_private_file() {
+fn a_record_holds_only_the_account_key_and_organization_in_a_private_file() {
     let e = env();
     record(&e.state, &n("work"), &work_account()).unwrap();
     let path = e.file("work");
@@ -97,7 +99,10 @@ fn a_record_holds_only_the_account_key_in_a_private_file() {
     assert_eq!(meta.mode() & 0o777, 0o600);
     assert_eq!(meta.uid(), unsafe { libc::geteuid() });
     let v: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
-    assert_eq!(v, serde_json::json!({"account": "u-SENTINEL-work"}));
+    assert_eq!(
+        v,
+        serde_json::json!({"account": "u-SENTINEL-work", "org": null})
+    );
 }
 
 #[test]
@@ -317,7 +322,8 @@ fn another_account_is_mismatched() {
 
 #[test]
 fn an_email_record_matches_ignoring_case() {
-    // `Account::matches_key` is the only comparison.
+    // A record of a login without a uuid compares by e-mail, as
+    // `Account::same` compares two such logins.
     let e = env();
     record(
         &e.state,
@@ -374,7 +380,7 @@ fn expected_rs_names_no_identity_field_and_does_no_io_of_its_own() {
         "writes via State::write_sub_json"
     );
     assert!(src.contains("safe_account"), "keys are checked");
-    assert!(src.contains("matches_key"), "the one comparison");
+    assert!(src.contains("matches_record"), "the one comparison");
     for bad in [".unwrap()", ".expect("] {
         let code: String = src
             .lines()
@@ -396,5 +402,81 @@ fn expected_rs_takes_profile_names_not_strings() {
         assert!(sig.contains("&ProfileName"), "{sig}");
         assert!(!sig.contains("&str"), "{sig}");
         assert!(!sig.contains("&Path"), "{sig}");
+    }
+}
+
+// --- Organizations (#1845 review) -----------------------------------------
+
+fn in_org(uuid: &str, org: &str) -> Account {
+    Account::from_block(&serde_json::json!({
+        "accountUuid": uuid,
+        "organizationUuid": org,
+    }))
+    .unwrap()
+}
+
+#[test]
+fn a_record_stores_the_organization() {
+    let e = env();
+    record(
+        &e.state,
+        &n("work"),
+        &in_org("u-SENTINEL-work", "o-SENTINEL-team"),
+    )
+    .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&fs::read(e.file("work")).unwrap()).unwrap();
+    assert_eq!(
+        v,
+        serde_json::json!({"account": "u-SENTINEL-work", "org": "o-SENTINEL-team"})
+    );
+    assert_eq!(
+        lookup(&e.state, &n("work"))
+            .unwrap()
+            .unwrap()
+            .org
+            .as_deref(),
+        Some("o-SENTINEL-team")
+    );
+}
+
+#[test]
+fn the_same_user_in_another_organization_is_mismatched() {
+    let e = env();
+    record(&e.state, &n("work"), &in_org("u-SENTINEL-work", "o-team")).unwrap();
+    let personal = in_org("u-SENTINEL-work", "o-personal");
+    assert_eq!(mismatched(&e.state, &n("work"), &personal), Some(true));
+    let no_org = account(Some("u-SENTINEL-work"), None);
+    assert_eq!(mismatched(&e.state, &n("work"), &no_org), Some(true));
+    let same = in_org("u-SENTINEL-work", "o-team");
+    assert_eq!(mismatched(&e.state, &n("work"), &same), Some(false));
+}
+
+#[test]
+fn a_record_without_an_organization_does_not_match_one_with_it() {
+    let e = env();
+    record(&e.state, &n("work"), &work_account()).unwrap();
+    let in_team = in_org("u-SENTINEL-work", "o-team");
+    assert_eq!(mismatched(&e.state, &n("work"), &in_team), Some(true));
+}
+
+#[test]
+fn a_record_without_an_org_entry_or_with_a_bad_one_is_no_record() {
+    // A record from before the organization was stored cannot say which
+    // organization was meant, so it is not used.
+    let e = env();
+    for body in [
+        serde_json::json!({"account": "u-SENTINEL-work"}),
+        serde_json::json!({"account": "u-SENTINEL-work", "org": 7}),
+        serde_json::json!({"account": "u-SENTINEL-work", "org": ""}),
+        serde_json::json!({"account": "u-SENTINEL-work", "org": "o\nx"}),
+    ] {
+        e.raw_json(body.clone());
+        assert_eq!(lookup(&e.state, &n("work")), Err(()), "{body}");
+        assert_eq!(recorded(&e.state, &n("work")), None, "{body}");
+        assert_eq!(
+            mismatched(&e.state, &n("work"), &work_account()),
+            None,
+            "{body}"
+        );
     }
 }

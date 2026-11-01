@@ -6309,14 +6309,16 @@ The record is `<root>/.auto-switch.d/expected/<name>.json`:
 
 ```json
 {
-  "account": "<key>"
+  "account": "<key>",
+  "org": "<organization uuid>"
 }
 ```
 
 `<key>` is the account's uuid, or its e-mail address when it has no uuid.
-The file holds nothing else: no token, organization or display name. It is
-written atomically, mode `0600`, owned by you and never through a symlink.
-It has no `version` field.
+`org` is the login's `organizationUuid`, or `null` when it has none. The
+file holds nothing else: no token or display name. It is written
+atomically, mode `0600`, owned by you and never through a symlink. It has
+no `version` field.
 
 A record is written in three cases only:
 
@@ -6324,7 +6326,7 @@ A record is written in three cases only:
 |------|------------------|
 | [`profile login <name>`](#login-check) is accepted | The account in the profile's new `.claude.json`. A later accepted login overwrites it. Nothing is recorded when that file has no account (for example a macOS Keychain login with no `oauthAccount` block). |
 | A [swap](#rotate-swap) adopts the login in `~/.claude` as `default-original[-N]` | The account in `~/.claude.json`, for the new profile. |
-| A [swap](#rotate-swap) completes from a profile that has no record | The outgoing account, for the `from` profile, only when the [rotate ledger](#rotate-live-profile) names `from` as live and the outgoing account matches the ledger's `account`. |
+| A [swap](#rotate-swap) completes from a profile that has no record | The outgoing account, for the `from` profile, only when the [rotate ledger](#rotate-live-profile) names `from` as live, the outgoing account matches the ledger's `account`, and no other profile holds the same account and organization or has it recorded. |
 
 Nothing else writes a record. A swap never records the incoming (`to`)
 profile and never overwrites a usable record of the outgoing one. An
@@ -6339,25 +6341,49 @@ warning: the recorded account for profile 'work' was not saved: <reason>
 
 A record that is missing, unreadable, not `0600`, not owned by you, a
 symlink, over 64 KiB, not valid JSON, or whose `account` is not a usable
-string counts as no record, and no command fails because of it. A swap
+string, or whose `org` is missing or neither `null` nor such a string,
+counts as no record, and no command fails because of it. A record written
+before the organization was stored has no `org` and is not used; the next
+accepted `profile login`, or a swap that records the profile, replaces it. A swap
 from that profile is not checked and prints one line to stderr:
 
 ```
 warning: the recorded account for profile 'work' could not be read; the swap was not checked against it
 ```
 
-Records are compared with the [account identity](#account-identity) key
-match: a record matches an account whose uuid equals it, or whose e-mail
-equals it, ignoring case. The organization is not compared.
+Records are compared by the [account identity](#account-identity) rule. A
+record whose `account` is the login's uuid matches only when `org` equals
+the login's `organizationUuid`, both being absent counting as equal: the
+same user in another organization is another account, and is refused. A
+record whose `account` is an e-mail address, written from a login without a
+uuid, matches a login with that e-mail, ignoring case, and the organization
+is not compared, as two logins without a uuid are compared by e-mail.
 
-Two things read the record:
+The backfill in the last row of the table is skipped when another profile
+holds the outgoing account or has it recorded. A profile folder can already
+hold another account's login, written by a Claude session started with
+`CLAUDE_CONFIG_DIR` on that folder; recording it would make the guard
+protect the wrong account. Such a profile stays unrecorded until its next
+accepted `profile login`.
+
+Three things read the record:
 
 - the [duplicate-login warning](#duplicate-login-warning), to name the
   profile whose login is wrong;
+- `profile usage` and `profile auto-switch status`, which print one line per
+  profile whose login is not its recorded account, whether or not that
+  login is also a duplicate:
+
+  ```
+  warning: profile '<name>' holds a login that is not the account recorded for it; fix: run 'amplihack profile login <name>' with the browser signed out of claude.ai or in a private window.
+  ```
+
+  The line names the profile, never an account. `auto-switch status` prints
+  it among its notes, without the `warning: ` prefix;
 - the [rotate swap](#rotate-swap), which refuses to move the login in
   `~/.claude` into a profile whose record names another account.
 
-A profile with no record gets neither: its duplicate pairs use the
+A profile with no record gets none of these: its duplicate pairs use the
 cannot-tell form and its swaps are not checked. Profiles created before this
 release have no record until their next accepted `profile login`, or a swap
 that records them.

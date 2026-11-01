@@ -1653,8 +1653,12 @@ amplihack records the account each profile is meant to hold when you run
 `amplihack profile login <name>` and the login is accepted. A swap that
 adopts a login into `default-original` records that profile too, and a
 swap away from a profile with no record records it when the ledger shows the
-outgoing login came from that profile. The record is
-`<root>/.auto-switch.d/expected/<name>.json` and holds one key, `account`.
+outgoing login came from that profile and no other profile holds or has
+recorded the same account. The record is
+`<root>/.auto-switch.d/expected/<name>.json` and holds the account and its
+organization. The same user in another organization counts as another
+account, so a `/login` to your personal organization is refused for a
+profile recorded with your team organization.
 
 Before a swap moves the login in `~/.claude` back to the live profile, the
 rotator compares it with that profile's record. If they differ, the swap is
@@ -1698,10 +1702,12 @@ If you saved another root, the file is under that root instead;
 Profiles with no record are not checked. A profile created before this
 check existed has no record until one of two things happens: its next
 accepted `profile login`, or a swap away from it while the ledger shows the
-outgoing login came from that profile.
+outgoing login came from that profile and no other profile holds that
+account. A record written before the organization was stored is not used
+either; it is replaced the same way.
 
 A record that exists but cannot be read (not valid JSON, no usable
-`account`, or not a private file) is also treated as no record, so the swap
+`account` or `org`, or not a private file) is also treated as no record, so the swap
 is not checked. The rotator then prints one line to stderr, which a
 background rotator appends to `rotate.err`:
 
