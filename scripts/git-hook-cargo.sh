@@ -109,17 +109,46 @@ checkout_hash() {
 # Issue #1808: inside or outside a recipe run, a validated absolute
 # AMPLIHACK_WORK_ROOT puts the caches under <work root>/targets instead, so a
 # run's build output lives with the rest of its files and `amplihack cleanup`
-# can find it. A relative or unset value keeps the XDG path below.
+# can find it. Any other value keeps the XDG path below.
+
+# owner_and_mode <path> — "<uid> <octal mode>" (GNU stat, then BSD stat).
+owner_and_mode() {
+    stat -c '%u %a' -- "$1" 2>/dev/null || stat -f '%u %Lp' -- "$1" 2>/dev/null
+}
+
+# work_root_usable <dir> — the work root already exists as a real folder (not
+# a symlink) owned by this user, is not group- or world-writable, and is
+# neither / nor $HOME. The hook never creates the work root itself.
+work_root_usable() {
+    local dir="$1" real home_real stat_out uid mode
+    case "$dir" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+    real="$(cd -P -- "$dir" 2>/dev/null && pwd -P)" || return 1
+    [ "$real" != "/" ] || return 1
+    if [ -n "${HOME:-}" ] && home_real="$(cd -P -- "$HOME" 2>/dev/null && pwd -P)"; then
+        [ "$real" != "$home_real" ] || return 1
+    fi
+    stat_out="$(owner_and_mode "$dir")" || return 1
+    uid="${stat_out%% *}"
+    mode="${stat_out##* }"
+    [ "$uid" = "$(id -u)" ] || return 1
+    case "$mode" in
+        *[!0-7]*|"") return 1 ;;
+    esac
+    [ $((8#$mode & 8#022)) -eq 0 ]
+}
+
 cache_root() {
     local base work="${AMPLIHACK_WORK_ROOT:-}"
-    case "$work" in
-        /*)
-            if mkdir -p "$work/targets" 2>/dev/null; then
-                printf '%s' "$work/targets"
-                return 0
-            fi
-            ;;
-    esac
+    if [ -n "$work" ] && work_root_usable "$work" \
+        && (umask 077 && mkdir -p "$work/targets") 2>/dev/null \
+        && [ -d "$work/targets" ] && [ ! -L "$work/targets" ]; then
+        printf '%s' "$work/targets"
+        return 0
+    fi
     base="${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}"
     if [ -n "$base" ] && mkdir -p "$base/amplihack" 2>/dev/null; then
         printf '%s' "$base/amplihack"
@@ -170,7 +199,8 @@ record_owned_target() {
     if [ -f "$owned" ] && grep -qxF -- "$line" "$owned" 2>/dev/null; then
         return 0
     fi
-    (umask 077 && printf 'target\t%s\t\n' "$dir" >> "$owned") 2>/dev/null || true
+    (umask 077 && printf 'target\t%s\t\n' "$dir" >> "$owned") 2>/dev/null \
+        || printf 'amplihack: warning: could not record cache ownership for %s\n' "$dir" >&2
 }
 
 # Is a build writing into this cache right now?

@@ -11,7 +11,9 @@
 #   TASK_DESCRIPTION=... workflow_branch_name.sh explicit --repo-path REPO --main-repo MAIN
 #
 #   REPO  the checkout the run was pointed at (the caller checkout).
-#   MAIN  the main repository whose worktrees/<branch> the run would use.
+#   MAIN  the main repository; the run would use <base>/<branch>, where <base>
+#         comes from `workflow_worktree_root.sh base MAIN` (issue #1808),
+#         falling back to MAIN/worktrees.
 #
 # Output: the named branch on stdout, or nothing.
 # Exit codes:
@@ -20,7 +22,7 @@
 #   1   no branch is named                                  — derive one
 #   2   usage error (unknown flag, missing or non-directory path)
 #   3   the named branch is checked out in a worktree that is neither REPO nor
-#       MAIN/worktrees/<branch>: another session owns it; refuse, never share it
+#       <base>/<branch>: another session owns it; refuse, never share it
 #
 # Rules:
 #   * Only these directive forms count, case-insensitive, at the start of a line:
@@ -81,6 +83,22 @@ candidate_ok() {
 
 real_dir() { (cd "$1" 2>/dev/null && pwd -P); }
 
+ROOT_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/workflow_worktree_root.sh"
+
+# worktree_base MAIN — the folder this repository's worktrees go under. The
+# one source is `workflow_worktree_root.sh base` (issue #1808), so a re-run
+# under an explicit work root recognises its own worktree.
+worktree_base() {
+  local base=""
+  if [ -f "$ROOT_HELPER" ]; then
+    base="$(bash "$ROOT_HELPER" base "$1" 2>/dev/null)" || base=""
+  fi
+  if [ -z "$base" ]; then
+    base="$(real_dir "$1")/worktrees"
+  fi
+  real_dir "$base" || printf '%s' "$base"
+}
+
 # decide REF REPO MAIN — print REF and exit with the code documented above.
 decide() {
   local ref="$1" repo="$2" main="$3" holder holder_real repo_real intended
@@ -90,7 +108,7 @@ decide() {
   if [ -n "$holder" ]; then
     holder_real="$(real_dir "$holder" || printf '%s' "$holder")"
     repo_real="$(real_dir "$repo")"
-    intended="$(real_dir "$main")/worktrees/$ref"
+    intended="$(worktree_base "$main")/$ref"
     # The caller checkout is left to step-04's own #858 refusal; our own
     # worktree from a previous run of this task is an idempotent re-run.
     if [ "$holder_real" != "$repo_real" ] && [ "$holder_real" != "$intended" ]; then

@@ -339,3 +339,135 @@ fn restore_refuses_destination_outside_log_roots() {
     );
     assert!(!evil.exists());
 }
+
+/// §8 test 8: a folder inside a log root that has become a symlink (here to
+/// a stand-in for `~/.ssh`) is never written through on restore.
+#[test]
+fn restore_refuses_symlinked_folder_inside_log_root() {
+    let fx = Fx::new();
+    let logs = recipe_logs(&fx);
+    let log = old_log(&logs, "x/authorized_keys", "ssh-ed25519 AAAA test\n", 60);
+    let out = fx.cleanup(&["--apply", "--only", "recipe-log"]);
+    assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
+    assert!(!log.exists());
+
+    let ssh = fx.home.join("fake-ssh");
+    fs::create_dir_all(&ssh).unwrap();
+    fs::remove_dir(logs.join("x")).unwrap();
+    std::os::unix::fs::symlink(&ssh, logs.join("x")).unwrap();
+
+    let out = restore(&fx, &[&fx.work.join("archive/MANIFEST.jsonl")]);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert!(
+        String::from_utf8_lossy(&out.stderr).contains("symbolic link"),
+        "{}",
+        describe(&out)
+    );
+    assert_eq!(
+        fs::read_dir(&ssh).unwrap().count(),
+        0,
+        "nothing may be written through the symlink"
+    );
+}
+
+/// §8 test 9: `--dest` with a `..` component is refused, and so is a
+/// manifest whose archive path climbs out of the archive folder.
+#[test]
+fn restore_refuses_dotdot_in_dest_and_manifest() {
+    let fx = Fx::new();
+    let (log, archive) = archived(&fx, "g.log", "eta\n");
+    let manifest = fx.work.join("archive/MANIFEST.jsonl");
+    let escape = fx.root.join("escape");
+
+    let mut c = fx.amplihack();
+    c.args(["cleanup", "restore"])
+        .arg(&manifest)
+        .arg("--dest")
+        .arg(fx.root.join("restored/../escape"));
+    let out = c.output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert!(!escape.exists() && !fx.root.join("restored").exists());
+
+    let text = fs::read_to_string(&manifest).unwrap();
+    let mut line: serde_json::Value = serde_json::from_str(text.lines().next().unwrap()).unwrap();
+    line["archive_path"] = format!(
+        "{}/../../{}",
+        archive.parent().unwrap().display(),
+        archive.file_name().unwrap().to_string_lossy()
+    )
+    .into();
+    fs::write(&manifest, format!("{line}\n")).unwrap();
+    let mut c = fx.amplihack();
+    c.args(["cleanup", "restore"])
+        .arg(&manifest)
+        .arg("--dest")
+        .arg(&escape);
+    let out = c.output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert!(!log.exists());
+    assert!(
+        !escape.exists()
+            || snapshot(&escape)
+                .values()
+                .all(|(kind, _, _)| kind != "file"),
+        "nothing restored"
+    );
+}
+
+/// Replaces `archive` with a `.tar.gz` of `entries` built by tar(1) in `dir`.
+fn replace_archive(archive: &Path, dir: &Path, entries: &[&str]) {
+    let tmp = archive.with_extension("new");
+    let out = Command::new("tar")
+        .arg("-czf")
+        .arg(&tmp)
+        .arg("-C")
+        .arg(dir)
+        .args(entries)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    fs::rename(&tmp, archive).unwrap();
+}
+
+/// §8 test 10: an archive holding a symlink entry, two entries, or more bytes
+/// than the manifest records is refused, and nothing is restored.
+#[test]
+fn restore_refuses_malformed_archives() {
+    let cases: [(&str, &str); 3] = [
+        ("symlink", "not a regular file"),
+        ("two", "more than one entry"),
+        ("oversized", "larger than its manifest says"),
+    ];
+    for (case, message) in cases {
+        let fx = Fx::new();
+        let (log, archive) = archived(&fx, "h.log", "theta\n");
+        let src = fx.root.join(format!("craft-{case}"));
+        fs::create_dir_all(&src).unwrap();
+        match case {
+            "symlink" => {
+                std::os::unix::fs::symlink("/etc/hostname", src.join("h.log")).unwrap();
+                replace_archive(&archive, &src, &["h.log"]);
+            }
+            "two" => {
+                fs::write(src.join("h.log"), "theta\n").unwrap();
+                fs::write(src.join("extra"), "x").unwrap();
+                replace_archive(&archive, &src, &["h.log", "extra"]);
+            }
+            _ => {
+                fs::write(src.join("h.log"), "theta\n".repeat(100)).unwrap();
+                replace_archive(&archive, &src, &["h.log"]);
+            }
+        }
+        let out = restore(&fx, &[&archive]);
+        assert_eq!(out.status.code(), Some(1), "{case}: {}", describe(&out));
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(message),
+            "{case}: {}",
+            describe(&out)
+        );
+        assert!(
+            !log.exists() && fs::symlink_metadata(&log).is_err(),
+            "{case}"
+        );
+    }
+}

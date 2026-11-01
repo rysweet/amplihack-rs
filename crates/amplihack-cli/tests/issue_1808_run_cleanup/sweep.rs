@@ -452,3 +452,87 @@ fn dry_run_writes_nothing() {
     assert!(!fx.work.join(".cleanup.lock").exists());
     assert!(!fx.work.join("archive").exists());
 }
+
+/// D6, AC5: each worktree of a run is judged by its own branch. With one PR
+/// merged and the other open, only the merged one goes, and the run's target
+/// stays while a worktree of the run is kept.
+#[test]
+fn two_worktrees_of_one_run_get_their_own_verdicts() {
+    let fx = Fx::new();
+    let merged = fx.worktree("merged-a");
+    let open = fx.worktree("open-b");
+    let tgt = fx.target("amplihack-precommit-target-0123456789ab-run-two", 64);
+    fx.gh_closed("merged-a", 1901, 48, true);
+    fx.gh_open("open-b", 1902);
+    fx.seed_run(
+        &SeedRun::ended(48)
+            .owns_worktree(&merged, "merged-a")
+            .owns_worktree(&open, "open-b")
+            .owns_target(&tgt),
+    );
+
+    let report = fx.cleanup_json(&["--apply"]);
+
+    assert_eq!(entry_for(&report, &merged)["action"], "removed");
+    assert!(!merged.exists());
+    let e = entry_for(&report, &open);
+    assert_eq!(e["action"], "skipped", "{e}");
+    assert!(reason(&e).contains("PR #1902 is open"), "{e}");
+    assert!(open.exists());
+    let t = entry_for(&report, &tgt);
+    assert_eq!(t["action"], "skipped", "{t}");
+    assert!(reason(&t).contains("a worktree of this run is kept"), "{t}");
+    assert!(tgt.exists());
+}
+
+/// §8 test 4: a `core.fsmonitor` command configured in the repository is
+/// never run, by cleanup's own git calls or by git started from `gh`.
+#[test]
+fn fsmonitor_configured_in_the_repository_is_never_run() {
+    let fx = Fx::new();
+    let wt = fx.worktree("fsmon");
+    fx.gh_closed("fsmon", 1903, 48, true);
+    fx.seed_run(&SeedRun::ended(48).owns_worktree(&wt, "fsmon"));
+    let marker = fx.root.join("fsmonitor-ran");
+    let hook = fx.root.join("fsmonitor-hook");
+    crate::support::exec_stub::write_executable(
+        &hook,
+        format!("#!/bin/sh\ntouch '{}'\nexit 1\n", marker.display()),
+        0o755,
+    );
+    fx.git_ok(
+        &fx.repo,
+        &["config", "core.fsmonitor", hook.to_str().unwrap()],
+    );
+    // A gh that runs git in its working folder, as the real one does.
+    let gh = fs::read_to_string(fx.bin.join("gh")).unwrap();
+    let gh = gh.replacen(
+        "#!/bin/sh\n",
+        "#!/bin/sh\ngit status --porcelain >/dev/null 2>&1\n",
+        1,
+    );
+    fs::remove_file(fx.bin.join("gh")).unwrap();
+    crate::support::exec_stub::write_executable(&fx.bin.join("gh"), &gh, 0o755);
+
+    let report = fx.cleanup_json(&["--apply"]);
+
+    assert_eq!(entry_for(&report, &wt)["action"], "removed", "{report:#}");
+    assert!(!marker.exists(), "core.fsmonitor ran");
+}
+
+/// §8 test 5: a recorded branch that reads as a `gh` option is refused and
+/// never reaches `gh`.
+#[test]
+fn branch_that_reads_as_an_option_never_reaches_gh() {
+    let fx = Fx::new();
+    let wt = fx.worktree("plain");
+    fx.seed_run(&SeedRun::ended(48).owns_worktree(&wt, "--repo=evil/x"));
+
+    let report = fx.cleanup_json(&["--apply"]);
+
+    let e = entry_for(&report, &wt);
+    assert_eq!(e["action"], "skipped", "{e}");
+    assert!(reason(&e).contains("not a valid branch name"), "{e}");
+    assert!(wt.exists());
+    assert!(!fx.gh_calls().contains("--repo"), "{}", fx.gh_calls());
+}

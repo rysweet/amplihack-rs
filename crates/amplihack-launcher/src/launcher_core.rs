@@ -158,8 +158,6 @@ impl ClaudeLauncher {
             return Ok(false);
         }
         info!(repo = %repo, "Checking out repository...");
-        let mut command = amplihack_git::command();
-        command.args(["clone", "--depth", "1", "--", repo]);
         // Issue #1808: inside a recipe run, clone into the work root rather
         // than the current folder, and allow only network transports.
         if let Some(dest) = run_clone_destination(
@@ -167,14 +165,15 @@ impl ClaudeLauncher {
             std::env::var_os("AMPLIHACK_RUN_DIR").as_deref(),
             std::env::var_os("AMPLIHACK_WORK_ROOT").as_deref(),
         ) {
-            if let Some(parent) = dest.parent() {
-                create_private_dir_all(parent)?;
+            if let Err(error) = checkout_run_clone(repo, &dest, RUN_CLONE_PROTOCOLS) {
+                warn!(repo = %repo, error = %format!("{error:#}"), "Repository checkout failed");
+                eprintln!("amplihack: repository checkout failed: {error:#}");
+                return Ok(false);
             }
-            info!(dest = %dest.display(), "Cloning into the run's work root");
-            command
-                .arg(&dest)
-                .env("GIT_ALLOW_PROTOCOL", "https:ssh:git");
+            return Ok(true);
         }
+        let mut command = amplihack_git::command();
+        command.args(["clone", "--depth", "1", "--", repo]);
         let status = command.status().context("failed to run git clone")?;
         if !status.success() {
             warn!(repo = %repo, "Repository checkout failed");
@@ -374,6 +373,102 @@ pub(crate) fn run_clone_destination(
     Some(work_root.join("clones").join(format!("{base}-{hash}")))
 }
 
+/// Transports a clone inside a recipe run may use.
+const RUN_CLONE_PROTOCOLS: &str = "https:ssh:git";
+
+/// git with no system config, no prompts, no fsmonitor and no hooks, for
+/// inspecting a folder that may hold a planted repository.
+fn hardened_git(dir: &Path) -> Command {
+    let mut command = amplihack_git::command();
+    command
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
+        .arg("-C")
+        .arg(dir)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    command
+}
+
+fn git_stdout(mut command: Command) -> Option<String> {
+    let output = command.output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Issue #1808: clones `repo` into the run clone folder `dest`, or reuses it.
+///
+/// The folder depends only on the URL and outlives the run, so a second
+/// checkout of the same repository finds it. It is reused, and fetched, only
+/// when it is a real folder at the top of a git checkout whose
+/// `remote.origin.url` is `repo`; anything else is refused with a message
+/// rather than replaced.
+pub(crate) fn checkout_run_clone(repo: &str, dest: &Path, protocols: &str) -> Result<()> {
+    match std::fs::symlink_metadata(dest) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if let Some(parent) = dest.parent() {
+                create_private_dir_all(parent)?;
+            }
+            info!(dest = %dest.display(), "Cloning into the run's work root");
+            let status = amplihack_git::command()
+                .args(["clone", "--depth", "1", "--", repo])
+                .arg(dest)
+                .env("GIT_ALLOW_PROTOCOL", protocols)
+                .env("GIT_TERMINAL_PROMPT", "0")
+                .status()
+                .context("failed to run git clone")?;
+            anyhow::ensure!(status.success(), "git clone of {repo} failed");
+            Ok(())
+        }
+        Err(error) => Err(error).with_context(|| format!("cannot inspect {}", dest.display())),
+        Ok(meta) => {
+            anyhow::ensure!(
+                meta.file_type().is_dir(),
+                "{} exists and is not a folder; remove it to check out {repo}",
+                dest.display()
+            );
+            let real = std::fs::canonicalize(dest)
+                .with_context(|| format!("cannot resolve {}", dest.display()))?;
+            let mut top = hardened_git(dest);
+            top.args(["rev-parse", "--show-toplevel"]);
+            let is_checkout = git_stdout(top)
+                .and_then(|t| std::fs::canonicalize(t).ok())
+                .is_some_and(|t| t == real);
+            anyhow::ensure!(
+                is_checkout,
+                "{} exists but is not a git checkout; remove it to check out {repo}",
+                dest.display()
+            );
+            let mut origin = hardened_git(dest);
+            origin.args(["config", "--get", "remote.origin.url"]);
+            let url = git_stdout(origin).unwrap_or_default();
+            anyhow::ensure!(
+                url == repo,
+                "{} is a checkout of {url:?}, not {repo}; remove it to check out {repo}",
+                dest.display()
+            );
+            info!(dest = %dest.display(), "Reusing the run clone; fetching");
+            let mut fetch = hardened_git(dest);
+            fetch
+                .args(["fetch", "--depth", "1", "origin"])
+                .env("GIT_ALLOW_PROTOCOL", protocols);
+            let status = fetch.status().context("failed to run git fetch")?;
+            anyhow::ensure!(
+                status.success(),
+                "git fetch in the existing clone {} failed",
+                dest.display()
+            );
+            Ok(())
+        }
+    }
+}
+
 #[cfg(unix)]
 fn create_private_dir_all(dir: &Path) -> Result<()> {
     use std::os::unix::fs::DirBuilderExt;
@@ -391,9 +486,69 @@ fn create_private_dir_all(dir: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod issue_1808_clone_destination {
-    use super::run_clone_destination;
+    use super::{checkout_run_clone, run_clone_destination};
     use std::ffi::OsStr;
     use std::path::Path;
+
+    fn git(dir: &Path, args: &[&str]) {
+        let status = amplihack_git::command_in(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    }
+
+    fn origin(root: &Path, name: &str) -> String {
+        let dir = root.join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        std::fs::write(dir.join("f"), name).unwrap();
+        git(&dir, &["add", "f"]);
+        git(&dir, &["commit", "-q", "-m", "c"]);
+        format!("file://{}", dir.display())
+    }
+
+    /// P1-4: a second checkout of the same URL reuses the clone.
+    #[test]
+    fn second_checkout_of_the_same_url_reuses_the_clone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let url = origin(tmp.path(), "a");
+        let dest = tmp.path().join("work/clones/a-12345678");
+        checkout_run_clone(&url, &dest, "file").unwrap();
+        assert!(dest.join("f").is_file());
+        checkout_run_clone(&url, &dest, "file").unwrap();
+        assert!(dest.join("f").is_file());
+    }
+
+    /// P1-4: a folder holding another remote, or no checkout, is refused.
+    #[test]
+    fn mismatched_remote_or_non_checkout_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let a = origin(tmp.path(), "a");
+        let b = origin(tmp.path(), "b");
+        let dest = tmp.path().join("work/clones/x-12345678");
+        checkout_run_clone(&b, &dest, "file").unwrap();
+        let error = checkout_run_clone(&a, &dest, "file").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("is a checkout of"),
+            "{error:#}"
+        );
+        assert_eq!(std::fs::read_to_string(dest.join("f")).unwrap(), "b");
+
+        let plain = tmp.path().join("work/clones/plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let error = checkout_run_clone(&a, &plain, "file").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("not a git checkout"),
+            "{error:#}"
+        );
+    }
 
     #[test]
     fn outside_a_run_or_with_a_relative_root_there_is_no_destination() {

@@ -243,11 +243,15 @@ use:
 # /home/ryan/src/amplihack-rs/worktrees
 ```
 
-The `workflow-worktree.yaml` recipe (used by `default-workflow`) creates its
-worktrees under this base. `consensus-issue-worktree.yaml` and
-`autodrive_pr_worktree.sh` still create theirs under
-`<main checkout>/worktrees/`; they record them in `owned-paths`, so cleanup
-covers them in either location.
+`workflow_worktree_root.sh base` is the only source of this folder. These
+helpers use it:
+
+- `workflow-worktree.yaml` (used by `default-workflow`);
+- `autodrive_pr_worktree.sh`;
+- `consensus-issue-worktree.yaml`, unless the caller passes `worktree_dir`,
+  which still wins;
+- `workflow_branch_name.sh`, so that a re-run of a task that names its branch
+  recognises its own worktree under the work root and reuses it.
 
 The default work root (`$HOME/.amplihack/work`) applies to run folders,
 targets, clones and the archive whether or not the variable is set. Only
@@ -263,14 +267,14 @@ panicked, the runner:
 2. Finalises `run.json` with the end time, outcome and step summary.
 3. Unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set, sweeps the whole work root for
    run-owned items that are now eligible (the categories `run-tmp`,
-   `run-worktree`, `run-target` and `untagged-target`), and removes them. This
-   includes items from earlier runs, and from the current run if it is
-   already eligible.
+   `run-worktree` and `run-target`), and removes them. This includes items
+   from earlier runs, and from the current run if it is already eligible.
 
 The sweep is best effort. If another cleanup holds the lock, the sweep is
 skipped. It stops after 120 seconds. Any problem is printed as a warning and
-never changes the run's exit status. Log archiving and scans of the system
-temporary folder are left to `amplihack cleanup`.
+never changes the run's exit status. Untagged targets, log archiving and
+scans of the system temporary folder are left to `amplihack cleanup`, so a
+run never removes the pre-commit hook caches of your other checkouts.
 
 When the sweep removes something from a run, it adds an entry to that run's
 `cleanup-record.json`:
@@ -328,9 +332,18 @@ The pull request is found with:
 gh pr list --head=<branch> --state all --json number,state,closedAt,mergedAt
 ```
 
-run in the worktree's repository, using the branch recorded in `owned-paths`.
-Each branch is looked up once per sweep, and each lookup has a 30-second
-limit.
+run inside the worktree itself, using the branch recorded for it in
+`owned-paths`. Each worktree gets its own verdict, so a run with one merged
+and one open pull request loses only the merged worktree. The lookup runs only
+in a worktree that has already passed the containment and linked-worktree
+checks, never in a folder named only by `run.json`, and `gh` is started with
+the same git hardening as cleanup's own git commands. Each branch is looked up
+once per sweep, and each lookup has a 30-second limit.
+
+A run's targets are removed only when every worktree the run still has is
+eligible. If a recorded worktree could not be checked, the targets are kept.
+When none of the run's worktrees is left, the targets follow the no-PR rule
+above.
 
 A run is **skipped**, with a reason in the output, when:
 
@@ -338,7 +351,10 @@ A run is **skipped**, with a reason in the output, when:
 - its pull request is still open;
 - `gh` is missing, fails, returns output that cannot be parsed, or takes longer
   than 30 seconds;
-- `run.json` has a `schema_version` newer than this release understands.
+- `run.json` has a `schema_version` newer than this release understands;
+- its `owned-paths` file exists but cannot be read (reported as
+  `owned-paths unreadable: ...`). Untagged targets are then also skipped,
+  since that run may own them.
 
 For example, with the default keep period, a run whose PR closed one hour ago
 is skipped with the reason `within keep period`, and a run whose PR closed 25
@@ -472,9 +488,16 @@ The tag is written by:
 
 | Condition | Folder |
 | --- | --- |
-| `AMPLIHACK_WORK_ROOT` set, inside a run | `$AMPLIHACK_WORK_ROOT/targets/amplihack-precommit-target-<hash>-run-<run id>` |
-| `AMPLIHACK_WORK_ROOT` set, outside a run | `$AMPLIHACK_WORK_ROOT/targets/amplihack-precommit-target-<hash>` |
-| `AMPLIHACK_WORK_ROOT` not set | the XDG cache path used by earlier releases, with the same naming |
+| `AMPLIHACK_WORK_ROOT` usable, inside a run | `$AMPLIHACK_WORK_ROOT/targets/amplihack-precommit-target-<hash>-run-<run id>` |
+| `AMPLIHACK_WORK_ROOT` usable, outside a run | `$AMPLIHACK_WORK_ROOT/targets/amplihack-precommit-target-<hash>` |
+| `AMPLIHACK_WORK_ROOT` not set, or not usable | the XDG cache path used by earlier releases, with the same naming |
+
+The hook uses the work root only when it already exists as a real folder (not
+a symbolic link) owned by you, is not group- or world-writable, and is neither
+`/` nor your home folder. It never creates the work root, and it creates
+`targets/` with mode `0700`. If it cannot record a target in `owned-paths`,
+it prints `amplihack: warning: could not record cache ownership for <path>`
+and the build goes ahead.
 
 The `-run-<run id>` suffix uses `AMPLIHACK_RUN_ID`, not the attempt id, and
 is added only when that variable is set and matches `^[0-9a-f-]{1,64}$`, the
@@ -567,6 +590,14 @@ other files are still restored, and the command exits with code 1. The
 destination must lie under a log folder or under `--dest`. Restored files are
 checked against the recorded digest and written with mode `0600`.
 
+Restore refuses, and writes nothing, when:
+
+- a folder between the log folder (or `--dest`) and the destination is a
+  symbolic link, or resolves outside it;
+- `--dest` or an archive path in the manifest contains `.` or `..`;
+- the archive holds anything other than one regular file, or more bytes than
+  the manifest records.
+
 ## Move the work root to another disk
 
 To put run folders, targets, clones and worktrees on a data disk:
@@ -587,7 +618,10 @@ them as they become eligible.
 
 Inside a run, the launcher clones repositories into
 `<work root>/clones/<repository name>-<8-character hash>`. Outside a run,
-clones go where they did before. Cleanup does not remove clones.
+clones go where they did before. Cleanup does not remove clones. The folder
+name depends only on the URL, so a later run that checks out the same
+repository reuses the clone and fetches it. If the folder is not a git
+checkout of that URL, the launch is refused with a message naming the folder.
 
 ## Safety rules
 
@@ -617,9 +651,19 @@ Git commands against a candidate run with hooks and fsmonitor disabled and
 with the system git configuration ignored, so a worktree's configuration
 cannot run code during cleanup.
 
-Before each removal, cleanup resolves the path again, refuses symbolic links,
-and repeats the liveness, Cargo lock and cleanliness checks. Symbolic links
-are not followed when counting sizes.
+Before each removal, cleanup resolves the path again and requires it to
+resolve to the same place it did when the item was collected, and still to lie
+inside the folders above. It then removes that resolved path, never the path a
+step wrote. It also refuses symbolic links and repeats the liveness, Cargo
+lock and cleanliness checks; if the run's `run.json` can no longer be read,
+the item is skipped. An item that fails one of these checks is reported as
+`skipped` with the reason. Symbolic links are not followed when counting
+sizes.
+
+If a run's `cleanup-record.json` cannot be parsed, it is renamed to
+`cleanup-record.json.corrupt-<time>`, a warning is printed, and a new record
+is started. When every path in `owned-paths` has been removed, the file is
+removed too.
 
 Cleanup never touches other files in the work root, such as driver scripts or
 task files you keep there, clones under `<work root>/clones/`, your home

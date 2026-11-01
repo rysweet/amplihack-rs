@@ -96,6 +96,25 @@ steps:
       # of deriving a slug. EXISTING_BRANCH wins on tie (WARNING to stderr).
       # Keep in sync with default-workflow.yaml step-04-setup-worktree.
       # ========================================================================
+      # Issue #1808: a caller-supplied worktree_dir wins. Otherwise the base comes
+      # from `workflow_worktree_root.sh base`, the one source of the worktree base,
+      # so an explicit AMPLIHACK_WORK_ROOT moves these worktrees too.
+      if [ -z "${WORKTREE_DIR:-}" ]; then
+        for ROOT_HELPER in \
+          "${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_root.sh" \
+          "${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_root.sh" \
+          "$(pwd)/amplifier-bundle/tools/workflow_worktree_root.sh" \
+          "${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_worktree_root.sh"; do
+          [ -f "$ROOT_HELPER" ] && break
+        done
+        if [ -f "$ROOT_HELPER" ]; then
+          WORKTREE_DIR="$(bash "$ROOT_HELPER" base "$(pwd)")" || WORKTREE_DIR=""
+        fi
+        if [ -z "$WORKTREE_DIR" ]; then
+          # The main checkout, never a linked worktree's top level (#1134).
+          WORKTREE_DIR="$(cd "$(git rev-parse --git-common-dir)/.." && pwd -P)/worktrees"
+        fi
+      fi
       EXISTING_BRANCH="${EXISTING_BRANCH:-}"
       PR_NUMBER="${PR_NUMBER:-}"
       if [ -n "$EXISTING_BRANCH" ] || [ -n "$PR_NUMBER" ]; then

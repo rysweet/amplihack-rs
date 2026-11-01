@@ -224,3 +224,27 @@ fn hygiene_cleanup_output_has_no_size_bytes_key() {
     assert!(out.status.success(), "{}", describe(&out));
     assert!(!String::from_utf8_lossy(&out.stdout).contains("size_bytes"));
 }
+
+/// §8 test 13: a symlink planted at the lock-file path is refused; the file
+/// it points at is neither created nor changed.
+#[test]
+fn planted_symlink_at_lock_path_is_refused() {
+    let fx = Fx::new();
+    let sentinel = fx.root.join("sentinel");
+    fs::write(&sentinel, "precious").unwrap();
+    std::os::unix::fs::symlink(&sentinel, fx.work.join(".cleanup.lock")).unwrap();
+    let dangling = fx.root.join("never-created");
+
+    let out = fx.cleanup(&["--apply"]);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(fs::read_to_string(&sentinel).unwrap(), "precious");
+
+    fs::remove_file(fx.work.join(".cleanup.lock")).unwrap();
+    std::os::unix::fs::symlink(&dangling, fx.work.join(".cleanup.lock")).unwrap();
+    let out = fx.cleanup(&["--apply"]);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert!(
+        !dangling.exists(),
+        "the lock must not be created through a symlink"
+    );
+}

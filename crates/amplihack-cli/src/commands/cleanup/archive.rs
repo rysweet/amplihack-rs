@@ -269,6 +269,36 @@ fn lexical_canonical(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
+/// Refuses when any existing folder from below `base` down to `dir` is a
+/// symbolic link or not a folder. `base` itself may be a symlink.
+fn refuse_symlinks_below(base: &Path, dir: &Path) -> Result<()> {
+    let rel = dir
+        .strip_prefix(base)
+        .with_context(|| format!("{} is not under {}", dir.display(), base.display()))?;
+    let mut current = base.to_path_buf();
+    for part in rel.components() {
+        let Component::Normal(name) = part else {
+            bail!("unsafe path {}", dir.display());
+        };
+        current.push(name);
+        match fs::symlink_metadata(&current) {
+            Ok(meta) if meta.file_type().is_symlink() => bail!(
+                "refusing to restore through symbolic link {}",
+                current.display()
+            ),
+            Ok(meta) if !meta.file_type().is_dir() => {
+                bail!("{} is not a folder", current.display())
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotFound => break,
+            Err(error) => {
+                return Err(error).with_context(|| format!("cannot inspect {}", current.display()));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// What a restore did, one line per manifest entry.
 #[derive(Debug, Default)]
 pub(crate) struct RestoreOutcome {
@@ -356,7 +386,9 @@ fn restore_one(
             original.display()
         );
     }
-    let destination = match dest {
+    // `base` is the folder the destination must stay under: --dest, or the
+    // log root that holds the original path.
+    let (destination, base) = match dest {
         Some(dest) => {
             let canonical = lexical_canonical(&archive);
             let relative = canonical
@@ -368,16 +400,16 @@ fn restore_one(
             if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
                 bail!("unsafe archive path {}", archive.display());
             }
-            dest.join(rel)
+            (dest.join(rel), dest.to_path_buf())
         }
         None => {
-            if !log_roots.iter().any(|root| original.starts_with(root)) {
+            let Some(root) = log_roots.iter().find(|root| original.starts_with(root)) else {
                 bail!(
                     "refusing to restore {}: it is not under a log folder; use --dest",
                     original.display()
                 );
-            }
-            original.clone()
+            };
+            (original.clone(), root.clone())
         }
     };
     if fs::symlink_metadata(&destination).is_ok() {
@@ -401,7 +433,22 @@ fn restore_one(
     let parent = destination
         .parent()
         .context("destination has no parent folder")?;
+    refuse_symlinks_below(&base, parent)?;
     create_private_dir_all(parent)?;
+    // Checked again after creating: a symlink planted in between, or one
+    // above the first missing folder, must not take the write elsewhere.
+    refuse_symlinks_below(&base, parent)?;
+    let real_base =
+        fs::canonicalize(&base).with_context(|| format!("cannot resolve {}", base.display()))?;
+    let real_parent =
+        fs::canonicalize(parent).with_context(|| format!("cannot resolve {}", parent.display()))?;
+    if !real_parent.starts_with(&real_base) {
+        bail!(
+            "refusing to restore {}: its folder resolves outside {}",
+            destination.display(),
+            base.display()
+        );
+    }
     let file_name = destination
         .file_name()
         .context("destination has no file name")?

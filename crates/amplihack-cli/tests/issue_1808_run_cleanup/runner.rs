@@ -308,6 +308,30 @@ fn end_of_run_sweep_removes_expired_items_of_earlier_runs() {
     assert_eq!(record["run_id"], seeded.id.as_str());
 }
 
+/// D5: the end-of-run sweep covers run-owned categories only. Untagged
+/// targets, in the hook cache or under the work root, are left to
+/// `amplihack cleanup` however old they are.
+#[test]
+fn end_of_run_sweep_leaves_untagged_targets_alone() {
+    let fx = Fx::new();
+    let hook_cache = fx
+        .home
+        .join(".cache/amplihack/amplihack-precommit-target-0123456789ab");
+    fs::create_dir_all(hook_cache.join("debug")).unwrap();
+    fs::write(hook_cache.join("debug/blob"), "x").unwrap();
+    age_tree(&hook_cache, 25);
+    let untagged = fx.target("amplihack-precommit-target-fedcba987654", 64);
+    age_tree(&untagged, 25);
+
+    let out = fx.recipe_run(&success_runner(), |_| {});
+    assert!(out.status.success(), "{}", describe(&out));
+    assert!(hook_cache.join("debug/blob").exists(), "hook cache removed");
+    assert!(
+        untagged.join("debug/blob").exists(),
+        "untagged target removed"
+    );
+}
+
 /// D5: the end-of-run sweep never waits for a held lock and never changes the
 /// run's exit status.
 #[test]
@@ -401,7 +425,7 @@ printf 'WT=%s\nTGT=%s\n' "$wt" "$tgt" >> "$RECORD_DIR/env"
         names.contains("run.json") && names.contains("cleanup-record.json"),
         "{names:?}"
     );
-    let allowed: BTreeSet<String> = ["run.json", "cleanup-record.json", "owned-paths"]
+    let allowed: BTreeSet<String> = ["run.json", "cleanup-record.json"]
         .into_iter()
         .map(String::from)
         .collect();

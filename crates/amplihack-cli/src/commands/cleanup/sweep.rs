@@ -12,7 +12,7 @@ use super::eligibility::{
     run_is_active,
 };
 use super::run_dir::{
-    CLEANUP_RECORD, OwnedKind, OwnedPath, RUN_JSON, RUN_SCHEMA_VERSION, RunReport,
+    CLEANUP_RECORD, OWNED_PATHS, OwnedKind, OwnedPath, RUN_JSON, RUN_SCHEMA_VERSION, RunReport,
     format_owned_line, now_rfc3339, read_capped_nofollow, read_owned_paths, short_id,
     write_atomic_0600,
 };
@@ -36,6 +36,11 @@ const HOOK_TARGET_PREFIX: &str = "amplihack-precommit-target-";
 const TMP_PREFIXES: &[&str] = &["replay-", "release-", "amplihack-workflow-"];
 pub(crate) const END_OF_RUN_DEADLINE: Duration = Duration::from_secs(120);
 const RECORD_MAX_BYTES: u64 = 16 * 1024 * 1024;
+
+/// The end-of-run sweep covers run-owned categories only (D5). Untagged
+/// targets and the rest are left to `amplihack cleanup`.
+pub(crate) const END_OF_RUN_CATEGORIES: [Category; 3] =
+    [Category::RunTmp, Category::RunWorktree, Category::RunTarget];
 
 pub(crate) const REASON_LOCK_HELD: &str = "cleanup lock held";
 pub(crate) const REASON_AWAITING_1766: &str = "awaiting sessions archive (#1766)";
@@ -92,6 +97,8 @@ pub(crate) struct Entry {
     pub run_id: Option<String>,
 }
 
+/// What to do with an item. Every removal names the run folder whose
+/// liveness is checked again at apply time, when the item belongs to a run.
 #[derive(Debug, Clone)]
 enum Op {
     Skip,
@@ -100,10 +107,11 @@ enum Op {
     },
     RemoveWorktree {
         main: PathBuf,
+        run_dir: PathBuf,
     },
     RemoveDir {
+        run_dir: Option<PathBuf>,
         cargo_lock: bool,
-        check_in_use: bool,
     },
     Archive {
         relative: PathBuf,
@@ -113,7 +121,11 @@ enum Op {
 #[derive(Debug, Clone)]
 struct Item {
     category: Category,
+    /// The path as recorded or found; shown in reports.
     path: PathBuf,
+    /// The path resolved at collection. Removal acts on this path only, and
+    /// only while `path` still resolves to it.
+    canonical: PathBuf,
     size_bytes: Option<u64>,
     reason: String,
     run_id: Option<String>,
@@ -130,6 +142,7 @@ impl Item {
         Self {
             category,
             path: path.to_path_buf(),
+            canonical: path.to_path_buf(),
             size_bytes: None,
             reason: reason.into(),
             run_id: run_id.map(String::from),
@@ -138,62 +151,13 @@ impl Item {
     }
 }
 
-// ----- processes ------------------------------------------------------------
+#[path = "execute.rs"]
+mod execute;
+#[path = "procs.rs"]
+mod procs;
 
-/// Working folders and open files of every other process this user can see.
-struct ProcScan {
-    available: bool,
-    paths: Vec<PathBuf>,
-}
-
-impl ProcScan {
-    fn take() -> Self {
-        let Ok(entries) = fs::read_dir("/proc") else {
-            return Self {
-                available: false,
-                paths: Vec::new(),
-            };
-        };
-        let me = std::process::id().to_string();
-        let mut paths = Vec::new();
-        for entry in entries.flatten() {
-            let name = entry.file_name();
-            let Some(name) = name.to_str() else { continue };
-            if name == me || !name.bytes().all(|b| b.is_ascii_digit()) {
-                continue;
-            }
-            let base = entry.path();
-            if let Ok(cwd) = fs::read_link(base.join("cwd")) {
-                paths.push(cwd);
-            }
-            if let Ok(fds) = fs::read_dir(base.join("fd")) {
-                for fd in fds.flatten() {
-                    if let Ok(target) = fs::read_link(fd.path())
-                        && target.is_absolute()
-                    {
-                        paths.push(target);
-                    }
-                }
-            }
-        }
-        Self {
-            available: true,
-            paths,
-        }
-    }
-
-    /// Whether a process has its working folder in `path` or a file open in it.
-    /// Without `/proc`, everything counts as in use.
-    fn in_use(&self, path: &Path) -> bool {
-        if !self.available {
-            return true;
-        }
-        let canonical = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        self.paths
-            .iter()
-            .any(|p| p.starts_with(&canonical) || p.starts_with(path))
-    }
-}
+use execute::{Refusal, execute};
+use procs::ProcScan;
 
 // ----- filesystem helpers ---------------------------------------------------
 
@@ -260,14 +224,16 @@ fn idle_for(path: &Path, now: SystemTime, keep: Duration) -> Option<(Duration, u
     (age >= keep).then_some((age, stats.size))
 }
 
-/// Whether a build holds `.cargo-lock` in `dir` or one level below it.
+/// Whether a build holds `.cargo-lock` in `dir` or one level below it. A
+/// folder that cannot be listed counts as held: a lock below it is unseen.
 fn cargo_lock_held(dir: &Path) -> bool {
     let mut locks = vec![dir.join(".cargo-lock")];
-    if let Ok(rd) = fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            if entry.file_type().is_ok_and(|t| t.is_dir()) {
-                locks.push(entry.path().join(".cargo-lock"));
-            }
+    let Ok(rd) = fs::read_dir(dir) else {
+        return true;
+    };
+    for entry in rd.flatten() {
+        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+            locks.push(entry.path().join(".cargo-lock"));
         }
     }
     locks.iter().any(|lock| lock_is_held(lock))
@@ -410,8 +376,16 @@ struct RunInfo {
     id: String,
     dir: PathBuf,
     report: Result<RunReport, String>,
-    owned: Vec<OwnedPath>,
+    /// `Err` when `owned-paths` exists but cannot be read: the run's items
+    /// are unknown, so nothing it may own is removed.
+    owned: Result<Vec<OwnedPath>, String>,
     run_json_mtime: SystemTime,
+}
+
+impl RunInfo {
+    fn owned(&self) -> &[OwnedPath] {
+        self.owned.as_deref().unwrap_or(&[])
+    }
 }
 
 fn scan_runs(root: &WorkRoot) -> Vec<RunInfo> {
@@ -432,7 +406,7 @@ fn scan_runs(root: &WorkRoot) -> Vec<RunInfo> {
             continue;
         }
         let report = RunReport::read(&dir).map_err(|e| format!("{e:#}"));
-        let owned = read_owned_paths(&dir).unwrap_or_default();
+        let owned = read_owned_paths(&dir).map_err(|e| e.to_string());
         let run_json_mtime = fs::symlink_metadata(dir.join(RUN_JSON))
             .and_then(|m| m.modified())
             .unwrap_or_else(|_| SystemTime::now());
@@ -450,17 +424,42 @@ fn scan_runs(root: &WorkRoot) -> Vec<RunInfo> {
 
 // ----- collection -----------------------------------------------------------
 
-/// Canonical folders under which recorded owned paths may be removed (D9).
+/// Canonical folders under which cleanup may act (D9), worked out from the
+/// settings. Collection and apply each build their own, so a root repointed
+/// in between no longer covers what was collected.
 struct ManagedRoots {
     worktrees: PathBuf,
     targets: PathBuf,
+    runs: PathBuf,
+    short_runtime: PathBuf,
     hook_base: Option<PathBuf>,
+    tmp: PathBuf,
+}
+
+impl ManagedRoots {
+    fn new(s: &Settings) -> Self {
+        let root = &s.work_root;
+        Self {
+            worktrees: canonical_or_self(&root.worktrees_dir()),
+            targets: canonical_or_self(&root.targets_dir()),
+            runs: canonical_or_self(&root.runs_dir()),
+            short_runtime: canonical_or_self(&root.short_runtime_dir()),
+            hook_base: s.hook_cache_base.as_deref().map(canonical_or_self),
+            tmp: canonical_or_self(&std::env::temp_dir()),
+        }
+    }
+}
+
+fn has_prefix(path: &Path, prefixes: &[&str]) -> bool {
+    path.file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| prefixes.iter().any(|p| n.starts_with(p)))
 }
 
 /// True when the canonical `path` of an owned item lies where cleanup may
 /// act: a target directly under `<work root>/targets/` or a hook cache
-/// folder, a worktree under `<work root>/worktrees/<repo>/` or the run's
-/// `<main>/worktrees/`.
+/// folder, a worktree under `<work root>/worktrees/<repo>/` or under
+/// `<main>/worktrees/`, where `main` is the worktree's own main checkout.
 fn is_contained(kind: OwnedKind, path: &Path, roots: &ManagedRoots, main: Option<&Path>) -> bool {
     match kind {
         OwnedKind::Target => {
@@ -468,10 +467,7 @@ fn is_contained(kind: OwnedKind, path: &Path, roots: &ManagedRoots, main: Option
             parent == Some(roots.targets.as_path())
                 || (parent.is_some()
                     && parent == roots.hook_base.as_deref()
-                    && path
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .is_some_and(|n| n.starts_with(HOOK_TARGET_PREFIX)))
+                    && has_prefix(path, &[HOOK_TARGET_PREFIX]))
         }
         OwnedKind::Worktree => {
             let under_work = path
@@ -486,8 +482,17 @@ fn is_contained(kind: OwnedKind, path: &Path, roots: &ManagedRoots, main: Option
     }
 }
 
+/// An owned path that passed the symlink, folder and containment checks.
+struct Candidate<'a> {
+    owned: &'a OwnedPath,
+    canonical: PathBuf,
+    /// For a worktree: its main checkout, from its own git common dir.
+    main: Option<PathBuf>,
+}
+
 struct Collector<'a> {
     s: &'a Settings,
+    roots: ManagedRoots,
     now: SystemTime,
     /// Taken on first use: most categories never ask.
     procs: Option<ProcScan>,
@@ -519,7 +524,8 @@ impl Collector<'_> {
         value
     }
 
-    /// The git common dir of the folder the run started in, if it still exists.
+    /// The git common dir of the folder the run started in, if it still
+    /// exists. Used only to list unrecorded worktrees, which are never removed.
     fn report_common_dir(&mut self, report: &RunReport) -> Option<PathBuf> {
         let cwd = PathBuf::from(&report.cwd);
         if report.cwd.is_empty() || !is_real_dir(&cwd) {
@@ -548,34 +554,24 @@ impl Collector<'_> {
         value
     }
 
-    /// The run-level verdict for an inactive run.
-    fn run_verdict(&mut self, run: &RunInfo, report: &RunReport) -> Verdict {
-        let branch = run
-            .owned
-            .iter()
-            .filter(|o| o.kind == OwnedKind::Worktree)
-            .find_map(|o| o.branch.clone());
-        let Some(branch) = branch else {
+    /// The verdict for one contained, linked worktree of an inactive run,
+    /// from its own branch. The PR is looked up in the worktree itself, never
+    /// in a folder named only by `run.json`.
+    fn worktree_verdict(
+        &mut self,
+        c: &Candidate<'_>,
+        run: &RunInfo,
+        report: &RunReport,
+    ) -> Verdict {
+        let Some(branch) = c.owned.branch.as_deref() else {
             return self.no_pr(report, run);
         };
-        if !is_valid_branch(&branch) {
+        if !is_valid_branch(branch) {
             return Verdict::Skip {
                 reason: format!("recorded branch {branch:?} is not a valid branch name"),
             };
         }
-        let repo_dir = run
-            .owned
-            .iter()
-            .filter(|o| o.kind == OwnedKind::Worktree && is_real_dir(&o.path))
-            .map(|o| o.path.clone())
-            .next()
-            .or_else(|| Some(PathBuf::from(&report.cwd)).filter(|p| is_real_dir(p)));
-        let Some(repo_dir) = repo_dir else {
-            return Verdict::Skip {
-                reason: "no repository folder left to look up the PR in".to_string(),
-            };
-        };
-        match self.pr_for(&branch, &repo_dir) {
+        match self.pr_for(branch, &c.canonical) {
             Ok(Some(pr)) => pr_verdict(&pr, Utc::now(), self.s.keep),
             Ok(None) => self.no_pr(report, run),
             Err(error) => Verdict::Skip {
@@ -593,6 +589,51 @@ impl Collector<'_> {
         no_pr_verdict(ended, run.run_json_mtime, self.now, self.s.keep)
     }
 
+    /// Symlink, folder, containment and (for worktrees) linked-worktree
+    /// checks. `Err` is the skip reason.
+    fn check_owned<'o>(&mut self, o: &'o OwnedPath) -> Result<Candidate<'o>, String> {
+        let meta = fs::symlink_metadata(&o.path).map_err(|e| e.to_string())?;
+        if meta.file_type().is_symlink() {
+            return Err("symbolic link; not followed".into());
+        }
+        if !meta.file_type().is_dir() {
+            return Err("not a folder".into());
+        }
+        let canonical = fs::canonicalize(&o.path).map_err(|e| format!("cannot resolve: {e}"))?;
+        let outside = || "outside the folders cleanup manages".to_string();
+        match o.kind {
+            OwnedKind::Target => {
+                if !is_contained(o.kind, &canonical, &self.roots, None) {
+                    return Err(outside());
+                }
+                Ok(Candidate {
+                    owned: o,
+                    canonical,
+                    main: None,
+                })
+            }
+            OwnedKind::Worktree => {
+                let common = self.common_dir(&canonical).ok_or("not a git worktree")?;
+                let main = main_checkout(&common).ok_or("repository has no main checkout")?;
+                if !is_contained(o.kind, &canonical, &self.roots, Some(&main)) {
+                    return Err(outside());
+                }
+                let list = self.worktrees_of(&main)?;
+                if list.first() == Some(&canonical) {
+                    return Err("the main checkout is never removed".into());
+                }
+                if !list.iter().skip(1).any(|p| *p == canonical) {
+                    return Err("not a linked worktree".into());
+                }
+                Ok(Candidate {
+                    owned: o,
+                    canonical,
+                    main: Some(main),
+                })
+            }
+        }
+    }
+
     fn collect_runs(&mut self, runs: &[RunInfo]) {
         let want_tmp = self.wants(Category::RunTmp);
         let want_wt = self.wants(Category::RunWorktree);
@@ -601,36 +642,46 @@ impl Collector<'_> {
             return;
         }
         let root = self.s.work_root.clone();
-        let roots = ManagedRoots {
-            worktrees: canonical_or_self(&root.worktrees_dir()),
-            targets: canonical_or_self(&root.targets_dir()),
-            hook_base: self.s.hook_cache_base.as_deref().map(canonical_or_self),
-        };
 
         for run in runs {
             if self.past_deadline() {
                 break;
             }
             let id = run.id.as_str();
+            if let Err(error) = &run.owned
+                && (want_wt || want_tgt)
+            {
+                let category = if want_wt {
+                    Category::RunWorktree
+                } else {
+                    Category::RunTarget
+                };
+                self.items.push(Item::skip(
+                    category,
+                    &run.dir.join(OWNED_PATHS),
+                    format!("owned-paths unreadable: {error}"),
+                    Some(id),
+                ));
+            }
             let runtime_dirs = [
                 run.dir.join("runtime"),
                 root.short_runtime_dir().join(short_id(id)),
             ];
             let existing: Vec<&OwnedPath> = {
                 let mut seen = BTreeSet::new();
-                run.owned
+                run.owned()
                     .iter()
                     .filter(|o| fs::symlink_metadata(&o.path).is_ok())
                     .filter(|o| seen.insert(o.path.clone()))
-                    .filter(|o| match o.kind {
-                        OwnedKind::Worktree => want_wt,
-                        OwnedKind::Target => want_tgt,
-                    })
                     .collect()
             };
             let category_of = |o: &OwnedPath| match o.kind {
                 OwnedKind::Worktree => Category::RunWorktree,
                 OwnedKind::Target => Category::RunTarget,
+            };
+            let wanted = |o: &OwnedPath| match o.kind {
+                OwnedKind::Worktree => want_wt,
+                OwnedKind::Target => want_tgt,
             };
 
             let report = match &run.report {
@@ -644,7 +695,7 @@ impl Collector<'_> {
             let report = match report {
                 Ok(report) => report,
                 Err(reason) => {
-                    for o in &existing {
+                    for o in existing.iter().filter(|o| wanted(o)) {
                         self.items
                             .push(Item::skip(category_of(o), &o.path, &reason, Some(id)));
                     }
@@ -671,6 +722,7 @@ impl Collector<'_> {
                         self.items.push(Item {
                             category: Category::RunTmp,
                             path: dir.clone(),
+                            canonical: canonical_or_self(dir),
                             size_bytes: tree_size(dir),
                             reason: reason.to_string(),
                             run_id: Some(id.to_string()),
@@ -684,81 +736,112 @@ impl Collector<'_> {
             if existing.is_empty() {
                 continue;
             }
+            if active {
+                for o in existing.iter().filter(|o| wanted(o)) {
+                    self.items.push(Item::skip(
+                        category_of(o),
+                        &o.path,
+                        "run is active",
+                        Some(id),
+                    ));
+                }
+                continue;
+            }
 
-            let run_main = self.report_common_dir(&report);
-            let mut verdict: Option<Verdict> = active.then_some(Verdict::Active);
-            for o in existing {
-                let category = category_of(o);
-                let meta = match fs::symlink_metadata(&o.path) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-                if meta.file_type().is_symlink() {
-                    self.items.push(Item::skip(
-                        category,
-                        &o.path,
-                        "symbolic link; not followed",
-                        Some(id),
-                    ));
-                    continue;
-                }
-                if !meta.file_type().is_dir() {
-                    self.items
-                        .push(Item::skip(category, &o.path, "not a folder", Some(id)));
-                    continue;
-                }
-                let canonical = canonical_or_self(&o.path);
-                let main = run_main.as_deref().and_then(main_checkout);
-                if !is_contained(o.kind, &canonical, &roots, main.as_deref()) {
-                    self.items.push(Item::skip(
-                        category,
-                        &o.path,
-                        "outside the folders cleanup manages",
-                        Some(id),
-                    ));
-                    continue;
-                }
-                let v = match &verdict {
-                    Some(v) => v.clone(),
-                    None => {
-                        let v = self.run_verdict(run, &report);
-                        verdict = Some(v.clone());
-                        v
+            // Every existing path is checked, wanted or not: a worktree that
+            // cannot be checked keeps the run's targets.
+            let mut candidates = Vec::new();
+            let mut unknown_worktree: Option<String> = None;
+            for o in &existing {
+                match self.check_owned(o) {
+                    Ok(c) => candidates.push(c),
+                    Err(reason) => {
+                        if o.kind == OwnedKind::Worktree && unknown_worktree.is_none() {
+                            unknown_worktree = Some(format!(
+                                "PR state unknown: worktree {} of this run was not checked ({reason})",
+                                o.path.display()
+                            ));
+                        }
+                        if wanted(o) {
+                            self.items
+                                .push(Item::skip(category_of(o), &o.path, reason, Some(id)));
+                        }
                     }
-                };
-                let reason = match v {
-                    Verdict::Eligible { reason } => reason,
+                }
+            }
+
+            // One verdict per worktree, from its own branch (D6).
+            let mut verdicts: Vec<Verdict> = Vec::new();
+            for c in candidates
+                .iter()
+                .filter(|c| c.owned.kind == OwnedKind::Worktree)
+            {
+                let v = self.worktree_verdict(c, run, &report);
+                verdicts.push(v.clone());
+                if !want_wt {
+                    continue;
+                }
+                let item = match v {
+                    Verdict::Eligible { reason } => self.worktree_item(c, &run.dir, reason, id),
                     Verdict::Skip { reason } => {
-                        self.items
-                            .push(Item::skip(category, &o.path, reason, Some(id)));
-                        continue;
-                    }
-                    Verdict::Active => {
-                        self.items
-                            .push(Item::skip(category, &o.path, "run is active", Some(id)));
-                        continue;
+                        Item::skip(Category::RunWorktree, &c.owned.path, reason, Some(id))
                     }
                 };
-                let item = match o.kind {
-                    OwnedKind::Target => {
-                        if cargo_lock_held(&o.path) {
-                            Item::skip(category, &o.path, "in use: .cargo-lock is held", Some(id))
+                self.items.push(item);
+            }
+            if !want_tgt {
+                continue;
+            }
+
+            // A run's targets go only when every worktree it still has may go.
+            // With no worktree left, the no-PR rule dates them from the run.
+            let target_verdict = if let Some(reason) = unknown_worktree {
+                Verdict::Skip { reason }
+            } else if let Some(Verdict::Skip { reason }) = verdicts
+                .iter()
+                .find(|v| !matches!(v, Verdict::Eligible { .. }))
+            {
+                Verdict::Skip {
+                    reason: format!("a worktree of this run is kept: {reason}"),
+                }
+            } else if let Some(Verdict::Eligible { reason }) = verdicts.first() {
+                Verdict::Eligible {
+                    reason: reason.clone(),
+                }
+            } else {
+                self.no_pr(&report, run)
+            };
+            for c in candidates
+                .iter()
+                .filter(|c| c.owned.kind == OwnedKind::Target)
+            {
+                let path = &c.owned.path;
+                let item = match &target_verdict {
+                    Verdict::Eligible { reason } => {
+                        if cargo_lock_held(&c.canonical) {
+                            Item::skip(
+                                Category::RunTarget,
+                                path,
+                                "in use: .cargo-lock is held",
+                                Some(id),
+                            )
                         } else {
                             Item {
-                                category,
-                                path: o.path.clone(),
-                                size_bytes: tree_size(&o.path),
-                                reason,
+                                category: Category::RunTarget,
+                                path: path.clone(),
+                                canonical: c.canonical.clone(),
+                                size_bytes: tree_size(&c.canonical),
+                                reason: reason.clone(),
                                 run_id: Some(id.to_string()),
                                 op: Op::RemoveDir {
+                                    run_dir: Some(run.dir.clone()),
                                     cargo_lock: true,
-                                    check_in_use: true,
                                 },
                             }
                         }
                     }
-                    OwnedKind::Worktree => {
-                        self.worktree_item(o, &canonical, run_main.as_deref(), reason, id)
+                    Verdict::Skip { reason } => {
+                        Item::skip(Category::RunTarget, path, reason, Some(id))
                     }
                 };
                 self.items.push(item);
@@ -768,66 +851,36 @@ impl Collector<'_> {
 
     fn worktree_item(
         &mut self,
-        o: &OwnedPath,
-        canonical: &Path,
-        run_common: Option<&Path>,
+        c: &Candidate<'_>,
+        run_dir: &Path,
         reason: String,
         id: &str,
     ) -> Item {
         let category = Category::RunWorktree;
-        let Some(own_common) = self.common_dir(&o.path) else {
-            return Item::skip(category, &o.path, "not a git worktree", Some(id));
+        let path = &c.owned.path;
+        let Some(main) = c.main.clone() else {
+            return Item::skip(category, path, "repository has no main checkout", Some(id));
         };
-        if let Some(run_common) = run_common
-            && run_common != own_common
-        {
-            return Item::skip(
-                category,
-                &o.path,
-                "belongs to a different repository than the run",
-                Some(id),
-            );
+        if git_has_dirty_state(&c.canonical) {
+            return Item::skip(category, path, "has uncommitted changes", Some(id));
         }
-        let Some(main) = main_checkout(&own_common) else {
-            return Item::skip(
-                category,
-                &o.path,
-                "repository has no main checkout",
-                Some(id),
-            );
-        };
-        match self.worktrees_of(&main) {
-            Ok(list) => {
-                if list.first().map(PathBuf::as_path) == Some(canonical) {
-                    return Item::skip(
-                        category,
-                        &o.path,
-                        "the main checkout is never removed",
-                        Some(id),
-                    );
-                }
-                if !list.iter().skip(1).any(|p| p == canonical) {
-                    return Item::skip(category, &o.path, "not a linked worktree", Some(id));
-                }
-            }
-            Err(error) => return Item::skip(category, &o.path, error, Some(id)),
+        if git_has_unpushed_commits(&c.canonical) {
+            return Item::skip(category, path, "has unpushed commits", Some(id));
         }
-        if git_has_dirty_state(&o.path) {
-            return Item::skip(category, &o.path, "has uncommitted changes", Some(id));
-        }
-        if git_has_unpushed_commits(&o.path) {
-            return Item::skip(category, &o.path, "has unpushed commits", Some(id));
-        }
-        if self.in_use(&o.path) {
-            return Item::skip(category, &o.path, "in use by a running process", Some(id));
+        if self.in_use(&c.canonical) {
+            return Item::skip(category, path, "in use by a running process", Some(id));
         }
         Item {
             category,
-            path: o.path.clone(),
-            size_bytes: tree_size(&o.path),
+            path: path.clone(),
+            canonical: c.canonical.clone(),
+            size_bytes: tree_size(&c.canonical),
             reason,
             run_id: Some(id.to_string()),
-            op: Op::RemoveWorktree { main },
+            op: Op::RemoveWorktree {
+                main,
+                run_dir: run_dir.to_path_buf(),
+            },
         }
     }
 
@@ -837,7 +890,7 @@ impl Collector<'_> {
         }
         let recorded: BTreeSet<PathBuf> = runs
             .iter()
-            .flat_map(|r| r.owned.iter())
+            .flat_map(|r| r.owned().iter())
             .filter(|o| o.kind == OwnedKind::Worktree)
             .flat_map(|o| [o.path.clone(), canonical_or_self(&o.path)])
             .collect();
@@ -876,10 +929,15 @@ impl Collector<'_> {
         }
         let recorded: BTreeSet<PathBuf> = runs
             .iter()
-            .flat_map(|r| r.owned.iter())
+            .flat_map(|r| r.owned().iter())
             .filter(|o| o.kind == OwnedKind::Target)
             .flat_map(|o| [o.path.clone(), canonical_or_self(&o.path)])
             .collect();
+        // A run whose owned-paths cannot be read may own any of these.
+        let unreadable = runs
+            .iter()
+            .find(|r| r.owned.is_err())
+            .map(|r| format!("owned-paths of run {} unreadable; it may own this", r.id));
         let mut candidates = Vec::new();
         let targets = self.s.work_root.targets_dir();
         if is_real_dir(&targets)
@@ -892,11 +950,11 @@ impl Collector<'_> {
             && canonical_or_self(base) != canonical_or_self(&targets)
             && let Ok(rd) = fs::read_dir(base)
         {
-            candidates.extend(rd.flatten().map(|e| e.path()).filter(|p| {
-                p.file_name()
-                    .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.starts_with(HOOK_TARGET_PREFIX))
-            }));
+            candidates.extend(
+                rd.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| has_prefix(p, &[HOOK_TARGET_PREFIX])),
+            );
         }
         candidates.sort();
         for path in candidates {
@@ -912,6 +970,11 @@ impl Collector<'_> {
             let Some((age, size)) = idle_for(&path, self.now, self.s.keep) else {
                 continue;
             };
+            if let Some(reason) = &unreadable {
+                self.items
+                    .push(Item::skip(Category::UntaggedTarget, &path, reason, None));
+                continue;
+            }
             if cargo_lock_held(&path) {
                 self.items.push(Item::skip(
                     Category::UntaggedTarget,
@@ -923,6 +986,7 @@ impl Collector<'_> {
             }
             self.items.push(Item {
                 category: Category::UntaggedTarget,
+                canonical: canonical_or_self(&path),
                 size_bytes: Some(size),
                 reason: format!(
                     "not recorded by any run; untouched for {} hours{}",
@@ -936,8 +1000,8 @@ impl Collector<'_> {
                 path,
                 run_id: None,
                 op: Op::RemoveDir {
+                    run_dir: None,
                     cargo_lock: true,
-                    check_in_use: true,
                 },
             });
         }
@@ -986,13 +1050,14 @@ impl Collector<'_> {
             }
             self.items.push(Item {
                 category: Category::TmpLeftover,
+                canonical: canonical_or_self(&path),
                 size_bytes: Some(size),
                 reason: format!("untouched for {} hours", age.as_secs() / 3600),
                 path,
                 run_id: None,
                 op: Op::RemoveDir {
+                    run_dir: None,
                     cargo_lock: false,
-                    check_in_use: true,
                 },
             });
         }
@@ -1026,6 +1091,7 @@ impl Collector<'_> {
                 };
                 self.items.push(Item {
                     category,
+                    canonical: path.clone(),
                     size_bytes: Some(meta.len()),
                     reason: format!("modified {} days ago", age.as_secs() / 86_400),
                     run_id: None,
@@ -1058,6 +1124,7 @@ fn collect(settings: &Settings) -> Vec<Item> {
     let runs = scan_runs(&settings.work_root);
     let mut c = Collector {
         s: settings,
+        roots: ManagedRoots::new(settings),
         now: SystemTime::now(),
         procs: None,
         gh_cache: HashMap::new(),
@@ -1075,82 +1142,13 @@ fn collect(settings: &Settings) -> Vec<Item> {
 
 // ----- apply ----------------------------------------------------------------
 
-fn remove_real_dir(path: &Path, expected: &Path) -> Result<()> {
-    let meta = fs::symlink_metadata(path).with_context(|| format!("{} is gone", path.display()))?;
-    if meta.file_type().is_symlink() || !meta.file_type().is_dir() {
-        bail!("{} is no longer a real folder", path.display());
-    }
-    if canonical_or_self(path) != expected {
-        bail!("{} now resolves somewhere else", path.display());
-    }
-    fs::remove_dir_all(path).with_context(|| format!("cannot remove {}", path.display()))
-}
-
-fn execute(item: &Item, settings: &Settings, procs: &ProcScan) -> Result<()> {
-    let expected = canonical_or_self(&item.path);
-    match &item.op {
-        Op::Skip => Ok(()),
-        Op::RemoveRunTmp { run_dir } => {
-            if let Ok(report) = RunReport::read(run_dir)
-                && run_is_active(&report)
-            {
-                bail!("the run became active");
-            }
-            remove_real_dir(&item.path, &expected)
-        }
-        Op::RemoveDir {
-            cargo_lock,
-            check_in_use,
-        } => {
-            if *cargo_lock && cargo_lock_held(&item.path) {
-                bail!("in use: .cargo-lock is held");
-            }
-            if *check_in_use && procs.in_use(&item.path) {
-                bail!("in use by a running process");
-            }
-            remove_real_dir(&item.path, &expected)
-        }
-        Op::RemoveWorktree { main } => {
-            let meta = fs::symlink_metadata(&item.path)?;
-            if meta.file_type().is_symlink() {
-                bail!("{} became a symbolic link", item.path.display());
-            }
-            if git_has_dirty_state(&item.path) {
-                bail!("has uncommitted changes");
-            }
-            if git_has_unpushed_commits(&item.path) {
-                bail!("has unpushed commits");
-            }
-            if procs.in_use(&item.path) {
-                bail!("in use by a running process");
-            }
-            let mut command = hardened_git();
-            command
-                .arg("-C")
-                .arg(main)
-                .args(["worktree", "remove", "--"])
-                .arg(&item.path);
-            let output = crate::util::run_output_with_timeout(command, GIT_TIMEOUT)?;
-            if !output.status.success() {
-                bail!(
-                    "git worktree remove failed: {}",
-                    sanitized_stderr_short(&output.stderr)
-                );
-            }
-            Ok(())
-        }
-        Op::Archive { relative } => {
-            archive_file(&item.path, &settings.archive_dir, relative).map(|_| ())
-        }
-    }
-}
-
 /// Turns collected items into report entries, acting on them when
 /// `settings.apply` and the lock is held.
 fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry> {
     // Taken just before the first action, so it is fresh and skipped when
     // nothing is acted on (the usual end-of-run case).
     let mut procs: Option<ProcScan> = None;
+    let roots = ManagedRoots::new(settings);
     let mut entries = Vec::with_capacity(items.len());
     for item in items {
         let archive = matches!(item.op, Op::Archive { .. });
@@ -1162,9 +1160,15 @@ fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry
             (_, true) if settings.deadline.is_some_and(|d| Instant::now() >= d) => {
                 (Action::Skipped, "sweep deadline reached".to_string())
             }
-            (_, true) => match execute(&item, settings, procs.get_or_insert_with(ProcScan::take)) {
+            (_, true) => match execute(
+                &item,
+                settings,
+                &roots,
+                procs.get_or_insert_with(ProcScan::take),
+            ) {
                 Ok(()) if archive => (Action::Archived, item.reason.clone()),
                 Ok(()) => (Action::Removed, item.reason.clone()),
+                Err(error) if error.is::<Refusal>() => (Action::Skipped, format!("{error:#}")),
                 Err(error) => {
                     tracing::warn!(path = %item.path.display(), error = %format!("{error:#}"), "cleanup action failed");
                     (Action::Failed, format!("{error:#}"))
@@ -1239,17 +1243,37 @@ fn write_records(entries: &[Entry], root: &WorkRoot) {
     }
 }
 
+/// Appends one sweep to the run's `cleanup-record.json`. A missing record
+/// starts empty; one that cannot be parsed is renamed aside with a warning so
+/// its history is kept; any other read error is returned.
 fn write_record(run_dir: &Path, id: &str, list: &[&Entry]) -> Result<()> {
     let path = run_dir.join(CLEANUP_RECORD);
+    let empty = || CleanupRecord {
+        run_id: id.to_string(),
+        sweeps: Vec::new(),
+    };
     let mut record = match read_capped_nofollow(&path, RECORD_MAX_BYTES) {
-        Ok(bytes) => serde_json::from_slice::<CleanupRecord>(&bytes).unwrap_or(CleanupRecord {
-            run_id: id.to_string(),
-            sweeps: Vec::new(),
-        }),
-        Err(_) => CleanupRecord {
-            run_id: id.to_string(),
-            sweeps: Vec::new(),
+        Ok(bytes) => match serde_json::from_slice::<CleanupRecord>(&bytes) {
+            Ok(record) => record,
+            Err(error) => {
+                let aside = run_dir.join(format!(
+                    "{CLEANUP_RECORD}.corrupt-{}",
+                    Utc::now().format("%Y%m%dT%H%M%S%.fZ")
+                ));
+                fs::rename(&path, &aside)
+                    .with_context(|| format!("cannot move unreadable {} aside", path.display()))?;
+                eprintln!(
+                    "amplihack cleanup: warning: {} could not be parsed ({error}); kept as {} and a new record started",
+                    path.display(),
+                    aside.display()
+                );
+                empty()
+            }
         },
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => empty(),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot read {}", path.display()));
+        }
     };
     record.run_id = id.to_string();
     let item = |e: &Entry, with_reason: bool| RecordItem {
@@ -1276,6 +1300,8 @@ fn write_record(run_dir: &Path, id: &str, list: &[&Entry]) -> Result<()> {
     write_atomic_0600(&path, &bytes)
 }
 
+/// Drops paths that no longer exist from `owned-paths`, and removes the file
+/// when nothing is left.
 fn prune_owned_paths(run_dir: &Path) -> Result<()> {
     let owned = read_owned_paths(run_dir)?;
     let mut out = Vec::new();
@@ -1285,7 +1311,15 @@ fn prune_owned_paths(run_dir: &Path) -> Result<()> {
     {
         out.extend(format_owned_line(item));
     }
-    write_atomic_0600(&run_dir.join(super::run_dir::OWNED_PATHS), &out)
+    let file = run_dir.join(OWNED_PATHS);
+    if out.is_empty() {
+        return match fs::remove_file(&file) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error).with_context(|| format!("cannot remove {}", file.display())),
+        };
+    }
+    write_atomic_0600(&file, &out)
 }
 
 // ----- entry points ---------------------------------------------------------
@@ -1331,14 +1365,7 @@ fn end_of_run_inner(work_root: &WorkRoot) -> Result<()> {
         keep: Duration::from_secs(keep * 3600),
         log_age: Duration::MAX,
         archive_dir: work_root.path.join("archive"),
-        categories: [
-            Category::RunTmp,
-            Category::RunWorktree,
-            Category::RunTarget,
-            Category::UntaggedTarget,
-        ]
-        .into_iter()
-        .collect(),
+        categories: END_OF_RUN_CATEGORIES.into_iter().collect(),
         apply: true,
         report_unrecorded: false,
         deadline: Some(Instant::now() + END_OF_RUN_DEADLINE),
@@ -1363,3 +1390,7 @@ fn end_of_run_inner(work_root: &WorkRoot) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "tests_sweep.rs"]
+mod tests;

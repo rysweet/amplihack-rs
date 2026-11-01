@@ -16,7 +16,6 @@ const GH_MAX_STDOUT: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Verdict {
-    Active,
     Eligible { reason: String },
     Skip { reason: String },
 }
@@ -200,6 +199,7 @@ pub(crate) fn lookup_pr(branch: &str, repo_dir: &Path) -> Result<Option<PrInfo>>
         .stdin(std::process::Stdio::null())
         .env("GH_PROMPT_DISABLED", "1")
         .env("GH_NO_UPDATE_NOTIFIER", "1");
+    harden_git_env(&mut command);
     let output = crate::util::run_output_with_timeout_limited(command, GH_TIMEOUT, GH_MAX_STDOUT)
         .map_err(|error| anyhow::anyhow!("{}", first_line(&format!("{error:#}"))))?;
     if !output.status.success() {
@@ -213,6 +213,21 @@ pub(crate) fn lookup_pr(branch: &str, repo_dir: &Path) -> Result<Option<PrInfo>>
         );
     }
     parse_pr_list(&output.stdout)
+}
+
+/// The git settings `hardened_git` passes with `-c`, as environment for a
+/// child (`gh`) that runs git itself in `repo_dir`: no system config, no
+/// prompts, no fsmonitor and no hooks.
+pub(crate) fn harden_git_env(command: &mut Command) {
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_CONFIG_COUNT", "2")
+        .env("GIT_CONFIG_KEY_0", "core.fsmonitor")
+        .env("GIT_CONFIG_VALUE_0", "false")
+        .env("GIT_CONFIG_KEY_1", "core.hooksPath")
+        .env("GIT_CONFIG_VALUE_1", "/dev/null");
 }
 
 fn first_line(text: &str) -> String {

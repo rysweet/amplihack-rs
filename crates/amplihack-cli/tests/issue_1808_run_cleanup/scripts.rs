@@ -139,6 +139,72 @@ fn hook_ignores_relative_work_root() {
     assert!(!fx.repo.join("relative").exists());
 }
 
+/// P1-6: the hook uses `AMPLIHACK_WORK_ROOT` only when it already exists as
+/// a private folder of this user that is neither `/` nor `$HOME`; otherwise
+/// it falls back to the XDG path and creates nothing under the root.
+#[test]
+fn hook_falls_back_to_xdg_for_unusable_work_roots() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new();
+    let missing = fx.root.join("missing-root");
+    let group_writable = fx.root.join("gw-root");
+    fs::create_dir_all(&group_writable).unwrap();
+    fs::set_permissions(&group_writable, fs::Permissions::from_mode(0o770)).unwrap();
+    let home = fx.home.display().to_string();
+    let cases = [
+        missing.display().to_string(),
+        group_writable.display().to_string(),
+        "/".to_string(),
+        home,
+    ];
+    for root in &cases {
+        let (target, _) = hook_target(&fx, &[], &[("AMPLIHACK_WORK_ROOT", root)]);
+        assert_eq!(
+            target.parent(),
+            Some(fx.home.join(".cache/amplihack").as_path()),
+            "{root}"
+        );
+    }
+    assert!(!missing.exists(), "the hook must not create the work root");
+    assert!(!group_writable.join("targets").exists());
+    assert!(!fx.home.join("targets").exists());
+}
+
+/// P1-6: `targets/` under a usable work root is created private (0700).
+#[test]
+fn hook_creates_targets_folder_private() {
+    let fx = Fx::new();
+    let (target, _) = hook_target(&fx, &[("AMPLIHACK_WORK_ROOT", &fx.work)], &[]);
+    assert_eq!(target.parent(), Some(fx.work.join("targets").as_path()));
+    assert_eq!(mode_of(&fx.work.join("targets")), 0o700);
+}
+
+/// P1-5: when the ownership record cannot be written the hook still runs the
+/// build but says so on stderr.
+#[test]
+fn hook_warns_when_ownership_cannot_be_recorded() {
+    let fx = Fx::new();
+    let run_id = uuid::Uuid::new_v4().to_string();
+    let run_dir = fx.work.join("runs").join(&run_id);
+    mkdir_0700(&run_dir.join("owned-paths"));
+    let (target, out) = hook_target(
+        &fx,
+        &[
+            ("AMPLIHACK_WORK_ROOT", &fx.work),
+            ("AMPLIHACK_RUN_DIR", &run_dir),
+        ],
+        &[("AMPLIHACK_RUN_ID", &run_id)],
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "amplihack: warning: could not record cache ownership for {}",
+            target.display()
+        )),
+        "{stderr}"
+    );
+}
+
 /// The bash suite for the worktree base and the owned-path recorder.
 #[test]
 fn worktree_base_and_owned_path_recorder_bash_suite() {

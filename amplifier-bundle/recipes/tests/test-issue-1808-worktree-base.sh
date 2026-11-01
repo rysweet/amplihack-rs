@@ -97,6 +97,25 @@ AMPLIHACK_WORK_ROOT="$ROOT" AMPLIHACK_WORK_ROOT_EXPLICIT=1 \
     bash "$ROOT_HELPER" assert-not-nested "$CAND" "$MAIN" >/dev/null 2>&1; rc=$?
 check B10 "assert-not-nested accepts the external base" test "$rc" = 0
 
+echo "workflow_branch_name.sh under an explicit work root"
+
+BRANCH_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_branch_name.sh"
+REUSE_ROOT="$WORK/reuse-root"
+mkdir -p "$REUSE_ROOT"
+REUSE_BASE="$(AMPLIHACK_WORK_ROOT="$REUSE_ROOT" AMPLIHACK_WORK_ROOT_EXPLICIT=1 base "$MAIN" 2>/dev/null)"
+mkdir -p "$REUSE_BASE/feat"
+git -C "$MAIN" worktree add -q -b feat/reuse-1808 "$REUSE_BASE/feat/reuse-1808"
+branch_explicit() {
+    TASK_DESCRIPTION="Branch: feat/reuse-1808" AMPLIHACK_WORK_ROOT="$REUSE_ROOT" \
+        AMPLIHACK_WORK_ROOT_EXPLICIT="$1" \
+        bash "$BRANCH_HELPER" explicit --repo-path "$MAIN" --main-repo "$MAIN"
+}
+out="$(branch_explicit 1 2>/dev/null)"; rc=$?
+check N1 "a re-run under an explicit work root reuses its own worktree" \
+    test "$rc" = 0 -a "$out" = "feat/reuse-1808"
+branch_explicit 0 >/dev/null 2>&1; rc=$?
+check N2 "the same worktree is another session's without the explicit root" test "$rc" = 3
+
 echo "amplihack_run_owned.sh record"
 
 if [[ ! -f "$RECORDER" ]]; then

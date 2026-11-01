@@ -378,3 +378,7 @@ fn run_restore(path: &Path, dest: Option<&Path>) -> Result<bool> {
 pub(crate) fn cleanup_on_exit_enabled() -> bool {
     std::env::var(CLEANUP_ON_EXIT_ENV).map_or(true, |v| v.trim() != "0")
 }
+
+#[cfg(test)]
+#[path = "tests_cli.rs"]
+mod tests_cli;
