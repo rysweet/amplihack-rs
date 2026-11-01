@@ -423,10 +423,16 @@ fn session_reset(v: Value) -> UsageWindow {
 
 #[test]
 fn a_reset_that_is_not_text_leaves_both_fields_out() {
-    for v in [json!(1_792_170_000), json!(null), json!({}), json!(true)] {
+    // A `resets_at` that is present and not `null` is evidence of a session
+    // window (issue #1818), so the window is kept with no reset.
+    for v in [json!(1_792_170_000), json!({}), json!(true), json!("")] {
         let s = session_reset(v.clone());
         assert_eq!((s.resets_text, s.resets_at), (None, None), "{v}");
     }
+    // A `null` or absent `resets_at` means no session limit: no window.
+    let r = with(|p| limits(p)["five_hour"]["resets_at"] = json!(null)).unwrap();
+    assert_eq!(r.session, None);
+    assert!(!r.session_limit);
     let r = with(|p| {
         limits(p)["five_hour"]
             .as_object_mut()
@@ -434,8 +440,8 @@ fn a_reset_that_is_not_text_leaves_both_fields_out() {
             .remove("resets_at");
     })
     .unwrap();
-    let s = r.session.unwrap();
-    assert_eq!((s.resets_text, s.resets_at), (None, None));
+    assert_eq!(r.session, None);
+    assert!(!r.session_limit);
 }
 
 #[test]
@@ -518,4 +524,178 @@ fn model_scoped_that_is_not_a_list_gives_no_entries() {
         let r = with(|p| limits(p)["model_scoped"] = v.clone()).unwrap();
         assert!(r.week_models.is_empty(), "{v}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1818: no session limit
+// ---------------------------------------------------------------------------
+//
+// `session_limit` is `false` only when `seven_day` gives a window and
+// `five_hour` is absent, or has `resets_at` absent or `null`. The check is on
+// the raw key, never on the cleaned reset text, so a `resets_at` that is
+// present but malformed, empty, too long or unsafe keeps the limit (S1).
+
+/// The #1818 invariants (I1 to I3).
+fn assert_invariants(r: &UsageReport) {
+    if !r.session_limit {
+        assert!(r.session.is_none(), "I1: {r:?}");
+        assert!(r.week_all.is_some(), "I1: {r:?}");
+        assert!(
+            matches!(r.state, UsageState::Ok | UsageState::WeeklyExhausted),
+            "I2: {r:?}"
+        );
+    }
+    if r.state == UsageState::SessionExhausted {
+        assert!(r.session_limit, "I3: {r:?}");
+    }
+}
+
+#[test]
+fn a_full_answer_has_a_session_limit() {
+    let r = parse(&answer(payload())).unwrap();
+    assert!(r.session_limit);
+    assert_invariants(&r);
+}
+
+#[test]
+fn a_missing_five_hour_is_no_session_limit() {
+    let r = with(|p| {
+        limits(p).as_object_mut().unwrap().remove("five_hour");
+    })
+    .expect("week alone is accepted");
+    assert!(!r.session_limit);
+    assert_eq!(r.session, None);
+    assert_eq!(r.state, UsageState::Ok);
+    assert_eq!(
+        r.week_all,
+        Some(window("all models", 61.0, WEEK_RESET, WEEK_AT))
+    );
+    assert_invariants(&r);
+
+    let r = with(|p| limits(p)["five_hour"] = json!(null)).expect("week alone");
+    assert!(!r.session_limit, "a null five_hour is no window");
+    assert_invariants(&r);
+}
+
+#[test]
+fn a_five_hour_with_a_null_or_absent_reset_is_no_session_limit_at_any_use() {
+    for pct in [0.0, 47.0, 100.0, 150.0] {
+        for null in [true, false] {
+            let r = with(|p| {
+                limits(p)["five_hour"]["utilization"] = json!(pct);
+                if null {
+                    limits(p)["five_hour"]["resets_at"] = json!(null);
+                } else {
+                    limits(p)["five_hour"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("resets_at");
+                }
+            })
+            .unwrap();
+            assert!(!r.session_limit, "{pct} null={null}");
+            assert_eq!(r.session, None, "{pct} null={null}");
+            assert_eq!(r.state, UsageState::Ok, "{pct}: never session_exhausted");
+            assert_invariants(&r);
+        }
+    }
+}
+
+#[test]
+fn no_session_limit_with_a_full_week_is_weekly_exhausted() {
+    let r = with(|p| {
+        limits(p).as_object_mut().unwrap().remove("five_hour");
+        limits(p)["seven_day"]["utilization"] = json!(100.0);
+    })
+    .unwrap();
+    assert_eq!(r.state, UsageState::WeeklyExhausted);
+    assert!(!r.session_limit);
+    assert_invariants(&r);
+}
+
+#[test]
+fn a_present_reset_keeps_the_session_limit_and_session_exhaustion() {
+    let r = with(|p| limits(p)["five_hour"]["utilization"] = json!(100.0)).unwrap();
+    assert_eq!(r.state, UsageState::SessionExhausted);
+    assert!(r.session_limit);
+    assert_invariants(&r);
+}
+
+/// S1: a `resets_at` that is present but cannot be used is still a printed
+/// reset, so the login keeps its session limit.
+#[test]
+fn a_present_but_unusable_reset_keeps_the_session_limit() {
+    let long = "x".repeat(65);
+    let unsafe_text = format!("2026-10-16T17:00:00Z{RLO}");
+    for v in [
+        json!(""),
+        json!(0),
+        json!(1_792_170_000),
+        json!("tomorrow at 5pm"),
+        json!("2099-01-01T00:00:00Z"),
+        json!(long),
+        json!(unsafe_text),
+        json!({}),
+        json!([]),
+        json!(false),
+    ] {
+        let r = with(|p| {
+            limits(p)["five_hour"]["utilization"] = json!(100.0);
+            limits(p)["five_hour"]["resets_at"] = v.clone();
+        })
+        .unwrap();
+        assert!(r.session_limit, "{v}");
+        assert_eq!(r.state, UsageState::SessionExhausted, "{v}");
+        assert_invariants(&r);
+    }
+}
+
+/// S1: a `five_hour` that `window()` rejects, with a reset present, leaves
+/// no session window and keeps the session limit.
+#[test]
+fn a_rejected_five_hour_with_a_reset_keeps_the_session_limit() {
+    for v in [json!(null), json!("37"), json!(-1), json!(1_000_001)] {
+        let r = with(|p| limits(p)["five_hour"]["utilization"] = v.clone()).unwrap();
+        assert_eq!(r.session, None, "{v}");
+        assert!(r.session_limit, "{v}");
+        assert_eq!(r.state, UsageState::Ok, "{v}");
+    }
+}
+
+/// S1: a `five_hour` that `window()` rejects keeps the session limit even
+/// when its `resets_at` is `null`, because the window could not be read.
+#[test]
+fn a_rejected_five_hour_with_a_null_reset_keeps_the_session_limit() {
+    let r = with(|p| {
+        limits(p)["five_hour"]["utilization"] = json!("x");
+        limits(p)["five_hour"]["resets_at"] = json!(null);
+    })
+    .expect("the week is still read");
+    assert!(r.session_limit);
+    assert_eq!(r.session, None);
+    assert_eq!(r.state, UsageState::Ok);
+    assert_invariants(&r);
+}
+
+#[test]
+fn no_week_window_is_still_handled_as_before() {
+    // five_hour with no reset and no usable week: nothing to read, so the
+    // existing fallback to `/usage` still applies.
+    assert_eq!(
+        with(|p| {
+            limits(p)["five_hour"]["resets_at"] = json!(null);
+            limits(p).as_object_mut().unwrap().remove("seven_day");
+        })
+        .map(|r| (r.session_limit, r.session.is_some())),
+        // The session window with no reset and no week is read as before.
+        Some((true, true))
+    );
+    assert_eq!(
+        with(|p| {
+            limits(p).as_object_mut().unwrap().remove("five_hour");
+            limits(p)["seven_day"]["utilization"] = json!(-3);
+        }),
+        None,
+        "neither window: fall back"
+    );
 }

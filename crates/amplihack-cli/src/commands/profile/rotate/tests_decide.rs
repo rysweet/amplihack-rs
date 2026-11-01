@@ -67,6 +67,7 @@ fn report(state: UsageState, session: Option<f64>, week: Option<f64>) -> UsageRe
         session: session.map(|u| window("session", u)),
         week_all: week.map(|u| window("all models", u)),
         week_models: Vec::new(),
+        session_limit: true,
     }
 }
 
@@ -340,4 +341,81 @@ fn a_dry_run_reports_the_outcome_it_previewed() {
         CycleOutcome::Swapped
     );
     assert_eq!(would(&Decision::Alert), CycleOutcome::Alerted);
+}
+
+// --- Issue #1818: plans with no session limit -------------------------------
+
+/// The rotator's reading of a `/usage` text, through the real parser.
+fn read(text: &str) -> Reading {
+    let rep = crate::commands::profile::usage_parse::parse_usage(text, "", NOW);
+    Reading::from_report(&rep)
+}
+
+const RESET: &str = "· resets 3am (UTC)";
+
+fn exhausted_session(week: u32) -> String {
+    format!("Current session: 100% used {RESET}\nCurrent week (all models): {week}% used {RESET}\n")
+}
+
+fn weekly_only(week: u32) -> String {
+    format!("Current week (all models): {week}% used {RESET}\n")
+}
+
+fn no_reset_session(session: u32, week: u32) -> String {
+    format!("Current session: {session}% used\nCurrent week (all models): {week}% used {RESET}\n")
+}
+
+#[test]
+fn a_profile_with_no_session_limit_reads_on_its_week_alone() {
+    assert_eq!(read(&weekly_only(30)), r(0.0, 30.0));
+    assert_eq!(read(&no_reset_session(100, 30)), r(0.0, 30.0));
+    assert_eq!(read(&no_reset_session(47, 89)), r(0.0, 89.0));
+    assert_eq!(read(&weekly_only(100)), Reading::Exhausted);
+    assert_eq!(read(&exhausted_session(30)), Reading::Exhausted);
+}
+
+#[test]
+fn the_rotator_picks_the_no_session_limit_profile_when_the_rest_are_session_exhausted() {
+    for text in [weekly_only(30), no_reset_session(100, 30)] {
+        let cands = [
+            c("a-spent", read(&exhausted_session(10))),
+            c("b-free", read(&text)),
+            c("c-spent", read(&exhausted_session(5))),
+        ];
+        assert_eq!(
+            decide(
+                &settings(),
+                &read(&exhausted_session(20)),
+                &cands,
+                None,
+                NOW
+            ),
+            swap("b-free", Reason::Threshold),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_live_profile_with_no_session_limit_stays_below_the_week_threshold() {
+    let cands = [c("spare", read(&exhausted_session(0)))];
+    for text in [weekly_only(89), no_reset_session(100, 89)] {
+        assert_eq!(
+            decide(&settings(), &read(&text), &cands, None, NOW),
+            Decision::Stay,
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_live_profile_with_no_session_limit_swaps_at_the_week_threshold() {
+    let cands = [c("spare", r(10.0, 10.0))];
+    for text in [weekly_only(90), no_reset_session(0, 90), weekly_only(100)] {
+        assert_eq!(
+            decide(&settings(), &read(&text), &cands, None, NOW),
+            swap("spare", Reason::Threshold),
+            "{text}"
+        );
+    }
 }

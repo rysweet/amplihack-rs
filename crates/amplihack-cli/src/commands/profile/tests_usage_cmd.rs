@@ -35,6 +35,7 @@ fn report(
         session: s.map(|(p, at)| win("session", p, at)),
         week_all: w.map(|(p, at)| win("all models", p, at)),
         week_models: Vec::new(),
+        session_limit: true,
     }
 }
 
@@ -438,6 +439,7 @@ fn json_is_an_array_of_rows_with_the_exact_keys() {
                 "overflow_blocked_until",
                 "profile",
                 "session",
+                "session_limit",
                 "state",
                 "week_all",
                 "week_models"
@@ -1674,4 +1676,167 @@ mod request {
         assert_eq!(session(&probes[1]), 20.0, "plan read with the request");
         assert_eq!(f.starts(), ["-p /usage".to_string(), ARGS.join(" ")]);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1818: no session limit
+// ---------------------------------------------------------------------------
+
+/// A plan with no session limit: no session window, the week read.
+fn weekly_only(name: &str, state: UsageState, week: f64) -> Row {
+    let mut rep = report(state, None, Some((week, Some(NOW + DAY))));
+    rep.session_limit = false;
+    row(name, rep)
+}
+
+fn cells(out: &str, name: &str) -> Vec<String> {
+    let header = out.lines().next().unwrap();
+    let line = out
+        .lines()
+        .find(|l| l.starts_with(name))
+        .unwrap_or_else(|| panic!("no row for {name}: {out}"));
+    // Cut at the header's column starts, so a cell with spaces stays whole.
+    let starts: Vec<usize> = [
+        "PROFILE",
+        "MARKS",
+        "STATE",
+        "SESSION",
+        "SESSION RESETS",
+        "WEEK",
+        "WEEK RESETS",
+    ]
+    .iter()
+    .scan(0, |from, h| {
+        let at = *from + header[*from..].find(h).unwrap();
+        *from = at + h.len();
+        Some(header[..at].chars().count())
+    })
+    .collect();
+    let chars: Vec<char> = line.chars().collect();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(i, &a)| {
+            let b = starts.get(i + 1).copied().unwrap_or(chars.len());
+            chars[a.min(chars.len())..b.min(chars.len())]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn the_table_says_no_session_limit_in_full_with_a_dash_for_the_reset() {
+    for (state, word) in [
+        (UsageState::Ok, "ok"),
+        (UsageState::WeeklyExhausted, "weekly_exhausted"),
+    ] {
+        let week = if state == UsageState::Ok { 40.0 } else { 100.0 };
+        let out = render_table(&[weekly_only("free", state, week)]);
+        let c = cells(&out, "free");
+        assert_eq!(c[2], word, "{out}");
+        assert_eq!(c[3], "no session limit", "never clipped: {out}");
+        assert_eq!(c[4], "-", "{out}");
+        assert!(c[5].ends_with('%'), "{out}");
+    }
+}
+
+#[test]
+fn the_label_appears_only_on_rows_with_no_session_limit() {
+    let normal = ok(
+        "normal",
+        Some((20.0, Some(NOW + HOUR))),
+        Some((30.0, Some(NOW + DAY))),
+    );
+    // A failed reading keeps its cells even with no windows.
+    let mut timeout = row("slow", report(UsageState::Timeout, None, None));
+    timeout.report.session_limit = true;
+    let mut key = weekly_only("key", UsageState::Ok, 10.0);
+    key.api_key = true;
+    let out = render_table(&[
+        normal,
+        timeout,
+        row("gone", report(UsageState::NotLoggedIn, None, None)),
+        row("bad", report(UsageState::Unparsed, None, None)),
+        row("err", report(UsageState::Error, None, None)),
+        row(
+            "spent",
+            report(UsageState::SpendLimit, None, Some((10.0, None))),
+        ),
+        key,
+        weekly_only("free", UsageState::Ok, 10.0),
+    ]);
+    assert_eq!(
+        out.matches("no session limit").count(),
+        1,
+        "only the weekly-only row: {out}"
+    );
+    assert_eq!(cells(&out, "normal")[3], "20%");
+    for name in ["slow", "gone", "bad", "err", "spent"] {
+        assert_eq!(cells(&out, name)[3], "-", "{name}: {out}");
+    }
+    assert!(
+        cells(&out, "key")[3].starts_with("api-key"),
+        "API-key rows keep their cell: {out}"
+    );
+}
+
+#[test]
+fn json_rows_carry_session_limit_right_after_session() {
+    let rows = [
+        ok(
+            "normal",
+            Some((20.0, Some(NOW + HOUR))),
+            Some((30.0, Some(NOW + DAY))),
+        ),
+        weekly_only("free", UsageState::Ok, 40.0),
+        row("slow", report(UsageState::Timeout, None, None)),
+    ];
+    let text = render_json(&rows);
+    let v = json(&rows);
+    assert_eq!(v[0]["session_limit"], true);
+    assert_eq!(v[1]["session_limit"], false);
+    assert_eq!(v[1]["session"], serde_json::Value::Null);
+    assert_eq!(v[1]["state"], "ok");
+    assert_eq!(v[1]["week_all"]["used_percentage"], 40.0);
+    assert_eq!(v[2]["session_limit"], true, "a failed row is never false");
+    assert_eq!(v[2]["state"], "timeout");
+    // Field order: `session_limit` is written straight after `session`.
+    for obj in text.split("\"profile\"").skip(1) {
+        let s = obj.find("\"session\":").expect("session key");
+        let l = obj.find("\"session_limit\":").expect("session_limit key");
+        let w = obj.find("\"week_all\":").expect("week_all key");
+        assert!(s < l && l < w, "{text}");
+    }
+}
+
+#[test]
+fn json_session_limit_is_a_bool_on_every_row() {
+    let v = json(&table_rows());
+    for r in v.as_array().unwrap() {
+        assert!(r["session_limit"].is_boolean(), "{r}");
+    }
+}
+
+#[test]
+fn observations_say_whether_a_session_limit_applies() {
+    let rows = vec![
+        ok(
+            "normal",
+            Some((20.0, Some(NOW + HOUR))),
+            Some((30.0, Some(NOW + DAY))),
+        ),
+        weekly_only("free", UsageState::Ok, 40.0),
+        weekly_only("full", UsageState::WeeklyExhausted, 100.0),
+    ];
+    let obs = observations(&rows);
+    let got: Vec<(&str, bool)> = obs
+        .iter()
+        .map(|o| (o.profile.as_str(), o.session_limit))
+        .collect();
+    assert_eq!(got, [("normal", true), ("free", false), ("full", false)]);
+    assert!(obs[1].session.is_none());
+    assert_eq!(obs[1].week.unwrap().used_percentage, 40.0);
 }

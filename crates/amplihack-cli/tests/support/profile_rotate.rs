@@ -193,13 +193,43 @@ impl Fixture {
         Some(serde_json::from_str(&raw).unwrap())
     }
 
+    /// Canned `/usage` output for `p`. Issue #1818: the session line has a
+    /// reset clause in a zone that does not resolve, so the login still has
+    /// a session limit (with no known reset time), as before #1818. A
+    /// session line with no reset clause now means "no session limit"; use
+    /// [`Self::usage_no_reset`] or [`Self::usage_weekly_only`] for that.
     pub fn usage(&self, p: &str, session: u32, week: u32) {
-        fs::write(
-            self.canned.join(format!("{}.out", email(p))),
-            format!(
-                "{BANNER}\n\nCurrent session: {session}% used\n\
+        self.canned_usage(
+            p,
+            &format!(
+                "Current session: {session}% used · resets 3am (Etc/Unknown)\n\
                  Current week (all models): {week}% used\n"
             ),
+        );
+    }
+
+    /// Issue #1818: a plan with no session limit. Claude prints only the
+    /// all-models week line.
+    pub fn usage_weekly_only(&self, p: &str, week: u32) {
+        self.canned_usage(p, &format!("Current week (all models): {week}% used\n"));
+    }
+
+    /// Issue #1818: a session line with no reset clause, then the week
+    /// line. Read as "no session limit" whatever the session percentage.
+    pub fn usage_no_reset(&self, p: &str, session: u32, week: u32) {
+        self.canned_usage(
+            p,
+            &format!(
+                "Current session: {session}% used\n\
+                 Current week (all models): {week}% used\n"
+            ),
+        );
+    }
+
+    fn canned_usage(&self, p: &str, lines: &str) {
+        fs::write(
+            self.canned.join(format!("{}.out", email(p))),
+            format!("{BANNER}\n\n{lines}"),
         )
         .unwrap();
     }

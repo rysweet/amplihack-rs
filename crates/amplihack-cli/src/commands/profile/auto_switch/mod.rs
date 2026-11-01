@@ -361,6 +361,10 @@ pub struct Observation {
     pub account: String,
     pub session: Option<ObservedWindow>,
     pub week: Option<ObservedWindow>,
+    /// Issue #1818: `false` when the reading showed no session window, so a
+    /// stored one is cleared rather than kept. In memory only; the usage
+    /// file's format is unchanged.
+    pub session_limit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -421,6 +425,40 @@ pub fn lease_view(root: &Path) -> Result<Option<LeaseView>, ProfileError> {
     }
 }
 
+/// Issue #1818: the profiles among `names` whose stored reading has a week
+/// window and no session window, sorted. Read-only: it never creates state,
+/// takes the lock or writes, and any failure (no state, an unsafe or damaged
+/// `usage.json`) gives an empty list without printing anything.
+pub fn no_session_limit_profiles(root: &Path, names: &[&str]) -> Vec<String> {
+    #[cfg(unix)]
+    {
+        let Ok(state) = state::State::new(root) else {
+            return Vec::new();
+        };
+        if !state.exists() {
+            return Vec::new();
+        }
+        let Ok(file) = state.try_load_usage() else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = file
+            .accounts
+            .iter()
+            .filter(|(name, r)| {
+                r.seven_day.is_some() && r.five_hour.is_none() && names.contains(&name.as_str())
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        out.sort();
+        out
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (root, names);
+        Vec::new()
+    }
+}
+
 /// Records `profile usage` observations as status-line readings. Takes the
 /// lock for a bounded wait, never runs swap recovery, re-checks each
 /// profile's live account under the lock, applies the status-line bounds,
@@ -460,7 +498,11 @@ pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutco
             let file = file.get_or_insert_with(|| state.load_usage_or_warn());
             let old = file.accounts.get(&o.account);
             let reading = Reading {
-                five_hour: five_hour.or_else(|| still_valid(old.and_then(|r| r.five_hour))),
+                five_hour: if o.session_limit {
+                    five_hour.or_else(|| still_valid(old.and_then(|r| r.five_hour)))
+                } else {
+                    None
+                },
                 seven_day: seven_day.or_else(|| still_valid(old.and_then(|r| r.seven_day))),
                 observed_at: now,
                 // Deliberate: the usage file's format is fixed, and a

@@ -248,6 +248,7 @@ fn report(
         session: s.map(|(u, r)| uw("session", u, r)),
         week_all: w.map(|(u, r)| uw("all models", u, r)),
         week_models: Vec::new(),
+        session_limit: true,
     }
 }
 

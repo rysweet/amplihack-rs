@@ -347,15 +347,15 @@ fn reset_text_is_kept_as_printed_even_when_it_cannot_be_resolved() {
 
 #[test]
 fn a_line_without_a_reset_clause_is_read_with_no_reset() {
-    // Claude 2.x prints this when no session is open.
+    // Claude 2.x prints a session line with no reset clause. Issue #1818:
+    // next to an all-models week line, that means the plan has no session
+    // limit, so the session window is dropped and only the week counts.
     let out = "Current session: 0% used\n\
                Current week (all models): 84% used · resets 4pm (UTC)\n\
                Current week (Fable): 0% used\n";
     let r = parse(out);
-    let s = r.session.expect("session line without a reset is read");
-    assert_eq!(s.used_percentage, 0.0);
-    assert_eq!(s.resets_text, None);
-    assert_eq!(s.resets_at, None);
+    assert_eq!(r.session, None, "a reset-less session line is no window");
+    assert!(!r.session_limit);
     assert_eq!(
         r.week_all.unwrap().resets_text.as_deref(),
         Some("4pm (UTC)")
@@ -364,10 +364,12 @@ fn a_line_without_a_reset_clause_is_read_with_no_reset() {
     assert_eq!(r.week_models[0].resets_text, None);
     assert_eq!(r.state, UsageState::Ok);
 
-    // Only reset-less lines still gives a usable reading, not `unparsed`.
+    // With no week line the old rules apply: the session line is read, the
+    // reading is usable, and the login keeps its session limit.
     let r = parse("Current session: 12% used\n");
     assert_eq!(r.session.unwrap().used_percentage, 12.0);
     assert_eq!(r.state, UsageState::Ok);
+    assert!(r.session_limit, "no week line: fail closed");
 
     // Trailing text that is not a reset clause is still not a usage line.
     assert!(
@@ -590,6 +592,7 @@ fn assert_sane(r: &UsageReport) {
         assert!((0.0..=1_000_000.0).contains(&w.used_percentage));
     }
     assert!(!matches!(r.state, UsageState::Timeout | UsageState::Error));
+    assert_invariants(r);
 }
 
 #[test]
@@ -644,4 +647,265 @@ fn both_spend_limit_wordings_are_a_spend_limit() {
         let err = parse_usage("", &format!("{msg}\n"), NOW);
         assert_eq!(err.state, UsageState::SpendLimit, "stderr: {msg:?}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1818: plans with no session limit
+// ---------------------------------------------------------------------------
+//
+// Contract:
+// - `UsageReport::session_limit` is `false` only on positive evidence: an
+//   all-models week line was read and either no session line was read or
+//   the session line had no reset clause. Then `session` is `None` and the
+//   state is `Ok` or `WeeklyExhausted`, never `SessionExhausted`.
+// - A reset clause that is printed but cannot be resolved still means a
+//   session limit. So does a `Current session` line that does not parse
+//   (S2), a reading with no week line, a spend limit, and every failure
+//   state. `UsageReport::empty` gives `true`.
+// - `settle_session(&mut session, reset_seen, week_read) -> bool` is the one
+//   shared rule: it drops the window and returns `false` only when
+//   `week_read && !reset_seen`.
+
+use super::usage_parse::settle_session;
+
+const WEEK_LINE: &str =
+    "Current week (all models): 30% used · resets Oct 22, 2am (America/Los_Angeles)\n";
+
+/// The #1818 invariants (I1 to I4), checked on every report.
+fn assert_invariants(r: &UsageReport) {
+    if !r.session_limit {
+        assert!(r.session.is_none(), "I1: no session window: {r:?}");
+        assert!(r.week_all.is_some(), "I1: the week was read: {r:?}");
+        assert!(
+            matches!(r.state, UsageState::Ok | UsageState::WeeklyExhausted),
+            "I2: {r:?}"
+        );
+    }
+    if r.state == UsageState::SessionExhausted {
+        assert!(r.session_limit, "I3: {r:?}");
+    }
+}
+
+fn no_reset_session(pct: &str, week: &str) -> String {
+    format!(
+        "{BANNER}Current session: {pct}% used\n\
+         Current week (all models): {week}% used · resets Oct 22, 2am (America/Los_Angeles)\n\
+         {TRAILER}"
+    )
+}
+
+#[test]
+fn empty_reports_keep_the_session_limit() {
+    for s in [
+        UsageState::Ok,
+        UsageState::SessionExhausted,
+        UsageState::WeeklyExhausted,
+        UsageState::SpendLimit,
+        UsageState::NotLoggedIn,
+        UsageState::Timeout,
+        UsageState::Unparsed,
+        UsageState::Error,
+    ] {
+        assert!(UsageReport::empty(s).session_limit, "{s:?}");
+    }
+}
+
+#[test]
+fn settle_session_drops_the_window_only_when_the_week_was_read_with_no_reset() {
+    let w = || {
+        Some(UsageWindow {
+            label: "session".into(),
+            used_percentage: 47.0,
+            resets_text: None,
+            resets_at: None,
+        })
+    };
+    // (session, reset_seen, week_read) -> (session_limit, window kept)
+    let mut s = w();
+    assert!(!settle_session(&mut s, false, true));
+    assert_eq!(s, None, "no reset with a week: dropped");
+
+    let mut s = None;
+    assert!(!settle_session(&mut s, false, true), "no session line");
+    assert_eq!(s, None);
+
+    let mut s = w();
+    assert!(settle_session(&mut s, true, true), "a reset was printed");
+    assert_eq!(s, w(), "kept");
+
+    let mut s = w();
+    assert!(settle_session(&mut s, false, false), "no week: fail closed");
+    assert_eq!(s, w(), "kept");
+
+    let mut s = None;
+    assert!(settle_session(&mut s, false, false));
+    let mut s = None;
+    assert!(
+        settle_session(&mut s, true, true),
+        "an unread session line that showed a reset"
+    );
+}
+
+#[test]
+fn a_week_line_alone_is_ok_with_no_session_limit() {
+    let r = parse(WEEK_LINE);
+    assert_eq!(r.state, UsageState::Ok);
+    assert!(!r.session_limit);
+    assert_eq!(r.session, None);
+    assert_eq!(r.week_all.as_ref().unwrap().used_percentage, 30.0);
+    assert_invariants(&r);
+
+    let r = parse(&format!("{BANNER}{WEEK_LINE}{TRAILER}"));
+    assert_eq!(r.state, UsageState::Ok);
+    assert!(!r.session_limit);
+}
+
+#[test]
+fn a_week_line_alone_at_100_is_weekly_exhausted_with_no_session_limit() {
+    for pct in ["100", "130"] {
+        let r = parse(&format!(
+            "Current week (all models): {pct}% used · resets Oct 22, 2am (America/Los_Angeles)\n"
+        ));
+        assert_eq!(r.state, UsageState::WeeklyExhausted, "{pct}");
+        assert!(!r.session_limit, "{pct}");
+        assert_invariants(&r);
+    }
+}
+
+#[test]
+fn a_session_line_with_no_reset_is_no_session_limit_at_any_percentage() {
+    for pct in ["0", "47", "99.9", "100", "250"] {
+        let r = parse(&no_reset_session(pct, "30"));
+        assert_eq!(r.state, UsageState::Ok, "{pct}: never session_exhausted");
+        assert!(!r.session_limit, "{pct}");
+        assert_eq!(r.session, None, "{pct}");
+        assert_eq!(r.week_all.as_ref().unwrap().used_percentage, 30.0);
+        assert_invariants(&r);
+    }
+}
+
+#[test]
+fn no_reset_session_with_a_full_week_is_weekly_exhausted() {
+    for pct in ["0", "100"] {
+        let r = parse(&no_reset_session(pct, "100"));
+        assert_eq!(r.state, UsageState::WeeklyExhausted, "{pct}");
+        assert!(!r.session_limit, "{pct}");
+        assert_invariants(&r);
+    }
+}
+
+#[test]
+fn a_session_line_with_a_reset_keeps_the_session_limit() {
+    let r = parse(&sample("20", "30", ""));
+    assert_eq!(r.state, UsageState::Ok);
+    assert!(r.session_limit);
+    assert_eq!(r.session.as_ref().unwrap().used_percentage, 20.0);
+    assert_invariants(&r);
+
+    for pct in ["100", "101"] {
+        let r = parse(&sample(pct, "30", ""));
+        assert_eq!(r.state, UsageState::SessionExhausted, "{pct}");
+        assert!(r.session_limit, "{pct}");
+        assert_invariants(&r);
+    }
+}
+
+#[test]
+fn an_unresolvable_reset_still_means_a_session_limit() {
+    // The shared integration fixture relies on this zone never resolving.
+    assert_eq!(resolve_reset("3am (Etc/Unknown)", NOW), None);
+    for (pct, want) in [
+        ("40", UsageState::Ok),
+        ("100", UsageState::SessionExhausted),
+    ] {
+        let r = parse(&format!(
+            "Current session: {pct}% used · resets 3am (Etc/Unknown)\n{WEEK_LINE}"
+        ));
+        assert_eq!(r.state, want, "{pct}");
+        assert!(
+            r.session_limit,
+            "{pct}: a printed reset is a session window"
+        );
+        let s = r.session.as_ref().expect("session kept");
+        assert_eq!(s.resets_text.as_deref(), Some("3am (Etc/Unknown)"));
+        assert_eq!(s.resets_at, None);
+        assert_invariants(&r);
+    }
+    let r = parse(&format!(
+        "Current session: 100% used · resets in a little while\n{WEEK_LINE}"
+    ));
+    assert_eq!(r.state, UsageState::SessionExhausted);
+    assert!(r.session_limit);
+}
+
+/// S2: a `Current session` line Claude may word differently in future must
+/// never make a login look free of a session limit.
+#[test]
+fn a_session_line_that_does_not_parse_keeps_the_session_limit() {
+    for line in [
+        "Current session: 100% used by robots",
+        "Current session: lots used",
+        "Current session: 100% used · resets",
+        "  Current session: 1e3% used",
+        "Current session: 1000001% used",
+    ] {
+        let r = parse(&format!("{line}\n{WEEK_LINE}"));
+        assert!(r.session_limit, "{line:?}");
+        assert_eq!(r.session, None, "{line:?}: not read");
+        assert_eq!(r.state, UsageState::Ok, "{line:?}: the week was read");
+        assert_invariants(&r);
+    }
+}
+
+#[test]
+fn a_spend_limit_keeps_the_session_limit_and_the_session_window() {
+    let out = format!(
+        "{}Spend limit reached for your organization\n",
+        no_reset_session("12", "30")
+    );
+    let r = parse(&out);
+    assert_eq!(r.state, UsageState::SpendLimit);
+    assert!(r.session_limit);
+    assert_eq!(r.session.unwrap().used_percentage, 12.0, "not settled");
+}
+
+#[test]
+fn readings_with_no_week_line_follow_the_old_rules() {
+    let r = parse("Current session: 100% used\n");
+    assert_eq!(r.state, UsageState::SessionExhausted);
+    assert!(r.session_limit);
+    assert_eq!(r.session.unwrap().used_percentage, 100.0);
+
+    // A model week line is not the all-models week.
+    let r = parse(
+        "Current session: 5% used\n\
+         Current week (Opus): 3% used · resets Oct 22, 2am (America/Los_Angeles)\n",
+    );
+    assert_eq!(r.state, UsageState::Ok);
+    assert!(r.session_limit);
+    assert_eq!(r.session.unwrap().used_percentage, 5.0);
+
+    let r = parse("Current week (Opus): 3% used · resets Oct 22, 2am (America/Los_Angeles)\n");
+    assert_eq!(r.state, UsageState::Unparsed);
+    assert!(r.session_limit);
+}
+
+#[test]
+fn failed_readings_keep_the_session_limit() {
+    for (stdout, stderr, want) in [
+        ("", "", UsageState::Unparsed),
+        ("Not logged in · Run /login\n", "", UsageState::NotLoggedIn),
+        ("", "spending limit reached\n", UsageState::SpendLimit),
+    ] {
+        let r = parse_usage(stdout, stderr, NOW);
+        assert_eq!(r.state, want, "{stdout:?}");
+        assert!(r.session_limit, "{stdout:?}");
+    }
+}
+
+#[test]
+fn the_captured_output_keeps_its_session_limit() {
+    let r = parse(CAPTURED_2026_10_17);
+    assert!(r.session_limit);
+    assert_invariants(&r);
 }
