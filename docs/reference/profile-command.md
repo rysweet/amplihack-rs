@@ -229,14 +229,21 @@ which neither `five_hour` nor `seven_day` has a valid `utilization`, is
 `unparseable`. A direct read never gives `spend_limit`, `not_logged_in` or
 `unparsed`.
 
-**Timing.** The connect and read timeouts are each
-`min(10 seconds, deadline - 1 second)`, at least 1 second, and the whole
-read, refresh included, must finish within the [deadline](#probe-deadline).
-The deadline is fixed when the read starts, and each request is given only
-the time left of it, so a `GET` that answers `401`, the refresh `POST` and
-the second `GET` together take no longer than one deadline. No request
-starts once the deadline has passed; a refresh `POST` that would start
-then is not sent.
+**Timing.** The connect and read timeouts of each `GET` are
+`min(10 seconds, deadline - 1 second)`, at least 500 milliseconds, and the
+whole read, refresh included, must finish within the
+[deadline](#probe-deadline). The deadline is fixed when the read starts,
+and each request is given only the time left of it, so a `GET` that answers
+`401`, the refresh `POST` and the second `GET` together take no longer than
+one deadline. No request starts once the deadline has passed.
+
+A refresh `POST` is sent only when at least 3 seconds of the deadline are
+left; otherwise none is sent and the read is `timeout`. A refresh can
+retire the old refresh token, so one given up on before its answer arrives
+could leave the profile logged out, while a skipped refresh costs only this
+read. The `POST`'s connect and read timeouts are `min(10 seconds, time
+left)`, so never below 3 seconds, and it too ends by the deadline. With a
+deadline under 3 seconds, a direct read never refreshes.
 Redirects are not followed, no proxy is used (`HTTPS_PROXY` and similar are
 ignored), and a `429` is not retried. One read makes at most two `GET`s and
 one refresh `POST`.
@@ -337,9 +344,11 @@ The refresh runs as follows:
    others, that the file can be replaced safely, and that a private
    temporary file can be created beside it. If any check fails, the reason
    is `refresh refused` and no request is sent.
-4. Send `POST` to the token URL with a JSON body holding `grant_type`
-   (`refresh_token`), `refresh_token` and `client_id` (Claude Code's public
-   client id).
+4. If less than 3 seconds of the [deadline](#probe-deadline) are left,
+   stop: no request is sent, nothing is changed and the reason is
+   `timeout` (see **Timing** above). Otherwise send `POST` to the token URL
+   with a JSON body holding `grant_type` (`refresh_token`), `refresh_token`
+   and `client_id` (Claude Code's public client id).
 5. On a `200` with a usable answer, set `accessToken`, `expiresAt` (now plus
    `expires_in` seconds, in milliseconds) and, only when one is returned,
    `refreshToken`. Every other field of the file is kept as it was. The new

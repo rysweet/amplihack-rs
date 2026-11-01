@@ -52,8 +52,15 @@ pub(super) const MAX_TOKEN: usize = 4096;
 pub(super) const MAX_EXPIRES_IN: i64 = 31_536_000;
 /// The longest connect and read step. The whole read, every request in
 /// it, has the one probe deadline ([`Deadline`]).
-const MAX_STEP: Duration = Duration::from_secs(10);
-const MIN_STEP: Duration = Duration::from_millis(500);
+pub(super) const MAX_STEP: Duration = Duration::from_secs(10);
+pub(super) const MIN_STEP: Duration = Duration::from_millis(500);
+/// A refresh POST is sent only with at least this much of the read's
+/// deadline left, and its connect and read steps are at least this long. A
+/// refresh can retire the old refresh token (RFC 6749 section 6, RFC 9700
+/// section 4.14.2); one given up on before its answer arrives can leave the
+/// login with no working refresh token. Skipping a refresh costs one
+/// `timeout` row; abandoning one can cost the login.
+pub(super) const REFRESH_BUDGET: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(20);
 
 /// The fixed failure texts. None holds a path, a token or a response body.
@@ -454,7 +461,7 @@ pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<UsageReport, &'s
         .is_some_and(|at| at <= req.now_ms.saturating_add(margin_ms));
     if due {
         if req.allow_refresh {
-            let fresh = refresh(ep, &agent, req, &creds.access, deadline)?;
+            let fresh = refresh(ep, req, &creds.access, deadline)?;
             return get_usage(&agent, ep, &fresh, now_s, deadline);
         }
         if creds.expires_at_ms.is_some_and(|at| at <= req.now_ms) {
@@ -463,7 +470,7 @@ pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<UsageReport, &'s
     }
     match get_usage(&agent, ep, &creds.access, now_s, deadline) {
         Err(r) if r == reason::HTTP_401 && req.allow_refresh => {
-            let fresh = refresh(ep, &agent, req, &creds.access, deadline)?;
+            let fresh = refresh(ep, req, &creds.access, deadline)?;
             get_usage(&agent, ep, &fresh, now_s, deadline)
         }
         other => other,
@@ -474,6 +481,10 @@ fn agent(ep: &Endpoints, timeout: Duration) -> ureq::Agent {
     let step = MAX_STEP
         .min(timeout.saturating_sub(Duration::from_secs(1)))
         .max(MIN_STEP);
+    agent_with_step(ep, timeout, step)
+}
+
+fn agent_with_step(ep: &Endpoints, timeout: Duration, step: Duration) -> ureq::Agent {
     ureq::AgentBuilder::new()
         .timeout_connect(step)
         .timeout_read(step)
@@ -610,7 +621,6 @@ fn journal_present(journals: &[PathBuf]) -> bool {
 /// token endpoint, saved back before it is used.
 fn refresh(
     ep: &Endpoints,
-    agent: &ureq::Agent,
     req: &Request<'_>,
     used: &Token,
     deadline: Deadline,
@@ -641,12 +651,18 @@ fn refresh(
     // when the result can be saved.
     let temp = PrivateTemp::create(req.creds_dir, CREDS).map_err(|_| reason::REFRESH_REFUSED)?;
     let url = ep.token_url();
-    // No POST starts once the read's time is up: a refresh sent then could
-    // retire the old refresh token and not be answered in time to save the
-    // new one.
-    let post = agent
+    // No POST starts with less than REFRESH_BUDGET of the read left: a
+    // refresh sent then could retire the old refresh token and not be
+    // answered in time to save the new one. The POST gets its own agent so
+    // that its connect and read steps are not cut below the budget by a
+    // short probe deadline; it still ends by the read's deadline.
+    let left = deadline.left()?;
+    if left < REFRESH_BUDGET {
+        return Err(reason::TIMEOUT);
+    }
+    let post = agent_with_step(ep, left, left.min(MAX_STEP))
         .post(url)
-        .timeout(deadline.left()?)
+        .timeout(left)
         .set("Content-Type", "application/json")
         .set("Accept", "application/json")
         .set("anthropic-beta", BETA);

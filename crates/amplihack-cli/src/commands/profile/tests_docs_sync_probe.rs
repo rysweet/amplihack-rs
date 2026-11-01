@@ -292,3 +292,30 @@ fn reference_quotes_the_fixed_row_texts() {
         );
     }
 }
+
+/// The direct-read step timeouts and the refresh budget in the reference
+/// are the code's.
+#[test]
+fn reference_gives_the_direct_read_step_limits_and_refresh_budget() {
+    use super::usage_direct::{MAX_STEP, MIN_STEP, REFRESH_BUDGET};
+    use std::time::Duration;
+    assert_eq!(MAX_STEP, Duration::from_secs(10));
+    assert_eq!(MIN_STEP, Duration::from_millis(500));
+    assert_eq!(REFRESH_BUDGET, Duration::from_secs(3));
+    let text = REFERENCE.split_whitespace().collect::<Vec<_>>().join(" ");
+    for phrase in [
+        "`min(10 seconds, deadline - 1 second)`, at least 500 milliseconds",
+        "A refresh `POST` is sent only when at least 3 seconds of the deadline are left",
+        "`min(10 seconds, time left)`, so never below 3 seconds",
+        "If less than 3 seconds of the [deadline](#probe-deadline) are left",
+    ] {
+        assert!(
+            text.contains(phrase),
+            "the reference does not say {phrase:?}"
+        );
+    }
+    assert!(
+        !text.contains("deadline - 1 second)`, at least 1 second"),
+        "the reference still gives a 1 second floor"
+    );
+}
