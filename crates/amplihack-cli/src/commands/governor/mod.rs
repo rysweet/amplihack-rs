@@ -117,6 +117,7 @@ pub enum GovernorCommands {
 /// One start to decide.
 pub struct AdmitRequest {
     args: Option<GovernorArgs>,
+    start: model::Start,
     recipe: Option<String>,
     task: Option<String>,
 }
@@ -132,6 +133,7 @@ impl AdmitRequest {
             .cloned();
         Self {
             args: Some(args.clone()),
+            start: model::Start::Agent,
             recipe: None,
             task,
         }
@@ -145,6 +147,7 @@ impl AdmitRequest {
     pub fn recipe(args: Option<&GovernorArgs>, recipe: &str) -> Self {
         Self {
             args: args.cloned(),
+            start: model::Start::Recipe,
             recipe: Some(recipe.to_string()),
             task: None,
         }
@@ -196,6 +199,7 @@ pub fn admit(request: AdmitRequest) -> Result<SlotGuard, Denied> {
             request.recipe.as_deref(),
             request.task.as_deref(),
         ),
+        start: request.start,
         workstream: identity::workstream(args.workstream.as_deref(), &env),
         wait_secs: config::wait_secs(args.governor_wait, &env, &settings),
         session_depth: env("AMPLIHACK_SESSION_DEPTH"),

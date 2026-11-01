@@ -32,6 +32,7 @@ pub(super) fn ctx(r: &Root) -> AdmitContext<'_> {
         root: Some(&r.root),
         settings: Settings::default(),
         class: Class::Ordinary,
+        start: super::model::Start::Agent,
         workstream: "ws-test".into(),
         wait_secs: 0,
         session_depth: None,
@@ -50,6 +51,7 @@ pub(super) fn me_slot(tree: &str) -> Slot {
         tree_id: tree.into(),
         admitted_at: 1_793_000_000,
         nested_children: 0,
+        start: super::model::Start::Agent,
     }
 }
 

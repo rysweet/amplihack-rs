@@ -40,6 +40,7 @@ fn slot(pid: u32, start: Option<u64>) -> Slot {
         tree_id: format!("t-{pid}"),
         admitted_at: 1_800_000_000,
         nested_children: 0,
+        start: super::model::Start::Agent,
     }
 }
 

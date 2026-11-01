@@ -57,6 +57,7 @@ fn state_with_slot() -> State {
             tree_id: "t-1".into(),
             admitted_at: 1_800_000_000,
             nested_children: 2,
+            start: super::model::Start::Agent,
         }],
         ..State::default()
     }

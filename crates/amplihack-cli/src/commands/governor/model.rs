@@ -67,6 +67,28 @@ impl Class {
     }
 }
 
+/// What kind of start a request or slot is. Only the agent steps and
+/// sub-recipes of a running `recipe run` skip the reserve; see "Nesting" in
+/// docs/reference/capacity-governor.md.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Start {
+    /// `amplihack launch` or `amplihack claude`, interactive or `-p`.
+    #[default]
+    Agent,
+    /// `amplihack recipe run`.
+    Recipe,
+}
+
+impl Start {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Recipe => "recipe",
+        }
+    }
+}
+
 /// One usage window of one profile.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WindowBudget {
@@ -96,6 +118,11 @@ pub struct Slot {
     pub admitted_at: i64,
     /// Nested launches currently running under this slot.
     pub nested_children: u32,
+    /// What holds the slot. A nested start under a `recipe` slot is part of
+    /// that recipe; one under an `agent` slot (an interactive session) is
+    /// new work.
+    #[serde(default)]
+    pub start: Start,
 }
 
 /// A waiting request.
@@ -132,12 +159,32 @@ pub struct Sample {
 pub struct Request {
     pub class: Class,
     pub workstream: String,
-    /// Runs under a live parent slot (D2).
-    pub nested: bool,
+    /// What this start is.
+    pub start: Start,
+    /// The kind of the live slot this start runs under (D2), or `None` for a
+    /// top-level start.
+    pub parent: Option<Start>,
     /// The request's queue ticket, once it has one.
     pub seq: Option<u64>,
     /// The latest time the request may still start.
     pub deadline: i64,
+}
+
+impl Request {
+    /// Runs under a live parent slot (D2): skips the concurrency limit and
+    /// the queue.
+    pub fn nested(&self) -> bool {
+        self.parent.is_some()
+    }
+
+    /// Part of a `recipe run` that was already admitted: an agent step or a
+    /// sub-recipe started under the run's slot. Only these also skip the
+    /// reserve, so a recipe that crosses it part-way through finishes. A
+    /// start under an interactive session's slot is new work and is held at
+    /// the reserve like a top-level one.
+    pub fn inside_recipe(&self) -> bool {
+        self.parent == Some(Start::Recipe)
+    }
 }
 
 /// Everything [`super::policy::decide`] reads.

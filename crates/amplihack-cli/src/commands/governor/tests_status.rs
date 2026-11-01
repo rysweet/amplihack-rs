@@ -45,6 +45,7 @@ fn seed_state(r: &Root, slot_pid: u32) {
         tree_id: "t-1".into(),
         admitted_at: NOW - 60,
         nested_children: 3,
+        start: super::model::Start::Agent,
     });
     store
         .save(&lock, &History::default(), &Queue::default(), &state)

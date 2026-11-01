@@ -120,8 +120,9 @@ The inputs are:
 - the governor's own history of readings, used for burn rates;
 - the active profile, read from the default-login pointer;
 - the slots held and the requests waiting, from `.governor.d`;
-- the request itself: class, workstream, whether it is nested, and how long
-  it may wait.
+- the request itself: class, workstream, whether it is a `recipe run` or an
+  agent launch, the kind of slot it is nested under if any, and how long it
+  may wait.
 
 The decision is one of **admit**, **wait** or **deny**, with a reason. The
 checks run in this order, and the first that applies decides:
@@ -136,8 +137,10 @@ checks run in this order, and the first that applies decides:
 | 6 | Another waiting request comes first in the [fair queue](#fair-queue) | Wait (`queue`) |
 | 7 | Otherwise | Admit (`room`, or `nested` for a nested request) |
 
-A [nested](#nesting) request skips steps 4, 5 and 6; steps 1 to 3 apply to
-it as usual.
+A [nested](#nesting) request skips steps 5 and 6. Only a request nested
+under a running `recipe run`'s slot also skips step 4; one nested under an
+interactive session's slot is held at the reserve like a top-level start.
+Steps 1 to 3 apply to every request.
 
 The decision function denies only at step 2, and only when at least one
 profile has a reading. Separately, the admission loop ends any wait that runs
@@ -225,8 +228,10 @@ Classes, from highest priority to lowest:
 The **reserve** is `governor.reserve_points` (default 10) points of weekly
 remainder. A new top-level ordinary start waits when the best usable
 profile's weekly remainder is at or below the reserve. The other three
-classes may spend the reserve down to 0, and so may a
-[nested](#nesting) start inside work that was already admitted.
+classes may spend the reserve down to 0, and so may an agent step or
+sub-recipe of a `recipe run` that was already admitted (see
+[Nesting](#nesting)). A `recipe run` or launch started from inside an
+interactive session is new work and is held at the reserve.
 
 The reserve is a scheduling preference, not a guarantee: a class can be set
 by any parent process. A session-exhausted pool (step 3) makes every class
@@ -372,11 +377,16 @@ start from such an environment is not in the slot's process tree, so neither
 variable nests it and it counts against the limit. Without `/proc` the
 ancestry cannot be checked and a matching tree id is trusted.
 
+Each slot records what holds it in its `start` field: `recipe` for a
+`recipe run`, `agent` for `amplihack claude` or `amplihack launch`.
+
 A nested launch:
 
 - takes no new slot, and runs under its parent's slot;
-- is not limited by the reserve, the concurrency limit or the queue
-  (steps 4, 5 and 6);
+- is not limited by the concurrency limit or the queue (steps 5 and 6);
+- is not limited by the reserve (step 4) only when its parent slot is a
+  `recipe run`'s; under an `agent` slot it waits at the reserve unless its
+  class is protected;
 - is still held by weekly exhaustion (step 2) and session exhaustion
   (step 3);
 - is counted in the parent slot's `nested_children` in status.
@@ -406,11 +416,21 @@ released when the parent exits.
 A nested launch whose tree id has no live slot is treated as top-level and
 needs a slot of its own.
 
-Nested launches are exempt from the reserve. A recipe that was admitted
-above the reserve and crosses it part-way through finishes its remaining
-agent steps, spending reserve points, rather than holding each step and
+Only starts inside a running recipe are exempt from the reserve. A recipe
+that was admitted above the reserve and crosses it part-way through
+finishes its remaining agent steps and any sub-recipe it starts with
+`recipe run`, spending reserve points, rather than holding each step and
 abandoning the run with the points already spent and a half-built worktree
-left behind. The reserve holds new top-level ordinary work only.
+left behind. A recipe is bounded work that was admitted once, so this
+spends at most what that recipe still needs.
+
+An interactive session is not bounded in the same way: it can stay open
+for days and start a new `recipe run` (as dev-orchestrator does) or a new
+launch at any time. Each of those is new work. It runs under the session's
+slot, so it does not wait for a slot of its own, but an ordinary one waits
+at the reserve. Without this rule a session admitted at 60% weekly use could
+spend the whole reserve, and the reserve would gate only the start of
+sessions and detached runs.
 
 Because a nested launch can still wait on weekly or session exhaustion, an
 agent step inside a running recipe can wait for up to the wait time, and
@@ -451,10 +471,10 @@ Reason codes are stable and appear in stderr lines and in status JSON.
 | Code | Decision | Meaning |
 |------|----------|---------|
 | `room` | Admit | A profile in the pool has room; printed only when that profile is not the active one |
-| `nested` | Admit | Admitted under the parent's slot |
+| `nested` | Admit | Admitted under the parent's slot: inside a running recipe, or with room above the reserve (or a protected class) under a session |
 | `weekly-exhausted` | Wait or deny | Every usable profile's weekly window is used |
 | `session-exhausted` | Wait | Every usable profile is at its session limit; the message names the reset time |
-| `reserve` | Wait | Top-level ordinary work, and the best weekly remainder is at or below the reserve |
+| `reserve` | Wait | Ordinary work that is top-level or nested under a session, and the best weekly remainder is at or below the reserve |
 | `concurrency` | Wait | The slots in use are at the limit |
 | `queue` | Wait | Another request comes first |
 | `wait-expired` | Deny | A wait, for any of the reasons above, ran out; set by the admission loop, not the decision function |
@@ -574,7 +594,8 @@ Example `state.json`:
       "class": "ordinary",
       "tree_id": "t-5c1e2a",
       "admitted_at": 1793541320,
-      "nested_children": 3
+      "nested_children": 3,
+      "start": "recipe"
     }
   ],
   "admissions": [
@@ -780,7 +801,8 @@ against other processes of the same user: any parent can set
   not read, so anyone who can open an issue that a recipe run picks up
   cannot claim the reserve.
 - **Nesting.** A process nests under a live slot, and is not counted against
-  the concurrency limit or held by the reserve, only when the slot's process is its parent or
+  the concurrency limit (nor held by the reserve, when the slot is a
+  `recipe run`'s), only when the slot's process is its parent or
   another ancestor (on Linux). A tree id or parent marker that leaked into
   an unrelated environment, such as a tmux server started from an agent
   step, therefore nests nothing. A process of the same user can still nest

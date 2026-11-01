@@ -4,13 +4,13 @@
 //! Wire with `#[cfg(test)] mod tests_policy_flow;` in `governor/mod.rs`.
 //! Uses the fixture from `tests_policy`. Expected extra API:
 //! - `model::Slot { pid, start_time: Option<u64>, workstream, class, tree_id,
-//!   admitted_at, nested_children: u32 }`
+//!   admitted_at, nested_children: u32, start: Start }`
 //! - `model::QueueEntry { seq, workstream, class, pid, start_time:
 //!   Option<u64>, enqueued_at }`
 //! - `model::Admission { workstream, at }`
 //! - `Decision { limit_after: u32, evaluated: bool, .. }`
 
-use super::model::{Admission, Class, DecisionKind, QueueEntry, ReasonCode, Slot};
+use super::model::{Admission, Class, DecisionKind, QueueEntry, ReasonCode, Slot, Start};
 use super::policy::decide;
 use super::rate::RateSignal;
 use super::tests_policy::fixture::{budget, check, inputs, weekly_only};
@@ -25,6 +25,7 @@ fn slot(pid: u32, workstream: &str) -> Slot {
         tree_id: format!("t-{pid}"),
         admitted_at: NOW - 60,
         nested_children: 0,
+        start: Start::Agent,
     }
 }
 
@@ -192,12 +193,22 @@ fn step6_fairness_prefers_the_workstream_with_fewer_admissions() {
 
 #[test]
 fn nested_skips_concurrency_and_queue() {
-    let mut i = inputs(roomy(), Class::Ordinary);
-    i.limit = 1;
-    i.slots = vec![slot(10, "a")];
-    i.queue = vec![queued(1, "a", Class::Coordination)];
-    i.request.nested = true;
-    check(&decide(&i, NOW), DecisionKind::Admit, ReasonCode::Nested);
+    // Under a recipe's slot and under a session's slot alike (D2): at a
+    // limit of 1 the parent would otherwise wait on itself.
+    for (start, parent) in [
+        (Start::Agent, Start::Recipe),
+        (Start::Recipe, Start::Recipe),
+        (Start::Recipe, Start::Agent),
+        (Start::Agent, Start::Agent),
+    ] {
+        let mut i = inputs(roomy(), Class::Ordinary);
+        i.limit = 1;
+        i.slots = vec![slot(10, "a")];
+        i.queue = vec![queued(1, "a", Class::Coordination)];
+        i.request.start = start;
+        i.request.parent = Some(parent);
+        check(&decide(&i, NOW), DecisionKind::Admit, ReasonCode::Nested);
+    }
 }
 
 #[test]
@@ -206,7 +217,7 @@ fn nested_is_still_held_by_session_exhaustion() {
         vec![budget("alpha", true, 100.0, 50.0)],
         Class::Coordination,
     );
-    i.request.nested = true;
+    i.request.parent = Some(Start::Recipe);
     check(
         &decide(&i, NOW),
         DecisionKind::Wait,
@@ -229,10 +240,15 @@ fn deny_comes_only_from_weekly_exhaustion() {
     ];
     for pool in pools {
         for class in [Class::Coordination, Class::Ordinary] {
-            for (nested, slots) in [(false, 0), (false, 4), (true, 4)] {
+            for (parent, slots) in [
+                (None, 0),
+                (None, 4),
+                (Some(Start::Agent), 4),
+                (Some(Start::Recipe), 4),
+            ] {
                 for signal in [RateSignal::Over, RateSignal::Unknown] {
                     let mut i = inputs(pool.clone(), class);
-                    i.request.nested = nested;
+                    i.request.parent = parent;
                     i.request.deadline = NOW;
                     i.slots = (0..slots).map(|p| slot(10 + p, "a")).collect();
                     i.queue = vec![queued(1, "a", Class::Coordination)];

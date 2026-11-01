@@ -10,7 +10,11 @@
 //! 4. Ordinary work and no profile above the reserve: wait (`reserve`).
 //! 5. Top-level slots at the limit: wait (`concurrency`).
 //! 6. An earlier request in the fair queue: wait (`queue`).
-//! 7. Admit (`room`); a nested request is admitted after step 3 (`nested`).
+//! 7. Admit (`room`, or `nested` for a nested request).
+//!
+//! A nested request skips steps 5 and 6. Only a request inside a running
+//! `recipe run` (its parent slot is a recipe's) also skips step 4; one under
+//! an interactive session's slot is new work and is held at the reserve.
 //!
 //! Rate feedback runs first, at most once per evaluation interval, and sets
 //! the limit step 5 uses. Profiles are sorted before use, so the order of
@@ -121,17 +125,19 @@ pub fn decide(i: &Inputs, now: i64) -> Decision {
         return d;
     }
 
-    // A nested launch runs under its parent's slot, inside work that was
-    // already admitted. It is held by weekly and session exhaustion (steps
-    // 2 and 3), where it would fail against the provider's limit anyway, but
-    // not by the reserve, the concurrency limit or the queue: holding it
-    // there would abandon a running recipe part-way through and waste the
-    // points it has already spent.
-    if i.request.nested {
+    // A start inside a running recipe (an agent step, or a sub-recipe) is
+    // part of work that was already admitted. It is held by weekly and
+    // session exhaustion (steps 2 and 3), where it would fail against the
+    // provider's limit anyway, but not by the reserve: holding it there
+    // would abandon the recipe part-way through and waste the points it has
+    // already spent. A nested start under an interactive session's slot is
+    // not exempt: the session can start new recipe runs for as long as it
+    // stays open, and those would spend the protected reserve.
+    if i.request.inside_recipe() {
         return made(
             DecisionKind::Admit,
             ReasonCode::Nested,
-            "nested launch admitted under its parent's slot".into(),
+            "admitted under the slot of the running recipe".into(),
         );
     }
 
@@ -164,6 +170,21 @@ pub fn decide(i: &Inputs, now: i64) -> Decision {
         );
         return made(DecisionKind::Wait, ReasonCode::Reserve, message);
     };
+
+    // A nested start under an interactive session's slot takes no slot of
+    // its own, so the concurrency limit and the queue do not apply (D2): at
+    // a limit of 1 the session would otherwise wait on itself.
+    if i.request.nested() {
+        return made(
+            DecisionKind::Admit,
+            ReasonCode::Nested,
+            format!(
+                "{} start admitted under the session's slot; profile {} has room",
+                i.request.start.as_str(),
+                chosen.name
+            ),
+        );
+    }
 
     // Step 5.
     let held = u32::try_from(i.slots.len()).unwrap_or(u32::MAX);

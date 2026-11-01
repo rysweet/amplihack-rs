@@ -13,7 +13,7 @@ use super::inputs;
 use super::liveness::{reclaim, start_time};
 use super::model::{
     Admission, Class, DecisionKind, FailOpen, FailOpenCode, Inputs, QueueEntry, ReasonCode,
-    Request, Slot,
+    Request, Slot, Start,
 };
 use super::nesting::{marked_parent, nested_parent};
 use super::policy::decide;
@@ -28,6 +28,9 @@ pub struct AdmitContext<'a> {
     pub root: Option<&'a Path>,
     pub settings: Settings,
     pub class: Class,
+    /// What this start is; recorded on its slot so that starts nested
+    /// under it know whether they are part of a running recipe.
+    pub start: Start,
     pub workstream: String,
     pub wait_secs: u64,
     pub session_depth: Option<String>,
@@ -113,7 +116,8 @@ fn round(
         request: Request {
             class: ctx.class,
             workstream: ctx.workstream.clone(),
-            nested: parent.is_some(),
+            start: ctx.start,
+            parent: parent.map(|i| l.state.slots[i].start),
             seq: *ticket,
             deadline,
         },
@@ -152,6 +156,7 @@ fn round(
                         tree_id: tree_id.to_string(),
                         admitted_at: now,
                         nested_children: 0,
+                        start: ctx.start,
                     });
                     l.state.admissions.push(Admission {
                         workstream: ctx.workstream.clone(),
