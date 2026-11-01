@@ -2213,8 +2213,9 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
      measuring cycle found with no room, while the ledger's
      [`no_room`](#api-key-ledger-fields) record holds: auto-switch has no
      reading of its own for the login in `~/.claude`, and the rotator
-     measures it every cycle. The record names every login the cycle
-     measured, so a login the rotator has just moved off is covered too.
+     measures it every cycle. The record ends at the first reset the
+     rotator read for a login it names, since that login has room again.
+     It names every login the cycle measured, so a login the rotator has just moved off is covered too.
      Without a record in force, as when no rotator runs or the rotator
      found room on the login, it counts until a reading is recorded for it
      (a session on it, or `profile usage`) or it is added to `exclude`. The
@@ -6676,7 +6677,7 @@ these optional fields. Older ledgers load unchanged.
 |-------|----------|
 | `live_kind` | `"platform"` while `live` is an API-key profile; absent means subscription. Only present with `live`. The rotator checks and repairs it on every cycle; it is kept for readers, such as the limit-resume hook, that cannot detect kinds. |
 | `platform_block` | `{"reason", "at", "until"}`, with `reason` one of `key_exhausted`, `key_revoked` or `key_rate_limited`, and `0 < at < until <= at + 62 days`; absent when there is no block. Expired blocks are removed the next time the rotator records a cycle. |
-| `no_room` | `{"at", "until", "profiles"}`: the profiles the last measuring cycle found with no room (a reached limit, or a window at 100%), sorted, never the API-key profile and never one whose probe failed. `at` is when the cycle measured; `until` is two `--interval`s plus the cycle's own length after the record was written, so a slow cycle's record is still in force when the next one arrives, and at most one hour after `at`. Written every measuring cycle whatever the capacity state; auto-switch reads it while `at <= now <= until`, for profiles it has no reading of. |
+| `no_room` | `{"at", "until", "profiles"}`: the profiles the last measuring cycle found with no room (a reached limit, or a window at 100%), sorted, never the API-key profile and never one whose probe failed. `at` is when the cycle measured; `until` is two `--interval`s plus the cycle's own length after the record was written, so a slow cycle's record is still in force when the next one arrives, and at most one hour after `at`. It is earlier when a profile the record names has a known reset before then: the whole record ends at the earliest reset of a full window, or the later reset of a profile with both windows full, because that profile has room again. A profile no longer named is unread, so auto-switch holds the API key back until the next record. Written every measuring cycle whatever the capacity state; auto-switch reads it while `at <= now <= until`, for profiles it has no reading of. |
 
 The limit-resume hook reads `live_kind` and `platform_block` without failing on a missing or
 wrongly typed field, and treats a live API-key profile as on the API key,

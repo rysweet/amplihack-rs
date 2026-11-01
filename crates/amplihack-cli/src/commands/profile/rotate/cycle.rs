@@ -290,6 +290,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         unknown_plan,
         key_held,
         measured_at,
+        probed,
         ..
     } = m;
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
@@ -383,7 +384,14 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         tag,
         first.shown_platform(),
     );
-    no_room::record(&mut l, ctx, &first, &live, &others, measured_at);
+    no_room::record(
+        &mut l,
+        ctx,
+        &first,
+        (&live, &others),
+        probed.as_ref(),
+        measured_at,
+    );
     save(ctx, &mut l, outcome, now(), Some(measured_at), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.

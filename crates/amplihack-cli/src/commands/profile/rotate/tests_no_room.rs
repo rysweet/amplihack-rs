@@ -415,3 +415,91 @@ fn a_refused_directory_is_not_an_unusable_login() {
         "a refused directory says nothing about its login"
     );
 }
+
+/// Crusty round 20: the record ends at the first reset the cycle read for a
+/// login it names. `cred`'s full session window resets 100 seconds after
+/// the measurement, well inside the span, so the record holds until then
+/// and names nothing after it: auto-switch then counts `cred` and `work`
+/// unread again and holds the key back.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_record_ends_at_a_known_reset_of_a_login_it_names() {
+    const SOON: i64 = 100;
+    fn cred_resets_soon(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+        let at = now();
+        let mut cred = probed(100.0);
+        cred.windows.session = Some(Win {
+            used: 100.0,
+            resets_at: Some(at + SOON),
+        });
+        let others = vec![(n(CRED), cred), (n(KEY), Probed::platform())];
+        decide_measured(ctx, snap, probed(100.0), others, at)
+    }
+    let f = fx();
+    f.cycle(cred_resets_soon, fails);
+    let l = f.ledger();
+    let rec = l.no_room.as_ref().unwrap();
+    assert_eq!(rec.until, rec.at + SOON, "{rec:?}");
+    assert_eq!(recorded(&f), vec![CRED.to_string(), WORK.to_string()]);
+    assert_eq!(
+        no_room::holding(Some(rec), rec.at + SOON).len(),
+        2,
+        "held up to the reset"
+    );
+    assert!(
+        no_room::holding(Some(rec), rec.at + SOON + 1).is_empty(),
+        "nothing held after the reset"
+    );
+    assert!(no_room::valid(Some(rec)));
+}
+
+#[test]
+fn room_comes_back_at_the_reset_of_the_full_window() {
+    let w = |s: f64, sr: Option<i64>, k: f64, kr: Option<i64>| Windows {
+        session: Some(Win {
+            used: s,
+            resets_at: sr,
+        }),
+        week: Some(Win {
+            used: k,
+            resets_at: kr,
+        }),
+    };
+    let measured = |session, week| Reading::Measured { session, week };
+    let back = no_room::room_back;
+    let both = w(100.0, Some(50), 100.0, Some(900));
+    assert_eq!(
+        back(&measured(100.0, 40.0), &both),
+        Some(50),
+        "session full"
+    );
+    assert_eq!(back(&measured(40.0, 100.0), &both), Some(900), "week full");
+    assert_eq!(back(&measured(100.0, 100.0), &both), Some(900), "the later");
+    assert_eq!(
+        back(&Reading::Exhausted, &w(100.0, Some(50), 3.0, Some(9))),
+        Some(50)
+    );
+    assert_eq!(back(&measured(99.0, 99.0), &both), None, "room");
+    assert_eq!(back(&Reading::Failed, &both), None);
+    let unknown = w(100.0, None, 3.0, Some(9));
+    assert_eq!(back(&Reading::Exhausted, &unknown), None, "reset unknown");
+
+    // Only a login the record names shortens it, and never below `at`.
+    let rec = no_room::of_cycle(
+        Some(&n(WORK)),
+        &measured(100.0, 3.0),
+        &[(n(CRED), measured(10.0, 3.0))],
+        None,
+        1000,
+        1000,
+        120,
+    );
+    assert_eq!(rec.until, 1240);
+    let cred_soon = w(10.0, Some(1010), 3.0, Some(1010));
+    let cut = no_room::until_reset(rec.clone(), &[(&n(CRED), &measured(10.0, 3.0), &cred_soon)]);
+    assert_eq!(cut.until, 1240, "cred is not named");
+    let work_past = w(100.0, Some(500), 3.0, None);
+    let cut = no_room::until_reset(rec, &[(&n(WORK), &measured(100.0, 3.0), &work_past)]);
+    assert_eq!(cut.until, 1000);
+    assert!(no_room::valid(Some(&cut)));
+}

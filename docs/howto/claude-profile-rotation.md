@@ -1910,8 +1910,8 @@ records only a session's own profile, and `profile usage` probes each
 profile's own directory. It uses the rotator's measurement instead: every
 cycle, the rotator records in its ledger the logins it measured with no room,
 and while that record holds (past the next cycle, at most an hour after the
-measurement) those logins no
-longer keep auto-switch off the key. That includes a login the rotator has
+measurement, and no later than the first reset the rotator read for one of
+those logins) those logins no longer keep auto-switch off the key. That includes a login the rotator has
 just moved off. When no rotator is running, or the rotator found room on the
 live login, the live login keeps the key out until a reading is recorded for
 it. To let auto-switch use the key in that state, add the live login to the
