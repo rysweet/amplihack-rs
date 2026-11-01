@@ -148,8 +148,18 @@ pub fn build_from(
         }
     }
     set.ids
-        .extend(crate::commands::agent::unended_conversations(home)?);
+        .extend(crate::commands::agent::unended_conversations(home).map_err(from_agents)?);
     Ok(set)
+}
+
+/// The agent registry's error as this module's: an I/O error by kind, a
+/// refusal by the path it names and its problem, without the path again.
+fn from_agents(e: crate::commands::agent::Unreadable) -> LiveError {
+    use crate::commands::agent::Unreadable;
+    match e {
+        Unreadable::Io(path, kind) => (path, kind.into()),
+        Unreadable::Refused(r) => (r.path, Why::Agents(r.problem)),
+    }
 }
 
 /// Profile names in the root, as `profile list` sees them.

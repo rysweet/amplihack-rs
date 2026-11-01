@@ -168,7 +168,7 @@ mod validate;
 mod wrapper;
 
 #[cfg(unix)]
-pub(crate) use live_conversations::unended_conversations;
+pub(crate) use live_conversations::{Unreadable, unended_conversations};
 #[cfg(unix)]
 pub use wrapper::run_wrapped;
 

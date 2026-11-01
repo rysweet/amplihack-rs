@@ -41,7 +41,7 @@ impl AgentsDir {
                 .mode(0o700)
                 .create(&top)
                 .or_else(|e| match e.kind() {
-                    io::ErrorKind::AlreadyExists => check_top(&top),
+                    io::ErrorKind::AlreadyExists => check_top(&top).map_err(anyhow::Error::from),
                     _ => Err(anyhow!("{}: {e}", top.display())),
                 })?,
             _ => check_top(&top)?,
@@ -52,8 +52,9 @@ impl AgentsDir {
     }
 
     /// The same checks as [`AgentsDir::open`], creating nothing. `None`
-    /// when either directory is missing.
-    pub fn existing(home: &Path) -> anyhow::Result<Option<Self>> {
+    /// when either directory is missing. A refusal names the directory at
+    /// fault as a field, so a caller never has to parse it out of the text.
+    pub fn existing(home: &Path) -> Result<Option<Self>, Refusal> {
         let top = home.join(".amplihack");
         if missing(&top)? {
             return Ok(None);
@@ -63,7 +64,7 @@ impl AgentsDir {
         if missing(&root)? {
             return Ok(None);
         }
-        check_private_dir(&root).map_err(|e| anyhow!("{}: {e}", root.display()))?;
+        check_private_dir(&root).map_err(|e| Refusal::new(&root, e))?;
         Ok(Some(Self { root }))
     }
 
@@ -84,18 +85,43 @@ impl AgentsDir {
     }
 }
 
-fn missing(p: &Path) -> anyhow::Result<bool> {
+fn missing(p: &Path) -> Result<bool, Refusal> {
     match fs::symlink_metadata(p) {
         Ok(_) => Ok(false),
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(true),
-        Err(e) => Err(anyhow!("{}: {e}", p.display())),
+        Err(e) => Err(Refusal::new(p, e)),
     }
 }
 
+/// A file or directory of the registry that was refused, and why. Shown as
+/// `<path>: <problem>`, the shape of every registry message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub path: PathBuf,
+    pub problem: String,
+}
+
+impl Refusal {
+    fn new(path: &Path, problem: impl std::fmt::Display) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            problem: problem.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for Refusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.path.display(), self.problem)
+    }
+}
+
+impl std::error::Error for Refusal {}
+
 /// `~/.amplihack` may be the user's own: a real directory owned by the
 /// effective user that others cannot write (a private group may).
-fn check_top(top: &Path) -> anyhow::Result<()> {
-    let m = fs::symlink_metadata(top).map_err(|e| anyhow!("{}: {e}", top.display()))?;
+fn check_top(top: &Path) -> Result<(), Refusal> {
+    let m = fs::symlink_metadata(top).map_err(|e| Refusal::new(top, e))?;
     let problem = if m.file_type().is_symlink() {
         "is a symlink"
     } else if !m.is_dir() {
@@ -107,15 +133,16 @@ fn check_top(top: &Path) -> anyhow::Result<()> {
     } else {
         return Ok(());
     };
-    Err(anyhow!("{}: {problem}", top.display()))
+    Err(Refusal::new(top, problem))
 }
 
 /// Why the registry could not be loaded. `Unsafe` and `Corrupt` hold the
-/// whole message; [`LoadError::into_error`] adds the path to the others.
+/// file and the problem; [`LoadError::into_error`] adds the path to the
+/// others.
 #[derive(Debug)]
 pub enum LoadError {
-    Unsafe(String),
-    Corrupt(String),
+    Unsafe(Refusal),
+    Corrupt(Refusal),
     TooNew(u64),
     Io(io::Error),
 }
@@ -123,7 +150,7 @@ pub enum LoadError {
 impl std::fmt::Display for LoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Unsafe(m) | Self::Corrupt(m) => f.write_str(m),
+            Self::Unsafe(r) | Self::Corrupt(r) => r.fmt(f),
             Self::TooNew(n) => write!(
                 f,
                 "written by a newer amplihack (registry version {n}); upgrade amplihack. It was \
@@ -155,11 +182,11 @@ pub fn load(dir: &AgentsDir) -> Result<Registry, LoadError> {
 /// [`load`], with the bytes it parsed; `None` for a missing file.
 fn read(dir: &AgentsDir) -> Result<(Registry, Option<Vec<u8>>), LoadError> {
     let path = dir.registry();
-    let shown = path.display();
+    let refused = |problem: String| Refusal::new(&path, problem);
     let unsafe_file = || {
-        LoadError::Unsafe(format!(
-            "{shown}: must be a regular file owned by you with mode 0600; {KEPT}"
-        ))
+        LoadError::Unsafe(refused(format!(
+            "must be a regular file owned by you with mode 0600; {KEPT}"
+        )))
     };
     let (bytes, meta) = match read_bounded_nofollow(&path, MAX_BYTES as u64) {
         Ok(Some(read)) => read,
@@ -168,8 +195,8 @@ fn read(dir: &AgentsDir) -> Result<(Registry, Option<Vec<u8>>), LoadError> {
             let big = fs::symlink_metadata(&path)
                 .is_ok_and(|m| m.is_file() && m.len() > MAX_BYTES as u64);
             if big {
-                let msg = format!("{shown}: larger than 8 MiB; {KEPT}");
-                return Err(LoadError::Corrupt(msg));
+                let msg = format!("larger than 8 MiB; {KEPT}");
+                return Err(LoadError::Corrupt(refused(msg)));
             }
             return Err(unsafe_file());
         }
@@ -179,11 +206,11 @@ fn read(dir: &AgentsDir) -> Result<(Registry, Option<Vec<u8>>), LoadError> {
         return Err(unsafe_file());
     }
     let at = |what: &str, e: serde_json::Error| {
-        LoadError::Corrupt(format!(
-            "{shown}: {what} (line {}, column {}); {KEPT}",
+        LoadError::Corrupt(refused(format!(
+            "{what} (line {}, column {}); {KEPT}",
             e.line(),
             e.column()
-        ))
+        )))
     };
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|e| at("not valid JSON", e))?;
@@ -191,9 +218,9 @@ fn read(dir: &AgentsDir) -> Result<(Registry, Option<Vec<u8>>), LoadError> {
         Some(VERSION) => {}
         Some(n) if n > VERSION => return Err(LoadError::TooNew(n)),
         _ => {
-            return Err(LoadError::Corrupt(format!(
-                "{shown}: field version is not valid; {KEPT}"
-            )));
+            return Err(LoadError::Corrupt(refused(format!(
+                "field version is not valid; {KEPT}"
+            ))));
         }
     }
     let reg: Registry =
@@ -201,11 +228,11 @@ fn read(dir: &AgentsDir) -> Result<(Registry, Option<Vec<u8>>), LoadError> {
     for (name, entry) in &reg.agents {
         if let Err(fe) = validate::entry(name, entry) {
             let msg = if fe.field == "name" {
-                format!("{shown}: an agent name is not valid; {KEPT}")
+                format!("an agent name is not valid; {KEPT}")
             } else {
-                format!("{shown}: agent {name}: {fe}; {KEPT}")
+                format!("agent {name}: {fe}; {KEPT}")
             };
-            return Err(LoadError::Corrupt(msg));
+            return Err(LoadError::Corrupt(refused(msg)));
         }
     }
     Ok((reg, Some(bytes)))

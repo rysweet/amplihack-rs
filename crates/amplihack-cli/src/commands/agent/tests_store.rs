@@ -5,11 +5,11 @@
 //! API under test:
 //! - `AgentsDir::path(home: &Path) -> PathBuf` (`home/.amplihack/agents`)
 //! - `AgentsDir::open(home: &Path) -> anyhow::Result<AgentsDir>` (creates as
-//!   needed) and `AgentsDir::existing(home: &Path) ->
-//!   anyhow::Result<Option<AgentsDir>>` (never creates)
+//!   needed) and `AgentsDir::existing(home: &Path) -> Result<Option<AgentsDir>,
+//!   Refusal>` (never creates); `Refusal { path, problem }` shows `<path>: <problem>`
 //! - `AgentsDir::{registry, registry_lock, supervisor_lock, log, ended}(&self)
 //!   -> PathBuf`
-//! - `LoadError { Unsafe(String), Corrupt(String), TooNew(u64),
+//! - `LoadError { Unsafe(Refusal), Corrupt(Refusal), TooNew(u64),
 //!   Io(std::io::Error) }`, `Display` = the step 5b section 9.2 message
 //! - `load(dir: &AgentsDir) -> Result<Registry, LoadError>`
 //! - `update<T>(dir: &AgentsDir, now: i64, f: impl FnOnce(&mut Registry) ->
@@ -53,8 +53,8 @@ fn with_registry(body: &str) -> (tempfile::TempDir, AgentsDir) {
 }
 
 /// The whole chain of an expected error.
-fn err<T>(r: anyhow::Result<T>) -> String {
-    format!("{:#}", r.err().expect("an error"))
+fn err<T, E: Into<anyhow::Error>>(r: Result<T, E>) -> String {
+    format!("{:#}", r.err().expect("an error").into())
 }
 /// The refusals of `open` and of `existing` for `home`, joined.
 fn refusals(home: &Path) -> String {
