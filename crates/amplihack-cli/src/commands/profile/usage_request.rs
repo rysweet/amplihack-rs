@@ -5,7 +5,7 @@
 //! left out. Nothing here runs a process, does I/O or names a login file.
 
 use super::usage_cmd::sanitize_display;
-use super::usage_parse::{MAX_PCT, UsageReport, UsageState, UsageWindow};
+use super::usage_parse::{MAX_PCT, UsageReport, UsageState, UsageWindow, settle_session};
 use serde_json::{Map, Value};
 
 /// Fixed: each process gets one request, and a constant line can be quoted
@@ -59,9 +59,8 @@ pub(super) fn parse_answer(stdout: &str, now: i64) -> Option<UsageReport> {
     if !credits_off(payload) || !credits_off(limits) {
         return None;
     }
-    let session = limits
-        .get("five_hour")
-        .and_then(|w| window(w, "session", now));
+    let five_hour = limits.get("five_hour");
+    let mut session = five_hour.and_then(|w| window(w, "session", now));
     let week_all = limits
         .get("seven_day")
         .and_then(|w| window(w, "all models", now));
@@ -76,6 +75,9 @@ pub(super) fn parse_answer(stdout: &str, now: i64) -> Option<UsageReport> {
         });
     let exhausted =
         |w: &Option<UsageWindow>| w.as_ref().is_some_and(|w| w.used_percentage >= 100.0);
+    // Issue #1818: decided on the raw `five_hour`, never the cleaned text.
+    let reset_seen = session_reset_seen(five_hour, session.is_some());
+    let session_limit = settle_session(&mut session, reset_seen, week_all.is_some());
     let state = if exhausted(&session) {
         UsageState::SessionExhausted
     } else if exhausted(&week_all) {
@@ -88,7 +90,22 @@ pub(super) fn parse_answer(stdout: &str, now: i64) -> Option<UsageReport> {
         session,
         week_all,
         week_models,
+        session_limit,
     })
+}
+
+/// Whether `five_hour` shows a session reset (issue #1818). Only an absent
+/// or `null` `five_hour`, or a read window whose `resets_at` is absent or
+/// `null`, shows none. A `resets_at` of any other value counts, even when it
+/// cannot be used, and so does a `five_hour` the reader rejected (S1). A read
+/// window with a non-zero `utilization` keeps the limit even with no reset:
+/// [`settle_session`] checks the percentage.
+fn session_reset_seen(five_hour: Option<&Value>, read: bool) -> bool {
+    match five_hour {
+        None | Some(Value::Null) => false,
+        Some(w) if read => !matches!(w.get("resets_at"), None | Some(Value::Null)),
+        Some(_) => true,
+    }
 }
 
 /// `extra_usage` in `object` is absent, `null`, or an object whose

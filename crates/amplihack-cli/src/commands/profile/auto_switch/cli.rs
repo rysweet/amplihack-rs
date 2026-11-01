@@ -7,7 +7,7 @@ use super::liveness::{self, Liveness};
 use super::state::{CREDS, Ledger, PHASE_INCONSISTENT, State};
 use super::statusline;
 use super::swap;
-use super::usage::Window;
+use super::usage::{Reading, Window};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
@@ -195,6 +195,17 @@ fn cell(w: Option<&Window>, now: i64) -> String {
     }
 }
 
+/// The `5h` cell (issue #1818): `no session window` for a reading with a
+/// week window and no session window, otherwise as [`cell`]. It does not say
+/// `no session limit`: see [`Reading::no_session_window`] for the other
+/// ways a stored reading loses its session window.
+pub(super) fn five_cell(r: Option<&Reading>, now: i64) -> String {
+    match r {
+        Some(r) if r.no_session_window() => "no session window".into(),
+        _ => cell(r.and_then(|r| r.five_hour.as_ref()), now),
+    }
+}
+
 fn ago(observed_at: Option<i64>, now: i64) -> String {
     let Some(t) = observed_at else {
         return "never".into();
@@ -301,7 +312,7 @@ fn status(store: &ProfileStore) -> Result<String> {
             }
             Row {
                 name: n.to_string(),
-                five: cell(r.and_then(|r| r.five_hour.as_ref()), now),
+                five: five_cell(r, now),
                 seven: cell(r.and_then(|r| r.seven_day.as_ref()), now),
                 observed: ago(r.map(|r| r.observed_at), now),
                 login,

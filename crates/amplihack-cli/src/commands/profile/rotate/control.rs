@@ -108,6 +108,15 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     if let Some(line) = super::platform_live_line(store.root()) {
         println!("{line}");
     }
+    // Issue #1818: profiles whose stored reading has no session window. Not
+    // labelled "no session limit": the stored reading cannot tell a plan
+    // with none from a session window that was not recorded.
+    let names_now = store.list().unwrap_or_default();
+    if let Some(line) =
+        crate::commands::profile::auto_switch::no_session_window_line(store.root(), &names_now)
+    {
+        println!("{line}");
+    }
     // `.default` bypasses the rotator: say so when it names an overflow profile.
     if let Ok(Some(d)) = pointer::read(store.root())
         && names.contains(&d)

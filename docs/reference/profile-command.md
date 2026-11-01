@@ -264,6 +264,12 @@ is kept:
   than 8 days from now: no session or weekly window resets that far ahead,
   so such a time is treated as unknown rather than trusted.
 
+A `five_hour` window at `0` whose `resets_at` key is absent or `null`, or no
+`five_hour` at all, means the reading has
+[no session limit](#no-session-limit) when `seven_day` was read: `session`
+is then `null` and `session_limit` is `false`. A `five_hour` above `0` with
+no reset keeps its window and the session limit.
+
 This page shows such resets as `2026-10-16T23:50:00Z`. That is an example
 of the form: whether `claude` sends fractional seconds, `Z` or an offset
 such as `+00:00` is up to `claude`, and `resets_text` keeps what it sent.
@@ -271,9 +277,10 @@ The other windows in the payload (`seven_day_opus`, `seven_day_sonnet`,
 `seven_day_oauth_apps`) are not used.
 
 The state of an accepted answer is `session_exhausted` when the session is
-at 100% or more, else `weekly_exhausted` when the all-models week is, else
-`ok`. The usage request never gives `spend_limit`, `not_logged_in` or
-`unparsed`: those states come only from the `/usage` text.
+at 100% or more and a session limit applies, else `weekly_exhausted` when
+the all-models week is, else `ok`. The usage request never gives
+`spend_limit`, `not_logged_in` or `unparsed`: those states come only from
+the `/usage` text.
 
 `claude` can answer from figures it stored earlier, without saying how old
 they are. `/usage` shows the same stored figures, so amplihack treats both
@@ -444,10 +451,11 @@ Current week (all models): 68% used · resets Oct 22, 2am (America/Los_Angeles)
 Current week (Fable): 0% used · resets Oct 22, 2am (America/Los_Angeles)
 ```
 
-Claude leaves out the reset when the window has not started, for example
-`Current session: 0% used` when no session is open. Such a line is still
-read: `resets_text` and `resets_at` are `null`, and the table shows `-` for
-the reset.
+Claude leaves out the reset when no session window applies, for example
+`Current session: 0% used`. Such a line at 0% means the reading has
+[no session limit](#no-session-limit) when the all-models week was read. A
+session line above 0% with no reset is read as a session window with no
+known reset.
 
 | Line | Field |
 |------|-------|
@@ -478,6 +486,107 @@ gap) or the text has another form, `resets_at` is `null` and only the text is
 shown. A time that occurs twice (the hour repeated when daylight saving
 ends) resolves to the earlier one.
 
+#### No session limit
+
+Claude sometimes reports the all-models week without a running five-hour
+session window. A reading then has *no session limit*: no active session
+window was reported, and the profile is judged on its all-models week alone.
+The report has `session_limit` set to `false` and `session` set to `null`.
+
+The label describes the reading, not the plan. Claude also leaves out the
+session reset when a session-limited login has not started a session, so an
+idle Pro or Max login reads as having no session limit until a session
+starts. This does not change which login is chosen: the session is at 0%,
+which is not exhausted, and the next reading that has a reset restores the
+session window.
+
+A `/usage` reading has no session limit when the all-models week line was
+read and either of these holds:
+
+- there is no `Current session` line;
+- the `Current session` line is at 0% and has no reset clause, for example
+  `Current session: 0% used`.
+
+```
+Current week (all models): 47% used · resets Oct 22, 2am (America/Los_Angeles)
+```
+
+```
+Current session: 0% used
+Current week (all models): 47% used · resets Oct 22, 2am (America/Los_Angeles)
+```
+
+Both give state `ok`, `session_limit` `false` and `session` `null`. With
+the week at 100% or more the state is `weekly_exhausted`.
+
+A plan with no session limit has nothing to count in the session
+percentage, so a value above 0% shows that a session window exists. The same
+line at `47% used` keeps the session limit with state `ok`, and at
+`100% used` gives `session_exhausted`, as before issue #1818. In both cases
+`resets_text` and `resets_at` are `null`.
+
+The rule fails closed. A session limit still applies, and the session line
+is read as before, in each of these cases:
+
+| Case | Example | Why |
+|------|---------|-----|
+| The session line is above 0%, with or without a reset clause | `Current session: 100% used` | A non-zero percentage shows a session window. With no reset clause `resets_text` and `resets_at` are `null`. |
+| The session line has a reset clause, even one whose time cannot be resolved | `Current session: 3% used · resets 3am (Etc/Unknown)` | A printed reset shows that a session window exists. `resets_at` is `null` and `resets_text` keeps the text. |
+| A line contains `Current session` but does not have the form above, for example because of a prefix | `Current session: unavailable` | A change in Claude's wording must not make an exhausted login look usable. |
+| No all-models week line was read | `Current session: 0% used` alone | Nothing else can rank the profile. The state follows the usual [rules](#states). A session line with no reset clause is still read: `resets_text` and `resets_at` are `null`, and the table shows `-` in `SESSION RESETS`. |
+| The row is `spend_limit` or any failed state | | `session_limit` is `true` on every row that is not `ok` or `weekly_exhausted`. |
+
+An accepted [usage request](#probe-method) has no session limit when
+`rate_limits.seven_day` was read and either `rate_limits.five_hour` is
+absent, or its `utilization` is `0` and its `resets_at` key is absent or
+`null`. A `five_hour` above `0` with no reset keeps the session window and
+the limit, and is `session_exhausted` at 100 or more. The check is on the raw
+key: a `resets_at` that is present but not a valid string, not an RFC 3339
+time or more than 8 days ahead still means a session limit applies, even
+though the row's `resets_at` is then `null`. A `five_hour` whose
+`utilization` is unusable is left out as before and also keeps the limit.
+
+| `rate_limits` | `session_limit` | `session` |
+|---------------|-----------------|-----------|
+| `{"seven_day": {"utilization": 47.0, "resets_at": "2026-10-22T09:00:00Z"}}` | `false` | `null` |
+| `{"five_hour": {"utilization": 0.0, "resets_at": null}, "seven_day": {…}}` | `false` | `null` |
+| `{"five_hour": {"utilization": 0.0}, "seven_day": {…}}` | `false` | `null` |
+| `{"five_hour": {"utilization": 100.0, "resets_at": null}, "seven_day": {…}}` | `true` | the window, with both reset fields `null` |
+| `{"five_hour": {"utilization": 20.0, "resets_at": "2026-10-17T02:00:00Z"}, "seven_day": {…}}` | `true` | the window |
+| `{"five_hour": {"utilization": 20.0, "resets_at": 1792202400}, "seven_day": {…}}` | `true` | the window, with both reset fields `null` |
+
+A profile with no session limit is not exempt from limits: it is
+`weekly_exhausted`, and never chosen, once its all-models week reaches 100%,
+and the rotator and auto-switch apply their usual week thresholds to it. See
+[Rotate decision rule](#rotate-decision-rule) and
+[Candidate selection](#candidate-selection).
+
+Known limitations:
+
+- An idle session-limited login at 0% is labelled `no session limit`, as
+  described above, in `profile usage` and `profile usage --json`.
+- `rotate status` and `auto-switch status` read the stored auto-switch
+  [readings](#readings), which have no field for "a session limit applies
+  but its window is unknown". They therefore print `no session window`, not
+  `no session limit`: a stored reading with `seven_day` and no `five_hour`.
+  That happens for a reading with no session limit, and also when:
+  - a status-line input had no `five_hour`, or one that was rejected (no
+    `resets_at`, an unusable percentage, or a reset outside the bounds in
+    [Readings](#readings));
+  - a `profile usage` row that has a session limit had its session window
+    rejected by the same bounds (for example no reset time), and the stored
+    `five_hour` had already reset.
+
+  Ranking is the same in every case: a missing `five_hour` counts as 0%.
+  These views can also be as old as the last recorded reading.
+- When `profile usage` records a reading with no session limit for a login
+  whose stored auto-switch reading has a session window that has not reset,
+  that window is kept until its reset passes. The new reading may come from
+  figures `claude` stored earlier, and a live window contradicts it. The
+  rotator and auto-switch therefore go on treating the login as it was
+  (for example session-exhausted) for at most five hours. See
+  [Refreshing auto-switch readings](#refreshing-auto-switch-readings).
+
 #### States
 
 Every profile gets exactly one state:
@@ -485,7 +594,7 @@ Every profile gets exactly one state:
 | State | Meaning |
 |-------|---------|
 | `ok` | The session or the all-models week was read, from an accepted usage request or a `/usage` line, and neither is at 100%. |
-| `session_exhausted` | The session is at 100% or more. |
+| `session_exhausted` | The session is at 100% or more and a session limit applies. A reading with [no session limit](#no-session-limit) never has this state. |
 | `weekly_exhausted` | The all-models week is at 100% or more and the session is not. |
 | `spend_limit` | The `/usage` output reported that the organisation's spend limit was reached. Any percentages read are kept. |
 | `not_logged_in` | The `/usage` output had no usage line of any kind (model week lines included) and reported that the profile is not signed in. Run `amplihack profile login <name>`. A profile [live in `~/.claude`](#logins-in-claude) is probed against `~/.claude`, so its missing `.credentials.json` does not give this state. |
@@ -563,12 +672,13 @@ failure to start, write to, read or wait for the usage request is not an
 #### Table output
 
 ```
-PROFILE   MARKS             STATE              SESSION  SESSION RESETS        WEEK  WEEK RESETS
-review    -                 ok                 5%       2026-10-17T04:00:00Z  10%   2026-10-22T09:00:00Z
-work      * hosts:personal  ok                 20%      2026-10-17T02:00:00Z  30%   2026-10-22T09:00:00Z
-team      -                 session_exhausted  100%     2026-10-16T23:50:00Z  68%   2026-10-22T09:00:00Z
-personal  leased→work       not_logged_in      -        -                     -     -
-spare     -                 timeout            -        -                     -     -
+PROFILE   MARKS             STATE              SESSION           SESSION RESETS        WEEK  WEEK RESETS
+review    -                 ok                 5%                2026-10-17T04:00:00Z  10%   2026-10-22T09:00:00Z
+work      * hosts:personal  ok                 20%               2026-10-17T02:00:00Z  30%   2026-10-22T09:00:00Z
+weekly    -                 ok                 no session limit  -                     47%   2026-10-22T09:00:00Z
+team      -                 session_exhausted  100%              2026-10-16T23:50:00Z  68%   2026-10-22T09:00:00Z
+personal  leased→work       not_logged_in      -                 -                     -     -
+spare     -                 timeout            -                 -                     -     -
 ```
 
 `SESSION` and `WEEK` are the session and all-models week. Percentages print
@@ -576,6 +686,14 @@ as a whole number when they are whole and with one decimal place otherwise
 (`12.5%`). `-` means no value. A `timeout` or `error` row shows `-` in every
 percentage and reset column: its usage is unknown. Model-specific week lines
 are not in the table; they are in the JSON.
+
+A row in state `ok` or `weekly_exhausted` with
+[no session limit](#no-session-limit) shows `no session limit` in full in
+`SESSION`, never shortened, and `-` in `SESSION RESETS`. The label means
+that no active session window was reported; the profile is ranked on its
+week. Every other row keeps its usual cells: `timeout`, `error`,
+`unparsed`, `not_logged_in`, `spend_limit` and
+[API-key](#api-key-usage) rows never show the label.
 
 Reset columns show the reset as received, so their form depends on the
 [attempt](#probe-method) that gave the row:
@@ -888,6 +1006,7 @@ there is no version field.
       "resets_text": "2026-10-17T02:00:00Z",
       "resets_at": 1792202400
     },
+    "session_limit": true,
     "week_all": {
       "label": "all models",
       "used_percentage": 30.0,
@@ -917,7 +1036,8 @@ there is no version field.
 | `overflow` | bool | Whether the profile is marked as [credit-backed overflow](#rotate-overflow). Always present. |
 | `overflow_blocked_until` | integer or `null` | Unix epoch seconds until which the rotator has [blocked](#overflow-spend-limit-block) this overflow profile after a spend limit; `null` when it is not blocked or not marked. Always present. |
 | `state` | string | One of the [states](#states). |
-| `session` | window or `null` | The session: `rate_limits.five_hour` from the [usage request](#probe-method), or the `Current session` line from `/usage`. Always `null` for `timeout` and `error`. |
+| `session` | window or `null` | The session: `rate_limits.five_hour` from the [usage request](#probe-method), or the `Current session` line from `/usage`. Always `null` for `timeout` and `error`, and when `session_limit` is `false`. |
+| `session_limit` | bool | `false` only when a reading showed no session window; `true` otherwise, including rows that could not be read. See [No session limit](#no-session-limit). Always present, immediately after `session`. |
 | `week_all` | window or `null` | The all-models week: `rate_limits.seven_day`, or the `Current week (all models)` line. Always `null` for `timeout` and `error`. |
 | `week_models` | array of windows | Each usable `rate_limits.model_scoped` entry, or every other `Current week (<model>)` line, in the order given. Empty if none. |
 | `error` | string or `null` | The [reason](#states) for an `error` row, otherwise `null`. |
@@ -953,6 +1073,34 @@ amplihack profile usage --json | jq -r '.[]
 
 ```
 ryan-mistt-org
+```
+
+The weekly-only row from the [table example](#table-output) reads:
+
+```json
+{
+  "profile": "weekly",
+  "state": "ok",
+  "session": null,
+  "session_limit": false,
+  "week_all": {
+    "label": "all models",
+    "used_percentage": 47.0,
+    "resets_text": "2026-10-22T09:00:00Z",
+    "resets_at": 1792659600
+  }
+}
+```
+
+Its other keys are left out here. To list the profiles with
+[no session limit](#no-session-limit):
+
+```bash
+amplihack profile usage --json | jq -r '.[] | select(.session_limit == false) | .profile'
+```
+
+```
+weekly
 ```
 
 #### Refreshing auto-switch readings
@@ -1003,6 +1151,14 @@ Then, under the lock, for each row:
 - If neither window passes, nothing is recorded for that account. If only
   one passes, the other is kept from the stored reading while its reset time
   is still in the future.
+- A row with [no session limit](#no-session-limit) follows the same rule:
+  its stored `five_hour` is kept while its reset time is still in the
+  future, and dropped once it has passed. A 0% session line with no reset
+  may come from figures `claude` stored earlier, so it does not override a
+  live session window. A login that has just stopped reporting a session
+  window can therefore stay session-exhausted until the old reset passes,
+  which is at most five hours. No new `five_hour` is recorded for such a
+  row.
 - The reading has `observed_at` set to now and `source` set to `statusline`,
   and is merged with the stored one the usual way.
 
@@ -1952,6 +2108,20 @@ overflow gate: wait 1800s, unknown reset waits, plan capacity below 85% session 
 overflow gate: closed (the running rotator (pid 4242) has not recorded its overflow settings; restart it)
 ```
 
+The `5h` cell shows `no session window` when the account's reading has
+`seven_day` and no `five_hour`: no session window was recorded, and the
+account is ranked on its week (see [Readings](#readings)). This is not the
+same as [no session limit](#no-session-limit): the stored reading cannot
+tell a plan with no session limit from a session window that was not
+recorded (see the known limitations there). An account with neither window,
+or no reading, shows `-`.
+
+```
+profile   5h                 7d    observed   login   wrapper
+weekly    no session window  47%   2m ago     home    installed
+work      93%                61%   5m ago     home    installed
+```
+
 `status` prints `wrapper` as `installed`, `missing`, `stale` (an older or
 edited wrapper command, one wrapped twice, or one pointing at a different
 binary) or `unsafe` (the binary is in a location `install` would refuse).
@@ -2132,6 +2302,13 @@ limit (see [Usage-limit reruns](#usage-limit-reruns)).
   reset times) is still ignored, because it describes the previous account.
   Readings recorded by `profile usage` skip this quiet period; see
   [Refreshing auto-switch readings](#refreshing-auto-switch-readings).
+- **No session window.** A reading may hold `seven_day` with no
+  `five_hour`: Claude reported no session window for that login (see
+  [No session limit](#no-session-limit)), or the status line gave none. It
+  is judged on `seven_day` alone. When `profile usage` records such a
+  reading, a stored `five_hour` is kept until its reset time passes; see
+  [Refreshing auto-switch readings](#refreshing-auto-switch-readings).
+  `usage.json` has no `session_limit` field and its format is unchanged.
 - **Merging.** The reading with the newer `observed_at` wins; on a tie, the
   one with the higher usage wins.
 - **Errors.** A damaged `usage.json` is treated as empty and overwritten by
@@ -2142,7 +2319,10 @@ limit (see [Usage-limit reruns](#usage-limit-reruns)).
 An account is *exhausted* when the higher of its two adjusted windows is
 at or above the threshold (`max(five_hour, seven_day) >= threshold`). An
 *adjusted* window is one whose `resets_at` is at or before now, which counts
-as 0%. A window without `resets_at` is used as read. An account with no
+as 0%. A window without `resets_at` is used as read. A reading with no
+`five_hour` is judged and ranked on `seven_day` alone, so a login with
+[no session limit](#no-session-limit) is eligible while its week is below
+the threshold. An account with no
 reading is not exhausted. Exhausted plan accounts are never chosen; an
 [overflow](#auto-switch-and-overflow-profiles) profile's own reading does
 not count.
@@ -3371,10 +3551,17 @@ point.
 | Probe result | Session used | Week used | Headroom |
 |--------------|--------------|-----------|----------|
 | `ok` with both windows | as reported | as reported | as computed |
-| `ok` with no session window | `0` | as reported | as computed |
+| `ok` with no session window, including [no session limit](#no-session-limit) | `0` | as reported | as computed |
 | `ok` with no week window | | | probe failed |
 | `session_exhausted` or `weekly_exhausted` | | | `0` |
 | any other [state](#states) | | | probe failed |
+
+A profile with no session limit is ranked on its week alone: its headroom
+is `100 - week_used`, and `session-at` never triggers for it. When every
+other login is session-exhausted, such a profile with weekly room is the
+best candidate. Once its week reaches `week-at` it is treated like any
+other profile over the week threshold, and at 100% it is
+`weekly_exhausted`.
 
 A candidate whose probe failed, or that is exhausted, is never chosen. A
 probe that timed out, or that could not start `claude`, read its output or
@@ -4670,7 +4857,7 @@ stdout only, without the time.
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows `s=100%,w=100%`, whatever the windows it read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows `s=100%,w=100%`, whatever the windows it read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
 | `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
@@ -4916,6 +5103,22 @@ on overflow: no
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
+With two profiles whose last reading had no session window:
+
+```
+root: /home/you/.claude-profiles (source: config)
+rotate: running
+autostart: on (default)
+pid: 48213
+live: spare
+last cycle: 2026-10-18T12:50:05Z stayed
+overflow: -
+api key: -
+on overflow: no
+no session window: review, weekly
+log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
 On credits, with a second overflow profile blocked:
 
 ```
@@ -4942,7 +5145,9 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `last cycle` | The time and outcome (`swapped`, `stayed`, `switched`, `alerted`, `skipped`, `idle` or `held`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; `switched` by [`profile switch`](#rotate-switch), and kept by the held cycles after it; `held` when the [pin](#rotate-pin) held rotation with no switch record; a cycle that could not take the lock records nothing. An [overflow](#rotate-overflow) cycle adds ` overflow=in`, ` overflow=out` or ` overflow=on`. |
 | `hold` | Only while something is at the [pin](#rotate-pin) path: `hold: <name>`, `hold: <name> (profile missing; ignored)` or `hold: unreadable`. |
 | `overflow` | The marked overflow profiles in list order, separated by `, `, each followed by ` (blocked until <time>)` when it has an active [spend block](#overflow-spend-limit-block); `-` when none is marked or `.auto-switch` is corrupt. When the ledger cannot be read, the list ends with ` (blocks unknown)`. |
+| `api key` | The first API-key profile, followed by ` (blocked until <time>, <reason>)` while the ledger records an active API-key block; `-` when there is no API-key profile. Printed between `overflow` and `on overflow`. |
 | `on overflow` | `yes (<name>, held by switch)` when a [pin](#rotate-pin) names the live overflow profile: a `profile switch` onto it is a choice to spend, and the rotator does not move off it until `profile switch --none` (see [Pin and overflow](#pin-and-overflow)). Otherwise `yes (<name>)` when the profile identified as live in `~/.claude` by account is an overflow profile and the ledger's `last_cycle.overflow` is `in` or `on`, which means the rotator found no plan capacity in its last cycle. `no (<name> is overflow; plan capacity remains)` when the live profile is an overflow profile but the last cycle carries no such tag, for example after the login was put in `~/.claude` by hand. `no` when it is a plan profile, `-` when the live profile cannot be identified. `status` runs no probe; the ledger is its only evidence. |
+| `no session window` | Printed only when the list is not empty: the profiles whose current auto-switch [reading](#readings) has `seven_day` and no `five_hour`, sorted by name and separated by `, `. These profiles are ranked on their week. The line does not say `no session limit`: a stored reading also loses its `five_hour` when a session window was not recorded (see the known limitations under [No session limit](#no-session-limit)). Only profiles that exist now are listed. The line comes after `on overflow` and after the `~/.claude is on API key profile ...` line when that is printed, and before `default` and `hold`. It is read from `usage.json` without a lock; if the file is missing, unreadable or unsafe, the line is left out and nothing is printed to stderr. |
 | `default` | Printed only when the [default pointer](#clearing-the-default) names an overflow profile: `<name> (overflow; launches use it directly)`. |
 | `log` | The log path. |
 | `alert` | Zero or more. A current [hand-change](#rotate-hand-change-recovery) guidance line. |

@@ -531,3 +531,48 @@ fn the_rerun_candidate_follows_the_overflow_rule() {
         "back to the plan profile once it recovers"
     );
 }
+
+// --- Issue #1818: readings with no session limit ----------------------------
+
+/// A reading with a week window and no five-hour window.
+fn weekly_only(seven: f64) -> Reading {
+    Reading {
+        five_hour: None,
+        seven_day: w(seven, 86_400),
+        observed_at: NOW - 10,
+        source: ReadingSource::Statusline,
+    }
+}
+
+#[test]
+fn a_weekly_only_reading_is_judged_on_its_week() {
+    assert!(!candidate::is_exhausted(Some(&weekly_only(0.0)), 90, NOW));
+    assert!(!candidate::is_exhausted(Some(&weekly_only(89.9)), 90, NOW));
+    assert!(candidate::is_exhausted(Some(&weekly_only(90.0)), 90, NOW));
+    assert!(candidate::is_exhausted(Some(&weekly_only(100.0)), 90, NOW));
+}
+
+#[test]
+fn a_weekly_only_profile_is_picked_when_the_rest_are_session_exhausted() {
+    let c = Case::new(&["cur", "a", "b", "free"])
+        .with("cur", reading(100.0, 10.0))
+        .with("a", reading(95.0, 5.0))
+        .with("b", reading(100.0, 0.0))
+        .with("free", weekly_only(40.0));
+    assert_eq!(c.pick("cur").as_deref(), Some("free"));
+}
+
+#[test]
+fn weekly_only_profiles_rank_by_their_week() {
+    let c = Case::new(&["cur", "x", "y", "z"])
+        .with("cur", reading(100.0, 0.0))
+        .with("x", weekly_only(60.0))
+        .with("y", reading(30.0, 30.0))
+        .with("z", weekly_only(20.0));
+    assert_eq!(c.pick("cur").as_deref(), Some("z"));
+    let c = Case::new(&["cur", "x", "y"])
+        .with("cur", reading(100.0, 0.0))
+        .with("x", weekly_only(60.0))
+        .with("y", reading(30.0, 30.0));
+    assert_eq!(c.pick("cur").as_deref(), Some("y"));
+}

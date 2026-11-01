@@ -428,6 +428,56 @@ pub fn lease_view(root: &Path) -> Result<Option<LeaseView>, ProfileError> {
     }
 }
 
+/// Issue #1818: the profiles among `names` whose stored reading has a week
+/// window and no session window, sorted. Read-only: it never creates state,
+/// takes the lock or writes, and any failure (no state, an unsafe or damaged
+/// `usage.json`) gives an empty list without printing anything.
+pub fn no_session_window_profiles(root: &Path, names: &[&str]) -> Vec<String> {
+    #[cfg(unix)]
+    {
+        let Ok(state) = state::State::new(root) else {
+            return Vec::new();
+        };
+        if !state.exists() {
+            return Vec::new();
+        }
+        let Ok(file) = state.try_load_usage() else {
+            return Vec::new();
+        };
+        let mut out: Vec<String> = file
+            .accounts
+            .iter()
+            .filter(|(name, r)| r.no_session_window() && names.contains(&name.as_str()))
+            .map(|(name, _)| name.clone())
+            .collect();
+        out.sort();
+        out
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (root, names);
+        Vec::new()
+    }
+}
+
+/// The `rotate status` line `no session window: <names>` for the profiles
+/// among `names` that [`no_session_window_profiles`] lists, or `None` when
+/// there are none. Read-only. It does not say "no session limit": the stored
+/// reading cannot tell a plan with none from a session window that was not
+/// recorded.
+pub fn no_session_window_line(root: &Path, names: &[String]) -> Option<String> {
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let free = no_session_window_profiles(root, &names);
+    if free.is_empty() {
+        return None;
+    }
+    let free: Vec<String> = free
+        .iter()
+        .map(|n| super::usage_cmd::sanitize_display(n, false))
+        .collect();
+    Some(format!("no session window: {}", free.join(", ")))
+}
+
 /// Records `profile usage` observations as status-line readings. Takes the
 /// lock for a bounded wait, never runs swap recovery, re-checks each
 /// profile's live account under the lock, applies the status-line bounds,
@@ -467,6 +517,11 @@ pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutco
             let file = file.get_or_insert_with(|| state.load_usage_or_warn());
             let old = file.accounts.get(&o.account);
             let reading = Reading {
+                // Issue #1818: a reading with no session limit keeps a stored
+                // session window until its reset passes. A 0%, reset-less
+                // reading may be stale, and a live window that contradicts
+                // it is the cautious answer; the cost is at most one
+                // five-hour window in which the login is passed over.
                 five_hour: five_hour.or_else(|| still_valid(old.and_then(|r| r.five_hour))),
                 seven_day: seven_day.or_else(|| still_valid(old.and_then(|r| r.seven_day))),
                 observed_at: now,
