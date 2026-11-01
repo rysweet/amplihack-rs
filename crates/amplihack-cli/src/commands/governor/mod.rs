@@ -64,6 +64,9 @@ use std::sync::OnceLock;
 pub const EXIT_GOVERNOR_DENIED: i32 = 80;
 /// `governor status` only: the workstream usage manifest for `token_share`.
 pub const GOVERNOR_MANIFEST_ENV: &str = "AMPLIHACK_GOVERNOR_MANIFEST";
+/// Set on the children of a process that holds a slot, to that slot's tree
+/// id, so their own starts run nested under it.
+pub const GOVERNOR_PARENT_ENV: &str = "AMPLIHACK_GOVERNOR_PARENT";
 
 /// The governor's flags on `launch`, `claude` and `recipe run`.
 #[derive(clap::Args, Debug, Clone, Default)]
@@ -78,6 +81,24 @@ pub struct GovernorArgs {
     /// does not wait
     #[arg(long = "governor-wait", value_name = "DURATION", value_parser = config::parse_wait)]
     pub governor_wait: Option<u64>,
+}
+
+impl GovernorArgs {
+    /// The flags as command-line arguments, for a child that must ask with
+    /// the same values (a `recipe run --detach` pane).
+    pub fn to_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(ws) = &self.workstream {
+            args.extend(["--workstream".to_string(), ws.clone()]);
+        }
+        if let Some(class) = self.governor_class {
+            args.extend(["--governor-class".to_string(), class.as_str().to_string()]);
+        }
+        if let Some(secs) = self.governor_wait {
+            args.extend(["--governor-wait".to_string(), format!("{secs}s")]);
+        }
+        args
+    }
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -129,9 +150,10 @@ impl AdmitRequest {
 
 static SETTLED_TREE_ID: OnceLock<String> = OnceLock::new();
 
-/// The tree id the admission of this process recorded with its slot, when
-/// `AMPLIHACK_TREE_ID` was not inherited. The environment builder and the
-/// recipe runner hand it to children, so their launches find the slot.
+/// The tree id of the slot this process holds, if it holds one (a nested or
+/// fail-open admission holds none). The environment builder hands it to
+/// children as [`GOVERNOR_PARENT_ENV`], and as `AMPLIHACK_TREE_ID` when none
+/// was inherited, so their starts find the slot.
 pub fn settled_tree_id() -> Option<String> {
     SETTLED_TREE_ID.get().cloned()
 }
@@ -175,9 +197,10 @@ pub fn admit(request: AdmitRequest) -> Result<SlotGuard, Denied> {
         wait_secs: config::wait_secs(args.governor_wait, &env, &settings),
         session_depth: env("AMPLIHACK_SESSION_DEPTH"),
         tree_id: env("AMPLIHACK_TREE_ID"),
+        parent: env(GOVERNOR_PARENT_ENV),
     };
     let guard = admit::admit_with(&ctx)?;
-    if ctx.tree_id.is_none()
+    if !guard.nested()
         && let Some(id) = guard.tree_id()
     {
         // `set` fails only if `admit` runs twice in one process, which does

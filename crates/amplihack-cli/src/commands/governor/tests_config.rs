@@ -234,3 +234,25 @@ fn unset_and_in_range_values_give_no_warning() {
     );
     assert_eq!(bool_setting(None, "governor.enabled"), (None, None));
 }
+
+/// `recipe run --detach` hands the flags to the pane's run; they must parse
+/// back to the same values.
+#[test]
+fn governor_args_round_trip_through_the_command_line() {
+    #[derive(clap::Parser)]
+    struct Probe {
+        #[command(flatten)]
+        governor: super::GovernorArgs,
+    }
+    let args = super::GovernorArgs {
+        workstream: Some("ws-7".into()),
+        governor_class: Some(super::Class::Review),
+        governor_wait: Some(90),
+    };
+    let argv = std::iter::once("probe".to_string()).chain(args.to_args());
+    let back = <Probe as clap::Parser>::parse_from(argv).governor;
+    assert_eq!(back.workstream.as_deref(), Some("ws-7"));
+    assert_eq!(back.governor_class, Some(super::Class::Review));
+    assert_eq!(back.governor_wait, Some(90));
+    assert!(super::GovernorArgs::default().to_args().is_empty());
+}

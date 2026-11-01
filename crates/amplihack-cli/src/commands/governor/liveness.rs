@@ -38,6 +38,47 @@ pub fn start_time(_pid: u32) -> Option<u64> {
     None
 }
 
+/// Field 4 (parent PID) of `/proc/<pid>/stat`, counted after the last `)`.
+pub fn parse_stat_ppid(stat: &str) -> Option<u32> {
+    if stat.len() > MAX_STAT {
+        return None;
+    }
+    let close = stat.rfind(')')?;
+    stat[close + 1..].split_whitespace().nth(1)?.parse().ok()
+}
+
+/// The longest parent chain walked.
+const MAX_HOPS: usize = 64;
+
+/// Whether `pid` is this process or one of its ancestors. A marker that
+/// leaked into an unrelated environment (a tmux server's, say) then names a
+/// slot that is not an ancestor and nests nothing.
+#[cfg(target_os = "linux")]
+pub fn self_or_ancestor(pid: u32) -> bool {
+    let mut current = std::process::id();
+    for _ in 0..MAX_HOPS {
+        if current == pid {
+            return true;
+        }
+        let parent = std::fs::File::open(format!("/proc/{current}/stat"))
+            .ok()
+            .and_then(|f| amplihack_utils::secure_files::read_bounded(f, MAX_STAT as u64).ok())
+            .and_then(|raw| parse_stat_ppid(std::str::from_utf8(&raw).ok()?));
+        match parent {
+            Some(p) if p > 1 => current = p,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// No `/proc` here: the ancestry cannot be checked and the marker is
+/// trusted, as the tree id is.
+#[cfg(not(target_os = "linux"))]
+pub fn self_or_ancestor(_pid: u32) -> bool {
+    true
+}
+
 /// Whether `pid` is a live process with the recorded start time. PIDs
 /// outside `2..=i32::MAX` are never signalled and count as dead, as does a
 /// process this user may not signal (`EPERM`) and one whose recorded start

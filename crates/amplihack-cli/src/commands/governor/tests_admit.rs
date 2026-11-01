@@ -18,7 +18,7 @@
 //! Every test passes `wait_secs: 0`, so nothing sleeps.
 
 use super::EXIT_GOVERNOR_DENIED;
-use super::admit::{AdmitContext, admit_with, nested_parent};
+use super::admit::{AdmitContext, admit_with, marked_parent, nested_parent};
 use super::config::Settings;
 use super::liveness::start_time;
 use super::model::{Class, QueueEntry, Slot};
@@ -36,6 +36,7 @@ fn ctx(r: &Root) -> AdmitContext<'_> {
         wait_secs: 0,
         session_depth: None,
         tree_id: None,
+        parent: None,
     }
 }
 
@@ -137,6 +138,29 @@ fn nested_launch_runs_under_the_parent_slot() {
         1,
         "dropping a nested guard keeps the parent slot"
     );
+}
+
+/// A `recipe run` inside a top-level `amplihack claude` has no session
+/// depth; the parent marker alone nests it, so limit 1 does not deadlock.
+#[test]
+fn parent_marker_nests_a_start_without_session_depth() {
+    let r = Root::new(ROOMY);
+    let state = State {
+        limit: 1,
+        slots: vec![me_slot("t-claude")],
+        ..State::default()
+    };
+    save(&r, &state, &Queue::default());
+    let mut c = ctx(&r);
+    c.parent = Some("t-claude".into());
+    let guard = admit_with(&c).expect("the marker nests the start");
+    assert!(guard.nested());
+    assert_eq!(load(&r).0.slots[0].nested_children, 1);
+    let slots = [me_slot("t-a")];
+    assert_eq!(marked_parent(Some("t-a"), &slots), Some(0));
+    assert_eq!(marked_parent(Some("t-z"), &slots), None);
+    assert_eq!(marked_parent(Some("t a"), &slots), None);
+    assert_eq!(marked_parent(None, &slots), None);
 }
 
 #[test]

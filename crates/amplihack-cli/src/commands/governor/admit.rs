@@ -4,13 +4,13 @@
 //! again every 15 seconds until its deadline. Every fault admits.
 
 use super::admit_state::{
-    LOCK_WAIT, drop_ticket, fail_open, load_all, record, save_logged, take_ticket,
+    LOCK_WAIT, check_ticket, drop_ticket, fail_open, load_all, record, save_logged, take_ticket,
 };
 use super::config::{GOVERNOR_POLL_SECS, Settings};
 use super::files::{GOVERNOR_QUEUE_CAP, tree_id_ok};
 use super::guard::{Denied, SlotGuard};
 use super::inputs;
-use super::liveness::{reclaim, start_time};
+use super::liveness::{reclaim, self_or_ancestor, start_time};
 use super::model::{
     Admission, Class, DecisionKind, FailOpen, FailOpenCode, Inputs, QueueEntry, ReasonCode,
     Request, Slot,
@@ -31,6 +31,9 @@ pub struct AdmitContext<'a> {
     pub wait_secs: u64,
     pub session_depth: Option<String>,
     pub tree_id: Option<String>,
+    /// `AMPLIHACK_GOVERNOR_PARENT`: the slot tree id of the launch that
+    /// started this process.
+    pub parent: Option<String>,
 }
 
 /// The index of the live slot a nested launch runs under: a depth above 0
@@ -42,6 +45,17 @@ pub fn nested_parent(depth: Option<&str>, tree_id: Option<&str>, slots: &[Slot])
         return None;
     }
     slots.iter().position(|s| s.tree_id == tree)
+}
+
+/// The index of the live slot named by `AMPLIHACK_GOVERNOR_PARENT` whose
+/// process is an ancestor of this one. A top-level `amplihack claude` sets
+/// no session depth on its children, so a `recipe run` started inside it is
+/// found by this marker instead.
+pub fn marked_parent(marker: Option<&str>, slots: &[Slot]) -> Option<usize> {
+    let tree = marker.filter(|t| tree_id_ok(t))?;
+    slots
+        .iter()
+        .position(|s| s.tree_id == tree && self_or_ancestor(s.pid))
 }
 
 enum Round {
@@ -76,6 +90,7 @@ fn round(
     repair(&mut l.state, &l.queue, max);
     reclaim(&mut l.state.slots, &mut l.queue.entries);
     prune_window(&mut l.state.admissions, now);
+    check_ticket(&l.queue, ticket);
     if let Some(f) = l.fault.take() {
         take_ticket(&mut l.queue, ticket);
         l.state.fail_open = Some(record(&f, now));
@@ -86,7 +101,8 @@ fn round(
         ctx.session_depth.as_deref(),
         ctx.tree_id.as_deref(),
         &l.state.slots,
-    );
+    )
+    .or_else(|| marked_parent(ctx.parent.as_deref(), &l.state.slots));
     let snaps = inputs::snapshots(root);
     inputs::record(&mut l.history, &snaps);
     let budgets = inputs::budgets(&snaps, now);
@@ -138,6 +154,11 @@ fn round(
                 }
                 None => {
                     let pid = std::process::id();
+                    // Without /proc a reused PID can leave a record with this
+                    // key; a duplicate would make the file corrupt.
+                    l.state
+                        .slots
+                        .retain(|s| !(s.pid == pid && s.tree_id == tree_id));
                     l.state.slots.push(Slot {
                         pid,
                         start_time: start_time(pid),
@@ -204,9 +225,10 @@ fn round(
                     start_time: start_time(pid),
                     enqueued_at: now,
                 });
-                if save_logged(store, &lock, &l).is_ok() {
-                    *ticket = Some(seq);
-                }
+                // Kept even when the save fails: the entry may be on disk
+                // already, and the next round's check forgets it if not.
+                let _ = save_logged(store, &lock, &l);
+                *ticket = Some(seq);
             } else {
                 let _ = save_logged(store, &lock, &l);
             }

@@ -737,15 +737,19 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
             if detach {
                 let working = recipe::validate_path(working_dir.as_deref().unwrap_or("."), false)?;
                 let agent_binary = crate::env_builder::resolve_agent_binary_in(&working);
+                let mut args = recipe::detach::pane_args(
+                    &recipe_path,
+                    dry_run,
+                    verbose,
+                    &format,
+                    working_dir.as_deref(),
+                    step_timeout,
+                );
+                // Issue #1811: the pane's run asks the governor, so it needs
+                // the same workstream, class and wait.
+                args.extend(governor.to_args());
                 return recipe::detach::launch(recipe::detach::Launch {
-                    args: recipe::detach::pane_args(
-                        &recipe_path,
-                        dry_run,
-                        verbose,
-                        &format,
-                        working_dir.as_deref(),
-                        step_timeout,
-                    ),
+                    args,
                     context: &resolved,
                     recipe_path: &recipe_path,
                     working_dir: &working,

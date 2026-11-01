@@ -13,7 +13,10 @@
 //! - `reclaim(&mut Vec<Slot>, &mut Vec<QueueEntry>) -> usize`: removes the
 //!   records of dead processes; never signals anything but 0.
 
-use super::liveness::{alive, parse_stat_start_time, reclaim, same_process, start_time};
+use super::liveness::{
+    alive, parse_stat_ppid, parse_stat_start_time, reclaim, same_process, self_or_ancestor,
+    start_time,
+};
 use super::model::{Class, QueueEntry, Slot};
 
 fn dead_pid() -> u32 {
@@ -131,4 +134,17 @@ fn same_process_covers_every_combination() {
     assert!(!same_process(Some(7), None));
     assert!(same_process(None, Some(7)));
     assert!(same_process(None, None));
+}
+
+/// The parent marker nests a start only under a slot of an ancestor.
+#[cfg(target_os = "linux")]
+#[test]
+fn ancestry_accepts_self_and_parent_but_not_a_stranger() {
+    let stat = "123 (a) (b) S 456 7 8";
+    assert_eq!(parse_stat_ppid(stat), Some(456));
+    let me = std::process::id();
+    assert!(self_or_ancestor(me));
+    let parent = std::os::unix::process::parent_id();
+    assert!(self_or_ancestor(parent));
+    assert!(!self_or_ancestor(dead_pid()));
 }

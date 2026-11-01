@@ -79,9 +79,8 @@ pub(super) fn load_all(store: &Store, lock: &StoreLock) -> Result<Loaded, FailOp
 
 /// Saves the round's files. A fault is logged here and is not propagated
 /// as an error: D11 requires the governor to fail open, so callers that
-/// cannot act on a failed save discard the result. Two callers use it: an
-/// admission that was not saved holds nothing, and a waiting entry that was
-/// not saved has no ticket.
+/// cannot act on a failed save discard the result. One caller uses it: an
+/// admission that was not saved holds nothing.
 pub(super) fn save_logged(store: &Store, lock: &StoreLock, l: &Loaded) -> Result<(), FailOpen> {
     store
         .save(lock, &l.history, &l.queue, &l.state)
@@ -93,6 +92,18 @@ pub(super) fn save_logged(store: &Store, lock: &StoreLock, l: &Loaded) -> Result
 pub(super) fn take_ticket(queue: &mut Queue, ticket: &mut Option<u64>) {
     if let Some(seq) = ticket.take() {
         queue.entries.retain(|e| e.seq != seq);
+    }
+}
+
+/// Forgets a ticket whose entry is no longer this process's, after a
+/// corrupt `queue.json` was rebuilt or a save failed part-way, so the round
+/// queues the start again instead of waiting behind an entry that is gone.
+pub(super) fn check_ticket(queue: &Queue, ticket: &mut Option<u64>) {
+    let me = std::process::id();
+    if let Some(seq) = *ticket
+        && !queue.entries.iter().any(|e| e.seq == seq && e.pid == me)
+    {
+        *ticket = None;
     }
 }
 

@@ -112,3 +112,12 @@ fn prune_window_keeps_at_most_the_newest_1024() {
     assert_eq!(a.len(), 1024);
     assert!(a.iter().all(|x| x.at >= NOW - 1024));
 }
+
+/// A ticket whose entry vanished (a rebuilt `queue.json`) is forgotten, so
+/// the start queues again rather than waiting behind nothing.
+#[test]
+fn a_ticket_without_its_entry_is_forgotten() {
+    let mut ticket = Some(7);
+    super::admit_state::check_ticket(&super::store::Queue::default(), &mut ticket);
+    assert_eq!(ticket, None);
+}

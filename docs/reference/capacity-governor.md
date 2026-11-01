@@ -339,8 +339,16 @@ A recipe run holds a slot and starts its agent steps through
 `amplihack claude`. If each step needed a slot of its own, a limit of 1 would
 deadlock.
 
-A launch is **nested** when `AMPLIHACK_SESSION_DEPTH` is greater than 0 and
-`AMPLIHACK_TREE_ID` equals the tree id of a live slot. A nested launch:
+A launch is **nested** when either of these holds:
+
+- `AMPLIHACK_SESSION_DEPTH` is greater than 0 and `AMPLIHACK_TREE_ID` equals
+  the tree id of a live slot;
+- `AMPLIHACK_GOVERNOR_PARENT` equals the tree id of a live slot whose
+  process is this process's parent or another ancestor (checked through
+  `/proc` on Linux), so a marker copied into an unrelated environment nests
+  nothing.
+
+A nested launch:
 
 - takes no new slot, and runs under its parent's slot;
 - is not limited by the concurrency limit or the queue (steps 5 and 6);
@@ -352,8 +360,22 @@ A top-level `recipe run` usually starts without `AMPLIHACK_TREE_ID`. Before
 it records its slot, admission settles the tree id: it uses the inherited
 value if there is one, and otherwise generates one. The slot records that
 id, and the environment built for the recipe's children reuses it rather
-than generating another, so every agent step carries the slot's tree id. The
-same applies to `amplihack claude` and `amplihack launch`.
+than generating another, so every agent step carries the slot's tree id.
+
+A process that holds a slot of its own also sets `AMPLIHACK_GOVERNOR_PARENT`
+to the slot's tree id in the environment it builds for its children. A
+top-level `amplihack claude` or `amplihack launch` sets no session depth, so
+this marker is what lets a `recipe run` started inside the session run under
+the session's slot instead of waiting for a second one. A `recipe run --detach`
+removes the marker from the run it starts in tmux, so a detached run started
+from an interactive session asks for a slot of its own. One started from an
+agent step still carries the step's session depth and tree id, and runs
+under that step's slot.
+
+A nested start holds no slot of its own. If it outlives its parent (for
+example a background `recipe run` left running after an interactive session
+ends), it runs on with no slot until it finishes; the parent's slot is
+released when the parent exits.
 
 A nested launch whose tree id has no live slot is treated as top-level and
 needs a slot of its own.

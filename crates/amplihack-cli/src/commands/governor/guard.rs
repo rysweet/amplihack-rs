@@ -132,6 +132,7 @@ impl Denied {
         Self { code, message }
     }
 
+    #[cfg(test)]
     pub fn code(&self) -> &'static str {
         self.code
     }

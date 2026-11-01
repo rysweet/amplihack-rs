@@ -86,6 +86,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_GOVERNOR` | user preference |  | `off`, `0` or `false` turns the [capacity governor](./capacity-governor.md) off. Read by the governor itself; outranks `governor.enabled`. |
 | `AMPLIHACK_GOVERNOR_CLASS` | user preference |  | Default admission class for the capacity governor. |
 | `AMPLIHACK_GOVERNOR_MANIFEST` | user preference |  | Usage manifest that `governor status` reads for `token_share`. |
+| `AMPLIHACK_GOVERNOR_PARENT` | internal |  | Tree id of the capacity governor slot held by the parent process; a start that matches a live slot runs nested under it. |
 | `AMPLIHACK_GOVERNOR_WAIT` | user preference |  | Default `--governor-wait`. Read by the governor itself; outranks `governor.wait_secs`. |
 | `AMPLIHACK_GRAPH_DB_PATH` | internal |  | Code-graph database path exported to children. |
 | `AMPLIHACK_HOME` | user preference | `paths.home` | Root for framework assets, hooks and runtime state. |

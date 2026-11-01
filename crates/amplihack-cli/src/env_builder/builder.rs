@@ -89,13 +89,24 @@ impl EnvBuilder {
             .set("AMPLIHACK_DEPTH", depth)
     }
 
+    /// Issue #1811: when this process holds a capacity governor slot, tell
+    /// children its tree id, so their own starts run nested under it rather
+    /// than asking for a second slot.
+    fn with_governor_parent(self) -> Self {
+        match crate::commands::governor::settled_tree_id() {
+            Some(tree) => self.set(crate::commands::governor::GOVERNOR_PARENT_ENV, tree),
+            None => self,
+        }
+    }
+
     /// Propagate orchestration tree context without changing depth.
     pub fn with_session_tree_context(self) -> Self {
+        let this = self.with_governor_parent();
         if !session_tree_context_present() {
-            return self;
+            return this;
         }
 
-        self.set("AMPLIHACK_TREE_ID", resolve_session_tree_id())
+        this.set("AMPLIHACK_TREE_ID", resolve_session_tree_id())
             .set("AMPLIHACK_SESSION_DEPTH", resolve_session_tree_depth(false))
             .set(
                 "AMPLIHACK_MAX_DEPTH",
@@ -109,11 +120,12 @@ impl EnvBuilder {
 
     /// Propagate orchestration tree context while incrementing child session depth.
     pub fn with_incremented_session_tree_context(self) -> Self {
+        let this = self.with_governor_parent();
         if !session_tree_context_present() {
-            return self;
+            return this;
         }
 
-        self.set("AMPLIHACK_TREE_ID", resolve_session_tree_id())
+        this.set("AMPLIHACK_TREE_ID", resolve_session_tree_id())
             .set("AMPLIHACK_SESSION_DEPTH", resolve_session_tree_depth(true))
             .set(
                 "AMPLIHACK_MAX_DEPTH",
