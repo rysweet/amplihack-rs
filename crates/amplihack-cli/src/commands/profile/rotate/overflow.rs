@@ -12,20 +12,18 @@
 //!   (`candidate::may_return_to`; `tests_gate_record` checks thresholds 70,
 //!   80 and 90 against 85/90).
 //! - Onto overflow only when the live plan login is at a threshold (and its
-//!   probe did not fail), no plan candidate's probe is unknown (it timed out
-//!   or could not run, issue #1698), no plan profile is skipped as
-//!   `directory refused`, and the shared [`Gate`] allows it: no plan login
-//!   has capacity and the earliest plan reset is more than `overflow_wait`
-//!   away. An unknown reset allows it only with `--overflow-unknown-reset 1`.
-//!   This replaces the ALERT, and also a threshold swap onto a plan login
-//!   that is itself at a threshold; that swap still happens when the gate
-//!   does not allow overflow. Auto-switch decides in the same order.
+//!   probe did not fail), no plan login, live included, has room
+//!   ([`plan_room`]), no plan candidate's probe is unknown (it timed out or
+//!   could not run, issue #1698), no plan profile is skipped as
+//!   `directory refused`, and the shared [`Gate`] allows it: the earliest
+//!   plan reset is more than `overflow_wait` away. An unknown reset allows
+//!   it only with `--overflow-unknown-reset 1`. Auto-switch decides in the
+//!   same order.
 //! - The overflow profile chosen is the first usable one by tier, then by
 //!   file order within a tier.
-//! - Off overflow as soon as a plan login has capacity, ignoring the hold
-//!   (`--hold`, the minimum time after a rotator swap) and both margins.
-//!   Both rules use the same capacity test, so the rotator does not flap
-//!   (P2).
+//! - Off overflow as soon as a plan login has capacity, then as soon as one
+//!   has room, ignoring the hold (`--hold`, the minimum time after a rotator
+//!   swap) and both margins (P2).
 //! - A `profile switch` pin (`rotate::pin`, #1691) is a different thing from
 //!   the hold, and it wins over every rule here: the cycle stops on the pin
 //!   before measuring, so this function never runs while one is in force.
@@ -34,14 +32,40 @@
 //!   with an active block. See `tests_pin_overflow` and "Pin and overflow"
 //!   in docs/reference/profile-command.md.
 //! - A spend-limit reading on an overflow profile blocks it, once per block.
-//! - Issue #1700: the API-key profile is the entry at
-//!   [`PLATFORM_TIER`], after every credit tier, and the API-key block
-//!   covers it. Off the API key, every cycle and ignoring the hold: a plan
-//!   login with capacity, else a usable credit profile; blocked, the best
-//!   usable plan login, else an ALERT that stays (no swap, no loop).
+//! - Issue #1700: the API-key profile is the entry at [`PLATFORM_TIER`],
+//!   after every credit tier, and the API-key block covers it. Off the API
+//!   key with no plan room, every cycle and ignoring the hold: a usable
+//!   credit profile; blocked, the best usable plan login, else an ALERT that
+//!   stays (no swap, no loop).
+//! - Issue #1804: the API-key entry exists only when `overflow=` marks it,
+//!   and every per-token profile waits for plan logins. Off a plan login
+//!   the order is `decide`, the plan-room swap, then the marked per-token
+//!   profiles by tier, then the ALERT. A threshold swap onto a plan login
+//!   without capacity goes where [`plan_room::choose`] ranks first, not to
+//!   the most headroom. When the live login ranks first it is an ALERT, so
+//!   two logins with the same week are not swapped back and forth.
+//! - "No plan login has room" covers measured logins only. A plan login that
+//!   was skipped as busy ([`crate::commands::profile::rotate::observe::Snap::unmeasured_plan`])
+//!   or failed its probe is unknown, not empty: while one is unknown the
+//!   API-key tier is not used and [`Verdict::key_held`] names them for the
+//!   ALERT. Credit tiers do not wait for a busy login or a probe that read
+//!   a state such as `not_logged_in`: they have a spend limit and a marked
+//!   account behind them, and the `per-token` line gives the count. Credit
+//!   tiers do wait, off a plan login, for a probe that is
+//!   [`Measured::unknown`] and for a plan profile skipped as
+//!   `directory refused` (issue #1698): that login might have capacity. An
+//!   excluded login is the operator's choice and counts as neither.
+//! - A key in the `$HOME` files can make the live reading `Failed`
+//!   (`key_check` says which), and then the per-token tier is not tried off
+//!   a plan login. Nothing is lost: Claude is already using that key, a
+//!   swap would not change the billing, and the cycle logs the ALERT.
+//!   Without a home key the move fails its login check. `decide`'s swap on
+//!   `Failed` is also dropped, after this function, by
+//!   `damp::keep_for_home_key`. A normal live reading follows every rule.
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};
 use super::ledger::OverflowBlock;
+use super::plan_room;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{Gate, OverflowEntry, PLATFORM_TIER};
@@ -79,6 +103,9 @@ pub struct OverflowInput<'a> {
     pub live_name: Option<&'a ProfileName>,
     pub live: &'a Probed,
     pub candidates: &'a [Measured],
+    /// Plan logins left unmeasured this cycle because they are busy: they
+    /// may have room, so they hold back the API key.
+    pub unmeasured_plan: &'a [ProfileName],
     /// Profiles skipped as `directory refused` (issue #1698). Their logins
     /// cannot be checked, so a plan profile among them holds a move onto
     /// overflow, as an unknown probe does, until its directory is fixed.
@@ -106,6 +133,11 @@ pub struct Verdict {
     /// The earliest plan reset, for the `overflow:` log lines; `None` when
     /// unknown or when the verdict does not use overflow.
     pub next_plan_reset: Option<i64>,
+    /// Plan logins of unknown state: unmeasured, probe failed or refused.
+    pub unknown_plan: Vec<ProfileName>,
+    /// [`Self::unknown_plan`] when they alone kept work off the API key, for
+    /// the ALERT; otherwise empty.
+    pub key_held: Vec<ProfileName>,
 }
 
 /// A plan login with capacity: an `ok` probe that passes
@@ -220,29 +252,53 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
             })
             .map(|c| c.name.clone())
     };
-    let next_overflow = || next_in(false);
     let plan: Vec<Measured> = i
         .candidates
         .iter()
         .filter(|c| !is_overflow(&c.name))
         .cloned()
         .collect();
+    let unknown_plan: Vec<ProfileName> = i
+        .unmeasured_plan
+        .iter()
+        .cloned()
+        .chain(
+            plan.iter()
+                .filter(|c| c.reading == Reading::Failed)
+                .map(|c| c.name.clone()),
+        )
+        .chain(i.refused.iter().filter(|n| !is_overflow(n)).cloned())
+        .collect();
     let verdict = |decision, tag, next_plan_reset| Verdict {
         decision,
         tag,
         new_blocks: new_blocks.clone(),
         next_plan_reset,
+        unknown_plan: unknown_plan.clone(),
+        key_held: Vec::new(),
+    };
+    // The next per-token profile; the API key only with every plan login known.
+    let next_paid = || next_in(!unknown_plan.is_empty());
+    // No per-token move: `d`, naming the unknown logins if only they stopped it.
+    let no_move = |d, earliest: Option<i64>| {
+        let held = gate.far(earliest, i.now) && next_in(true).is_none() && next_in(false).is_some();
+        Verdict {
+            key_held: if held {
+                unknown_plan.clone()
+            } else {
+                Vec::new()
+            },
+            ..verdict(d, None, None)
+        }
     };
     let swap = |to: ProfileName, reason| Decision::Swap { to, reason };
 
     if !live_over {
         let d = decide(s, &i.live.reading, &plan, i.swapped_at, i.now);
-        // Overflow only replaces a move off a live login at a threshold (an
-        // ALERT, or a threshold swap onto a plan login that is itself
-        // without capacity), and never for a login whose state is unknown.
-        // A threshold swap onto a plan login with capacity stands. This is
-        // auto-switch's order too: plan capacity, then overflow, then a plan
-        // login without capacity.
+        // Everything below replaces only a move off a live login at a
+        // threshold (an ALERT, or a threshold swap onto a plan login that is
+        // itself without capacity), and never for a login whose state is
+        // unknown. A threshold swap onto a plan login with capacity stands.
         let moving_without_capacity = match &d {
             Decision::Alert => true,
             Decision::Swap {
@@ -253,31 +309,41 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
                 .any(|c| &c.name == to && plan_usable(s, &c.reading)),
             _ => false,
         };
-        // A failed live probe holds the move onto credits, and so does an
-        // unknown plan probe (a timeout, a `claude` that could not be
-        // started, read or waited for, or a directory refused just before
-        // the spawn) or a plan profile skipped as `directory refused`. That
-        // login might have capacity. A plan login that read `not_logged_in`,
-        // `unparsed`, `spend_limit`, or `ok` with no week figure, does not.
-        if i.overflow.is_empty()
-            || !moving_without_capacity
-            || i.live.reading == Reading::Failed
-            || plan.iter().any(|c| c.unknown)
-            || i.refused.iter().any(|n| !is_overflow(n))
-        {
+        if !moving_without_capacity || i.live.reading == Reading::Failed {
             return verdict(d, None, None);
         }
-        let plan_has_capacity = plan.iter().any(|c| plan_usable(s, &c.reading));
+        // The plan login with the most room costs nothing.
+        let live_measured = i.live_name.map(|n| Measured::new(n.clone(), i.live));
+        let choice = plan_room::choose(s, live_measured.as_ref(), &plan);
+        if let Some(to) = choice {
+            let same = matches!(&d, Decision::Swap { to: t, .. } if *t == to);
+            let d = if same { d } else { swap(to, Reason::PlanRoom) };
+            return verdict(d, None, None);
+        }
+        // Per-token profiles only when no measured plan login, live
+        // included, has room. The API key also needs every one measured.
+        let room = std::iter::once(&i.live.reading)
+            .chain(plan.iter().map(|c| &c.reading))
+            .any(plan_room::has_room);
+        if room {
+            return verdict(Decision::Alert, None, None);
+        }
+        // An unknown plan probe (timed out, or `claude` could not run) or a
+        // plan profile skipped as `directory refused` might have capacity,
+        // so it holds every per-token move (issue #1698). A login that read
+        // `not_logged_in`, `unparsed`, `spend_limit`, or `ok` with no week
+        // figure does not.
+        let held = plan.iter().any(|c| c.unknown) || i.refused.iter().any(|n| !is_overflow(n));
         let pool = std::iter::once((&i.live.reading, &i.live.windows))
             .chain(plan.iter().map(|c| (&c.reading, &c.windows)));
         let earliest = earliest_plan_reset(s, pool);
-        if !gate.allows(plan_has_capacity, earliest, i.now) {
-            return verdict(d, None, None);
+        if !held
+            && gate.far(earliest, i.now)
+            && let Some(to) = next_paid()
+        {
+            return verdict(swap(to, Reason::OverflowIn), Some(Tag::In), earliest);
         }
-        return match next_overflow() {
-            Some(to) => verdict(swap(to, Reason::OverflowIn), Some(Tag::In), earliest),
-            None => verdict(d, None, None),
-        };
+        return no_move(d, earliest);
     }
 
     // On overflow: leave as soon as a plan login has capacity.
@@ -288,6 +354,10 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         .collect();
     if let Some((to, _)) = best(&with_capacity) {
         return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
+    }
+    // A plan login below 100% costs nothing (issue #1804).
+    if let Some(to) = plan_room::choose(s, None, &plan) {
+        return verdict(swap(to, Reason::OverflowOut), Some(Tag::Out), None);
     }
     let earliest = earliest_plan_reset(s, plan.iter().map(|c| (&c.reading, &c.windows)));
     if live_platform {
@@ -306,17 +376,18 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         return verdict(Decision::Stay, Some(Tag::On), earliest);
     }
     if i.live_name.is_some_and(blocked) {
-        // The live overflow cannot spend: the next overflow profile if the
-        // wait still holds, else the best plan login, else the ALERT.
+        // The live overflow cannot spend, and no measured plan login has room: the
+        // next per-token profile by tier if the wait still holds, else the
+        // best plan login, else the ALERT.
         if gate.far(earliest, i.now)
-            && let Some(to) = next_overflow()
+            && let Some(to) = next_paid()
         {
             return verdict(swap(to, Reason::OverflowIn), Some(Tag::In), earliest);
         }
         if let Some((to, _)) = best(&plan) {
             return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
         }
-        return verdict(Decision::Alert, None, None);
+        return no_move(Decision::Alert, earliest);
     }
     // A failed live probe: the failed-probe rules with plan candidates as
     // the only targets (`damp` then applies); otherwise stay on overflow.
