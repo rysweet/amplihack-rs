@@ -83,8 +83,30 @@ impl LiveSet {
     }
 }
 
-/// The directory that could not be read and why.
-pub type LiveError = (PathBuf, io::ErrorKind);
+/// Why a live-session source could not be read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Why {
+    /// An I/O error, shown as its kind.
+    Kind(io::ErrorKind),
+    /// The agent registry's own message, which names the file or directory
+    /// at fault and says what is wrong with it.
+    Agents(String),
+}
+
+impl From<io::ErrorKind> for Why {
+    fn from(k: io::ErrorKind) -> Self {
+        Self::Kind(k)
+    }
+}
+
+impl PartialEq<io::ErrorKind> for Why {
+    fn eq(&self, k: &io::ErrorKind) -> bool {
+        *self == Self::Kind(*k)
+    }
+}
+
+/// The path that could not be read and why.
+pub type LiveError = (PathBuf, Why);
 
 /// The `sessions/` directory of every `CLAUDE_CONFIG_DIR` that this user's
 /// running processes set. This is the costly source (a walk of `/proc`), so
@@ -92,7 +114,7 @@ pub type LiveError = (PathBuf, io::ErrorKind);
 pub fn process_dirs(probe: &dyn Probe) -> Result<Vec<PathBuf>, LiveError> {
     let dirs = probe
         .config_dirs()
-        .map_err(|e| (PathBuf::from("/proc"), e.kind()))?;
+        .map_err(|e| (PathBuf::from("/proc"), e.kind().into()))?;
     Ok(dirs.into_iter().map(|d| d.join("sessions")).collect())
 }
 
@@ -119,7 +141,7 @@ pub fn build_from(
         let canonical = match dir.canonicalize() {
             Ok(c) => c,
             Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-            Err(e) => return Err((dir, e.kind())),
+            Err(e) => return Err((dir, e.kind().into())),
         };
         if seen.insert(canonical.clone()) {
             read_dir_into(&dir, &canonical, probe, &mut set)?;
@@ -135,8 +157,8 @@ fn profiles(root: &Path) -> Result<Vec<String>, LiveError> {
     ProfileStore::new(root.to_path_buf())
         .list()
         .map_err(|e| match e {
-            ProfileError::Io(e) => (root.to_path_buf(), e.kind()),
-            _ => (root.to_path_buf(), io::ErrorKind::InvalidData),
+            ProfileError::Io(e) => (root.to_path_buf(), e.kind().into()),
+            _ => (root.to_path_buf(), io::ErrorKind::InvalidData.into()),
         })
 }
 
@@ -146,7 +168,7 @@ fn read_dir_into(
     probe: &dyn Probe,
     set: &mut LiveSet,
 ) -> Result<(), LiveError> {
-    let fail = |e: io::Error| (shown.to_path_buf(), e.kind());
+    let fail = |e: io::Error| -> LiveError { (shown.to_path_buf(), e.kind().into()) };
     let entries = match fs::read_dir(dir) {
         Ok(e) => e,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
@@ -168,7 +190,7 @@ fn read_dir_into(
             Ok(None) => continue,
             // A symlink, a non-regular file or one over the limit.
             Err(e) if e.kind() == io::ErrorKind::InvalidData => continue,
-            Err(e) => return Err((entry.path(), e.kind())),
+            Err(e) => return Err((entry.path(), e.kind().into())),
         };
         match live_id(&raw, stem, probe) {
             Ok(Some(id)) => {

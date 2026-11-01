@@ -11,7 +11,7 @@
 
 use super::config::Opts;
 use super::fmt::{esc, gib, kind_word, remove_failed, thousands};
-use super::live::{self, LiveSet, Probe};
+use super::live::{self, LiveSet, Probe, Why};
 use super::scan::{self, Session};
 use super::store::{Dest, Entry, LockError, contains_or_overlaps};
 use flate2::Compression;
@@ -46,7 +46,7 @@ pub enum ArchiveError {
     DestOverlapsProjects(PathBuf, PathBuf),
     NotPrivate(PathBuf),
     Setup(PathBuf, io::ErrorKind),
-    LiveUnreadable(PathBuf, io::ErrorKind),
+    LiveUnreadable(PathBuf, Why),
 }
 
 impl fmt::Display for ArchiveError {
@@ -71,13 +71,22 @@ impl fmt::Display for ArchiveError {
                 esc(p)
             ),
             Self::Setup(p, k) => write!(f, "cannot prepare {} ({})", esc(p), kind_word(*k)),
-            Self::LiveUnreadable(p, k) => write!(
+            Self::LiveUnreadable(p, why) => write!(
                 f,
                 "cannot read live sessions in {} ({}); nothing archived",
                 esc(p),
-                kind_word(*k)
+                why_text(why)
             ),
         }
+    }
+}
+
+/// The reason in a live-check message: the kind word for an I/O error, or
+/// the agent registry's own message.
+fn why_text(why: &Why) -> String {
+    match why {
+        Why::Kind(k) => kind_word(*k).to_string(),
+        Why::Agents(m) => esc(m),
     }
 }
 
@@ -140,7 +149,7 @@ impl Live<'_> {
     /// [`PROC_MAX_AGE`].
     fn refresh(&mut self) -> Result<(), String> {
         let unreadable =
-            |(_, k): live::LiveError| format!("cannot read live sessions ({})", kind_word(k));
+            |(_, why): live::LiveError| format!("cannot read live sessions ({})", why_text(&why));
         if self.procs_read.elapsed() > PROC_MAX_AGE {
             self.procs = live::process_dirs(self.probe).map_err(unreadable)?;
             self.procs_read = Instant::now();

@@ -126,12 +126,18 @@ kept for as long as the agent is registered. An `ended` agent's conversation
 is treated like any other session. Run `amplihack agent unregister NAME` to
 let an agent's transcript be archived.
 
-The registry is read the way `amplihack agent status` reads it: a missing
-`~/.amplihack/agents/` directory or registry file is empty, and anything else
-that stops it from loading (the directory or file is not private, the file is
-not valid JSON, or it was written by a newer amplihack) fails the check
-closed with `cannot read live sessions in <path> (I/O error); nothing
-archived`, where `<path>` is the directory or the registry file.
+The check first asks whether `~/.amplihack/agents/registry.json` exists.
+If it does not, no agent is registered and the check adds nothing; the
+supervisor's rules for `~/.amplihack` are not applied, so `~/.amplihack` may
+be a symlink to another disk. Only when the file exists is it read the way
+`amplihack agent status` reads it, and anything that stops it from loading
+fails the check closed with `cannot read live sessions in <path> (<reason>);
+nothing archived`. `<path>` is `~/.amplihack`, `~/.amplihack/agents` or the
+registry file, whichever is at fault, and `<reason>` is the registry's own
+message, for example `is a symlink`, `is not private (owner-only mode
+0700)`, or `not valid JSON (line 1, column 2); it was not changed`. A
+symlinked `~/.amplihack` that holds a registry is refused in the same way
+the supervisor refuses it.
 
 A pid file counts when it is a regular `*.json` file. It is opened without
 following symlinks and read up to 64 KiB. Only `sessionId` and `pid` are
@@ -550,7 +556,9 @@ that directory for the daily run and for `restore` as well, set
 
 Every path and name in a message has its control characters escaped. Error
 detail is reduced to one of `permission denied`, `not found`,
-`already exists`, `disk full` or `I/O error`, shown as `<kind>` below.
+`already exists`, `disk full` or `I/O error`, shown as `<kind>` below. The
+one exception is a registry that exists but cannot be loaded: then the
+reason is the agent registry's own fixed message, shown as `<reason>`.
 
 Every message below goes to stderr. The tests check these strings exactly.
 
@@ -568,11 +576,12 @@ Every message below goes to stderr. The tests check these strings exactly.
 | `failed <project>/<id>: no free archive name` | All eleven [archive names](#archive-names) exist. Originals kept. |
 | `failed <project>/<id>: archive directory not private` | `<DEST>/<project>` is not a real directory owned by you. Originals kept. |
 | `failed <project>/<id>: manifest write failed (<kind>)` | The manifest line could not be written. Originals kept. |
-| `failed <project>/<id>: cannot read live sessions (<kind>)` | The live set could not be read again before removal. Originals kept. |
+| `failed <project>/<id>: cannot read live sessions (<kind>)` | The live set could not be read again before removal. Originals kept. For the agent registry, `<reason>` replaces `<kind>`. |
 | `failed <project>/<id>: remove failed (<kind>): <path>; session archived as <archive>` | Archived and recorded as `<DEST>/<archive>`, but `<path>` could not be removed. See [Archive steps](#archive-steps). |
 | `failed <project>/<id>: <reason>; archive left at <path>` | After a failure that keeps the originals, the final archive `<path>` could not be removed either. It has no manifest line and can be deleted by hand. |
 | `ignored unreadable pid file <path>` | A pid file could not be parsed or names no valid session; it protects nothing. See [Live sessions](#live-sessions). The run goes on. |
 | `cannot read live sessions in <path> (<kind>); nothing archived` | The [live check](#live-sessions) failed closed. |
+| `cannot read live sessions in <path> (<reason>); nothing archived` | An agent registry exists but could not be loaded; see [Live sessions](#live-sessions). |
 | `cannot prepare <path> (<kind>)` | DEST, its lock or its manifest could not be created or opened. |
 | `cannot remove <path> (<kind>)` | A crash leftover could not be removed. The run goes on. |
 | `cannot read the current directory for a relative destination` | `--dest` is relative and the current directory is gone. Nothing read. |
@@ -616,9 +625,10 @@ the [live check](#live-sessions) cannot tell whether that process is using
 an old session, so nothing is archived. Fix or unset the variable for that
 process, or end it. The daily run stops in the same way until then.
 
-If `<path>` is `~/.amplihack/agents` or its `registry.json`, the agent
-registry could not be loaded; `amplihack agent status` prints the reason.
-Until it is fixed, neither the archive nor the supervisor runs.
+If `<path>` is `~/.amplihack`, `~/.amplihack/agents` or its
+`registry.json`, a registry exists but could not be loaded, and `<reason>`
+says why. Until it is fixed, neither the archive nor the supervisor runs.
+Without a registry file the check does not look at `~/.amplihack`.
 
 If the profile root cannot be read, the path is the root you configured
 with `AMPLIHACK_CLAUDE_PROFILE_ROOT`, or `~/.amplihack` when it is unset.
@@ -635,7 +645,8 @@ The commands read file metadata, pid files and, on Linux, the
 `CLAUDE_CONFIG_DIR` value of your own processes. They copy session files
 into archives byte for byte, but never parse, print or log their contents.
 They never open credential files. No message contains file contents, the
-text of a parser or I/O error, or an environment value.
+text of an I/O error, or an environment value. The agent registry's
+messages give at most the line and column where its JSON fails to parse.
 
 ## Platform support
 

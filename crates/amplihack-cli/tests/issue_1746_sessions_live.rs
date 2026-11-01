@@ -423,7 +423,7 @@ fn an_unreadable_agent_registry_fails_closed() {
     assert_stderr_line(
         &out,
         &format!(
-            "cannot read live sessions in {} (I/O error); nothing archived",
+            "cannot read live sessions in {} (not valid JSON (line 1, column 2); it was not changed); nothing archived",
             path.display()
         ),
     );
@@ -444,9 +444,74 @@ fn an_agent_directory_that_is_not_private_fails_closed() {
     assert_stderr_line(
         &out,
         &format!(
-            "cannot read live sessions in {} (I/O error); nothing archived",
+            "cannot read live sessions in {} (is not private (owner-only mode 0700)); nothing archived",
             dir.display()
         ),
     );
     assert!(jsonl.is_file());
+}
+
+/// Moves `~/.amplihack` to another directory and leaves a symlink to it in
+/// its place, as a user does to put it on another disk.
+fn symlink_amplihack_home(fx: &Fx) {
+    let real = fx.base.join("elsewhere");
+    let top = fx.home.join(".amplihack");
+    if top.exists() {
+        fs::rename(&top, &real).unwrap();
+    } else {
+        fs::create_dir_all(&real).unwrap();
+    }
+    chmod(&real, 0o700);
+    std::os::unix::fs::symlink(&real, &top).unwrap();
+}
+
+#[test]
+fn a_symlinked_amplihack_home_without_agents_does_not_stop_the_archive() {
+    let fx = Fx::new();
+    let jsonl = fx.session("old-1", 10, &[]);
+    symlink_amplihack_home(&fx);
+    let out = fx.archive(&[]);
+    ok(&out);
+    assert!(
+        text(&out.stdout).contains("would archive 1 sessions"),
+        "{}",
+        text(&out.stdout)
+    );
+    let out = fx.apply();
+    ok(&out);
+    assert_stdout(&out, &applied(1, 0));
+    assert!(!jsonl.exists());
+}
+
+#[test]
+fn a_symlinked_amplihack_home_with_an_empty_agents_directory_is_archived() {
+    let fx = Fx::new();
+    let jsonl = fx.session("old-1", 10, &[]);
+    let dir = fx.home.join(".amplihack/agents");
+    fs::create_dir_all(&dir).unwrap();
+    chmod(&dir, 0o700);
+    symlink_amplihack_home(&fx);
+    let out = fx.apply();
+    ok(&out);
+    assert_stdout(&out, &applied(1, 0));
+    assert!(!jsonl.exists());
+}
+
+#[test]
+fn a_symlinked_amplihack_home_holding_a_registry_fails_closed_with_the_reason() {
+    let fx = Fx::new();
+    let jsonl = fx.session("conv-stopped", 10, &[]);
+    registry(&fx, &[("halted", agent_entry("stopped", "conv-stopped"))]);
+    symlink_amplihack_home(&fx);
+    let out = fx.apply();
+    assert_eq!(exit_code(&out), 1);
+    assert_stderr_line(
+        &out,
+        &format!(
+            "cannot read live sessions in {} (is a symlink); nothing archived",
+            fx.home.join(".amplihack").display()
+        ),
+    );
+    assert!(jsonl.is_file());
+    assert!(!fx.manifest().exists());
 }

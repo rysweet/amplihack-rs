@@ -12,7 +12,7 @@
 //!   and `summary(&Report, days: u32, apply: bool) -> String`.
 //! - `ArchiveError::{LockHeld(PathBuf), DestOverlapsProjects(PathBuf,
 //!   PathBuf), NotPrivate(PathBuf), Setup(PathBuf, io::ErrorKind),
-//!   LiveUnreadable(PathBuf, io::ErrorKind)}` with one `Display` each.
+//!   LiveUnreadable(PathBuf, live::Why)}` with one `Display` each.
 
 use super::archive::{ArchiveError, Report, archive_names, cutoff, is_old, summary};
 use std::io::ErrorKind;
@@ -115,7 +115,7 @@ fn error_lines() {
     assert_eq!(
         ArchiveError::LiveUnreadable(
             PathBuf::from("/p/work/sessions"),
-            ErrorKind::PermissionDenied
+            ErrorKind::PermissionDenied.into()
         )
         .to_string(),
         "cannot read live sessions in /p/work/sessions (permission denied); nothing archived"

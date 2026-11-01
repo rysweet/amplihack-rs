@@ -7,7 +7,7 @@
 //!   -> io::Result<Vec<PathBuf>>; }`; production calls `kill(pid, 0)` and
 //!   reads `/proc`. A `config_dirs` error fails the build closed.
 //! - `build_from(home, profile_root, &process_dirs(probe)?, probe)
-//!   -> Result<LiveSet, (PathBuf, io::ErrorKind)>` (as `build` here): reads
+//!   -> Result<LiveSet, (PathBuf, Why)>` (as `build` here): reads
 //!   `<home>/.claude/sessions`, `<profile>/sessions` for every profile
 //!   listed by `ProfileStore::list`, and `<dir>/sessions` for each of
 //!   `probe.config_dirs()`, each canonical directory once. NotFound is
@@ -387,7 +387,10 @@ fn unreadable_config_dirs_fail_the_build_closed() {
     let err = build(&t.home, &t.root, &p).unwrap_err();
     assert_eq!(
         err,
-        (PathBuf::from("/proc"), io::ErrorKind::PermissionDenied)
+        (
+            PathBuf::from("/proc"),
+            io::ErrorKind::PermissionDenied.into()
+        )
     );
 }
 

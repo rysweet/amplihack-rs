@@ -106,7 +106,7 @@ pub fn run_sessions(cmd: SessionsCommands) -> anyhow::Result<()> {
                     let root =
                         env(ROOT_ENV).map_or_else(|| opts.home.join(".amplihack"), PathBuf::from);
                     fail(
-                        &archive::ArchiveError::LiveUnreadable(root, ErrorKind::InvalidData)
+                        &archive::ArchiveError::LiveUnreadable(root, ErrorKind::InvalidData.into())
                             .to_string(),
                     )
                 }
