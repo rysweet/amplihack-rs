@@ -271,8 +271,7 @@ Step-04 aborts on any other exit code. If the helper is missing, step-04 prints 
 ## What issue #1426 asked for, item by item
 
 The report closed with a six-part "Suggested fix". Three parts are implemented as
-written, one is implemented differently, and two are refused. The refusals are the
-ones worth reading.
+written, two are implemented differently, and one is not done.
 
 | # | #1426 asked for | Outcome |
 | - | --------------- | ------- |
@@ -281,7 +280,7 @@ ones worth reading.
 | 3 | otherwise a short stable hash, not prose | **As asked** — rank 4 |
 | 4 | cap the slug (~30 chars), cut on a word boundary | **As asked** — 24 chars, word boundary |
 | 5 | take the kind prefix from the work type | **Not done** — below |
-| 6 | prefer a branch already checked out in the `-w` directory | **Refused** — conflicts with #858 |
+| 6 | prefer a branch already checked out in the `-w` directory | **Deviated**: a worktree alias of that branch (#858, #1762) |
 
 ### Item 2 — why the slug is the task's words, not the issue title
 
@@ -311,33 +310,35 @@ So there is currently no structured source to read the prefix from; one would ha
 be built (the tracking issue's labels are the obvious candidate). That is a design
 question of its own and is tracked in **#1463** rather than smuggled in here.
 
+<a id="item-6-caller-checkout"></a>
+
 ### Item 6 — the branch already checked out in the `-w` directory
 
-This is refused, and it is a real conflict rather than an oversight.
-
 #1426 asks: if the directory the recipe was pointed at is already on the branch, use it
-instead of creating a second one. Issue **#858** forbids precisely that — the caller
-checkout must never be adopted as a recipe task worktree, because it may carry
-unrelated commits and uncommitted files from another recipe that a failed run would
-then have to salvage. `step-04` therefore **fails closed**, with an error naming #858.
+instead of creating a second one. Issue **#858** forbids using the caller checkout as a
+recipe task worktree, because it may hold unrelated commits and uncommitted files from
+another recipe that a failed run would then have to salvage. Until #1762, `step-04`
+therefore stopped with an error naming #858.
 
-Both positions are right in their own context. The conflict is resolved in #858's
-favour because silently committing into a checkout the user was already working in is
-the more expensive mistake. The consequence, stated plainly:
+Since **#1762**, `step-04` gives the run its own worktree on a local alias branch,
+`<branch>--wt-<n>`, which starts at `origin/<branch>` and has `origin/<branch>` as its
+upstream. Later steps push with `git push origin HEAD:<branch>` and look the pull request
+up by `<branch>`, so the run updates the branch the task named. The caller's checkout is
+not changed and is still never the task worktree, so #858 holds.
 
-> The exact configuration in #1426's report — the pinned branch checked out in the
-> `-w` directory — now **stops the run with an error** instead of producing a
-> wrongly-named branch.
+The alias needs three things of the caller's checkout: no uncommitted changes to tracked
+files, `<branch>` present on `origin`, and no local commits missing from
+`origin/<branch>`. When one fails, the run stops and the message says which and what to
+do. The default branch (`main`, `master`, the target of `origin/HEAD`, or `develop` when
+`origin/HEAD` is not set) gets no alias and keeps the #858 refusal. The full behaviour is in
+[Caller branch worktree alias (#1762)](../recipes/issue-1762-caller-branch-worktree-alias.md).
 
-What #1426 does win even there is that no competing `feat/issue-N-<prose>` branch is
-invented while refusing. `E2` and `E2b` in `tests/issue_1426_branch_name_not_prose.sh`
-pin both halves, so neither can drift by accident.
-
-A caller who hits this takes the remedy the error prints: run the recipe from a base
-checkout, or pass `-c existing_branch=<ref>` from a directory not sitting on that
-branch.
-
-Anyone reopening #858 should start here.
+In #1426's report the pinned branch was checked out in the `-w` directory. When that
+branch is on `origin`, has no local commits missing from it, and the checkout has no
+uncommitted changes to tracked files, the run now gets an alias worktree. The regression
+case `E2` in `tests/issue_1426_branch_name_not_prose.sh` creates the branch locally and
+never pushes it, so it stops with the #1762 message that `origin/<branch>` does not exist.
+`E2b` checks that no competing `feat/issue-N-<prose>` branch is invented.
 
 ---
 
@@ -362,13 +363,23 @@ runs that would collide are separated by `tools/workflow_worktree_deconflict.sh`
 (issues #829/#840), and an issue already claimed by an open PR stops the second run
 (`tools/workflow_issue_claim_check.sh`, issue #1361).
 
-### The run stops with "refusing to use the caller checkout as a recipe task worktree"
+### The run stops with "cannot set up an alias worktree"
 
-The branch the task named is checked out in the directory passed to `-w`. That is
-refused by design (issue #858) even though issue #1426 asked for the opposite; the
-reasoning is under [Item 6](#item-6--the-branch-already-checked-out-in-the--w-directory).
-Run the recipe from a base checkout, or pass `-c existing_branch=<ref>` from a
-directory not sitting on that branch.
+The branch the task named is checked out in the directory passed to `-w`, and the
+caller's checkout failed one of the alias checks. The `ERROR` line just above names the
+cause: uncommitted changes to tracked files, `origin/<branch>` missing, or commits not on
+`origin/<branch>`. Commit and push, push the branch, or discard the changes, then re-run.
+If the branch has diverged from `origin/<branch>`, integrate it first with
+`git pull --rebase`, because a plain push is rejected as a non-fast-forward.
+See [Item 6](#item-6-caller-checkout) and the
+[#1762 how-to](../recipes/issue-1762-caller-branch-worktree-alias.md#messages).
+
+### The run still stops with "refusing to use the caller checkout as a recipe task worktree"
+
+Either the named branch is the default branch, which never gets an alias, or
+`workflow_caller_branch_alias.sh` was not found, in which case a `WARNING` naming it is
+printed first. For the default branch, run the recipe from a checkout on another branch.
+For a missing helper, reinstall the bundle with `amplihack install`.
 
 ### The name looks like `feat/task-unnamed-1699564800`
 
@@ -398,5 +409,6 @@ and an `issue_number` that form a valid ref, or name the branch outright.
   inline derivation (ranks 3-4)
 - `amplifier-bundle/tools/workflow_branch_name.sh` — the explicit-branch scan (rank 2)
 - `tests/issue_1426_branch_name_not_prose.sh` — the regression spec
+- [Caller branch worktree alias (#1762)](../recipes/issue-1762-caller-branch-worktree-alias.md) (item 6)
 - #1463 — deriving `branch_prefix` from a structured source (item 5)
 - #1464 — the non-deterministic `feat/task-unnamed-<epoch>` fallback

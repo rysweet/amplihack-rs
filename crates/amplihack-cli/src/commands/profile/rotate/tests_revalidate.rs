@@ -37,7 +37,7 @@ use super::pin::{self, PinState};
 use super::revalidate::REREAD;
 use super::switch::{Switched, switch_live};
 use super::tests_revalidate_cause::{ctx_with, env3, log_of, ok, park, probes_for, spent};
-use super::tests_swap::{CREDS, env, ino_at, json, n, private};
+use super::tests_swap::{CREDS, Env, env, ino_at, json, n, private};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::config::{self, ReadMode};
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
@@ -457,6 +457,15 @@ fn the_retry_never_swaps_to_a_profile_that_lost_oauth() {
 static SPARE_SESSION_F1: AtomicBool = AtomicBool::new(false);
 static SPARE_SESSION_F2: AtomicBool = AtomicBool::new(false);
 
+/// The shared fixture keeps a key in `~/.claude.json`, and a home key stops
+/// the failed-probe swap these tests need (`damp::keep_for_home_key`).
+fn take_key_from_home(e: &Env) {
+    let path = e.home.join(".claude.json");
+    let mut home = json(&path);
+    home.as_object_mut().unwrap().remove("primaryApiKey");
+    private(&path, &home.to_string());
+}
+
 fn live_failed(flag: &AtomicBool, ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 10.0)), ("spare2", ok(0.0, 43.0))]);
@@ -474,6 +483,7 @@ fn live_failed(flag: &AtomicBool, ctx: &Ctx, snap: &Snap) -> Result<Measurement,
 #[test]
 fn a_skipped_retry_counts_the_failed_live_probe_once() {
     let e = env();
+    take_key_from_home(&e);
     let mut ctx = ctx_with(&e, |c, s| live_failed(&SPARE_SESSION_F1, c, s));
     ctx.scan = |_| sessions(&SPARE_SESSION_F1, &["spare"]);
     ctx.failed_live = FAILED_PROBE_LIMIT - 1;
@@ -490,6 +500,7 @@ fn a_skipped_retry_counts_the_failed_live_probe_once() {
 #[test]
 fn a_retry_after_failed_live_probes_still_swaps() {
     let (e, s2, _) = env3();
+    take_key_from_home(&e);
     let mut ctx = ctx_with(&e, |c, s| live_failed(&SPARE_SESSION_F2, c, s));
     ctx.scan = |_| sessions(&SPARE_SESSION_F2, &["spare"]);
     ctx.failed_live = FAILED_PROBE_LIMIT - 1;

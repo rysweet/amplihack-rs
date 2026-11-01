@@ -24,20 +24,22 @@ lock_holder_alive() {
 }
 
 # lock_acquire <lockdir>: take the lock, reclaiming it only from a dead holder.
-# Reclaims are serialised by a second mkdir mutex, $1.reclaim, and the holder is
-# re-checked inside it, so two processes can never both reclaim, and neither
-# can remove a lock another has just taken. A reclaim mutex left by a crashed
-# process is itself cleared after ten minutes.
+# Every acquire, not only a reclaim, runs inside a second mkdir mutex,
+# $1.reclaim. A holder can release at any moment, so if a free lock could be
+# taken outside the mutex, a reclaimer that had just judged the old holder dead
+# would remove the new holder's lock. A process that loses the mutex reports the
+# lock as held: the winner is either taking it or has found a live holder. A
+# mutex left by a crashed process is cleared after ten minutes.
 lock_acquire() {
-  mkdir "$1" 2>/dev/null && return 0
-  lock_holder_alive "$1" && return 1
   if ! mkdir "$1.reclaim" 2>/dev/null; then
     [ -n "$(find "$1.reclaim" -maxdepth 0 -mmin +10 2>/dev/null)" ] || return 1
     rm -rf "$1.reclaim"
     mkdir "$1.reclaim" 2>/dev/null || return 1
   fi
   _got=1
-  if ! lock_holder_alive "$1"; then
+  if mkdir "$1" 2>/dev/null; then
+    _got=0
+  elif ! lock_holder_alive "$1"; then
     rm -rf "$1"
     mkdir "$1" 2>/dev/null && _got=0
   fi

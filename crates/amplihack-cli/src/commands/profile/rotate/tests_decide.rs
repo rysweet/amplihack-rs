@@ -334,7 +334,7 @@ fn custom_thresholds_and_margins_apply() {
 #[test]
 fn a_dry_run_reports_the_outcome_it_previewed() {
     use super::cycle::CycleOutcome;
-    use super::observe::would;
+    use super::dry_run::would;
     assert_eq!(would(&Decision::Stay), CycleOutcome::Stayed);
     assert_eq!(
         would(&swap("spare", Reason::Threshold)),
@@ -440,4 +440,38 @@ fn a_live_profile_with_no_session_limit_swaps_at_the_week_threshold() {
             "{text}"
         );
     }
+}
+
+/// Crusty round 2 on #1829: main's plan-room swap (#1804) ranks on
+/// `Reading::Measured` through `plan_room::choose`, not through `decide`.
+/// A weekly-only login reads as `Measured { session: 0, week }`, so it is in
+/// pass 1 and wins over a login with a lower week that is past
+/// `--session-at`; exhausted logins are never chosen.
+#[test]
+fn plan_room_picks_the_no_session_limit_login_in_pass_1() {
+    use super::plan_room::choose;
+    let s = settings();
+    let live = c("live", read(&exhausted_session(20)));
+    let past =
+        format!("Current session: 92% used {RESET}\nCurrent week (all models): 10% used {RESET}\n");
+    for text in [weekly_only(40), no_reset_session(0, 40)] {
+        assert_eq!(read(&text), r(0.0, 40.0), "{text}");
+        let plan = [
+            c("a-spent", read(&exhausted_session(10))),
+            c("b-free", read(&text)),
+            c("c-past", read(&past)),
+        ];
+        assert_eq!(
+            choose(&s, Some(&live), &plan),
+            Some(ProfileName::parse("b-free").unwrap()),
+            "pass 1 holds only the no-session-limit login: {text}"
+        );
+    }
+    // Live on the no-session-limit login, it ranks first and stays.
+    let live = c("b-free", read(&weekly_only(40)));
+    let plan = [
+        c("a-spent", read(&exhausted_session(10))),
+        c("c-past", read(&past)),
+    ];
+    assert_eq!(choose(&s, Some(&live), &plan), None);
 }

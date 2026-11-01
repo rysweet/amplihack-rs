@@ -1404,6 +1404,7 @@ mod request {
     use super::super::ProfileError;
     use super::super::name::ProfileName;
     use super::super::probe_limits::ProbeMode;
+    use super::super::rotate::decide::{Probed, Reading};
     use super::super::store::ProfileStore;
     use super::super::usage_cmd::{Probe, probe_all, probe_with};
     use super::super::usage_parse::UsageState;
@@ -1536,6 +1537,71 @@ mod request {
         assert_eq!(p.raw, None);
         assert_eq!(f.starts(), [ARGS.join(" ")]);
         assert_eq!(f.read("stdin"), Some(format!("{REQUEST_LINE}\n")));
+    }
+
+    /// What Claude 2.1.316 printed for `-p /usage` under a key in `$HOME`.
+    const COST_TEXT: &str =
+        "printf 'Total cost:            $0.0000\\nTotal duration (API):  0s\\n'";
+
+    /// The answer of Claude 2.1.316 under each `$HOME` setting, with the
+    /// fields amplihack reads. See "API-key login check".
+    fn home_key_answer(subscription: Option<&str>, available: bool, limits: bool) -> String {
+        let rate_limits = limits.then(|| {
+            serde_json::json!({
+                "five_hour": {"utilization": 20, "resets_at": "2026-10-16T17:00:00Z"},
+                "seven_day": {"utilization": 30, "resets_at": "2026-10-22T09:00:00Z"}
+            })
+        });
+        serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": REQUEST_ID,
+                "response": {
+                    "subscription_type": subscription,
+                    "rate_limits_available": available,
+                    "rate_limits": rate_limits
+                }
+            }
+        })
+        .to_string()
+    }
+
+    fn reading(p: &Probe) -> Reading {
+        Probed::from_report(&p.report).reading
+    }
+
+    /// `env.ANTHROPIC_API_KEY` and `apiKeyHelper`: plan limits do not apply,
+    /// so the fallback runs, prints cost text, and the live reading fails.
+    #[test]
+    fn a_home_key_in_settings_reads_as_failed_through_the_fallback() {
+        let answer = home_key_answer(None, false, false);
+        let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
+        let p = f.probe(ProbeMode::Auto, 20, false);
+        assert_eq!(reading(&p), Reading::Failed);
+        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+    }
+
+    /// `primaryApiKey` answers like a plain plan login, so figures in that
+    /// answer give a normal reading and `/usage` never runs.
+    #[test]
+    fn a_home_primary_key_with_figures_reads_as_measured() {
+        let answer = home_key_answer(Some("max"), true, true);
+        let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
+        let p = f.probe(ProbeMode::Auto, 20, false);
+        assert!(matches!(reading(&p), Reading::Measured { .. }));
+        assert_eq!(f.starts(), [ARGS.join(" ")]);
+    }
+
+    /// With no figures, as when the usage read failed, `primaryApiKey` ends
+    /// on the same fallback, which fails.
+    #[test]
+    fn a_home_primary_key_without_figures_reads_as_failed_through_the_fallback() {
+        let answer = home_key_answer(Some("max"), true, false);
+        let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
+        let p = f.probe(ProbeMode::Auto, 20, false);
+        assert_eq!(reading(&p), Reading::Failed);
+        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
     }
 
     #[test]
