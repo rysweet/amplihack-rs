@@ -55,13 +55,13 @@
 //!   [`Measured::unknown`] and for a plan profile skipped as
 //!   `directory refused` (issue #1698): that login might have capacity. An
 //!   excluded login is the operator's choice and counts as neither.
-//! - A key in the `$HOME` files makes the live probe unreadable
-//!   (`key_check`), so the live reading is `Failed` and the per-token tier
-//!   is not tried off a plan login. Nothing is lost: Claude is already
-//!   using that key, the swap would not change the billing, and the cycle
-//!   logs the ALERT. Without a home key the move fails its login check.
-//!   `decide`'s swap on that `Failed` reading is also dropped, after this
-//!   function, by `damp::keep_for_home_key`.
+//! - A key in the `$HOME` files can make the live reading `Failed`
+//!   (`key_check` says which), and then the per-token tier is not tried off
+//!   a plan login. Nothing is lost: Claude is already using that key, a
+//!   swap would not change the billing, and the cycle logs the ALERT.
+//!   Without a home key the move fails its login check. `decide`'s swap on
+//!   `Failed` is also dropped, after this function, by
+//!   `damp::keep_for_home_key`. A normal live reading follows every rule.
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};
 use super::ledger::OverflowBlock;

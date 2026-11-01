@@ -198,8 +198,11 @@ fn a_symlinked_claude_json_fails_and_names_the_file() {
 }
 
 /// What Claude 2.1.316 printed for `-p /usage` with each key setting in
-/// `$HOME` and a plan login live: no reading, so the live login is `Failed`
-/// and the per-token tier is not tried from it. See "API-key login check".
+/// `$HOME` and a plan login live: no reading. `/usage` is the first probe
+/// only with `AMPLIHACK_PROFILE_USAGE_PROBE=text`; otherwise it is the fallback, so
+/// this is the live reading only when `get_usage` gave no answer. The tests
+/// `a_home_key_*` in `tests_usage_cmd` cover both steps. See "API-key login
+/// check".
 #[test]
 fn claudes_cost_text_under_a_home_key_is_a_failed_reading() {
     use super::decide::{Probed, Reading};

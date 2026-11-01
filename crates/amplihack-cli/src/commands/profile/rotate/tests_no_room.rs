@@ -322,13 +322,58 @@ fn a_failed_probe_and_the_api_key_are_never_recorded() {
         &others,
         Some(&n(KEY)),
         1000,
+        1000,
         120,
     );
     assert_eq!(r.profiles, vec!["spare".to_string(), WORK.to_string()]);
-    assert_eq!((r.at, r.until), (1000, 1240), "two cycles");
-    let r = no_room::of_cycle(None, &Reading::Failed, &[], None, 1000, 86_400);
+    assert_eq!((r.at, r.until), (1000, 1240), "two intervals");
+    let r = no_room::of_cycle(None, &Reading::Failed, &[], None, 1000, 1000, 86_400);
     assert_eq!(r.until, 1000 + MAX_SECS, "capped");
     assert!(no_room::valid(Some(&r)));
+}
+
+/// `until` runs from when the record is written and covers the next cycle,
+/// which the daemon starts one interval after this one ended.
+#[test]
+fn the_span_counts_from_the_write_and_covers_a_cycle_as_slow_as_this_one() {
+    let at = 1000;
+    let of = |written, interval| {
+        no_room::of_cycle(None, &Reading::Failed, &[], None, at, written, interval)
+    };
+    let (interval, length) = (120, 300);
+    let written = at + length;
+    let r = of(written, interval as u64);
+    assert_eq!(r.at, at);
+    let next_written = written + interval + length;
+    assert!(r.until > written, "expired before it was written");
+    assert!(r.until >= next_written, "a gap before the next record");
+    assert!(no_room::valid(Some(&r)));
+
+    // The hour after the measurement is the limit however slow the cycle.
+    assert_eq!(of(at + 3599, 120).until, at + MAX_SECS);
+    assert!(no_room::valid(Some(&of(at + 2 * MAX_SECS, 120))));
+    // A clock stepped back mid-cycle shortens nothing.
+    assert_eq!(of(at - 50, 120).until, at + 240);
+}
+
+/// The whole path on a host where measuring took five minutes, longer than
+/// two intervals: the record is still in force when the cycle ends, so
+/// auto-switch uses the key and does not say the login was not measured.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_cycle_slower_than_the_span_still_leaves_a_record_in_force() {
+    fn slow(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+        let others = vec![(n(CRED), probed(100.0)), (n(KEY), Probed::platform())];
+        decide_measured(ctx, snap, probed(100.0), others, now() - 300)
+    }
+    let f = fx();
+    f.cycle(slow, fails);
+    let l = f.ledger();
+    let rec = l.no_room.as_ref().unwrap();
+    assert!(now() - rec.at >= 300, "{rec:?}");
+    assert!(rec.until > now() + 120, "{rec:?}");
+    assert_eq!(recorded(&f), vec![CRED.to_string(), WORK.to_string()]);
+    assert_eq!(f.auto_switch_pick().as_deref(), Some(KEY));
 }
 
 #[test]

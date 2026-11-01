@@ -6364,23 +6364,46 @@ fake OAuth login and each setting in turn. The last column comes from sending
 a prompt to a local fake endpoint through `ANTHROPIC_BASE_URL`; the other
 columns come from runs without that variable.
 
-| Setting in `$HOME` | `claude auth status` | `claude -p /usage` | Credential sent with a prompt |
-|--------------------|----------------------|--------------------|-------------------------------|
-| `ANTHROPIC_API_KEY` under `env` | `authMethod: api_key` | cost text | The key, in `x-api-key` |
-| `apiKeyHelper` | `authMethod: api_key_helper` | cost text | The key, in `x-api-key` and `Authorization` |
-| `primaryApiKey` | `authMethod: claude.ai`, `apiKeySource: /login managed key` | cost text | The key, in `x-api-key` |
+| Setting in `$HOME` | `claude auth status` | `get_usage` `rate_limits_available` | `claude -p /usage` | Credential sent with a prompt |
+|--------------------|----------------------|-------------------------------------|--------------------|-------------------------------|
+| `ANTHROPIC_API_KEY` under `env` | `authMethod: api_key` | `false` | cost text | The key, in `x-api-key` |
+| `apiKeyHelper` | `authMethod: api_key_helper` | `false` | cost text | The key, in `x-api-key` and `Authorization` |
+| `primaryApiKey` | `authMethod: claude.ai`, `apiKeySource: /login managed key` | `true` | cost text | The key, in `x-api-key` |
 
-With no setting, `auth status` reports `authMethod: claude.ai` and `/usage`
-prints no cost text. `primaryApiKey` is the case to watch: `auth status` names
-the subscription while the request carries the key.
+With no setting, `auth status` reports `authMethod: claude.ai`,
+`rate_limits_available` is `true` and `/usage` prints no cost text.
+`primaryApiKey` is the case to watch: `auth status` and `get_usage` both treat
+the login as a subscription while the request carries the key.
+
+The `get_usage` column has a limit. With a fake login no figures came back:
+`rate_limits` was `null` in every row, so the probe went on to `/usage`.
+Claude's schema describes `rate_limits_available: false` as "plan rate limits
+do not apply", and with `true` it reads the plan's usage endpoint with the
+OAuth login. So with a working login and `primaryApiKey`, figures are expected
+as for a plain plan login. No run with a real login has confirmed this, so
+both outcomes below are covered by tests.
 
 So, while a plan login is live and one of these is present:
 
 - Every session bills per token. A mark does not change this, and neither
   does plan-first order, which is decided on plan readings.
-- The live `/usage` probe prints cost text, which is no reading, so the live
-  login reads as a failed probe on every cycle.
-- The rotator does not try the per-token tier from a failed live reading
+- What the live probe reads depends on the setting:
+  - With `ANTHROPIC_API_KEY` under `env` or `apiKeyHelper`, `get_usage` gives
+    no figures and `/usage` prints cost text, which is no reading. The live
+    login reads as a failed probe on every cycle.
+  - With `primaryApiKey`, an answer with figures is a normal reading, so the
+    live login is treated as a plan login. The rotator moves off it at its
+    thresholds as usual, including onto a marked API key, and the two rules
+    below do not apply. The moves change nothing that is billed. If
+    `get_usage` gives no figures, or the account has usage credits on, the
+    probe falls back to `/usage`, and the login reads as a failed probe on
+    that cycle.
+  - With `AMPLIHACK_PROFILE_USAGE_PROBE=text`, `get_usage` does not run, so every
+    setting reads as a failed probe.
+
+On a cycle with a failed live reading:
+
+- The rotator does not try the per-token tier
   ([decision order](#rotate-decision-order)). That loses nothing: Claude is
   already using the key, and the move would not change what is billed.
 - The rotator makes no [failed-probe swap](#rotate-failed-live-probes). The
@@ -6653,7 +6676,7 @@ these optional fields. Older ledgers load unchanged.
 |-------|----------|
 | `live_kind` | `"platform"` while `live` is an API-key profile; absent means subscription. Only present with `live`. The rotator checks and repairs it on every cycle; it is kept for readers, such as the limit-resume hook, that cannot detect kinds. |
 | `platform_block` | `{"reason", "at", "until"}`, with `reason` one of `key_exhausted`, `key_revoked` or `key_rate_limited`, and `0 < at < until <= at + 62 days`; absent when there is no block. Expired blocks are removed the next time the rotator records a cycle. |
-| `no_room` | `{"at", "until", "profiles"}`: the profiles the last measuring cycle found with no room (a reached limit, or a window at 100%), sorted, never the API-key profile and never one whose probe failed. `at` is when the cycle measured; `until` is two `--interval`s later, at most one hour. Written every measuring cycle whatever the capacity state; auto-switch reads it while `at <= now <= until`, for profiles it has no reading of. |
+| `no_room` | `{"at", "until", "profiles"}`: the profiles the last measuring cycle found with no room (a reached limit, or a window at 100%), sorted, never the API-key profile and never one whose probe failed. `at` is when the cycle measured; `until` is two `--interval`s plus the cycle's own length after the record was written, so a slow cycle's record is still in force when the next one arrives, and at most one hour after `at`. Written every measuring cycle whatever the capacity state; auto-switch reads it while `at <= now <= until`, for profiles it has no reading of. |
 
 The limit-resume hook reads `live_kind` and `platform_block` without failing on a missing or
 wrongly typed field, and treats a live API-key profile as on the API key,

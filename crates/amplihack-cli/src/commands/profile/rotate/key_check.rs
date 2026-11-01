@@ -22,9 +22,13 @@
 //! A home key is host-wide. Claude reads `~/.claude.json` and
 //! `~/.claude/settings.json` whatever login is live, and each accepted
 //! setting wins over a plan login, so every plan session on the host bills
-//! per token, marked or not, and the live `/usage` probe prints cost text
-//! the rotator cannot read. Claude 2.1.316 was run to confirm this; the
-//! results are under "API-key login check". [`HOME_KEY_EFFECT`] says so at
+//! per token, marked or not. What the live probe reads depends on the
+//! setting. With `env.ANTHROPIC_API_KEY` or `apiKeyHelper`, `get_usage` says
+//! plan limits do not apply and `/usage` prints cost text, so the live
+//! reading is `Failed`. `primaryApiKey` leaves `get_usage` on the plan path,
+//! so it can read normally, and only the `/usage` fallback fails. Claude
+//! 2.1.316 was run to confirm this; the results are under "API-key login
+//! check". [`HOME_KEY_EFFECT`] states the billing effect at
 //! run time: the cycle logs it as an ALERT (`note_home_key`) and `overflow
 //! add` prints it.
 //!
@@ -60,7 +64,7 @@ const NONE: &str = "no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting"
 /// What a key in the `$HOME` files does while a plan login is live.
 pub const HOME_KEY_EFFECT: &str = "a key in ~/.claude.json or ~/.claude/settings.json is used \
      ahead of a plan login: every session on this host bills per token whether or not a profile \
-     is marked, and the rotator cannot read the live login's usage. Remove the key to bill plans";
+     is marked, and the rotator's reading of the live login may fail. Remove the key to bill plans";
 
 /// A key plain `claude` can read once a swap has made an API-key profile
 /// live: [`names_a_key`] over `<home>/.claude.json` and

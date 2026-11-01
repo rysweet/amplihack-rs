@@ -375,6 +375,30 @@ fn a_home_key_stops_failed_probe_swaps_for_good() {
     assert!(c.failed_live >= 6, "the count goes on: {}", c.failed_live);
 }
 
+/// Under `primaryApiKey` the live probe can read normally, because
+/// `get_usage` stays on the plan path. No failed reading means no home-key
+/// stay: a plan login out of room moves onto the marked key as usual, and
+/// the ALERT still says the key is billing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_home_primary_key_with_a_normal_reading_follows_the_plan_rules() {
+    let f = fx();
+    private(&f.home.join(".claude.json"), HOME_WITH_KEY);
+    let mut c = f.ctx(super::key_check::reachable);
+    assert_eq!(
+        run_cycle(&mut c, Mode::Watch).unwrap(),
+        CycleOutcome::Swapped
+    );
+    assert_eq!(f.home_login(), Some(f.key));
+    let log = f.logged();
+    assert!(!log.iter().any(|l| l.contains("home key (")), "{log:?}");
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("ALERT: home_key (primaryApiKey set): ")),
+        "{log:?}"
+    );
+}
+
 /// A symlinked key may never reach Claude, so the warning reader's view of it
 /// is no ground to stay. The live login may simply be dead: the swap goes
 /// ahead, and the ALERT still says the key might be billing.

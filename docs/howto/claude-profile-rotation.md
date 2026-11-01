@@ -1909,7 +1909,8 @@ it. The rotator's live login counts, though its login file is in
 records only a session's own profile, and `profile usage` probes each
 profile's own directory. It uses the rotator's measurement instead: every
 cycle, the rotator records in its ledger the logins it measured with no room,
-and while that record holds (two cycles, at most an hour) those logins no
+and while that record holds (past the next cycle, at most an hour after the
+measurement) those logins no
 longer keep auto-switch off the key. That includes a login the rotator has
 just moved off. When no rotator is running, or the rotator found room on the
 live login, the live login keeps the key out until a reading is recorded for

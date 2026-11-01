@@ -15,7 +15,16 @@
 //! stays measured until the record expires. It holds until `until`, at most
 //! [`MAX_SECS`] after the measurement: a login regains room at a reset the
 //! rotator does not record, so a stopped rotator's record must not last.
+//!
+//! `until` is counted from when the record is written, not from `at`. The
+//! record is written at the end of a cycle, and the next one arrives a whole
+//! interval plus the next cycle's length later, because the daemon sleeps
+//! the interval after a cycle ends. Probes can take minutes on a loaded host
+//! (`probe_limits`), so a span counted from `at` alone could expire before
+//! the record was written, and auto-switch would call measured logins
+//! unread.
 
+use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate::cycle::Ctx;
 use crate::commands::profile::rotate::decide::Reading;
@@ -33,24 +42,30 @@ pub const MAX_PROFILES: usize = 256;
 pub struct NoRoom {
     /// When the cycle measured them.
     pub at: i64,
-    /// When the record stops holding: two cycles later, at most
-    /// [`MAX_SECS`] after `at`.
+    /// When the record stops holding; see [`of_cycle`].
     pub until: i64,
     /// The profiles measured with no room, sorted, never the API-key
     /// profile.
     pub profiles: Vec<String>,
 }
 
-/// The record for a cycle that measured at `at`, every `interval` seconds:
-/// `live` and each of `others` whose reading is a measurement with no room
-/// or a reached limit. A failed probe is no reading, so it is left out, and
-/// so is `platform`, whose reading is synthetic (issue #1700).
+/// The record for a cycle that measured at `at` and writes it at `written`,
+/// every `interval` seconds: `live` and each of `others` whose reading is a
+/// measurement with no room or a reached limit. A failed probe is no
+/// reading, so it is left out, and so is `platform`, whose reading is
+/// synthetic (issue #1700).
+///
+/// It holds for two intervals plus this cycle's length after `written`, so
+/// the next record arrives in time even if that cycle takes up to one
+/// interval longer than this one. [`MAX_SECS`] after `at` is the limit
+/// whatever the cycle took: a measurement that old says nothing.
 pub fn of_cycle(
     live: Option<&ProfileName>,
     reading: &Reading,
     others: &[(ProfileName, Reading)],
     platform: Option<&ProfileName>,
     at: i64,
+    written: i64,
     interval: u64,
 ) -> NoRoom {
     let mut profiles: Vec<String> = live
@@ -62,16 +77,22 @@ pub fn of_cycle(
         .collect();
     profiles.sort();
     profiles.dedup();
-    let span = i64::try_from(interval.saturating_mul(2)).map_or(MAX_SECS, |s| s.min(MAX_SECS));
+    let span = i64::try_from(interval.saturating_mul(2)).unwrap_or(MAX_SECS);
+    // A clock stepped back mid-cycle gives no length, not a negative one.
+    let written = written.max(at);
+    let until = written
+        .saturating_add(span)
+        .saturating_add(written - at)
+        .min(at.saturating_add(MAX_SECS));
     NoRoom {
         at,
-        until: at.saturating_add(span),
+        until,
         profiles,
     }
 }
 
 /// Records in `l` what the cycle that identified `snap` measured at `at`,
-/// at `ctx`'s interval; see [`of_cycle`].
+/// written now at `ctx`'s interval; see [`of_cycle`].
 pub fn record(
     l: &mut RotateLedger,
     ctx: &Ctx,
@@ -82,7 +103,7 @@ pub fn record(
 ) {
     let (name, platform) = (live_name(&snap.live), snap.shown_platform());
     let interval = ctx.settings.interval;
-    l.no_room = Some(of_cycle(name, live, others, platform, at, interval));
+    l.no_room = Some(of_cycle(name, live, others, platform, at, now(), interval));
 }
 
 /// Whether a loaded record is one the rotator could have written.

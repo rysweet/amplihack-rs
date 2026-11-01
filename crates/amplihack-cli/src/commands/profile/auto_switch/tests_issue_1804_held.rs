@@ -46,6 +46,7 @@ fn rotator_measured(f: &Fx, spare: R, at: i64) {
         &others,
         Some(&n("console")),
         at,
+        at,
         120,
     );
     let rs = RotateState::new(&f.root);
