@@ -94,8 +94,10 @@ pub(super) use state::CREDS;
 pub(super) use swap::read_claude_json;
 #[cfg(all(test, unix))]
 pub(crate) use swap::rerun_owner;
+#[cfg(unix)]
+pub(super) use usage::Window;
 #[cfg(all(test, unix))]
-pub(super) use usage::{Reading as SwitchReading, ReadingSource, Window};
+pub(super) use usage::{Reading as SwitchReading, ReadingSource};
 #[cfg(unix)]
 pub(crate) use {swap::sweep_rerun, usage::reset_or_default};
 
@@ -426,6 +428,42 @@ pub fn lease_view(root: &Path) -> Result<Option<LeaseView>, ProfileError> {
         let _ = root;
         Ok(None)
     }
+}
+
+/// Issue #1844: the stored reading for the account whose login is in
+/// directory `dir`, when it was observed no more than `max_age` seconds
+/// before `now` (and not after it), with each window that passes
+/// [`usage::plausible`]. `None` without auto-switch state, a reading, or a
+/// plausible window, and when anything cannot be read. Read-only and
+/// silent: it never creates state, takes the lock or prints.
+#[cfg(unix)]
+pub fn fresh_reading(
+    root: &Path,
+    dir: &str,
+    max_age: i64,
+    now: i64,
+) -> Option<(Option<Window>, Option<Window>)> {
+    if max_age <= 0 {
+        return None;
+    }
+    let state = state::State::new(root).ok()?;
+    if !state.exists() {
+        return None;
+    }
+    fsx::check_root_private(&state.root).ok()?;
+    fsx::check_private_dir(&state.dir).ok()?;
+    let ledger = state.load_ledger().ok()?;
+    let account = ledger.account_in(dir);
+    let file = state.try_load_usage().ok()?;
+    let r = file.accounts.get(account)?;
+    let age = now.checked_sub(r.observed_at)?;
+    if !(0..=max_age).contains(&age) {
+        return None;
+    }
+    let ok =
+        |w: &Option<Window>| w.and_then(|w| usage::plausible(w.used_percentage, w.resets_at, now));
+    let (session, week) = (ok(&r.five_hour), ok(&r.seven_day));
+    (session.is_some() || week.is_some()).then_some((session, week))
 }
 
 /// Issue #1818: the profiles among `names` whose stored reading has a week

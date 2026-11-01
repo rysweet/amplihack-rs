@@ -319,3 +319,109 @@ fn the_leak_scan_matches_the_argv_spawn_builds() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1844 (SR-9): a stopping rotator waits for token refreshes in
+// progress, so it never leaves Claude's `.oauth_refresh.lock` behind.
+//
+// Contract:
+// - `daemon::refresh_grace(timeout) = timeout + 1 s`.
+// - `daemon::finish_refreshes(grace) -> bool` waits until no refresh holds
+//   a lock (`usage_direct::refreshes_in_progress() == 0`) or `grace` ends,
+//   and says whether none is left. It never sets `PROBE_CANCEL`.
+// ---------------------------------------------------------------------------
+
+mod issue_1844 {
+    use super::super::daemon::{finish_refreshes, refresh_grace};
+    use crate::commands::profile::tests_fake_http::{FakeHttp, Reply};
+    use crate::commands::profile::usage_direct::{Endpoints, Request, read};
+    use serde_json::json;
+    use std::ffi::OsStr;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_grace_is_the_deadline_plus_one_second() {
+        assert_eq!(
+            refresh_grace(Duration::from_secs(120)),
+            Duration::from_secs(121)
+        );
+        assert_eq!(
+            refresh_grace(Duration::from_secs(1)),
+            Duration::from_secs(2)
+        );
+    }
+
+    #[test]
+    fn stopping_during_a_stalled_refresh_leaves_no_refresh_lock() {
+        let now = chrono::Utc::now().timestamp();
+        let iso = |t: i64| {
+            chrono::DateTime::from_timestamp(t, 0)
+                .unwrap()
+                .format("%Y-%m-%dT%H:%M:%SZ")
+                .to_string()
+        };
+        let body = json!({
+            "five_hour": {"utilization": 5.0, "resets_at": iso(now + 3600)},
+            "seven_day": {"utilization": 6.0, "resets_at": iso(now + 86_400)}
+        });
+        let fake = FakeHttp::start(move |s, _| {
+            if s.method == "POST" {
+                Reply::json(
+                    200,
+                    &json!({"access_token": "FAKE-NEW-1844-d", "expires_in": 3600}),
+                )
+                .after(Duration::from_millis(1200))
+            } else if s.header("authorization") == Some("Bearer FAKE-NEW-1844-d") {
+                Reply::json(200, &body)
+            } else {
+                Reply::json(401, &json!({}))
+            }
+        });
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("spare");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let creds = dir.join(".credentials.json");
+        fs::write(
+            &creds,
+            json!({"claudeAiOauth": {
+                "accessToken": "FAKE-OLD-1844-d",
+                "refreshToken": "FAKE-REFRESH-1844-d",
+                "expiresAt": chrono::Utc::now().timestamp_millis() + 3_600_000
+            }})
+            .to_string(),
+        )
+        .unwrap();
+        fs::set_permissions(&creds, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let (base, token) = (fake.base(), fake.token_url());
+        let reader_dir = dir.clone();
+        let reader = std::thread::spawn(move || {
+            let (ep, _) = Endpoints::resolve(Some(OsStr::new(&base)), Some(OsStr::new(&token)));
+            let journals = Vec::new();
+            let req = Request {
+                creds_dir: &reader_dir,
+                journals: &journals,
+                allow_refresh: true,
+                timeout: Duration::from_secs(5),
+                now_ms: chrono::Utc::now().timestamp_millis(),
+            };
+            read(&ep, &req).is_ok()
+        });
+        let start = Instant::now();
+        while fake.count("POST", "/v1/oauth/token") == 0 {
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "no refresh started"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(dir.join(".oauth_refresh.lock").is_dir());
+        // The daemon stops now.
+        assert!(finish_refreshes(refresh_grace(Duration::from_secs(5))));
+        assert!(!dir.join(".oauth_refresh.lock").exists());
+        assert!(reader.join().unwrap());
+    }
+}

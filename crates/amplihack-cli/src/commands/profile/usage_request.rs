@@ -54,10 +54,36 @@ pub(super) fn parse_answer(stdout: &str, now: i64) -> Option<UsageReport> {
     if payload.get("rate_limits_available") != Some(&Value::Bool(true)) {
         return None;
     }
-    let limits = payload.get("rate_limits")?.as_object()?;
-    // Credits on: only `/usage` reports the spend limit, so fall back.
-    if !credits_off(payload) || !credits_off(limits) {
+    if !credits_off(payload) {
         return None;
+    }
+    match parse_limits(payload.get("rate_limits")?, now) {
+        Limits::Report(report) => Some(report),
+        Limits::CreditsOn | Limits::Unparseable => None,
+    }
+}
+
+/// What one `rate_limits`-shaped object holds (issue #1844).
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum Limits {
+    /// The windows, read as `profile usage` reports them.
+    Report(UsageReport),
+    /// `extra_usage` is on: only `/usage` reports the spend limit.
+    CreditsOn,
+    /// Not an object, or neither window could be read.
+    Unparseable,
+}
+
+/// Reads one `rate_limits`-shaped object: `five_hour`, `seven_day`,
+/// `model_scoped` and `extra_usage`. The `get_usage` answer and the direct
+/// read (issue #1844) both use it, so issue #1818's rules are the same on
+/// both. Unknown keys are ignored.
+pub(super) fn parse_limits(limits: &Value, now: i64) -> Limits {
+    let Some(limits) = limits.as_object() else {
+        return Limits::Unparseable;
+    };
+    if !credits_off(limits) {
+        return Limits::CreditsOn;
     }
     let five_hour = limits.get("five_hour");
     let mut session = five_hour.and_then(|w| window(w, "session", now));
@@ -65,7 +91,7 @@ pub(super) fn parse_answer(stdout: &str, now: i64) -> Option<UsageReport> {
         .get("seven_day")
         .and_then(|w| window(w, "all models", now));
     if session.is_none() && week_all.is_none() {
-        return None;
+        return Limits::Unparseable;
     }
     let week_models = limits
         .get("model_scoped")
@@ -85,7 +111,7 @@ pub(super) fn parse_answer(stdout: &str, now: i64) -> Option<UsageReport> {
     } else {
         UsageState::Ok
     };
-    Some(UsageReport {
+    Limits::Report(UsageReport {
         state,
         session,
         week_all,

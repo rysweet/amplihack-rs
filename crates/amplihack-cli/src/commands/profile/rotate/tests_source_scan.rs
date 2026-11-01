@@ -186,11 +186,14 @@ fn assert_before(body: &str, first: &str, then: &str, what: &str) {
 #[test]
 fn the_pin_gate_runs_before_claude_is_looked_for() {
     // No measuring, and so no usage or OAuth call, while pinned.
+    // Issue #1844: `claude` is looked up lazily inside measuring, so the
+    // gate must come before `measure_and_decide`, and the cycle itself never
+    // looks it up.
     let cycle = body_of(&source("cycle.rs"), "run_cycle");
-    assert_before(&cycle, "pin::gate", "resolve_claude_binary", "run_cycle");
+    assert!(!cycle.contains("resolve_claude_binary"), "run_cycle");
     assert_before(&cycle, "pin::gate", "measure_and_decide", "run_cycle");
     let dry = body_of(&source("dry_run.rs"), "dry_run");
-    assert_before(&dry, "pin::gate", "resolve_claude_binary", "dry_run");
+    assert!(!dry.contains("resolve_claude_binary"), "dry_run");
     assert_before(&dry, "pin::gate", "measure_and_decide", "dry_run");
 }
 

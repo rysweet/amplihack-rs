@@ -246,6 +246,8 @@ mod profile_issue_1804;
 mod profile_overflow;
 #[path = "profile_platform.rs"]
 mod profile_platform;
+#[path = "profile_usage_direct.rs"]
+mod profile_usage_direct;
 #[path = "remote_cli_contract.rs"]
 mod remote_cli_contract;
 #[path = "runner_probe_cleanup.rs"]

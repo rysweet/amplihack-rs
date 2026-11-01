@@ -132,6 +132,7 @@ fn probed(session: f64) -> Probed {
         },
         spend_limit: false,
         unknown: false,
+        still_running: false,
     }
 }
 

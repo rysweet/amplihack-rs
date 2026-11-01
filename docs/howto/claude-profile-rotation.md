@@ -815,7 +815,7 @@ before. When every account is at or above a threshold, the rotator writes
 one `ALERT` and stays, as before.
 
 A probe that timed out or could not run shows as `<name>:failed` in the
-cycle line, never as `s=100%,w=100%`, and writes
+cycle line, never as a percentage, and writes
 `warning: rotate: probe of <name> timed out` (or `failed: <reason>`) to
 `rotate.err`. Its usage is unknown: the rotator does not choose it, does not
 count or record it as exhausted, and probes it again on the next cycle.
@@ -823,8 +823,14 @@ While a plan profile's usage is unknown this way, the rotator does not move
 onto
 [usage credits](#use-usage-credits-when-every-plan-login-is-exhausted); see
 [When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured).
-`s=100%,w=100%` means the probe answered and the account reached its
-session or weekly limit.
+A percentage of 100 means the probe answered and the account reached that
+limit. A login at its session limit shows its weekly figure as reported,
+for example `work:s=100%,w=55%`; `w=?` means no weekly figure was read.
+
+A login whose read had not finished when the cycle stopped waiting shows as
+`<name>:unknown, still running`. Its usage is unknown for that cycle, as for
+`failed`, and the next cycle uses the result when it arrives; see
+[Readings that take longer than a cycle](#readings-that-take-longer-than-a-cycle).
 
 To see why a probe fails, run `amplihack profile usage --raw`. If the state
 is `timeout`, see
@@ -833,19 +839,24 @@ is `timeout`, see
 ## When the host is heavily loaded
 
 The rotator measures each login as
-[`profile usage`](claude-profiles.md#check-usage-across-profiles) does: it
-asks `claude` with a `get_usage` request, which does not appear to make
-Claude read the session transcripts, and falls back to `claude -p /usage`,
-which reads every transcript the profile can see. That fallback can take a
-minute or more of CPU on a busy host, and a profile marked as overflow is
-always probed with `/usage` alone. So the rotator gives each login's probe 120
-seconds, for the request and any fallback together, and runs only a few
-probes at once: between 2 and 4, fewer as the load average rises towards
-the number of CPUs. The live login's probe counts as one of those. A
-`claude` that answers `get_usage` but does not exit keeps its place among
-those few until its 120 seconds are up; it is then stopped and its answer is
-still used. The formula is in the
-[reference](../reference/profile-command.md#probe-parallelism).
+[`profile usage`](claude-profiles.md#check-usage-across-profiles) does:
+
+1. it uses a reading the status line stored in the last 300 seconds, if
+   there is one;
+2. otherwise it asks Anthropic's OAuth usage endpoint directly, with the
+   login stored in the profile, which takes well under a second and starts
+   no `claude` process;
+3. only if that fails does it start `claude`, first with a `get_usage`
+   request and then with `claude -p /usage`.
+
+The last step is the slow one: `/usage` reads every transcript the profile
+can see, which can take a minute or more of CPU on a busy host. A profile
+marked as overflow is always probed with `/usage` alone, because only
+`/usage` shows a used-up spend limit. So each login's `claude` probe gets
+120 seconds, and only a few run at once: between 2 and 4, fewer as the load
+average rises towards the number of CPUs. Direct reads have their own
+bound, 8 by default. The live login counts as one of each. The formula is
+in the [reference](../reference/profile-command.md#probe-parallelism).
 
 If probes still time out, give them longer, run fewer at once, or both. The
 rotator reads these variables from the environment it was started in, so
@@ -866,19 +877,78 @@ in another shell does nothing to a running rotator.
 |----------|--------|---------|
 | `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | `1` to `600` seconds | `120` |
 | `AMPLIHACK_PROFILE_USAGE_PARALLEL` | `1` to `16` | derived from CPUs and load |
-| `AMPLIHACK_PROFILE_USAGE_PROBE` | `auto` or `text` | `auto` |
+| `AMPLIHACK_PROFILE_USAGE_DIRECT_PARALLEL` | `1` to `16` | `8` |
+| `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` | `0` to `3600` seconds; `0` turns passive readings off | `300` |
+| `AMPLIHACK_PROFILE_USAGE_PROBE` | `direct`, `auto` or `text` | unset: passive, direct, then `claude` |
+| `AMPLIHACK_PROFILE_USAGE_API_BASE` | an `https://` URL, or `http://` on a loopback address | `https://api.anthropic.com` |
+| `AMPLIHACK_PROFILE_USAGE_TOKEN_URL` | an `https://` URL, or `http://` on a loopback address | `https://platform.claude.com/v1/oauth/token` |
 
-On an idle host with many profiles, a higher
+On an idle host with many profiles that need `claude`, a higher
 `AMPLIHACK_PROFILE_USAGE_PARALLEL` makes each cycle shorter.
-`AMPLIHACK_PROFILE_USAGE_PROBE=text` skips the `get_usage` request; use it
-only if that request gives wrong figures (see
+`AMPLIHACK_PROFILE_USAGE_PROBE=direct` starts no `claude` to measure a
+login: a login whose direct read fails reads as failed for that cycle, and
+overflow logins always do, with `direct read: overflow needs /usage`, so the
+rotator never moves onto one. The one `claude` it still starts is the
+spend-limit check of a held cycle whose pinned live login is an overflow
+profile; see [Pin and overflow](../reference/profile-command.md#pin-and-overflow). `AMPLIHACK_PROFILE_USAGE_PROBE=auto` goes back to the behaviour before
+direct reads (the `get_usage` request, then `/usage`), and `text` uses
+`/usage` alone; use them only if the direct read gives wrong figures (see
 [Compare the two probe methods](claude-profiles.md#compare-the-two-probe-methods)),
-because every probe then reads the transcripts. An empty value is treated as
+because every probe then starts `claude`. An empty value is treated as
 unset. An invalid value is reported once per cycle in `rotate.err` beside
 the log, and the default is used instead.
 
-A slow cycle can take longer than `--interval`. Cycles do not overlap: the
-next one starts `--interval` seconds after the previous one ends.
+When a direct read fails and the login is measured with `claude` instead,
+the rotator writes nothing about it to its log or `rotate.err`; the cycle
+line shows the figures as usual. To see why a login fell back, run
+`amplihack profile usage --raw <name>`.
+
+The direct read may refresh a candidate's expired token, under Claude's own
+refresh lock, and write the new token back to that profile's
+`.credentials.json`. It never refreshes the login in `~/.claude` or a login
+lent to or from another directory; `claude` does that itself. The details
+are in the [reference](../reference/profile-command.md#token-refresh).
+
+### Readings that take longer than a cycle
+
+A cycle does not wait for every reading. It waits until 2 seconds before
+`--interval` is up, counted from the start of the cycle, and at least
+1 second. A login whose reading has not finished by then shows as
+`<name>:unknown, still running` in the cycle line and counts as unmeasured
+for that cycle. Its reading keeps running, and the next cycle uses the
+result; no second reading of that login starts while one is outstanding.
+With `--interval 120`:
+
+```
+2026-11-01T10:00:00Z cycle live=work work:s=41%,w=30% spare:unknown, still running third:s=5%,w=12%
+2026-11-01T10:02:01Z cycle live=work work:s=43%,w=30% spare:s=0%,w=8% third:s=5%,w=12%
+```
+
+A reading still outstanding after twice the probe deadline plus 5 seconds
+(245 seconds by default) is given up, and the next cycle starts a new one.
+When the rotator stops, it waits a little over the deadline for any token
+refresh in progress, so that it does not leave Claude's refresh lock
+behind.
+
+Cycles do not overlap: the next one starts `--interval` seconds after the
+previous one ends.
+
+Each cycle stores the readings it took, and later cycles use a stored
+reading while it is younger than `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`
+(300 seconds by default). With `--interval 120`, a login is therefore asked
+afresh only about every third cycle, and a swap can rest on a reading up to
+five minutes old. For the rotator to react sooner, lower the age in the
+shell that starts it:
+
+```bash
+export AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS=100
+amplihack profile rotate stop
+amplihack profile rotate start --interval 120 --session-at 70
+```
+
+A value just under `--interval` makes every cycle ask each login again, at
+the cost of one direct read per login per cycle; `0` does the same and also
+ignores the status line's own readings.
 
 ## Which profiles can take over
 

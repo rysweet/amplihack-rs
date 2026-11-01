@@ -238,6 +238,9 @@ impl Fixture {
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
             // Launches never start a real background rotator here (autostart).
             .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
+            // Issue #1844: these tests read through `claude`; a reading an
+            // earlier command recorded must not stand in as a passive one.
+            .env("AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS", "0")
             .env("AMPLIHACK_SKIP_REFLECTION", "1")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
         c
@@ -739,10 +742,12 @@ fn setup_failures_exit_non_zero_before_probing() {
         .env("PATH", empty.path())
         .output()
         .unwrap();
-    assert_eq!(
-        out.status.code(),
-        Some(1),
-        "claude not found: {}",
+    // Issue #1844: `claude` is looked up only when a row needs it, and a
+    // missing one fails only those rows, not the command.
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains(": claude not found"),
+        "{}",
         text(&out.stderr)
     );
     assert!(f.probed().is_empty());
@@ -1085,7 +1090,9 @@ fn a_bad_method_warns_once_and_still_uses_the_request() {
         .collect();
     assert_eq!(
         warnings,
-        ["warning: ignored AMPLIHACK_PROFILE_USAGE_PROBE \"Text\" (use auto or text); using auto"]
+        [
+            "warning: ignored AMPLIHACK_PROFILE_USAGE_PROBE \"Text\" (use direct, auto or text); using the default order"
+        ]
     );
     let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(session(&rows[0]), 42.0);

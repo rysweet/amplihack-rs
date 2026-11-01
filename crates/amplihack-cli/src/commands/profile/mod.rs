@@ -1,10 +1,12 @@
 //! `amplihack profile`: manual Claude Code login profiles.
 //!
 //! A profile is a directory under the profile root that is handed to Claude
-//! Code as `CLAUDE_CONFIG_DIR`. amplihack never reads, copies or refreshes
-//! credentials, and never changes the parent environment. With auto-switch on
-//! (off by default) it may move a login file between profile directories;
-//! see `auto_switch`.
+//! Code as `CLAUDE_CONFIG_DIR`. amplihack never copies credentials and never
+//! changes the parent environment. `profile usage` and the rotator read a
+//! profile's OAuth token in memory to ask the usage endpoint, and may
+//! refresh it once under Claude's lock (`usage_direct`, issue #1844). With
+//! auto-switch on (off by default) amplihack may move a login file between
+//! profile directories; see `auto_switch`.
 
 #[cfg(unix)]
 mod attempt;
@@ -32,8 +34,13 @@ mod shared_dirs;
 mod store;
 mod supervise_gate;
 mod usage_cmd;
+#[cfg(unix)]
+mod usage_direct;
 mod usage_parse;
+#[cfg(unix)]
+mod usage_passive;
 mod usage_request;
+mod usage_source;
 
 #[cfg(test)]
 mod tests_commands;
@@ -47,6 +54,8 @@ mod tests_docs_sync_platform;
 mod tests_docs_sync_probe;
 #[cfg(all(test, unix))]
 mod tests_duplicates;
+#[cfg(all(test, unix))]
+mod tests_fake_http;
 #[cfg(all(test, unix))]
 mod tests_kind;
 #[cfg(all(test, unix))]
@@ -73,10 +82,18 @@ mod tests_shared_dirs;
 mod tests_store;
 #[cfg(test)]
 mod tests_usage_cmd;
+#[cfg(all(test, unix))]
+mod tests_usage_direct;
+#[cfg(all(test, unix))]
+mod tests_usage_direct_scan;
 #[cfg(test)]
 mod tests_usage_parse;
+#[cfg(all(test, unix))]
+mod tests_usage_passive;
 #[cfg(test)]
 mod tests_usage_request;
+#[cfg(all(test, unix))]
+mod tests_usage_source;
 #[cfg(test)]
 mod tests_verify;
 
