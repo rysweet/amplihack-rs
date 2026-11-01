@@ -9,11 +9,14 @@
 //!   behind or a linked worktree, and a caller not on <B> (unchanged).
 //! - `step04_stops.rs`: the three stops, first cause only, the default
 //!   branch, a missing or misbehaving planner, and a concurrent create.
-//! - `resolver.rs`, `planner.rs`: the two new tools on their own.
+//! - `resolver.rs`, `planner.rs`: the resolver and planner on their own;
+//!   `resolver.rs` also holds the bash 3.2 and strict-mode checks for all
+//!   three new tools (resolver, planner and `workflow_alias_reuse.sh`).
 //! - `consumers.rs`: the open-PR check, final status and the terminal-state
 //!   probe look the PR up by <B> (AC11).
 //! - `push.rs`: steps 15, 16b, 18c and 20b publish to origin/<B>.
-//! - `static_checks.rs`: read-only helpers, step 4 and the docs.
+//! - `static_checks.rs`: the planner and resolver only read, the reuse
+//!   helper's only write is one fast-forward, step 4 and the docs.
 //!
 //! Every child starts from `isolated(..)` with a fixture-owned HOME, a fake
 //! `gh` and a bare local origin; nothing reaches GitHub or the real

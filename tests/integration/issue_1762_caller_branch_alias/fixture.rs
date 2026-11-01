@@ -36,6 +36,7 @@ pub const ORIGIN_URL: &str = "https://github.com/acme/widget.git";
 pub const PR_URL: &str = "https://github.com/acme/widget/pull/7";
 pub const PLANNER: &str = "workflow_caller_branch_alias.sh";
 pub const RESOLVER: &str = "workflow_remote_branch.sh";
+pub const REUSE: &str = "workflow_alias_reuse.sh";
 
 /// `<BRANCH>--wt-<n>`.
 pub fn alias(n: u32) -> String {

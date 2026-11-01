@@ -1,6 +1,7 @@
-//! Static guards for #1762: the two helpers contain no write commands, step 4
-//! adds nothing destructive, the consensus recipe keeps the #858 refusal, and
-//! the documentation is linked (D8, D17, R16, S6, S8, AC15).
+//! Static guards for #1762: the planner and resolver contain no write
+//! commands, the reuse helper's only write is one `git merge --ff-only`, the
+//! step 4 recipe text adds nothing destructive, the consensus recipe keeps the
+//! #858 refusal, and the documentation is linked (D8, D17, R16, S6, S8, AC15).
 
 use regex::Regex;
 
@@ -17,36 +18,39 @@ fn git_invocation(sub: &str) -> Regex {
     .unwrap()
 }
 
+/// Git subcommands that write. `merge` is among them; the reuse helper is
+/// allowed exactly one, and only with `--ff-only`.
+const WRITE_SUBCOMMANDS: [&str; 25] = [
+    "fetch",
+    "push",
+    "pull",
+    "update-ref",
+    "reset",
+    "checkout",
+    "switch",
+    "stash",
+    "clean",
+    "commit",
+    "merge",
+    "rebase",
+    "tag",
+    "worktree add",
+    "worktree remove",
+    "worktree prune",
+    "worktree move",
+    "branch -D",
+    "branch -d",
+    "branch -m",
+    "branch -M",
+    "branch -c",
+    "branch -f",
+    "branch --set-upstream-to",
+    "remote set-head",
+];
+
 #[test]
 fn helpers_contain_no_write_commands() {
-    let forbidden = [
-        "fetch",
-        "push",
-        "pull",
-        "update-ref",
-        "reset",
-        "checkout",
-        "switch",
-        "stash",
-        "clean",
-        "commit",
-        "merge",
-        "rebase",
-        "tag",
-        "worktree add",
-        "worktree remove",
-        "worktree prune",
-        "worktree move",
-        "branch -D",
-        "branch -d",
-        "branch -m",
-        "branch -M",
-        "branch -c",
-        "branch -f",
-        "branch --set-upstream-to",
-        "remote set-head",
-    ];
-    let forbidden: Vec<(&str, Regex)> = forbidden
+    let forbidden: Vec<(&str, Regex)> = WRITE_SUBCOMMANDS
         .into_iter()
         .map(|sub| (sub, git_invocation(sub)))
         .collect();
@@ -86,9 +90,57 @@ fn helpers_contain_no_write_commands() {
     );
 }
 
-/// D8: step 4 adds no `exit 2`, `branch -D`, `reset --hard`, `clean -f` or
+/// The reuse helper is the only helper that writes. Its one write is the
+/// fast-forward of the alias to origin/<B>; it fetches, pushes, resets,
+/// discards and moves nothing else, changes no config and writes no files.
+#[test]
+fn reuse_helper_only_write_is_one_fast_forward() {
+    let text = read(&tool_path(REUSE));
+    let merge = git_invocation("merge");
+    let config = git_invocation("config");
+    let file_writes =
+        Regex::new(r"(?:^|[\s;&|(]|\$\()(?:rm|mkdir|touch|mv|cp|ln|mktemp)\s").unwrap();
+    let others: Vec<(&str, Regex)> = WRITE_SUBCOMMANDS
+        .into_iter()
+        .filter(|sub| *sub != "merge")
+        .map(|sub| (sub, git_invocation(sub)))
+        .collect();
+    let mut merges = Vec::new();
+    for line in code_lines(&text) {
+        for (sub, pattern) in &others {
+            assert!(
+                !pattern.is_match(line),
+                "{REUSE} may only fast-forward, but runs `git {sub}`: {line}"
+            );
+        }
+        assert!(
+            !config.is_match(line) || line.contains("--get"),
+            "{REUSE}: every `git config` must be a `--get` read: {line}"
+        );
+        assert!(
+            !file_writes.is_match(line),
+            "{REUSE} writes no files: {line}"
+        );
+        if merge.is_match(line) {
+            merges.push(line);
+        }
+    }
+    assert_eq!(
+        merges.len(),
+        1,
+        "{REUSE} has exactly one `git merge`: {merges:?}"
+    );
+    assert!(
+        merges[0].contains("--ff-only") && merges[0].contains("refs/remotes/origin/$branch"),
+        "{REUSE}'s merge is `--ff-only` to origin/<B>: {merges:?}"
+    );
+}
+
+/// D8: the step 4 recipe text adds no `exit 2`, `branch -D`, `reset --hard`, `clean -f` or
 /// `checkout -- .`, and its only `--force` is the existing one in
-/// wt_add_idempotent.
+/// wt_add_idempotent. This reads the recipe text only; the write step 4
+/// delegates to the reuse helper is checked in
+/// `reuse_helper_only_write_is_one_fast_forward`.
 #[test]
 fn step04_adds_nothing_destructive() {
     let body = step_text("workflow-worktree", "step-04-setup-worktree", "command");
@@ -161,7 +213,7 @@ fn alias_behaviour_is_documented_and_linked() {
     let root = workspace_root();
     let page = "issue-1762-caller-branch-worktree-alias.md";
     let howto = read(&root.join("docs/recipes").join(page));
-    for needle in [PLANNER, RESOLVER, "--wt-", "HEAD:", "#858"] {
+    for needle in [PLANNER, RESOLVER, REUSE, "--wt-", "HEAD:", "#858"] {
         assert!(howto.contains(needle), "the how-to covers `{needle}`");
     }
     assert!(

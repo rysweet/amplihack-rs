@@ -228,10 +228,13 @@ fn resolver_ignores_inherited_git_dir() {
     assert_eq!(run.stdout, format!("{BRANCH}\n"), "{}", run.describe());
 }
 
-/// D1: a bash 3.2 script that starts strict and is executable.
+/// D1: each of the three helpers is a bash 3.2 script that starts strict and
+/// is executable. The reuse helper is included because it is the one that
+/// writes (a fast-forward), so an inherited `GIT_DIR` there would move
+/// another repository's branch.
 #[test]
-fn resolver_and_planner_are_portable_executables() {
-    for name in [RESOLVER, PLANNER] {
+fn helpers_are_portable_executables() {
+    for name in [RESOLVER, PLANNER, REUSE] {
         let path = tool_path(name);
         let text = read(&path);
         assert!(text.starts_with("#!/usr/bin/env bash\n"), "{name}: shebang");

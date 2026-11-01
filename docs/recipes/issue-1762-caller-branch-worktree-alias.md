@@ -447,9 +447,14 @@ stale task worktrees, as described under
 never touches the caller's HEAD, index, working tree or `branch.<B>.*`, and
 never stashes, moves or discards the caller's work.
 
-Both helpers are bash scripts compatible with bash 3.2, the system bash on
-macOS. Both unset `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` first, so an
-inherited environment cannot point them at another repository.
+All three helpers, the planner (`workflow_caller_branch_alias.sh`), the
+resolver (`workflow_remote_branch.sh`) and the reuse check
+(`workflow_alias_reuse.sh`), are bash scripts compatible with bash 3.2, the
+system bash on macOS. Each unsets `GIT_DIR`, `GIT_WORK_TREE` and
+`GIT_INDEX_FILE` first, so an inherited environment cannot point it at another
+repository. The planner and the resolver only read. The reuse check's only
+write is `git merge --ff-only` of the alias to `origin/<B>` in the alias
+worktree.
 
 ---
 
@@ -459,9 +464,10 @@ inherited environment cannot point them at another repository.
 |---|---|
 | Planner | Step 4 prints `WARNING: <TOOLS_DIR>/workflow_caller_branch_alias.sh not found; cannot create an alias worktree for '<B>' (issue #1762).`, then the two #858 `ERROR` lines, and exits 1 with nothing on stdout. This is the behaviour from before #1762. |
 | Resolver | Bash prints `No such file or directory` with the resolver's path, and no caller uses the local branch name instead. Steps 15, 18c and 20b, the step 16b retry command and `workflow_publish_pr.sh` stop before pushing or opening a PR. `workflow_pr_ready.sh`, `workflow-terminal-state`, finalization's evidence collection and the PR scope check in `workflow_final_status.sh` stop with an `ERROR`. The other lookups fail closed: the open-PR check confirms no PR, the branch PR lookup in `workflow_final_status.sh` is skipped, the terminal evidence verdict is `UNCERTAIN`, and `workflow_pr_head_sync.sh` syncs nothing. |
+| Reuse check | Only a re-run that finds `refs/heads/<B>--wt-<n>` already present is affected. Step 4 prints `ERROR: <TOOLS_DIR>/workflow_alias_reuse.sh not found; cannot check alias '<B>--wt-<n>' before reusing it (issue #1762).` and exits 1 with nothing on stdout. The alias worktree is left as it was; it is neither reused unchecked nor fast-forwarded. A first run, which creates the alias, does not call it. |
 
-Both helpers ship in `amplifier-bundle/tools/`, so an install that lacks either
-one is damaged. Without the stop, a run in an alias worktree would push, or
+All three helpers ship in `amplifier-bundle/tools/`, so an install that lacks
+any one of them is damaged. Without the stop, a run in an alias worktree would push, or
 look up the PR, under the alias name. Reinstall the bundle with
 `amplihack install`.
 
@@ -564,10 +570,10 @@ The fixture branch is `feat/issue-1762-fixture`, so its alias directory is
 | `step04.rs` | The alias path: creating the alias with the caller left untouched, reuse on a re-run, skipping an alias-shaped branch that fails the reuse conditions or whose path is taken, a caller behind `origin/<B>`, a linked-worktree caller, and a caller not on `<B>` (unchanged) |
 | `step04_stops.rs` | The three stops and first-cause-only reporting, the default branch's #858 refusal, a missing planner, planner output that step 4 must reject, and the two concurrent-create cases, neither of which removes anything |
 | `planner.rs` | The planner on its own: its contract, that it writes nothing, rejects `@{-1}`, fails closed when `git status` fails and ignores an inherited `GIT_DIR`; and that the planner and the resolver agree on the default branch |
-| `resolver.rs` | The resolver on its own: its contract and an inherited `GIT_DIR`; and that both helpers are executable, start with `set -euo pipefail`, unset the inherited git variables and use nothing newer than bash 3.2 |
+| `resolver.rs` | The resolver on its own: its contract and an inherited `GIT_DIR`; and that all three helpers (planner, resolver and reuse check) are executable, start with `set -euo pipefail`, unset the inherited git variables and use nothing newer than bash 3.2 |
 | `consumers.rs` | The open-PR check, the final-status branch lookup and the terminal-state branch check use `<B>`, with a `FAILED_WRONG_BRANCH` control on an alias-shaped branch with another upstream |
 | `push.rs` | Steps 15, 16b, 18c and 20b push to `<B>`: step 15's refusal of a target other than `worktree_setup.branch_name`, the `-u` fallbacks, a missing resolver stopping every push step, and step 16b getting `<B>` without `{{...}}` templating |
-| `static_checks.rs` | Checks on the files themselves: the helpers contain no write commands, step 4 adds nothing destructive, `consensus-issue-worktree.yaml` keeps the #858 refusal, no resolver caller falls back to the local branch name, and this page is linked and in the changelog |
+| `static_checks.rs` | Checks on the files themselves: the planner and resolver contain no write commands, the reuse check's only write is a single `git merge --ff-only` to `origin/<B>`, the step 4 recipe text adds no destructive command (`exit 2`, `branch -D`, `reset --hard`, `clean -f`, `checkout -- .` or a new `--force`; the write it delegates is covered by the reuse-check test), `consensus-issue-worktree.yaml` keeps the #858 refusal, no resolver caller falls back to the local branch name, and this page is linked and in the changelog |
 
 `tests/integration/workflow_worktree_caller_refusal_test.rs` keeps the #858
 cases. Its Gate B, Gate B symlink and Gate C cases now expect the #1762 stop:
