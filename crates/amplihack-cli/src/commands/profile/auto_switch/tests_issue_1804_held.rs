@@ -1,11 +1,13 @@
-//! Issue #1804, crusty round 15: what auto-switch knows of the rotator's live
-//! login, and how often it writes its held-key ALERT to the rotate log.
+//! Issue #1804, crusty rounds 15 and 16: what auto-switch knows of the
+//! rotator's live login (the ledger's `no_room` record), and how often it
+//! writes its held-key ALERT to the rotate log. A real rotator cycle writing
+//! that record is in `rotate::tests_no_room`.
 
 use super::*;
-use crate::commands::profile::auto_switch::capacity::ROTATE_WRITER;
 use crate::commands::profile::auto_switch::per_token::{KeyHeld, record_key_held};
-use amplihack_utils::claude_capacity::CapacityFile;
-use chrono::DateTime;
+use crate::commands::profile::rotate::decide::Reading as R;
+use crate::commands::profile::rotate::plan_room::no_room;
+use crate::commands::profile::rotate::plan_room::room;
 
 const NOW: i64 = 2_000_000_000;
 
@@ -23,56 +25,110 @@ fn live_spare() -> Fx {
     f
 }
 
-fn capacity_file(f: &Fx, writer: &str, over: &[&str], written_at: i64) {
-    let file = CapacityFile {
-        version: cap::VERSION,
-        state: Cap::Exhausted,
-        threshold: 90,
-        over: over.iter().map(ToString::to_string).collect(),
-        earliest_reset: None,
-        written_at: DateTime::from_timestamp(written_at, 0).unwrap(),
-        writer: writer.to_string(),
-    };
-    private(&cap::path(&f.root), &serde_json::to_string(&file).unwrap());
+/// What a rotator cycle that measured at `at` writes to the ledger, through
+/// the rotator's own `no_room::of_cycle`: `spare` live with reading `spare`,
+/// `work` and `cred` at their limits, the key with its synthetic reading.
+fn rotator_measured(f: &Fx, spare: R, at: i64) {
+    let others = [
+        (n("cred"), R::Exhausted),
+        (
+            n("work"),
+            R::Measured {
+                session: 100.0,
+                week: 40.0,
+            },
+        ),
+        (n("console"), R::Exhausted),
+    ];
+    let rec = no_room::of_cycle(
+        Some(&n("spare")),
+        &spare,
+        &others,
+        Some(&n("console")),
+        at,
+        120,
+    );
+    let rs = RotateState::new(&f.root);
+    let mut l = rs.load_ledger().unwrap().unwrap_or_default();
+    l.no_room = Some(rec);
+    rs.save_ledger(&l).unwrap();
 }
 
-/// The rotator measures its live login, which auto-switch cannot. When its
-/// capacity file lists that login as full, the login is measured with no
-/// room and no longer holds the key back. Any other evidence leaves it
-/// unread.
+/// The rotator measures its live login, which auto-switch cannot. Its
+/// ledger records that login with no room whatever the capacity state, so
+/// the login no longer holds the key back. A login it found with room, a
+/// failed probe, or an expired record leaves the login unread.
 #[test]
 fn the_rotators_reading_of_its_live_login_is_used() {
     let f = live_spare();
     assert_eq!(pick_without_spare(&f, NOW), None, "no reading: held");
 
-    capacity_file(&f, ROTATE_WRITER, &["work", "spare", "cred"], NOW - 60);
+    rotator_measured(&f, R::Exhausted, NOW - 60);
     assert_eq!(pick_without_spare(&f, NOW).as_deref(), Some("console"));
     assert!(
         f.inputs(&cfg(&["console"]), Some(GATE), NOW)
             .no_login
             .contains(&n("spare"))
     );
+    // The same at 100% of the week: `room` is the rotator's own test.
+    rotator_measured(
+        &f,
+        R::Measured {
+            session: 3.0,
+            week: 100.0,
+        },
+        NOW - 60,
+    );
+    assert!(!room(3.0, 100.0));
+    assert_eq!(pick_without_spare(&f, NOW).as_deref(), Some("console"));
 
-    // Not listed as over: the rotator found room, or did not say.
-    capacity_file(&f, ROTATE_WRITER, &["work", "cred"], NOW - 60);
+    // Room, or no reading: the login may have room.
+    rotator_measured(
+        &f,
+        R::Measured {
+            session: 99.0,
+            week: 99.0,
+        },
+        NOW - 60,
+    );
+    assert_eq!(pick_without_spare(&f, NOW), None);
+    rotator_measured(&f, R::Failed, NOW - 60);
     assert_eq!(pick_without_spare(&f, NOW), None);
 
-    // Another writer cannot read `~/.claude`.
-    capacity_file(&f, "statusline", &["work", "spare", "cred"], NOW - 60);
-    assert_eq!(pick_without_spare(&f, NOW), None);
-
-    // Past the time an unknown reset is trusted: the reading has expired.
-    let old = NOW - cap::UNKNOWN_RESET_TTL_SECS - 1;
-    capacity_file(&f, ROTATE_WRITER, &["work", "spare", "cred"], old);
+    // Two cycles later the record no longer holds.
+    rotator_measured(&f, R::Exhausted, NOW - 241);
     assert_eq!(pick_without_spare(&f, NOW), None);
 }
 
-/// A capacity file naming a login that is not the rotator's live one says
-/// nothing about a login auto-switch could have read itself.
+/// The record covers every login of the cycle, so a login the rotator has
+/// moved off, unread by auto-switch, stays measured while it holds.
 #[test]
-fn only_the_live_login_takes_the_rotators_reading() {
+fn a_login_the_rotator_moved_off_stays_measured() {
     let f = fx("enabled=on\noverflow=console\n");
-    capacity_file(&f, ROTATE_WRITER, &["work", "spare", "cred"], NOW - 60);
+    rotator_measured(&f, R::Exhausted, NOW - 60);
+    let rs = RotateState::new(&f.root);
+    let mut l = rs.load_ledger().unwrap().unwrap();
+    l.live = Some("work".into());
+    rs.save_ledger(&l).unwrap();
+    assert_eq!(pick_without_spare(&f, NOW).as_deref(), Some("console"));
+}
+
+/// The rotator's capacity file is not read for this any more: one that
+/// lists `spare` as full, from any writer, leaves it unread.
+#[test]
+fn the_capacity_file_says_nothing_about_the_live_login() {
+    use amplihack_utils::claude_capacity::CapacityFile;
+    let f = live_spare();
+    let file = CapacityFile {
+        version: cap::VERSION,
+        state: Cap::Exhausted,
+        threshold: 90,
+        over: vec!["cred".into(), "spare".into(), "work".into()],
+        earliest_reset: None,
+        written_at: chrono::DateTime::from_timestamp(NOW - 60, 0).unwrap(),
+        writer: "rotate".into(),
+    };
+    private(&cap::path(&f.root), &serde_json::to_string(&file).unwrap());
     assert_eq!(pick_without_spare(&f, NOW), None);
 }
 

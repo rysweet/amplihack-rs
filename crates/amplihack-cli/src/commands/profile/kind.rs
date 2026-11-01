@@ -272,16 +272,36 @@ impl Ctx {
     /// listed, for callers that must not read that as "no API-key profile"
     /// (issue #1804).
     pub fn try_platform_profiles(&self, store: &ProfileStore) -> Option<Vec<ProfileName>> {
-        let mut out: Vec<ProfileName> = store
+        let all = self.try_resolve_all(store)?;
+        Some(platforms_of(&all))
+    }
+
+    /// Every profile with its kind as [`Self::resolve_kind`] gives it,
+    /// sorted by name, or `None` when the root cannot be listed. Each profile
+    /// is resolved once, so a caller that needs both the API-key profiles
+    /// ([`platforms_of`]) and each login's kind reads the files once.
+    pub fn try_resolve_all(&self, store: &ProfileStore) -> Option<Vec<(ProfileName, Resolved)>> {
+        let mut out: Vec<(ProfileName, Resolved)> = store
             .list()
             .ok()?
             .iter()
             .filter_map(|n| ProfileName::parse(n).ok())
-            .filter(|n| self.kind(store, n) == Kind::Platform)
+            .map(|n| {
+                let r = self.resolve_kind(store, &n);
+                (n, r)
+            })
             .collect();
-        out.sort();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
         Some(out)
     }
+}
+
+/// The API-key profiles of `all`, in its order.
+pub fn platforms_of(all: &[(ProfileName, Resolved)]) -> Vec<ProfileName> {
+    all.iter()
+        .filter(|(_, r)| r.kind == Kind::Platform)
+        .map(|(n, _)| n.clone())
+        .collect()
 }
 
 /// What `kind set <name> api-key` prints: the cost, and that the override

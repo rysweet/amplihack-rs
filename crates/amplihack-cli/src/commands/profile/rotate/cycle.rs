@@ -8,7 +8,7 @@ use super::dry_run::dry_run;
 use super::held::held_cycle;
 use super::identify::{LiveId, Skip};
 use super::key_check::{self, KeyCheckFn};
-use super::ledger::{LastCycle, RotateLedger, RotateState, SWITCHED};
+use super::ledger::{RotateLedger, RotateState, newer_than};
 use super::log::msg;
 use super::observe::{
     Measurement, Snap, live_name, measure_and_decide, platform_block_reason, reading_of,
@@ -18,6 +18,7 @@ use super::overflow_record::{
     self, alert_line, block_spend_limited, note_home_key, note_live, note_move, note_per_token,
     refresh_capacity, refuse_key, stay_note, target_check,
 };
+use super::plan_room::no_room;
 // Under an alias: `profile::overflow::Gate` (whether credits may be spent)
 // is a different thing from the pin's gate (whether a `profile switch`
 // holds the cycle).
@@ -146,13 +147,6 @@ pub(super) fn save(
     tag: Option<Tag>,
 ) -> Result<(), ProfileError> {
     overflow_record::record(&ctx.rs, l, o.as_str(), t, measured_at, tag)
-}
-
-/// Whether `last` was written after a cycle began measuring at
-/// `measured_at`, so another writer used the ledger while that cycle held no
-/// lock. A switch record always counts, whatever the clock says.
-pub(super) fn newer_than(last: Option<&LastCycle>, measured_at: i64) -> bool {
-    last.is_some_and(|c| c.outcome == SWITCHED || c.at >= measured_at)
 }
 
 pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError> {
@@ -389,6 +383,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         tag,
         first.shown_platform(),
     );
+    no_room::record(&mut l, ctx, &first, &live, &others, measured_at);
     save(ctx, &mut l, outcome, now(), Some(measured_at), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.

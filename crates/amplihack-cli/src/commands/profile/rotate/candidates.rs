@@ -71,10 +71,12 @@ fn login_skip<'a>(dir: Option<&Path>, resolved: impl FnOnce() -> &'a Resolved) -
 /// it holds no login that could be measured or moved, so it is no plan login
 /// (issue #1804). Auto-switch uses this so that it and the rotator leave out
 /// the same profiles when asking which plan logins may have room.
-pub fn login_unusable(store: &ProfileStore, kinds: &kind::Ctx, name: &ProfileName) -> bool {
+/// `resolved` is the profile's kind as [`kind::Ctx::resolve_kind`] gives
+/// it; the caller has already read it, so no login or settings file is read
+/// again here, only the directory and the login file's metadata.
+pub fn login_unusable(store: &ProfileStore, name: &ProfileName, resolved: &Resolved) -> bool {
     let dir = store.verify_profile_dir(name).ok();
-    let resolved = kinds.resolve_kind(store, name);
-    login_skip(dir.as_deref(), || &resolved).is_some()
+    login_skip(dir.as_deref(), || resolved).is_some()
 }
 
 /// The profiles that may receive the login in `~/.claude`, sorted by name,

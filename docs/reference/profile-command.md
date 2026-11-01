@@ -1840,11 +1840,18 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
      account of the session that ran out; `live=`, in the rotator's form of
      the line, is the login in `~/.claude`. Excluded profiles do not count,
      and neither do those the rotator skips as `no login` or `not oauth`,
-     which nothing can measure. The rotator's live login counts until the
-     rotator's capacity file, still in force, lists it at or over the
-     threshold: auto-switch has no reading of its own for a login in
-     `~/.claude`. Until then only the rotator moving `~/.claude`, or adding
-     that login to `exclude`, lets the key be used. A current plan profile
+     which nothing can measure. Nor does a profile the rotator's last
+     measuring cycle found with no room, while the ledger's
+     [`no_room`](#api-key-ledger-fields) record holds: auto-switch has no
+     reading of its own for the login in `~/.claude`, and the rotator
+     measures it every cycle. The record names every login the cycle
+     measured, so a login the rotator has just moved off is covered too.
+     Without a record in force, as when no rotator runs or the rotator
+     found room on the login, it counts until a reading is recorded for it
+     (a session on it, or `profile usage`) or it is added to `exclude`. The
+     capacity file plays no part here: the rotator writes it as `ok` when
+     it can use the key, and the status line and `profile usage` rewrite
+     it. A current plan profile
      at 82%, or at
      97%, still has room: the rotator would not leave it for overflow, so
      the session stays on it rather than spend, and it cannot move onto
@@ -6174,8 +6181,9 @@ these optional fields. Older ledgers load unchanged.
 |-------|----------|
 | `live_kind` | `"platform"` while `live` is an API-key profile; absent means subscription. Only present with `live`. The rotator checks and repairs it on every cycle; it is kept for readers, such as the limit-resume hook, that cannot detect kinds. |
 | `platform_block` | `{"reason", "at", "until"}`, with `reason` one of `key_exhausted`, `key_revoked` or `key_rate_limited`, and `0 < at < until <= at + 62 days`; absent when there is no block. Expired blocks are removed the next time the rotator records a cycle. |
+| `no_room` | `{"at", "until", "profiles"}`: the profiles the last measuring cycle found with no room (a reached limit, or a window at 100%), sorted, never the API-key profile and never one whose probe failed. `at` is when the cycle measured; `until` is two `--interval`s later, at most one hour. Written every measuring cycle whatever the capacity state; auto-switch reads it while `at <= now <= until`, for profiles it has no reading of. |
 
-The limit-resume hook reads both fields without failing on a missing or
+The limit-resume hook reads `live_kind` and `platform_block` without failing on a missing or
 wrongly typed field, and treats a live API-key profile as on the API key,
 not as plan capacity.
 

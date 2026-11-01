@@ -1776,12 +1776,13 @@ neither does one with no login file or no OAuth login: nothing can measure
 it. The rotator's live login counts, though its login file is in
 `~/.claude`. Auto-switch cannot measure that login itself: the status line
 records only a session's own profile, and `profile usage` probes each
-profile's own directory. It uses the rotator's measurement instead: once the
-rotator's capacity file lists the live login at or over the threshold, that
-login no longer keeps auto-switch off the key. Until then, which is the case
-when no rotator is running or the rotator found room on it, the live login
-keeps the key out until the rotator moves `~/.claude` to another login. To
-let auto-switch use the key in that state, add the live login to the
+profile's own directory. It uses the rotator's measurement instead: every
+cycle, the rotator records in its ledger the logins it measured with no room,
+and while that record holds (two cycles, at most an hour) those logins no
+longer keep auto-switch off the key. That includes a login the rotator has
+just moved off. When no rotator is running, or the rotator found room on the
+live login, the live login keeps the key out until a reading is recorded for
+it. To let auto-switch use the key in that state, add the live login to the
 `exclude` list.
 
 ### See when work is on the API key

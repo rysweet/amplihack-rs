@@ -819,3 +819,6 @@ fn a_corrupt_auto_switch_file_loses_the_marks_for_the_rotator() {
     );
     assert!(!snap.candidates.contains(&n(KEY)), "{:?}", snap.candidates);
 }
+
+#[path = "tests_no_room.rs"]
+mod tests_no_room;

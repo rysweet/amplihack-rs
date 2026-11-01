@@ -26,7 +26,7 @@ mod daemon;
 #[cfg(unix)]
 mod damp;
 #[cfg(unix)]
-mod decide;
+pub(super) mod decide;
 #[cfg(unix)]
 mod dry_run;
 #[cfg(unix)]

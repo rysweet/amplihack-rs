@@ -33,9 +33,6 @@ use std::path::Path;
 /// holds, so the reader's 5-hour bound does not expire a still-true state.
 const HEARTBEAT_SECS: i64 = 3600;
 const HARD_LIMIT: u8 = 100;
-/// The `writer` of a capacity file the rotator wrote: the only writer that
-/// reads the login in `~/.claude`.
-pub const ROTATE_WRITER: &str = "rotate";
 
 /// The rotator's own reading of one profile.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -399,7 +396,7 @@ pub fn refresh_from_rotation(
             &eff.config,
             &overflow.pool(),
             now,
-            ROTATE_WRITER,
+            "rotate",
         );
         if on_overflow {
             file.state = Cap::Ok;

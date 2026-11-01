@@ -13,6 +13,11 @@
 //! auto-switch both use [`room`].
 
 use super::decide::{Measured, Reading};
+
+/// The rotator's record of the logins it measured with no room, kept in its
+/// ledger for auto-switch (issue #1804).
+#[path = "no_room.rs"]
+pub mod no_room;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use std::cmp::Ordering;
