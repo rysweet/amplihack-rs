@@ -25,7 +25,7 @@
 use super::name::ProfileName;
 use super::usage_cmd::Row;
 use super::usage_history::{
-    Entry, HistoryError, Point, Snapshot, entry_of, from_rows, parse_line, to_line,
+    Entry, HistoryError, Point, Snapshot, Writer, entry_of, from_rows, parse_line, to_line,
 };
 use super::usage_parse::{UsageReport, UsageState, UsageWindow};
 use std::collections::BTreeMap;
@@ -50,6 +50,7 @@ fn report(state: UsageState, s: Option<f64>, w: Option<f64>) -> UsageReport {
         session: s.map(|p| win("session", p, Some(T + HOUR))),
         week_all: w.map(|p| win("all models", p, Some(T + DAY))),
         week_models: Vec::new(),
+        session_limit: true,
     }
 }
 
@@ -77,6 +78,7 @@ fn p(s: Option<u8>, w: u8, w_reset: Option<i64>) -> Point {
         w,
         w_reset,
         s_reset: None,
+        no_session_limit: false,
     }
 }
 
@@ -87,6 +89,8 @@ fn entry(at: i64, points: &[(&str, Point)]) -> Entry {
             .iter()
             .map(|(n, p)| (n.to_string(), p.clone()))
             .collect::<BTreeMap<_, _>>(),
+        by: None,
+        unknown: Vec::new(),
     }
 }
 
@@ -229,7 +233,9 @@ fn a_snapshot_entry_holds_only_its_points() {
         row("work", report(UsageState::Ok, Some(20.0), Some(30.0))),
         row("slow", UsageReport::empty(UsageState::Timeout)),
     ];
-    let e = from_rows(T, &rows, None).unwrap().entry();
+    let e = from_rows(T, &rows, None)
+        .unwrap()
+        .entry(super::usage_history::Writer::Usage);
     assert_eq!(e.at, T);
     assert_eq!(e.profiles.keys().collect::<Vec<_>>(), ["work"]);
 }
@@ -366,6 +372,92 @@ fn the_history_errors_print_fixed_reasons_and_no_directory_is_silent() {
         Some("warning: usage history not updated (too large)")
     );
     assert_eq!(w(HistoryError::NoStateDir), None);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1818 in the summary: no session limit against a session not read
+// ---------------------------------------------------------------------------
+
+fn no_limit(state: UsageState, w: f64) -> UsageReport {
+    let mut r = report(state, None, Some(w));
+    r.session_limit = false;
+    r
+}
+
+#[test]
+fn from_rows_a_login_with_no_session_limit_is_usable_now() {
+    let rows = vec![row("free", no_limit(UsageState::Ok, 40.0))];
+    let s = from_rows(T, &rows, None).unwrap();
+    let pt = &s.points["free"];
+    assert_eq!((pt.s, pt.w, pt.no_session_limit), (None, 40, true));
+    assert!(super::capacity_summary::usable_now(pt, 95));
+}
+
+#[test]
+fn from_rows_a_session_not_read_is_not_usable_now() {
+    // `session_limit` stays `true`: the parser saw no evidence either way.
+    let rows = vec![row("blank", report(UsageState::Ok, None, Some(40.0)))];
+    let s = from_rows(T, &rows, None).unwrap();
+    let pt = &s.points["blank"];
+    assert_eq!((pt.s, pt.no_session_limit), (None, false));
+    assert!(!super::capacity_summary::usable_now(pt, 95));
+}
+
+#[test]
+fn from_rows_no_session_limit_with_a_full_week_is_not_usable_now() {
+    let rows = vec![row("spent", no_limit(UsageState::WeeklyExhausted, 100.0))];
+    let s = from_rows(T, &rows, None).unwrap();
+    assert!(!super::capacity_summary::usable_now(&s.points["spent"], 95));
+}
+
+#[test]
+fn a_session_figure_wins_over_a_stray_no_limit_flag() {
+    let mut r = report(UsageState::Ok, Some(99.0), Some(10.0));
+    r.session_limit = false;
+    let pt = entry_of(&r).unwrap();
+    assert!(!pt.no_session_limit, "a session window is a session limit");
+    assert!(!super::capacity_summary::usable_now(&pt, 95));
+}
+
+#[test]
+fn the_history_line_keeps_no_session_limit_writer_and_unknowns() {
+    let rows = vec![
+        row("free", no_limit(UsageState::Ok, 40.0)),
+        row("blank", report(UsageState::Ok, None, Some(40.0))),
+        row("slow", UsageReport::empty(UsageState::Timeout)),
+    ];
+    let e = from_rows(T, &rows, None).unwrap().entry(Writer::Usage);
+    let line = to_line(&e);
+    let v: serde_json::Value = serde_json::from_str(&line).unwrap();
+    assert_eq!(v["by"], "usage");
+    assert_eq!(v["unknown"], serde_json::json!(["slow"]));
+    assert_eq!(v["profiles"]["free"]["session_limit"], false);
+    assert!(
+        v["profiles"]["blank"].get("session_limit").is_none(),
+        "an unread session writes no flag: {line}"
+    );
+    let back = parse_line(&line, T).unwrap();
+    assert_eq!(back, e);
+    assert!(back.profiles["free"].no_session_limit);
+    assert!(!back.profiles["blank"].no_session_limit);
+}
+
+#[test]
+fn an_older_line_without_the_new_keys_reads_as_before() {
+    let line = r#"{"at":"2026-10-30T16:15:00Z","profiles":{"a":{"s":null,"w":10,"w_reset":null}}}"#;
+    let e = parse_line(line, T).unwrap();
+    assert_eq!(e.by, None);
+    assert!(e.unknown.is_empty());
+    assert!(!e.profiles["a"].no_session_limit, "missing means not read");
+}
+
+#[test]
+fn a_no_limit_flag_beside_a_session_figure_is_ignored_on_read() {
+    let line = r#"{"at":"2026-10-30T16:15:00Z","by":"rotate","unknown":["b","a"],"profiles":{"a":{"s":5,"session_limit":false,"w":10,"w_reset":null}}}"#;
+    let e = parse_line(line, T).unwrap();
+    assert!(!e.profiles["a"].no_session_limit);
+    assert_eq!(e.by, Some(Writer::Rotate));
+    assert_eq!(e.unknown, ["b"], "a name with a reading is not unknown");
 }
 
 // ---------------------------------------------------------------------------

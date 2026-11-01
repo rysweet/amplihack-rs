@@ -189,9 +189,9 @@ pub enum ProfileError {
     )]
     SubscriptionNoLogin(String),
     #[error(
-        "profile {0} is an API-key profile; API-key profiles are always the last overflow tier and cannot be marked"
+        "profile {0} is an API-key profile; the API-key tier is fixed at 10, so --tier cannot be set"
     )]
-    PlatformNotMarkable(String),
+    PlatformTierFixed(String),
     /// `switch` onto an API-key profile while the API-key block is active.
     #[error(
         "profile {name}: the API key is blocked ({reason}) until {}",
@@ -274,7 +274,9 @@ impl ProfileError {
             Self::SubscriptionNoLogin(_) => {
                 "amplihack profile login <name>, or: amplihack profile kind set <name> api-key"
             }
-            Self::PlatformNotMarkable(_) => "run `amplihack profile kind list`",
+            Self::PlatformTierFixed(_) => {
+                "run `amplihack profile overflow add <name>` without --tier"
+            }
             Self::PlatformBlocked { .. } => "amplihack profile overflow clear --platform",
             Self::Inherited { source, .. } if matches!(**source, Self::UnsupportedMode(_)) => {
                 "unset AMPLIHACK_CLAUDE_PROFILE and CLAUDE_CONFIG_DIR to run with --docker/--auto"

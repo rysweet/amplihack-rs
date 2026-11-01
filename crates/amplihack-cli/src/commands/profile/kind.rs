@@ -205,6 +205,11 @@ impl Ctx {
         }
     }
 
+    /// The profile the rotate ledger names as live, if any.
+    pub fn ledger_live(&self) -> Option<&ProfileName> {
+        self.ledger_live.as_ref()
+    }
+
     /// `.auto-switch` is unreadable or invalid.
     pub fn corrupt(&self) -> bool {
         self.overrides.is_none()
@@ -248,7 +253,7 @@ impl Ctx {
     /// overrides or logins decide the kind: `kind`, `source`, `own_oauth`
     /// and [`Resolved::may_be_live`] are the same, but `key_setting` may be
     /// false where it is true, so not for [`Resolved::warn_key_setting`].
-    pub(super) fn resolve_kind(&self, store: &ProfileStore, name: &ProfileName) -> Resolved {
+    pub fn resolve_kind(&self, store: &ProfileStore, name: &ProfileName) -> Resolved {
         resolve_from(&self.evidence_with(store, name, false))
     }
 
@@ -260,16 +265,61 @@ impl Ctx {
     /// Every API-key profile, sorted by name. A root that cannot be listed
     /// has none.
     pub fn platform_profiles(&self, store: &ProfileStore) -> Vec<ProfileName> {
-        let mut out: Vec<ProfileName> = store
+        self.try_platform_profiles(store).unwrap_or_default()
+    }
+
+    /// [`Self::platform_profiles`], or `None` when the root cannot be
+    /// listed, for callers that must not read that as "no API-key profile"
+    /// (issue #1804).
+    pub fn try_platform_profiles(&self, store: &ProfileStore) -> Option<Vec<ProfileName>> {
+        let all = self.try_resolve_all(store)?;
+        Some(platforms_of(&all))
+    }
+
+    /// Every profile with its kind as [`Self::resolve_kind`] gives it,
+    /// sorted by name, or `None` when the root cannot be listed. Each profile
+    /// is resolved once, so a caller that needs both the API-key profiles
+    /// ([`platforms_of`]) and each login's kind reads the files once.
+    pub fn try_resolve_all(&self, store: &ProfileStore) -> Option<Vec<(ProfileName, Resolved)>> {
+        let mut out: Vec<(ProfileName, Resolved)> = store
             .list()
-            .unwrap_or_default()
+            .ok()?
             .iter()
             .filter_map(|n| ProfileName::parse(n).ok())
-            .filter(|n| self.kind(store, n) == Kind::Platform)
+            .map(|n| {
+                let r = self.resolve_kind(store, &n);
+                (n, r)
+            })
             .collect();
-        out.sort();
-        out
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        Some(out)
     }
+}
+
+/// The API-key profiles of `all`, in its order.
+pub fn platforms_of(all: &[(ProfileName, Resolved)]) -> Vec<ProfileName> {
+    all.iter()
+        .filter(|(_, r)| r.kind == Kind::Platform)
+        .map(|(n, _)| n.clone())
+        .collect()
+}
+
+/// What `kind set <name> api-key` prints: the cost, and that the override
+/// alone does not put the profile to use (issue #1804).
+pub(super) fn platform_note(name: &ProfileName) -> String {
+    format!(
+        "note: {name} is billed per token on the Claude Platform API key, which is stored outside the profile directory; the rotator and auto-switch use it only if you mark it with 'amplihack profile overflow add {name}', and then only after every plan and credit profile."
+    )
+}
+
+/// Printed when `kind set <name> api-key` meets an existing `overflow=` mark.
+/// That mark may have been given for a credit account with a spend limit. On
+/// an API-key profile the same mark is the consent to per-token billing at
+/// tier 10, so the change is said out loud (issue #1804).
+pub(super) fn mark_became_key_consent(name: &ProfileName) -> String {
+    format!(
+        "warning: {name} is already marked in overflow=; on an API-key profile that mark allows per-token billing on the API key, at tier 10, with no spend limit. If you did not mean that, run: amplihack profile overflow remove {name}"
+    )
 }
 
 /// `name`'s kind under `store`, with `home` the user's home directory.
@@ -380,8 +430,10 @@ pub fn run(
                 store.resolve(&name)?;
             }
             let mut had = None;
+            let mut marked = false;
             config::update(store.root(), ReadMode::Editable, |c| {
                 had = c.kind.get(&name).copied();
+                marked = c.overflow.iter().any(|e| e.name == name);
                 match want {
                     Some(k) => {
                         c.kind.insert(name.clone(), k);
@@ -396,9 +448,10 @@ pub fn run(
                 Some(k) => {
                     println!("kind: {name} is {} (override)", k.label());
                     if k == Kind::Platform {
-                        println!(
-                            "note: {name} is billed per token on the Claude Platform API key, which is stored outside the profile directory; the rotator uses it only after every plan and credit profile."
-                        );
+                        println!("{}", platform_note(&name));
+                        if marked && had != Some(Kind::Platform) {
+                            eprintln!("{}", mark_became_key_consent(&name));
+                        }
                     }
                     if let Some(pid) = RotateState::new(store.root()).foreign_rotator() {
                         eprintln!(

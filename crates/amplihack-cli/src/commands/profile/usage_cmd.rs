@@ -261,8 +261,11 @@ fn capacity_of(
 /// that have a subscription login. A failure is one stderr line and never
 /// changes the exit status.
 fn record_history(store: &ProfileStore, current: &usage_history::Snapshot, now: i64) {
-    if let Err(e) = usage_history::append(store.root(), &current.entry(), now)
-        && let Some(w) = e.warning()
+    if let Err(e) = usage_history::append(
+        store.root(),
+        &current.entry(usage_history::Writer::Usage),
+        now,
+    ) && let Some(w) = e.warning()
     {
         eprintln!("{w}");
     }
@@ -1215,6 +1218,8 @@ pub(super) fn render_table(rows: &[Row]) -> String {
                 state_label(r).to_string(),
                 if r.api_key {
                     API_KEY_CELL.to_string()
+                } else if no_session_limit(r) {
+                    NO_SESSION_LIMIT_CELL.to_string()
                 } else {
                     pct(&r.report.session)
                 },
@@ -1272,6 +1277,14 @@ pub(super) fn render_table(rows: &[Row]) -> String {
 
 /// The `SESSION` cell of an API-key row.
 const API_KEY_CELL: &str = "api-key (billed per token)";
+/// The `SESSION` cell of a plan reading with no session window (#1818).
+const NO_SESSION_LIMIT_CELL: &str = "no session limit";
+
+/// A usable reading that showed no session window (#1818).
+fn no_session_limit(r: &Row) -> bool {
+    !r.report.session_limit
+        && matches!(r.report.state, UsageState::Ok | UsageState::WeeklyExhausted)
+}
 
 /// The `STATE` of a row: `api_key` for an API-key profile.
 fn state_label(r: &Row) -> &'static str {
@@ -1331,6 +1344,7 @@ struct JsonRow<'a> {
     api_key_blocked: Option<ApiKeyBlock<'a>>,
     state: &'static str,
     session: Option<&'a UsageWindow>,
+    session_limit: bool,
     week_all: Option<&'a UsageWindow>,
     week_models: &'a [UsageWindow],
     error: Option<&'static str>,
@@ -1394,6 +1408,7 @@ fn json_rows(rows: &[Row]) -> Vec<JsonRow<'_>> {
                 }),
             state: state_label(r),
             session: r.report.session.as_ref(),
+            session_limit: r.report.session_limit,
             week_all: r.report.week_all.as_ref(),
             week_models: &r.report.week_models,
             error: r.error.map(ErrorReason::as_str),

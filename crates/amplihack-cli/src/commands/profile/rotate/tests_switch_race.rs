@@ -49,6 +49,8 @@ fn decided(measured_at: i64) -> Measurement {
         tag: None,
         new_blocks: Vec::new(),
         next_plan_reset: None,
+        unknown_plan: Vec::new(),
+        key_held: Vec::new(),
         measured_at,
         probed: None,
     }

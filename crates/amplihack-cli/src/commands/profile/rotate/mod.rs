@@ -18,6 +18,8 @@ mod backup;
 #[cfg(unix)]
 mod candidates;
 #[cfg(unix)]
+pub(in crate::commands::profile) mod change_log;
+#[cfg(unix)]
 mod control;
 #[cfg(unix)]
 mod cycle;
@@ -26,7 +28,11 @@ mod daemon;
 #[cfg(unix)]
 mod damp;
 #[cfg(unix)]
-mod decide;
+pub(super) mod decide;
+#[cfg(unix)]
+mod dry_run;
+#[cfg(unix)]
+mod exhausted;
 #[cfg(unix)]
 mod gate_record;
 #[cfg(unix)]
@@ -43,6 +49,8 @@ mod history;
 mod holders;
 #[cfg(unix)]
 pub(super) mod identify;
+#[cfg(unix)]
+pub(super) mod key_check;
 #[cfg(unix)]
 pub(super) mod ledger;
 #[cfg(unix)]
@@ -62,7 +70,11 @@ mod overflow_msg;
 #[cfg(unix)]
 mod overflow_record;
 #[cfg(unix)]
+mod owner;
+#[cfg(unix)]
 mod pin;
+#[cfg(unix)]
+pub(super) mod plan_room;
 #[cfg(unix)]
 pub(super) mod platform_block;
 #[cfg(unix)]
@@ -87,11 +99,14 @@ mod switch;
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
 pub use super::rotate_args::{RotateAction, RotateArgs, TuneFlags};
+pub use candidates::login_unusable;
+pub use overflow_msg::{CheckNote, alert_key_held_session, per_token_off_key, per_token_reason};
+pub use overflow_record::append_to_log;
 
 #[cfg(all(test, unix))]
 mod tests_autostart;
 #[cfg(all(test, unix))]
-mod tests_capacity_history;
+mod tests_autostart_owner;
 #[cfg(all(test, unix))]
 mod tests_daemon;
 #[cfg(all(test, unix))]
@@ -111,6 +126,12 @@ mod tests_home_unreadable;
 #[cfg(all(test, unix))]
 mod tests_identify;
 #[cfg(all(test, unix))]
+mod tests_issue_1804;
+#[cfg(all(test, unix))]
+mod tests_issue_1804_cycle;
+#[cfg(all(test, unix))]
+mod tests_key_check;
+#[cfg(all(test, unix))]
 mod tests_ledger;
 #[cfg(all(test, unix))]
 mod tests_live_readers;
@@ -120,6 +141,8 @@ mod tests_log;
 mod tests_measure;
 #[cfg(all(test, unix))]
 mod tests_overflow;
+#[cfg(all(test, unix))]
+mod tests_owner;
 #[cfg(all(test, unix))]
 mod tests_pin;
 #[cfg(all(test, target_os = "linux"))]
@@ -161,19 +184,17 @@ use super::name::ProfileName;
 use super::root_config::RootSource;
 use super::store::ProfileStore;
 
+// Issue #1797: `Probes` is what the usage history records from a cycle.
+#[cfg(unix)]
+pub(super) use self::{identify::is_live, observe::Probes, platform_block::platform_live_line};
 #[cfg(unix)]
 pub(in crate::commands::profile) use autostart::autostart_line;
 #[cfg(unix)]
 pub(crate) use autostart::autostart_on_launch;
 #[cfg(unix)]
-pub(super) use control::{clear_overflow_block, overflow_blocks, platform_live_line};
+pub(super) use control::{clear_overflow_block, overflow_blocks};
 #[cfg(unix)]
 pub(super) use log::timestamp;
-// Issue #1797: the usage history records the rotator's kept probes.
-#[cfg(unix)]
-pub(super) use decide::{Probed, Reading};
-#[cfg(unix)]
-pub(super) use observe::Probes;
 #[cfg(unix)]
 pub(crate) use older_readers::warn_foreign_rotator;
 
@@ -205,22 +226,6 @@ fn foreign_note_for(
     })
 }
 
-/// Whether rotate live-profile detection names `name` as the login in
-/// `<home>/.claude` (issue #1700: the launch guard's "held"). Any error, a
-/// hand change, an ambiguous or an adopted login is not.
-#[cfg(unix)]
-pub(super) fn is_live(
-    store: &super::store::ProfileStore,
-    home: Option<&std::path::Path>,
-    name: &super::name::ProfileName,
-) -> bool {
-    let Some(home) = home else {
-        return false;
-    };
-    let rs = ledger::RotateState::new(store.root());
-    matches!(identify::live(store, &rs, home), Ok((identify::LiveId::Known(n), _)) if &n == name)
-}
-
 /// After a successful `profile switch NAME`: one line on stderr when the
 /// running rotator would ignore the hold. The switch itself succeeded, so
 /// this never changes the exit code.
@@ -242,7 +247,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
     #[cfg(unix)]
     {
         let env = |k: &str| std::env::var_os(k);
-        let home = home_dir();
+        let home = settings::home_dir();
         match args.action {
             None => {
                 let s = settings::resolve(&args.tune, None, &env)?;
@@ -258,16 +263,22 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                 cycle::run_cycle(&mut ctx, mode)?;
             }
             Some(RotateAction::Start(w)) => {
+                if w.supervised.is_some() {
+                    let why = "--supervised applies to rotate watch only";
+                    return Err(super::ProfileError::RotateRefused(why.into()).into());
+                }
                 let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
                 daemon::start(store, &home?, &s)?;
             }
             Some(RotateAction::Watch(w)) => {
+                owner::check_flag(&w.supervised)?;
                 let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
-                daemon::watch(store, home?, s, w.spawned)?;
+                daemon::watch(store, home?, s, w.spawned, w.supervised.clone())?;
             }
             Some(RotateAction::Stop) => control::stop(store, home.as_deref().ok())?,
             Some(RotateAction::Status) => control::status(store, home.as_deref().ok(), source),
             Some(RotateAction::Autostart { state }) => autostart::cli(store, state.as_deref())?,
+            Some(RotateAction::Owner { action }) => owner::cli(store, action.is_some())?,
         }
         Ok(())
     }
@@ -276,15 +287,6 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
         let _ = (store, source, args);
         Err(super::ProfileError::RotateUnsupported.into())
     }
-}
-
-/// `$HOME`, which holds the live `~/.claude`.
-#[cfg(unix)]
-fn home_dir() -> Result<std::path::PathBuf, super::ProfileError> {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| super::ProfileError::RotateRefused("HOME is not set".into()))
 }
 
 /// `profile switch NAME` (issue #1691): moves NAME's login into `~/.claude`
@@ -299,7 +301,7 @@ pub(in crate::commands::profile) fn switch_live(
 ) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        let home = home_dir()?;
+        let home = settings::home_dir()?;
         // Judged before the move, from the profile's own login (or from
         // `~/.claude` when it is already live), as the kind guard does.
         let platform = super::kind::kind_of(store, name, &home) == super::kind::Kind::Platform;

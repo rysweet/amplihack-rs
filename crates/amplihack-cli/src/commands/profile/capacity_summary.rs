@@ -7,7 +7,8 @@
 //!   not 1.0.
 //! - Unknown readings are never counted as 0% or 100%: they are left out of
 //!   `N`, every sum and the rate, and only listed as unknown.
-//! - Usable now: session below the threshold and week below 100%.
+//! - Usable now: week below 100% and session below the threshold, or no
+//!   session limit at all (issue #1818). A session not read is not usable.
 //! - Next session reset: session-limited logins with weekly capacity and a
 //!   known reset, grouped within 60 s of the earliest.
 //! - Rate: from the oldest entry no more than 6 h old, which must be at
@@ -18,7 +19,7 @@
 
 use super::capacity_weight::Weights;
 use super::usage_cmd::{sanitize_display, utc_time as iso};
-use super::usage_history::{Entry, Point, Snapshot};
+use super::usage_history::{Entry, Point, Snapshot, Writer};
 use serde::{Serialize, Serializer};
 
 /// How far back the rate looks.
@@ -153,6 +154,18 @@ fn rate_of(i: &Inputs<'_>) -> Option<f64> {
     counted.then(|| total / 100.0 / (span as f64 / 3600.0))
 }
 
+/// Usable now: the week is below 100% and the session is below the
+/// threshold. A login with no session limit (issue #1818) has no session to
+/// be below it and is usable on its week alone; a session that was not read
+/// is not usable, because nothing shows it is below the threshold.
+pub(super) fn usable_now(p: &Point, threshold: u8) -> bool {
+    p.w < 100
+        && match p.s {
+            Some(s) => s < threshold,
+            None => p.no_session_limit,
+        }
+}
+
 /// Works out the summary.
 pub(super) fn compute(i: &Inputs<'_>) -> Summary {
     let points = &i.current.points;
@@ -166,7 +179,7 @@ pub(super) fn compute(i: &Inputs<'_>) -> Summary {
         headroom_points += u32::from(left);
         weighted_points += weight * f64::from(left);
         weight_total += weight;
-        if p.s.is_some_and(|s| s < i.threshold) && p.w < 100 {
+        if usable_now(p, i.threshold) {
             usable += 1;
         }
     }
@@ -335,8 +348,10 @@ impl Summary {
     }
 
     /// The `rotate status` line for a summary of the entry taken at `at`,
-    /// with its age at `now`.
-    pub(super) fn status_line(&self, at: i64, now: i64) -> String {
+    /// with its age at `now`. `by` names the writer, because `N` differs:
+    /// `profile usage` reads every subscription login, a rotate cycle only
+    /// the profiles it probed. A line with no known writer names none.
+    pub(super) fn status_line(&self, at: i64, now: i64, by: Option<Writer>) -> String {
         let age = now.saturating_sub(at).max(0);
         let age = match age {
             a if a < 60 => format!("{a}s"),
@@ -345,11 +360,20 @@ impl Summary {
             a => format!("{}d", a / 86_400),
         };
         format!(
-            "capacity: headroom {}, usable {}, runway {} (as of {}, {age} ago)",
+            "capacity: headroom {}, usable {}{}, runway {} (as of {}, {age} ago{})",
             self.headroom_text(),
             self.usable_text(),
+            match self.unknown.len() {
+                0 => String::new(),
+                m => format!(", {m} unknown"),
+            },
             self.runway_hours().unwrap_or_else(|| "unknown".to_string()),
-            iso(at)
+            iso(at),
+            match by {
+                Some(Writer::Usage) => ", profile usage: all logins",
+                Some(Writer::Rotate) => ", rotate cycle: probed profiles only",
+                None => "",
+            }
         )
     }
 

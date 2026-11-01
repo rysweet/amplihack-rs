@@ -102,6 +102,27 @@ pub struct OverflowPool<'a> {
     /// The API-key profile (issue #1700), also last in `order`. Its block,
     /// when active, is in `blocked`.
     pub platform: Option<&'a ProfileName>,
+    /// Every API-key profile, marked or not (issue #1804). None is a plan
+    /// login: only `order` makes one a target.
+    pub not_plan: &'a [ProfileName],
+    /// Plan-kind profiles the rotator skips as `no login` or `not oauth`
+    /// (`rotate::login_unusable`), so nothing can ever measure them, and the
+    /// logins the rotator's ledger records as measured with no room
+    /// (`rotate::no_room`): they never make a missing reading "unknown"
+    /// ([`unread_plan`]).
+    pub no_login: &'a [ProfileName],
+    /// Kinds could not be read, so any profile may bill per token: nothing
+    /// is selected.
+    pub kinds_unknown: bool,
+}
+
+impl OverflowPool<'_> {
+    /// Whether `p` is a plan login: neither overflow nor an API-key profile
+    /// (issue #1804). The one test every auto-switch decision uses, so an
+    /// API-key profile's missing reading never counts as free capacity.
+    pub fn is_plan(&self, p: &ProfileName) -> bool {
+        !self.order.contains(p) && !self.not_plan.contains(p)
+    }
 }
 
 /// A reading's adjusted (session, week) use: five-hour and seven-day, 0 for
@@ -118,6 +139,14 @@ fn session_week(r: &Reading, now: i64) -> (f64, f64) {
 pub fn gate_capacity(r: &Reading, g: &Gate, now: i64) -> bool {
     let (session, week) = session_week(r, now);
     g.plan_capacity(session, week)
+}
+
+/// Whether a plan reading has room: both windows below 100%, the
+/// rotator's test (`rotate::plan_room`, issue #1804). Only room keeps work
+/// off the API key; capacity is the stricter test above.
+pub fn has_room(r: &Reading, now: i64) -> bool {
+    let (session, week) = session_week(r, now);
+    crate::commands::profile::rotate::plan_room::room(session, week)
 }
 
 /// When a plan reading without capacity by the gate's test has it again:
@@ -170,6 +199,15 @@ pub fn may_return_to(r: Option<&Reading>, gate: Option<&Gate>, threshold: u8, no
     }
 }
 
+/// Whether a session on an overflow profile leaves it for a plan profile
+/// with reading `r`: [`may_return_to`] or, with a gate, room ([`has_room`],
+/// issue #1804). The status line's cheap pre-check uses this, so it never
+/// refuses a move the selection makes.
+pub fn way_off(r: Option<&Reading>, gate: Option<&Gate>, threshold: u8, now: i64) -> bool {
+    may_return_to(r, gate, threshold, now)
+        || (gate.is_some() && r.is_some_and(|r| has_room(r, now)))
+}
+
 /// Whether overflow profile `name` may be used or stayed on: it has no
 /// active spend block. Its own plan reading does not count (issue #1694:
 /// "the plan limits shown for an overflow profile count as exhausted, but
@@ -183,50 +221,85 @@ pub fn overflow_usable(name: &str, blocked: &[String]) -> bool {
     !blocked.iter().any(|b| b == name)
 }
 
+/// When the first plan profile, `current` included unless it is an overflow
+/// profile, regains capacity by `gate`'s test: what the wait is measured
+/// against in [`select_with_overflow`], and what the per-token reason line
+/// reports. `None` when no reading gives a reset.
+pub fn earliest_plan_reset(
+    pool: &Pool<'_>,
+    ov: &OverflowPool<'_>,
+    gate: &Gate,
+    current: &str,
+) -> Option<i64> {
+    let on_overflow = ov.order.iter().any(|o| o.as_str() == current);
+    pool.profiles
+        .iter()
+        .filter(|p| !pool.exclude.contains(p) && ov.is_plan(p))
+        .filter_map(|p| pool.readings.get(p.as_str()))
+        .chain((!on_overflow).then(|| pool.readings.get(current)).flatten())
+        .filter_map(|r| regains(r, gate, pool.now))
+        .min()
+}
+
+/// The plan profiles with no reading: their state is unknown, so they may
+/// have room. Each keeps the API key out of step 5 of
+/// [`select_with_overflow`], even if this selection cannot move to it. As
+/// in the rotator (`Snap::unmeasured_plan`), excluded profiles do not count,
+/// and neither do those with no login that could ever be measured
+/// ([`OverflowPool::no_login`]).
+pub fn unread_plan<'a>(pool: &Pool<'a>, ov: &OverflowPool<'_>) -> Vec<&'a ProfileName> {
+    pool.profiles
+        .iter()
+        .filter(|p| !pool.exclude.contains(p) && ov.is_plan(p) && !ov.no_login.contains(p))
+        .filter(|p| !pool.readings.contains_key(p.as_str()))
+        .collect()
+}
+
 /// [`select`] with overflow profiles. With a gate, "plan capacity" is the
 /// gate's test ([`Gate::plan_capacity`], the rotator's `--session-at` and
 /// `--week-at`), so auto-switch and the rotator agree on when money is
-/// spent. In order:
+/// spent. In order, the rotator's (`rotate::overflow`, issue #1804):
 ///
 /// 1. The best plan profile (the overflow profiles excluded) that has
 ///    capacity by the gate's test, or has no reading. From a plan profile it
 ///    must also be under the auto-switch threshold, as for any plan-to-plan
 ///    move. From an overflow profile the gate's test alone decides
-///    ([`may_return_to`]): this is how a session moves back, and it does so
-///    exactly when the rotator would, even with an auto-switch threshold
-///    below `--session-at` or `--week-at`.
-/// 2. From the API-key profile (issue #1700): the first usable credit
-///    profile, since credits cost less. Then, as for credits, `None` when
-///    the API key is not blocked.
-///    `None` when `current` is an overflow profile without a spend block: it
-///    stays there until a plan profile has capacity.
-/// 3. The first overflow profile in `ov.order` that is not `current`, not
-///    excluded, not blocked and `eligible`, when the gate
-///    allows it: no plan profile has capacity by the gate's test, and the
-///    earliest plan reset is far enough away. `current` counts too: a
-///    plan profile at the auto-switch threshold that still has capacity by
-///    the gate's test is one the rotator would not leave for overflow, so
-///    neither does auto-switch, and the move back in step 1 cannot flap.
-/// 4. Otherwise the best plan profile under the auto-switch threshold
-///    ([`select`]): a plan profile between the gate's thresholds and the
-///    auto-switch threshold still beats an ALERT, and costs nothing.
+///    ([`may_return_to`]), even with an auto-switch threshold below
+///    `--session-at` or `--week-at`.
+/// 2. From an overflow profile, the plan profile with room ([`has_room`])
+///    and the most quota left: it costs nothing.
+/// 3. From the API-key profile (issue #1700): the first usable credit
+///    profile, since credits cost less. `None` when `current` is an overflow
+///    profile without a spend block: it stays there.
+/// 4. While any plan profile, `current` included, has room, no per-token
+///    profile at all: the best plan profile under the auto-switch threshold
+///    ([`select`]), else the one with room that beats `current`, else `None`.
+/// 5. The first overflow profile in `ov.order` that is not `current`, not
+///    excluded, not blocked and `eligible`, when the gate's wait holds. The
+///    API key also needs a reading for every plan profile ([`unread_plan`]).
+/// 6. Otherwise step 4's plan profile, which still beats an ALERT.
 ///
-/// An overflow profile's own plan reading plays no part in steps 2 and 3
+/// An overflow profile's own plan reading plays no part in steps 3 and 5
 /// ([`overflow_usable`]): a credit account at its plan limit is the case
 /// overflow exists for, and the rotator ignores that reading too.
 ///
 /// Without a gate (overflow closed) this is [`select`] on the plan profiles.
-/// A plan profile with no reading never counts as capacity in step 3; if
-/// it is eligible, step 1 has already picked it.
+/// With kinds unknown it is `None`. An API-key profile ([`OverflowPool::not_plan`])
+/// is never one of the plan profiles, and a session on an unmarked one never
+/// moves onto the API-key tier.
+/// A plan profile with no reading never counts as capacity or room in step
+/// 4; if it is eligible, step 1 has already picked it.
 pub fn select_with_overflow<'a>(
     pool: &Pool<'a>,
     ov: &OverflowPool<'a>,
     current: &str,
     eligible: impl Fn(&ProfileName) -> bool,
 ) -> Option<&'a ProfileName> {
-    let is_overflow = |p: &ProfileName| ov.order.contains(p);
+    if ov.kinds_unknown {
+        return None;
+    }
     let mut plan_exclude = pool.exclude.to_vec();
-    plan_exclude.extend(ov.order.iter().cloned());
+    plan_exclude.extend(pool.profiles.iter().filter(|p| !ov.is_plan(p)).cloned());
     let plan_pool = Pool {
         profiles: pool.profiles,
         readings: pool.readings,
@@ -262,6 +335,13 @@ pub fn select_with_overflow<'a>(
     if let Some(p) = own(back) {
         return Some(p);
     }
+    let with_room = || {
+        let roomy = |r: Option<&Reading>| r.is_some_and(|r| has_room(r, pool.now));
+        own(select_by(&plan_pool, current, roomy, &eligible))
+    };
+    if on_overflow && let Some(p) = with_room() {
+        return Some(p);
+    }
     if on_overflow
         && ov.platform.is_some_and(|p| p.as_str() == current)
         && let Some(o) = ov.order.iter().find(|o| {
@@ -282,24 +362,32 @@ pub fn select_with_overflow<'a>(
     let plan: Vec<&ProfileName> = pool
         .profiles
         .iter()
-        .filter(|p| !is_overflow(p) && !pool.exclude.contains(p))
+        .filter(|p| !plan_exclude.contains(p))
         .collect();
-    let plan_has_capacity = plan.iter().any(|p| {
-        pool.readings
-            .get(p.as_str())
-            .is_some_and(|r| gate_capacity(r, &gate, pool.now))
-    });
     let current_reading = (!on_overflow).then(|| pool.readings.get(current)).flatten();
-    let earliest = plan
+    let earliest = earliest_plan_reset(pool, ov, &gate, current);
+    // Issue #1804: per-token profiles only when no plan profile with a
+    // reading, the current one included, has room.
+    let plan_room = plan
         .iter()
         .filter_map(|p| pool.readings.get(p.as_str()))
         .chain(current_reading)
-        .filter_map(|r| regains(r, &gate, pool.now))
-        .min();
-    if gate.allows(plan_has_capacity, earliest, pool.now)
+        .any(|r| has_room(r, pool.now));
+    if plan_room {
+        let beats_current =
+            |p: &&ProfileName| match (current_reading, pool.readings.get(p.as_str())) {
+                (Some(c), Some(r)) => worst(r, pool.now) < worst(c, pool.now),
+                _ => true,
+            };
+        return fallback().or_else(|| with_room().filter(beats_current));
+    }
+    let on_key = ov.not_plan.iter().any(|k| k.as_str() == current);
+    let unread = !unread_plan(pool, ov).is_empty();
+    if gate.far(earliest, pool.now)
         && let Some(o) = ov.order.iter().find(|o| {
             let n = o.as_str();
             n != current
+                && !((on_key || unread) && Some(*o) == ov.platform)
                 && pool.profiles.contains(o)
                 && !pool.exclude.contains(o)
                 && overflow_usable(n, ov.blocked)

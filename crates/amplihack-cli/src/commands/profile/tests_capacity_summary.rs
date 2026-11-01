@@ -33,6 +33,7 @@ fn pt(s: Option<u8>, w: u8) -> Point {
         w,
         w_reset: None,
         s_reset: None,
+        no_session_limit: false,
     }
 }
 
@@ -42,6 +43,7 @@ fn pt_r(s: Option<u8>, w: u8, w_reset: Option<i64>, s_reset: Option<i64>) -> Poi
         w,
         w_reset,
         s_reset,
+        no_session_limit: false,
     }
 }
 
@@ -63,6 +65,8 @@ fn entry(at: i64, points: &[(&str, Point)]) -> Entry {
             .iter()
             .map(|(n, p)| (n.to_string(), p.clone()))
             .collect::<BTreeMap<_, _>>(),
+        by: None,
+        unknown: Vec::new(),
     }
 }
 
@@ -249,6 +253,8 @@ fn docs_history() -> Vec<Entry> {
         ]
         .into_iter()
         .collect(),
+        by: None,
+        unknown: Vec::new(),
     }]
 }
 
@@ -760,7 +766,7 @@ fn a_weight_for_an_absent_profile_does_not_show_the_weighted_figure() {
         lines(&s)[0],
         "weekly headroom      1.25 login-weeks of 2 (63%)"
     );
-    assert!(!s.status_line(T, T).contains("[weighted:"));
+    assert!(!s.status_line(T, T, None).contains("[weighted:"));
     assert_eq!(
         s,
         plain(&snap(
@@ -789,9 +795,9 @@ fn every_label_pads_to_21_characters() {
 fn the_status_line_gives_headroom_usable_and_runway_with_its_age() {
     let s = summary(&docs_now(), &Weights::default(), 95, &docs_history());
     assert_eq!(
-        s.status_line(T, T + 3 * MIN),
-        "capacity: headroom 2.07 login-weeks of 4 (52%), usable 2 of 4 logins, runway ~9 h \
-         (as of 2026-10-30T16:15:00Z, 3m ago)"
+        s.status_line(T, T + 3 * MIN, None),
+        "capacity: headroom 2.07 login-weeks of 4 (52%), usable 2 of 4 logins, 2 unknown, \
+         runway ~9 h (as of 2026-10-30T16:15:00Z, 3m ago)"
     );
 }
 
@@ -804,7 +810,7 @@ fn the_status_line_age_uses_the_largest_whole_unit() {
         (2 * HOUR + 59 * MIN, "2h ago"),
         (DAY + 23 * HOUR, "1d ago"),
     ] {
-        let l = s.status_line(T, T + age);
+        let l = s.status_line(T, T + age, None);
         assert!(
             l.ends_with(&format!("(as of 2026-10-30T16:15:00Z, {want})")),
             "{l}"
@@ -817,7 +823,7 @@ fn the_status_line_age_uses_the_largest_whole_unit() {
 fn the_status_line_with_no_valid_readings() {
     let s = plain(&snap(T, &[], &[]));
     assert_eq!(
-        s.status_line(T, T + 45),
+        s.status_line(T, T + 45, None),
         "capacity: headroom unknown (no valid readings), usable 0 of 0 logins, runway unknown \
          (as of 2026-10-30T16:15:00Z, 45s ago)"
     );
@@ -827,10 +833,10 @@ fn the_status_line_with_no_valid_readings() {
 fn the_status_line_adds_the_weighted_figure_after_the_percentage() {
     let w = Weights::from_pairs(&[("team", 2.0)]);
     let s = summary(&docs_now(), &w, 95, &docs_history());
-    let l = s.status_line(T, T + 60);
+    let l = s.status_line(T, T + 60, None);
     assert!(
         l.starts_with(
-            "capacity: headroom 2.07 login-weeks of 4 (52%)   [weighted: 2.39 of 5.00], usable 2 of 4 logins, runway ~"
+            "capacity: headroom 2.07 login-weeks of 4 (52%)   [weighted: 2.39 of 5.00], usable 2 of 4 logins, 2 unknown, runway ~"
         ),
         "{l}"
     );

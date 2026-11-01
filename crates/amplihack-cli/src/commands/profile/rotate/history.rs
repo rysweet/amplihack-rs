@@ -10,6 +10,10 @@ use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::{capacity_summary, capacity_weight, usage_history};
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "tests_capacity_history.rs"]
+mod tests;
+
 /// Appends the cycle's probes, measured at `at`, to the usage history. The
 /// live probe is recorded only under a profile whose login is identified as
 /// live; a hand-changed or unowned login is left out, and so is the API-key
@@ -22,7 +26,8 @@ pub fn record(root: &Path, out: &mut Sink, first: &Snap, probes: &Probes, at: i6
         LiveId::Known(n) => Some(n),
         _ => None,
     };
-    let entry = usage_history::from_probes(at, live, probes, first.platform()).entry();
+    let entry = usage_history::from_probes(at, live, probes, first.platform())
+        .entry(usage_history::Writer::Rotate);
     if let Err(e) = usage_history::append(root, &entry, now())
         && let Some(w) = e.warning()
     {
@@ -52,7 +57,7 @@ pub fn capacity(root: &Path, now: i64) -> (String, Vec<String>) {
     let current = usage_history::Snapshot {
         at: newest.at,
         points: newest.profiles,
-        unknown: Vec::new(),
+        unknown: newest.unknown,
     };
     let summary = capacity_summary::compute(&capacity_summary::Inputs {
         current: &current,
@@ -61,5 +66,11 @@ pub fn capacity(root: &Path, now: i64) -> (String, Vec<String>) {
         history: &entries,
         now: newest.at,
     });
-    (summary.status_line(newest.at, now), warnings)
+    (summary.status_line(newest.at, now, newest.by), warnings)
+}
+
+/// The `capacity:` line of `rotate status` alone, without its warnings.
+#[cfg(test)]
+pub fn capacity_line(root: &Path, now: i64) -> String {
+    capacity(root, now).0
 }

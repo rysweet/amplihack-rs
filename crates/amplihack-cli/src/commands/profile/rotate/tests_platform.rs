@@ -4,7 +4,8 @@
 //! Contract (additions to `tests_overflow`):
 //! - `profile::overflow::PLATFORM_TIER == 10`, and
 //!   `OverflowEntry::platform(name)` is an entry at that tier; `tiers()`
-//!   appends one for the first API-key profile by name.
+//!   appends one for the first API-key profile by name that `overflow=`
+//!   marks (issue #1804). Every case here marks `console`.
 //! - `decide::Probed::platform()`: `Measured { session: 0, week: 0 }`,
 //!   default windows, `spend_limit: false`. It is never a plan reading: a
 //!   profile in the overflow order is never in the plan pool, so its 0/0
@@ -61,6 +62,7 @@ fn measured(session: f64, week: f64, reset: Option<i64>) -> Probed {
         windows: Windows {
             session: win(session, reset),
             week: win(week, reset),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
@@ -73,6 +75,7 @@ fn exhausted(reset: Option<i64>) -> Probed {
         windows: Windows {
             session: win(100.0, reset),
             week: win(100.0, reset),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
@@ -182,6 +185,7 @@ impl Case {
             overflow: &overflow,
             blocks: &self.blocks,
             platform_block: self.platform_block.as_ref(),
+            unmeasured_plan: &[],
             swapped_at: self.swapped_at,
             now: NOW,
         })
@@ -363,9 +367,9 @@ fn a_usable_credit_profile_that_is_live_stays_and_never_moves_to_the_api_key() {
     assert_eq!(v.tag, Some(Tag::On));
 }
 
-/// Every combination: the API key is chosen only when no plan login has
-/// capacity, no credit profile can be used, the key is not blocked and the
-/// gate allows overflow.
+/// Every combination: the API key is chosen only when every plan login is
+/// measured and none has room, no credit profile can be used, the key is not
+/// blocked and the gate allows overflow. A failed plan probe is unknown.
 #[test]
 fn the_api_key_is_chosen_only_as_the_last_resort() {
     let plans = [
@@ -394,7 +398,7 @@ fn the_api_key_is_chosen_only_as_the_last_resort() {
                 let v = c.run();
                 let to_key =
                     matches!(&v.decision, Decision::Swap { to, .. } if to == &n("console"));
-                let want = *pn != "capacity" && credit != "usable" && !key_blocked;
+                let want = *pn == "exhausted" && credit != "usable" && !key_blocked;
                 assert_eq!(
                     to_key, want,
                     "plan {pn}, credit {credit}, blocked {key_blocked}: {v:?}"

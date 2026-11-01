@@ -25,6 +25,8 @@ The exact flags, files, exit codes and log lines are in the
 - [Switch to a login by hand](#switch-to-a-login-by-hand)
 - [Run rotation in the background](#run-rotation-in-the-background)
 - [Start the rotator automatically](#start-the-rotator-automatically)
+- [Run the rotator under a service manager](#run-the-rotator-under-a-service-manager)
+- [See who turned rotation off](#see-who-turned-rotation-off)
 - [Which root the rotator uses](#which-root-the-rotator-uses)
 - [Change the thresholds](#change-the-thresholds)
 - [When a swap happens](#when-a-swap-happens)
@@ -322,10 +324,11 @@ amplihack profile rotate status
 root: /home/you/.claude-profiles (source: config)
 rotate: running
 autostart: on (default)
+owner: none
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
-capacity: headroom 2.07 login-weeks of 4 (52%), usable 2 of 4 logins, runway ~9 h (as of 2026-10-18T12:50:05Z, 3m ago)
+capacity: headroom 2.07 login-weeks of 4 (52%), usable 2 of 4 logins, runway ~9 h (as of 2026-10-18T12:50:05Z, 3m ago, rotate cycle: probed profiles only)
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
@@ -415,16 +418,24 @@ A launch starts the rotator only when all of these hold:
 - No rotator is running for that root.
 - `rotate start` would not refuse: the
   [tmux prototype](#move-from-the-tmux-prototype) is not holding its lock.
+- The launch is not a step of a recipe run: `AMPLIHACK_RECIPE_RUN_ID` is
+  unset or empty. `amplihack recipe run` sets it for every step.
+- No service manager owns rotation: there is no
+  [owner marker](#run-the-rotator-under-a-service-manager).
 
 When auto-switch is off, a launch does nothing extra: it creates no file,
 takes no lock and prints nothing.
 
 ### Many launches at once
 
-Recipe runs and `multitask` start many Claude sessions in parallel, and
-nested launches inside a recipe run check like any other launch. Only one
-rotator ever runs: a launch that finds the rotator running stops there, and
-otherwise it tries the state lock without waiting. If another launch holds
+Recipe runs and `multitask` start many Claude sessions in parallel. Launches
+inside a recipe run never start the rotator: they see
+`AMPLIHACK_RECIPE_RUN_ID` and stop before reading anything. Start the rotator
+before the run, or let the `amplihack claude` you start the run from start it.
+
+Other launches check as usual, and only one rotator ever runs: a launch that
+finds the rotator running stops there, and otherwise it tries the state lock
+without waiting. If another launch holds
 the lock, it gives up silently. The launch that gets the lock checks again
 before it starts the rotator and writes the pid file while it still holds the
 lock.
@@ -511,6 +522,178 @@ The source in brackets is `default` (no setting), `setting` (from
 `corrupt` (the setting file cannot be trusted; autostart counts as off until
 you run `rotate autostart on` or `off` again).
 
+## Run the rotator under a service manager
+
+To have a service manager such as systemd keep the rotator running, run
+`rotate watch` in the foreground with `--supervised`. In a systemd user unit:
+
+```ini
+ExecStart=/home/you/.cargo/bin/amplihack profile rotate watch --supervised=amplihack-rotator.service --interval 120 --session-at 70
+```
+
+Stop any rotator that is already running before you enable the unit. A
+supervised `watch` refuses to run beside another rotator, exits with status 1
+and writes no owner marker, so the unit would restart and fail until that
+rotator stops:
+
+```bash
+amplihack profile rotate stop
+systemctl --user enable --now amplihack-rotator.service
+```
+
+If `systemctl --user status amplihack-rotator.service` shows the unit
+failing because a rotator is running, a launch started one between the two
+commands. Run `amplihack profile rotate stop` again; the unit's next restart
+then succeeds.
+
+A supervised `watch` writes an owner marker,
+`<root>/.auto-switch.d/rotate/owner`, naming the unit and its pid. While the
+marker exists, launches never start a rotator of their own, even when
+autostart is on, so the unit's rotator is the only one. The marker stops
+autostart only: `amplihack profile rotate start` does not read it, so do not
+run `rotate start` while the unit is enabled. A `watch` that systemd runs
+as a service, where `INVOCATION_ID` is set and the last component of its
+`/proc/self/cgroup` path is a `.service` unit other than `user@<uid>.service`,
+records itself even without the flag; the flag lets you name the unit.
+Without a name, the unit is read from `/proc/self/cgroup`, and failing that
+`amplihack-rotator.service` is used.
+
+`rotate status` shows the owner straight after the autostart line (excerpt):
+
+```
+rotate: running
+autostart: on (default) (deferring to amplihack-rotator.service)
+owner: amplihack-rotator.service pid 48213 (running); autostart defers to it
+pid: 48213
+```
+
+Show the owner on its own with:
+
+```bash
+amplihack profile rotate owner
+```
+
+```
+owner: amplihack-rotator.service pid 48213 (running); autostart defers to it
+```
+
+### When the owner stops
+
+The marker stays when the unit stops, so that launches do not start a rotator
+while the service manager is restarting it. When the unit restarts, the new
+`watch` writes its own pid. Until then, each launch prints one line to stderr
+and still starts Claude:
+
+```
+amplihack: rotation is owned by amplihack-rotator.service, which is not running; run 'amplihack profile rotate owner clear' to let launches start the rotator
+```
+
+With autostart off, the line ends after `which is not running`, since
+clearing the marker would not start a rotator. `status` shows:
+
+```
+owner: amplihack-rotator.service pid 48213 (not running); autostart defers to it; run 'amplihack profile rotate owner clear' to release
+```
+
+If the marker is damaged, or is not a private file owned by you, launches
+still defer, and the line says the marker is unreadable. `status` then shows:
+
+```
+autostart: on (default) (deferring to an unreadable owner marker)
+owner: unreadable; autostart defers to it; run 'amplihack profile rotate owner clear' to release
+```
+
+If the profile root itself is not private, launches never start a rotator,
+and `status` does not read the marker:
+
+```
+autostart: on (default) (skipped: root is not private)
+owner: not read (root is not private)
+```
+
+### Hand rotation back to launches
+
+When you retire the unit, stop and disable it, then clear the owner:
+
+```bash
+systemctl --user disable --now amplihack-rotator.service
+amplihack profile rotate owner clear
+```
+
+```
+owner: cleared (was amplihack-rotator.service)
+```
+
+The next launch starts the rotator as described in
+[Start the rotator automatically](#start-the-rotator-automatically).
+`owner clear` is the only command that removes the marker: `rotate stop`,
+`rotate start` and a `watch` without `--supervised` leave it alone. A `watch`
+without `--supervised` that finds a marker prints a note to stderr and runs
+anyway.
+
+### A watch that claims ownership by mistake
+
+systemd sets `INVOCATION_ID` for every process in a unit, including a shell
+inside one. A shell started from a tmux or terminal server that the user
+manager runs inherits it too, but such a shell runs in a `.scope`, so a
+`rotate watch` started from it does not claim ownership. A `rotate watch` you
+start by hand from a shell inside a `.service` unit does record itself as
+the owner. Stop it, then run `amplihack profile rotate owner clear`.
+Rotators started by `rotate start` or by a launch never claim ownership,
+because `INVOCATION_ID` is removed from their environment.
+
+An `amplihack` binary older than this feature ignores the marker. Upgrade
+every binary that launches Claude against the root.
+
+## See who turned rotation off
+
+Each change to the autostart setting or to the auto-switch toggle adds a
+`change:` line to the rotate log, naming the process that made it, its
+parent's command line and, for a recipe step or a systemd unit, the run or
+invocation id:
+
+```bash
+grep ' change: ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+```
+2026-11-01T09:14:02Z change: auto-switch on -> off by pid=51877 ppid=51702 parent="bash /home/you/bin/pause-rotation.sh" recipe_run=3f9c2a1e-6b7d-4c1e-9a52-0d8e7b6f4a21
+2026-11-01T09:20:45Z change: rotate-autostart on -> off by pid=52011 ppid=4120 parent="-bash"
+```
+
+Only real changes are logged: running `off` when the setting is already off
+adds nothing. Threshold and exclusion changes, and the
+`AMPLIHACK_ROTATE_AUTOSTART` and `AMPLIHACK_CLAUDE_AUTO_SWITCH` variables,
+are not logged. Secrets in the parent command line are replaced by `***`
+before the line is written: `NAME=value` pairs, the values of flags such as
+`--api-key`, `--token` or `--pass`, headers such as `Authorization: ...`,
+`curl -u user:password`, `mysql -p<password>`, passwords in URLs and URL
+parameters such as `access_token=`. Like the rest of the log,
+the file is private to you (`0600`).
+
+While auto-switch is off, the rotator idles. If the live login is exhausted
+at the same time, it writes an ALERT on every cycle, and `rotate status`
+shows it as an `alert:` line:
+
+```
+2026-11-01T10:10:05Z ALERT: auto-switch is off while the live login is exhausted (spare: 100% used, threshold 90%)
+```
+
+```
+alert: auto-switch is off while the live login is exhausted (spare: 100% used, threshold 90%)
+```
+
+The percentage is rounded down. A login stopped by a usage limit shows
+`(spare: usage limit reached, resets 2026-11-01T14:00:00Z)` instead, with
+the reset time in UTC. If a ledger or `usage.json` cannot be read, the
+check cannot run: the log shows `skip: alert check failed: <error>` and
+`status` shows `alert: unavailable (<error>)`.
+
+The ALERT changes nothing by itself. Turn auto-switch back on with
+`amplihack profile auto-switch on`, or move the login by hand with
+[`profile switch`](#switch-to-a-login-by-hand). The `change:` lines show what
+turned it off.
+
 ## Which root the rotator uses
 
 The rotator keeps the profile root it was started with. `start` passes that
@@ -532,6 +715,7 @@ env -i HOME="$HOME" PATH="$PATH" amplihack profile rotate status
 root: /home/you/.claude-profiles (pinned by running rotator)
 rotate: running
 autostart: on (default)
+owner: none
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
@@ -745,14 +929,19 @@ To see only swaps and alerts:
 grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
+`change:` lines record who changed the autostart setting or the auto-switch
+toggle; see [See who turned rotation off](#see-who-turned-rotation-off).
+
 The same ALERT is written to the log once. It is written again only after
 something changes: a swap succeeds, a cycle needs no swap, or the reason
 changes. The one-shot `rotate` still prints it on every run. The ALERT for a
 [manual `/login` in `~/.claude`](#after-a-manual-login-in-claude), its `fix`
-lines and the `has no login anywhere` line are the exception: they are
-written on every cycle until the problem is resolved. The log
+lines, the `has no login anywhere` line and the
+[exhausted-while-off](#see-who-turned-rotation-off) ALERT are the exception:
+they are written on every cycle until the problem is resolved. The log
 holds profile names, percentages, fixed text and, in `recovered:` and `fix`
-lines, paths under your home directory and the profile root; it never holds
+lines, paths under your home directory and the profile root. `change:` lines
+also hold a redacted parent command line and run ids. It never holds
 account IDs, e-mail addresses, tokens or Claude's output.
 
 ## Resume sessions stopped by a usage limit
@@ -996,9 +1185,9 @@ the file and the exact rules are in the
 ## Use usage credits when every plan login is exhausted
 
 If one of your accounts has usage credits turned on, the rotator can move
-work onto it when every plan login is out of capacity and the next reset is
-a long way off, and move work back as soon as a plan login has capacity
-again. That account is an *overflow profile*. Every other profile is a
+work onto it when every plan login is at 100% of its session or week and
+the next reset is a long way off, and move work back as soon as a plan login has capacity
+or room again. That account is an *overflow profile*. Every other profile is a
 *plan profile*.
 
 **Overflow costs real money.** Work on an overflow profile past its plan
@@ -1024,7 +1213,7 @@ amplihack profile overflow add ryan-mistt-org
 
 ```
 overflow: added ryan-mistt-org
-note: ryan-mistt-org is used only when every plan login is exhausted, and work on it is billed to that account's usage credits.
+note: ryan-mistt-org is used only when no measured plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account.
 note: set a spend limit for the organization at https://claude.ai/settings/usage; the rotator is not a spending cap.
 ```
 
@@ -1087,8 +1276,8 @@ amplihack profile rotate start --overflow-wait 3600
 `AMPLIHACK_ROTATE_OVERFLOW_WAIT` sets the same value. Accepted values are
 whole seconds from `0` to `604800` (7 days); anything else is a usage error
 that names the flag or the variable. `0` means credits are used as soon as
-every plan login is out of capacity. The live login still has to reach
-`--session-at` or `--week-at` first.
+no measured plan login is below 100% on both windows. The live login still has to
+reach `--session-at` or `--week-at` first.
 
 Auto-switch uses the running rotator's wait: `rotate watch` records its
 overflow settings when it starts, and every Claude session reads them from
@@ -1175,8 +1364,8 @@ Each overflow mark has a tier from 1 to 9 (default 1). Lower tiers are tried
 first, so a cheaper kind of overflow comes before a dearer one:
 
 ```bash
-amplihack profile overflow add ryan-mistt-org            # tier 1
-amplihack profile overflow add api-key-profile --tier 2  # tried after tier 1
+amplihack profile overflow add ryan-mistt-org          # tier 1
+amplihack profile overflow add team-credits --tier 2   # tried after tier 1
 amplihack profile overflow list
 ```
 
@@ -1185,22 +1374,39 @@ amplihack profile overflow list
 On each cycle:
 
 1. While the live login is a plan profile, the rotator decides as usual.
-   Only when it would write `ALERT: no profile has capacity` does it look at
-   overflow: if the earliest plan reset is more than `--overflow-wait` away,
-   no plan profile's probe timed out or could not start in this cycle, and an
-   overflow profile can be used, it swaps to the first one by tier with
-   `reason=overflow-in`. A failed live probe never leads to credits.
+   When it would write `ALERT: no profile has capacity`, it first tries the
+   [plan-room swap](../reference/profile-command.md#rotate-plan-room-swap):
+   a move to the plan login below 100% on both windows with the most room.
+   Only when no measured plan login, the live one included, has room does it look
+   at overflow: if the earliest plan reset is more than `--overflow-wait`
+   away, no plan profile's probe timed out or could not start in this cycle,
+   and an overflow profile can be used, it swaps to the first one by
+   tier with `reason=overflow-in`. A failed live probe never leads to
+   credits.
 2. While the live login is an overflow profile, it checks every plan
-   profile. As soon as one has capacity it swaps back with
-   `reason=overflow-out`, without waiting for `--hold` or needing `--margin`
-   or `--upgrade-margin`. Otherwise it stays.
+   profile. As soon as one has capacity, or failing that has room, it swaps
+   back with `reason=overflow-out`, without waiting for `--hold` or needing
+   `--margin` or `--upgrade-margin`. Otherwise it stays.
 
 A plan profile *has capacity* when its probe succeeded and its session and
-week use are both below `--session-at` and `--week-at`. Reaching either
-threshold is enough to take its capacity away. The rotator never
-moves onto credits while any plan profile has capacity, and moves back only
-to one that has it, so it does not bounce between credits and a login that
-is already at a threshold.
+week use are both below `--session-at` and `--week-at`. It *has room* when
+its probe succeeded and both are below 100%. Credits are billed, so the
+rotator never moves onto them while a measured plan profile has room, and it
+moves back as soon as one has. It does not bounce: from the plan login it
+moves to, it returns to credits only once no plan login has room again.
+
+Not every plan login is measured. One with a session on it, or leased,
+hosting, parked or with no account, is skipped; one whose probe failed gave
+no reading. Either may have room. Credits do not wait for a skipped login or
+one whose probe read a state such as `not_logged_in`, and the `per-token` line
+says how many there were (`2 not measured`). Credits do wait for a probe that
+timed out or could not run, and for a plan profile skipped as
+`directory refused`: that login might have capacity. The API key waits for
+all of these: see [The order the rotator follows](#the-order-the-rotator-follows).
+
+Earlier releases moved onto credits as soon as every plan login had reached
+a threshold. They now wait until no plan login is below 100%; until then
+the rotator spreads work over the plan logins with room.
 
 An overflow profile's own session and weekly limits show as exhausted in
 `profile usage`. That does not stop it being used, by the rotator or by
@@ -1208,12 +1414,15 @@ auto-switch; those are the plan limits the credits cover. Only a
 [spend block](../reference/profile-command.md#overflow-spend-limit-block)
 moves work from one overflow profile to the next.
 
-The log shows each move:
+The log shows each move. Auto-switch writes its own moves onto a per-token
+profile to the same log, as a `per-token` line that ends `auto-switch from
+<profile>`:
 
 ```
-2026-10-24T09:00:05Z cycle live=work work:s=97%,w=91% personal:s=100%,w=100% ryan-mistt-org:s=100%,w=100%
-2026-10-24T09:00:05Z swap work->ryan-mistt-org live s=97% w=91% target s=100% w=100% reason=overflow-in
-2026-10-24T09:00:05Z overflow: on ryan-mistt-org; no plan profile has capacity, next plan reset 2026-10-24T14:00:00Z
+2026-10-24T09:00:05Z cycle live=work work:s=100%,w=91% personal:s=100%,w=100% ryan-mistt-org:s=100%,w=100%
+2026-10-24T09:00:05Z per-token ryan-mistt-org: no measured plan login below 100%, 0 not measured; earliest reset 2026-10-24T14:00:00Z beyond overflow_wait; marked overflow tier 1; probe ok, no spend limit
+2026-10-24T09:00:05Z swap work->ryan-mistt-org live s=100% w=91% target s=100% w=100% reason=overflow-in
+2026-10-24T09:00:05Z overflow: on ryan-mistt-org; no measured plan login below 100%, next plan reset 2026-10-24T14:00:00Z
 2026-10-24T14:10:05Z swap ryan-mistt-org->personal live s=100% w=100% target s=0% w=62% reason=overflow-out
 2026-10-24T14:10:05Z overflow: off ryan-mistt-org; back on plan profile personal
 ```
@@ -1221,7 +1430,7 @@ The log shows each move:
 To see only overflow moves:
 
 ```bash
-grep -E 'reason=overflow|overflow: (on|off|staying)|spend limit' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
+grep -E 'reason=overflow|^\S+ per-token |overflow: (on|off|staying)|spend limit|key_check_refused' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
 ### See whether you are running on credits
@@ -1234,6 +1443,7 @@ amplihack profile rotate status
 root: /home/you/.claude-profiles (source: config)
 rotate: running
 autostart: on (default)
+owner: none
 pid: 48213
 live: ryan-mistt-org
 last cycle: 2026-10-24T09:10:05Z stayed overflow=on
@@ -1773,9 +1983,10 @@ again with `amplihack profile login <name>`.
 ## Use an API key as the last resort
 
 An API-key profile runs Claude Code on a Claude Platform API key and is
-billed per token. The rotator uses it only after every plan login and
-every [credit overflow profile](../reference/profile-command.md#rotate-overflow)
-is out of capacity or blocked, and leaves it as soon as it can. The exact
+billed per token. The rotator uses it only after you mark it, only when no
+plan login is below 100% on both windows and every
+[credit overflow profile](../reference/profile-command.md#rotate-overflow)
+is blocked or cannot be used, and leaves it as soon as it can. The exact
 rules are in the [API-key profiles reference](../reference/profile-command.md#api-key-profiles).
 
 ### Set up the profile
@@ -1812,28 +2023,102 @@ amplihack profile kind set api-key api-key
 amplihack profile kind set api-key auto
 ```
 
+### Mark the profile
+
+The rotator never uses an API-key profile you have not marked. Mark it to
+allow per-token billing:
+
+```bash
+amplihack profile overflow add api-key
+```
+
+`overflow list` shows `api-key  api-key tier  marked` once it is marked and
+`api-key  api-key tier  not marked (not used)` before. An API-key profile is
+always tier 10, after every credit tier, so `--tier` is refused for it with
+`the API-key tier is fixed at 10`. A kind override or the profile's name does
+not mark it. If the profile already has a mark from when it was a credit
+account, `kind set <name> api-key` warns you: that mark now allows per-token
+billing on the key. Run `overflow remove <name>` if you did not mean that.
+
+Hosts that relied on an earlier release, which used every API-key profile
+without a mark, must run this command once; nothing is marked for you.
+
+The rotator checks for a key before every move onto the profile, in the
+files plain `claude` reads after the move: a non-empty `primaryApiKey` in
+`~/.claude.json`, or `ANTHROPIC_API_KEY` under `env` or `apiKeyHelper` in
+`~/.claude/settings.json`. The move carries only `.credentials.json`, so a
+key in the profile's own files does not pass, and neither does a
+`.credentials.json` of `{}`. The check reads those files only: it does not
+run the helper or make a request, so it confirms that a key is configured,
+not that it works.
+
+A key in those files is used ahead of a plan login while that login is
+live: every session on the host bills per token, marked or not, and the
+rotator cannot read the live login's usage. `overflow add` warns about it and
+the rotator logs `ALERT: home_key`. Leave those files without a key on a host
+that bills only plan logins: the rotator then refuses every move onto the
+API-key profile. See
+[API-key login check](../reference/profile-command.md#api-key-login-check).
+
 ### The order the rotator follows
 
-1. Plan (subscription) logins.
-2. Credit overflow profiles, by tier.
-3. The API-key profile.
+1. Plan (subscription) logins with capacity.
+2. Plan logins past a threshold but below 100% on both windows
+   (`reason=plan-room`): those with session use below `--session-at` first,
+   then the most weekly room, then the most session room.
+3. Only when no measured plan login is below 100% on both windows: marked
+   credit overflow profiles, tiers 1 to 9.
+4. The marked API-key profile, tier 10, only with every plan login measured.
 
-The rotator moves onto the API key only when no plan login has capacity, no
-credit overflow profile can be used, and the earliest plan reset is further
-away than `--overflow-wait`. If the reset is closer, it waits. API-key
-profiles need no `overflow add`; `overflow list` shows them as
-`api-key tier`. After the swap line, the log reads:
+The rotator moves onto the API key only when it is marked, every plan login
+was measured and is at 100% of its session or week, no credit overflow profile can be used,
+the earliest plan reset is further away than `--overflow-wait` and the login
+check passes. If the reset is closer, it waits. A failed live probe never
+moves work onto the API key, and when every probe fails no reset is known,
+so nothing moves unless you set `--overflow-unknown-reset 1`. The log names
+the reason before the swap:
 
 ```
+per-token api-key: no measured plan login below 100%, 0 not measured; earliest reset 2026-11-01T02:14:00Z beyond overflow_wait; marked overflow tier 10; login check passed (primaryApiKey set)
+swap iivanovich->api-key live s=100% w=61% target s=0% w=0% reason=overflow-in
 moved ~/.claude onto API key profile api-key (billed per token)
 ```
+
+A plan login that was skipped as busy or failed its probe may have room, so
+it keeps the key out, and the rotator writes one ALERT naming it:
+
+```
+ALERT: API key not used live=iivanovich: no measured plan login has room, but these were not measured and may have: ccapstone
+```
+
+A login in the `amplihack profile auto-switch exclude` list does not count,
+so excluding a login that is never available lets the key be used. If `overflow=` marks a profile that was
+detected as API-key (no `kind set`, for example a credit account whose login
+file lost its OAuth login), the first cycle logs one `warning:` line saying
+so, with the command that removes the mark.
+
+If the login check fails, nothing moves, `~/.claude` is unchanged and the
+log reads:
+
+```
+key_check_refused api-key: no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting
+ALERT: API key profile api-key failed its login check (no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting); not moving onto it
+```
+
+The ALERT is written once, not on every cycle. `--dry-run` prints
+`would_refuse api-key: <reason>` in its place.
+
+The full rules are in
+[Rotate plan-room swap](../reference/profile-command.md#rotate-plan-room-swap)
+and [API-key rotation](../reference/profile-command.md#api-key-rotation).
 
 ### Moving back off the API key
 
 While the API key is live, every cycle checks again and ignores `--hold`.
 As soon as a plan login has capacity, the rotator moves `~/.claude` to it.
-If no plan login has capacity but a credit overflow profile can be used, it
-moves to credits, which cost less than tokens. Both swaps use
+Failing that, it moves to the plan login below 100% on both windows with the
+most room. Failing both, if a credit overflow profile can be used, it moves
+to credits, which cost less than tokens. All three use
 `reason=overflow-out` and log:
 
 ```
@@ -1841,7 +2126,34 @@ moved ~/.claude off API key profile api-key to ryan-mistt
 ```
 
 It never moves from a plan login to credits, or to the API key, while a
-plan login has capacity.
+plan login with a usage reading has room below 100%. A plan login with no
+reading may have room, so it keeps auto-switch off the API key too, and
+auto-switch writes its own form of the ALERT:
+
+```
+ALERT: API key not used session=work: no measured plan login has room, but these were not measured and may have: ccapstone; auto-switch from work
+```
+
+`session=` names the account of the session that ran out, which is not the
+login in `~/.claude`; only the rotator's lines use `live=`. The line goes to
+stderr on every exhausted launch and rerun, and to the rotate log once for
+each set of unmeasured logins. It is written to the log again when that set
+changes, or after every plan login has been measured.
+
+As for the rotator, a profile in the `exclude` list does not count, and
+neither does one with no login file or no OAuth login: nothing can measure
+it. The rotator's live login counts, though its login file is in
+`~/.claude`. Auto-switch cannot measure that login itself: the status line
+records only a session's own profile, and `profile usage` probes each
+profile's own directory. It uses the rotator's measurement instead: every
+cycle, the rotator records in its ledger the logins it measured with no room,
+and while that record holds (past the next cycle, at most an hour after the
+measurement, and no later than the first reset the rotator read for one of
+those logins) those logins no longer keep auto-switch off the key. That includes a login the rotator has
+just moved off. When no rotator is running, or the rotator found room on the
+live login, the live login keeps the key out until a reading is recorded for
+it. To let auto-switch use the key in that state, add the live login to the
+`exclude` list.
 
 ### See when work is on the API key
 

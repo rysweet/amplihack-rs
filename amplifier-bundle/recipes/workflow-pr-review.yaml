@@ -197,7 +197,7 @@ steps:
         exit 1
       fi
       echo "=== Pushing Review Feedback Changes ==="
-      current_branch=$(git branch --show-current)
+      current_branch=$(git branch --show-current); remote_branch="$(bash "$(dirname "$WT_TOOL")/workflow_remote_branch.sh" .)" || exit 2; [ "$remote_branch" != "$current_branch" ] || remote_branch=""  # #1762: an alias pushes HEAD to <B>
       if [ -z "$current_branch" ]; then
         echo "ERROR: current branch is empty; cannot push review feedback changes from detached HEAD" >&2
         exit 1
@@ -264,12 +264,12 @@ steps:
       push_rc=0
       if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
         if git_remote_with_retry git pull --rebase; then
-          git_remote_with_retry git push || push_rc=$?
+          git_remote_with_retry git push ${remote_branch:+origin "HEAD:$remote_branch"} || push_rc=$?
         else
           push_rc=$?
         fi
       else
-        git_remote_with_retry git push -u origin "$current_branch" || push_rc=$?
+        git_remote_with_retry git push -u origin "$current_branch"${remote_branch:+":$remote_branch"} || push_rc=$?
       fi
       if [ "$push_rc" -eq 0 ]; then
         cat "$push_output_file"

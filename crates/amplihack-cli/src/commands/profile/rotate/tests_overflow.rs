@@ -94,6 +94,7 @@ fn measured(session: f64, week: f64, s_reset: Option<i64>, w_reset: Option<i64>)
         windows: Windows {
             session: win(session, s_reset),
             week: win(week, w_reset),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
@@ -107,6 +108,7 @@ fn exhausted(s_reset: Option<i64>, w_reset: Option<i64>) -> Probed {
         windows: Windows {
             session: win(100.0, s_reset),
             week: win(100.0, w_reset),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
@@ -221,6 +223,7 @@ impl<'a> Case<'a> {
             overflow: &overflow,
             blocks: &self.blocks,
             platform_block: None,
+            unmeasured_plan: &[],
             swapped_at: self.swapped_at,
             now: NOW,
         })
@@ -248,6 +251,7 @@ fn report(
         session: s.map(|(u, r)| uw("session", u, r)),
         week_all: w.map(|(u, r)| uw("all models", u, r)),
         week_models: Vec::new(),
+        session_limit: true,
     }
 }
 
@@ -340,18 +344,6 @@ fn an_unknown_reset_is_far_only_with_the_opt_in() {
     assert!(opt_in.far(None, NOW));
 }
 
-#[test]
-fn the_gate_never_allows_overflow_while_a_plan_profile_has_capacity() {
-    let g = Gate {
-        wait: 0,
-        unknown_reset: true,
-        ..gate(&settings())
-    };
-    assert!(!g.allows(true, Some(NOW + 100 * HOUR), NOW));
-    assert!(!g.allows(true, None, NOW));
-    assert!(g.allows(false, Some(NOW + 1), NOW));
-}
-
 // --- P1: no overflow profiles means today's decide() -----------------------
 
 #[test]
@@ -371,7 +363,7 @@ fn p1_without_overflow_profiles_the_verdict_is_decide() {
         Case::new("work", failed()).cand("spare", measured(10.0, 10.0, far, far)),
         Case::new("work", spend_limited()).cand("spare", measured(10.0, 10.0, far, far)),
         Case::new("work", measured(85.0, 0.0, far, far))
-            .cand("spare", measured(84.0, 0.0, far, far)),
+            .cand("spare", measured(100.0, 0.0, far, far)),
         Case::new("work", measured(90.0, 40.0, far, far)),
         Case {
             swapped_at: Some(NOW - 10),
@@ -446,17 +438,17 @@ fn never_upgrades_onto_overflow_below_the_thresholds() {
 }
 
 #[test]
-fn a_plan_login_below_the_thresholds_but_short_of_the_margin_alerts_without_overflow() {
+fn a_plan_login_below_the_thresholds_but_short_of_the_margin_gets_plan_room_not_overflow() {
     // work at the session threshold (headroom 15); spare below both
-    // thresholds (headroom 16) but only 1 point better: no plan swap, and
-    // spare still has capacity, so no credits either.
+    // thresholds (headroom 16) but only 1 point better: no threshold swap,
+    // so plan room takes it (issue #1804). No credits are spent.
     let far = Some(NOW + 5 * HOUR);
     let v = Case::new("work", measured(85.0, 0.0, far, far))
         .cand("spare", measured(84.0, 0.0, far, far))
         .cand("cred", exhausted(far, far))
         .overflow(&["cred"])
         .run();
-    assert_eq!(v.decision, Decision::Alert);
+    assert_eq!(v.decision, swap("spare", Reason::PlanRoom));
     assert_eq!(v.tag, None);
 }
 
@@ -484,11 +476,10 @@ fn a_reset_one_second_past_the_wait_moves_onto_overflow() {
 #[test]
 fn the_earliest_plan_reset_decides_the_wait() {
     // work resets far away, but spare's session resets in ten minutes.
-    // spare at 96% has 4 points of headroom, short of --margin 5, so the
-    // plan rule alone gives no swap (at 95% it would swap to spare).
+    // spare at 100% has no room, so plan room gives no swap (issue #1804).
     let far = Some(NOW + 50 * HOUR);
     let v = Case::new("work", exhausted(far, far))
-        .cand("spare", measured(96.0, 10.0, Some(NOW + 600), far))
+        .cand("spare", measured(100.0, 10.0, Some(NOW + 600), far))
         .cand("cred", exhausted(None, None))
         .overflow(&["cred"])
         .run();
@@ -515,7 +506,7 @@ fn only_the_windows_at_the_threshold_set_the_regain_time() {
 fn with_both_windows_at_the_threshold_the_later_reset_counts() {
     let v = Case::new(
         "work",
-        measured(90.0, 95.0, Some(NOW + 600), Some(NOW + 100 * HOUR)),
+        measured(100.0, 95.0, Some(NOW + 600), Some(NOW + 100 * HOUR)),
     )
     .cand("cred", exhausted(None, None))
     .overflow(&["cred"])
@@ -875,8 +866,8 @@ fn moving_off_overflow_picks_the_best_plan_login_with_capacity() {
 #[test]
 fn a_plan_login_at_a_threshold_is_no_reason_to_leave_overflow() {
     let v = Case::new("cred", exhausted(None, None))
-        .cand("spare", measured(85.0, 0.0, None, None))
-        .cand("extra", measured(0.0, 90.0, None, None))
+        .cand("spare", measured(100.0, 0.0, None, None))
+        .cand("extra", measured(0.0, 100.0, None, None))
         .overflow(&["cred"])
         .run();
     assert_eq!(v.decision, Decision::Stay);
@@ -1073,9 +1064,9 @@ fn either_plan_limit_takes_away_capacity() {
     // threshold only, and neither has enough more headroom than `work` for a
     // threshold swap: no plan login has capacity, so credits are used.
     let far = Some(NOW + 5 * HOUR);
-    let v = Case::new("work", measured(90.0, 10.0, far, far))
-        .cand("spare", measured(86.0, 10.0, far, far))
-        .cand("extra", measured(10.0, 91.0, far, far))
+    let v = Case::new("work", measured(100.0, 10.0, far, far))
+        .cand("spare", measured(100.0, 10.0, far, far))
+        .cand("extra", measured(10.0, 100.0, far, far))
         .cand("cred", exhausted(far, far))
         .overflow(&["cred"])
         .run();
@@ -1084,29 +1075,19 @@ fn either_plan_limit_takes_away_capacity() {
 }
 
 #[test]
-fn a_plan_login_over_a_threshold_is_used_only_when_overflow_is_not_allowed() {
-    // `spare` at 86% session is itself at `--session-at` (85), so it is not
-    // plan capacity: with the plan reset far away the rotator moves onto
-    // credits, as auto-switch does on the same readings. Swapping onto
-    // `spare` would only meet the threshold again next cycle.
-    let far = Some(NOW + 5 * HOUR);
-    let v = Case::new("work", exhausted(far, far))
-        .cand("spare", measured(86.0, 10.0, far, far))
-        .cand("cred", exhausted(far, far))
-        .overflow(&["cred"])
-        .run();
-    assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
-    assert_eq!(v.tag, Some(Tag::In));
-    // With the reset near, the gate does not allow overflow, and `decide`'s
-    // free swap onto `spare` stands: it costs nothing.
-    let near = Some(NOW + 600);
-    let v = Case::new("work", exhausted(near, near))
-        .cand("spare", measured(86.0, 10.0, near, near))
-        .cand("cred", exhausted(far, far))
-        .overflow(&["cred"])
-        .run();
-    assert_eq!(v.decision, swap("spare", Reason::Threshold));
-    assert_eq!(v.tag, None);
+fn a_plan_login_over_a_threshold_comes_before_overflow() {
+    // `spare` at 86% session is at `--session-at` (85), so it is not plan
+    // capacity, but it has room: `decide`'s free swap stands wherever the
+    // plan reset is, and no credit is spent (issue #1804).
+    for reset in [Some(NOW + 5 * HOUR), Some(NOW + 600)] {
+        let v = Case::new("work", exhausted(reset, reset))
+            .cand("spare", measured(86.0, 10.0, reset, reset))
+            .cand("cred", exhausted(reset, reset))
+            .overflow(&["cred"])
+            .run();
+        assert_eq!(v.decision, swap("spare", Reason::Threshold));
+        assert_eq!(v.tag, None);
+    }
 }
 
 #[test]

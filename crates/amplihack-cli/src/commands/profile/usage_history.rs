@@ -62,6 +62,37 @@ pub(super) struct Point {
     /// When the session resets, epoch seconds. Used by the summary of the
     /// current cycle only; never written to the history.
     pub(super) s_reset: Option<i64>,
+    /// Issue #1818: the reading showed no session window, so no session
+    /// limit applies and the login is usable on its week alone. Only ever
+    /// `true` with `s` `None`; a session that was simply not read is
+    /// `false`. Written to the history as `"session_limit": false`.
+    pub(super) no_session_limit: bool,
+}
+
+/// Which command wrote a history line. `profile usage` reads every
+/// subscription login; a rotate cycle records only the profiles it probed,
+/// so the two give different `N` and `rotate status` names the writer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Writer {
+    Usage,
+    Rotate,
+}
+
+impl Writer {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Usage => "usage",
+            Self::Rotate => "rotate",
+        }
+    }
+
+    fn of_key(k: &str) -> Option<Self> {
+        match k {
+            "usage" => Some(Self::Usage),
+            "rotate" => Some(Self::Rotate),
+            _ => None,
+        }
+    }
 }
 
 /// One history line: the valid readings of one cycle.
@@ -69,6 +100,12 @@ pub(super) struct Point {
 pub(super) struct Entry {
     pub(super) at: i64,
     pub(super) profiles: BTreeMap<String, Point>,
+    /// Who wrote the line; `None` for a line written before `by` existed,
+    /// or with a writer this version does not know.
+    pub(super) by: Option<Writer>,
+    /// The logins this writer tried and could not read, sorted by name.
+    /// Only names: never counted in a figure. Empty for older lines.
+    pub(super) unknown: Vec<String>,
 }
 
 /// One cycle as the summary sees it: the valid readings, and the logins
@@ -81,11 +118,14 @@ pub(super) struct Snapshot {
 }
 
 impl Snapshot {
-    /// The history entry of this cycle: its valid readings only.
-    pub(super) fn entry(&self) -> Entry {
+    /// The history entry of this cycle, written by `by`: its valid
+    /// readings only.
+    pub(super) fn entry(&self, by: Writer) -> Entry {
         Entry {
             at: self.at,
             profiles: self.points.clone(),
+            by: Some(by),
+            unknown: self.unknown.clone(),
         }
     }
 }
@@ -153,24 +193,30 @@ pub(super) fn entry_of(r: &UsageReport) -> Option<Point> {
     let week = r.week_all.as_ref();
     let s_reset = session.and_then(|w| w.resets_at);
     let w_reset = week.and_then(|w| w.resets_at);
+    // Issue #1818: positive evidence only; the parser never sets it with a
+    // session window, and the check keeps that true here.
+    let no_session_limit = !r.session_limit && session.is_none();
     match r.state {
         UsageState::Ok => Some(Point {
             s: pct_of(session),
             w: pct_of(week)?,
             w_reset,
             s_reset,
+            no_session_limit,
         }),
         UsageState::SessionExhausted => Some(Point {
             s: Some(100),
             w: pct_of(week)?,
             w_reset,
             s_reset,
+            no_session_limit: false,
         }),
         UsageState::WeeklyExhausted => Some(Point {
             s: pct_of(session),
             w: 100,
             w_reset,
             s_reset,
+            no_session_limit,
         }),
         _ => None,
     }
@@ -244,13 +290,17 @@ pub(super) fn from_probes(
 /// the week it read. A probe without a readable week is unknown, as is a
 /// failed probe: the week is never taken to be 0% or 100% unread.
 #[cfg(unix)]
-fn point_of_probe(p: &super::rotate::Probed) -> Option<Point> {
-    use super::rotate::Reading;
+fn point_of_probe(p: &super::rotate::decide::Probed) -> Option<Point> {
+    use super::rotate::decide::Reading;
     let session = p.windows.session.as_ref();
     let week = p.windows.week.as_ref();
     let s = session.and_then(|w| whole_pct(w.used));
     let s_reset = session.and_then(|w| w.resets_at);
     let w_reset = week.and_then(|w| w.resets_at);
+    // Issue #1818: as in `entry_of`, positive evidence only. `Reading`
+    // counts a missing session as 0% used; the point keeps it unread and
+    // says why.
+    let no_session_limit = p.windows.no_session_limit && session.is_none();
     match p.reading {
         Reading::Failed => None,
         Reading::Measured { week: used, .. } => Some(Point {
@@ -258,6 +308,7 @@ fn point_of_probe(p: &super::rotate::Probed) -> Option<Point> {
             w: whole_pct(used)?,
             w_reset,
             s_reset,
+            no_session_limit,
         }),
         Reading::Exhausted => match week.map(|w| whole_pct(w.used)) {
             Some(Some(100)) => Some(Point {
@@ -265,12 +316,14 @@ fn point_of_probe(p: &super::rotate::Probed) -> Option<Point> {
                 w: 100,
                 w_reset,
                 s_reset,
+                no_session_limit,
             }),
             Some(Some(w)) => Some(Point {
                 s: Some(100),
                 w,
                 w_reset,
                 s_reset,
+                no_session_limit: false,
             }),
             Some(None) | None => None,
         },
@@ -284,12 +337,19 @@ fn point_of_probe(p: &super::rotate::Probed) -> Option<Point> {
 #[derive(Serialize)]
 struct LineOut<'a> {
     at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    by: Option<&'static str>,
     profiles: BTreeMap<&'a str, PointOut>,
+    #[serde(skip_serializing_if = "<[String]>::is_empty")]
+    unknown: &'a [String],
 }
 
 #[derive(Serialize)]
 struct PointOut {
     s: Option<u8>,
+    /// Written only as `false`, for a login with no session limit.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_limit: Option<bool>,
     w: u8,
     w_reset: Option<String>,
 }
@@ -298,6 +358,7 @@ struct PointOut {
 pub(super) fn to_line(e: &Entry) -> String {
     let out = LineOut {
         at: utc_time(e.at),
+        by: e.by.map(Writer::key),
         profiles: e
             .profiles
             .iter()
@@ -306,12 +367,14 @@ pub(super) fn to_line(e: &Entry) -> String {
                     n.as_str(),
                     PointOut {
                         s: p.s,
+                        session_limit: (p.no_session_limit && p.s.is_none()).then_some(false),
                         w: p.w,
                         w_reset: p.w_reset.map(utc_time),
                     },
                 )
             })
             .collect(),
+        unknown: &e.unknown,
     };
     // Strings, small integers and options always serialise.
     serde_json::to_string(&out).expect("a history entry serialises to JSON")
@@ -340,11 +403,18 @@ fn point_in(v: &serde_json::Value, now: i64) -> Option<Point> {
         None | Some(serde_json::Value::Null) => None,
         Some(t) => Some(time_of(t, now)?),
     };
+    // Issue #1818: only an explicit `false` with no session figure means no
+    // session limit; missing or `null` is the old meaning, "not read".
+    let no_session_limit = match o.get("session_limit") {
+        None | Some(serde_json::Value::Null) => false,
+        Some(v) => !v.as_bool()? && s.is_none(),
+    };
     Some(Point {
         s,
         w: pct_in(o.get("w")?)?,
         w_reset,
         s_reset: None,
+        no_session_limit,
     })
 }
 
@@ -359,14 +429,37 @@ pub(super) fn parse_line(line: &str, now: i64) -> Option<Entry> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let o = v.as_object()?;
     let at = time_of(o.get("at")?, now)?;
-    let profiles = o
+    let profiles: BTreeMap<String, Point> = o
         .get("profiles")?
         .as_object()?
         .iter()
         .filter(|(n, _)| ProfileName::parse(n).is_ok())
         .filter_map(|(n, p)| point_in(p, now).map(|p| (n.clone(), p)))
         .collect();
-    Some(Entry { at, profiles })
+    let by = o
+        .get("by")
+        .and_then(serde_json::Value::as_str)
+        .and_then(Writer::of_key);
+    // Issue #1797 review: unknown logins by name. A name that fails the
+    // name rules, or that also has a reading, is dropped; a value that is
+    // not an array is ignored, as an unknown key would be.
+    let mut unknown: Vec<String> = o
+        .get("unknown")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(serde_json::Value::as_str)
+        .filter(|n| ProfileName::parse(n).is_ok() && !profiles.contains_key(*n))
+        .map(str::to_string)
+        .collect();
+    unknown.sort();
+    unknown.dedup();
+    Some(Entry {
+        at,
+        profiles,
+        by,
+        unknown,
+    })
 }
 
 /// The UTF-8 lines of `bytes`, in file order.

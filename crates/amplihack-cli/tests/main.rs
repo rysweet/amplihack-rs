@@ -210,6 +210,10 @@ mod issue_1760_fixture;
 mod issue_1760_fixture_files;
 #[path = "issue_1797_capacity_summary.rs"]
 mod issue_1797_capacity_summary;
+#[path = "issue_1803_rotation_owner.rs"]
+mod issue_1803_rotation_owner;
+#[path = "issue_1818_no_session_limit.rs"]
+mod issue_1818_no_session_limit;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -238,6 +242,8 @@ mod issue_899_merge_validations_abstention;
 mod no_capacity_notice_statusline;
 #[path = "pr_712_named_asset_canonicalization.rs"]
 mod pr_712_named_asset_canonicalization;
+#[path = "profile_issue_1804.rs"]
+mod profile_issue_1804;
 #[path = "profile_overflow.rs"]
 mod profile_overflow;
 #[path = "profile_platform.rs"]

@@ -69,6 +69,7 @@ nav:
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
       - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md
       - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md
+      - Keep Tests from Prompting for Git Credentials: howto/keep-tests-from-prompting-for-git.md
       - Profile Command Reference: reference/profile-command.md
       - Agent Command Reference: reference/agent-command.md
       - ccswitch Review: reviews/ccswitch-review.md
@@ -130,6 +131,7 @@ nav:
       - Publish Lockfile Sync: reference/workflow-publish-lockfile-sync.md
       - Commit Hook Repair: reference/recipe-commit-hook-repair.md
       - Local Tracking Issue-Number Extraction: recipes/issue-815-804-local-tracking-issue-number.md
+      - Caller Branch Worktree Alias: recipes/issue-1762-caller-branch-worktree-alias.md
       - Tracking Issue Selection: reference/workflow-tracking-issue-selection.md
   - Agents:
       - Overview: claude/agents/README.md

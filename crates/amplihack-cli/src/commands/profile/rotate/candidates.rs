@@ -6,9 +6,10 @@
 use super::identify::Account;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{CREDS, Ledger, Liveness, exists, movable_login};
-use crate::commands::profile::kind::{self, Kind};
+use crate::commands::profile::kind::{self, Kind, Resolved};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+use std::path::Path;
 
 /// Why a profile is not a candidate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +60,35 @@ pub struct CandidateInput<'a> {
 /// The candidates, then every skipped profile with its reason.
 pub type Candidates = (Vec<ProfileName>, Vec<(ProfileName, Skip)>);
 
+/// Why the login in profile directory `dir` can never be used, if so: the
+/// tests that come before anything about the profile's current state.
+fn login_skip<'a>(dir: Option<&Path>, resolved: impl FnOnce() -> &'a Resolved) -> Option<Skip> {
+    if !dir.is_some_and(|d| movable_login(&d.join(CREDS))) {
+        Some(Skip::NoLogin)
+    } else if !resolved().may_be_live() {
+        Some(Skip::NotOAuth)
+    } else {
+        None
+    }
+}
+
+/// Whether `name` would be skipped as [`Skip::NoLogin`] or [`Skip::NotOAuth`]:
+/// it holds no login that could be measured or moved, so it is no plan login
+/// (issue #1804). Auto-switch uses this so that it and the rotator leave out
+/// the same profiles when asking which plan logins may have room.
+/// `resolved` is the profile's kind as [`kind::Ctx::resolve_kind`] gives
+/// it; the caller has already read it, so no login or settings file is read
+/// again here, only the directory and the login file's metadata.
+///
+/// A directory that fails the check is not unusable: the rotator skips it as
+/// [`Skip::Refused`], its login cannot be checked, and it holds a per-token
+/// move (issue #1698), so auto-switch keeps counting it as unread too.
+pub fn login_unusable(store: &ProfileStore, name: &ProfileName, resolved: &Resolved) -> bool {
+    store
+        .verify_profile_dir(name)
+        .is_ok_and(|dir| login_skip(Some(&dir), || resolved).is_some())
+}
+
 /// The profiles that may receive the login in `~/.claude`, sorted by name,
 /// and every other profile with the first reason it is skipped. A profile
 /// root that cannot be listed is an error, not an empty list.
@@ -86,10 +116,8 @@ pub fn candidates(
             } else {
                 Skip::Refused
             })
-        } else if !dir.as_ref().is_some_and(|d| movable_login(&d.join(CREDS))) {
-            Some(Skip::NoLogin)
-        } else if !resolved().may_be_live() {
-            Some(Skip::NotOAuth)
+        } else if let Some(s) = login_skip(dir.as_deref(), resolved) {
+            Some(s)
         } else if input.exclude.contains(&name) {
             Some(Skip::Excluded)
         } else if input.liveness.is_live(&name) {
