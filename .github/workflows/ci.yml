@@ -195,6 +195,9 @@ jobs:
       - name: Pre-commit build cache — off /tmp, reclaimed, legible when full (issue #1440)
         shell: bash
         run: bash tests/issue_1440_precommit_cache_location.sh
+      - name: Pre-commit symlinked cache reclaim and tagging (issue #1771)
+        shell: bash
+        run: bash tests/issue_1771_precommit_symlinked_caches.sh
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "24.19.0"
