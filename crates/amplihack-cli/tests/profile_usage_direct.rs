@@ -72,13 +72,40 @@ struct Endpoint {
 
 impl Endpoint {
     fn start(profiles: Vec<String>, status: u16) -> Self {
+        Self::serve(move |_, auth| {
+            let now = chrono::Utc::now().timestamp();
+            let who = profiles
+                .iter()
+                .position(|p| auth == format!("Bearer {}", access(p)));
+            match (status, who) {
+                (0, Some(i)) => (
+                    200,
+                    serde_json::json!({
+                        "five_hour": {
+                            "utilization": if i == 0 { 100.0 } else { i as f64 },
+                            "resets_at": iso(now + 3600)
+                        },
+                        "seven_day": {"utilization": 55.0, "resets_at": iso(now + 3 * 86_400)},
+                        "extra_usage": {"is_enabled": false}
+                    })
+                    .to_string(),
+                ),
+                (0, None) => (401, "{}".to_string()),
+                (s, _) => (s, "{}".to_string()),
+            }
+        })
+    }
+
+    /// Answers each request with `route(request line, authorization)`.
+    fn serve(route: impl Fn(&str, &str) -> (u16, String) + Send + Sync + 'static) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let seen: Arc<Mutex<Vec<String>>> = Arc::default();
         let log = Arc::clone(&seen);
+        let route = Arc::new(route);
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                let profiles = profiles.clone();
+                let route = Arc::clone(&route);
                 let log = Arc::clone(&log);
                 std::thread::spawn(move || {
                     let mut r = BufReader::new(stream.try_clone().unwrap());
@@ -103,26 +130,7 @@ impl Endpoint {
                     let _ = r.read_exact(&mut body);
                     log.lock().unwrap().push(format!("{} {auth}", first.trim()));
                     std::thread::sleep(Duration::from_millis(50));
-                    let now = chrono::Utc::now().timestamp();
-                    let who = profiles
-                        .iter()
-                        .position(|p| auth == format!("Bearer {}", access(p)));
-                    let (code, reply) = match (status, who) {
-                        (0, Some(i)) => (
-                            200,
-                            serde_json::json!({
-                                "five_hour": {
-                                    "utilization": if i == 0 { 100.0 } else { i as f64 },
-                                    "resets_at": iso(now + 3600)
-                                },
-                                "seven_day": {"utilization": 55.0, "resets_at": iso(now + 3 * 86_400)},
-                                "extra_usage": {"is_enabled": false}
-                            })
-                            .to_string(),
-                        ),
-                        (0, None) => (401, "{}".to_string()),
-                        (s, _) => (s, "{}".to_string()),
-                    };
+                    let (code, reply) = route(first.trim(), &auth);
                     let mut out = stream;
                     let _ = write!(
                         out,
@@ -386,4 +394,67 @@ fn the_fake_claude_is_the_one_on_record() {
     let runs = s.claude_runs();
     assert!(!runs.is_empty());
     assert!(runs.iter().all(|r| r.starts_with("ARGV:")), "{runs:?}");
+}
+
+/// SR-10: a refresh whose new token cannot be saved. Every GET answers 401;
+/// the token endpoint first puts a directory where `creds` was, so the
+/// rename that saves the answer fails, then answers 200.
+fn unsaveable_refresh(creds: PathBuf) -> Endpoint {
+    Endpoint::serve(move |line, _| {
+        if !line.starts_with("POST ") {
+            return (401, "{}".to_string());
+        }
+        let _ = fs::remove_file(&creds);
+        fs::create_dir_all(creds.join("blocker")).unwrap();
+        let answer = serde_json::json!({
+            "access_token": "SENTINEL-ACCESS-new",
+            "refresh_token": "SENTINEL-REFRESH-new",
+            "expires_in": 28_800
+        });
+        (200, answer.to_string())
+    })
+}
+
+#[test]
+fn a_refresh_that_is_not_saved_warns_in_every_mode() {
+    let s = setup(0);
+    let creds = s.f.slot("spare");
+    let original = fs::read_to_string(&creds).unwrap();
+    let endpoint = unsaveable_refresh(creds.clone());
+    let warning = "warning: profile \"spare\": token refreshed but not saved; run claude /login for this profile";
+    for (mode, json) in [(None, false), (None, true), (Some("direct"), false)] {
+        if creds.is_dir() {
+            fs::remove_dir_all(&creds).unwrap();
+        }
+        private_file(&creds, &original);
+        let mut args = vec!["profile", "usage"];
+        if json {
+            args.push("--json");
+        }
+        args.push("spare");
+        let mut c = s.f.cmd(&args);
+        c.env(API_BASE_ENV, endpoint.base())
+            .env(TOKEN_URL_ENV, format!("{}/v1/oauth/token", endpoint.base()))
+            .env(PASSIVE_ENV, "0");
+        if let Some(m) = mode {
+            c.env("AMPLIHACK_PROFILE_USAGE_PROBE", m);
+        }
+        let out = c.output().unwrap();
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        let err = text(&out.stderr);
+        assert_eq!(
+            err.matches(warning).count(),
+            1,
+            "{mode:?} json={json}: {err}"
+        );
+        assert!(!err.contains("SENTINEL"), "{err}");
+        assert!(
+            endpoint.requests().iter().any(|r| r.starts_with("POST ")),
+            "the refresh was sent"
+        );
+        assert!(
+            !creds.parent().unwrap().join(".oauth_refresh.lock").exists(),
+            "the lock is released"
+        );
+    }
 }

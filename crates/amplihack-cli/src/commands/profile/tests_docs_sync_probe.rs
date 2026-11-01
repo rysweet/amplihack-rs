@@ -284,6 +284,7 @@ fn reference_quotes_the_fixed_row_texts() {
         "(passive: no claude output)".to_string(),
         "unknown, still running".to_string(),
         "note: profile \"spare\": direct read gave http 5xx; using claude".to_string(),
+        super::usage_cmd::not_saved_warning("spare"),
     ] {
         assert!(
             REFERENCE.contains(&text),

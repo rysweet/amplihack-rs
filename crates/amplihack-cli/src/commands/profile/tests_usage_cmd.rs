@@ -1092,13 +1092,30 @@ fn no_profile_can_be_named_like_the_home_row() {
 // the bound it is given. Fake `claude` scripts only; never a real one.
 // ---------------------------------------------------------------------------
 
+/// Every profile probed by `mode` with `claude`, at most `parallel` at once,
+/// through the pool `profile usage` uses; in the order of `names`.
+#[cfg(unix)]
+fn probe_each(
+    store: &super::store::ProfileStore,
+    bin: &crate::binary_finder::BinaryInfo,
+    names: &[super::name::ProfileName],
+    mode: super::probe_limits::ProbeMode,
+    timeout: std::time::Duration,
+    parallel: usize,
+) -> Vec<super::usage_cmd::Probe> {
+    super::usage_cmd::pooled(names.len(), parallel, |i| {
+        super::usage_cmd::probe_profile(store, bin, &names[i], false, mode, timeout, NOW, false)
+    })
+}
+
 #[cfg(unix)]
 mod under_load {
     use super::super::name::ProfileName;
     use super::super::probe_limits::ProbeMode;
     use super::super::store::ProfileStore;
-    use super::super::usage_cmd::{Row, observations, probe, probe_all, render_json, render_table};
+    use super::super::usage_cmd::{Row, observations, probe, render_json, render_table};
     use super::super::usage_parse::UsageState;
+    use super::probe_each;
     use super::{NOW, row};
     use crate::binary_finder::BinaryInfo;
     use std::fs;
@@ -1262,15 +1279,12 @@ mod under_load {
     }
 
     fn run_pool(p: &Pool, parallel: usize) -> Vec<super::super::usage_cmd::Probe> {
-        probe_all(
+        probe_each(
             &p.store,
             &p.bin,
             &p.names,
-            None,
             ProbeMode::Text,
             Duration::from_secs(60),
-            NOW,
-            false,
             parallel,
         )
     }
@@ -1334,15 +1348,12 @@ mod under_load {
             path,
             version: None,
         };
-        let probes = probe_all(
+        let probes = probe_each(
             &p.store,
             &bin,
             &p.names,
-            None,
             ProbeMode::Text,
             Duration::from_secs(60),
-            NOW,
-            false,
             2,
         );
         let got: Vec<f64> = probes
@@ -1374,15 +1385,12 @@ mod under_load {
             version: None,
         };
         let start = Instant::now();
-        let probes = probe_all(
+        let probes = probe_each(
             &p.store,
             &bin,
             &p.names,
-            None,
             ProbeMode::Text,
             Duration::from_secs(1),
-            NOW,
-            false,
             2,
         );
         assert!(start.elapsed() < Duration::from_secs(15));
@@ -1409,10 +1417,11 @@ mod request {
     use super::super::probe_limits::ProbeMode;
     use super::super::rotate::decide::{Probed, Reading};
     use super::super::store::ProfileStore;
-    use super::super::usage_cmd::{Probe, probe_all, probe_with};
+    use super::super::usage_cmd::{Probe, probe_with};
     use super::super::usage_parse::UsageState;
     use super::super::usage_request::{ARGS, REQUEST_ID, REQUEST_LINE};
     use super::NOW;
+    use super::probe_each;
     use crate::binary_finder::BinaryInfo;
     use std::cell::Cell;
     use std::fs;
@@ -1730,15 +1739,12 @@ mod request {
             path: f.path.clone(),
             version: None,
         };
-        let probes = probe_all(
+        let probes = probe_each(
             &store,
             &bin,
             &names,
-            None,
             ProbeMode::Auto,
             Duration::from_secs(20),
-            NOW,
-            false,
             1,
         );
         assert_eq!(session(&probes[0]), 37.0, "cred read with /usage");

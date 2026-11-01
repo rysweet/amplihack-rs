@@ -149,7 +149,9 @@ A passive row is built from the stored windows: `five_hour` becomes
 time written as `YYYY-MM-DDTHH:MM:SSZ`, and `week_models` is empty.
 `usage.json` does not record that a login has no session window, so a
 passive row with no `five_hour` has `session` `null` and `session_limit`
-`true`; it never reads as [no session limit](#no-session-limit). The state
+`true`; it never reads as [no session limit](#no-session-limit). A login
+with weekly figures only therefore shows its session as unknown when it is
+read passively. The state
 follows the usual [rule](#states).
 
 The status-line wrapper writes these readings during live sessions. Rows
@@ -317,8 +319,9 @@ The refresh runs as follows:
 
 1. Take Claude's own refresh lock, `<dir>/.oauth_refresh.lock` (a directory
    made with `mkdir`), in the directory that holds the credentials file. If
-   it is held, or an auto-switch or rotate `journal.json` exists, nothing is
-   refreshed and the reason is `refresh busy`. A lock held by someone else
+   it is held, an auto-switch or rotate `journal.json` exists, or the
+   rotator is stopping, nothing is refreshed and the reason is
+   `refresh busy`. A lock held by someone else
    is never broken.
 2. Under the lock, read the file again. If `accessToken` or `refreshToken`
    has changed, `claude` has refreshed it already: the new token is used and
@@ -340,12 +343,16 @@ The refresh runs as follows:
    the `GET` once more with the new token.
 
 If the request fails, the file is not touched. If the request succeeded but
-the write failed, the old refresh token may no longer work, so one line goes
-to stderr (`rotate.err` for a background rotator):
+the write failed, the reason is `refresh not saved`. The old refresh token
+may no longer work, so one line goes to stderr in every mode, with or
+without `--raw` (`rotate.err` for a background rotator):
 
 ```
-warning: profile "spare": a refreshed login could not be saved; run amplihack profile login spare
+warning: profile "spare": token refreshed but not saved; run claude /login for this profile
 ```
+
+The row then falls back as usual, or reads `error` with
+`direct read: refresh not saved` under `AMPLIHACK_PROFILE_USAGE_PROBE=direct`.
 
 The lock is held only for steps 2 to 6. If amplihack is killed with
 `SIGKILL` while it holds the lock, the lock stays behind and `claude`
@@ -783,9 +790,10 @@ the cycle started, and at least 1 second. Then:
 
 `--dry-run` waits for every read in full. When the rotator stops, it waits
 up to the deadline plus 1 second for any [token refresh](#token-refresh) in
-progress, so that it does not leave Claude's refresh lock behind. Reads
-still running after that are abandoned: they check for the stop between
-requests, never while they hold a lock.
+progress, so that it does not leave Claude's refresh lock behind. Once
+the rotator is stopping, no new refresh starts: a read that needs one
+gives `refresh busy` and takes no lock. Reads still running after that
+are abandoned, and reads not yet started are not run.
 
 Cycles never overlap: the rotator waits for `--interval` seconds after a
 cycle ends before it starts the next one.
@@ -1007,6 +1015,14 @@ of the live login. Both are fixed text:
 ```
 warning: rotate: probe of <name> timed out
 warning: rotate: probe of <name> failed: <reason>
+```
+
+A read that panics, which is a bug, gives no result and reads failed for
+that cycle; the rotator writes one line for it and reads that login again
+in the next cycle:
+
+```
+warning: rotate: read of <name> panicked; no result
 ```
 
 The reasons for `error` are fixed text, never the underlying I/O error. A

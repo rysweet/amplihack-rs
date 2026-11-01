@@ -22,7 +22,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use ureq::Error as HttpError;
 use ureq::ErrorKind;
@@ -400,11 +400,14 @@ fn status_reason(code: u16) -> &'static str {
 
 /// One read: the profile directory whose login is used, the swap journals
 /// that forbid a refresh while they exist, whether a refresh is allowed,
-/// the per-request deadline and the time now.
+/// the stop flag that forbids a new refresh once set, the per-request
+/// deadline and the time now.
 pub(super) struct Request<'a> {
     pub(super) creds_dir: &'a Path,
     pub(super) journals: &'a [PathBuf],
     pub(super) allow_refresh: bool,
+    /// `PROBE_CANCEL` in production; tests give their own flag.
+    pub(super) cancel: &'a AtomicBool,
     pub(super) timeout: Duration,
     pub(super) now_ms: i64,
 }
@@ -501,7 +504,7 @@ fn get_usage(
 // Refresh
 // ---------------------------------------------------------------------------
 
-/// Refreshes holding a lock right now, in this process.
+/// Refreshes holding or about to take a lock right now, in this process.
 pub(super) fn refreshes_in_progress() -> usize {
     REFRESHING.load(Ordering::SeqCst)
 }
@@ -527,14 +530,26 @@ struct Held<'a> {
 }
 
 impl<'a> Held<'a> {
-    fn take(dir: &'a Path) -> Result<Self, &'static str> {
+    /// SR-9: the count goes up before `cancel` is read, and a stopping
+    /// rotator sets `cancel` before it waits for the count to reach zero
+    /// (both `SeqCst`). Either the rotator sees this refresh and waits for
+    /// it, or this refresh sees the stop and takes no lock.
+    fn take(dir: &'a Path, cancel: &AtomicBool) -> Result<Self, &'static str> {
+        REFRESHING.fetch_add(1, Ordering::SeqCst);
+        if cancel.load(Ordering::SeqCst) {
+            REFRESHING.fetch_sub(1, Ordering::SeqCst);
+            return Err(reason::REFRESH_BUSY);
+        }
         match take_refresh_lock_at(dir) {
-            Ok(ino) => {
-                REFRESHING.fetch_add(1, Ordering::SeqCst);
-                Ok(Self { dir, ino })
+            Ok(ino) => Ok(Self { dir, ino }),
+            Err(e) => {
+                REFRESHING.fetch_sub(1, Ordering::SeqCst);
+                Err(if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    reason::REFRESH_BUSY
+                } else {
+                    reason::REFRESH_REFUSED
+                })
             }
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(reason::REFRESH_BUSY),
-            Err(_) => Err(reason::REFRESH_REFUSED),
         }
     }
 }
@@ -576,7 +591,12 @@ fn refresh(
     if journal_present(req.journals) {
         return Err(reason::REFRESH_BUSY);
     }
-    let _held = Held::take(req.creds_dir)?;
+    let _held = Held::take(req.creds_dir, req.cancel)?;
+    // Both checks again under the lock: the first pair only saves a
+    // `mkdir` in a directory that would be refused anyway (SR-6).
+    if !dir_private(req.creds_dir) {
+        return Err(reason::REFRESH_REFUSED);
+    }
     if journal_present(req.journals) {
         return Err(reason::REFRESH_BUSY);
     }

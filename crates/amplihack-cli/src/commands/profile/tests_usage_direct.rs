@@ -30,7 +30,8 @@
 //!   `http 3xx`, `http 4xx` or `http 5xx`; a timeout to `timeout`; anything
 //!   else to `transport`.
 //! - `read(&Endpoints, &Request) -> Result<UsageReport, &'static str>`, with
-//!   `Request { creds_dir, journals, allow_refresh, timeout, now_ms }`.
+//!   `Request { creds_dir, journals, allow_refresh, cancel, timeout, now_ms }`;
+//!   with `cancel` set, a refresh takes no lock and gives `refresh busy`.
 //!   Errors are the fixed texts in `reason`.
 //! - `refreshes_in_progress() -> usize` counts refreshes holding a lock;
 //!   `wait_for_refreshes(limit) -> bool` waits up to `limit` for it to
@@ -52,7 +53,11 @@ use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
+
+/// A stop flag that is never set.
+static NO_CANCEL: AtomicBool = AtomicBool::new(false);
 
 const ACCESS: &str = "FAKE-ACCESS-1844-a";
 const REFRESH: &str = "FAKE-REFRESH-1844-a";
@@ -170,6 +175,7 @@ fn request<'a>(l: &'a Login, journals: &'a [PathBuf], allow_refresh: bool) -> Re
         creds_dir: &l.dir,
         journals,
         allow_refresh,
+        cancel: &NO_CANCEL,
         timeout: Duration::from_secs(5),
         now_ms: now_ms(),
     }
@@ -765,6 +771,30 @@ fn a_held_lock_is_refresh_busy_and_left_alone() {
         "a lock held by someone else is never broken"
     );
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], ACCESS);
+    // The count went up before the `mkdir` and must come down again: a
+    // leaked count would keep this from ever reaching zero.
+    assert!(wait_for_refreshes(Duration::from_secs(10)));
+}
+
+#[test]
+fn a_set_stop_flag_takes_no_lock_and_sends_no_post() {
+    // SR-9: once the rotator is stopping, a 401 does not start a refresh.
+    let fake = refreshing(Reply::json(200, &token_answer()));
+    let l = login();
+    let cancel = AtomicBool::new(true);
+    let journals = l.journals();
+    let req = Request {
+        cancel: &cancel,
+        ..request(&l, &journals, true)
+    };
+    assert_eq!(read(&endpoints(&fake), &req), Err(reason::REFRESH_BUSY));
+    assert_eq!(posts(&fake), 0);
+    assert!(!l.lock().exists(), "no lock was taken");
+    assert_eq!(l.entries(), [CREDS]);
+    assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], ACCESS);
+    // Other tests may refresh in parallel; a count left raised by this one
+    // would keep it above zero for ever.
+    assert!(wait_for_refreshes(Duration::from_secs(10)));
 }
 
 #[test]
@@ -938,6 +968,7 @@ fn the_refresh_counter_covers_a_refresh_in_progress() {
             creds_dir: &dir,
             journals: &journals,
             allow_refresh: true,
+            cancel: &NO_CANCEL,
             timeout: Duration::from_secs(5),
             now_ms: now_ms(),
         };

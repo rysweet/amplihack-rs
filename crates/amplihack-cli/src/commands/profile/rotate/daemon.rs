@@ -279,7 +279,7 @@ pub fn watch(
         super::inflight::max_age(probe_timeout),
     )));
     let mut idle = false;
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::SeqCst) {
         if !paused(store.root()) {
             idle = false;
             match cycle::run_cycle(&mut ctx, Mode::Watch) {
@@ -297,12 +297,14 @@ pub fn watch(
             log_line(&rs, &line);
         }
         let until = Instant::now() + Duration::from_secs(s.interval);
-        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+        while Instant::now() < until && !stop.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_secs(1).min(until - Instant::now()));
         }
     }
-    // SR-9: a refresh holding Claude's lock is let finish, so the lock is
-    // never left behind.
+    // SR-9: `stop` is `PROBE_CANCEL`, already set here. A refresh counts
+    // itself before it reads that flag and backs out if it is set, so once
+    // the count reaches zero no refresh can take a lock. Any that counted
+    // in time is let finish, so the lock is never left behind.
     if !finish_refreshes(refresh_grace(probe_timeout)) {
         log_line(
             &rs,
@@ -320,7 +322,10 @@ pub(super) fn refresh_grace(timeout: Duration) -> Duration {
 }
 
 /// Waits up to `grace` until no token refresh holds Claude's lock, and says
-/// whether none is left. Never sets `PROBE_CANCEL`: a refresh is let finish.
+/// whether none is left. The caller sets `PROBE_CANCEL` first: workers
+/// increment the refresh count and then check the flag, and this waits for
+/// the count to reach zero, so no refresh starts after it returns. It never
+/// sets the flag itself, and a refresh already under way is let finish.
 pub(super) fn finish_refreshes(grace: Duration) -> bool {
     crate::commands::profile::usage_direct::wait_for_refreshes(grace)
 }

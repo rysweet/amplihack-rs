@@ -4,8 +4,6 @@
 //! network beyond loopback and never sees a real credential: the tests give
 //! it fake tokens only.
 
-#![allow(dead_code)]
-
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};

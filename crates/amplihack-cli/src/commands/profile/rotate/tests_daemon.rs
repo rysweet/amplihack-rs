@@ -339,7 +339,10 @@ mod issue_1844 {
     use std::ffi::OsStr;
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::AtomicBool;
     use std::time::{Duration, Instant};
+
+    static NO_CANCEL: AtomicBool = AtomicBool::new(false);
 
     #[test]
     fn the_grace_is_the_deadline_plus_one_second() {
@@ -405,6 +408,7 @@ mod issue_1844 {
                 creds_dir: &reader_dir,
                 journals: &journals,
                 allow_refresh: true,
+                cancel: &NO_CANCEL,
                 timeout: Duration::from_secs(5),
                 now_ms: chrono::Utc::now().timestamp_millis(),
             };

@@ -8,7 +8,7 @@
 use crate::commands::profile::usage_cmd::PROBE_CANCEL;
 use std::collections::HashMap;
 use std::hash::Hash;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -27,15 +27,28 @@ pub fn max_age(timeout: Duration) -> Duration {
     timeout.saturating_mul(2).saturating_add(SLACK)
 }
 
-/// A finished job: its key, the start it belongs to, and its result, or
-/// `None` when it panicked.
-type Done<K, T> = (K, u64, Option<T>);
+/// Why a finished job has no result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lost {
+    /// The job panicked; reported once, as a warning.
+    Panicked,
+    /// The stop flag was set before the job started; not reported.
+    Cancelled,
+}
+
+/// A finished job: its key, the start it belongs to, and its result or why
+/// there is none.
+type Done<K, T> = (K, u64, Result<T, Lost>);
 
 pub struct InFlight<K, T> {
     max_age: Duration,
     bound: usize,
     next: u64,
     running: HashMap<K, (Instant, u64)>,
+    /// Keys whose job panicked, not yet taken by [`Self::take_panicked`].
+    panicked: Vec<K>,
+    /// `PROBE_CANCEL` unless a test gives its own flag.
+    cancel: Arc<AtomicBool>,
     tx: Sender<Done<K, T>>,
     rx: Receiver<Done<K, T>>,
 }
@@ -46,15 +59,28 @@ where
     T: Send + 'static,
 {
     pub fn new(max_age: Duration) -> Self {
+        Self::with_cancel(max_age, PROBE_CANCEL.clone())
+    }
+
+    /// As [`Self::new`], with `cancel` in place of `PROBE_CANCEL`.
+    pub fn with_cancel(max_age: Duration, cancel: Arc<AtomicBool>) -> Self {
         let (tx, rx) = channel();
         Self {
             max_age,
             bound: DEFAULT_BOUND,
             next: 0,
             running: HashMap::new(),
+            panicked: Vec::new(),
+            cancel,
             tx,
             rx,
         }
+    }
+
+    /// The keys whose job panicked since the last call. Each panic is
+    /// returned once; the caller reports it.
+    pub fn take_panicked(&mut self) -> Vec<K> {
+        std::mem::take(&mut self.panicked)
     }
 
     /// The bound [`gather`](super::measure::gather) starts jobs with.
@@ -76,8 +102,13 @@ where
     }
 
     /// Starts every job whose key is not already busy, on one detached
-    /// dispatcher that runs at most `bound` at once. [`PROBE_CANCEL`] is
-    /// checked before each job starts.
+    /// dispatcher that runs at most `bound` at once. The stop flag is
+    /// checked before each job starts; once it is set, the jobs still
+    /// queued are not run.
+    ///
+    /// Invariant: every queued job sends exactly one message, its result,
+    /// `Panicked` or `Cancelled`, unless the receiver is gone. So every key
+    /// this marks busy is cleared, and [`Self::wait_all`] always returns.
     pub fn start_all(&mut self, jobs: Vec<(K, Job<T>)>, bound: usize) {
         let now = Instant::now();
         let mut queue = Vec::new();
@@ -96,22 +127,28 @@ where
         let workers = bound.max(1).min(queue.len());
         let queue = Arc::new(Mutex::new(queue.into_iter()));
         let tx = self.tx.clone();
+        let cancel = Arc::clone(&self.cancel);
         std::thread::spawn(move || {
             std::thread::scope(|s| {
                 for _ in 0..workers {
                     let queue = Arc::clone(&queue);
                     let tx = tx.clone();
+                    let cancel = Arc::clone(&cancel);
                     s.spawn(move || {
                         loop {
-                            if PROBE_CANCEL.load(Ordering::Relaxed) {
-                                break;
-                            }
+                            let cancelled = cancel.load(Ordering::SeqCst);
                             let next = queue.lock().unwrap_or_else(PoisonError::into_inner).next();
                             let Some((k, id, job)) = next else {
                                 break;
                             };
-                            let out =
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).ok();
+                            // On a stop the queue is drained, not left: each
+                            // job still sends its one message.
+                            let out = if cancelled {
+                                Err(Lost::Cancelled)
+                            } else {
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(job))
+                                    .map_err(|_| Lost::Panicked)
+                            };
                             // The cycle that started it may have ended and
                             // the receiver with it: the result is not needed.
                             if tx.send((k, id, out)).is_err() {
@@ -128,8 +165,10 @@ where
     fn accept(&mut self, (k, id, out): Done<K, T>, got: &mut Vec<(K, T)>) {
         if self.running.get(&k).is_some_and(|(_, ours)| *ours == id) {
             self.running.remove(&k);
-            if let Some(t) = out {
-                got.push((k, t));
+            match out {
+                Ok(t) => got.push((k, t)),
+                Err(Lost::Panicked) => self.panicked.push(k),
+                Err(Lost::Cancelled) => {}
             }
         }
     }

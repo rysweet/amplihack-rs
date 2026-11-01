@@ -128,6 +128,7 @@ impl Probe {
     pub(super) fn direct_error(why: &'static str) -> Self {
         let mut p = Self::failed(ErrorReason::Direct(why), None);
         p.source = Some(Source::Direct);
+        p.direct_failure = Some(why);
         p
     }
 }
@@ -244,6 +245,10 @@ pub(super) fn run(
     }
     order(&mut rows, now_secs());
     print_output(&rows, json, swapped.as_ref());
+    // SR-10: in every mode, with or without `--raw`.
+    for warning in not_saved_warnings(&rows) {
+        eprintln!("{warning}");
+    }
     // Issue #1844: why a row fell back, for the detailed mode only.
     if raw {
         for note in fallback_notes(&rows) {
@@ -731,38 +736,6 @@ pub(super) fn no_refresh_dirs(store: &ProfileStore) -> Option<Vec<String>> {
 // ---------------------------------------------------------------------------
 // Probing
 // ---------------------------------------------------------------------------
-
-/// Probes every profile by `mode` with `claude`, at most `parallel` at
-/// once (at least one); `live` is probed against `~/.claude`. Results are
-/// in the order of `profiles`. `profile usage` ran this before issue #1844;
-/// the pool tests still drive it.
-#[cfg(test)]
-#[allow(clippy::too_many_arguments)]
-pub(super) fn probe_all(
-    store: &ProfileStore,
-    binary: &BinaryInfo,
-    profiles: &[ProfileName],
-    live: Option<&ProfileName>,
-    mode: ProbeMode,
-    timeout: Duration,
-    now: i64,
-    keep_raw: bool,
-    parallel: usize,
-) -> Vec<Probe> {
-    pooled(profiles.len(), parallel, |i| {
-        let name = &profiles[i];
-        probe_profile(
-            store,
-            binary,
-            name,
-            live == Some(name),
-            mode,
-            timeout,
-            now,
-            keep_raw,
-        )
-    })
-}
 
 /// Probes one profile by `mode`, against `~/.claude` when `live`. A profile
 /// marked as overflow is probed with `/usage` only, the one method that
@@ -1555,6 +1528,25 @@ pub(super) fn fallback_notes(rows: &[Row]) -> Vec<String> {
                 )
             })
         })
+        .collect()
+}
+
+/// SR-10: the fixed line for a profile whose token was refreshed but could
+/// not be saved. Its refresh token on disk may have been retired, so the
+/// user has to log in again.
+pub(super) fn not_saved_warning(profile: &str) -> String {
+    format!(
+        "warning: profile \"{}\": token refreshed but not saved; run claude /login for this profile",
+        sanitize_display(profile, false)
+    )
+}
+
+/// One [`not_saved_warning`] per row whose direct read gave
+/// `refresh not saved`, whatever the mode or `--raw`.
+pub(super) fn not_saved_warnings(rows: &[Row]) -> Vec<String> {
+    rows.iter()
+        .filter(|r| r.direct_failure.is_some_and(usage_source::not_saved))
+        .map(|r| not_saved_warning(&r.profile))
         .collect()
 }
 

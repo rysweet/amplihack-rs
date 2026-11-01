@@ -13,7 +13,7 @@ use crate::commands::profile::probe_limits::{self, ProbeMode};
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd::{self, Probe, RowReader};
 use crate::commands::profile::usage_parse::UsageState;
-use crate::commands::profile::usage_source::{ClaudeGate, LazyBinary, SourceEnv};
+use crate::commands::profile::usage_source::{self, ClaudeGate, LazyBinary, SourceEnv};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::Hash;
@@ -46,6 +46,10 @@ impl Live<'_> {
 /// the next cycle the profile is skipped as `directory refused` before any
 /// probe, and that skip holds the move until the directory is fixed.
 pub(super) fn reading(who: &str, p: &Probe) -> Probed {
+    // SR-10: logged whether or not the row fell back to `claude`.
+    if p.direct_failure.is_some_and(usage_source::not_saved) {
+        eprintln!("{}", usage_cmd::not_saved_warning(who));
+    }
     if p.error.is_some() || p.report.state == UsageState::Error {
         let why = p
             .error
@@ -226,6 +230,9 @@ where
         Wait::Full => fl.wait_all(),
     };
     got.extend(more);
+    for k in fl.take_panicked() {
+        eprintln!("warning: rotate: read of {k} panicked; no result");
+    }
     keys.iter()
         .map(|k| {
             let probed = match got.remove(k) {

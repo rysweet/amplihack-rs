@@ -101,6 +101,7 @@ pub(super) struct Plan {
 }
 
 /// The swap journals under `root`: a refresh never runs while one exists.
+#[cfg(unix)]
 fn journals(root: &Path) -> [PathBuf; 2] {
     let state = root.join(".auto-switch.d");
     [
@@ -150,6 +151,18 @@ pub(super) fn read(
     }
 }
 
+/// SR-10: the direct read refreshed the token but could not save it; the
+/// refresh token on disk may no longer work.
+#[cfg(unix)]
+pub(super) fn not_saved(why: &str) -> bool {
+    why == usage_direct::reason::REFRESH_NOT_SAVED
+}
+
+#[cfg(not(unix))]
+pub(super) fn not_saved(_why: &str) -> bool {
+    false
+}
+
 #[cfg(unix)]
 fn credits_on(why: &str) -> bool {
     why == usage_direct::reason::CREDITS_ON
@@ -179,6 +192,7 @@ fn read_without_claude(
         creds_dir: &plan.creds_dir,
         journals: &journals,
         allow_refresh: plan.allow_refresh,
+        cancel: &super::usage_cmd::PROBE_CANCEL,
         timeout: env.timeout,
         now_ms: chrono::Utc::now().timestamp_millis(),
     };
@@ -190,10 +204,9 @@ fn read_without_claude(
 fn read_without_claude(
     _env: &SourceEnv,
     _plan: &Plan,
-    root: &Path,
+    _root: &Path,
     _now: i64,
 ) -> Result<Probe, &'static str> {
-    let _ = journals(root);
     Err("unsupported platform")
 }
 
@@ -219,9 +232,17 @@ impl LazyBinary {
         }
     }
 
-    /// The real lookup, `run::resolve_claude_binary`; a failure is `None`.
+    /// The real lookup, `run::resolve_claude_binary`. A failure is `None`
+    /// and its cause, a path or an I/O message, is logged once: the lookup
+    /// runs at most once per reader. The row text stays `claude not found`.
     pub(super) fn claude() -> Self {
-        Self::new(|| super::run::resolve_claude_binary().ok())
+        Self::new(|| match super::run::resolve_claude_binary() {
+            Ok(bin) => Some(bin),
+            Err(e) => {
+                tracing::warn!("profile usage: claude lookup failed: {e:#}");
+                None
+            }
+        })
     }
 
     pub(super) fn get(&self) -> Option<&BinaryInfo> {

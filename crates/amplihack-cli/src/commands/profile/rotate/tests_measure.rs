@@ -737,3 +737,60 @@ fn a_busy_key_is_not_started_twice() {
     assert_eq!(got, [("a", 1)]);
     assert_eq!(n.load(AtomicOrdering::SeqCst), 1);
 }
+
+// Contract (review of #1844): every queued job sends exactly one message.
+// - A job that panics gives no result, clears its key and is returned once
+//   by `InFlight::take_panicked()`; `gather` prints
+//   `warning: rotate: read of <key> panicked; no result`.
+// - `InFlight::with_cancel(max_age, flag)`: once `flag` is set, jobs still
+//   queued are not run, their keys are cleared without a result or a
+//   warning, and `wait_all()` returns.
+
+#[test]
+fn a_panicking_job_is_reported_once_and_clears_its_key() {
+    let mut fl: InFlight<&'static str, u8> = InFlight::new(Duration::from_secs(60));
+    let boom: Job<u8> = Box::new(|| panic!("test panic in a read"));
+    let fine: Job<u8> = Box::new(|| 7);
+    fl.start_all(vec![("boom", boom), ("fine", fine)], 2);
+    let got = fl.wait(Instant::now() + Duration::from_secs(5));
+    assert_eq!(got, [("fine", 7)]);
+    assert!(!fl.busy(&"boom"), "a panicked job's key is cleared");
+    assert_eq!(fl.len(), 0);
+    assert_eq!(fl.take_panicked(), ["boom"]);
+    assert!(fl.take_panicked().is_empty(), "each panic is reported once");
+}
+
+#[test]
+fn a_stop_with_jobs_queued_lets_wait_all_return() {
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut fl: InFlight<usize, usize> =
+        InFlight::with_cancel(Duration::from_secs(60), Arc::clone(&cancel));
+    let ran = Arc::new(AtomicUsize::new(0));
+    let jobs: Vec<(usize, Job<usize>)> = (0..5)
+        .map(|i| {
+            let cancel = Arc::clone(&cancel);
+            let ran = Arc::clone(&ran);
+            let job: Job<usize> = Box::new(move || {
+                ran.fetch_add(1, AtomicOrdering::SeqCst);
+                // The first job stops the rest while they are queued.
+                cancel.store(true, AtomicOrdering::SeqCst);
+                std::thread::sleep(Duration::from_millis(50));
+                i
+            });
+            (i, job)
+        })
+        .collect();
+    fl.start_all(jobs, 1);
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let got = fl.wait_all();
+        let _ = tx.send((got, fl.len(), fl.take_panicked()));
+    });
+    let (got, left, panicked) = rx
+        .recv_timeout(Duration::from_secs(10))
+        .expect("wait_all returned after the stop");
+    assert_eq!(got, [(0, 0)]);
+    assert_eq!(left, 0, "no key is left busy");
+    assert!(panicked.is_empty(), "a cancelled job is not a panic");
+    assert_eq!(ran.load(AtomicOrdering::SeqCst), 1);
+}
