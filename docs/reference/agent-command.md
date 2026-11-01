@@ -571,7 +571,7 @@ Each lost agent is checked in this order; the first failure decides.
 |-------|--------|
 | The agent has a conversation id | `failed: no conversation id` |
 | The launch directory exists | `failed: launch directory missing` |
-| The transcript exists | `failed: no transcript`; also when the recorded profile's directory no longer exists, or the default profile pointer cannot be read |
+| The transcript exists | `failed: no transcript`; also when the recorded profile's directory no longer exists, or the default profile pointer cannot be read. If the transcript was archived, `amplihack sessions restore ID` brings it back |
 | The [restart limit](#restart-limit) is not reached | `stopped: restart limit`, followed by the ALERT line |
 
 The transcript is `CONFIG/projects/ENCODED/ID.jsonl`, where CONFIG is the
@@ -583,6 +583,14 @@ the recorded profile's directory, else the default profile pointer's, else
 `~/.claude`, as it does for the launch. ENCODED is the launch directory with every `/` and `.`
 replaced by `-`; the name with every character other than an ASCII letter or
 digit replaced by `-` is accepted as well.
+
+The daily [session archive](./sessions-command.md#live-sessions) keeps the
+transcript of every agent whose state is `active` or `stopped`, however long
+it waits to be resumed, and archives an `ended` agent's transcript like any
+other old session. A transcript can still be missing because it was
+archived before the agent was registered, or by hand. In that case
+`amplihack sessions restore ID` restores it, and a later pass resumes the
+agent if it is `active`.
 
 ### Restart limit
 
@@ -1346,4 +1354,6 @@ units are independent: either runs without the other.
   Register sessions, run the service, and handle clean exits and crash loops
 - [`amplihack profile` reference](profile-command.md) - Profiles used by
   `--profile`, their name rules and the profile root
+- [`amplihack sessions` reference](sessions-command.md#live-sessions) - The
+  daily archive, which keeps registered agents' transcripts, and `restore`
 - [CLI reference](cli.md) - All `amplihack` subcommands

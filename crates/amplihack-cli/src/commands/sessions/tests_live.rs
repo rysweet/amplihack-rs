@@ -415,3 +415,62 @@ fn claude_config_dirs_fails_closed() {
     fs::write(d.join("cmdline"), b"/usr/bin/claude\0--resume\0").unwrap();
     assert!(claude_config_dirs(p, 1, 1000).is_err());
 }
+
+// ------------------------------------------------ registered agent sources
+
+/// `<home>/.amplihack/agents/registry.json` holding one agent per
+/// `(name, state, conversation)`.
+fn agents(home: &Path, list: &[(&str, &str, &str)]) -> PathBuf {
+    let top = home.join(".amplihack");
+    let dir = top.join("agents");
+    fs::create_dir_all(&dir).unwrap();
+    fs::set_permissions(&top, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    let mut map = serde_json::Map::new();
+    for (name, state, id) in list {
+        map.insert(
+            (*name).to_string(),
+            serde_json::json!({
+                "state": state, "tmux_session": "s", "tmux_window": "w",
+                "launch_dir": "/srv/p", "conversation_id": id,
+                "registered_at": "2026-10-30T09:12:04Z",
+                "launched_at": "2026-10-30T09:12:04Z",
+                "launch_id": "6f1c0d8e2a4b4f0e9c7d3b5a1e2f4c6d", "restarts": []
+            }),
+        );
+    }
+    let path = dir.join("registry.json");
+    fs::write(
+        &path,
+        serde_json::json!({"version": 1, "agents": map}).to_string(),
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    path
+}
+
+#[test]
+fn unended_registered_agents_are_live_without_a_pid_file() {
+    let t = setup();
+    agents(
+        &t.home,
+        &[
+            ("a", "active", "conv-a"),
+            ("b", "stopped", "conv-b"),
+            ("c", "ended", "conv-c"),
+        ],
+    );
+    let set = build(&t.home, &t.root, &probe(&[])).unwrap();
+    assert!(set.contains("conv-a"));
+    assert!(set.contains("conv-b"));
+    assert!(!set.contains("conv-c"));
+}
+
+#[test]
+fn a_registry_that_cannot_be_loaded_fails_closed() {
+    let t = setup();
+    let path = agents(&t.home, &[("a", "stopped", "conv-a")]);
+    fs::write(&path, b"{").unwrap();
+    let (got, _) = build(&t.home, &t.root, &probe(&[])).expect_err("must fail closed");
+    assert_eq!(got, path);
+}

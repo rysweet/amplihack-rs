@@ -60,7 +60,8 @@ impl Probe for SystemProbe {
     }
 }
 
-/// Session ids with a live pid file.
+/// Session ids with a live pid file, or registered to an agent that is not
+/// `ended`.
 #[derive(Debug, Default, Clone)]
 pub struct LiveSet {
     ids: HashSet<String>,
@@ -96,8 +97,9 @@ pub fn process_dirs(probe: &dyn Probe) -> Result<Vec<PathBuf>, LiveError> {
 }
 
 /// The live set from every source: the home and profile `sessions/`
-/// directories, read now, and `process_dirs` from [`process_dirs`]. Any
-/// error but a missing directory fails closed.
+/// directories, read now, `process_dirs` from [`process_dirs`], and the
+/// agent registry under `home`. Any error but a missing directory or
+/// registry fails closed.
 pub fn build_from(
     home: &Path,
     profile_root: &Path,
@@ -123,6 +125,8 @@ pub fn build_from(
             read_dir_into(&dir, &canonical, probe, &mut set)?;
         }
     }
+    set.ids
+        .extend(crate::commands::agent::unended_conversations(home)?);
     Ok(set)
 }
 

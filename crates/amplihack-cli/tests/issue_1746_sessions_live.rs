@@ -328,3 +328,125 @@ fn live_session_is_kept_by_the_dry_run_count_too() {
         "would archive 1 sessions, 0.00 GiB (older than 3 days; 1 live sessions kept); dry run, nothing changed (use --apply)",
     );
 }
+
+// ------------------------------------------- registered supervised agents
+//
+// `amplihack agent` (#1760) resumes a conversation by id after its process
+// has gone, so a pid file is not the only sign that a transcript is still
+// needed. The conversation of every registered agent that is not `ended`
+// counts as live; an `ended` one is archived like any other session.
+
+/// One registry entry in `state` for conversation `id`.
+fn agent_entry(state: &str, id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "state": state, "tmux_session": "coord", "tmux_window": "main",
+        "launch_dir": "/srv/project", "conversation_id": id,
+        "registered_at": "2026-10-30T09:12:04Z", "launched_at": "2026-10-30T09:12:04Z",
+        "launch_id": "6f1c0d8e2a4b4f0e9c7d3b5a1e2f4c6d", "restarts": []
+    })
+}
+
+/// Writes `~/.amplihack/agents/registry.json` (0600, in a 0700 directory)
+/// holding `agents`, and returns its path.
+fn registry(fx: &Fx, agents: &[(&str, serde_json::Value)]) -> std::path::PathBuf {
+    let top = fx.home.join(".amplihack");
+    let dir = top.join("agents");
+    fs::create_dir_all(&dir).unwrap();
+    chmod(&top, 0o700);
+    chmod(&dir, 0o700);
+    let map: serde_json::Map<String, serde_json::Value> = agents
+        .iter()
+        .map(|(n, e)| ((*n).to_string(), e.clone()))
+        .collect();
+    let path = dir.join("registry.json");
+    fs::write(
+        &path,
+        serde_json::json!({ "version": 1, "agents": map }).to_string(),
+    )
+    .unwrap();
+    chmod(&path, 0o600);
+    path
+}
+
+#[test]
+fn stopped_and_active_agents_are_kept_and_an_ended_one_is_archived() {
+    let fx = Fx::new();
+    let stopped = fx.session("conv-stopped", 10, &["sub/a.txt"]);
+    let active = fx.session("conv-active", 10, &[]);
+    let ended = fx.session("conv-ended", 10, &[]);
+    registry(
+        &fx,
+        &[
+            ("halted", agent_entry("stopped", "conv-stopped")),
+            ("waiting", agent_entry("active", "conv-active")),
+            ("done", agent_entry("ended", "conv-ended")),
+        ],
+    );
+    let out = fx.apply();
+    ok(&out);
+    assert_stdout(&out, &applied(1, 2));
+    assert!(
+        stopped.is_file(),
+        "a stopped agent's transcript was archived"
+    );
+    assert!(fx.project_dir().join("conv-stopped/sub/a.txt").is_file());
+    assert!(
+        active.is_file(),
+        "an active agent's transcript was archived"
+    );
+    assert!(!ended.exists(), "an ended agent's transcript was kept");
+}
+
+#[test]
+fn a_registered_agent_is_kept_by_the_dry_run_count_too() {
+    let fx = Fx::new();
+    fx.session("conv-stopped", 10, &[]);
+    registry(&fx, &[("halted", agent_entry("stopped", "conv-stopped"))]);
+    let out = fx.archive(&[]);
+    ok(&out);
+    assert!(
+        text(&out.stdout).contains("would archive 0 sessions")
+            && text(&out.stdout).contains("1 live sessions kept"),
+        "{}",
+        text(&out.stdout)
+    );
+}
+
+#[test]
+fn an_unreadable_agent_registry_fails_closed() {
+    let fx = Fx::new();
+    let jsonl = fx.session("conv-stopped", 10, &[]);
+    let path = registry(&fx, &[("halted", agent_entry("stopped", "conv-stopped"))]);
+    fs::write(&path, b"not json").unwrap();
+    let out = fx.apply();
+    assert_eq!(exit_code(&out), 1);
+    assert_stderr_line(
+        &out,
+        &format!(
+            "cannot read live sessions in {} (I/O error); nothing archived",
+            path.display()
+        ),
+    );
+    assert!(jsonl.is_file());
+    assert!(!fx.manifest().exists());
+}
+
+#[test]
+fn an_agent_directory_that_is_not_private_fails_closed() {
+    let fx = Fx::new();
+    let jsonl = fx.session("conv-stopped", 10, &[]);
+    registry(&fx, &[("halted", agent_entry("stopped", "conv-stopped"))]);
+    let dir = fx.home.join(".amplihack/agents");
+    chmod(&dir, 0o777);
+    let out = fx.apply();
+    chmod(&dir, 0o700);
+    assert_eq!(exit_code(&out), 1);
+    assert_stderr_line(
+        &out,
+        &format!(
+            "cannot read live sessions in {} (I/O error); nothing archived",
+            dir.display()
+        ),
+    );
+    assert!(jsonl.is_file());
+}

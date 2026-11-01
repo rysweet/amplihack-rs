@@ -116,6 +116,23 @@ reads every such directory it can find:
 
 The same directory reached twice is read once.
 
+A session can also be live with no process at all. The
+[agent supervisor](./agent-command.md) resumes a registered agent's
+conversation by id after its process has gone, and an agent in state
+`stopped` waits for a user to bring it back, which may be days later. The
+conversation id of every agent in `~/.amplihack/agents/registry.json` whose
+state is `active` or `stopped` therefore counts as live, so its transcript is
+kept for as long as the agent is registered. An `ended` agent's conversation
+is treated like any other session. Run `amplihack agent unregister NAME` to
+let an agent's transcript be archived.
+
+The registry is read the way `amplihack agent status` reads it: a missing
+`~/.amplihack/agents/` directory or registry file is empty, and anything else
+that stops it from loading (the directory or file is not private, the file is
+not valid JSON, or it was written by a newer amplihack) fails the check
+closed with `cannot read live sessions in <path> (I/O error); nothing
+archived`, where `<path>` is the directory or the registry file.
+
 A pid file counts when it is a regular `*.json` file. It is opened without
 following symlinks and read up to 64 KiB. Only `sessionId` and `pid` are
 used; other fields are ignored. Two pids are checked: `pid` from the file
@@ -144,8 +161,9 @@ cannot read live sessions in /home/ryan/.claude-profiles/work/sessions (permissi
 
 The live set is built once at the start. With `--apply`, just before a
 session's originals are removed, every `sessions/` directory listed above is
-read again and that session is checked again, so a session resumed during
-the run counts as live even before it has written anything. Only the walk of
+read again, the agent registry is loaded again, and that session is checked
+again, so a session resumed during the run counts as live even before it has
+written anything. Only the walk of
 `/proc` for `CLAUDE_CONFIG_DIR` values is reused, for up to 30 seconds; the
 directories it found are read again each time.
 
@@ -598,6 +616,10 @@ the [live check](#live-sessions) cannot tell whether that process is using
 an old session, so nothing is archived. Fix or unset the variable for that
 process, or end it. The daily run stops in the same way until then.
 
+If `<path>` is `~/.amplihack/agents` or its `registry.json`, the agent
+registry could not be loaded; `amplihack agent status` prints the reason.
+Until it is fixed, neither the archive nor the supervisor runs.
+
 If the profile root cannot be read, the path is the root you configured
 with `AMPLIHACK_CLAUDE_PROFILE_ROOT`, or `~/.amplihack` when it is unset.
 
@@ -623,6 +645,8 @@ the [live check](#live-sessions) uses `~/.claude/sessions` and the profiles'
 outside those is not seen as live there.
 
 ## Related
+
+- [`amplihack agent` reference](./agent-command.md) - Supervised agents, whose conversations count as live
 
 - [`amplihack profile` reference: daily session archive](./profile-command.md#rotate-daily-session-archive) - How the rotator runs the archive once a day
 - [Shared session directories](./profile-command.md#shared-session-directories) - Why every profile's `projects/` is the same directory
