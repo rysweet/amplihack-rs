@@ -20,7 +20,10 @@
 //! - `exhausted::ALERT`, `exhausted::Reason::{Threshold { pct, threshold },
 //!   LimitStop { resets_at }}`, `exhausted::Exhausted { profile, reason }`
 //!   (its `Display` is `<profile>: <reason>`) and
-//!   `exhausted::exhausted_while_off(root, now) -> Option<Exhausted>`.
+//!   `exhausted::exhausted_while_off(root, now) -> Result<Option<Exhausted>,
+//!   String>`: `Err` when a ledger or `usage.json` exists but fails to load.
+//!   `exhausted::status_line` and `exhausted::watch_line` give the `alert:`
+//!   status line and the `rotate.log` line for it.
 
 use super::autostart::{self, Deps, ENV, Outcome, REFUSED_SPAWN};
 use super::exhausted::{self, ALERT, Exhausted, Reason};
@@ -42,8 +45,8 @@ const EXE: &str = "amplihack-owner-gate-test";
 /// Above Linux's `PID_MAX_LIMIT` (4194304): never a real process.
 const OWNER_PID: u32 = 4_300_100;
 const RECIPE: &str = "AMPLIHACK_RECIPE_RUN_ID";
-const DEAD_LINE: &str = "amplihack: rotation is owned by amplihack-rotator.service, which is not running; 'amplihack profile rotate owner clear' to let launches start the rotator\n";
-const UNREADABLE_LINE: &str = "amplihack: the rotation owner marker is unreadable; 'amplihack profile rotate owner clear' to let launches start the rotator\n";
+const DEAD_LINE: &str = "amplihack: rotation is owned by amplihack-rotator.service, which is not running; run 'amplihack profile rotate owner clear' to let launches start the rotator\n";
+const UNREADABLE_LINE: &str = "amplihack: the rotation owner marker is unreadable; run 'amplihack profile rotate owner clear' to let launches start the rotator\n";
 
 fn mode(path: &Path, m: u32) {
     fs::set_permissions(path, fs::Permissions::from_mode(m)).unwrap();
@@ -349,7 +352,7 @@ fn the_warning_names_the_unit_from_the_marker() {
     let (_, err) = f.run();
     assert_eq!(
         err,
-        "amplihack: rotation is owned by custom-rot.service, which is not running; 'amplihack profile rotate owner clear' to let launches start the rotator\n"
+        "amplihack: rotation is owned by custom-rot.service, which is not running; run 'amplihack profile rotate owner clear' to let launches start the rotator\n"
     );
 }
 
@@ -647,11 +650,26 @@ const OFF_90: &str = "enabled=off\nthreshold=90\nexclude=\n";
 
 /// `paused` reads `AMPLIHACK_CLAUDE_AUTO_SWITCH`, so every check runs under
 /// the env lock with it unset.
-fn check(root: &Path, now: i64) -> Option<Exhausted> {
+fn try_check(root: &Path, now: i64) -> Result<Option<Exhausted>, String> {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let _restore = EnvGuard::capture(&["AMPLIHACK_CLAUDE_AUTO_SWITCH"]);
     let _unset = EnvGuard::unset(["AMPLIHACK_CLAUDE_AUTO_SWITCH"]);
     exhausted::exhausted_while_off(root, now)
+}
+
+fn check(root: &Path, now: i64) -> Option<Exhausted> {
+    try_check(root, now).expect("the files load")
+}
+
+/// `(status_line, watch_line)` under the env lock.
+fn lines(root: &Path, now: i64) -> (Option<String>, Option<String>) {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _restore = EnvGuard::capture(&["AMPLIHACK_CLAUDE_AUTO_SWITCH"]);
+    let _unset = EnvGuard::unset(["AMPLIHACK_CLAUDE_AUTO_SWITCH"]);
+    (
+        exhausted::status_line(root, now),
+        exhausted::watch_line(root, now),
+    )
 }
 
 #[test]
@@ -827,9 +845,50 @@ fn no_live_profile_or_no_reading_gives_nothing() {
 }
 
 #[test]
-fn a_damaged_usage_file_gives_nothing() {
+fn a_damaged_usage_file_is_an_error_not_silence() {
     let x = ex(Some(OFF_90), Some("spare"), "{not json");
-    assert_eq!(check(&x.root, NOW), None);
+    let err = try_check(&x.root, NOW).expect_err("a damaged usage.json is an error");
+    assert!(err.contains("usage.json"), "{err}");
+}
+
+#[test]
+fn a_damaged_auto_switch_ledger_is_an_error_not_silence() {
+    let x = ex(
+        Some(OFF_90),
+        Some("spare"),
+        &statusline("spare", 100.0, 0.0),
+    );
+    private_file(&x.root.join(".auto-switch.d/ledger.json"), b"\xff{");
+    let err = try_check(&x.root, NOW).expect_err("a damaged ledger is an error");
+    assert!(err.contains("ledger.json"), "{err}");
+}
+
+#[test]
+fn a_load_failure_is_shown_in_status_and_logged_by_watch() {
+    let x = ex(Some(OFF_90), Some("spare"), "{not json");
+    let (status, watch) = lines(&x.root, NOW);
+    let status = status.expect("a status line");
+    let watch = watch.expect("a log line");
+    assert!(status.starts_with("alert: unavailable ("), "{status}");
+    assert!(watch.starts_with("rotate: alert check failed: "), "{watch}");
+}
+
+#[test]
+fn the_status_and_watch_lines_for_an_exhausted_login() {
+    let x = ex(
+        Some(OFF_90),
+        Some("spare"),
+        &statusline("spare", 100.0, 0.0),
+    );
+    assert_eq!(
+        lines(&x.root, NOW),
+        (
+            Some(format!("alert: {ALERT} (spare: 100% used, threshold 90%)")),
+            Some(format!("ALERT: {ALERT} (spare: 100% used, threshold 90%)")),
+        )
+    );
+    let x = ex(Some(OFF_90), Some("spare"), &statusline("spare", 1.0, 0.0));
+    assert_eq!(lines(&x.root, NOW), (None, None));
 }
 
 #[test]
@@ -843,9 +902,9 @@ fn a_leased_directory_maps_through_the_auto_switch_ledger() {
 }
 
 #[test]
-fn a_huge_percentage_is_not_an_alert_when_the_file_cannot_parse_it() {
+fn a_huge_percentage_is_an_error_when_the_file_cannot_parse_it() {
     // JSON has no NaN; a value serde cannot read as f64 makes the file
-    // unreadable, which gives no alert.
+    // unreadable, which is reported rather than taken as no alert.
     let x = ex(
         Some(OFF_90),
         Some("spare"),
@@ -855,7 +914,7 @@ fn a_huge_percentage_is_not_an_alert_when_the_file_cannot_parse_it() {
             1,
         ),
     );
-    assert_eq!(check(&x.root, NOW), None);
+    assert!(try_check(&x.root, NOW).is_err());
 }
 
 #[test]
@@ -881,7 +940,7 @@ fn the_check_creates_and_changes_nothing() {
         x.root.join(".auto-switch.d/rotate"),
     ];
     let before: Vec<_> = dirs.iter().map(|d| list(d)).collect();
-    let _ = check(&x.root, NOW);
+    let _ = try_check(&x.root, NOW);
     let after: Vec<_> = dirs.iter().map(|d| list(d)).collect();
     assert_eq!(before, after);
 }

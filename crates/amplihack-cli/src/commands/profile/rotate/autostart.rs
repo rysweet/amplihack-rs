@@ -29,7 +29,7 @@ use std::time::Duration;
 pub const ENV: &str = "AMPLIHACK_ROTATE_AUTOSTART";
 /// Set by `amplihack recipe run` for its steps: a launch inside a recipe run
 /// never starts the rotator (issue #1803).
-const RECIPE_RUN_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
+pub(super) const RECIPE_RUN_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
 /// The setting's file name in `<root>/.auto-switch.d/rotate/`.
 const FILE: &str = "autostart";
 const MAX_SETTING: u64 = 64;

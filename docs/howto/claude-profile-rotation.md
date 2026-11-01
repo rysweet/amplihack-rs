@@ -578,7 +578,7 @@ while the service manager is restarting it. When the unit restarts, the new
 and still starts Claude:
 
 ```
-amplihack: rotation is owned by amplihack-rotator.service, which is not running; 'amplihack profile rotate owner clear' to let launches start the rotator
+amplihack: rotation is owned by amplihack-rotator.service, which is not running; run 'amplihack profile rotate owner clear' to let launches start the rotator
 ```
 
 and `status` shows:
@@ -655,7 +655,8 @@ adds nothing. Threshold and exclusion changes, and the
 `AMPLIHACK_ROTATE_AUTOSTART` and `AMPLIHACK_CLAUDE_AUTO_SWITCH` variables,
 are not logged. Secrets in the parent command line are replaced by `***`
 before the line is written: `NAME=value` pairs, the values of flags such as
-`--api-key` or `--token`, and passwords in URLs. Like the rest of the log,
+`--api-key` or `--token`, headers such as `Authorization: ...`, and
+passwords in URLs. Like the rest of the log,
 the file is private to you (`0600`).
 
 While auto-switch is off, the rotator idles. If the live login is exhausted
@@ -672,7 +673,9 @@ alert: auto-switch is off while the live login is exhausted (spare: 100% used, t
 
 The percentage is rounded down. A login stopped by a usage limit shows
 `(spare: usage limit reached, resets 2026-11-01T14:00:00Z)` instead, with
-the reset time in UTC.
+the reset time in UTC. If a ledger or `usage.json` cannot be read, the
+check cannot run: the log shows `rotate: alert check failed: <error>` and
+`status` shows `alert: unavailable (<error>)`.
 
 The ALERT changes nothing by itself. Turn auto-switch back on with
 `amplihack profile auto-switch on`, or move the login by hand with

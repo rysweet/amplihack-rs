@@ -12,14 +12,15 @@
 //!   following symlinks and without blocking, owned by the euid, not
 //!   writable by group or others, at most 4 KiB, holding `unit` and `pid`
 //!   exactly once each; `pid` a positive decimal without a sign; `unit`
-//!   non-empty, at most 256 bytes, no `=` and no control character. Unknown
+//!   non-empty, at most 256 bytes, no `=`, control or bidi character. Unknown
 //!   keys are ignored; `since` is informational.
 //! - `owner::write(root: &Path, m: &Marker) -> std::io::Result<()>`: writes
 //!   `unit=..\npid=..\nsince=..\n` with mode 0600 into a directory that has
 //!   already passed `RotateState::ensure`.
 //! - `owner::clear(root: &Path) -> std::io::Result<Option<OwnerState>>`:
 //!   what was removed, `None` when nothing was there. Removes a symlink
-//!   itself and never its target.
+//!   itself and never its target. `owner::clear_checked(root)` first
+//!   refuses a root that is not private, leaving the marker in place.
 //! - `owner::alive(m: &Marker, proc_root: &Path, exe_name: &OsStr) -> bool`.
 //! - `owner::unit_name(flag: Option<&str>, proc_root: &Path) -> String`,
 //!   reading `<proc_root>/self/cgroup`.
@@ -350,6 +351,46 @@ fn clear_removes_a_symlink_and_leaves_its_target() {
     assert_eq!(fs::read(&target).unwrap(), b"keep", "target left alone");
 }
 
+#[test]
+fn clear_checked_refuses_a_root_that_is_not_private_and_keeps_the_marker() {
+    let f = fx();
+    owner::write(&f.root, &marker("t.service", OWNER_PID)).unwrap();
+    mode(&f.root, 0o777);
+    let r = owner::clear_checked(&f.root);
+    mode(&f.root, 0o700);
+    let err = r.expect_err("refused").to_string();
+    assert!(err.contains("left in place"), "{err}");
+    assert!(f.marker_path().exists(), "the marker is still there");
+}
+
+#[test]
+fn clear_checked_clears_under_a_private_root() {
+    let f = fx();
+    let m = marker("t.service", OWNER_PID);
+    owner::write(&f.root, &m).unwrap();
+    assert_eq!(
+        owner::clear_checked(&f.root).unwrap(),
+        Some(OwnerState::Present(m))
+    );
+    assert!(!f.marker_path().exists());
+}
+
+#[test]
+fn bidi_characters_are_refused_in_a_unit_name() {
+    for c in ['\u{202A}', '\u{202E}', '\u{2066}', '\u{2069}'] {
+        let unit = format!("rot{c}.service");
+        assert!(!owner::valid_unit(&unit), "{c:?}");
+        let err = owner::check_flag(&Some(Some(unit)))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("bidi"), "{err}");
+    }
+    assert!(
+        owner::valid_unit("rot\u{00e9}.service"),
+        "other letters are fine"
+    );
+}
+
 // --- Liveness ----------------------------------------------------------------
 
 #[test]
@@ -428,6 +469,23 @@ fn an_oversized_cmdline_is_not_alive() {
     assert!(!owner::alive(
         &marker("t.service", OWNER_PID),
         &f.proc_root,
+        OsStr::new(EXE)
+    ));
+}
+
+#[test]
+fn a_proc_entry_owned_by_another_user_is_not_alive() {
+    // A fake `/proc` cannot hold a directory of another user without root,
+    // so this uses the real `/proc/1`, which belongs to root.
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
+    let meta = fs::symlink_metadata("/proc/1").unwrap();
+    assert!(!amplihack_utils::secure_files::owned_by_euid(&meta));
+    assert!(!owner::alive(
+        &marker("t.service", 1),
+        Path::new("/proc"),
         OsStr::new(EXE)
     ));
 }
@@ -721,6 +779,18 @@ fn every_secret_flag_form_is_redacted() {
             "git clone https://example.org/r",
         ),
         (&["x", "--interval", "120"], "x --interval 120"),
+        (
+            &["curl", "-H", "Authorization: Bearer sk-x", "u"],
+            "curl -H Authorization: *** u",
+        ),
+        (
+            &["curl", "-H", "X-Api-Key: k3", "u"],
+            "curl -H X-Api-Key: *** u",
+        ),
+        (
+            &["curl", "-H", "Content-Type: json", "u"],
+            "curl -H Content-Type: json u",
+        ),
     ];
     for (argv, want) in cases {
         let line = change_log::line("auto-switch", "on", "off", &caller(Some(argv)));
@@ -857,12 +927,12 @@ fn spawn_removes_invocation_id_from_the_child() {
 fn the_exhausted_alert_is_logged_outside_the_idle_latch() {
     let body = fn_body(&source("daemon.rs"), "watch");
     assert!(
-        body.contains("exhausted_while_off"),
+        body.contains("exhausted::watch_line"),
         "watch checks the exhausted-while-off condition"
     );
     let latch = block_after(&body, "else if !idle");
     assert!(
-        !latch.contains("exhausted_while_off"),
+        !latch.contains("exhausted::watch_line"),
         "the ALERT is written on every paused cycle, not once per idle latch"
     );
 }
@@ -884,6 +954,22 @@ fn a_spawned_watch_never_writes_the_marker() {
         !body.contains("owner::clear"),
         "a watch never removes the marker"
     );
+}
+
+#[test]
+fn the_new_modules_never_unwrap_or_expect() {
+    for name in ["owner.rs", "change_log.rs", "exhausted.rs"] {
+        let text = source(name);
+        let code = text.split("#[cfg(test)]").next().unwrap_or_default();
+        for (i, line) in code.lines().enumerate() {
+            let line = line.split("//").next().unwrap_or_default();
+            assert!(
+                !line.contains(".unwrap(") && !line.contains(".expect("),
+                "{name}:{}: unwrap or expect outside tests",
+                i + 1
+            );
+        }
+    }
 }
 
 #[test]

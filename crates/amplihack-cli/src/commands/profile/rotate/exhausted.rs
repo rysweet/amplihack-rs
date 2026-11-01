@@ -4,9 +4,11 @@
 //! prints it as an `alert:` line. See "Exhausted while off" in
 //! docs/reference/profile-command.md.
 //!
-//! Read-only: takes no lock, runs no probe and writes nothing. Unknown data
-//! (no ledger, no reading, a damaged file, a non-finite value) gives no
-//! alert.
+//! Read-only: takes no lock, runs no probe and writes nothing. Missing data
+//! (no ledger, no reading, a non-finite value) gives no alert. A ledger or
+//! `usage.json` that fails to load is an error, which `watch` logs as
+//! `rotate: alert check failed: ...` and `status` prints as
+//! `alert: unavailable (...)`.
 
 use super::ledger::RotateState;
 use super::log::timestamp;
@@ -71,17 +73,26 @@ pub(super) fn paused(root: &Path) -> bool {
 /// it to the account whose login it holds, and that account's reading in
 /// `usage.json` decides. A usage-limit failure with a future reset wins
 /// over the threshold.
-pub fn exhausted_while_off(root: &Path, now: i64) -> Option<Exhausted> {
+///
+/// `Ok(None)` when auto-switch is on, a file or entry is missing, or the
+/// login is under its threshold; `Err` when a ledger or `usage.json` exists
+/// but fails to load.
+pub fn exhausted_while_off(root: &Path, now: i64) -> Result<Option<Exhausted>, String> {
     let eff = effective(root);
     if eff.on || eff.source == Source::Default {
-        return None;
+        return Ok(None);
     }
-    let live = RotateState::new(root).load_ledger().ok()??.live?;
-    let state = State::new(root).ok()?;
-    let ledger = state.load_ledger().ok()?;
+    let rotate = RotateState::new(root).load_ledger().map_err(failed)?;
+    let Some(live) = rotate.and_then(|l| l.live) else {
+        return Ok(None);
+    };
+    let state = State::new(root).map_err(failed)?;
+    let ledger = state.load_ledger().map_err(failed)?;
     let profile = ledger.account_in(&live).to_string();
-    let usage = state.try_load_usage().ok()?;
-    let reading = usage.accounts.get(&profile)?;
+    let usage = state.try_load_usage().map_err(failed)?;
+    let Some(reading) = usage.accounts.get(&profile) else {
+        return Ok(None);
+    };
     let limit_reset = (reading.source == ReadingSource::UsageLimitFailure)
         .then(|| {
             [reading.five_hour, reading.seven_day]
@@ -98,10 +109,33 @@ pub fn exhausted_while_off(root: &Path, now: i64) -> Option<Exhausted> {
             let pct = reading.worst();
             let threshold = eff.config.threshold;
             if !pct.is_finite() || pct < f64::from(threshold) {
-                return None;
+                return Ok(None);
             }
             Reason::Threshold { pct, threshold }
         }
     };
-    Some(Exhausted { profile, reason })
+    Ok(Some(Exhausted { profile, reason }))
+}
+
+fn failed(e: impl fmt::Display) -> String {
+    e.to_string()
+}
+
+/// The `rotate status` line for [`exhausted_while_off`], if any.
+pub fn status_line(root: &Path, now: i64) -> Option<String> {
+    match exhausted_while_off(root, now) {
+        Ok(None) => None,
+        Ok(Some(e)) => Some(format!("alert: {ALERT} ({e})")),
+        Err(m) => Some(format!("alert: unavailable ({m})")),
+    }
+}
+
+/// The `rotate.log` line for [`exhausted_while_off`] on a paused cycle, if
+/// any.
+pub fn watch_line(root: &Path, now: i64) -> Option<String> {
+    match exhausted_while_off(root, now) {
+        Ok(None) => None,
+        Ok(Some(e)) => Some(format!("ALERT: {ALERT} ({e})")),
+        Err(m) => Some(format!("rotate: alert check failed: {m}")),
+    }
 }

@@ -2937,7 +2937,7 @@ amplihack profile rotate owner [clear]
 | `rotate autostart` | **Read-only.** Prints the effective [autostart](#rotate-autostart) state, for example `autostart: on (default)`. |
 | `rotate autostart on\|off` | Writes the autostart setting and prints `autostart: on (setting)` or `autostart: off (setting)`. Does not start or stop a rotator. When the value changes, appends a [`change:` line](#rotate-change-log) to the log. Any other value is a usage error (status 2). |
 | `rotate owner` | **Read-only.** Prints the [owner](#rotate-owner) line, as in `rotate status`, for example `owner: none`. |
-| `rotate owner clear` | Removes the [owner marker](#rotate-owner) and prints `owner: cleared (was <unit>)`, or `owner: none` when there was no marker. Does not stop a running rotator. |
+| `rotate owner clear` | Removes the [owner marker](#rotate-owner) and prints `owner: cleared (was <unit>)`, or `owner: none` when there was no marker. Does not stop a running rotator. Under a profile root that is not private, it reads and removes nothing and fails with `RotateRefused` (`profile root <reason>; the owner marker was left in place`, status 1). |
 
 `--dry-run` belongs to the one-shot form only. Tuning flags go after `start`
 or `watch`; `amplihack profile rotate --margin 3 start` is a usage error and
@@ -4501,6 +4501,7 @@ stdout only, without the time.
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
 | `ALERT: auto-switch is off while the live login is exhausted (<profile>: <reason>)` | `watch` with auto-switch turned off, while the live login has no capacity left; see [Exhausted while off](#exhausted-while-off). Written on every cycle while the condition holds, and does not change what the cycle does. |
+| `rotate: alert check failed: <error>` | `watch` with auto-switch turned off, when a ledger or `usage.json` cannot be read, so the [exhausted-while-off](#exhausted-while-off) check cannot run. Written on every paused cycle until the file loads again. |
 | `change: <setting> <old> -> <new> by pid=<p> ppid=<pp> parent="<command>"[ recipe_run=<id>][ invocation=<id>]` | The autostart setting or the auto-switch toggle was changed. See [Rotate change log](#rotate-change-log). |
 | `skip: owner marker not written (<error>)` | A supervised `watch` could not write the [owner marker](#rotate-owner). It carries on without one. |
 | ``skip: held by switch to <name>; run `amplihack profile switch --none` to release`` | The [pin](#rotate-pin) holds rotation; the cycle neither measured nor swapped. |
@@ -4568,6 +4569,10 @@ The parent command line is redacted before it is written:
 - The argument after a flag whose name contains `key`, `token`, `secret`,
   `password` or `auth` becomes `***`, and so does the value in
   `--flag=value` for such a flag.
+- A `Name: value` argument whose name contains one of those words, such as
+  the `Authorization: Bearer ...` or `X-Api-Key: ...` header passed to
+  `curl -H`, becomes `Name: ***`. Other headers, such as
+  `Content-Type: json`, are left as they are.
 - `user:password@` is removed from URLs.
 
 For example, `claude --api-key sk-abc TOKEN=xyz https://u:p@h/x` is written
@@ -4721,7 +4726,7 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `log` | The log path. |
 | `alert` | Zero or more. A current [hand-change](#rotate-hand-change-recovery) guidance line. |
 | `warning` | Zero or more. A profile that lost its login to a manual `/login` in `~/.claude`. |
-| `alert` (exhausted) | `alert: auto-switch is off while the live login is exhausted (<profile>: <reason>)`, printed after the ledger's `alert:` and `warning:` lines when the [exhausted-while-off](#exhausted-while-off) condition holds. |
+| `alert` (exhausted) | `alert: auto-switch is off while the live login is exhausted (<profile>: <reason>)`, printed after the ledger's `alert:` and `warning:` lines when the [exhausted-while-off](#exhausted-while-off) condition holds; or `alert: unavailable (<error>)` when auto-switch is off and a ledger or `usage.json` cannot be read, so the condition cannot be checked. |
 
 Run from a shell where the root now resolves elsewhere, for example cron with
 no saved root, `status` finds the running rotator through the record:
@@ -4862,13 +4867,13 @@ At step 4, a marker whose owner is not running gives one stderr line per
 launch:
 
 ```
-amplihack: rotation is owned by amplihack-rotator.service, which is not running; 'amplihack profile rotate owner clear' to let launches start the rotator
+amplihack: rotation is owned by amplihack-rotator.service, which is not running; run 'amplihack profile rotate owner clear' to let launches start the rotator
 ```
 
 A marker that cannot be read or trusted gives:
 
 ```
-amplihack: the rotation owner marker is unreadable; 'amplihack profile rotate owner clear' to let launches start the rotator
+amplihack: the rotation owner marker is unreadable; run 'amplihack profile rotate owner clear' to let launches start the rotator
 ```
 
 Neither line fails the launch, and neither is written to `rotate.err`.
@@ -4971,7 +4976,11 @@ rotate: rotation is owned by amplihack-rotator.service; this watch runs anyway a
 
 The unit name is the first of:
 
-1. the value of `--supervised=<UNIT>`;
+1. the value of `--supervised=<UNIT>`, which must be 1 to 256 bytes with no
+   `=`, control character or bidirectional-override or isolate character
+   (U+202A to U+202E, U+2066 to U+2069); any other value is refused with
+   `RotateRefused` (`--supervised=UNIT needs a unit name of 1 to 256 bytes
+   without '=', control or bidi characters`, status 1);
 2. the last path component ending in `.service` in `/proc/self/cgroup`, read
    up to 4 KiB, which is where systemd places the unit's processes;
 3. `amplihack-rotator.service`.
@@ -5074,8 +5083,12 @@ The reason has exactly one of two forms:
 When both apply, the usage-limit form is used. The same text appears in the
 log line and in the `alert:` line of `rotate status`.
 
-An unreadable ledger, a live profile with no reading, and a non-finite
-percentage or threshold all give no ALERT. The check takes no lock, runs no
+No rotate ledger, no `live` profile, a live profile with no reading, and a
+non-finite percentage or threshold all give no ALERT. A rotate ledger,
+auto-switch ledger or `usage.json` that exists but cannot be read is not
+taken as "not exhausted": `watch` writes
+`rotate: alert check failed: <error>` on every paused cycle instead, and
+`rotate status` prints `alert: unavailable (<error>)`. The check takes no lock, runs no
 probe and writes nothing. The ALERT does not change what the cycle does: the
 rotator stays idle, and `idle: auto-switch is off` is still written only once
 per change. Turn auto-switch back on, or switch logins by hand with

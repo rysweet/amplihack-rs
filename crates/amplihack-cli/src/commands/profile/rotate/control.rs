@@ -3,7 +3,7 @@
 //! overflow list` and `clear` (issue #1606).
 
 use super::daemon::{DaemonState, current_state, daemon_err, exe_name};
-use super::exhausted::{ALERT, exhausted_while_off};
+use super::exhausted;
 use super::identify::{self, LiveId};
 use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
 use super::log::{msg, timestamp};
@@ -124,11 +124,8 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     for line in ledger.as_ref().map(status_alerts).unwrap_or_default() {
         println!("{line}");
     }
-    if let Some(e) = exhausted_while_off(store.root(), now()) {
-        println!(
-            "alert: {ALERT} ({})",
-            sanitize_display(&e.to_string(), false)
-        );
+    if let Some(line) = exhausted::status_line(store.root(), now()) {
+        println!("{}", sanitize_display(&line, false));
     }
     match rs.load_journal() {
         Ok(Some(j)) if j.phase == Phase::Inconsistent => println!("journal: inconsistent"),

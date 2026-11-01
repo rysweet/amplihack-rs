@@ -53,7 +53,7 @@ pub fn caller(env: &dyn Fn(&str) -> Option<OsString>, proc_root: &Path) -> Calle
         pid: std::process::id(),
         ppid,
         parent: read_cmdline(&proc_root.join(ppid.to_string()).join("cmdline")),
-        recipe_run: var("AMPLIHACK_RECIPE_RUN_ID"),
+        recipe_run: var(super::autostart::RECIPE_RUN_ENV),
         invocation: var("INVOCATION_ID"),
     }
 }
@@ -108,15 +108,30 @@ fn strip_userinfo(s: &str) -> String {
     out
 }
 
+/// A `Name: value` header whose name holds a secret word, such as
+/// `Authorization: Bearer ...` or `X-Api-Key: ...`, as `Name: ***`.
+fn secret_header(a: &str) -> Option<String> {
+    let (name, _) = a.split_once(": ")?;
+    let lower = name.to_ascii_lowercase();
+    (!name.is_empty()
+        && !name.contains(char::is_whitespace)
+        && SECRET_WORDS.iter().any(|w| lower.contains(w)))
+    .then(|| format!("{name}: {HIDDEN}"))
+}
+
 /// The arguments with secrets replaced: `NAME=value`, the value of a flag
-/// whose name holds a secret word (`--flag value` and `--flag=value`), and
-/// URL user information.
+/// whose name holds a secret word (`--flag value` and `--flag=value`), a
+/// `Name: value` header whose name holds one, and URL user information.
 fn redact(args: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     let mut hide_next = false;
     for a in args {
         if std::mem::take(&mut hide_next) {
             out.push(HIDDEN.to_string());
+            continue;
+        }
+        if let Some(h) = secret_header(a) {
+            out.push(h);
             continue;
         }
         if a.starts_with('-') {

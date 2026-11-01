@@ -48,13 +48,15 @@ pub enum OwnerState {
     Unreadable,
 }
 
-/// A unit name the marker may hold: non-empty, at most 256 bytes, no `=`
-/// and no control character.
+/// A unit name the marker may hold: non-empty, at most 256 bytes, no `=`,
+/// no control character and no bidi override or isolate.
 pub fn valid_unit(unit: &str) -> bool {
     !unit.is_empty()
         && unit.len() <= MAX_UNIT
         && !unit.contains('=')
-        && !unit.chars().any(char::is_control)
+        && !unit.chars().any(|c| {
+            c.is_control() || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+        })
 }
 
 /// `unit` and `pid` exactly once each, `pid` a positive decimal without a
@@ -219,7 +221,7 @@ pub fn deferral_suffix(root: &Path) -> String {
 /// line to `err` unless its owner is running. The caller has checked the
 /// root and the euid. Creates nothing.
 pub fn defer(root: &Path, proc_root: &Path, exe_name: &OsStr, err: &mut dyn Write) -> Option<bool> {
-    let tail = format!("{CLEAR} to let launches start the rotator");
+    let tail = format!("run {CLEAR} to let launches start the rotator");
     // The launch goes on whether or not its stderr takes the line.
     match read(root) {
         OwnerState::None => None,
@@ -261,11 +263,24 @@ pub fn watch_note(root: &Path) -> Option<String> {
 pub fn check_flag(flag: &Option<Option<String>>) -> Result<(), ProfileError> {
     match flag {
         Some(Some(u)) if !valid_unit(u) => Err(ProfileError::RotateRefused(
-            "--supervised=UNIT needs a unit name of 1 to 256 bytes without '=' or control characters"
+            "--supervised=UNIT needs a unit name of 1 to 256 bytes without '=', control or bidi characters"
                 .into(),
         )),
         _ => Ok(()),
     }
+}
+
+/// `rotate owner clear` without the printing: refuses under a root that is
+/// not private, since another user could then swap the state directory for
+/// a symlink, and otherwise [`clear`]s.
+pub fn clear_checked(root: &Path) -> Result<Option<OwnerState>, ProfileError> {
+    check_root_private(root).map_err(|e| {
+        ProfileError::RotateRefused(format!(
+            "profile root {e}; the owner marker was left in place"
+        ))
+    })?;
+    clear(root)
+        .map_err(|e| ProfileError::RotateRefused(format!("could not remove the owner marker: {e}")))
 }
 
 /// `rotate owner [clear]`: prints the owner line, or removes the marker.
@@ -276,10 +291,7 @@ pub fn cli(store: &ProfileStore, clear_it: bool) -> Result<(), ProfileError> {
         println!("{}", describe(root, Path::new("/proc"), &exe));
         return Ok(());
     }
-    let removed = clear(root).map_err(|e| {
-        ProfileError::RotateRefused(format!("could not remove the owner marker: {e}"))
-    })?;
-    match removed {
+    match clear_checked(root)? {
         None | Some(OwnerState::None) => println!("owner: none"),
         Some(OwnerState::Present(m)) => println!("owner: cleared (was {})", shown(&m.unit)),
         Some(OwnerState::Unreadable) => println!("owner: cleared (was unreadable)"),

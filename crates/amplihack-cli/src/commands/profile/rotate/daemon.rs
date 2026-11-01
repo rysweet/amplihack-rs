@@ -4,7 +4,7 @@
 //! here.
 
 use super::cycle::{self, Ctx, CycleOutcome, LOCK_WAIT, Mode, prototype_guard};
-use super::exhausted::{self, ALERT, paused};
+use super::exhausted::{self, paused};
 use super::ledger::{LastCycle, RotateState};
 use super::log::{Sink, msg, open_or_warn};
 use super::owner;
@@ -286,8 +286,8 @@ pub fn watch(
             record_idle(&rs, store);
         }
         // Every paused cycle, not once per idle latch; changes nothing.
-        if let Some(e) = exhausted::exhausted_while_off(store.root(), now()) {
-            log_line(&rs, &format!("ALERT: {ALERT} ({e})"));
+        if let Some(line) = exhausted::watch_line(store.root(), now()) {
+            log_line(&rs, &line);
         }
         let until = Instant::now() + Duration::from_secs(s.interval);
         while Instant::now() < until && !stop.load(Ordering::Relaxed) {
