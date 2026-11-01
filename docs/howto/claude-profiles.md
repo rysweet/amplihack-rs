@@ -1815,7 +1815,9 @@ hours by default:
   a rotator running; without one the run ends at once, as before;
 - for a step under an inherited profile with auto-switch on, until a usage
   reading taken during the wait shows that another profile has capacity;
-  the step then runs on that profile, not on the exhausted one.
+  the step then runs on that profile, not on the exhausted one. This also
+  needs a rotator running; without one nothing may record a reading during
+  an unattended run, so the run ends at once, as before.
 
 "Another login could take over" means the profile store holds another
 login that auto-switch could choose once its readings allow: not excluded
@@ -1854,7 +1856,7 @@ The run ends as before, with no wait, when:
   reset (a spend limit that also says when your session limit resets is
   waited out);
 - the limit is weekly, or states no readable reset, and no other login
-  could take over, or the step uses `~/.claude` and no rotator is running;
+  could take over, or no rotator is running;
 - the step uses an explicit `CLAUDE_CONFIG_DIR`, an inherited profile with
   auto-switch off, or a `.default` profile that is not the rotator's live
   one, and the limit is weekly or states no readable reset;

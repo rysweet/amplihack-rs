@@ -6059,7 +6059,8 @@ needs a rotator running: the built-in one (`amplihack profile rotate start`,
 checked through its pid file) or the external rotator, which holds
 `<root>/.rotator/lock`. With neither, the step fails at once as before, and
 a reading that shows another login has capacity does not change that,
-because nothing would move that login into `$HOME/.claude`. An explicit
+because nothing would move that login into `$HOME/.claude`.
+
 A step under an inherited profile needs a running rotator for the same
 reason. No `/usage` probe is made, so its wait ends only on a fresh
 [reading](#readings), a rotator cycle, a login change in its own directory
@@ -6068,6 +6069,7 @@ In an unattended recipe run `AMPLIHACK_RECIPE_RUN_ID` stops launches from
 starting the rotator and a `claude -p` step has no status line, so with no
 rotator nothing may record a reading and the wait would run to its six-hour
 maximum. With no rotator running the step therefore fails at once as before.
+
 An explicit
 `$CLAUDE_CONFIG_DIR` is skipped because the rotator never changes it and it
 is the login the user chose. A spend limit is skipped because it can apply

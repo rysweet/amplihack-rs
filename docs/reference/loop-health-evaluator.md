@@ -911,7 +911,10 @@ runner sees the failure:
 2. The supervisor waits. A limit that resets within five hours gets a reset
    wait. A weekly limit, or one with no readable reset, gets a
    [capacity wait](profile-command.md#capacity-wait) when another stored
-   login could take over, for up to six hours by default.
+   login could take over and a rotator is running, for up to six hours by
+   default. Inside a recipe run `AMPLIHACK_RECIPE_RUN_ID` stops launches
+   from starting the rotator, so start one before auto-drive; without one
+   the step fails at once on the usage limit.
 3. The wait ends on `rotator capacity`, `login changed`, `login capacity`
    or `reset reached`, and step-02 runs once more with the same prompt under
    whichever login is now live.
