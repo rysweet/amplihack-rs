@@ -13,7 +13,8 @@ pub(crate) const CACHEDIR_TAG: &str = "Signature: 8a477f597d28d172789f06886806bc
 # This file is a cache directory tag created by amplihack.\n\
 # For information about cache directory tags see https://bford.info/cachedir/\n";
 
-const SIGNATURE: &[u8] = b"Signature: 8a477f597d28d172789f06886806bc55";
+/// Length of the `Signature: <hash>` line that starts every valid tag.
+const SIGNATURE_LEN: usize = 43;
 
 /// Creates `path` (and its parents) and writes `CACHEDIR.TAG` into it. The
 /// Rust twin of the tagging in `scripts/git-hook-cargo.sh`, for code that
@@ -55,15 +56,16 @@ pub(crate) fn is_tagged(path: &Path) -> bool {
     else {
         return false;
     };
-    let mut head = Vec::with_capacity(SIGNATURE.len());
+    let signature = &CACHEDIR_TAG.as_bytes()[..SIGNATURE_LEN];
+    let mut head = Vec::with_capacity(SIGNATURE_LEN);
     if file
-        .take(SIGNATURE.len() as u64)
+        .take(SIGNATURE_LEN as u64)
         .read_to_end(&mut head)
         .is_err()
     {
         return false;
     }
-    head == SIGNATURE
+    head == signature
 }
 
 #[cfg(test)]

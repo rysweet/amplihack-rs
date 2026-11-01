@@ -211,33 +211,19 @@ fn canonical_or_self(path: &Path) -> PathBuf {
     fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Total bytes under `path`, not following symlinks. `None` past the limit.
-fn tree_size(path: &Path) -> Option<u64> {
-    let mut total = 0u64;
-    let mut seen = 0usize;
-    let mut stack = vec![path.to_path_buf()];
-    while let Some(p) = stack.pop() {
-        seen += 1;
-        if seen > WALK_LIMIT {
-            return None;
-        }
-        let meta = fs::symlink_metadata(&p).ok()?;
-        if meta.file_type().is_dir() {
-            total = total.saturating_add(meta.len());
-            if let Ok(rd) = fs::read_dir(&p) {
-                stack.extend(rd.flatten().map(|e| e.path()));
-            }
-        } else {
-            total = total.saturating_add(meta.len());
-        }
-    }
-    Some(total)
+/// Size and newest mtime of a folder tree, from one walk.
+struct TreeStats {
+    size: u64,
+    newest: SystemTime,
 }
 
-/// The newest mtime under `path`, not following symlinks. `None` past the
-/// limit, which callers treat as "recent".
-fn newest_mtime(path: &Path) -> Option<SystemTime> {
-    let mut newest = SystemTime::UNIX_EPOCH;
+/// Walks `path` once, not following symlinks. `None` past the limit or when
+/// an entry cannot be read; callers treat that as "recent" and skip the path.
+fn tree_stats(path: &Path) -> Option<TreeStats> {
+    let mut stats = TreeStats {
+        size: 0,
+        newest: SystemTime::UNIX_EPOCH,
+    };
     let mut seen = 0usize;
     let mut stack = vec![path.to_path_buf()];
     while let Some(p) = stack.pop() {
@@ -246,10 +232,11 @@ fn newest_mtime(path: &Path) -> Option<SystemTime> {
             return None;
         }
         let meta = fs::symlink_metadata(&p).ok()?;
+        stats.size = stats.size.saturating_add(meta.len());
         if let Ok(m) = meta.modified()
-            && m > newest
+            && m > stats.newest
         {
-            newest = m;
+            stats.newest = m;
         }
         if meta.file_type().is_dir()
             && let Ok(rd) = fs::read_dir(&p)
@@ -257,15 +244,20 @@ fn newest_mtime(path: &Path) -> Option<SystemTime> {
             stack.extend(rd.flatten().map(|e| e.path()));
         }
     }
-    Some(newest)
+    Some(stats)
 }
 
-/// Whether `path` was untouched for at least `keep`. A future time counts as
-/// recent.
-fn idle_for(path: &Path, now: SystemTime, keep: Duration) -> Option<Duration> {
-    let newest = newest_mtime(path)?;
-    let age = now.duration_since(newest).ok()?;
-    (age >= keep).then_some(age)
+/// Total bytes under `path`, not following symlinks. `None` past the limit.
+fn tree_size(path: &Path) -> Option<u64> {
+    tree_stats(path).map(|t| t.size)
+}
+
+/// How long `path` has been untouched, with its size, when that is at least
+/// `keep`. A future time counts as recent.
+fn idle_for(path: &Path, now: SystemTime, keep: Duration) -> Option<(Duration, u64)> {
+    let stats = tree_stats(path)?;
+    let age = now.duration_since(stats.newest).ok()?;
+    (age >= keep).then_some((age, stats.size))
 }
 
 /// Whether a build holds `.cargo-lock` in `dir` or one level below it.
@@ -458,10 +450,47 @@ fn scan_runs(root: &WorkRoot) -> Vec<RunInfo> {
 
 // ----- collection -----------------------------------------------------------
 
+/// Canonical folders under which recorded owned paths may be removed (D9).
+struct ManagedRoots {
+    worktrees: PathBuf,
+    targets: PathBuf,
+    hook_base: Option<PathBuf>,
+}
+
+/// True when the canonical `path` of an owned item lies where cleanup may
+/// act: a target directly under `<work root>/targets/` or a hook cache
+/// folder, a worktree under `<work root>/worktrees/<repo>/` or the run's
+/// `<main>/worktrees/`.
+fn is_contained(kind: OwnedKind, path: &Path, roots: &ManagedRoots, main: Option<&Path>) -> bool {
+    match kind {
+        OwnedKind::Target => {
+            let parent = path.parent();
+            parent == Some(roots.targets.as_path())
+                || (parent.is_some()
+                    && parent == roots.hook_base.as_deref()
+                    && path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .is_some_and(|n| n.starts_with(HOOK_TARGET_PREFIX)))
+        }
+        OwnedKind::Worktree => {
+            let under_work = path
+                .strip_prefix(&roots.worktrees)
+                .is_ok_and(|rel| rel.components().count() >= 2);
+            let under_main = main.is_some_and(|main| {
+                path.strip_prefix(main.join("worktrees"))
+                    .is_ok_and(|rel| rel.components().count() >= 1)
+            });
+            under_work || under_main
+        }
+    }
+}
+
 struct Collector<'a> {
     s: &'a Settings,
     now: SystemTime,
-    procs: ProcScan,
+    /// Taken on first use: most categories never ask.
+    procs: Option<ProcScan>,
     gh_cache: HashMap<(PathBuf, String), Result<Option<PrInfo>, String>>,
     common_cache: HashMap<PathBuf, Option<PathBuf>>,
     list_cache: HashMap<PathBuf, Result<Vec<PathBuf>, String>>,
@@ -471,6 +500,10 @@ struct Collector<'a> {
 impl Collector<'_> {
     fn wants(&self, category: Category) -> bool {
         self.s.categories.contains(&category)
+    }
+
+    fn in_use(&mut self, path: &Path) -> bool {
+        self.procs.get_or_insert_with(ProcScan::take).in_use(path)
     }
 
     fn past_deadline(&self) -> bool {
@@ -484,6 +517,15 @@ impl Collector<'_> {
         let value = git_common_dir(dir);
         self.common_cache.insert(dir.to_path_buf(), value.clone());
         value
+    }
+
+    /// The git common dir of the folder the run started in, if it still exists.
+    fn report_common_dir(&mut self, report: &RunReport) -> Option<PathBuf> {
+        let cwd = PathBuf::from(&report.cwd);
+        if report.cwd.is_empty() || !is_real_dir(&cwd) {
+            return None;
+        }
+        self.common_dir(&cwd)
     }
 
     fn worktrees_of(&mut self, main: &Path) -> Result<Vec<PathBuf>, String> {
@@ -559,9 +601,11 @@ impl Collector<'_> {
             return;
         }
         let root = self.s.work_root.clone();
-        let worktrees_root = canonical_or_self(&root.worktrees_dir());
-        let targets_root = canonical_or_self(&root.targets_dir());
-        let hook_base = self.s.hook_cache_base.as_deref().map(canonical_or_self);
+        let roots = ManagedRoots {
+            worktrees: canonical_or_self(&root.worktrees_dir()),
+            targets: canonical_or_self(&root.targets_dir()),
+            hook_base: self.s.hook_cache_base.as_deref().map(canonical_or_self),
+        };
 
         for run in runs {
             if self.past_deadline() {
@@ -590,20 +634,16 @@ impl Collector<'_> {
             };
 
             let report = match &run.report {
-                Ok(report) if report.schema_version > RUN_SCHEMA_VERSION => {
-                    let reason = format!(
-                        "run.json schema_version {} is newer than this release understands",
-                        report.schema_version
-                    );
-                    for o in &existing {
-                        self.items
-                            .push(Item::skip(category_of(o), &o.path, &reason, Some(id)));
-                    }
-                    continue;
-                }
-                Ok(report) => report.clone(),
-                Err(error) => {
-                    let reason = format!("run.json cannot be read: {error}");
+                Ok(report) if report.schema_version > RUN_SCHEMA_VERSION => Err(format!(
+                    "run.json schema_version {} is newer than this release understands",
+                    report.schema_version
+                )),
+                Ok(report) => Ok(report.clone()),
+                Err(error) => Err(format!("run.json cannot be read: {error}")),
+            };
+            let report = match report {
+                Ok(report) => report,
+                Err(reason) => {
                     for o in &existing {
                         self.items
                             .push(Item::skip(category_of(o), &o.path, &reason, Some(id)));
@@ -645,14 +685,7 @@ impl Collector<'_> {
                 continue;
             }
 
-            let run_main = {
-                let cwd = PathBuf::from(&report.cwd);
-                if report.cwd.is_empty() || !is_real_dir(&cwd) {
-                    None
-                } else {
-                    self.common_dir(&cwd)
-                }
-            };
+            let run_main = self.report_common_dir(&report);
             let mut verdict: Option<Verdict> = active.then_some(Verdict::Active);
             for o in existing {
                 let category = category_of(o);
@@ -675,33 +708,8 @@ impl Collector<'_> {
                     continue;
                 }
                 let canonical = canonical_or_self(&o.path);
-                let contained = match o.kind {
-                    OwnedKind::Target => {
-                        let parent = canonical.parent().map(Path::to_path_buf);
-                        parent.as_deref() == Some(targets_root.as_path())
-                            || (parent.as_deref() == hook_base.as_deref()
-                                && canonical
-                                    .file_name()
-                                    .and_then(|n| n.to_str())
-                                    .is_some_and(|n| n.starts_with(HOOK_TARGET_PREFIX)))
-                    }
-                    OwnedKind::Worktree => {
-                        let under_work = canonical
-                            .strip_prefix(&worktrees_root)
-                            .is_ok_and(|rel| rel.components().count() >= 2);
-                        let under_main =
-                            run_main
-                                .as_deref()
-                                .and_then(main_checkout)
-                                .is_some_and(|main| {
-                                    canonical
-                                        .strip_prefix(main.join("worktrees"))
-                                        .is_ok_and(|rel| rel.components().count() >= 1)
-                                });
-                        under_work || under_main
-                    }
-                };
-                if !contained {
+                let main = run_main.as_deref().and_then(main_checkout);
+                if !is_contained(o.kind, &canonical, &roots, main.as_deref()) {
                     self.items.push(Item::skip(
                         category,
                         &o.path,
@@ -810,7 +818,7 @@ impl Collector<'_> {
         if git_has_unpushed_commits(&o.path) {
             return Item::skip(category, &o.path, "has unpushed commits", Some(id));
         }
-        if self.procs.in_use(&o.path) {
+        if self.in_use(&o.path) {
             return Item::skip(category, &o.path, "in use by a running process", Some(id));
         }
         Item {
@@ -835,15 +843,11 @@ impl Collector<'_> {
             .collect();
         let mut mains = BTreeSet::new();
         for run in runs {
-            if let Ok(report) = &run.report {
-                let cwd = PathBuf::from(&report.cwd);
-                if !report.cwd.is_empty()
-                    && is_real_dir(&cwd)
-                    && let Some(common) = self.common_dir(&cwd)
-                    && let Some(main) = main_checkout(&common)
-                {
-                    mains.insert(main);
-                }
+            if let Ok(report) = &run.report
+                && let Some(common) = self.report_common_dir(report)
+                && let Some(main) = main_checkout(&common)
+            {
+                mains.insert(main);
             }
         }
         let worktrees_root = canonical_or_self(&self.s.work_root.worktrees_dir());
@@ -905,7 +909,7 @@ impl Collector<'_> {
             if recorded.contains(&path) || recorded.contains(&canonical_or_self(&path)) {
                 continue;
             }
-            let Some(age) = idle_for(&path, self.now, self.s.keep) else {
+            let Some((age, size)) = idle_for(&path, self.now, self.s.keep) else {
                 continue;
             };
             if cargo_lock_held(&path) {
@@ -919,7 +923,7 @@ impl Collector<'_> {
             }
             self.items.push(Item {
                 category: Category::UntaggedTarget,
-                size_bytes: tree_size(&path),
+                size_bytes: Some(size),
                 reason: format!(
                     "not recorded by any run; untouched for {} hours{}",
                     age.as_secs() / 3600,
@@ -968,10 +972,10 @@ impl Collector<'_> {
             if !meta.file_type().is_dir() || meta.uid() != euid() {
                 continue;
             }
-            let Some(age) = idle_for(&path, self.now, self.s.keep) else {
+            let Some((age, size)) = idle_for(&path, self.now, self.s.keep) else {
                 continue;
             };
-            if self.procs.in_use(&path) {
+            if self.in_use(&path) {
                 self.items.push(Item::skip(
                     Category::TmpLeftover,
                     &path,
@@ -982,7 +986,7 @@ impl Collector<'_> {
             }
             self.items.push(Item {
                 category: Category::TmpLeftover,
-                size_bytes: tree_size(&path),
+                size_bytes: Some(size),
                 reason: format!("untouched for {} hours", age.as_secs() / 3600),
                 path,
                 run_id: None,
@@ -1055,7 +1059,7 @@ fn collect(settings: &Settings) -> Vec<Item> {
     let mut c = Collector {
         s: settings,
         now: SystemTime::now(),
-        procs: ProcScan::take(),
+        procs: None,
         gh_cache: HashMap::new(),
         common_cache: HashMap::new(),
         list_cache: HashMap::new(),
@@ -1144,11 +1148,9 @@ fn execute(item: &Item, settings: &Settings, procs: &ProcScan) -> Result<()> {
 /// Turns collected items into report entries, acting on them when
 /// `settings.apply` and the lock is held.
 fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry> {
-    let procs = if settings.apply && locked {
-        Some(ProcScan::take())
-    } else {
-        None
-    };
+    // Taken just before the first action, so it is fresh and skipped when
+    // nothing is acted on (the usual end-of-run case).
+    let mut procs: Option<ProcScan> = None;
     let mut entries = Vec::with_capacity(items.len());
     for item in items {
         let archive = matches!(item.op, Op::Archive { .. });
@@ -1160,8 +1162,7 @@ fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry
             (_, true) if settings.deadline.is_some_and(|d| Instant::now() >= d) => {
                 (Action::Skipped, "sweep deadline reached".to_string())
             }
-            (_, true) => match execute(&item, settings, procs.as_ref().expect("taken when locked"))
-            {
+            (_, true) => match execute(&item, settings, procs.get_or_insert_with(ProcScan::take)) {
                 Ok(()) if archive => (Action::Archived, item.reason.clone()),
                 Ok(()) => (Action::Removed, item.reason.clone()),
                 Err(error) => {
