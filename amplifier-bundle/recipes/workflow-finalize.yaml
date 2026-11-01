@@ -152,7 +152,7 @@ steps:
         sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g'
       }
       echo "=== Pushing Cleanup Changes ==="
-      current_branch=$(git branch --show-current)
+      current_branch=$(git branch --show-current); remote_branch="$(bash "$(dirname "$WT_TOOL")/workflow_remote_branch.sh" .)" || exit 2; [ "$remote_branch" != "$current_branch" ] || remote_branch=""  # #1762: an alias pushes HEAD to <B>
       if [ -z "$current_branch" ]; then
         echo "ERROR: current branch is empty; cannot push cleanup changes from detached HEAD" >&2
         exit 1
@@ -196,9 +196,9 @@ steps:
       # #1714: fetch origin/<branch> and set a missing upstream, so the pull below runs
       # whenever the branch is on origin; a bare `push -u` to a remote ahead is rejected.
       bash "$(dirname "$WT_TOOL")/workflow_pr_head_sync.sh"
-      push_cmd=(git push -u origin "$current_branch")
+      push_cmd=(git push -u origin "$current_branch"${remote_branch:+":$remote_branch"})
       if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
-        push_cmd=(git push)
+        push_cmd=(git push ${remote_branch:+origin "HEAD:$remote_branch"})
         pull_output_file=$(mktemp -t step20b-cleanup-pull-XXXXXX)
         if git --no-pager pull --rebase >"$pull_output_file" 2>&1; then
           redact_sensitive_output < "$pull_output_file"
