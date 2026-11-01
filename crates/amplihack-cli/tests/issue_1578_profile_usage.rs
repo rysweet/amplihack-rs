@@ -882,10 +882,10 @@ fn a_swap_during_the_probe_is_warned_and_not_recorded() {
     assert_no_secrets(&out);
     let stderr = text(&out.stderr);
     // Issue #1845 (D7): a note, not a warning.
-    let warning = "note: the login in ~/.claude changed while profile \"c\" was probed \
-                   (the rotator swapped logins); its usage was not recorded this run";
+    let warning = "note: the login in ~/.claude changed while profile \"c\" was probed; \
+                   its usage was not recorded this run";
     assert!(
-        !stderr.contains("was probed; its usage was not recorded"),
+        !stderr.contains("warning: the login in ~/.claude changed while profile"),
         "the old warning text is gone: {stderr}"
     );
     assert_eq!(

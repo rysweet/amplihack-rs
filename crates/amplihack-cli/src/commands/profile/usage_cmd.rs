@@ -475,7 +475,7 @@ fn print_output(rows: &[Row], json: bool, swapped: Option<&ProfileName>) {
 /// every other displayed value.
 pub(super) fn swap_warning(name: &ProfileName) -> String {
     format!(
-        "note: the login in ~/.claude changed while profile \"{}\" was probed (the rotator swapped logins); its usage was not recorded this run",
+        "note: the login in ~/.claude changed while profile \"{}\" was probed; its usage was not recorded this run",
         sanitize_display(name.as_str(), false)
     )
 }

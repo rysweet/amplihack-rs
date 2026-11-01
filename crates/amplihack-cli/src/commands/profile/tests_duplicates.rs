@@ -19,8 +19,12 @@
 //! - `warnings(Option<&State>, &[(Holder, Account)]) -> Vec<String>`: one
 //!   line per `pairs()` entry, in that order. A profile pair names the one
 //!   profile that is mismatched (it has a recorded account its current
-//!   account does not match), and is cannot-tell otherwise; a pair with
-//!   `Home` always names the profile. Without a state, no record is read.
+//!   account does not match), and is cannot-tell otherwise. A pair with
+//!   `Home` judges `~/.claude` by the record of the rotator's live profile:
+//!   it names the one mismatched holder (`~/.claude` with the `/login`
+//!   text), never a profile that matches its record, the profile when it
+//!   has no record and `~/.claude` matches or no live profile is known, and
+//!   is cannot-tell otherwise. Without a state, no record is read.
 //! - `record_warnings(Option<&State>, &[(Holder, Account)]) -> Vec<String>`:
 //!   one `record_warning` line per profile whose account is not its
 //!   recorded account (same user and organization), duplicate or not.
@@ -527,18 +531,123 @@ fn every_pair_gets_its_own_line_in_pair_order() {
     );
 }
 
+/// The cannot-tell text for a pair with `~/.claude`, word for word.
+fn home_cannot_tell(b: &str) -> String {
+    format!(
+        "profiles '~/.claude' and '{b}' are signed in to the same account and organization \
+         (duplicate login); amplihack cannot tell which of them holds the wrong login; fix: \
+         run 'amplihack profile login {b}' if '{b}' should hold a different account, or plain \
+         'claude' and '/login' if ~/.claude should, with the browser signed out of claude.ai \
+         or in a private window."
+    )
+}
+
+/// The text naming `~/.claude`, which is off the record of live profile
+/// `live`, word for word.
+fn home_named(b: &str, live: &str) -> String {
+    format!(
+        "profiles '~/.claude' and '{b}' are signed in to the same account and organization \
+         (duplicate login); the login in ~/.claude is not the account recorded for profile \
+         '{live}'; fix: run plain 'claude' and '/login' to the account '{live}' is meant for, \
+         with the browser signed out of claude.ai or in a private window."
+    )
+}
+
 #[test]
-fn a_pair_with_home_always_names_the_profile() {
+fn without_a_live_profile_a_home_pair_names_the_profile_unless_it_matches() {
     let e = env();
     e.profile("c", &acct("u-home", Some("o1")));
-    let want = vec![names("~/.claude", "c", "c")];
-    assert_eq!(e.warnings(), want, "no record");
-    e.record("c", "u-home");
-    assert_eq!(e.warnings(), want, "a matching record");
-    e.record("c", "u-c-recorded");
-    assert_eq!(e.warnings(), want, "a mismatched record");
     let list = accounts(&e.store, Some(&e.home));
-    assert_eq!(warnings(None, &list), want, "no state");
+    assert!(list.iter().any(|(h, _)| *h == Holder::Home { live: None }));
+    let named = vec![names("~/.claude", "c", "c")];
+    assert_eq!(e.warnings(), named, "no record");
+    assert_eq!(warnings(None, &list), named, "no state");
+    e.record("c", "u-c-recorded");
+    assert_eq!(e.warnings(), named, "a mismatched record");
+    e.record("c", "u-home");
+    assert_eq!(
+        e.warnings(),
+        vec![home_cannot_tell("c")],
+        "a profile matching its record is never named"
+    );
+}
+
+/// `a` is the rotator's live profile by the rotate ledger; its folder has
+/// no login and still names `u-a`. `~/.claude` and `b` both hold `u-b`.
+fn live_a_home_dup_b() -> Env {
+    let e = env();
+    fs::remove_file(e.store.root().join("a/.credentials.json")).unwrap();
+    private(
+        &e.store.root().join(".auto-switch.d/rotate/ledger.json"),
+        r#"{"version":1,"live":"a","since":10}"#,
+    );
+    for d in [".auto-switch.d", ".auto-switch.d/rotate"] {
+        fs::set_permissions(e.store.root().join(d), fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    private(&e.home.join(".claude.json"), &acct("u-b", Some("o1")));
+    let list = accounts(&e.store, Some(&e.home));
+    assert!(
+        list.iter()
+            .any(|(h, _)| *h == Holder::Home { live: Some(n("a")) }),
+        "{list:?}"
+    );
+    assert_eq!(
+        pairs(&list),
+        vec![(Holder::Home { live: Some(n("a")) }, p("b"))]
+    );
+    e
+}
+
+#[test]
+fn home_off_the_live_profiles_record_is_named_not_the_matching_profile() {
+    // Issue #1845: the swap guard refuses this state ("the login in
+    // ~/.claude is not the account recorded for profile a"); the warning
+    // must agree with it and must not send the user to log `b` in again.
+    let e = live_a_home_dup_b();
+    e.record("a", "u-a");
+    e.record("b", "u-b");
+    let got = e.warnings();
+    assert_eq!(got, vec![home_named("b", "a")]);
+    assert!(!got[0].contains("profile login b"), "{got:?}");
+    // `b` has no record: `~/.claude` is still the one off its record.
+    let e = live_a_home_dup_b();
+    e.record("a", "u-a");
+    assert_eq!(e.warnings(), vec![home_named("b", "a")]);
+}
+
+#[test]
+fn a_profile_off_its_record_is_named_when_home_matches_the_live_record() {
+    let e = live_a_home_dup_b();
+    e.record("a", "u-b");
+    assert_eq!(
+        e.warnings(),
+        vec![names("~/.claude", "b", "b")],
+        "b has no record"
+    );
+    e.record("b", "u-b-recorded");
+    assert_eq!(
+        e.warnings(),
+        vec![names("~/.claude", "b", "b")],
+        "b is off its record"
+    );
+}
+
+#[test]
+fn a_home_pair_with_a_live_profile_cannot_be_told_without_evidence() {
+    let e = live_a_home_dup_b();
+    assert_eq!(e.warnings(), vec![home_cannot_tell("b")], "no record");
+    let list = accounts(&e.store, Some(&e.home));
+    assert_eq!(
+        warnings(None, &list),
+        vec![home_cannot_tell("b")],
+        "no state"
+    );
+    e.record("a", "u-b");
+    e.record("b", "u-b");
+    assert_eq!(e.warnings(), vec![home_cannot_tell("b")], "both match");
+    e.record("a", "u-a");
+    e.record("b", "u-b-recorded");
+    assert_eq!(e.warnings(), vec![home_cannot_tell("b")], "both mismatched");
 }
 
 #[test]

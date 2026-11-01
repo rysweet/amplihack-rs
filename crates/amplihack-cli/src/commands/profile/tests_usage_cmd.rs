@@ -933,8 +933,8 @@ fn swap_warning_names_the_profile_in_fixed_text() {
     let name = super::name::ProfileName::parse("work").unwrap();
     assert_eq!(
         swap_warning(&name),
-        "note: the login in ~/.claude changed while profile \"work\" was probed \
-         (the rotator swapped logins); its usage was not recorded this run"
+        "note: the login in ~/.claude changed while profile \"work\" was probed; \
+         its usage was not recorded this run"
     );
 }
 

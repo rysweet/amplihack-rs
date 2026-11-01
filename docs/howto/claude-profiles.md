@@ -1122,9 +1122,20 @@ names a profile.
 
 `status` prints it as a `note:` line; `usage` prints the same text on stderr
 as a `warning:` line, after the table. The login in `~/.claude` takes part
-too, named `~/.claude`; such a pair always names the profile in its fix.
-The rotator's live profile is not compared with `~/.claude`, since that is
-where its own login is.
+too, named `~/.claude`. It is judged by the record of the rotator's live
+profile, since that is the account it should hold, and a profile that
+matches its own record is never named. When `~/.claude` is the one off its
+record, the fix is a `/login` there rather than `profile login`:
+
+```
+note: profiles '~/.claude' and 'bbuck' are signed in to the same account and organization (duplicate login); the login in ~/.claude is not the account recorded for profile 'work'; fix: run plain 'claude' and '/login' to the account 'work' is meant for, with the browser signed out of claude.ai or in a private window.
+```
+
+The rotator refuses to swap in the same state, with the same reason. The
+rotator's live profile is not compared with `~/.claude`, since that is
+where its own login is. See
+[Duplicate-login warning](../reference/profile-command.md#duplicate-login-warning)
+for every form.
 
 A profile can also hold the wrong login without forming a duplicate, for
 example when a Claude session started with `CLAUDE_CONFIG_DIR` pointing at

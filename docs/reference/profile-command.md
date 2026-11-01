@@ -944,11 +944,14 @@ mark, but its usage is [not recorded](#refreshing-auto-switch-readings)
 profile name in it is cleaned of control characters:
 
 ```
-note: the login in ~/.claude changed while profile "work" was probed (the rotator swapped logins); its usage was not recorded this run
+note: the login in ~/.claude changed while profile "work" was probed; its usage was not recorded this run
 ```
 
-This is a note, not a warning: a rotator swap during a probe is expected
-and nothing needs fixing. The command does not retry the probe, and the exit
+This is a note, not a warning. The command only sees that `~/.claude` no
+longer holds the live profile's login; the change may be a rotator swap or a
+`/login` in `~/.claude`, and the note does not say which. A rotator swap
+needs no fix; a login that is not the profile's
+[recorded account](#recorded-account) is reported by its own warning. The command does not retry the probe, and the exit
 status is unchanged. A run with no swap during the probes prints no note.
 
 On such a row, the numbers and any `--raw` text may belong to the login that
@@ -977,8 +980,8 @@ status, and none marks a profile live when there is doubt.
 | `warning: more than one profile matches the account in ~/.claude; none is marked live` | No ledger, and more than one profile with no login matches the account in `~/.claude.json`. |
 | `warning: the login rotator's ledger names a profile that still has its own login; it is not marked live in ~/.claude` | The ledger names a profile whose directory still has a `.credentials.json`. |
 | `warning: could not list profiles; no profile is marked live in ~/.claude` | No ledger, and the profile root could not be listed (for example, it is not readable), so no account match was tried. |
-| `note: the login in ~/.claude changed while profile "<name>" was probed (the rotator swapped logins); its usage was not recorded this run` | The evidence for the live profile changed during the probe. A note rather than a warning. See [Swaps during the probe](#swaps-during-the-probe). |
-| `warning: profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); …` | Two logins are the same account. One line per pair, after the other warnings. The line either names the profile whose login is not its [recorded account](#recorded-account), or says amplihack cannot tell which one is wrong. See [Duplicate-login warning](#duplicate-login-warning). Printed for `~/.claude` and `M` while a manual `/login` in `~/.claude` has left both with the same account; the next rotate cycle moves `M`'s copy aside when it [safely can](#rotate-hand-change-recovery). |
+| `note: the login in ~/.claude changed while profile "<name>" was probed; its usage was not recorded this run` | The evidence for the live profile changed during the probe. A note rather than a warning. See [Swaps during the probe](#swaps-during-the-probe). |
+| `warning: profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); …` | Two logins are the same account. One line per pair, after the other warnings. The line names the profile whose login is not its [recorded account](#recorded-account), or `~/.claude` when it is not the live profile's recorded account, or says amplihack cannot tell which one is wrong. See [Duplicate-login warning](#duplicate-login-warning). Printed for `~/.claude` and `M` while a manual `/login` in `~/.claude` has left both with the same account; the next rotate cycle moves `M`'s copy aside when it [safely can](#rotate-hand-change-recovery). |
 
 A manual `/login` in `~/.claude` replaces whatever login was there; the
 profile that login belonged to is left with no login. `profile usage` prints
@@ -2168,7 +2171,7 @@ Both `install` and `repair` are idempotent: a second run leaves every
 | `ignored AMPLIHACK_CLAUDE_AUTO_SWITCH value (use 1 or 0); the file decides` | The variable is set to something other than `1`, `0` or empty. |
 | `profiles without the wrapper: <names> — run: amplihack profile auto-switch install` | A profile's wrapper is `missing` or `stale`. |
 | `excluded but missing: <names>` | An exclusion names no existing profile. |
-| `profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); …` | Two logins are the [same account](#account-identity): from each profile's own `.claude.json`, from its saved block while its directory hosts another account, or `$HOME/.claude.json` (shown as `~/.claude`). The fix names the profile whose login is not its [recorded account](#recorded-account), or the line says amplihack cannot tell which one is wrong. See [Duplicate-login warning](#duplicate-login-warning) for both forms. No uuid, organization or e-mail is printed. |
+| `profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); …` | Two logins are the [same account](#account-identity): from each profile's own `.claude.json`, from its saved block while its directory hosts another account, or `$HOME/.claude.json` (shown as `~/.claude`). The fix names the profile whose login is not its [recorded account](#recorded-account), or `~/.claude` when it is not the live profile's recorded account, or the line says amplihack cannot tell which one is wrong. See [Duplicate-login warning](#duplicate-login-warning) for every form. No uuid, organization or e-mail is printed. |
 
 Every command takes the global state lock only when it needs it, and exits
 with status 1 on error with the usual `error:`/`hint:` lines.
@@ -6478,34 +6481,58 @@ Claude as before, with no check.
 
 ### Duplicate-login warning
 
-The warning has two forms. When amplihack can tell which profile holds the
+The warning has four forms. When amplihack can tell which profile holds the
 wrong login, the fix names that profile:
 
 ```
 profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login <wrong>' with the browser signed out of claude.ai or in a private window.
 ```
 
-Otherwise it says so, and the fix names no profile:
+When it can tell that the login in `~/.claude` is the wrong one, the fix is
+a `/login` in `~/.claude`, since `profile login` is refused for the live
+profile:
+
+```
+profiles '~/.claude' and '<b>' are signed in to the same account and organization (duplicate login); the login in ~/.claude is not the account recorded for profile '<live>'; fix: run plain 'claude' and '/login' to the account '<live>' is meant for, with the browser signed out of claude.ai or in a private window.
+```
+
+Otherwise it says so. For two profiles the fix names no profile:
 
 ```
 profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); amplihack cannot tell which of them holds the wrong login; fix: run 'amplihack profile login <name>' for the one that should hold a different account, with the browser signed out of claude.ai or in a private window.
 ```
 
-`<name>` is printed as written; it is not replaced by a profile name.
+`<name>` is printed as written; it is not replaced by a profile name. For
+`~/.claude` and a profile, the fix gives both commands:
+
+```
+profiles '~/.claude' and '<b>' are signed in to the same account and organization (duplicate login); amplihack cannot tell which of them holds the wrong login; fix: run 'amplihack profile login <b>' if '<b>' should hold a different account, or plain 'claude' and '/login' if ~/.claude should, with the browser signed out of claude.ai or in a private window.
+```
 
 A profile is *mismatched* when it has a [recorded account](#recorded-account)
 and its current account does not match it. The current account is the one
 in the profile's own `.claude.json`, or its saved block while its directory
-hosts another account.
+hosts another account. `~/.claude` has no record of its own: it is judged
+by the record of the rotator's [live profile](#rotate-live-profile)
+`<live>`, which is the account `~/.claude` should hold, so it is mismatched
+when `<live>` has a record and the account in `$HOME/.claude.json` does not
+match it. With no live profile known, `~/.claude` is not judged.
 
 | Pair | Records | Form | `<wrong>` |
 |------|---------|------|-----------|
-| two profiles | exactly one is mismatched (the other matches its record or has none) | first | the mismatched profile, whether it is `<a>` or `<b>` |
+| two profiles | exactly one is mismatched (the other matches its record or has none) | profile | the mismatched profile, whether it is `<a>` or `<b>` |
 | two profiles | neither is mismatched, both are, or neither has a record | cannot tell | none |
-| `~/.claude` and a profile | any | first | the profile |
+| `~/.claude` and a profile | `~/.claude` is mismatched; the profile matches its record or has none | `~/.claude` | none; the `/login` fix |
+| `~/.claude` and a profile | the profile is mismatched; `~/.claude` matches `<live>`'s record or is not judged | profile | the profile |
+| `~/.claude` and a profile | the profile has no record; `~/.claude` matches `<live>`'s record, or no live profile is known | profile | the profile |
+| `~/.claude` and a profile | the profile matches its record, both are mismatched, or a live profile is known and neither has a record | cannot tell | none |
 
-`~/.claude` has no record, so a pair with it keeps the first form and the
-fix names the profile, as before.
+A profile that matches its record is never named. This keeps the warning in
+step with the rotator: when the login in `~/.claude` is not `<live>`'s
+recorded account, the swap is refused with
+`the login in ~/.claude is not the account recorded for profile <live>`,
+and the warning names `~/.claude` too, not the profile that happens to hold
+the same account.
 
 For example, `rssourcelabs` and `ryan-ryansweet` both hold the
 `ryan-ryansweet` account, and only `rssourcelabs` has a record that names
@@ -6523,13 +6550,15 @@ given.
 
 One line is printed per pair. Pairs of profiles follow `profile list` order;
 a pair with the login in `~/.claude` comes last, with `'~/.claude'` as
-`<a>` and the profile as `<b>`, so the fix always names a profile. The
-rotator's live profile is never paired with `~/.claude`. Names are cleaned
+`<a>` and the profile as `<b>`. The rotator's live profile is never paired
+with `~/.claude`. Names are cleaned
 of control characters. Neither form prints a uuid, organization, e-mail or
 the recorded key.
 
-When the auto-switch state cannot be opened, no record can be read, and
-every profile pair gets the cannot-tell form.
+When the auto-switch state cannot be opened, no record can be read: every
+profile pair gets the cannot-tell form, and so does every pair with
+`~/.claude` while a live profile is known. Without a live profile, a pair
+with `~/.claude` names the profile.
 
 ### Live profile launch
 

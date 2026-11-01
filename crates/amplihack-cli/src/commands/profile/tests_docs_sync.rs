@@ -548,7 +548,7 @@ fn docs_quote_the_probe_race_note_and_not_the_old_warning() {
         ("rotation howto", ROTATE_HOWTO),
     ] {
         assert!(
-            !doc.contains("was probed; its usage was not recorded"),
+            !doc.contains("warning: the login in ~/.claude changed while profile"),
             "{name} still quotes the old probe-race warning"
         );
     }

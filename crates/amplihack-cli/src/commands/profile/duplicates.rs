@@ -137,51 +137,83 @@ pub(super) fn pairs(list: &[(Holder, Account)]) -> Vec<(Holder, Holder)> {
 }
 
 /// Issue #1845 (D3): the holder the duplicate warning tells the user to
-/// log in again. In a pair with `~/.claude`, the profile. In a pair of
-/// profiles, the one profile whose current account is not the account
-/// recorded for it; `None` when neither or both are, so amplihack cannot
-/// tell. Without a state no record is read.
+/// log in again, or `None` when amplihack cannot tell. A holder is
+/// mismatched when its current account is not the account recorded for it;
+/// for `~/.claude` that is the record of the rotator's live profile, so
+/// `~/.claude` is only judged while the live profile is known. Without a
+/// state no record is read.
+///
+/// In a pair of profiles, the one mismatched profile; `None` when neither
+/// or both are. In a pair `(Home, Profile)`:
+/// - the one mismatched holder is named, as for profiles;
+/// - a profile that matches its record is never named, whatever
+///   `~/.claude` holds;
+/// - a profile without a record is named when `~/.claude` matches the live
+///   profile's record, or when no live profile is known (then `~/.claude`
+///   is not a profile's login and only the profile can be logged in again);
+/// - otherwise `None`.
 pub(super) fn wrong<'h>(
     state: Option<&State>,
     list: &[(Holder, Account)],
     a: &'h Holder,
     b: &'h Holder,
 ) -> Option<&'h Holder> {
-    if matches!(a, Holder::Home { .. }) {
-        return Some(b);
-    }
-    let state = state?;
-    let mismatched = |h: &Holder| match h {
-        Holder::Profile(n) => {
-            list.iter()
-                .find(|(x, _)| x == h)
-                .and_then(|(_, acc)| super::expected::mismatched(state, n, acc))
-                == Some(true)
+    let mismatched = |h: &Holder| -> Option<bool> {
+        let state = state?;
+        let acc = list.iter().find(|(x, _)| x == h).map(|(_, acc)| acc)?;
+        match h {
+            Holder::Profile(n) => super::expected::mismatched(state, n, acc),
+            Holder::Home { live } => super::expected::mismatched(state, live.as_ref()?, acc),
         }
-        Holder::Home { .. } => false,
     };
-    match (mismatched(a), mismatched(b)) {
-        (true, false) => Some(a),
-        (false, true) => Some(b),
+    let (ma, mb) = (mismatched(a), mismatched(b));
+    match (ma, mb) {
+        (Some(true), Some(true)) => None,
+        (Some(true), _) => Some(a),
+        (_, Some(true)) => Some(b),
+        (_, Some(false)) => None,
+        (Some(false), None) if matches!(a, Holder::Home { .. }) => Some(b),
+        (None, None) if matches!(a, Holder::Home { live: None }) => Some(b),
         _ => None,
     }
 }
 
 /// The duplicate-login warning, without a `note: ` or `warning: ` prefix.
-/// The fix names `wrong`; without it, the warning says amplihack cannot
-/// tell which holder has the wrong login.
+/// The fix names `wrong`: a profile is logged in again with `profile
+/// login`; `~/.claude`, which `profile login` refuses while it holds the
+/// live profile's login, with plain `claude` and `/login`. Without `wrong`,
+/// the warning says amplihack cannot tell which holder has the wrong login.
 pub(super) fn warning(a: &Holder, b: &Holder, wrong: Option<&Holder>) -> String {
-    let (a, b) = (a.shown(), b.shown());
+    let (sa, sb) = (a.shown(), b.shown());
+    let head = format!(
+        "profiles '{sa}' and '{sb}' are signed in to the same account and organization \
+         (duplicate login)"
+    );
     match wrong {
+        Some(Holder::Home { live }) => {
+            let live = live
+                .as_ref()
+                .map(|n| sanitize_display(n.as_str(), false))
+                .unwrap_or_default();
+            format!(
+                "{head}; the login in {HOME_LABEL} is not the account recorded for profile \
+                 '{live}'; fix: run plain 'claude' and '/login' to the account '{live}' is meant \
+                 for, with the browser signed out of claude.ai or in a private window."
+            )
+        }
         Some(w) => format!(
-            "profiles '{a}' and '{b}' are signed in to the same account and organization \
-             (duplicate login); fix: run 'amplihack profile login {}' with the browser signed \
-             out of claude.ai or in a private window.",
+            "{head}; fix: run 'amplihack profile login {}' with the browser signed out of \
+             claude.ai or in a private window.",
             w.shown()
         ),
+        None if matches!(a, Holder::Home { .. }) => format!(
+            "{head}; amplihack cannot tell which of them holds the wrong login; fix: run \
+             'amplihack profile login {sb}' if '{sb}' should hold a different account, or plain \
+             'claude' and '/login' if {HOME_LABEL} should, with the browser signed out of \
+             claude.ai or in a private window."
+        ),
         None => format!(
-            "profiles '{a}' and '{b}' are signed in to the same account and organization \
-             (duplicate login); amplihack cannot tell which of them holds the wrong login; \
+            "{head}; amplihack cannot tell which of them holds the wrong login; \
              fix: run 'amplihack profile login <name>' for the one that should hold a \
              different account, with the browser signed out of claude.ai or in a private \
              window."
