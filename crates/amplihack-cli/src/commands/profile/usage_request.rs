@@ -94,10 +94,12 @@ pub(super) fn parse_answer(stdout: &str, now: i64) -> Option<UsageReport> {
     })
 }
 
-/// Whether `five_hour` shows a session window (issue #1818). Only an absent
+/// Whether `five_hour` shows a session reset (issue #1818). Only an absent
 /// or `null` `five_hour`, or a read window whose `resets_at` is absent or
 /// `null`, shows none. A `resets_at` of any other value counts, even when it
-/// cannot be used, and so does a `five_hour` the reader rejected (S1).
+/// cannot be used, and so does a `five_hour` the reader rejected (S1). A read
+/// window with a non-zero `utilization` keeps the limit even with no reset:
+/// [`settle_session`] checks the percentage.
 fn session_reset_seen(five_hour: Option<&Value>, read: bool) -> bool {
     match five_hour {
         None | Some(Value::Null) => false,

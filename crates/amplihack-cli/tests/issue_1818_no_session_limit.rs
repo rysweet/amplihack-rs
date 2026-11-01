@@ -1,10 +1,12 @@
 //! Issue #1818: logins whose plan has no session limit.
 //!
 //! `profile usage` reads a weekly-only `/usage` output (or a session line
-//! with no reset clause) as `ok` with no session window, labels it
-//! `no session limit`, and writes `"session_limit": false` in `--json`.
-//! `rotate status` lists such profiles from auto-switch's `usage.json` on a
-//! `no session limit:` line, left out when the list is empty.
+//! at 0% with no reset clause) as `ok` with no session window, labels it
+//! `no session limit`, and writes `"session_limit": false` in `--json`. A
+//! session line above 0% with no reset clause keeps the session limit.
+//! `rotate status` lists the profiles whose stored auto-switch reading has
+//! a week window and no session window on a `no session window:` line, left
+//! out when the list is empty.
 //!
 //! Every command runs through the shared fixture: `isolated(..)` with a
 //! temporary HOME and profile root, a fake `claude`, no tmux and no real
@@ -66,7 +68,7 @@ fn rotate_status(f: &Fixture) -> (String, String) {
 fn no_limit_lines(stdout: &str) -> Vec<&str> {
     stdout
         .lines()
-        .filter(|l| l.starts_with("no session limit:"))
+        .filter(|l| l.starts_with("no session window:"))
         .collect()
 }
 
@@ -89,7 +91,7 @@ fn rotate_status_lists_weekly_only_profiles_sorted() {
     let (stdout, stderr) = rotate_status(&f);
     assert_eq!(
         no_limit_lines(&stdout),
-        ["no session limit: extra, spare"],
+        ["no session window: extra, spare"],
         "{stdout}"
     );
     assert!(!stderr.contains("usage"), "{stderr}");
@@ -102,8 +104,8 @@ fn rotate_status_puts_the_line_after_on_overflow_and_before_default_and_hold() {
     let (stdout, _) = rotate_status(&f);
     let lines: Vec<&str> = stdout.lines().collect();
     let at = |prefix: &str| lines.iter().position(|l| l.starts_with(prefix));
-    let ours = at("no session limit:").unwrap_or_else(|| panic!("{stdout}"));
-    assert_eq!(lines[ours], "no session limit: spare");
+    let ours = at("no session window:").unwrap_or_else(|| panic!("{stdout}"));
+    assert_eq!(lines[ours], "no session window: spare");
     let on_overflow = at("on overflow:").expect("on overflow line");
     assert!(on_overflow < ours, "{stdout}");
     for later in ["default:", "hold:", "alert:", "warning:", "journal:"] {
@@ -120,7 +122,7 @@ fn rotate_status_lists_only_profiles_that_exist() {
     let (stdout, _) = rotate_status(&f);
     assert_eq!(
         no_limit_lines(&stdout),
-        ["no session limit: spare"],
+        ["no session window: spare"],
         "{stdout}"
     );
 }
@@ -141,14 +143,14 @@ fn rotate_status_leaves_the_line_out_when_no_profile_qualifies() {
     );
     let (stdout, _) = rotate_status(&f);
     assert!(no_limit_lines(&stdout).is_empty(), "{stdout}");
-    assert!(!stdout.contains("no session limit"), "{stdout}");
+    assert!(!stdout.contains("no session window"), "{stdout}");
 }
 
 #[test]
 fn rotate_status_leaves_the_line_out_with_no_usage_file() {
     let f = Fixture::new();
     let (stdout, stderr) = rotate_status(&f);
-    assert!(!stdout.contains("no session limit"), "{stdout}");
+    assert!(!stdout.contains("no session window"), "{stdout}");
     assert!(!stderr.contains("usage"), "{stderr}");
 }
 
@@ -157,7 +159,7 @@ fn rotate_status_ignores_an_unsafe_or_damaged_usage_file_silently() {
     let f = Fixture::new();
     seed_usage(&f, &[("spare", false, true)], 0o644);
     let (stdout, stderr) = rotate_status(&f);
-    assert!(!stdout.contains("no session limit"), "{stdout}");
+    assert!(!stdout.contains("no session window"), "{stdout}");
     assert!(
         !stderr.contains("usage.json"),
         "nothing on stderr: {stderr}"
@@ -167,7 +169,7 @@ fn rotate_status_ignores_an_unsafe_or_damaged_usage_file_silently() {
     fs::write(&path, "{not json").unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
     let (stdout, stderr) = rotate_status(&f);
-    assert!(!stdout.contains("no session limit"), "{stdout}");
+    assert!(!stdout.contains("no session window"), "{stdout}");
     assert!(
         !stderr.contains("usage.json"),
         "nothing on stderr: {stderr}"
@@ -180,7 +182,7 @@ fn rotate_status_ignores_an_unsafe_or_damaged_usage_file_silently() {
     fs::rename(&path, &real).unwrap();
     std::os::unix::fs::symlink(&real, &path).unwrap();
     let (stdout, stderr) = rotate_status(&f);
-    assert!(!stdout.contains("no session limit"), "{stdout}");
+    assert!(!stdout.contains("no session window"), "{stdout}");
     assert!(
         !stderr.contains("usage.json"),
         "nothing on stderr: {stderr}"
@@ -217,10 +219,10 @@ fn by_profile<'a>(rows: &'a [serde_json::Value], name: &str) -> &'a serde_json::
 }
 
 #[test]
-fn profile_usage_json_marks_weekly_only_and_reset_less_logins() {
+fn profile_usage_json_marks_weekly_only_and_idle_reset_less_logins() {
     let f = Fixture::new();
     f.usage_weekly_only("spare", 30);
-    f.usage_no_reset("extra", 100, 40);
+    f.usage("extra", 0, 40);
     let rows = usage_rows(&f, &["work", "spare", "extra"]);
 
     let work = by_profile(&rows, "work");
@@ -268,4 +270,30 @@ fn a_reset_less_session_with_no_week_line_keeps_the_session_limit() {
     let r = by_profile(&rows, "spare");
     assert_eq!(r["state"], "session_exhausted", "{r}");
     assert_eq!(r["session_limit"], true, "{r}");
+}
+
+/// Crusty round 1 on #1829: a session line above 0% with no reset clause is
+/// a session window, not a plan with no session limit. `usage(p, 100, 40)`
+/// prints exactly that, and the login must stay `session_exhausted`.
+#[test]
+fn a_full_session_with_no_reset_clause_is_session_exhausted() {
+    let f = Fixture::new();
+    f.usage("work", 100, 40);
+    f.usage("extra", 47, 40);
+    let rows = usage_rows(&f, &["work", "extra"]);
+
+    let work = by_profile(&rows, "work");
+    assert_eq!(work["state"], "session_exhausted", "{work}");
+    assert_eq!(work["session_limit"], true, "{work}");
+    assert_eq!(work["session"]["used_percentage"], 100.0, "{work}");
+    assert_eq!(
+        work["session"]["resets_at"],
+        serde_json::Value::Null,
+        "{work}"
+    );
+
+    let extra = by_profile(&rows, "extra");
+    assert_eq!(extra["state"], "ok", "{extra}");
+    assert_eq!(extra["session_limit"], true, "{extra}");
+    assert_eq!(extra["session"]["used_percentage"], 47.0, "{extra}");
 }

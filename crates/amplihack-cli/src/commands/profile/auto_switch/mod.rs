@@ -429,7 +429,7 @@ pub fn lease_view(root: &Path) -> Result<Option<LeaseView>, ProfileError> {
 /// window and no session window, sorted. Read-only: it never creates state,
 /// takes the lock or writes, and any failure (no state, an unsafe or damaged
 /// `usage.json`) gives an empty list without printing anything.
-pub fn no_session_limit_profiles(root: &Path, names: &[&str]) -> Vec<String> {
+pub fn no_session_window_profiles(root: &Path, names: &[&str]) -> Vec<String> {
     #[cfg(unix)]
     {
         let Ok(state) = state::State::new(root) else {
@@ -444,7 +444,7 @@ pub fn no_session_limit_profiles(root: &Path, names: &[&str]) -> Vec<String> {
         let mut out: Vec<String> = file
             .accounts
             .iter()
-            .filter(|(name, r)| r.no_session_limit() && names.contains(&name.as_str()))
+            .filter(|(name, r)| r.no_session_window() && names.contains(&name.as_str()))
             .map(|(name, _)| name.clone())
             .collect();
         out.sort();

@@ -107,8 +107,10 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     if let Some(line) = super::platform_live_line(store.root()) {
         println!("{line}");
     }
-    // Issue #1818: profiles whose last reading showed no session window.
-    if let Some(line) = no_session_limit_line(&store) {
+    // Issue #1818: profiles whose stored reading has no session window. Not
+    // labelled "no session limit": the stored reading cannot tell a plan
+    // with none from a session window that was not recorded.
+    if let Some(line) = no_session_window_line(&store) {
         println!("{line}");
     }
     // `.default` bypasses the rotator: say so when it names an overflow profile.
@@ -243,17 +245,17 @@ fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
     }
 }
 
-/// The `no session limit:` line, or `None` when no current profile's stored
+/// The `no session window:` line, or `None` when no current profile's stored
 /// reading has a week window and no session window. Read-only.
-fn no_session_limit_line(store: &ProfileStore) -> Option<String> {
+fn no_session_window_line(store: &ProfileStore) -> Option<String> {
     let names = store.list().unwrap_or_default();
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    let free = auto_switch::no_session_limit_profiles(store.root(), &names);
+    let free = auto_switch::no_session_window_profiles(store.root(), &names);
     if free.is_empty() {
         return None;
     }
     let free: Vec<String> = free.iter().map(|n| sanitize_display(n, false)).collect();
-    Some(format!("no session limit: {}", free.join(", ")))
+    Some(format!("no session window: {}", free.join(", ")))
 }
 
 /// The `overflow:` value: the marked profiles `names` in list order, each

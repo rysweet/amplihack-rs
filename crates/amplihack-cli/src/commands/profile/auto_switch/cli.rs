@@ -195,11 +195,13 @@ fn cell(w: Option<&Window>, now: i64) -> String {
     }
 }
 
-/// The `5h` cell (issue #1818): `no session limit` for a reading with a
-/// week window and no session window, otherwise as [`cell`].
+/// The `5h` cell (issue #1818): `no session window` for a reading with a
+/// week window and no session window, otherwise as [`cell`]. It does not say
+/// `no session limit`: see [`Reading::no_session_window`] for the other
+/// ways a stored reading loses its session window.
 pub(super) fn five_cell(r: Option<&Reading>, now: i64) -> String {
     match r {
-        Some(r) if r.no_session_limit() => "no session limit".into(),
+        Some(r) if r.no_session_window() => "no session window".into(),
         _ => cell(r.and_then(|r| r.five_hour.as_ref()), now),
     }
 }

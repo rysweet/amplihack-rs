@@ -103,9 +103,9 @@ impl UsageState {
 }
 
 /// One `Current …: N% used[ · resets …]` line. A week line may have no
-/// reset clause. A session line with none, next to an all-models week line,
-/// means the plan has no session limit (issue #1818); the parser then keeps
-/// no session window at all, see [`settle_session`].
+/// reset clause. A session line at 0% with none, next to an all-models week
+/// line, means the reading has no session limit (issue #1818); the parser
+/// then keeps no session window at all, see [`settle_session`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct UsageWindow {
     /// `session`, `all models`, or the model name as printed.
@@ -147,16 +147,22 @@ impl UsageReport {
 
 /// Issue #1818: the one rule for whether a session limit applies, shared by
 /// both readers. A plan with no session limit is known only on positive
-/// evidence: the all-models week was read (`week_read`) and no session reset
-/// was shown (`reset_seen`). Then the session window, if any, is dropped and
-/// the result is `false`, which leaves the state `Ok` or `WeeklyExhausted`.
-/// Otherwise the window is kept and the result is `true`.
+/// evidence: the all-models week was read (`week_read`), no session reset
+/// was shown (`reset_seen`), and the session window, if one was read, is at
+/// 0%. Then the window is dropped and the result is `false`, which leaves
+/// the state `Ok` or `WeeklyExhausted`. Otherwise the window is kept and the
+/// result is `true`.
+///
+/// A session percentage above 0 keeps the limit even with no reset: a plan
+/// with no session limit has nothing to count there, so a non-zero value
+/// shows that a session window exists and may be exhausted.
 pub(crate) fn settle_session(
     session: &mut Option<UsageWindow>,
     reset_seen: bool,
     week_read: bool,
 ) -> bool {
-    if week_read && !reset_seen {
+    let used = session.as_ref().is_some_and(|w| w.used_percentage != 0.0);
+    if week_read && !reset_seen && !used {
         *session = None;
         return false;
     }

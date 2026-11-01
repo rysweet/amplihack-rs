@@ -47,9 +47,17 @@ pub struct Reading {
 }
 
 impl Reading {
-    /// Issue #1818: the reading has a week window and no session window,
-    /// so the account reported no session limit.
-    pub fn no_session_limit(&self) -> bool {
+    /// Issue #1818: the reading has a week window and no session window.
+    ///
+    /// This is a fact about the stored reading, not about the plan: the
+    /// usage file has no field for "a session limit applies, but its window
+    /// is unknown". A plan with no session limit gives this, and so do a
+    /// status-line `five_hour` that was absent or rejected by
+    /// `parse_window` or `plausible`, and a `profile usage` session
+    /// window that `plausible` rejected when the stored one had already
+    /// reset. Callers label it `no session window`, never `no session
+    /// limit`.
+    pub fn no_session_window(&self) -> bool {
         self.seven_day.is_some() && self.five_hour.is_none()
     }
 

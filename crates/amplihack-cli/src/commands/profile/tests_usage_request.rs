@@ -429,11 +429,16 @@ fn a_reset_that_is_not_text_leaves_both_fields_out() {
         let s = session_reset(v.clone());
         assert_eq!((s.resets_text, s.resets_at), (None, None), "{v}");
     }
-    // A `null` or absent `resets_at` means no session limit: no window.
-    let r = with(|p| limits(p)["five_hour"]["resets_at"] = json!(null)).unwrap();
+    // A `null` or absent `resets_at` at 0% means no session limit: no window.
+    let r = with(|p| {
+        limits(p)["five_hour"]["utilization"] = json!(0.0);
+        limits(p)["five_hour"]["resets_at"] = json!(null);
+    })
+    .unwrap();
     assert_eq!(r.session, None);
     assert!(!r.session_limit);
     let r = with(|p| {
+        limits(p)["five_hour"]["utilization"] = json!(0.0);
         limits(p)["five_hour"]
             .as_object_mut()
             .unwrap()
@@ -578,8 +583,37 @@ fn a_missing_five_hour_is_no_session_limit() {
 }
 
 #[test]
-fn a_five_hour_with_a_null_or_absent_reset_is_no_session_limit_at_any_use() {
-    for pct in [0.0, 47.0, 100.0, 150.0] {
+fn a_five_hour_at_0_with_a_null_or_absent_reset_is_no_session_limit() {
+    for null in [true, false] {
+        let r = with(|p| {
+            limits(p)["five_hour"]["utilization"] = json!(0.0);
+            if null {
+                limits(p)["five_hour"]["resets_at"] = json!(null);
+            } else {
+                limits(p)["five_hour"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("resets_at");
+            }
+        })
+        .unwrap();
+        assert!(!r.session_limit, "null={null}");
+        assert_eq!(r.session, None, "null={null}");
+        assert_eq!(r.state, UsageState::Ok, "null={null}");
+        assert_invariants(&r);
+    }
+}
+
+/// Crusty round 1 on #1829: a non-zero `utilization` is a session window
+/// even with no reset, so it keeps the limit and can be exhausted.
+#[test]
+fn a_five_hour_above_0_with_a_null_or_absent_reset_keeps_the_session_limit() {
+    for (pct, want) in [
+        (0.5, UsageState::Ok),
+        (47.0, UsageState::Ok),
+        (100.0, UsageState::SessionExhausted),
+        (150.0, UsageState::SessionExhausted),
+    ] {
         for null in [true, false] {
             let r = with(|p| {
                 limits(p)["five_hour"]["utilization"] = json!(pct);
@@ -593,9 +627,11 @@ fn a_five_hour_with_a_null_or_absent_reset_is_no_session_limit_at_any_use() {
                 }
             })
             .unwrap();
-            assert!(!r.session_limit, "{pct} null={null}");
-            assert_eq!(r.session, None, "{pct} null={null}");
-            assert_eq!(r.state, UsageState::Ok, "{pct}: never session_exhausted");
+            assert!(r.session_limit, "{pct} null={null}");
+            let s = r.session.as_ref().expect("session kept");
+            assert_eq!(s.used_percentage, pct, "{pct} null={null}");
+            assert_eq!((s.resets_text.as_deref(), s.resets_at), (None, None));
+            assert_eq!(r.state, want, "{pct} null={null}");
             assert_invariants(&r);
         }
     }

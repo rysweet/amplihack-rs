@@ -614,7 +614,8 @@ fn docs_describe_hand_change_recovery() {
 }
 
 /// Issue #1818: the reference defines `session_limit`, the table label and
-/// the `rotate status` line, with the contract wording for the JSON field.
+/// the `rotate status` line, with the contract wording for the JSON field,
+/// the 0% rule and the stored-reading label (crusty round 1 on #1829).
 #[test]
 fn docs_describe_no_session_limit() {
     let flat = flat(REFERENCE);
@@ -622,8 +623,11 @@ fn docs_describe_no_session_limit() {
         "| `session_limit` | bool | `false` only when a reading showed no session window; `true` otherwise, including rows that could not be read.",
         "no active session window was",
         "shows `no session limit` in full",
-        "| `no session limit` | Printed only when the list is not empty",
-        "The `5h` cell shows `no session limit`",
+        "| `no session window` | Printed only when the list is not empty",
+        "The `5h` cell shows `no session window`",
+        "Such a line at 0% means the reading has",
+        "a value above 0% shows that a session window exists",
+        "They therefore print `no session window`, not `no session limit`",
         "shows `s=0%`",
     ] {
         assert!(

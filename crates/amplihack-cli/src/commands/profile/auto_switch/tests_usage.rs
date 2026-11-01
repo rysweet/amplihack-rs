@@ -389,7 +389,7 @@ fn a_status_line_with_only_seven_day_is_accepted() {
 }
 
 #[test]
-fn the_5h_cell_says_no_session_limit_only_for_a_week_without_five_hour() {
+fn the_5h_cell_says_no_session_window_only_for_a_week_without_five_hour() {
     use super::cli::five_cell;
     let reading = |five: Option<Window>, seven: Option<Window>| Reading {
         five_hour: five,
@@ -398,7 +398,7 @@ fn the_5h_cell_says_no_session_limit_only_for_a_week_without_five_hour() {
         source: ReadingSource::Statusline,
     };
     let weekly = reading(None, Some(win(42.0, NOW + 86_400)));
-    assert_eq!(five_cell(Some(&weekly), NOW), "no session limit");
+    assert_eq!(five_cell(Some(&weekly), NOW), "no session window");
 
     let both = reading(Some(win(37.0, NOW + 600)), Some(win(42.0, NOW + 86_400)));
     assert_eq!(five_cell(Some(&both), NOW), "37%");

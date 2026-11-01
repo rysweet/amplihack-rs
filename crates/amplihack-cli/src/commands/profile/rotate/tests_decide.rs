@@ -368,15 +368,37 @@ fn no_reset_session(session: u32, week: u32) -> String {
 #[test]
 fn a_profile_with_no_session_limit_reads_on_its_week_alone() {
     assert_eq!(read(&weekly_only(30)), r(0.0, 30.0));
-    assert_eq!(read(&no_reset_session(100, 30)), r(0.0, 30.0));
-    assert_eq!(read(&no_reset_session(47, 89)), r(0.0, 89.0));
+    assert_eq!(read(&no_reset_session(0, 30)), r(0.0, 30.0));
+    assert_eq!(read(&no_reset_session(0, 89)), r(0.0, 89.0));
     assert_eq!(read(&weekly_only(100)), Reading::Exhausted);
     assert_eq!(read(&exhausted_session(30)), Reading::Exhausted);
 }
 
+/// Crusty round 1 on #1829: a session above 0% with no reset clause is a
+/// session window, so the rotator reads it and never picks it when full.
+#[test]
+fn a_session_above_0_with_no_reset_is_read_as_a_session() {
+    assert_eq!(read(&no_reset_session(47, 30)), r(47.0, 30.0));
+    assert_eq!(read(&no_reset_session(100, 30)), Reading::Exhausted);
+    let cands = [
+        c("a-spent", read(&no_reset_session(100, 10))),
+        c("b-free", read(&weekly_only(30))),
+    ];
+    assert_eq!(
+        decide(
+            &settings(),
+            &read(&exhausted_session(20)),
+            &cands,
+            None,
+            NOW
+        ),
+        swap("b-free", Reason::Threshold),
+    );
+}
+
 #[test]
 fn the_rotator_picks_the_no_session_limit_profile_when_the_rest_are_session_exhausted() {
-    for text in [weekly_only(30), no_reset_session(100, 30)] {
+    for text in [weekly_only(30), no_reset_session(0, 30)] {
         let cands = [
             c("a-spent", read(&exhausted_session(10))),
             c("b-free", read(&text)),
@@ -399,7 +421,7 @@ fn the_rotator_picks_the_no_session_limit_profile_when_the_rest_are_session_exha
 #[test]
 fn a_live_profile_with_no_session_limit_stays_below_the_week_threshold() {
     let cands = [c("spare", read(&exhausted_session(0)))];
-    for text in [weekly_only(89), no_reset_session(100, 89)] {
+    for text in [weekly_only(89), no_reset_session(0, 89)] {
         assert_eq!(
             decide(&settings(), &read(&text), &cands, None, NOW),
             Decision::Stay,

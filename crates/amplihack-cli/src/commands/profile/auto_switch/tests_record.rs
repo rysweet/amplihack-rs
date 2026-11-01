@@ -525,7 +525,7 @@ fn a_session_limited_reading_without_a_session_window_still_carries_it() {
 }
 
 // ---------------------------------------------------------------------------
-// Issue #1818: `no_session_limit_profiles`, read by `rotate status`
+// Issue #1818: `no_session_window_profiles`, read by `rotate status`
 // ---------------------------------------------------------------------------
 
 fn seed(r: &Root, readings: &[(&str, bool, bool)]) {
@@ -559,8 +559,8 @@ fn seed(r: &Root, readings: &[(&str, bool, bool)]) {
 }
 
 #[test]
-fn no_session_limit_profiles_lists_weekly_only_readings_sorted_and_filtered() {
-    use super::no_session_limit_profiles;
+fn no_session_window_profiles_lists_weekly_only_readings_sorted_and_filtered() {
+    use super::no_session_window_profiles;
     let r = root(true);
     seed(
         &r,
@@ -573,35 +573,35 @@ fn no_session_limit_profiles_lists_weekly_only_readings_sorted_and_filtered() {
         ],
     );
     let names = ["both", "five", "zed", "amy", "never"];
-    assert_eq!(no_session_limit_profiles(&r.root, &names), ["amy", "zed"]);
+    assert_eq!(no_session_window_profiles(&r.root, &names), ["amy", "zed"]);
     assert!(
-        no_session_limit_profiles(&r.root, &[]).is_empty(),
+        no_session_window_profiles(&r.root, &[]).is_empty(),
         "only current profiles are listed"
     );
 }
 
 #[test]
-fn no_session_limit_profiles_is_empty_without_state_and_never_creates_it() {
-    use super::no_session_limit_profiles;
+fn no_session_window_profiles_is_empty_without_state_and_never_creates_it() {
+    use super::no_session_window_profiles;
     let r = root(false);
-    assert!(no_session_limit_profiles(&r.root, &["a"]).is_empty());
+    assert!(no_session_window_profiles(&r.root, &["a"]).is_empty());
     assert!(!r.root.join(".auto-switch.d").exists(), "read-only");
 }
 
 #[test]
-fn no_session_limit_profiles_is_empty_when_usage_json_is_unsafe_or_damaged() {
-    use super::no_session_limit_profiles;
+fn no_session_window_profiles_is_empty_when_usage_json_is_unsafe_or_damaged() {
+    use super::no_session_window_profiles;
     let r = root(true);
     seed(&r, &[("amy", false, true)]);
-    assert_eq!(no_session_limit_profiles(&r.root, &["amy"]), ["amy"]);
+    assert_eq!(no_session_window_profiles(&r.root, &["amy"]), ["amy"]);
 
     fs::set_permissions(usage_file(&r), fs::Permissions::from_mode(0o644)).unwrap();
     assert!(
-        no_session_limit_profiles(&r.root, &["amy"]).is_empty(),
+        no_session_window_profiles(&r.root, &["amy"]).is_empty(),
         "group- or world-readable state is not trusted"
     );
 
     fs::write(usage_file(&r), "{not json").unwrap();
     fs::set_permissions(usage_file(&r), fs::Permissions::from_mode(0o600)).unwrap();
-    assert!(no_session_limit_profiles(&r.root, &["amy"]).is_empty());
+    assert!(no_session_window_profiles(&r.root, &["amy"]).is_empty());
 }

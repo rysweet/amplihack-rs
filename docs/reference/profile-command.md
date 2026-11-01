@@ -262,10 +262,11 @@ is kept:
   than 8 days from now: no session or weekly window resets that far ahead,
   so such a time is treated as unknown rather than trusted.
 
-A `five_hour` window whose `resets_at` key is absent or `null`, or no
+A `five_hour` window at `0` whose `resets_at` key is absent or `null`, or no
 `five_hour` at all, means the reading has
 [no session limit](#no-session-limit) when `seven_day` was read: `session`
-is then `null` and `session_limit` is `false`.
+is then `null` and `session_limit` is `false`. A `five_hour` above `0` with
+no reset keeps its window and the session limit.
 
 This page shows such resets as `2026-10-16T23:50:00Z`. That is an example
 of the form: whether `claude` sends fractional seconds, `Z` or an offset
@@ -449,8 +450,10 @@ Current week (Fable): 0% used · resets Oct 22, 2am (America/Los_Angeles)
 ```
 
 Claude leaves out the reset when no session window applies, for example
-`Current session: 0% used`. Such a line means the reading has
-[no session limit](#no-session-limit) when the all-models week was read.
+`Current session: 0% used`. Such a line at 0% means the reading has
+[no session limit](#no-session-limit) when the all-models week was read. A
+session line above 0% with no reset is read as a session window with no
+known reset.
 
 | Line | Field |
 |------|-------|
@@ -499,7 +502,7 @@ A `/usage` reading has no session limit when the all-models week line was
 read and either of these holds:
 
 - there is no `Current session` line;
-- the `Current session` line has no reset clause, for example
+- the `Current session` line is at 0% and has no reset clause, for example
   `Current session: 0% used`.
 
 ```
@@ -511,16 +514,21 @@ Current session: 0% used
 Current week (all models): 47% used · resets Oct 22, 2am (America/Los_Angeles)
 ```
 
-Both give state `ok`, `session_limit` `false` and `session` `null`. The
-session percentage on a line with no reset is not kept, so the same line at
-`47% used` or `100% used` also gives `ok`, never `session_exhausted`. With
+Both give state `ok`, `session_limit` `false` and `session` `null`. With
 the week at 100% or more the state is `weekly_exhausted`.
+
+A plan with no session limit has nothing to count in the session
+percentage, so a value above 0% shows that a session window exists. The same
+line at `47% used` keeps the session limit with state `ok`, and at
+`100% used` gives `session_exhausted`, as before issue #1818. In both cases
+`resets_text` and `resets_at` are `null`.
 
 The rule fails closed. A session limit still applies, and the session line
 is read as before, in each of these cases:
 
 | Case | Example | Why |
 |------|---------|-----|
+| The session line is above 0%, with or without a reset clause | `Current session: 100% used` | A non-zero percentage shows a session window. With no reset clause `resets_text` and `resets_at` are `null`. |
 | The session line has a reset clause, even one whose time cannot be resolved | `Current session: 3% used · resets 3am (Etc/Unknown)` | A printed reset shows that a session window exists. `resets_at` is `null` and `resets_text` keeps the text. |
 | A line contains `Current session` but does not have the form above, for example because of a prefix | `Current session: unavailable` | A change in Claude's wording must not make an exhausted login look usable. |
 | No all-models week line was read | `Current session: 0% used` alone | Nothing else can rank the profile. The state follows the usual [rules](#states). A session line with no reset clause is still read: `resets_text` and `resets_at` are `null`, and the table shows `-` in `SESSION RESETS`. |
@@ -528,7 +536,9 @@ is read as before, in each of these cases:
 
 An accepted [usage request](#probe-method) has no session limit when
 `rate_limits.seven_day` was read and either `rate_limits.five_hour` is
-absent, or its `resets_at` key is absent or `null`. The check is on the raw
+absent, or its `utilization` is `0` and its `resets_at` key is absent or
+`null`. A `five_hour` above `0` with no reset keeps the session window and
+the limit, and is `session_exhausted` at 100 or more. The check is on the raw
 key: a `resets_at` that is present but not a valid string, not an RFC 3339
 time or more than 8 days ahead still means a session limit applies, even
 though the row's `resets_at` is then `null`. A `five_hour` whose
@@ -539,6 +549,7 @@ though the row's `resets_at` is then `null`. A `five_hour` whose
 | `{"seven_day": {"utilization": 47.0, "resets_at": "2026-10-22T09:00:00Z"}}` | `false` | `null` |
 | `{"five_hour": {"utilization": 0.0, "resets_at": null}, "seven_day": {…}}` | `false` | `null` |
 | `{"five_hour": {"utilization": 0.0}, "seven_day": {…}}` | `false` | `null` |
+| `{"five_hour": {"utilization": 100.0, "resets_at": null}, "seven_day": {…}}` | `true` | the window, with both reset fields `null` |
 | `{"five_hour": {"utilization": 20.0, "resets_at": "2026-10-17T02:00:00Z"}, "seven_day": {…}}` | `true` | the window |
 | `{"five_hour": {"utilization": 20.0, "resets_at": 1792202400}, "seven_day": {…}}` | `true` | the window, with both reset fields `null` |
 
@@ -550,15 +561,22 @@ and the rotator and auto-switch apply their usual week thresholds to it. See
 
 Known limitations:
 
-- An idle session-limited login is labelled `no session limit`, as described
-  above, in `profile usage`, `profile usage --json`, `rotate status` and
-  `auto-switch status`.
-- A `Current session` line at 100% with no reset clause gives `ok`, not
-  `session_exhausted`, because the session percentage on such a line is not
-  kept.
-- The `no session limit` line in `rotate status` and the `5h` cell in
-  `auto-switch status` come from the stored auto-switch readings, so they can
-  be as old as the last recorded reading.
+- An idle session-limited login at 0% is labelled `no session limit`, as
+  described above, in `profile usage` and `profile usage --json`.
+- `rotate status` and `auto-switch status` read the stored auto-switch
+  [readings](#readings), which have no field for "a session limit applies
+  but its window is unknown". They therefore print `no session window`, not
+  `no session limit`: a stored reading with `seven_day` and no `five_hour`.
+  That happens for a reading with no session limit, and also when:
+  - a status-line input had no `five_hour`, or one that was rejected (no
+    `resets_at`, an unusable percentage, or a reset outside the bounds in
+    [Readings](#readings));
+  - a `profile usage` row that has a session limit had its session window
+    rejected by the same bounds (for example no reset time), and the stored
+    `five_hour` had already reset.
+
+  Ranking is the same in every case: a missing `five_hour` counts as 0%.
+  These views can also be as old as the last recorded reading.
 
 #### States
 
@@ -2075,14 +2093,17 @@ overflow gate: wait 1800s, unknown reset waits, plan capacity below 85% session 
 overflow gate: closed (the running rotator (pid 4242) has not recorded its overflow settings; restart it)
 ```
 
-The `5h` cell shows `no session limit` when the account's reading has
-`seven_day` and no `five_hour`: no session window was reported, and the
-account is ranked on its week (see [Readings](#readings)). An account with
-neither window, or no reading, shows `-`.
+The `5h` cell shows `no session window` when the account's reading has
+`seven_day` and no `five_hour`: no session window was recorded, and the
+account is ranked on its week (see [Readings](#readings)). This is not the
+same as [no session limit](#no-session-limit): the stored reading cannot
+tell a plan with no session limit from a session window that was not
+recorded (see the known limitations there). An account with neither window,
+or no reading, shows `-`.
 
 ```
 profile   5h                 7d    observed   login   wrapper
-weekly    no session limit   47%   2m ago     home    installed
+weekly    no session window  47%   2m ago     home    installed
 work      93%                61%   5m ago     home    installed
 ```
 
@@ -4790,7 +4811,7 @@ last cycle: 2026-10-18T12:50:05Z stayed
 overflow: -
 api key: -
 on overflow: no
-no session limit: review, weekly
+no session window: review, weekly
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
@@ -4820,7 +4841,7 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `overflow` | The marked overflow profiles in list order, separated by `, `, each followed by ` (blocked until <time>)` when it has an active [spend block](#overflow-spend-limit-block); `-` when none is marked or `.auto-switch` is corrupt. When the ledger cannot be read, the list ends with ` (blocks unknown)`. |
 | `api key` | The first API-key profile, followed by ` (blocked until <time>, <reason>)` while the ledger records an active API-key block; `-` when there is no API-key profile. Printed between `overflow` and `on overflow`. |
 | `on overflow` | `yes (<name>, held by switch)` when a [pin](#rotate-pin) names the live overflow profile: a `profile switch` onto it is a choice to spend, and the rotator does not move off it until `profile switch --none` (see [Pin and overflow](#pin-and-overflow)). Otherwise `yes (<name>)` when the profile identified as live in `~/.claude` by account is an overflow profile and the ledger's `last_cycle.overflow` is `in` or `on`, which means the rotator found no plan capacity in its last cycle. `no (<name> is overflow; plan capacity remains)` when the live profile is an overflow profile but the last cycle carries no such tag, for example after the login was put in `~/.claude` by hand. `no` when it is a plan profile, `-` when the live profile cannot be identified. `status` runs no probe; the ledger is its only evidence. |
-| `no session limit` | Printed only when the list is not empty: the profiles whose current auto-switch [reading](#readings) has `seven_day` and no `five_hour`, sorted by name and separated by `, `. These profiles reported [no session limit](#no-session-limit) and are ranked on their week. Only profiles that exist now are listed. The line comes after `on overflow` and after the `~/.claude is on API key profile ...` line when that is printed, and before `default` and `hold`. It is read from `usage.json` without a lock; if the file is missing, unreadable or unsafe, the line is left out and nothing is printed to stderr. |
+| `no session window` | Printed only when the list is not empty: the profiles whose current auto-switch [reading](#readings) has `seven_day` and no `five_hour`, sorted by name and separated by `, `. These profiles are ranked on their week. The line does not say `no session limit`: a stored reading also loses its `five_hour` when a session window was not recorded (see the known limitations under [No session limit](#no-session-limit)). Only profiles that exist now are listed. The line comes after `on overflow` and after the `~/.claude is on API key profile ...` line when that is printed, and before `default` and `hold`. It is read from `usage.json` without a lock; if the file is missing, unreadable or unsafe, the line is left out and nothing is printed to stderr. |
 | `default` | Printed only when the [default pointer](#clearing-the-default) names an overflow profile: `<name> (overflow; launches use it directly)`. |
 | `log` | The log path. |
 | `alert` | Zero or more. A current [hand-change](#rotate-hand-change-recovery) guidance line. |
