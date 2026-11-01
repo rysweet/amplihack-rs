@@ -2,6 +2,9 @@
 # Scenario 8 — Git Fetch Resilience (Issues #655/#656)
 # Run from repo root: bash tests/outside-in/scripts/scenario8-checks.sh
 set -euo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 
 RECIPE="amplifier-bundle/recipes/workflow-prep.yaml"
 SKILL="docs/claude/skills/default-workflow/SKILL.md"
