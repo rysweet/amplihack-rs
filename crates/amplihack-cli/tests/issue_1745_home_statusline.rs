@@ -21,6 +21,7 @@ use std::process::{Command, Output, Stdio};
 
 const HOUR: i64 = 3600;
 const LINE_34_43: &str = "🔑 X  5h ███░░░░░░░ 34%  7d ████░░░░░░ 43%";
+const BARS: &str = "5h ███░░░░░░░ 34%  7d ████░░░░░░ 43%";
 const PREFIX_LOW: &str = "⚠ all Claude accounts ≥90% · next reset ";
 /// The first line the fake `statusline.sh` prints.
 const FIRST: &str = "#!/bin/sh\ncat >/dev/null\nprintf 'first\\n'\n";
@@ -285,11 +286,11 @@ fn an_explicit_absolute_root_is_used() {
 }
 
 #[test]
-fn a_relative_root_prints_the_first_line_only() {
+fn a_relative_root_prints_the_bars_only() {
     let f = Fixture::new(Some(FIRST));
     f.prototype_ledger(r#"{"live":"X","since":1}"#);
     let out = f.run(&["--root", "profiles"], "0", None, &input(34.0, 43.0));
-    assert_eq!(text(&out.stdout), "first\n");
+    assert_eq!(text(&out.stdout), format!("first\n{BARS}\n"), "bars only");
     assert_eq!(out.status.code(), Some(0));
     assert!(f.usage().is_none());
 }
@@ -316,10 +317,10 @@ fn a_spare_profile_is_counted() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_missing_ledger_prints_the_first_line_only() {
+fn a_missing_ledger_leaves_out_the_login() {
     let f = Fixture::new(Some(FIRST));
     let out = f.home_tick(&input(34.0, 43.0));
-    assert_eq!(text(&out.stdout), "first\n");
+    assert_eq!(text(&out.stdout), format!("first\n{BARS}  · 0 spare\n"));
     assert_eq!(out.status.code(), Some(0));
     assert!(f.usage().is_none());
     assert!(
@@ -330,21 +331,22 @@ fn a_missing_ledger_prints_the_first_line_only() {
 }
 
 #[test]
-fn a_damaged_ledger_prints_the_first_line_only() {
+fn a_damaged_ledger_leaves_out_the_login() {
     let f = Fixture::new(Some(FIRST));
     f.prototype_ledger("not json");
     let out = f.home_tick(&input(34.0, 43.0));
-    assert_eq!(text(&out.stdout), "first\n");
+    assert_eq!(text(&out.stdout), format!("first\n{BARS}  · 0 spare\n"));
     assert_eq!(out.status.code(), Some(0));
     assert!(f.usage().is_none());
 }
 
 #[test]
-fn without_rate_limits_only_the_first_line_is_printed() {
+fn without_rate_limits_the_bars_are_left_out() {
     let f = Fixture::new(Some(FIRST));
     f.prototype_ledger(r#"{"live":"X","since":1}"#);
     let out = f.home_tick(br#"{"session_id":"s"}"#);
-    assert_eq!(text(&out.stdout), "first\n");
+    assert_eq!(text(&out.stdout), "first\n🔑 X  · 0 spare\n");
+    assert!(f.usage().is_none());
 }
 
 #[test]
@@ -377,14 +379,19 @@ fn a_world_writable_script_is_not_run() {
 
 #[test]
 fn nothing_at_all_prints_nothing_and_exits_zero() {
+    // No script, no root and no rate limits: no segment is left.
     let f = Fixture::new(None);
-    let out = f.home_tick(&input(34.0, 43.0));
-    assert_eq!(out.stdout, b"");
+    let missing = f.home.join("no-such-root");
+    let out = f.run_with(&[], "0", None, br#"{"session_id":"s"}"#, |c| {
+        c.env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &missing);
+    });
+    assert_eq!(out.stdout, b"", "{}", text(&out.stderr));
+    assert!(!missing.exists());
     assert_eq!(out.status.code(), Some(0));
 }
 
 #[test]
-fn an_over_limit_reading_shows_one_hundred() {
+fn an_over_limit_reading_is_capped_at_one_hundred_by_the_bounds_check() {
     let f = Fixture::new(Some(FIRST));
     f.prototype_ledger(r#"{"live":"X","since":1}"#);
     let out = f.home_tick(&input(130.0, 43.0));
@@ -414,8 +421,13 @@ fn the_script_exit_code_passes_through_after_the_capacity_line() {
 fn the_script_gets_the_same_input() {
     let f = Fixture::new(Some("#!/bin/sh\ncat\n"));
     let raw = input(34.0, 43.0);
-    let out = f.home_tick(&raw);
-    assert_eq!(out.stdout, raw, "no ledger: the script's output alone");
+    let missing = f.home.join("no-such-root");
+    let out = f.run_with(&[], "0", None, &raw, |c| {
+        c.env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &missing);
+    });
+    let mut want = raw.clone();
+    want.extend_from_slice(format!("\n{BARS}\n").as_bytes());
+    assert_eq!(text(&out.stdout), text(&want), "the input, then the bars");
 }
 
 #[test]
@@ -428,7 +440,11 @@ fn input_over_one_mib_reaches_the_script_but_records_nothing() {
     raw.extend(std::iter::repeat_n(b'x', (1 << 20) + 1));
     raw.extend_from_slice(b"\"}");
     let out = f.home_tick(&raw);
-    assert_eq!(text(&out.stdout), format!("{}\n", raw.len()));
+    assert_eq!(
+        text(&out.stdout),
+        format!("{}\n🔑 X  · 0 spare\n", raw.len()),
+        "no bars from input that is not parsed"
+    );
     assert!(f.usage().is_none());
 }
 
@@ -584,7 +600,7 @@ fn the_wrapper_puts_the_warning_after_the_capacity_line() {
     assert_eq!(lines.len(), 3, "{stdout}");
     assert_eq!(lines[0], "first");
     assert!(
-        lines[1] == "🔑 X  5h █████████░ 95%  7d █░░░░░░░░░ 10%  · 0 spare",
+        lines[1] == "🔑 X  5h ██████████ 95%  7d █░░░░░░░░░ 10%  · 0 spare",
         "{stdout}"
     );
     assert!(lines[2].starts_with(PREFIX_LOW), "{stdout}");

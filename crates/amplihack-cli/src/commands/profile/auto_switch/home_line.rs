@@ -12,14 +12,16 @@
 //! less output, never an error on stdout.
 
 use super::capacity_line;
+use super::config;
 use super::fsx;
 use super::state::State;
 use super::statusline::{self, LOCK_WAIT};
-use super::usage::{self, RateLimits};
+use super::usage::{self, RateLimits, Reading};
 use crate::commands::profile::default_live;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::root_config;
 use crate::commands::profile::store::ProfileStore;
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -75,11 +77,9 @@ pub(super) fn mode(config_dir: Option<&OsStr>, home: Option<&Path>, root: Option
 /// the capacity line. Returns the exit code of `statusline.sh`, or 0 when it
 /// did not run.
 pub(super) fn run(root: Option<&Path>, input: &[u8]) -> i32 {
-    let line = root.and_then(|root| {
-        std::panic::catch_unwind(|| tick(root, input, fsx::now()))
-            .ok()
-            .flatten()
-    });
+    let line = std::panic::catch_unwind(|| tick(root, input, fsx::now()))
+        .ok()
+        .flatten();
     statusline::stream_command(script_command().as_deref(), input, &[line])
 }
 
@@ -139,28 +139,61 @@ fn trusted(m: &fs::Metadata) -> bool {
     (m.uid() == fsx::euid() || m.uid() == 0) && !fsx::writable_by_others(m)
 }
 
-/// The capacity line for the login the rotator ledgers name, after
-/// recording this reading when [`should_record`] allows it. `None` (and
-/// nothing written) when the root is missing or not private, the input has
-/// no usable `rate_limits`, or no trusted ledger names a usable profile.
-pub(super) fn tick(root: &Path, input: &[u8], now: i64) -> Option<String> {
+/// The home-mode capacity line. The login is the one the rotator ledgers
+/// name, when `<root>/<name>` is a real directory; the reading is recorded
+/// first when [`should_record`] allows it. Without a usable root (missing,
+/// a symlink, or not private) only the bars are left: nothing is read or
+/// written under it. `None` when no segment remains.
+pub(super) fn tick(root: Option<&Path>, input: &[u8], now: i64) -> Option<String> {
+    let rl = usage::parse_statusline_input(input, now);
     // Before anything that could create the state directory.
-    fsx::check_root_private(root).ok()?;
-    let rl = usage::parse_statusline_input(input, now)?;
-    let live = default_live::ledger_live(&ProfileStore::new(root.to_path_buf()))?;
-    real_dir(&root.join(live.name.as_str())).then_some(())?;
-    let state = match State::new(root) {
-        Ok(s) => s,
+    let root = root.filter(|r| match fsx::check_root_private(r) {
+        Ok(()) => true,
         Err(e) => {
-            tracing::debug!(op = "home status line state", error = %e);
-            return None;
+            if fs::symlink_metadata(r).is_ok() {
+                eprintln!(
+                    "auto-switch: status line: profile root {}: {e}",
+                    r.display()
+                );
+            }
+            false
         }
+    });
+    let (login, spare) = match root.map(State::new) {
+        Some(Ok(state)) => home_login_and_spare(&state, rl.as_ref(), now),
+        Some(Err(e)) => {
+            tracing::debug!(op = "home status line state", error = %e);
+            (None, None)
+        }
+        None => (None, None),
     };
-    let spare = match should_record(&state, &live, &rl, now) {
-        Some(account) => record(&state, &account, &rl, now, live.name.as_str()),
-        None => unlocked_spare(&state, live.name.as_str(), now),
+    let pct = |w: Option<usage::Window>| w.map(|w| w.used_percentage);
+    capacity_line::render(
+        login.as_ref().map(ProfileName::as_str),
+        rl.as_ref().and_then(|r| pct(r.five_hour)),
+        rl.as_ref().and_then(|r| pct(r.seven_day)),
+        spare,
+    )
+}
+
+/// The ledgers' login and the spare count, recording `rl` on the way when
+/// it can be trusted.
+fn home_login_and_spare(
+    state: &State,
+    rl: Option<&RateLimits>,
+    now: i64,
+) -> (Option<ProfileName>, Option<usize>) {
+    let live = default_live::ledger_live(&ProfileStore::new(state.root.clone()))
+        .filter(|l| real_dir(&state.profile_dir(l.name.as_str())));
+    let name = live.as_ref().map(|l| l.name.as_str());
+    let spare = match (&live, rl) {
+        (Some(l), Some(rl)) => match should_record(state, l, rl, now) {
+            Some(account) => record(state, &account, rl, now, name),
+            None => unlocked_spare(state, name, now),
+        },
+        _ => unlocked_spare(state, name, now),
     };
-    render(live.name.as_str(), &rl, spare)
+    (live.map(|l| l.name), spare)
 }
 
 /// `path` is a directory itself, not a symlink to one.
@@ -203,7 +236,13 @@ pub(super) fn should_record(
 /// spare count from the file just saved. When the lock is busy nothing is
 /// recorded and the count is read without it. `None` when `usage.json` is
 /// damaged or the save fails, so no count is shown from unsaved data.
-fn record(state: &State, account: &str, rl: &RateLimits, now: i64, live: &str) -> Option<usize> {
+fn record(
+    state: &State,
+    account: &str,
+    rl: &RateLimits,
+    now: i64,
+    live: Option<&str>,
+) -> Option<usize> {
     let _lock = match state.try_lock(LOCK_WAIT) {
         Ok(Some(lock)) => lock,
         Ok(None) => return unlocked_spare(state, live, now),
@@ -230,33 +269,67 @@ fn record(state: &State, account: &str, rl: &RateLimits, now: i64, live: &str) -
         Ok(ledger) => super::capacity::refresh(state, &file, &ledger, "statusline"),
         Err(e) => tracing::debug!(op = "home status line ledger", error = %e),
     }
-    Some(spare(state, &file.accounts, live, now))
+    spare(state, &file.accounts, live, now)
 }
 
 /// The spare count from `usage.json` read without the lock; `None` when it
-/// is missing or damaged.
-fn unlocked_spare(state: &State, live: &str, now: i64) -> Option<usize> {
-    if !fsx::exists(&state.dir.join("usage.json")) {
-        return None;
-    }
-    state
+/// is damaged.
+fn unlocked_spare(state: &State, live: Option<&str>, now: i64) -> Option<usize> {
+    let file = state
         .try_load_usage()
-        .inspect_err(|e| tracing::debug!(op = "home status line usage", error = %e))
-        .ok()
-        .map(|f| spare(state, &f.accounts, live, now))
+        .inspect_err(|e| tracing::debug!(op = "status line usage", error = %e))
+        .ok()?;
+    spare(state, &file.accounts, live, now)
+}
+
+/// The spare count (D7): the profiles `profile list` shows, less `live`,
+/// the auto-switch `exclude` list and the overflow profiles, whose reading
+/// (under the account auto-switch has live in their directory, else their
+/// own name) passes [`capacity_line::is_spare`]. `None` when the list, the
+/// auto-switch settings or its ledger cannot be read.
+fn spare(
+    state: &State,
+    accounts: &BTreeMap<String, Reading>,
+    live: Option<&str>,
+    now: i64,
+) -> Option<usize> {
+    let cfg = match config::read(&state.root) {
+        config::FileState::Valid(c) => c,
+        config::FileState::Missing => config::Config::default(),
+        config::FileState::Corrupt => return None,
+    };
+    let ledger = state
+        .load_ledger()
+        .inspect_err(|e| tracing::debug!(op = "status line spare ledger", error = %e))
+        .ok()?;
+    let names = ProfileStore::new(state.root.clone())
+        .list()
+        .inspect_err(|e| tracing::debug!(op = "status line spare list", error = %e))
+        .ok()?;
+    let count = names
+        .iter()
+        .filter_map(|n| ProfileName::parse(n).ok())
+        .filter(|n| Some(n.as_str()) != live && !cfg.exclude.contains(n) && !cfg.is_overflow(n))
+        .filter(|n| {
+            accounts
+                .get(ledger.account_in(n.as_str()))
+                .is_some_and(|r| capacity_line::is_spare(r, now))
+        })
+        .count();
+    Some(count)
 }
 
 /// The capacity line in profile `owner`'s own session: the account
 /// auto-switch has live in its directory (else `owner`), the bars from
-/// `input`, and the spare count from recorded readings read without the
-/// lock.
+/// `input`, and the spare count from readings read without the lock,
+/// `owner` excluded.
 pub(super) fn owned_line(
     state: &State,
     owner: &ProfileName,
     input: &[u8],
     now: i64,
 ) -> Option<String> {
-    let rl = usage::parse_statusline_input(input, now)?;
+    let rl = usage::parse_statusline_input(input, now);
     let ledger = state
         .load_ledger()
         .inspect_err(|e| tracing::debug!(op = "profile status line ledger", error = %e))
@@ -264,21 +337,11 @@ pub(super) fn owned_line(
     let login = ledger
         .as_ref()
         .map_or(owner.as_str(), |l| l.account_in(owner.as_str()));
-    render(login, &rl, unlocked_spare(state, login, now))
-}
-
-fn spare(
-    state: &State,
-    accounts: &std::collections::BTreeMap<String, usage::Reading>,
-    live: &str,
-    now: i64,
-) -> usize {
-    capacity_line::spare(accounts, live, now, |name| {
-        fs::symlink_metadata(state.profile_dir(name)).is_ok_and(|m| m.is_dir())
-    })
-}
-
-fn render(login: &str, rl: &RateLimits, spare: Option<usize>) -> Option<String> {
     let pct = |w: Option<usage::Window>| w.map(|w| w.used_percentage);
-    capacity_line::render(login, pct(rl.five_hour), pct(rl.seven_day), spare)
+    capacity_line::render(
+        Some(login),
+        rl.as_ref().and_then(|r| pct(r.five_hour)),
+        rl.as_ref().and_then(|r| pct(r.seven_day)),
+        unlocked_spare(state, Some(owner.as_str()), now),
+    )
 }

@@ -81,7 +81,8 @@ fn latest(resets: &[Option<i64>]) -> Option<i64> {
         .max()
 }
 
-fn future(w: Option<&Window>, now: i64) -> Option<&Window> {
+/// `w`, when its reset is still ahead.
+pub(crate) fn future(w: Option<&Window>, now: i64) -> Option<&Window> {
     w.filter(|w| w.resets_at > now)
 }
 
