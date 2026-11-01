@@ -43,7 +43,8 @@ fn live_profile(store: &ProfileStore) -> Option<String> {
 pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
     Box::new(move || {
         store.as_ref().is_some_and(|s| {
-            rotate::running(s.root()) && could_take_over(Some(s), live_profile(s).as_deref())
+            rotate::daemon::running(s.root())
+                && could_take_over(Some(s), live_profile(s).as_deref())
         })
     })
 }

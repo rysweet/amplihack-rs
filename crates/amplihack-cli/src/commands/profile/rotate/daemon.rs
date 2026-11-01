@@ -48,6 +48,19 @@ pub(super) fn current_state(rs: &RotateState) -> DaemonState {
     }
 }
 
+/// Whether a login rotator is running for the store at `root`: the built-in
+/// daemon, or the external prototype holding `.rotator/lock` (issue #1801).
+/// Read-only; any read error is `false`.
+pub(in crate::commands::profile) fn running(root: &Path) -> bool {
+    matches!(
+        current_state(&RotateState::new(root)),
+        DaemonState::Running(_)
+    ) || matches!(
+        prototype_guard(root),
+        Err(ProfileError::RotatePrototypeRunning)
+    )
+}
+
 /// Why `start` refuses before it takes the lock, if it does: the external
 /// rotator holds its lock, or the root is not private. Creates nothing.
 pub(super) fn start_refusal(root: &Path) -> Option<ProfileError> {

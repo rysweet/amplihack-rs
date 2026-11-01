@@ -22,7 +22,7 @@ mod control;
 #[cfg(unix)]
 mod cycle;
 #[cfg(unix)]
-mod daemon;
+pub(super) mod daemon;
 #[cfg(unix)]
 mod damp;
 #[cfg(unix)]
@@ -194,20 +194,6 @@ fn foreign_note_for(
     rs.foreign_rotator_at(proc_root, exe).map(|pid| {
         format!("amplihack: the Claude login rotator (pid {pid}) {FOREIGN_IGNORES_HOLD}")
     })
-}
-
-/// Whether a login rotator is running for the store at `root`: the built-in
-/// daemon, or the external prototype holding `.rotator/lock` (issue #1801).
-/// Read-only; any read error is `false`.
-#[cfg(unix)]
-pub(super) fn running(root: &std::path::Path) -> bool {
-    matches!(
-        daemon::current_state(&ledger::RotateState::new(root)),
-        daemon::DaemonState::Running(_)
-    ) || matches!(
-        cycle::prototype_guard(root),
-        Err(super::ProfileError::RotatePrototypeRunning)
-    )
 }
 
 /// Whether rotate live-profile detection names `name` as the login in
