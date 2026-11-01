@@ -73,6 +73,7 @@ fn measured(session: f64, week: f64, reset: Option<i64>) -> Probed {
             }),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -90,6 +91,7 @@ fn exhausted(reset: Option<i64>) -> Probed {
             }),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -110,6 +112,7 @@ struct Case {
     overflow: Vec<OverflowEntry>,
     blocks: BTreeMap<String, OverflowBlock>,
     unmeasured: Vec<ProfileName>,
+    refused: Vec<ProfileName>,
 }
 
 impl Case {
@@ -122,6 +125,7 @@ impl Case {
             overflow: Vec::new(),
             blocks: BTreeMap::new(),
             unmeasured: Vec::new(),
+            refused: Vec::new(),
         }
     }
 
@@ -156,6 +160,12 @@ impl Case {
         self
     }
 
+    /// A profile skipped as `directory refused` (issue #1698).
+    fn refused(mut self, name: &str) -> Self {
+        self.refused.push(n(name));
+        self
+    }
+
     fn spend_blocked(mut self, name: &str) -> Self {
         self.blocks.insert(
             name.into(),
@@ -179,6 +189,7 @@ impl Case {
             blocks: &self.blocks,
             platform_block: None,
             unmeasured_plan: &self.unmeasured,
+            refused: &self.refused,
             swapped_at: Some(NOW - 60),
             now: NOW,
         })
@@ -629,9 +640,15 @@ fn an_unknown_plan_login_does_not_name_itself_when_the_gate_stopped_the_key() {
 }
 
 #[test]
-fn credit_tiers_do_not_wait_for_an_unknown_plan_login_and_report_the_count() {
+fn credit_tiers_do_not_wait_for_a_busy_login_or_a_read_state_and_report_the_count() {
+    // `Failed` without `unknown`: the probe read a state such as
+    // `not_logged_in`. A timeout holds credits too; see the #1698 tests below.
+    let read_a_state = Probed {
+        unknown: false,
+        ..Probed::failed()
+    };
     let v = Case::new("work", exhausted(FAR))
-        .cand("spare", Probed::failed())
+        .cand("spare", read_a_state)
         .busy("ccapstone")
         .credits(measured(10.0, 10.0, FAR))
         .marked_key()
@@ -788,3 +805,60 @@ fn platform_tier_fixed_names_the_profile_and_says_why() {
     );
     assert!(e.hint().contains("without --tier"), "{}", e.hint());
 }
+
+// --- Issue #1698 with issue #1804: both holds, after the merge --------------
+
+fn all_out() -> Case {
+    Case::new("work", exhausted(FAR)).cand("spare", exhausted(FAR))
+}
+
+#[test]
+fn an_unknown_plan_probe_holds_credits_and_the_api_key() {
+    let v = all_out()
+        .cand("timedout", Probed::failed())
+        .credits(measured(0.0, 0.0, FAR))
+        .marked_key()
+        .run();
+    assert_eq!(v.tag, None, "{v:?}");
+    assert_eq!(v.unknown_plan, [n("timedout")]);
+}
+
+#[test]
+fn a_refused_plan_profile_holds_credits_and_counts_as_unknown() {
+    let v = all_out()
+        .refused("locked")
+        .credits(measured(0.0, 0.0, FAR))
+        .run();
+    assert_eq!(v.tag, None, "{v:?}");
+    assert_eq!(v.unknown_plan, [n("locked")]);
+}
+
+#[test]
+fn a_refused_plan_profile_alone_keeping_the_key_back_is_named_for_the_alert() {
+    let v = all_out().refused("locked").marked_key().run();
+    assert_eq!(v.tag, None, "{v:?}");
+    assert_eq!(v.key_held, [n("locked")]);
+}
+
+#[test]
+fn a_refused_overflow_profile_holds_nothing() {
+    let v = all_out()
+        .credits(measured(0.0, 0.0, FAR))
+        .refused("credits")
+        .run();
+    assert_eq!(v.decision, swap("credits", Reason::OverflowIn), "{v:?}");
+}
+
+#[test]
+fn neither_hold_stops_the_plan_room_swap_which_costs_nothing() {
+    for c in [
+        Case::new("work", exhausted(FAR)).cand("timedout", Probed::failed()),
+        Case::new("work", exhausted(FAR)).refused("locked"),
+    ] {
+        let v = c.cand("spare", measured(50.0, 97.0, FAR)).run();
+        assert_eq!(v.decision, swap("spare", Reason::PlanRoom), "{v:?}");
+    }
+}
+
+#[path = "tests_issue_1804_msg.rs"]
+mod tests_issue_1804_msg;

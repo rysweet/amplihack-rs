@@ -25,16 +25,20 @@
 //! leave it, but `platform()` stays `None`, so it never counts as a mark
 //! and is never a target.
 
-use super::decide::{Decision, Measured, Probed, Reading, Reason, Win, Windows};
-use super::identify::LiveId;
-use super::log::{msg, timestamp};
-use super::observe::Snap;
-use super::overflow::{OverflowInput, Tag, decide_overflow};
-use super::overflow_msg::{CheckNote, per_token_off_key, per_token_reason};
-use super::pin::PinState;
-use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{OverflowEntry, PLATFORM_TIER};
+use crate::commands::profile::rotate::decide::{
+    Decision, Measured, Probed, Reading, Reason, Win, Windows,
+};
+use crate::commands::profile::rotate::identify::LiveId;
+use crate::commands::profile::rotate::log::{msg, timestamp};
+use crate::commands::profile::rotate::observe::Snap;
+use crate::commands::profile::rotate::overflow::{OverflowInput, Tag, decide_overflow};
+use crate::commands::profile::rotate::overflow_msg::{
+    CheckNote, per_token_off_key, per_token_reason,
+};
+use crate::commands::profile::rotate::pin::PinState;
+use crate::commands::profile::rotate::settings::Settings;
 use std::collections::BTreeMap;
 
 const NOW: i64 = 1_793_389_376; // 2026-10-30T19:42:56Z
@@ -266,6 +270,7 @@ fn measured(session: f64, week: f64) -> Probed {
             week: win(week),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -283,10 +288,13 @@ fn exhausted() -> Probed {
             week: win(100.0),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
-fn decide_on_unmarked(candidates: &[(&str, Probed)]) -> super::overflow::Verdict {
+fn decide_on_unmarked(
+    candidates: &[(&str, Probed)],
+) -> crate::commands::profile::rotate::overflow::Verdict {
     let s = settings();
     let snap = snap_on_unmarked_key();
     let overflow = snap.decision_overflow();
@@ -304,6 +312,7 @@ fn decide_on_unmarked(candidates: &[(&str, Probed)]) -> super::overflow::Verdict
         blocks: &BTreeMap::new(),
         platform_block: None,
         unmeasured_plan: &[],
+        refused: &[],
         swapped_at: Some(NOW - 60),
         now: NOW,
     })

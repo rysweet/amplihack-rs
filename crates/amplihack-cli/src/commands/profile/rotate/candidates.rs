@@ -15,6 +15,10 @@ use std::path::Path;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Skip {
     Live,
+    /// The profile directory fails the ownership and mode check, so its
+    /// login cannot be checked (issue #1698). A plan profile skipped for
+    /// this holds a move onto overflow until the directory is fixed.
+    Refused,
     NoLogin,
     Excluded,
     SessionRunning,
@@ -31,6 +35,7 @@ impl Skip {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Live => "live",
+            Self::Refused => "directory refused",
             Self::NoLogin => "no login",
             Self::Excluded => "excluded",
             Self::SessionRunning => "session running",
@@ -74,9 +79,14 @@ fn login_skip<'a>(dir: Option<&Path>, resolved: impl FnOnce() -> &'a Resolved) -
 /// `resolved` is the profile's kind as [`kind::Ctx::resolve_kind`] gives
 /// it; the caller has already read it, so no login or settings file is read
 /// again here, only the directory and the login file's metadata.
+///
+/// A directory that fails the check is not unusable: the rotator skips it as
+/// [`Skip::Refused`], its login cannot be checked, and it holds a per-token
+/// move (issue #1698), so auto-switch keeps counting it as unread too.
 pub fn login_unusable(store: &ProfileStore, name: &ProfileName, resolved: &Resolved) -> bool {
-    let dir = store.verify_profile_dir(name).ok();
-    login_skip(dir.as_deref(), || resolved).is_some()
+    store
+        .verify_profile_dir(name)
+        .is_ok_and(|dir| login_skip(Some(&dir), || resolved).is_some())
 }
 
 /// The profiles that may receive the login in `~/.claude`, sorted by name,
@@ -98,6 +108,14 @@ pub fn candidates(
         let resolved = || resolved.get_or_init(|| kinds.resolve_kind(store, &name));
         let skip = if input.live == Some(&name) {
             Some(Skip::Live)
+        } else if dir.is_none() {
+            // An excluded profile is out of rotation whatever its directory,
+            // so it holds nothing back.
+            Some(if input.exclude.contains(&name) {
+                Skip::Excluded
+            } else {
+                Skip::Refused
+            })
         } else if let Some(s) = login_skip(dir.as_deref(), resolved) {
             Some(s)
         } else if input.exclude.contains(&name) {
@@ -123,4 +141,13 @@ pub fn candidates(
         }
     }
     Ok((ok, skips))
+}
+
+/// The profiles skipped as [`Skip::Refused`], for the overflow rule.
+pub fn refused_dirs(skips: &[(ProfileName, Skip)]) -> Vec<ProfileName> {
+    skips
+        .iter()
+        .filter(|(_, s)| *s == Skip::Refused)
+        .map(|(n, _)| n.clone())
+        .collect()
 }

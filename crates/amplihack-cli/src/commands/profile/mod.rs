@@ -21,6 +21,7 @@ mod login_check;
 mod name;
 mod overflow;
 mod pointer;
+mod probe_limits;
 mod root_cmd;
 mod root_config;
 mod rotate;
@@ -32,6 +33,7 @@ mod store;
 mod supervise_gate;
 mod usage_cmd;
 mod usage_parse;
+mod usage_request;
 
 #[cfg(test)]
 mod tests_commands;
@@ -41,6 +43,8 @@ mod tests_default_live;
 mod tests_docs_sync;
 #[cfg(test)]
 mod tests_docs_sync_platform;
+#[cfg(test)]
+mod tests_docs_sync_probe;
 #[cfg(all(test, unix))]
 mod tests_duplicates;
 #[cfg(all(test, unix))]
@@ -51,6 +55,8 @@ mod tests_login_check;
 mod tests_name;
 #[cfg(test)]
 mod tests_pointer;
+#[cfg(test)]
+mod tests_probe_limits;
 #[cfg(test)]
 mod tests_root_config;
 #[cfg(test)]
@@ -69,6 +75,8 @@ mod tests_store;
 mod tests_usage_cmd;
 #[cfg(test)]
 mod tests_usage_parse;
+#[cfg(test)]
+mod tests_usage_request;
 #[cfg(test)]
 mod tests_verify;
 
@@ -375,8 +383,8 @@ pub enum ProfileCommands {
         /// Also print what `claude` wrote to stdout and stderr
         #[arg(long)]
         raw: bool,
-        /// Per-profile deadline in seconds (default 30)
-        #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(1..=usage_cmd::MAX_TIMEOUT_SECS))]
+        /// Seconds each probe may run (default 120, max 600; or AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS)
+        #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(1..=probe_limits::MAX_TIMEOUT_SECS))]
         timeout_secs: Option<u64>,
     },
     /// Switch accounts automatically when one nears its usage limit

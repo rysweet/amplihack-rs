@@ -4,12 +4,13 @@
 //! - `decide::Win { used: f64, resets_at: Option<i64> }` and
 //!   `decide::Windows { session: Option<Win>, week: Option<Win> }`
 //!   (`Default` = both `None`).
-//! - `decide::Probed { reading: Reading, windows: Windows, spend_limit: bool }`
-//!   with `Probed::from_report(&UsageReport)`. `reading` is exactly
-//!   `Reading::from_report` (a spend limit still reads `Failed`); `windows`
-//!   keeps `used_percentage` and `resets_at` for every state, exhausted ones
-//!   included; `spend_limit` is `state == SpendLimit`.
-//! - `decide::Measured { name, reading, windows, spend_limit }`.
+//! - `decide::Probed { reading: Reading, windows: Windows, spend_limit: bool,
+//!   unknown: bool }` with `Probed::from_report(&UsageReport)`. `reading` is
+//!   exactly `Reading::from_report` (a spend limit still reads `Failed`);
+//!   `windows` keeps `used_percentage` and `resets_at` for every state,
+//!   exhausted ones included; `spend_limit` is `state == SpendLimit`;
+//!   `unknown` is `state` `timeout` or `error` (issue #1698).
+//! - `decide::Measured { name, reading, windows, spend_limit, unknown }`.
 //! - `decide::Reason::{OverflowIn, OverflowOut}`, `as_str` `overflow-in`
 //!   and `overflow-out`.
 //! - `overflow::Tag::{In, Out, On}` with `as_str` `in`, `out`, `on`.
@@ -20,8 +21,9 @@
 //!   `unknown_reset` (`--overflow-unknown-reset 1`; default off).
 //! - `overflow::decide_overflow(&OverflowInput) -> Verdict` where
 //!   `OverflowInput { settings, live_name: Option<&ProfileName>, live:
-//!   &Probed, candidates: &[Measured], overflow: &[OverflowEntry], blocks:
-//!   &BTreeMap<String, OverflowBlock>, swapped_at, now }` and
+//!   &Probed, candidates: &[Measured], refused: &[ProfileName], overflow:
+//!   &[OverflowEntry], blocks: &BTreeMap<String, OverflowBlock>, swapped_at,
+//!   now }` and
 //!   `Verdict { decision: Decision, tag: Option<Tag>, new_blocks:
 //!   Vec<ProfileName> }`.
 //!
@@ -32,7 +34,9 @@
 //! - Onto credits only when the live plan login is at a threshold, no plan
 //!   login has capacity, and the earliest plan reset is more than
 //!   `overflow_wait` away (unknown: only with the opt-in). A failed live
-//!   probe never moves onto overflow. This replaces the ALERT and also a
+//!   probe never moves onto overflow, and neither does a plan candidate's
+//!   unknown probe or a plan profile skipped as `directory refused` (issue
+//!   #1698). This replaces the ALERT and also a
 //!   threshold swap onto a plan login without capacity; that swap stands
 //!   when the gate does not allow overflow.
 //! - Overflow profiles are tried by tier, then by the order given.
@@ -47,10 +51,12 @@
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Win, Windows, decide};
 use super::ledger::OverflowBlock;
+use super::measure::reading;
 use super::overflow::{OverflowInput, Tag, Verdict, decide_overflow, gate};
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{Gate, OverflowEntry};
+use crate::commands::profile::usage_cmd::{ErrorReason, Probe};
 use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow};
 use std::collections::BTreeMap;
 
@@ -90,6 +96,7 @@ fn measured(session: f64, week: f64, s_reset: Option<i64>, w_reset: Option<i64>)
             week: win(week, w_reset),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -102,15 +109,24 @@ fn exhausted(s_reset: Option<i64>, w_reset: Option<i64>) -> Probed {
             week: win(100.0, w_reset),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
+/// A probe that read a lasting state (`not_logged_in`, `unparsed`): failed,
+/// but not unknown.
 fn failed() -> Probed {
     Probed {
         reading: Reading::Failed,
         windows: Windows::default(),
         spend_limit: false,
+        unknown: false,
     }
+}
+
+/// A probe that timed out (issue #1698): unknown.
+fn timed_out() -> Probed {
+    Probed::from_report(&UsageReport::empty(UsageState::Timeout))
 }
 
 fn spend_limited() -> Probed {
@@ -118,6 +134,7 @@ fn spend_limited() -> Probed {
         reading: Reading::Failed,
         windows: Windows::default(),
         spend_limit: true,
+        unknown: false,
     }
 }
 
@@ -127,6 +144,7 @@ fn cand(name: &str, p: &Probed) -> Measured {
         reading: p.reading,
         windows: p.windows.clone(),
         spend_limit: p.spend_limit,
+        unknown: p.unknown,
     }
 }
 
@@ -146,6 +164,7 @@ struct Case<'a> {
     live_name: &'a str,
     live: Probed,
     candidates: Vec<Measured>,
+    refused: Vec<ProfileName>,
     overflow: Vec<&'a str>,
     blocks: BTreeMap<String, OverflowBlock>,
     swapped_at: Option<i64>,
@@ -158,6 +177,7 @@ impl<'a> Case<'a> {
             live_name,
             live,
             candidates: Vec::new(),
+            refused: Vec::new(),
             overflow: Vec::new(),
             blocks: BTreeMap::new(),
             swapped_at: None,
@@ -167,6 +187,11 @@ impl<'a> Case<'a> {
 
     fn cand(mut self, name: &str, p: Probed) -> Self {
         self.candidates.push(cand(name, &p));
+        self
+    }
+
+    fn refused(mut self, names: &[&str]) -> Self {
+        self.refused = names.iter().map(|x| n(x)).collect();
         self
     }
 
@@ -192,6 +217,7 @@ impl<'a> Case<'a> {
             live_name: Some(&live_name),
             live: &self.live,
             candidates: &self.candidates,
+            refused: &self.refused,
             overflow: &overflow,
             blocks: &self.blocks,
             platform_block: None,
@@ -533,13 +559,184 @@ fn a_failed_plan_candidate_never_shortens_the_wait() {
         .run();
     assert_eq!(v.tag, None);
     assert_eq!(v.decision, Decision::Alert);
-    // With work's reset far, overflow starts: the failed probe adds nothing.
+    // With work's reset far, a spare whose probe timed out holds overflow
+    // back: it may have capacity (issue #1698).
+    let v = Case::new("work", exhausted(FAR, FAR))
+        .cand("spare", timed_out())
+        .cand("cred", exhausted(None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.tag, None);
+    assert_eq!(v.decision, Decision::Alert);
+    // A lasting failure adds nothing, so overflow starts.
     let v = Case::new("work", exhausted(FAR, FAR))
         .cand("spare", failed())
         .cand("cred", exhausted(None, None))
         .overflow(&["cred"])
         .run();
     assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
+}
+
+// --- Issue #1698: an unknown plan probe blocks the move onto overflow -----
+
+#[test]
+fn every_plan_probe_unknown_gives_the_decide_result_not_overflow() {
+    // The defect: the plan logins' probes timed out under load, and the
+    // rotator moved work onto credits although they may have capacity.
+    let run = |live: Probed, opt_in: bool| {
+        let mut c = Case::new("work", live)
+            .cand("spare", timed_out())
+            .cand("extra", timed_out())
+            .cand("cred", exhausted(None, None))
+            .overflow(&["cred"]);
+        c.s.overflow_unknown_reset = opt_in;
+        let v = c.run();
+        let want = decide(&c.s, &c.live.reading, &c.candidates[..2], c.swapped_at, NOW);
+        (v, want)
+    };
+    for (live, opt_in) in [
+        (exhausted(None, None), true),
+        (exhausted(FAR, FAR), false),
+        (exhausted(FAR, FAR), true),
+        (measured(90.0, 40.0, FAR, FAR), false),
+    ] {
+        let (v, want) = run(live, opt_in);
+        assert_eq!(v.decision, Decision::Alert);
+        assert_eq!(v.decision, want);
+        assert_eq!(v.tag, None);
+        assert_eq!(v.next_plan_reset, None);
+        assert!(v.new_blocks.is_empty());
+    }
+}
+
+#[test]
+fn one_unknown_plan_probe_among_exhausted_ones_blocks_overflow() {
+    let case = |extra: Probed| {
+        Case::new("work", exhausted(FAR, FAR))
+            .cand("spare", exhausted(FAR, FAR))
+            .cand("extra", extra)
+            .cand("cred", exhausted(None, None))
+            .overflow(&["cred"])
+            .run()
+    };
+    let v = case(timed_out());
+    assert_eq!(v.decision, Decision::Alert);
+    assert_eq!(v.tag, None);
+    let v = case(exhausted(FAR, FAR));
+    assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
+}
+
+#[test]
+fn an_unknown_plan_probe_keeps_a_threshold_swap_off_overflow() {
+    // decide swaps onto spare, itself at a threshold; with extra unknown that
+    // swap stands instead of overflow.
+    let v = Case::new("work", measured(95.0, 40.0, FAR, FAR))
+        .cand("spare", measured(86.0, 10.0, FAR, FAR))
+        .cand("extra", timed_out())
+        .cand("cred", exhausted(None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, swap("spare", Reason::Threshold));
+    assert_eq!(v.tag, None);
+}
+
+#[test]
+fn a_lasting_plan_failure_does_not_block_overflow() {
+    // Logged out, unreadable or at the spend limit: Failed, but what the
+    // login reported, so overflow is not held back on every cycle.
+    for state in [
+        UsageState::NotLoggedIn,
+        UsageState::Unparsed,
+        UsageState::SpendLimit,
+    ] {
+        let spare = Probed::from_report(&UsageReport::empty(state));
+        assert_eq!(spare.reading, Reading::Failed, "{state:?}");
+        assert!(!spare.unknown, "{state:?}");
+        let v = Case::new("work", exhausted(FAR, FAR))
+            .cand("spare", spare)
+            .cand("cred", exhausted(None, None))
+            .overflow(&["cred"])
+            .run();
+        assert_eq!(v.decision, swap("cred", Reason::OverflowIn), "{state:?}");
+        assert_eq!(v.tag, Some(Tag::In));
+    }
+}
+
+#[test]
+fn a_refused_plan_profile_directory_blocks_overflow() {
+    // A directory refused just before the spawn reads `error`; that login
+    // may have capacity, so the move onto credits is held in this cycle.
+    let refused = Probe {
+        report: UsageReport::empty(UsageState::Error),
+        error: Some(ErrorReason::ProfileRefused),
+        raw: None,
+    };
+    let spare = reading("spare", &refused);
+    assert!(spare.unknown);
+    let v = Case::new("work", exhausted(FAR, FAR))
+        .cand("spare", spare)
+        .cand("cred", exhausted(None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, Decision::Alert);
+    assert_eq!(v.tag, None);
+    assert!(v.new_blocks.is_empty());
+}
+
+#[test]
+fn a_plan_profile_skipped_as_directory_refused_blocks_overflow() {
+    // Its login cannot be checked, so it may have capacity. The skip comes
+    // back every cycle until the directory is fixed, and so does the hold.
+    let case = || {
+        Case::new("work", exhausted(FAR, FAR))
+            .cand("cred", exhausted(None, None))
+            .overflow(&["cred"])
+    };
+    let v = case().refused(&["odd"]).run();
+    assert_eq!(v.decision, Decision::Alert);
+    assert_eq!(v.tag, None);
+    assert!(v.new_blocks.is_empty());
+    // Fixed (no longer skipped as refused): the move goes ahead.
+    let v = case().run();
+    assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
+    assert_eq!(v.tag, Some(Tag::In));
+}
+
+#[test]
+fn an_overflow_profile_skipped_as_directory_refused_holds_nothing() {
+    let v = Case::new("work", exhausted(FAR, FAR))
+        .cand("cred", exhausted(None, None))
+        .overflow(&["cred", "odd:2"])
+        .refused(&["odd"])
+        .run();
+    assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
+    assert_eq!(v.tag, Some(Tag::In));
+}
+
+#[test]
+fn an_unknown_overflow_probe_is_skipped_for_the_next() {
+    let v = Case::new("work", exhausted(FAR, FAR))
+        .cand("cred", timed_out())
+        .cand("cred2", exhausted(None, None))
+        .overflow(&["cred", "cred2"])
+        .run();
+    assert_eq!(v.decision, swap("cred2", Reason::OverflowIn));
+}
+
+#[test]
+fn a_blocked_live_overflow_moves_on_despite_an_unknown_plan_probe() {
+    // Decision 7: only the move from a plan login onto credits is held; a
+    // live overflow profile that cannot spend still moves to the next.
+    let mut c = Case::new("cred", exhausted(None, None))
+        .cand("cred2", exhausted(None, None))
+        .cand("spare", exhausted(FAR, FAR))
+        .cand("extra", timed_out())
+        .overflow(&["cred", "cred2"]);
+    c.blocks
+        .insert("cred".into(), block(NOW - HOUR, NOW + 24 * HOUR));
+    let v = c.run();
+    assert_eq!(v.decision, swap("cred2", Reason::OverflowIn));
+    assert_eq!(v.tag, Some(Tag::In));
 }
 
 #[test]

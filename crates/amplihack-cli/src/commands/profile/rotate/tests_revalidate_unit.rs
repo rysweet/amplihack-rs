@@ -177,6 +177,7 @@ fn overflow_entries_and_ignored_names_are_overflow_changes() {
 #[test]
 fn a_swap_target_that_is_skipped_names_its_reason() {
     for why in [
+        Skip::Refused,
         Skip::NoLogin,
         Skip::Excluded,
         Skip::SessionRunning,

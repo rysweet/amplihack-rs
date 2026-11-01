@@ -18,8 +18,10 @@ use crate::commands::profile::auto_switch::kit::{Liveness, now};
 use crate::commands::profile::auto_switch::{
     OverflowInputs, Pool, ReadingSource, SwitchReading, Window, select_with_overflow,
 };
+use crate::commands::profile::kind;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{Gate, OverflowEntry};
+use crate::commands::profile::rotate::candidates::login_unusable;
 use crate::commands::profile::rotate::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use crate::commands::profile::rotate::decide::{Probed, Reading, Win, Windows};
 use crate::commands::profile::rotate::gate_record::GateSource;
@@ -129,6 +131,7 @@ fn probed(session: f64) -> Probed {
             week: win(40.0),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -346,4 +349,24 @@ fn a_ledger_with_a_record_the_rotator_could_not_write_is_refused() {
     });
     f.rs.save_ledger(&l).unwrap();
     assert!(f.rs.load_ledger().is_err());
+}
+
+/// Issue #1698 with #1804: a directory that fails the check is `directory
+/// refused`, not `no login`. Its login cannot be checked, so the rotator
+/// holds per-token moves for it and auto-switch must keep counting it unread.
+#[test]
+fn a_refused_directory_is_not_an_unusable_login() {
+    let f = fx();
+    let name = n(WORK);
+    let dir = f.root.join(WORK);
+    let resolved = kind::Ctx::load(&f.store, None).resolve_kind(&f.store, &name);
+    assert!(
+        login_unusable(&f.store, &name, &resolved),
+        "a directory that passes the check, with no login in it, is unusable"
+    );
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(
+        !login_unusable(&f.store, &name, &resolved),
+        "a refused directory says nothing about its login"
+    );
 }

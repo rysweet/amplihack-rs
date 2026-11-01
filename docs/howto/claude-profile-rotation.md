@@ -29,6 +29,7 @@ The exact flags, files, exit codes and log lines are in the
 - [Change the thresholds](#change-the-thresholds)
 - [When a swap happens](#when-a-swap-happens)
 - [When the live login cannot be measured](#when-the-live-login-cannot-be-measured)
+- [When the host is heavily loaded](#when-the-host-is-heavily-loaded)
 - [Which profiles can take over](#which-profiles-can-take-over)
 - [Read the log](#read-the-log)
 - [Resume sessions stopped by a usage limit](#resume-sessions-stopped-by-a-usage-limit)
@@ -69,7 +70,9 @@ work      live in ~/.claude  ok     88%      Oct 18, 1pm (Europe/London)        
 ```
 
 Only a profile in state `ok` can be chosen; an exhausted profile, or one whose
-probe failed, never is.
+probe failed, never is. A probe that failed or timed out means the account's
+usage is unknown, not that it is used up: such a profile is not treated as
+exhausted and is probed again on the next cycle.
 
 ## Preview a rotation
 
@@ -269,6 +272,7 @@ then refuses. Without a pending recovery, a refusal changes nothing but
 | `profile spare is not a rotate candidate (leased): ...`, `(hosting)`, `(parked)` | Auto-switch has lent `spare`'s login to another session, or `spare`'s directory holds another account's login. Wait for that session to end; auto-switch then returns the logins. |
 | `profile spare is not a rotate candidate (excluded): ...` | `spare` is in the auto-switch exclude list, which keeps it out of rotation; a switch is a rotation done by hand. Set the list without it with `amplihack profile auto-switch exclude`, then switch. |
 | `profile spare is not a rotate candidate (no account): ...` | `spare/.claude.json` has no `oauthAccount`, so `~/.claude.json` could not be updated. Run `amplihack profile login spare`. |
+| `profile spare is not a rotate candidate (directory refused): ...` | The `spare` directory is a symlink, not yours, or open to group or other users. Run `chmod 700` on it, or recreate it if it is not yours. While it is refused, the rotator does not move onto overflow profiles; see [When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured). |
 | `profile spare is not a rotate candidate (no login): ...` | `spare`'s `.credentials.json` is a symlink, not yours, readable by others or hard-linked. See [Swap refused](#swap-refused). |
 | Any reason in the [Swap refused](#swap-refused) table | As described there. |
 
@@ -427,8 +431,9 @@ start` runs, with the same pid file, log and
 [root record](#which-root-the-rotator-uses). The differences:
 
 - It uses the profile root the launch resolved.
-- It keeps the `AMPLIHACK_ROTATE_*` [thresholds](#change-the-thresholds) set
-  in the environment of the launch that started it, and that launch's
+- It keeps the `AMPLIHACK_ROTATE_*` [thresholds](#change-the-thresholds) and
+  the `AMPLIHACK_PROFILE_USAGE_*` [probe settings](#when-the-host-is-heavily-loaded)
+  set in the environment of the launch that started it, and that launch's
   `amplihack` binary. To change them, run `rotate stop`, then
   `rotate start` with the settings you want.
 - It does not run [recovery](#recovery) before it starts; its first cycle
@@ -625,7 +630,71 @@ A failed probe of a *candidate* only stops that candidate being chosen, as
 before. When every account is at or above a threshold, the rotator writes
 one `ALERT` and stays, as before.
 
-To see why a probe fails, run `amplihack profile usage --raw`.
+A probe that timed out or could not run shows as `<name>:failed` in the
+cycle line, never as `s=100%,w=100%`, and writes
+`warning: rotate: probe of <name> timed out` (or `failed: <reason>`) to
+`rotate.err`. Its usage is unknown: the rotator does not choose it, does not
+count or record it as exhausted, and probes it again on the next cycle.
+While a plan profile's usage is unknown this way, the rotator does not move
+onto
+[usage credits](#use-usage-credits-when-every-plan-login-is-exhausted); see
+[When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured).
+`s=100%,w=100%` means the probe answered and the account reached its
+session or weekly limit.
+
+To see why a probe fails, run `amplihack profile usage --raw`. If the state
+is `timeout`, see
+[When the host is heavily loaded](#when-the-host-is-heavily-loaded).
+
+## When the host is heavily loaded
+
+The rotator measures each login as
+[`profile usage`](claude-profiles.md#check-usage-across-profiles) does: it
+asks `claude` with a `get_usage` request, which does not appear to make
+Claude read the session transcripts, and falls back to `claude -p /usage`,
+which reads every transcript the profile can see. That fallback can take a
+minute or more of CPU on a busy host, and a profile marked as overflow is
+always probed with `/usage` alone. So the rotator gives each login's probe 120
+seconds, for the request and any fallback together, and runs only a few
+probes at once: between 2 and 4, fewer as the load average rises towards
+the number of CPUs. The live login's probe counts as one of those. A
+`claude` that answers `get_usage` but does not exit keeps its place among
+those few until its 120 seconds are up; it is then stopped and its answer is
+still used. The formula is in the
+[reference](../reference/profile-command.md#probe-parallelism).
+
+If probes still time out, give them longer, run fewer at once, or both. The
+rotator reads these variables from the environment it was started in, so
+set them in the shell that starts it, then restart it:
+
+```bash
+export AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS=300
+export AMPLIHACK_PROFILE_USAGE_PARALLEL=1
+amplihack profile rotate stop
+amplihack profile rotate start --interval 120 --session-at 70
+```
+
+A rotator that a launch [started automatically](#start-the-rotator-automatically)
+has that launch's values, so restart it the same way. Changing a variable
+in another shell does nothing to a running rotator.
+
+| Variable | Values | Default |
+|----------|--------|---------|
+| `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | `1` to `600` seconds | `120` |
+| `AMPLIHACK_PROFILE_USAGE_PARALLEL` | `1` to `16` | derived from CPUs and load |
+| `AMPLIHACK_PROFILE_USAGE_PROBE` | `auto` or `text` | `auto` |
+
+On an idle host with many profiles, a higher
+`AMPLIHACK_PROFILE_USAGE_PARALLEL` makes each cycle shorter.
+`AMPLIHACK_PROFILE_USAGE_PROBE=text` skips the `get_usage` request; use it
+only if that request gives wrong figures (see
+[Compare the two probe methods](claude-profiles.md#compare-the-two-probe-methods)),
+because every probe then reads the transcripts. An empty value is treated as
+unset. An invalid value is reported once per cycle in `rotate.err` beside
+the log, and the default is used instead.
+
+A slow cycle can take longer than `--interval`. Cycles do not overlap: the
+next one starts `--interval` seconds after the previous one ends.
 
 ## Which profiles can take over
 
@@ -983,11 +1052,15 @@ See [Auto-switch and overflow profiles](../reference/profile-command.md#auto-swi
 
 ### When no plan reset time is known
 
-A plan profile whose probe failed, or that reads exhausted without a reset
-time, has no known reset. Unknown resets are left out: one known reset
-decides the wait. When **none** is known, the rotator does not spend money
-by default: it writes the no-capacity ALERT and stays on the plan login. To
-let an unknown reset move work onto credits at once, opt in:
+A plan profile that reads exhausted without a reset time, or whose probe
+read `not_logged_in`, `unparsed` or `spend_limit`, has no known reset.
+Unknown resets are left out: one known reset decides the wait. (A plan
+profile whose probe timed out, or whose `claude` could not be started or
+read, stops the move onto credits for that cycle altogether; see
+[When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured).)
+When **none** is known, the rotator does not spend money by default: it
+writes the no-capacity ALERT and stays on the plan login. To let an unknown
+reset move work onto credits at once, opt in:
 
 ```bash
 amplihack profile rotate stop
@@ -998,6 +1071,55 @@ amplihack profile rotate start --overflow-unknown-reset 1
 `rotate start` does the same. Auto-switch follows the running rotator's
 choice either way. The `overflow: on` log line then reads `next plan reset
 unknown`.
+
+### When a plan login cannot be measured
+
+If a plan profile's probe times out, its `claude` cannot be started or
+read, or its directory is refused just before the spawn, the rotator cannot
+tell whether that login has capacity, so it does not move onto credits in
+that cycle, however far away the known resets are. It writes the no-capacity
+ALERT (or makes the free swap onto a plan login at a threshold) as it would
+with no overflow profile, and probes again on the next cycle:
+
+```
+2026-10-24T09:00:05Z cycle live=work work:s=97%,w=91% personal:failed ryan-mistt-org:s=100%,w=100%
+2026-10-24T09:00:05Z ALERT: no profile has capacity live=work s=97% w=91% (candidates: 1 failed, 1 exhausted)
+```
+
+A plan probe that timed out or could not run never moves work onto
+credits. If the probes keep timing out, see
+[When the host is heavily loaded](#when-the-host-is-heavily-loaded).
+
+A plan profile whose directory fails the ownership and mode check (it is a
+symlink, is not yours, or is open to group or other users) is skipped
+before any probe:
+
+```
+2026-10-24T09:00:05Z skip: personal (directory refused)
+```
+
+Its login cannot be checked, so it might have capacity. The rotator never
+chooses it, and does not move onto credits on any cycle until the directory
+is fixed. `amplihack profile usage personal` shows `error` with `profile
+directory refused`. Run `chmod 700` on the directory (or recreate it if it
+is not yours) to bring the profile back into rotation and release the hold.
+A directory that changes between that check and the probe reads `error` in
+the cycle line instead, and holds credits back in the same way. An excluded
+profile is skipped as `excluded` whatever its directory, and an overflow
+profile with a refused directory is skipped; neither holds anything back.
+
+A profile that is not logged in, whose `/usage` output cannot be read
+(`unparsed`) or that is at its spend limit does not block credits: the
+login reported that state, and it would otherwise keep the rotator off
+credits for good. Such a profile is never chosen; fix it or remove it.
+
+The rule stops only a move from a plan login onto credits. If the overflow
+profile you are on hits its spend limit, the rotator still moves to the next
+overflow profile, and it moves back to a plan login as soon as one reads
+capacity.
+
+Auto-switch does not apply this rule. It decides from the readings it has
+recorded, and a probe that timed out or could not run is never recorded.
 
 ### Rank overflow profiles
 
@@ -1020,7 +1142,8 @@ On each cycle:
    a move to the plan login below 100% on both windows with the most room.
    Only when no measured plan login, the live one included, has room does it look
    at overflow: if the earliest plan reset is more than `--overflow-wait`
-   away and an overflow profile can be used, it swaps to the first one by
+   away, no plan profile's probe timed out or could not start in this cycle,
+   and an overflow profile can be used, it swaps to the first one by
    tier with `reason=overflow-in`. A failed live probe never leads to
    credits.
 2. While the live login is an overflow profile, it checks every plan
@@ -1037,9 +1160,12 @@ moves to, it returns to credits only once no plan login has room again.
 
 Not every plan login is measured. One with a session on it, or leased,
 hosting, parked or with no account, is skipped; one whose probe failed gave
-no reading. Either may have room. Credits do not wait for these logins, and
-the `per-token` line says how many there were (`2 not measured`). The API
-key does wait: see [The order the rotator follows](#the-order-the-rotator-follows).
+no reading. Either may have room. Credits do not wait for a skipped login or
+one whose probe read a state such as `not_logged_in`, and the `per-token` line
+says how many there were (`2 not measured`). Credits do wait for a probe that
+timed out or could not run, and for a plan profile skipped as
+`directory refused`: that login might have capacity. The API key waits for
+all of these: see [The order the rotator follows](#the-order-the-rotator-follows).
 
 Earlier releases moved onto credits as soon as every plan login had reached
 a threshold. They now wait until no plan login is below 100%; until then
@@ -1143,9 +1269,14 @@ overflow: cleared the spend block on ryan-mistt-org
 `rotator busy, retry`; run it again.
 
 The block depends on the spend-limit message appearing in the output of
-`claude -p /usage`. If sessions on the overflow profile fail with that
-message but no block appears in `overflow list`, the rotator cannot tell, and
-you have two ways out:
+`claude -p /usage`. An overflow profile needs its usage credits turned on
+(see [Turn on usage credits](#turn-on-usage-credits)), and a profile marked
+as overflow is always probed with `/usage`, so the rotator can see that
+message. With
+credits off there is no spend limit to reach: the account stops at its plan
+limit like a plan login. If sessions on the overflow profile fail with the
+spend-limit message but no block appears in `overflow list`, the rotator
+cannot tell, and you have two ways out:
 
 - `amplihack profile overflow remove <name>` makes it a plan profile. A
   spend-limit reading then counts as a failed probe, so the rotator swaps it
@@ -1954,10 +2085,11 @@ full rule is in
   organization, both commands warn about a duplicate login.
 - **Overflow depends on what `/usage` shows.** The rotator assumes that an
   account on credits still answers `claude -p /usage` after its plan limit,
-  and that a used-up spend limit shows there as `spend_limit`. An overflow
-  profile whose probe fails is never used. A spend block always lasts until
-  the 1st of the next month (UTC), whatever reset Claude states; lift it
-  sooner with `amplihack profile overflow clear <name>`.
+  and that a used-up spend limit shows there as `spend_limit`. A profile
+  marked as overflow is always probed with `/usage`, so it always pays the
+  transcript scan. An overflow profile whose probe fails is never used. A spend block
+  always lasts until the 1st of the next month (UTC), whatever reset Claude
+  states; lift it sooner with `amplihack profile overflow clear <name>`.
 - **The warning can say exhausted while on credits.** The status line and
   `profile usage` do not know about credits and may record the no-capacity
   warning between cycles; the rotator's next cycle clears it.
@@ -1982,5 +2114,13 @@ full rule is in
   sessions while a `switch` hold is in force, and the usage-limit wait reruns
   a step only when its limit resets; see
   [What the hold changes](#what-the-hold-changes).
-- **Each cycle starts `claude` once per profile.** The probes run
-  `claude -p /usage` in parallel, so a short `--interval` means many processes.
+- **Each cycle starts `claude` once or twice per profile.** Each probe
+  starts `claude` for the `get_usage` request, and again for `/usage` when
+  that request falls back, a few profiles at a time. A short `--interval`
+  means many processes.
+- **`get_usage` is experimental in Claude Code.** A Claude Code update can
+  change or remove it. amplihack then falls back to `/usage` on every probe,
+  which is slower but still correct. When Claude's own usage lookup fails,
+  it can answer `get_usage` with figures it stored earlier, without marking
+  them as old; compare with `AMPLIHACK_PROFILE_USAGE_PROBE=text` as in
+  [Compare the two probe methods](claude-profiles.md#compare-the-two-probe-methods).

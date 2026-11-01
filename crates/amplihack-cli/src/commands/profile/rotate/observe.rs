@@ -109,6 +109,16 @@ impl Snap {
             .collect()
     }
 
+    /// Plan profiles skipped as `directory refused` (issue #1698). Unmarked
+    /// and unused API-key profiles among them were never plan logins, so
+    /// they hold nothing back (issue #1804).
+    pub fn refused_plan(&self) -> Vec<ProfileName> {
+        identify::refused_dirs(&self.skips)
+            .into_iter()
+            .filter(|n| !self.unmarked.contains(n) && !self.ignored.contains(n))
+            .collect()
+    }
+
     /// The overflow entries the decision uses: [`Self::overflow`], with an
     /// adopted live API-key profile at [`PLATFORM_TIER`] in place of the
     /// marked one. Live, it is never moved to; the entry only lets the exit
@@ -311,6 +321,7 @@ pub(super) fn decide_measured(
         live: &probe,
         candidates: &measured,
         unmeasured_plan: &unmeasured_plan,
+        refused: &snap.refused_plan(),
         overflow: &overflow,
         blocks: &blocks,
         platform_block: platform_block.as_ref(),

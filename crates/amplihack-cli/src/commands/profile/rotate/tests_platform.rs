@@ -64,6 +64,7 @@ fn measured(session: f64, week: f64, reset: Option<i64>) -> Probed {
             week: win(week, reset),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -75,6 +76,7 @@ fn exhausted(reset: Option<i64>) -> Probed {
             week: win(100.0, reset),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -83,6 +85,7 @@ fn failed() -> Probed {
         reading: Reading::Failed,
         windows: Windows::default(),
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -91,6 +94,7 @@ fn spend_limited() -> Probed {
         reading: Reading::Failed,
         windows: Windows::default(),
         spend_limit: true,
+        unknown: false,
     }
 }
 
@@ -148,6 +152,7 @@ impl Case {
             reading: p.reading,
             windows: p.windows.clone(),
             spend_limit: p.spend_limit,
+            unknown: p.unknown,
         });
         self
     }
@@ -174,6 +179,7 @@ impl Case {
             live_name: Some(&live_name),
             live: &self.live,
             candidates: &self.candidates,
+            refused: &[],
             overflow: &overflow,
             blocks: &self.blocks,
             platform_block: self.platform_block.as_ref(),

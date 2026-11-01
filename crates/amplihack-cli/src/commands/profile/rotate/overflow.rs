@@ -13,10 +13,12 @@
 //!   80 and 90 against 85/90).
 //! - Onto overflow only when the live plan login is at a threshold (and its
 //!   probe did not fail), no plan login, live included, has room
-//!   ([`plan_room`]) and the shared [`Gate`] allows it: the earliest plan
-//!   reset is more than `overflow_wait` away. An unknown reset allows it
-//!   only with `--overflow-unknown-reset 1`. Auto-switch decides in the same
-//!   order.
+//!   ([`plan_room`]), no plan candidate's probe is unknown (it timed out or
+//!   could not run, issue #1698), no plan profile is skipped as
+//!   `directory refused`, and the shared [`Gate`] allows it: the earliest
+//!   plan reset is more than `overflow_wait` away. An unknown reset allows
+//!   it only with `--overflow-unknown-reset 1`. Auto-switch decides in the
+//!   same order.
 //! - The overflow profile chosen is the first usable one by tier, then by
 //!   file order within a tier.
 //! - Off overflow as soon as a plan login has capacity, then as soon as one
@@ -46,10 +48,13 @@
 //!   was skipped as busy ([`crate::commands::profile::rotate::observe::Snap::unmeasured_plan`])
 //!   or failed its probe is unknown, not empty: while one is unknown the
 //!   API-key tier is not used and [`Verdict::key_held`] names them for the
-//!   ALERT. Credit tiers do not wait for unknown logins: they have a spend
-//!   limit and a marked account behind them, and the `per-token` line gives
-//!   the count. An excluded login is the operator's choice and counts as
-//!   neither.
+//!   ALERT. Credit tiers do not wait for a busy login or a probe that read
+//!   a state such as `not_logged_in`: they have a spend limit and a marked
+//!   account behind them, and the `per-token` line gives the count. Credit
+//!   tiers do wait, off a plan login, for a probe that is
+//!   [`Measured::unknown`] and for a plan profile skipped as
+//!   `directory refused` (issue #1698): that login might have capacity. An
+//!   excluded login is the operator's choice and counts as neither.
 //! - A key in the `$HOME` files makes the live probe unreadable
 //!   (`key_check`), so the live reading is `Failed` and the per-token tier
 //!   is not tried off a plan login. Nothing is lost: Claude is already
@@ -101,6 +106,11 @@ pub struct OverflowInput<'a> {
     /// Plan logins left unmeasured this cycle because they are busy: they
     /// may have room, so they hold back the API key.
     pub unmeasured_plan: &'a [ProfileName],
+    /// Profiles skipped as `directory refused` (issue #1698). Their logins
+    /// cannot be checked, so a plan profile among them holds a move onto
+    /// overflow, as an unknown probe does, until its directory is fixed.
+    /// Overflow profiles among them are ignored.
+    pub refused: &'a [ProfileName],
     /// The overflow entries, in any order: they are tried by tier, then in
     /// the order given within a tier.
     pub overflow: &'a [OverflowEntry],
@@ -123,7 +133,7 @@ pub struct Verdict {
     /// The earliest plan reset, for the `overflow:` log lines; `None` when
     /// unknown or when the verdict does not use overflow.
     pub next_plan_reset: Option<i64>,
-    /// Plan logins whose state is unknown: unmeasured or failed probe.
+    /// Plan logins of unknown state: unmeasured, probe failed or refused.
     pub unknown_plan: Vec<ProfileName>,
     /// [`Self::unknown_plan`] when they alone kept work off the API key, for
     /// the ALERT; otherwise empty.
@@ -257,6 +267,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
                 .filter(|c| c.reading == Reading::Failed)
                 .map(|c| c.name.clone()),
         )
+        .chain(i.refused.iter().filter(|n| !is_overflow(n)).cloned())
         .collect();
     let verdict = |decision, tag, next_plan_reset| Verdict {
         decision,
@@ -317,10 +328,17 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         if room {
             return verdict(Decision::Alert, None, None);
         }
+        // An unknown plan probe (timed out, or `claude` could not run) or a
+        // plan profile skipped as `directory refused` might have capacity,
+        // so it holds every per-token move (issue #1698). A login that read
+        // `not_logged_in`, `unparsed`, `spend_limit`, or `ok` with no week
+        // figure does not.
+        let held = plan.iter().any(|c| c.unknown) || i.refused.iter().any(|n| !is_overflow(n));
         let pool = std::iter::once((&i.live.reading, &i.live.windows))
             .chain(plan.iter().map(|c| (&c.reading, &c.windows)));
         let earliest = earliest_plan_reset(s, pool);
-        if gate.far(earliest, i.now)
+        if !held
+            && gate.far(earliest, i.now)
             && let Some(to) = next_paid()
         {
             return verdict(swap(to, Reason::OverflowIn), Some(Tag::In), earliest);

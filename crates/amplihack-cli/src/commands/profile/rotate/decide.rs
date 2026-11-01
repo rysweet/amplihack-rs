@@ -88,14 +88,20 @@ pub struct Probed {
     pub reading: Reading,
     pub windows: Windows,
     pub spend_limit: bool,
+    /// The probe timed out or could not run: the login may have capacity,
+    /// so it blocks a move onto overflow. Always with `Reading::Failed`.
+    pub unknown: bool,
 }
 
 impl Probed {
+    /// A `timeout` or `error` report is unknown; every other state is what
+    /// the login reported.
     pub fn from_report(r: &UsageReport) -> Self {
         Self {
             reading: Reading::from_report(r),
             windows: Windows::from_report(r),
             spend_limit: r.state == UsageState::SpendLimit,
+            unknown: matches!(r.state, UsageState::Timeout | UsageState::Error),
         }
     }
 
@@ -111,15 +117,17 @@ impl Probed {
             },
             windows: Windows::default(),
             spend_limit: false,
+            unknown: false,
         }
     }
 
-    /// A probe that failed before any output was read.
+    /// A probe that failed before any output was read: unknown.
     pub fn failed() -> Self {
         Self {
             reading: Reading::Failed,
             windows: Windows::default(),
             spend_limit: false,
+            unknown: true,
         }
     }
 }
@@ -131,6 +139,8 @@ pub struct Measured {
     pub windows: Windows,
     /// Claude reported the organisation's spend limit for this profile.
     pub spend_limit: bool,
+    /// As [`Probed::unknown`].
+    pub unknown: bool,
 }
 
 impl Measured {
@@ -140,6 +150,7 @@ impl Measured {
             reading: p.reading,
             windows: p.windows.clone(),
             spend_limit: p.spend_limit,
+            unknown: p.unknown,
         }
     }
 }
