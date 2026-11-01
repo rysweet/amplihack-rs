@@ -83,6 +83,11 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE` | user preference |  | Allows installing an older recipe runner. |
 | `AMPLIHACK_GIT_1278_CHILD` | test-only |  | Re-exec switch for the #1278 git test. |
 | `AMPLIHACK_GIT_1278_PLAIN` | test-only |  | Re-exec switch for the #1278 git test. |
+| `AMPLIHACK_GOVERNOR` | user preference |  | `off`, `0` or `false` turns the [capacity governor](./capacity-governor.md) off. Read by the governor itself; outranks `governor.enabled`. |
+| `AMPLIHACK_GOVERNOR_CLASS` | user preference |  | Default admission class for the capacity governor. |
+| `AMPLIHACK_GOVERNOR_MANIFEST` | user preference |  | Usage manifest that `governor status` reads for `token_share`. |
+| `AMPLIHACK_GOVERNOR_PARENT` | internal |  | Tree id of the capacity governor slot held by the parent process; a start that matches a live slot runs nested under it. |
+| `AMPLIHACK_GOVERNOR_WAIT` | user preference |  | Default `--governor-wait`. Read by the governor itself; outranks `governor.wait_secs`. |
 | `AMPLIHACK_GRAPH_DB_PATH` | internal |  | Code-graph database path exported to children. |
 | `AMPLIHACK_HOME` | user preference | `paths.home` | Root for framework assets, hooks and runtime state. |
 | `AMPLIHACK_HOOK_CONTRACT` | internal |  | Not an env var: suffix of the `CANONICAL_AMPLIHACK_HOOK_CONTRACT` constant. |
@@ -243,7 +248,8 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_WORKFLOW_ARTIFACT_DIR` | internal |  | Artifact directory handed to recipe steps. |
 | `AMPLIHACK_WORKFLOW_RUNTIME_DIR` | internal |  | Runtime directory handed to recipe steps. |
 | `AMPLIHACK_WORKSPACE_MARKER` | internal |  | Not an env var: the install clone's workspace marker constant. |
-| `AMPLIHACK_WORKSTREAM_ISSUE` | internal |  | Issue number handed to a multitask workstream. |
+| `AMPLIHACK_WORKSTREAM` | user preference |  | Workstream identity for the capacity governor's fair queue. |
+| `AMPLIHACK_WORKSTREAM_ISSUE` | internal |  | Issue number handed to a multitask workstream. The capacity governor also uses it as the workstream `ws-<n>`. |
 | `AMPLIHACK_WORKSTREAM_PROGRESS_FILE` | internal |  | Progress file handed to a multitask workstream. |
 | `AMPLIHACK_WORKSTREAM_STATE_FILE` | internal |  | State file handed to a multitask workstream. |
 | `AMPLIHACK_WORKTREE_PATH` | internal |  | Worktree path handed to a multitask workstream. |

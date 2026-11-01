@@ -432,6 +432,62 @@ pub fn lease_view(root: &Path) -> Result<Option<LeaseView>, ProfileError> {
     }
 }
 
+/// One account's reading as [`usage_view`] gives it to the capacity
+/// governor (issue #1811). Each window is `(used percentage, resets_at)`.
+#[derive(Debug, Clone, Copy)]
+pub struct UsageViewReading {
+    pub five_hour: Option<(f64, i64)>,
+    pub seven_day: Option<(f64, i64)>,
+    pub observed_at: i64,
+    /// [`usage::Reading::no_session_window`] (issue #1818): a week window
+    /// and no session window. The stored reading cannot tell a plan with no
+    /// session limit from a session window that was not recorded, so the
+    /// governor labels this `no session window`, as `rotate status` does.
+    pub no_session_window: bool,
+}
+
+/// Readings by account for [`usage_view`].
+pub type UsageView = std::collections::BTreeMap<String, UsageViewReading>;
+
+/// Readings by account from `usage.json`, read without the lock, for the
+/// capacity governor (issue #1811). `None` without a state directory. The
+/// same trust checks as [`lease_view`]; nothing is created or written.
+pub fn usage_view(root: &Path) -> Result<Option<UsageView>, ProfileError> {
+    #[cfg(unix)]
+    {
+        if !fsx::exists(&root.join(state::DIR)) {
+            return Ok(None);
+        }
+        let state = state::State::new(root)?;
+        fsx::check_root_private(&state.root)
+            .map_err(|e| ProfileError::AutoSwitchInvariant(format!("profile root {e}")))?;
+        fsx::check_private_dir(&state.dir)
+            .map_err(|e| ProfileError::AutoSwitchInvariant(format!("{}: {e}", state::DIR)))?;
+        let window = |w: Option<usage::Window>| w.map(|w| (w.used_percentage, w.resets_at));
+        Ok(Some(
+            state
+                .try_load_usage()?
+                .accounts
+                .into_iter()
+                .map(|(account, r)| {
+                    let view = UsageViewReading {
+                        no_session_window: r.no_session_window(),
+                        five_hour: window(r.five_hour),
+                        seven_day: window(r.seven_day),
+                        observed_at: r.observed_at,
+                    };
+                    (account, view)
+                })
+                .collect(),
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        Ok(None)
+    }
+}
+
 /// Issue #1818: the profiles among `names` whose stored reading has a week
 /// window and no session window, sorted. Read-only: it never creates state,
 /// takes the lock or writes, and any failure (no state, an unsafe or damaged

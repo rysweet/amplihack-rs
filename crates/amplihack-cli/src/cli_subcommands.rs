@@ -599,6 +599,8 @@ pub enum RecipeCommands {
         /// Run in the foreground even when `recipe.detach = "tmux"`.
         #[arg(long, overrides_with = "detach")]
         no_detach: bool,
+        #[command(flatten)]
+        governor: crate::commands::governor::GovernorArgs,
     },
     /// Stop a recipe run and its whole process tree: a tmux session started
     /// by `recipe run --detach`, or a run id from its log pointer

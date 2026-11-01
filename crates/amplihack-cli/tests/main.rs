@@ -220,6 +220,16 @@ mod issue_1802_auto_drive_light_recipe;
 mod issue_1802_auto_drive_light_round;
 #[path = "issue_1803_rotation_owner.rs"]
 mod issue_1803_rotation_owner;
+#[path = "issue_1811_fail_open.rs"]
+mod issue_1811_fail_open;
+#[path = "issue_1811_fixture.rs"]
+mod issue_1811_fixture;
+#[path = "issue_1811_governor.rs"]
+mod issue_1811_governor;
+#[path = "issue_1811_nesting.rs"]
+mod issue_1811_nesting;
+#[path = "issue_1811_status.rs"]
+mod issue_1811_status;
 #[path = "issue_1818_no_session_limit.rs"]
 mod issue_1818_no_session_limit;
 #[path = "issue_439_no_per_step_timeout.rs"]

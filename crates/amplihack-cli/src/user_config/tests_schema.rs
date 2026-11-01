@@ -25,6 +25,13 @@ fn keys_are_in_documented_order() {
             "recipe.usage_limit_wait",
             "recipe.usage_limit_max_wait_secs",
             "orchestrator.max_depth",
+            "governor.enabled",
+            "governor.max_concurrency",
+            "governor.reserve_points",
+            "governor.step",
+            "governor.band_pct",
+            "governor.eval_interval_secs",
+            "governor.wait_secs",
         ]
     );
 }
@@ -45,7 +52,7 @@ fn no_project_scoped_key_names_a_path() {
 }
 
 #[test]
-fn user_only_keys_are_agent_home_node_and_log_dir() {
+fn user_only_keys_are_agent_home_node_log_dir_and_governor() {
     let user_only: Vec<&str> = KEYS
         .iter()
         .filter(|k| k.scope == Scope::UserOnly)
@@ -58,7 +65,14 @@ fn user_only_keys_are_agent_home_node_and_log_dir() {
             "paths.home",
             "node.heap_consent",
             "node.max_old_space_mb",
-            "recipe.log_dir"
+            "recipe.log_dir",
+            "governor.enabled",
+            "governor.max_concurrency",
+            "governor.reserve_points",
+            "governor.step",
+            "governor.band_pct",
+            "governor.eval_interval_secs",
+            "governor.wait_secs",
         ]
     );
 }
@@ -158,4 +172,47 @@ fn agent_binary_is_canonicalised() {
 fn paths_home_rejects_overlong_values() {
     let long = format!("/{}", "a".repeat(4096));
     assert!(parse_cli("paths.home", &long).is_err());
+}
+
+/// Issue #1811: the governor keys are user-only, so a repository cannot turn
+/// the governor off or loosen it, and none has a resolver variable or flag:
+/// the governor reads `AMPLIHACK_GOVERNOR` and `AMPLIHACK_GOVERNOR_WAIT`
+/// itself.
+#[test]
+fn governor_keys_are_user_only_with_documented_ranges_and_defaults() {
+    let cases: [(&str, Option<Value>, &str, &str); 7] = [
+        (
+            "governor.enabled",
+            Some(Value::Bool(true)),
+            "false",
+            "maybe",
+        ),
+        ("governor.max_concurrency", Some(Value::Int(4)), "64", "0"),
+        ("governor.reserve_points", Some(Value::Int(10)), "0", "101"),
+        ("governor.step", Some(Value::Int(1)), "8", "9"),
+        ("governor.band_pct", Some(Value::Int(10)), "50", "51"),
+        (
+            "governor.eval_interval_secs",
+            Some(Value::Int(60)),
+            "3600",
+            "0",
+        ),
+        (
+            "governor.wait_secs",
+            Some(Value::Int(600)),
+            "86400",
+            "86401",
+        ),
+    ];
+    for (name, default, ok, bad) in cases {
+        let k = key_def(name).unwrap_or_else(|| panic!("{name} missing"));
+        assert_eq!(k.scope, Scope::UserOnly, "{name}");
+        assert_eq!(k.env, None, "{name}");
+        assert!(!k.lower_only, "{name}");
+        assert_eq!(k.default_value(), default, "{name}");
+        assert!(parse_cli(name, ok).is_ok(), "{name} {ok}");
+        assert!(parse_cli(name, bad).is_err(), "{name} {bad}");
+    }
+    assert!(parse_cli("governor.wait_secs", "0").is_ok());
+    assert!(parse_cli("governor.reserve_points", "100").is_ok());
 }

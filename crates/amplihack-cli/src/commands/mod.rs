@@ -10,6 +10,7 @@ pub mod config;
 pub mod cs_validate;
 pub mod doctor;
 pub mod fleet;
+pub mod governor;
 pub mod hive_haymaker;
 pub mod hygiene;
 pub mod install;
@@ -43,6 +44,7 @@ use crate::{
 };
 use amplihack_utils::launch_target::OverrideOrigin;
 use anyhow::{Context, Result};
+use governor::{AdmitRequest, Denied};
 
 fn reject_gateway_append() -> Result<()> {
     if amplihack_utils::litellm_proxy::validate_environment()
@@ -118,6 +120,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Uninstall => install::run_uninstall(),
         Commands::Profile(cmd) => profile::run_profile(cmd),
         Commands::Usage(cmd) => usage::run(cmd),
+        Commands::Governor(cmd) => governor::run(cmd),
         Commands::Agent(cmd) => agent::run_agent(cmd),
         Commands::Launch {
             resume,
@@ -133,6 +136,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             max_turns,
             ui,
             profile,
+            governor,
             claude_args,
         } => {
             if let Some(instruction) = append {
@@ -145,6 +149,10 @@ pub fn dispatch(command: Commands) -> Result<()> {
             let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
             profile::autostart_on_launch(docker);
             profile::capacity_launch_warning(&claude_args);
+            // Issue #1811: after supervision, whose rerun child is the process
+            // that asks; held until the launch returns.
+            let _slot = governor::admit(AdmitRequest::launch(&governor, &claude_args))
+                .map_err(Denied::report)?;
             if auto {
                 validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
@@ -190,6 +198,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             profile,
             prompt_file,
             supervise,
+            governor,
             claude_args,
         } => {
             if let Some(instruction) = append {
@@ -208,6 +217,10 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
                 profile::autostart_on_launch(docker);
                 profile::capacity_launch_warning(&claude_args);
+                // Issue #1811: after supervision, whose rerun child is the
+                // process that asks; held until the launch returns.
+                let _slot = governor::admit(AdmitRequest::launch(&governor, &claude_args))
+                    .map_err(Denied::report)?;
                 if auto {
                     validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                     let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
@@ -701,6 +714,7 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
             step_timeout,
             detach,
             no_detach,
+            governor,
         } => {
             if progress {
                 anyhow::bail!(
@@ -723,15 +737,19 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
             if detach {
                 let working = recipe::validate_path(working_dir.as_deref().unwrap_or("."), false)?;
                 let agent_binary = crate::env_builder::resolve_agent_binary_in(&working);
+                let mut args = recipe::detach::pane_args(
+                    &recipe_path,
+                    dry_run,
+                    verbose,
+                    &format,
+                    working_dir.as_deref(),
+                    step_timeout,
+                );
+                // Issue #1811: the pane's run asks the governor, so it needs
+                // the same workstream, class and wait.
+                args.extend(governor.to_args());
                 return recipe::detach::launch(recipe::detach::Launch {
-                    args: recipe::detach::pane_args(
-                        &recipe_path,
-                        dry_run,
-                        verbose,
-                        &format,
-                        working_dir.as_deref(),
-                        step_timeout,
-                    ),
+                    args,
                     context: &resolved,
                     recipe_path: &recipe_path,
                     working_dir: &working,
@@ -747,6 +765,7 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 &format,
                 working_dir.as_deref(),
                 step_timeout,
+                &governor,
             )
         }
         RecipeCommands::Stop { target } => recipe::stop::run_stop(&target),

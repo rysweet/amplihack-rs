@@ -267,6 +267,13 @@ pub(crate) static KEYS: &[KeyDef] = &[
         default: Some(DEFAULT_MAX_DEPTH),
         lower_only: true,
     },
+    super::schema_governor::GOVERNOR_ENABLED,
+    super::schema_governor::GOVERNOR_MAX_CONCURRENCY,
+    super::schema_governor::GOVERNOR_RESERVE_POINTS,
+    super::schema_governor::GOVERNOR_STEP,
+    super::schema_governor::GOVERNOR_BAND_PCT,
+    super::schema_governor::GOVERNOR_EVAL_INTERVAL_SECS,
+    super::schema_governor::GOVERNOR_WAIT_SECS,
 ];
 
 /// The schema entry for `name`.

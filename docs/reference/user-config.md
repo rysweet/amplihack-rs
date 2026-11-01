@@ -19,6 +19,7 @@ files.
   - [recipe.detach, recipe.tmux_session_pattern and recipe.log_dir](#recipedetach)
   - [recipe.usage_limit_wait and recipe.usage_limit_max_wait_secs](#recipeusage_limit_wait)
   - [orchestrator.max_depth](#orchestratormax_depth)
+  - [Governor keys](#governor-keys)
 - [The config command](#the-config-command)
   - [config get](#config-get)
   - [config set](#config-set)
@@ -147,6 +148,13 @@ command, so it never prints `flag`.
 | `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
 | `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | `21600` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
+| `governor.enabled` | bool | `true` | — | — | user only |
+| `governor.max_concurrency` | integer, 1 to 64 | `4` | — | — | user only |
+| `governor.reserve_points` | integer, 0 to 100 | `10` | — | — | user only |
+| `governor.step` | integer, 1 to 8 | `1` | — | — | user only |
+| `governor.band_pct` | integer, 0 to 50 | `10` | — | — | user only |
+| `governor.eval_interval_secs` | integer seconds, 1 to 3600 | `60` | — | — | user only |
+| `governor.wait_secs` | integer seconds, 0 to 86400 | `600` | — | — | user only |
 
 Any other key is an error for `config set` and a diagnostic when found in a
 file. A user-only key in a project file is reported and ignored.
@@ -364,6 +372,36 @@ stays at 2 even with `orchestrator.max_depth = 10` configured. See
 A project file can only lower this value: the result is the smaller of the
 project value and the user value (or the default, 3).
 
+### Governor keys
+
+Settings for the [capacity governor](./capacity-governor.md), which decides
+when `recipe run`, `claude` and `launch` may start.
+
+| Key | Effect |
+|-----|--------|
+| `governor.enabled` | Turns the governor on or off. `AMPLIHACK_GOVERNOR` (`off`, `0`, `false`, `on`, `1`, `true`) outranks it. |
+| `governor.max_concurrency` | Highest concurrency limit; the limit never goes below 1. |
+| `governor.reserve_points` | Weekly points kept for coordination, recovery and review work. |
+| `governor.step` | How far one rate evaluation moves the limit. |
+| `governor.band_pct` | Width of the band around the sustainable rate in which the limit stays put. |
+| `governor.eval_interval_secs` | Shortest time between two rate evaluations. |
+| `governor.wait_secs` | Default longest wait for admission; `0` means do not wait. |
+
+All seven are user-only, so a project file cannot turn the governor off or
+loosen it.
+
+The Keys table lists no environment variable or flag for these keys. The
+governor reads `AMPLIHACK_GOVERNOR`, `AMPLIHACK_GOVERNOR_WAIT` and
+`--governor-wait` itself, because they accept values the config file does not
+(`off`, `15m`). They outrank `governor.enabled` and `governor.wait_secs`, but
+`config get --show-origin` does not see them and reports the file or default
+the key came from.
+
+```sh
+amplihack config set governor.max_concurrency 2
+amplihack config set governor.wait_secs 1800
+```
+
 ## The config command
 
 ```
@@ -552,9 +590,11 @@ have just cloned, so it is trusted less.
 
 - **The user file must be owned by you and not writable by group or others.**
   If it is not, its user-only keys (`agent.binary`, `paths.home`, `node.*`,
-  `recipe.log_dir`) are ignored and reported. Its other keys still apply.
+  `recipe.log_dir`, `governor.*`) are ignored and reported. Its other keys still apply.
 - **The project file never names a path, a command, an executable or the
   agent CLI.** `agent.binary` and every path-valued key are user-only.
+- **The project file cannot change the capacity governor.** Every
+  `governor.*` key is user-only.
 - **`config set --project` and `config edit --project` refuse a project
   `config.toml` that is a symlink, or whose directory resolves outside the git
   repository**, and exit 1.
@@ -671,4 +711,5 @@ so the user file is the only place the consent lives.
 - [Environment Variables](./environment-variables.md) — What each variable does
 - [Active Agent Binary](./active-agent-binary.md) — The full agent-binary resolver, including the `user_config` layer
 - [amplihack doctor](./doctor-command.md) — The `Effective config` section
+- [Capacity Governor](./capacity-governor.md): What the `governor.*` keys control
 - [Memory Configuration Consent](../features/memory-consent-prompt.md) — The NODE_OPTIONS prompt whose answer `node.heap_consent` stores

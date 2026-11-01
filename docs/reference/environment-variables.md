@@ -41,6 +41,11 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
   - [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait)
   - [AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
+  - [AMPLIHACK_GOVERNOR](#amplihack_governor)
+  - [AMPLIHACK_GOVERNOR_WAIT](#amplihack_governor_wait)
+  - [AMPLIHACK_GOVERNOR_CLASS](#amplihack_governor_class)
+  - [AMPLIHACK_GOVERNOR_MANIFEST](#amplihack_governor_manifest)
+  - [AMPLIHACK_WORKSTREAM](#amplihack_workstream)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
   - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
@@ -1001,6 +1006,71 @@ unreadable reset it sets the length of the wait, with no five-hour ceiling
 (the wait still ends sooner at the failed login's own reset plus 120 s), and `0` means the step ends at once as a usage limit. The variable may set a
 value above the default. Overrides the config files; empty means unset; an
 invalid value prints one warning, naming the variable only, and is ignored.
+
+---
+
+### AMPLIHACK_GOVERNOR
+
+**Type:** string (boolean)
+**Values:** `off`, `0` or `false` (off) | `on`, `1` or `true` (on)
+**Default:** on
+**Config key:** none; the governor reads this variable itself. It outranks [`governor.enabled`](./user-config.md#governor-keys).
+**Read by:** `amplihack recipe run`, `amplihack claude`, `amplihack launch`, `amplihack governor status`
+
+Turns the [capacity governor](./capacity-governor.md) off or on. When off,
+the governor reads and writes no state and prints nothing, and starts
+behave as they did without it. Outranks `governor.enabled`.
+
+---
+
+### AMPLIHACK_GOVERNOR_WAIT
+
+**Type:** string (duration)
+**Values:** one to six digits with an optional `s`, `m` or `h`; capped at 24 hours
+**Default:** `governor.wait_secs`, else 10 minutes
+**Config key:** none; the governor reads this variable itself. It outranks [`governor.wait_secs`](./user-config.md#governor-keys).
+**Read by:** `amplihack recipe run`, `amplihack claude`, `amplihack launch`
+
+Longest time a start waits for admission before it exits with 80 without
+starting. `0` means do not wait. `--governor-wait` outranks it. See
+[Waiting, denial and exit code 80](./capacity-governor.md#waiting-denial-and-exit-code-80).
+
+---
+
+### AMPLIHACK_GOVERNOR_CLASS
+
+**Type:** string
+**Values:** `coordination` | `recovery` | `review` | `ordinary`
+**Default:** inferred from the task and recipe, else `ordinary`
+**Read by:** `amplihack recipe run`, `amplihack claude`, `amplihack launch`
+
+Priority class for admission. Classes other than `ordinary` may use the
+weekly reserve. `--governor-class` outranks it. See
+[Reserves and classes](./capacity-governor.md#reserves-and-classes).
+
+---
+
+### AMPLIHACK_GOVERNOR_MANIFEST
+
+**Type:** string (absolute path)
+**Default:** unset
+**Read by:** `amplihack governor status`
+
+A [workstream usage manifest](./workstream-usage.md) from which status
+computes each workstream's `token_share`. It must be an absolute path to a
+regular file owned by the current user. The path is never printed.
+
+---
+
+### AMPLIHACK_WORKSTREAM
+
+**Type:** string, `[A-Za-z0-9._-]{1,64}`, not `.` or `..`
+**Default:** `AMPLIHACK_WORKSTREAM_ISSUE` as `ws-<n>`, then `AMPLIHACK_RECIPE_RUN_ID` cleaned to fit the pattern, else `default`
+**Read by:** `amplihack recipe run`, `amplihack claude`, `amplihack launch`
+
+Workstream a start is counted against in the governor's
+[fair queue](./capacity-governor.md#fair-queue). `--workstream` outranks it.
+An invalid value becomes `default` with a warning that gives only its length.
 
 ---
 

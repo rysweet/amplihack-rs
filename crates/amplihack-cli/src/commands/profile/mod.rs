@@ -12,6 +12,7 @@ mod auto_switch;
 mod default_live;
 #[cfg(unix)]
 mod duplicates;
+pub(crate) mod governor_view;
 #[cfg(unix)]
 mod kind;
 #[cfg(unix)]

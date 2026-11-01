@@ -1,0 +1,261 @@
+//! The capacity governor (issue #1811): decides whether a recipe run or an
+//! agent launch may start now, from the usage readings of every login
+//! profile, a concurrency limit that follows the burn rate, protected
+//! reserves for coordination, recovery and review work, and a fair queue
+//! between workstreams. It never moves an account, never spawns a process
+//! and writes only inside `<profile root>/.governor.d`.
+//!
+//! See docs/reference/capacity-governor.md.
+
+mod admit;
+mod admit_state;
+mod budget;
+mod config;
+mod fail_open;
+mod files;
+mod guard;
+mod identity;
+mod inputs;
+mod liveness;
+mod manifest;
+mod model;
+mod nesting;
+mod policy;
+mod queue;
+mod rate;
+mod status;
+mod status_table;
+mod store;
+
+#[cfg(all(test, unix))]
+mod tests_admit;
+#[cfg(test)]
+mod tests_budget;
+#[cfg(test)]
+mod tests_config;
+#[cfg(test)]
+mod tests_identity;
+#[cfg(all(test, unix))]
+mod tests_liveness;
+#[cfg(all(test, unix))]
+mod tests_nesting;
+#[cfg(test)]
+mod tests_policy;
+#[cfg(test)]
+mod tests_policy_flow;
+#[cfg(test)]
+mod tests_policy_reserve;
+#[cfg(test)]
+mod tests_queue;
+#[cfg(test)]
+mod tests_rate;
+#[cfg(all(test, unix))]
+mod tests_seed;
+#[cfg(test)]
+mod tests_source_scan;
+#[cfg(all(test, unix))]
+mod tests_status;
+#[cfg(all(test, unix))]
+mod tests_store;
+
+pub use guard::{Denied, SlotGuard};
+pub use model::Class;
+
+use admit::AdmitContext;
+use anyhow::Result;
+use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// The exit code of a start the governor did not allow.
+pub const EXIT_GOVERNOR_DENIED: i32 = 80;
+/// `governor status` only: the workstream usage manifest for `token_share`.
+pub const GOVERNOR_MANIFEST_ENV: &str = "AMPLIHACK_GOVERNOR_MANIFEST";
+/// Set on the children of a process that holds a slot, to that slot's tree
+/// id, so their own starts run nested under it.
+pub const GOVERNOR_PARENT_ENV: &str = "AMPLIHACK_GOVERNOR_PARENT";
+/// Set on the children of an admitted `recipe run`, to `<pid>:<start time>`
+/// of that run, so its agent steps count as inside a recipe even when the run
+/// is nested under an interactive session and holds no slot of its own.
+pub const GOVERNOR_RECIPE_ENV: &str = "AMPLIHACK_GOVERNOR_RECIPE";
+
+/// The governor's flags on `launch`, `claude` and `recipe run`.
+#[derive(clap::Args, Debug, Clone, Default)]
+pub struct GovernorArgs {
+    /// Workstream this start belongs to, for the fair queue
+    #[arg(long = "workstream", value_name = "ID", value_parser = identity::parse_workstream)]
+    pub workstream: Option<String>,
+    /// Priority class: coordination, recovery, review or ordinary
+    #[arg(long = "governor-class", value_name = "CLASS", value_enum)]
+    pub governor_class: Option<Class>,
+    /// How long to wait for capacity: digits with an optional s, m or h; 0
+    /// does not wait
+    #[arg(long = "governor-wait", value_name = "DURATION", value_parser = config::parse_wait)]
+    pub governor_wait: Option<u64>,
+}
+
+impl GovernorArgs {
+    /// The flags as command-line arguments, for a child that must ask with
+    /// the same values (a `recipe run --detach` pane).
+    pub fn to_args(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if let Some(ws) = &self.workstream {
+            args.extend(["--workstream".to_string(), ws.clone()]);
+        }
+        if let Some(class) = self.governor_class {
+            args.extend(["--governor-class".to_string(), class.as_str().to_string()]);
+        }
+        if let Some(secs) = self.governor_wait {
+            args.extend(["--governor-wait".to_string(), format!("{secs}s")]);
+        }
+        args
+    }
+}
+
+#[derive(Debug, clap::Subcommand)]
+pub enum GovernorCommands {
+    /// Show the concurrency limit, budgets, slots, queue and workstreams
+    Status {
+        /// Print the JSON document instead of the table
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// One start to decide.
+pub struct AdmitRequest {
+    args: Option<GovernorArgs>,
+    start: model::Start,
+    recipe: Option<String>,
+    task: Option<String>,
+}
+
+impl AdmitRequest {
+    /// `amplihack launch` or `amplihack claude`; the task is the text after
+    /// `-p` or `--print`, read only for the `[coord]` marker.
+    pub fn launch(args: &GovernorArgs, claude_args: &[String]) -> Self {
+        let task = claude_args
+            .iter()
+            .position(|a| a == "-p" || a == "--print")
+            .and_then(|i| claude_args.get(i + 1))
+            .cloned();
+        Self {
+            args: Some(args.clone()),
+            start: model::Start::Agent,
+            recipe: None,
+            task,
+        }
+    }
+
+    /// `amplihack recipe run`. `None` arguments (a dry run, or a call from
+    /// inside amplihack) admit without asking. The task description is not
+    /// read: in a recipe run it can come from a GitHub issue, so `[coord]`
+    /// in it must not claim the reserve. A recipe run that is coordination
+    /// work says so with `--governor-class` or `AMPLIHACK_GOVERNOR_CLASS`.
+    pub fn recipe(args: Option<&GovernorArgs>, recipe: &str) -> Self {
+        Self {
+            args: args.cloned(),
+            start: model::Start::Recipe,
+            recipe: Some(recipe.to_string()),
+            task: None,
+        }
+    }
+}
+
+static SETTLED_TREE_ID: OnceLock<String> = OnceLock::new();
+
+/// The tree id of the slot this process holds, if it holds one (a nested or
+/// fail-open admission holds none). The environment builder hands it to
+/// children as [`GOVERNOR_PARENT_ENV`], and as `AMPLIHACK_TREE_ID` when none
+/// was inherited, so their starts find the slot.
+pub fn settled_tree_id() -> Option<String> {
+    SETTLED_TREE_ID.get().cloned()
+}
+
+static RECIPE_MARKER: OnceLock<String> = OnceLock::new();
+
+/// The [`GOVERNOR_RECIPE_ENV`] value for this process's children, when this
+/// process is an admitted `recipe run`.
+pub fn recipe_marker() -> Option<String> {
+    RECIPE_MARKER.get().cloned()
+}
+
+fn env(key: &str) -> Option<String> {
+    std::env::var(key).ok()
+}
+
+fn settings() -> config::Settings {
+    let user = crate::user_config::load_user_only();
+    config::resolve(&env, &|key| user.file_value(key).cloned())
+}
+
+/// The profile root, when it is an existing directory.
+fn root() -> Option<PathBuf> {
+    crate::commands::profile::governor_view::root_from_env().filter(|r| r.is_dir())
+}
+
+/// Decides one start, waiting for capacity when told to; see "Waiting,
+/// denial and exit code 80" in docs/reference/capacity-governor.md. Keep the
+/// guard until the work ends.
+pub fn admit(request: AdmitRequest) -> Result<SlotGuard, Denied> {
+    let Some(args) = request.args else {
+        return Ok(SlotGuard::inert(None));
+    };
+    let settings = settings();
+    if !settings.enabled {
+        return Ok(SlotGuard::inert(None));
+    }
+    let root = root();
+    let ctx = AdmitContext {
+        root: root.as_deref(),
+        settings,
+        class: identity::class(
+            args.governor_class,
+            &env,
+            request.recipe.as_deref(),
+            request.task.as_deref(),
+        ),
+        start: request.start,
+        workstream: identity::workstream(args.workstream.as_deref(), &env),
+        wait_secs: config::wait_secs(args.governor_wait, &env, &settings),
+        session_depth: env("AMPLIHACK_SESSION_DEPTH"),
+        tree_id: env("AMPLIHACK_TREE_ID"),
+        parent: env(GOVERNOR_PARENT_ENV),
+        recipe: env(GOVERNOR_RECIPE_ENV),
+    };
+    let guard = admit::admit_with(&ctx)?;
+    if !guard.nested()
+        && let Some(id) = guard.tree_id()
+    {
+        // `set` fails only if `admit` runs twice in one process, which does
+        // not happen; the first value would then stand.
+        let _ = SETTLED_TREE_ID.set(id.to_string());
+    }
+    // A slot or a nested admission: either way the run was admitted, and its
+    // steps are part of it. A nested run holds no slot, so this marker is
+    // the only record that its steps are inside a recipe.
+    if request.start == model::Start::Recipe && guard.tree_id().is_some() {
+        let _ = RECIPE_MARKER.set(nesting::recipe_marker_for(std::process::id()));
+    }
+    Ok(guard)
+}
+
+/// `amplihack governor ...`.
+pub fn run(cmd: GovernorCommands) -> Result<()> {
+    match cmd {
+        GovernorCommands::Status { json } => {
+            let manifest = std::env::var_os(GOVERNOR_MANIFEST_ENV).map(PathBuf::from);
+            let v = status::view(
+                root().as_deref(),
+                &settings(),
+                manifest.as_deref(),
+                store::now(),
+            );
+            if json {
+                println!("{}", serde_json::to_string_pretty(&v)?);
+            } else {
+                print!("{}", status::render_table(&v));
+            }
+            Ok(())
+        }
+    }
+}
