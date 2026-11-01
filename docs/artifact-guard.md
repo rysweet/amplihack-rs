@@ -1114,7 +1114,10 @@ build output outside the repository — outside, not specifically on `/tmp`. The
 forms above set it inline because they are run by hand; the checked-in hook
 instead runs through `scripts/git-hook-cargo.sh`, which defaults it to a
 per-checkout directory under `${XDG_CACHE_HOME:-$HOME/.cache}/amplihack` (issues
-#1381 and #1440) and leaves an explicitly set `CARGO_TARGET_DIR` alone.
+#1381 and #1440) and leaves an explicitly set `CARGO_TARGET_DIR` alone. The
+[pre-commit build cache reference](reference/pre-commit-build-cache.md)
+describes how the wrapper reclaims stale caches, including symlinked ones, and
+tags the current cache with `CACHEDIR.TAG` (issue #1771).
 
 ## Output isolation
 
