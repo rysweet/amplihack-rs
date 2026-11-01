@@ -5466,6 +5466,10 @@ The maximum shortens a reset wait, which never lasts beyond its reset plus
 ceiling: a user `config.toml` or the variable may set a higher value, which
 a capacity wait honours. A project `config.toml` may only lower the
 maximum, so a repository cannot make your runs wait longer.
+A capacity wait does not use the reset time, so the maximum and
+`AMPLIHACK_STEP_TIMEOUT` are its only bounds. With a very large maximum and
+no step timeout, the step waits until a login has capacity again, a signal
+arrives or the session ends.
 An invalid maximum is not an error that stops a run: `config set` rejects
 it with exit code `2`, and a file or variable value is reported by the
 config loader and ignored, so the next layer down applies. See

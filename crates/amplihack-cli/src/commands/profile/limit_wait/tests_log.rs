@@ -91,6 +91,8 @@ fn every_other_event_has_its_documented_fields() {
             Event::Skipped(Skip::Cannot(NoWait::SpendLimit)),
             "skipped reason=spend_limit",
         ),
+        // Rendering only: the upgrade to a capacity wait is decided before
+        // logging and is tested in tests_plan.rs.
         (
             Event::Skipped(Skip::Cannot(NoWait::ResetTooFar)),
             "skipped reason=reset_too_far",
