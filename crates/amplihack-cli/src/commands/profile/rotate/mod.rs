@@ -162,13 +162,11 @@ use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 #[cfg(unix)]
 pub(in crate::commands::profile) use autostart::autostart_line;
 #[cfg(unix)]
-pub(crate) use autostart::autostart_on_launch;
-#[cfg(unix)]
 pub(super) use control::{clear_overflow_block, overflow_blocks};
 #[cfg(unix)]
 pub(super) use log::timestamp;
 #[cfg(unix)]
-pub(crate) use older_readers::warn_foreign_rotator;
+pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
 
 // Auto-switch's overflow gate (`gate_record`): the running rotator's own
 // settings, or, when no rotator runs, the `AMPLIHACK_ROTATE_*` variables.
