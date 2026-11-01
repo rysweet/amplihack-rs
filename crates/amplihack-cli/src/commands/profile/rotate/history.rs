@@ -13,8 +13,10 @@ use std::path::Path;
 /// Appends the cycle's probes, measured at `at`, to the usage history. The
 /// live probe is recorded only under a profile whose login is identified as
 /// live; a hand-changed or unowned login is left out, and so is the API-key
-/// profile. A line that cannot be written puts one fixed line in the rotate
-/// log and never fails the cycle.
+/// profile. `usage_history::append` applies the recording rules (a trusted
+/// root, a private `.auto-switch.d` and no credential variable), so nothing
+/// is written while a credential variable is set. A line that cannot be
+/// written puts one fixed line in the rotate log and never fails the cycle.
 pub fn record(root: &Path, out: &mut Sink, first: &Snap, probes: &Probes, at: i64) {
     let live = match &first.live {
         LiveId::Known(n) => Some(n),
@@ -32,12 +34,16 @@ pub fn record(root: &Path, out: &mut Sink, first: &Snap, probes: &Probes, at: i6
 /// history entry is "now" for the figures and the entries up to six hours
 /// before it are the history; the threshold comes from the variable alone
 /// and the weights from the weights file. The age is measured at `now`.
-/// With no readable entry the line is `capacity: no recorded cycle`.
+/// With no readable entry the line is `capacity: no recorded cycle`, with
+/// the history's warning when it exists but was refused.
 pub fn capacity(root: &Path, now: i64) -> (String, Vec<String>) {
     // One read: the newest entry is "now", the rest are the history.
-    let mut entries = usage_history::read_all(root, now);
+    let (mut entries, refused) = usage_history::read_all(root, now);
     let Some(newest) = entries.pop() else {
-        return ("capacity: no recorded cycle".to_string(), Vec::new());
+        return (
+            "capacity: no recorded cycle".to_string(),
+            refused.into_iter().collect(),
+        );
     };
     let env = std::env::var_os(capacity_weight::ENV);
     let (threshold, warning) = capacity_weight::usable_threshold(None, env.as_deref());

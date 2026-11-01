@@ -356,7 +356,7 @@ fn the_history_errors_print_fixed_reasons_and_no_directory_is_silent() {
 #[cfg(unix)]
 mod file {
     use super::super::usage_history::{
-        FILE, HistoryError, LOCK, append, last, read_recent, recording_enabled, to_line,
+        FILE, HistoryError, LOCK, READ_REFUSED, append_with, read_all, read_recent, to_line,
     };
     use super::{DAY, HOUR, T, entry, p};
     use std::fs;
@@ -410,6 +410,21 @@ mod file {
         entry(at, &[("work", p(Some(1), w, None))])
     }
 
+    /// `append` with no credential variable, whatever the test's own
+    /// environment holds.
+    fn append(root: &Path, e: &super::Entry, now: i64) -> Result<(), HistoryError> {
+        append_with(root, e, now, None)
+    }
+
+    /// The newest readable entry.
+    fn newest(root: &Path, now: i64) -> Option<super::Entry> {
+        read_all(root, now).0.pop()
+    }
+
+    fn refused() -> Option<String> {
+        Some(READ_REFUSED.to_string())
+    }
+
     /// Runs `f` on a thread; a FIFO that blocks the open fails the test
     /// instead of hanging it.
     fn within<T: Send + 'static>(secs: u64, f: impl FnOnce() -> T + Send + 'static) -> T {
@@ -434,14 +449,108 @@ mod file {
     }
 
     #[test]
-    fn recording_is_enabled_only_with_a_private_state_directory() {
+    fn append_needs_a_private_state_directory() {
         let r = Root::new();
-        assert!(recording_enabled(&r.root));
-        let bare = tempfile::tempdir().unwrap();
-        assert!(!recording_enabled(bare.path()));
+        append(&r.root, &one(T, 1), T).unwrap();
         let linked = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(&r.state, linked.path().join(".auto-switch.d")).unwrap();
-        assert!(!recording_enabled(linked.path()), "a symlinked directory");
+        assert_eq!(
+            append(linked.path(), &one(T, 2), T),
+            Err(HistoryError::NoStateDir),
+            "a symlinked directory"
+        );
+        assert_eq!(r.lines().len(), 1);
+        let open = Root::new();
+        fs::set_permissions(&open.state, fs::Permissions::from_mode(0o750)).unwrap();
+        assert_eq!(
+            append(&open.root, &one(T, 2), T),
+            Err(HistoryError::NoStateDir)
+        );
+        assert!(!open.history().exists());
+    }
+
+    #[test]
+    fn append_writes_nothing_while_a_credential_variable_is_set() {
+        let r = Root::new();
+        assert_eq!(
+            append_with(&r.root, &one(T, 1), T, Some("ANTHROPIC_API_KEY")),
+            Err(HistoryError::CredentialVar)
+        );
+        assert_eq!(HistoryError::CredentialVar.warning(), None);
+        assert!(!r.history().exists());
+        assert!(!r.lock().exists());
+    }
+
+    #[test]
+    fn an_untrusted_root_is_neither_written_nor_read() {
+        let r = Root::new();
+        r.seed(&format!("{}\n", to_line(&one(T - HOUR, 1))));
+        fs::set_permissions(&r.root, fs::Permissions::from_mode(0o777)).unwrap();
+        assert_eq!(
+            append(&r.root, &one(T, 2), T),
+            Err(HistoryError::NoStateDir)
+        );
+        assert!(!r.lock().exists(), "nothing created under the root");
+        assert_eq!(read_all(&r.root, T), (Vec::new(), refused()));
+        assert_eq!(read_recent(&r.root, T, 6 * HOUR), (Vec::new(), refused()));
+        fs::set_permissions(&r.root, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(r.lines().len(), 1);
+    }
+
+    #[test]
+    fn a_missing_history_or_state_directory_is_empty_without_a_warning() {
+        let r = Root::new();
+        assert_eq!(read_all(&r.root, T), (Vec::new(), None));
+        let bare = tempfile::tempdir().unwrap();
+        assert_eq!(read_all(bare.path(), T), (Vec::new(), None));
+        assert_eq!(
+            read_all(&bare.path().join("absent"), T),
+            (Vec::new(), None),
+            "no root at all"
+        );
+    }
+
+    #[test]
+    fn a_history_writable_by_group_or_others_is_refused_with_a_warning() {
+        for mode in [0o664, 0o646, 0o622] {
+            let r = Root::new();
+            r.seed(&format!("{}\n", to_line(&one(T - HOUR, 1))));
+            fs::set_permissions(r.history(), fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(read_all(&r.root, T), (Vec::new(), refused()), "{mode:o}");
+        }
+        assert_eq!(READ_REFUSED, "warning: usage history ignored (unsafe file)");
+    }
+
+    #[test]
+    fn a_cut_last_line_is_ended_before_the_next_append() {
+        let r = Root::new();
+        let kept = to_line(&one(T - HOUR, 1));
+        r.seed(&format!("{kept}\n{{\"at\":\"20"));
+        append(&r.root, &one(T, 2), T).unwrap();
+        assert_eq!(
+            read_all(&r.root, T).0,
+            [one(T - HOUR, 1), one(T, 2)],
+            "the new line is read whole"
+        );
+    }
+
+    #[test]
+    fn a_failed_trim_still_appends_and_says_so() {
+        let r = Root::new();
+        let old = to_line(&one(T - 9 * DAY, 1));
+        r.seed(&format!("{old}\n"));
+        fs::write(r.lock(), "").unwrap();
+        fs::set_permissions(r.lock(), fs::Permissions::from_mode(0o600)).unwrap();
+        // A read-only directory: the atomic rewrite cannot create its file.
+        fs::set_permissions(&r.state, fs::Permissions::from_mode(0o500)).unwrap();
+        let got = append(&r.root, &one(T, 2), T);
+        fs::set_permissions(&r.state, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(got, Err(HistoryError::TrimFailed));
+        assert_eq!(r.lines(), [old, to_line(&one(T, 2))]);
+        assert_eq!(
+            HistoryError::TrimFailed.warning().as_deref(),
+            Some("warning: usage history not trimmed")
+        );
     }
 
     #[test]
@@ -531,9 +640,15 @@ mod file {
         let got = within(10, move || append(&root, &one(T, 1), T));
         assert_eq!(got, Err(HistoryError::UnsafeFile));
         let root = r.root.clone();
-        assert!(within(10, move || last(&root, T)).is_none());
+        assert_eq!(
+            within(10, move || read_all(&root, T)),
+            (Vec::new(), refused())
+        );
         let root = r.root.clone();
-        assert!(within(10, move || read_recent(&root, T, 6 * HOUR)).is_empty());
+        assert_eq!(
+            within(10, move || read_recent(&root, T, 6 * HOUR)),
+            (Vec::new(), refused())
+        );
 
         let r = Root::new();
         mkfifo(&r.lock());
@@ -660,11 +775,12 @@ mod file {
         big(&r, 5);
         assert!(fs::metadata(r.history()).unwrap().len() > 5 * MIB as u64);
 
-        let recent = read_recent(&r.root, T, 6 * HOUR);
+        let (recent, warning) = read_recent(&r.root, T, 6 * HOUR);
+        assert_eq!(warning, None);
         assert_eq!(recent.len(), 360, "one a minute over six hours");
         assert_eq!(recent.first().unwrap().at, T - 6 * HOUR);
         assert_eq!(recent.last().unwrap().at, T - 60);
-        assert_eq!(last(&r.root, T).unwrap().at, T - 60);
+        assert_eq!(newest(&r.root, T).unwrap().at, T - 60);
 
         append(&r.root, &one(T, 7), T).unwrap();
         let len = fs::metadata(r.history()).unwrap().len();
@@ -696,6 +812,7 @@ mod file {
             to_line(&one(T - HOUR, 2))
         ));
         let got: Vec<i64> = read_recent(&r.root, T, 6 * HOUR)
+            .0
             .iter()
             .map(|e| e.at)
             .collect();
@@ -711,6 +828,7 @@ mod file {
             .collect();
         r.seed(&body);
         let got: Vec<i64> = read_recent(&r.root, T, 6 * HOUR)
+            .0
             .iter()
             .map(|e| e.at)
             .collect();
@@ -718,15 +836,15 @@ mod file {
     }
 
     #[test]
-    fn last_is_the_newest_readable_entry() {
+    fn the_newest_readable_entry_is_last_in_read_all() {
         let r = Root::new();
-        assert!(last(&r.root, T).is_none(), "no file");
+        assert!(newest(&r.root, T).is_none(), "no file");
         r.seed(&format!(
             "{}\n{}\nnot json\n",
             to_line(&one(T - HOUR, 1)),
             to_line(&one(T - 30 * 60, 2))
         ));
-        assert_eq!(last(&r.root, T).unwrap(), one(T - 30 * 60, 2));
+        assert_eq!(newest(&r.root, T).unwrap(), one(T - 30 * 60, 2));
     }
 
     #[test]
@@ -736,7 +854,7 @@ mod file {
         fs::write(&target, format!("{}\n", to_line(&one(T - HOUR, 1)))).unwrap();
         fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
         std::os::unix::fs::symlink(&target, r.history()).unwrap();
-        assert!(last(&r.root, T).is_none());
-        assert!(read_recent(&r.root, T, 6 * HOUR).is_empty());
+        assert_eq!(read_all(&r.root, T), (Vec::new(), refused()));
+        assert_eq!(read_recent(&r.root, T, 6 * HOUR), (Vec::new(), refused()));
     }
 }

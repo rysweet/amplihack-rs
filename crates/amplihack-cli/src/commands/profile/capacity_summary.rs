@@ -3,7 +3,8 @@
 //! the weights, the usable threshold and earlier history entries. No I/O.
 //!
 //! - Headroom is summed in whole percentage points and is unweighted; the
-//!   weighted figure is shown only when some weight is not 1.0.
+//!   weighted figure is shown only when some current profile's weight is
+//!   not 1.0.
 //! - Unknown readings are never counted as 0% or 100%: they are left out of
 //!   `N`, every sum and the rate, and only listed as unknown.
 //! - Usable now: session below the threshold and week below 100%.
@@ -212,7 +213,9 @@ pub(super) fn compute(i: &Inputs<'_>) -> Summary {
         headroom_points,
         weighted_points,
         weight_total,
-        show_weighted: i.weights.any_differs(),
+        show_weighted: i
+            .weights
+            .any_differs_among(i.current.points.keys().map(String::as_str)),
         usable,
         threshold: i.threshold,
         unknown,

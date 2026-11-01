@@ -237,6 +237,10 @@ fn the_documented_history_warning_and_reasons_are_the_codes() {
             "reason {reason}"
         );
     }
+    let trim = HistoryError::TrimFailed.warning().unwrap();
+    assert!(REFERENCE.contains(&format!("`{trim}`")), "{trim}");
+    let refused = super::usage_history::READ_REFUSED;
+    assert!(REFERENCE.contains(refused), "{refused}");
 }
 
 #[test]

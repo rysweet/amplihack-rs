@@ -7,9 +7,11 @@
 //! no identity, no plan, no error text and nothing Claude printed.
 //!
 //! [`entry_of`] is the one validity rule. Readers take the last 4 MiB and
-//! skip whatever they cannot trust. Writers lock `usage-history.lock`, append
-//! one line in one write, trim entries older than eight days, and never
-//! create `.auto-switch.d`. No failure here ever fails a command.
+//! skip whatever they cannot trust; a history that exists but is refused
+//! gives one fixed warning. Writers check the profile root, refuse while a
+//! credential variable is set, lock `usage-history.lock`, append one line in
+//! one write, trim entries older than eight days, and never create
+//! `.auto-switch.d`. No failure here ever fails a command.
 
 use super::name::ProfileName;
 use super::usage_cmd::{Row, utc_time};
@@ -88,22 +90,33 @@ impl Snapshot {
     }
 }
 
-/// Why a line was not written. Fixed reasons: never a path or system text.
+/// Why a line was not written, or was written without its trim. Fixed
+/// reasons: never a path or system text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum HistoryError {
-    /// `.auto-switch.d` is missing or not private: recording is off.
+    /// The profile root is not trusted, or `.auto-switch.d` is missing or
+    /// not private: recording is off.
     NoStateDir,
+    /// A credential variable is set, so the readings may all be one
+    /// credential's. The caller already warns about the variable.
+    CredentialVar,
     LockBusy,
     UnsafeFile,
     WriteFailed,
     TooLarge,
+    /// The line was appended but the trim rewrite failed.
+    TrimFailed,
 }
+
+/// The one warning when a history exists but is refused or unreadable.
+pub(super) const READ_REFUSED: &str = "warning: usage history ignored (unsafe file)";
 
 impl HistoryError {
     /// The one stderr or rotate-log line, or `None` when recording is off.
     pub(super) fn warning(self) -> Option<String> {
         let reason = match self {
-            Self::NoStateDir => return None,
+            Self::NoStateDir | Self::CredentialVar => return None,
+            Self::TrimFailed => return Some("warning: usage history not trimmed".to_string()),
             Self::LockBusy => "lock busy",
             Self::UnsafeFile => "unsafe file",
             Self::WriteFailed => "write failed",
@@ -374,18 +387,6 @@ fn entries_in(bytes: &[u8], now: i64) -> Vec<Entry> {
 // Reading
 // ---------------------------------------------------------------------------
 
-/// Whether `profile usage` may record: `<root>/.auto-switch.d` is a private
-/// directory of this user. Checking never creates it.
-pub(super) fn recording_enabled(root: &Path) -> bool {
-    #[cfg(unix)]
-    return amplihack_utils::secure_files::check_private_dir(&root.join(STATE_DIR)).is_ok();
-    #[cfg(not(unix))]
-    {
-        let _ = root;
-        false
-    }
-}
-
 /// The last 4 MiB of `file`, from the first whole line when cut.
 #[cfg(unix)]
 fn read_tail(file: &std::fs::File, len: u64) -> std::io::Result<Vec<u8>> {
@@ -406,58 +407,73 @@ fn read_tail(file: &std::fs::File, len: u64) -> std::io::Result<Vec<u8>> {
     Ok(buf)
 }
 
-/// The tail of the history, or `None` when it is missing or cannot be
-/// trusted: a symlink, not a regular file (a FIFO never blocks the open),
-/// another owner, or writable by group or others.
+/// A history that exists but was not read: [`READ_REFUSED`] says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ReadRefused;
+
+/// The tail of the history; empty when it or `.auto-switch.d` is missing.
+/// Refused when the profile root is not trusted, or the file cannot be
+/// opened, is a symlink, is not a regular file (a FIFO never blocks the
+/// open), has another owner, is writable by group or others, or cannot be
+/// read.
 #[cfg(unix)]
-fn read_history(root: &Path) -> Option<Vec<u8>> {
+fn read_history(root: &Path) -> Result<Vec<u8>, ReadRefused> {
     use amplihack_utils::secure_files::owned_by_euid;
+    use std::io::ErrorKind::NotFound;
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    match super::auto_switch::check_root_private(root) {
+        Ok(()) => {}
+        Err(e) if e.kind() == NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(ReadRefused),
+    }
     let path = root.join(STATE_DIR).join(FILE);
-    let file = std::fs::OpenOptions::new()
+    let file = match std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
         .open(path)
-        .ok()?;
-    let meta = file.metadata().ok()?;
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(ReadRefused),
+    };
+    let meta = file.metadata().map_err(|_| ReadRefused)?;
     if !meta.is_file() || !owned_by_euid(&meta) || meta.mode() & 0o022 != 0 {
-        return None;
+        return Err(ReadRefused);
     }
-    read_tail(&file, meta.len()).ok()
+    read_tail(&file, meta.len()).map_err(|_| ReadRefused)
 }
 
 #[cfg(not(unix))]
-fn read_history(_root: &Path) -> Option<Vec<u8>> {
-    None
+fn read_history(_root: &Path) -> Result<Vec<u8>, ReadRefused> {
+    Ok(Vec::new())
 }
 
 /// Every readable entry, oldest first; entries with the same time stay in
-/// file order. Empty when the history is missing or cannot be read. One
-/// read parses the whole tail, so a caller that needs both the newest entry
-/// and the ones before it reads once.
-pub(super) fn read_all(root: &Path, now: i64) -> Vec<Entry> {
-    let Some(bytes) = read_history(root) else {
-        return Vec::new();
-    };
-    let mut out = entries_in(&bytes, now);
-    out.sort_by_key(|e| e.at);
-    out
+/// file order. Empty when the history is missing or refused, with
+/// [`READ_REFUSED`] as the warning when refused. One read parses the whole
+/// tail, so a caller that needs both the newest entry and the ones before
+/// it reads once.
+pub(super) fn read_all(root: &Path, now: i64) -> (Vec<Entry>, Option<String>) {
+    match read_history(root) {
+        Ok(bytes) => {
+            let mut out = entries_in(&bytes, now);
+            out.sort_by_key(|e| e.at);
+            (out, None)
+        }
+        Err(ReadRefused) => (Vec::new(), Some(READ_REFUSED.to_string())),
+    }
 }
 
-/// The entries with `now - window <= at < now`, oldest first. Empty when
-/// the history is missing or cannot be read.
-pub(super) fn read_recent(root: &Path, now: i64, window: i64) -> Vec<Entry> {
+/// The entries with `now - window <= at < now`, oldest first, and the
+/// warning of [`read_all`].
+pub(super) fn read_recent(root: &Path, now: i64, window: i64) -> (Vec<Entry>, Option<String>) {
     let from = now.saturating_sub(window);
-    read_all(root, now)
+    let (all, warning) = read_all(root, now);
+    let recent = all
         .into_iter()
         .filter(|e| e.at >= from && e.at < now)
-        .collect()
-}
-
-/// The newest readable entry; `None` when there is none.
-#[cfg(test)]
-pub(super) fn last(root: &Path, now: i64) -> Option<Entry> {
-    read_all(root, now).pop()
+        .collect();
+    (recent, warning)
 }
 
 // ---------------------------------------------------------------------------
@@ -545,16 +561,49 @@ fn rewritten(tail: &[u8], line: &str, now: i64) -> Vec<u8> {
     body
 }
 
-/// Appends `entry` as one line under the writers' lock, trimming first when
-/// needed. Never creates `.auto-switch.d`: without a private one it returns
-/// [`HistoryError::NoStateDir`], which prints nothing.
+/// Whether a non-empty history does not end in a newline.
 #[cfg(unix)]
+fn ends_cut(file: &std::fs::File, len: u64) -> Result<bool, HistoryError> {
+    use std::os::unix::fs::FileExt;
+    if len == 0 {
+        return Ok(false);
+    }
+    let mut last = [0u8];
+    file.read_exact_at(&mut last, len - 1)
+        .map_err(|_| HistoryError::WriteFailed)?;
+    Ok(last[0] != b'\n')
+}
+
+/// Appends `entry` as one line, applying every recording rule; see
+/// [`append_with`]. The credential variables are read from the environment.
 pub(super) fn append(root: &Path, entry: &Entry, now: i64) -> Result<(), HistoryError> {
+    let cred = super::usage_cmd::env_credential_var(|k| std::env::var_os(k));
+    append_with(root, entry, now, cred)
+}
+
+/// Appends `entry` as one line under the writers' lock, trimming first when
+/// needed. Nothing is written while `cred`, a credential variable, is set
+/// ([`HistoryError::CredentialVar`]), or when the profile root is not
+/// trusted or `.auto-switch.d` is missing or not private
+/// ([`HistoryError::NoStateDir`]); neither prints anything. Never creates
+/// `.auto-switch.d`. A line appended after a failed trim gives
+/// [`HistoryError::TrimFailed`].
+#[cfg(unix)]
+pub(super) fn append_with(
+    root: &Path,
+    entry: &Entry,
+    now: i64,
+    cred: Option<&'static str>,
+) -> Result<(), HistoryError> {
     use amplihack_utils::secure_files::{
         check_private_dir, open_private_nofollow, write_private_atomic,
     };
     use std::io::Write;
 
+    if cred.is_some() {
+        return Err(HistoryError::CredentialVar);
+    }
+    super::auto_switch::check_root_private(root).map_err(|_| HistoryError::NoStateDir)?;
     let dir = root.join(STATE_DIR);
     check_private_dir(&dir).map_err(|_| HistoryError::NoStateDir)?;
     let _lock = lock(&dir)?;
@@ -565,6 +614,7 @@ pub(super) fn append(root: &Path, entry: &Entry, now: i64) -> Result<(), History
         .map_err(|_| HistoryError::WriteFailed)?
         .len();
     let line = to_line(entry);
+    let mut trim_failed = false;
     if needs_rewrite(&file, len, now)? {
         let tail = read_tail(&file, len).map_err(|_| HistoryError::WriteFailed)?;
         match write_private_atomic(&dir, FILE, &rewritten(&tail, &line, now)) {
@@ -572,15 +622,27 @@ pub(super) fn append(root: &Path, entry: &Entry, now: i64) -> Result<(), History
             // Too large to grow any further: nothing is appended.
             Err(_) if len > TAIL => return Err(HistoryError::TooLarge),
             // Small enough to append to; the trim is tried again next time.
-            Err(_) => {}
+            Err(_) => trim_failed = true,
         }
     }
+    // A last line cut short (by a full disk, say) is ended first, so this
+    // line is not joined onto it and lost with it.
+    let lead = if ends_cut(&file, len)? { "\n" } else { "" };
     let mut f = &file;
-    f.write_all(format!("{line}\n").as_bytes())
-        .map_err(|_| HistoryError::WriteFailed)
+    f.write_all(format!("{lead}{line}\n").as_bytes())
+        .map_err(|_| HistoryError::WriteFailed)?;
+    if trim_failed {
+        return Err(HistoryError::TrimFailed);
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]
-pub(super) fn append(_root: &Path, _entry: &Entry, _now: i64) -> Result<(), HistoryError> {
+pub(super) fn append_with(
+    _root: &Path,
+    _entry: &Entry,
+    _now: i64,
+    _cred: Option<&'static str>,
+) -> Result<(), HistoryError> {
     Err(HistoryError::NoStateDir)
 }

@@ -16,7 +16,13 @@
 //!   and has no summary; `--summary-json` holds the `--json` array.
 //! - History is written only when `.auto-switch.d` exists, no names were
 //!   given, no `--raw` and no credential variable; it never holds an e-mail
-//!   address, even one Claude printed.
+//!   address, even one Claude printed. The rotator writes nothing under a
+//!   credential variable either.
+//! - A history that exists but is refused (group-writable here) is read as
+//!   empty, with one fixed warning on stderr, by `profile usage` and by
+//!   `rotate status`; a missing one gives no warning.
+//! - `--summary-json`'s `at` and the history line's `at` are taken after the
+//!   probes.
 //! - `rotate status` prints `capacity:` from the history and starts nothing.
 
 #![cfg(target_os = "linux")]
@@ -109,6 +115,24 @@ fn usage_with_email(f: &Fixture, p: &str, session: u32, week: u32) {
         ),
     )
     .unwrap();
+}
+
+const REFUSED: &str = "warning: usage history ignored (unsafe file)";
+
+/// One history line `hours_ago` hours back, with every fixture profile at
+/// `w`% of the week.
+fn old_line(hours_ago: i64, w: u32) -> String {
+    let at = chrono::Utc::now() - chrono::Duration::hours(hours_ago);
+    let p = format!(r#"{{"s":0,"w":{w},"w_reset":null}}"#);
+    format!(
+        r#"{{"at":"{}","profiles":{{"work":{p},"spare":{p},"extra":{p}}}}}"#,
+        at.format("%Y-%m-%dT%H:%M:%SZ")
+    )
+}
+
+fn seed_history(f: &Fixture, body: &str, mode: u32) {
+    fs::write(history(f), body).unwrap();
+    fs::set_permissions(history(f), fs::Permissions::from_mode(mode)).unwrap();
 }
 
 fn summary_lines(stdout: &str) -> Vec<&str> {
@@ -376,4 +400,122 @@ fn rotate_status_prints_the_capacity_line_and_starts_nothing() {
         "after last cycle: {out}"
     );
     assert_eq!(starts(&f), 0, "status started claude");
+}
+
+#[test]
+fn a_rotator_cycle_under_a_credential_variable_records_nothing() {
+    let f = Fixture::new();
+    let out = f
+        .cmd(&["profile", "rotate"])
+        .env("ANTHROPIC_API_KEY", "sk-test-not-real")
+        .output()
+        .unwrap();
+    assert_no_secrets(&out);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        state_dir(&f).is_dir(),
+        "the rotator set up its state directory"
+    );
+    assert!(!history(&f).exists(), "{:?}", history_lines(&f));
+}
+
+#[test]
+fn a_group_writable_history_is_ignored_with_one_warning_by_profile_usage() {
+    let f = Fixture::new();
+    recording_on(&f);
+    // Every profile was at 0% five hours ago, so a trusted history gives a
+    // rate.
+    seed_history(&f, &format!("{}\n", old_line(5, 0)), 0o600);
+    let out = usage(&f, &["--summary-json"], &[]);
+    assert!(out.status.success());
+    assert!(
+        !text(&out.stderr).contains(REFUSED),
+        "{}",
+        text(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(
+        v["summary"]["rate_login_weeks_per_hour"].is_number(),
+        "control: {v}"
+    );
+
+    seed_history(&f, &format!("{}\n", old_line(5, 0)), 0o664);
+    let out = usage(&f, &["--summary-json"], &[]);
+    assert!(out.status.success());
+    let err = text(&out.stderr);
+    assert_eq!(err.matches(REFUSED).count(), 1, "{err}");
+    assert!(!err.contains(&*f.root.to_string_lossy()), "no path: {err}");
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["summary"]["rate_login_weeks_per_hour"].is_null(), "{v}");
+    assert!(v["summary"]["runway_hours"].is_null(), "{v}");
+
+    let table = usage(&f, &[], &[]);
+    assert_eq!(text(&table.stderr).matches(REFUSED).count(), 1);
+    assert!(
+        text(&table.stdout).contains("\nrunway               unknown\n"),
+        "{}",
+        text(&table.stdout)
+    );
+}
+
+#[test]
+fn a_missing_history_gives_no_warning() {
+    let f = Fixture::new();
+    recording_on(&f);
+    let out = usage(&f, &["--summary-json"], &[]);
+    assert!(
+        !text(&out.stderr).contains("usage history"),
+        "{}",
+        text(&out.stderr)
+    );
+    let out = f.ok(&["profile", "rotate", "status"]);
+    assert!(
+        !text(&out.stderr).contains("usage history"),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
+fn rotate_status_ignores_a_group_writable_history_with_one_warning() {
+    let f = Fixture::new();
+    recording_on(&f);
+    seed_history(&f, &format!("{}\n", old_line(1, 30)), 0o664);
+    let out = f.ok(&["profile", "rotate", "status"]);
+    let stdout = text(&out.stdout);
+    assert!(
+        stdout.contains("\ncapacity: no recorded cycle\n"),
+        "{stdout}"
+    );
+    let err = text(&out.stderr);
+    assert_eq!(err.matches(REFUSED).count(), 1, "{err}");
+}
+
+#[test]
+fn the_summary_and_history_time_is_taken_after_the_probes() {
+    let f = Fixture::new();
+    recording_on(&f);
+    let real = f.tools.join("claude.real");
+    fs::rename(f.tools.join("claude"), &real).unwrap();
+    write_executable(
+        &f.tools.join("claude"),
+        format!(
+            "#!/bin/sh\ncase \"$1\" in --version) exec '{0}' \"$@\" ;; esac\nsleep 1\nexec '{0}' \"$@\"\n",
+            real.display()
+        ),
+        0o755,
+    );
+    let t0 = chrono::Utc::now().timestamp();
+    let v: serde_json::Value =
+        serde_json::from_str(&usage_ok(&f, &["--summary-json"], &[])).unwrap();
+    let at = v["at"].as_str().unwrap();
+    let secs = chrono::DateTime::parse_from_rfc3339(at)
+        .unwrap()
+        .timestamp();
+    // At least one second after `t0`, in whole seconds.
+    assert!(secs > t0, "at {at} is before the probes ended ({t0})");
+    let lines = history_lines(&f);
+    assert_eq!(lines.len(), 1, "{lines:?}");
+    let h: serde_json::Value = serde_json::from_str(&lines[0]).unwrap();
+    assert_eq!(h["at"], at, "the history line has the same time");
 }

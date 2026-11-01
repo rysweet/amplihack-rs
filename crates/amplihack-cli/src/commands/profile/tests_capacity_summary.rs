@@ -4,7 +4,8 @@
 //!
 //! Contract (docs/reference/profile-command.md, "Capacity summary"):
 //! - Headroom is kept in whole percentage points and is unweighted; the
-//!   weighted figure is shown only when some weight is not 1.0.
+//!   weighted figure is shown only when some current profile's weight is
+//!   not 1.0.
 //! - Unknown readings are never counted as 0% or 100%: they are left out of
 //!   `N`, every sum and the rate, and only counted on the `unknown` line.
 //! - Usable now: session below the threshold and week below 100%.
@@ -742,6 +743,31 @@ fn weighted_figures_round_only_when_printed() {
     assert_eq!(
         lines(&s)[0],
         "weekly headroom      0.25 login-weeks of 1 (25%)   [weighted: 0.13 of 0.50]"
+    );
+}
+
+#[test]
+fn a_weight_for_an_absent_profile_does_not_show_the_weighted_figure() {
+    // `gone` is in the weights file but is no current profile.
+    let w = Weights::from_pairs(&[("gone", 2.0)]);
+    let s = summary(
+        &snap(T, &[("a", pt(Some(0), 75)), ("b", pt(Some(0), 0))], &[]),
+        &w,
+        95,
+        &[],
+    );
+    assert_eq!(
+        lines(&s)[0],
+        "weekly headroom      1.25 login-weeks of 2 (63%)"
+    );
+    assert!(!s.status_line(T, T).contains("[weighted:"));
+    assert_eq!(
+        s,
+        plain(&snap(
+            T,
+            &[("a", pt(Some(0), 75)), ("b", pt(Some(0), 0))],
+            &[]
+        ))
     );
 }
 

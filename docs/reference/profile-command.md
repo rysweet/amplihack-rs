@@ -986,7 +986,7 @@ unknown              2 profiles (readings timed out or failed; excluded from all
 
 | Line | Meaning |
 |------|---------|
-| `weekly headroom` | The weekly capacity left across all logins with a [valid reading](#valid-and-unknown-readings), in login-weeks: one login-week is one login's whole weekly allowance. `X login-weeks of N (P%)`, where `N` is the number of valid readings, `X` is the sum of `(100 − week%) / 100` over them, and `P` is `X / N` as a percentage. Followed by `   [weighted: X' of T]` only when some [weight](#capacity-weights) is not `1.0`. With no valid reading: `unknown (no valid readings)`. |
+| `weekly headroom` | The weekly capacity left across all logins with a [valid reading](#valid-and-unknown-readings), in login-weeks: one login-week is one login's whole weekly allowance. `X login-weeks of N (P%)`, where `N` is the number of valid readings, `X` is the sum of `(100 − week%) / 100` over them, and `P` is `X / N` as a percentage. Followed by `   [weighted: X' of T]` only when some login with a valid reading has a [weight](#capacity-weights) other than `1.0`; a weight for a profile that is not among them, such as a deleted one, does not count. With no valid reading: `unknown (no valid readings)`. |
 | `usable now` | `U of N logins (session < S% and weekly < 100%)`: how many logins with a valid reading can take work now, and the session threshold `S` in force. See [Usable now](#usable-now). |
 | `next session reset` | The earliest session reset among logins stopped only by their session limit, and every such login whose reset falls within 60 seconds of it: `<time>  (<names>: +K usable)`, where `K` is the number of names. `none` when there is no such login. See [Next session reset](#next-session-reset). |
 | `runway` | How long the weekly headroom lasts at the rate it was used over the last six hours: `~H h at the last 6 h rate (R login-weeks/h)`, or `unknown`. The `6 h` is fixed text; the rate is per hour whatever the length of history used. See [Rate and runway](#rate-and-runway). |
@@ -1246,24 +1246,39 @@ Who writes it:
 
 | Writer | When |
 |--------|------|
-| `profile usage` | After the probes, when [auto-switch is set up](#refreshing-auto-switch-readings) (`<root>/.auto-switch.d/` exists), no profile names were given, `--raw` was not given, and none of `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or `CLAUDE_CODE_OAUTH_TOKEN` is set. With or without `--json` and `--summary-json`. |
+| `profile usage` | After the probes, when no profile names were given and `--raw` was not given. With or without `--json` and `--summary-json`. |
 | The [rotator](#rotate-cycle) | After every cycle that measured usage, once its state lock is released. It records the profiles it measured, which may be fewer than all; the rate copes with that. The [live login](#rotate-live-profile) is recorded under its profile, and a login in `~/.claude` that belongs to no profile is not recorded. A cycle that measured nothing writes nothing. |
 
-`profile usage` never creates `<root>/.auto-switch.d/`. A line cannot be
-recorded under a filtered run, because the gaps would make the rate wrong, or
-under a credential variable, because every row might show that credential's
-numbers.
+Both writers record only when all of these hold, and otherwise write nothing
+and print nothing about the history:
+
+- The profile root is a real directory, not a symlink, owned by you and not
+  writable by other users.
+- [Auto-switch is set up](#refreshing-auto-switch-readings):
+  `<root>/.auto-switch.d/` exists and is a private directory of yours. It is
+  never created by recording.
+- None of `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
+  `CLAUDE_CODE_OAUTH_TOKEN` is set, because every reading might then show
+  that credential's numbers. The rotator measures anyway and warns about the
+  variable, but does not record.
+
+A filtered `profile usage` run is not recorded either, because the gaps
+would make the rate wrong.
 
 Writers take an exclusive lock on `usage-history.lock` beside it, trying
 every 50 ms for up to one second; the rotator's state lock is never held at
-the same time. Each line is written in one append. Under the lock, entries
+the same time. Each line is written in one append; when the file's last line
+was cut short, for example by a full disk, a newline is written first so the
+new line stays whole. Under the lock, entries
 older than eight days are dropped: when the first line is more than an hour
 older than that or cannot be read, or the file is over 4 MiB, the file is
 rewritten atomically without entries older than eight days or lines that
 cannot be read, dropping the oldest entries until it is under 3 MiB. The
 hour's slack means a full history is rewritten at most once an hour rather
 than on every cycle. If the rewrite fails while the file is over 4 MiB,
-nothing is appended.
+nothing is appended. If it fails on a smaller file, the line is still
+appended, the trim is tried again on the next cycle, and one warning is
+printed: `warning: usage history not trimmed`.
 
 Readers take the last 4 MiB of the file, and skip any line longer than
 64 KiB, any line that is not valid JSON, any profile name that fails the
@@ -1271,6 +1286,17 @@ Readers take the last 4 MiB of the file, and skip any line longer than
 more than 100 years from now. A missing `s` counts as `null`, and times with
 a UTC offset are read as the same instant in UTC. Unknown keys are ignored,
 so a newer writer's lines still read.
+
+Readers check the profile root as writers do. A missing history, or a
+missing `.auto-switch.d/`, is an empty history with no warning. A history
+that exists but is refused, because the root is not trusted, or the file is
+a symlink, is not a regular file, has another owner, is writable by group or
+others, or cannot be opened or read, is also treated as empty, and one
+warning goes to stderr, from `profile usage` and from `rotate status`:
+
+```
+warning: usage history ignored (unsafe file)
+```
 
 The history never decides anything and never fails a command. When it cannot
 be read, the rate is unknown. When a line cannot be written (the lock stays
@@ -5039,12 +5065,13 @@ before the clock now that entry was written, in the largest whole unit:
 When the newest entry came from a [rotator cycle](#usage-history), it holds
 only the profiles that cycle measured, so `N` may be fewer than all
 profiles; `profile usage` with no names records every profile it could read.
-With a weight other than `1.0`, the line adds `   [weighted: X' of T]`
-after `(P%)`, as in the summary.
+When a profile in that entry has a weight other than `1.0`, the line adds
+`   [weighted: X' of T]` after `(P%)`, as in the summary.
 
 | History | Line |
 |---------|------|
 | No file, or no readable entry | `capacity: no recorded cycle` |
+| A file that is refused (see [Usage history](#usage-history)) | `capacity: no recorded cycle`, and `warning: usage history ignored (unsafe file)` on stderr |
 | Newest entry has no profiles | `capacity: headroom unknown (no valid readings), usable 0 of 0 logins, runway unknown (as of <time>, <age> ago)` |
 
 A pending or inconsistent journal adds a line `journal: pending (phase <phase>)`

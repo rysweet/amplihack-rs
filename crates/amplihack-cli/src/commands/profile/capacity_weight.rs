@@ -50,9 +50,10 @@ impl Weights {
         self.0.get(name).copied().unwrap_or(1.0)
     }
 
-    /// Whether any weight is other than 1.0.
-    pub(super) fn any_differs(&self) -> bool {
-        self.0.values().any(|w| *w != 1.0)
+    /// Whether any of `names` has a weight other than 1.0. A weight for a
+    /// profile not among them, such as a deleted one, does not count.
+    pub(super) fn any_differs_among<'a>(&self, names: impl IntoIterator<Item = &'a str>) -> bool {
+        names.into_iter().any(|n| self.of(n) != 1.0)
     }
 }
 

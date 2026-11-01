@@ -40,7 +40,7 @@ fn assert_uniform(w: &Weights) {
     for n in ["team", "work", "anything"] {
         assert_eq!(w.of(n), 1.0, "{n}");
     }
-    assert!(!w.any_differs());
+    assert!(!w.any_differs_among(["team", "work", "anything"]));
 }
 
 #[test]
@@ -66,14 +66,18 @@ fn a_valid_object_sets_each_weight_and_others_stay_one() {
     assert_eq!(w.of("scratch"), 0.5);
     assert_eq!(w.of("max"), 1000.0);
     assert_eq!(w.of("work"), 1.0, "a profile not in the file");
-    assert!(w.any_differs());
+    assert!(w.any_differs_among(["work", "scratch"]));
+    assert!(
+        !w.any_differs_among(["work", "other"]),
+        "only the named profiles count"
+    );
 }
 
 #[test]
 fn weights_of_exactly_one_do_not_differ() {
     let (w, warnings) = parse(br#"{"team": 1.0, "work": 1}"#);
     assert!(warnings.is_empty(), "{warnings:?}");
-    assert!(!w.any_differs());
+    assert!(!w.any_differs_among(["team", "work"]));
 }
 
 #[test]
