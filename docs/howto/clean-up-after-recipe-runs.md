@@ -183,8 +183,9 @@ grep -l "\"$ATTEMPT_ID\"" "$WORK_ROOT"/runs/*/run.json | xargs -r dirname
 ```
 
 Run folders themselves are never removed. After cleanup a folder holds only
-`run.json`, `owned-paths` and `cleanup-record.json`, which together take a few
-kilobytes. Pruning old run folders is not part of this feature.
+`run.json`, `cleanup-record.json` and, while some recorded path remains,
+`owned-paths`. Together they take a few kilobytes. Pruning old run folders is
+not part of this feature.
 
 ### Recording owned paths
 
