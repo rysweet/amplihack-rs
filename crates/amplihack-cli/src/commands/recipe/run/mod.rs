@@ -247,9 +247,8 @@ pub(crate) fn run_recipe_with(
     // Issue #1811: the capacity governor may hold or refuse the run; the
     // slot is held until the runner returns. A dry run starts nothing.
     let governed = preflight.governor.as_ref().filter(|_| !dry_run);
-    let task = merged_context.get("task_description").map(String::as_str);
-    let _slot = governor::admit(AdmitRequest::recipe(governed, &recipe.name, task))
-        .map_err(Denied::report)?;
+    let request = AdmitRequest::recipe(governed, &recipe.name);
+    let _slot = governor::admit(request).map_err(Denied::report)?;
     let search_dirs = build_search_dirs(&validated_path, &abs_working_dir)?;
     // Issue #1551: auto-drive, and any run nested inside one, gets the `gh`
     // merge guard first on PATH.

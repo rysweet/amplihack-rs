@@ -50,25 +50,72 @@ fn switch(raw: &str) -> Option<bool> {
     }
 }
 
+/// An integer setting and the warning to log, if any: the default when the
+/// key is unset or of the wrong type, else the value clamped into
+/// `min..=max`. The warning names the key; a wrong-typed value is never
+/// quoted, only the type that was expected.
+pub(super) fn int_setting(
+    value: Option<Value>,
+    key: &str,
+    min: u64,
+    max: u64,
+    default: u64,
+) -> (u64, Option<String>) {
+    let Some(value) = value else {
+        return (default, None);
+    };
+    let Some(raw) = value.as_int() else {
+        return (
+            default,
+            Some(format!(
+                "{key} is not an integer; using the default {default}"
+            )),
+        );
+    };
+    let used = raw.clamp(min, max);
+    let warning =
+        (used != raw).then(|| format!("{key} is {raw}, outside {min}..={max}; using {used}"));
+    (used, warning)
+}
+
+/// A boolean setting and the warning to log when it has the wrong type.
+pub(super) fn bool_setting(value: Option<Value>, key: &str) -> (Option<bool>, Option<String>) {
+    let Some(value) = value else {
+        return (None, None);
+    };
+    match value.as_bool() {
+        Some(b) => (Some(b), None),
+        None => (
+            None,
+            Some(format!("{key} is not a boolean; using the default")),
+        ),
+    }
+}
+
+fn logged<T>((value, warning): (T, Option<String>)) -> T {
+    if let Some(warning) = warning {
+        tracing::warn!("governor config: {warning}");
+    }
+    value
+}
+
 /// The settings from the environment and the user-scope `governor.*`
-/// values. A value of the wrong type is ignored; an integer outside its
-/// range is clamped into it.
+/// values. A value of the wrong type is ignored and an integer outside its
+/// range is clamped into it; both log a warning that names the key.
 pub fn resolve(
     env: &dyn Fn(&str) -> Option<String>,
     user: &dyn Fn(&str) -> Option<Value>,
 ) -> Settings {
     let d = Settings::default();
     let int = |key: &str, min: u64, max: u64, default: u64| -> u64 {
-        user(key)
-            .and_then(|v| v.as_int())
-            .map_or(default, |v| v.clamp(min, max))
+        logged(int_setting(user(key), key, min, max, default))
     };
     let small = |key: &str, min: u64, max: u64, default: u32| -> u32 {
         u32::try_from(int(key, min, max, u64::from(default))).unwrap_or(default)
     };
     let enabled = env(GOVERNOR_ENV)
         .and_then(|raw| switch(&raw))
-        .or_else(|| user("governor.enabled").and_then(|v| v.as_bool()))
+        .or_else(|| logged(bool_setting(user("governor.enabled"), "governor.enabled")))
         .unwrap_or(d.enabled);
     Settings {
         enabled,

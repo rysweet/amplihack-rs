@@ -193,3 +193,54 @@ fn class_parses_as_a_clap_value_enum() {
     }
     assert!(Class::from_str("admin", false).is_err());
 }
+
+/// S1 (PR 1831): a recipe's task description can come from a GitHub
+/// issue, so `[coord]` in it never reaches class inference. `claude -p`
+/// still does, and a recipe run opts in through the flag or the variable.
+#[test]
+fn recipe_task_text_cannot_claim_coordination() {
+    use super::{AdmitRequest, GovernorArgs};
+    let args = GovernorArgs::default();
+    let recipe = AdmitRequest::recipe(Some(&args), "default-workflow");
+    assert_eq!(recipe.task, None);
+    assert_eq!(
+        class(
+            None,
+            &env(&[]),
+            recipe.recipe.as_deref(),
+            recipe.task.as_deref()
+        ),
+        Class::Ordinary
+    );
+    let opted_in = env(&[("AMPLIHACK_GOVERNOR_CLASS", "coordination")]);
+    assert_eq!(
+        class(
+            None,
+            &opted_in,
+            recipe.recipe.as_deref(),
+            recipe.task.as_deref()
+        ),
+        Class::Coordination
+    );
+    assert_eq!(
+        class(
+            Some(Class::Coordination),
+            &env(&[]),
+            recipe.recipe.as_deref(),
+            recipe.task.as_deref()
+        ),
+        Class::Coordination
+    );
+
+    let claude_args = ["-p".to_string(), "[coord] ping".to_string()];
+    let launch = AdmitRequest::launch(&args, &claude_args);
+    assert_eq!(
+        class(
+            None,
+            &env(&[]),
+            launch.recipe.as_deref(),
+            launch.task.as_deref()
+        ),
+        Class::Coordination
+    );
+}

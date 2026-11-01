@@ -114,12 +114,15 @@ impl AdmitRequest {
     }
 
     /// `amplihack recipe run`. `None` arguments (a dry run, or a call from
-    /// inside amplihack) admit without asking.
-    pub fn recipe(args: Option<&GovernorArgs>, recipe: &str, task: Option<&str>) -> Self {
+    /// inside amplihack) admit without asking. The task description is not
+    /// read: in a recipe run it can come from a GitHub issue, so `[coord]`
+    /// in it must not claim the reserve. A recipe run that is coordination
+    /// work says so with `--governor-class` or `AMPLIHACK_GOVERNOR_CLASS`.
+    pub fn recipe(args: Option<&GovernorArgs>, recipe: &str) -> Self {
         Self {
             args: args.cloned(),
             recipe: Some(recipe.to_string()),
-            task: task.map(str::to_string),
+            task: None,
         }
     }
 }

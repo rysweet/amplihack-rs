@@ -184,3 +184,53 @@ fn invalid_wait_env_falls_back_to_the_setting() {
     let e = env(&[("AMPLIHACK_GOVERNOR_WAIT", "soon")]);
     assert_eq!(wait_secs(None, &|k: &str| e.get(k).cloned(), &s), 600);
 }
+
+/// P1 (PR 1831): a wrong type and a clamp each give a warning that names
+/// the key, and the value still resolves as before.
+#[test]
+fn wrong_type_and_clamp_each_give_a_warning_naming_the_key() {
+    use super::config::{bool_setting, int_setting};
+    let (v, w) = int_setting(
+        Some(Value::Text("SECRETVALUE".into())),
+        "governor.max_concurrency",
+        1,
+        64,
+        4,
+    );
+    assert_eq!(v, 4);
+    let w = w.expect("a wrong type warns");
+    assert!(
+        w.contains("governor.max_concurrency is not an integer"),
+        "{w}"
+    );
+    assert!(
+        !w.contains("SECRETVALUE"),
+        "a wrong-typed value is quoted: {w}"
+    );
+
+    let (v, w) = int_setting(Some(Value::Int(500)), "governor.reserve_points", 0, 100, 10);
+    assert_eq!(v, 100);
+    assert_eq!(
+        w.as_deref(),
+        Some("governor.reserve_points is 500, outside 0..=100; using 100")
+    );
+
+    let (v, w) = bool_setting(Some(Value::Int(1)), "governor.enabled");
+    assert_eq!(v, None);
+    assert!(w.unwrap().contains("governor.enabled is not a boolean"));
+}
+
+#[test]
+fn unset_and_in_range_values_give_no_warning() {
+    use super::config::{bool_setting, int_setting};
+    assert_eq!(int_setting(None, "governor.step", 1, 8, 1), (1, None));
+    assert_eq!(
+        int_setting(Some(Value::Int(2)), "governor.step", 1, 8, 1),
+        (2, None)
+    );
+    assert_eq!(
+        bool_setting(Some(Value::Bool(false)), "governor.enabled"),
+        (Some(false), None)
+    );
+    assert_eq!(bool_setting(None, "governor.enabled"), (None, None));
+}

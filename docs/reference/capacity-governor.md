@@ -229,8 +229,13 @@ The first of these that is set wins:
 1. `--governor-class`
 2. `AMPLIHACK_GOVERNOR_CLASS`
 3. Inference from the work:
-   - a task text whose first token is `[coord]` gives `coordination`
-     (see [Coordination Messages](./coordination-messages.md));
+   - for `amplihack launch` and `amplihack claude` only, a `-p` task
+     text whose first token is `[coord]` gives `coordination` (see
+     [Coordination Messages](./coordination-messages.md)). The
+     `task_description` of a recipe run is never read, because it can come
+     from a GitHub issue; a recipe run that is coordination work sets
+     `--governor-class coordination` or
+     `AMPLIHACK_GOVERNOR_CLASS=coordination`;
    - a recipe whose name starts with `recovery` gives `recovery` (no such
      recipe ships yet; the prefix rule covers future ones);
    - the recipes `consensus-pr-review`, `workflow-pr-review` and
@@ -403,7 +408,16 @@ Reason codes are stable and appear in stderr lines and in status JSON.
 ### Failure modes
 
 These faults admit the start without taking a slot and write the reason to
-the log at warning level. Where the state can still be written
+the log at warning level. Every fault except `no-root` and `no-readings` also
+prints one line to stderr, sanitised and with no path:
+
+```text
+amplihack: governor: admitted without a decision (state-dir): <reason>
+```
+
+Neither of those two prints anything: `no-root` is the usual state of a host
+with no login profiles, and `no-readings` admits with a slot and is shown by
+`governor status`. Where the state can still be written
 (`corrupt-state`, `no-readings` and `queue-full`), the reason is also recorded
 in `state.json` and shown as `fail_open_reason` by status; `no-readings`
 admits with a slot, so the concurrency limit still counts it. Status also
@@ -703,8 +717,10 @@ against other processes of the same user: any parent can set
   workstream ids, classes, PIDs, start times, tree ids and readings, and no
   secrets.
 - **Reserve.** The reserve is advisory. `[coord]` as the first word of a
-  task, or `AMPLIHACK_GOVERNOR_CLASS`, raises a start's class and so its
-  access to the reserve.
+  `claude -p` task, `--governor-class` or `AMPLIHACK_GOVERNOR_CLASS` raises
+  a start's class and so its access to the reserve. Recipe task text is
+  not read, so anyone who can open an issue that a recipe run picks up
+  cannot claim the reserve.
 - **Nesting.** A process that sets `AMPLIHACK_SESSION_DEPTH` above 0 and an
   `AMPLIHACK_TREE_ID` matching a live slot nests under that slot and is not
   counted against the concurrency limit. This is accepted under the

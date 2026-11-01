@@ -9,8 +9,25 @@ use std::time::Duration;
 /// How long a round waits for the lock before failing open.
 pub(super) const LOCK_WAIT: Duration = Duration::from_secs(5);
 
+/// The stderr line of a fail-open admission. The message was sanitised and
+/// cut to 512 bytes by [`FailOpen::new`] and never holds a path.
+pub(super) fn fail_open_line(fault: &FailOpen) -> String {
+    format!(
+        "amplihack: governor: admitted without a decision ({}): {}",
+        fault.code.as_str(),
+        fault.message
+    )
+}
+
+/// Admits without a slot. Every fault but `no-root` also prints one line to
+/// stderr, because faults such as `state-dir` and `lock-timeout` happen
+/// before anything can be saved for `governor status`. `no-root` is the
+/// usual state of a host with no login profiles, so it stays in the log.
 pub(super) fn fail_open(fault: &FailOpen) -> SlotGuard {
     tracing::warn!(code = fault.code.as_str(), reason = %fault.message, "governor: admitted without a decision (fail open)");
+    if fault.code != FailOpenCode::NoRoot {
+        eprintln!("{}", fail_open_line(fault));
+    }
     SlotGuard::inert(Some(fault.code))
 }
 
