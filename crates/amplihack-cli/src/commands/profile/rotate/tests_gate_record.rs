@@ -362,6 +362,7 @@ fn probed(session: f64, resets_at: i64) -> Probed {
             }),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -371,6 +372,7 @@ fn measured(name: &str, p: &Probed) -> Measured {
         reading: p.reading,
         windows: p.windows.clone(),
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -386,6 +388,7 @@ fn rotator_spends(s: &Settings, live: f64, spare: f64, resets_in: i64) -> bool {
         live_name: Some(&n("work")),
         live: &live_p,
         candidates: &candidates,
+        refused: &[],
         overflow: &[OverflowEntry::new(n("cred"), 1)],
         blocks: &BTreeMap::new(),
         platform_block: None,
@@ -472,6 +475,7 @@ fn probed2(session: f64, week: f64) -> Probed {
             }),
         },
         spend_limit: false,
+        unknown: false,
     }
 }
 
@@ -485,6 +489,7 @@ fn rotator_returns(s: &Settings, session: f64, week: f64) -> bool {
         live_name: Some(&n("cred")),
         live: &live,
         candidates: &candidates,
+        refused: &[],
         overflow: &[OverflowEntry::new(n("cred"), 1)],
         blocks: &BTreeMap::new(),
         platform_block: None,

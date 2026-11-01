@@ -21,6 +21,7 @@ mod login_check;
 mod name;
 mod overflow;
 mod pointer;
+mod probe_limits;
 mod root_cmd;
 mod root_config;
 mod rotate;
@@ -32,6 +33,7 @@ mod store;
 mod supervise_gate;
 mod usage_cmd;
 mod usage_parse;
+mod usage_request;
 
 #[cfg(test)]
 mod tests_commands;
@@ -41,6 +43,8 @@ mod tests_default_live;
 mod tests_docs_sync;
 #[cfg(test)]
 mod tests_docs_sync_platform;
+#[cfg(test)]
+mod tests_docs_sync_probe;
 #[cfg(all(test, unix))]
 mod tests_duplicates;
 #[cfg(all(test, unix))]
@@ -51,6 +55,8 @@ mod tests_login_check;
 mod tests_name;
 #[cfg(test)]
 mod tests_pointer;
+#[cfg(test)]
+mod tests_probe_limits;
 #[cfg(test)]
 mod tests_root_config;
 #[cfg(test)]
@@ -69,6 +75,8 @@ mod tests_store;
 mod tests_usage_cmd;
 #[cfg(test)]
 mod tests_usage_parse;
+#[cfg(test)]
+mod tests_usage_request;
 #[cfg(test)]
 mod tests_verify;
 
@@ -377,8 +385,8 @@ pub enum ProfileCommands {
         /// Also print what `claude` wrote to stdout and stderr
         #[arg(long)]
         raw: bool,
-        /// Per-profile deadline in seconds (default 30)
-        #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(1..=usage_cmd::MAX_TIMEOUT_SECS))]
+        /// Seconds each probe may run (default 120, max 600; or AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS)
+        #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(1..=probe_limits::MAX_TIMEOUT_SECS))]
         timeout_secs: Option<u64>,
     },
     /// Switch accounts automatically when one nears its usage limit
@@ -696,6 +704,30 @@ pub(crate) const AUTO_SWITCH_SUPERVISED_ENV: &str = auto_switch::SUPERVISED_ENV;
 /// export, when auto-switch picks another one.
 pub(crate) fn substitute_inherited_profile(inherited: &str) -> Option<String> {
     auto_switch::substitute_name(inherited)
+}
+
+/// `agent supervise` seam (issue #1760): the config directory a launch with
+/// `flag` and no inherited `AMPLIHACK_CLAUDE_PROFILE` resolves to, as a
+/// resumed pane runs it. That is the flag's profile, else the default
+/// pointer's; `None` means `~/.claude` (neither is set, or the profile is the
+/// rotator's live login). Prints nothing, takes no lock and refuses nothing
+/// that only the launch itself checks. An error is a whole sentence.
+pub(crate) fn resume_profile_dir(
+    flag: Option<&str>,
+    home: Option<&std::path::Path>,
+) -> std::result::Result<Option<PathBuf>, String> {
+    let store = ProfileStore::from_env().map_err(|e| e.to_string())?;
+    let Some((name, dir)) =
+        resolve_launch_profile(&store, flag, None).map_err(|e| e.to_string())?
+    else {
+        return Ok(None);
+    };
+    if default_live::could_be_live(&store, &name)
+        && default_live::live_name(&store, home).is_some_and(|l| l == name)
+    {
+        return Ok(None);
+    }
+    Ok(Some(dir))
 }
 
 /// Profile directory for an interactive `launch`/`claude`: `--profile`, then

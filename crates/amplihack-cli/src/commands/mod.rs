@@ -1,5 +1,6 @@
 //! Command dispatch for all CLI subcommands.
 
+pub mod agent;
 pub mod agent_binary;
 pub mod append;
 pub mod auto_mode;
@@ -34,6 +35,7 @@ pub mod session_tree;
 #[cfg(unix)]
 pub mod sessions;
 pub mod signal;
+pub mod usage;
 pub mod uvx_help;
 pub mod workflow;
 
@@ -119,6 +121,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Profile(cmd) => profile::run_profile(cmd),
         #[cfg(unix)]
         Commands::Sessions(cmd) => sessions::run_sessions(cmd),
+        Commands::Usage(cmd) => usage::run(cmd),
+        Commands::Agent(cmd) => agent::run_agent(cmd),
         Commands::Launch {
             resume,
             continue_session,
@@ -189,51 +193,72 @@ pub fn dispatch(command: Commands) -> Result<()> {
             ui,
             profile,
             prompt_file,
+            supervise,
             claude_args,
         } => {
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
-            if run_supervised(profile.as_deref(), docker, auto, &claude_args)? {
-                return Ok(());
-            }
-            let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
-            profile::autostart_on_launch(docker);
-            profile::capacity_launch_warning(&claude_args);
-            if auto {
-                validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
-                let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
-                return auto_mode::run_auto_mode(
-                    auto_mode::AutoModeTool::Claude,
-                    max_turns,
-                    ui,
-                    claude_args,
+            // Issue #1760: `--supervise NAME` wraps the unchanged launch path
+            // below, so these are copied before the closure takes them.
+            let profile_copy = profile.clone();
+            let args_copy = claude_args.clone();
+            let launch = move || -> Result<()> {
+                if run_supervised(profile.as_deref(), docker, auto, &claude_args)? {
+                    return Ok(());
+                }
+                let claude_config_dir =
+                    profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
+                profile::autostart_on_launch(docker);
+                profile::capacity_launch_warning(&claude_args);
+                if auto {
+                    validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
+                    let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
+                    return auto_mode::run_auto_mode(
+                        auto_mode::AutoModeTool::Claude,
+                        max_turns,
+                        ui,
+                        claude_args,
+                        checkout_repo,
+                        working_dir,
+                        prompt_file,
+                    );
+                }
+                // Always inject --dangerously-skip-permissions to match Python launcher parity.
+                launch::run_launch_profiled(
+                    "claude",
+                    "claude",
+                    docker,
+                    false,
+                    false,
+                    true,
+                    false,
+                    no_reflection,
+                    subprocess_safe,
                     checkout_repo,
-                    working_dir,
-                    prompt_file,
-                );
+                    claude_args,
+                    // Issue #1276: not the rustyclawd path — nothing has set an override
+                    // on amplihack's behalf, so any override in the environment is the
+                    // user's instruction.
+                    OverrideOrigin::User,
+                    Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
+                    claude_config_dir,
+                )
+            };
+            match supervise {
+                Some(name) => agent::run_wrapped(
+                    &agent::WrapRequest {
+                        name: &name,
+                        profile: profile_copy.as_deref(),
+                        subprocess_safe,
+                        no_reflection,
+                        claude_args: &args_copy,
+                    },
+                    launch,
+                ),
+                None => launch(),
             }
-            // Always inject --dangerously-skip-permissions to match Python launcher parity.
-            launch::run_launch_profiled(
-                "claude",
-                "claude",
-                docker,
-                false,
-                false,
-                true,
-                false,
-                no_reflection,
-                subprocess_safe,
-                checkout_repo,
-                claude_args,
-                // Issue #1276: not the rustyclawd path — nothing has set an override
-                // on amplihack's behalf, so any override in the environment is the
-                // user's instruction.
-                OverrideOrigin::User,
-                Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
-                claude_config_dir,
-            )
         }
         Commands::Copilot {
             no_reflection,

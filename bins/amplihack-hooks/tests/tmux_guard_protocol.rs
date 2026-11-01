@@ -18,6 +18,16 @@ const REQUIRED: &[&str] = &[
 /// auto-drive marker) reaches it, and every path it could write to is inside
 /// a temporary directory.
 fn hook_bytes(subcommand: &str, payload: &str, provider: &str) -> Value {
+    hook_bytes_with_env(subcommand, payload, provider, &[])
+}
+
+/// [`hook_bytes`] with `extra_env` added to the cleared environment.
+fn hook_bytes_with_env(
+    subcommand: &str,
+    payload: &str,
+    provider: &str,
+    extra_env: &[(&str, &str)],
+) -> Value {
     let home = tempfile::tempdir().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"));
     command.env_clear();
@@ -35,6 +45,7 @@ fn hook_bytes(subcommand: &str, payload: &str, provider: &str) -> Value {
     if provider == "codex" {
         command.env("AMPLIHACK_HOOK_PROTOCOL", "codex");
     }
+    command.envs(extra_env.iter().copied());
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -63,6 +74,17 @@ fn hook_bytes(subcommand: &str, payload: &str, provider: &str) -> Value {
 
 fn hook(payload: Value, provider: &str) -> Value {
     hook_bytes("pre-tool-use", &payload.to_string(), provider)
+}
+
+/// [`hook`] with XPIA opted in (it is off by default, #1734, and the harness
+/// clears the environment).
+fn hook_xpia_on(payload: Value, provider: &str) -> Value {
+    hook_bytes_with_env(
+        "pre-tool-use",
+        &payload.to_string(),
+        provider,
+        &[("XPIA_ENABLED", "true")],
+    )
 }
 
 fn assert_reason(reason: &Value) {
@@ -306,19 +328,17 @@ const KILLS_XPIA_ALSO_MATCHES: &[&str] = &[
     "${TMUX_BIN:-tmux} -C attach <<EOF\nkill-server\nEOF",
 ];
 
-/// Crusty round 7, concern 1: with XPIA at its defaults (the harness clears
-/// the environment, so no `XPIA_ENABLED=false` reaches the hook), these
-/// commands get the guard's deny, not XPIA's bare `{"block": true}`, which
+/// Crusty round 7, concern 1: with XPIA opted in, these commands get the
+/// guard's deny, not XPIA's bare `{"block": true}`, which
 /// Claude Code does not enforce (#1773). Claude Code acts on
 /// `hookSpecificOutput.permissionDecision == "deny"` (or
 /// `decision == "block"`), so that is what is asserted; a `block` key alone
 /// would not count.
 #[test]
 fn every_host_gets_the_guard_deny_where_xpia_also_matches() {
-    // Control: XPIA is on in this harness and answers a command the guard
-    // allows, so each case below would reach XPIA if the guard did not run
-    // first.
-    let control = hook(claude_payload("echo done; rm -rf \"$SB\""), "claude");
+    // Control: XPIA is on here and answers a command the guard allows, so
+    // each case below would reach XPIA if the guard did not run first.
+    let control = hook_xpia_on(claude_payload("echo done; rm -rf \"$SB\""), "claude");
     assert!(
         control["message"]
             .as_str()
@@ -328,14 +348,40 @@ fn every_host_gets_the_guard_deny_where_xpia_also_matches() {
 
     for command in KILLS_XPIA_ALSO_MATCHES {
         for output in [
-            hook(claude_payload(command), "claude"),
-            hook(claude_monitor_payload(command), "claude"),
-            hook(copilot_payload(command), "copilot"),
+            hook_xpia_on(claude_payload(command), "claude"),
+            hook_xpia_on(claude_monitor_payload(command), "claude"),
+            hook_xpia_on(copilot_payload(command), "copilot"),
         ] {
             assert_eq!(
                 output["hookSpecificOutput"]["permissionDecision"], "deny",
                 "{command:?}: {output}"
             );
+            assert_full_deny(&output);
+        }
+        assert_codex_deny(&hook_xpia_on(codex_exec_payload(command), "codex"));
+    }
+}
+
+/// XPIA is off by default (#1734) and the guard does not depend on it: with
+/// nothing set in the cleared environment, every host still gets the deny, and
+/// XPIA does not answer the control above, which shows XPIA is off here.
+#[test]
+fn every_host_gets_the_guard_deny_with_xpia_at_its_default_off() {
+    let control = hook(claude_payload("echo done; rm -rf \"$SB\""), "claude");
+    assert!(
+        !control["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("XPIA"),
+        "XPIA must be off here: {control}"
+    );
+
+    for command in KILLS_XPIA_ALSO_MATCHES {
+        for output in [
+            hook(claude_payload(command), "claude"),
+            hook(claude_monitor_payload(command), "claude"),
+            hook(copilot_payload(command), "copilot"),
+        ] {
             assert_full_deny(&output);
         }
         assert_codex_deny(&hook(codex_exec_payload(command), "codex"));

@@ -439,11 +439,18 @@ fn install_variant_has_hidden_force_refresh_flag() {
 fn build_install_command_source_sets_recursion_guard() {
     // Contract (#683): build_install_command must set AMPLIHACK_NO_UPDATE_CHECK
     // and AMPLIHACK_NONINTERACTIVE env vars in the subprocess to prevent
-    // infinite recursion and suppress interactive prompts.
+    // infinite recursion and suppress interactive prompts. Since #1765 it
+    // passes the process PATH to build_install_command_with_path, which
+    // builds the command, so the variables are checked in that body.
     let check_src = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/update/check.rs"));
+    assert!(
+        check_src
+            .contains("build_install_command_with_path(installed_exe, std::env::var_os(\"PATH\"))"),
+        "build_install_command must build its command through build_install_command_with_path"
+    );
     let fn_start = check_src
-        .find("fn build_install_command")
-        .expect("build_install_command must exist in check.rs");
+        .find("fn build_install_command_with_path(")
+        .expect("build_install_command_with_path must exist in check.rs");
     let fn_body = &check_src[fn_start..];
     // Find the function's closing brace
     let mut brace_depth = 0;

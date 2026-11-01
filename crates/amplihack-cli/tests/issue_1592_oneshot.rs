@@ -101,6 +101,34 @@ fn a_threshold_swap_moves_both_logins_and_only_the_account() {
     }
 }
 
+/// Issue #1698: the rotator warns about a bad probe variable, the deadline as
+/// well as the pool size, escaped, and the cycle still runs on the defaults.
+#[test]
+fn bad_probe_variables_warn_and_the_cycle_uses_the_defaults() {
+    let f = Fixture::new();
+    f.usage("work", 20, 20);
+    let out = f
+        .cmd(&["profile", "rotate"])
+        .env("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "soon\n")
+        .env("AMPLIHACK_PROFILE_USAGE_PARALLEL", "lots")
+        .output()
+        .unwrap();
+    let err = text(&out.stderr);
+    assert!(out.status.success(), "{err}");
+    assert!(
+        err.contains(
+            "warning: ignored AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS \"soon\\n\" (use 1 to 600); using 120"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains("warning: ignored AMPLIHACK_PROFILE_USAGE_PARALLEL \"lots\""),
+        "{err}"
+    );
+    assert!(text(&out.stdout).contains("cycle live=work"));
+    assert_eq!(ino(&f.home_login()), Some(f.live_ino));
+}
+
 #[test]
 fn an_upgrade_swap_needs_thirty_points() {
     let f = Fixture::new();

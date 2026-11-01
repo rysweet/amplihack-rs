@@ -649,7 +649,11 @@ fn publish_azdo_change_request(
 fn run_provider_command(binary: &str, args: &[&str]) -> std::io::Result<Output> {
     let mut cmd = Command::new(binary);
     cmd.args(args);
-    run_output_with_timeout(cmd, provider_command_timeout()).map_err(|err| {
+    run_provider_command_with_timeout(cmd, PROVIDER_COMMAND_TIMEOUT)
+}
+
+fn run_provider_command_with_timeout(cmd: Command, timeout: Duration) -> std::io::Result<Output> {
+    run_output_with_timeout(cmd, timeout).map_err(|err| {
         let kind = err
             .chain()
             .find_map(|cause| cause.downcast_ref::<io::Error>().map(io::Error::kind))
@@ -662,16 +666,6 @@ fn run_provider_command(binary: &str, args: &[&str]) -> std::io::Result<Output> 
             });
         io::Error::new(kind, err.to_string())
     })
-}
-
-fn provider_command_timeout() -> Duration {
-    #[cfg(test)]
-    if let Ok(ms) = std::env::var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS")
-        && let Ok(ms) = ms.parse::<u64>()
-    {
-        return Duration::from_millis(ms);
-    }
-    PROVIDER_COMMAND_TIMEOUT
 }
 
 fn provider_cli_missing(
@@ -951,6 +945,8 @@ fn write_output<T: serde::Serialize>(value: &T, _format: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_os = "linux")]
+    use crate::commands::profile::ROOT_ENV;
 
     #[test]
     fn manual_publish_actions_are_provider_specific_without_fake_success() {
@@ -980,45 +976,81 @@ mod tests {
     }
 
     #[cfg(target_os = "linux")]
+    fn write_fake(dir: &std::path::Path, name: &str, script: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, script).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path
+    }
+
+    /// Issue #1765: the timeout is passed in, so nothing in the process
+    /// environment changes, and the fake runs far longer than the bound, so
+    /// a pass means the timeout fired.
+    #[cfg(target_os = "linux")]
     #[test]
     fn provider_command_execution_is_bounded() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        let fake_provider = temp.path().join("fake-gh");
-        std::fs::write(
-            &fake_provider,
-            "#!/bin/sh\n/bin/sleep 30\nprintf 'done\\n'\n",
-        )
-        .unwrap();
-        let mut perms = std::fs::metadata(&fake_provider).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-        std::fs::set_permissions(&fake_provider, perms).unwrap();
+        let fake_provider = write_fake(temp.path(), "fake-gh", "#!/bin/sh\nexec /bin/sleep 60\n");
+        let mut cmd = Command::new(&fake_provider);
+        cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
 
-        let previous_timeout = std::env::var_os("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS");
-        unsafe {
-            std::env::set_var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS", "50");
-        }
         let started = std::time::Instant::now();
-        let result = run_provider_command(fake_provider.to_str().unwrap(), &[]);
-        match previous_timeout {
-            Some(value) => unsafe {
-                std::env::set_var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS", value)
-            },
-            None => unsafe { std::env::remove_var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS") },
-        }
+        let result = run_provider_command_with_timeout(cmd, Duration::from_millis(500));
+        let elapsed = started.elapsed();
 
-        // The fake provider sleeps 30 s and the timeout is 50 ms, so 10 s
+        // The fake provider sleeps 60 s and the timeout is 500 ms, so 30 s
         // separates an enforced timeout from none while leaving room for a
         // descheduled poll thread on a loaded host.
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(10),
-            "provider command helper must enforce an explicit timeout"
+            elapsed < Duration::from_secs(30),
+            "provider command helper must enforce an explicit timeout, elapsed {elapsed:?}"
         );
+        let err = result.expect_err("a provider command that outlives its timeout must fail");
         assert!(
-            result.is_err(),
-            "timed-out provider command should return an error with timeout context"
+            err.to_string().contains("timed out"),
+            "timed-out provider command should return an error with timeout context: {err}"
+        );
+    }
+
+    /// Issue #1765 (A2): the environment set on the prepared command reaches
+    /// the provider's child. The second line proves the removal only when the
+    /// test process has the variable set; the test does not set it, because
+    /// tests must not change the process environment.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn provider_command_child_gets_test_home_without_profile_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let capture = temp.path().join("child-env");
+        let capture_text = capture.to_str().expect("temporary paths are UTF-8");
+        assert!(
+            !capture_text.contains(['\'', '\n']),
+            "cannot single-quote {capture_text:?} for /bin/sh"
+        );
+        let fake_provider = write_fake(
+            temp.path(),
+            "fake-gh",
+            &format!(
+                "#!/bin/sh\nif [ -n \"${{{ROOT_ENV}+x}}\" ]; then r=set; else r=unset; fi\nprintf '%s\\n%s\\n' \"$HOME\" \"$r\" > '{capture_text}'\nexit 0\n"
+            ),
+        );
+        let mut cmd = Command::new(&fake_provider);
+        cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
+
+        let output = run_provider_command_with_timeout(cmd, PROVIDER_COMMAND_TIMEOUT)
+            .expect("a provider command that exits 0 must succeed");
+
+        assert!(
+            output.status.success(),
+            "fake provider status: {:?}",
+            output.status
+        );
+        let captured = std::fs::read_to_string(&capture).expect("the fake records its environment");
+        assert_eq!(
+            captured.lines().collect::<Vec<_>>(),
+            [temp.path().to_str().unwrap(), "unset"],
+            "the provider's child must get the test HOME and no {ROOT_ENV}"
         );
     }
 

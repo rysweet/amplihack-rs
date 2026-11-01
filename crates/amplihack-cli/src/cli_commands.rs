@@ -44,6 +44,12 @@ pub enum Commands {
     #[cfg(unix)]
     #[command(subcommand)]
     Sessions(crate::commands::sessions::SessionsCommands),
+    /// Report workstream token observations or explicitly publish a PR summary
+    #[command(subcommand)]
+    Usage(crate::commands::usage::UsageCommands),
+    /// Register, supervise and report long-lived agent sessions
+    #[command(subcommand)]
+    Agent(crate::commands::agent::AgentCommands),
     /// Launch Claude Code
     Launch {
         /// Resume the previous session
@@ -149,6 +155,14 @@ MODEL SELECTION (issues #1421, #1527)
         /// Read the initial auto-mode prompt from a file (requires --auto).
         #[arg(long = "prompt-file", value_name = "PATH", requires = "auto")]
         prompt_file: Option<PathBuf>,
+        /// Record this session under NAME so 'amplihack agent supervise' can
+        /// resume it if its tmux session is lost.
+        #[arg(
+            long = "supervise",
+            value_name = "NAME",
+            conflicts_with_all = ["auto", "append", "docker", "checkout_repo"]
+        )]
+        supervise: Option<String>,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,

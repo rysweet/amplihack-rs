@@ -65,10 +65,13 @@ nav:
       - Uninstall: howto/uninstall.md
       - Claude Login Profiles: howto/claude-profiles.md
       - Claude Login Rotation: howto/claude-profile-rotation.md
+      - Supervise Agent Sessions: howto/supervise-agent-sessions.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
       - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md
+      - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md
       - Profile Command Reference: reference/profile-command.md
       - Sessions Command Reference: reference/sessions-command.md
+      - Agent Command Reference: reference/agent-command.md
       - ccswitch Review: reviews/ccswitch-review.md
   - Core Concepts:
       - Philosophy: claude/context/PHILOSOPHY.md
@@ -109,6 +112,7 @@ nav:
       - Multi-Agent Debate: claude/workflow/DEBATE_WORKFLOW.md
       - Fallback Cascade: claude/workflow/CASCADE_WORKFLOW.md
       - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
+      - Quick-Change Recipe: reference/quick-change-recipe.md
       - Recipe CLI Commands: howto/recipe-cli-commands.md
       - Recipe CLI Reference: reference/recipe-cli-reference.md
       - Large Payload Delivery:
@@ -168,6 +172,7 @@ nav:
       - Scenarios Overview: claude/scenarios/README.md
       - Creating Tools: CREATE_YOUR_OWN_TOOLS.md
       - Hooks Configuration: HOOK_CONFIGURATION_GUIDE.md
+      - Coordination Messages: reference/coordination-messages.md
       - GitHub Copilot CLI:
           - Overview: COPILOT_CLI.md
           - Tutorial: tutorials/copilot-parity-control-plane.md
@@ -231,6 +236,7 @@ nav:
   - Reference:
       - Discoveries: claude/context/DISCOVERIES.md
       - Security: SECURITY_RECOMMENDATIONS.md
+      - XPIA Configuration: reference/xpia-configuration.md
       - Testing: testing/TEST_PLAN.md
       - Migration Contract Tests: testing/MIGRATION_CONTRACT_TESTS.md
       - Subprocess Env Isolation Tests: testing/SUBPROCESS_ENV_ISOLATION_TESTS.md

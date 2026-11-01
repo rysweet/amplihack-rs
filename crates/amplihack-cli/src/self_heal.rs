@@ -70,6 +70,9 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     "agent-binary",
     "config",
     "sessions",
+    "agent",
+    // Usage reporting and explicit publication never need staged framework assets.
+    "usage",
 ];
 
 /// Top-level flags that short-circuit clap and should not pay for an
@@ -999,6 +1002,45 @@ steps:
         .expect("ok");
         assert_eq!(calls.get(), 0);
         assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+    }
+
+    /// Issue #1760 (B1): `agent status --json` prints data on stdout, which
+    /// an install banner would corrupt, and the supervisor service would
+    /// restage assets on every restart. No `agent` command reads staged
+    /// assets.
+    #[test]
+    fn agent_subcommand_skips() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "agent", "status", "--json"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+        assert_eq!(calls.get(), 0);
+        assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+    }
+
+    #[test]
+    fn usage_commands_skip_startup_self_heal() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        for subcommand in ["report", "publish"] {
+            let calls = Cell::new(0u32);
+            let mut notice = Vec::new();
+            ensure_assets_match_binary_version_with(
+                &args(&["amplihack", "usage", subcommand]),
+                &mut notice,
+                counting_installer(&calls, crate::VERSION),
+            )
+            .unwrap();
+            assert_eq!(calls.get(), 0);
+            assert!(notice.is_empty());
+        }
+        assert!(!tmp.path().join(".amplihack").exists());
     }
 
     #[test]
