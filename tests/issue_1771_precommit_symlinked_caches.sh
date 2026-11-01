@@ -14,7 +14,8 @@
 #   1.  a stale link to a Cargo target dir: link and target both removed;
 #   2.  a stale link whose target holds a live cargo lock (in debug/ or at the
 #       root): both kept;
-#   3.  a dangling prefixed link: removed;
+#   3.  a dangling prefixed link: removed once the link is older than the TTL,
+#       kept while it is newer (its volume may only be unmounted);
 #   4.  a stale link to a directory that is not a Cargo target dir: kept;
 #   5.  the current cache is tagged with Cargo's CACHEDIR.TAG, an existing tag
 #       is never rewritten, and a failed tag write never fails the hook;
@@ -26,7 +27,8 @@
 #   11. links to HOME, the cache root, its ancestors or the checkout's
 #       ancestors are never deleted, even when they look like Cargo dirs;
 #   12. an exported CDPATH and a relative link target change nothing;
-#   13. TTL 0, or a TTL that is not a positive integer, disables the sweep;
+#   13. TTL 0, or a TTL that is not a positive integer, disables the sweep,
+#       and an invalid TTL is reported once;
 #   14. an explicit CARGO_TARGET_DIR is never swept, cleaned or tagged.
 #
 # Ownership checks (a link or target owned by another user is kept) cannot be
@@ -264,14 +266,21 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. A dangling prefixed link is removed when the sweep runs.
+# 3. A dangling prefixed link is removed once the link itself is older than
+#    the TTL. A fresh one is kept: its volume may only be unmounted, and
+#    removing the link would orphan the target when the volume returns.
 # ---------------------------------------------------------------------------
 new_case c3
 l3="$C_ROOT/${PREFIX}c3dangling00"
+f3="$C_ROOT/${PREFIX}c3danglingnw"
 ln -s "$VOL/c3-never-existed" "$l3"
+touch -h -t "$OLD_STAMP" "$l3"
+ln -s "$VOL/c3-unmounted" "$f3"
 run_wrapper 7 "$WRAPPER" true >/dev/null 2>&1 || true
-check "3: a dangling prefixed link is removed" \
+check "3: an old dangling prefixed link is removed" \
     "$l3 is still there" absent "$l3"
+check "3: a fresh dangling prefixed link is kept" \
+    "$f3 was removed" is_link "$f3"
 
 # ---------------------------------------------------------------------------
 # 4. A stale link to a directory that is not a Cargo target dir: all kept.
@@ -537,8 +546,16 @@ for ttl13 in 0 week -1; do
     make_target cargo "$t13"
     ln -s "$t13" "$l13"
     ln -s "$VOL/c13-never" "$g13"
+    touch -h -t "$OLD_STAMP" "$g13"
     rc13=0
-    run_wrapper "$ttl13" "$WRAPPER" true >/dev/null 2>&1 || rc13=$?
+    err13="$TMPROOT/c13-$ttl13.err"
+    run_wrapper "$ttl13" "$WRAPPER" true >/dev/null 2>"$err13" || rc13=$?
+    warn13="$(grep -c 'ignoring invalid AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS' "$err13" || true)"
+    if [ "$ttl13" = 0 ]; then
+        check "13: TTL <0> prints no warning" "warned $warn13 times" [ "$warn13" -eq 0 ]
+    else
+        check "13: TTL <$ttl13> is reported once" "warned $warn13 times" [ "$warn13" -eq 1 ]
+    fi
     check "13: TTL <$ttl13> does not fail the hook" "exit $rc13" [ "$rc13" -eq 0 ]
     check "13: TTL <$ttl13> keeps a stale link" "$l13 was removed" is_link "$l13"
     check "13: TTL <$ttl13> keeps its target" "$t13 was deleted" is_dir "$t13"

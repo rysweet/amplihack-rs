@@ -92,7 +92,9 @@ the temporary directory, the cache is under `${TMPDIR:-/tmp}` instead (see
 | `CARGO_TARGET_DIR` | unset | When set, the wrapper uses it unchanged. See [Explicit CARGO_TARGET_DIR](#explicit-cargo_target_dir). |
 
 A value that is not a positive integer, such as `-1`, `3.5` or `week`, disables
-the sweep in the same way as `0`.
+the sweep in the same way as `0`. A value containing anything other than digits
+also prints one warning, so that a typo does not leave old caches in place
+without explanation.
 
 Run a hook with a shorter TTL:
 
@@ -165,9 +167,13 @@ TTL of 7 that is `-mtime -8`. This matches the `-mtime +<TTL>` test used for
 directories since #1440, so a cache last modified exactly seven days ago is
 kept, and one untouched for eight full days or more is reclaimed. Depth 2
 covers `debug/deps`, `debug/.fingerprint`, `release/build` and similar
-directories, which Cargo updates on every build. Age is always measured on the resolved directory, not on
-the link, because the link's own timestamp does not change when the target is
-built.
+directories, which Cargo updates whenever a build writes output. Age is always
+measured on the resolved directory, not on the link, because the link's own
+timestamp does not change when the target is built.
+
+Staleness depends on modification, not on use. A build that finds nothing to
+recompile writes nothing, so a cache that is only read by no-op builds still
+becomes stale after the TTL.
 
 Example: a target whose root and `debug/` were last modified in 2020, but whose
 `debug/deps` changed yesterday, is not stale and is kept.
@@ -218,10 +224,10 @@ the target holds.
 
 ### Accepted risk
 
-A user-owned link to a Cargo target that is still wanted, but has not been built
-for longer than the TTL, is deleted together with its target. Raise
-`AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS` or set it to `0` if that matters on your
-host.
+A user-owned link to a Cargo target that is still wanted, but whose files have
+not been modified for longer than the TTL, is deleted together with its target.
+Raise `AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS` or set it to `0` if that matters on
+your host.
 
 ## Dangling links
 
@@ -229,11 +235,19 @@ A dangling link is a link whose target no longer exists, for example after the
 build volume was wiped.
 
 - Under the cache root, the sweep removes a dangling prefixed link owned by the
-  user. This step is part of the sweep, so `AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS=0`
+  user once the link itself has not been modified for more than the TTL. A
+  newer dangling link is kept without a message, because its target may be on
+  a volume that is only unmounted for now; removing the link would leave the
+  target unreachable when the volume returns. Age is read from the link with
+  `find <link> -maxdepth 0 -mtime -<TTL+1>`, which does not follow the link.
+  This step is part of the sweep, so `AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS=0`
   disables it.
 - At the current cache path, the wrapper removes a dangling link owned by the
   user before running the command, whatever the TTL. Cargo then sees a missing
-  path and creates a real directory.
+  path and creates a real directory. If the link was dangling only because its
+  volume was unmounted, the build therefore runs on the disk that holds the
+  cache root, and the old target on the other volume is no longer linked; once
+  the volume is back, remove that target by hand or link it again.
 
 If the current cache path is a link owned by another user, the wrapper prints a
 warning and neither removes nor tags it. The command still runs.
@@ -301,6 +315,7 @@ All messages go to stderr with the `amplihack:` prefix. Paths are printed with
 | Directory reclaimed | `amplihack: reclaiming build cache untouched for <ttl>+ days: <path>` |
 | Link and target reclaimed | `amplihack: reclaiming build cache untouched for <ttl>+ days: <link> -> <resolved>` |
 | Dangling link removed | `amplihack: removing dangling build cache link: <link>` |
+| TTL value is not a plain number | `amplihack: ignoring invalid AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS=<value>; cache sweep disabled` |
 | Link kept because the target is not Cargo-shaped | `amplihack: kept <link>: target <resolved> does not look like a Cargo target dir` |
 | Current cache path is a link owned by another user | `amplihack: warning: build cache <link> is a link owned by another user; leaving it alone` |
 | `CACHEDIR.TAG` could not be written | `amplihack: could not write CACHEDIR.TAG in <path>; continuing` |

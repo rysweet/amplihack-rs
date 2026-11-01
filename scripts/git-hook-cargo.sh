@@ -87,6 +87,9 @@
 #      an ancestor of those or of the checkout is ever deleted.
 #   g. A dangling link at the current path is removed before the build, even
 #      with the sweep disabled, so cargo can create a real directory there.
+#      A dangling sibling link is removed only once the link itself is older
+#      than the TTL, so a cache on a volume that is unmounted for a while is
+#      not orphaned.
 #   h. The current cache gets cargo's CACHEDIR.TAG when it exists without one,
 #      so backup tools skip it. A missing cache is left for cargo to create,
 #      an existing tag (or a link named CACHEDIR.TAG) is never written through,
@@ -113,10 +116,15 @@ unset \
 # sweep.
 CACHE_TTL_DAYS="${AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS:-7}"
 # Anything other than a plain decimal integer (-1, 3.5, week) disables the sweep
-# like 0 does. Leading zeros are dropped so that shell arithmetic cannot read
+# like 0 does, with one warning so that a typo does not silently bring back the
+# #1771 leak. Leading zeros are dropped so that shell arithmetic cannot read
 # 08 as octal, and more than nine digits is treated as "never stale".
 case "$CACHE_TTL_DAYS" in
-    '' | *[!0-9]*) CACHE_TTL_DAYS=0 ;;
+    '' | *[!0-9]*)
+        printf 'amplihack: ignoring invalid AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS=%q; cache sweep disabled\n' \
+            "$CACHE_TTL_DAYS" >&2
+        CACHE_TTL_DAYS=0
+        ;;
     *)
         if [ "${#CACHE_TTL_DAYS}" -gt 9 ]; then
             CACHE_TTL_DAYS=0
@@ -234,6 +242,13 @@ is_stale() {
     [ -z "$(find "$1" -maxdepth 2 -mtime -$((CACHE_TTL_DAYS + 1)) -print -quit 2>/dev/null)" ]
 }
 
+# Has a link itself not been created or touched in the last CACHE_TTL_DAYS
+# days? find does not follow links by default, so this reads the link's own
+# mtime, which is all a dangling link has.
+link_is_stale() {
+    [ -z "$(find "$1" -maxdepth 0 -mtime -$((CACHE_TTL_DAYS + 1)) -print -quit 2>/dev/null)" ]
+}
+
 # Is this path, measured without following a link, owned by the current user?
 # find does not follow links by default, so for a link this is the link's own
 # owner. CI runs as one user, so a foreign-owned fixture cannot be built there;
@@ -243,7 +258,10 @@ owned_by_me() {
     [ -n "$(find "$1" -maxdepth 0 -user "$MY_UID" 2>/dev/null)" ]
 }
 
-# Write cargo's CACHEDIR.TAG into an existing directory that has none. Nothing
+# Write cargo's CACHEDIR.TAG into an existing directory that has none. cargo
+# writes the tag only into a target dir it creates, and this script's caches
+# often exist before cargo runs (made by an earlier build, or turned into a link
+# by a host wrapper), so issue #1771 requires the script to write it. Nothing
 # is written when CACHEDIR.TAG exists or is a link, dangling or not, and the
 # write itself runs under noclobber so it can neither follow a link created in
 # the meantime nor replace a file. A failed write (read-only directory, full
@@ -334,6 +352,10 @@ reclaim_stale_caches() {
         owned_by_me "$entry" || continue
         if [ -L "$entry" ]; then
             if [ ! -e "$entry" ]; then
+                # The target may be on a volume that is only unmounted for now.
+                # Removing the link at once would orphan the target when the
+                # volume returns, so wait until the link itself is past the TTL.
+                link_is_stale "$entry" || continue
                 printf 'amplihack: removing dangling build cache link: %q\n' "$entry" >&2
                 rm -f -- "$entry" 2>/dev/null \
                     || printf 'amplihack: could not remove %q\n' "$entry" >&2
