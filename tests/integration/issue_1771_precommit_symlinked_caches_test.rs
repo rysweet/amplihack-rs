@@ -6,13 +6,22 @@
 //! change to the sweep could pass the Rust suite unchecked. This test runs the
 //! script and requires it to exit 0 with no failed case.
 //!
-//! The script builds every fixture under its own `mktemp -d` directory with a
-//! fake `HOME`, and runs the wrapper around plain commands such as `printenv`
-//! rather than a build, so it never touches the real home directory or a real
-//! build cache. It runs in a few seconds.
+//! `bash` is started through the shared [`isolated`] helper, as every spawned
+//! test command must be (`tests/support/isolated_amplihack.rs`). The helper
+//! clears the environment and keeps only `PATH`, `TMPDIR`, the locale and a
+//! few other basic variables, so `XDG_*`, `GIT_*` (including `GIT_DIR`,
+//! `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_PARAMETERS`) and `AMPLIHACK_*` from the
+//! developer's shell do not reach the suite. It also sets the home guard and
+//! `GIT_TERMINAL_PROMPT=0` with a null stdin. On top of that, this test points
+//! `HOME` and `TMPDIR` at a temporary directory of its own, so the suite's
+//! outer `git init` and its HOME checks never read the developer's real home
+//! directory or git configuration. Each case inside the script then gets its
+//! own fake `HOME` under that directory, and the wrapper runs plain commands
+//! such as `printenv` rather than a build. It runs in a few seconds.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+
+use crate::isolated_amplihack::isolated;
 
 const SUITE: &str = "tests/issue_1771_precommit_symlinked_caches.sh";
 
@@ -26,14 +35,14 @@ fn workspace_root() -> PathBuf {
 #[test]
 fn symlinked_cache_suite_passes() {
     let root = workspace_root();
-    let out = Command::new("bash")
+    let tmp = tempfile::TempDir::new().expect("create the suite temp dir");
+    let home = tmp.path().join("home");
+    std::fs::create_dir_all(&home).expect("create the suite HOME");
+    let out = isolated("bash")
         .arg(root.join(SUITE))
         .current_dir(&root)
-        .stdin(Stdio::null())
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
+        .env("HOME", &home)
+        .env("TMPDIR", tmp.path())
         .output()
         .unwrap_or_else(|e| panic!("run {SUITE}: {e}"));
     let stdout = String::from_utf8_lossy(&out.stdout);
