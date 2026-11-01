@@ -218,8 +218,9 @@ fn run_until(command: &mut Command, limit: Duration, give_up: &dyn Fn() -> bool)
     };
     let elapsed = started.elapsed();
     drop(child);
-    let read =
-        |path: &Path| String::from_utf8_lossy(&fs::read(path).unwrap_or_default()).into_owned();
+    let read = |path: &Path| {
+        String::from_utf8_lossy(&fs::read(path).expect("read the child's output")).into_owned()
+    };
     let (stdout, stderr) = (read(&stdout_path), read(&stderr_path));
     match code {
         Some(code) => Ran::Exited {

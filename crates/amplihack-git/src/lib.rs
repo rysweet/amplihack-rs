@@ -117,11 +117,14 @@ pub fn scrub<C: Scrubbable>(command: &mut C) -> &mut C {
 }
 
 /// A `git` command that ignores the caller's inherited git environment and
-/// never asks for a credential on the terminal.
+/// turns off git's own credential prompt on the terminal.
 ///
 /// Equivalent to `Command::new("git")` with [`REPOSITORY_ENV_VARS`] cleared
 /// and `GIT_TERMINAL_PROMPT=0` set. The repository is then whatever the
 /// working directory (or an explicit `-C` / `--git-dir` argument) selects.
+///
+/// `GIT_TERMINAL_PROMPT` does not reach OpenSSH, so an `ssh://` or `git@`
+/// remote can still prompt.
 pub fn command() -> Command {
     let mut command = interactive_command();
     command.env(TERMINAL_PROMPT_VAR, "0");
@@ -129,7 +132,8 @@ pub fn command() -> Command {
 }
 
 /// A `git` command that runs in `dir`, ignores the caller's inherited git
-/// environment and never asks for a credential on the terminal.
+/// environment and turns off git's own credential prompt on the terminal.
+/// [`command`] says what that does not cover.
 pub fn command_in(dir: impl AsRef<Path>) -> Command {
     let mut command = command();
     command.current_dir(dir.as_ref());
