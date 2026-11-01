@@ -14,12 +14,12 @@ pub(super) fn fail_open(fault: &FailOpen) -> SlotGuard {
     SlotGuard::inert(Some(fault.code))
 }
 
-pub(super) fn record(fault: &FailOpen, at: i64) -> Option<FailOpenRecord> {
-    Some(FailOpenRecord {
+pub(super) fn record(fault: &FailOpen, at: i64) -> FailOpenRecord {
+    FailOpenRecord {
         code: fault.code,
         message: fault.message.clone(),
         at,
-    })
+    }
 }
 
 /// The files of one round. A newer file stops the round with no write.
@@ -60,6 +60,11 @@ pub(super) fn load_all(store: &Store, lock: &StoreLock) -> Result<Loaded, FailOp
     })
 }
 
+/// Saves the round's files. A fault is logged here and is not propagated
+/// as an error: D11 requires the governor to fail open, so callers that
+/// cannot act on a failed save discard the result. Two callers use it: an
+/// admission that was not saved holds nothing, and a waiting entry that was
+/// not saved has no ticket.
 pub(super) fn save_logged(store: &Store, lock: &StoreLock, l: &Loaded) -> Result<(), FailOpen> {
     store
         .save(lock, &l.history, &l.queue, &l.state)

@@ -274,7 +274,10 @@ on an admission attempt. With `band = governor.band_pct / 100` (default
 The limit is never below 1 or above `governor.max_concurrency`. When the
 limit is already 1 and the signal is still over, the limit stays at 1; one
 slot remains available, and further starts wait with the reason
-`concurrency` while it is held.
+`concurrency` while it is held. There is no separate `rate` hold. Burn
+readings are noisy, and holding every ordinary start on the rate signal alone
+could stop all work on a single high reading; keeping one slot free bounds
+the burn without that risk.
 
 The band stops the limit stepping up and down on every evaluation.
 
@@ -347,6 +350,12 @@ same applies to `amplihack claude` and `amplihack launch`.
 
 A nested launch whose tree id has no live slot is treated as top-level and
 needs a slot of its own.
+
+Because a nested launch can wait on session exhaustion or the reserve, an
+agent step inside a running recipe can wait for up to the wait time. If that
+wait expires, the step exits 80 in the middle of the run. An agent step
+started while the session limit is exhausted would fail against that limit
+anyway, so the governor does not exempt nested launches from steps 3 and 4.
 
 ## Waiting, denial and exit code 80
 
@@ -514,7 +523,9 @@ different process. It never signals another process: it only checks
 existence with signal 0.
 
 On hosts without `/proc`, such as macOS, only the PID is checked, so a reused
-PID keeps a dead slot until that process also exits.
+PID keeps a dead slot until that process also exits. On Linux, a slot whose
+recorded start time can no longer be read (for example under `hidepid=`)
+counts as dead.
 
 A slot is held for the whole life of the admitted process, so a forgotten
 interactive session holds a slot. `governor status` shows when each slot was
@@ -683,14 +694,28 @@ against other processes of the same user: any parent can set
   settles for [nesting](#nesting), which the environment builder would
   otherwise have generated.
 - **Processes.** Signal 0 is the only signal used, and only for PIDs from 2
-  to `i32::MAX`. A process the governor may not signal counts as dead.
+  to `i32::MAX`. A process the governor may not signal counts as dead, and
+  so does a slot whose recorded start time cannot be checked. Without
+  `/proc`, PID reuse goes undetected.
+- **State files.** Files are created 0600 in a 0700 directory. They hold
+  workstream ids, classes, PIDs, start times, tree ids and readings, and no
+  secrets.
+- **Reserve.** The reserve is advisory. `[coord]` as the first word of a
+  task, or `AMPLIHACK_GOVERNOR_CLASS`, raises a start's class and so its
+  access to the reserve.
+- **Nesting.** A process that sets `AMPLIHACK_SESSION_DEPTH` above 0 and an
+  `AMPLIHACK_TREE_ID` matching a live slot nests under that slot and is not
+  counted against the concurrency limit. This is accepted under the
+  same-user model above.
 - **Input.** Workstream ids, wait durations, classes and tree ids are
   validated before use. Classes inferred from recipes come from fixed lists.
   The manifest must be an absolute path to a regular file owned by the
   current user.
 - **Output.** No account keys, emails, task text, `claude` arguments,
   invalid environment values or manifest paths appear in state, status or
-  logs. Strings printed to the terminal are sanitised.
+  logs. Strings printed to the terminal or written to the log are
+  sanitised, and fail-open messages are cut to 512 bytes and never quote
+  the content of a corrupt file.
 - **Availability.** Every internal fault admits the start. Waits are
   bounded; a wait of `0` never sleeps. Releasing a slot never panics.
 

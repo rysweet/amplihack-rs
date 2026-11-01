@@ -65,7 +65,16 @@ fn parse<T: Persisted>(raw: &[u8], now: i64) -> Parsed<T> {
     }
     let value: T = match serde_json::from_value(probe) {
         Ok(v) => v,
-        Err(e) => return Parsed::Corrupt(format!("unexpected content: {e}")),
+        // serde's text can quote the file's own content, so only its
+        // category and position are kept.
+        Err(e) => {
+            return Parsed::Corrupt(format!(
+                "unexpected content ({:?} at line {}, column {})",
+                e.classify(),
+                e.line(),
+                e.column()
+            ));
+        }
     };
     if value.version() != super::files::GOVERNOR_STATE_VERSION {
         return Parsed::Corrupt("unknown version".into());

@@ -13,7 +13,7 @@
 //! - `reclaim(&mut Vec<Slot>, &mut Vec<QueueEntry>) -> usize`: removes the
 //!   records of dead processes; never signals anything but 0.
 
-use super::liveness::{alive, parse_stat_start_time, reclaim, start_time};
+use super::liveness::{alive, parse_stat_start_time, reclaim, same_process, start_time};
 use super::model::{Class, QueueEntry, Slot};
 
 fn dead_pid() -> u32 {
@@ -121,4 +121,14 @@ fn reclaim_removes_dead_slots_and_queue_entries_only() {
     assert_eq!(removed, 3);
     assert_eq!(slots.iter().map(|s| s.pid).collect::<Vec<_>>(), [pid]);
     assert_eq!(queue.iter().map(|q| q.seq).collect::<Vec<_>>(), [2]);
+}
+
+#[test]
+fn same_process_covers_every_combination() {
+    assert!(same_process(Some(7), Some(7)));
+    assert!(!same_process(Some(7), Some(8)));
+    // A recorded start time that cannot be read again counts as dead (S2.3).
+    assert!(!same_process(Some(7), None));
+    assert!(same_process(None, Some(7)));
+    assert!(same_process(None, None));
 }

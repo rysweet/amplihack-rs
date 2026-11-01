@@ -190,22 +190,15 @@ pub fn decide(i: &Inputs, now: i64) -> Decision {
     }
 
     // Step 7.
-    let mut d = if chosen.active {
-        made(
-            DecisionKind::Admit,
-            ReasonCode::Room,
-            format!("profile {} has room", chosen.name),
-        )
+    let message = if chosen.active {
+        format!("profile {} has room", chosen.name)
     } else {
-        made(
-            DecisionKind::Admit,
-            ReasonCode::Room,
-            format!(
-                "profile {} has room; the rotator moves work there from the active profile",
-                chosen.name
-            ),
+        format!(
+            "profile {} has room; the rotator moves work there from the active profile",
+            chosen.name
         )
     };
+    let mut d = made(DecisionKind::Admit, ReasonCode::Room, message);
     d.announce = !chosen.active;
     d
 }

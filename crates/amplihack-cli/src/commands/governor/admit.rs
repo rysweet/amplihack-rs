@@ -31,8 +31,6 @@ pub struct AdmitContext<'a> {
     pub wait_secs: u64,
     pub session_depth: Option<String>,
     pub tree_id: Option<String>,
-    /// Read only for classing; never stored.
-    pub task_text: Option<String>,
 }
 
 /// The index of the live slot a nested launch runs under: a depth above 0
@@ -44,11 +42,6 @@ pub fn nested_parent(depth: Option<&str>, tree_id: Option<&str>, slots: &[Slot])
         return None;
     }
     slots.iter().position(|s| s.tree_id == tree)
-}
-
-/// A new tree id: nanoseconds and PID in hex, the session-tree alphabet.
-pub fn new_tree_id() -> String {
-    crate::commands::recipe::run::execute::new_tree_id()
 }
 
 enum Round {
@@ -85,7 +78,7 @@ fn round(
     prune_window(&mut l.state.admissions, now);
     if let Some(f) = l.fault.take() {
         take_ticket(&mut l.queue, ticket);
-        l.state.fail_open = record(&f, now);
+        l.state.fail_open = Some(record(&f, now));
         let _ = save_logged(store, &lock, &l);
         return Round::Done(Ok(fail_open(&f)));
     }
@@ -103,7 +96,7 @@ fn round(
             FailOpenCode::QueueFull,
             format!("{} requests are already waiting", l.queue.entries.len()),
         );
-        l.state.fail_open = record(&f, now);
+        l.state.fail_open = Some(record(&f, now));
         let _ = save_logged(store, &lock, &l);
         return Round::Done(Ok(fail_open(&f)));
     }
@@ -136,7 +129,7 @@ fn round(
             let no_readings = d.reason.code == ReasonCode::NoReadings;
             let fault = no_readings
                 .then(|| FailOpen::new(FailOpenCode::NoReadings, d.reason.message.clone()));
-            l.state.fail_open = fault.as_ref().and_then(|f| record(f, now));
+            l.state.fail_open = fault.as_ref().map(|f| record(f, now));
             let made = match parent {
                 Some(i) => {
                     let p = &mut l.state.slots[i];
@@ -234,14 +227,7 @@ fn round(
 
 /// Decides one start; see the module documentation.
 pub fn admit_with(ctx: &AdmitContext<'_>) -> Result<SlotGuard, Denied> {
-    if !ctx.settings.enabled {
-        return Ok(SlotGuard::inert(None));
-    }
-    tracing::debug!(
-        class = ctx.class.as_str(),
-        task_len = ctx.task_text.as_ref().map(String::len),
-        "governor: deciding a start"
-    );
+    tracing::debug!(class = ctx.class.as_str(), "governor: deciding a start");
     let Some(root) = ctx.root else {
         return Ok(fail_open(&FailOpen::new(
             FailOpenCode::NoRoot,
@@ -256,7 +242,7 @@ pub fn admit_with(ctx: &AdmitContext<'_>) -> Result<SlotGuard, Denied> {
         .tree_id
         .clone()
         .filter(|t| tree_id_ok(t))
-        .unwrap_or_else(new_tree_id);
+        .unwrap_or_else(crate::commands::recipe::run::execute::new_tree_id);
     let wait = i64::try_from(ctx.wait_secs).unwrap_or(i64::MAX);
     let deadline = now().saturating_add(wait);
     let mut ticket = None;

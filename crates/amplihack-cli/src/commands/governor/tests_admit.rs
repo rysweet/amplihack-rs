@@ -6,7 +6,7 @@
 //! environment and the profile root, then calls `admit_with`):
 //! - `AdmitContext<'a> { root: Option<&'a Path>, settings: Settings, class:
 //!   Class, workstream: String, wait_secs: u64, session_depth:
-//!   Option<String>, tree_id: Option<String>, task_text: Option<String> }`
+//!   Option<String>, tree_id: Option<String> }`
 //! - `admit_with(&AdmitContext) -> Result<SlotGuard, Denied>`
 //! - `SlotGuard::fail_open() -> Option<&'static str>`, `nested() -> bool`,
 //!   `tree_id() -> Option<&str>`; dropping it removes its slot.
@@ -36,7 +36,6 @@ fn ctx(r: &Root) -> AdmitContext<'_> {
         wait_secs: 0,
         session_depth: None,
         tree_id: None,
-        task_text: None,
     }
 }
 
@@ -255,9 +254,7 @@ fn canary_secrets_never_reach_governor_state() {
     fs::write(auto.join("ledger.json"), ledger).unwrap();
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(auto.join("ledger.json"), fs::Permissions::from_mode(0o600)).unwrap();
-    let mut c = ctx(&r);
-    c.task_text = Some("TASKSECRET do the thing".into());
-    let guard = admit_with(&c);
+    let guard = admit_with(&ctx(&r));
     let mut text = String::new();
     for entry in fs::read_dir(r.gov()).unwrap() {
         text.push_str(&String::from_utf8_lossy(
@@ -265,7 +262,7 @@ fn canary_secrets_never_reach_governor_state() {
         ));
     }
     drop(guard);
-    for secret in ["acct-SECRET", "TASKSECRET", r.root.to_str().unwrap()] {
+    for secret in ["acct-SECRET", r.root.to_str().unwrap()] {
         assert!(!text.contains(secret), "{secret} leaked into .governor.d");
     }
 }

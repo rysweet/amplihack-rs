@@ -40,7 +40,8 @@ pub fn start_time(_pid: u32) -> Option<u64> {
 
 /// Whether `pid` is a live process with the recorded start time. PIDs
 /// outside `2..=i32::MAX` are never signalled and count as dead, as does a
-/// process this user may not signal (`EPERM`).
+/// process this user may not signal (`EPERM`) and one whose recorded start
+/// time cannot be checked.
 pub fn alive(pid: u32, recorded_start: Option<u64>) -> bool {
     let Ok(raw) = i32::try_from(pid) else {
         return false;
@@ -55,9 +56,17 @@ pub fn alive(pid: u32, recorded_start: Option<u64>) -> bool {
     if rc != 0 {
         return false;
     }
-    match (recorded_start, start_time(pid)) {
+    same_process(recorded_start, start_time(pid))
+}
+
+/// Whether a live PID is still the process that was recorded. A slot with
+/// no recorded start time is trusted (no `/proc` when it was made); a
+/// recorded start time that can no longer be read counts as dead (S2.3).
+pub fn same_process(recorded: Option<u64>, observed: Option<u64>) -> bool {
+    match (recorded, observed) {
         (Some(want), Some(got)) => want == got,
-        _ => true,
+        (Some(_), None) => false,
+        (None, _) => true,
     }
 }
 

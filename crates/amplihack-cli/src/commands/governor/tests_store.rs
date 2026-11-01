@@ -255,3 +255,30 @@ fn peek_never_creates_renames_or_writes() {
         .collect();
     assert_eq!(names, ["state.json"], "peek wrote or renamed a file");
 }
+
+#[test]
+fn hostile_corrupt_content_never_makes_a_state_file_that_is_rejected() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = Store::open(tmp.path()).unwrap();
+    let path = tmp.path().join(GOVERNOR_DIR).join("history.json");
+    let field = format!("\x1b[31m{}", "x".repeat(600));
+    fs::write(&path, format!(r#"{{"version":1,"{field}":1}}"#)).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    let lock = store.lock_exclusive(SEC).unwrap();
+    let fault = store.load::<History>(&lock).unwrap_err();
+    let mut state = state_with_slot();
+    state.fail_open = Some(super::admit_state::record(&fault, 1_800_000_000));
+    let msg = &state.fail_open.as_ref().unwrap().message;
+    assert!(msg.len() <= 512, "{} bytes", msg.len());
+    assert!(!msg.chars().any(char::is_control), "{msg:?}");
+    store
+        .save(&lock, &History::default(), &Queue::default(), &state)
+        .unwrap();
+    assert_eq!(store.load::<State>(&lock).unwrap(), state);
+    assert!(
+        !tmp.path()
+            .join(GOVERNOR_DIR)
+            .join("state.json.corrupt")
+            .exists()
+    );
+}

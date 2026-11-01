@@ -250,3 +250,36 @@ fn recipe_run_with_exhausted_budget_exits_80_before_the_runner() {
         "recipe-runner-rs must not start"
     );
 }
+
+#[test]
+fn task_text_never_reaches_state_or_status() {
+    const CANARY: &str = "TASKSECRET";
+    let f = Fixture::new();
+    f.readings(&[("alpha", 10.0, 20.0)]);
+    let out = f.run(&["claude", "--", "-p", "TASKSECRET do the thing"]);
+    assert!(out.status.success(), "{}", describe(&out));
+    let recipe = f.recipe_path();
+    let out = f
+        .cmd(&["recipe", "run"])
+        .arg(&recipe)
+        .arg("-w")
+        .arg(&f.work)
+        .args(["-c", "task_description=TASKSECRET in a recipe"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    let files = f.tree(&f.gov());
+    assert!(files.len() > 1, "the governor saved no state");
+    for (path, bytes) in files {
+        assert!(!text(&bytes).contains(CANARY), "{}", path.display());
+    }
+    for args in [
+        &["governor", "status", "--json"][..],
+        &["governor", "status"],
+    ] {
+        let st = f.run(args);
+        assert!(st.status.success(), "{}", describe(&st));
+        assert!(!text(&st.stdout).contains(CANARY), "{args:?}");
+        assert!(!text(&st.stderr).contains(CANARY), "{args:?}");
+    }
+}

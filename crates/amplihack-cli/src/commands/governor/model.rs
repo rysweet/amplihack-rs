@@ -247,12 +247,24 @@ pub struct FailOpen {
     pub message: String,
 }
 
+/// The longest fail-open message. It matches the 512-byte check in
+/// `files.rs` that `state.json` passes when it is loaded again.
+pub const MAX_FAIL_OPEN_MESSAGE: usize = 512;
+
 impl FailOpen {
+    /// The message is sanitised for the terminal and the log, and cut to
+    /// [`MAX_FAIL_OPEN_MESSAGE`] bytes on a character boundary, so a saved
+    /// record always passes validation.
     pub fn new(code: FailOpenCode, message: impl Into<String>) -> Self {
-        Self {
-            code,
-            message: message.into(),
+        let mut message = crate::user_config::safe::display_safe(&message.into());
+        if message.len() > MAX_FAIL_OPEN_MESSAGE {
+            let mut end = MAX_FAIL_OPEN_MESSAGE;
+            while !message.is_char_boundary(end) {
+                end -= 1;
+            }
+            message.truncate(end);
         }
+        Self { code, message }
     }
 }
 

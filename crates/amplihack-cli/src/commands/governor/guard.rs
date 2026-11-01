@@ -93,6 +93,8 @@ fn release(root: &std::path::Path, change: impl FnOnce(&mut State)) {
 
 impl Drop for SlotGuard {
     fn drop(&mut self) {
+        // The id is `None` only for `Held::Nothing`, which matches no slot,
+        // so the empty default is never compared with a stored id.
         let tree = self.tree_id.clone().unwrap_or_default();
         let held = std::mem::replace(&mut self.held, Held::Nothing);
         let outcome = catch_unwind(AssertUnwindSafe(|| match held {

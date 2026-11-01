@@ -172,12 +172,13 @@ pub fn admit(request: AdmitRequest) -> Result<SlotGuard, Denied> {
         wait_secs: config::wait_secs(args.governor_wait, &env, &settings),
         session_depth: env("AMPLIHACK_SESSION_DEPTH"),
         tree_id: env("AMPLIHACK_TREE_ID"),
-        task_text: request.task,
     };
     let guard = admit::admit_with(&ctx)?;
     if ctx.tree_id.is_none()
         && let Some(id) = guard.tree_id()
     {
+        // `set` fails only if `admit` runs twice in one process, which does
+        // not happen; the first value would then stand.
         let _ = SETTLED_TREE_ID.set(id.to_string());
     }
     Ok(guard)
