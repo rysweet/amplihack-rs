@@ -601,6 +601,66 @@ fn issue_cells_are_sanitised_and_the_marker_appears_once() {
 }
 
 #[test]
+fn full_github_urls_in_cells_are_broken() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    let concerns = json!([{"id": "style-1", "severity": "minor",
+        "summary": "see https://github.com/o/r/issues/12",
+        "evidence": "and HTTPS://GitHub.com/o/r/pull/34"}]);
+    deferred(&e.defer(&concerns, &[]));
+    let body = e.fakes.bodies()[0].clone();
+    assert!(
+        !body.contains("github.com/o/r/issues/12"),
+        "the URL is not left whole: {body}"
+    );
+    assert!(!body.contains("GitHub.com/o/r/pull/34"), "{body}");
+    assert!(body.contains("github.com/\u{200b}o/r/issues/12"), "{body}");
+}
+
+#[test]
+fn junk_lines_in_posted_ids_do_not_stop_a_post() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    private_file(&e.p("follow-up-issue"), "1851\n");
+    private_file(&e.p("follow-up-linked"), "1851\n");
+    // A forged line that is not an id, and one that names doc-2 with junk.
+    private_file(
+        &e.p("follow-up-posted-ids"),
+        "naming-1\ndoc-2 extra\n../doc-2\n",
+    );
+    deferred(&e.defer(&two_minor(), &[]));
+    let body = e.fakes.bodies().pop().unwrap();
+    assert!(body.contains("doc-2"), "doc-2 is posted: {body}");
+    assert!(!body.contains("naming-1"), "{body}");
+    let posted = e.read("follow-up-posted-ids");
+    assert_eq!(posted, "naming-1\ndoc-2\n", "junk is not written back");
+}
+
+#[test]
+fn a_failure_to_record_follow_up_failed_is_reported() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    findings(&e, &["naming-1", "doc-2"]);
+    std::fs::create_dir(e.p("follow-up-failed")).unwrap();
+    let o = e.defer(&two_minor(), &[("FAKE_GH_FAIL", "issue create")]);
+    exit_none(&o, "follow-up-failed");
+    assert!(
+        stderr(&o).contains("ERROR: light round: follow-up-failed could not be written"),
+        "{}",
+        show(&o)
+    );
+}
+
+#[test]
 fn a_gh_failure_keeps_the_normal_path_and_truncates_nothing() {
     if skip() {
         return;
@@ -901,6 +961,188 @@ fn a_re_measurement_fault_escalates_with_a_fault_reason() {
     assert!(!e.p("light-mode").exists());
 }
 
+/// Pushes a 400-line commit to `origin/main` from a second clone, so the
+/// working repository does not hold it yet, and returns its SHA.
+fn upstream_commit(e: &Env) -> String {
+    let other = e.repo.tmp.path().join("other");
+    let origin = e.repo.tmp.path().join("origin.git");
+    git(
+        e.repo.tmp.path(),
+        &[
+            "clone",
+            "-q",
+            origin.to_str().unwrap(),
+            other.to_str().unwrap(),
+        ],
+    );
+    std::fs::write(other.join("upstream.md"), "line\n".repeat(400)).unwrap();
+    git(&other, &["add", "-A"]);
+    git(&other, &["commit", "-q", "-m", "upstream"]);
+    git(&other, &["push", "-q", "origin", "HEAD:main"]);
+    git(&other, &["rev-parse", "HEAD"])
+}
+
+/// Merges `origin/main` into the PR branch and returns the merge commit.
+fn merge_upstream(e: &Env) -> String {
+    git(&e.repo.wt, &["fetch", "-q", "origin"]);
+    git(
+        &e.repo.wt,
+        &["merge", "-q", "--no-edit", "--no-ff", "origin/main"],
+    );
+    e.repo.head()
+}
+
+#[test]
+fn a_moved_head_that_merged_the_base_branch_is_measured_from_the_new_merge_base() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    let up = upstream_commit(&e);
+    let moved = merge_upstream(&e);
+    findings(&e, &["naming-1", "doc-2"]);
+    let j = deferred(&e.defer_raw(
+        &two_minor().to_string(),
+        &moved,
+        &[("FAKE_GH_HEAD", &moved), ("FAKE_GH_BASE_OID", &up)],
+    ));
+    assert_eq!(j["follow_up_issue"], "1851");
+    assert_eq!(e.read("light-mode").trim(), moved);
+    let elig: Value = serde_json::from_str(&e.read("light-eligibility.json")).unwrap();
+    assert_eq!(elig["decision"], "light");
+    assert_eq!(elig["head"], moved.as_str());
+    assert_eq!(
+        elig["base"],
+        up.as_str(),
+        "the new base is recorded, so the next round's reuse check uses it"
+    );
+    assert!(
+        called(&e.fakes.gh_calls(), "pr", "view"),
+        "{:?}",
+        e.fakes.gh_calls()
+    );
+}
+
+#[test]
+fn a_base_tip_missing_locally_is_fetched_before_the_merge_base() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    let up = upstream_commit(&e);
+    e.repo.write(
+        "docs/guide.md",
+        "# guide\n\nA small fix.\nAnd an address commit.\n",
+    );
+    let moved = e.repo.commit("address");
+    findings(&e, &["naming-1", "doc-2"]);
+    deferred(&e.defer_raw(
+        &two_minor().to_string(),
+        &moved,
+        &[("FAKE_GH_HEAD", &moved), ("FAKE_GH_BASE_OID", &up)],
+    ));
+    git(&e.repo.wt, &["cat-file", "-e", &format!("{up}^{{commit}}")]);
+    let elig: Value = serde_json::from_str(&e.read("light-eligibility.json")).unwrap();
+    // The PR did not merge the base, so the merge-base is still the pinned base.
+    assert_eq!(elig["base"], e.repo.base.as_str());
+}
+
+#[test]
+fn the_pr_s_own_change_over_a_limit_still_escalates_after_a_base_merge() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    let up = upstream_commit(&e);
+    merge_upstream(&e);
+    e.repo.write("docs/big.md", &"line\n".repeat(400));
+    let moved = e.repo.commit("big address");
+    findings(&e, &["naming-1", "doc-2"]);
+    exit_none(
+        &e.defer_raw(
+            &two_minor().to_string(),
+            &moved,
+            &[("FAKE_GH_HEAD", &moved), ("FAKE_GH_BASE_OID", &up)],
+        ),
+        "re-measured-escalate",
+    );
+    let esc: Value = serde_json::from_str(&e.read("escalation.json")).unwrap();
+    assert_eq!(esc["reason"], "in-loop-lines");
+    assert_eq!(esc["base_sha"], up.as_str());
+    assert!(!e.p("light-mode").exists());
+    no_issue_created(&e);
+}
+
+#[test]
+fn an_unreadable_or_invalid_base_falls_back_to_the_pinned_base_and_escalates() {
+    if skip() {
+        return;
+    }
+    let cases: Vec<(&str, Vec<(&str, String)>)> = vec![
+        ("gh fails", vec![("FAKE_GH_FAIL", "pr view".into())]),
+        ("no base oid", vec![]),
+        (
+            "base oid not hex",
+            vec![("FAKE_GH_BASE_OID", "not-a-sha".into())],
+        ),
+        (
+            "base oid unknown",
+            vec![("FAKE_GH_BASE_OID", "ab".repeat(20))],
+        ),
+        (
+            "base name starts with -",
+            vec![("FAKE_GH_BASE_NAME", "-main".into())],
+        ),
+    ];
+    for (name, extra) in cases {
+        let e = Env::new();
+        e.light();
+        let up = upstream_commit(&e);
+        let moved = merge_upstream(&e);
+        findings(&e, &["naming-1", "doc-2"]);
+        let mut env: Vec<(&str, &str)> = vec![("FAKE_GH_HEAD", &moved)];
+        if name == "base name starts with -" {
+            env.push(("FAKE_GH_BASE_OID", &up));
+        }
+        env.extend(extra.iter().map(|(k, v)| (*k, v.as_str())));
+        let o = e.defer_raw(&two_minor().to_string(), &moved, &env);
+        exit_none(&o, "re-measured-escalate");
+        assert!(
+            stderr(&o).contains("measuring from the pinned base"),
+            "{name}: {}",
+            show(&o)
+        );
+        let esc: Value = serde_json::from_str(&e.read("escalation.json")).unwrap();
+        assert_eq!(esc["reason"], "in-loop-lines", "{name}");
+        assert_eq!(esc["base_sha"], e.repo.base.as_str(), "{name}");
+    }
+}
+
+#[test]
+fn exit_79_while_reading_the_base_is_passed_through() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    e.repo.write("docs/guide.md", "moved\n");
+    let moved = e.repo.commit("moved");
+    let o = e.defer_raw(
+        &two_minor().to_string(),
+        &moved,
+        &[
+            ("FAKE_GH_HEAD", &moved),
+            ("FAKE_GH_FAIL", "pr view"),
+            ("FAKE_GH_EXIT_CODE", "79"),
+        ],
+    );
+    assert_eq!(o.status.code(), Some(79), "{}", show(&o));
+    assert!(e.p("light-mode").exists());
+}
+
 // --- argument checks -------------------------------------------------------
 
 #[test]
@@ -967,8 +1209,9 @@ fn concerns_that_are_not_a_json_array_take_the_normal_path() {
 // 2. step-03 and step-06 of autodrive-crusty-round.yaml
 // ===========================================================================
 
-/// A tools directory holding only a logging stand-in for
-/// `autodrive_light_round.sh`, which prints `$FAKE_ROUND_OUT` and exits
+/// A tools directory holding a copy of the real `autodrive_light_steps.sh`,
+/// which the round recipe sources from `AUTODRIVE_LAUNCH_TOOLS`, and a logging
+/// stand-in for `autodrive_light_round.sh`, which prints `$FAKE_ROUND_OUT` and exits
 /// `$FAKE_ROUND_EXIT` (default 0). With `$FAKE_ROUND_TRUNCATE` set it empties
 /// the record's `.findings`, as the real tool does on `minor-deferred`.
 const FAKE_ROUND_TOOL: &str = r#"#!/usr/bin/env bash
@@ -984,6 +1227,11 @@ exit "${FAKE_ROUND_EXIT:-0}"
 fn fake_tools(e: &Env) -> PathBuf {
     let t = e.repo.tmp.path().join("fake-tools");
     std::fs::create_dir_all(&t).unwrap();
+    std::fs::copy(
+        tools_dir().join("autodrive_light_steps.sh"),
+        t.join("autodrive_light_steps.sh"),
+    )
+    .unwrap();
     crate::support::exec_stub::write_executable(
         &t.join("autodrive_light_round.sh"),
         FAKE_ROUND_TOOL,
@@ -1479,6 +1727,76 @@ fn step06_writes_concerns_when_the_side_file_is_invalid() {
             show(&o)
         );
     }
+}
+
+#[test]
+fn step03_loads_the_helper_from_the_launch_tools_only() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    let tools = fake_tools(&e);
+    std::fs::remove_file(tools.join("autodrive_light_steps.sh")).unwrap();
+    // AMPLIHACK_HOME (the repository root) still holds the helper.
+    let o = step03(
+        &e,
+        &tools,
+        &crusty_review("CONCERNS", &two_minor()),
+        &[("FAKE_ROUND_OUT", DEFERRED_OUT)],
+    );
+    assert!(
+        stdout(&o).starts_with("{\"crusty_verdict\":\"CONCERNS\","),
+        "{}",
+        show(&o)
+    );
+    assert!(
+        stderr(&o).contains("autodrive_light_steps.sh not found under AUTODRIVE_LAUNCH_TOOLS"),
+        "{}",
+        show(&o)
+    );
+    assert!(round_log(&e).is_empty(), "the round tool is not called");
+}
+
+#[test]
+fn step06_rejects_a_verdict_that_names_the_rule_but_has_another_source() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    light_side_files(&e);
+    let tools = fake_tools(&e);
+    let verdict = r#"{"crusty_verdict":"CLEAN","verdict_source":"crusty","note":"light-minor-rule","concern_count":0}"#;
+    let o = step06(&e, &tools, verdict, "");
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let rec = std::fs::read_to_string(&e.record).unwrap();
+    assert!(
+        rec.starts_with("{\"crusty_verdict\":\"CONCERNS\","),
+        "{rec}"
+    );
+    assert!(!rec.contains("deferred_ids"), "{rec}");
+    assert!(
+        stderr(&o).contains("WARNING: light-side-file-invalid"),
+        "{}",
+        show(&o)
+    );
+
+    // The function itself: non-zero, with an empty SUFFIX.
+    let helper = tools_dir().join("autodrive_light_steps.sh");
+    let script = format!(
+        ". {:?}; VERDICT=CLEAN; RECORD={:?}; SUFFIX=x; autodrive_light_step06 \"$1\"; printf 'rc=%s suffix=[%s]' \"$?\" \"$SUFFIX\"",
+        helper.display().to_string(),
+        e.record.display().to_string()
+    );
+    let argv = [
+        OsStr::new("-c"),
+        OsStr::new(&script),
+        OsStr::new("x"),
+        OsStr::new(verdict),
+    ];
+    let o = run_bash(&e.repo.home, &e.fakes, None, &argv, &[], "");
+    assert_eq!(stdout(&o), "rc=1 suffix=[]", "{}", show(&o));
 }
 
 // ===========================================================================

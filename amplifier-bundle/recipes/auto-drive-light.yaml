@@ -32,9 +32,9 @@ tags: ["auto-drive", "small-change", "crusty", "merge-ready", "merge", "issue-18
 # PROHIBITIONS (docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions):
 # a hook-skipping commit flag is never passed to git and a branch-protection
 # bypass is never passed to gh. Merging happens only through the merge loop's
-# gate. Bash steps read context only as RECIPE_VAR_* values, load tools from
-# AMPLIHACK_HOME (quick_change_common.sh also from the install locations,
-# never from the worktree), and pass exit code 79 through without a retry.
+# gate. Bash steps read context only as RECIPE_VAR_* values, load tools only
+# from AMPLIHACK_HOME (never from the worktree or another install location),
+# and pass exit code 79 through without a retry.
 #
 # max_total_steps allows for an escalation, whose nested auto-drive-to-merge
 # run counts against the same total.
@@ -97,7 +97,7 @@ steps:
       command -v jq >/dev/null 2>&1 || die "jq is not on PATH; auto-drive-light needs it"
       case "${AMPLIHACK_HOME:-}" in /*) ;; *) die "AMPLIHACK_HOME must be an absolute path; tools are loaded only from it" ;; esac
       T="${AMPLIHACK_HOME}/amplifier-bundle/tools"
-      for f in autodrive_light_eligibility.sh autodrive_light_round.sh autodrive_state.sh autodrive_trust.sh; do
+      for f in autodrive_light_eligibility.sh autodrive_light_round.sh autodrive_light_steps.sh autodrive_state.sh autodrive_trust.sh quick_change_common.sh; do
         [ -f "$T/$f" ] || die "$f not found under AMPLIHACK_HOME"
       done
       cd "${RECIPE_VAR_repo_path:-.}" 2>/dev/null || die "cannot enter repo_path"
@@ -151,7 +151,7 @@ steps:
     type: "bash"
     condition: "not pr_number and not existing_branch"
     command: |
-      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=light-base-pin; . "${QC:?quick_change_common.sh not found}"
+      QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-base-pin; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-base-pin: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-base-pin: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT"
       qc_branch >/dev/null
       qc_require_identity
@@ -203,7 +203,7 @@ steps:
     type: "bash"
     condition: "not pr_number and not existing_branch"
     command: |
-      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=light-qa; . "${QC:?quick_change_common.sh not found}"
+      QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-qa; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-qa: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-qa: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"
       BASE="$(qc_base)"
       cd "$QC_WT"
@@ -230,7 +230,7 @@ steps:
     type: "bash"
     condition: "not pr_number and not existing_branch"
     command: |
-      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=light-precommit; . "${QC:?quick_change_common.sh not found}"
+      QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-precommit; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-precommit: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-precommit: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"
       BASE="$(qc_base)"
       cd "$QC_WT"
@@ -261,7 +261,7 @@ steps:
     type: "bash"
     condition: "not pr_number and not existing_branch"
     command: |
-      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=light-commit-push; . "${QC:?quick_change_common.sh not found}"
+      QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-commit-push; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-commit-push: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-commit-push: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       exec 3>&1 1>&2
       cd "$QC_WT"
       BRANCH="$(qc_branch)"
@@ -299,7 +299,7 @@ steps:
     type: "bash"
     condition: "not pr_number and not existing_branch"
     command: |
-      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=light-open-pr; . "${QC:?quick_change_common.sh not found}"
+      QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-open-pr; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-open-pr: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-open-pr: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       cd "$QC_WT"
       BRANCH="$(qc_branch)"
       RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"

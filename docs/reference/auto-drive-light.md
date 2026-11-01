@@ -234,9 +234,11 @@ A marker that fails these checks gives `marker-invalid` or `state-unsafe`. A rev
 
 ### Escalation inside the loop
 
-When the reviewed head differs from the marker head, `autodrive_light_round.sh` runs `autodrive_light_eligibility.sh` on `<base>..<reviewed head>` with the base and limits recorded in `light-eligibility.json`, before it applies the minor-only rule.
+When the reviewed head differs from the marker head, `autodrive_light_round.sh` runs `autodrive_light_eligibility.sh` on `<base>..<reviewed head>` with the limits recorded in `light-eligibility.json`, before it applies the minor-only rule.
 
-- **`light`.** The tool rewrites `light-eligibility.json` with the new head, then rewrites `light-mode` with the same head, and goes on to the minor-only rule.
+The base is the merge-base of the reviewed head and the PR's current base tip, so a head that merged the base branch in (the usual fix for a branch that is behind) is measured on the PR's own change only, as GitHub shows it. The tool reads `baseRefName` and `baseRefOid` with `gh pr view`, checks both, fetches `refs/heads/<baseRefName>` from `origin` if the tip is not present locally, and uses the merge-base only when it descends from the base recorded in `light-eligibility.json`. In every other case (a `gh` failure, an invalid name or SHA, a failed fetch, or a merge-base that does not descend from the recorded base) it logs one `INFO:` line and measures from the recorded base. That measurement counts any upstream changes the head has merged, so it can only escalate more often. Exit code 79 from `gh` is passed through.
+
+- **`light`.** The tool rewrites `light-eligibility.json` with the new head and the base it measured from, then rewrites `light-mode` with the same head, and goes on to the minor-only rule.
 - **`escalate` or a fault.** The tool removes `light-mode`, writes `escalation.json` with reason `in-loop-<reason>` or `in-loop-fault-<token>`, and prints `light_exit` `none` with reason `re-measured-escalate`. The round takes the normal path and addresses every concern.
 
 After an escalation inside the loop, every later round in that state directory, including merge-phase re-reviews, finds no marker and runs with full rules. The run stays in the same crusty and merge loops; it does not start a nested `auto-drive-to-merge`, because those loops are the ones that recipe would run. `light-report` prints the path as `light-escalated` with the recorded reason.
@@ -245,7 +247,7 @@ Without the marker, `autodrive-crusty-round` behaves exactly as it did before #1
 
 ## The minor-only rule
 
-In step-03 of `autodrive-crusty-round`, when the marker is present, the parsed concerns go to `autodrive_light_round.sh defer`, loaded from the launch-side tools (`AUTODRIVE_LAUNCH_TOOLS`). The round recipe is at its 400-line brick budget, so the light branch of step-03 and step-06 lives in `amplifier-bundle/tools/autodrive_light_steps.sh`, which each step sources from `AMPLIHACK_HOME` in one line, and only under the light condition. If that file cannot be loaded, step-03 keeps `CONCERNS` and step-06 writes `CONCERNS` with `WARNING: light-side-file-invalid`. The tool works out an effective severity for each concern and fails closed:
+In step-03 of `autodrive-crusty-round`, when the marker is present, the parsed concerns go to `autodrive_light_round.sh defer`, loaded from the launch-side tools (`AUTODRIVE_LAUNCH_TOOLS`). The round recipe is at its 400-line brick budget, so the light branch of step-03 and step-06 lives in `amplifier-bundle/tools/autodrive_light_steps.sh`, which each step sources in one line, and only under the light condition. Both steps load it from `AUTODRIVE_LAUNCH_TOOLS`, the tool root that step-00 has already checked (#1543), so the helper and the round tool always come from the same install. If that file cannot be loaded, step-03 keeps `CONCERNS` and step-06 writes `CONCERNS` with `WARNING: light-side-file-invalid`. Step-06 calls the helper only when the verdict text names `light-minor-rule`; if the verdict's `verdict_source` is anything else, the helper returns an error and step-06 records `CONCERNS`. The tool works out an effective severity for each concern and fails closed:
 
 | Concern | Effective severity |
 | --- | --- |
@@ -358,7 +360,7 @@ Issue numbers are validated as 1 to 10 digits before they are written or reused.
 
 ### Cell sanitising
 
-Each table cell has control characters removed, passes through `sanitize_cli_output`, has `&`, `<` and `>` HTML-encoded, has `|` and backticks replaced by the numeric entities `&#x7C;` and `&#x60;`, has `@` mentions and `#N` references neutralised, and is truncated to 200 characters. The marker therefore appears exactly once, however the concern text is written. Titles and PR comments contain only fixed text and digits.
+Each table cell has control characters removed, passes through `sanitize_cli_output`, has `&`, `<` and `>` HTML-encoded, has `|` and backticks replaced by the numeric entities `&#x7C;` and `&#x60;`, has `@` mentions, `#N` references and full `github.com/` URLs neutralised with U+200B (after `@`, after `#`, and after `github.com/`, matched without regard to case), and is truncated to 200 characters. The marker therefore appears exactly once, however the concern text is written. Titles and PR comments contain only fixed text and digits.
 
 ## Merge criteria
 
@@ -377,7 +379,7 @@ All files live in the autodrive state directory. They are written under `umask 0
 | `<record>.light.json` | `autodrive_light_round.sh` | `follow_up_issue` and `deferred_ids`. |
 | `follow-up-issue` | `autodrive_light_round.sh` | The issue number. |
 | `follow-up-linked` | `autodrive_light_round.sh` | Present once the PR comment is posted. |
-| `follow-up-posted-ids` | `autodrive_light_round.sh` | One id per line. |
+| `follow-up-posted-ids` | `autodrive_light_round.sh` | One id per line. Lines that do not match `^[A-Za-z0-9._-]{1,64}$` are ignored when the file is read and dropped when it is next written. |
 | `follow-up-failed` | `autodrive_light_round.sh` | A fixed token. No free text. |
 
 Logs written by the light tools contain only counts, ids, digits and fixed tokens. `gh` stderr goes through `gh_sanitize_stderr`.
@@ -392,7 +394,7 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 - `--admin`, `--no-verify`, `SKIP=` and `gh pr merge` do not appear in the recipe or either tool. Merging happens only through the unchanged merge loop and gate.
 - Bash steps read context only as `RECIPE_VAR_*` values and contain no `{{...}}` templates. Every value is validated before use.
 - Agent text reaches `gh` only through files (`--body-file`).
-- Judging agents run from the review directory. Round and loop recipes, and both light tools, are loaded from the tool root.
+- Judging agents run from the review directory. Round and loop recipes, and the light tools, are loaded from the tool root. `auto-drive-light.yaml` loads every tool, including `quick_change_common.sh`, only from `$AMPLIHACK_HOME/amplifier-bundle/tools`; `light-prereqs` checks that each one exists there, and a missing file stops the step rather than falling back to the worktree or another install. Inside `autodrive-crusty-round`, `autodrive_light_steps.sh` and `autodrive_light_round.sh` both come from `AUTODRIVE_LAUNCH_TOOLS`.
 - Exit code 79 is final at every level and is never retried.
 - `light-implement` and the crusty loop agents carry `[amplihack:no-merge]` in their prompts.
 
@@ -408,6 +410,9 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 - **The CLEAN is a rule, not a review.** A light CLEAN record means crusty raised only minor concerns, and they were deferred to an issue. The record's `verdict_source` and `deferred_ids` show this.
 - **Branch prefix.** New changes use the `quick/` branch prefix from `quick_change_common.sh`. `auto-drive-light` has no equivalent of the `branch_prefix` key that `auto-drive-to-merge` offers (default `feat`). Repositories with other branch-naming conventions need `existing_branch` or `pr_number`.
 - **Eligibility heuristics.** The public API rule reads `lib.rs` only, so a `pub` item added in another module and re-exported through an existing `pub use` is not counted. The recipe contract rule compares top-level `context:` keys only.
+- **Block-style `context:` only.** The recipe contract rule reads `context:` mappings written in block style. A flow-style mapping such as `context: { a: "1" }` yields no keys, so a change to its key set is not detected. No bundled recipe uses flow style.
+- **Re-measurement base.** After the head moves, the change is measured from the merge-base with the PR's current base tip. When that tip cannot be read, fetched or checked, the recorded base is used instead, and a head that merged the base branch then usually escalates with `in-loop-lines`.
+- **Rejected side files leave `.findings` empty.** `autodrive_light_round.sh` empties `<record>.findings` before step-06 checks the side files. If step-06 rejects them, the round is recorded as `CONCERNS`, which blocks merge, but the address step of that round has no ids to work on. The next round reviews the PR again.
 
 ## Files
 

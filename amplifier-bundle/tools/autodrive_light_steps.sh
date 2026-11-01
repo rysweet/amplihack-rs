@@ -3,8 +3,9 @@
 # autodrive_light_steps.sh - the auto-drive-light branch of
 # autodrive-crusty-round.yaml step-03 and step-06 (issue #1802).
 #
-# Sourced, never executed, from AMPLIHACK_HOME; this file only defines
-# functions. The round recipe is at its 400-line brick budget, so the branch
+# Sourced, never executed, from the round's validated tool root,
+# AUTODRIVE_LAUNCH_TOOLS, the same root as autodrive_light_round.sh; this
+# file only defines functions. The round recipe is at its 400-line brick budget, so the branch
 # lives here and each step calls it in one line. Neither step sources this
 # file without the light condition, so a round with no light-mode marker
 # runs exactly as before #1802.
@@ -20,7 +21,8 @@
 #                            79 when the tool exits 79 (final), else 0.
 #   autodrive_light_step06   step-06, when the verdict names light-minor-rule;
 #                            takes step-03's verdict JSON as its argument.
-#                            Validates <record>.light.json, <record>.concerns.tsv
+#                            Returns 1 when its verdict_source is not
+#                            light-minor-rule, which fails closed. Validates <record>.light.json, <record>.concerns.tsv
 #                            and <record>.findings and sets SUFFIX to the
 #                            record's light fields, built by jq. Returns 1
 #                            when a check fails; the step then records
@@ -69,14 +71,16 @@ _autodrive_light_private() {
     && [ -z "$(find "$1" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null)" ]
 }
 
-# autodrive_light_step06 <verdict json>: reads VERDICT RECORD, sets SUFFIX. Returns 0 with an empty SUFFIX when the verdict source is not
-# light-minor-rule, 0 with the suffix when every check passes, else 1.
+# autodrive_light_step06 <verdict json>: reads VERDICT RECORD, sets SUFFIX.
+# Called only when the verdict text names light-minor-rule, so any other
+# verdict_source is an error. Returns 0 with the suffix when every check
+# passes, else 1 with an empty SUFFIX.
 autodrive_light_step06() {
   local src lj
   SUFFIX=""
   command -v jq >/dev/null 2>&1 || return 1
   src="$(printf '%s' "${1:-}" | jq -r '.verdict_source // ""' 2>/dev/null)"
-  [ "$src" = "light-minor-rule" ] || return 0
+  [ "$src" = "light-minor-rule" ] || return 1
   [ "${VERDICT:-}" = "CLEAN" ] || return 1
   _autodrive_light_private "${RECORD}.light.json" && _autodrive_light_private "${RECORD}.concerns.tsv" || return 1
   [ -f "${RECORD}.findings" ] && [ ! -L "${RECORD}.findings" ] && [ ! -s "${RECORD}.findings" ] || return 1

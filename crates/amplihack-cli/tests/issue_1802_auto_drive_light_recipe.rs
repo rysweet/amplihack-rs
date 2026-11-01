@@ -512,6 +512,77 @@ fn tools_are_loaded_from_the_tool_root_not_the_worktree() {
     }
 }
 
+#[test]
+fn quick_change_common_is_loaded_from_amplihack_home_only() {
+    let mut n = 0;
+    for (id, cmd) in bash_commands(&r()) {
+        for line in cmd.lines().filter(|l| l.contains("quick_change_common.sh")) {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            for banned in ["RECIPE_VAR_repo_path", ".copilot", ".amplihack", "for c in"] {
+                assert!(
+                    !line.contains(banned),
+                    "{id}: quick_change_common.sh has no fallback ({banned}): {line}"
+                );
+            }
+            if line.contains(". \"$QC\"") {
+                assert!(
+                    line.contains(
+                        "QC=\"${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh\""
+                    ),
+                    "{id}: {line}"
+                );
+                assert!(
+                    line.contains("exit 1"),
+                    "{id}: a missing file stops the step"
+                );
+                n += 1;
+            }
+        }
+    }
+    assert_eq!(n, 5, "five steps source quick_change_common.sh");
+    let pre = yaml_text(&step(&r(), "light-prereqs"));
+    for f in ["quick_change_common.sh", "autodrive_light_steps.sh"] {
+        assert!(pre.contains(f), "light-prereqs checks {f}");
+    }
+}
+
+#[test]
+fn crusty_round_light_hooks_load_the_helper_from_the_launch_tools() {
+    let round = recipe("autodrive-crusty-round");
+    for id in [
+        "step-03-extract-crusty-verdict",
+        "step-06-write-round-record",
+    ] {
+        let cmd = round["steps"]
+            .as_sequence()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"].as_str() == Some(id))
+            .unwrap()["command"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let hook = cmd
+            .lines()
+            .find(|l| l.contains("autodrive_light_steps.sh") && !l.trim_start().starts_with('#'))
+            .unwrap_or_else(|| panic!("{id}: light hook"));
+        assert!(
+            hook.contains(". \"/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_light_steps.sh\""),
+            "{id}: {hook}"
+        );
+        assert!(!hook.contains("AMPLIHACK_HOME"), "{id}: {hook}");
+    }
+    assert!(
+        read("amplifier-bundle/recipes/autodrive-crusty-round.yaml")
+            .lines()
+            .count()
+            <= 400,
+        "autodrive-crusty-round.yaml stays within 400 lines"
+    );
+}
+
 // --- the shared round ------------------------------------------------------
 
 #[test]

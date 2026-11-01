@@ -14,8 +14,12 @@
 # The tool:
 #   1. validates the marker against light-eligibility.json and escalation.json;
 #   2. measures the change again with autodrive_light_eligibility.sh when the
-#      reviewed head differs from the marker head, and escalates in the loop
-#      (marker removed, escalation.json written) when it is no longer light;
+#      reviewed head differs from the marker head, from the merge-base of the
+#      reviewed head and the PR's current base tip (gh pr view baseRefOid), so
+#      a merge of the base branch into the PR does not count upstream changes.
+#      When that base cannot be read, fetched or checked, it measures from the
+#      pinned base, which is stricter. It escalates in the loop (marker
+#      removed, escalation.json written) when the change is no longer light;
 #   3. works out each concern's effective severity, failing closed;
 #   4. when every effective severity is minor (and there is at least one
 #      concern), files or reuses the follow-up issue, posts only ids not yet
@@ -106,7 +110,7 @@ private() {
 }
 
 command -v jq >/dev/null 2>&1 || { echo "ERROR: light round: jq is not on PATH; the marker cannot be checked" >&2; none state-unsafe; }
-[ -d "$STATE" ] && private "$STATE" || none state-unsafe
+if [ ! -d "$STATE" ] || ! private "$STATE"; then none state-unsafe; fi
 private "$MARKER_FILE" || none state-unsafe
 MHEAD="$(cat -- "$MARKER_FILE" 2>/dev/null)" || none marker-invalid
 [[ "$MHEAD" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || none marker-invalid
@@ -130,9 +134,80 @@ write_state() {
   return 1
 }
 
+# --- gh helpers -------------------------------------------------------------------
+# Loaded once, before the re-measurement, which reads the PR's base tip. A
+# missing helper only matters where gh is needed: the re-measurement then uses
+# the pinned base, and the follow-up step reports follow-up-failed.
+PRIV="$(mktemp -d "${TMPDIR:-/tmp}/autodrive-light.XXXXXX")" || none state-unsafe
+trap 'rm -rf -- "$PRIV"' EXIT
+HELPER_MISSING=""
+for helper in workflow_gh_retry.sh workflow_issue_tracking.sh; do
+  if [ -f "$TOOLS/$helper" ]; then
+    # shellcheck source=/dev/null
+    . "$TOOLS/$helper"
+  else
+    HELPER_MISSING="$helper"
+  fi
+done
+
+failed() {
+  printf '%s\n' "$1" | write_state follow-up-failed \
+    || echo "ERROR: light round: follow-up-failed could not be written" >&2
+  echo "WARNING: light round: follow-up step failed (${1}); the concerns are addressed in this round instead" >&2
+  none follow-up-failed
+}
+
+# gh_call <label> <gh args...>: through _gh_retry_core; exit 79 is final.
+gh_call() {
+  local out rc
+  out="$(GH_RETRY_TMPDIR="$PRIV" _gh_retry_core "$@")"
+  rc=$?
+  if [ "$rc" -eq 79 ]; then
+    echo "ERROR: light round: gh exited 79; that code is final and is not retried" >&2
+    exit 79
+  fi
+  [ "$rc" -eq 0 ] || return "$rc"
+  printf '%s' "$out"
+}
+
+# current_base: prints the merge-base of the reviewed head and the PR's current
+# base tip, when that merge-base descends from the pinned base. Returns 1, with
+# one INFO line, in every other case; the caller then keeps the pinned base.
+current_base() {
+  local js rc name oid mb
+  [ -z "$HELPER_MISSING" ] || { echo "INFO: light round: $HELPER_MISSING is missing; measuring from the pinned base" >&2; return 1; }
+  js="$(cd -- "$REPO" && gh_call "pr view" pr view "$PR" --json baseRefName,baseRefOid)"
+  rc=$?
+  [ "$rc" -ne 79 ] || exit 79
+  [ "$rc" -eq 0 ] || { echo "INFO: light round: the PR's base could not be read; measuring from the pinned base" >&2; return 1; }
+  name="$(printf '%s' "$js" | jq -r '.baseRefName // "" | strings' 2>/dev/null)"
+  oid="$(printf '%s' "$js" | jq -r '.baseRefOid // "" | strings' 2>/dev/null)"
+  if ! [[ "$oid" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || [ -z "$name" ] || [ "${name#-}" != "$name" ] \
+    || ! git -C "$REPO" check-ref-format --branch "$name" >/dev/null 2>&1; then
+    echo "INFO: light round: the PR's base name or tip is not valid; measuring from the pinned base" >&2
+    return 1
+  fi
+  if ! git -C "$REPO" cat-file -e "${oid}^{commit}" 2>/dev/null; then
+    GIT_TERMINAL_PROMPT=0 git -C "$REPO" fetch -q --no-tags origin "refs/heads/$name" </dev/null >/dev/null 2>&1 || true
+    git -C "$REPO" cat-file -e "${oid}^{commit}" 2>/dev/null \
+      || { echo "INFO: light round: the PR's base tip could not be fetched; measuring from the pinned base" >&2; return 1; }
+  fi
+  mb="$(git -C "$REPO" merge-base "$REVIEWED" "$oid" 2>/dev/null)"
+  if ! [[ "$mb" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+    || ! git -C "$REPO" merge-base --is-ancestor "$LBASE" "$mb" >/dev/null 2>&1; then
+    echo "INFO: light round: the merge-base with the PR's base tip does not descend from the pinned base; measuring from the pinned base" >&2
+    return 1
+  fi
+  printf '%s' "$mb"
+}
+
 # --- measure again when the head moved -------------------------------------------
 if [ "$REVIEWED" != "$MHEAD" ]; then
   git -C "$REPO" merge-base --is-ancestor "$MHEAD" "$REVIEWED" >/dev/null 2>&1 || none marker-stale
+  MBASE="$(current_base)"
+  rc=$?
+  [ "$rc" -ne 79 ] || exit 79
+  [ "$rc" -eq 0 ] && [ -n "$MBASE" ] || MBASE="$LBASE"
   LIMITS=()
   for pair in lines:--max-lines new_modules:--max-new-modules public_api:--max-public-api \
               schema:--max-schema recipe_contract:--max-recipe-contract; do
@@ -140,14 +215,16 @@ if [ "$REVIEWED" != "$MHEAD" ]; then
     [[ "$v" =~ ^[0-9]{1,6}$ ]] && LIMITS+=("${pair#*:}" "$v")
   done
   ERR="$(mktemp "${TMPDIR:-/tmp}/autodrive-light-measure.XXXXXX")" || none state-unsafe
-  OUT="$(bash "$TOOLS/autodrive_light_eligibility.sh" --repo "$REPO" --base "$LBASE" --head "$REVIEWED" "${LIMITS[@]}" 2>"$ERR")"
+  OUT="$(bash "$TOOLS/autodrive_light_eligibility.sh" --repo "$REPO" --base "$MBASE" --head "$REVIEWED" "${LIMITS[@]}" 2>"$ERR")"
   RC=$?
   FAULT="$(sed -n 's/^AUTODRIVE_LIGHT_ELIGIBILITY=fault reason=\([a-z-]*\)$/\1/p' "$ERR" | head -n 1)"
   rm -f -- "$ERR"
   LINE1="${OUT%%$'\n'*}"; JSON="${OUT#*$'\n'}"
   if [ "$RC" -eq 0 ] && [ "$LINE1" = "AUTODRIVE_LIGHT_ELIGIBILITY=light reason=within-limits" ]; then
-    printf '%s\n' "$JSON" | write_state light-eligibility.json \
-      && printf '%s\n' "$REVIEWED" | write_state light-mode || none state-unsafe
+    if ! printf '%s\n' "$JSON" | write_state light-eligibility.json \
+      || ! printf '%s\n' "$REVIEWED" | write_state light-mode; then
+      none state-unsafe
+    fi
     echo "INFO: light round: head moved; measured again and still light" >&2
     MHEAD="$REVIEWED"
   else
@@ -158,7 +235,7 @@ if [ "$REVIEWED" != "$MHEAD" ]; then
     fi
     printf '%s' "$JSON" | jq -e 'type == "object"' >/dev/null 2>&1 || JSON='null'
     rm -f -- "$MARKER_FILE"
-    jq -nc --arg r "$WHY" --arg b "$LBASE" --arg h "$REVIEWED" --argjson m "$JSON" \
+    jq -nc --arg r "$WHY" --arg b "$MBASE" --arg h "$REVIEWED" --argjson m "$JSON" \
       '{reason: $r, base_sha: $b, head_sha: $h, measurements: $m}' | write_state escalation.json \
       || echo "ERROR: light round: escalation.json could not be written" >&2
     echo "WARNING: light round: head moved and the change is no longer light (${WHY}); light mode ends for this state directory" >&2
@@ -209,32 +286,7 @@ IDS_JSON="$(printf '%s' "$ROWS" | jq -c 'reduce .[].id as $x ([]; if index([$x])
 mapfile -t IDS < <(printf '%s' "$IDS_JSON" | jq -r '.[]')
 
 # --- follow-up issue ---------------------------------------------------------------
-PRIV="$(mktemp -d "${TMPDIR:-/tmp}/autodrive-light.XXXXXX")" || none state-unsafe
-trap 'rm -rf -- "$PRIV"' EXIT
-for helper in workflow_gh_retry.sh workflow_issue_tracking.sh; do
-  [ -f "$TOOLS/$helper" ] || { echo "ERROR: light round: $helper is missing from $TOOLS" >&2; none follow-up-failed; }
-  # shellcheck source=/dev/null
-  . "$TOOLS/$helper"
-done
-
-failed() {
-  printf '%s\n' "$1" | write_state follow-up-failed || true
-  echo "WARNING: light round: follow-up step failed (${1}); the concerns are addressed in this round instead" >&2
-  none follow-up-failed
-}
-
-# gh_call <label> <gh args...>: through _gh_retry_core; exit 79 is final.
-gh_call() {
-  local out rc
-  out="$(GH_RETRY_TMPDIR="$PRIV" _gh_retry_core "$@")"
-  rc=$?
-  if [ "$rc" -eq 79 ]; then
-    echo "ERROR: light round: gh exited 79; that code is final and is not retried" >&2
-    exit 79
-  fi
-  [ "$rc" -eq 0 ] || return "$rc"
-  printf '%s' "$out"
-}
+[ -z "$HELPER_MISSING" ] || { echo "ERROR: light round: $HELPER_MISSING is missing from $TOOLS" >&2; none follow-up-failed; }
 
 GH_REPO_NAME=""
 repo_name() {
@@ -252,7 +304,7 @@ cell() {
   s="$(sanitize_cli_output "$1")"
   s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"
   s="${s//@/@$ZW}"
-  s="$(printf '%s' "$s" | sed -E "s/#([0-9])/#${ZW}\\1/g")"
+  s="$(printf '%s' "$s" | sed -E -e "s/#([0-9])/#${ZW}\\1/g" -e "s#(github\\.com)/#\\1/${ZW}#Ig")"
   s="${s//|/&#x7C;}"; s="${s//\`/&#x60;}"
   printf '%s' "$s"
 }
@@ -327,10 +379,13 @@ fi
 
 POSTED=()
 f="$STATE/follow-up-posted-ids"
-if [ -f "$f" ] && [ ! -L "$f" ]; then mapfile -t POSTED < "$f"; fi
+# Only lines that are valid ids count; anything else is ignored, so a junk
+# line cannot stop an id from being posted.
+if [ -f "$f" ] && [ ! -L "$f" ]; then
+  mapfile -t POSTED < <(grep -E '^[A-Za-z0-9._-]{1,64}$' -- "$f")
+fi
 NEW=()
 if [ "$CREATED" = 1 ]; then
-  NEW=()
   POSTED+=("${IDS[@]}")
 else
   for id in "${IDS[@]}"; do

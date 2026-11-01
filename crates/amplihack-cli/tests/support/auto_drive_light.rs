@@ -257,7 +257,9 @@ pub fn fault(o: &Output, token: &str) {
 ///
 /// - `api user`                  `{"login":"$FAKE_GH_LOGIN"}` (default `me`)
 /// - `repo view`                 `{"nameWithOwner":"o/r","url":"https://github.com/o/r"}`
-/// - `pr view`                   PR 7 of `o/r`, head `$FAKE_GH_HEAD`
+/// - `pr view`                   PR 7 of `o/r`, head `$FAKE_GH_HEAD`, base
+///   `$FAKE_GH_BASE_NAME` (default `main`) at `$FAKE_GH_BASE_OID` (default
+///   empty)
 /// - `label list`                `$FAKE_GH_LABELS` (default `[]`)
 /// - `search issues`/`issue list` `$FAKE_GH_SEARCH` (default `[]`)
 /// - `api .../search/issues...`  `{"items": $FAKE_GH_SEARCH_API}` (default `[]`)
@@ -292,7 +294,7 @@ login="${FAKE_GH_LOGIN:-me}"
 case "$1 ${2:-}" in
   "api user") emit "{\"login\":\"$login\"}" ;;
   "repo view") emit '{"nameWithOwner":"o/r","url":"https://github.com/o/r","owner":{"login":"o"},"name":"r"}' ;;
-  "pr view") emit "{\"number\":7,\"url\":\"https://github.com/o/r/pull/7\",\"isCrossRepository\":false,\"headRefOid\":\"${FAKE_GH_HEAD:-}\",\"headRefName\":\"quick/demo\",\"baseRefName\":\"main\",\"state\":\"OPEN\",\"headRepository\":{\"name\":\"r\"},\"headRepositoryOwner\":{\"login\":\"o\"}}" ;;
+  "pr view") emit "{\"number\":7,\"url\":\"https://github.com/o/r/pull/7\",\"isCrossRepository\":false,\"headRefOid\":\"${FAKE_GH_HEAD:-}\",\"headRefName\":\"quick/demo\",\"baseRefName\":\"${FAKE_GH_BASE_NAME:-main}\",\"baseRefOid\":\"${FAKE_GH_BASE_OID:-}\",\"state\":\"OPEN\",\"headRepository\":{\"name\":\"r\"},\"headRepositoryOwner\":{\"login\":\"o\"}}" ;;
   "label list") emit "${FAKE_GH_LABELS:-[]}" ;;
   "search issues"|"issue list") emit "${FAKE_GH_SEARCH:-[]}" ;;
   "issue view") emit "${FAKE_GH_ISSUE_VIEW:-{\"number\":${3:-0},\"state\":\"OPEN\",\"author\":{\"login\":\"$login\"},\"body\":\"\"}}" ;;
