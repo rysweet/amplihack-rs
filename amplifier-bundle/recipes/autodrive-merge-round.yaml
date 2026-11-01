@@ -344,6 +344,7 @@ steps:
         answer any requested changes; the approval itself needs a person.
       - **Merge conflicts, unresolved review threads (outdated ones too),
         missing docs or evidence**: resolve, answer and resolve, or write them.
+      - **Running tests or hooks**: export `GIT_TERMINAL_PROMPT=0`, then run each long command as `setsid -w timeout --kill-after=60 <secs> <cmd> </dev/null`, or as `timeout --foreground --kill-after=60 <secs> <cmd> </dev/null` where `setsid` is missing. Plain `timeout` puts the command in a background process group, so a git credential prompt reads the terminal and `SIGTTIN` stops it: nothing fails, and the run waits until it is killed, indefinitely where `timeout` is stopped too (issue #1764).
 
       Do not create, edit, move, rename, delete or archive any file in the
       auto-drive state directory (the directory holding crusty-round-*.json,

@@ -165,6 +165,7 @@ amplihack copilot
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
 - [Keep Tests out of the Real Profile Root](howto/keep-tests-out-of-the-real-profile-root.md) - How tests avoid writing real profiles' `settings.json`, and the guard that fails the run when one changes
 - [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
+- [Keep Tests from Prompting for Git Credentials](howto/keep-tests-from-prompting-for-git.md) - Why git under plain `timeout` stops on `SIGTTIN`, the settings that stop test and amplihack git from prompting, and how to run long commands safely
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
 - [Capacity Governor](reference/capacity-governor.md) - How recipe runs and agent launches are admitted, made to wait or refused (exit 80) from session and weekly budgets, and `amplihack governor status`
 - [`amplihack agent` Reference](reference/agent-command.md) - Register flags, `amplihack claude --supervise`, the supervisor pass, result texts, status formats, the registry and the systemd unit

@@ -472,3 +472,11 @@ mod issue_1642_github_origin_parsing;
 // separation from documentation-writing, registration, isolated install.
 #[path = "journalistic_writing_style_skill_test.rs"]
 mod journalistic_writing_style_skill;
+
+// Issue #1764: no git that a test or amplihack starts may wait on a
+// credential prompt. Checks the cargo [env] table and isolated(..), runs git
+// through amplihack_git::command() and under script and plain timeout against
+// a server on 127.0.0.1 that answers 401, and pins the recipe guidance for
+// long commands and the how-to links.
+#[path = "issue_1764_git_never_prompts_test.rs"]
+mod issue_1764_git_never_prompts;
