@@ -11,16 +11,17 @@
 //! its skip or stays on its wait.
 //!
 //! The issue's other trigger, a rotator cycle on record, is left out on
-//! purpose: rotation needs stored profiles, so the store check covers it.
+//! purpose: rotation needs stored profiles, so the store check covers it. A
+//! `$HOME/.claude` step also needs a running rotator: see [`home_check`].
 
 use super::config::{self, Config, FileState};
 use super::fsx;
-use super::rerun::{Switch, holds_login, nested_candidate};
+use super::rerun::{holds_login, nested_candidate};
 use super::state::State;
 use crate::commands::profile::kind::Ctx;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::rotate::ledger::{RotateState, active_blocks};
-use crate::commands::profile::rotate::platform_block;
+use crate::commands::profile::rotate::{self, platform_block};
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd;
 use std::collections::BTreeSet;
@@ -29,8 +30,22 @@ use std::collections::BTreeSet;
 const FUTURE_MARGIN: i64 = 60;
 
 /// The profile the rotate ledger says is live in `$HOME/.claude`.
-pub(crate) fn live_profile(store: Option<&ProfileStore>) -> Option<String> {
-    RotateState::new(store?.root()).load_ledger().ok()??.live
+fn live_profile(store: &ProfileStore) -> Option<String> {
+    RotateState::new(store.root()).load_ledger().ok()??.live
+}
+
+/// The takeover check for a step on the login in `$HOME/.claude`. Only a
+/// rotator cycle or a login change can end such a step's wait, so the check
+/// holds only while a rotator is running and another stored login could
+/// take over from the profile live there. Without a rotator a far reset stays
+/// `reset_too_far`, failing at once as before. The store is read only when the
+/// check is called, which is when a limit is seen.
+pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
+    Box::new(move || {
+        store.as_ref().is_some_and(|s| {
+            rotate::running(s.root()) && could_take_over(Some(s), live_profile(s).as_deref())
+        })
+    })
 }
 
 /// Another account could take over from a step whose own login is `own`: the
@@ -91,18 +106,23 @@ pub(super) fn is_fresh(observed_at: i64, start: i64, now: i64) -> bool {
     start < observed_at && observed_at <= now.saturating_add(FUTURE_MARGIN)
 }
 
-/// The profile auto-switch would choose now for this step, from readings
-/// taken since `start` only: a profile with an older reading, or none, has
-/// shown nothing during this wait.
-pub(crate) fn capacity_candidate(sw: &Switch<'_>, start: i64, now: i64) -> Option<ProfileName> {
-    let eff = config::effective(sw.store.root());
+/// The profile auto-switch would choose now for a step that inherited
+/// `inherited`, from readings taken since `start` only: a profile with an
+/// older reading, or none, has shown nothing during this wait.
+pub(crate) fn capacity_candidate(
+    store: &ProfileStore,
+    state: &State,
+    inherited: &ProfileName,
+    start: i64,
+    now: i64,
+) -> Option<ProfileName> {
+    let eff = config::effective(store.root());
     if !eff.on {
         return None;
     }
-    let ledger = sw.state.load_ledger().ok()?;
-    let readings = sw.state.try_load_usage().ok()?.accounts;
-    let profiles: Vec<ProfileName> = sw
-        .store
+    let ledger = state.load_ledger().ok()?;
+    let readings = state.try_load_usage().ok()?.accounts;
+    let profiles: Vec<ProfileName> = store
         .list()
         .ok()?
         .iter()
@@ -117,9 +137,9 @@ pub(crate) fn capacity_candidate(sw: &Switch<'_>, start: i64, now: i64) -> Optio
                 .is_some_and(|r| is_fresh(r.observed_at, start, now))
         })
         .collect();
-    let account = ledger.account_in(sw.inherited.as_str());
+    let account = ledger.account_in(inherited.as_str());
     nested_candidate(
-        &sw.state,
+        state,
         &ledger,
         &profiles,
         &readings,
@@ -127,5 +147,5 @@ pub(crate) fn capacity_candidate(sw: &Switch<'_>, start: i64, now: i64) -> Optio
         account,
         &stale,
     )
-    .filter(|p| *p != sw.inherited)
+    .filter(|p| p != inherited)
 }

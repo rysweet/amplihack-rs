@@ -213,9 +213,9 @@ pub(crate) fn ledger_account(root: &std::path::Path, name: &str) -> Option<Strin
 /// Auto-switch for one supervised step: the store, its state and the
 /// profile the step inherited.
 pub(crate) struct Switch<'a> {
-    pub(super) store: &'a ProfileStore,
-    pub(super) state: State,
-    pub(super) inherited: ProfileName,
+    store: &'a ProfileStore,
+    state: State,
+    inherited: ProfileName,
 }
 
 /// Runs a launch that inherited a profile under supervision. `None` when
@@ -298,9 +298,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         None => waiter.takeover_home(),
     };
     let probe = |start, now| {
-        switch
-            .as_ref()
-            .is_some_and(|sw| capacity_candidate(sw, start, now).is_some())
+        switch.as_ref().is_some_and(|sw| {
+            capacity_candidate(sw.store, &sw.state, &sw.inherited, start, now).is_some()
+        })
     };
     if let Some(sw) = &switch {
         let eff = config::effective(sw.store.root());
@@ -457,7 +457,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
 /// candidate is chosen again here and may now be `None`: the one retry then
 /// runs on the inherited profile, at a cost of one more attempt.
 fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<ProfileName> {
-    capacity_candidate(switch?, waiter.capacity_start()?, waiter.now())
+    let sw = switch?;
+    let start = waiter.capacity_start()?;
+    capacity_candidate(sw.store, &sw.state, &sw.inherited, start, waiter.now())
 }
 
 /// `<root>/.auto-switch.d/rerun` with auto-switch on, else

@@ -25,7 +25,9 @@
 
 use crate::issue_1618_fixture::{Fixture, WEEKLY_TEXT, describe, events, executable, text};
 use crate::issue_1618_wait_profiles::with_profiles;
-use crate::issue_1801_capacity_wait::{assert_no_account_detail, real_now, write_cycle, x_is_live};
+use crate::issue_1801_capacity_wait::{
+    assert_no_account_detail, real_now, rotator_running, write_cycle, x_is_live,
+};
 use crate::support::quiet_process::in_quiet_process;
 use std::fs;
 use std::process::Output;
@@ -145,6 +147,7 @@ fn g1_a_limited_evaluator_step_is_retried_and_returns_its_verdict() {
         || {
             let f = with_profiles();
             x_is_live(&f);
+            let _rotator = rotator_running(&f);
             let writer = rotator_cycle_during_wait(&f);
             let out = run_evaluator(&f, true, &[]);
             writer.join().unwrap();
@@ -185,6 +188,7 @@ fn g1_an_evaluator_wait_that_expires_fails_the_step_as_usage_limit() {
         || {
             let f = with_profiles();
             x_is_live(&f);
+            let _rotator = rotator_running(&f);
             let out = run_evaluator(&f, false, &[("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0")]);
 
             assert!(!out.status.success(), "{}", describe(&out));

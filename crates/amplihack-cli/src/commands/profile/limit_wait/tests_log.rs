@@ -228,6 +228,42 @@ fn the_class_survives_a_real_number_of_progress_lines() {
     assert_eq!(classify_failure_text(&tail).0, FailureClass::UsageLimit);
 }
 
+/// A reset wait ended by the step timeout also closes with the failed line,
+/// so its step is classed usage_limit however many progress lines it wrote,
+/// and auto-drive stops as USAGE_LIMIT rather than STUCK (#1801).
+#[test]
+fn a_reset_wait_ended_by_the_step_timeout_keeps_its_class() {
+    let mut lines = vec![
+        "You've hit your session limit · resets 8:30am (America/Los_Angeles)".to_string(),
+        line(
+            &Event::Start {
+                harness: Harness::Claude,
+                reset: Some(T0 + 16_200),
+                until: T0 + 7_140,
+                bound: Bound::StepTimeout,
+                capacity: false,
+            },
+            &LA,
+        ),
+    ];
+    for k in 1..=119u64 {
+        lines.push(line(
+            &Event::Progress {
+                remaining: 7_140 - k * 60,
+            },
+            &LA,
+        ));
+    }
+    lines.push(line(&Event::End(End::StepTimeout), &LA));
+    lines.push(line(&Event::Failed(FailReason::StepTimeout), &LA));
+    let tail = lines[lines.len() - 40..].join("\n");
+    assert!(
+        !tail.contains("session limit"),
+        "the message is out of the tail"
+    );
+    assert_eq!(classify_failure_text(&tail).0, FailureClass::UsageLimit);
+}
+
 #[test]
 fn no_event_can_hold_a_name_a_path_or_an_address() {
     let events = [

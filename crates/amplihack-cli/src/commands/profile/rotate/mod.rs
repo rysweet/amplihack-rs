@@ -196,6 +196,20 @@ fn foreign_note_for(
     })
 }
 
+/// Whether a login rotator is running for the store at `root`: the built-in
+/// daemon, or the external prototype holding `.rotator/lock` (issue #1801).
+/// Read-only; any read error is `false`.
+#[cfg(unix)]
+pub(super) fn running(root: &std::path::Path) -> bool {
+    matches!(
+        daemon::current_state(&ledger::RotateState::new(root)),
+        daemon::DaemonState::Running(_)
+    ) || matches!(
+        cycle::prototype_guard(root),
+        Err(super::ProfileError::RotatePrototypeRunning)
+    )
+}
+
 /// Whether rotate live-profile detection names `name` as the login in
 /// `<home>/.claude` (issue #1700: the launch guard's "held"). Any error, a
 /// hand change, an ambiguous or an adopted login is not.

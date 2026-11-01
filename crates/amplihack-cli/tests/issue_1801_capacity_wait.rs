@@ -89,6 +89,24 @@ pub(crate) fn x_is_live(f: &Fixture) {
     write_cycle(&f.profiles, "X", OLD_CYCLE);
 }
 
+/// Holds the external rotator's lock, as a running prototype rotator does,
+/// until the returned file is dropped. A `$HOME/.claude` step takes a
+/// capacity wait only while a rotator runs (#1801).
+pub(crate) fn rotator_running(f: &Fixture) -> fs::File {
+    use std::os::fd::AsRawFd;
+    let dir = f.profiles.join(".rotator");
+    fs::create_dir_all(&dir).unwrap();
+    let lock = dir.join("lock");
+    fs::write(&lock, "").unwrap();
+    let holder = fs::File::open(&lock).unwrap();
+    // SAFETY: valid open descriptor.
+    assert_eq!(
+        unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    holder
+}
+
 /// A step using `$HOME/.claude`.
 fn home_step(f: &Fixture) -> Command {
     fs::create_dir_all(f.home.join(".claude")).unwrap();
@@ -171,6 +189,7 @@ pub(crate) fn assert_no_account_detail(f: &Fixture, out: &Output) {
 fn ac1_a_home_step_waits_on_a_weekly_limit_and_the_rotator_ends_the_wait() {
     let f = with_profiles();
     x_is_live(&f);
+    let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     real_clock(&mut c);
     let writer = rotator_cycle_during_wait(&f);
@@ -199,6 +218,7 @@ fn ac1_a_home_step_waits_on_a_weekly_limit_and_the_rotator_ends_the_wait() {
 fn ac1_no_readable_reset_also_waits_and_says_none() {
     let f = with_profiles();
     x_is_live(&f);
+    let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     c.env("LIMIT_MESSAGE", NO_RESET_TEXT).env(MAX_WAIT_ENV, "0");
     let out = f.run(&mut c);
@@ -282,6 +302,7 @@ fn a_near_reset_stays_a_reset_wait_with_a_second_login() {
 fn ac14_a_zero_maximum_is_immediate_usage_limit_with_one_attempt() {
     let f = with_profiles();
     x_is_live(&f);
+    let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     c.env(MAX_WAIT_ENV, "0");
     let out = f.run(&mut c);
@@ -309,6 +330,7 @@ fn ac14_a_zero_maximum_is_immediate_usage_limit_with_one_attempt() {
 fn reaching_the_maximum_ends_with_no_retry() {
     let f = with_profiles();
     x_is_live(&f);
+    let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     c.env(MAX_WAIT_ENV, "120");
     let out = f.run(&mut c);
@@ -334,6 +356,7 @@ fn reaching_the_maximum_ends_with_no_retry() {
 fn ac4_a_config_file_maximum_ends_the_wait_as_a_usage_limit() {
     let f = with_profiles();
     x_is_live(&f);
+    let _rotator = rotator_running(&f);
     f.write_config("[recipe]\nusage_limit_max_wait_secs = 300\n");
     let mut c = home_step(&f);
     c.env_remove(MAX_WAIT_ENV);
@@ -361,6 +384,7 @@ fn ac4_a_config_file_maximum_ends_the_wait_as_a_usage_limit() {
 fn the_default_maximum_is_six_hours() {
     let f = with_profiles();
     x_is_live(&f);
+    let _rotator = rotator_running(&f);
     let out = f.run(&mut home_step(&f));
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
     assert!(
@@ -374,6 +398,7 @@ fn the_default_maximum_is_six_hours() {
 fn a_user_maximum_above_six_hours_is_honoured() {
     let f = with_profiles();
     x_is_live(&f);
+    let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     c.env(MAX_WAIT_ENV, "28800");
     let out = f.run(&mut c);
@@ -388,6 +413,7 @@ fn a_user_maximum_above_six_hours_is_honoured() {
 fn a_step_timeout_on_a_capacity_wait_writes_the_closing_line() {
     let f = with_profiles();
     x_is_live(&f);
+    let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     c.env("AMPLIHACK_STEP_TIMEOUT", "30");
     let out = f.run(&mut c);
@@ -404,16 +430,29 @@ fn a_step_timeout_on_a_capacity_wait_writes_the_closing_line() {
     );
 }
 
+// Progress lines can push the limit message out of the runner's 40-line
+// evidence tail, so a reset wait ended by the step timeout also closes with
+// the failed line, and the step is still classed usage_limit.
 #[test]
-fn a_reset_wait_at_a_step_timeout_writes_no_closing_line() {
+fn a_reset_wait_at_a_step_timeout_writes_the_closing_line() {
     let f = Fixture::new();
     let mut c = f.step();
     c.env("AMPLIHACK_STEP_TIMEOUT", "30");
     let out = f.run(&mut c);
-    assert!(
-        !events(&out).iter().any(|l| l.starts_with("failed ")),
-        "{:?}",
-        events(&out)
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    let ev = events(&out);
+    assert!(ev[0].ends_with(" bound=step_timeout"), "{ev:?}");
+    assert_eq!(
+        ev[1..],
+        [
+            "end reason=step timeout",
+            "failed reason=step_timeout: usage limit not lifted",
+        ]
+    );
+    assert_eq!(
+        wait_lines(&out).last().map(String::as_str),
+        Some("failed reason=step_timeout: usage limit not lifted"),
+        "the closing line is the wait's last line"
     );
 }
 
@@ -421,6 +460,7 @@ fn a_reset_wait_at_a_step_timeout_writes_no_closing_line() {
 fn the_exit_code_passes_through_unchanged() {
     let f = with_profiles();
     x_is_live(&f);
+    let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     c.env(MAX_WAIT_ENV, "0").env("LIMIT_EXIT", "7");
     let out = f.run(&mut c);
@@ -431,6 +471,7 @@ fn the_exit_code_passes_through_unchanged() {
 fn ac15_a_retry_that_hits_the_limit_again_gets_no_second_wait() {
     let f = with_profiles();
     x_is_live(&f);
+    let _rotator = rotator_running(&f);
     let mut c = home_step(&f);
     c.env("LIMIT_CALLS", "5");
     real_clock(&mut c);
@@ -459,6 +500,17 @@ fn ac3_one_stored_login_skips_even_with_rotator_cycles() {
     let f = with_profiles();
     fs::remove_dir_all(f.profiles.join("Y")).unwrap();
     x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    let out = f.run(&mut home_step(&f));
+    assert_skipped(&f, &out, "reset_too_far");
+}
+
+// With no rotator nothing can end a `$HOME/.claude` step's wait but a login
+// change, so a far reset fails at once as it did before #1801.
+#[test]
+fn a_home_step_with_two_logins_and_no_rotator_skips() {
+    let f = with_profiles();
+    x_is_live(&f);
     let out = f.run(&mut home_step(&f));
     assert_skipped(&f, &out, "reset_too_far");
 }
@@ -482,6 +534,7 @@ fn ac3_a_spend_limit_skips_whatever_it_states_with_a_second_login() {
     ] {
         let f = with_profiles();
         x_is_live(&f);
+        let _rotator = rotator_running(&f);
         let mut c = home_step(&f);
         c.env("LIMIT_MESSAGE", message);
         let out = f.run(&mut c);

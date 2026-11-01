@@ -7,7 +7,7 @@
 //! Wired from `auto_switch/mod.rs` with `mod tests_takeover;`.
 
 use super::fsx;
-use super::takeover::{could_take_over, is_fresh};
+use super::takeover::{could_take_over, home_check, is_fresh};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
@@ -338,4 +338,55 @@ fn a_store_that_cannot_be_listed_is_false() {
     if !readable {
         assert!(!got, "an unreadable store must fail closed");
     }
+}
+
+/// Holds the external rotator's lock under `store`, as a running prototype
+/// rotator does, until the returned file is dropped.
+fn rotator_running(store: &ProfileStore) -> fs::File {
+    use std::os::fd::AsRawFd;
+    let dir = store.root().join(".rotator");
+    fs::create_dir_all(&dir).unwrap();
+    let lock = dir.join("lock");
+    fs::write(&lock, "").unwrap();
+    let holder = fs::File::open(&lock).unwrap();
+    // SAFETY: valid open descriptor.
+    assert_eq!(
+        unsafe { libc::flock(holder.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    holder
+}
+
+// A `$HOME/.claude` step's wait can end only on a rotator cycle or a login
+// change, so with no rotator a far reset keeps its immediate skip (#1801).
+#[test]
+fn a_home_step_with_two_logins_and_no_rotator_is_false() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(&tmp, &["a", "b"]);
+    assert!(
+        could_take_over(Some(&store), None),
+        "the store alone qualifies"
+    );
+    assert!(!home_check(Some(store))());
+}
+
+#[test]
+fn a_home_step_with_two_logins_and_a_running_rotator_is_true() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(&tmp, &["a", "b"]);
+    let _held = rotator_running(&store);
+    assert!(home_check(Some(store))());
+}
+
+#[test]
+fn a_running_rotator_alone_is_not_enough() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(&tmp, &["a"]);
+    let _held = rotator_running(&store);
+    assert!(!home_check(Some(store))());
+}
+
+#[test]
+fn a_home_step_with_no_store_is_false() {
+    assert!(!home_check(None)());
 }

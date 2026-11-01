@@ -125,9 +125,10 @@ pub(crate) struct Waiter {
     blocked: Option<NoWait>,
     /// Claude's arguments carry the prompt (else it may be on stdin).
     prompt_in_args: bool,
-    /// The store of a `$HOME/.claude` step, whose login another stored
-    /// profile could take over (#1801). Read only when a limit is seen.
-    home_store: Option<ProfileStore>,
+    /// Whether another login could take over this `$HOME/.claude` step
+    /// (#1801), called only when a limit is seen. Always false for a step
+    /// with an explicit login or an inherited profile.
+    home_takeover: Box<dyn Fn() -> bool>,
     /// When this step's wait began, on the wait's clock, if a capacity wait.
     capacity_start: Option<i64>,
 }
@@ -137,7 +138,7 @@ impl Waiter {
         settings: Option<WaitSettings>,
         watch: Watch,
         prompt_in_args: bool,
-        home_store: Option<ProfileStore>,
+        home_takeover: Box<dyn Fn() -> bool>,
     ) -> Self {
         let clock = Clock::new();
         let step_start = clock.now();
@@ -159,7 +160,7 @@ impl Waiter {
             parent: unsafe { libc::getppid() },
             blocked: None,
             prompt_in_args,
-            home_store,
+            home_takeover,
             capacity_start: None,
         }
     }
@@ -190,13 +191,11 @@ impl Waiter {
         self.prompt_in_args
     }
 
-    /// Whether another login could take over this `$HOME/.claude` step from
-    /// the profile live there. Called when a limit is seen, so steps that
-    /// never hit one make no reads.
+    /// Whether another login could take over this `$HOME/.claude` step.
+    /// Called when a limit is seen, so steps that never hit one make no
+    /// reads.
     pub(crate) fn takeover_home(&self) -> bool {
-        use super::auto_switch::takeover::{could_take_over, live_profile};
-        let store = self.home_store.as_ref();
-        could_take_over(store, live_profile(store).as_deref())
+        (self.home_takeover)()
     }
 
     /// When this step's capacity wait began, on the wait's clock.
@@ -281,9 +280,9 @@ impl Waiter {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),
             End::SessionEnded => AfterLimit::Finish(None),
             End::StepTimeout => {
-                if capacity {
-                    log(&Event::Failed(FailReason::StepTimeout));
-                }
+                // Progress lines may have pushed the limit message out of the
+                // runner's evidence tail, so this line keeps it classed.
+                log(&Event::Failed(FailReason::StepTimeout));
                 AfterLimit::Finish(None)
             }
             End::CapacityExpired => {
@@ -331,9 +330,10 @@ pub(crate) fn supervise_unprofiled(
     let watch = Watch::new(store, default, config_dir.as_deref(), home.as_deref());
     // Only `$HOME/.claude` can get another login: an explicit directory or a
     // `.default` profile is the login the launch chose (#1801).
-    let home_store = store.filter(|_| watch.is_home()).cloned();
+    let home_takeover =
+        super::auto_switch::takeover::home_check(store.filter(|_| watch.is_home()).cloned());
     super::auto_switch::rerun::run(
         None,
-        Waiter::new(Some(settings), watch, prompt_in_args, home_store),
+        Waiter::new(Some(settings), watch, prompt_in_args, home_takeover),
     )
 }

@@ -5226,7 +5226,7 @@ listed.
 | `reset reached` | both | the `reset+margin` deadline passed; on a capacity wait this is the failed login's own reset | yes |
 | `max reached` | reset | the `max_wait` deadline passed | yes |
 | `capacity expired` | capacity | the `max_wait` deadline passed with no login showing capacity | no; [closing line](#closing-line) |
-| `step timeout` | both | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no; on a capacity wait, also the closing line |
+| `step timeout` | both | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no; [closing line](#closing-line) |
 | `login changed` | both | two probes in a row, 30 s apart, agree on a fingerprint that differs from the baseline | yes |
 | `rotator capacity` | both | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle with capacity (`swapped`, `stayed` or `switched`, no alert) whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
 | `login capacity` | capacity | the step runs under an inherited profile with auto-switch on, and a [reading](#readings) taken after the wait began shows that another stored profile has capacity (see [Capacity for a profile step](#capacity-for-a-profile-step)) | yes, under that profile |
@@ -5271,9 +5271,10 @@ with their usual `skipped` reasons.
 | Limit | Step's login | Another login could take over | Result |
 |-------|--------------|-------------------------------|--------|
 | Reset within five hours | any | any | reset wait, as before |
-| Weekly limit, or a reset more than five hours away | `$HOME/.claude` | yes | capacity wait |
+| Weekly limit, or a reset more than five hours away | `$HOME/.claude`, with a rotator running | yes | capacity wait |
 | Weekly limit, or a reset more than five hours away | inherited profile, auto-switch on | yes | capacity wait |
-| No readable reset (`no_reset`) | `$HOME/.claude`, or inherited profile with auto-switch on | yes | capacity wait |
+| No readable reset (`no_reset`) | `$HOME/.claude` with a rotator running, or inherited profile with auto-switch on | yes | capacity wait |
+| Weekly limit or no readable reset | `$HOME/.claude`, no rotator running | any | `skipped reason=reset_too_far` or `no_reset` |
 | Weekly limit or no readable reset | any of the above | no | `skipped reason=reset_too_far` or `no_reset` |
 | Weekly limit or no readable reset | inherited profile, auto-switch off | any | `skipped reason=reset_too_far` or `no_reset` |
 | Weekly limit or no readable reset | a profile from the `.default` pointer that is not the rotator's live profile | any | `skipped reason=reset_too_far` or `no_reset` |
@@ -5281,7 +5282,13 @@ with their usual `skipped` reasons.
 | Spend limit, with a weekly reset or none | any | any | `skipped reason=reset_too_far` or `spend_limit` |
 
 A step whose `.default` pointer names the rotator's live profile uses
-`$HOME/.claude` and is treated as a `$HOME/.claude` step. An explicit
+`$HOME/.claude` and is treated as a `$HOME/.claude` step. Such a step's wait
+can end only on a rotator cycle with capacity or a login change, so it
+needs a rotator running: the built-in one (`amplihack profile rotate start`,
+checked through its pid file) or the external rotator, which holds
+`<root>/.rotator/lock`. With neither, the step fails at once as before, and
+a reading that shows another login has capacity does not change that,
+because nothing would move that login into `$HOME/.claude`. An explicit
 `$CLAUDE_CONFIG_DIR` is skipped because the rotator never changes it and it
 is the login the user chose. A spend limit is skipped because it can apply
 to a whole organisation, so another login of the same organisation would
@@ -5388,7 +5395,7 @@ amplihack.recipe.usage_limit_wait failed reason=capacity_expired: usage limit no
 | `reason=` | Written when |
 |-----------|--------------|
 | `capacity_expired` | a capacity wait reached its `max_wait` deadline |
-| `step_timeout` | a capacity wait reached its `step_timeout` deadline |
+| `step_timeout` | a wait of either kind reached its `step_timeout` deadline |
 | `already_waited` | the step hit a limit again after its one wait, of either kind |
 
 The recipe runner reads the last 40 lines of a failed step as evidence. A
