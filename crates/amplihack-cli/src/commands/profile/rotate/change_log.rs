@@ -19,7 +19,12 @@ use std::path::Path;
 const MAX_PARENT_READ: u64 = 8 * 1024;
 const MAX_PARENT_CHARS: usize = 200;
 const MAX_ID_CHARS: usize = 64;
-const SECRET_WORDS: [&str; 5] = ["key", "token", "secret", "password", "auth"];
+/// A name holding any of these is secret: `api-key`, `access_token`,
+/// `passwd`, `Authorization`.
+const SECRET_WORDS: [&str; 5] = ["key", "token", "secret", "passw", "auth"];
+/// A name with one of these as a whole part is secret: `--pass`,
+/// `db_pwd`, `?sig=`. Whole parts only, so `--bypass` is not.
+const SECRET_PARTS: [&str; 3] = ["pass", "pwd", "sig"];
 const HIDDEN: &str = "***";
 
 /// The process that made a change.
@@ -76,9 +81,13 @@ fn read_cmdline(path: &Path) -> Option<Vec<u8>> {
     Some(raw)
 }
 
-fn secret_flag(name: &str) -> bool {
+/// Whether a flag, header, variable or query parameter name names a secret.
+fn secret_name(name: &str) -> bool {
     let name = name.trim_start_matches('-').to_ascii_lowercase();
     SECRET_WORDS.iter().any(|w| name.contains(w))
+        || name
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|part| SECRET_PARTS.contains(&part))
 }
 
 fn is_env_name(n: &str) -> bool {
@@ -108,37 +117,101 @@ fn strip_userinfo(s: &str) -> String {
     out
 }
 
-/// A `Name: value` header whose name holds a secret word, such as
-/// `Authorization: Bearer ...` or `X-Api-Key: ...`, as `Name: ***`.
+/// `s` with the value of every secret query or fragment parameter, such
+/// as `?access_token=...` or `&sig=...`, replaced.
+fn hide_params(s: &str) -> String {
+    let Some(q) = s.find('?') else {
+        return s.to_string();
+    };
+    let hide = |p: &str| match p.split_once('=') {
+        Some((n, _)) if secret_name(n) => format!("{n}={HIDDEN}"),
+        _ => p.to_string(),
+    };
+    let mut out = s[..q].to_string();
+    let mut piece = String::new();
+    for c in s[q..].chars() {
+        if matches!(c, '?' | '&' | ';' | '#') {
+            out.push_str(&hide(&std::mem::take(&mut piece)));
+            out.push(c);
+        } else {
+            piece.push(c);
+        }
+    }
+    out.push_str(&hide(&piece));
+    out
+}
+
+/// A `Name: value` or `Name:value` header whose name holds a secret word,
+/// such as `Authorization: Bearer ...` or `X-Api-Key: ...`, as
+/// `Name: ***`. A URL such as `oauth://...` is not a header.
 fn secret_header(a: &str) -> Option<String> {
-    let (name, _) = a.split_once(": ")?;
-    let lower = name.to_ascii_lowercase();
+    let (name, value) = a.split_once(':')?;
     (!name.is_empty()
-        && !name.contains(char::is_whitespace)
-        && SECRET_WORDS.iter().any(|w| lower.contains(w)))
+        && !name.starts_with('-')
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && !value.starts_with("//")
+        && secret_name(name))
     .then(|| format!("{name}: {HIDDEN}"))
+}
+
+/// `user:password` credentials, as given to `curl -u` or `--user`, are
+/// hidden; a bare user name, or `-u origin` for git, is kept.
+fn creds(v: &str) -> String {
+    if v.contains(':') {
+        HIDDEN.to_string()
+    } else {
+        v.to_string()
+    }
 }
 
 /// The arguments with secrets replaced: `NAME=value`, the value of a flag
 /// whose name holds a secret word (`--flag value` and `--flag=value`), a
-/// `Name: value` header whose name holds one, and URL user information.
+/// `Name: value` header whose name holds one, `user:password` after `-u` or
+/// `--user`, the value in `-p<value>`, URL user information and secret URL
+/// query parameters.
 fn redact(args: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     let mut hide_next = false;
+    let mut creds_next = false;
     for a in args {
         if std::mem::take(&mut hide_next) {
             out.push(HIDDEN.to_string());
+            continue;
+        }
+        if std::mem::take(&mut creds_next) {
+            out.push(creds(a));
             continue;
         }
         if let Some(h) = secret_header(a) {
             out.push(h);
             continue;
         }
+        if a == "-u" || a == "--user" {
+            creds_next = true;
+            out.push(a.clone());
+            continue;
+        }
+        if let Some(v) = a.strip_prefix("--user=") {
+            out.push(format!("--user={}", creds(v)));
+            continue;
+        }
+        if !a.starts_with("--") {
+            if let Some(v) = a.strip_prefix("-u").filter(|v| !v.is_empty()) {
+                out.push(format!("-u{}", creds(v)));
+                continue;
+            }
+            if a.len() > 2 && a.starts_with("-p") {
+                out.push(format!("-p{HIDDEN}"));
+                continue;
+            }
+        }
         if a.starts_with('-') {
             let (name, value) = a
                 .split_once('=')
                 .map_or((a.as_str(), None), |(n, v)| (n, Some(v)));
-            if secret_flag(name) {
+            if secret_name(name) {
                 match value {
                     Some(_) => out.push(format!("{name}={HIDDEN}")),
                     None => {
@@ -154,7 +227,7 @@ fn redact(args: &[String]) -> Vec<String> {
             out.push(format!("{name}={HIDDEN}"));
             continue;
         }
-        out.push(strip_userinfo(a));
+        out.push(hide_params(&strip_userinfo(a)));
     }
     out
 }

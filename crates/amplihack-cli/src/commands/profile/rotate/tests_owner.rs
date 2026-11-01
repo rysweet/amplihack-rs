@@ -841,6 +841,30 @@ fn every_secret_flag_form_is_redacted() {
             &["curl", "-H", "Content-Type: json", "u"],
             "curl -H Content-Type: json u",
         ),
+        (
+            &["curl", "-H", "Authorization:Bearer sk-y", "u"],
+            "curl -H Authorization: *** u",
+        ),
+        (&["curl", "-u", "user:pw1", "u"], "curl -u *** u"),
+        (&["curl", "--user", "user:pw2", "u"], "curl --user *** u"),
+        (&["curl", "--user=user:pw3", "u"], "curl --user=*** u"),
+        (&["curl", "-uuser:pw4", "u"], "curl -u*** u"),
+        (&["git", "push", "-u", "origin"], "git push -u origin"),
+        (&["mysql", "-psecretpw", "db"], "mysql -p*** db"),
+        (&["ss", "-p", "8080"], "ss -p 8080"),
+        (&["x", "--pass", "p2"], "x --pass ***"),
+        (&["x", "--passwd", "p3"], "x --passwd ***"),
+        (&["x", "--db-pwd=p4"], "x --db-pwd=***"),
+        (&["x", "--bypass", "y"], "x --bypass y"),
+        (
+            &["curl", "https://h/x?a=1&access_token=t9#f"],
+            "curl https://h/x?a=1&access_token=***#f",
+        ),
+        (
+            &["az", "https://h/c?sv=1&sig=s9"],
+            "az https://h/c?sv=1&sig=***",
+        ),
+        (&["x", "oauth://h/x"], "x oauth://h/x"),
     ];
     for (argv, want) in cases {
         let line = change_log::line("auto-switch", "on", "off", &caller(Some(argv)));

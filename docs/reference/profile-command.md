@@ -4566,14 +4566,23 @@ which override the settings without changing them.
 The parent command line is redacted before it is written:
 
 - `NAME=value` becomes `NAME=***`.
-- The argument after a flag whose name contains `key`, `token`, `secret`,
-  `password` or `auth` becomes `***`, and so does the value in
-  `--flag=value` for such a flag.
-- A `Name: value` argument whose name contains one of those words, such as
+- A name counts as secret if it contains `key`, `token`, `secret`, `passw`
+  or `auth`, or if one of its parts is exactly `pass`, `pwd` or `sig`. So
+  `--pass` and `--db-pwd` are secret, but `--bypass` is not.
+- The argument after a flag with a secret name becomes `***`, and so does
+  the value in `--flag=value` for such a flag.
+- A `Name: value` or `Name:value` argument with a secret name, such as
   the `Authorization: Bearer ...` or `X-Api-Key: ...` header passed to
   `curl -H`, becomes `Name: ***`. Other headers, such as
   `Content-Type: json`, are left as they are.
-- `user:password@` is removed from URLs.
+- `user:password` given to `-u` or `--user` (`curl -u user:pw`,
+  `--user=user:pw`, `-uuser:pw`) becomes `***`. A value without `:`, such
+  as `git push -u origin`, is kept.
+- The value attached to `-p`, as in `mysql -psecret`, becomes `-p***`. A
+  separate argument after `-p` is kept.
+- `user:password@` is removed from URLs, and a query or fragment parameter
+  with a secret name, such as `?access_token=...` or `&sig=...`, becomes
+  `name=***`.
 
 For example, `claude --api-key sk-abc TOKEN=xyz https://u:p@h/x` is written
 as `claude --api-key *** TOKEN=*** https://h/x`. Control, newline and

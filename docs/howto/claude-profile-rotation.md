@@ -660,8 +660,9 @@ adds nothing. Threshold and exclusion changes, and the
 `AMPLIHACK_ROTATE_AUTOSTART` and `AMPLIHACK_CLAUDE_AUTO_SWITCH` variables,
 are not logged. Secrets in the parent command line are replaced by `***`
 before the line is written: `NAME=value` pairs, the values of flags such as
-`--api-key` or `--token`, headers such as `Authorization: ...`, and
-passwords in URLs. Like the rest of the log,
+`--api-key`, `--token` or `--pass`, headers such as `Authorization: ...`,
+`curl -u user:password`, `mysql -p<password>`, passwords in URLs and URL
+parameters such as `access_token=`. Like the rest of the log,
 the file is private to you (`0600`).
 
 While auto-switch is off, the rotator idles. If the live login is exhausted
