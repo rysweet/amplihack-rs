@@ -136,20 +136,21 @@ pub fn refuse_key(out: &mut Sink, l: &mut RotateLedger, to: &ProfileName, why: &
 /// The reason line for a move onto per-token profile `to`, written before
 /// the swap line, whatever the tag: a move off the API key onto a credit
 /// profile is `Tag::Out` and still bills per token. Nothing for any other
-/// move.
+/// move. The tuple is the earliest plan reset and how many plan logins the
+/// cycle could not measure.
 pub fn note_per_token(
     out: &mut Sink,
     snap: &Snap,
     tag: Option<Tag>,
     to: &ProfileName,
-    next_plan_reset: Option<i64>,
+    (next_plan_reset, unmeasured): (Option<i64>, usize),
     check: CheckNote,
 ) {
     let Some(e) = snap.overflow.iter().find(|e| &e.name == to) else {
         return;
     };
     let line = if tag == Some(Tag::In) {
-        msg::per_token_reason(to, e.tier, next_plan_reset, check)
+        msg::per_token_reason(to, e.tier, next_plan_reset, unmeasured, check)
     } else {
         msg::per_token_off_key(to, e.tier, check)
     };
@@ -279,8 +280,8 @@ pub fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
 }
 
 /// Logs, once per process, each API-key profile that `overflow=` does not
-/// mark (issue #1804) and each marked one that is not used because another
-/// comes first by name.
+/// mark (issue #1804), each marked one that is not used because another
+/// comes first by name, and a mark that holds on a detected kind.
 pub fn log_ignored(out: &mut Sink, snap: &Snap, t: i64) {
     static IGNORED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     let Ok(mut seen) = IGNORED.lock() else {
@@ -290,7 +291,8 @@ pub fn log_ignored(out: &mut Sink, snap: &Snap, t: i64) {
         .unmarked
         .iter()
         .map(msg::platform_not_marked)
-        .chain(snap.ignored.iter().map(msg::platform_not_used));
+        .chain(snap.ignored.iter().map(msg::platform_not_used))
+        .chain(snap.detected_mark.iter().map(msg::detected_mark));
     for line in lines {
         if !seen.contains(&line) {
             out.emit(t, &line);
@@ -299,17 +301,24 @@ pub fn log_ignored(out: &mut Sink, snap: &Snap, t: i64) {
     }
 }
 
-/// The ALERT key kind and line for an alerted cycle: the blocked API key
-/// with nowhere to go (issue #1700; it stays, with no swap), else no
-/// capacity, which counts the failed and exhausted readings in `others`.
+/// The ALERT key kind and line for an alerted cycle: plan logins of unknown
+/// state in `key_held` keeping work off the API key (issue #1804), the
+/// blocked API key with nowhere to go (issue #1700; it stays, with no swap),
+/// else no capacity, which counts the failed and exhausted readings in
+/// `others`.
 /// `reason` gives the block's reason, read only when needed.
 pub fn alert_line(
     snap: &Snap,
     tag: Option<Tag>,
     live: &Reading,
     others: &[(ProfileName, Reading)],
+    key_held: &[ProfileName],
     reason: impl FnOnce() -> String,
 ) -> (&'static str, String) {
+    if !key_held.is_empty() {
+        let name = live_name(&snap.live).map_or("-", ProfileName::as_str);
+        return ("key-held", msg::alert_key_held(name, key_held));
+    }
     match &snap.live {
         LiveId::Known(n) if tag == Some(Tag::On) && snap.platform_live() => {
             ("platform-blocked", msg::alert_platform_stuck(&reason(), n))

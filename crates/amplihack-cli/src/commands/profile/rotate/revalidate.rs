@@ -123,6 +123,8 @@ pub fn changed(first: &Snap, fresh: &Snap, decision: &Decision, journal: bool) -
         pin,
         ignored,
         unmarked,
+        // Only says how a mark in `overflow` was made, and only logs.
+        detected_mark: _,
         home_no_oauth,
         // A swap's target only, through `still_eligible` below.
         candidate_accounts: _,

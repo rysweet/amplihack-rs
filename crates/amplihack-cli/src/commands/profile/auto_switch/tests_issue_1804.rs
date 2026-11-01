@@ -533,11 +533,12 @@ fn a_rerun_onto_credits_gives_its_reason_and_claims_no_probe() {
     assert_eq!(got.profile, n("cred"));
     let line = got.per_token.expect("a move onto credits has a reason");
     assert!(
-        line.starts_with("per-token cred: no plan login below 100%; earliest reset ")
-            && line.ends_with(
-                " beyond overflow_wait; marked overflow tier 3 via profile overflow add; \
+        line.starts_with(
+            "per-token cred: no measured plan login below 100%, 0 not measured; earliest reset "
+        ) && line.ends_with(
+            " beyond overflow_wait; marked overflow tier 3; \
                  no spend block; auto-switch from work"
-            ),
+        ),
         "{line}"
     );
     assert!(!line.contains("probe"), "auto-switch runs no probe: {line}");
@@ -558,7 +559,7 @@ fn a_rerun_onto_a_marked_key_gives_the_login_check_it_passed() {
     assert_eq!(got.profile, n("console"));
     let line = got.per_token.expect("a move onto the key has a reason");
     assert!(
-        line.contains("marked overflow tier 10 via profile overflow add")
+        line.contains("marked overflow tier 10")
             && line.contains("login check passed (primaryApiKey set)"),
         "{line}"
     );
@@ -641,8 +642,9 @@ fn swap_check_onto_credits_writes_the_reason_to_the_rotate_log() {
     let lines = per_token_lines(&f);
     assert_eq!(lines.len(), 1, "{lines:?}");
     assert!(
-        lines[0].starts_with("per-token cred: no plan login below 100%; earliest reset ")
-            && lines[0].ends_with("; no spend block; auto-switch from work"),
+        lines[0].starts_with(
+            "per-token cred: no measured plan login below 100%, 0 not measured; earliest reset "
+        ) && lines[0].ends_with("; no spend block; auto-switch from work"),
         "{lines:?}"
     );
 }

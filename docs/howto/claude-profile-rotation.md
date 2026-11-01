@@ -907,7 +907,7 @@ amplihack profile overflow add ryan-mistt-org
 
 ```
 overflow: added ryan-mistt-org
-note: ryan-mistt-org is used only when no plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account.
+note: ryan-mistt-org is used only when no measured plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account.
 note: set a spend limit for the organization at https://claude.ai/settings/usage; the rotator is not a spending cap.
 ```
 
@@ -970,7 +970,7 @@ amplihack profile rotate start --overflow-wait 3600
 `AMPLIHACK_ROTATE_OVERFLOW_WAIT` sets the same value. Accepted values are
 whole seconds from `0` to `604800` (7 days); anything else is a usage error
 that names the flag or the variable. `0` means credits are used as soon as
-no plan login is below 100% on both windows. The live login still has to
+no measured plan login is below 100% on both windows. The live login still has to
 reach `--session-at` or `--week-at` first.
 
 Auto-switch uses the running rotator's wait: `rotate watch` records its
@@ -1018,7 +1018,7 @@ On each cycle:
    When it would write `ALERT: no profile has capacity`, it first tries the
    [plan-room swap](../reference/profile-command.md#rotate-plan-room-swap):
    a move to the plan login below 100% on both windows with the most room.
-   Only when no plan login, the live one included, has room does it look
+   Only when no measured plan login, the live one included, has room does it look
    at overflow: if the earliest plan reset is more than `--overflow-wait`
    away and an overflow profile can be used, it swaps to the first one by
    tier with `reason=overflow-in`. A failed live probe never leads to
@@ -1031,9 +1031,15 @@ On each cycle:
 A plan profile *has capacity* when its probe succeeded and its session and
 week use are both below `--session-at` and `--week-at`. It *has room* when
 its probe succeeded and both are below 100%. Credits are billed, so the
-rotator never moves onto them while any plan profile has room, and it moves
-back as soon as one has. It does not bounce: from the plan login it moves
-to, it returns to credits only once no plan login has room again.
+rotator never moves onto them while a measured plan profile has room, and it
+moves back as soon as one has. It does not bounce: from the plan login it
+moves to, it returns to credits only once no plan login has room again.
+
+Not every plan login is measured. One with a session on it, or leased,
+hosting, parked or with no account, is skipped; one whose probe failed gave
+no reading. Either may have room. Credits do not wait for these logins, and
+the `per-token` line says how many there were (`2 not measured`). The API
+key does wait: see [The order the rotator follows](#the-order-the-rotator-follows).
 
 Earlier releases moved onto credits as soon as every plan login had reached
 a threshold. They now wait until no plan login is below 100%; until then
@@ -1051,9 +1057,9 @@ profile to the same log, as a `per-token` line that ends `auto-switch from
 
 ```
 2026-10-24T09:00:05Z cycle live=work work:s=100%,w=91% personal:s=100%,w=100% ryan-mistt-org:s=100%,w=100%
-2026-10-24T09:00:05Z per-token ryan-mistt-org: no plan login below 100%; earliest reset 2026-10-24T14:00:00Z beyond overflow_wait; marked overflow tier 1 via profile overflow add; probe ok, no spend limit
+2026-10-24T09:00:05Z per-token ryan-mistt-org: no measured plan login below 100%, 0 not measured; earliest reset 2026-10-24T14:00:00Z beyond overflow_wait; marked overflow tier 1; probe ok, no spend limit
 2026-10-24T09:00:05Z swap work->ryan-mistt-org live s=100% w=91% target s=100% w=100% reason=overflow-in
-2026-10-24T09:00:05Z overflow: on ryan-mistt-org; no plan login below 100%, next plan reset 2026-10-24T14:00:00Z
+2026-10-24T09:00:05Z overflow: on ryan-mistt-org; no measured plan login below 100%, next plan reset 2026-10-24T14:00:00Z
 2026-10-24T14:10:05Z swap ryan-mistt-org->personal live s=100% w=100% target s=0% w=62% reason=overflow-out
 2026-10-24T14:10:05Z overflow: off ryan-mistt-org; back on plan profile personal
 ```
@@ -1691,12 +1697,12 @@ API-key profile. See
 2. Plan logins past a threshold but below 100% on both windows
    (`reason=plan-room`): those with session use below `--session-at` first,
    then the most weekly room, then the most session room.
-3. Only when no plan login is below 100% on both windows: marked credit
-   overflow profiles, tiers 1 to 9.
-4. The marked API-key profile, tier 10.
+3. Only when no measured plan login is below 100% on both windows: marked
+   credit overflow profiles, tiers 1 to 9.
+4. The marked API-key profile, tier 10, only with every plan login measured.
 
 The rotator moves onto the API key only when it is marked, every plan login
-is at 100% of its session or week, no credit overflow profile can be used,
+was measured and is at 100% of its session or week, no credit overflow profile can be used,
 the earliest plan reset is further away than `--overflow-wait` and the login
 check passes. If the reset is closer, it waits. A failed live probe never
 moves work onto the API key, and when every probe fails no reset is known,
@@ -1704,10 +1710,23 @@ so nothing moves unless you set `--overflow-unknown-reset 1`. The log names
 the reason before the swap:
 
 ```
-per-token api-key: no plan login below 100%; earliest reset 2026-11-01T02:14:00Z beyond overflow_wait; marked overflow tier 10 via profile overflow add; login check passed (primaryApiKey set)
+per-token api-key: no measured plan login below 100%, 0 not measured; earliest reset 2026-11-01T02:14:00Z beyond overflow_wait; marked overflow tier 10; login check passed (primaryApiKey set)
 swap iivanovich->api-key live s=100% w=61% target s=0% w=0% reason=overflow-in
 moved ~/.claude onto API key profile api-key (billed per token)
 ```
+
+A plan login that was skipped as busy or failed its probe may have room, so
+it keeps the key out, and the rotator writes one ALERT naming it:
+
+```
+ALERT: API key not used live=iivanovich: no measured plan login has room, but these were not measured and may have: ccapstone
+```
+
+A login in the `amplihack profile auto-switch exclude` list does not count,
+so excluding a login that is never available lets the key be used. If `overflow=` marks a profile that was
+detected as API-key (no `kind set`, for example a credit account whose login
+file lost its OAuth login), the first cycle logs one `warning:` line saying
+so, with the command that removes the mark.
 
 If the login check fails, nothing moves, `~/.claude` is unchanged and the
 log reads:
@@ -1738,7 +1757,8 @@ moved ~/.claude off API key profile api-key to ryan-mistt
 ```
 
 It never moves from a plan login to credits, or to the API key, while a
-plan login has room below 100%.
+plan login with a usage reading has room below 100%. A plan login with no
+reading may have room, so it keeps auto-switch off the API key too.
 
 ### See when work is on the API key
 

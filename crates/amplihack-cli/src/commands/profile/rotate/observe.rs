@@ -40,6 +40,10 @@ pub struct Snap {
     /// API-key profiles that `overflow=` does not mark (issue #1804): never
     /// candidates, never probed, never plan capacity or plan room.
     pub unmarked: Vec<ProfileName>,
+    /// The marked API-key profile, when its kind is detected and no
+    /// `kind set` confirmed it: its mark may have been made for a credit
+    /// account (issue #1804).
+    pub detected_mark: Option<ProfileName>,
     /// `~/.claude/.credentials.json` is a readable login without OAuth (API key).
     pub home_no_oauth: bool,
     /// Each candidate's account; step 6 compares the target's (#1721).
@@ -76,6 +80,33 @@ impl Snap {
     /// no-capacity file: the marked one, or an adopted live one.
     pub fn shown_platform(&self) -> Option<&ProfileName> {
         self.adopted_platform().or(self.platform())
+    }
+
+    /// Plan logins skipped as busy, so not measured this cycle: each may
+    /// have room. Excluded, login-less and non-OAuth profiles are not plan
+    /// logins that could be used, and overflow and API-key profiles never
+    /// were (issue #1804).
+    pub fn unmeasured_plan(&self) -> Vec<ProfileName> {
+        self.skips
+            .iter()
+            .filter(|(_, s)| {
+                matches!(
+                    s,
+                    Skip::SessionRunning
+                        | Skip::Leased
+                        | Skip::Hosting
+                        | Skip::Parked
+                        | Skip::NoAccount
+                )
+            })
+            .map(|(n, _)| n)
+            .filter(|n| {
+                !self.overflow.iter().any(|e| &e.name == *n)
+                    && !self.unmarked.contains(n)
+                    && !self.ignored.contains(n)
+            })
+            .cloned()
+            .collect()
     }
 
     /// The overflow entries the decision uses: [`Self::overflow`], with an
@@ -118,7 +149,8 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
     // others share its credential, and an unmarked one has no consent to
     // per-token billing (issue #1804). None of them is probed or treated as
     // a plan login, so a synthetic 0/0 never counts as plan room.
-    let platforms = kind::Ctx::load(&ctx.store, Some(&ctx.home)).platform_profiles(&ctx.store);
+    let kinds = kind::Ctx::load(&ctx.store, Some(&ctx.home));
+    let platforms = kinds.platform_profiles(&ctx.store);
     let marked = overflow
         .iter()
         .find(|e| e.tier == PLATFORM_TIER)
@@ -133,6 +165,9 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         .into_iter()
         .filter(|p| marked != Some(p) && !ignored.contains(p))
         .collect();
+    let detected_mark = marked
+        .filter(|n| kinds.resolve_kind(&ctx.store, n).source != kind::KindSource::Override)
+        .cloned();
     Ok(Snap {
         account: Account::of_dir(&ctx.home).map(|a| a.key().to_string()),
         candidate_accounts: super::revalidate::accounts(&ctx.store, &candidates),
@@ -145,6 +180,7 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         pin: pin::read(&ctx.rs),
         ignored,
         unmarked,
+        detected_mark,
         home_no_oauth,
     })
 }
@@ -202,6 +238,10 @@ pub struct Measurement {
     pub new_blocks: Vec<ProfileName>,
     /// The earliest plan reset, for the `overflow:` log lines.
     pub next_plan_reset: Option<i64>,
+    /// Plan logins whose state is unknown this cycle.
+    pub unknown_plan: Vec<ProfileName>,
+    /// The unknown logins, when only they kept work off the API key.
+    pub key_held: Vec<ProfileName>,
     /// When measuring started, epoch seconds.
     pub measured_at: i64,
     /// The probes decided on, for step 6 to re-decide a swap whose target
@@ -264,11 +304,13 @@ pub(super) fn decide_measured(
     };
     let t = now();
     let overflow = snap.decision_overflow();
+    let unmeasured_plan = snap.unmeasured_plan();
     let verdict = decide_overflow(&OverflowInput {
         settings: &ctx.settings,
         live_name,
         live: &probe,
         candidates: &measured,
+        unmeasured_plan: &unmeasured_plan,
         overflow: &overflow,
         blocks: &blocks,
         platform_block: platform_block.as_ref(),
@@ -314,6 +356,8 @@ pub(super) fn decide_measured(
         tag,
         new_blocks: verdict.new_blocks,
         next_plan_reset: verdict.next_plan_reset,
+        unknown_plan: verdict.unknown_plan,
+        key_held: verdict.key_held,
         measured_at,
     })
 }

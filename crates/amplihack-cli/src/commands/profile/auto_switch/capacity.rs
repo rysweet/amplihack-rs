@@ -183,7 +183,9 @@ fn gate_view(e: Option<&Evidence>, g: &Gate, now: i64) -> Option<(Option<i64>, b
 /// and the earliest plan reset is far enough away ([`gate_view`], the
 /// selection's helpers, not the auto-switch threshold),
 /// and the profile has no spend block ([`overflow_usable`]; its own plan
-/// reading does not count, as in the selection and the rotator). The
+/// reading does not count, as in the selection and the rotator). The API
+/// key also needs a view of every plan profile: one with none may have room,
+/// and the selection holds the key back for it. The
 /// rotator also forces `ok` while the live login is on an overflow profile
 /// (`refresh_from_rotation`). Pure.
 pub fn compute(
@@ -213,10 +215,16 @@ pub fn compute(
         let earliest_plan_reset = views.iter().filter_map(|v| v.0).min();
         !views.iter().any(|v| v.1) && g.far(earliest_plan_reset, now)
     };
+    let every_plan_known = overflow.gate.is_some_and(|g| {
+        eligible
+            .iter()
+            .all(|p| gate_view(evidence.get(p.as_str()), &g, now).is_some())
+    });
     let overflow_usable = || {
         overflow.gate.is_some_and(gate_allows)
             && overflow.order.iter().any(|o| {
-                profiles.contains(o)
+                (every_plan_known || Some(o) != overflow.platform)
+                    && profiles.contains(o)
                     && !cfg.exclude.contains(o)
                     && overflow_usable(o.as_str(), overflow.blocked)
             })

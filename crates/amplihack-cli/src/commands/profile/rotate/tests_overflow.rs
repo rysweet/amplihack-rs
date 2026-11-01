@@ -195,6 +195,7 @@ impl<'a> Case<'a> {
             overflow: &overflow,
             blocks: &self.blocks,
             platform_block: None,
+            unmeasured_plan: &[],
             swapped_at: self.swapped_at,
             now: NOW,
         })

@@ -13,7 +13,7 @@
 //! - `cycle::Ctx.key_check: key_check::KeyCheckFn`, defaulting to
 //!   `key_check::reachable`.
 //! - Pass (T3, D4): the swap runs. Before the `swap` line the log has one
-//!   `per-token api-key: no plan login below 100%; earliest reset <time> beyond overflow_wait; marked overflow tier 10 via profile overflow
+//!   `per-token api-key: no measured plan login below 100%, 0 not measured; earliest reset <time> beyond overflow_wait; marked overflow tier 10 via profile overflow
 //!   add; login check passed (<detail>)` line, and after it `moved
 //!   ~/.claude onto API key profile api-key (billed per token)`.
 //! - Fail (T4, D3): no swap, no journal, `~/.claude` unchanged, no
@@ -46,8 +46,10 @@ const KEY: &str = "api-key";
 const WORK: &str = "work";
 
 const MOVED: &str = "moved ~/.claude onto API key profile api-key (billed per token)";
-const REASON_HEAD: &str = "per-token api-key: no plan login below 100%; earliest reset ";
-const REASON_TAIL: &str = " beyond overflow_wait; marked overflow tier 10 via profile overflow add; login check passed (fake)";
+const REASON_HEAD: &str =
+    "per-token api-key: no measured plan login below 100%, 0 not measured; earliest reset ";
+const REASON_TAIL: &str =
+    " beyond overflow_wait; marked overflow tier 10; login check passed (fake)";
 const REFUSED: &str = "key_check_refused api-key: fake failure";
 const ALERT: &str =
     "ALERT: API key profile api-key failed its login check (fake failure); not moving onto it";
@@ -738,9 +740,9 @@ fn a_move_onto_credits_writes_the_per_token_line_with_its_tier_and_no_login_chec
     let pos = |pred: &dyn Fn(&String) -> bool| log.iter().position(pred);
     let reason = pos(&|l| {
         l.starts_with(
-            "per-token team-credits: no plan login below 100%; earliest reset ",
+            "per-token team-credits: no measured plan login below 100%, 0 not measured; earliest reset ",
         ) && l.ends_with(
-            " beyond overflow_wait; marked overflow tier 2 via profile overflow add; probe ok, no spend limit",
+            " beyond overflow_wait; marked overflow tier 2; probe ok, no spend limit",
         )
     })
     .unwrap_or_else(|| panic!("no per-token line: {log:?}"));
@@ -748,11 +750,54 @@ fn a_move_onto_credits_writes_the_per_token_line_with_its_tier_and_no_login_chec
         pos(&|l| l.starts_with("swap work->team-credits") && l.ends_with("reason=overflow-in"))
             .unwrap_or_else(|| panic!("no swap line: {log:?}"));
     let on = pos(&|l| {
-        l.starts_with("overflow: on team-credits; no plan login below 100%, next plan reset ")
+        l.starts_with(
+            "overflow: on team-credits; no measured plan login below 100%, next plan reset ",
+        )
     })
     .unwrap_or_else(|| panic!("no overflow: on line: {log:?}"));
     assert!(reason < swap && swap < on, "{log:?}");
     assert!(!log.iter().any(|l| l.starts_with("moved ")), "{log:?}");
+}
+
+/// Crusty round 13, through a whole cycle: every measured plan login is at
+/// 100% and the API key is marked, but `busy` has a session on it, so it is
+/// skipped and may have room. The key stays out and the ALERT names it.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_plan_login_with_a_session_on_it_keeps_the_rotator_off_the_api_key() {
+    let f = fx();
+    f.store.add(&n("busy")).unwrap();
+    login(&f.root.join("busy").join(CREDS));
+    let mut c = f.ctx(|_| panic!("no login check: the key must not be a target"));
+    c.scan = |_| Liveness::Known(BTreeSet::from(["busy".to_string()]));
+    let got = run_cycle(&mut c, Mode::Watch).unwrap();
+    let log = f.logged();
+    assert_eq!(got, CycleOutcome::Alerted, "{log:?}");
+    assert!(
+        log.iter()
+            .any(|l| l.starts_with("ALERT: API key not used live=work: ")
+                && l.ends_with("may have: busy")),
+        "{log:?}"
+    );
+    assert!(!log.iter().any(|l| l.starts_with("per-token ")), "{log:?}");
+    assert!(!log.iter().any(|l| l.starts_with("swap ")), "{log:?}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_mark_on_a_detected_key_is_reported_and_a_kind_set_one_is_not() {
+    let f = fx();
+    let c = f.ctx(|_| panic!("no login check"));
+    let state = crate::commands::profile::auto_switch::kit::State::new(&f.root).unwrap();
+    let snap = super::observe::snapshot(&c, &state).unwrap();
+    assert_eq!(snap.detected_mark, Some(n(KEY)));
+    private(
+        &f.root.join(".auto-switch"),
+        "enabled=off\noverflow=api-key\nkind=api-key:platform\n",
+    );
+    let snap = super::observe::snapshot(&c, &state).unwrap();
+    assert_eq!(snap.overflow.len(), 1, "{:?}", snap.overflow);
+    assert_eq!(snap.detected_mark, None);
 }
 
 /// The rotator with a corrupt `.auto-switch`: `tiers_detail` gives no tiers,

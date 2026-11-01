@@ -6,9 +6,11 @@
 //!
 //! "Room" is weaker than capacity: a login has room while both of its
 //! windows are below 100%, whatever `--session-at` and `--week-at` say.
-//! Only a measured reading has room. A failed probe, an unmeasured login
-//! and an exhausted one never do, so a probe failure can never open
-//! per-token billing. The rotator and auto-switch both use [`room`].
+//! Only a measured reading has room, so a login that failed its probe or
+//! was never measured is not a move target for room. That does not make it
+//! a login without room: its state is unknown, and `overflow::decide_overflow`
+//! keeps the API key out while any plan login is unknown. The rotator and
+//! auto-switch both use [`room`].
 
 use super::decide::{Measured, Reading};
 use super::settings::Settings;

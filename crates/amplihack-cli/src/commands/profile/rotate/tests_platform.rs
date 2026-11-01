@@ -177,6 +177,7 @@ impl Case {
             overflow: &overflow,
             blocks: &self.blocks,
             platform_block: self.platform_block.as_ref(),
+            unmeasured_plan: &[],
             swapped_at: self.swapped_at,
             now: NOW,
         })
@@ -358,9 +359,9 @@ fn a_usable_credit_profile_that_is_live_stays_and_never_moves_to_the_api_key() {
     assert_eq!(v.tag, Some(Tag::On));
 }
 
-/// Every combination: the API key is chosen only when no plan login has
-/// capacity, no credit profile can be used, the key is not blocked and the
-/// gate allows overflow.
+/// Every combination: the API key is chosen only when every plan login is
+/// measured and none has room, no credit profile can be used, the key is not
+/// blocked and the gate allows overflow. A failed plan probe is unknown.
 #[test]
 fn the_api_key_is_chosen_only_as_the_last_resort() {
     let plans = [
@@ -389,7 +390,7 @@ fn the_api_key_is_chosen_only_as_the_last_resort() {
                 let v = c.run();
                 let to_key =
                     matches!(&v.decision, Decision::Swap { to, .. } if to == &n("console"));
-                let want = *pn != "capacity" && credit != "usable" && !key_blocked;
+                let want = *pn == "exhausted" && credit != "usable" && !key_blocked;
                 assert_eq!(
                     to_key, want,
                     "plan {pn}, credit {credit}, blocked {key_blocked}: {v:?}"

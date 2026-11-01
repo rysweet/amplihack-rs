@@ -294,7 +294,7 @@ fn an_api_key_profile_is_marked_with_overflow_add() {
     );
     assert!(
         s.contains(
-            "note: console is billed per token; it is used only when no plan login is below 100% on both windows, no credit profile can be used, the earliest plan reset is more than --overflow-wait away and its login check passes."
+            "note: console is billed per token; it is used only when every plan login is measured and none is below 100% on both windows, no credit profile can be used, the earliest plan reset is more than --overflow-wait away and its login check passes."
         ),
         "{s}"
     );
@@ -521,7 +521,7 @@ fn rotate_moves_onto_the_api_key_and_off_it_at_the_next_cycle() {
         "{log}"
     );
     assert!(
-        log.contains("marked overflow tier 10 via profile overflow add; login check passed (primaryApiKey set)"),
+        log.contains("marked overflow tier 10; login check passed (primaryApiKey set)"),
         "{log}"
     );
     assert!(
@@ -615,8 +615,8 @@ fn rotate_moves_off_the_api_key_to_credits_when_no_plan_login_has_capacity() {
     let log = f.log();
     let reason = log
         .find(
-            "per-token extra: no plan login below 100%; leaving the API key, credits cost less; \
-             marked overflow tier 1 via profile overflow add; probe ok, no spend limit",
+            "per-token extra: no plan login took the move; leaving the API key, credits cost less; \
+             marked overflow tier 1; probe ok, no spend limit",
         )
         .unwrap_or_else(|| panic!("no per-token line: {log}"));
     let swap = log.find("swap console->extra").expect("swap line");

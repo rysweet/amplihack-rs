@@ -260,11 +260,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     }
     let m = match checked.verdict {
         Verdict::Proceed => m,
-        // Issue #1721: only the target changed, and the probes already taken
-        // chose another; from here the cycle is that one. `ctx.failed_live`
-        // stays: a target-only change leaves the live probe, live name and
-        // overflow entries as they were, so `retry.failed == m.failed`. If
-        // the retry rule is ever widened, assign `ctx.failed_live` here.
+        // Issue #1721: only the target changed, and the probes taken chose
+        // another; the cycle is now that one. `ctx.failed_live` stays: the
+        // live probe, live name and overflow entries are as they were, so
+        // `retry.failed == m.failed`. Widen the retry rule, assign it here.
         Verdict::Reconsidered { m, fresh, line } => {
             out.emit(t, &line);
             first = *fresh;
@@ -294,6 +293,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         mut tag,
         new_blocks,
         next_plan_reset,
+        unknown_plan,
+        key_held,
         measured_at,
         ..
     } = m;
@@ -322,8 +323,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             };
             let from = match swap::swap(&ctx.store, &ctx.rs, &ctx.home, source, &to, t) {
                 Ok(from) => from,
-                // A refusal repeats every cycle until a person acts: one
-                // ALERT per reason, and the cycle is recorded.
+                // A refusal repeats each cycle: one ALERT per reason.
                 Err(e @ ProfileError::RotateRefused(_)) => {
                     // Issue #1700: a login without OAuth is refused once per
                     // profile, keyed by the profile it would have made live.
@@ -342,7 +342,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             };
             swapped = Some([to.clone(), from.clone()]);
             let target = reading_of(&others, &to);
-            note_per_token(&mut out, &first, tag, &to, next_plan_reset, check);
+            let seen = (next_plan_reset, unknown_plan.len());
+            note_per_token(&mut out, &first, tag, &to, seen, check);
             out.emit(now(), &msg::swap(&from, &to, &live, &target, reason));
             let (off_key, onto_key) = (first.platform_live(), first.platform() == Some(&to));
             note_move(
@@ -374,7 +375,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             note_live(&mut l, &first, t);
             let name = live_name(&first.live);
             let reason = || platform_block_reason(ctx);
-            let (kind, line) = alert_line(&first, tag, &live, &others, reason);
+            let (kind, line) = alert_line(&first, tag, &live, &others, &key_held, reason);
             alert_once(&mut out, &mut l, &alert_key(kind, name), t, &line);
             CycleOutcome::Alerted
         }

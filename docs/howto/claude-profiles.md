@@ -1550,7 +1550,7 @@ is your consent to per-token billing:
 ```
 $ amplihack profile overflow add api-key
 overflow: added api-key (api-key tier, tier 10)
-note: api-key is billed per token; it is used only when no plan login is below 100% on both windows, no credit profile can be used, the earliest plan reset is more than --overflow-wait away and its login check passes.
+note: api-key is billed per token; it is used only when every plan login is measured and none is below 100% on both windows, no credit profile can be used, the earliest plan reset is more than --overflow-wait away and its login check passes.
 ```
 
 `overflow list` shows whether it is marked:
@@ -1606,15 +1606,16 @@ When accounts run out of quota, work moves in this order:
    both windows, ranked by the
    [plan-room swap](../reference/profile-command.md#rotate-plan-room-swap):
    session below the threshold first, then the most weekly room;
-3. only when no plan login is below 100% on both windows: a marked credit
+3. only when no measured plan login is below 100% on both windows: a marked credit
    overflow profile, by tier, once the earliest plan reset is further away
    than the overflow wait;
-4. the marked API-key profile (tier 10), once no credit overflow profile can
-   be used, the earliest plan reset is still further away than the wait and
-   its login check passes.
+4. the marked API-key profile (tier 10), once every plan login is measured,
+   no credit overflow profile can be used, the earliest plan reset is still
+   further away than the wait and its login check passes.
 
-Credit profiles are billed too, so they wait for the same condition as the
-API key. Earlier releases used them as soon as every plan login had reached
+Credit profiles are billed too, so they wait until no measured plan login
+has room. Only the API key also waits for a plan login that could not be
+measured (a session on it, or a failed probe), with an ALERT that names it. Earlier releases used them as soon as every plan login had reached
 its threshold.
 
 [Auto-switch](#switch-accounts-automatically) and the

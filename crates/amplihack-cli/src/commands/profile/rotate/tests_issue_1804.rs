@@ -109,6 +109,7 @@ struct Case {
     candidates: Vec<Measured>,
     overflow: Vec<OverflowEntry>,
     blocks: BTreeMap<String, OverflowBlock>,
+    unmeasured: Vec<ProfileName>,
 }
 
 impl Case {
@@ -120,6 +121,7 @@ impl Case {
             candidates: Vec::new(),
             overflow: Vec::new(),
             blocks: BTreeMap::new(),
+            unmeasured: Vec::new(),
         }
     }
 
@@ -148,6 +150,12 @@ impl Case {
         self
     }
 
+    /// A plan login skipped as busy: not measured this cycle.
+    fn busy(mut self, name: &str) -> Self {
+        self.unmeasured.push(n(name));
+        self
+    }
+
     fn spend_blocked(mut self, name: &str) -> Self {
         self.blocks.insert(
             name.into(),
@@ -170,6 +178,7 @@ impl Case {
             overflow: &self.overflow,
             blocks: &self.blocks,
             platform_block: None,
+            unmeasured_plan: &self.unmeasured,
             swapped_at: Some(NOW - 60),
             now: NOW,
         })
@@ -574,12 +583,74 @@ fn the_api_key_is_not_used_while_the_live_login_still_has_room() {
 }
 
 #[test]
-fn a_failed_plan_probe_counts_as_no_room_for_the_api_key() {
+fn a_failed_plan_probe_keeps_the_api_key_out_and_names_the_login() {
     let v = Case::new("work", exhausted(FAR))
         .cand("spare", Probed::failed())
         .marked_key()
         .run();
+    assert_eq!(v.decision, Decision::Alert, "{v:?}");
+    assert_eq!(v.key_held, [n("spare")]);
+}
+
+#[test]
+fn a_busy_plan_login_keeps_the_api_key_out_and_names_the_login() {
+    // Crusty round 13: `work` at 100%, `ccapstone` with a session on it at
+    // s=11% w=92%. It is skipped, so nothing here knows it has room.
+    let v = Case::new("work", exhausted(FAR))
+        .cand("spare", exhausted(FAR))
+        .busy("ccapstone")
+        .marked_key()
+        .run();
+    assert_eq!(v.decision, Decision::Alert, "{v:?}");
+    assert_eq!(v.tag, None);
+    assert_eq!(v.key_held, [n("ccapstone")]);
+}
+
+#[test]
+fn every_plan_login_known_lets_the_api_key_in_and_raises_no_key_held() {
+    let v = Case::new("work", exhausted(FAR))
+        .cand("spare", exhausted(FAR))
+        .marked_key()
+        .run();
     assert_eq!(v.decision, swap("api-key", Reason::OverflowIn), "{v:?}");
+    assert!(v.key_held.is_empty() && v.unknown_plan.is_empty(), "{v:?}");
+}
+
+#[test]
+fn an_unknown_plan_login_does_not_name_itself_when_the_gate_stopped_the_key() {
+    // The wait said no, so the unknown login is not why the key was unused.
+    let v = Case::new("work", exhausted(NEAR))
+        .cand("spare", exhausted(NEAR))
+        .busy("ccapstone")
+        .marked_key()
+        .run();
+    assert_eq!(v.decision, Decision::Alert, "{v:?}");
+    assert!(v.key_held.is_empty(), "{v:?}");
+}
+
+#[test]
+fn credit_tiers_do_not_wait_for_an_unknown_plan_login_and_report_the_count() {
+    let v = Case::new("work", exhausted(FAR))
+        .cand("spare", Probed::failed())
+        .busy("ccapstone")
+        .credits(measured(10.0, 10.0, FAR))
+        .marked_key()
+        .run();
+    assert_eq!(v.decision, swap("credits", Reason::OverflowIn), "{v:?}");
+    assert_eq!(v.unknown_plan, [n("ccapstone"), n("spare")]);
+    assert!(v.key_held.is_empty(), "{v:?}");
+}
+
+#[test]
+fn blocked_credits_do_not_move_to_the_api_key_past_a_busy_plan_login() {
+    let mut c = Case::new("credits", measured(10.0, 10.0, FAR))
+        .cand("work", exhausted(FAR))
+        .busy("ccapstone")
+        .marked_key()
+        .spend_blocked("credits");
+    c.overflow.push(OverflowEntry::new(n("credits"), 1));
+    let v = c.run();
+    assert_ne!(v.decision, swap("api-key", Reason::OverflowIn), "{v:?}");
 }
 
 #[test]

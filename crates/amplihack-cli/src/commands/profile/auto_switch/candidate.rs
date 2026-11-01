@@ -235,6 +235,18 @@ pub fn earliest_plan_reset(
         .min()
 }
 
+/// How many plan profiles have no reading: their state is unknown, so they
+/// may have room. Each keeps the API key out of step 5 of
+/// [`select_with_overflow`], whether or not it could be moved to; the
+/// `exclude` list is how an operator leaves one out of this count.
+pub fn unread_plan(pool: &Pool<'_>, ov: &OverflowPool<'_>) -> usize {
+    pool.profiles
+        .iter()
+        .filter(|p| !pool.exclude.contains(p) && ov.is_plan(p))
+        .filter(|p| !pool.readings.contains_key(p.as_str()))
+        .count()
+}
+
 /// [`select`] with overflow profiles. With a gate, "plan capacity" is the
 /// gate's test ([`Gate::plan_capacity`], the rotator's `--session-at` and
 /// `--week-at`), so auto-switch and the rotator agree on when money is
@@ -255,7 +267,8 @@ pub fn earliest_plan_reset(
 ///    profile at all: the best plan profile under the auto-switch threshold
 ///    ([`select`]), else the one with room that beats `current`, else `None`.
 /// 5. The first overflow profile in `ov.order` that is not `current`, not
-///    excluded, not blocked and `eligible`, when the gate's wait holds.
+///    excluded, not blocked and `eligible`, when the gate's wait holds. The
+///    API key also needs a reading for every plan profile ([`unread_plan`]).
 /// 6. Otherwise step 4's plan profile, which still beats an ALERT.
 ///
 /// An overflow profile's own plan reading plays no part in steps 3 and 5
@@ -266,8 +279,8 @@ pub fn earliest_plan_reset(
 /// With kinds unknown it is `None`. An API-key profile ([`OverflowPool::not_plan`])
 /// is never one of the plan profiles, and a session on an unmarked one never
 /// moves onto the API-key tier.
-/// A plan profile with no reading never counts as capacity or room in steps
-/// 4 and 5; if it is eligible, step 1 has already picked it.
+/// A plan profile with no reading never counts as capacity or room in step
+/// 4; if it is eligible, step 1 has already picked it.
 pub fn select_with_overflow<'a>(
     pool: &Pool<'a>,
     ov: &OverflowPool<'a>,
@@ -345,8 +358,8 @@ pub fn select_with_overflow<'a>(
         .collect();
     let current_reading = (!on_overflow).then(|| pool.readings.get(current)).flatten();
     let earliest = earliest_plan_reset(pool, ov, &gate, current);
-    // Issue #1804: per-token profiles only when no plan profile, the current
-    // one included, has room. A missing reading is no room.
+    // Issue #1804: per-token profiles only when no plan profile with a
+    // reading, the current one included, has room.
     let plan_room = plan
         .iter()
         .filter_map(|p| pool.readings.get(p.as_str()))
@@ -361,11 +374,12 @@ pub fn select_with_overflow<'a>(
         return fallback().or_else(|| with_room().filter(beats_current));
     }
     let on_key = ov.not_plan.iter().any(|k| k.as_str() == current);
+    let unread = unread_plan(pool, ov) > 0;
     if gate.far(earliest, pool.now)
         && let Some(o) = ov.order.iter().find(|o| {
             let n = o.as_str();
             n != current
-                && !(on_key && Some(*o) == ov.platform)
+                && !((on_key || unread) && Some(*o) == ov.platform)
                 && pool.profiles.contains(o)
                 && !pool.exclude.contains(o)
                 && overflow_usable(n, ov.blocked)

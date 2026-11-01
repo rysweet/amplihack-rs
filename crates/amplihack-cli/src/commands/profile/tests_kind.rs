@@ -23,7 +23,7 @@
 //!   reads overrides from `<root>/.auto-switch`, the ledger's `live` from
 //!   the rotate ledger and the files through `rotate::identify`.
 //! - `platform_profiles(&ProfileStore, home) -> Vec<ProfileName>`, sorted.
-//! - `profile::overflow::tiers(&ProfileStore, home) -> Vec<OverflowEntry>`:
+//! - `profile::overflow::tiers_detail(&ProfileStore, home)`, whose first list is:
 //!   the `overflow=` entries without API-key profiles, then one
 //!   `OverflowEntry::platform` for the first API-key profile by name that
 //!   `overflow=` names (issue #1804: marking is the consent to per-token

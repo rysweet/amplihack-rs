@@ -30,37 +30,47 @@ pub enum CheckNote {
 
 /// Why a move onto per-token profile `to` was allowed (issue #1804), written
 /// before the swap line. `earliest` is the earliest plan reset, `None` when
-/// no reading reports one. Everything here is fixed text, a tier or a time,
-/// so nothing from a profile file can reach the log.
+/// no reading reports one, and `unmeasured` counts the plan logins it could
+/// not see, so the line claims only what was checked. Everything here is
+/// fixed text, a number or a time, so nothing from a profile file can reach
+/// the log.
 pub fn per_token_reason(
     to: &ProfileName,
     tier: u8,
     earliest: Option<i64>,
+    unmeasured: usize,
     check: CheckNote,
 ) -> String {
     let gate = earliest.map_or_else(
         || "reset unknown".to_string(),
         |at| format!("earliest reset {} beyond overflow_wait", timestamp(at)),
     );
-    per_token_line(to, tier, &gate, check)
+    let plan = format!("no measured plan login below 100%, {unmeasured} not measured");
+    per_token_line(to, tier, &plan, &gate, check)
 }
 
 /// Why a move off the API key onto per-token profile `to` was allowed. It
-/// passes no wait gate: credits cost less, so the move is made at once.
+/// passes no wait gate: credits cost less, so the move is made at once. It
+/// says nothing of plan room: a plan login may have room and still be
+/// refused as a target, for example with a session on it.
 pub fn per_token_off_key(to: &ProfileName, tier: u8, check: CheckNote) -> String {
-    per_token_line(to, tier, "leaving the API key, credits cost less", check)
+    let plan = "no plan login took the move";
+    per_token_line(
+        to,
+        tier,
+        plan,
+        "leaving the API key, credits cost less",
+        check,
+    )
 }
 
-fn per_token_line(to: &ProfileName, tier: u8, gate: &str, check: CheckNote) -> String {
+fn per_token_line(to: &ProfileName, tier: u8, plan: &str, gate: &str, check: CheckNote) -> String {
     let check = match check {
         CheckNote::Key(detail) => format!("login check passed ({detail})"),
         CheckNote::Credit => "probe ok, no spend limit".to_string(),
         CheckNote::NoSpendBlock => "no spend block".to_string(),
     };
-    format!(
-        "per-token {to}: no plan login below 100%; {gate}; \
-         marked overflow tier {tier} via profile overflow add; {check}"
-    )
+    format!("per-token {to}: {plan}; {gate}; marked overflow tier {tier}; {check}")
 }
 
 /// After an `overflow-in` swap onto API-key profile `to` (issue #1700).
@@ -105,6 +115,27 @@ pub fn platform_not_used(name: &ProfileName) -> String {
     format!("skip: API-key profile {name} is marked but not used; another comes first by name")
 }
 
+/// The marked API-key profile's kind came from detection. The mark may have
+/// been made for a credit account, and on a key it allows per-token billing.
+pub fn detected_mark(name: &ProfileName) -> String {
+    format!(
+        "warning: {name} is marked in overflow= and detected as an API-key profile; \
+         that mark allows per-token billing on the API key, at tier 10, with no spend \
+         limit. If you did not mean that, run: amplihack profile overflow remove {name}"
+    )
+}
+
+/// The API key would have been used, but `unknown` plan logins may have
+/// room: skipped as busy or failed their probe.
+pub fn alert_key_held(live: &str, unknown: &[ProfileName]) -> String {
+    let names: Vec<&str> = unknown.iter().map(ProfileName::as_str).collect();
+    format!(
+        "ALERT: API key not used live={live}: no measured plan login has room, \
+         but these were not measured and may have: {}",
+        names.join(", ")
+    )
+}
+
 /// `<time>` for a known reset, else `unknown`.
 fn reset(at: Option<i64>) -> String {
     at.map_or_else(|| "unknown".to_string(), timestamp)
@@ -113,7 +144,7 @@ fn reset(at: Option<i64>) -> String {
 /// After an `overflow-in` swap onto `to`.
 pub fn onto_overflow(to: &ProfileName, next_reset: Option<i64>) -> String {
     format!(
-        "overflow: on {to}; no plan login below 100%, next plan reset {}",
+        "overflow: on {to}; no measured plan login below 100%, next plan reset {}",
         reset(next_reset)
     )
 }
@@ -122,7 +153,7 @@ pub fn onto_overflow(to: &ProfileName, next_reset: Option<i64>) -> String {
 /// record as on credits.
 pub fn stay_on_overflow(live: &ProfileName, next_reset: Option<i64>) -> String {
     format!(
-        "overflow: staying on {live}; no plan login below 100%, next plan reset {}",
+        "overflow: staying on {live}; no measured plan login below 100%, next plan reset {}",
         reset(next_reset)
     )
 }

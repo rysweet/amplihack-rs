@@ -7,8 +7,8 @@
 //!   `CheckNote::{Key(&'static str), Credit}`.
 //! - `per_token_reason(to: &ProfileName, tier: u8, earliest: Option<i64>, check:
 //!   CheckNote) -> String`, one line:
-//!   `per-token <to>: no plan login below 100%; <gate>; marked overflow
-//!   tier <tier> via profile overflow add; <check>`, where `<gate>` is
+//!   `per-token <to>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow
+//!   tier <tier>; <check>`, where `<gate>` is
 //!   `earliest reset <RFC3339> beyond overflow_wait` or `reset unknown`
 //!   and `<check>` is `login check passed (<detail>)` or `probe ok, no
 //!   spend limit`. It takes no string read from a profile file.
@@ -53,12 +53,13 @@ fn the_api_key_line_names_the_rule_gate_mark_and_check_in_order() {
         &n("api-key"),
         PLATFORM_TIER,
         Some(at),
+        0,
         CheckNote::Key("primaryApiKey set"),
     );
     assert_eq!(
         line,
         format!(
-            "per-token api-key: no plan login below 100%; earliest reset {} beyond overflow_wait; marked overflow tier 10 via profile overflow add; \
+            "per-token api-key: no measured plan login below 100%, 0 not measured; earliest reset {} beyond overflow_wait; marked overflow tier 10; \
              login check passed (primaryApiKey set)",
             timestamp(at)
         )
@@ -71,12 +72,13 @@ fn an_unknown_reset_is_named_as_such() {
         &n("api-key"),
         PLATFORM_TIER,
         None,
+        0,
         CheckNote::Key("apiKeyHelper set"),
     );
     assert_eq!(
         line,
-        "per-token api-key: no plan login below 100%; reset unknown; marked overflow \
-         tier 10 via profile overflow add; login check passed (apiKeyHelper set)"
+        "per-token api-key: no measured plan login below 100%, 0 not measured; reset unknown; marked overflow \
+         tier 10; login check passed (apiKeyHelper set)"
     );
     assert!(!line.contains("beyond overflow_wait"), "{line}");
 }
@@ -84,11 +86,11 @@ fn an_unknown_reset_is_named_as_such() {
 #[test]
 fn a_credit_line_names_its_tier_and_the_probe_not_a_login_check() {
     let at = NOW + 3600;
-    let line = per_token_reason(&n("team-credits"), 2, Some(at), CheckNote::Credit);
+    let line = per_token_reason(&n("team-credits"), 2, Some(at), 0, CheckNote::Credit);
     assert_eq!(
         line,
         format!(
-            "per-token team-credits: no plan login below 100%; earliest reset {} beyond overflow_wait; marked overflow tier 2 via profile overflow add; \
+            "per-token team-credits: no measured plan login below 100%, 0 not measured; earliest reset {} beyond overflow_wait; marked overflow tier 2; \
              probe ok, no spend limit",
             timestamp(at)
         )
@@ -97,10 +99,47 @@ fn a_credit_line_names_its_tier_and_the_probe_not_a_login_check() {
 }
 
 #[test]
+fn the_per_token_line_counts_the_plan_logins_it_could_not_see() {
+    let line = per_token_reason(&n("credits"), 1, None, 2, CheckNote::Credit);
+    assert!(
+        line.starts_with("per-token credits: no measured plan login below 100%, 2 not measured; "),
+        "{line}"
+    );
+}
+
+#[test]
+fn a_move_off_the_key_makes_no_claim_about_plan_room() {
+    // A plan login with room can be refused as a target (a session on it),
+    // so this line must not say that none has room.
+    let line = per_token_off_key(&n("credits"), 1, CheckNote::Credit);
+    assert!(!line.contains("below 100%"), "{line}");
+}
+
+#[test]
+fn the_key_held_alert_names_the_logins_not_measured() {
+    assert_eq!(
+        msg::alert_key_held("work", &[n("ccapstone"), n("spare")]),
+        "ALERT: API key not used live=work: no measured plan login has room, \
+         but these were not measured and may have: ccapstone, spare"
+    );
+}
+
+#[test]
+fn a_detected_mark_says_what_it_allows_and_how_to_undo_it() {
+    let line = msg::detected_mark(&n("old-credits"));
+    assert!(line.contains("detected as an API-key profile"), "{line}");
+    assert!(line.contains("per-token billing"), "{line}");
+    assert!(
+        line.ends_with("amplihack profile overflow remove old-credits"),
+        "{line}"
+    );
+}
+
+#[test]
 fn the_per_token_line_is_a_single_line() {
     for check in [CheckNote::Key("ANTHROPIC_API_KEY set"), CheckNote::Credit] {
         for gate in [Some(NOW), None] {
-            let line = per_token_reason(&n("api-key"), PLATFORM_TIER, gate, check);
+            let line = per_token_reason(&n("api-key"), PLATFORM_TIER, gate, 0, check);
             assert!(!line.contains('\n') && !line.contains('\r'), "{line:?}");
         }
     }
@@ -132,13 +171,13 @@ fn the_refusal_lines_use_the_documented_keys() {
 fn the_overflow_on_line_states_the_room_rule() {
     assert_eq!(
         msg::onto_overflow(&n("extra"), None),
-        "overflow: on extra; no plan login below 100%, next plan reset unknown"
+        "overflow: on extra; no measured plan login below 100%, next plan reset unknown"
     );
     let at = NOW + 3600;
     assert_eq!(
         msg::onto_overflow(&n("extra"), Some(at)),
         format!(
-            "overflow: on extra; no plan login below 100%, next plan reset {}",
+            "overflow: on extra; no measured plan login below 100%, next plan reset {}",
             timestamp(at)
         )
     );
@@ -148,7 +187,7 @@ fn the_overflow_on_line_states_the_room_rule() {
 fn the_staying_line_states_the_room_rule() {
     assert_eq!(
         msg::stay_on_overflow(&n("extra"), None),
-        "overflow: staying on extra; no plan login below 100%, next plan reset unknown"
+        "overflow: staying on extra; no measured plan login below 100%, next plan reset unknown"
     );
     assert!(!msg::stay_on_overflow(&n("extra"), Some(NOW)).contains("has capacity"));
 }
@@ -174,6 +213,7 @@ fn snap_on_unmarked_key() -> Snap {
         pin: PinState::None,
         ignored: Vec::new(),
         unmarked: vec![n("api-key")],
+        detected_mark: None,
         home_no_oauth: true,
         candidate_accounts: Vec::new(),
     }
@@ -263,6 +303,7 @@ fn decide_on_unmarked(candidates: &[(&str, Probed)]) -> super::overflow::Verdict
         overflow: &overflow,
         blocks: &BTreeMap::new(),
         platform_block: None,
+        unmeasured_plan: &[],
         swapped_at: Some(NOW - 60),
         now: NOW,
     })
@@ -297,8 +338,8 @@ fn with_no_plan_room_the_rotator_holds_the_unmarked_key_and_names_no_target() {
 fn a_move_off_the_api_key_onto_credits_names_no_wait_gate_it_did_not_pass() {
     assert_eq!(
         per_token_off_key(&n("team-credits"), 2, CheckNote::Credit),
-        "per-token team-credits: no plan login below 100%; \
+        "per-token team-credits: no plan login took the move; \
          leaving the API key, credits cost less; \
-         marked overflow tier 2 via profile overflow add; probe ok, no spend limit"
+         marked overflow tier 2; probe ok, no spend limit"
     );
 }

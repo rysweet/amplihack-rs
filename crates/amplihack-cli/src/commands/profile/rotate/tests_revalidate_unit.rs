@@ -38,6 +38,7 @@ fn base() -> Snap {
         pin: PinState::None,
         ignored: Vec::new(),
         unmarked: Vec::new(),
+        detected_mark: None,
         home_no_oauth: false,
         candidate_accounts: ["spare", "spare2", "third"]
             .iter()
@@ -78,6 +79,33 @@ fn skipped(mut s: Snap, name: &str, why: Skip) -> Snap {
     s.candidates.retain(|c| c != &n(name));
     s.skips.push((n(name), why));
     s
+}
+
+// --- `unmeasured_plan` --------------------------------------------------------
+
+#[test]
+fn only_busy_plan_logins_count_as_unmeasured() {
+    let mut s = base();
+    for (name, why) in [
+        ("running", Skip::SessionRunning),
+        ("leased", Skip::Leased),
+        ("hosting", Skip::Hosting),
+        ("parked", Skip::Parked),
+        ("noacct", Skip::NoAccount),
+        ("excluded", Skip::Excluded),
+        ("nologin", Skip::NoLogin),
+        ("notoauth", Skip::NotOAuth),
+        ("busycredit", Skip::SessionRunning),
+        ("busykey", Skip::SessionRunning),
+        ("extrakey", Skip::SessionRunning),
+    ] {
+        s.skips.push((n(name), why));
+    }
+    s.overflow = vec![OverflowEntry::new(n("busycredit"), 1)];
+    s.unmarked = vec![n("busykey")];
+    s.ignored = vec![n("extrakey")];
+    let want = ["running", "leased", "hosting", "parked", "noacct"].map(n);
+    assert_eq!(s.unmeasured_plan(), want);
 }
 
 // --- `changed` ---------------------------------------------------------------

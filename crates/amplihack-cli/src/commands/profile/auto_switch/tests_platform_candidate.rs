@@ -235,12 +235,19 @@ fn a_spend_blocked_credit_session_does_not_move_to_the_api_key_while_a_plan_prof
 }
 
 #[test]
-fn a_missing_plan_reading_counts_as_no_room() {
+fn a_missing_plan_reading_keeps_work_off_the_api_key() {
     // An eligible profile with no reading is step 1's: it costs nothing. One
-    // that cannot be used must not hold work off the API key as "room".
+    // that cannot be used is unknown, not empty: it may have room, so the
+    // API key waits, as it does for the rotator.
     let c = Case::all_plan_out().no_credits().without("spare");
     assert_eq!(c.pick("work").as_deref(), Some("spare"));
-    assert_eq!(c.pick_without("work", "spare").as_deref(), Some("console"));
+    assert_eq!(c.pick_without("work", "spare"), None);
+}
+
+#[test]
+fn a_missing_plan_reading_does_not_hold_back_credits() {
+    let c = Case::all_plan_out().without("spare");
+    assert_eq!(c.pick_without("work", "spare").as_deref(), Some("cred"));
 }
 
 /// `root` with `work` (an OAuth profile) and `console` (an API-key

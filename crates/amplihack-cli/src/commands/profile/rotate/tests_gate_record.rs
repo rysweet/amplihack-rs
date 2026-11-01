@@ -389,6 +389,7 @@ fn rotator_spends(s: &Settings, live: f64, spare: f64, resets_in: i64) -> bool {
         overflow: &[OverflowEntry::new(n("cred"), 1)],
         blocks: &BTreeMap::new(),
         platform_block: None,
+        unmeasured_plan: &[],
         swapped_at: None,
         now: NOW,
     });
@@ -490,6 +491,7 @@ fn rotator_returns(s: &Settings, session: f64, week: f64) -> bool {
         overflow: &[OverflowEntry::new(n("cred"), 1)],
         blocks: &BTreeMap::new(),
         platform_block: None,
+        unmeasured_plan: &[],
         swapped_at: None,
         now: NOW,
     });

@@ -112,7 +112,7 @@ fn the_key_error_table_is_the_classifiers_table() {
 #[test]
 fn the_documented_log_lines_and_errors_are_present() {
     for s in [
-        "per-token <name>: no plan login below 100%; <gate>; marked overflow tier <N> via profile overflow add; <check>",
+        "per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>",
         "moved ~/.claude onto API key profile <name> (billed per token)",
         "key_check_refused <name>: <reason>",
         "ALERT: API key profile <name> failed its login check (<reason>); not moving onto it",

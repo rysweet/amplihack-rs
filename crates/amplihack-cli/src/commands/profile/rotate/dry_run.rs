@@ -88,6 +88,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         note,
         new_blocks,
         tag,
+        key_held,
         ..
     } = measure_and_decide(ctx, &binary, &snap)?;
     let name = live_name(&snap.live);
@@ -113,7 +114,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         },
         Decision::Alert => {
             let reason = || platform_block_reason(ctx);
-            let (_, line) = alert_line(&snap, tag, &live, &others, reason);
+            let (_, line) = alert_line(&snap, tag, &live, &others, &key_held, reason);
             out.emit(
                 0,
                 &format!(

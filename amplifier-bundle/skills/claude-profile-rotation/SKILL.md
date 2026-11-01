@@ -151,8 +151,8 @@ directory.
   `amplihack profile overflow add <name>`; the mark is consent to per-token
   billing. Do not mark it without asking. The rotator uses it last (tier 10):
   plan logins with capacity, then plan logins below 100% (`plan-room`), then
-  credit overflow, then the API key, and only when no plan login is below
-  100% on both windows, the earliest plan reset is further away than
+  credit overflow, then the API key, and only when every plan login was
+  measured, none is below 100% on both windows, the earliest plan reset is further away than
   `--overflow-wait` and its login check passes. It moves `~/.claude` off it
   on the first cycle after a plan login has capacity or room, ignoring
   `--hold`. Auto-switch uses it only for a
@@ -197,7 +197,7 @@ grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log | 
 
 An account with usage credits turned on keeps working past its plan limit,
 and the extra use is billed to the credits. Marked as an *overflow profile*,
-the rotator moves work onto it only when no plan login, the live one
+the rotator moves work onto it only when no measured plan login, the live one
 included, is below 100% on both windows, and the next plan reset is known
 and more than `--overflow-wait` seconds away (default 1800). Until then the
 plan-room swap (`reason=plan-room`) moves `~/.claude` to the plan login with

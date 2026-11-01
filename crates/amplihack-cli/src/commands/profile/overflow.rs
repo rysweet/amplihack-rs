@@ -243,14 +243,14 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                 None if key => {
                     println!("overflow: added {name} (api-key tier, tier {PLATFORM_TIER})");
                     println!(
-                        "note: {name} is billed per token; it is used only when no plan login is below 100% on both windows, no credit profile can be used, the earliest plan reset is more than --overflow-wait away and its login check passes."
+                        "note: {name} is billed per token; it is used only when every plan login is measured and none is below 100% on both windows, no credit profile can be used, the earliest plan reset is more than --overflow-wait away and its login check passes."
                     );
                 }
                 Some(_) if key => println!("overflow: {name} is already marked (api-key tier)"),
                 None => {
                     println!("overflow: added {name} (tier {now_tier})");
                     println!(
-                        "note: {name} is used only when no plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account."
+                        "note: {name} is used only when no measured plan login is below 100% on both windows and the earliest plan reset is more than --overflow-wait away; work on it is billed to that account."
                     );
                 }
                 Some(old) if old == now_tier => {

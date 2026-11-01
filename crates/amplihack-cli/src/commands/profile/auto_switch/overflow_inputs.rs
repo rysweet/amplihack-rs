@@ -8,7 +8,7 @@
 //! unknown), a running rotator without a usable record, or an invalid
 //! variable means no overflow profile is chosen.
 //!
-//! Issue #1700: the order is the rotator's (`overflow::tiers`): the credit
+//! Issue #1700: the order is the rotator's (`overflow::tiers_of`): the credit
 //! profiles, then the first API-key profile, whose block counts as one of
 //! the spend blocks. A corrupt `.auto-switch` gives no order at all.
 //! Issue #1804: only an API-key profile that `overflow=` marks is in it, and

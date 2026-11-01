@@ -372,9 +372,9 @@ fn t3_a_marked_api_key_with_a_key_is_moved_in_with_the_per_token_line_first() {
     let at = |pred: &dyn Fn(&str) -> bool| bodies.iter().position(|b| pred(b));
     let reason = at(&|b| {
         b.starts_with(
-            "per-token console: no plan login below 100%; earliest reset ",
+            "per-token console: no measured plan login below 100%, 0 not measured; earliest reset ",
         ) && b.ends_with(
-            " beyond overflow_wait; marked overflow tier 10 via profile overflow add; login check passed (primaryApiKey set)",
+            " beyond overflow_wait; marked overflow tier 10; login check passed (primaryApiKey set)",
         )
     })
     .unwrap_or_else(|| panic!("no per-token line: {log}"));
@@ -468,9 +468,9 @@ fn overflow_add_marks_an_api_key_at_tier_10_with_the_cost_note() {
     );
     assert!(
         s.lines().any(|l| l
-            == "note: console is billed per token; it is used only when no plan login is \
-                below 100% on both windows, no credit profile can be used, the earliest plan \
-                reset is more than --overflow-wait away and its login check passes."),
+            == "note: console is billed per token; it is used only when every plan login is \
+                measured and none is below 100% on both windows, no credit profile can be used, \
+                the earliest plan reset is more than --overflow-wait away and its login check passes."),
         "{s}"
     );
     let list = stdout(&f.ok(&["profile", "overflow", "list"]));

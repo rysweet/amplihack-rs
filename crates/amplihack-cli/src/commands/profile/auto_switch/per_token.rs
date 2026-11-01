@@ -3,7 +3,7 @@
 //! swap. It goes to the rotate log, beside the rotator's own lines, as well
 //! as to stderr, which for a recipe step ends with the step.
 
-use super::candidate::{Pool, earliest_plan_reset};
+use super::candidate::{Pool, earliest_plan_reset, unread_plan};
 use super::config::Config;
 use super::overflow_inputs::OverflowInputs;
 use crate::commands::profile::name::ProfileName;
@@ -44,7 +44,7 @@ pub fn reason(
         let earliest = ov
             .gate
             .and_then(|g| earliest_plan_reset(pool, &ov, &g, current));
-        rotate::per_token_reason(to, tier, earliest, check)
+        rotate::per_token_reason(to, tier, earliest, unread_plan(pool, &ov), check)
     };
     Some(format!("{line}; auto-switch from {current}"))
 }

@@ -302,7 +302,7 @@ fn moves_onto_overflow_when_every_plan_login_is_out() {
     );
     assert_eq!(ino(&f.home_login()), Some(f.extra_ino));
     assert!(
-        s.contains("overflow: on extra; no plan login below 100%"),
+        s.contains("overflow: on extra; no measured plan login below 100%"),
         "{s}"
     );
     f.assert_each_login_once();
@@ -342,7 +342,9 @@ fn an_unknown_plan_reset_spends_only_with_the_opt_in() {
     let s = stdout(&f.ok(&["profile", "rotate", "--overflow-unknown-reset", "1"]));
     assert!(s.contains("reason=overflow-in"), "{s}");
     assert!(
-        s.contains("overflow: on extra; no plan login below 100%, next plan reset unknown"),
+        s.contains(
+            "overflow: on extra; no measured plan login below 100%, next plan reset unknown"
+        ),
         "{s}"
     );
     assert_eq!(ino(&f.home_login()), Some(f.extra_ino));
