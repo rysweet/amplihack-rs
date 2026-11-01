@@ -1759,11 +1759,30 @@ moved ~/.claude off API key profile api-key to ryan-mistt
 It never moves from a plan login to credits, or to the API key, while a
 plan login with a usage reading has room below 100%. A plan login with no
 reading may have room, so it keeps auto-switch off the API key too, and
-auto-switch writes the same ALERT to the rotate log and stderr, ending in
-`; auto-switch from <profile>`. As for the rotator, a profile in the
-`exclude` list does not count, and neither does one with no login file or no
-OAuth login: nothing can measure it. The rotator's live login counts, though
-its login file is in `~/.claude`.
+auto-switch writes its own form of the ALERT:
+
+```
+ALERT: API key not used session=work: no measured plan login has room, but these were not measured and may have: ccapstone; auto-switch from work
+```
+
+`session=` names the account of the session that ran out, which is not the
+login in `~/.claude`; only the rotator's lines use `live=`. The line goes to
+stderr on every exhausted launch and rerun, and to the rotate log once for
+each set of unmeasured logins. It is written to the log again when that set
+changes, or after every plan login has been measured.
+
+As for the rotator, a profile in the `exclude` list does not count, and
+neither does one with no login file or no OAuth login: nothing can measure
+it. The rotator's live login counts, though its login file is in
+`~/.claude`. Auto-switch cannot measure that login itself: the status line
+records only a session's own profile, and `profile usage` probes each
+profile's own directory. It uses the rotator's measurement instead: once the
+rotator's capacity file lists the live login at or over the threshold, that
+login no longer keeps auto-switch off the key. Until then, which is the case
+when no rotator is running or the rotator found room on it, the live login
+keeps the key out until the rotator moves `~/.claude` to another login. To
+let auto-switch use the key in that state, add the live login to the
+`exclude` list.
 
 ### See when work is on the API key
 

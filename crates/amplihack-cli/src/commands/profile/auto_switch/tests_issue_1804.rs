@@ -355,7 +355,9 @@ fn a_login_the_rotator_skips_does_not_hold_back_the_key() {
 }
 
 /// The rotator's live profile has no file of its own: the login is in
-/// `~/.claude`, so it is a plan login and may have room.
+/// `~/.claude`, so it is a plan login and may have room. With no capacity
+/// file from the rotator saying it is full, auto-switch has no reading of
+/// it (see `held::the_rotators_reading_of_its_live_login_is_used`).
 #[test]
 fn the_rotators_live_login_still_holds_back_the_key() {
     let now = 2_000_000_000;
@@ -402,17 +404,20 @@ fn a_held_key_names_the_login_that_held_it() {
         exclude: &[],
         now,
     };
-    let line = super::per_token::key_held(&pool, &inputs, "work", |p| p.as_str() != "spare");
+    let held = super::per_token::key_held(&pool, &inputs, "work", |p| p.as_str() != "spare");
+    assert_eq!(held.unread, [n("spare")]);
+    // `session=`, not `live=`: `work` is the session's account, and `live=`
+    // in the rotate log means the login in `~/.claude`.
     assert_eq!(
-        line.as_deref(),
+        held.line.as_deref(),
         Some(
-            "ALERT: API key not used live=work: no measured plan login has room, \
+            "ALERT: API key not used session=work: no measured plan login has room, \
              but these were not measured and may have: spare; auto-switch from work"
         )
     );
     // Step 1 takes an eligible unread login: nothing was held back.
     assert_eq!(
-        super::per_token::key_held(&pool, &inputs, "work", |_| true),
+        super::per_token::key_held(&pool, &inputs, "work", |_| true).line,
         None
     );
     // A plan reset inside the wait: the key would not be used anyway.
@@ -424,7 +429,7 @@ fn a_held_key_names_the_login_that_held_it() {
         ..pool
     };
     assert_eq!(
-        super::per_token::key_held(&pool, &inputs, "work", |p| p.as_str() != "spare"),
+        super::per_token::key_held(&pool, &inputs, "work", |p| p.as_str() != "spare").line,
         None
     );
 }
@@ -799,3 +804,6 @@ fn the_rotators_capacity_write_reads_the_home_it_is_given() {
     assert!(file.contains("\"work\""), "{file}");
     assert!(!file.contains("ghost"), "ghost is an API key here: {file}");
 }
+
+#[path = "tests_issue_1804_held.rs"]
+mod held;

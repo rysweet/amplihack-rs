@@ -106,8 +106,9 @@ pub struct OverflowPool<'a> {
     /// login: only `order` makes one a target.
     pub not_plan: &'a [ProfileName],
     /// Plan-kind profiles the rotator skips as `no login` or `not oauth`
-    /// (`rotate::login_unusable`), so nothing can ever measure them: they
-    /// never make a missing reading "unknown" ([`unread_plan`]).
+    /// (`rotate::login_unusable`), so nothing can ever measure them, and the
+    /// rotator's live login when its capacity file lists that login as full:
+    /// they never make a missing reading "unknown" ([`unread_plan`]).
     pub no_login: &'a [ProfileName],
     /// Kinds could not be read, so any profile may bill per token: nothing
     /// is selected.

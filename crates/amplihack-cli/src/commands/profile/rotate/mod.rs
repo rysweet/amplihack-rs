@@ -92,7 +92,7 @@ pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
 pub use super::rotate_args::{RotateAction, RotateArgs, TuneFlags};
 pub use candidates::login_unusable;
-pub use overflow_msg::{CheckNote, alert_key_held, per_token_off_key, per_token_reason};
+pub use overflow_msg::{CheckNote, alert_key_held_session, per_token_off_key, per_token_reason};
 pub use overflow_record::append_to_log;
 
 #[cfg(all(test, unix))]

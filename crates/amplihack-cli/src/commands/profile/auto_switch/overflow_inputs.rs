@@ -16,9 +16,11 @@
 //! Kinds that cannot be read mean no profile is known to be free of per-token
 //! billing, so `kinds_unknown` stops every selection and capacity write.
 //! `no_login` lists the profiles the rotator skips as `no login` or
-//! `not oauth`, so a missing reading means the same thing to both.
+//! `not oauth`, so a missing reading means the same thing to both, and the
+//! rotator's live login when the rotator found it full.
 
 use super::candidate::OverflowPool;
+use super::capacity::ROTATE_WRITER;
 use super::config::Config;
 use super::fsx;
 use super::state::CREDS;
@@ -29,6 +31,8 @@ use crate::commands::profile::rotate::ledger::RotateState;
 use crate::commands::profile::rotate::{self, CheckNote};
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd;
+use amplihack_utils::claude_capacity as cap;
+use chrono::DateTime;
 use std::path::Path;
 
 /// Whether a move onto `name` can find a login: its login file is in its
@@ -70,21 +74,57 @@ struct Order {
 
 /// The profiles whose missing reading says nothing, because the rotator's
 /// login tests skip them (`rotate::login_unusable`). The rotator's live
-/// profile stays out of the list: its login is in `~/.claude`, so its own
+/// profile stays out of that test: its login is in `~/.claude`, so its own
 /// directory has none. macOS keeps logins in the Keychain, so a missing file
-/// proves nothing there and the list is empty, which only holds the key back.
-fn no_login_of(store: &ProfileStore, kinds: &Ctx) -> Option<Vec<ProfileName>> {
-    if cfg!(target_os = "macos") {
-        return Some(Vec::new());
-    }
-    let names = store.list().ok()?;
-    let names = names.iter().filter_map(|n| ProfileName::parse(n).ok());
-    Some(
+/// proves nothing there and that test lists nothing, which only holds the
+/// key back.
+///
+/// Auto-switch cannot read the live login itself: the status line records
+/// only a session's own `CLAUDE_CONFIG_DIR` profile and `profile usage`
+/// probes each profile's own directory. The rotator does read it, and lists
+/// it in the capacity file when it is at or over the threshold; then it is
+/// measured, with no room, and is listed here too ([`rotator_found_full`]).
+/// Otherwise it stays unread and holds the key back until the rotator moves
+/// it, a reading is recorded for it, or it is excluded.
+fn no_login_of(
+    root: &Path,
+    store: &ProfileStore,
+    kinds: &Ctx,
+    now: i64,
+) -> Option<Vec<ProfileName>> {
+    let live = kinds.ledger_live();
+    let mut skipped: Vec<ProfileName> = if cfg!(target_os = "macos") {
+        Vec::new()
+    } else {
+        let names = store.list().ok()?;
+        let names = names.iter().filter_map(|n| ProfileName::parse(n).ok());
         names
-            .filter(|n| kinds.ledger_live() != Some(n))
+            .filter(|n| live != Some(n))
             .filter(|n| rotate::login_unusable(store, kinds, n))
-            .collect(),
-    )
+            .collect()
+    };
+    if let Some(live) = live
+        && rotator_found_full(root, live, now)
+    {
+        skipped.push(live.clone());
+    }
+    Some(skipped)
+}
+
+/// Whether the rotator's capacity file, still in force at `now`, lists
+/// `live` at or over the threshold. Only a file the rotator wrote counts: no
+/// other writer can read the login in `~/.claude`. A missing, unreadable or
+/// expired file, or one from another writer, says nothing, so the login
+/// stays unread.
+fn rotator_found_full(root: &Path, live: &ProfileName, now: i64) -> bool {
+    let Some(at) = DateTime::from_timestamp(now, 0) else {
+        return false;
+    };
+    cap::read_at(root, at).is_some_and(|f| {
+        f.writer == ROTATE_WRITER
+            && cap::effective_state(&f, at) != cap::State::Ok
+            && f.over.iter().any(|o| o == live.as_str())
+    })
 }
 
 /// The overflow order for `cfg` under `root`, by the rotator's rule
@@ -95,7 +135,7 @@ fn no_login_of(store: &ProfileStore, kinds: &Ctx) -> Option<Vec<ProfileName>> {
 /// listed. Parses `.claude.json`
 /// only for a profile with no login file, so this stays cheap on the status
 /// line.
-fn order_of(root: &Path, cfg: &Config, home: Option<&Path>) -> Option<Order> {
+fn order_of(root: &Path, cfg: &Config, home: Option<&Path>, now: i64) -> Option<Order> {
     let store = ProfileStore::new(root.to_path_buf());
     let kinds = Ctx::load(&store, home);
     if kinds.corrupt() {
@@ -109,7 +149,7 @@ fn order_of(root: &Path, cfg: &Config, home: Option<&Path>) -> Option<Order> {
         .map(|e| e.name.clone());
     // Only the API key waits for unread logins: skip the reads without one.
     let no_login = match platform {
-        Some(_) => no_login_of(&store, &kinds)?,
+        Some(_) => no_login_of(root, &store, &kinds, now)?,
         None => Vec::new(),
     };
     Some(Order {
@@ -131,7 +171,7 @@ impl OverflowInputs {
     /// [`Self::load`] with the home directory given, for a caller that holds
     /// its own.
     pub fn load_at(root: &Path, cfg: &Config, now: i64, home: Option<&Path>) -> Self {
-        let Some(o) = order_of(root, cfg, home) else {
+        let Some(o) = order_of(root, cfg, home, now) else {
             return Self::unknown();
         };
         if o.order.is_empty() {
@@ -151,7 +191,7 @@ impl OverflowInputs {
         now: i64,
     ) -> Self {
         // Tests: no home, so nothing outside the root is read.
-        let Some(o) = order_of(root, cfg, None) else {
+        let Some(o) = order_of(root, cfg, None, now) else {
             return Self::unknown();
         };
         if o.order.is_empty() {

@@ -1833,10 +1833,19 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
      spent while it exists). A plan profile with no reading, or whose probe
      failed, counts as having no room. The API-key profile also waits for
      every plan profile with no reading, which may have room: it is passed
-     over, and a launch or rerun writes `ALERT: API key not used`, ending in
-     `; auto-switch from <profile>`. Excluded profiles do not count, and
-     neither do those the rotator skips as `no login` or `not oauth`, which
-     nothing can measure. A current plan profile at 82%, or at
+     over, and a launch or rerun writes `ALERT: API key not used
+     session=<account>: …; auto-switch from <profile>` to stderr every time
+     and to the rotate log once per set of unmeasured profiles (again once
+     the set changes or every plan profile has a reading). `session=` is the
+     account of the session that ran out; `live=`, in the rotator's form of
+     the line, is the login in `~/.claude`. Excluded profiles do not count,
+     and neither do those the rotator skips as `no login` or `not oauth`,
+     which nothing can measure. The rotator's live login counts until the
+     rotator's capacity file, still in force, lists it at or over the
+     threshold: auto-switch has no reading of its own for a login in
+     `~/.claude`. Until then only the rotator moving `~/.claude`, or adding
+     that login to `exclude`, lets the key be used. A current plan profile
+     at 82%, or at
      97%, still has room: the rotator would not leave it for overflow, so
      the session stays on it rather than spend, and it cannot move onto
      overflow only to move straight back;
@@ -2517,6 +2526,7 @@ profile and never appears in `profile list`.
 | `statusline/<name>.json` | The profile's original `statusLine` object. |
 | `rerun/` | Buffered stdout of supervised steps, `<pid>-<n>.out`; see [Usage-limit reruns](#usage-limit-reruns) for how long each is kept. |
 | `capacity.json` | Whether any account has capacity left; see [Capacity file](#capacity-file). Unlike the other state files, it accepts unknown fields and is capped at 16 KiB. |
+| `key-held` | The unmeasured plan profiles named by the last `ALERT: API key not used session=…` that auto-switch wrote to the rotate log, one name per line, so the same set is logged once. Removed once every plan profile has a reading. Not JSON. |
 | `notice/<session>` | The last capacity state shown in a Claude session; see [Notice records](#notice-records). Unlike the other state files, it is a bare word, not JSON, and is read up to 64 bytes. |
 
 Apart from `capacity.json` and `notice/<session>`, every state file has

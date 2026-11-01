@@ -82,7 +82,7 @@ pub fn nested_candidate(
     let picked = candidate::select_with_overflow(&pool, &overflow.pool(), current, eligible);
     if picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
         let held = per_token::key_held(&pool, &overflow, current, eligible);
-        per_token::record(&state.root, held.as_deref());
+        per_token::record_key_held(state, &held);
     }
     let profile = picked?.clone();
     // Read again for the detail the reason line gives. A key that went away

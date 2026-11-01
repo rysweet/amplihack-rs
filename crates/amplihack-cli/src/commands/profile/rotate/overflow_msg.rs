@@ -126,11 +126,23 @@ pub fn detected_mark(name: &ProfileName) -> String {
 }
 
 /// The API key would have been used, but `unknown` plan logins may have
-/// room: skipped as busy or failed their probe.
+/// room: skipped as busy or failed their probe. `live` is the login in
+/// `~/.claude`.
 pub fn alert_key_held(live: &str, unknown: &[ProfileName]) -> String {
+    key_held_line(&format!("live={live}"), unknown)
+}
+
+/// [`alert_key_held`] for auto-switch, which held the key back for the
+/// session whose account is `session`. That account is not the login in
+/// `~/.claude`, so the line says `session=`, never `live=`.
+pub fn alert_key_held_session(session: &str, unknown: &[ProfileName]) -> String {
+    key_held_line(&format!("session={session}"), unknown)
+}
+
+fn key_held_line(whose: &str, unknown: &[ProfileName]) -> String {
     let names: Vec<&str> = unknown.iter().map(ProfileName::as_str).collect();
     format!(
-        "ALERT: API key not used live={live}: no measured plan login has room, \
+        "ALERT: API key not used {whose}: no measured plan login has room, \
          but these were not measured and may have: {}",
         names.join(", ")
     )

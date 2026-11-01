@@ -8,6 +8,7 @@ use super::candidate::{
 };
 use super::config::Config;
 use super::overflow_inputs::OverflowInputs;
+use super::state::State;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::PLATFORM_TIER;
 use crate::commands::profile::rotate::{self, CheckNote};
@@ -51,33 +52,76 @@ pub fn reason(
     Some(format!("{line}; auto-switch from {current}"))
 }
 
-/// The rotator's `ALERT: API key not used` line when unread plan profiles are
-/// the only thing that kept this selection off the API key, so the operator
-/// can see why it was not used. `None` otherwise: asked again as if those
-/// profiles were not there, the selection would still not pick the key.
+/// Why the API key was held back for a session, from [`key_held`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct KeyHeld {
+    /// The plan logins with no reading. Empty when there is no marked key.
+    pub unread: Vec<ProfileName>,
+    /// `ALERT: API key not used session=<current>: …` when those logins were
+    /// the only thing that kept this selection off the API key. `None`
+    /// otherwise: asked again as if they were not there, the selection would
+    /// still not pick the key.
+    pub line: Option<String>,
+}
+
+/// The rotator's `ALERT: API key not used` line, in auto-switch's form:
+/// `session=` names the account of the session that ran out, not the login
+/// in `~/.claude`, which is what `live=` means in the rotate log.
 pub fn key_held(
     pool: &Pool<'_>,
     inputs: &OverflowInputs,
     current: &str,
     eligible: impl Fn(&ProfileName) -> bool,
-) -> Option<String> {
+) -> KeyHeld {
     let ov = inputs.pool();
-    let key = ov.platform?;
+    let Some(key) = ov.platform else {
+        return KeyHeld::default();
+    };
     let unread: Vec<ProfileName> = unread_plan(pool, &ov).into_iter().cloned().collect();
     if unread.is_empty() {
-        return None;
+        return KeyHeld::default();
     }
     let ignored: Vec<ProfileName> = ov.no_login.iter().chain(&unread).cloned().collect();
     let unheld = OverflowPool {
         no_login: &ignored,
         ..inputs.pool()
     };
-    (select_with_overflow(pool, &unheld, current, eligible) == Some(key)).then(|| {
+    let line = (select_with_overflow(pool, &unheld, current, eligible) == Some(key)).then(|| {
         format!(
             "{}; auto-switch from {current}",
-            rotate::alert_key_held(current, &unread)
+            rotate::alert_key_held_session(current, &unread)
         )
-    })
+    });
+    KeyHeld { unread, line }
+}
+
+/// Writes the held-key ALERT to stderr every time, and to the rotate log
+/// once per set of unread logins, as the rotator's `alert_once` does: every
+/// exhausted launch and rerun asks, and a fleet of recipe steps would
+/// otherwise fill the log with one incident. The last set written is kept in
+/// the auto-switch state directory; it is forgotten once no plan login is
+/// unread, so the next held set is written again. A marker that cannot be
+/// read or written only means the line may be written again.
+pub fn record_key_held(state: &State, held: &KeyHeld) {
+    if held.unread.is_empty() {
+        if let Err(e) = state.clear_key_held() {
+            tracing::debug!(op = "clear key-held marker", error = %e);
+        }
+        return;
+    }
+    let Some(line) = held.line.as_deref() else {
+        return;
+    };
+    eprintln!("amplihack: {line}");
+    let set: Vec<&str> = held.unread.iter().map(ProfileName::as_str).collect();
+    let set = set.join("\n");
+    if state.load_key_held().as_deref() == Some(set.as_str()) {
+        return;
+    }
+    rotate::append_to_log(&state.root, line);
+    if let Err(e) = state.save_key_held(&set) {
+        tracing::debug!(op = "save key-held marker", error = %e);
+    }
 }
 
 /// Writes `line`, if there is one, to stderr and to the rotate log.
