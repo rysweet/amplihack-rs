@@ -3,7 +3,7 @@
 Use this guide to inspect, override, and troubleshoot where workflow runtime
 output is written.
 
-Updated: 2026-06-19
+Updated: 2026-11-01
 
 ## Contents
 
@@ -24,39 +24,51 @@ amplihack recipe run default-workflow \
   -c repo_path=.
 ```
 
-The workflow creates a per-run runtime root outside the commit worktree, sets
-`AMPLIHACK_RUNTIME_ROOT`, and passes that same value to child recipes, agents,
-provenance logging, publish helpers, and finalization helpers. Child workflows
-inherit the value unchanged.
+The runner creates a per-run runtime root outside the commit worktree, at
+`<work root>/runs/<run id>/runtime`, where the work root defaults to
+`~/.amplihack/work`. It sets `AMPLIHACK_RUNTIME_ROOT` and
+`AMPLIHACK_WORKFLOW_RUNTIME_DIR` to that folder and passes the same value to
+child recipes, agents, provenance logging, publish helpers, and finalization
+helpers. `TMPDIR`, `TMP` and `TEMP` point at its `tmp/` subfolder.
+
+The runner removes the runtime root when the run ends, whether it succeeded or
+failed. The run report `run.json` stays in the run folder. A runtime root left
+by a killed run is removed by `amplihack cleanup` (category `run-tmp`). See
+[Clean Up After Recipe Runs](clean-up-after-recipe-runs.md) for the full
+layout and the work root settings.
 
 ## Override the runtime root
 
-Set `AMPLIHACK_RUNTIME_ROOT` when CI or local policy requires runtime files in a
-specific external directory.
+Set `AMPLIHACK_WORK_ROOT` when CI or local policy requires runtime files on a
+specific disk or in a specific directory. The runner puts each run's runtime
+root under `<work root>/runs/<run id>/runtime`.
 
 ```bash
-export AMPLIHACK_RUNTIME_ROOT="/var/tmp/amplihack-runtime/$USER/login-tests"
+install -d -m 700 /var/tmp/amplihack-work
+export AMPLIHACK_WORK_ROOT=/var/tmp/amplihack-work
 
 amplihack recipe run default-workflow \
   -c task_description="Fix flaky login tests" \
   -c repo_path=.
 ```
 
-Use an absolute, private path outside the repository worktree. Do not point
-`AMPLIHACK_RUNTIME_ROOT` at `.claude/runtime`, `worktrees/`, `target/`, or any
-other path inside the task worktree.
+Use an absolute, private path outside any repository checkout. The runner
+refuses a work root that is `/`, your home folder or one of its ancestors, a
+system folder, the system temporary folder, or a git checkout root. It also
+refuses an existing folder that you do not own or that group or others can
+write to.
 
-For shared CI machines, create the directory with owner-only permissions where
-the platform supports them:
-
-```bash
-install -d -m 700 "$AMPLIHACK_RUNTIME_ROOT"
-```
+The runner always sets `AMPLIHACK_RUNTIME_ROOT` for its steps, so setting that
+variable before a run has no effect on where the runtime root goes. Setting
+`AMPLIHACK_WORK_ROOT` also moves worktrees into `<work root>/worktrees/`; see
+[Worktree location](clean-up-after-recipe-runs.md#worktree-location).
 
 ## Inspect the active runtime root
 
-Recipe progress logs include the run ID. Use that value to inspect the default
-runtime location.
+The JSON result reports the attempt id as `run_id`. The run folder is named
+after the run id, which differs from the attempt id, so find the folder by
+searching the run reports for the attempt id. While the run is going, its
+runtime root is under the run folder:
 
 ```bash
 amplihack recipe run default-workflow \
@@ -64,15 +76,16 @@ amplihack recipe run default-workflow \
   -c repo_path=. \
   --format json > result.json 2> progress.log
 
-RUN_ID="$(jq -r '.run_id' result.json)"
-if [ -n "${AMPLIHACK_RUNTIME_ROOT:-}" ]; then
-  echo "$AMPLIHACK_RUNTIME_ROOT"
-elif [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-  echo "$XDG_RUNTIME_DIR/amplihack/runtime/$RUN_ID"
-else
-  echo "/tmp/amplihack-runtime/$USER/$RUN_ID"
-fi
+ATTEMPT_ID="$(jq -r '.run_id' result.json)"
+WORK_ROOT="${AMPLIHACK_WORK_ROOT:-$HOME/.amplihack/work}"
+RUN_DIR="$(grep -l "\"$ATTEMPT_ID\"" "$WORK_ROOT"/runs/*/run.json | xargs -r dirname)"
+ls "$RUN_DIR"
+# run.json  owned-paths
 ```
+
+The `runtime/` subfolder exists only while the run is going. If the default
+path to `runtime/tmp` would be longer than 80 bytes, the runtime root is
+`<work root>/r/<first 12 hex digits of the run id>` instead.
 
 ## Clean known workflow runtime leftovers
 
@@ -141,3 +154,4 @@ state. Commit intentional fixtures only with a narrow reviewed allowlist entry.
 - [Workflow Runtime Artifacts Reference](../reference/workflow-runtime-artifacts.md)
 - [Artifact Guard](../artifact-guard.md)
 - [Correlate Recipe Runs with Logs](correlate-recipe-runs.md)
+- [Clean Up After Recipe Runs](clean-up-after-recipe-runs.md)

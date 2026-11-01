@@ -574,7 +574,7 @@ fn print_report(report: &CleanupReport, config: &CleanupConfig) -> Result<()> {
     Ok(())
 }
 
-fn active_worktrees(repo: &Path) -> Result<BTreeSet<PathBuf>> {
+pub(crate) fn active_worktrees(repo: &Path) -> Result<BTreeSet<PathBuf>> {
     let mut command = amplihack_git::command();
     command
         .arg("-C")
@@ -602,7 +602,46 @@ fn active_worktrees(repo: &Path) -> Result<BTreeSet<PathBuf>> {
     Ok(paths)
 }
 
-fn sanitized_stderr(stderr: &[u8]) -> String {
+/// Issue #1808: a `git` command for inspecting and removing candidate
+/// worktrees. Hooks and fsmonitor are disabled, the system configuration is
+/// ignored, prompts are refused and optional index locks are not taken (so a
+/// read-only check never rewrites the index).
+///
+/// This does not stop every command a repository's own configuration can
+/// name. Clean and smudge filters (`filter.<driver>.*`) and similar settings
+/// in the repository's `.git/config` may still run during `git status` and
+/// `git worktree remove`, and inside `gh`. Cleanup runs as the invoking user,
+/// on worktrees of that user's own runs, so such a filter gains no rights
+/// beyond those of whoever could already write that configuration.
+pub(crate) fn hardened_git() -> std::process::Command {
+    let mut command = amplihack_git::command();
+    command
+        .args([
+            "-c",
+            "core.fsmonitor=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0");
+    command
+}
+
+/// [`sanitized_stderr`] cut to 200 bytes, for reasons shown in reports.
+pub(crate) fn sanitized_stderr_short(stderr: &[u8]) -> String {
+    let full = sanitized_stderr(stderr);
+    if full.len() <= 200 {
+        return full;
+    }
+    let mut end = 200;
+    while !full.is_char_boundary(end) {
+        end -= 1;
+    }
+    full[..end].to_string()
+}
+
+pub(crate) fn sanitized_stderr(stderr: &[u8]) -> String {
     let text = String::from_utf8_lossy(stderr).replace(['\n', '\r'], " ");
     let sanitized = text
         .split_whitespace()
@@ -622,8 +661,8 @@ fn sanitized_stderr(stderr: &[u8]) -> String {
     }
 }
 
-fn git_has_dirty_state(path: &Path) -> bool {
-    let mut command = amplihack_git::command();
+pub(crate) fn git_has_dirty_state(path: &Path) -> bool {
+    let mut command = hardened_git();
     command.arg("-C").arg(path).arg("status").arg("--porcelain");
     let output = run_output_with_timeout(command, GIT_COMMAND_TIMEOUT);
     match output {
@@ -632,8 +671,8 @@ fn git_has_dirty_state(path: &Path) -> bool {
     }
 }
 
-fn git_has_unpushed_commits(path: &Path) -> bool {
-    let mut upstream_command = amplihack_git::command();
+pub(crate) fn git_has_unpushed_commits(path: &Path) -> bool {
+    let mut upstream_command = hardened_git();
     upstream_command
         .arg("-C")
         .arg(path)
@@ -648,7 +687,7 @@ fn git_has_unpushed_commits(path: &Path) -> bool {
         return true;
     }
 
-    let mut count_command = amplihack_git::command();
+    let mut count_command = hardened_git();
     count_command
         .arg("-C")
         .arg(path)
@@ -664,7 +703,7 @@ fn git_has_unpushed_commits(path: &Path) -> bool {
     }
 }
 
-fn overlaps_active_worktree(path: &Path, active_worktrees: &BTreeSet<PathBuf>) -> bool {
+pub(crate) fn overlaps_active_worktree(path: &Path, active_worktrees: &BTreeSet<PathBuf>) -> bool {
     path.ancestors()
         .any(|ancestor| active_worktrees.contains(ancestor))
         || active_worktrees
@@ -735,7 +774,7 @@ fn protected_session_ids() -> BTreeSet<String> {
     .collect()
 }
 
-fn has_live_pid_marker(path: &Path) -> bool {
+pub(crate) fn has_live_pid_marker(path: &Path) -> bool {
     ["pid", "PID", ".pid", "process.pid"]
         .into_iter()
         .map(|name| path.join(name))

@@ -29,6 +29,21 @@
 #              other than <main_root> (which legitimately holds `worktrees/`).
 #     exit 1 : nesting detected; diagnostics on stderr.
 #
+#   workflow_worktree_root.sh base [repo_path]                  (issue #1808)
+#     stdout : the folder new worktrees of this repository go under.
+#              With AMPLIHACK_WORK_ROOT_EXPLICIT=1 and an absolute
+#              AMPLIHACK_WORK_ROOT: <work root>/worktrees/<name>-<hash8>, where
+#              <name> is the main checkout's basename reduced to [A-Za-z0-9._-]
+#              and <hash8> the first 8 hex digits of the SHA-256 of its path.
+#              Otherwise <main>/worktrees, as before (#1134 anchoring); when
+#              the main checkout cannot be worked out, <repo_path>/worktrees.
+#     exit 1 : only with an explicit work root: the main checkout cannot be
+#              worked out, the work root is relative, or there is no hash
+#              tool. The reason is on stderr. Callers stop and show it; they
+#              never fall back, which would put worktrees in the place the
+#              user asked to avoid. This is the one fallback rule: callers
+#              make a single call and do not add their own.
+#
 # READ-ONLY INVARIANT (hard): this helper only inspects git state and path
 # strings. It creates, moves, resets and deletes nothing.
 #
@@ -43,6 +58,7 @@ usage() {
     log "usage: workflow_worktree_root.sh root [repo_path]"
     log "       workflow_worktree_root.sh assert-not-nested <candidate_path> [main_root]"
     log "       workflow_worktree_root.sh assert-origin [repo_path]"
+    log "       workflow_worktree_root.sh base [repo_path]"
 }
 
 # normalize <path>
@@ -118,6 +134,57 @@ cmd_root() {
             dirname -- "$abs"
             ;;
     esac
+}
+
+# sha256_hex <text> — hex SHA-256 of <text>; fails when no hash tool exists.
+sha256_hex() {
+    local digest
+    if command -v sha256sum >/dev/null 2>&1; then
+        digest="$(printf '%s' "$1" | sha256sum)" || return 1
+    elif command -v shasum >/dev/null 2>&1; then
+        digest="$(printf '%s' "$1" | shasum -a 256)" || return 1
+    else
+        return 1
+    fi
+    digest="${digest%% *}"
+    case "$digest" in
+        *[!0-9a-f]*|"") return 1 ;;
+    esac
+    printf '%s\n' "$digest"
+}
+
+# cmd_base [repo_path] — echo the folder new worktrees go under (issue #1808).
+cmd_base() {
+    local main work name digest
+    if [ "${AMPLIHACK_WORK_ROOT_EXPLICIT:-0}" != "1" ] || [ -z "${AMPLIHACK_WORK_ROOT:-}" ]; then
+        main="$(cmd_root "$@" 2>/dev/null)" \
+            || main="$(cd -P -- "${1:-.}" 2>/dev/null && pwd -P)" \
+            || { log "ERROR: repo_path '${1:-.}' is not accessible."; return 1; }
+        printf '%s/worktrees\n' "$main"
+        return 0
+    fi
+    main="$(cmd_root "$@")" || return 1
+    work="$AMPLIHACK_WORK_ROOT"
+    case "$work" in
+        /*) ;;
+        *)
+            log "ERROR: AMPLIHACK_WORK_ROOT '$work' is not an absolute path."
+            return 1
+            ;;
+    esac
+    while [ "${#work}" -gt 1 ] && [ "${work%/}" != "$work" ]; do
+        work="${work%/}"
+    done
+    name="$(basename -- "$main")"
+    name="$(printf '%s' "$name" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_')"
+    case "$name" in
+        ""|.|..) name="repo" ;;
+    esac
+    if ! digest="$(sha256_hex "$main")"; then
+        log "ERROR: no sha256sum or shasum to name the worktree base."
+        return 1
+    fi
+    printf '%s/worktrees/%s-%s\n' "$work" "$name" "${digest:0:8}"
 }
 
 # worktree_paths [repo] — porcelain worktree registrations. When <repo> is given
@@ -230,6 +297,10 @@ main() {
         assert-origin)
             shift
             cmd_assert_origin "$@"
+            ;;
+        base)
+            shift
+            cmd_base "$@"
             ;;
         ""|-h|--help|help)
             usage

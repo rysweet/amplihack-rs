@@ -17,6 +17,19 @@ case "${STALE_DAYS}" in
         ;;
 esac
 
+# Issue #1808: write the standard cache directory tag so backup tools skip the
+# target folder (https://bford.info/cachedir/). An existing tag is kept.
+write_cachedir_tag() {
+    local dir="$1"
+    mkdir -p "$dir" || return 1
+    [ -e "$dir/CACHEDIR.TAG" ] && return 0
+    printf '%s\n' \
+      'Signature: 8a477f597d28d172789f06886806bc55' \
+      '# This file is a cache directory tag created by amplihack.' \
+      '# For information about cache directory tags see https://bford.info/cachedir/' \
+      > "$dir/CACHEDIR.TAG"
+}
+
 usage() {
     cat <<EOF
 Usage:
@@ -88,7 +101,7 @@ run_cargo() {
         exit 1
     fi
     prune_stale_temp_targets
-    mkdir -p "${CURRENT_TARGET_DIR}"
+    write_cachedir_tag "${CURRENT_TARGET_DIR}"
     echo "Using CARGO_TARGET_DIR=${CURRENT_TARGET_DIR}"
     CARGO_TARGET_DIR="${CURRENT_TARGET_DIR}" cargo "$@"
 }

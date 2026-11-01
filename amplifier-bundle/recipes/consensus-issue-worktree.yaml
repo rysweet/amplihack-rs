@@ -96,6 +96,11 @@ steps:
       # of deriving a slug. EXISTING_BRANCH wins on tie (WARNING to stderr).
       # Keep in sync with default-workflow.yaml step-04-setup-worktree.
       # ========================================================================
+      # Issue #1808: a caller-supplied worktree_dir wins; else `workflow_worktree_root.sh base`.
+      ROOT_HELPER="${AMPLIHACK_HOME:-${HOME:-/root}/.amplihack}/amplifier-bundle/tools/workflow_worktree_root.sh"
+      [ -f "$ROOT_HELPER" ] || ROOT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_root.sh"
+      [ -n "${WORKTREE_DIR:-}" ] || [ ! -f "$ROOT_HELPER" ] || WORKTREE_DIR="$(bash "$ROOT_HELPER" base "$(pwd)")" || { echo "ERROR: cannot work out where worktrees go (see above; issue #1808)." >&2; exit 1; }
+      [ -n "$WORKTREE_DIR" ] || WORKTREE_DIR="$(cd "$(git rev-parse --git-common-dir)/.." && pwd -P)/worktrees"
       EXISTING_BRANCH="${EXISTING_BRANCH:-}"
       PR_NUMBER="${PR_NUMBER:-}"
       if [ -n "$EXISTING_BRANCH" ] || [ -n "$PR_NUMBER" ]; then
@@ -171,13 +176,8 @@ steps:
       fi
 
       # --- #858: remote-only base-ref resolution (NO caller-HEAD fallback) ---
-      # A recipe task worktree must ALWAYS branch off a freshly-fetched remote
-      # base ref, never the caller checkout's (possibly dirty, non-main) HEAD.
-      # The old BASE_REF="HEAD" bootstrap fallback baked the caller's unrelated
-      # local commits + uncommitted tree into the task branch, tangling
-      # concurrent recipes. We now fetch origin and resolve a remote base ref;
-      # if none resolves we FAIL CLOSED and visibly rather than inherit caller
-      # state. Mirrors workflow-worktree.yaml step-04-setup-worktree.
+      # Branch off a freshly fetched remote base ref, never the caller's HEAD; if
+      # none resolves, FAIL CLOSED. Mirrors workflow-worktree.yaml step-04.
       resolve_base_ref() {
         local candidate
 
@@ -352,6 +352,9 @@ steps:
         fi
         SETUP_STATE="create-from-base"
       fi
+      OWN_OP=record; [ "$SETUP_STATE" != "reuse-clean-worktree" ] || OWN_OP=adopt; [ -z "${AMPLIHACK_RUN_DIR:-}" ] || [ ! -f "$TOOLS_DIR/amplihack_run_owned.sh" ] \
+        || bash "$TOOLS_DIR/amplihack_run_owned.sh" "$OWN_OP" worktree "$(cd -P -- "$WORKTREE_PATH" && pwd -P)" "$BRANCH_NAME" \
+        || echo "WARNING: could not record $WORKTREE_PATH for cleanup (issue #1808)" >&2
 
       # Push with tracking (bootstrap-aware). Never forced: a deconflicted run pushes
       # only its own fresh branch, so a kept branch's unpushed commits stay local.

@@ -216,6 +216,8 @@ mod issue_1802_auto_drive_light_recipe;
 mod issue_1802_auto_drive_light_round;
 #[path = "issue_1803_rotation_owner.rs"]
 mod issue_1803_rotation_owner;
+#[path = "issue_1808_run_cleanup.rs"]
+mod issue_1808_run_cleanup;
 #[path = "issue_1818_no_session_limit.rs"]
 mod issue_1818_no_session_limit;
 #[path = "issue_439_no_per_step_timeout.rs"]

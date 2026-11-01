@@ -69,6 +69,9 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     "agent",
     // Usage reporting and explicit publication never need staged framework assets.
     "usage",
+    // Issue #1808: `cleanup` needs no framework assets, and its dry run must
+    // write nothing at all, not even the bundle-compatibility cache.
+    "cleanup",
 ];
 
 /// Top-level flags that short-circuit clap and should not pay for an
