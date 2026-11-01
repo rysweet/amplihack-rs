@@ -3,6 +3,7 @@
 //! primitives, auto-switch recovery and the no-capacity file writer.
 //! Re-exports only.
 
+pub use super::candidate::adjusted;
 pub use super::capacity::{Rotated, refresh_from_rotation as capacity_from_rotation};
 pub use super::config::{Source, effective};
 pub use super::fsx::{
@@ -16,3 +17,4 @@ pub use super::mv::{
 };
 pub use super::state::{CLAUDE_JSON, CREDS, Ledger, Lock, MAX_CLAUDE_JSON, State};
 pub use super::swap::{account, guard_held, read_claude_json, recover as recover_auto_switch};
+pub use super::usage::{Reading, ReadingSource};

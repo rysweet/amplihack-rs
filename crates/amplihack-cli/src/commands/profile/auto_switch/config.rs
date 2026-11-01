@@ -8,6 +8,7 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::kind::Kind;
 use crate::commands::profile::name::ProfileName;
 pub use crate::commands::profile::overflow::OverflowEntry;
+use crate::commands::profile::rotate::change_log;
 use amplihack_utils::rotator_status::{self as shared, DEFAULT_THRESHOLD, Toggle, ToggleFile};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -165,7 +166,7 @@ pub fn render(c: &Config) -> String {
     let exclude: Vec<&str> = c.exclude.iter().map(ProfileName::as_str).collect();
     let mut out = format!(
         "enabled={}\nthreshold={}\nexclude={}\n",
-        if c.enabled { "on" } else { "off" },
+        on_off(c.enabled),
         c.threshold,
         exclude.join(",")
     );
@@ -272,6 +273,13 @@ pub fn update_within(
             "{FILE} is being changed by another process (the rotator or auto-switch); retry"
         )));
     };
+    let on_disk = read(root);
+    // For the change log, which tells a missing file from a corrupt one.
+    let was = match &on_disk {
+        FileState::Missing => "missing",
+        FileState::Corrupt => "invalid",
+        FileState::Valid(c) => on_off(c.enabled),
+    };
     // `before` is what an unchanged result needs no write for. `on` and
     // `off` always write over a missing or corrupt file, so the file then
     // says what they set.
@@ -281,7 +289,7 @@ pub fn update_within(
                 .map_err(|_| fail(format!("{FILE} is unreadable or invalid; not changed")))?;
             (Some(c.clone()), c)
         }
-        ReadMode::DefaultOnInvalid => match read(root) {
+        ReadMode::DefaultOnInvalid => match on_disk {
             FileState::Valid(c) => (Some(c.clone()), c),
             FileState::Missing | FileState::Corrupt => (None, Config::default()),
         },
@@ -296,7 +304,13 @@ pub fn update_within(
         )));
     }
     write(root, &c)?;
+    let event = format!("auto-switch enabled={} was={was}", on_off(c.enabled));
+    change_log::record_or_warn(root, &event);
     Ok(c)
+}
+
+fn on_off(enabled: bool) -> &'static str {
+    if enabled { "on" } else { "off" }
 }
 
 /// Writes the file unlocked; callers go through `update`.

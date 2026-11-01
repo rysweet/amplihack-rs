@@ -99,6 +99,11 @@ fn shown(raw: &str) -> String {
     format!("{head:?}")
 }
 
+/// The default session and week thresholds.
+pub fn default_thresholds() -> (u8, u8) {
+    (SESSION_AT.default as u8, WEEK_AT.default as u8)
+}
+
 impl Spec {
     fn expected(&self) -> String {
         match self.max {

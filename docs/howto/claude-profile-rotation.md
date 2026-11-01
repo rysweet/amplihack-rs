@@ -25,6 +25,8 @@ The exact flags, files, exit codes and log lines are in the
 - [Switch to a login by hand](#switch-to-a-login-by-hand)
 - [Run rotation in the background](#run-rotation-in-the-background)
 - [Start the rotator automatically](#start-the-rotator-automatically)
+- [Run the rotator as a service](#run-the-rotator-as-a-service)
+- [Find what turned a setting off](#find-what-turned-a-setting-off)
 - [Which root the rotator uses](#which-root-the-rotator-uses)
 - [Change the thresholds](#change-the-thresholds)
 - [When a swap happens](#when-a-swap-happens)
@@ -34,6 +36,7 @@ The exact flags, files, exit codes and log lines are in the
 - [Read the log](#read-the-log)
 - [Resume sessions stopped by a usage limit](#resume-sessions-stopped-by-a-usage-limit)
 - [When no account has capacity](#when-no-account-has-capacity)
+- [When auto-switch is off and the live login runs out](#when-auto-switch-is-off-and-the-live-login-runs-out)
 - [Use usage credits when every plan login is exhausted](#use-usage-credits-when-every-plan-login-is-exhausted)
 - [Move from the tmux prototype](#move-from-the-tmux-prototype)
 - [Where a login with no profile goes](#where-a-login-with-no-profile-goes)
@@ -351,7 +354,8 @@ a reboot, but with auto-switch on the next `amplihack claude`,
 
 To run the loop in the foreground instead, for example under your own
 supervisor, use `amplihack profile rotate watch`. It takes the same flags as
-`start` and stops on Ctrl-C.
+`start` and stops on Ctrl-C. To run it under systemd, see
+[Run the rotator as a service](#run-the-rotator-as-a-service).
 
 ## Start the rotator automatically
 
@@ -410,19 +414,29 @@ A launch starts the rotator only when all of these hold:
 - No rotator is running for that root.
 - `rotate start` would not refuse: the
   [tmux prototype](#move-from-the-tmux-prototype) is not holding its lock.
+- The launch is not a step of a recipe run (`AMPLIHACK_RECIPE_RUN_ID` is not
+  set).
+- No service has claimed rotation; see
+  [Run the rotator as a service](#run-the-rotator-as-a-service).
+
+`AMPLIHACK_ROTATE_AUTOSTART=1` overrides the autostart setting only. It does
+not make a recipe step or a launch on a service-owned root start a rotator.
 
 When auto-switch is off, a launch does nothing extra: it creates no file,
 takes no lock and prints nothing.
 
 ### Many launches at once
 
-Recipe runs and `multitask` start many Claude sessions in parallel, and
-nested launches inside a recipe run check like any other launch. Only one
-rotator ever runs: a launch that finds the rotator running stops there, and
-otherwise it tries the state lock without waiting. If another launch holds
-the lock, it gives up silently. The launch that gets the lock checks again
-before it starts the rotator and writes the pid file while it still holds the
-lock.
+Launches inside a recipe run never start the rotator, whether or not one is
+running, and say nothing about it. Start it before the run, by hand or from
+an ordinary launch, if you want rotation during the run.
+
+`multitask` and other parallel launches outside a recipe run still check.
+Only one rotator ever runs: a launch that finds the rotator running stops
+there, and otherwise it tries the state lock without waiting. If another
+launch holds the lock, it gives up silently. The launch that gets the lock
+checks again before it starts the rotator and writes the pid file while it
+still holds the lock.
 
 ### What the started rotator uses
 
@@ -505,6 +519,154 @@ The source in brackets is `default` (no setting), `setting` (from
 `rotate autostart on|off`), `env` (from `AMPLIHACK_ROTATE_AUTOSTART`) or
 `corrupt` (the setting file cannot be trusted; autostart counts as off until
 you run `rotate autostart on` or `off` again).
+
+## Run the rotator as a service
+
+To keep the rotator running across reboots and crashes, run
+`rotate watch` under a systemd user service. A rotator run by systemd records
+itself as the owner of rotation. From then on, launches never start a
+rotator of their own for that root, even while the service is stopped, so
+rotation always stays with the service.
+
+1. Stop any rotator that is running, so the service can start one:
+
+   ```bash
+   amplihack profile rotate stop
+   ```
+
+2. Create `~/.config/systemd/user/amplihack-rotator.service`:
+
+   ```ini
+   [Unit]
+   Description=amplihack Claude login rotator
+
+   [Service]
+   ExecStart=%h/.cargo/bin/amplihack profile rotate watch --interval 120 --session-at 70
+   Restart=on-failure
+   RestartSec=30
+
+   [Install]
+   WantedBy=default.target
+   ```
+
+   Set the root with `Environment=AMPLIHACK_CLAUDE_PROFILE_ROOT=...` if you
+   do not use the saved root. The `ExecStart` binary must be named
+   `amplihack`; a rotator run from a binary with another name is reported as
+   not running.
+
+3. Start it:
+
+   ```bash
+   systemctl --user daemon-reload
+   systemctl --user enable --now amplihack-rotator.service
+   ```
+
+4. Check that it has claimed rotation:
+
+   ```bash
+   amplihack profile rotate status
+   ```
+
+   The first lines of the output read:
+
+   ```
+   root: /home/you/.claude-profiles (source: config)
+   rotate: running
+   autostart: on (default)
+   owner: amplihack-rotator.service (pid 48190, running)
+   deferring: yes
+   pid: 48190
+   ```
+
+systemd sets `INVOCATION_ID` for the service, which is how `rotate watch`
+knows it is supervised. It finds the unit name in its cgroup. Under another
+supervisor, pass the flag yourself, with the unit name if it is not
+`amplihack-rotator.service`:
+
+```bash
+amplihack profile rotate watch --supervised=claude-rotator.service
+```
+
+The value must end in `.service` and be given with `=`.
+
+### When the service is stopped
+
+While the service is down, every launch with auto-switch on prints one
+warning on stderr and then starts Claude without a rotator:
+
+```
+rotation is owned by amplihack-rotator.service, which is not running
+```
+
+Start the service again to restore rotation:
+
+```bash
+systemctl --user start amplihack-rotator.service
+```
+
+The same warning appears while a rotator runs under a pid other than the
+one recorded in `owner.json`, for example one started by hand with
+`rotate start`: only the service's own rotator counts as the owner.
+
+The warning is not printed inside recipe runs, or when autostart or
+auto-switch is off.
+
+### Hand rotation back to autostart
+
+Stop and disable the service, then delete the owner record:
+
+```bash
+systemctl --user disable --now amplihack-rotator.service
+rm ~/.claude-profiles/.auto-switch.d/rotate/owner.json
+```
+
+Use your own profile root in the path; `rotate status` prints it on its
+`root:` line. The next launch with auto-switch on starts a rotator as before.
+amplihack never deletes `owner.json` itself.
+
+If `rotate status` shows `owner: unreadable marker <path>`, the file is
+damaged or has unsafe permissions. Launches still start no rotator. Delete
+it, and restart the service if you use one, so it writes a new record.
+
+A `rotate watch` that you start by hand from a terminal opened by a systemd
+service inherits `INVOCATION_ID` and records itself as the owner too. The
+`owner:` line names the unit, so check it after such a run and delete
+`owner.json` if the unit is not your rotator service. To run `rotate watch`
+by hand from such a shell without claiming ownership, start it with
+`env -u INVOCATION_ID amplihack profile rotate watch …`. Older amplihack
+binaries ignore `owner.json` and may still start a rotator while the service
+is stopped; upgrade every binary that uses the root.
+
+## Find what turned a setting off
+
+Each change to autostart or auto-switch made through amplihack adds a line
+to `<root>/.auto-switch.d/rotate/setting-changes.log`:
+
+```bash
+tail ~/.claude-profiles/.auto-switch.d/rotate/setting-changes.log
+```
+
+```
+2026-10-31T07:12:40Z autostart set=off was=on pid=51022 ppid=50988 exe=/home/you/.cargo/bin/amplihack
+2026-10-31T07:14:02Z auto-switch enabled=off was=on pid=51107 ppid=50988 exe=/home/you/.cargo/bin/amplihack
+```
+
+`ppid` is the process that ran the command. If it is still running, find
+out what it is:
+
+```bash
+ps -o pid,args -p 50988
+```
+
+`rotate autostart on` or `off` adds a line every time, even when the value
+does not change. `auto-switch threshold` and `exclude`, and
+`profile overflow add` and `remove`, also add a line, with the same value
+before and after. Reading a setting adds nothing.
+
+Hand edits to the `autostart` or `.auto-switch` files, and the
+`AMPLIHACK_ROTATE_AUTOSTART` and `AMPLIHACK_CLAUDE_AUTO_SWITCH` variables,
+are not logged. The fields are in
+[Setting change log](../reference/profile-command.md#setting-change-log).
 
 ## Which root the rotator uses
 
@@ -944,6 +1106,40 @@ appears and how it is deduplicated is in
 [When no account has capacity](claude-profiles.md#when-no-account-has-capacity);
 the file and the exact rules are in the
 [capacity notice reference](../reference/profile-command.md#capacity-notice).
+
+## When auto-switch is off and the live login runs out
+
+With auto-switch turned off, by `amplihack profile auto-switch off`, by
+`AMPLIHACK_CLAUDE_AUTO_SWITCH=0` or by a damaged settings file, the rotator
+stays running but measures nothing and moves nothing. If the live login reaches its limit, sessions stop and stay
+stopped. The rotator writes this line on every pass while that lasts:
+
+```
+2026-10-31T08:20:05Z ALERT: auto-switch is off while the live login is exhausted
+```
+
+and `rotate status` shows:
+
+```
+alert: auto-switch is off while the live login is exhausted
+```
+
+The check uses the last readings recorded by the status line,
+`profile usage` or a step that hit its usage limit, so it can lag behind.
+With no readings for the live login there is no alert. Nor is there one
+when no auto-switch setting exists at all: in that case the rotator keeps
+rotating and moves you off the exhausted login itself.
+
+If you did not mean to turn auto-switch off, find out what did with
+[the setting change log](#find-what-turned-a-setting-off), then turn it back
+on:
+
+```bash
+amplihack profile auto-switch on
+```
+
+The rotator picks up the change on its next pass. The rules are in
+[Exhausted live login](../reference/profile-command.md#exhausted-live-login).
 
 ## Use usage credits when every plan login is exhausted
 

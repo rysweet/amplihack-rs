@@ -297,7 +297,7 @@ fn the_leak_scan_matches_the_argv_spawn_builds() {
     match cli.command {
         crate::Commands::Profile(crate::commands::profile::ProfileCommands::Rotate(r)) => {
             match r.action {
-                Some(super::RotateAction::Watch(w)) => assert!(w.spawned, "{args:?}"),
+                Some(super::RotateAction::Watch(w)) => assert!(w.flags.spawned, "{args:?}"),
                 other => panic!("spawned argv {args:?} parsed as {other:?}, not `watch`"),
             }
         }

@@ -4,8 +4,10 @@
 //! here.
 
 use super::cycle::{self, Ctx, CycleOutcome, LOCK_WAIT, Mode, prototype_guard};
+use super::exhausted;
 use super::ledger::{LastCycle, RotateState};
 use super::log::{Sink, msg, open_or_warn};
+use super::owner;
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome};
 use crate::commands::profile::auto_switch::kit::{
@@ -172,10 +174,11 @@ pub(super) fn spawned_args(s: &Settings) -> Vec<String> {
 /// Starts `<this exe> profile rotate watch <flags> --spawned` in a new
 /// session with SIGHUP ignored, stdin from `/dev/null` and its stdout and
 /// stderr appended to `rotate.err`, so the log keeps its grammar. No shell;
-/// the child gets no `AMPLIHACK_ROTATE*` variable and no profile selection
-/// (`CLAUDE_CONFIG_DIR`, `AMPLIHACK_CLAUDE_PROFILE`) from the launch that
-/// started it, and is pinned to `root` whatever the variable or the saved
-/// root say later (issue #1592).
+/// the child gets no `AMPLIHACK_ROTATE*` variable, no profile selection
+/// (`CLAUDE_CONFIG_DIR`, `AMPLIHACK_CLAUDE_PROFILE`) and no `INVOCATION_ID`
+/// (a rotator started from inside a service is not that service, #1803) from
+/// the launch that started it, and is pinned to `root` whatever the variable
+/// or the saved root say later (issue #1592).
 pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, ProfileError> {
     use std::os::unix::process::CommandExt;
     let errors = super::log::RotateLog::open(&rs.err, &rs.err)?;
@@ -190,7 +193,9 @@ pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, 
             cmd.env_remove(k);
         }
     }
-    cmd.env_remove("CLAUDE_CONFIG_DIR").env_remove(PROFILE_ENV);
+    cmd.env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove(PROFILE_ENV)
+        .env_remove("INVOCATION_ID");
     cmd.env(ROOT_ENV, root);
     // SAFETY: the closure runs in the child between fork and exec and calls
     // only setsid and signal, which are async-signal-safe.
@@ -207,12 +212,14 @@ pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, 
 }
 
 /// `watch`: cycles every `interval` seconds until SIGTERM or SIGINT. Never
-/// acts on a signal while holding the lock.
+/// acts on a signal while holding the lock. `claim` is the unit to record as
+/// the rotation owner, which only a `watch` that wrote its own pid file does.
 pub fn watch(
     store: &ProfileStore,
     home: PathBuf,
     s: Settings,
     spawned: bool,
+    claim: Option<String>,
 ) -> Result<(), ProfileError> {
     let rs = RotateState::new(store.root());
     let stop = PROBE_CANCEL.clone();
@@ -236,6 +243,14 @@ pub fn watch(
             "rotate.pid",
             format!("{}\n", std::process::id()).as_bytes(),
         )?;
+        if let Some(unit) = &claim {
+            let pid = std::process::id();
+            // The rotator is worth running even if launches may not defer.
+            match owner::write(&rs, unit, pid) {
+                Ok(()) => log_line(&rs, &format!("owner: recorded {unit} (pid {pid})")),
+                Err(e) => log_line(&rs, &format!("owner: not recorded ({e})")),
+            }
+        }
     }
     // Auto-switch reads its overflow gate from this record, so it applies
     // this rotator's flags, not its own environment. Without the record it
@@ -257,10 +272,15 @@ pub fn watch(
                 Ok(_) => {}
                 Err(e) => log_line(&rs, &failure(&e)),
             }
-        } else if !idle {
-            idle = true;
-            log_line(&rs, msg::IDLE);
-            record_idle(&rs, store);
+        } else {
+            if !idle {
+                idle = true;
+                log_line(&rs, msg::IDLE);
+                record_idle(&rs, store);
+            }
+            if exhausted::live_exhausted(store.root(), s.session_at, s.week_at, now()) {
+                log_line(&rs, exhausted::ALERT);
+            }
         }
         let until = Instant::now() + Duration::from_secs(s.interval);
         while Instant::now() < until && !stop.load(Ordering::Relaxed) {
@@ -274,7 +294,7 @@ pub fn watch(
 /// Whether auto-switch has been turned off (by its settings file or
 /// `AMPLIHACK_CLAUDE_AUTO_SWITCH=0`), or its settings file is damaged.
 /// Without any setting, rotation runs.
-fn paused(root: &Path) -> bool {
+pub(super) fn paused(root: &Path) -> bool {
     let eff = effective(root);
     !eff.on && eff.source != Source::Default
 }

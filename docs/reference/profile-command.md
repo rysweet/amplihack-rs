@@ -1071,7 +1071,9 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 | `AMPLIHACK_CLAUDE_AUTO_SWITCH` | `1` turns auto-switch on and `0` turns it off for this process and its children, overriding `<root>/.auto-switch`. Empty means unset. See [Toggle and precedence](#toggle-and-precedence). |
 | `<root>/.auto-switch` | Auto-switch settings. See [Settings file](#settings-file). |
 | `<root>/.auto-switch.d/` | Auto-switch state. See [State directory](#state-directory). |
-| `AMPLIHACK_ROTATE_AUTOSTART` | `0`/`off` stops launches from starting the rotator, and `1`/`on` lets them, overriding `<root>/.auto-switch.d/rotate/autostart`. Empty means unset. See [Rotate autostart](#rotate-autostart). |
+| `AMPLIHACK_ROTATE_AUTOSTART` | `0`/`off` stops launches from starting the rotator, and `1`/`on` lets them, overriding `<root>/.auto-switch.d/rotate/autostart`. Empty means unset. Does not override the recipe-run or owner checks. See [Rotate autostart](#rotate-autostart). |
+| `AMPLIHACK_RECIPE_RUN_ID` | Set by the recipe runner. When not empty, launches do not start the rotator. Only its presence is read. See [Rotate autostart](#rotate-autostart). |
+| `INVOCATION_ID` | Set by systemd. When not empty, `rotate watch` records itself as the [rotation owner](#rotation-owner). Only its presence is read, and the rotator's own background process never inherits it. |
 | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true` or `1` turns the [usage-limit wait](#usage-limit-wait) on, `false` or `0` off. Outranks `recipe.usage_limit_wait` in `config.toml`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
 | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | Upper bound on one usage-limit wait, in seconds. Only shortens the wait. Outranks `recipe.usage_limit_max_wait_secs`. |
 
@@ -2036,7 +2038,9 @@ file unchanged, with `AutoSwitchConfig` and the message:
 
 It never falls back to an unlocked write. When the change leaves every key as
 it was, for example `overflow add` on a name already marked, nothing is
-written. A change that would make the file larger than 4096 bytes is refused
+written. Every write adds a line to the
+[setting change log](#setting-change-log); a change that writes nothing adds
+none. A change that would make the file larger than 4096 bytes is refused
 with `AutoSwitchConfig` and the file is left as it was.
 
 The file is *corrupt*, and the switch counts as off, if it is larger than
@@ -2913,7 +2917,7 @@ exclusion list and its state lock.
 ```
 amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1]
 amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--interval SECS]
-amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--interval SECS]
+amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--interval SECS] [--supervised[=UNIT]]
 amplihack profile rotate stop
 amplihack profile rotate status
 amplihack profile rotate autostart [on|off]
@@ -2924,7 +2928,7 @@ amplihack profile rotate autostart [on|off]
 | `rotate` | Runs one [cycle](#rotate-cycle): recover, measure, decide, and swap if needed. Prints its log lines to stdout and appends them to the log. Runs whether the toggle is on or off. |
 | `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no file, moves nothing, and skips both the [prototype check](#rotate-prototype-coexistence) and [recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. Reads the [pin](#rotate-pin): a pin in force prints `would stay (held by switch to <name>)`, or `would stay (pin unreadable)`, and measures nothing. Reports a [hand change](#rotate-hand-change-recovery) as `would recover: <recovered line>`, or as `would alert: <ALERT line>` with its `fix` lines; either way it then stops without measuring, and the alert case ends with outcome `alerted`. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
 | `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Pins the child to its root and records that root; see [Rotate root record](#rotate-root-record). Prints `rotate: started (pid <pid>), checking every <interval>s`, `log: <path>` and `root: <path>`, and returns at once. |
-| `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log. |
+| `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log. Under a service manager, or with `--supervised`, it also records itself as the [rotation owner](#rotation-owner). |
 | `rotate stop` | Finds the rotator as described in [Rotate root record](#rotate-root-record). Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
 | `rotate status` | **Read-only.** Prints the [status lines](#rotate-status) and exits 0. |
 | `rotate autostart` | **Read-only.** Prints the effective [autostart](#rotate-autostart) state, for example `autostart: on (default)`. |
@@ -2933,6 +2937,11 @@ amplihack profile rotate autostart [on|off]
 `--dry-run` belongs to the one-shot form only. Tuning flags go after `start`
 or `watch`; `amplihack profile rotate --margin 3 start` is a usage error and
 exits with status 2.
+
+`--supervised` belongs to `watch` only. It takes its value only with `=`, so
+in `watch --supervised 30` the `30` is not a unit name and the command is a
+usage error. `rotate start --supervised` is a usage error, and so is
+`--supervised` together with the hidden `--spawned`; both exit with status 2.
 
 On platforms without Unix file semantics, such as Windows, every form fails
 with `RotateUnsupported` before doing anything else. That is the only use of
@@ -3073,7 +3082,10 @@ Every non-dry-run cycle runs these steps in order:
    `auto-switch off` or `AMPLIHACK_CLAUDE_AUTO_SWITCH=0`, or its settings
    file is damaged (see [Toggle and precedence](#toggle-and-precedence)),
    write `idle: auto-switch is off` once per change from on to off, and skip
-   the rest. With no setting at all (no `<root>/.auto-switch` and no
+   the rest. On every pass while it stays off, also write
+   `ALERT: auto-switch is off while the live login is exhausted` when the
+   [cached readings](#exhausted-live-login) show the live login at its
+   limit. With no setting at all (no `<root>/.auto-switch` and no
    variable), rotation runs.
 3. **Lock and recover.** Take `<root>/.auto-switch.d/lock`, waiting up to
    2 seconds. If it is busy, log `skip: state lock busy` and end the cycle.
@@ -3144,6 +3156,47 @@ also skipped when the [effective setting](#toggle-and-precedence) is off,
 which includes having no setting at all, even though rotation still runs
 then. A swap made after a [reconsideration](#rotate-revalidation) updates
 the file in the same way as any other swap.
+
+#### Exhausted live login
+
+While auto-switch is turned off, the rotator measures nothing, so a live
+login that runs out of capacity stays in `~/.claude` and sessions stop on its
+limit. Auto-switch counts as turned off here only when `<root>/.auto-switch`
+says `enabled=off`, `AMPLIHACK_CLAUDE_AUTO_SWITCH=0` is set, or the settings
+file is damaged; these are the cases in which [step 2](#rotate-cycle) pauses
+the loop. With no setting at all (no `<root>/.auto-switch` and no variable)
+the rotator rotates as usual, so neither the ALERT nor the `alert:` status
+line is written, however exhausted the live login is.
+
+The paused loop and `rotate status` check for this from data already on
+disk. The live login counts as exhausted when either holds:
+
+- Its [reading](#readings) in `<root>/.auto-switch.d/usage.json` has a
+  `five_hour` window at or above the session threshold, or a `seven_day`
+  window at or above the week threshold, and that window's `resets_at` is
+  still in the future.
+- Its reading has `source` `usage_limit_failure`, recorded when a step hit
+  its usage limit, and the window it records has not reset.
+
+The live login is the ledger's `live` profile. The thresholds are the
+`session_at` and `week_at` in `gate.json` when the pid there is the running
+rotator, and the [defaults](#rotate-settings) (`85` and `90`) otherwise.
+A missing ledger, no live profile, no reading for it, or a reading that
+cannot be parsed counts as not exhausted. The alert therefore needs a
+readable ledger and `usage.json`: when either is missing or damaged, neither
+the ALERT nor the `alert:` line is written. A damaged ledger shows on the
+`live:` line as `- (ledger unreadable)`. The check runs no probe, takes no
+lock and writes nothing, so the readings may be as old as the last status-line
+update or `profile usage` run.
+
+The ALERT and the `alert:` status line are fixed text. They name no account
+and show no figure. With auto-switch on, or with no setting at all, neither
+is ever written: the normal cycle measures the live login and raises its own
+ALERTs.
+
+Sessions stopped on a usage limit are not listed anywhere, so the check does
+not count them. A stop that recorded a `usage_limit_failure` reading counts
+through that reading.
 
 #### Rotate revalidation
 
@@ -4374,7 +4427,9 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | `rotate.log` | The log. |
 | `rotate.log.1` | The previous log, after rotation. |
 | `rotate.err` | The background process's own stdout and stderr, and one line from each launch that [started](#rotate-autostart) a rotator or failed to. Not rotated. |
-| `autostart` | The [autostart](#rotate-autostart) setting: `on` or `off` and a newline. Missing means on. |
+| `autostart` | The [autostart](#rotate-autostart) setting: `on` or `off` and a newline. Missing means on. Written only by `rotate autostart on\|off`. |
+| `owner.json` | The [rotation owner](#rotation-owner): `version`, `unit` and `pid`. Written by `rotate watch` under a service manager or with `--supervised`. Never removed by amplihack. |
+| `setting-changes.log` | One line for each change to the autostart or auto-switch setting made through amplihack; see [Setting change log](#setting-change-log). Rotated like the log, at 1 MiB, to `setting-changes.log.1`. |
 | `pin` | The [rotation pin](#rotate-pin): one profile name and a newline. Written by `profile switch <name>`, removed by `profile switch --none`. Not part of the ledger. |
 
 The auto-switch `ledger.json` and `journal.json` one level up are separate
@@ -4490,6 +4545,8 @@ stdout only, without the time.
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
+| `ALERT: auto-switch is off while the live login is exhausted` | `watch` with auto-switch turned off, when the [cached readings](#exhausted-live-login) show the live login at its limit. Written on every pass of the paused loop, after the `idle` line, while the condition holds. |
+| `owner: recorded <unit> (pid <pid>)` / `owner: not recorded (<error>)` | `watch` under a service manager or with `--supervised`, once at start; see [Rotation owner](#rotation-owner). The rotator runs either way. |
 | ``skip: held by switch to <name>; run `amplihack profile switch --none` to release`` | The [pin](#rotate-pin) holds rotation; the cycle neither measured nor swapped. |
 | ``skip: pin unreadable; run `amplihack profile switch --none` `` | The pin file cannot be trusted or parsed; the cycle holds. |
 | `skip: pin names missing profile <name>; ignored` | The pin names a removed profile; the cycle runs normally. |
@@ -4506,6 +4563,8 @@ or a swap succeeds, so the same ALERT can be written again later. The
 one-shot `rotate` still prints a repeated ALERT to stdout on every run; only
 the log line is written once. The hand-change guidance and lost-login ALERTs
 have no key: they are written on every cycle while their condition holds.
+So has the `auto-switch is off while the live login is exhausted` ALERT,
+which the paused loop writes on every pass and never stores in the ledger.
 
 Before each write, a log over 1 MiB is renamed to `rotate.log.1`, replacing
 the old one. The log is opened with `O_APPEND`, `O_NOFOLLOW` and `O_CLOEXEC`,
@@ -4531,8 +4590,11 @@ prints outside a cycle, such as start-up notices or a crash.
 pid file. No shell is involved.
 
 The child's environment is the parent's, with every `AMPLIHACK_ROTATE*`
-variable, `CLAUDE_CONFIG_DIR` and `AMPLIHACK_CLAUDE_PROFILE` removed and
-`AMPLIHACK_CLAUDE_PROFILE_ROOT` set to the absolute root `start` resolved.
+variable, `CLAUDE_CONFIG_DIR`, `AMPLIHACK_CLAUDE_PROFILE` and
+`INVOCATION_ID` removed and `AMPLIHACK_CLAUDE_PROFILE_ROOT` set to the
+absolute root `start` resolved. Removing `INVOCATION_ID` means a rotator
+started by `rotate start`, or by a launch, from inside a systemd service does
+not record itself as the [rotation owner](#rotation-owner).
 Removing the profile variables means a rotator started from a
 `--profile` launch still probes and swaps `~/.claude`. The child validates that value again when it starts, and
 never reads `~/.amplihack/profile-root`. Changing the variable or the saved
@@ -4622,6 +4684,22 @@ on overflow: no
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
+With a [rotation owner](#rotation-owner) recorded and its service stopped:
+
+```
+root: /home/you/.claude-profiles (source: config)
+rotate: stopped
+autostart: on (default)
+owner: amplihack-rotator.service (pid 48190, not running)
+deferring: yes
+pid: -
+live: spare
+last cycle: 2026-10-31T07:40:05Z stayed
+overflow: -
+on overflow: no
+log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
 On credits, with a second overflow profile blocked:
 
 ```
@@ -4641,6 +4719,8 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `root` | Always the first line. `<path> (source: env\|config\|default)` for the resolved root, or `<path> (pinned by running rotator)` when the rotator was found through the [rotate root record](#rotate-root-record). The lines after it describe that root. |
 | `rotate` | `running`, `stopped`, `stale` or `unverifiable`. |
 | `autostart` | `on` or `off`, then the source in brackets: `default`, `setting`, `env` or `corrupt`. See [Rotate autostart](#rotate-autostart). Unix only. |
+| `owner` | Only when `owner.json` exists. `<unit> (pid <pid>, running)` when the rotator recorded there is the running rotator, `<unit> (pid <pid>, not running)` otherwise, or `unreadable marker <path>` when the file cannot be trusted. See [Rotation owner](#rotation-owner). |
+| `deferring` | Only after an `owner` line. `yes` when launches leave rotation to the owner, which is whenever autostart is on; `no (autostart off)` when autostart is off and launches would not start a rotator anyway. The line reflects the autostart setting only. With auto-switch off, a launch starts no rotator whatever this line shows. |
 | `pid` | The pid, or `-`. |
 | `live` | The ledger's `live` profile, or `-`. |
 | `last cycle` | The time and outcome (`swapped`, `stayed`, `switched`, `alerted`, `skipped`, `idle` or `held`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; `switched` by [`profile switch`](#rotate-switch), and kept by the held cycles after it; `held` when the [pin](#rotate-pin) held rotation with no switch record; a cycle that could not take the lock records nothing. An [overflow](#rotate-overflow) cycle adds ` overflow=in`, ` overflow=out` or ` overflow=on`. |
@@ -4649,7 +4729,7 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `on overflow` | `yes (<name>, held by switch)` when a [pin](#rotate-pin) names the live overflow profile: a `profile switch` onto it is a choice to spend, and the rotator does not move off it until `profile switch --none` (see [Pin and overflow](#pin-and-overflow)). Otherwise `yes (<name>)` when the profile identified as live in `~/.claude` by account is an overflow profile and the ledger's `last_cycle.overflow` is `in` or `on`, which means the rotator found no plan capacity in its last cycle. `no (<name> is overflow; plan capacity remains)` when the live profile is an overflow profile but the last cycle carries no such tag, for example after the login was put in `~/.claude` by hand. `no` when it is a plan profile, `-` when the live profile cannot be identified. `status` runs no probe; the ledger is its only evidence. |
 | `default` | Printed only when the [default pointer](#clearing-the-default) names an overflow profile: `<name> (overflow; launches use it directly)`. |
 | `log` | The log path. |
-| `alert` | Zero or more. A current [hand-change](#rotate-hand-change-recovery) guidance line. |
+| `alert` | Zero or more. A current [hand-change](#rotate-hand-change-recovery) guidance line, then `alert: auto-switch is off while the live login is exhausted` when auto-switch has been turned off, by `<root>/.auto-switch`, by `AMPLIHACK_CLAUDE_AUTO_SWITCH=0` or by a damaged settings file (see [Toggle and precedence](#toggle-and-precedence)), and the [cached readings](#exhausted-live-login) show the live login at its limit. With no setting at all the rotator keeps rotating, and this line never appears. Like the other lines, `status` decides whether auto-switch is off from its own environment, so a `status` run with an `AMPLIHACK_CLAUDE_AUTO_SWITCH` value different from the rotator's can show or hide this line wrongly. |
 | `warning` | Zero or more. A profile that lost its login to a manual `/login` in `~/.claude`. |
 
 Run from a shell where the root now resolves elsewhere, for example cron with
@@ -4672,8 +4752,11 @@ or `journal: inconsistent`, and one that cannot be read `journal: damaged`. A
 ledger that cannot be read shows `live: - (ledger unreadable)`.
 
 After `last cycle:`, `status` prints one `alert: <line>` for each line of the
-ledger's `guidance`, then one `warning: <line>` for each profile in its
-`lost_login`. It does not compare accounts itself; it shows what the last
+ledger's `guidance`, then the [exhausted-login](#exhausted-live-login) alert
+when it applies, then one `warning: <line>` for each profile in its
+`lost_login`. The exhausted-login alert is worked out by `status` itself from
+cached readings, so it appears with or without a running rotator; `status`
+still runs no probe. It does not compare accounts itself; it shows what the last
 cycle decided. Lines are cleaned of control characters again before
 printing:
 
@@ -4700,45 +4783,52 @@ warning: profile ryan-ryansweet has no login anywhere: a manual /login in ~/.cla
 On Unix, `amplihack claude`, `amplihack launch` and `amplihack profile run`
 start the background rotator when auto-switch is on and no rotator is
 running. The check runs after the launch has resolved its profile and before
-Claude starts. It never fails the launch, never changes its exit status and
-never writes to stdout. On other platforms it does nothing.
+Claude starts. It never fails the launch, never changes its exit status,
+never waits, never runs `systemctl` and never writes to stdout. On other
+platforms it does nothing.
 
-It checks, in order, and stops silently at the first that fails. Nothing is
-created on disk before step 8.
+It checks, in order, and stops at the first that fails. Only step 7 prints
+when it stops the launch; the other steps stop silently. Step 13 prints the
+started line when it succeeds. Nothing is created on disk before
+step 10.
 
 | Step | Check | When it fails |
 |------|-------|---------------|
-| 1 | Auto-switch is on: `<root>/.auto-switch` says `enabled=on`, or `AMPLIHACK_CLAUDE_AUTO_SWITCH=1`. A missing, damaged or `off` setting counts as off. | No effect. |
-| 2 | The root exists, is a real directory (not a symlink) owned by you, and is not writable by other users. | Skipped. Nothing else under the root is read; in particular the autostart setting is not. |
-| 3 | The effective uid is not `0`. | Skipped. `rotate start` still works as root. |
-| 4 | Autostart is on (see the precedence table below). | No effect. |
-| 5 | Not Docker: no `--docker` flag, and Docker not activated through the environment. The environment activates it only when `AMPLIHACK_USE_DOCKER` is truthy, the process is not already inside a container, and Docker is running. `--auto` launches are not skipped. | Skipped. |
-| 6 | The [daemon state](#rotate-daemon) is not `running` or `unverifiable`. | Already running, or skipped. |
-| 7 | The [prototype lock](#rotate-prototype-coexistence) is free and the root is private, as `start` requires. | Skipped. |
-| 8 | Creates the state directory if needed and tries `<root>/.auto-switch.d/lock` once, without waiting. | Busy: another process holds it. |
-| 9 | Under the lock, the daemon state is still not `running`. | Already running. |
-| 10 | The `AMPLIHACK_ROTATE_*` [settings](#rotate-settings) in the launch's environment are valid. | Failed; no rotator started. |
-| 11 | Starts the [daemon](#rotate-daemon), writes `rotate.pid` and the [root record](#rotate-root-record), then releases the lock. | Failed. If the pid file cannot be written, the child is sent `SIGTERM`. |
+| 1 | The launch is not inside a recipe run: `AMPLIHACK_RECIPE_RUN_ID` is unset or empty. | Skipped, silently. `AMPLIHACK_ROTATE_AUTOSTART=on` does not override this. |
+| 2 | Auto-switch is on: `<root>/.auto-switch` says `enabled=on`, or `AMPLIHACK_CLAUDE_AUTO_SWITCH=1`. A missing, damaged or `off` setting counts as off. | No effect. |
+| 3 | The root exists, is a real directory (not a symlink) owned by you, and is not writable by other users. | Skipped. Nothing else under the root is read; in particular the autostart setting is not. |
+| 4 | The effective uid is not `0`. | Skipped. `rotate start` still works as root. |
+| 5 | Autostart is on (see the precedence table below). | No effect. |
+| 6 | Not Docker: no `--docker` flag, and Docker not activated through the environment. The environment activates it only when `AMPLIHACK_USE_DOCKER` is truthy, the process is not already inside a container, and Docker is running. `--auto` launches are not skipped. | Skipped. |
+| 7 | No [rotation owner](#rotation-owner) is recorded: `<root>/.auto-switch.d/rotate/owner.json` does not exist. | Skipped. If the owner is not running, or the file cannot be trusted, the launch prints the [owner warning](#rotation-owner) to stderr once. `AMPLIHACK_ROTATE_AUTOSTART=on` does not override this. |
+| 8 | The [daemon state](#rotate-daemon) is not `running` or `unverifiable`. | Already running, or skipped. |
+| 9 | The [prototype lock](#rotate-prototype-coexistence) is free and the root is private, as `start` requires. | Skipped. |
+| 10 | Creates the state directory if needed and tries `<root>/.auto-switch.d/lock` once, without waiting. | Busy: another process holds it. |
+| 11 | Under the lock, the daemon state is still not `running` and no owner has been recorded since step 7. | Already running, or skipped silently. |
+| 12 | The `AMPLIHACK_ROTATE_*` [settings](#rotate-settings) in the launch's environment are valid. | Failed; no rotator started. |
+| 13 | Starts the [daemon](#rotate-daemon), writes `rotate.pid` and the [root record](#rotate-root-record), then releases the lock. | Failed. If the pid file cannot be written, the child is sent `SIGTERM`. |
 
-Steps 8 to 11 run under the state lock, and `start` and other launches check
+Steps 10 to 13 run under the state lock, and `start` and other launches check
 under the same lock, so at most one rotator runs per root. Unlike `start`,
 autostart runs no recovery; the daemon's first cycle does.
 
-After step 11 the launch prints one line to stderr:
+After step 13 the launch prints one line to stderr:
 
 ```
 amplihack: started Claude login rotator (pid <pid>); 'amplihack profile rotate autostart off' to disable
 ```
 
 and appends `autostart: started pid <pid> exe <path>` to `rotate.err`. A
-failure at step 10 or 11, or an I/O error at step 8, is appended to
+failure at step 12 or 13, or an I/O error at step 10, is appended to
 `rotate.err` as one `autostart: failed: <error>` line, when that file can be
 written, and is otherwise ignored. Every `rotate.err` line has the
 [log](#rotate-log) time prefix and its control characters removed.
 
-Nested launches inside a recipe run take the same steps, so they start a
-rotator only when none is running. The Claude Code `SessionStart` hook does
-not start the rotator.
+Launches inside a recipe run never start a rotator, whether or not one is
+running, and print nothing about it. A recipe run is detected by
+`AMPLIHACK_RECIPE_RUN_ID`, which the recipe runner sets for every step; only
+its presence is checked, and its value is never printed or stored. The
+Claude Code `SessionStart` hook does not start the rotator.
 
 #### Autostart setting
 
@@ -4766,6 +4856,148 @@ if needed.
 When the variable is set to a valid value, `rotate autostart on|off` still
 writes the file, and then warns on stderr that
 `AMPLIHACK_ROTATE_AUTOSTART=<value>` overrides it in this environment.
+
+`rotate autostart on|off` is the only command that writes the file. Each
+run adds a line to the [setting change log](#setting-change-log), even when
+the file already held the same value. `rotate autostart` with no argument
+reads the state and logs nothing.
+
+#### Rotation owner
+
+A rotator run by a service manager records itself as the owner of rotation
+for its root. While an owner is recorded, launches never start a rotator,
+even when the owner's service has stopped, so a stopped service is not
+quietly replaced by an unsupervised rotator.
+
+`rotate watch` records itself when either holds:
+
+- `INVOCATION_ID` is set and not empty. systemd sets it for every process a
+  unit starts. Only its presence is checked; its value is never printed or
+  stored.
+- `--supervised` or `--supervised=UNIT` is given.
+
+It writes `<root>/.auto-switch.d/rotate/owner.json` under the state lock,
+after `rotate.pid`, and only when it wrote that pid file itself, so a
+`watch` that refuses to start, or a rotator started by `rotate start` or a
+launch, records nothing:
+
+```json
+{
+  "version": 1,
+  "unit": "amplihack-rotator.service",
+  "pid": 48190
+}
+```
+
+The file is written atomically with mode `0600`, never through a symlink.
+If it cannot be written, the log says `owner: not recorded (<error>)` and the
+rotator runs anyway; otherwise it says `owner: recorded <unit> (pid <pid>)`.
+The file stays when the service stops, and amplihack never removes it.
+
+The unit name comes from the first of these that gives one:
+
+1. The value of `--supervised=UNIT`.
+2. The last path part ending in `.service` in `/proc/self/cgroup`, read
+   without following symlinks and up to 64 KiB. `.scope` parts are ignored.
+   A part that is not a valid unit name is ignored.
+3. `amplihack-rotator.service`.
+
+When `owner.json` names `amplihack-rotator.service` but the service has
+another name, `watch` was started without `--supervised=UNIT` and could not
+read a unit name from its cgroup.
+
+A valid unit name is at most 256 bytes of ASCII letters, digits and `-`,
+`_`, `.`, `@` and `:`: a non-empty name followed by `.service`, so
+`.service` alone is not valid. A `--supervised` value that is not valid is a
+`RotateConfig` error before any lock is taken or file written, with the value
+escaped and cut to 256 characters:
+
+```
+error: invalid rotate setting --supervised "rotator": expected a unit name ending in .service
+```
+
+The owner is *running* when the [daemon state](#rotate-daemon) is `running`
+and the verified rotator's pid is the `pid` in `owner.json`. A rotator
+running under another pid, such as one started by hand with `rotate start`,
+does not count: a launch still prints the `which is not running` warning
+below while that rotator runs. On a host without `/proc` the owner counts as
+not running.
+
+`owner.json` *cannot be trusted*, and counts as *damaged*, when it is a
+symlink, is not a regular file, is not owned by you, is writable by group or
+others, is larger than 64 KiB, is not valid JSON, has an unknown field, has a
+`version` other than `1`, has a `pid` of `0`, or names an invalid unit. A
+damaged file still stops launches from starting a rotator.
+
+When a launch reaches [step 7](#rotate-autostart) and the owner is not
+running, it prints one line to stderr and then starts Claude as usual:
+
+```
+rotation is owned by amplihack-rotator.service, which is not running
+```
+
+The unit in the line is the one in `owner.json`, or
+`amplihack-rotator.service` when the file is damaged; text from a damaged
+file is never printed. The line is printed at most once per launch process.
+Nothing is printed when the owner is running, when autostart or auto-switch
+is off, or inside a recipe run.
+
+To hand rotation back to autostart, stop the service and delete the file.
+The path is under your profile root, which `rotate status` prints on its
+`root:` line; with a root of `~/.claude-profiles`:
+
+```bash
+rm ~/.claude-profiles/.auto-switch.d/rotate/owner.json
+```
+
+The next launch with auto-switch on then starts a rotator as before.
+amplihack binaries older than this file ignore it, and may start a rotator
+beside a stopped service.
+
+A `rotate watch` started by hand from a shell that inherited
+`INVOCATION_ID`, for example a terminal opened from a systemd service,
+records itself as the owner too. `rotate status` names the unit, so such a
+record can be spotted; delete `owner.json` to clear it. To run `rotate watch`
+by hand from such a shell without claiming ownership, start it with
+`env -u INVOCATION_ID amplihack profile rotate watch …`.
+
+#### Setting change log
+
+`<root>/.auto-switch.d/rotate/setting-changes.log` records who changed the
+autostart or auto-switch setting. Each line has the [log](#rotate-log) time
+prefix, then one of:
+
+```
+2026-10-31T07:12:40Z autostart set=off was=on pid=51022 ppid=50988 exe=/home/you/.cargo/bin/amplihack
+2026-10-31T07:14:02Z auto-switch enabled=off was=on pid=51107 ppid=50988 exe=/home/you/.cargo/bin/amplihack
+```
+
+| Field | Value |
+|-------|-------|
+| `autostart set=` | The value `rotate autostart on\|off` wrote: `on` or `off`. |
+| `auto-switch enabled=` | The new `enabled` in [`.auto-switch`](#settings-file): `on` or `off`. |
+| `was=` | The value before the write: `on` or `off`, `missing` when there was no file, `corrupt` for an autostart file that could not be trusted, or `invalid` for an `.auto-switch` that was [corrupt](#settings-file). |
+| `pid=` | The process that made the change. |
+| `ppid=` | Its parent, which identifies the shell, agent or service that ran it. |
+| `exe=` | The path of the `amplihack` binary that made the change, or `-` when it cannot be read. Always the last field, so a path with spaces cannot be mistaken for another field. |
+
+`rotate autostart on|off` adds an `autostart` line every time it runs. Every
+write of `.auto-switch`, by `auto-switch on`, `off`, `threshold` or
+`exclude`, or by `profile overflow add` or `remove`, adds an `auto-switch`
+line, with `enabled=` and `was=` equal when the write changed another key. A
+command that leaves the file as it was writes nothing and adds no line.
+
+The file has mode `0600`, is opened with `O_APPEND` and `O_NOFOLLOW`, and is
+renamed to `setting-changes.log.1` when it passes 1 MiB, with the same
+checks as the [log](#rotate-log). It holds only the fields above: no
+environment values, arguments, account IDs, e-mail addresses or tokens. If
+it cannot be written, the command prints
+`warning: setting change not logged: <error>` to stderr and still succeeds.
+
+Changes made by editing `autostart` or `.auto-switch` by hand, and changes
+through `AMPLIHACK_ROTATE_AUTOSTART` or `AMPLIHACK_CLAUDE_AUTO_SWITCH`, are
+not logged. The log is a trace for finding which process turned a setting
+off, not an audit record.
 
 ### Rotate prototype coexistence
 
@@ -5323,7 +5555,7 @@ failures use this format.
 | `AutoSwitchUnsupported`: an `auto-switch` command on a platform without Unix file semantics | `auto-switch needs Linux or another Unix; leave it off` |
 | `AutoSwitchInvariant`: the state files are damaged or a login is not where the state says | `see the Recovery section of docs/howto/claude-profiles.md` |
 | `AutoSwitchInstall`: a profile's `settings.json` is a symlink, owned by someone else, not a JSON object, or cannot be written | `` fix or remove the reported file, then run `amplihack profile auto-switch repair` `` |
-| `RotateConfig`: a rotate flag or `AMPLIHACK_ROTATE_*` value is not a whole number in range | `` run `amplihack profile rotate --help` for the accepted values `` |
+| `RotateConfig`: a rotate flag or `AMPLIHACK_ROTATE_*` value is not a whole number in range, or `--supervised=UNIT` is not a valid unit name | `` run `amplihack profile rotate --help` for the accepted values `` |
 | `RotatePrototypeRunning`: the external rotator holds `<root>/.rotator/lock` | `stop the external rotator (tmux session claude-rotator) first` |
 | `RotateRefused`: a check before the swap failed, or the atomic exchange failed; nothing was moved. Also every [`profile switch`](#rotate-switch) refusal (no stored login, lock busy, recovery inconsistent, live login unusable) and a `switch --none` that found the lock busy | `nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md` |
 | `profile switch` moved the live login, then could not write the pin or the default pointer. Not a `RotateRefused`: the login did move | The message itself says to run `amplihack profile switch <name>` again; see [Rotate switch](#rotate-switch) |

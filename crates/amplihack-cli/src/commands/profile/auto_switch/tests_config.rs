@@ -707,3 +707,125 @@ fn config_write_is_called_only_from_update() {
     }
     assert!(offenders.is_empty(), "unlocked writers: {offenders:?}");
 }
+
+// --- Issue #1803: every real write of `.auto-switch` is logged --------------
+//
+// `update_within` adds `<time> auto-switch enabled=<new> was=<old> pid=..
+// ppid=.. exe=..` to `<root>/.auto-switch.d/rotate/setting-changes.log` after
+// each real write. `was` is `on`, `off`, `missing` or `invalid`. A failed log
+// write warns and does not fail the update.
+
+fn change_log(root: &std::path::Path) -> Vec<String> {
+    fs::read_to_string(root.join(".auto-switch.d/rotate/setting-changes.log"))
+        .unwrap_or_default()
+        .lines()
+        .map(String::from)
+        .collect()
+}
+
+#[track_caller]
+fn assert_logged(line: &str, event: &str) {
+    assert!(
+        line.contains(&format!(" {event} pid={} ppid=", std::process::id())),
+        "{line:?} lacks {event:?}"
+    );
+    assert!(line.contains(" exe="), "{line:?}");
+}
+
+fn set_enabled(root: &std::path::Path, on: bool) {
+    config::update(root, ReadMode::DefaultOnInvalid, |c| {
+        c.enabled = on;
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn a_toggle_is_logged_with_the_old_and_new_value() {
+    let tmp = private_root();
+    let root = tmp.path();
+    write_file(root, "enabled=on\nthreshold=90\nexclude=\n");
+    set_enabled(root, false);
+    set_enabled(root, true);
+    let lines = change_log(root);
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_logged(&lines[0], "auto-switch enabled=off was=on");
+    assert_logged(&lines[1], "auto-switch enabled=on was=off");
+}
+
+#[test]
+fn a_missing_file_is_logged_as_missing() {
+    let tmp = private_root();
+    set_enabled(tmp.path(), false);
+    assert_logged(
+        &change_log(tmp.path())[0],
+        "auto-switch enabled=off was=missing",
+    );
+}
+
+#[test]
+fn a_corrupt_file_is_logged_as_invalid() {
+    let tmp = private_root();
+    write_file(tmp.path(), "not a setting\n");
+    set_enabled(tmp.path(), true);
+    assert_logged(
+        &change_log(tmp.path())[0],
+        "auto-switch enabled=on was=invalid",
+    );
+}
+
+#[test]
+fn a_write_of_another_key_is_logged_with_equal_values() {
+    let tmp = private_root();
+    let root = tmp.path();
+    write_file(root, "enabled=on\nthreshold=90\nexclude=\n");
+    config::update(root, ReadMode::Editable, |c| {
+        c.threshold = 50;
+        Ok(())
+    })
+    .unwrap();
+    assert_logged(&change_log(root)[0], "auto-switch enabled=on was=on");
+}
+
+#[test]
+fn an_update_that_changes_nothing_logs_nothing() {
+    let tmp = private_root();
+    let root = tmp.path();
+    write_file(root, "enabled=on\nthreshold=90\nexclude=\n");
+    set_enabled(root, true);
+    assert_eq!(change_log(root), Vec::<String>::new());
+    assert!(
+        !root
+            .join(".auto-switch.d/rotate/setting-changes.log")
+            .exists()
+    );
+}
+
+#[test]
+fn a_refused_update_logs_nothing() {
+    let tmp = private_root();
+    let root = tmp.path();
+    write_file(root, "enabled=on\nthreshold=90\nexclude=\n");
+    let r = config::update(root, ReadMode::Editable, |_| {
+        Err(ProfileError::AutoSwitchConfig("no".into()))
+    });
+    assert!(r.is_err());
+    assert_eq!(change_log(root), Vec::<String>::new());
+}
+
+#[test]
+fn a_failed_log_write_does_not_fail_the_update() {
+    let tmp = private_root();
+    let root = tmp.path();
+    write_file(root, "enabled=on\nthreshold=90\nexclude=\n");
+    let log = root.join(".auto-switch.d/rotate/setting-changes.log");
+    fs::create_dir_all(&log).unwrap();
+    for d in [
+        root.join(".auto-switch.d"),
+        root.join(".auto-switch.d/rotate"),
+    ] {
+        fs::set_permissions(&d, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    set_enabled(root, false);
+    assert_eq!(file_text(root), "enabled=off\nthreshold=90\nexclude=\n");
+}

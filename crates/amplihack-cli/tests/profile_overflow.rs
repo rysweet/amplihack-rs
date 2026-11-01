@@ -506,7 +506,8 @@ fn a_damaged_ledger_never_moves_onto_overflow() {
     fs::create_dir_all(f.rotate_dir()).unwrap();
     private_file(
         &f.rotate_dir().join("ledger.json"),
-        "{\"version\":1,\"surprise\":1}",
+        // Not an unknown field: the ledger ignores those (#1659).
+        "{\"version\":1,",
     );
     let _ = f.run(&["profile", "rotate"]);
     assert_eq!(

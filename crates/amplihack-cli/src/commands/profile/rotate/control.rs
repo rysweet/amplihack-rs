@@ -2,10 +2,12 @@
 //! signal only a verified rotator. Also the ledger side of `profile
 //! overflow list` and `clear` (issue #1606).
 
-use super::daemon::{DaemonState, current_state, daemon_err};
+use super::daemon::{DaemonState, current_state, daemon_err, exe_name, paused};
+use super::exhausted;
 use super::identify::{self, LiveId};
 use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
 use super::log::{msg, timestamp};
+use super::owner;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, now};
 use crate::commands::profile::name::ProfileName;
@@ -99,7 +101,14 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         None => "-".into(),
     };
     let auto = super::autostart_line(store.root());
-    println!("rotate: {word}\n{auto}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    println!("rotate: {word}\n{auto}");
+    // An empty name matches no process, so the owner then counts as down.
+    let owner = owner::check(&rs, Path::new("/proc"), &exe_name().unwrap_or_default());
+    let autostart_on = super::autostart::effective(store.root(), &|k| std::env::var_os(k)).on;
+    for line in owner::status_lines(&rs, &owner, autostart_on) {
+        println!("{line}");
+    }
+    println!("pid: {pid}\nlive: {live}\nlast cycle: {last}");
     println!("overflow: {overflow}\napi key: {api_key}\non overflow: {on_overflow}");
     if let Some(line) = super::platform_live_line(store.root()) {
         println!("{line}");
@@ -119,6 +128,12 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     }
     for line in ledger.as_ref().map(status_alerts).unwrap_or_default() {
         println!("{line}");
+    }
+    if paused(store.root()) {
+        let (session_at, week_at) = exhausted::thresholds(&rs, &state);
+        if exhausted::live_exhausted(store.root(), session_at, week_at, now()) {
+            println!("{}", exhausted::STATUS);
+        }
     }
     match rs.load_journal() {
         Ok(Some(j)) if j.phase == Phase::Inconsistent => println!("journal: inconsistent"),

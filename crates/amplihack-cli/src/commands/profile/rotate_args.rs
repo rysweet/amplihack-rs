@@ -21,7 +21,7 @@ pub enum RotateAction {
     /// Start `rotate watch` as a detached background process
     Start(WatchFlags),
     /// Run a cycle every --interval seconds in the foreground
-    Watch(WatchFlags),
+    Watch(WatchArgs),
     /// Stop the background rotator
     Stop,
     /// Show whether the rotator runs, the live profile and the last cycle
@@ -71,3 +71,23 @@ pub struct WatchFlags {
     #[arg(long, hide = true)]
     pub spawned: bool,
 }
+
+/// `watch`'s flags: those it shares with `start`, and `--supervised`.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub struct WatchArgs {
+    #[command(flatten)]
+    pub flags: WatchFlags,
+    /// Record this rotator as the owner of rotation, so launches leave rotation to its service; UNIT names the service
+    #[arg(
+        long,
+        value_name = "UNIT",
+        num_args = 0..=1,
+        require_equals = true,
+        conflicts_with = "spawned"
+    )]
+    pub supervised: Option<Option<String>>,
+}
+
+#[cfg(test)]
+#[path = "tests_rotate_args.rs"]
+mod tests;

@@ -2,6 +2,7 @@ use super::store::SHARED_SETTINGS_KEYS;
 
 const REFERENCE: &str = include_str!("../../../../../docs/reference/profile-command.md");
 const HOWTO: &str = include_str!("../../../../../docs/howto/claude-profiles.md");
+const ROTATION_HOWTO: &str = include_str!("../../../../../docs/howto/claude-profile-rotation.md");
 
 fn backticked(line: &str) -> Vec<&str> {
     line.split('`').skip(1).step_by(2).collect()
@@ -610,5 +611,49 @@ fn docs_describe_hand_change_recovery() {
         "its oauthAccount block has no usable accountUuid or emailAddress",
     ] {
         assert!(reference.contains(line), "reference is missing `{line}`");
+    }
+}
+
+// --- Issue #1803 ------------------------------------------------------------
+
+#[test]
+fn the_reference_documents_the_rotation_owner() {
+    for want in [
+        "[--supervised[=UNIT]]",
+        "#### Rotation owner",
+        "#### Setting change log",
+        "#### Exhausted live login",
+        "`AMPLIHACK_RECIPE_RUN_ID`",
+        "`INVOCATION_ID`",
+        "`owner.json`",
+        "`setting-changes.log`",
+        "| 13 | Starts the [daemon]",
+        "rotation is owned by amplihack-rotator.service, which is not running",
+        "autostart set=off was=on pid=",
+        "auto-switch enabled=off was=on pid=",
+    ] {
+        assert!(REFERENCE.contains(want), "reference lacks {want:?}");
+    }
+}
+
+#[test]
+fn the_old_nested_launch_claim_is_gone() {
+    for (name, doc) in [("reference", REFERENCE), ("rotation howto", ROTATION_HOWTO)] {
+        assert!(
+            !doc.contains("start a rotator only when none is running"),
+            "{name} still says nested launches start a rotator"
+        );
+    }
+}
+
+#[test]
+fn the_rotation_howto_gives_the_recovery_step() {
+    for want in [
+        "owner.json",
+        "setting-changes.log",
+        "--supervised",
+        "auto-switch is off while the live login is exhausted",
+    ] {
+        assert!(ROTATION_HOWTO.contains(want), "howto lacks {want:?}");
     }
 }

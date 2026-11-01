@@ -46,6 +46,7 @@ use std::sync::{Arc, Barrier, Mutex};
 use std::time::Duration;
 
 const EXE: &str = "amplihack-autostart-test";
+const RECIPE_RUN_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
 /// Above `PID_MAX_LIMIT`: never a real process.
 const FAKE_PID: u32 = 4_200_000;
 const STARTED: &str = "amplihack: started Claude login rotator (pid 4200000); 'amplihack profile rotate autostart off' to disable\n";
@@ -391,7 +392,7 @@ fn a_root_writable_by_others_is_skipped_without_reading_the_setting() {
     mode(&f.root, 0o757);
     let (o, err) = f.run();
     mode(&f.root, 0o700);
-    assert_eq!(o, Outcome::Skipped("root"), "step 2 comes before step 4");
+    assert_eq!(o, Outcome::Skipped("root"), "step 3 comes before step 5");
     assert_eq!(err, "");
     assert_eq!(f.spawned(), 0);
     assert!(!f.root.join(".auto-switch.d").join("lock").exists());
@@ -447,7 +448,7 @@ fn root_never_autostarts() {
     assert_eq!(
         o,
         Outcome::Skipped("root-user"),
-        "step 3 comes before step 4"
+        "step 4 comes before step 5"
     );
     assert_eq!(err, "");
     assert_eq!(f.spawned(), 0);
@@ -461,7 +462,7 @@ fn the_autostart_setting_off_does_nothing() {
         docker_flag: true,
         ..Opts::default()
     });
-    assert_eq!(o, Outcome::Off, "step 4 comes before step 5");
+    assert_eq!(o, Outcome::Off, "step 5 comes before step 6");
     assert_eq!(err, "");
     assert_eq!(f.spawned(), 0);
     assert!(!f.root.join(".auto-switch.d").join("lock").exists());
@@ -576,7 +577,7 @@ fn a_held_prototype_lock_is_refused_as_start_refuses_it() {
     assert_eq!(o, Outcome::Skipped("refused"));
     assert_eq!(err, "");
     assert_eq!(f.spawned(), 0);
-    assert!(!f.state_dir_exists(), "steps 1-7 create nothing");
+    assert!(!f.state_dir_exists(), "steps 1-9 create nothing");
 }
 
 #[test]
@@ -858,11 +859,19 @@ fn cli_without_a_value_changes_nothing() {
 
 /// Runs `autostart_on_launch` against a temp HOME and root. Every case
 /// also sets an invalid `AMPLIHACK_ROTATE_HOLD`, so even a wrong gate fails
-/// at step 10 and can never reach the real `spawn()`.
+/// at step 12 and can never reach the real `spawn()`.
 fn on_launch(vars: [(&str, &str); 2], docker: bool) -> Fx {
     let f = fx();
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
-    let _restore = EnvGuard::capture(&["HOME", ROOT_ENV, ENV, "AMPLIHACK_CLAUDE_AUTO_SWITCH"]);
+    let _restore = EnvGuard::capture(&[
+        "HOME",
+        ROOT_ENV,
+        ENV,
+        "AMPLIHACK_CLAUDE_AUTO_SWITCH",
+        RECIPE_RUN_ENV,
+    ]);
+    // This suite may itself run inside a recipe step (#1803).
+    let _no_recipe = EnvGuard::unset([RECIPE_RUN_ENV]);
     let _set = EnvGuard::set([
         ("HOME", f.home.to_str().unwrap()),
         (ROOT_ENV, f.root.to_str().unwrap()),
@@ -987,8 +996,9 @@ fn on_launch_reaching_the_spawner() -> Fx {
         "AMPLIHACK_CLAUDE_AUTO_SWITCH",
         "AMPLIHACK_ROTATE_HOLD",
         TEST_HOME_GUARD_ENV,
+        RECIPE_RUN_ENV,
     ]);
-    let _unset = EnvGuard::unset([TEST_HOME_GUARD_ENV, "AMPLIHACK_ROTATE_HOLD"]);
+    let _unset = EnvGuard::unset([TEST_HOME_GUARD_ENV, "AMPLIHACK_ROTATE_HOLD", RECIPE_RUN_ENV]);
     let _set = EnvGuard::set([
         ("HOME", f.home.to_str().unwrap()),
         (ROOT_ENV, f.root.to_str().unwrap()),

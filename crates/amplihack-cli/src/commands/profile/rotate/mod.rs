@@ -18,6 +18,8 @@ mod backup;
 #[cfg(unix)]
 mod candidates;
 #[cfg(unix)]
+pub(super) mod change_log;
+#[cfg(unix)]
 mod control;
 #[cfg(unix)]
 mod cycle;
@@ -27,6 +29,8 @@ mod daemon;
 mod damp;
 #[cfg(unix)]
 mod decide;
+#[cfg(unix)]
+mod exhausted;
 #[cfg(unix)]
 mod gate_record;
 #[cfg(unix)]
@@ -59,6 +63,8 @@ mod overflow;
 mod overflow_msg;
 #[cfg(unix)]
 mod overflow_record;
+#[cfg(unix)]
+mod owner;
 #[cfg(unix)]
 mod pin;
 #[cfg(unix)]
@@ -117,6 +123,8 @@ mod tests_measure;
 #[cfg(all(test, unix))]
 mod tests_overflow;
 #[cfg(all(test, unix))]
+mod tests_owner;
+#[cfg(all(test, unix))]
 mod tests_pin;
 #[cfg(all(test, target_os = "linux"))]
 mod tests_pin_overflow;
@@ -167,6 +175,8 @@ pub(super) use control::{clear_overflow_block, overflow_blocks};
 pub(super) use log::timestamp;
 #[cfg(unix)]
 pub(crate) use older_readers::warn_foreign_rotator;
+#[cfg(unix)]
+pub(super) use platform_block::platform_live_line;
 
 // Auto-switch's overflow gate (`gate_record`): the running rotator's own
 // settings, or, when no rotator runs, the `AMPLIHACK_ROTATE_*` variables.
@@ -212,24 +222,6 @@ pub(super) fn is_live(
     matches!(identify::live(store, &rs, home), Ok((identify::LiveId::Known(n), _)) if &n == name)
 }
 
-/// The status line while the rotate ledger says the live login is an
-/// API-key profile (issue #1700), for `rotate status` and `auto-switch
-/// status`. The ledger is the only evidence; nothing is probed.
-#[cfg(unix)]
-pub(super) fn platform_live_line(root: &std::path::Path) -> Option<String> {
-    let l = ledger::RotateState::new(root).load_ledger().ok()??;
-    if l.live_kind.as_deref() != Some(ledger::LIVE_KIND_PLATFORM) {
-        return None;
-    }
-    let live = l.live?;
-    let since = l
-        .since
-        .map_or_else(|| "unknown".to_string(), log::timestamp);
-    Some(format!(
-        "~/.claude is on API key profile {live}: work is billed per token (since {since})"
-    ))
-}
-
 /// After a successful `profile switch NAME`: one line on stderr when the
 /// running rotator would ignore the hold. The switch itself succeeded, so
 /// this never changes the exit code.
@@ -271,8 +263,10 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                 daemon::start(store, &home?, &s)?;
             }
             Some(RotateAction::Watch(w)) => {
-                let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
-                daemon::watch(store, home?, s, w.spawned)?;
+                let s = settings::resolve(&w.flags.tune, w.flags.interval.as_deref(), &env)?;
+                let supervised = w.supervised.as_ref().map(Option::as_deref);
+                let claim = owner::claim(supervised, &env, std::path::Path::new("/proc"))?;
+                daemon::watch(store, home?, s, w.flags.spawned, claim)?;
             }
             Some(RotateAction::Stop) => control::stop(store, home.as_deref().ok())?,
             Some(RotateAction::Status) => control::status(store, home.as_deref().ok(), source),

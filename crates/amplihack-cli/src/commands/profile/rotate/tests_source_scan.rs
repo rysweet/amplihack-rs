@@ -63,6 +63,9 @@ fn rotate_has_the_planned_files() {
         "pin.rs",
         "prelude.rs",
         "switch.rs",
+        "owner.rs",
+        "exhausted.rs",
+        "change_log.rs",
     ] {
         assert!(names.iter().any(|n| n == want), "missing rotate/{want}");
     }
@@ -426,4 +429,102 @@ fn every_rotate_submodule_is_unix_only() {
         checked > 20,
         "found only {checked} mod lines in rotate/mod.rs"
     );
+}
+
+// --- Issue #1803: the rotation owner and the setting logs -------------------
+
+/// Text with its comments removed.
+fn code_of(text: &str) -> String {
+    text.lines()
+        .map(|l| l.split("//").next().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn the_new_files_go_through_the_checked_helpers_and_signal_nothing() {
+    for name in ["owner.rs", "exhausted.rs", "change_log.rs"] {
+        let code = code_of(&source(name));
+        for f in [
+            "fs::write",
+            "fs::read",
+            "File::open",
+            "OpenOptions",
+            "create_dir_all",
+            "remove_file",
+            "Command::new",
+            "systemctl",
+            "libc::kill",
+        ] {
+            assert!(!code.contains(f), "rotate/{name} uses `{f}`");
+        }
+    }
+}
+
+#[test]
+fn only_autostart_set_writes_the_autostart_setting() {
+    let text = source("autostart.rs");
+    let code = code_of(&text);
+    assert!(
+        code.contains("\nconst FILE: &str = \"autostart\";"),
+        "the file name stays private to autostart.rs"
+    );
+    assert_eq!(
+        code.matches("write_private_atomic(").count(),
+        1,
+        "one write in autostart.rs"
+    );
+    assert!(body_of(&text, "set").contains("write_private_atomic("));
+    for path in sources() {
+        let code = code_of(&fs::read_to_string(&path).unwrap());
+        assert!(
+            !code.contains("join(\"autostart\")"),
+            "{} builds the setting's path by hand",
+            path.display()
+        );
+    }
+}
+
+#[test]
+fn the_owner_is_checked_again_under_the_lock() {
+    let run = body_of(&source("autostart.rs"), "run");
+    assert_before(&run, "docker_env", "owner::check", "run");
+    let (before, after) = run.split_once("try_lock").expect("run takes the lock");
+    assert!(before.contains("owner::check"), "checked before the lock");
+    assert!(after.contains("owner::check"), "checked under the lock");
+    assert!(!run.contains("Once"), "the warning uses no static Once");
+}
+
+#[test]
+fn the_spawned_rotator_never_inherits_invocation_id() {
+    let spawn = body_of(&source("daemon.rs"), "spawn");
+    assert!(spawn.contains("env_remove(\"INVOCATION_ID\")"), "{spawn}");
+}
+
+#[test]
+fn watch_writes_the_marker_after_the_pid_file_and_only_when_not_spawned() {
+    let watch = body_of(&source("daemon.rs"), "watch");
+    assert_before(&watch, "\"rotate.pid\"", "owner::write", "watch");
+    let (guarded, rest) = watch
+        .split_once("gate_record::write")
+        .expect("watch records the gate");
+    let (_, inside) = guarded
+        .split_once("if !spawned")
+        .expect("watch has the guard");
+    assert!(inside.contains("owner::write"), "inside `if !spawned`");
+    assert!(!rest.contains("owner::write"), "written once");
+}
+
+#[test]
+fn the_exhausted_check_takes_no_lock_and_saves_nothing() {
+    let exhausted = code_of(&source("exhausted.rs"));
+    for f in [
+        "try_lock",
+        "run_cycle",
+        "measure",
+        "save_ledger",
+        "save_usage",
+    ] {
+        assert!(!exhausted.contains(f), "exhausted.rs uses `{f}`");
+    }
 }

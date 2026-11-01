@@ -1,6 +1,7 @@
 //! Rotator autostart: `amplihack claude`, `launch` and `profile run` start
-//! the background rotator when auto-switch is on and none is running, and
-//! the `rotate autostart [on|off]` setting that turns it off. See "Rotate
+//! the background rotator when auto-switch is on, none is running, the
+//! launch is not inside a recipe run and no service owns rotation, and the
+//! `rotate autostart [on|off]` setting that turns it off. See "Rotate
 //! autostart" in docs/reference/profile-command.md for the steps in `run`.
 //!
 //! A launch is never failed, slowed by a wait or given stdout output by
@@ -8,9 +9,11 @@
 //! without waiting, and failures go to `rotate.err` only.
 
 use super::TuneFlags;
+use super::change_log;
 use super::daemon::{self, DaemonState, Spawner, launch_core, start_refusal, state_at};
 use super::ledger::RotateState;
 use super::log::RotateLog;
+use super::owner::{self, OwnerState};
 use super::settings;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
@@ -28,6 +31,8 @@ pub const ENV: &str = "AMPLIHACK_ROTATE_AUTOSTART";
 /// The setting's file name in `<root>/.auto-switch.d/rotate/`.
 const FILE: &str = "autostart";
 const MAX_SETTING: u64 = 64;
+/// Set by the recipe runner for every step. Only its presence is read.
+const RECIPE_RUN_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
 
 /// Where the effective autostart state comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -136,8 +141,17 @@ pub fn status_line(a: Autostart) -> String {
 pub fn set(store: &ProfileStore, on: bool) -> Result<(), ProfileError> {
     let rs = RotateState::new(store.root());
     rs.ensure()?;
-    let body: &[u8] = if on { b"on\n" } else { b"off\n" };
-    write_private_atomic(&rs.dir, FILE, body).map_err(ProfileError::Io)
+    let was = match read_setting(store.root()) {
+        FileValue::Missing => "missing",
+        FileValue::On => "on",
+        FileValue::Off => "off",
+        FileValue::Corrupt => "corrupt",
+    };
+    let word = if on { "on" } else { "off" };
+    write_private_atomic(&rs.dir, FILE, format!("{word}\n").as_bytes())
+        .map_err(ProfileError::Io)?;
+    change_log::record_or_warn(store.root(), &format!("autostart set={word} was={was}"));
+    Ok(())
 }
 
 /// `rotate autostart [on|off]`: prints the state, or writes the setting and
@@ -196,8 +210,8 @@ pub struct Deps<'a> {
 pub enum Outcome {
     /// Auto-switch or autostart is off.
     Off,
-    /// A gate refused: `test`, `root`, `root-user`, `docker`,
-    /// `unverifiable` or `refused`.
+    /// A gate refused: `test`, `recipe`, `root`, `root-user`, `docker`,
+    /// `owner`, `unverifiable` or `refused`.
     Skipped(&'static str),
     /// A verified rotator is running.
     Running,
@@ -221,17 +235,25 @@ fn failed(rs: &RotateState, e: &ProfileError) -> Outcome {
     Outcome::Failed
 }
 
-/// The autostart steps, in the documented order. Steps 1 to 7 create
-/// nothing; 8 to 11 run under the state lock, tried once without waiting.
+/// The autostart steps, in the documented order. Steps 1 to 9 create
+/// nothing; 10 to 13 run under the state lock, tried once without waiting.
 ///
 /// Step 0 (#1690): a process a test started (`AMPLIHACK_TEST_HOME_GUARD`
 /// non-empty) never autostarts a rotator. It returns `Skipped("test")` before
 /// any gate, so it reads, creates and prints nothing; a daemon started from
 /// a test's temp `HOME` would outlive the test. A guard value that is not
 /// valid UTF-8 still counts, since only emptiness is checked.
+///
+/// `AMPLIHACK_ROTATE_AUTOSTART=on` overrides neither the recipe gate nor the
+/// owner gate (#1803). The recipe gate is silent; the owner gate warns once
+/// when the owner is down or its marker is damaged, and its second check,
+/// under the lock, is silent.
 pub fn run(root: &Path, docker_flag: bool, d: Deps<'_>) -> Outcome {
     if (d.env)(TEST_HOME_GUARD_ENV).is_some_and(|v| !v.is_empty()) {
         return Outcome::Skipped("test");
+    }
+    if (d.env)(RECIPE_RUN_ENV).is_some_and(|v| !v.is_empty()) {
+        return Outcome::Skipped("recipe");
     }
     if !(d.auto_switch_on)(root) {
         return Outcome::Off;
@@ -250,6 +272,14 @@ pub fn run(root: &Path, docker_flag: bool, d: Deps<'_>) -> Outcome {
         return Outcome::Skipped("docker");
     }
     let rs = RotateState::new(root);
+    let owned = owner::check(&rs, d.proc_root, d.exe_name);
+    if owned != OwnerState::None {
+        if let Some(unit) = owned.warn_unit() {
+            // The launch goes on whether or not its stderr takes the line.
+            let _ = writeln!(d.err, "rotation is owned by {unit}, which is not running");
+        }
+        return Outcome::Skipped("owner");
+    }
     // A running or unverifiable rotator ends it, before the lock and again
     // under it.
     let blocked = || match state_at(&rs, d.proc_root, d.exe_name) {
@@ -273,6 +303,9 @@ pub fn run(root: &Path, docker_flag: bool, d: Deps<'_>) -> Outcome {
     };
     if let Some(o) = blocked() {
         return o;
+    }
+    if owner::check(&rs, d.proc_root, d.exe_name) != OwnerState::None {
+        return Outcome::Skipped("owner");
     }
     let s = match settings::resolve(&TuneFlags::default(), None, d.env) {
         Ok(s) => s,
