@@ -2518,8 +2518,8 @@ is missing.
    JSON object.
 3. That object's **top-level** `class` is `usage_limit`. With `jq` on
    `PATH`, `jq` parses the object and checks `.class == "usage_limit"`; a
-line that is not valid JSON does not count. Without `jq`, the
-   line must match
+   line that is not valid JSON does not count. Without `jq`, the line must
+   match
    `^amplihack\.recipe\.failure_class \{"action":"[a-z_]+","attempt":[0-9]+,"class":"usage_limit"`.
    The runner builds the marker with `serde_json` without the
    `preserve_order` feature, so its keys are written in alphabetical order
@@ -2532,6 +2532,9 @@ step's evidence. The usage-limit wait's
 [closing line](profile-command.md#closing-line) keeps the limit inside the
 runner's 40-line evidence window after a long wait. The runner prefixes
 every line of agent output, so an agent cannot write a column-0 marker. A
+bash step that runs a nested `amplihack recipe run` and tolerates its
+failure can still leave that run's column-0 marker in the log; if the round
+then fails for another reason, the loop stops as `USAGE_LIMIT`. A
 model that only mentions a usage limit, an indented or quoted copy of the
 marker, and `amplihack.recipe.usage_limit_wait` lines on their own do not
 stop the loop. A forged marker could at most change the label on a run that
@@ -2580,9 +2583,8 @@ and one line on stdout:
 the last stderr line. Called with two arguments, as every other stop is, its
 stderr lines are unchanged. The three `USAGE_LIMIT` reasons are fixed text,
 with no account, profile or log content in them. The stdout line is built
-with `jq -n --arg` when `jq` is on `PATH`, and otherwise with backslashes and
-double quotes escaped and newlines turned into spaces, so every reason gives
-valid JSON.
+with `tr` and `sed`, never `jq`: backslashes and double quotes are escaped
+and control characters become spaces, so every reason gives valid JSON.
 
 ### Readers of the result
 
