@@ -129,6 +129,8 @@ mod fields;
 #[cfg(unix)]
 mod launch;
 #[cfg(unix)]
+mod live_conversations;
+#[cfg(unix)]
 mod markers;
 #[cfg(unix)]
 mod pass;
@@ -165,6 +167,8 @@ mod validate;
 #[cfg(unix)]
 mod wrapper;
 
+#[cfg(unix)]
+pub(crate) use live_conversations::{Unreadable, unended_conversations};
 #[cfg(unix)]
 pub use wrapper::run_wrapped;
 

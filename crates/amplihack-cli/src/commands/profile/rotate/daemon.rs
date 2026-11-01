@@ -270,6 +270,7 @@ pub fn watch(
             &format!("overflow: gate not recorded, auto-switch will not use overflow ({e})"),
         );
     }
+    let archive_home = home.clone();
     let mut ctx = Ctx::new(store.clone(), home, s);
     ctx.stop = Some(stop.clone());
     let mut idle = false;
@@ -290,6 +291,7 @@ pub fn watch(
         if let Some(line) = exhausted::watch_line(store.root(), now()) {
             log_line(&rs, &line);
         }
+        super::sessions_daily::tick(&rs, &archive_home, now(), &stop);
         let until = Instant::now() + Duration::from_secs(s.interval);
         while Instant::now() < until && !stop.load(Ordering::Relaxed) {
             std::thread::sleep(Duration::from_secs(1).min(until - Instant::now()));
@@ -308,7 +310,7 @@ fn failure(e: &ProfileError) -> String {
     }
 }
 
-fn log_line(rs: &RotateState, line: &str) {
+pub(super) fn log_line(rs: &RotateState, line: &str) {
     match rs.ensure() {
         Ok(()) => Sink::new(open_or_warn(&rs.log, &rs.log1), false, true).emit(now(), line),
         Err(e) => eprintln!("warning: rotate log unavailable ({e}): {line}"),
