@@ -127,6 +127,8 @@ context:
   should_merge: "true"
   # Issue #1551: "true" tells prep and finalize agents to stop at merge-ready.
   no_merge: ""
+  # Issue #1714: only autodrive-build step-02 sets "true"; standalone runs fail closed on every failure state.
+  finalization_handoff: ""
   implementation_terminal_evidence: ""
   verification_terminal_evidence: ""
 

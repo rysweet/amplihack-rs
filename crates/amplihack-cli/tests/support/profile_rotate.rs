@@ -6,8 +6,14 @@
 //! a running `claude-rotator`. The fake `claude` never reads a login file:
 //! it reads the account e-mail from `$CLAUDE_CONFIG_DIR/.claude.json` (or
 //! `$HOME/.claude.json` when the variable is unset) and prints canned
-//! `/usage` output for that e-mail. Login fixtures are mode 0000 (0600 under
-//! root), so any attempt by amplihack to read one fails.
+//! `/usage` output for that e-mail. Login fixtures are private OAuth JSON
+//! objects holding `SENTINEL-TOKEN` values, which must never be printed.
+//!
+//! Issue #1698: the usage request (`--input-format` in argv) is answered only
+//! when `<email>.json` exists; without it the fake exits 1 at once, before
+//! recording anything, so every probe falls back to `/usage`. With
+//! `$CANNED/marks`, each `/usage` probe appends `S <email>` and `E <email>`
+//! to `$RECORD_DIR/marks` around a 0.5 s sleep.
 
 #![cfg(unix)]
 #![allow(dead_code)]
@@ -32,10 +38,22 @@ esac
 if [ -n "${CLAUDE_CONFIG_DIR+x}" ]; then cj="$CLAUDE_CONFIG_DIR/.claude.json"; else cj="$HOME/.claude.json"; fi
 email=$(sed -n 's/.*"emailAddress" *: *"\([^"]*\)".*/\1/p' "$cj" 2>/dev/null | head -n 1)
 [ -n "$email" ] || email=none
+case " $* " in
+  *" --input-format "*)
+    [ -f "$CANNED/$email.json" ] || exit 1
+    cat > "$RECORD_DIR/stdin.$email.$$"
+    cat "$CANNED/$email.json"
+    exit 0 ;;
+esac
 {
   printf 'CLAUDE_CONFIG_DIR=%s\n' "${CLAUDE_CONFIG_DIR-<unset>}"
   env | grep '^AMPLIHACK_ROTATE' || true
 } > "$RECORD_DIR/env.$email.$$"
+if [ -f "$CANNED/marks" ]; then
+  echo "S $email" >> "$RECORD_DIR/marks"
+  sleep 0.5
+  echo "E $email" >> "$RECORD_DIR/marks"
+fi
 [ -f "$CANNED/$email.slow" ] && sleep 30
 [ -f "$CANNED/$email.out" ] && cat "$CANNED/$email.out"
 exit 0
@@ -56,12 +74,16 @@ pub fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-/// A login file amplihack cannot read: only its inode identifies it.
+/// An OAuth login file. Issue #1700: amplihack reads which top-level keys
+/// a login file has (`claudeAiOauth` or not) to tell a subscription login
+/// from an API-key profile, so the file is a readable private JSON object.
+/// Its values are sentinels that must never be printed; its inode
+/// identifies it.
 pub fn login(path: &Path) -> u64 {
-    private_file(path, "SENTINEL-TOKEN");
-    if euid() != 0 {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
-    }
+    private_file(
+        path,
+        r#"{"claudeAiOauth":{"accessToken":"SENTINEL-TOKEN","refreshToken":"SENTINEL-TOKEN"}}"#,
+    );
     ino(path).unwrap()
 }
 
@@ -311,12 +333,40 @@ impl Fixture {
         out
     }
 
-    /// Recorded environments of every `claude` probe so far.
+    /// Recorded environments of every `/usage` probe so far.
     pub fn probe_envs(&self) -> Vec<String> {
+        self.records_named("env.")
+            .into_iter()
+            .map(|(_, body)| body)
+            .collect()
+    }
+
+    /// How many `/usage` probes ran for profile `p`'s account so far.
+    pub fn usage_probes(&self, p: &str) -> usize {
+        self.records_named(&format!("env.{}.", email(p))).len()
+    }
+
+    /// Record files whose name starts with `prefix`, with their contents.
+    fn records_named(&self, prefix: &str) -> Vec<(String, String)> {
         fs::read_dir(&self.records)
             .unwrap()
-            .map(|e| fs::read_to_string(e.unwrap().path()).unwrap())
+            .map(|e| e.unwrap())
+            .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+            .filter(|(name, _)| name.starts_with(prefix))
+            .map(|(name, path)| (name, fs::read_to_string(path).unwrap()))
             .collect()
+    }
+
+    /// Adds profile `p` with a login and an account, reading
+    /// `session`/`week`; it is not counted in `assert_each_login_once`.
+    pub fn add_logged_in(&self, p: &str, session: u32, week: u32) {
+        self.ok(&["profile", "add", p]);
+        private_file(
+            &self.root.join(p).join(".claude.json"),
+            &serde_json::json!({"oauthAccount": account_json(p)}).to_string(),
+        );
+        login(&self.slot(p));
+        self.usage(p, session, week);
     }
 }
 
@@ -347,7 +397,7 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
         line.to_string()
     };
     let kinds = regex::Regex::new(
-        r"^(cycle live=\S+( \S+:(s=\d+%,w=\d+%|failed))*|swap \S+->\S+ live s=\d+% w=\d+% target s=\d+% w=\d+% reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|stop: signal received; cycle abandoned|idle: auto-switch is off|would .+)$",
+        r"^(cycle live=\S+( \S+:(s=\d+%,w=\d+%|failed|per-token))*|swap \S+->\S+ live s=\d+% w=\d+% target s=\d+% w=\d+% reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|stop: signal received; cycle abandoned|idle: auto-switch is off|would .+)$",
     )
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");

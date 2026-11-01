@@ -204,6 +204,9 @@ fn snap_with(skip: Skip, sees_sessions: bool) -> Snap {
         sees_sessions,
         overflow: Vec::new(),
         pin: PinState::None,
+        ignored: Vec::new(),
+        home_no_oauth: false,
+        candidate_accounts: Vec::new(),
     }
 }
 
@@ -211,6 +214,7 @@ fn snap_with(skip: Skip, sees_sessions: bool) -> Snap {
 fn every_skip_reason_but_live_refuses_with_the_rotator_reason() {
     let e = env();
     for skip in [
+        Skip::Refused,
         Skip::NoLogin,
         Skip::Excluded,
         Skip::SessionRunning,

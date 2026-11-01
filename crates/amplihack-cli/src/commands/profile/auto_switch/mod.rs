@@ -53,6 +53,8 @@ mod tests_liveness;
 #[cfg(all(test, unix))]
 mod tests_mv;
 #[cfg(all(test, unix))]
+mod tests_platform_candidate;
+#[cfg(all(test, unix))]
 mod tests_record;
 #[cfg(all(test, unix))]
 mod tests_usage;
@@ -148,6 +150,22 @@ pub fn guard(store: &ProfileStore, name: &ProfileName, action: Action) -> Result
         let _ = (store, name, action);
         Ok(())
     }
+}
+
+/// Whether auto-switch holds `name`'s login for it (issue #1700): leased
+/// to another session's directory, or recorded as hosted in its own. A
+/// state directory or ledger that cannot be read holds nothing.
+#[cfg(unix)]
+pub fn login_held_elsewhere(store: &ProfileStore, name: &ProfileName) -> bool {
+    if !store.root().join(".auto-switch.d").exists() {
+        return false;
+    }
+    let Ok(state) = state::State::new(store.root()) else {
+        return false;
+    };
+    state
+        .load_ledger()
+        .is_ok_and(|l| l.leased_to(name.as_str()).is_some() || l.hosts.contains_key(name.as_str()))
 }
 
 /// Keeps swaps out of a profile between the pre-spawn lease check and the

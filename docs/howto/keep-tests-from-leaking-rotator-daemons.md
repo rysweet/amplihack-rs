@@ -243,3 +243,4 @@ leaves autostart off through stop A), and must stop the daemon it starts. No tes
 - [`amplihack profile` reference](../reference/profile-command.md) - `rotate start`, `rotate watch` and `rotate autostart`
 - [AMPLIHACK_* environment variables](../reference/amplihack-env-vars.md) - `AMPLIHACK_TEST_HOME_GUARD` and `AMPLIHACK_ROTATE_AUTOSTART`
 - [Developing amplihack](./develop-amplihack.md) - Build and test setup
+- [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md) - Why `isolated(..)` removes `AMPLIHACK_CLAUDE_PROFILE_ROOT`, and the real-root guard

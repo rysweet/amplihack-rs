@@ -2,26 +2,29 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::alert::{alert_key, alert_once, clear_alert, refusal_kind};
+use super::alert::{alert, alert_key, alert_once, clear_alert, refusal_kind};
 use super::decide::Decision;
 use super::held::held_cycle;
 use super::identify::{LiveId, Skip};
 use super::ledger::{LastCycle, RotateLedger, RotateState, SWITCHED};
-use super::log::{Sink, msg};
+use super::log::msg;
 use super::observe::{
-    Measurement, Snap, dry_run, live_name, measure_and_decide, reading_of, snapshot,
+    Measurement, Snap, dry_run, live_name, measure_and_decide, platform_block_reason, reading_of,
 };
 use super::overflow::Tag;
-use super::overflow_record::{self, block_spend_limited, note_move, refresh_capacity, stay_note};
+use super::overflow_record::{
+    self, alert_line, block_spend_limited, note_live, note_move, refresh_capacity, stay_note,
+};
 // Under an alias: `profile::overflow::Gate` (whether credits may be spent)
 // is a different thing from the pin's gate (whether a `profile switch`
 // holds the cycle).
 use super::pin::{self, Gate as PinGate};
 use super::prelude::{Prelude, locked_prelude};
+use super::revalidate::{self, Verdict};
 use super::settings::Settings;
 use super::swap::{self, Source};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{Liveness, exists, now, scan_system};
+use crate::commands::profile::auto_switch::kit::{Liveness, now, scan_system};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
 use crate::commands::profile::shared_dirs;
@@ -91,6 +94,8 @@ pub struct Ctx {
     pub(super) measure: Option<MeasureFn>,
     /// Replaces a held cycle's spend-limit probe when set; only tests do.
     pub(super) probe_held: Option<super::held::HeldProbeFn>,
+    /// Waits before step 6 reads the state again; tests act in it instead.
+    pub(super) pause: fn(&Ctx),
 }
 
 impl Ctx {
@@ -109,6 +114,7 @@ impl Ctx {
             scan: scan_system,
             measure: None,
             probe_held: None,
+            pause: |_| std::thread::sleep(revalidate::REREAD_PAUSE),
         }
     }
 
@@ -148,20 +154,6 @@ pub fn prototype_guard(root: &Path) -> Result<(), ProfileError> {
     }
 }
 
-/// Writes an ALERT once per key and records the cycle as alerted.
-fn alert(
-    ctx: &Ctx,
-    out: &mut Sink,
-    kind: &str,
-    live: Option<&ProfileName>,
-    line: &str,
-) -> Result<(), ProfileError> {
-    let t = now();
-    let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-    alert_once(out, &mut l, &alert_key(kind, live), t, line);
-    save(ctx, &mut l, CycleOutcome::Alerted, t, None, None)
-}
-
 /// Records the cycle as ended at `t`, after measuring from `measured_at`,
 /// with its overflow tag; see [`overflow_record::record`].
 pub(super) fn save(
@@ -182,26 +174,14 @@ pub(super) fn newer_than(last: Option<&LastCycle>, measured_at: i64) -> bool {
     last.is_some_and(|c| c.outcome == SWITCHED || c.at >= measured_at)
 }
 
-/// Records a known live profile and its account, so `profile usage` and the
-/// next cycle read it from the ledger.
-pub(super) fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
-    if let (LiveId::Known(n), Some(key)) = (&snap.live, &snap.account) {
-        if l.live.as_deref() != Some(n.as_str()) {
-            l.live = Some(n.to_string());
-            l.since = Some(t);
-        }
-        l.account = Some(key.clone());
-    }
-}
-
 pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError> {
     if mode == Mode::DryRun {
         return dry_run(ctx);
     }
     // Step 3: recover and identify under the lock.
     let (mut out, prelude) = locked_prelude(ctx, mode == Mode::OneShot, true)?;
-    let (lock, state, first) = match prelude {
-        Prelude::Ready { lock, state, first } => (lock, state, first),
+    let (lock, state, mut first) = match prelude {
+        Prelude::Ready { lock, state, first } => (lock, state, *first),
         Prelude::LockBusy => {
             out.emit(now(), msg::LOCK_BUSY);
             return Ok(CycleOutcome::Skipped);
@@ -261,17 +241,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
 
     // Steps 4 and 5: measure without the lock, then decide. Recovery does
     // not need `claude`, so it is looked for only now.
-    let Measurement {
-        live,
-        others,
-        decision,
-        note,
-        failed,
-        tag,
-        new_blocks,
-        next_plan_reset,
-        measured_at,
-    } = match ctx.measure {
+    let m = match ctx.measure {
         Some(stub) => stub(ctx, &first)?,
         None => {
             let binary = resolve_claude_binary()
@@ -279,14 +249,17 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             measure_and_decide(ctx, &binary, &first)?
         }
     };
-    ctx.failed_live = failed;
-    out.emit(now(), &msg::cycle(live_name(&first.live), &live, &others));
+    let failed_before = std::mem::replace(&mut ctx.failed_live, m.failed);
+    out.emit(
+        now(),
+        &msg::cycle(live_name(&first.live), &m.live, &m.others, first.platform()),
+    );
     if ctx.stopping() {
         out.emit(now(), msg::STOPPED);
         return Ok(CycleOutcome::Stopped);
     }
 
-    // Step 6: revalidate and swap under the lock.
+    // Step 6: revalidate and swap under the lock, held until the swap.
     let Some(lock) = state.try_lock(LOCK_WAIT)? else {
         out.emit(now(), msg::LOCK_BUSY);
         return Ok(CycleOutcome::Skipped);
@@ -294,27 +267,49 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // The external rotator may have started while this one measured.
     prototype_guard(ctx.store.root())?;
     let t = now();
-    if exists(&ctx.rs.journal) || snapshot(ctx, &state)? != first {
-        out.emit(t, msg::CHANGED);
-        let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-        // A record written while this cycle measured unlocked (a `profile
-        // switch`, or another cycle) is newer than anything this cycle knows.
-        // Overwriting it with `skipped` would lose a switch's record, and the
-        // held cycles after it would then write a bare `held`, so the
-        // limit-resume hook would never wake sessions stopped before the
-        // switch (#1691).
-        if !newer_than(l.last_cycle.as_ref(), measured_at) {
-            save(
-                ctx,
-                &mut l,
-                CycleOutcome::Skipped,
-                t,
-                Some(measured_at),
-                None,
-            )?;
-        }
-        return Ok(CycleOutcome::Skipped);
+    let checked = revalidate::check(ctx, &state, &first, &m, failed_before)?;
+    if checked.reread {
+        out.emit(t, revalidate::REREAD);
     }
+    let m = match checked.verdict {
+        Verdict::Proceed => m,
+        // Issue #1721: only the target changed, and the probes already taken
+        // chose another; from here the cycle is that one. `ctx.failed_live`
+        // stays: a target-only change leaves the live probe, live name and
+        // overflow entries as they were, so `retry.failed == m.failed`. If
+        // the retry rule is ever widened, assign `ctx.failed_live` here.
+        Verdict::Reconsidered { m, fresh, line } => {
+            out.emit(t, &line);
+            first = *fresh;
+            *m
+        }
+        Verdict::Skip(why) => {
+            out.emit(t, &msg::changed(&why));
+            let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+            // A record written while this cycle measured unlocked (a `profile
+            // switch`, or another cycle) is newer than anything this cycle
+            // knows. Overwriting it with `skipped` would lose a switch's
+            // record, and the held cycles after it would then write a bare
+            // `held`, so the limit-resume hook would never wake sessions
+            // stopped before the switch (#1691).
+            if !newer_than(l.last_cycle.as_ref(), m.measured_at) {
+                let at = Some(m.measured_at);
+                save(ctx, &mut l, CycleOutcome::Skipped, t, at, None)?;
+            }
+            return Ok(CycleOutcome::Skipped);
+        }
+    };
+    let Measurement {
+        live,
+        others,
+        decision,
+        note,
+        tag,
+        new_blocks,
+        next_plan_reset,
+        measured_at,
+        ..
+    } = m;
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
     let stay_line = stay_note(&l, tag, live_name(&first.live), next_plan_reset);
     // Saved before any swap, which reloads the ledger from disk.
@@ -333,14 +328,14 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 // A refusal repeats every cycle until a person acts: one
                 // ALERT per reason, and the cycle is recorded.
                 Err(e @ ProfileError::RotateRefused(_)) => {
-                    let live = live_name(&first.live);
-                    alert(
-                        ctx,
-                        &mut out,
-                        &refusal_kind(&e),
-                        live,
-                        &format!("ALERT: {e}"),
-                    )?;
+                    // Issue #1700: a login without OAuth is refused once per
+                    // profile, keyed by the profile it would have made live.
+                    let (kind, live) = if swap::is_no_oauth(&e) {
+                        ("no_oauth".to_string(), Some(&to))
+                    } else {
+                        (refusal_kind(&e), live_name(&first.live))
+                    };
+                    alert(ctx, &mut out, &kind, live, &format!("ALERT: {e}"))?;
                     return match mode {
                         Mode::Watch => Ok(CycleOutcome::Alerted),
                         _ => Err(e),
@@ -351,7 +346,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             swapped = Some([to.clone(), from.clone()]);
             let target = reading_of(&others, &to);
             out.emit(now(), &msg::swap(&from, &to, &live, &target, reason));
-            note_move(&mut out, tag, &from, &to, next_plan_reset);
+            note_move(&mut out, tag, &from, &to, next_plan_reset, first.platform());
             ctx.failed_live = 0;
             l = ctx.rs.load_ledger()?.unwrap_or_default();
             CycleOutcome::Swapped
@@ -371,8 +366,9 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         Decision::Alert => {
             note_live(&mut l, &first, t);
             let name = live_name(&first.live);
-            let line = msg::alert_no_capacity_for(name.map_or("-", ProfileName::as_str), &live);
-            alert_once(&mut out, &mut l, &alert_key("no-capacity", name), t, &line);
+            let reason = || platform_block_reason(ctx);
+            let (kind, line) = alert_line(&first, tag, &live, &others, reason);
+            alert_once(&mut out, &mut l, &alert_key(kind, name), t, &line);
             CycleOutcome::Alerted
         }
     };
@@ -383,6 +379,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         &others,
         t,
         tag,
+        first.platform(),
     );
     save(ctx, &mut l, outcome, now(), Some(measured_at), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the

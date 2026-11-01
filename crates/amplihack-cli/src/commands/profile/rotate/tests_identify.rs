@@ -1,6 +1,6 @@
 //! `rotate::identify`: which profile is live in `~/.claude`, and which
 //! profiles may receive it (D11, D13, D16, issue #1592). Only `.claude.json`
-//! files and metadata are read; the login fixtures are mode 0000.
+//! files and metadata are read, and login files only for their top-level keys.
 //!
 //! Contract:
 //! - `Account::from_claude_json(&[u8]) -> Option<Account>`; `Account::same`
@@ -15,7 +15,7 @@
 //!   Vec<(ProfileName, Skip)>), ProfileError>`; a root that cannot be listed
 //!   is an error. `Skip::as_str()` gives the documented reason.
 
-use super::identify::{Account, CandidateInput, LiveId, Skip, candidates, live};
+use super::identify::{Account, CandidateInput, LiveId, Skip, candidates, live, refused_dirs};
 use super::ledger::{RotateLedger, RotateState};
 use crate::commands::profile::auto_switch::kit::{Ledger, Liveness};
 use crate::commands::profile::name::ProfileName;
@@ -38,11 +38,9 @@ fn private(path: &Path, body: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
+/// An OAuth login (issue #1700: its top-level keys are read for the kind).
 fn login(path: &Path) {
-    private(path, "SENTINEL");
-    if crate::commands::profile::auto_switch::euid() != 0 {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
-    }
+    private(path, r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#);
 }
 
 fn acct(uuid: &str, email: &str) -> String {
@@ -491,6 +489,39 @@ fn every_documented_exclusion_applies() {
 }
 
 #[test]
+fn a_refused_directory_is_skipped_as_directory_refused_not_no_login() {
+    // Issue #1698: a directory open to other users fails the check, so its
+    // login cannot be looked at. That is not a missing login: the overflow
+    // rule holds a move onto credits while a plan profile is refused.
+    let e = env();
+    for p in ["g-open", "h-excl"] {
+        e.store.add(&n(p)).unwrap();
+        private(
+            &e.root().join(p).join(".claude.json"),
+            &acct(p, "x@example.com"),
+        );
+        login(&e.root().join(p).join(".credentials.json"));
+        fs::set_permissions(e.root().join(p), fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut input = e.input(None);
+    input.exclude = vec![n("h-excl")];
+    let (c, skips) = candidates(&e.store, &input).unwrap();
+    assert_eq!(c, vec![n("extra"), n("spare")]);
+    assert_eq!(skipped(&skips, "g-open"), Some("directory refused"));
+    // Out of rotation anyway, so it holds nothing.
+    assert_eq!(skipped(&skips, "h-excl"), Some("excluded"));
+    // A missing login is still `no login`, and is not refused.
+    assert_eq!(skipped(&skips, "work"), Some("no login"));
+    assert_eq!(refused_dirs(&skips), vec![n("g-open")]);
+
+    // Fixed, it is a candidate again.
+    fs::set_permissions(e.root().join("g-open"), fs::Permissions::from_mode(0o700)).unwrap();
+    let (c, skips) = candidates(&e.store, &input).unwrap();
+    assert_eq!(c, vec![n("extra"), n("g-open"), n("spare")]);
+    assert!(refused_dirs(&skips).is_empty());
+}
+
+#[test]
 fn unknown_liveness_leaves_no_candidates() {
     let e = env();
     for l in [Liveness::Everything, Liveness::Unsupported] {
@@ -654,11 +685,17 @@ mod holders {
 
     #[test]
     fn the_holder_query_reads_no_login_file() {
-        // Login fixtures are mode 0000: a read would fail, so a result
-        // that names an own login came from metadata only.
+        // The login is mode 0000 here (issue #1700's `login` fixture is
+        // readable): a read would fail, so a result that names an own login
+        // came from metadata only.
         let e = env();
         login(&e.root().join("work/.credentials.json"));
         if crate::commands::profile::auto_switch::euid() != 0 {
+            fs::set_permissions(
+                e.root().join("work/.credentials.json"),
+                fs::Permissions::from_mode(0o000),
+            )
+            .unwrap();
             assert!(fs::read(e.root().join("work/.credentials.json")).is_err());
         }
         assert!(matches!(

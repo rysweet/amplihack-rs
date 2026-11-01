@@ -110,7 +110,8 @@ esac"#
             );
         }
         let reply = if unsupported {
-            "exit 23"
+            // A Codex without native plugins rejects the subcommand the way clap does.
+            "printf \"error: unrecognized subcommand 'plugin'\\n\" >&2; exit 2"
         } else {
             "printf '%s\\n' '{\"installed\":[]}'"
         };

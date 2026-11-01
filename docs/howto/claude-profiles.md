@@ -30,6 +30,8 @@ To be told when every account is out of capacity, see
 [When no account has capacity](#when-no-account-has-capacity).
 For what a recipe step does when every account is out of quota, see
 [Waiting for a usage-limit reset](#waiting-for-a-usage-limit-reset).
+For a profile that uses a Claude Platform API key, billed per token, see
+[API-key profiles and usage limits](#api-key-profiles-and-usage-limits).
 
 ## What a new profile inherits
 
@@ -705,19 +707,30 @@ amplihack profile usage
 ```
 
 ```
-PROFILE   MARKS             STATE              SESSION  SESSION RESETS                        WEEK  WEEK RESETS
-review    -                 ok                 5%       Oct 16, 9pm (America/Los_Angeles)     10%   Oct 22, 2am (America/Los_Angeles)
-work      *                 ok                 20%      Oct 16, 7pm (America/Los_Angeles)     30%   Oct 22, 2am (America/Los_Angeles)
-team      -                 session_exhausted  100%     Oct 16, 4:50pm (America/Los_Angeles)  68%   Oct 22, 2am (America/Los_Angeles)
-scratch   -                 not_logged_in      -        -                                     -     -
+PROFILE   MARKS             STATE              SESSION  SESSION RESETS        WEEK  WEEK RESETS
+review    -                 ok                 5%       2026-10-17T04:00:00Z  10%   2026-10-22T09:00:00Z
+work      *                 ok                 20%      2026-10-17T02:00:00Z  30%   2026-10-22T09:00:00Z
+team      -                 session_exhausted  100%     2026-10-16T23:50:00Z  68%   2026-10-22T09:00:00Z
+scratch   -                 not_logged_in      -        -                     -     -
 ```
 
-amplihack runs `claude -p /usage` under every profile at once, with
-`CLAUDE_CONFIG_DIR` set to that profile, and reads the `Current session` and
-`Current week` lines. Checking does not appear to use quota, and an
-exhausted account still answers. The profiles with the most room come first. Exhausted ones
-follow, soonest back first, and the reset column says when. Profiles that
-could not be read come last. `*` marks the default.
+amplihack starts `claude` under every profile, a few at a time, with
+`CLAUDE_CONFIG_DIR` set to that profile, and asks it for the session and
+weekly figures with a `get_usage` request. amplihack runs
+`claude -p /usage` instead, and reads its `Current session` and
+`Current week` lines, when it cannot use the answer: for example when the
+profile is not logged in, the installed `claude` is too old to answer, or
+the account has usage credits turned on. `claude` does answer for such an
+account, but the answer cannot show a spend limit, so amplihack does not
+accept it. A profile marked as
+[overflow](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted)
+is always read with `/usage`, without the request. Checking does not appear
+to use quota, and an exhausted account still answers. The profiles with the most room come first. Exhausted ones
+follow, soonest back first, and the reset column says when: an ISO 8601
+time as `claude` sent it (the times above are examples of the form), or
+Claude's own words (`Oct 16, 4:50pm (America/Los_Angeles)`) for a profile
+read with `/usage`. Profiles that could not be read come last. `*` marks the
+default.
 
 To check only some profiles, name them:
 
@@ -732,8 +745,9 @@ What the `STATE` column means:
 | `ok` | Ready to use. |
 | `session_exhausted` / `weekly_exhausted` | Wait for the reset shown, or use another profile. |
 | `spend_limit` | Your organisation's spend limit was reached. |
+| `api_key` | An API-key profile, billed per token; its `SESSION` cell reads `api-key (billed per token)` and nothing is probed. Nothing to fix. See [API-key profiles and usage limits](#api-key-profiles-and-usage-limits). |
 | `not_logged_in` | `amplihack profile login <name>` |
-| `timeout` | Claude did not answer in time (30 seconds by default). Try again. |
+| `timeout` | Claude did not answer in time (120 seconds by default, for the `get_usage` request and any `/usage` fallback together). The usage is unknown, not exhausted. Try again, or see [Probes on a busy host](#probes-on-a-busy-host). |
 | `unparsed` | Claude printed something unexpected. Run with `--raw` to see it. |
 | `error` | The probe could not run (the profile directory was refused, or `claude` could not be started, read or waited for); the reason is printed on stderr. |
 
@@ -744,8 +758,11 @@ output amplihack does not recognise:
 amplihack profile usage --raw scratch
 ```
 
-`--raw` text can include your e-mail address or organisation name. Read it
-before you share it.
+`--raw` output can include your e-mail address, organisation name or
+subscription type. Read it before you share it. It shows everything
+`claude` printed in the attempt that gave the row: for a `get_usage` answer,
+every JSON line, starting with the one `claude` prints when it starts; for
+`/usage`, the text.
 
 For scripts, use `--json`. This picks the profile with the most capacity:
 
@@ -781,6 +798,83 @@ session or all-models weekly limit reached, the table ends with
 
 The command exits with status 0 whenever the probes ran, whatever their
 states. Like `profile run`, it is refused under Docker.
+
+### Probes on a busy host
+
+Claude does not appear to read the session transcripts to answer the
+`get_usage` request. The `/usage` fallback reads every transcript the
+profile can see, which can take a minute or more of CPU on a busy host. So amplihack
+gives each profile's probe 120 seconds, for the request and any fallback
+together, and runs between 2 and 4 probes at once, fewer when the host's
+load average is close to its number of CPUs.
+
+A profile in state `timeout` or `error` shows `-` for its percentages, and
+`--json` gives `null` for `session` and `week_all`. Its usage is unknown,
+never 100%, and it is not recorded for auto-switch. Check which profiles
+timed out:
+
+```bash
+amplihack profile usage --json | jq -r '.[] | select(.state == "timeout") | .profile'
+```
+
+```
+spare
+```
+
+If probes keep timing out, give them longer, run fewer at once, or both:
+
+```bash
+AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS=300 AMPLIHACK_PROFILE_USAGE_PARALLEL=1 amplihack profile usage
+```
+
+`AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` takes `1` to `600` seconds and
+`AMPLIHACK_PROFILE_USAGE_PARALLEL` takes `1` to `16`. An invalid value prints
+one warning and the default is used.
+
+The [rotator](claude-profile-rotation.md#when-the-host-is-heavily-loaded)
+uses the same variables. The limits and the formula are in the
+[reference](../reference/profile-command.md#probe-parallelism).
+
+### Compare the two probe methods
+
+`get_usage` is an interface Claude Code marks as experimental. To check that
+it gives the same figures as `/usage` for your logins, run both methods one
+after the other and compare the percentages. `/usage` prints whole
+percentages and `get_usage` can send decimals, so this rounds both to whole
+numbers before comparing:
+
+```bash
+q='def whole: if type == "number" then round else . end;
+  .[] | {profile, state, session: (.session.used_percentage | whole), week: (.week_all.used_percentage | whole)}'
+AMPLIHACK_PROFILE_USAGE_PROBE=text amplihack profile usage --json | jq -c "$q" | sort > ~/usage-text.jsonl
+amplihack profile usage --json | jq -c "$q" | sort > ~/usage-auto.jsonl
+diff ~/usage-text.jsonl ~/usage-auto.jsonl && echo same
+```
+
+```
+same
+```
+
+Run them one after the other, not at once, so they do not compete for the
+host. A percentage can still move between the two runs if a session is
+working, and a difference of one point can still be rounding, for example
+`20.5` from `get_usage` against `20%` from `/usage`. Resets are not
+compared: they differ in form, an ISO 8601 time from `get_usage` against
+Claude's own words from `/usage`.
+
+If the figures disagree, or `get_usage` stops working after a Claude Code
+update, use `/usage` alone until the problem is fixed:
+
+```bash
+export AMPLIHACK_PROFILE_USAGE_PROBE=text
+```
+
+`AMPLIHACK_PROFILE_USAGE_PROBE` takes `auto` (the default) or `text`,
+exactly as written. Any other value prints a warning and uses `auto`. With
+`text`, every probe pays the transcript scan, so on a busy host also see
+[Probes on a busy host](#probes-on-a-busy-host). A running rotator keeps the
+value it started with; restart it as described in
+[When the host is heavily loaded](claude-profile-rotation.md#when-the-host-is-heavily-loaded).
 
 ### A profile shows `live in ~/.claude`
 
@@ -1505,6 +1599,106 @@ do not depend on these two behaviours.
 - **Readings come only from sessions with the wrapper and from
   `profile usage`.** A profile that has done neither since the switch was
   turned on has no reading. Run `amplihack profile usage` to fill them in.
+
+## API-key profiles and usage limits
+
+An API-key profile runs Claude Code on a Claude Platform API key instead of
+a subscription login. It has no session or weekly limit; every token it
+uses is billed per token. Its login file, `.credentials.json`, holds `{}`
+(an object with no OAuth login), and Claude Code falls back to the Platform
+credential stored outside the profile directory, in the real home
+directory. Every profile on the machine shares that credential, so there is
+one API-key account per home directory. `amplihack` never reads, prints or
+copies the key; it decides a profile's kind from key names and file
+presence only.
+
+A profile with no login file at all is **not** an API-key profile. It is a
+subscription profile with no login, and launching it is refused (see
+below). A missing login file counts as an API key only when the profile
+names an API-key setting (`ANTHROPIC_API_KEY`, `apiKeyHelper` or
+`primaryApiKey`); those settings are ignored when the profile has a login
+file. The full rules are in
+[Kind detection](../reference/profile-command.md#kind-detection).
+
+`amplihack profile kind list` shows each profile's kind and why:
+
+```
+$ amplihack profile kind list
+api-key         api-key       (detected: login file has no oauth login)
+ryan-mistt      subscription  (detected: oauth login)
+ryan-ryansweet  subscription  (detected: oauth login)
+```
+
+`amplihack profile kind set <name> <subscription|api-key|auto>` overrides a
+wrong detection; `auto` removes the override. See
+[Kind override](../reference/profile-command.md#kind-override).
+
+### How limits are handled with an API-key profile
+
+When accounts run out of quota, work moves in this order:
+
+1. another plan (subscription) login with capacity;
+2. a credit overflow profile, once the earliest plan reset is further away
+   than the overflow wait;
+3. the API-key profile, once no credit overflow profile can be used and the
+   earliest plan reset is still further away than the wait.
+
+[Auto-switch](#switch-accounts-automatically) and the
+[rotator](claude-profile-rotation.md#use-an-api-key-as-the-last-resort)
+follow the same order. The rotator moves `~/.claude` off the API key on the
+first cycle after a plan login has capacity again, without waiting for a
+hold to end. Auto-switch uses the API-key profile only for a new nested
+launch or a usage-limit rerun and never swaps it into a running session; a
+session started on the API-key profile keeps it, and its next nested launch
+or rerun goes back to a plan profile.
+
+`profile usage` does not probe an API-key profile. Its `STATE` is `api_key`
+and its `SESSION` cell reads `api-key (billed per token)`:
+
+```
+$ amplihack profile usage api-key
+PROFILE  MARKS              STATE    SESSION                     SESSION RESETS  WEEK  WEEK RESETS
+api-key  live in ~/.claude  api_key  api-key (billed per token)  -               -     -
+live: work is running on the API key (billed per token)
+```
+
+If the key runs out of funds or is revoked, every API-key profile is
+blocked with one ALERT until you clear the block. A rate limit blocks it
+until the time the error gives, or for one hour. While blocked, `usage`
+prints `blocked: the API key until <time> (<reason>)`. Fund or replace the
+key, then clear the block:
+
+```
+$ amplihack profile overflow clear --platform
+overflow: cleared the API-key block (key_exhausted)
+```
+
+### Subscription profiles with no login are refused
+
+A subscription profile with no OAuth login of its own (never logged in, its
+login file missing or damaged) would quietly use the API key if launched.
+`profile run`, `--profile` launches and `profile switch` refuse it, exit 1
+and say what to run:
+
+```
+error: profile old-team is a subscription profile with no login of its own; launching it would bill the Claude Platform API key per token. Run 'amplihack profile login old-team', or run 'amplihack profile kind set old-team api-key' if per-token billing is intended.
+hint: amplihack profile login <name>, or: amplihack profile kind set <name> api-key
+```
+
+A profile whose login is live in `~/.claude`, or lent to a session by
+auto-switch, is not refused.
+
+### Logging an API-key profile in to a subscription
+
+`amplihack profile login api-key` works as for any profile and first prints:
+
+```
+note: this profile uses a Claude Platform credential stored outside the profile directory, which amplihack does not manage.
+```
+
+If you complete a subscription login there, the profile has an OAuth login
+and is detected as a subscription profile from then on, unless a `kind`
+override says otherwise.
 
 ## Waiting for a usage-limit reset
 

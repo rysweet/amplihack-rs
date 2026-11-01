@@ -140,8 +140,74 @@ mod issue_1688_routing_gap_report;
 mod issue_1690_isolated_autostart;
 #[path = "issue_1691_switch_live.rs"]
 mod issue_1691_switch_live;
+#[path = "issue_1698_probe_load.rs"]
+mod issue_1698_probe_load;
+#[path = "issue_1699_isolated_profile_root.rs"]
+mod issue_1699_isolated_profile_root;
+#[path = "issue_1699_real_root_guard.rs"]
+mod issue_1699_real_root_guard;
 #[path = "issue_1707_claim_check_shell_suites.rs"]
 mod issue_1707_claim_check_shell_suites;
+#[path = "issue_1740_checks_tool.rs"]
+mod issue_1740_checks_tool;
+#[path = "issue_1740_diff_limits.rs"]
+mod issue_1740_diff_limits;
+#[path = "issue_1740_diff_limits_awk.rs"]
+mod issue_1740_diff_limits_awk;
+#[path = "issue_1740_diff_limits_guards.rs"]
+mod issue_1740_diff_limits_guards;
+#[path = "issue_1740_diff_limits_shared_config.rs"]
+mod issue_1740_diff_limits_shared_config;
+#[path = "issue_1740_quick_change_recipe.rs"]
+mod issue_1740_quick_change_recipe;
+#[path = "issue_1740_quick_change_steps.rs"]
+mod issue_1740_quick_change_steps;
+#[path = "issue_1740_routing_recipes.rs"]
+mod issue_1740_routing_recipes;
+#[path = "issue_1740_select_workflow.rs"]
+mod issue_1740_select_workflow;
+#[path = "issue_1740_state_gates.rs"]
+mod issue_1740_state_gates;
+#[path = "issue_1760_agent_markers.rs"]
+mod issue_1760_agent_markers;
+#[path = "issue_1760_agent_profile_resolved.rs"]
+mod issue_1760_agent_profile_resolved;
+#[path = "issue_1760_agent_register_discover.rs"]
+mod issue_1760_agent_register_discover;
+#[path = "issue_1760_agent_register_env.rs"]
+mod issue_1760_agent_register_env;
+#[path = "issue_1760_agent_register_pane.rs"]
+mod issue_1760_agent_register_pane;
+#[path = "issue_1760_agent_registry.rs"]
+mod issue_1760_agent_registry;
+#[path = "issue_1760_agent_registry_safety.rs"]
+mod issue_1760_agent_registry_safety;
+#[path = "issue_1760_agent_source_scan.rs"]
+mod issue_1760_agent_source_scan;
+#[path = "issue_1760_agent_supervise.rs"]
+mod issue_1760_agent_supervise;
+#[path = "issue_1760_agent_supervise_checks.rs"]
+mod issue_1760_agent_supervise_checks;
+#[path = "issue_1760_agent_supervise_dupes.rs"]
+mod issue_1760_agent_supervise_dupes;
+#[path = "issue_1760_agent_supervise_limits.rs"]
+mod issue_1760_agent_supervise_limits;
+#[path = "issue_1760_agent_tmux_scope.rs"]
+mod issue_1760_agent_tmux_scope;
+#[path = "issue_1760_agent_wrapper.rs"]
+mod issue_1760_agent_wrapper;
+#[path = "issue_1760_agent_wrapper_refusals.rs"]
+mod issue_1760_agent_wrapper_refusals;
+#[path = "issue_1760_fake_proc.rs"]
+mod issue_1760_fake_proc;
+#[path = "issue_1760_fake_systemd_run.rs"]
+mod issue_1760_fake_systemd_run;
+#[path = "issue_1760_fakes.rs"]
+mod issue_1760_fakes;
+#[path = "issue_1760_fixture.rs"]
+mod issue_1760_fixture;
+#[path = "issue_1760_fixture_files.rs"]
+mod issue_1760_fixture_files;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -172,6 +238,8 @@ mod no_capacity_notice_statusline;
 mod pr_712_named_asset_canonicalization;
 #[path = "profile_overflow.rs"]
 mod profile_overflow;
+#[path = "profile_platform.rs"]
+mod profile_platform;
 #[path = "remote_cli_contract.rs"]
 mod remote_cli_contract;
 #[path = "runner_probe_cleanup.rs"]

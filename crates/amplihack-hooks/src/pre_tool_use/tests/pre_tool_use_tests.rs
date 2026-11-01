@@ -838,14 +838,15 @@ fn main_branch_guard_fires_from_copilot_tool_args_payload() {
 }
 
 /// Issue #1551: the hook's direct-form check does not consult PATH, so it
-/// holds even with a fake `gh` in the first PATH entry. This is the hook's
-/// own contract, not the fix for a profile that reorders PATH: that fix is the
-/// runner's `BASH_ENV` re-assertion, tested structurally in
+/// holds whatever `gh` a profile puts first on PATH, including one named by
+/// its absolute path. This is the hook's own contract, not the fix for a
+/// profile that reorders PATH: that fix is the runner's `BASH_ENV`
+/// re-assertion, tested structurally in
 /// `crates/amplihack-cli/tests/issue_1551_merge_guard.rs`
 /// (`agent_login_shell_resolves_gh_to_the_shim_after_a_profile_reorders_path`).
 #[cfg(unix)]
 #[test]
-fn auto_drive_merge_is_refused_when_a_profile_puts_another_gh_first_on_path() {
+fn auto_drive_merge_is_refused_for_bare_and_absolute_gh() {
     use std::os::unix::fs::PermissionsExt;
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let tmp = tempfile::tempdir().unwrap();
@@ -855,19 +856,13 @@ fn auto_drive_merge_is_refused_when_a_profile_puts_another_gh_first_on_path() {
     std::fs::write(&fake_gh, "#!/bin/sh\nexit 0\n").unwrap();
     std::fs::set_permissions(&fake_gh, std::fs::Permissions::from_mode(0o755)).unwrap();
 
-    let old_path = std::env::var_os("PATH");
+    // Issue #1765: PATH is not reordered here. The guard reads no PATH, so
+    // the order cannot affect it, and changing the process PATH races every
+    // test that starts a program by name. If the guard ever resolves `gh`
+    // through PATH, give this test a PATH case through a seam, not set_var.
     let old_marker = std::env::var_os("AMPLIHACK_MERGE_GUARD");
-    let reordered = format!(
-        "{}:/opt/amplihack/amplifier-bundle/tools/gh-merge-guard:{}",
-        profile_bin.display(),
-        old_path
-            .as_deref()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_default()
-    );
     // SAFETY: serialised by env_lock; restored below.
     unsafe {
-        std::env::set_var("PATH", &reordered);
         std::env::set_var("AMPLIHACK_MERGE_GUARD", "1");
     }
 
@@ -900,10 +895,6 @@ fn auto_drive_merge_is_refused_when_a_profile_puts_another_gh_first_on_path() {
 
     // SAFETY: serialised by env_lock.
     unsafe {
-        match old_path {
-            Some(p) => std::env::set_var("PATH", p),
-            None => std::env::remove_var("PATH"),
-        }
         if let Some(v) = old_marker {
             std::env::set_var("AMPLIHACK_MERGE_GUARD", v);
         }
@@ -1130,4 +1121,315 @@ fn xpia_default_off_allows_webfetch_injection() {
         result.get("block").is_none(),
         "XPIA is off by default; WebFetch must not be blocked: {result}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1733: the tmux server guard runs for every shell tool name, above the
+// `tool_name != "Bash"` return, and is not gated by any environment variable.
+// ---------------------------------------------------------------------------
+
+const TMUX_INCIDENT: &str = "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server";
+
+fn shell_tool_input(tool_name: &str, tool_input: serde_json::Value) -> HookInput {
+    HookInput::PreToolUse {
+        tool_name: tool_name.to_string(),
+        tool_input,
+        session_id: None,
+    }
+}
+
+fn assert_tmux_denied(result: &serde_json::Value) {
+    assert_eq!(result["block"], true, "{result}");
+    assert_eq!(
+        result["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{result}"
+    );
+    assert!(
+        result["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("env -u TMUX")),
+        "{result}"
+    );
+}
+
+#[test]
+fn tmux_guard_denies_for_every_shell_tool_name_without_the_merge_marker() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    for tool in [
+        "Bash",
+        "bash",
+        "BASH",
+        "shell",
+        "Shell",
+        "exec_command",
+        "Monitor",
+    ] {
+        let result = PreToolUseHook
+            .process(shell_tool_input(
+                tool,
+                serde_json::json!({"command": TMUX_INCIDENT}),
+            ))
+            .unwrap();
+        assert_tmux_denied(&result);
+    }
+}
+
+#[test]
+fn tmux_guard_reads_cmd_and_argv_arrays() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    for input in [
+        serde_json::json!({"cmd": TMUX_INCIDENT}),
+        serde_json::json!({"command": ["bash", "-lc", TMUX_INCIDENT]}),
+    ] {
+        let result = PreToolUseHook
+            .process(shell_tool_input("exec_command", input))
+            .unwrap();
+        assert_tmux_denied(&result);
+    }
+}
+
+#[test]
+fn tmux_guard_denies_from_copilot_tool_args_payload() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let result = PreToolUseHook
+        .process(copilot_pre_tool_use_payload(TMUX_INCIDENT))
+        .unwrap();
+    assert_tmux_denied(&result);
+}
+
+#[test]
+fn tmux_guard_allows_a_scoped_kill_server() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let result = PreToolUseHook
+        .process(make_bash_input(
+            "env -u TMUX tmux -S /tmp/tx1/a.sock kill-server",
+        ))
+        .unwrap();
+    assert!(result.get("block").is_none(), "{result}");
+}
+
+#[test]
+fn tmux_guard_skips_non_shell_tools() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let result = PreToolUseHook
+        .process(shell_tool_input(
+            "Read",
+            serde_json::json!({"command": TMUX_INCIDENT, "path": "/tmp/notes.md"}),
+        ))
+        .unwrap();
+    assert!(result.as_object().unwrap().is_empty(), "{result}");
+}
+
+/// Crusty round 6, concern 1: Claude Code's `Monitor` runs its `command` as
+/// shell text, so the guard checks it; a WebSocket watch has no `command`
+/// and a command that kills nothing is allowed.
+#[test]
+fn tmux_guard_checks_the_monitor_tool() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    for command in [
+        TMUX_INCIDENT,
+        "until [ -f done ]; do sleep 1; done; tmux kill-session -a",
+    ] {
+        let result = PreToolUseHook
+            .process(shell_tool_input(
+                "Monitor",
+                serde_json::json!({"command": command, "description": "wait"}),
+            ))
+            .unwrap();
+        assert_tmux_denied(&result);
+    }
+    for input in [
+        serde_json::json!({"ws": "wss://example.invalid/events", "description": "watch"}),
+        serde_json::json!({"command": "tail -f build.log | grep --line-buffered error", "description": "watch"}),
+    ] {
+        let result = PreToolUseHook
+            .process(shell_tool_input("Monitor", input))
+            .unwrap();
+        assert!(result.as_object().unwrap().is_empty(), "{result}");
+    }
+}
+
+#[test]
+fn tmux_guard_denies_for_the_powershell_tool_name() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    for tool in ["powershell", "PowerShell"] {
+        let result = PreToolUseHook
+            .process(shell_tool_input(
+                tool,
+                serde_json::json!({"command": "tmux kill-server"}),
+            ))
+            .unwrap();
+        assert_tmux_denied(&result);
+    }
+}
+
+#[test]
+fn tmux_guard_allows_a_scoped_kill_server_for_the_powershell_tool_name() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    let result = PreToolUseHook
+        .process(shell_tool_input(
+            "powershell",
+            serde_json::json!({"command": "tmux -S /tmp/tx1/a.sock kill-server"}),
+        ))
+        .unwrap();
+    assert!(result.get("block").is_none(), "{result}");
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 7, concern 1: XPIA answers with a bare `{"block": true}` that
+// Claude Code does not enforce (#1773), and its command-injection pattern
+// matches `; rm`, `\; kill…` and a line starting `kill…`. The guard runs
+// first, so these commands get its enforceable deny when the user opts in to
+// XPIA (it is off by default, #1734). Every `XPIA_*` variable is cleared and
+// `XPIA_ENABLED=true` set explicitly, so a session's own exports cannot hide
+// the ordering.
+// ---------------------------------------------------------------------------
+
+/// Kill commands that XPIA's patterns also match.
+const KILLS_XPIA_ALSO_MATCHES: &[&str] = &[
+    "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server; rm -rf \"$SB\"",
+    "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server && rm -rf \"$SB\"",
+    "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server\nrm -rf \"$SB\"",
+    "tmux -C attach <<EOF\nkill-server\nEOF",
+    "tmux new -d 'sleep 1' \\; kill-server",
+    "tmux kill-session -a; rm -f /tmp/qa.log",
+];
+
+#[test]
+fn tmux_guard_answers_before_xpia_when_opted_in() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    let _xpia = unset_xpia_env();
+    let _on = EnvRestore::set("XPIA_ENABLED", "true");
+
+    // Control: XPIA is on and answers a command the guard allows, so the
+    // cases below would reach XPIA if the guard did not run first.
+    let control = PreToolUseHook
+        .process(make_bash_input("echo done; rm -rf \"$SB\""))
+        .unwrap();
+    assert!(
+        control["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("XPIA")),
+        "XPIA is not active in this test: {control}"
+    );
+
+    for command in KILLS_XPIA_ALSO_MATCHES {
+        for tool in ["Bash", "bash", "Monitor"] {
+            let result = PreToolUseHook
+                .process(shell_tool_input(
+                    tool,
+                    serde_json::json!({"command": command}),
+                ))
+                .unwrap();
+            assert_tmux_denied(&result);
+            assert!(
+                !result["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("XPIA"),
+                "{tool} {command:?}: {result}"
+            );
+        }
+    }
+}
+
+/// The guard is not gated by XPIA: with every `XPIA_*` variable unset, the
+/// same commands are still denied, and XPIA does not answer the command it
+/// answers in the opt-in control above, which shows XPIA really is off here.
+#[test]
+fn tmux_guard_denies_with_xpia_at_its_default_off() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    let _xpia = unset_xpia_env();
+
+    let control = PreToolUseHook
+        .process(make_bash_input("echo done; rm -rf \"$SB\""))
+        .unwrap();
+    assert!(
+        !control["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("XPIA"),
+        "XPIA must be off here: {control}"
+    );
+
+    for command in KILLS_XPIA_ALSO_MATCHES {
+        for tool in ["Bash", "bash", "Monitor"] {
+            let result = PreToolUseHook
+                .process(shell_tool_input(
+                    tool,
+                    serde_json::json!({"command": command}),
+                ))
+                .unwrap();
+            assert_tmux_denied(&result);
+        }
+    }
+}
+
+/// The guard runs first but only denies, so XPIA, when opted in, still answers
+/// a command the guard allows.
+#[test]
+fn xpia_still_answers_what_the_guard_allows() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _xpia = unset_xpia_env();
+    let _on = EnvRestore::set("XPIA_ENABLED", "true");
+    for command in [
+        "env -u TMUX tmux -S \"$SB/tmux.sock\" kill-server; rm -rf \"$SB\"",
+        "tmux kill-session -t amp-x; rm -f /tmp/qa.log",
+    ] {
+        let result = PreToolUseHook.process(make_bash_input(command)).unwrap();
+        assert!(
+            result["message"]
+                .as_str()
+                .is_some_and(|m| m.contains("XPIA")),
+            "{command:?}: {result}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 5, concern 4: the shell tokeniser this PR shares with the
+// #1551 merge guard changes that guard as well. It now refuses forms that the
+// 1.2.59 build allowed, and no form found that 1.2.59 refused is now
+// allowed. `merge_guard_tests.rs` stays byte-identical to main (D8), so the
+// change is pinned here.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn shared_tokeniser_makes_the_merge_guard_refuse_more_forms() {
+    for command in [
+        // A backslash-newline is removed and adds no empty word.
+        "gh pr \\\n  merge 38",
+        "gh \\\n  pr merge 38",
+        // Redirections are not words, before or among gh's arguments.
+        "gh 2>/dev/null pr merge 38",
+        ">out gh pr merge 38",
+        "2>&1 gh pr merge 38",
+        "</dev/null gh pr merge 38",
+        // `$'…'` escapes are decoded.
+        "gh $'\\x70r' merge 38",
+        "gh api $'repos/o/r/pulls/1/\\x6derge' -X PUT",
+    ] {
+        assert!(
+            merge_guard::check(command).is_some(),
+            "not refused: {command:?}"
+        );
+    }
+    for command in [
+        "gh pr view 38 > merge",
+        "gh pr view 38 2>&1 >merge",
+        "echo 'gh pr merge 38'",
+        "git commit -m 'gh pr merge 38'",
+        "cat <<'EOF'\ngh pr merge 38\nEOF",
+    ] {
+        assert!(
+            merge_guard::check(command).is_none(),
+            "wrongly refused: {command:?}"
+        );
+    }
 }

@@ -114,8 +114,8 @@ pub(crate) fn agent_binary_for_name(
 /// Should amplihack inject `--append-system-prompt` into this launch?
 ///
 /// Pure — no I/O, and **no `std::env` reads inside**. This is a deliberate
-/// divergence from its neighbours [`super::command::should_inject_copilot_allow_all`]
-/// and `should_inject_copilot_remote`, which read the environment internally.
+/// divergence from its neighbour [`super::command::should_inject_copilot_allow_all`],
+/// which reads the environment internally.
 /// The read is hoisted to the call site here so the function is directly
 /// testable without mutating process environment, which is `unsafe` under
 /// edition 2024. Do not move it back inside.

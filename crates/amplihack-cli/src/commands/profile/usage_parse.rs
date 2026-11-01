@@ -30,8 +30,42 @@ pub const SPEND_LIMIT: &[&str] = &[
     "organization has reached",
 ];
 
+/// Issue #1700: the API-key errors that block the API key, matched without
+/// regard to case. Keep in step with the key-error table in
+/// docs/reference/profile-command.md.
+const KEY_EXHAUSTED_TEXT: &[&str] = &["credit balance is too low", "insufficient funds"];
+const KEY_REVOKED_TEXT: &[&str] = &["invalid x-api-key", "authentication_error"];
+
+static RETRY_AFTER: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"retry-after["']?\s*[:=]?\s*["']?(\d+)"#).expect("valid regex"));
+
+/// The API-key block reason in a failed session's output, and the
+/// `retry-after` seconds a rate limit gives: `key_exhausted`,
+/// `key_revoked` or `key_rate_limited` (`rate_limit_error`, or `429`
+/// together with `rate limit`). `None` for anything else, a spend limit
+/// included. A `retry-after` that does not fit is no value.
+pub fn classify_key_error(text: &str) -> Option<(&'static str, Option<i64>)> {
+    let lower = text.to_lowercase();
+    let says = |phrases: &[&str]| phrases.iter().any(|p| lower.contains(p));
+    if says(KEY_EXHAUSTED_TEXT) {
+        return Some(("key_exhausted", None));
+    }
+    if says(KEY_REVOKED_TEXT) {
+        return Some(("key_revoked", None));
+    }
+    if lower.contains("rate_limit_error") || (lower.contains("429") && lower.contains("rate limit"))
+    {
+        let retry = RETRY_AFTER
+            .captures(&lower)
+            .and_then(|c| c.get(1))
+            .and_then(|m| m.as_str().parse::<i64>().ok());
+        return Some(("key_rate_limited", retry));
+    }
+    None
+}
+
 /// A percentage above this is not a reading.
-const MAX_PCT: f64 = 1_000_000.0;
+pub(super) const MAX_PCT: f64 = 1_000_000.0;
 const DAY: i64 = 86_400;
 /// How far in the past a time-only reset may be and still mean today.
 /// Claude prints whole minutes, so a reset due in the current minute can

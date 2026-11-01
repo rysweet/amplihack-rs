@@ -13,6 +13,11 @@ mod issue_1449_partial_registration;
 mod issue_1526_implicit_downgrade;
 mod issue_1526_implicit_mode;
 mod issue_1526_launch_bootstrap;
+// Issue #1699: the real-profile-root guard also runs in this binary, where
+// the in-process install tests run.
+#[cfg(unix)]
+#[path = "../../../../tests/issue_1699_real_root_guard.rs"]
+mod issue_1699_real_root_guard;
 mod issue_527_tests;
 mod issue_911_durable_hooks_path;
 #[cfg(unix)]

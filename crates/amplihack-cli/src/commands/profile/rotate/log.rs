@@ -204,7 +204,7 @@ pub mod msg {
 
     /// `s=<n>% w=<n>%` with `sep` between; an exhausted login shows as
     /// 100%, a failed probe as `failed`.
-    fn usage(r: &Reading, sep: &str) -> String {
+    pub(in super::super) fn usage(r: &Reading, sep: &str) -> String {
         match r {
             Reading::Measured { session, week } => {
                 format!("s={}%{sep}w={}%", pct(*session), pct(*week))
@@ -229,33 +229,24 @@ pub mod msg {
         )
     }
 
-    /// Every measured profile: the live one first, then by name.
+    /// Every measured profile, live first; the API-key one as `per-token`.
     pub fn cycle(
         live: Option<&ProfileName>,
         reading: &Reading,
         others: &[(ProfileName, Reading)],
+        platform: Option<&ProfileName>,
     ) -> String {
-        let label = live.map_or("-", ProfileName::as_str);
-        let mut sorted: Vec<&(ProfileName, Reading)> = others.iter().collect();
-        sorted.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
-        let mut out = format!("cycle live={label} {label}:{}", usage(reading, ","));
-        for (name, r) in sorted {
-            out.push_str(&format!(" {name}:{}", usage(r, ",")));
+        let mut sorted: Vec<_> = others.iter().map(|(n, r)| (Some(n), r)).collect();
+        sorted.sort_by_key(|(n, _)| n.map(ProfileName::as_str));
+        let mut out = format!("cycle live={}", live.map_or("-", ProfileName::as_str));
+        for (n, r) in std::iter::once((live, reading)).chain(sorted) {
+            let shown = match n {
+                Some(_) if n == platform => "per-token".to_string(),
+                _ => usage(r, ","),
+            };
+            out.push_str(&format!(" {}:{shown}", n.map_or("-", ProfileName::as_str)));
         }
         out
-    }
-
-    #[cfg(test)]
-    pub fn alert_no_capacity(live: &ProfileName, reading: &Reading) -> String {
-        alert_no_capacity_for(live.as_str(), reading)
-    }
-
-    /// As [`alert_no_capacity`], with `-` for a login no profile owns.
-    pub fn alert_no_capacity_for(live: &str, reading: &Reading) -> String {
-        format!(
-            "ALERT: no profile has capacity live={live} {}",
-            usage(reading, " ")
-        )
     }
 
     pub const NO_LOGIN: &str = "ALERT: no login in ~/.claude; no swap";
@@ -298,6 +289,9 @@ pub mod msg {
     }
 
     pub use super::super::overflow_msg::*;
+    pub use super::super::revalidate::changed_line as changed;
+    #[cfg(test)]
+    pub use super::super::revalidate::reconsidered;
 
     /// A cycle stopped by the rotation pin (issue #1691).
     pub fn held(name: &ProfileName) -> String {
@@ -319,6 +313,46 @@ pub mod msg {
 
     pub fn switched_already_live(name: &ProfileName) -> String {
         format!("skip: {name} is already the live login; nothing moved")
+    }
+
+    /// After an `overflow-in` swap onto API-key profile `to` (issue #1700).
+    pub fn onto_platform(to: &ProfileName) -> String {
+        format!("moved ~/.claude onto API key profile {to} (billed per token)")
+    }
+
+    /// After a swap off API-key profile `from` onto `to`.
+    pub fn off_platform(from: &ProfileName, to: &ProfileName) -> String {
+        format!("moved ~/.claude off API key profile {from} to {to}")
+    }
+
+    /// A new API-key block.
+    pub fn alert_platform_block(reason: &str, until: i64) -> String {
+        format!(
+            "ALERT: the API key is blocked ({reason}) until {}; API-key profiles are not used",
+            super::timestamp(until)
+        )
+    }
+
+    /// The live API-key profile is blocked and nothing else can be used.
+    pub fn alert_platform_stuck(reason: &str, live: &ProfileName) -> String {
+        format!(
+            "ALERT: the API key is blocked ({reason}) and no plan or credit profile can be used; staying on {live}"
+        )
+    }
+
+    pub const AMBIGUOUS_PLATFORM: &str =
+        "ALERT: more than one API-key profile could be live in ~/.claude; no swap";
+
+    /// An API-key profile listed in `overflow=`.
+    pub fn platform_ignored_in_overflow(name: &ProfileName) -> String {
+        format!(
+            "skip: API-key profile {name} ignored in overflow=; API-key profiles are always the last tier"
+        )
+    }
+
+    /// A session saw a key error but the block could not be stored.
+    pub fn platform_block_not_recorded(kind: &str) -> String {
+        format!("platform block not recorded: {kind}")
     }
 
     pub fn recovered(forward: bool, from: &ProfileName, to: &ProfileName) -> String {

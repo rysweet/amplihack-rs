@@ -51,7 +51,9 @@ pub fn check_health_with(config: &XpiaConfig) -> HealthReport {
 
     let mut checks = Vec::new();
 
-    // Check 1: XPIA enabled. Off is the default, so it is not a failure.
+    // Check 1: XPIA enabled. Off is the default, so this always passes and
+    // only reports the state. `config_summary.enabled` is the machine-readable
+    // answer to whether XPIA is scanning.
     checks.push(CheckResult {
         name: "xpia_enabled".into(),
         passed: true,

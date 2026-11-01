@@ -9,16 +9,117 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ### Added
 
+- **Supervised agent sessions (#1760)**: `amplihack agent register|unregister|status|supervise` and `amplihack claude --supervise NAME` keep a registry of long-lived Claude Code sessions in `~/.amplihack/agents/`. The supervisor, run as a systemd user service, resumes each registered session whose `claude` process and tmux session are both gone from its saved conversation, in the same directory and with the same profile, model, effort, directories and permissions, and tells it when and why it was resumed. Sessions that exited cleanly stay ended; resumes are ordered by uncommitted changes, made in batches and limited per hour, and an agent over the limit is stopped with an ALERT line. When no tmux server is running, the supervisor starts one through `systemd-run --user --scope` in a unit named `amplihack-tmux-server-TS-N` (launch time and a per-pass counter), so restarting the service does not end the agents; without `systemd-run` it starts tmux directly and writes a `WARNING: ... tmux server started without its own scope` line. `status --json` now includes a top-level `"version": 1`. A launch that tmux refuses counts towards the restart limit, so a launch that keeps failing ends with the agent `stopped`. Each recovery is one line in `~/.amplihack/agents/supervisor.log`. See `docs/howto/supervise-agent-sessions.md` and `docs/reference/agent-command.md`.
+- **API-key (Claude Platform) profiles as the last overflow tier (#1700)**: a profile whose login file is `{}` or another object with no OAuth login, or which has no login file and names `ANTHROPIC_API_KEY`, `apiKeyHelper` or `primaryApiKey` in its settings, is detected as an API-key profile from key names and file presence only. A profile with no login file and no such setting is a subscription profile with no login. `amplihack profile kind list|set` shows and overrides the kind (`kind=` in `<root>/.auto-switch`). `profile usage` shows state `api_key` with `api-key (billed per token)` and runs no probe. The rotator uses an API-key profile only after every plan login and every credit overflow profile, behind the overflow wait, and moves `~/.claude` off it on the first cycle after plan capacity returns. Auto-switch uses it only for a new nested launch or a usage-limit rerun; that session's next nested launch or rerun goes back to a plan profile. Out-of-funds, revoked and rate-limited keys block every API-key profile with one ALERT; `profile overflow clear --platform` clears the block. Behaviour change: `profile run`, `switch` and `--profile` launches now refuse a subscription profile with no OAuth login of its own (`SubscriptionNoLogin`), and the rotator refuses a swap that would leave `~/.claude` with no OAuth login, because Claude would otherwise bill the API key. Kind detection, `profile kind` and the launch guard are Unix-only, like the rotator and auto-switch; see `docs/reference/profile-command.md#api-key-platform-support`. See `docs/reference/profile-command.md#api-key-profiles`.
 - **Claude login profiles (#1555)** — `amplihack profile <add|list|show|switch|remove|login|run>` and `--profile <name>` on `launch`/`claude` manage named, isolated Claude Code logins via `CLAUDE_CONFIG_DIR`. Manual only: no token vault, refresh, usage probing or auto-rotation. See `docs/howto/claude-profiles.md`.
 
 ### Changed
 
-- **XPIA is off by default (#1734)**: prompt-injection scanning in the `amplihack-hooks pre-tool-use` hook no longer runs unless you opt in. Set `XPIA_ENABLED` to `1`, `true` or `yes` (any case, no surrounding spaces) in the environment that starts `amplihack claude`, `copilot` or `codex`; unset, `false`, `0`, `no` or any other value leaves it off. Behaviour change: with it off, chained deletions outside the working directory, piping data to `curl`, `wget` or `nc`, reads of `.env` and credentials files, `../` path traversal and injected instructions in tool inputs are no longer blocked. XPIA scans only tool inputs, never fetched pages, file contents or command output, whether it is on or off. The CWD deletion, CWD rename, commit-on-`main`/`master` and `--no-verify` guards do not depend on XPIA and stay active. The `xpia_enabled` health check now passes when XPIA is off, with the message `XPIA defense is disabled (default; set XPIA_ENABLED=true to opt in)`; the summary still reports `enabled: false`. You no longer need to edit the installed Codex hook wrapper to turn XPIA off — editing it breaks `amplihack codex` with `Codex package changed outside installer`. See `docs/reference/xpia-configuration.md`.
+- **XPIA is off by default (#1734)**: prompt-injection scanning in the `amplihack-hooks pre-tool-use` hook no longer runs unless you opt in. Set `XPIA_ENABLED` to `1`, `true` or `yes` (any case, no surrounding spaces) in the environment that starts `amplihack claude`, `copilot` or `codex`; unset, `false`, `0`, `no` or any other value leaves it off. Behaviour change: with it off, chained deletions outside the working directory, piping data to `curl`, `wget` or `nc`, reads of `.env` and credentials files, `../` path traversal and injected instructions in tool inputs are no longer blocked. XPIA scans only tool inputs, never fetched pages, file contents or command output, whether it is on or off. The tmux, CWD deletion, CWD rename, commit-on-`main`/`master` and `--no-verify` guards do not depend on XPIA and still run. On Claude Code and Copilot only the tmux guard's answer stops the call; the XPIA block and the other guards' bare `block` answers are not acted on (#1773), so opting in to XPIA stops these calls only on Codex. A session resumed by the supervisor runs with the tmux server's environment and may come back with XPIA off. The library health check (`check_health`, which nothing in amplihack calls) now reports `xpia_enabled` as passing when XPIA is off; `config_summary.enabled` still reports `false`. You no longer need to edit the installed Codex hook wrapper to turn XPIA off — editing it breaks `amplihack codex` with `Codex package changed outside installer`. See `docs/reference/xpia-configuration.md`.
+- **Usage probes work under heavy host load (#1698)**: `profile usage` and the rotator now ask `claude` for usage with a `get_usage` control request (`claude -p --input-format stream-json --output-format stream-json --verbose`, one request line on stdin), which does not appear to make Claude read every session transcript, and fall back to `claude -p /usage` in the time left when the answer is not accepted, for example because `claude` does not know the request or the account has usage credits turned on. Profiles marked as overflow are always probed with `/usage` only, so the spend-limit block still sees a used-up spend limit. `AMPLIHACK_PROFILE_USAGE_PROBE=text` skips the request (`auto` is the default). The default probe deadline is now 120 seconds (was 30) and covers both attempts; `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` (`1` to `600`) or the hidden `--timeout-secs` flag of `profile usage` changes it. Probes run in a pool sized from the host's free CPUs (2 to 4) instead of 8 at once; `AMPLIHACK_PROFILE_USAGE_PARALLEL` (`1` to `16`) replaces the derived size. The rotator's live probe takes one of the pool's slots, so a cycle never runs more probes at once than the pool size (before, it could run one more). An invalid value of any of the three variables prints one warning to stderr and uses the default; the rotator keeps the values it was started with until restarted. A `timeout` or `error` probe is unknown, never 100%: `profile usage` shows `-` (JSON `null`) and does not record it, and the rotator never chooses it or counts it as exhausted. The rotator warns `probe of <name> timed out` in `rotate.err`. While a plan candidate's probe timed out, `claude` could not be started or read, or its profile directory was refused just before the spawn, the rotator does not move from a plan login onto an overflow profile in that cycle. A profile whose directory fails the ownership and mode check is now skipped as `directory refused` instead of `no login` (an excluded one stays `excluded`), and `profile switch` refuses it with that reason; while a plan profile is skipped for it, the rotator does not make that move on any cycle, until the directory is fixed. A plan login that reads `not_logged_in`, `unparsed` or `spend_limit` does not block that move. Other moves, and auto-switch, are unchanged. The acceptance rules and the checks on text in the answer are in `docs/reference/profile-command.md#probe-method`.
 - **`profile switch` moves the live login (#1691)**: `amplihack profile switch <name>` now moves `<name>`'s login into `~/.claude` with the rotator's swap, lock and ledger entry, holds rotation on `<name>` (pin file `<root>/.auto-switch.d/rotate/pin`), and sets the default. It works with no rotator running. `profile switch --none` clears the default and releases the hold without moving a login. Behaviour change: `switch` now refuses a profile with no stored login, and it fails with `RotateUnsupported` on platforms without Unix file semantics, where it used to only write `.default`. It needs no `claude` on `PATH` and measures nothing. A `rotate watch` started from another amplihack binary ignores the hold; `switch` warns on stderr when one is running (exit 0); restart it. A cycle held by a switch records `held` with no `measured_at`, and never counts as capacity, so neither the limit-resume hook nor the usage-limit wait wakes early on the rotator during a hold; the limit-resume hook does not resume sessions until the hold is released, and the usage-limit wait still reruns its step when the limit resets. The hold is checked before a cycle measures or picks a target, so it wins over every target rule until `switch --none` releases it. See `docs/howto/claude-profile-rotation.md#switch-to-a-login-by-hand`.
 - **Saved Claude profile root (#1592)**: `amplihack profile root [<dir>]` shows or saves the profile root in `~/.amplihack/profile-root`, so cron, `tmux -d` and `env -i` find profiles without `~/.bashrc`; the first `profile add` records the root it used. An empty `AMPLIHACK_CLAUDE_PROFILE_ROOT` now counts as unset, and a non-empty value with a control character or a `..` component is now refused with `InvalidRoot`. `profile list` and `profile rotate status` now print a `root:` line first, and `profile root <dir>` refuses a value with leading or trailing whitespace. See `docs/reference/profile-command.md#profile-root`.
 
 ### Fixed
 
+- **Copilot launch failed with Copilot CLI 1.0.105 (#1744)**: amplihack no
+  longer adds `--remote` to Copilot launches, because Copilot removed the
+  flag. A user's `--remote` or `--no-remote` is passed through unchanged, but
+  Copilot 1.0.105 rejects both; use `/remote on` or `/remote off` inside a
+  session. Routed (LiteLLM proxy)
+  launches still add `--no-remote` and `--no-remote-export`, so they fail to
+  start on Copilot 1.0.105 until #1747 is resolved.
+  `AMPLIHACK_COPILOT_NO_REMOTE` is removed and has no effect. See
+  [flag injection rules](docs/reference/flag-matrix.md#flag-injection-rules).
+- **Intermittent `exited_probe_with_inherited_pipe_is_bounded_and_cleans_its_group`
+  failure (#1748)**: the test read the probe descendant's state once, straight
+  after the probe returned, but the group `SIGKILL` arrives asynchronously, so
+  under load the descendant could still read as sleeping. The test now polls
+  for up to 5 seconds before failing.
+- **Intermittent `hostile_root_round_trips_through_bash_without_running_anything`
+  failure (#1730, #1731)**: the test spawned `bash` from `PATH` without the
+  crate-wide env lock, while other tests point `PATH` at an empty directory
+  under that lock, so the spawn could fail with `ENOENT`. The test now holds
+  the lock for the spawn.
+- **Intermittent `version_probe_is_bounded_for_hanging_binaries` failure
+  (#1765)**: the test pointed the process-wide `PATH` at a temporary
+  directory and required the probe of a fake `mmdc` that sleeps 2 seconds to
+  return within 1 second, which a loaded host can miss although the probe is
+  bounded. The test now runs the fake by absolute path, leaving `PATH` alone,
+  and requires the probe of a fake that sleeps 60 seconds to return within
+  30 seconds and report failure.
+- **Tests changed `PATH` and `HOME` for the whole test process (#1765)**:
+  libtest runs a binary's tests on parallel threads of one process, so a test
+  that set `PATH` or `HOME` with `std::env::set_var` changed them for every
+  other test running at the same time, which then found the wrong program or
+  wrote under the wrong home. Tests in `amplihack-cli`, `amplihack-hooks` and
+  `amplihack-utils` now set `PATH` and `HOME` on the child process they start
+  and leave the test process alone. To make that possible, the code under
+  test gained seams that take the child's environment from the caller:
+  `configure` hooks on the `npm`, `mmdc` and version probes
+  (`get_latest_version_with`, `detect_version_with`, `version_probe_succeeds`,
+  `ensure_mermaid_cli_with`), `*_with` variants such as
+  `git_clone_framework_repo_with` and `run_claude_reflection_with`, an
+  `AzlinLookup` for the fleet's `azlin` search, and a `PATH` argument for the
+  `rustyclawd` binary search. Production callers pass the process
+  environment, so their behaviour is unchanged. The test-only variable
+  `AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS` is removed:
+  `provider_command_execution_is_bounded` now passes a 500 ms timeout to the
+  provider helper directly and runs a fake that sleeps 60 seconds, so a pass
+  within 30 seconds means the timeout fired.
+  `run_npm_with_timeout_terminates_child_after_timeout` now sets the child's
+  `PATH` and `HOME` to the fake `npm`'s directory instead of changing them
+  for the process, and checks at 7 seconds that the fake, which writes a
+  marker after 5 seconds, was stopped. Both tests replace the versions
+  described under #1735 below. The tests that still change the variables
+  are listed in #1787. See
+  `docs/howto/keep-tests-from-changing-path-and-home.md`.
+- **`issue_1543_pr_head_worktree_shell_test_passes` failed in CI once
+  recipe-runner-rs v0.5.1 was released (#1772)**: at startup, the pinned
+  runner asks GitHub for its latest release and prints a notice on stderr
+  when that release is newer than itself. The test captured the runner's
+  stdout and stderr together and parsed them as one JSON document, so T20 and
+  T21 reported `<runner output is not JSON>`. The test now sets
+  `RECIPE_RUNNER_NO_UPDATE_CHECK=1`, parses only the runner's stdout, and
+  prints both streams when a run fails or returns no JSON.
+- **Intermittent `release_under_a_held_lock_leaves_pin_and_pointer_alone`
+  failure (#1774)**: six rotate tests took the rotate state lock with no
+  wait, and one autostart test expected a launch straight after a failed one
+  to find it free. While another test thread spawns a child process, the
+  child shares a lock file this test has just closed until it reaches
+  `exec`, so the lock could read as held. The six tests now use one helper
+  that waits up to 10 seconds for the lock, and the autostart test retries
+  its final launch while it reports `Busy`, for up to 10 seconds.
+- **Intermittent `home_command_child_sees_no_config_dir` failure (#1777)**:
+  two profile tests ran a script they had just written without retrying
+  `ETXTBSY`, which a child process spawned by another test thread can cause
+  while it still shares the script's write descriptor. All three such runs in
+  `tests_run.rs` now share one helper that retries for up to 5 seconds.
+- **Intermittent `downgrade_guard_tests` failures in `freshness.rs` (#1780)**:
+  the tests run each case in a child copy of the test binary, which started
+  in whatever directory the test process was in. Other tests move the process
+  into a temporary directory and then delete it, and git cannot start in a
+  deleted directory, so the child's runner ancestry check answered
+  `Unverifiable` instead of `Newer`. Both worker helpers in `freshness.rs` now
+  start the child in a directory the test owns.
+- **Auto-drive ended at phase 1 although its build had an open PR (#1714)**: when `default-workflow` ran inside `auto-drive-to-merge` and finalization failed while a published, open PR existed, the whole auto-drive run ended at phase 1, although its crusty and merge-ready loops exist to review that PR and fix what keeps it from merging. Two cases were reported. (1) Red checks, classified `BLOCKED_CI`. (2) A merge of main pushed to the PR from another checkout, so the PR head was a fast-forward of the local HEAD; the open-PR check required the two to be equal, found no signal and the run ended `FAILED_IMPLEMENTATION`. The open-PR check (`workflow_finalization_pr_signal.sh`) now accepts a PR head whose ancestor is the local HEAD, fetching the PR head once without writing refs when it is not local (only after the PR passes the open, same-repo, branch, number and URL checks, and without prompting: ssh runs with `BatchMode=yes` and connection time limits, HTTPS with a stall limit, so the fetch cannot hang where `timeout` is missing, as on macOS), and fails closed when the commit is missing or the heads diverged. The terminal-state probe that `workflow-finalize` runs before the validator applies the same rule (`accept_pr_head_ahead: "true"`, `workflow_pr_scope.sh --allow-head-ahead`), through one shared test in `workflow_pr_head_fetch.sh`, so a merge that reached the PR before finalization started is no longer reported as stale metadata (`FAILED_INVALID_INPUT`); a diverged head or a rewound remote still is. `workflow-finalize` then runs `step-20-sync-pr-head` (`workflow_pr_head_sync.sh`), which fetches the branch, sets a missing upstream and fast-forwards the worktree to that PR head before the cleanup and quality-audit agents edit it; step-20b runs the same tool after its cleanup commit, so it fetches and sets a missing upstream and pulls before it pushes instead of a bare `git push -u` that a remote ahead would reject. `autodrive-build` step-02 sets `finalization_handoff: "true"`; with it, finalization emits its usual `BLOCKED_CI` result, or a `FAILED_IMPLEMENTATION` or `FAILED_REPORTING` result on a PR the open-PR check confirmed (on a reporting failure the check runs only under auto-drive and can only hand the PR off, never classify success), with `terminal_success=false`, `handoff=merge_ready_loop` and exit `0`. Step-03 then checks that the PR is the one it resolved and is open, and records `terminal_state` and `handed_off` in `build_result`. Every other failure still ends the run. A standalone `default-workflow` declares the flag `""` and still fails closed. The allow-list lives in `amplifier-bundle/tools/workflow_finalization_handoff.sh`. See `docs/reference/auto-drive-to-merge.md#finalization-hand-off-from-phase-1-1714`.
+
+- **Agents could kill the user's tmux server (#1733)**: inside a tmux pane `$TMUX` is set, and tmux then uses that socket and ignores `TMUX_TMPDIR`, so an agent's `TMUX_TMPDIR=$SB/tmuxsock tmux kill-server` killed the user's own server and every session on it. The `pre-tool-use` hook now denies `tmux kill-server` (and its prefixes) and `tmux kill-session -a` unless the invocation names a private socket with `-S <path>` or `-L <name>`, on Claude Code (its `Bash`, `PowerShell` and `Monitor` tools), Codex and Copilot. The deny names the safe form, `env -u TMUX tmux -S <private socket> …`. The guard is the hook's first check for a shell tool, ahead of XPIA: XPIA, on by default, also matches commands such as `tmux kill-server; rm -rf "$SB"`, and its bare `{"block": true}` reply is not enforced by Claude Code (#1773). The testing and tmux-using skills now require `-S` on every tmux command. The guard shares its shell tokeniser with the #1551 merge guard, which changes that guard too. With `AMPLIHACK_MERGE_GUARD=1` it now also blocks three kinds of `gh` command that 1.2.59 allowed: one broken across lines (`gh pr \` then `merge 38` on the next line), since a backslash-newline no longer adds an empty word; one with a redirection before or among its words (`>out gh pr merge 38`, `gh 2>/dev/null pr merge 38`); and one that spells a word with `$'…'` escapes (`gh $'\x70r' merge 38`). No form that 1.2.59 blocked is now allowed. See `docs/reference/hook-specifications.md#tmux-server-guard`.
+- **Intermittent failures of three `amplihack-cli` tests on a loaded host
+  (#1735)**: these fixes arrived with the #1733 tmux guard because they failed
+  its merge-ready runs of `cargo test --workspace`; none is related to tmux.
+  `tests_issue_1570_admiral` wrote its stub `azlin` and ran it at once, so a
+  write descriptor inherited by another test thread's fork could make the exec
+  fail with `ETXTBSY` for longer than `start_agent`'s 250 ms retry. The test
+  now runs the stub with a `__probe` argument, retrying `ETXTBSY` for up to
+  5 seconds, before the calls under test. `provider_command_execution_is_bounded`
+  required a provider that sleeps 2 seconds, under a 50 ms timeout, to return
+  within 1 second; the provider now sleeps 30 seconds and the bound is
+  10 seconds. `run_npm_with_timeout_terminates_child_after_timeout` now gives
+  its fake `npm` 5 seconds instead of 1 and waits 5.5 seconds instead of
+  1.5 before checking that the child left no output, so the test takes about
+  4 seconds longer. The timeouts under test are unchanged. #1765 has since
+  rewritten the provider and `npm` timeout tests; see its entry above.
 - **Workflow cleanup deleted other runs' worktrees and uncommitted work
   (#1494, #1560)** — when a run started from the main checkout, the runtime
   artifact cleanup ran `rm -rf <repo>/worktrees`, deleting every concurrent

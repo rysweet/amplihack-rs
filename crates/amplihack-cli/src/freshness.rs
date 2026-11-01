@@ -663,6 +663,9 @@ mod codex_delivery_contract_tests {
                 &format!("freshness::codex_delivery_contract_tests::{test}"),
                 "--nocapture",
             ])
+            // As in `downgrade_guard_tests::run_worker`: never inherit a
+            // working directory that another test may delete.
+            .current_dir(home)
             .env("AMPLIHACK_DELIVERY_WORKER", test)
             .env("PATH", bin)
             .env("HOME", home)
@@ -1054,6 +1057,12 @@ mod downgrade_guard_tests {
 
     /// Runs `test` in a child process. `runner` is the stub installed in
     /// `$CARGO_HOME/bin`; `extra` adds environment variables.
+    ///
+    /// The child runs in this test's own directory. Otherwise it inherits
+    /// the test process's working directory, which another test may have
+    /// moved into a temporary directory that it then deletes. Git cannot
+    /// start in a deleted directory, so the ancestry lookup would answer
+    /// `Unverifiable` instead of the expected order.
     fn run_worker(test: &str, runner: &str, extra: &[(&str, &str)]) {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
@@ -1082,6 +1091,7 @@ mod downgrade_guard_tests {
                 &format!("freshness::downgrade_guard_tests::{test}"),
                 "--nocapture",
             ])
+            .current_dir(dir.path())
             .env(WORKER_ENV, test)
             .env("PATH", path)
             .env("HOME", &home)

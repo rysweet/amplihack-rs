@@ -54,13 +54,35 @@ fn reset_text(t: i64) -> String {
 /// Records its arguments and directory; `<p>.slow` makes it sleep in a child
 /// process (not `exec`), so a grandchild keeps the pipes open after a kill.
 /// An executable `<p>.hook` runs during the probe (test-only).
+///
+/// Issue #1698: the usage request (`--input-format` in argv) is answered
+/// only when `<p>.json` exists: the fake records its arguments and stdin,
+/// sleeps for the seconds in `<p>.wait` if present, then prints a 16 KiB
+/// `system` line and the canned answer. Without `<p>.json` it exits 1 at
+/// once, so the probe falls back to `/usage`. With `$CANNED/marks`, the
+/// `/usage` path appends `S <p>` and `E <p>` around a 0.5 s sleep.
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
   --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
 esac
 p=$(basename "${CLAUDE_CONFIG_DIR:-$HOME/.claude}")
+case " $* " in
+  *" --input-format "*)
+    [ -f "$CANNED/$p.json" ] || exit 1
+    printf '%s\n' "$#" "$@" > "$RECORD_DIR/args-request.$p"
+    cat > "$RECORD_DIR/stdin.$p"
+    if [ -f "$CANNED/$p.wait" ]; then sleep "$(cat "$CANNED/$p.wait")"; fi
+    printf '{"type":"system","subtype":"init","note":"SYSTEM-LINE-MARKER-1698","pad":"%s"}\n' "$(head -c 16384 /dev/zero | tr '\0' x)"
+    cat "$CANNED/$p.json"
+    exit 0 ;;
+esac
 printf '%s\n' "$#" "$@" > "$RECORD_DIR/args.$p"
 printf 'CLAUDE_CONFIG_DIR=%s\n' "$CLAUDE_CONFIG_DIR" > "$RECORD_DIR/env.$p"
+if [ -f "$CANNED/marks" ]; then
+  echo "S $p" >> "$RECORD_DIR/marks"
+  sleep 0.5
+  echo "E $p" >> "$RECORD_DIR/marks"
+fi
 if [ -f "$CANNED/$p.slow" ]; then
   sleep 30
 fi
@@ -161,6 +183,7 @@ impl Fixture {
                 &format!("{{\"claudeAiOauth\":{{\"accessToken\":\"SENTINEL-TOKEN-{p}\"}}}}"),
             );
         }
+        set_default(&f.root, "c");
         if lease {
             let state = f.state();
             fs::create_dir_all(&state).unwrap();
@@ -179,6 +202,15 @@ impl Fixture {
 
     fn canned(&self, p: &str, stdout: &str) {
         fs::write(self.canned.join(format!("{p}.out")), stdout).unwrap();
+    }
+
+    /// Makes the fake answer `p`'s usage request with `line` (issue #1698).
+    fn answers(&self, p: &str, line: &str) {
+        fs::write(self.canned.join(format!("{p}.json")), format!("{line}\n")).unwrap();
+    }
+
+    fn recorded(&self, file: &str) -> Option<String> {
+        fs::read_to_string(self.records.join(file)).ok()
     }
 
     fn state(&self) -> PathBuf {
@@ -584,11 +616,77 @@ fn timeout_env_is_honoured_and_a_bad_value_warns() {
     assert!(out.status.success());
     assert!(
         text(&out.stderr).contains(
-            "warning: ignored AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS \"soon\" (use 1 to 600); using 30"
+            "warning: ignored AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS \"soon\" (use 1 to 600); using 120"
         ),
         "{}",
         text(&out.stderr)
     );
+}
+
+#[test]
+fn a_bad_parallel_value_warns_and_every_profile_is_still_probed() {
+    // Issue #1698: the variable is set on the child only.
+    let f = Fixture::new(false);
+    let out = f
+        .cmd(&["profile", "usage", "--json"])
+        .env("AMPLIHACK_PROFILE_USAGE_PARALLEL", "lots")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    let warning = warning_lines(&stderr)
+        .into_iter()
+        .find(|l| l.contains("AMPLIHACK_PROFILE_USAGE_PARALLEL"))
+        .unwrap_or_else(|| panic!("no parallel warning: {stderr}"));
+    assert!(
+        warning.starts_with(
+            "warning: ignored AMPLIHACK_PROFILE_USAGE_PARALLEL \"lots\" (use 1 to 16); using "
+        ),
+        "{warning}"
+    );
+    let n: usize = warning.rsplit(' ').next().unwrap().parse().unwrap();
+    assert!((2..=4).contains(&n), "derived bound {n}");
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(!rows.is_empty());
+}
+
+#[test]
+fn a_valid_or_empty_parallel_value_prints_no_warning() {
+    let f = Fixture::new(false);
+    for v in ["1", "16", ""] {
+        let out = f
+            .cmd(&["profile", "usage", "--json"])
+            .env("AMPLIHACK_PROFILE_USAGE_PARALLEL", v)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{v:?}: {}", text(&out.stderr));
+        assert!(
+            !text(&out.stderr).contains("AMPLIHACK_PROFILE_USAGE_PARALLEL"),
+            "{v:?}: {}",
+            text(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn a_timed_out_profile_is_timeout_in_the_table_never_a_percentage() {
+    let f = Fixture::new(false);
+    f.ok(&["profile", "add", "e"]);
+    fs::write(f.canned.join("e.slow"), "").unwrap();
+    f.canned("e", "Current session: 100% used · resets 4pm (UTC)\n");
+    let out = f
+        .cmd(&["profile", "usage", "e"])
+        .env("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    let row = table_rows(&stdout)
+        .into_iter()
+        .find(|l| first_word(l) == "e")
+        .unwrap_or_else(|| panic!("no row for e: {stdout}"));
+    assert!(row.split_whitespace().any(|w| w == "timeout"), "{row}");
+    assert!(!row.contains('%'), "{row}");
 }
 
 #[test]
@@ -860,4 +958,231 @@ fn malformed_ledger_warns_once_and_marks_nothing_live() {
         fs::read_to_string(f.root.join(".rotator/ledger.json")).unwrap(),
         "not json"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1698: the usage request, its `/usage` fallback and the method
+// variable. `<p>.json` makes the fake answer `p`'s request; `a.out` reads
+// 20/30, so a row at 42/17 came from the request.
+// ---------------------------------------------------------------------------
+
+const REQUEST_LINE: &str = r#"{"type":"control_request","request_id":"amplihack-usage","request":{"subtype":"get_usage","skip_behaviors":true}}"#;
+const REQUEST_ARGS: &str =
+    "6\n-p\n--input-format\nstream-json\n--output-format\nstream-json\n--verbose\n";
+const SYSTEM_MARKER: &str = "SYSTEM-LINE-MARKER-1698";
+const PROBE_ENV: &str = "AMPLIHACK_PROFILE_USAGE_PROBE";
+
+/// An answer shaped as Claude Code 2.1.314 sends it, with invented figures.
+fn answer(session: f64, week: f64, credits: bool) -> String {
+    let at = |t: i64| {
+        chrono::DateTime::from_timestamp(t, 0)
+            .unwrap()
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    };
+    serde_json::json!({
+        "type": "control_response",
+        "response": {
+            "subtype": "success",
+            "request_id": "amplihack-usage",
+            "response": {
+                "rate_limits_available": true,
+                "rate_limits": {
+                    "five_hour": {"utilization": session, "resets_at": at(now() + 7200)},
+                    "seven_day": {"utilization": week, "resets_at": at(now() + 3 * 86_400)},
+                    "model_scoped": [
+                        {"display_name": "Fable", "utilization": 3, "resets_at": at(now() + 3 * 86_400)}
+                    ],
+                    "extra_usage": {"is_enabled": credits}
+                }
+            }
+        }
+    })
+    .to_string()
+}
+
+fn session(row: &serde_json::Value) -> &serde_json::Value {
+    &row["session"]["used_percentage"]
+}
+
+#[test]
+fn an_answered_request_gives_the_row_without_usage() {
+    let f = Fixture::new(false);
+    f.answers("a", &answer(42.0, 17.0, false));
+    let (rows, _) = f.json(&["profile", "usage", "--json", "a"]);
+    assert_eq!(rows[0]["state"], "ok");
+    assert_eq!(session(&rows[0]), 42.0);
+    assert_eq!(rows[0]["week_all"]["used_percentage"], 17.0);
+    assert_eq!(rows[0]["week_models"][0]["label"], "Fable");
+    assert!(rows[0]["session"]["resets_at"].is_i64(), "{}", rows[0]);
+    assert_eq!(f.recorded("args-request.a").as_deref(), Some(REQUEST_ARGS));
+    assert_eq!(f.recorded("stdin.a"), Some(format!("{REQUEST_LINE}\n")));
+    assert_eq!(f.recorded("args.a"), None, "/usage was not run");
+
+    let out = f.ok(&["profile", "usage", "a"]);
+    let stdout = text(&out.stdout);
+    let row = table_rows(&stdout)[0];
+    assert!(row.contains("42%") && row.contains("17%"), "{stdout}");
+}
+
+#[test]
+fn an_error_answer_falls_back_to_usage() {
+    let f = Fixture::new(false);
+    f.answers(
+        "a",
+        r#"{"type":"control_response","response":{"subtype":"error","request_id":"amplihack-usage","error":"Unknown control request"}}"#,
+    );
+    let (rows, stderr) = f.json(&["profile", "usage", "--json", "a"]);
+    assert_eq!(session(&rows[0]), 20.0, "read from /usage");
+    assert!(f.recorded("args-request.a").is_some());
+    assert_eq!(f.recorded("args.a").as_deref(), Some("2\n-p\n/usage\n"));
+    assert!(!stderr.contains("Unknown control request"), "{stderr}");
+}
+
+#[test]
+fn an_answer_with_usage_credits_on_falls_back_to_usage() {
+    let f = Fixture::new(false);
+    f.answers("a", &answer(42.0, 17.0, true));
+    let (rows, _) = f.json(&["profile", "usage", "--json", "a"]);
+    assert_eq!(session(&rows[0]), 20.0, "read from /usage");
+    assert!(f.recorded("args.a").is_some());
+}
+
+#[test]
+fn text_mode_runs_only_usage() {
+    let f = Fixture::new(false);
+    f.answers("a", &answer(42.0, 17.0, false));
+    let out = f
+        .cmd(&["profile", "usage", "--json", "a"])
+        .env(PROBE_ENV, "text")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(session(&rows[0]), 20.0);
+    assert_eq!(f.recorded("stdin.a"), None);
+    assert_eq!(f.recorded("args-request.a"), None);
+    assert!(
+        !text(&out.stderr).contains(PROBE_ENV),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+#[test]
+fn a_bad_method_warns_once_and_still_uses_the_request() {
+    let f = Fixture::new(false);
+    f.answers("a", &answer(42.0, 17.0, false));
+    let out = f
+        .cmd(&["profile", "usage", "--json", "a"])
+        .env(PROBE_ENV, "Text")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    let warnings: Vec<&str> = warning_lines(&stderr)
+        .into_iter()
+        .filter(|l| l.contains(PROBE_ENV))
+        .collect();
+    assert_eq!(
+        warnings,
+        ["warning: ignored AMPLIHACK_PROFILE_USAGE_PROBE \"Text\" (use auto or text); using auto"]
+    );
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(session(&rows[0]), 42.0);
+}
+
+#[test]
+fn a_slow_request_inside_the_deadline_is_used() {
+    let f = Fixture::new(false);
+    f.answers("a", &answer(42.0, 17.0, false));
+    fs::write(f.canned.join("a.wait"), "2").unwrap();
+    let start = Instant::now();
+    let (rows, _) = f.json(&["profile", "usage", "--json", "--timeout-secs", "10", "a"]);
+    assert!(start.elapsed() >= Duration::from_secs(2));
+    assert_eq!(rows[0]["state"], "ok");
+    assert_eq!(session(&rows[0]), 42.0);
+    assert_eq!(f.recorded("args.a"), None);
+}
+
+#[test]
+fn a_request_past_the_deadline_is_timeout_and_usage_never_runs() {
+    let f = Fixture::new(false);
+    f.answers("a", &answer(42.0, 17.0, false));
+    fs::write(f.canned.join("a.wait"), "30").unwrap();
+    let start = Instant::now();
+    let out = f.ok(&["profile", "usage", "--timeout-secs", "1", "a"]);
+    assert!(start.elapsed() < Duration::from_secs(15));
+    let stdout = text(&out.stdout);
+    let row = table_rows(&stdout)[0];
+    let cells: Vec<&str> = row.split_whitespace().collect();
+    assert_eq!(cells[0], "a");
+    assert!(cells.contains(&"timeout"), "{row}");
+    assert!(!row.contains('%'), "{row}");
+    // SESSION, SESSION RESETS, WEEK and WEEK RESETS.
+    assert_eq!(cells[cells.len() - 4..], ["-", "-", "-", "-"], "{row}");
+    assert_eq!(f.recorded("args.a"), None, "no /usage after the deadline");
+
+    let (rows, _) = f.json(&["profile", "usage", "--json", "--timeout-secs", "1", "a"]);
+    assert_eq!(rows[0]["state"], "timeout");
+    assert_eq!(rows[0]["session"], serde_json::Value::Null);
+    assert_eq!(rows[0]["week_all"], serde_json::Value::Null);
+    assert_eq!(rows[0]["week_models"], serde_json::json!([]));
+    assert_eq!(rows[0]["error"], serde_json::Value::Null);
+}
+
+#[test]
+fn the_bound_holds_with_the_request_and_its_fallback() {
+    let f = Fixture::new(false);
+    for p in ["e", "g"] {
+        f.ok(&["profile", "add", p]);
+        f.canned(
+            p,
+            "Current session: 1% used\nCurrent week (all models): 1% used\n",
+        );
+    }
+    fs::write(f.canned.join("marks"), "").unwrap();
+    let out = f
+        .cmd(&["profile", "usage", "--json"])
+        .env("AMPLIHACK_PROFILE_USAGE_PARALLEL", "2")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let marks = fs::read_to_string(f.records.join("marks")).unwrap();
+    let (mut running, mut peak) = (0usize, 0usize);
+    for line in marks.lines() {
+        if line.starts_with("S ") {
+            running += 1;
+            peak = peak.max(running);
+        } else {
+            running -= 1;
+        }
+    }
+    assert_eq!(marks.lines().filter(|l| l.starts_with("S ")).count(), 6);
+    assert_eq!(peak, 2, "six profiles at a bound of 2: {marks}");
+}
+
+#[test]
+fn the_system_line_is_shown_only_with_raw() {
+    let f = Fixture::new(false);
+    f.answers("a", &answer(42.0, 17.0, false));
+    let out = f.ok(&["profile", "usage", "a"]);
+    for s in [text(&out.stdout), text(&out.stderr)] {
+        assert!(!s.contains(SYSTEM_MARKER), "{s}");
+    }
+    let out = f.ok(&["profile", "usage", "--raw", "a"]);
+    assert!(text(&out.stdout).contains(SYSTEM_MARKER));
+    assert!(!text(&out.stderr).contains(SYSTEM_MARKER));
+    assert_no_secrets(&out);
+}
+
+#[test]
+fn an_overflow_profile_is_probed_with_usage_only() {
+    let f = Fixture::new(false);
+    f.answers("a", &answer(42.0, 17.0, false));
+    f.ok(&["profile", "overflow", "add", "a"]);
+    let (rows, _) = f.json(&["profile", "usage", "--json", "a"]);
+    assert_eq!(rows[0]["overflow"], true);
+    assert_eq!(session(&rows[0]), 20.0, "read from /usage");
+    assert_eq!(f.recorded("stdin.a"), None);
+    assert_eq!(f.recorded("args-request.a"), None);
 }

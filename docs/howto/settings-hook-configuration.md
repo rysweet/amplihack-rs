@@ -56,9 +56,9 @@ All hooks are implemented as subcommands of the compiled `amplihack-hooks` binar
 | `stop` | Stop | Session cleanup and metrics flush |
 | `pre-compact` | PreCompact | Context preservation before compaction |
 
-**XPIA security behavior:** When the `tools/xpia` directory is present in the staged framework assets, the `session-start`, `pre-tool-use`, and `post-tool-use` subcommands additionally activate XPIA defense logic (implemented in `amplihack-security::XpiaDefender`). No extra hook entries are added — the same `amplihack-hooks <subcommand>` invocation handles both framework and security duties. The `pre-tool-use` subcommand is only registered when XPIA assets are present.
+**XPIA security behavior:** When the `tools/xpia` directory is present in the staged framework assets, the `pre-tool-use` subcommand is registered. It is the only subcommand that calls the XPIA defense logic (implemented in `amplihack-security::XpiaDefender`); `session-start` and `post-tool-use` do not. No extra hook entries are added — the same `amplihack-hooks pre-tool-use` invocation handles both framework and security duties.
 
-Registering the hook does not turn XPIA scanning on. XPIA is off by default and runs only when the agent CLI is started with `XPIA_ENABLED=true` (`1` and `yes` also work, in any case). With XPIA off, the registered `pre-tool-use` hook still enforces the CWD deletion, CWD rename, commit-on-main and `--no-verify` guards. See the [XPIA Configuration Reference](../reference/xpia-configuration.md).
+Registering the hook does not turn XPIA scanning on. XPIA is off by default and runs only when the agent CLI is started with `XPIA_ENABLED=true` (`1` and `yes` also work, in any case). With XPIA off, the registered `pre-tool-use` hook still runs the tmux, CWD deletion, CWD rename, commit-on-main and `--no-verify` guards, but on Claude Code and Copilot only the tmux guard's answer stops the call. See the [XPIA Configuration Reference](../reference/xpia-configuration.md).
 
 ### What Is Validated
 
