@@ -13,7 +13,8 @@
 # pushes. Without this tool they would edit a tree missing the PR head's
 # commits, and step-20b would push to a remote that is ahead of it.
 #
-# What it does, in the current directory:
+# What it does, in the current directory, where <branch> is the branch's name
+# on origin (workflow_remote_branch.sh: <B> for an alias <B>--wt-<n>, #1762):
 #   1. Fetches origin refs/heads/<branch> into refs/remotes/origin/<branch>,
 #      with the same no-prompt, bounded options as workflow_pr_head_fetch.sh.
 #   2. If the branch has no upstream and origin/<branch> exists, sets the
@@ -36,11 +37,16 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=workflow_pr_head_fetch.sh
 . "$here/workflow_pr_head_fetch.sh"
 
-branch="$(git branch --show-current 2>/dev/null || :)"
-if [ -z "$branch" ]; then
+local_branch="$(git branch --show-current 2>/dev/null || :)"
+# #1762: an alias (<B>--wt-<n> tracking origin/<B>) syncs with origin/<B>.
+if [ -z "$local_branch" ]; then
   echo "WARNING: workflow_pr_head_sync: detached HEAD; nothing to sync (#1714)" >&2
   exit 0
 fi
+branch="$(bash "$here/workflow_remote_branch.sh" .)" || {
+  echo "WARNING: workflow_pr_head_sync: workflow_remote_branch.sh is missing or failed; nothing to sync (#1762)" >&2
+  exit 0
+}
 
 bound=""
 ! command -v timeout >/dev/null 2>&1 || bound="timeout 60"
@@ -62,10 +68,10 @@ if [ -z "$remote_oid" ]; then
 fi
 
 if ! git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
-  if git branch --quiet --set-upstream-to="origin/$branch" "$branch" >/dev/null 2>&1; then
-    echo "INFO: workflow_pr_head_sync: set the upstream of $branch to origin/$branch (#1714)" >&2
+  if git branch --quiet --set-upstream-to="origin/$branch" "$local_branch" >/dev/null 2>&1; then
+    echo "INFO: workflow_pr_head_sync: set the upstream of $local_branch to origin/$branch (#1714)" >&2
   else
-    echo "WARNING: workflow_pr_head_sync: could not set the upstream of $branch to origin/$branch (#1714)" >&2
+    echo "WARNING: workflow_pr_head_sync: could not set the upstream of $local_branch to origin/$branch (#1714)" >&2
   fi
 fi
 
@@ -76,8 +82,8 @@ fi
 
 count="$(git rev-list --count "$local_oid..$remote_oid")"
 if git merge --ff-only --quiet "$remote_oid" >/dev/null 2>&1; then
-  echo "INFO: workflow_pr_head_sync: fast-forwarded $branch by $count commit(s) to the PR head $remote_oid (#1714)" >&2
+  echo "INFO: workflow_pr_head_sync: fast-forwarded $local_branch by $count commit(s) to the PR head $remote_oid (#1714)" >&2
 else
-  echo "WARNING: workflow_pr_head_sync: could not fast-forward $branch to $remote_oid (uncommitted changes in the way?); step-20b will pull --rebase (#1714)" >&2
+  echo "WARNING: workflow_pr_head_sync: could not fast-forward $local_branch to $remote_oid (uncommitted changes in the way?); step-20b will pull --rebase (#1714)" >&2
 fi
 exit 0
