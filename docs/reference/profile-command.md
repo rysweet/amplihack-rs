@@ -3,6 +3,9 @@
 Manage Claude Code login profiles. See the
 [how-to](../howto/claude-profiles.md) for a walkthrough.
 
+See also the [capacity governor](./capacity-governor.md), which reads the
+usage readings described here to decide when new work may start.
+
 ## Synopsis
 
 ```

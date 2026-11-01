@@ -145,7 +145,15 @@ pub struct AmplihackClaude {
 
 /// Options of `amplihack claude` and `launch` that take a value and are not
 /// recorded.
-const SKIPPED_VALUES: [&str; 3] = ["--checkout-repo", "--append", "--max-turns"];
+const SKIPPED_VALUES: [&str; 6] = [
+    "--checkout-repo",
+    "--append",
+    "--max-turns",
+    // Issue #1811: the capacity governor's flags.
+    "--workstream",
+    "--governor-class",
+    "--governor-wait",
+];
 /// The same, for options only `amplihack claude` has.
 const CLAUDE_VALUES: [&str; 2] = ["--prompt-file", "--supervise"];
 /// Flags of both that are not recorded.

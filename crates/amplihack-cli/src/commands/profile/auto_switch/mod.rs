@@ -421,6 +421,45 @@ pub fn lease_view(root: &Path) -> Result<Option<LeaseView>, ProfileError> {
     }
 }
 
+/// Readings by account for [`usage_view`]: the five-hour and seven-day
+/// windows as `(used percentage, resets_at)`, then `observed_at`.
+pub type UsageView =
+    std::collections::BTreeMap<String, (Option<(f64, i64)>, Option<(f64, i64)>, i64)>;
+
+/// Readings by account from `usage.json`, read without the lock, for the
+/// capacity governor (issue #1811). `None` without a state directory. The
+/// same trust checks as [`lease_view`]; nothing is created or written.
+pub fn usage_view(root: &Path) -> Result<Option<UsageView>, ProfileError> {
+    #[cfg(unix)]
+    {
+        if !fsx::exists(&root.join(state::DIR)) {
+            return Ok(None);
+        }
+        let state = state::State::new(root)?;
+        fsx::check_root_private(&state.root)
+            .map_err(|e| ProfileError::AutoSwitchInvariant(format!("profile root {e}")))?;
+        fsx::check_private_dir(&state.dir)
+            .map_err(|e| ProfileError::AutoSwitchInvariant(format!("{}: {e}", state::DIR)))?;
+        let window = |w: Option<usage::Window>| w.map(|w| (w.used_percentage, w.resets_at));
+        Ok(Some(
+            state
+                .try_load_usage()?
+                .accounts
+                .into_iter()
+                .map(|(account, r)| {
+                    let view = (window(r.five_hour), window(r.seven_day), r.observed_at);
+                    (account, view)
+                })
+                .collect(),
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        Ok(None)
+    }
+}
+
 /// Records `profile usage` observations as status-line readings. Takes the
 /// lock for a bounded wait, never runs swap recovery, re-checks each
 /// profile's live account under the lock, applies the status-line bounds,

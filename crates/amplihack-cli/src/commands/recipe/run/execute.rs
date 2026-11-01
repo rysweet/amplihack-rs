@@ -1603,7 +1603,10 @@ fn enforce_recursion_depth_guard(working_dir: &Path) -> Result<SpawnGuard> {
     let tree_id = std::env::var(TREE_ID_ENV)
         .ok()
         .map(|id| id.trim().to_string())
-        .filter(|id| !id.is_empty());
+        .filter(|id| !id.is_empty())
+        // Issue #1811: a root run uses the tree id the capacity governor
+        // recorded with its slot, so the agent steps find that slot.
+        .or_else(crate::commands::governor::settled_tree_id);
     let sealed = tree_id.as_deref().and_then(sealed_ceiling);
     let max_depth = effective_max_depth(sealed, env_max_depth);
 

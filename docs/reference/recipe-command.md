@@ -199,7 +199,8 @@ Execute a recipe by delegating to the `recipe-runner-rs` binary.
 ```
 amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
   [--format <FORMAT>] [--working-dir <DIR>] [--step-timeout <SECONDS>]
-  [--detach | --no-detach]
+  [--detach | --no-detach] [--governor-wait <DURATION>]
+  [--governor-class <CLASS>] [--workstream <ID>]
 ```
 
 | Flag | Default | Description |
@@ -212,7 +213,12 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
 | `--working-dir <DIR>` | `.` | Working directory for step execution |
 | `--detach` | false, or [`recipe.detach`](./user-config.md#recipedetach) `= "tmux"` | Run in a new tmux session with a private log, print the session and log path, and return. See [Detached runs](#detached-runs) |
 | `--no-detach` | | Run in the foreground even when `recipe.detach = "tmux"` |
+| `--governor-wait <DURATION>` | `AMPLIHACK_GOVERNOR_WAIT`, then `governor.wait_secs`, else `10m` | Longest time to wait for the [capacity governor](./capacity-governor.md) to admit the run. `0` means do not wait |
+| `--governor-class <CLASS>` | inferred, else `ordinary` | Priority class for admission: `coordination`, `recovery`, `review` or `ordinary`. See [Reserves and classes](./capacity-governor.md#reserves-and-classes) |
+| `--workstream <ID>` | `AMPLIHACK_WORKSTREAM`, then the issue or run id | Workstream the run is counted against for [fair queueing](./capacity-governor.md#fair-queue) |
 | `--step-timeout <SECONDS>` | `AMPLIHACK_STEP_TIMEOUT`, then [`recipe.step_timeout`](./user-config.md#recipestep_timeout), else none | Apply a global per-step timeout ceiling to **every** step in the recipe. Useful for CI guard rails. `0` disables all step timeouts. When omitted, agent steps run without a per-step timeout and bash steps use the YAML-defined `timeout_seconds` only when present |
+
+After the pre-flight checks and before `recipe-runner-rs` starts, `recipe run` (but not `--dry-run`) asks the [capacity governor](./capacity-governor.md) for a slot and holds it until the recipe returns. Before the slot is recorded, the run's `AMPLIHACK_TREE_ID` is settled (inherited, or generated once) and the environment built for agent steps reuses it, so agent steps run under that slot. If the governor makes the run wait, a reason line goes to stderr; if the wait runs out or the run is refused, the runner is not started and the command exits with 80.
 
 Before spawning `recipe-runner-rs`, the Rust CLI always injects `AMPLIHACK_HOME` and, when available, `AMPLIHACK_ASSET_RESOLVER` into the child environment. That gives recipes a stable native way to resolve `amplifier-bundle/...` assets without assuming the Python package layout. Additionally, when `--step-timeout` is provided, the CLI sets [`AMPLIHACK_STEP_TIMEOUT`](./environment-variables.md#amplihack_step_timeout) in the child environment so `recipe-runner-rs` can read and apply the override. Without the flag, an `AMPLIHACK_STEP_TIMEOUT` already in the environment is passed on unchanged, and otherwise a configured `recipe.step_timeout` is exported.
 
@@ -662,6 +668,8 @@ amplihack recipe run recipe.yaml -c task_description="..."
 |-----------|---------|
 | 0 | Success (list, show, validate passed; run completed with all steps succeeded) |
 | 1 | Error (validate failed; run failed; recipe-runner-rs not found; malformed context args) |
+| 2 | Usage error (for example an invalid `--workstream` or `--governor-wait`) |
+| 80 | Not started: the [capacity governor](./capacity-governor.md#waiting-denial-and-exit-code-80) refused the run or its wait ran out |
 
 ---
 
@@ -677,6 +685,7 @@ Recipe execution can fail at multiple levels. For diagnosis:
 | Duplicate issues filed | Repeated `gh issue create` on retries | [Issue Deduplication](./issue-dedup.md) |
 | Condition parse error | `condition` field uses unsupported expression | [Agentic Step Patterns](../concepts/agentic-step-patterns.md) |
 | Context variable missing | `{{var}}` renders as empty string | [Context variables](#context-variables) |
+| Run not started, exit 80 | `amplihack: governor: not started (<code>): ...` on stderr | [Capacity Governor](./capacity-governor.md#reason-codes) |
 | Opaque long-running step | No visible child output for a while | [Recipe Runner Logging](./recipe-runner-logging.md) |
 
 For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../howto/troubleshoot-recipe-execution.md).
@@ -686,6 +695,7 @@ For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../how
 ## Related
 
 - [Run a Recipe End-to-End](../howto/run-a-recipe.md) — Step-by-step guide to executing recipes
+- [Capacity Governor](./capacity-governor.md): When `recipe run` may start, waits or exits with 80
 - [Environment Variables](./environment-variables.md) — `AMPLIHACK_CONTEXT_*`, `AMPLIHACK_TASK_DESCRIPTION`, `RECIPE_RUNNER_RS_PATH`
 - [Recipe Runner Logging](./recipe-runner-logging.md) — stderr progress, heartbeats, snippets, and JSONL logs
 - [Parity Test Scenarios](./parity-test-scenarios.md) — `tier4-recipe-run.yaml` test cases

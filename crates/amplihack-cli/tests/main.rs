@@ -208,6 +208,12 @@ mod issue_1760_fakes;
 mod issue_1760_fixture;
 #[path = "issue_1760_fixture_files.rs"]
 mod issue_1760_fixture_files;
+#[path = "issue_1811_fixture.rs"]
+mod issue_1811_fixture;
+#[path = "issue_1811_governor.rs"]
+mod issue_1811_governor;
+#[path = "issue_1811_status.rs"]
+mod issue_1811_status;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
