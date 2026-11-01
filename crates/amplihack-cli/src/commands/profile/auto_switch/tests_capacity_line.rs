@@ -250,17 +250,50 @@ fn an_exhausted_login_is_not_spare_even_below_the_thresholds() {
 }
 
 // ---------------------------------------------------------------------------
-// Source guard (requirement 11)
+// Source guard (AC11, SR1)
 // ---------------------------------------------------------------------------
 
+/// The text of the function in `src` that starts at `start`, through the
+/// closing brace at the same indentation.
+fn function<'a>(src: &'a str, start: &str) -> &'a str {
+    let i = src
+        .find(start)
+        .unwrap_or_else(|| panic!("`{start}` not found"));
+    let line = &src[src[..i].rfind('\n').map_or(0, |n| n + 1)..];
+    let indent = &line[..line.len() - line.trim_start().len()];
+    let close = format!("\n{indent}}}\n");
+    let end = src[i..].find(&close).expect("the closing brace") + close.len();
+    &src[i..i + end]
+}
+
 #[test]
-fn the_new_modules_never_name_credentials() {
-    for (name, src) in [
+fn capacity_line_and_home_line_read_no_credentials() {
+    let default_live = include_str!("../default_live.rs");
+    let mut sources = vec![
         ("capacity_line.rs", include_str!("capacity_line.rs")),
         ("home_line.rs", include_str!("home_line.rs")),
+    ];
+    for start in [
+        "pub(super) fn ledger_live(",
+        "fn newer(",
+        "    pub(super) fn since(",
+        "    pub(super) fn prototype(root: &Path) -> Ledger",
+        "    pub(super) fn rotate(",
+        "    fn read_ledger(",
     ] {
-        assert!(!src.contains(".credentials.json"), "{name}");
-        assert!(!src.contains("CREDS"), "{name}");
+        sources.push((start, function(default_live, start)));
+    }
+    for (name, src) in sources {
+        for banned in [
+            "Account::of_dir",
+            ".credentials.json",
+            "CREDS",
+            ".claude.json",
+            "detect",
+            "from_ledger",
+        ] {
+            assert!(!src.contains(banned), "{name} names {banned}");
+        }
         for banned in ["TcpStream", "UdpSocket", "std::net", "reqwest", "ureq"] {
             assert!(!src.contains(banned), "{name} uses {banned}");
         }

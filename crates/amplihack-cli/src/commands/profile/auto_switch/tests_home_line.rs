@@ -838,21 +838,49 @@ fn the_line_has_no_control_characters() {
 }
 
 // ---------------------------------------------------------------------------
-// Timing (D9)
+// Timing (AC10)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_tick_takes_under_two_hundred_milliseconds() {
+fn the_capacity_work_takes_under_two_hundred_milliseconds() {
+    // 22 profiles, every one with a reading, and a `~/.claude.json` of about
+    // 1 MB that nothing on this path may read.
     let e = env();
-    e.rotate_ledger("X");
-    plant_usage(
-        &e,
-        &serde_json::json!({"version": 1, "accounts": {"Y": usage_entry(20.0, 30.0)}}),
+    let names: Vec<String> = (0..20).map(|i| format!("p{i:02}")).collect();
+    add(&e, &names.iter().map(String::as_str).collect::<Vec<_>>());
+    let pad = "x".repeat(1 << 20);
+    let claude_json = serde_json::json!({
+        "oauthAccount": {"accountUuid": "u1", "emailAddress": "me@x"},
+        "projects": {"pad": pad},
+    });
+    private(
+        &e.home.join(".claude.json"),
+        claude_json.to_string().as_bytes(),
     );
+    e.rotate_ledger_body(serde_json::json!({
+        "version": 1, "live": "X", "account": "u1", "since": 10,
+    }));
+    let mut accounts = serde_json::Map::new();
+    for n in names.iter().map(String::as_str).chain(["Y"]) {
+        accounts.insert(n.to_string(), usage_entry(20.0, 30.0));
+    }
+    plant_usage(&e, &serde_json::json!({"version": 1, "accounts": accounts}));
     let raw = input(34.0, 43.0);
+
     let start = Instant::now();
     let line = e.tick(&raw);
-    let took = start.elapsed();
-    assert!(line.is_some());
-    assert!(took < Duration::from_millis(200), "{took:?}");
+    let home = start.elapsed();
+    assert_eq!(line.as_deref(), Some(&*format!("{LINE_34_43}  · 21 spare")));
+    assert!(home < Duration::from_millis(200), "home mode: {home:?}");
+
+    let state = State::new(&e.root).unwrap();
+    let owner = ProfileName::parse("Y").unwrap();
+    let start = Instant::now();
+    let line = super::home_line::owned_line(&state, &owner, &raw, now());
+    let owned = start.elapsed();
+    assert!(line.is_some_and(|l| l.ends_with("· 21 spare")));
+    assert!(
+        owned < Duration::from_millis(200),
+        "profile mode: {owned:?}"
+    );
 }
