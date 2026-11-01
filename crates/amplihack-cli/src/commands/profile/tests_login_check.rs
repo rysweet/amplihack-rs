@@ -1230,7 +1230,10 @@ fn only_login_check_and_swap_expect_write_records() {
             .map(|l| l.split("//").next().unwrap_or_default())
             .collect::<Vec<_>>()
             .join("\n");
-        if code.contains("expected::record(") || code.contains("\"expected\"") {
+        if code.contains("expected::record(")
+            || code.contains("expected::save(")
+            || code.contains("\"expected\"")
+        {
             let rel = f.strip_prefix(&base).unwrap().display().to_string();
             writers.push(rel);
         }

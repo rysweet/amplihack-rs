@@ -13,6 +13,7 @@ use super::name::ProfileName;
 use super::rotate::identify::Account;
 use super::rotate::ledger::safe_account;
 use crate::commands::profile::ProfileError;
+use std::path::Path;
 
 /// The state subdirectory that holds the records.
 const SUB: &str = "expected";
@@ -42,4 +43,19 @@ pub fn recorded(state: &State, name: &ProfileName) -> Option<String> {
 /// recorded for `name`.
 pub fn mismatched(state: &State, name: &ProfileName, account: &Account) -> Option<bool> {
     recorded(state, name).map(|key| !account.matches_key(&key))
+}
+
+/// Records `account` for `name` in the state under `root`, printing a
+/// warning when it cannot be saved. With `keep`, an existing record is left
+/// in place.
+pub fn save(root: &Path, name: &ProfileName, account: &Account, keep: bool) {
+    let saved = State::new(root).and_then(|state| {
+        if keep && recorded(&state, name).is_some() {
+            return Ok(());
+        }
+        record(&state, name, account)
+    });
+    if let Err(e) = saved {
+        eprintln!("warning: the recorded account for profile '{name}' was not saved: {e}");
+    }
 }

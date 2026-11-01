@@ -17,7 +17,7 @@
 //!   its own.
 
 use super::auto_switch::kit::State;
-use super::expected::{mismatched, record, recorded};
+use super::expected::{mismatched, record, recorded, save};
 use super::name::ProfileName;
 use super::rotate::identify::Account;
 use super::store::ProfileStore;
@@ -135,6 +135,44 @@ fn a_second_record_overwrites_the_first() {
         &account(Some("u-SENTINEL-next"), None),
     )
     .unwrap();
+    assert_eq!(
+        recorded(&e.state, &n("work")).as_deref(),
+        Some("u-SENTINEL-next")
+    );
+}
+
+/// The swap's backfill saves with `keep`: a record written after the guard
+/// read none (another rotator, or a `profile login`) is left in place.
+#[test]
+fn save_with_keep_leaves_an_existing_record() {
+    let e = env();
+    record(&e.state, &n("work"), &work_account()).unwrap();
+    save(
+        &e.root,
+        &n("work"),
+        &account(Some("u-SENTINEL-next"), None),
+        true,
+    );
+    assert_eq!(
+        recorded(&e.state, &n("work")).as_deref(),
+        Some("u-SENTINEL-work")
+    );
+}
+
+#[test]
+fn save_with_keep_records_when_there_is_none_and_without_keep_replaces() {
+    let e = env();
+    save(&e.root, &n("work"), &work_account(), true);
+    assert_eq!(
+        recorded(&e.state, &n("work")).as_deref(),
+        Some("u-SENTINEL-work")
+    );
+    save(
+        &e.root,
+        &n("work"),
+        &account(Some("u-SENTINEL-next"), None),
+        false,
+    );
     assert_eq!(
         recorded(&e.state, &n("work")).as_deref(),
         Some("u-SENTINEL-next")

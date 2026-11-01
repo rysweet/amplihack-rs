@@ -364,14 +364,8 @@ fn no_login_file(
 /// any earlier record. Nothing is recorded without an account; a record
 /// that cannot be saved is a warning and the login stands.
 fn record_login(store: &ProfileStore, held: &Held, name: &ProfileName) {
-    let Some(account) = Account::of_dir(&held.dir) else {
-        return;
-    };
-    let saved = State::new(store.root())
-        .map_err(|e| e.to_string())
-        .and_then(|st| super::expected::record(&st, name, &account).map_err(|e| e.to_string()));
-    if let Err(e) = saved {
-        eprintln!("warning: the recorded account for profile '{name}' was not saved: {e}");
+    if let Some(account) = Account::of_dir(&held.dir) {
+        super::expected::save(store.root(), name, &account, false);
     }
 }
 

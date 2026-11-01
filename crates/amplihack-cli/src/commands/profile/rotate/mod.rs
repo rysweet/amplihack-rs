@@ -300,8 +300,8 @@ fn home_dir() -> Result<std::path::PathBuf, super::ProfileError> {
 
 /// `profile switch NAME` (#1691): swaps NAME's login into `~/.claude`, pins
 /// rotation to it and makes it the default, in three lines. A later failed
-/// write is an error, not a refusal; an unmovable login is refused (exit 1)
-/// after NAME is still made, and printed as, the default for new launches.
+/// write is an error, not a refusal. If the login cannot move, NAME is still
+/// made the default for new launches and printed, then the refusal exits 1.
 pub(in crate::commands::profile) fn switch_live(
     store: &ProfileStore,
     name: &ProfileName,

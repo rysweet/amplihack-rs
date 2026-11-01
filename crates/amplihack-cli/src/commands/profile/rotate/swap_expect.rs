@@ -34,11 +34,6 @@ pub fn is_account_mismatch(e: &ProfileError) -> bool {
     matches!(e, ProfileError::RotateRefused(m) if m.starts_with(ACCOUNT_MISMATCH))
 }
 
-/// The state the records are kept in; `None` reads as no record.
-fn state(store: &ProfileStore) -> Option<State> {
-    State::new(store.root()).ok()
-}
-
 /// Refuses a swap from a profile whose record names another account than
 /// the one in `$HOME/.claude.json`. Otherwise says what [`settle`] records:
 /// the adopted account, or, for a profile without a record, the outgoing
@@ -56,7 +51,8 @@ pub(super) fn guard(
         Source::Adopt => return Ok(Pending::Adopted(live)),
         Source::Profile(name) => name,
     };
-    let Some(state) = state(store) else {
+    // A state that cannot be opened reads as no record.
+    let Ok(state) = State::new(store.root()) else {
         return Ok(Pending::Nothing);
     };
     match expected::recorded(&state, name) {
@@ -82,21 +78,9 @@ pub(super) fn guard(
 /// Writes what [`guard`] decided for `from`, after the swap finished. A
 /// backfill is skipped when a record appeared in between.
 pub(super) fn settle(store: &ProfileStore, from: &ProfileName, pending: Pending) {
-    let (account, backfill) = match pending {
-        Pending::Nothing => return,
-        Pending::Adopted(a) => (a, false),
-        Pending::Backfill(a) => (a, true),
-    };
-    let Some(state) = state(store) else {
-        eprintln!(
-            "warning: the recorded account for profile '{from}' was not saved: the profile root cannot be read"
-        );
-        return;
-    };
-    if backfill && expected::recorded(&state, from).is_some() {
-        return;
-    }
-    if let Err(e) = expected::record(&state, from, &account) {
-        eprintln!("warning: the recorded account for profile '{from}' was not saved: {e}");
+    match pending {
+        Pending::Nothing => {}
+        Pending::Adopted(a) => expected::save(store.root(), from, &a, false),
+        Pending::Backfill(a) => expected::save(store.root(), from, &a, true),
     }
 }
