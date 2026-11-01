@@ -991,3 +991,258 @@ fn login_check_never_opens_a_login_file() {
         }
     }
 }
+
+// --- Issue #1845: the recorded account (D2, AC7) ----------------------------
+//
+// Contract: an accepted login records the account in the profile's new
+// `.claude.json` with `expected::record`; a later accepted login overwrites
+// it. The Keychain case (no login file before or after) records the same way
+// when `.claude.json` names an account and is not a duplicate. Nothing is
+// recorded for a refused, failed or restored login, nor when `.claude.json`
+// names no account. A record that cannot be saved prints a warning and does
+// not fail the login.
+
+fn state(e: &Env) -> super::auto_switch::kit::State {
+    super::auto_switch::kit::State::new(e.store.root()).unwrap()
+}
+
+fn recorded(e: &Env, p: &str) -> Option<String> {
+    super::expected::recorded(&state(e), &n(p))
+}
+
+fn record_file(e: &Env, p: &str) -> PathBuf {
+    e.store
+        .root()
+        .join(".auto-switch.d/expected")
+        .join(format!("{p}.json"))
+}
+
+fn pre_record(e: &Env, p: &str, uuid: &str) {
+    let a = super::rotate::identify::Account::from_block(&block(uuid, "org-SENTINEL-1")).unwrap();
+    super::expected::record(&state(e), &n(p), &a).unwrap();
+}
+
+#[test]
+fn an_accepted_first_login_records_its_account() {
+    let e = env();
+    e.check("fresh", || {
+        e.claude_logs_in("fresh", "user-SENTINEL-new", "org-SENTINEL-1");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(recorded(&e, "fresh").as_deref(), Some("user-SENTINEL-new"));
+    let path = record_file(&e, "fresh");
+    assert_eq!(
+        read_json(&path),
+        serde_json::json!({"account": "user-SENTINEL-new"}),
+        "the key only: no organization, e-mail or token"
+    );
+    assert_eq!(mode(&path), 0o600);
+}
+
+#[test]
+fn an_accepted_login_to_another_account_overwrites_the_record() {
+    let e = env();
+    pre_record(&e, "work", "user-SENTINEL-work");
+    e.check("work", || {
+        e.claude_logs_in("work", "user-SENTINEL-new", "org-SENTINEL-1");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(recorded(&e, "work").as_deref(), Some("user-SENTINEL-new"));
+}
+
+#[test]
+fn logging_in_again_to_the_same_account_records_it() {
+    let e = env();
+    e.check("work", || {
+        e.claude_logs_in("work", "user-SENTINEL-work", "org-SENTINEL-1");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(recorded(&e, "work").as_deref(), Some("user-SENTINEL-work"));
+}
+
+#[test]
+fn a_refused_duplicate_records_nothing_and_keeps_the_old_record() {
+    let e = env();
+    pre_record(&e, "work", "user-SENTINEL-work");
+    e.check("work", || {
+        e.claude_logs_in("work", "user-SENTINEL-other", "org-SENTINEL-1");
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(recorded(&e, "work").as_deref(), Some("user-SENTINEL-work"));
+    e.check("fresh", || {
+        e.claude_logs_in("fresh", "user-SENTINEL-other", "org-SENTINEL-1");
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(recorded(&e, "fresh"), None);
+}
+
+#[test]
+fn a_failed_child_records_nothing() {
+    let e = env();
+    e.check("fresh", || {
+        e.claude_logs_in("fresh", "user-SENTINEL-new", "org-SENTINEL-1");
+        anyhow::bail!("claude exited with exit status: 3")
+    })
+    .unwrap_err();
+    assert_eq!(recorded(&e, "fresh"), None);
+}
+
+#[test]
+fn a_restored_login_records_nothing() {
+    // Exit 0 with no new login file after a previous one: restored.
+    let e = env();
+    e.check("work", || {
+        let path = e.dir("work").join(".claude.json");
+        let mut v = read_json(&path);
+        v["oauthAccount"] = block("user-SENTINEL-new", "org-SENTINEL-1");
+        private(&path, &v.to_string());
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(recorded(&e, "work"), None);
+}
+
+#[test]
+fn a_login_to_the_live_profile_records_nothing() {
+    // `team` holds the account in `~/.claude`, so it is the live profile and
+    // its login is refused before Claude runs.
+    let e = env();
+    e.store.add(&n("team")).unwrap();
+    private(
+        &e.dir("team").join(".claude.json"),
+        &serde_json::json!({"oauthAccount": block("user-SENTINEL-home", "org-SENTINEL-1")})
+            .to_string(),
+    );
+    e.check("team", || Ok(())).unwrap_err();
+    assert_eq!(recorded(&e, "team"), None);
+}
+
+#[test]
+fn a_login_without_an_account_records_nothing() {
+    let e = env();
+    fs::remove_file(e.dir("fresh").join(".claude.json")).ok();
+    e.check("fresh", || {
+        login(&e.dir("fresh").join(CREDS));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(recorded(&e, "fresh"), None);
+    assert!(!record_file(&e, "fresh").exists());
+}
+
+#[test]
+fn a_keychain_login_records_its_account() {
+    // C3 (macOS Keychain): exit 0, no login file before or after.
+    let e = env();
+    e.check("fresh", || {
+        private(
+            &e.dir("fresh").join(".claude.json"),
+            &serde_json::json!({"oauthAccount": block("user-SENTINEL-new", "org-SENTINEL-1")})
+                .to_string(),
+        );
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(recorded(&e, "fresh").as_deref(), Some("user-SENTINEL-new"));
+}
+
+#[test]
+fn a_keychain_login_without_an_account_records_nothing() {
+    let e = env();
+    e.check("fresh", || {
+        private(&e.dir("fresh").join(".claude.json"), r#"{"numStartups":2}"#);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(recorded(&e, "fresh"), None);
+}
+
+#[test]
+fn a_refused_keychain_duplicate_records_nothing() {
+    let e = env();
+    e.check("fresh", || {
+        private(
+            &e.dir("fresh").join(".claude.json"),
+            &serde_json::json!({"oauthAccount": block("user-SENTINEL-other", "org-SENTINEL-1")})
+                .to_string(),
+        );
+        Ok(())
+    })
+    .unwrap_err();
+    assert_eq!(recorded(&e, "fresh"), None);
+}
+
+#[test]
+fn a_record_that_cannot_be_saved_does_not_fail_the_login() {
+    let e = env();
+    let blocker = e.store.root().join(".auto-switch.d");
+    fs::create_dir_all(&blocker).unwrap();
+    fs::set_permissions(&blocker, fs::Permissions::from_mode(0o700)).unwrap();
+    // `expected` is a file, so no record can be written under it.
+    private(&blocker.join("expected"), "in the way");
+    let mut new_ino = 0;
+    e.check("fresh", || {
+        new_ino = e.claude_logs_in("fresh", "user-SENTINEL-new", "org-SENTINEL-1");
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(
+        ino(&e.dir("fresh").join(CREDS)),
+        Some(new_ino),
+        "login kept"
+    );
+    assert_eq!(recorded(&e, "fresh"), None);
+}
+
+/// D2 and the security notes: only an accepted login, an adopting swap and
+/// a swap backfill write a record.
+#[test]
+fn only_login_check_and_swap_expect_write_records() {
+    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+        for e in fs::read_dir(dir).unwrap() {
+            let p = e.unwrap().path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && !p
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .starts_with("tests_")
+            {
+                out.push(p);
+            }
+        }
+    }
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile");
+    let mut files = Vec::new();
+    walk(&base, &mut files);
+    let mut writers = Vec::new();
+    for f in &files {
+        let src = fs::read_to_string(f).unwrap();
+        let code: String = src
+            .lines()
+            .map(|l| l.split("//").next().unwrap_or_default())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if code.contains("expected::record(") || code.contains("\"expected\"") {
+            let rel = f.strip_prefix(&base).unwrap().display().to_string();
+            writers.push(rel);
+        }
+    }
+    writers.sort();
+    assert_eq!(
+        writers,
+        vec![
+            "expected.rs".to_string(),
+            "login_check.rs".to_string(),
+            "rotate/swap_expect.rs".to_string(),
+        ],
+        "files that write or name the record store"
+    );
+}

@@ -6,7 +6,9 @@
 use super::identify::{LoginKind, login_kind};
 use super::swap::{DOT_CLAUDE_NOT_PRIVATE, HOME_NOT_OWNED};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{euid, read_claude_json, writable_by_others};
+use crate::commands::profile::auto_switch::kit::{
+    CREDS, euid, read_claude_json, writable_by_others,
+};
 use crate::commands::profile::name::ProfileName;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -62,4 +64,14 @@ pub fn is_no_oauth(e: &ProfileError) -> bool {
 /// login, or any login of an API-key profile.
 pub(super) fn may_go_live(t: &Path, platform: bool) -> bool {
     platform || login_kind(t) == LoginKind::OAuth
+}
+
+pub(super) fn ino_at(path: &Path) -> Option<u64> {
+    fs::symlink_metadata(path).ok().map(|m| m.ino())
+}
+
+/// `<parent>/.credentials.json`, for messages: never more of the path.
+pub(super) fn show(p: &Path) -> String {
+    let parent = p.parent().and_then(Path::file_name).unwrap_or_default();
+    format!("{}/{}", parent.to_string_lossy(), CREDS)
 }

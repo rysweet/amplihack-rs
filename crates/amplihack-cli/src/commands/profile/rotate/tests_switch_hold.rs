@@ -332,7 +332,7 @@ fn the_hold_warning_text_is_fixed() {
 
 #[test]
 fn the_hold_warning_is_a_documented_line() {
-    assert_eq!(DOCUMENTED.len(), 11);
+    assert_eq!(DOCUMENTED.len(), 12);
     assert!(DOCUMENTED.contains(&FOREIGN_IGNORES_HOLD));
 }
 

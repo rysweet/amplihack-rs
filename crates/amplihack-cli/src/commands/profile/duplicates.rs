@@ -136,15 +136,65 @@ pub(super) fn pairs(list: &[(Holder, Account)]) -> Vec<(Holder, Holder)> {
     out
 }
 
+/// Issue #1845 (D3): the holder the duplicate warning tells the user to
+/// log in again. In a pair with `~/.claude`, the profile. In a pair of
+/// profiles, the one profile whose current account is not the account
+/// recorded for it; `None` when neither or both are, so amplihack cannot
+/// tell. Without a state no record is read.
+pub(super) fn wrong<'h>(
+    state: Option<&State>,
+    list: &[(Holder, Account)],
+    a: &'h Holder,
+    b: &'h Holder,
+) -> Option<&'h Holder> {
+    if matches!(a, Holder::Home { .. }) {
+        return Some(b);
+    }
+    let state = state?;
+    let mismatched = |h: &Holder| match h {
+        Holder::Profile(n) => {
+            list.iter()
+                .find(|(x, _)| x == h)
+                .and_then(|(_, acc)| super::expected::mismatched(state, n, acc))
+                == Some(true)
+        }
+        Holder::Home { .. } => false,
+    };
+    match (mismatched(a), mismatched(b)) {
+        (true, false) => Some(a),
+        (false, true) => Some(b),
+        _ => None,
+    }
+}
+
 /// The duplicate-login warning, without a `note: ` or `warning: ` prefix.
-/// The fix names `b`, which is always a profile.
-pub(super) fn warning(a: &Holder, b: &Holder) -> String {
+/// The fix names `wrong`; without it, the warning says amplihack cannot
+/// tell which holder has the wrong login.
+pub(super) fn warning(a: &Holder, b: &Holder, wrong: Option<&Holder>) -> String {
     let (a, b) = (a.shown(), b.shown());
-    format!(
-        "profiles '{a}' and '{b}' are signed in to the same account and organization \
-         (duplicate login); fix: run 'amplihack profile login {b}' with the browser signed \
-         out of claude.ai or in a private window."
-    )
+    match wrong {
+        Some(w) => format!(
+            "profiles '{a}' and '{b}' are signed in to the same account and organization \
+             (duplicate login); fix: run 'amplihack profile login {}' with the browser signed \
+             out of claude.ai or in a private window.",
+            w.shown()
+        ),
+        None => format!(
+            "profiles '{a}' and '{b}' are signed in to the same account and organization \
+             (duplicate login); amplihack cannot tell which of them holds the wrong login; \
+             fix: run 'amplihack profile login <name>' for the one that should hold a \
+             different account, with the browser signed out of claude.ai or in a private \
+             window."
+        ),
+    }
+}
+
+/// One warning per duplicate pair in `list`, in [`pairs`] order.
+pub(super) fn warnings(state: Option<&State>, list: &[(Holder, Account)]) -> Vec<String> {
+    pairs(list)
+        .iter()
+        .map(|(a, b)| warning(a, b, wrong(state, list, a, b)))
+        .collect()
 }
 
 /// The holder as named in the `profile login` refusal.

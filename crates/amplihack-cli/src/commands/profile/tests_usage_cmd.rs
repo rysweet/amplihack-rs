@@ -928,11 +928,22 @@ fn which_live_warnings_apply_to_the_selected_profiles() {
 
 #[test]
 fn swap_warning_names_the_profile_in_fixed_text() {
+    // Issue #1845 (D7): a rotator swap during a probe is expected, so it is
+    // a note that says what happened, not a warning.
     let name = super::name::ProfileName::parse("work").unwrap();
     assert_eq!(
         swap_warning(&name),
-        "warning: the login in ~/.claude changed while profile \"work\" was probed; its usage was not recorded"
+        "note: the login in ~/.claude changed while profile \"work\" was probed \
+         (the rotator swapped logins); its usage was not recorded this run"
     );
+}
+
+#[test]
+fn swap_warning_is_one_line_that_is_not_a_warning() {
+    let name = super::name::ProfileName::parse("work").unwrap();
+    let got = swap_warning(&name);
+    assert!(!got.starts_with("warning:"), "{got}");
+    assert!(!got.contains('\n'), "{got}");
 }
 
 // ---------------------------------------------------------------------------

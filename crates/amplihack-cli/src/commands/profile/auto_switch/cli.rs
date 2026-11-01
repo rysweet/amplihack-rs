@@ -427,9 +427,7 @@ fn notes(
         .cloned()
         .collect();
     let accounts = duplicates::accounts_with(state, ledger, &names, home.as_deref(), live_profile);
-    for (a, b) in duplicates::pairs(&accounts) {
-        notes.push(duplicates::warning(&a, &b));
-    }
+    notes.extend(duplicates::warnings(Some(state), &accounts));
     notes
 }
 

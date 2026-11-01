@@ -280,7 +280,11 @@ fn finish(
         return Err(exposed(held, n));
     }
     match duplicate_of(store, held, name, home) {
-        Ok(None) => replace_previous(held, n),
+        Ok(None) => {
+            replace_previous(held, n)?;
+            record_login(store, held, name);
+            Ok(())
+        }
         Ok(Some(h)) => {
             let aside = set_aside(held, n)?;
             restore(held, n, Some(&aside))?;
@@ -328,6 +332,7 @@ fn no_login_file(
     match duplicate_of(store, held, name, home) {
         Ok(None) => {
             remove_pending(&held.pending);
+            record_login(store, held, name);
             Ok(())
         }
         Ok(Some(h)) => {
@@ -351,6 +356,22 @@ fn no_login_file(
                 format!("fix that, then run 'amplihack profile login {n}' again"),
             ))
         }
+    }
+}
+
+/// Issue #1845 (D2): an accepted login records the account in the
+/// profile's new `.claude.json` as the one it is meant to hold, replacing
+/// any earlier record. Nothing is recorded without an account; a record
+/// that cannot be saved is a warning and the login stands.
+fn record_login(store: &ProfileStore, held: &Held, name: &ProfileName) {
+    let Some(account) = Account::of_dir(&held.dir) else {
+        return;
+    };
+    let saved = State::new(store.root())
+        .map_err(|e| e.to_string())
+        .and_then(|st| super::expected::record(&st, name, &account).map_err(|e| e.to_string()));
+    if let Err(e) = saved {
+        eprintln!("warning: the recorded account for profile '{name}' was not saved: {e}");
     }
 }
 

@@ -62,6 +62,21 @@ fn oauth(f: &Fixture, p: &str) -> serde_json::Value {
     serde_json::from_str::<serde_json::Value>(&raw).unwrap()["oauthAccount"].clone()
 }
 
+/// Issue #1845: records `key` as the account profile `p` is meant to hold.
+fn record_expected(f: &Fixture, p: &str, key: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let state = f.root.join(".auto-switch.d");
+    let dir = state.join("expected");
+    fs::create_dir_all(&dir).unwrap();
+    for d in [&state, &dir] {
+        fs::set_permissions(d, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    private_file(
+        &dir.join(format!("{p}.json")),
+        &serde_json::json!({ "account": key }).to_string(),
+    );
+}
+
 fn set_account(f: &Fixture, p: &str, account: &serde_json::Value) {
     private_file(
         &f.root.join(p).join(".claude.json"),
@@ -249,12 +264,34 @@ fn a_login_to_the_live_profile_is_refused_before_claude_runs() {
 
 // --- Bugs 1 and 2: warnings ---------------------------------------------------
 
+const CANNOT_TELL: &str = "profiles 'extra' and 'spare' are signed in to the same account and organization (duplicate login); amplihack cannot tell which of them holds the wrong login; fix: run 'amplihack profile login <name>' for the one that should hold a different account, with the browser signed out of claude.ai or in a private window.";
+
+/// Issue #1845 (D3): without a record, amplihack does not guess which
+/// profile holds the wrong login.
+#[test]
+fn without_a_record_the_duplicate_warning_cannot_tell() {
+    let f = Fixture::new();
+    set_account(&f, "spare", &account_json("extra"));
+    let stderr = text(&f.run(&["profile", "usage"]).stderr);
+    assert!(
+        stderr.contains(&format!("warning: {CANNOT_TELL}\n")),
+        "{stderr}"
+    );
+    let status = text(&f.run(&["profile", "auto-switch", "status"]).stdout);
+    assert!(
+        status.contains(&format!("note: {CANNOT_TELL}\n")),
+        "{status}"
+    );
+}
+
 const DUP: &str = "profiles 'extra' and 'spare' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login spare' with the browser signed out of claude.ai or in a private window.";
 
 #[test]
 fn usage_and_status_warn_about_a_duplicate_login() {
     let f = Fixture::new();
     set_account(&f, "spare", &account_json("extra"));
+    // `spare` is recorded as its own account, so the warning names it.
+    record_expected(&f, "spare", "uuid-spare");
     let usage = f.run(&["profile", "usage"]);
     let stderr = text(&usage.stderr);
     assert!(stderr.contains(&format!("warning: {DUP}\n")), "{stderr}");
@@ -271,6 +308,8 @@ fn usage_and_status_warn_about_a_duplicate_login() {
 fn usage_warns_about_every_profile_whatever_names_it_was_given() {
     let f = Fixture::new();
     set_account(&f, "spare", &account_json("extra"));
+    // `spare` is recorded as its own account, so the warning names it.
+    record_expected(&f, "spare", "uuid-spare");
     let stderr = text(&f.run(&["profile", "usage", "work"]).stderr);
     assert!(stderr.contains(&format!("warning: {DUP}\n")), "{stderr}");
 }

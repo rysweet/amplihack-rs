@@ -296,6 +296,9 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                     // profile, keyed by the profile it would have made live.
                     let (kind, live) = if swap::is_no_oauth(&e) {
                         ("no_oauth".to_string(), Some(&to))
+                    } else if swap::is_account_mismatch(&e) {
+                        // Issue #1845: once per profile, until its login is fixed.
+                        ("account_mismatch".to_string(), live_name(&first.live))
                     } else {
                         (refusal_kind(&e), live_name(&first.live))
                     };

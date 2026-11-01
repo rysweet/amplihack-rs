@@ -1630,6 +1630,7 @@ hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotatio
 | `atomic exchange is not supported here` | The system or filesystem cannot swap two files in one step. Only Linux can. Nothing was moved. |
 | `Claude holds its refresh lock; the swap waits for the next cycle` | A `claude` session is refreshing its token in `~/.claude` or the target profile. The rotator never breaks that lock; it tries again on the next cycle. If it repeats with no `claude` running, see "Stale refresh lock" under Limits. |
 | `~/.claude.json is not a JSON object` | The swap could not record the new account in `~/.claude.json`, so it refuses before anything moves. Repair the file so it holds a JSON object. |
+| `the login in ~/.claude is not the account recorded for profile <name>` | The live login would go back to `<name>`, but it is not the account recorded for `<name>`. Saving it there would leave `<name>` holding another account's login. See [The live login is not the profile's account](#the-live-login-is-not-the-profiles-account). |
 
 Three situations write an ALERT instead of refusing:
 
@@ -1645,6 +1646,59 @@ Three situations write an ALERT instead of refusing:
   [After a manual /login in ~/.claude](#after-a-manual-login-in-claude).
 - `ALERT: auto-switch recovery is inconsistent; no swap`. Run
   `amplihack profile auto-switch repair`.
+
+### The live login is not the profile's account
+
+amplihack records the account each profile is meant to hold when you run
+`amplihack profile login <name>` and the login is accepted. A swap that
+adopts a login into `default-original` records that profile too, and a
+swap away from a profile with no record records it when the ledger shows the
+outgoing login came from that profile. The record is
+`<root>/.auto-switch.d/expected/<name>.json` and holds one key, `account`.
+
+Before a swap moves the login in `~/.claude` back to the live profile, the
+rotator compares it with that profile's record. If they differ, the swap is
+refused and nothing moves:
+
+```
+2026-11-01T09:40:05Z ALERT: swap refused: the login in ~/.claude is not the account recorded for profile work
+```
+
+The ALERT is written to the log once for `work`, not on every cycle, but
+every cycle refuses to swap until it is fixed. It names the profile and
+never the account. `amplihack profile switch` reports the same refusal and
+exits 1.
+
+This usually follows a `/login` in `~/.claude` to the wrong account, or a
+browser that signed Claude in to whichever account it already had. To fix
+it, put the right login back in `~/.claude`:
+
+1. Sign out of claude.ai in the browser, or open a private window.
+2. Run plain `claude`, then `/login`, and sign in to the account `work` is
+   meant for.
+3. Run `amplihack profile rotate` once, or wait for the next cycle. When a
+   swap is due, it now goes ahead instead of being refused. While the login
+   is still wrong, the one-shot command prints the refusal and exits 1.
+   `--dry-run` does not run this check, so it cannot confirm the fix.
+
+`amplihack profile login work` does not help here: `work` is the live
+profile, so `login` refuses it before Claude starts.
+
+If `work` is now meant to hold the other account, the record is out of date.
+Delete it, and the next cycle swaps as before. With the default profile
+root:
+
+```bash
+rm ~/.amplihack/claude-profiles/.auto-switch.d/expected/work.json
+```
+
+If you saved another root, the file is under that root instead;
+`amplihack profile root` prints it.
+
+Profiles with no record are not checked. A profile created before this
+check existed has no record until one of two things happens: its next
+accepted `profile login`, or a swap away from it while the ledger shows the
+outgoing login came from that profile.
 
 ## Recovery
 
