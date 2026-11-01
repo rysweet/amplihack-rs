@@ -101,7 +101,7 @@ steps:
         [ -f "$T/$f" ] || die "$f not found under AMPLIHACK_HOME"
       done
       cd "${RECIPE_VAR_repo_path:-.}" 2>/dev/null || die "cannot enter repo_path"
-      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "repo_path is not a git work tree"
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "requires a git repo at $(pwd); either \`git init\` or rerun from a checkout"
       PRN="${RECIPE_VAR_pr_number:-}"; BR="${RECIPE_VAR_existing_branch:-}"
       ISS="${RECIPE_VAR_issue_number:-}"; SD="${RECIPE_VAR_autodrive_state_dir:-}"
       [ -z "$PRN" ] || [[ "$PRN" =~ ^[0-9]{1,10}$ ]] || die "pr_number must be 1 to 10 digits" 2
@@ -152,7 +152,7 @@ steps:
     condition: "not pr_number and not existing_branch"
     command: |
       QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-base-pin; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-base-pin: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-base-pin: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
-      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT"
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"
       qc_branch >/dev/null
       qc_require_identity
       qc_sweep_state
@@ -233,7 +233,7 @@ steps:
       QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-precommit; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-precommit: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-precommit: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"
       BASE="$(qc_base)"
-      cd "$QC_WT"
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"; cd "$QC_WT"
       if [ ! -f .pre-commit-config.yaml ]; then
         echo "auto-drive-light: no .pre-commit-config.yaml; the commit's own hooks still run" >&2
         printf 'none'; exit 0
@@ -263,7 +263,7 @@ steps:
     command: |
       QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-commit-push; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-commit-push: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-commit-push: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
       exec 3>&1 1>&2
-      cd "$QC_WT"
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"; cd "$QC_WT"
       BRANCH="$(qc_branch)"
       RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"
       BASE="$(qc_base)"
@@ -300,7 +300,7 @@ steps:
     condition: "not pr_number and not existing_branch"
     command: |
       QC="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/quick_change_common.sh"; QC_STEP=light-open-pr; case "$QC" in /*) ;; *) echo "ERROR: auto-drive-light/light-open-pr: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac; . "$QC" || { echo "ERROR: auto-drive-light/light-open-pr: quick_change_common.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
-      cd "$QC_WT"
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT; either \`git init\` or rerun from a checkout"; cd "$QC_WT"
       BRANCH="$(qc_branch)"
       RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"
       BASE="$(qc_base)"
@@ -345,6 +345,7 @@ steps:
       trap 'rm -rf -- "$GHT"' EXIT
       ghr() { GH_RETRY_TMPDIR="$GHT" _gh_retry_core "$@"; }
       cd "${RECIPE_VAR_repo_path:-.}" 2>/dev/null || die "cannot enter repo_path"
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "requires a git repo at $(pwd); either \`git init\` or rerun from a checkout"
       hex() { [[ "$1" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; }
       PR="${RECIPE_VAR_pr_number:-}"; BR="${RECIPE_VAR_existing_branch:-}"; NEW="false"
       if [ -z "$PR" ] && [ -n "$BR" ]; then
