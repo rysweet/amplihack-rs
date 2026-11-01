@@ -301,7 +301,9 @@ fn table_rows(stdout: &str) -> Vec<&str> {
     let mut lines = stdout.lines();
     let header = lines.next().unwrap_or_default();
     assert!(header.starts_with("PROFILE"), "header first: {stdout}");
+    // The capacity summary (issue #1797) follows the table.
     lines
+        .take_while(|l| !l.starts_with("weekly headroom "))
         .filter(|l| !l.starts_with(' ') && !l.is_empty())
         .collect()
 }

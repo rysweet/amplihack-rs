@@ -208,6 +208,8 @@ mod issue_1760_fakes;
 mod issue_1760_fixture;
 #[path = "issue_1760_fixture_files.rs"]
 mod issue_1760_fixture_files;
+#[path = "issue_1797_capacity_summary.rs"]
+mod issue_1797_capacity_summary;
 #[path = "issue_1803_rotation_owner.rs"]
 mod issue_1803_rotation_owner;
 #[path = "issue_1818_no_session_limit.rs"]

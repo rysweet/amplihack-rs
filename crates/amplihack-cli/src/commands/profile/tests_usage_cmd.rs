@@ -1745,6 +1745,241 @@ mod request {
 }
 
 // ---------------------------------------------------------------------------
+// Issue #1797: `--json` is unchanged byte for byte, and `--summary-json`
+// holds the same array
+// ---------------------------------------------------------------------------
+
+/// Every kind of row `--json` can print, in display order: a default,
+/// leased row with per-model windows; an exhausted overflow row with a
+/// block; a timed-out error row; the `~/.claude` row; an API-key row with a
+/// block; and a row whose text needs JSON escaping.
+fn golden_rows() -> Vec<Row> {
+    let mut work = ok(
+        "work",
+        Some((20.0, Some(NOW + HOUR))),
+        Some((30.5, Some(NOW + DAY))),
+    );
+    work.account = "personal".to_string();
+    work.default = true;
+    work.report
+        .week_models
+        .push(win("Fable", 12.0, Some(NOW + 2 * DAY)));
+    let mut spare = row(
+        "spare",
+        report(
+            UsageState::SessionExhausted,
+            Some((100.0, Some(NOW + 2 * HOUR))),
+            Some((68.0, None)),
+        ),
+    );
+    spare.leased_to = Some("work".to_string());
+    spare.live_in = true;
+    let mut extra = row(
+        "extra",
+        report(
+            UsageState::WeeklyExhausted,
+            None,
+            Some((100.0, Some(NOW + 3 * DAY))),
+        ),
+    );
+    extra.overflow = true;
+    extra.overflow_blocked_until = Some(NOW + 5 * HOUR);
+    let mut slow = row("slow", UsageReport::empty(UsageState::Timeout));
+    slow.error = Some(ErrorReason::ReadFailed);
+    let mut key = row(
+        "key",
+        report(UsageState::Ok, Some((0.0, None)), Some((0.0, None))),
+    );
+    key.api_key = true;
+    key.api_key_blocked = Some(("spend limit".to_string(), NOW + DAY));
+    let mut odd = ok("odd", Some((1.25, None)), Some((2.0, None)));
+    odd.account = "quote\"back\\slash\u{1b}[0m".to_string();
+    vec![work, spare, extra, home_row(), slow, key, odd]
+}
+
+#[test]
+fn json_output_matches_the_golden_file_byte_for_byte() {
+    let want = include_str!("testdata/usage_json_golden.json");
+    assert_eq!(
+        render_json(&golden_rows()),
+        want.strip_suffix('\n').unwrap_or(want),
+        "`--json` must not change (issue #1797)"
+    );
+}
+
+mod summary_1797 {
+    //! `--summary-json`, the text block and the summary seam in `usage_cmd`.
+    //! The arithmetic is in `tests_capacity_summary.rs`.
+
+    use super::super::capacity_summary::Summary;
+    use super::super::capacity_weight::Weights;
+    use super::super::name::ProfileName;
+    use super::super::usage_cmd::{render_json, render_summary_json, summary_block};
+    use super::super::usage_parse::{UsageReport, UsageState};
+    use super::super::{capacity_summary, usage_history};
+    use super::{DAY, HOUR, NOW, golden_rows, ok, row};
+
+    /// The capacity summary `profile usage` prints for `rows` at `now`;
+    /// `None` when no row is a subscription login.
+    fn summary_of(
+        rows: &[super::Row],
+        swapped: Option<&ProfileName>,
+        weights: &Weights,
+        threshold: u8,
+        history: &[usage_history::Entry],
+        now: i64,
+    ) -> Option<Summary> {
+        let current = usage_history::from_rows(now, rows, swapped)?;
+        Some(capacity_summary::compute(&capacity_summary::Inputs {
+            current: &current,
+            weights,
+            threshold,
+            history,
+            now,
+        }))
+    }
+
+    fn parse(text: &str) -> serde_json::Value {
+        serde_json::from_str(text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
+    }
+
+    fn summary(rows: &[super::Row]) -> Option<Summary> {
+        summary_of(rows, None, &Weights::default(), 95, &[], NOW)
+    }
+
+    #[test]
+    fn summary_json_profiles_are_exactly_the_json_array() {
+        let rows = golden_rows();
+        let s = summary(&rows);
+        let v = parse(&render_summary_json(NOW, &rows, s.as_ref()));
+        assert_eq!(v["profiles"], parse(&render_json(&rows)));
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["at", "profiles", "summary"]);
+    }
+
+    #[test]
+    fn summary_json_at_is_iso_utc_and_profile_times_stay_epoch() {
+        let rows = golden_rows();
+        let v = parse(&render_summary_json(NOW, &rows, summary(&rows).as_ref()));
+        assert_eq!(v["at"], "2026-10-16T12:00:00Z");
+        assert!(v["profiles"][0]["session"]["resets_at"].is_i64());
+    }
+
+    #[test]
+    fn summary_json_with_no_profiles_has_an_empty_array_and_null_summary() {
+        let v = parse(&render_summary_json(NOW, &[], None));
+        assert_eq!(
+            v,
+            serde_json::json!({"at": "2026-10-16T12:00:00Z", "profiles": [], "summary": null})
+        );
+    }
+
+    #[test]
+    fn the_golden_rows_summarise_only_subscription_logins() {
+        // work 30.5 -> 31 (rounded), spare 68, extra 100, odd 2; the
+        // ~/.claude row and the API-key row are not logins; slow is unknown.
+        let s = summary(&golden_rows()).expect("there are subscription rows");
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["valid_readings"], 4);
+        assert_eq!(v["unknown"], serde_json::json!(["slow"]));
+        assert_eq!(v["weekly_headroom_login_weeks"], 1.99);
+    }
+
+    #[test]
+    fn no_subscription_row_means_no_summary() {
+        let mut key = ok("key", Some((0.0, None)), Some((0.0, None)));
+        key.api_key = true;
+        assert!(summary(&[key]).is_none());
+        assert!(summary(&[]).is_none());
+    }
+
+    #[test]
+    fn a_swapped_live_profile_is_unknown_in_the_summary() {
+        let mut live = ok("work", Some((10.0, None)), Some((20.0, None)));
+        live.live_in = true;
+        let rows = [live, ok("spare", Some((10.0, None)), Some((40.0, None)))];
+        let swapped = ProfileName::parse("work").unwrap();
+        let s = summary_of(&rows, Some(&swapped), &Weights::default(), 95, &[], NOW).unwrap();
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["valid_readings"], 1);
+        assert_eq!(v["unknown"], serde_json::json!(["work"]));
+    }
+
+    #[test]
+    fn the_text_block_is_a_blank_line_then_six_lines() {
+        let rows = [
+            ok(
+                "a",
+                Some((10.0, Some(NOW + HOUR))),
+                Some((40.0, Some(NOW + DAY))),
+            ),
+            row("b", UsageReport::empty(UsageState::Timeout)),
+        ];
+        let block = summary_block(&summary(&rows).unwrap());
+        assert!(
+            block.starts_with("\nweekly headroom      0.60 login-weeks of 1 (60%)\n"),
+            "{block}"
+        );
+        assert!(block.ends_with('\n'));
+        assert_eq!(block.lines().count(), 7, "{block}");
+        assert!(
+            block.contains("\nunknown              1 profile ("),
+            "{block}"
+        );
+    }
+
+    #[test]
+    fn nothing_from_the_account_or_claude_output_reaches_the_summary() {
+        let mut r = ok("work", Some((10.0, None)), Some((40.0, None)));
+        r.account = "someone@example.com".to_string();
+        if let Some(w) = r.report.week_all.as_mut() {
+            w.resets_text = Some("resets for someone@example.com".to_string());
+        }
+        let s = summary(&[r.clone()]).unwrap();
+        let text = summary_block(&s);
+        let json = serde_json::to_string(&s).unwrap();
+        for out in [&text, &json] {
+            assert!(!out.contains("example.com"), "{out}");
+        }
+        let whole = render_summary_json(NOW, &[r], Some(&s));
+        assert_eq!(
+            whole.matches("someone@example.com").count(),
+            2,
+            "only in profiles"
+        );
+    }
+}
+
+#[test]
+fn capacity_sources_never_touch_credentials_or_account_identities() {
+    for (name, src) in [
+        ("capacity_summary.rs", include_str!("capacity_summary.rs")),
+        ("capacity_weight.rs", include_str!("capacity_weight.rs")),
+        ("usage_history.rs", include_str!("usage_history.rs")),
+        ("rotate/history.rs", include_str!("rotate/history.rs")),
+    ] {
+        for needle in [
+            "set_var",
+            "remove_var",
+            "Command::new",
+            ".credentials.json",
+            ".claude.json",
+            "CREDS",
+            "oauthAccount",
+            "accessToken",
+            "emailAddress",
+            "account",
+            "email",
+            "resets_text",
+            "Raw",
+        ] {
+            assert!(!src.contains(needle), "{name} must not contain {needle:?}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Issue #1818: no session limit
 // ---------------------------------------------------------------------------
 

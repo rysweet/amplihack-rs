@@ -9,11 +9,13 @@
 //! is live in `~/.claude` (see `default_live`), has it removed.
 
 use super::auto_switch::{self, Observation, ObservedWindow, RecordOutcome};
+use super::capacity_summary::{self, Summary};
+use super::capacity_weight;
 use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
 use super::store::ProfileStore;
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
-use super::{ProfileError, default_live, pointer, probe_limits, run, usage_request};
+use super::{ProfileError, default_live, pointer, probe_limits, run, usage_history, usage_request};
 use crate::binary_finder::BinaryInfo;
 use anyhow::Result;
 use serde::Serialize;
@@ -38,7 +40,7 @@ pub(super) static PROBE_CANCEL: std::sync::LazyLock<Arc<AtomicBool>> =
     std::sync::LazyLock::new(Arc::default);
 /// With one of these set, `claude` may report that credential's usage rather
 /// than the profile login's, so nothing is recorded.
-const ENV_CREDENTIAL_VARS: [&str; 3] = [
+pub(super) const ENV_CREDENTIAL_VARS: [&str; 3] = [
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -117,13 +119,34 @@ pub(super) struct Row {
     pub(super) raw: Option<Raw>,
 }
 
-pub(super) fn run(
-    store: &ProfileStore,
-    names: &[String],
-    json: bool,
-    raw: bool,
-    timeout_flag: Option<u64>,
-) -> Result<()> {
+/// How `profile usage` prints its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Output {
+    /// The table, then the capacity summary (issue #1797).
+    Table,
+    /// The `--json` array, unchanged.
+    Json,
+    /// One object: the `--json` array and the capacity summary.
+    SummaryJson,
+}
+
+/// The options of `profile usage`.
+#[derive(Debug, Clone)]
+pub(super) struct UsageOpts {
+    pub(super) output: Output,
+    pub(super) raw: bool,
+    pub(super) timeout_secs: Option<u64>,
+    pub(super) usable_session_pct: Option<u8>,
+}
+
+pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Result<()> {
+    let UsageOpts {
+        output,
+        raw,
+        timeout_secs: timeout_flag,
+        usable_session_pct,
+    } = opts;
+    let json = output != Output::Table;
     super::reject_docker_env()?;
     let (mode, warning) = probe_limits::probe_mode_from_env();
     if let Some(w) = warning {
@@ -140,7 +163,7 @@ pub(super) fn run(
     }
     let profiles = selected_profiles(store, names)?;
     if profiles.is_empty() {
-        print_empty(json);
+        print_empty(output);
         return Ok(());
     }
     let binary = run::resolve_claude_binary()?;
@@ -183,14 +206,69 @@ pub(super) fn run(
         let p = probe_home(&binary, mode, Duration::from_secs(secs), now, raw);
         rows.push(home_row_of(p));
     }
-    order(&mut rows, now_secs());
-    print_output(&rows, json, swapped.as_ref());
+    // Taken after the probes: the summary, `--summary-json`'s `at` and the
+    // history line are all as of when the readings were in.
+    let at = now_secs();
+    order(&mut rows, at);
+    // Issue #1797: the capacity summary, from these rows only; no probe.
+    // `--raw` is diagnostic output and gets neither summary nor history.
+    // `None` when no row is a subscription login: no summary, no history.
+    let current = usage_history::from_rows(at, &rows, swapped.as_ref());
+    let summary = current
+        .as_ref()
+        .filter(|_| !raw && output != Output::Json)
+        .map(|c| capacity_of(store, c, usable_session_pct, at));
+    print_output(&rows, output, summary.as_ref(), at, swapped.as_ref());
     #[cfg(unix)]
     for (a, b) in super::duplicates::pairs(&super::duplicates::accounts(store, home.as_deref())) {
         eprintln!("warning: {}", super::duplicates::warning(&a, &b));
     }
     record(store, &rows, swapped.as_ref(), json);
+    if let Some(c) = current.as_ref().filter(|_| !raw && names.is_empty()) {
+        record_history(store, c, at);
+    }
     Ok(())
+}
+
+/// The capacity summary of `current`, printing the threshold, weights and
+/// history warnings.
+fn capacity_of(
+    store: &ProfileStore,
+    current: &usage_history::Snapshot,
+    flag: Option<u8>,
+    now: i64,
+) -> Summary {
+    let env = std::env::var_os(capacity_weight::ENV);
+    let (threshold, warning) = capacity_weight::usable_threshold(flag, env.as_deref());
+    let (weights, warnings) = capacity_weight::load(store.root());
+    let (history, refused) =
+        usage_history::read_recent(store.root(), now, capacity_summary::RATE_WINDOW);
+    for w in warning.iter().chain(&warnings).chain(&refused) {
+        eprintln!("{w}");
+    }
+    capacity_summary::compute(&capacity_summary::Inputs {
+        current,
+        weights: &weights,
+        threshold,
+        history: &history,
+        now,
+    })
+}
+
+/// Appends this run to the usage history (issue #1797). `append` applies
+/// the recording rules: a trusted root, a private `.auto-switch.d` and no
+/// credential variable. Called only for unfiltered runs without `--raw`
+/// that have a subscription login. A failure is one stderr line and never
+/// changes the exit status.
+fn record_history(store: &ProfileStore, current: &usage_history::Snapshot, now: i64) {
+    if let Err(e) = usage_history::append(
+        store.root(),
+        &current.entry(usage_history::Writer::Usage),
+        now,
+    ) && let Some(w) = e.warning()
+    {
+        eprintln!("{w}");
+    }
 }
 
 /// `$HOME` as an absolute path; `None` when it is unset, empty or relative.
@@ -200,11 +278,13 @@ pub(super) fn home_dir() -> Option<std::path::PathBuf> {
         .filter(|h| h.is_absolute())
 }
 
-fn print_empty(json: bool) {
-    if json {
-        println!("[]");
-    } else {
-        println!("no profiles; create one with `amplihack profile add <name>`");
+fn print_empty(output: Output) {
+    match output {
+        Output::Json => println!("[]"),
+        Output::SummaryJson => println!("{}", render_summary_json(now_secs(), &[], None)),
+        Output::Table => {
+            println!("no profiles; create one with `amplihack profile add <name>`")
+        }
     }
 }
 
@@ -450,12 +530,24 @@ fn build_rows(
         .collect()
 }
 
-/// The table or JSON on stdout, then the warnings on stderr.
-fn print_output(rows: &[Row], json: bool, swapped: Option<&ProfileName>) {
-    if json {
-        println!("{}", render_json(rows));
-    } else {
-        print!("{}", render_table(rows));
+/// The table (with the capacity summary) or JSON on stdout, then the
+/// warnings on stderr.
+fn print_output(
+    rows: &[Row],
+    output: Output,
+    summary: Option<&Summary>,
+    at: i64,
+    swapped: Option<&ProfileName>,
+) {
+    match output {
+        Output::Table => {
+            print!("{}", render_table(rows));
+            if let Some(s) = summary {
+                print!("{}", summary_block(s));
+            }
+        }
+        Output::Json => println!("{}", render_json(rows)),
+        Output::SummaryJson => println!("{}", render_summary_json(at, rows, summary)),
     }
     for w in error_warnings(rows) {
         eprintln!("{w}");
@@ -1053,7 +1145,7 @@ pub(super) fn marks(row: &Row) -> String {
 }
 
 /// UTC time as `YYYY-MM-DDTHH:MM:SSZ`, the rotate log's format.
-fn utc_time(t: i64) -> String {
+pub(super) fn utc_time(t: i64) -> String {
     chrono::DateTime::from_timestamp(t, 0).map_or_else(
         || "1970-01-01T00:00:00Z".to_string(),
         |d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
@@ -1263,8 +1355,41 @@ struct JsonRow<'a> {
 /// The stable interface: a JSON array of rows in display order. Strings use
 /// JSON escaping and are not otherwise cleaned.
 pub(super) fn render_json(rows: &[Row]) -> String {
-    let out: Vec<JsonRow<'_>> = rows
-        .iter()
+    // Plain structs of strings, numbers and options always serialise.
+    serde_json::to_string_pretty(&json_rows(rows)).expect("usage rows serialise to JSON")
+}
+
+/// The capacity summary after the table: a blank line, then six lines.
+pub(super) fn summary_block(s: &Summary) -> String {
+    let mut out = String::from("\n");
+    for l in s.text_lines() {
+        out.push_str(&l);
+        out.push('\n');
+    }
+    out
+}
+
+#[derive(Serialize)]
+struct SummaryOutput<'a> {
+    at: String,
+    profiles: Vec<JsonRow<'a>>,
+    summary: Option<&'a Summary>,
+}
+
+/// `--summary-json` (issue #1797): `at` as ISO UTC, `profiles` exactly the
+/// `--json` array, and the summary, `null` when there is none.
+pub(super) fn render_summary_json(at: i64, rows: &[Row], summary: Option<&Summary>) -> String {
+    let out = SummaryOutput {
+        at: utc_time(at),
+        profiles: json_rows(rows),
+        summary,
+    };
+    serde_json::to_string_pretty(&out).expect("usage summary serialises to JSON")
+}
+
+/// The rows as `--json` prints them.
+fn json_rows(rows: &[Row]) -> Vec<JsonRow<'_>> {
+    rows.iter()
         .map(|r| JsonRow {
             profile: &r.profile,
             account: &r.account,
@@ -1289,9 +1414,7 @@ pub(super) fn render_json(rows: &[Row]) -> String {
             error: r.error.map(ErrorReason::as_str),
             raw: r.raw.as_ref(),
         })
-        .collect();
-    // Plain structs of strings, numbers and options always serialise.
-    serde_json::to_string_pretty(&out).expect("usage rows serialise to JSON")
+        .collect()
 }
 
 /// One stderr line per error row.

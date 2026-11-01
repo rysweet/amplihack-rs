@@ -129,6 +129,7 @@ fn probed(session: f64) -> Probed {
         windows: Windows {
             session: win(session),
             week: win(40.0),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
@@ -464,6 +465,7 @@ fn room_comes_back_at_the_reset_of_the_full_window() {
             used: k,
             resets_at: kr,
         }),
+        no_session_limit: false,
     };
     let measured = |session, week| Reading::Measured { session, week };
     let back = no_room::room_back;

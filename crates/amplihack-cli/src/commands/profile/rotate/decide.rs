@@ -65,6 +65,11 @@ pub struct Win {
 pub struct Windows {
     pub session: Option<Win>,
     pub week: Option<Win>,
+    /// Issue #1818: the reading showed no session window, so no session
+    /// limit applies (`UsageReport::session_limit` is `false`). `false` for
+    /// a session that was read and for a probe that read nothing, so a
+    /// missing reading is never taken as room.
+    pub no_session_limit: bool,
 }
 
 impl Windows {
@@ -76,6 +81,7 @@ impl Windows {
         Self {
             session: r.session.as_ref().map(win),
             week: r.week_all.as_ref().map(win),
+            no_session_limit: !r.session_limit,
         }
     }
 }

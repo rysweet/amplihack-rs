@@ -9,6 +9,8 @@
 #[cfg(unix)]
 mod attempt;
 mod auto_switch;
+mod capacity_summary;
+mod capacity_weight;
 mod default_live;
 #[cfg(unix)]
 mod duplicates;
@@ -32,9 +34,14 @@ mod shared_dirs;
 mod store;
 mod supervise_gate;
 mod usage_cmd;
+mod usage_history;
 mod usage_parse;
 mod usage_request;
 
+#[cfg(test)]
+mod tests_capacity_summary;
+#[cfg(test)]
+mod tests_capacity_weight;
 #[cfg(test)]
 mod tests_commands;
 #[cfg(all(test, unix))]
@@ -73,6 +80,8 @@ mod tests_shared_dirs;
 mod tests_store;
 #[cfg(test)]
 mod tests_usage_cmd;
+#[cfg(test)]
+mod tests_usage_history;
 #[cfg(test)]
 mod tests_usage_parse;
 #[cfg(test)]
@@ -380,9 +389,15 @@ pub enum ProfileCommands {
         /// Print a JSON array instead of the table
         #[arg(long)]
         json: bool,
+        /// Print one JSON object: the --json rows and the capacity summary
+        #[arg(long, conflicts_with_all = ["json", "raw"])]
+        summary_json: bool,
         /// Also print what `claude` wrote to stdout and stderr
         #[arg(long)]
         raw: bool,
+        /// Session % below which a login counts as usable now (1-100; default 95, or AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT)
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
+        usable_session_pct: Option<u8>,
         /// Seconds each probe may run (default 120, max 600; or AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS)
         #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(1..=probe_limits::MAX_TIMEOUT_SECS))]
         timeout_secs: Option<u64>,
@@ -523,9 +538,26 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::Usage {
             names,
             json,
+            summary_json,
             raw,
             timeout_secs,
-        } => usage_cmd::run(&store, &names, json, raw, timeout_secs)?,
+            usable_session_pct,
+        } => {
+            let output = if summary_json {
+                usage_cmd::Output::SummaryJson
+            } else if json {
+                usage_cmd::Output::Json
+            } else {
+                usage_cmd::Output::Table
+            };
+            let opts = usage_cmd::UsageOpts {
+                output,
+                raw,
+                timeout_secs,
+                usable_session_pct,
+            };
+            usage_cmd::run(&store, &names, opts)?
+        }
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
         ProfileCommands::Overflow { command } => overflow::run(&store, command)?,

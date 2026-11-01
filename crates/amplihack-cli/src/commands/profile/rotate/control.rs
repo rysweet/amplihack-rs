@@ -4,6 +4,7 @@
 
 use super::daemon::{DaemonState, current_state, daemon_err, exe_name};
 use super::exhausted;
+use super::history;
 use super::identify::{self, LiveId};
 use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
 use super::log::{msg, timestamp};
@@ -104,6 +105,12 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     let exe = exe_name();
     let owner = super::owner::describe(store.root(), Path::new("/proc"), exe.as_deref());
     println!("rotate: {word}\n{auto}\n{owner}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    // Issue #1797: from the usage history only; no probe and no `claude`.
+    let (capacity, warnings) = history::capacity(store.root(), now());
+    for w in warnings {
+        eprintln!("{w}");
+    }
+    println!("{capacity}");
     println!("overflow: {overflow}\napi key: {api_key}\non overflow: {on_overflow}");
     if let Some(line) = super::platform_live_line(store.root()) {
         println!("{line}");

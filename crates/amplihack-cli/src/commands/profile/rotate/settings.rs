@@ -214,3 +214,11 @@ impl Settings {
         args
     }
 }
+
+/// `$HOME`, which holds the live `~/.claude`.
+pub fn home_dir() -> Result<std::path::PathBuf, ProfileError> {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| ProfileError::RotateRefused("HOME is not set".into()))
+}

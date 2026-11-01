@@ -1,0 +1,186 @@
+[
+  {
+    "profile": "work",
+    "account": "personal",
+    "default": true,
+    "leased_to": null,
+    "live_in": null,
+    "overflow": false,
+    "overflow_blocked_until": null,
+    "kind": "subscription",
+    "api_key_blocked": null,
+    "state": "ok",
+    "session": {
+      "label": "session",
+      "used_percentage": 20.0,
+      "resets_text": "text-session-20",
+      "resets_at": 1792155600
+    },
+    "session_limit": true,
+    "week_all": {
+      "label": "all models",
+      "used_percentage": 30.5,
+      "resets_text": "text-all models-30.5",
+      "resets_at": 1792238400
+    },
+    "week_models": [
+      {
+        "label": "Fable",
+        "used_percentage": 12.0,
+        "resets_text": "text-Fable-12",
+        "resets_at": 1792324800
+      }
+    ],
+    "error": null
+  },
+  {
+    "profile": "spare",
+    "account": "spare",
+    "default": false,
+    "leased_to": "work",
+    "live_in": "~/.claude",
+    "overflow": false,
+    "overflow_blocked_until": null,
+    "kind": "subscription",
+    "api_key_blocked": null,
+    "state": "session_exhausted",
+    "session": {
+      "label": "session",
+      "used_percentage": 100.0,
+      "resets_text": "text-session-100",
+      "resets_at": 1792159200
+    },
+    "session_limit": true,
+    "week_all": {
+      "label": "all models",
+      "used_percentage": 68.0,
+      "resets_text": "text-all models-68",
+      "resets_at": null
+    },
+    "week_models": [],
+    "error": null
+  },
+  {
+    "profile": "extra",
+    "account": "extra",
+    "default": false,
+    "leased_to": null,
+    "live_in": null,
+    "overflow": true,
+    "overflow_blocked_until": 1792170000,
+    "kind": "subscription",
+    "api_key_blocked": null,
+    "state": "weekly_exhausted",
+    "session": null,
+    "session_limit": true,
+    "week_all": {
+      "label": "all models",
+      "used_percentage": 100.0,
+      "resets_text": "text-all models-100",
+      "resets_at": 1792411200
+    },
+    "week_models": [],
+    "error": null
+  },
+  {
+    "profile": "~/.claude",
+    "account": "~/.claude",
+    "default": false,
+    "leased_to": null,
+    "live_in": "~/.claude",
+    "overflow": false,
+    "overflow_blocked_until": null,
+    "kind": "subscription",
+    "api_key_blocked": null,
+    "state": "ok",
+    "session": {
+      "label": "session",
+      "used_percentage": 10.0,
+      "resets_text": "text-session-10",
+      "resets_at": 1792155600
+    },
+    "session_limit": true,
+    "week_all": {
+      "label": "all models",
+      "used_percentage": 95.0,
+      "resets_text": "text-all models-95",
+      "resets_at": 1792238400
+    },
+    "week_models": [],
+    "error": null
+  },
+  {
+    "profile": "slow",
+    "account": "slow",
+    "default": false,
+    "leased_to": null,
+    "live_in": null,
+    "overflow": false,
+    "overflow_blocked_until": null,
+    "kind": "subscription",
+    "api_key_blocked": null,
+    "state": "timeout",
+    "session": null,
+    "session_limit": true,
+    "week_all": null,
+    "week_models": [],
+    "error": "could not read claude output"
+  },
+  {
+    "profile": "key",
+    "account": "key",
+    "default": false,
+    "leased_to": null,
+    "live_in": null,
+    "overflow": false,
+    "overflow_blocked_until": null,
+    "kind": "api-key",
+    "api_key_blocked": {
+      "reason": "spend limit",
+      "until": 1792238400
+    },
+    "state": "api_key",
+    "session": {
+      "label": "session",
+      "used_percentage": 0.0,
+      "resets_text": "text-session-0",
+      "resets_at": null
+    },
+    "session_limit": true,
+    "week_all": {
+      "label": "all models",
+      "used_percentage": 0.0,
+      "resets_text": "text-all models-0",
+      "resets_at": null
+    },
+    "week_models": [],
+    "error": null
+  },
+  {
+    "profile": "odd",
+    "account": "quote\"back\\slash\u001b[0m",
+    "default": false,
+    "leased_to": null,
+    "live_in": null,
+    "overflow": false,
+    "overflow_blocked_until": null,
+    "kind": "subscription",
+    "api_key_blocked": null,
+    "state": "ok",
+    "session": {
+      "label": "session",
+      "used_percentage": 1.25,
+      "resets_text": "text-session-1.25",
+      "resets_at": null
+    },
+    "session_limit": true,
+    "week_all": {
+      "label": "all models",
+      "used_percentage": 2.0,
+      "resets_text": "text-all models-2",
+      "resets_at": null
+    },
+    "week_models": [],
+    "error": null
+  }
+]

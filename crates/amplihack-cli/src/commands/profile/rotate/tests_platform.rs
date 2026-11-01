@@ -62,6 +62,7 @@ fn measured(session: f64, week: f64, reset: Option<i64>) -> Probed {
         windows: Windows {
             session: win(session, reset),
             week: win(week, reset),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
@@ -74,6 +75,7 @@ fn exhausted(reset: Option<i64>) -> Probed {
         windows: Windows {
             session: win(100.0, reset),
             week: win(100.0, reset),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
