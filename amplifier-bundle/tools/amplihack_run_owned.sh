@@ -13,9 +13,16 @@
 #     exit 1 : refused or failed (relative path, control characters, unknown
 #              kind, symlinked owned-paths file, write failure).
 #     exit 2 : usage error.
+#   amplihack_run_owned.sh adopt worktree <absolute path> [branch]
+#     For a worktree this run reuses: records it, as `record` does, only when
+#     another run under the same runs folder already recorded that path. A
+#     reused worktree then stays owned by every run that used it, and cleanup
+#     keeps it while any of them is active. A worktree no run created (one
+#     made by hand) is never recorded. Exit codes as for `record`.
 #
-# Callers record only after a new `git worktree add` succeeded, and treat a
-# failure as a warning: `... record ... || echo "warning: ..." >&2`.
+# Callers record only after a new `git worktree add` succeeded, adopt after
+# reusing one, and treat a failure as a warning:
+# `... record ... || echo "warning: ..." >&2`.
 
 set -u
 umask 077
@@ -24,6 +31,7 @@ log() { printf 'amplihack_run_owned: %s\n' "$*" >&2; }
 
 usage() {
     log "usage: amplihack_run_owned.sh record <worktree|target> <absolute path> [branch]"
+    log "       amplihack_run_owned.sh adopt worktree <absolute path> [branch]"
 }
 
 has_control_chars() {
@@ -84,10 +92,37 @@ cmd_record() {
     return 0
 }
 
+# Records a reused worktree only when another run recorded it first.
+cmd_adopt() {
+    local kind="${1:-}" path="${2:-}"
+    if [ "$kind" != worktree ] || [ -z "$path" ] || [ "$#" -gt 3 ]; then
+        usage
+        return 2
+    fi
+    local run_dir="${AMPLIHACK_RUN_DIR:-}"
+    [ -n "$run_dir" ] || return 0
+    if has_control_chars "$path"; then
+        log "refusing a path or branch with control characters"
+        return 1
+    fi
+    local other want
+    want="$(printf 'worktree\t%s' "$path")"
+    for other in "$(dirname -- "$run_dir")"/*/owned-paths; do
+        [ -f "$other" ] && [ ! -L "$other" ] || continue
+        [ "$other" != "$run_dir/owned-paths" ] || continue
+        if cut -f1,2 -- "$other" 2>/dev/null | grep -qxF -- "$want"; then
+            cmd_record "$@"
+            return $?
+        fi
+    done
+    return 0
+}
+
 main() {
     local op="${1:-}"
     case "$op" in
         record) shift; cmd_record "$@" ;;
+        adopt) shift; cmd_adopt "$@" ;;
         -h|--help|help) usage; return 0 ;;
         *) usage; return 2 ;;
     esac

@@ -35,9 +35,14 @@
 #              AMPLIHACK_WORK_ROOT: <work root>/worktrees/<name>-<hash8>, where
 #              <name> is the main checkout's basename reduced to [A-Za-z0-9._-]
 #              and <hash8> the first 8 hex digits of the SHA-256 of its path.
-#              Otherwise <main>/worktrees, as before (#1134 anchoring).
-#     exit 0 : resolved.  exit 1 : unresolvable, relative work root, or no
-#              hash tool; callers then fall back to <main>/worktrees.
+#              Otherwise <main>/worktrees, as before (#1134 anchoring); when
+#              the main checkout cannot be worked out, <repo_path>/worktrees.
+#     exit 1 : only with an explicit work root: the main checkout cannot be
+#              worked out, the work root is relative, or there is no hash
+#              tool. The reason is on stderr. Callers stop and show it; they
+#              never fall back, which would put worktrees in the place the
+#              user asked to avoid. This is the one fallback rule: callers
+#              make a single call and do not add their own.
 #
 # READ-ONLY INVARIANT (hard): this helper only inspects git state and path
 # strings. It creates, moves, resets and deletes nothing.
@@ -151,11 +156,14 @@ sha256_hex() {
 # cmd_base [repo_path] — echo the folder new worktrees go under (issue #1808).
 cmd_base() {
     local main work name digest
-    main="$(cmd_root "$@")" || return 1
     if [ "${AMPLIHACK_WORK_ROOT_EXPLICIT:-0}" != "1" ] || [ -z "${AMPLIHACK_WORK_ROOT:-}" ]; then
+        main="$(cmd_root "$@" 2>/dev/null)" \
+            || main="$(cd -P -- "${1:-.}" 2>/dev/null && pwd -P)" \
+            || { log "ERROR: repo_path '${1:-.}' is not accessible."; return 1; }
         printf '%s/worktrees\n' "$main"
         return 0
     fi
+    main="$(cmd_root "$@")" || return 1
     work="$AMPLIHACK_WORK_ROOT"
     case "$work" in
         /*) ;;

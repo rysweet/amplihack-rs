@@ -99,7 +99,7 @@ steps:
       # Issue #1808: a caller-supplied worktree_dir wins; else `workflow_worktree_root.sh base`.
       ROOT_HELPER="${AMPLIHACK_HOME:-${HOME:-/root}/.amplihack}/amplifier-bundle/tools/workflow_worktree_root.sh"
       [ -f "$ROOT_HELPER" ] || ROOT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_root.sh"
-      [ -n "${WORKTREE_DIR:-}" ] || WORKTREE_DIR="$(bash "$ROOT_HELPER" base "$(pwd)" 2>/dev/null)" || WORKTREE_DIR=""
+      [ -n "${WORKTREE_DIR:-}" ] || [ ! -f "$ROOT_HELPER" ] || WORKTREE_DIR="$(bash "$ROOT_HELPER" base "$(pwd)")" || { echo "ERROR: cannot work out where worktrees go (see above; issue #1808)." >&2; exit 1; }
       [ -n "$WORKTREE_DIR" ] || WORKTREE_DIR="$(cd "$(git rev-parse --git-common-dir)/.." && pwd -P)/worktrees"
       EXISTING_BRANCH="${EXISTING_BRANCH:-}"
       PR_NUMBER="${PR_NUMBER:-}"
@@ -352,8 +352,8 @@ steps:
         fi
         SETUP_STATE="create-from-base"
       fi
-      [ "$SETUP_STATE" = "reuse-clean-worktree" ] || [ -z "${AMPLIHACK_RUN_DIR:-}" ] || [ ! -f "$TOOLS_DIR/amplihack_run_owned.sh" ] \
-        || bash "$TOOLS_DIR/amplihack_run_owned.sh" record worktree "$(cd -P -- "$WORKTREE_PATH" && pwd -P)" "$BRANCH_NAME" \
+      OWN_OP=record; [ "$SETUP_STATE" != "reuse-clean-worktree" ] || OWN_OP=adopt; [ -z "${AMPLIHACK_RUN_DIR:-}" ] || [ ! -f "$TOOLS_DIR/amplihack_run_owned.sh" ] \
+        || bash "$TOOLS_DIR/amplihack_run_owned.sh" "$OWN_OP" worktree "$(cd -P -- "$WORKTREE_PATH" && pwd -P)" "$BRANCH_NAME" \
         || echo "WARNING: could not record $WORKTREE_PATH for cleanup (issue #1808)" >&2
 
       # Push with tracking (bootstrap-aware). Never forced: a deconflicted run pushes

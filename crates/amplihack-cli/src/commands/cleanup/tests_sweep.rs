@@ -110,7 +110,7 @@ fn symlinked_parent_repointed_after_collection_is_refused() {
     fx.run(&[&recorded]);
     let settings = fx.settings(&[Category::RunTarget]);
 
-    let items = collect(&settings);
+    let items = collect(&settings).unwrap();
     fs::remove_file(&lnk).unwrap();
     symlink(fx.root.join("projects"), &lnk).unwrap();
     let entries = apply_items(items, &settings, true);
@@ -135,7 +135,7 @@ fn canonical_change_inside_managed_roots_is_skipped() {
     fx.run(&[&recorded]);
     let settings = fx.settings(&[Category::RunTarget]);
 
-    let items = collect(&settings);
+    let items = collect(&settings).unwrap();
     fs::remove_file(&lnk).unwrap();
     symlink(&fx.hook_base, &lnk).unwrap();
     let entries = apply_items(items, &settings, true);
@@ -155,7 +155,7 @@ fn unreadable_run_json_at_apply_skips() {
     let run_dir = fx.run(&[&target]);
     let settings = fx.settings(&[Category::RunTarget, Category::RunTmp]);
 
-    let items = collect(&settings);
+    let items = collect(&settings).unwrap();
     assert_eq!(
         items.iter().filter(|i| !matches!(i.op, Op::Skip)).count(),
         2,
@@ -180,7 +180,7 @@ fn unchanged_items_are_removed() {
     let run_dir = fx.run(&[&target]);
     let settings = fx.settings(&[Category::RunTarget, Category::RunTmp]);
 
-    let entries = run_sweep(&settings, true);
+    let entries = run_sweep(&settings, true).unwrap();
 
     assert_eq!(entry(&entries, &target).action, Action::Removed);
     assert!(!target.exists() && !run_dir.join("runtime").exists());
@@ -203,7 +203,7 @@ fn unreadable_owned_paths_is_reported_as_skipped() {
     symlink(&real, &owned).unwrap();
     let settings = fx.settings(&[Category::RunTarget, Category::UntaggedTarget]);
 
-    let entries = run_sweep(&settings, true);
+    let entries = run_sweep(&settings, true).unwrap();
 
     let e = entry(&entries, &owned);
     assert_eq!(e.action, Action::Skipped, "{entries:#?}");

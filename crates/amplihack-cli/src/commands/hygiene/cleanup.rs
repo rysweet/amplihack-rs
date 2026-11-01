@@ -602,10 +602,17 @@ pub(crate) fn active_worktrees(repo: &Path) -> Result<BTreeSet<PathBuf>> {
     Ok(paths)
 }
 
-/// Issue #1808: a `git` command that a candidate worktree's own configuration
-/// cannot use to run code: hooks and fsmonitor are disabled, the system
-/// configuration is ignored, prompts are refused and optional index locks are
-/// not taken (so a read-only check never rewrites the index).
+/// Issue #1808: a `git` command for inspecting and removing candidate
+/// worktrees. Hooks and fsmonitor are disabled, the system configuration is
+/// ignored, prompts are refused and optional index locks are not taken (so a
+/// read-only check never rewrites the index).
+///
+/// This does not stop every command a repository's own configuration can
+/// name. Clean and smudge filters (`filter.<driver>.*`) and similar settings
+/// in the repository's `.git/config` may still run during `git status` and
+/// `git worktree remove`, and inside `gh`. Cleanup runs as the invoking user,
+/// on worktrees of that user's own runs, so such a filter gains no rights
+/// beyond those of whoever could already write that configuration.
 pub(crate) fn hardened_git() -> std::process::Command {
     let mut command = amplihack_git::command();
     command

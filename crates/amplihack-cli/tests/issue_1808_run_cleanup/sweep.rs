@@ -184,6 +184,39 @@ fn active_run_is_never_touched() {
     assert_eq!(entry_for(&report, &active_tgt)["action"], "skipped");
 }
 
+/// A worktree reused by a later run is recorded by both runs. While the later
+/// run is active, the earlier run's eligibility does not remove it.
+#[test]
+fn worktree_also_recorded_by_an_active_run_is_kept() {
+    let mut fx = Fx::new();
+    let (_, wt, _) = merged_run(&fx, "reused", 25);
+    let pid = fx.live_process(&fx.root.clone());
+    let mut live = SeedRun::ended(0).owns_worktree(&wt, "reused");
+    live.pid = pid;
+    live.pid_start_ticks = start_ticks(pid);
+    live.ended_hours_ago = None;
+    fx.seed_run(&live);
+
+    let report = fx.cleanup_json(&["--apply"]);
+    let want = wt.to_string_lossy().to_string();
+    let for_wt: Vec<_> = entries(&report)
+        .into_iter()
+        .filter(|e| e["path"].as_str() == Some(want.as_str()))
+        .collect();
+    assert!(!for_wt.is_empty(), "{report:#}");
+    assert!(
+        for_wt.iter().all(|e| e["action"] == "skipped"),
+        "{for_wt:#?}"
+    );
+    assert!(
+        for_wt
+            .iter()
+            .any(|e| reason(e).contains("also recorded by active run")),
+        "{for_wt:#?}"
+    );
+    assert!(wt.exists());
+}
+
 /// D6: a reused pid (alive, wrong start ticks) does not make a dead run look
 /// active, so its leftover `runtime/` is removed as `run-tmp`.
 #[test]

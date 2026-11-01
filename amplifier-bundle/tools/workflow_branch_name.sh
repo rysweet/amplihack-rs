@@ -13,14 +13,15 @@
 #   REPO  the checkout the run was pointed at (the caller checkout).
 #   MAIN  the main repository; the run would use <base>/<branch>, where <base>
 #         comes from `workflow_worktree_root.sh base MAIN` (issue #1808),
-#         falling back to MAIN/worktrees.
+#         or MAIN/worktrees when that helper is missing.
 #
 # Output: the named branch on stdout, or nothing.
 # Exit codes:
 #   0   a branch is named and already exists (local or origin) — REUSE it
 #   10  a branch is named and does not exist yet            — CREATE it
 #   1   no branch is named                                  — derive one
-#   2   usage error (unknown flag, missing or non-directory path)
+#   2   usage error (unknown flag, missing or non-directory path), or the
+#       worktree base cannot be worked out (the helper's reason is on stderr)
 #   3   the named branch is checked out in a worktree that is neither REPO nor
 #       <base>/<branch>: another session owns it; refuse, never share it
 #
@@ -89,11 +90,10 @@ ROOT_HELPER="$(dirname -- "${BASH_SOURCE[0]}")/workflow_worktree_root.sh"
 # one source is `workflow_worktree_root.sh base` (issue #1808), so a re-run
 # under an explicit work root recognises its own worktree.
 worktree_base() {
-  local base=""
+  local base
   if [ -f "$ROOT_HELPER" ]; then
-    base="$(bash "$ROOT_HELPER" base "$1" 2>/dev/null)" || base=""
-  fi
-  if [ -z "$base" ]; then
+    base="$(bash "$ROOT_HELPER" base "$1")" || return 1
+  else
     base="$(real_dir "$1")/worktrees"
   fi
   real_dir "$base" || printf '%s' "$base"
@@ -108,7 +108,11 @@ decide() {
   if [ -n "$holder" ]; then
     holder_real="$(real_dir "$holder" || printf '%s' "$holder")"
     repo_real="$(real_dir "$repo")"
-    intended="$(worktree_base "$main")/$ref"
+    intended="$(worktree_base "$main")" || {
+      echo "ERROR: cannot work out where worktrees go (see above; issue #1808)." >&2
+      exit 2
+    }
+    intended="$intended/$ref"
     # The caller checkout is left to step-04's own #858 refusal; our own
     # worktree from a previous run of this task is an idempotent re-run.
     if [ "$holder_real" != "$repo_real" ] && [ "$holder_real" != "$intended" ]; then

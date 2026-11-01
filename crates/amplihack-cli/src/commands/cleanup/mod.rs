@@ -291,7 +291,7 @@ fn run_cleanup(args: &CleanupArgs) -> Result<bool> {
             work_root.lock_path().display()
         );
     }
-    let entries = sweep::run_sweep(&settings, lock.is_some());
+    let entries = sweep::run_sweep(&settings, lock.is_some())?;
     drop(lock);
 
     match args.format {

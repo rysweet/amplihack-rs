@@ -29,7 +29,7 @@ macro_rules! refuse {
 fn is_managed(item: &Item, roots: &ManagedRoots) -> bool {
     let c = item.canonical.as_path();
     match &item.op {
-        Op::Skip | Op::Archive { .. } => true,
+        Op::Skip | Op::Fail | Op::Archive { .. } => true,
         Op::RemoveRunTmp { .. } => item.run_id.as_deref().is_some_and(|id| {
             c == roots.runs.join(id).join("runtime") || c == roots.short_runtime.join(short_id(id))
         }),
@@ -74,7 +74,7 @@ pub(super) fn execute(
     procs: &ProcScan,
 ) -> Result<()> {
     match &item.op {
-        Op::Skip => return Ok(()),
+        Op::Skip | Op::Fail => return Ok(()),
         Op::Archive { relative } => {
             return archive_file(&item.path, &settings.archive_dir, relative).map(|_| ());
         }
@@ -100,7 +100,7 @@ pub(super) fn execute(
     }
     let target = item.canonical.as_path();
     match &item.op {
-        Op::Skip | Op::Archive { .. } => Ok(()),
+        Op::Skip | Op::Fail | Op::Archive { .. } => Ok(()),
         Op::RemoveRunTmp { run_dir } => {
             run_still_inactive(run_dir)?;
             remove_real_dir(target)
@@ -111,6 +111,7 @@ pub(super) fn execute(
         } => {
             if let Some(run_dir) = run_dir {
                 run_still_inactive(run_dir)?;
+                refuse_if_other_live_owner(item, settings)?;
             }
             if *cargo_lock && cargo_lock_held(target) {
                 refuse!("in use: .cargo-lock is held");
@@ -122,6 +123,7 @@ pub(super) fn execute(
         }
         Op::RemoveWorktree { main, run_dir } => {
             run_still_inactive(run_dir)?;
+            refuse_if_other_live_owner(item, settings)?;
             if !is_real_dir(target) {
                 refuse!("{} is no longer a real folder", target.display());
             }
@@ -158,4 +160,41 @@ pub(super) fn execute(
             Ok(())
         }
     }
+}
+
+/// Why `canonical` must be kept because a run other than `except` records it
+/// and is active, or has a `run.json` that cannot be read. A reused worktree
+/// is recorded by every run that used it, so the path goes only once all of
+/// them are inactive.
+pub(super) fn other_live_owner(runs: &[RunInfo], canonical: &Path, except: &str) -> Option<String> {
+    runs.iter()
+        .filter(|r| r.id != except)
+        .filter(|r| {
+            r.owned()
+                .iter()
+                .any(|o| o.path == canonical || canonical_or_self(&o.path) == canonical)
+        })
+        .find_map(|r| match &r.report {
+            Ok(report) if run_is_active(report) => {
+                Some(format!("also recorded by active run {}", r.id))
+            }
+            Ok(_) => None,
+            Err(_) => Some(format!(
+                "also recorded by run {}, whose run.json cannot be read",
+                r.id
+            )),
+        })
+}
+
+/// Apply-time form of [`other_live_owner`]: scans the runs folder again.
+fn refuse_if_other_live_owner(item: &Item, settings: &Settings) -> Result<()> {
+    let own = item.run_id.as_deref().unwrap_or_default();
+    let runs = match scan_runs(&settings.work_root) {
+        Ok(runs) => runs,
+        Err(error) => refuse!("cannot list runs: {error:#}"),
+    };
+    if let Some(reason) = other_live_owner(&runs, &item.canonical, own) {
+        refuse!("{reason}");
+    }
+    Ok(())
 }

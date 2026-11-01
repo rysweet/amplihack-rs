@@ -102,6 +102,9 @@ pub(crate) struct Entry {
 #[derive(Debug, Clone)]
 enum Op {
     Skip,
+    /// Nothing to act on, but the sweep could not finish this part; reported
+    /// as `failed` so the command does not claim success.
+    Fail,
     RemoveRunTmp {
         run_dir: PathBuf,
     },
@@ -149,6 +152,13 @@ impl Item {
             op: Op::Skip,
         }
     }
+
+    fn fail(category: Category, path: &Path, reason: impl Into<String>) -> Self {
+        Self {
+            op: Op::Fail,
+            ..Self::skip(category, path, reason, None)
+        }
+    }
 }
 
 #[path = "execute.rs"]
@@ -156,7 +166,7 @@ mod execute;
 #[path = "procs.rs"]
 mod procs;
 
-use execute::{Refusal, execute};
+use execute::{Refusal, execute, other_live_owner};
 use procs::ProcScan;
 
 // ----- filesystem helpers ---------------------------------------------------
@@ -294,19 +304,31 @@ pub(crate) fn lock_with_timeout(path: &Path, wait: Duration) -> Result<Option<fs
 }
 
 /// Files under `root`, not following symlinks, with their path relative to it.
-fn walk_files(root: &Path) -> Vec<(PathBuf, fs::Metadata)> {
+/// The regular files under `root`, plus one message per folder that could
+/// not be listed and one if the walk stopped at [`WALK_LIMIT`].
+fn walk_files(root: &Path) -> (Vec<(PathBuf, fs::Metadata)>, Vec<String>) {
     let mut out = Vec::new();
+    let mut problems = Vec::new();
     if !is_real_dir(root) {
-        return out;
+        return (out, problems);
     }
     let mut seen = 0usize;
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        let rd = match fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(error) => {
+                problems.push(format!("cannot list {}: {error}", dir.display()));
+                continue;
+            }
+        };
         for entry in rd.flatten() {
             seen += 1;
             if seen > WALK_LIMIT {
-                return out;
+                problems.push(format!(
+                    "scan stopped after {WALK_LIMIT} entries; the rest was not checked"
+                ));
+                return (out, problems);
             }
             let path = entry.path();
             let Ok(meta) = fs::symlink_metadata(&path) else {
@@ -319,7 +341,7 @@ fn walk_files(root: &Path) -> Vec<(PathBuf, fs::Metadata)> {
             }
         }
     }
-    out
+    (out, problems)
 }
 
 // ----- git helpers ----------------------------------------------------------
@@ -388,14 +410,15 @@ impl RunInfo {
     }
 }
 
-fn scan_runs(root: &WorkRoot) -> Vec<RunInfo> {
+/// The runs under `<work root>/runs/`. A missing folder means no runs; one
+/// that exists but cannot be listed is an error, never an empty list.
+fn scan_runs(root: &WorkRoot) -> Result<Vec<RunInfo>> {
     let runs_dir = root.runs_dir();
     if !is_real_dir(&runs_dir) {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let Ok(rd) = fs::read_dir(&runs_dir) else {
-        return Vec::new();
-    };
+    let rd =
+        fs::read_dir(&runs_dir).with_context(|| format!("cannot list {}", runs_dir.display()))?;
     let mut runs = Vec::new();
     for entry in rd.flatten() {
         let Some(id) = entry.file_name().to_str().map(String::from) else {
@@ -419,7 +442,7 @@ fn scan_runs(root: &WorkRoot) -> Vec<RunInfo> {
         });
     }
     runs.sort_by(|a, b| a.id.cmp(&b.id));
-    runs
+    Ok(runs)
 }
 
 // ----- collection -----------------------------------------------------------
@@ -753,7 +776,13 @@ impl Collector<'_> {
             let mut candidates = Vec::new();
             let mut unknown_worktree: Option<String> = None;
             for o in &existing {
-                match self.check_owned(o) {
+                let checked = self.check_owned(o).and_then(|c| {
+                    match other_live_owner(runs, &c.canonical, id) {
+                        Some(reason) => Err(reason),
+                        None => Ok(c),
+                    }
+                });
+                match checked {
                     Ok(c) => candidates.push(c),
                     Err(reason) => {
                         if o.kind == OwnedKind::Worktree && unknown_worktree.is_none() {
@@ -1074,7 +1103,11 @@ impl Collector<'_> {
             sources.push((Category::SessionLog, dir.clone(), "codex-sessions"));
         }
         for (category, root, prefix) in sources {
-            for (path, meta) in walk_files(&root) {
+            let (files, problems) = walk_files(&root);
+            for problem in problems {
+                self.items.push(Item::fail(category, &root, problem));
+            }
+            for (path, meta) in files {
                 if meta.uid() != euid() {
                     continue;
                 }
@@ -1103,7 +1136,12 @@ impl Collector<'_> {
             }
         }
         if want_session && let Some(dir) = self.s.claude_projects_dir.clone() {
-            for (path, meta) in walk_files(&dir) {
+            let (files, problems) = walk_files(&dir);
+            for problem in problems {
+                self.items
+                    .push(Item::fail(Category::SessionLog, &dir, problem));
+            }
+            for (path, meta) in files {
                 let old = meta
                     .modified()
                     .ok()
@@ -1120,8 +1158,8 @@ impl Collector<'_> {
     }
 }
 
-fn collect(settings: &Settings) -> Vec<Item> {
-    let runs = scan_runs(&settings.work_root);
+fn collect(settings: &Settings) -> Result<Vec<Item>> {
+    let runs = scan_runs(&settings.work_root)?;
     let mut c = Collector {
         s: settings,
         roots: ManagedRoots::new(settings),
@@ -1137,7 +1175,7 @@ fn collect(settings: &Settings) -> Vec<Item> {
     c.collect_untagged_targets(&runs);
     c.collect_tmp_leftovers();
     c.collect_logs();
-    c.items
+    Ok(c.items)
 }
 
 // ----- apply ----------------------------------------------------------------
@@ -1154,6 +1192,7 @@ fn apply_items(items: Vec<Item>, settings: &Settings, locked: bool) -> Vec<Entry
         let archive = matches!(item.op, Op::Archive { .. });
         let (action, reason) = match (&item.op, settings.apply) {
             (Op::Skip, _) => (Action::Skipped, item.reason.clone()),
+            (Op::Fail, _) => (Action::Failed, item.reason.clone()),
             (_, false) if archive => (Action::WouldArchive, item.reason.clone()),
             (_, false) => (Action::WouldRemove, item.reason.clone()),
             (_, true) if !locked => (Action::Skipped, REASON_LOCK_HELD.to_string()),
@@ -1325,13 +1364,13 @@ fn prune_owned_paths(run_dir: &Path) -> Result<()> {
 // ----- entry points ---------------------------------------------------------
 
 /// Collects, applies (when `settings.apply` and `locked`) and records.
-pub(crate) fn run_sweep(settings: &Settings, locked: bool) -> Vec<Entry> {
-    let items = collect(settings);
+pub(crate) fn run_sweep(settings: &Settings, locked: bool) -> Result<Vec<Entry>> {
+    let items = collect(settings)?;
     let entries = apply_items(items, settings, locked);
     if settings.apply && locked {
         write_records(&entries, &settings.work_root);
     }
-    entries
+    Ok(entries)
 }
 
 /// The best-effort end-of-run sweep (D5). Never returns an error and never
@@ -1374,7 +1413,7 @@ fn end_of_run_inner(work_root: &WorkRoot) -> Result<()> {
         claude_projects_dir: None,
         hook_cache_base: super::hook_cache_base(),
     };
-    let entries = run_sweep(&settings, true);
+    let entries = run_sweep(&settings, true)?;
     for e in &entries {
         match e.action {
             Action::Removed => {

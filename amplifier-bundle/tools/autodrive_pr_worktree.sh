@@ -208,7 +208,7 @@ cmd_resolve() {
     # Issue #1808: `base` is the one source of the worktree base, so an
     # explicit AMPLIHACK_WORK_ROOT moves these worktrees too.
     local wt_base
-    wt_base="$(bash "$root_helper" base "$PWD" 2>/dev/null)" || wt_base="$main_root/worktrees"
+    wt_base="$(bash "$root_helper" base "$PWD")" || refuse "cannot work out where worktrees go (see the message above)"
     # A symlinked base would move the worktree elsewhere: refuse it before
     # resolving the folders above it.
     if [ -L "$wt_base" ] || { [ -e "$wt_base" ] && [ ! -d "$wt_base" ]; }; then
@@ -311,6 +311,7 @@ EOF
             git merge-base --is-ancestor "refs/remotes/origin/$head" "$tip" \
                 || refuse "the matching worktree is behind or has diverged from origin; fast-forward it with 'git -C <worktree> merge --ff-only' onto the origin branch, then resume"
         fi
+        own_worktree adopt "$found" "$head"
         printf '%s\n' "$found"
         return 0
     fi
@@ -337,14 +338,20 @@ EOF
     found="$(canonical_dir "$target")" || refuse "the new worktree is not accessible"
     [ "$found" = "$target" ] || refuse "the new worktree did not land at the target path"
     verify_worktree "$found" "$head" "$common" || refuse "the new worktree failed verification"
-    # Issue #1808: record the new worktree so cleanup may remove it later.
+    own_worktree record "$found" "$head"
+    printf '%s\n' "$found"
+}
+
+# own_worktree <record|adopt> <path> <branch> — issue #1808: record a new
+# worktree so cleanup may remove it later, or adopt a reused one so it stays
+# owned by this run while it is active. A failure is only a warning.
+own_worktree() {
     local recorder
     recorder="$(dirname -- "${BASH_SOURCE[0]}")/amplihack_run_owned.sh"
     if [ -n "${AMPLIHACK_RUN_DIR:-}" ] && [ -f "$recorder" ]; then
-        bash "$recorder" record worktree "$found" "$head" \
-            || printf 'WARNING: could not record %s for cleanup (issue #1808)\n' "$found" >&2
+        bash "$recorder" "$1" worktree "$2" "$3" \
+            || printf 'WARNING: could not record %s for cleanup (issue #1808)\n' "$2" >&2
     fi
-    printf '%s\n' "$found"
 }
 
 main() {

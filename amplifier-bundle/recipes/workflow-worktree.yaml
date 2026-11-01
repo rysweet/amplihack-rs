@@ -54,7 +54,7 @@ steps:
       if [ -f "$ROOT_HELPER" ]; then bash "$ROOT_HELPER" assert-origin "$REPO_PATH" || exit 1; MAIN_REPO_PATH="$(bash "$ROOT_HELPER" root "$REPO_PATH" || printf '%s' "$REPO_PATH")"; fi
       [ -d "$MAIN_REPO_PATH" ] || MAIN_REPO_PATH="$REPO_PATH"
       # #1808: worktrees move under the work root only with AMPLIHACK_WORK_ROOT_EXPLICIT=1 (else <main>/worktrees, #1134).
-      WT_BASE="$( { [ -f "$ROOT_HELPER" ] && bash "$ROOT_HELPER" base "$MAIN_REPO_PATH" 2>/dev/null; } || printf '%s' "${MAIN_REPO_PATH}/worktrees")"; OWNED_HELPER="$TOOLS_DIR/amplihack_run_owned.sh"
+      WT_BASE="${MAIN_REPO_PATH}/worktrees"; [ ! -f "$ROOT_HELPER" ] || WT_BASE="$(bash "$ROOT_HELPER" base "$MAIN_REPO_PATH")" || { echo "ERROR: cannot work out where worktrees go (see above; #1808)." >&2; exit 1; }; OWNED_HELPER="$TOOLS_DIR/amplihack_run_owned.sh"
       [ "$MAIN_REPO_PATH" = "$REPO_PATH" ] || echo "INFO: caller checkout '$REPO_PATH' is a linked worktree — anchoring new worktrees at main repository '$MAIN_REPO_PATH' (issue #1134)." >&2
       # Self-healing orphan sweep (#840): best-effort prune of worktrees/branches
       # leaked by prior FAILED runs so a re-run converges instead of colliding. Never
@@ -72,6 +72,8 @@ steps:
       }
 
       # wt_add_idempotent MODE WT BRANCH [REF] (issue #1121/#642): prune stale regs,
+      # #1808: record a new worktree for cleanup; adopt a reused one, so it stays owned by this live run.
+      wt_own() { [ -z "${AMPLIHACK_RUN_DIR:-}" ] || [ ! -f "$OWNED_HELPER" ] || bash "$OWNED_HELPER" "$1" worktree "$(cd -P -- "$2" && pwd -P)" "$3" || echo "WARNING: could not record $2 for cleanup (#1808)" >&2; }
       # reuse dir if it's a worktree on BRANCH else remove+re-add. No add --force.
       wt_add_idempotent() {
         local mode="$1" wt="$2" branch="$3" ref="${4:-}" cur
@@ -82,7 +84,7 @@ steps:
           cur="$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null || true)"
           if [ "$cur" = "$branch" ]; then
             echo "INFO: Reusing existing worktree directory at '$wt' (branch matches)." >&2
-            return 0
+            wt_own adopt "$wt" "$branch"; return 0
           fi
           echo "INFO: Removing stale worktree at '$wt' (was '${cur:-none}', need '$branch')." >&2
           git worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
@@ -92,8 +94,7 @@ steps:
           create) git worktree add -b "$branch" -- "$wt" "$ref" >&2 ;;
           track)  git worktree add --track -b "$branch" -- "$wt" "$ref" >&2 ;;
         esac
-        # #1808: record the new worktree so cleanup may remove it later.
-        [ -z "${AMPLIHACK_RUN_DIR:-}" ] || [ ! -f "$OWNED_HELPER" ] || bash "$OWNED_HELPER" record worktree "$(cd -P -- "$wt" && pwd -P)" "$branch" || echo "WARNING: could not record $wt for cleanup (#1808)" >&2
+        wt_own record "$wt" "$branch"
       }
 
       # NEW (#342): Existing-branch / PR targeting path. When EXISTING_BRANCH or
@@ -187,7 +188,7 @@ steps:
           fi
           # Gate B: the branch's worktree is the caller checkout. Any other is reused.
           [ "$EXISTING_WT_REAL" != "$REPO_REAL" ] || CALLER_ON_BRANCH=true
-          [ "$CALLER_ON_BRANCH" = true ] || { WORKTREE_PATH="$EXISTING_WT"; echo "INFO: Reusing existing worktree at '$WORKTREE_PATH'." >&2; }
+          [ "$CALLER_ON_BRANCH" = true ] || { WORKTREE_PATH="$EXISTING_WT"; echo "INFO: Reusing existing worktree at '$WORKTREE_PATH'." >&2; wt_own adopt "$WORKTREE_PATH" "$BRANCH_NAME"; }
         elif [ "$(git symbolic-ref --short HEAD 2>/dev/null || true)" = "$BRANCH_NAME" ]; then
           CALLER_ON_BRANCH=true  # Gate C: the caller checkout's HEAD is the branch.
         else
@@ -342,7 +343,7 @@ steps:
         KEPT_DIRTY=$(git --no-optional-locks -C "${WORKTREE_PATH}" status --porcelain 2>/dev/null || echo unknown)
         [ -z "$KEPT_DIRTY" ] || refuse_reset yes
         [ "$KEPT_AHEAD" -eq 0 ] || refuse_reset no
-        echo "INFO: Branch '${BRANCH_NAME}' and worktree '${WORKTREE_PATH}' already exist and are clean — reusing." >&2
+        echo "INFO: Branch '${BRANCH_NAME}' and worktree '${WORKTREE_PATH}' already exist and are clean — reusing." >&2; wt_own adopt "${WORKTREE_PATH}" "${BRANCH_NAME}"
         CREATED=false
       elif [ -n "$BRANCH_EXISTS" ]; then
         [ "$KEPT_AHEAD" -eq 0 ] || refuse_reset no

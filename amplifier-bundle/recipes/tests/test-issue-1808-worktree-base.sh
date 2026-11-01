@@ -156,6 +156,20 @@ else
 
     (unset AMPLIHACK_RUN_DIR; bash "$RECORDER" record target "$ROOT/targets/t3" >/dev/null 2>&1)
     check R9 "outside a run nothing is written" test ! -e "$WORK/owned-paths"
+
+    NEXT_RUN="$WORK/runs/7a1d2e3f-0000-4b8a-9f57-2c41d0e7a6b3"
+    mkdir -p "$NEXT_RUN"
+    adopt() { AMPLIHACK_RUN_DIR="$NEXT_RUN" bash "$RECORDER" adopt worktree "$@"; }
+    adopt "$MAIN/worktrees/linked" linked; rc=$?
+    check A1 "adopt records a reused worktree an earlier run recorded" \
+        bash -c '[[ "$1" = 0 ]] && grep -qxF "$(printf "worktree\t%s\tlinked" "$2")" "$3"' \
+        _ "$rc" "$MAIN/worktrees/linked" "$NEXT_RUN/owned-paths"
+    adopt "$MAIN/worktrees/by-hand" by-hand; rc=$?
+    check A2 "adopt leaves a worktree no run recorded unrecorded" \
+        bash -c '[[ "$1" = 0 ]] && ! grep -qF "by-hand" "$2"' _ "$rc" "$NEXT_RUN/owned-paths"
+    adopt "$MAIN/worktrees/link" >/dev/null 2>&1; rc=$?
+    check A3 "adopt does not match a path that is only a prefix" \
+        bash -c '! grep -qF "$(printf "worktree\t%s\t" "$1")" "$2"' _ "$MAIN/worktrees/link" "$NEXT_RUN/owned-paths"
 fi
 
 echo

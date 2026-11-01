@@ -196,6 +196,12 @@ it in `owned-paths`. The bundled helpers do this for you:
   (`workflow-worktree.yaml`, `consensus-issue-worktree.yaml` and
   `autodrive_pr_worktree.sh`) call `amplihack_run_owned.sh record` after a new
   `git worktree add`.
+- When the same helpers reuse an existing worktree, they call
+  `amplihack_run_owned.sh adopt`. It records the worktree for the current run
+  only if an earlier run already recorded it. The worktree is then listed by
+  every run that used it, and cleanup keeps it while any of those runs is
+  active. A worktree you made by hand is never recorded, even when a run
+  reuses it.
 - `scripts/git-hook-cargo.sh` records the target it creates.
 
 Each line has three tab-separated fields, `kind`, `path` and `branch`. The
@@ -253,6 +259,12 @@ helpers use it:
   which still wins;
 - `workflow_branch_name.sh`, so that a re-run of a task that names its branch
   recognises its own worktree under the work root and reuses it.
+
+None of them adds a fallback of its own. When the work root is set
+explicitly but cannot be used, for example because `AMPLIHACK_WORK_ROOT` is a
+relative path, `base` prints the reason and the step stops with
+`cannot work out where worktrees go`. It does not create the worktree under
+`<main checkout>/worktrees/`, the place you asked to avoid.
 
 The default work root (`$HOME/.amplihack/work`) applies to run folders,
 targets, clones and the archive whether or not the variable is set. Only
@@ -506,6 +518,16 @@ same pattern cleanup requires of every id it reads from a folder name. Inside a 
 target in `owned-paths`. Its stale-cache reclaim recognises both name forms
 and considers only folders you own.
 
+Because the suffix changes with every run, each run that commits in a
+worktree starts with an empty target and builds from scratch, even in a
+worktree an earlier run already built. The earlier run's target, often
+several gigabytes for this workspace, stays until that run is eligible for
+cleanup: at least `AMPLIHACK_CLEANUP_KEEP_HOURS` (default 24) after its PR
+closes or the run ends. On a host that runs many recipes, check free space
+with `df -h` and run `amplihack cleanup --apply --only run-target` when it is
+low. This follows the design choice that one run never deletes another
+run's build output.
+
 The runner does not set `CARGO_TARGET_DIR`. A worktree's own `target/` stays
 inside the worktree, Cargo tags it, and it is removed with the worktree.
 
@@ -619,10 +641,23 @@ them as they become eligible.
 
 Inside a run, the launcher clones repositories into
 `<work root>/clones/<repository name>-<8-character hash>`. Outside a run,
-clones go where they did before. Cleanup does not remove clones. The folder
-name depends only on the URL, so a later run that checks out the same
-repository reuses the clone and fetches it. If the folder is not a git
-checkout of that URL, the launch is refused with a message naming the folder.
+clones go to `./<repository name>` as before. Inside a run, the launcher
+prints `amplihack: <url> is checked out at <folder>`, because the clone is no
+longer in the current folder. Cleanup does not remove clones.
+
+The folder name depends only on the URL, so a later run that checks out the
+same repository reuses the clone. It fetches and moves the clone's branch to
+the fetched tip, so the run never works on an old commit. The launch is
+refused, with a message naming the folder and changing nothing, when:
+
+- the folder is not a git checkout of that URL;
+- the clone has uncommitted changes, is not on a branch with an upstream, or
+  has commits its upstream does not have;
+- the work root or `clones/` is a symbolic link, belongs to another user, or
+  is group- or world-writable, or the clone belongs to another user.
+
+Clones and fetches inside a run use only `https` and `ssh`; plain `git://` is
+refused.
 
 ## Safety rules
 
@@ -645,12 +680,16 @@ A worktree is removed only if all of these hold:
 - it is a linked worktree, never the main checkout;
 - it has no uncommitted changes and no unpushed commits;
 - no running process has its working folder inside it;
-- the run that recorded it is not active;
+- the run that recorded it is not active, and no other active run has
+  recorded it (a run whose `run.json` cannot be read counts as active);
 - `git worktree remove` succeeds without `--force`.
 
 Git commands against a candidate run with hooks and fsmonitor disabled and
-with the system git configuration ignored, so a worktree's configuration
-cannot run code during cleanup.
+with the system git configuration ignored. A repository's own
+`.git/config` can still name clean and smudge filters, and those can run
+during `git status` and `git worktree remove`, and inside `gh`. Cleanup runs
+as you, on worktrees of your own runs, so such a filter has no more rights
+than whoever could already write that configuration.
 
 Before each removal, cleanup resolves the path again and requires it to
 resolve to the same place it did when the item was collected, and still to lie
