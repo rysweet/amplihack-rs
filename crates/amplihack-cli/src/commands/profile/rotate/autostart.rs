@@ -8,9 +8,11 @@
 //! without waiting, and failures go to `rotate.err` only.
 
 use super::TuneFlags;
+use super::change_log;
 use super::daemon::{self, DaemonState, Spawner, launch_core, start_refusal, state_at};
 use super::ledger::RotateState;
 use super::log::RotateLog;
+use super::owner;
 use super::settings;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
@@ -25,6 +27,9 @@ use std::path::Path;
 use std::time::Duration;
 
 pub const ENV: &str = "AMPLIHACK_ROTATE_AUTOSTART";
+/// Set by `amplihack recipe run` for its steps: a launch inside a recipe run
+/// never starts the rotator (issue #1803).
+pub(super) const RECIPE_RUN_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
 /// The setting's file name in `<root>/.auto-switch.d/rotate/`.
 const FILE: &str = "autostart";
 const MAX_SETTING: u64 = 64;
@@ -131,13 +136,33 @@ pub fn status_line(a: Autostart) -> String {
     format!("autostart: {word} ({})", a.src.as_str())
 }
 
+/// The change log's name for a setting file value.
+fn label(v: FileValue) -> &'static str {
+    match v {
+        FileValue::Missing => "unset",
+        FileValue::On => "on",
+        FileValue::Off => "off",
+        FileValue::Corrupt => "corrupt",
+    }
+}
+
 /// Writes the setting, private and atomically, after checking the root and
-/// creating the state directory.
+/// creating the state directory. A write that changes the value appends a
+/// `change:` line to the rotate log (issue #1803).
 pub fn set(store: &ProfileStore, on: bool) -> Result<(), ProfileError> {
     let rs = RotateState::new(store.root());
     rs.ensure()?;
+    // Read without a lock: two `rotate autostart` commands at the same moment
+    // can log the wrong old value. The change log is best effort, and the
+    // setting itself is written atomically.
+    let old = read_setting(store.root());
     let body: &[u8] = if on { b"on\n" } else { b"off\n" };
-    write_private_atomic(&rs.dir, FILE, body).map_err(ProfileError::Io)
+    write_private_atomic(&rs.dir, FILE, body).map_err(ProfileError::Io)?;
+    let new = if on { FileValue::On } else { FileValue::Off };
+    if old != new {
+        change_log::record(store.root(), "rotate-autostart", label(old), label(new));
+    }
+    Ok(())
 }
 
 /// `rotate autostart [on|off]`: prints the state, or writes the setting and
@@ -196,11 +221,16 @@ pub struct Deps<'a> {
 pub enum Outcome {
     /// Auto-switch or autostart is off.
     Off,
-    /// A gate refused: `test`, `root`, `root-user`, `docker`,
+    /// A gate refused: `test`, `recipe-run`, `root`, `root-user`, `docker`,
     /// `unverifiable` or `refused`.
     Skipped(&'static str),
     /// A verified rotator is running.
     Running,
+    /// A rotation owner marker exists (issue #1803); `running` is whether
+    /// its owner is a live, verified rotator.
+    Deferred {
+        running: bool,
+    },
     /// Another process holds the state lock.
     Busy,
     Started(u32),
@@ -221,17 +251,24 @@ fn failed(rs: &RotateState, e: &ProfileError) -> Outcome {
     Outcome::Failed
 }
 
-/// The autostart steps, in the documented order. Steps 1 to 7 create
-/// nothing; 8 to 11 run under the state lock, tried once without waiting.
+/// The autostart steps, in the documented order. Steps 0 to 8 create
+/// nothing; 9 to 12 run under the state lock, tried once without waiting.
 ///
 /// Step 0 (#1690): a process a test started (`AMPLIHACK_TEST_HOME_GUARD`
 /// non-empty) never autostarts a rotator. It returns `Skipped("test")` before
 /// any gate, so it reads, creates and prints nothing; a daemon started from
 /// a test's temp `HOME` would outlive the test. A guard value that is not
 /// valid UTF-8 still counts, since only emptiness is checked.
+///
+/// Step 0b and the owner gate (#1803): inside a recipe run nothing is read;
+/// while an owner marker exists the launch defers to it, before the
+/// autostart setting, so an owner wins over `autostart on`.
 pub fn run(root: &Path, docker_flag: bool, d: Deps<'_>) -> Outcome {
     if (d.env)(TEST_HOME_GUARD_ENV).is_some_and(|v| !v.is_empty()) {
         return Outcome::Skipped("test");
+    }
+    if (d.env)(RECIPE_RUN_ENV).is_some_and(|v| !v.is_empty()) {
+        return Outcome::Skipped("recipe-run");
     }
     if !(d.auto_switch_on)(root) {
         return Outcome::Off;
@@ -243,7 +280,12 @@ pub fn run(root: &Path, docker_flag: bool, d: Deps<'_>) -> Outcome {
     if d.euid == 0 {
         return Outcome::Skipped("root-user");
     }
-    if !effective(root, d.env).on {
+    // The owner wins over the setting, which only shapes the owner warning.
+    let autostart_on = effective(root, d.env).on;
+    if let Some(running) = owner::defer(root, d.proc_root, d.exe_name, autostart_on, d.err) {
+        return Outcome::Deferred { running };
+    }
+    if !autostart_on {
         return Outcome::Off;
     }
     if docker_flag || (d.docker_env)() {
@@ -350,7 +392,9 @@ pub fn autostart_on_launch(docker_flag: bool) {
     );
 }
 
-/// The `autostart:` status line for `root`, for `auto-switch status`.
+/// The `autostart:` status line for `root`, for `rotate status` and
+/// `auto-switch status`, with the owner deferral when there is one.
 pub(in crate::commands::profile) fn autostart_line(root: &std::path::Path) -> String {
-    status_line(effective(root, &|k| std::env::var_os(k)))
+    let line = status_line(effective(root, &|k| std::env::var_os(k)));
+    format!("{line}{}", owner::deferral_suffix(root))
 }

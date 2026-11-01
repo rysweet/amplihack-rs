@@ -343,3 +343,14 @@ pub fn home_problem(home: &Path) -> &'static str {
         Some(_) => "its oauthAccount block has no usable accountUuid or emailAddress",
     }
 }
+
+/// Whether rotate live-profile detection names `name` as the login in
+/// `<home>/.claude` (issue #1700: the launch guard's "held"). Any error, a
+/// hand change, an ambiguous or an adopted login is not.
+pub fn is_live(store: &ProfileStore, home: Option<&Path>, name: &ProfileName) -> bool {
+    let Some(home) = home else {
+        return false;
+    };
+    let rs = RotateState::new(store.root());
+    matches!(live(store, &rs, home), Ok((LiveId::Known(n), _)) if &n == name)
+}

@@ -464,6 +464,24 @@ pub fn no_session_window_profiles(root: &Path, names: &[&str]) -> Vec<String> {
     }
 }
 
+/// The `rotate status` line `no session window: <names>` for the profiles
+/// among `names` that [`no_session_window_profiles`] lists, or `None` when
+/// there are none. Read-only. It does not say "no session limit": the stored
+/// reading cannot tell a plan with none from a session window that was not
+/// recorded.
+pub fn no_session_window_line(root: &Path, names: &[String]) -> Option<String> {
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let free = no_session_window_profiles(root, &names);
+    if free.is_empty() {
+        return None;
+    }
+    let free: Vec<String> = free
+        .iter()
+        .map(|n| super::usage_cmd::sanitize_display(n, false))
+        .collect();
+    Some(format!("no session window: {}", free.join(", ")))
+}
+
 /// Records `profile usage` observations as status-line readings. Takes the
 /// lock for a bounded wait, never runs swap recovery, re-checks each
 /// profile's live account under the lock, applies the status-line bounds,

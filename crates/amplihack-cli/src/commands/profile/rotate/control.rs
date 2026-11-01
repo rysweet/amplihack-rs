@@ -2,15 +2,13 @@
 //! signal only a verified rotator. Also the ledger side of `profile
 //! overflow list` and `clear` (issue #1606).
 
-use super::daemon::{DaemonState, current_state, daemon_err};
+use super::daemon::{DaemonState, current_state, daemon_err, exe_name};
+use super::exhausted;
 use super::identify::{self, LiveId};
 use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
 use super::log::{msg, timestamp};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::{
-    self,
-    kit::{State, now},
-};
+use crate::commands::profile::auto_switch::kit::{State, now};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::overflow_names;
 use crate::commands::profile::pointer;
@@ -102,7 +100,10 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         None => "-".into(),
     };
     let auto = super::autostart_line(store.root());
-    println!("rotate: {word}\n{auto}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    // Issue #1803: read only under a private root; never echoes the marker.
+    let exe = exe_name();
+    let owner = super::owner::describe(store.root(), Path::new("/proc"), exe.as_deref());
+    println!("rotate: {word}\n{auto}\n{owner}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
     println!("overflow: {overflow}\napi key: {api_key}\non overflow: {on_overflow}");
     if let Some(line) = super::platform_live_line(store.root()) {
         println!("{line}");
@@ -110,7 +111,10 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     // Issue #1818: profiles whose stored reading has no session window. Not
     // labelled "no session limit": the stored reading cannot tell a plan
     // with none from a session window that was not recorded.
-    if let Some(line) = no_session_window_line(&store) {
+    let names_now = store.list().unwrap_or_default();
+    if let Some(line) =
+        crate::commands::profile::auto_switch::no_session_window_line(store.root(), &names_now)
+    {
         println!("{line}");
     }
     // `.default` bypasses the rotator: say so when it names an overflow profile.
@@ -128,6 +132,9 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     }
     for line in ledger.as_ref().map(status_alerts).unwrap_or_default() {
         println!("{line}");
+    }
+    if let Some(line) = exhausted::status_line(store.root(), now()) {
+        println!("{}", sanitize_display(&line, false));
     }
     match rs.load_journal() {
         Ok(Some(j)) if j.phase == Phase::Inconsistent => println!("journal: inconsistent"),
@@ -243,19 +250,6 @@ fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
     } else {
         Err(std::io::Error::last_os_error().into())
     }
-}
-
-/// The `no session window:` line, or `None` when no current profile's stored
-/// reading has a week window and no session window. Read-only.
-fn no_session_window_line(store: &ProfileStore) -> Option<String> {
-    let names = store.list().unwrap_or_default();
-    let names: Vec<&str> = names.iter().map(String::as_str).collect();
-    let free = auto_switch::no_session_window_profiles(store.root(), &names);
-    if free.is_empty() {
-        return None;
-    }
-    let free: Vec<String> = free.iter().map(|n| sanitize_display(n, false)).collect();
-    Some(format!("no session window: {}", free.join(", ")))
 }
 
 /// The `overflow:` value: the marked profiles `names` in list order, each
