@@ -160,10 +160,23 @@ pub fn is_home_command(cmd: &str) -> bool {
 }
 
 /// The `statusLine` command `amplihack install` writes into
-/// `~/.claude/settings.json`: `'<exe>' profile statusline` (issue #1745).
-pub fn home_statusline_command() -> anyhow::Result<String> {
+/// `~/.claude/settings.json` for `exe`: `'<exe>' profile statusline`
+/// (issue #1745). An error when `exe` cannot be quoted for `sh`.
+pub fn home_statusline_command(exe: &std::path::Path) -> anyhow::Result<String> {
     #[cfg(unix)]
-    return Ok(statusline::home_command(&statusline::installed_binary()?)?);
+    return Ok(statusline::home_command(exe)?);
+    #[cfg(not(unix))]
+    {
+        let _ = exe;
+        anyhow::bail!("the status line is not supported on this platform")
+    }
+}
+
+/// The running amplihack binary, refused if anyone but the user (or root)
+/// can replace it.
+pub fn statusline_binary() -> anyhow::Result<std::path::PathBuf> {
+    #[cfg(unix)]
+    return statusline::installed_binary();
     #[cfg(not(unix))]
     anyhow::bail!("the status line is not supported on this platform")
 }

@@ -85,8 +85,8 @@ use anyhow::Result;
 #[cfg(unix)]
 use auto_switch::fsx;
 pub(crate) use auto_switch::{
-    home_statusline_command, is_home_command as is_home_statusline_command,
-    launch_warning as capacity_launch_warning, recipe_warning as capacity_recipe_warning,
+    home_statusline_command, launch_warning as capacity_launch_warning,
+    recipe_warning as capacity_recipe_warning, statusline_binary,
 };
 use clap::Subcommand;
 use name::ProfileName;

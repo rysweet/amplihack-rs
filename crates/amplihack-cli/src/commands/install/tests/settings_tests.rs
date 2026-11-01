@@ -565,9 +565,14 @@ mod status_line {
     fn an_older_amplihack_entry_is_updated_keeping_padding() {
         for old in [
             "'/old/bin/amplihack' profile statusline",
-            "/old/bin/amplihack profile statusline --root '/r'",
-            "bash ~/.amplihack/.claude/tools/statusline.sh",
+            "  '/old/bin/amplihack' profile statusline  ",
+            "'/o'\\''x/amplihack' profile statusline",
+            "amplihack profile statusline",
+            "~/.amplihack/.claude/tools/statusline.sh",
+            "$HOME/.amplihack/.claude/tools/statusline.sh",
+            "\"${HOME}/.amplihack/.claude/tools/statusline.sh\"",
             "/home/u/.amplihack/.claude/tools/statusline.sh",
+            "'/home/u/.amplihack/.claude/tools/statusline.sh'",
         ] {
             let mut v = json!({
                 "statusLine": {"type": "command", "command": old, "padding": 2},
@@ -590,7 +595,7 @@ mod status_line {
     }
 
     #[test]
-    fn an_update_keeps_padding_and_drops_other_fields() {
+    fn an_update_keeps_padding_and_every_other_key() {
         let mut v = json!({"statusLine": {
             "type": "command",
             "command": "'/old/bin/amplihack' profile statusline",
@@ -600,42 +605,52 @@ mod status_line {
         assert_eq!(ensure_status_line(&mut v, CMD), StatusLineOutcome::Updated);
         assert_eq!(
             v,
-            json!({"statusLine": {"type": "command", "command": CMD, "padding": 1}})
+            json!({"statusLine": {
+                "type": "command",
+                "command": CMD,
+                "padding": 1,
+                "refreshInterval": 5,
+            }})
         );
     }
 
     #[test]
-    fn only_an_explicit_global_install_asks_for_the_command() {
+    fn only_global_scope_asks_for_the_binary() {
         use crate::commands::install::interactive::HookScope;
-        use crate::commands::install::{InstallMode, status_line_command};
-        for (mode, scope, want) in [
-            (
-                InstallMode::Explicit,
-                HookScope::Global,
-                Some(CMD.to_string()),
-            ),
-            (InstallMode::Explicit, HookScope::RepoLocal, None),
-            (InstallMode::Implicit, HookScope::Global, None),
-            (InstallMode::Implicit, HookScope::RepoLocal, None),
+        use crate::commands::install::status_line_command;
+        for (scope, want) in [
+            (HookScope::Global, Some(CMD.to_string())),
+            (HookScope::RepoLocal, None),
         ] {
             let mut asked = false;
-            let got = status_line_command(mode, scope, || {
+            let got = status_line_command(scope, || {
                 asked = true;
-                Ok(CMD.to_string())
+                Ok("/usr/local/bin/amplihack".into())
             });
-            assert_eq!(got, want, "{mode:?} {scope:?}");
-            assert_eq!(asked, want.is_some(), "{mode:?} {scope:?}");
+            assert_eq!(got, want, "{scope:?}");
+            assert_eq!(asked, want.is_some(), "{scope:?}");
         }
     }
 
     #[test]
-    fn a_failed_command_lookup_installs_no_entry() {
+    fn a_failed_binary_lookup_writes_no_entry() {
         use crate::commands::install::interactive::HookScope;
-        use crate::commands::install::{InstallMode, status_line_command};
-        let got = status_line_command(InstallMode::Explicit, HookScope::Global, || {
+        use crate::commands::install::status_line_command;
+        let got = status_line_command(HookScope::Global, || {
             anyhow::bail!("binary is writable by others")
         });
         assert_eq!(got, None);
+    }
+
+    #[test]
+    fn a_binary_path_with_a_newline_writes_no_entry() {
+        // SR6: no entry, and no fallback to a bare `amplihack` on PATH.
+        use crate::commands::install::interactive::HookScope;
+        use crate::commands::install::status_line_command;
+        for path in ["/opt/a\nb/amplihack", "/opt/a\rb/amplihack"] {
+            let got = status_line_command(HookScope::Global, || Ok(path.into()));
+            assert_eq!(got, None, "{path:?}");
+        }
     }
 
     #[test]
@@ -655,6 +670,12 @@ mod status_line {
             entry("$CLAUDE_PROJECT_DIR/.claude/tools/statusline.sh"),
             entry("printf 'mine'"),
             entry("'/x/amplihack' profile statusline --root '/r' --owner 'work'"),
+            entry("/old/bin/amplihack profile statusline --root '/r'"),
+            entry("'/x/not-amplihack' profile statusline"),
+            entry("'relative/amplihack' profile statusline"),
+            entry("bash ~/.amplihack/.claude/tools/statusline.sh"),
+            entry("~/.amplihack/.claude/tools/statusline.sh; rm -rf ~"),
+            entry("/a b/.amplihack/.claude/tools/statusline.sh"),
             json!("a string"),
             json!(null),
             json!(42),
@@ -674,6 +695,22 @@ mod status_line {
     }
 
     #[test]
+    fn a_pipeline_around_the_legacy_script_is_the_users() {
+        let mine = entry("bash ~/.amplihack/.claude/tools/statusline.sh | my-filter");
+        let mut v = json!({"statusLine": mine.clone()});
+        assert_eq!(ensure_status_line(&mut v, CMD), StatusLineOutcome::KeptUser);
+        assert_eq!(v["statusLine"], mine);
+    }
+
+    #[test]
+    fn a_command_that_only_contains_profile_statusline_is_the_users() {
+        let mine = entry("my-profile statusline-helper.sh");
+        let mut v = json!({"statusLine": mine.clone()});
+        assert_eq!(ensure_status_line(&mut v, CMD), StatusLineOutcome::KeptUser);
+        assert_eq!(v["statusLine"], mine);
+    }
+
+    #[test]
     fn running_twice_is_idempotent() {
         let mut v = json!({});
         ensure_status_line(&mut v, CMD);
@@ -686,22 +723,19 @@ mod status_line {
     }
 
     #[test]
-    fn outcomes_print_one_line_each() {
+    fn outcomes_print_at_most_one_line_each() {
         assert_eq!(
-            StatusLineOutcome::Installed.to_string(),
-            "statusLine: installed"
+            StatusLineOutcome::Installed.message(),
+            Some("statusLine: installed")
         );
         assert_eq!(
-            StatusLineOutcome::Updated.to_string(),
-            "statusLine: updated"
+            StatusLineOutcome::Updated.message(),
+            Some("statusLine: updated")
         );
+        assert_eq!(StatusLineOutcome::Unchanged.message(), None);
         assert_eq!(
-            StatusLineOutcome::Unchanged.to_string(),
-            "statusLine: unchanged"
-        );
-        assert_eq!(
-            StatusLineOutcome::KeptUser.to_string(),
-            "statusLine: kept your existing entry in ~/.claude/settings.json"
+            StatusLineOutcome::KeptUser.message(),
+            Some("statusLine: kept your existing entry")
         );
     }
 
@@ -776,6 +810,31 @@ mod status_line {
             let path = home.join(".claude/settings.json");
             let after = run(home, &path, None);
             assert!(after.get("statusLine").is_none(), "{after}");
+        });
+    }
+
+    #[test]
+    fn an_update_through_the_file_keeps_padding_and_other_keys() {
+        with_home(|home| {
+            let path = home.join(".claude/settings.json");
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            let old = json!({
+                "type": "command",
+                "command": "'/old/bin/amplihack' profile statusline",
+                "padding": 3,
+                "refreshInterval": 7,
+            });
+            fs::write(
+                &path,
+                json!({"statusLine": old, "model": "opus"}).to_string(),
+            )
+            .unwrap();
+            let after = run(home, &path, Some(CMD));
+            assert_eq!(
+                after["statusLine"],
+                json!({"type": "command", "command": CMD, "padding": 3, "refreshInterval": 7})
+            );
+            assert_eq!(after["model"], "opus");
         });
     }
 

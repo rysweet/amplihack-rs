@@ -94,8 +94,8 @@ pub(super) fn ensure_settings_json(
     )
     .with_context(|| format!("failed to write {}", settings_path.display()))?;
     println!("  ✅ settings.json configured");
-    if let Some(outcome) = status_line {
-        println!("  {outcome}");
+    if let Some(message) = status_line.and_then(StatusLineOutcome::message) {
+        println!("  {message}");
     }
 
     let hook_contract_drift = validate_amplihack_native_hook_contract(&settings, limit_resume);
@@ -134,54 +134,109 @@ pub(crate) enum StatusLineOutcome {
     KeptUser,
 }
 
-impl std::fmt::Display for StatusLineOutcome {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Installed => "statusLine: installed",
-            Self::Updated => "statusLine: updated",
-            Self::Unchanged => "statusLine: unchanged",
-            Self::KeptUser => "statusLine: kept your existing entry in ~/.claude/settings.json",
-        })
+impl StatusLineOutcome {
+    /// The line install prints, if any: nothing when the entry is current.
+    pub(crate) fn message(self) -> Option<&'static str> {
+        match self {
+            Self::Installed => Some("statusLine: installed"),
+            Self::Updated => Some("statusLine: updated"),
+            Self::Unchanged => None,
+            Self::KeptUser => Some("statusLine: kept your existing entry"),
+        }
     }
 }
 
-/// Points `settings.statusLine` at `cmd` (issue #1745). An entry is
-/// amplihack's when it is an object whose `command` runs `profile
-/// statusline` without `--owner` (a profile's wrapper the user copied is
-/// theirs) or runs `~/.amplihack/.claude/tools/statusline.sh`; amplihack's
-/// entry is replaced, keeping its `padding`. Any other entry is the user's
-/// and is not touched.
+/// Points `settings.statusLine` at `cmd` (issue #1745). Only amplihack's
+/// own entry is replaced (see [`is_amplihack_statusline`]); its `padding`
+/// and every other key are kept. Any other entry is the user's and is not
+/// touched.
 pub(crate) fn ensure_status_line(settings: &mut Value, cmd: &str) -> StatusLineOutcome {
     let Some(obj) = settings.as_object_mut() else {
         return StatusLineOutcome::KeptUser;
     };
-    let want = |padding: Option<Value>| {
+    let Some(current) = obj.get_mut("statusLine") else {
         let mut sl = Map::new();
         sl.insert("type".into(), "command".into());
         sl.insert("command".into(), cmd.into());
-        if let Some(p) = padding {
-            sl.insert("padding".into(), p);
-        }
-        Value::Object(sl)
-    };
-    let Some(current) = obj.get("statusLine") else {
-        obj.insert("statusLine".into(), want(None));
+        obj.insert("statusLine".into(), Value::Object(sl));
         return StatusLineOutcome::Installed;
     };
-    let Some(command) = current.get("command").and_then(Value::as_str) else {
+    let Some(sl) = current.as_object_mut() else {
         return StatusLineOutcome::KeptUser;
     };
-    let ours = crate::commands::profile::is_home_statusline_command(command)
-        || command.contains(".amplihack/.claude/tools/statusline.sh");
+    let ours = sl
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|c| is_amplihack_statusline(c, cmd));
     if !ours {
         return StatusLineOutcome::KeptUser;
     }
-    let updated = want(current.get("padding").cloned());
-    if *current == updated {
-        return StatusLineOutcome::Unchanged;
+    let before = sl.clone();
+    sl.insert("type".into(), "command".into());
+    sl.insert("command".into(), cmd.into());
+    if *sl == before {
+        StatusLineOutcome::Unchanged
+    } else {
+        StatusLineOutcome::Updated
     }
-    obj.insert("statusLine".into(), updated);
-    StatusLineOutcome::Updated
+}
+
+/// The script older installs pointed the entry at, after `~` or `$HOME`.
+const LEGACY_SCRIPT: &str = "/.amplihack/.claude/tools/statusline.sh";
+
+/// Whether `command` is an entry amplihack wrote (issue #1745). Exact
+/// matches only, after trimming: `cmd` itself; a single-quoted absolute
+/// path to a binary named `amplihack` followed by ` profile statusline`;
+/// the bare `amplihack profile statusline`; or the legacy `statusline.sh`
+/// path alone, quoted or not. Anything else, even a command that runs one
+/// of these, is the user's.
+pub(crate) fn is_amplihack_statusline(command: &str, cmd: &str) -> bool {
+    let c = command.trim();
+    if c == cmd.trim() || c == "amplihack profile statusline" {
+        return true;
+    }
+    if let Some(path) = c.strip_suffix(" profile statusline").and_then(sh_unquote) {
+        return path.starts_with('/')
+            && Path::new(&path).file_name() == Some(std::ffi::OsStr::new("amplihack"));
+    }
+    is_legacy_script(c)
+}
+
+/// `word` as `sh` reads it, when it is single-quoted segments joined by
+/// `\'` (the form `sh_quote` writes); `None` for anything else.
+fn sh_unquote(word: &str) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = word;
+    loop {
+        rest = rest.strip_prefix('\'')?;
+        let end = rest.find('\'')?;
+        out.push_str(&rest[..end]);
+        rest = &rest[end + 1..];
+        if rest.is_empty() {
+            return Some(out);
+        }
+        rest = rest.strip_prefix("\\'")?;
+        out.push('\'');
+        if rest.is_empty() {
+            return Some(out);
+        }
+    }
+}
+
+/// The legacy script path and nothing else: `~`, `$HOME`, `${HOME}` or an
+/// absolute path in front, the whole optionally in one pair of quotes.
+fn is_legacy_script(c: &str) -> bool {
+    let unquoted = ['\'', '"']
+        .iter()
+        .find_map(|q| c.strip_prefix(*q).and_then(|r| r.strip_suffix(*q)))
+        .unwrap_or(c);
+    let Some(prefix) = unquoted.strip_suffix(LEGACY_SCRIPT) else {
+        return false;
+    };
+    matches!(prefix, "~" | "$HOME" | "${HOME}")
+        || (prefix.starts_with('/')
+            && !prefix
+                .contains(|ch: char| ch.is_whitespace() || "'\"$`\\;|&<>(){}*?[]!#~".contains(ch)))
 }
 
 /// The first Claude Code the limit-resume hook (`StopFailure` with
