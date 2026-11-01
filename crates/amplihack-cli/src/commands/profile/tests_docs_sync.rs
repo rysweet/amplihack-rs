@@ -496,20 +496,118 @@ fn docs_quote_the_live_profile_login_refusal() {
 #[cfg(unix)]
 #[test]
 fn docs_quote_the_duplicate_login_warning() {
+    // Issue #1845 (D3): both forms, as the code prints them.
     use super::duplicates::{Holder, warning};
     let p = |s: &str| Holder::Profile(super::name::ProfileName::parse(s).unwrap());
-    let template = warning(&p("aaa"), &p("bbb"))
-        .replace("aaa", "<a>")
-        .replace("bbb", "<b>");
+    let placeholders = |w: String| {
+        w.replace("aaa", "<a>")
+            .replace("bbb", "<b>")
+            .replace("www", "<wrong>")
+    };
+    let named = placeholders(warning(&p("aaa"), &p("bbb"), Some(&p("www"))));
+    let unknown = placeholders(warning(&p("aaa"), &p("bbb"), None));
+    assert!(named.contains("<wrong>"), "{named}");
+    assert!(unknown.contains("cannot tell"), "{unknown}");
+    for form in [&named, &unknown] {
+        assert!(
+            REFERENCE.contains(form.as_str()),
+            "reference is missing {form:?}"
+        );
+    }
+    // The how-to's example: `rssourcelabs` holds the wrong login.
+    let (a, b) = (p("rssourcelabs"), p("ryan-ryansweet"));
+    for (doc_name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        let example = warning(&a, &b, Some(&a));
+        assert!(doc.contains(&example), "{doc_name} is missing {example:?}");
+    }
+    let note = format!("note: {}", warning(&a, &b, Some(&a)));
+    assert!(HOWTO.contains(&note), "howto is missing {note:?}");
+    let note = format!("note: {}", warning(&a, &b, None));
+    assert!(HOWTO.contains(&note), "howto is missing {note:?}");
+}
+
+/// Issue #1845 (D7): the probe-race message is a note, quoted word for word,
+/// and the old warning text is gone from every doc.
+#[test]
+fn docs_quote_the_probe_race_note_and_not_the_old_warning() {
+    let note = super::usage_cmd::swap_warning(&super::name::ProfileName::parse("work").unwrap());
+    assert!(note.starts_with("note: "), "{note}");
+    assert_eq!(
+        REFERENCE.matches(note.as_str()).count(),
+        1,
+        "reference quotes {note:?} once in the example"
+    );
+    let row = note.replace("\"work\"", "\"<name>\"");
     assert!(
-        REFERENCE.contains(&template),
-        "reference is missing {template:?}"
+        REFERENCE.contains(&row),
+        "reference table is missing {row:?}"
     );
-    let example = format!(
-        "note: {}",
-        warning(&p("rssourcelabs"), &p("ryan-ryansweet"))
+    for (name, doc) in [
+        ("reference", REFERENCE),
+        ("howto", HOWTO),
+        ("rotation howto", ROTATE_HOWTO),
+    ] {
+        assert!(
+            !doc.contains("was probed; its usage was not recorded"),
+            "{name} still quotes the old probe-race warning"
+        );
+    }
+}
+
+/// Issue #1845 (D4, D5): the refusal, the ALERT it writes and the record's
+/// save-failure warning are quoted as the code prints them.
+#[cfg(unix)]
+#[test]
+fn docs_quote_the_account_mismatch_refusal_and_alert() {
+    use super::ProfileError as E;
+    let refusal = "the login in ~/.claude is not the account recorded for profile";
+    assert!(
+        super::rotate::DOCUMENTED_REFUSALS.contains(&refusal),
+        "swap::DOCUMENTED lists the account-mismatch refusal"
     );
-    assert!(HOWTO.contains(&example), "howto is missing {example:?}");
+    let alert = format!("ALERT: {}", E::RotateRefused(format!("{refusal} work")));
+    assert!(ROTATE_HOWTO.contains(&alert), "how-to is missing {alert:?}");
+    let row = format!("ALERT: {}", E::RotateRefused(format!("{refusal} <from>")));
+    assert!(REFERENCE.contains(&row), "reference is missing {row:?}");
+    assert!(REFERENCE.contains("`account_mismatch:<from>`"));
+    assert!(REFERENCE.contains(".auto-switch.d/expected/<name>.json"));
+    // The state-file table gives the record format the code writes and
+    // requires: both `account` and `org` (issue #1845, round-2 review).
+    let row = REFERENCE
+        .lines()
+        .find(|l| l.starts_with("| `expected/<name>.json` |"))
+        .expect("state-file table row for expected/<name>.json");
+    assert!(
+        row.contains(r#""account":"<key>""#) && row.contains(r#""org":"#),
+        "state-file table row names both record keys: {row}"
+    );
+    assert!(
+        REFERENCE
+            .contains("warning: the recorded account for profile 'work' was not saved: <reason>")
+    );
+    // The refusal names no way out that is refused for the live profile.
+    assert!(ROTATE_HOWTO.contains("`amplihack profile login work` does not help here"));
+}
+
+/// Issue #1845 review: the per-profile record warning is quoted as the
+/// code prints it, and the docs no longer say the organization is ignored.
+#[cfg(unix)]
+#[test]
+fn docs_quote_the_record_warning_and_compare_the_organization() {
+    use super::duplicates::{Holder, record_warning};
+    let name = |s: &str| super::name::ProfileName::parse(s).unwrap();
+    let line = format!(
+        "warning: {}",
+        record_warning(&Holder::Profile(name("bbuck")))
+    );
+    assert!(HOWTO.contains(&line), "how-to is missing {line:?}");
+    let generic = line.replace("bbuck", "<name>");
+    assert!(
+        REFERENCE.contains(&generic),
+        "reference is missing {generic:?}"
+    );
+    assert!(!REFERENCE.contains("The organization is not compared."));
+    assert!(REFERENCE.contains("\"org\": \"<organization uuid>\""));
 }
 
 #[test]

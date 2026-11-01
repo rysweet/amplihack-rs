@@ -13,6 +13,8 @@ mod default_live;
 #[cfg(unix)]
 mod duplicates;
 #[cfg(unix)]
+pub(in crate::commands::profile) mod expected;
+#[cfg(unix)]
 mod kind;
 #[cfg(unix)]
 mod limit_wait;
@@ -47,6 +49,8 @@ mod tests_docs_sync_platform;
 mod tests_docs_sync_probe;
 #[cfg(all(test, unix))]
 mod tests_duplicates;
+#[cfg(all(test, unix))]
+mod tests_expected;
 #[cfg(all(test, unix))]
 mod tests_kind;
 #[cfg(all(test, unix))]

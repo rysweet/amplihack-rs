@@ -398,7 +398,10 @@ always runs the `claude` binary (not the configured launch binary) with
 `CLAUDE_CONFIG_DIR` pointing at the profile so the login is stored there.
 If the new login is an account another profile already has, `login` refuses
 it and puts the previous login back; see
-[Duplicate logins](#duplicate-logins).
+[Duplicate logins](#duplicate-logins). An accepted login also records the
+account as the one the profile is meant to hold. The duplicate-login warning
+and the rotator compare against this record; see
+[Recorded account](../reference/profile-command.md#recorded-account).
 
 ## Choose a profile
 
@@ -1096,17 +1099,43 @@ Running `/login` inside a Claude session is not checked when it happens.
 duplicate afterwards:
 
 ```
-note: profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login ryan-ryansweet' with the browser signed out of claude.ai or in a private window.
+note: profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login rssourcelabs' with the browser signed out of claude.ai or in a private window.
 ```
 
-Profile names are listed in sorted order and the fix names the second one.
-If the second profile is the one with the right login, log in the first one
-again instead.
+Profile names are listed in sorted order. The fix names the profile whose
+login is not the account recorded for it. amplihack records a profile's
+account when `profile login` accepts a login, and in some rotator swaps; see
+[Recorded account](../reference/profile-command.md#recorded-account). Here
+`rssourcelabs` was recorded with another account, so it is the one to log in
+again.
+
+When neither profile has a record, both match their records, or both
+differ, amplihack cannot tell which login is wrong and says so:
+
+```
+note: profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); amplihack cannot tell which of them holds the wrong login; fix: run 'amplihack profile login <name>' for the one that should hold a different account, with the browser signed out of claude.ai or in a private window.
+```
+
+Decide which profile should hold another account, and log that one in
+again. The accepted login records its account, so the next warning, if any,
+names a profile.
 
 `status` prints it as a `note:` line; `usage` prints the same text on stderr
 as a `warning:` line, after the table. The login in `~/.claude` takes part
-too, named `~/.claude`. The rotator's live profile is not compared with
-`~/.claude`, since that is where its own login is.
+too, named `~/.claude`; such a pair always names the profile in its fix.
+The rotator's live profile is not compared with `~/.claude`, since that is
+where its own login is.
+
+A profile can also hold the wrong login without forming a duplicate, for
+example when a Claude session started with `CLAUDE_CONFIG_DIR` pointing at
+that profile's folder signed in to another account. `status` and `usage`
+compare every profile that has a record with its record, the same user in
+another organization counting as another account, and print one line for
+each that differs:
+
+```
+warning: profile 'bbuck' holds a login that is not the account recorded for it; fix: run 'amplihack profile login bbuck' with the browser signed out of claude.ai or in a private window.
+```
 
 ## Switch accounts automatically
 

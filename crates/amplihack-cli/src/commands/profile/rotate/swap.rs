@@ -23,6 +23,9 @@ pub use super::recover::{RecoverOutcome, recover};
 pub(super) use super::swap_check::check_home;
 pub use super::swap_check::is_no_oauth;
 use super::swap_check::{account_block, may_go_live, no_oauth};
+pub(super) use super::swap_check::{ino_at, show};
+pub use super::swap_expect::is_account_mismatch;
+use super::swap_expect::{guard, settle};
 
 const ADOPT_NAME: &str = "default-original";
 
@@ -41,7 +44,7 @@ const HOME_JSON_UNREADABLE: &str = "~/.claude.json is not a JSON object";
 pub const NO_STORED_LOGIN_HINT: &str = "has no stored login; run `amplihack profile login";
 
 #[cfg(test)]
-pub const DOCUMENTED: [&str; 11] = [
+pub const DOCUMENTED: [&str; 12] = [
     HOME_NOT_OWNED,
     DOT_CLAUDE_NOT_PRIVATE,
     LOGIN_NOT_MOVABLE,
@@ -53,6 +56,7 @@ pub const DOCUMENTED: [&str; 11] = [
     HOME_JSON_UNREADABLE,
     NO_STORED_LOGIN_HINT,
     super::FOREIGN_IGNORES_HOLD,
+    super::swap_expect::ACCOUNT_MISMATCH,
 ];
 
 /// Where the outgoing login goes.
@@ -73,15 +77,6 @@ pub(super) fn describe(e: MoveError) -> String {
         MoveError::Exists => "the exchange found an unexpected file".to_string(),
         MoveError::Other(m) => m,
     }
-}
-
-pub(super) fn ino_at(path: &Path) -> Option<u64> {
-    fs::symlink_metadata(path).ok().map(|m| m.ino())
-}
-
-pub(super) fn show(p: &Path) -> String {
-    let parent = p.parent().and_then(Path::file_name).unwrap_or_default();
-    format!("{}/{}", parent.to_string_lossy(), CREDS)
 }
 
 /// The first free `default-original`, `default-original-2`, ... name.
@@ -158,6 +153,7 @@ pub fn swap(
             return Err(refused(format!("profile {name} {ALREADY_LOGGED_IN}")));
         }
     }
+    let pending = guard(store, rs, home, &from)?; // Issue #1845: reads only.
     let home_str = home.to_str().ok_or_else(|| refused("HOME is not UTF-8"))?;
     let (Some(live_ino), Some(target_ino)) = (ino_at(&l), ino_at(&t)) else {
         return Err(refused(LOGIN_NOT_MOVABLE));
@@ -238,6 +234,7 @@ pub fn swap(
     drop_locks(store, rs, home, &mut j)?;
     step(rs, &mut j, Phase::S2)?;
     finish(store, rs, home, &j)?;
+    settle(store, &from, pending);
     Ok(from)
 }
 

@@ -940,12 +940,16 @@ compared for equality; it is never printed or stored. If the evidence
 changed or can no longer be read, the login in `~/.claude` may have been
 swapped during the probe. The row is still shown, with its numbers and its
 mark, but its usage is [not recorded](#refreshing-auto-switch-readings)
-(the other rows are recorded as usual), and one line goes to stderr. The
+(the other rows are recorded as usual), and one note goes to stderr. The
 profile name in it is cleaned of control characters:
 
 ```
-warning: the login in ~/.claude changed while profile "work" was probed; its usage was not recorded
+note: the login in ~/.claude changed while profile "work" was probed (the rotator swapped logins); its usage was not recorded this run
 ```
+
+This is a note, not a warning: a rotator swap during a probe is expected
+and nothing needs fixing. The command does not retry the probe, and the exit
+status is unchanged. A run with no swap during the probes prints no note.
 
 On such a row, the numbers and any `--raw` text may belong to the login that
 replaced it. Run the command again for current numbers.
@@ -973,8 +977,8 @@ status, and none marks a profile live when there is doubt.
 | `warning: more than one profile matches the account in ~/.claude; none is marked live` | No ledger, and more than one profile with no login matches the account in `~/.claude.json`. |
 | `warning: the login rotator's ledger names a profile that still has its own login; it is not marked live in ~/.claude` | The ledger names a profile whose directory still has a `.credentials.json`. |
 | `warning: could not list profiles; no profile is marked live in ~/.claude` | No ledger, and the profile root could not be listed (for example, it is not readable), so no account match was tried. |
-| `warning: the login in ~/.claude changed while profile "<name>" was probed; its usage was not recorded` | The evidence for the live profile changed during the probe. See [Swaps during the probe](#swaps-during-the-probe). |
-| `warning: profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); fix: …` | Two logins are the same account. One line per pair, after the other warnings. See [Duplicate-login warning](#duplicate-login-warning). Printed for `~/.claude` and `M` while a manual `/login` in `~/.claude` has left both with the same account; the next rotate cycle moves `M`'s copy aside when it [safely can](#rotate-hand-change-recovery). |
+| `note: the login in ~/.claude changed while profile "<name>" was probed (the rotator swapped logins); its usage was not recorded this run` | The evidence for the live profile changed during the probe. A note rather than a warning. See [Swaps during the probe](#swaps-during-the-probe). |
+| `warning: profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); …` | Two logins are the same account. One line per pair, after the other warnings. The line either names the profile whose login is not its [recorded account](#recorded-account), or says amplihack cannot tell which one is wrong. See [Duplicate-login warning](#duplicate-login-warning). Printed for `~/.claude` and `M` while a manual `/login` in `~/.claude` has left both with the same account; the next rotate cycle moves `M`'s copy aside when it [safely can](#rotate-hand-change-recovery). |
 
 A manual `/login` in `~/.claude` replaces whatever login was there; the
 profile that login belonged to is left with no login. `profile usage` prints
@@ -2164,7 +2168,7 @@ Both `install` and `repair` are idempotent: a second run leaves every
 | `ignored AMPLIHACK_CLAUDE_AUTO_SWITCH value (use 1 or 0); the file decides` | The variable is set to something other than `1`, `0` or empty. |
 | `profiles without the wrapper: <names> — run: amplihack profile auto-switch install` | A profile's wrapper is `missing` or `stale`. |
 | `excluded but missing: <names>` | An exclusion names no existing profile. |
-| `profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login <b>' with the browser signed out of claude.ai or in a private window.` | Two logins are the [same account](#account-identity): from each profile's own `.claude.json`, from its saved block while its directory hosts another account, or `$HOME/.claude.json` (shown as `~/.claude`). See [Duplicate-login warning](#duplicate-login-warning). No uuid, organization or e-mail is printed. |
+| `profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); …` | Two logins are the [same account](#account-identity): from each profile's own `.claude.json`, from its saved block while its directory hosts another account, or `$HOME/.claude.json` (shown as `~/.claude`). The fix names the profile whose login is not its [recorded account](#recorded-account), or the line says amplihack cannot tell which one is wrong. See [Duplicate-login warning](#duplicate-login-warning) for both forms. No uuid, organization or e-mail is printed. |
 
 Every command takes the global state lock only when it needs it, and exits
 with status 1 on error with the usual `error:`/`hint:` lines.
@@ -3085,6 +3089,7 @@ profile and never appears in `profile list`.
 | `usage.json` | Readings, as shown in [Readings](#readings). |
 | `parked/<name>/.credentials.json` | The home slot of a profile whose directory is hosting another account. |
 | `accounts/<name>.json` | The profile's saved `oauthAccount` block. No tokens. |
+| `expected/<name>.json` | The profile's [recorded account](#recorded-account): `{"account":"<key>","org":"<uuid>"|null}`, both keys required (see [Recorded account](#recorded-account)). No `version` field. A damaged file counts as no record; a swap from that profile prints one warning. |
 | `statusline/<name>.json` | The profile's original `statusLine` object. |
 | `rerun/` | Buffered stdout of supervised steps, `<pid>-<n>.out`; see [Usage-limit reruns](#usage-limit-reruns) for how long each is kept. |
 | `capacity.json` | Whether any account has capacity left; see [Capacity file](#capacity-file). Unlike the other state files, it accepts unknown fields and is capped at 16 KiB. |
@@ -4139,6 +4144,13 @@ fails with `RotateRefused` and nothing changes:
   bits and exactly one link (checked
   with `lstat`, never opened);
 - `S` does not exist;
+- when `<from>` is a profile (not an adopted login), `<from>` has a
+  [recorded account](#recorded-account) and `$HOME/.claude.json` has an
+  account, that account matches the record. Otherwise the swap is refused
+  with `the login in ~/.claude is not the account recorded for profile <from>`,
+  because moving that login into `<from>` would save another account's
+  login there. A profile with no record, and a `$HOME/.claude.json` with no
+  account, are not checked here. This check only reads;
 - `~/.claude` and the profile root are on the same device;
 - the platform has an atomic exchange. Only Linux
   (`renameat2(RENAME_EXCHANGE)`) qualifies. macOS has `renamex_np`, but Claude
@@ -4158,6 +4170,9 @@ journal.
 | `s3` | Replace the `oauthAccount` block in `$HOME/.claude.json` with the one from `<root>/<to>/.claude.json`, keeping every other key and the file's mode. |
 | `s4` | Write the ledger: `live=<to>`, `previous=<from>`, `account`, `since` and `swapped_at`. Clear any ALERT key. |
 | | Delete `journal.json`. |
+| | Write the [recorded account](#recorded-account), if one is due: for an adopted login, the outgoing account for the new `default-original[-N]` profile; for `<from>` with no record, the outgoing account, only when the ledger read before `j0` named `<from>` as live and its `account` matched the outgoing account. For `<from>`, the record is read again first, and a usable one is never overwritten. Nothing is recorded for `<to>`. A failure prints `warning: the recorded account for profile '<name>' was not saved: <reason>` and the swap still succeeds. |
+
+A swap that [recovery](#rotate-recovery) finishes writes no record.
 
 Credentials files are touched only by `lstat`, the exchange and the rename,
 and each parent directory is synced after each rename. At every point each
@@ -4879,6 +4894,7 @@ stdout only, without the time.
 | `ALERT: profile <L> has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login <L>` | `L` lost its login but `lost_login` already holds 64 profiles. Written once. |
 | `ALERT: more than one profile matches the account in ~/.claude; no swap` | Two or more login-less profiles have the account in `~/.claude.json`. |
 | `ALERT: swap refused: <reason>` | A [pre-swap check](#rotate-swap) failed; written once per reason. The one-shot command also prints it and exits with `RotateRefused`. |
+| `ALERT: swap refused: the login in ~/.claude is not the account recorded for profile <from>` | The login in `~/.claude` is not the [recorded account](#recorded-account) of the live profile `<from>`, so it was not moved back there. Written once per profile (ALERT key `account_mismatch:<from>`), not on every cycle, although every cycle refuses until it is fixed. Names the profile only, never an account. `profile login <from>` is refused while `<from>` is the live profile, so fix it in `~/.claude`: run plain `claude` and `/login` to the account `<from>` is meant for. If the record itself is out of date, delete `<root>/.auto-switch.d/expected/<from>.json` instead; the next cycle swaps as before and records nothing for `<from>`. See [Recorded account](#recorded-account). |
 | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` | See [Rotate recovery](#rotate-recovery). |
 | `ALERT: auto-switch recovery is inconsistent; no swap` | Auto-switch state needs `auto-switch repair`. |
 | `recovery: rolled back an interrupted swap <from>-><to>` / `recovery: finished an interrupted swap <from>-><to>` | Recovery acted. |
@@ -6282,6 +6298,99 @@ swap verification and auto-switch's observed-account check) still compare
 the user only. Where a full account is needed, the organization is read
 from the profile's `.claude.json`.
 
+### Recorded account
+
+Each profile can have a recorded account: the account amplihack knows the
+profile is meant to hold. Claude can rewrite a profile's `.claude.json`, so
+the account in that file is not trusted on its own. The record is what it is
+compared against.
+
+The record is `<root>/.auto-switch.d/expected/<name>.json`:
+
+```json
+{
+  "account": "<key>",
+  "org": "<organization uuid>"
+}
+```
+
+`<key>` is the account's uuid, or its e-mail address when it has no uuid.
+`org` is the login's `organizationUuid`, or `null` when it has none. The
+file holds nothing else: no token or display name. It is written
+atomically, mode `0600`, owned by you and never through a symlink. It has
+no `version` field.
+
+A record is written in three cases only:
+
+| When | What is recorded |
+|------|------------------|
+| [`profile login <name>`](#login-check) is accepted | The account in the profile's new `.claude.json`. A later accepted login overwrites it. Nothing is recorded when that file has no account (for example a macOS Keychain login with no `oauthAccount` block). |
+| A [swap](#rotate-swap) adopts the login in `~/.claude` as `default-original[-N]` | The account in `~/.claude.json`, for the new profile. |
+| A [swap](#rotate-swap) completes from a profile that has no record | The outgoing account, for the `from` profile, only when the [rotate ledger](#rotate-live-profile) names `from` as live, the outgoing account matches the ledger's `account`, and no other profile holds the same account and organization or has it recorded. |
+
+Nothing else writes a record. A swap never records the incoming (`to`)
+profile and never overwrites a usable record of the outgoing one. An
+adopted login replaces any record left under the new `default-original[-N]`
+name by a removed profile. No record is ever derived
+from a profile name or from `accounts/<name>.json`. A failure to write one
+prints a warning and does not fail the login or the swap:
+
+```
+warning: the recorded account for profile 'work' was not saved: <reason>
+```
+
+A record that is missing, unreadable, not `0600`, not owned by you, a
+symlink, over 64 KiB, not valid JSON, or whose `account` is not a usable
+string, or whose `org` is missing or neither `null` nor such a string,
+counts as no record, and no command fails because of it. A swap from that
+profile is not checked and prints one line to stderr:
+
+```
+warning: the recorded account for profile 'work' could not be read; the swap was not checked against it
+```
+
+A record whose `account` is the login's uuid matches only when `org`
+equals the login's `organizationUuid`, both being absent counting as equal:
+the same user in another organization is another account, and is refused,
+as under the [account identity](#account-identity) rule. A record whose
+`account` is an e-mail address, written from a login without a uuid,
+matches any login with that e-mail, ignoring case, and the organization is
+not compared. This holds even when the current login has a uuid, so such a
+record does not tell one organization from another; the account identity
+rule would. A normal OAuth login has a uuid, so e-mail records are rare.
+
+The backfill in the last row of the table is skipped when another profile
+holds the outgoing account or has it recorded. A profile folder can already
+hold another account's login, written by a Claude session started with
+`CLAUDE_CONFIG_DIR` on that folder; recording it would make the guard
+protect the wrong account. Such a profile stays unrecorded until its next
+accepted `profile login`.
+
+Three things read the record:
+
+- the [duplicate-login warning](#duplicate-login-warning), to name the
+  profile whose login is wrong;
+- `profile usage` and `profile auto-switch status`, which print one line per
+  profile whose login is not its recorded account, whether or not that
+  login is also a duplicate:
+
+  ```
+  warning: profile '<name>' holds a login that is not the account recorded for it; fix: run 'amplihack profile login <name>' with the browser signed out of claude.ai or in a private window.
+  ```
+
+  The line names the profile, never an account. `auto-switch status` prints
+  it among its notes, without the `warning: ` prefix;
+- the [rotate swap](#rotate-swap), which refuses to move the login in
+  `~/.claude` into a profile whose record names another account.
+
+A profile with no record gets none of these: its duplicate pairs use the
+cannot-tell form and its swaps are not checked. Profiles created before this
+release have no record until their next accepted `profile login`, or a swap
+that records them.
+
+`profile remove` leaves the record in place. If the name is reused, the old
+record can refuse one swap; an accepted `profile login <name>` replaces it.
+
 ### Login check
 
 `amplihack profile login <name>` runs in three steps. The usual
@@ -6316,11 +6425,11 @@ hint: log in with plain 'claude', or stop the rotator first.
 |---------|--------------|------|
 | Claude exited non-zero | Any new `.credentials.json` goes to `<name>-<time>/`. The previous login and `oauthAccount` are restored. No duplicate check. | Claude's status |
 | Claude exited 0, no new `.credentials.json`, a previous login was held | The login did not finish. The previous login and `oauthAccount` are restored: `Claude exited without writing a login file; the previous login of profile '<name>' was restored`. | 1 |
-| Claude exited 0, no `.credentials.json` before or after | The macOS Keychain case. `oauthAccount` is left as Claude wrote it, even for a duplicate: restoring the old block would make `.claude.json` disagree with the login in the Keychain. If `.claude.json` names a duplicate account, the refusal is printed but there is no file to move. | 0, or 1 for a duplicate |
+| Claude exited 0, no `.credentials.json` before or after | The macOS Keychain case. `oauthAccount` is left as Claude wrote it, even for a duplicate: restoring the old block would make `.claude.json` disagree with the login in the Keychain. If `.claude.json` names a duplicate account, the refusal is printed but there is no file to move. If it is not a duplicate and `.claude.json` names an account, that account becomes the [recorded account](#recorded-account). | 0, or 1 for a duplicate |
 | New login is not a private regular file | Nothing is moved and its mode is not changed. The error reports the mode and says the login may be exposed; the previous login stays in the `.pending-…` directory, and the hint prints that path. | 1 |
 | New login duplicates another login | Refused; see below. | 1 |
 | The profiles cannot be listed, or the auto-switch state cannot be opened | The check fails closed: the new login is set aside and the previous one restored as for a refusal, with `could not check profile '<name>' for duplicate logins: <reason>`. | 1 |
-| New login is accepted | The previous login, if any, moves to `<name>-<time>-replaced/` and its path is printed. The empty `.pending-…` directory is removed. | 0 |
+| New login is accepted | The previous login, if any, moves to `<name>-<time>-replaced/` and its path is printed. The empty `.pending-…` directory is removed. The new account becomes the profile's [recorded account](#recorded-account). | 0 |
 
 The new login is compared with every other profile (its own `.claude.json`,
 or its saved block while it hosts another account) and with
@@ -6369,8 +6478,41 @@ Claude as before, with no check.
 
 ### Duplicate-login warning
 
+The warning has two forms. When amplihack can tell which profile holds the
+wrong login, the fix names that profile:
+
 ```
-profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login <b>' with the browser signed out of claude.ai or in a private window.
+profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login <wrong>' with the browser signed out of claude.ai or in a private window.
+```
+
+Otherwise it says so, and the fix names no profile:
+
+```
+profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); amplihack cannot tell which of them holds the wrong login; fix: run 'amplihack profile login <name>' for the one that should hold a different account, with the browser signed out of claude.ai or in a private window.
+```
+
+`<name>` is printed as written; it is not replaced by a profile name.
+
+A profile is *mismatched* when it has a [recorded account](#recorded-account)
+and its current account does not match it. The current account is the one
+in the profile's own `.claude.json`, or its saved block while its directory
+hosts another account.
+
+| Pair | Records | Form | `<wrong>` |
+|------|---------|------|-----------|
+| two profiles | exactly one is mismatched (the other matches its record or has none) | first | the mismatched profile, whether it is `<a>` or `<b>` |
+| two profiles | neither is mismatched, both are, or neither has a record | cannot tell | none |
+| `~/.claude` and a profile | any | first | the profile |
+
+`~/.claude` has no record, so a pair with it keeps the first form and the
+fix names the profile, as before.
+
+For example, `rssourcelabs` and `ryan-ryansweet` both hold the
+`ryan-ryansweet` account, and only `rssourcelabs` has a record that names
+another account:
+
+```
+profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login rssourcelabs' with the browser signed out of claude.ai or in a private window.
 ```
 
 `auto-switch status` prints it as a [status note](#status-notes) on stdout.
@@ -6383,7 +6525,11 @@ One line is printed per pair. Pairs of profiles follow `profile list` order;
 a pair with the login in `~/.claude` comes last, with `'~/.claude'` as
 `<a>` and the profile as `<b>`, so the fix always names a profile. The
 rotator's live profile is never paired with `~/.claude`. Names are cleaned
-of control characters.
+of control characters. Neither form prints a uuid, organization, e-mail or
+the recorded key.
+
+When the auto-switch state cannot be opened, no record can be read, and
+every profile pair gets the cannot-tell form.
 
 ### Live profile launch
 

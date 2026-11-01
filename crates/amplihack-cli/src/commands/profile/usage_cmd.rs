@@ -186,8 +186,14 @@ pub(super) fn run(
     order(&mut rows, now_secs());
     print_output(&rows, json, swapped.as_ref());
     #[cfg(unix)]
-    for (a, b) in super::duplicates::pairs(&super::duplicates::accounts(store, home.as_deref())) {
-        eprintln!("warning: {}", super::duplicates::warning(&a, &b));
+    {
+        let st = super::auto_switch::kit::State::new(store.root()).ok();
+        let list = super::duplicates::accounts(store, home.as_deref());
+        let mut ws = super::duplicates::warnings(st.as_ref(), &list);
+        ws.extend(super::duplicates::record_warnings(st.as_ref(), &list));
+        for w in ws {
+            eprintln!("warning: {w}");
+        }
     }
     record(store, &rows, swapped.as_ref(), json);
     Ok(())
@@ -469,7 +475,7 @@ fn print_output(rows: &[Row], json: bool, swapped: Option<&ProfileName>) {
 /// every other displayed value.
 pub(super) fn swap_warning(name: &ProfileName) -> String {
     format!(
-        "warning: the login in ~/.claude changed while profile \"{}\" was probed; its usage was not recorded",
+        "note: the login in ~/.claude changed while profile \"{}\" was probed (the rotator swapped logins); its usage was not recorded this run",
         sanitize_display(name.as_str(), false)
     )
 }

@@ -326,8 +326,8 @@ fn a_profile_without_a_stored_login_is_refused() {
 
 #[test]
 fn the_no_stored_login_reason_is_documented() {
-    // 11 since D4 added `FOREIGN_IGNORES_HOLD`; see tests_switch_hold.rs.
-    assert_eq!(DOCUMENTED.len(), 11);
+    // 12 since #1845 added `ACCOUNT_MISMATCH`; see tests_issue_1845_swap.rs.
+    assert_eq!(DOCUMENTED.len(), 12);
     let e = env();
     fs::remove_file(e.slot("spare")).unwrap();
     let Ok(Ok(Switched::DefaultOnly { reason: m, .. })) =
