@@ -1,5 +1,5 @@
-//! Whether another login could take over (issue #1801): the one cheap,
-//! read-only check that decides if a capacity wait starts. True when the store
+//! Whether another login could take over (issue #1801): the one cheap check,
+//! which writes nothing, that decides if a capacity wait starts. True when the store
 //! holds a profile on another account than the step's that the selection could
 //! choose: not excluded, no spend block, a plan login or a usable overflow
 //! profile, and passing the login checks (issue #1804's rule for API keys). A profile's readings do not matter, because it may recover
@@ -487,6 +487,7 @@ fn a_home_step_with_two_logins_and_a_running_rotator_is_true() {
     let tmp = tempfile::tempdir().unwrap();
     let store = store(&tmp, &["a", "b"]);
     let _held = rotator_running(&store);
+    let _env = toggle_unset();
     assert!(home_check(Some(store))());
 }
 
@@ -523,6 +524,7 @@ fn an_inherited_profile_step_with_two_logins_and_a_running_rotator_is_true() {
     let tmp = tempfile::tempdir().unwrap();
     let store = store(&tmp, &["a", "b"]);
     let _held = rotator_running(&store);
+    let _env = toggle_unset();
     assert!(profile_check(&store, "a"));
 }
 
@@ -532,4 +534,68 @@ fn a_running_rotator_alone_is_not_enough_for_a_profile_step() {
     let store = store(&tmp, &["a"]);
     let _held = rotator_running(&store);
     assert!(!profile_check(&store, "a"));
+}
+
+/// The auto-switch environment toggle unset until the guards are dropped, so
+/// only the file under the store decides whether auto-switch is off. The
+/// environment guard is dropped first, while the lock is still held.
+fn toggle_unset() -> (
+    crate::test_support::EnvGuard,
+    std::sync::MutexGuard<'static, ()>,
+) {
+    use crate::test_support::{EnvGuard, env_lock};
+    let lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    (EnvGuard::unset(["AMPLIHACK_CLAUDE_AUTO_SWITCH"]), lock)
+}
+
+/// Auto-switch turned off in the file under `store`, so the rotator's
+/// `paused` rule holds.
+fn switched_off(store: &ProfileStore) {
+    private(
+        &store.root().join(".auto-switch"),
+        "enabled=off\nthreshold=90\nexclude=\n",
+        0o600,
+    );
+}
+
+// A rotator with auto-switch off keeps running but skips every cycle, so it
+// records no cycle and makes no swap: nothing could end a `$HOME/.claude`
+// step's wait. Such a rotator does not count, and a far reset fails at once.
+#[test]
+fn a_home_step_with_a_running_but_paused_rotator_is_false() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(&tmp, &["a", "b"]);
+    let _held = rotator_running(&store);
+    let _env = toggle_unset();
+    switched_off(&store);
+    assert!(
+        could_take_over(Some(&store), None),
+        "the store alone qualifies"
+    );
+    assert!(!home_check(Some(store))());
+}
+
+#[test]
+fn a_profile_step_with_a_running_but_paused_rotator_is_false() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(&tmp, &["a", "b"]);
+    let _held = rotator_running(&store);
+    let _env = toggle_unset();
+    switched_off(&store);
+    assert!(!profile_check(&store, "a"));
+}
+
+// With auto-switch on in the file, the same running rotator counts.
+#[test]
+fn a_home_step_with_a_running_rotator_and_auto_switch_on_is_true() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(&tmp, &["a", "b"]);
+    let _held = rotator_running(&store);
+    let _env = toggle_unset();
+    private(
+        &store.root().join(".auto-switch"),
+        "enabled=on\nthreshold=90\nexclude=\n",
+        0o600,
+    );
+    assert!(home_check(Some(store))());
 }

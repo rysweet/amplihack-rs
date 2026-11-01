@@ -5546,7 +5546,11 @@ Before a non-dry-run `rotate`, `start` or cycle, the rotator opens
 lock, and releases it at once. A missing file passes the check and is not
 created. If the lock is held, the command fails with
 `RotatePrototypeRunning`. `--dry-run` skips this check. The rotator never
-creates, writes or deletes anything under `<root>/.rotator/`.
+creates, writes or deletes anything under `<root>/.rotator/`. A supervised
+step that hits a far reset makes the same check to decide whether a
+[capacity wait](#capacity-wait) may start. While it holds the lock, an
+external rotator that takes it with `LOCK_NB` at that instant is refused
+once; the check holds the lock only for the length of two system calls.
 
 ### Rotate exit status
 
@@ -6046,6 +6050,7 @@ with their usual `skipped` reasons.
 | Weekly limit, or a reset more than five hours away | inherited profile, auto-switch on, with a rotator running | yes | capacity wait |
 | No readable reset (`no_reset`) | `$HOME/.claude` or inherited profile with auto-switch on, with a rotator running | yes | capacity wait |
 | Weekly limit or no readable reset | `$HOME/.claude` or inherited profile, no rotator running | any | `skipped reason=reset_too_far` or `no_reset` |
+| Weekly limit or no readable reset | `$HOME/.claude`, a rotator running with auto-switch off | any | `skipped reason=reset_too_far` or `no_reset` |
 | Weekly limit or no readable reset | any of the above | no | `skipped reason=reset_too_far` or `no_reset` |
 | Weekly limit or no readable reset | inherited profile, auto-switch off | any | `skipped reason=reset_too_far` or `no_reset` |
 | Weekly limit or no readable reset | a profile from the `.default` pointer that is not the rotator's live profile | any | `skipped reason=reset_too_far` or `no_reset` |
@@ -6059,7 +6064,15 @@ needs a rotator running: the built-in one (`amplihack profile rotate start`,
 checked through its pid file) or the external rotator, which holds
 `<root>/.rotator/lock`. With neither, the step fails at once as before, and
 a reading that shows another login has capacity does not change that,
-because nothing would move that login into `$HOME/.claude`.
+because nothing would move that login into `$HOME/.claude`. A rotator that
+is running while auto-switch is off does not count: it stays idle, records
+no cycle and makes no swap, so the step fails at once in that case too. The
+check uses the rotator's own rule for being paused (auto-switch turned off
+in the environment or in `<root>/.auto-switch`), read in the step's process.
+To detect the external rotator, the check takes a non-blocking exclusive
+lock on `<root>/.rotator/lock` and releases it at once, as `rotate start`
+does (see [Prototype coexistence](#rotate-prototype-coexistence)). With
+auto-switch off it does not touch the lock.
 
 A step under an inherited profile needs a running rotator for the same
 reason. No `/usage` probe is made, so its wait ends only on a fresh

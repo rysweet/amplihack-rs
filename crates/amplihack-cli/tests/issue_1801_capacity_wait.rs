@@ -523,6 +523,20 @@ fn a_home_step_with_two_logins_and_no_rotator_skips() {
     assert_skipped(&f, &out, "reset_too_far");
 }
 
+// A rotator with auto-switch off keeps running but skips every cycle, so it
+// records no cycle and makes no swap. It cannot end a `$HOME/.claude` step's
+// wait, so it does not count: a far reset fails at once, not after six hours.
+#[test]
+fn a_home_step_with_a_running_rotator_and_auto_switch_off_skips() {
+    let f = with_profiles();
+    x_is_live(&f);
+    let _rotator = rotator_running(&f);
+    let off = f.run(&mut f.cmd(&["profile", "auto-switch", "off"]));
+    assert!(off.status.success(), "auto-switch off: {}", describe(&off));
+    let out = f.run(&mut home_step(&f));
+    assert_skipped(&f, &out, "reset_too_far");
+}
+
 // The same holds for an inherited-profile step: no `/usage` probe is made, and
 // in an unattended run nothing records a reading without a rotator, so the
 // wait would run to its six-hour maximum. A far reset fails at once instead.

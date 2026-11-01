@@ -6,14 +6,16 @@
 //! [`capacity_candidate`] decides during the wait: it is the full auto-switch
 //! choice over readings taken since the wait began.
 //!
-//! Everything here is read-only, makes no network or `/usage` call, and
-//! prints nothing. Every read error gives `false` or `None`, so a step keeps
-//! its skip or stays on its wait.
+//! Nothing here writes a file, makes a network or `/usage` call, or prints.
+//! The rotator check briefly takes the external rotator's `.rotator/lock`
+//! when it is free; see `rotate::daemon::running`. Every read error gives
+//! `false` or `None`, so a step keeps its skip or stays on its wait.
 //!
 //! The issue's other trigger, a rotator cycle on record, is left out on
 //! purpose: rotation needs stored profiles, so the store check covers it.
-//! Every step also needs a running rotator: see [`home_check`] and
-//! [`profile_check`].
+//! Every step also needs a rotator that is running with auto-switch on: see
+//! [`home_check`] and [`profile_check`]. A running rotator with auto-switch
+//! off stays idle, so it cannot end a wait and does not count.
 
 use super::config::{self, Config, FileState};
 use super::fsx;
@@ -36,14 +38,16 @@ fn live_profile(store: &ProfileStore) -> Option<String> {
 
 /// The takeover check for a step on the login in `$HOME/.claude`. Only a
 /// rotator cycle or a login change can end such a step's wait, so the check
-/// holds only while a rotator is running and another stored login could
-/// take over from the profile live there. Without a rotator a far reset stays
+/// holds only while a rotator is running with auto-switch on, and another
+/// stored login could take over from the profile live there. A running
+/// rotator with auto-switch off is idle: it records no cycle and makes no
+/// swap, so it does not count. Without a rotating rotator a far reset stays
 /// `reset_too_far`, failing at once as before. The store is read only when the
 /// check is called, which is when a limit is seen.
 pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
     Box::new(move || {
         store.as_ref().is_some_and(|s| {
-            rotate::daemon::running(s.root())
+            rotate::daemon::rotating(s.root())
                 && could_take_over(Some(s), live_profile(s).as_deref())
         })
     })
@@ -55,10 +59,10 @@ pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
 /// unattended recipe run no rotator starts and a `claude -p` step has no
 /// status line, so without a running rotator nothing may record a reading and
 /// the wait would run to its maximum. The check therefore holds only while a
-/// rotator is running, as [`home_check`] does, and a far reset stays
+/// rotator is running with auto-switch on, as [`home_check`] does, and a far reset stays
 /// `reset_too_far`, failing at once as before.
 pub(crate) fn profile_check(store: &ProfileStore, own: &str) -> bool {
-    rotate::daemon::running(store.root()) && could_take_over(Some(store), Some(own))
+    rotate::daemon::rotating(store.root()) && could_take_over(Some(store), Some(own))
 }
 
 /// Another account could take over from a step whose own login is `own`: the
