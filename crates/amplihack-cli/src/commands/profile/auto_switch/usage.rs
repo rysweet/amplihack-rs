@@ -47,6 +47,12 @@ pub struct Reading {
 }
 
 impl Reading {
+    /// Issue #1818: the reading has a week window and no session window,
+    /// so the account reported no session limit.
+    pub fn no_session_limit(&self) -> bool {
+        self.seven_day.is_some() && self.five_hour.is_none()
+    }
+
     fn worst(&self) -> f64 {
         let pct = |w: &Option<Window>| w.map_or(0.0, |w| w.used_percentage);
         pct(&self.five_hour).max(pct(&self.seven_day))

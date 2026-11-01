@@ -444,9 +444,7 @@ pub fn no_session_limit_profiles(root: &Path, names: &[&str]) -> Vec<String> {
         let mut out: Vec<String> = file
             .accounts
             .iter()
-            .filter(|(name, r)| {
-                r.seven_day.is_some() && r.five_hour.is_none() && names.contains(&name.as_str())
-            })
+            .filter(|(name, r)| r.no_session_limit() && names.contains(&name.as_str()))
             .map(|(name, _)| name.clone())
             .collect();
         out.sort();

@@ -199,7 +199,7 @@ fn cell(w: Option<&Window>, now: i64) -> String {
 /// week window and no session window, otherwise as [`cell`].
 pub(super) fn five_cell(r: Option<&Reading>, now: i64) -> String {
     match r {
-        Some(r) if r.five_hour.is_none() && r.seven_day.is_some() => "no session limit".into(),
+        Some(r) if r.no_session_limit() => "no session limit".into(),
         _ => cell(r.and_then(|r| r.five_hour.as_ref()), now),
     }
 }
