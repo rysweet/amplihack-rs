@@ -17,7 +17,13 @@ use super::ledger::{RotateLedger, RotateState};
 ///   spend limit, and a profile reporting one is blocked again and never
 ///   moved onto;
 /// - `guidance`, `home_unreadable_since` and `lost_login` (issue #1693),
-///   which only `rotate status` and this binary's hand-change recovery read.
+///   which only `rotate status` and this binary's hand-change recovery read;
+/// - `no_room` (issue #1804), set on every measuring cycle. Only this
+///   binary's auto-switch reads it, as advice on whether a plan login was
+///   measured. Without it auto-switch counts the rotator's live login as
+///   unread and holds the API key back, which fails safe. Unlike
+///   `platform_block` and `live_kind`, nothing is gained by keeping it for a
+///   rotator that would refuse the whole ledger.
 pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
     let mut out = l.clone();
     if older {
@@ -29,6 +35,7 @@ pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
         out.guidance = None;
         out.home_unreadable_since = None;
         out.lost_login.clear();
+        out.no_room = None;
     }
     out
 }

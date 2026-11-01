@@ -18,6 +18,8 @@ mod backup;
 #[cfg(unix)]
 mod candidates;
 #[cfg(unix)]
+pub(in crate::commands::profile) mod change_log;
+#[cfg(unix)]
 mod control;
 #[cfg(unix)]
 mod cycle;
@@ -26,7 +28,11 @@ pub(super) mod daemon;
 #[cfg(unix)]
 mod damp;
 #[cfg(unix)]
-mod decide;
+pub(super) mod decide;
+#[cfg(unix)]
+mod dry_run;
+#[cfg(unix)]
+mod exhausted;
 #[cfg(unix)]
 mod gate_record;
 #[cfg(unix)]
@@ -41,6 +47,8 @@ mod held;
 mod holders;
 #[cfg(unix)]
 pub(super) mod identify;
+#[cfg(unix)]
+pub(super) mod key_check;
 #[cfg(unix)]
 pub(super) mod ledger;
 #[cfg(unix)]
@@ -60,7 +68,11 @@ mod overflow_msg;
 #[cfg(unix)]
 mod overflow_record;
 #[cfg(unix)]
+mod owner;
+#[cfg(unix)]
 mod pin;
+#[cfg(unix)]
+pub(super) mod plan_room;
 #[cfg(unix)]
 pub(super) mod platform_block;
 #[cfg(unix)]
@@ -85,9 +97,14 @@ mod switch;
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
 pub use super::rotate_args::{RotateAction, RotateArgs, TuneFlags};
+pub use candidates::login_unusable;
+pub use overflow_msg::{CheckNote, alert_key_held_session, per_token_off_key, per_token_reason};
+pub use overflow_record::append_to_log;
 
 #[cfg(all(test, unix))]
 mod tests_autostart;
+#[cfg(all(test, unix))]
+mod tests_autostart_owner;
 #[cfg(all(test, unix))]
 mod tests_daemon;
 #[cfg(all(test, unix))]
@@ -107,6 +124,12 @@ mod tests_home_unreadable;
 #[cfg(all(test, unix))]
 mod tests_identify;
 #[cfg(all(test, unix))]
+mod tests_issue_1804;
+#[cfg(all(test, unix))]
+mod tests_issue_1804_cycle;
+#[cfg(all(test, unix))]
+mod tests_key_check;
+#[cfg(all(test, unix))]
 mod tests_ledger;
 #[cfg(all(test, unix))]
 mod tests_live_readers;
@@ -116,6 +139,8 @@ mod tests_log;
 mod tests_measure;
 #[cfg(all(test, unix))]
 mod tests_overflow;
+#[cfg(all(test, unix))]
+mod tests_owner;
 #[cfg(all(test, unix))]
 mod tests_pin;
 #[cfg(all(test, target_os = "linux"))]
@@ -158,6 +183,8 @@ use super::root_config::RootSource;
 use super::store::ProfileStore;
 
 #[cfg(unix)]
+pub(super) use self::{identify::is_live, platform_block::platform_live_line};
+#[cfg(unix)]
 pub(in crate::commands::profile) use autostart::autostart_line;
 #[cfg(unix)]
 pub(crate) use autostart::autostart_on_launch;
@@ -194,40 +221,6 @@ fn foreign_note_for(
     rs.foreign_rotator_at(proc_root, exe).map(|pid| {
         format!("amplihack: the Claude login rotator (pid {pid}) {FOREIGN_IGNORES_HOLD}")
     })
-}
-
-/// Whether rotate live-profile detection names `name` as the login in
-/// `<home>/.claude` (issue #1700: the launch guard's "held"). Any error, a
-/// hand change, an ambiguous or an adopted login is not.
-#[cfg(unix)]
-pub(super) fn is_live(
-    store: &super::store::ProfileStore,
-    home: Option<&std::path::Path>,
-    name: &super::name::ProfileName,
-) -> bool {
-    let Some(home) = home else {
-        return false;
-    };
-    let rs = ledger::RotateState::new(store.root());
-    matches!(identify::live(store, &rs, home), Ok((identify::LiveId::Known(n), _)) if &n == name)
-}
-
-/// The status line while the rotate ledger says the live login is an
-/// API-key profile (issue #1700), for `rotate status` and `auto-switch
-/// status`. The ledger is the only evidence; nothing is probed.
-#[cfg(unix)]
-pub(super) fn platform_live_line(root: &std::path::Path) -> Option<String> {
-    let l = ledger::RotateState::new(root).load_ledger().ok()??;
-    if l.live_kind.as_deref() != Some(ledger::LIVE_KIND_PLATFORM) {
-        return None;
-    }
-    let live = l.live?;
-    let since = l
-        .since
-        .map_or_else(|| "unknown".to_string(), log::timestamp);
-    Some(format!(
-        "~/.claude is on API key profile {live}: work is billed per token (since {since})"
-    ))
 }
 
 /// After a successful `profile switch NAME`: one line on stderr when the
@@ -267,16 +260,22 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                 cycle::run_cycle(&mut ctx, mode)?;
             }
             Some(RotateAction::Start(w)) => {
+                if w.supervised.is_some() {
+                    let why = "--supervised applies to rotate watch only";
+                    return Err(super::ProfileError::RotateRefused(why.into()).into());
+                }
                 let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
                 daemon::start(store, &home?, &s)?;
             }
             Some(RotateAction::Watch(w)) => {
+                owner::check_flag(&w.supervised)?;
                 let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
-                daemon::watch(store, home?, s, w.spawned)?;
+                daemon::watch(store, home?, s, w.spawned, w.supervised.clone())?;
             }
             Some(RotateAction::Stop) => control::stop(store, home.as_deref().ok())?,
             Some(RotateAction::Status) => control::status(store, home.as_deref().ok(), source),
             Some(RotateAction::Autostart { state }) => autostart::cli(store, state.as_deref())?,
+            Some(RotateAction::Owner { action }) => owner::cli(store, action.is_some())?,
         }
         Ok(())
     }

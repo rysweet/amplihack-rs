@@ -4,21 +4,26 @@
 
 use super::alert::{alert, alert_key, alert_once, clear_alert, refusal_kind};
 use super::decide::Decision;
+use super::dry_run::dry_run;
 use super::held::held_cycle;
 use super::identify::{LiveId, Skip};
-use super::ledger::{LastCycle, RotateLedger, RotateState, SWITCHED};
+use super::key_check::{self, KeyCheckFn};
+use super::ledger::{RotateLedger, RotateState, newer_than};
 use super::log::msg;
 use super::observe::{
-    Measurement, Snap, dry_run, live_name, measure_and_decide, platform_block_reason, reading_of,
+    Measurement, Snap, live_name, measure_and_decide, platform_block_reason, reading_of,
 };
 use super::overflow::Tag;
 use super::overflow_record::{
-    self, alert_line, block_spend_limited, note_live, note_move, refresh_capacity, stay_note,
+    self, alert_line, block_spend_limited, note_home_key, note_live, note_move, note_per_token,
+    refresh_capacity, refuse_key, stay_note, target_check,
 };
+use super::plan_room::no_room;
 // Under an alias: `profile::overflow::Gate` (whether credits may be spent)
 // is a different thing from the pin's gate (whether a `profile switch`
 // holds the cycle).
 use super::pin::{self, Gate as PinGate};
+pub use super::prelude::prototype_guard;
 use super::prelude::{Prelude, locked_prelude};
 use super::revalidate::{self, Verdict};
 use super::settings::Settings;
@@ -29,7 +34,6 @@ use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
 use crate::commands::profile::shared_dirs;
 use crate::commands::profile::store::ProfileStore;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,37 +41,9 @@ use std::time::Duration;
 
 pub(super) const LOCK_WAIT: Duration = Duration::from_secs(2);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    OneShot,
-    DryRun,
-    Watch,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CycleOutcome {
-    Swapped,
-    Stayed,
-    Alerted,
-    Skipped,
-    /// A `profile switch` pin stopped the cycle before measuring (#1691).
-    Held,
-    /// `watch` received a signal and abandoned the cycle.
-    Stopped,
-}
-
-impl CycleOutcome {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Swapped => "swapped",
-            Self::Stayed => "stayed",
-            Self::Alerted => "alerted",
-            Self::Skipped => "skipped",
-            Self::Held => "held",
-            Self::Stopped => "stopped",
-        }
-    }
-}
+#[path = "cycle_outcome.rs"]
+mod outcome;
+pub use outcome::{CycleOutcome, Mode};
 
 /// Steps 4 and 5 of a cycle: measure, then decide.
 pub(super) type MeasureFn = fn(&Ctx, &Snap) -> Result<Measurement, ProfileError>;
@@ -96,6 +72,11 @@ pub struct Ctx {
     pub(super) probe_held: Option<super::held::HeldProbeFn>,
     /// Waits before step 6 reads the state again; tests act in it instead.
     pub(super) pause: fn(&Ctx),
+    /// The login check before a swap onto the API-key profile (issue
+    /// #1804); `key_check::reachable` outside tests.
+    pub(super) key_check: KeyCheckFn,
+    /// The `$HOME` key setting `note_home_key` last logged.
+    pub(super) home_key: Option<&'static str>,
 }
 
 impl Ctx {
@@ -115,6 +96,8 @@ impl Ctx {
             measure: None,
             probe_held: None,
             pause: |_| std::thread::sleep(revalidate::REREAD_PAUSE),
+            key_check: key_check::reachable,
+            home_key: None,
         }
     }
 
@@ -122,35 +105,6 @@ impl Ctx {
         self.stop
             .as_ref()
             .is_some_and(|s| s.load(Ordering::Relaxed))
-    }
-}
-
-/// Fails with `RotatePrototypeRunning` while the external rotator holds
-/// `<root>/.rotator/lock`. Opens it read-only without following a symlink,
-/// creating it or blocking on a FIFO, and releases the lock at once.
-pub fn prototype_guard(root: &Path) -> Result<(), ProfileError> {
-    use fs4::fs_std::FileExt;
-    let path = root.join(".rotator").join("lock");
-    let refuse = || ProfileError::RotateRefused(".rotator/lock is not a regular file".into());
-    let file = match std::fs::OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(&path)
-    {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) => return Err(refuse()),
-    };
-    if !file.metadata().is_ok_and(|m| m.is_file()) {
-        return Err(refuse());
-    }
-    match FileExt::try_lock_exclusive(&file) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(ProfileError::RotatePrototypeRunning),
-        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-            Err(ProfileError::RotatePrototypeRunning)
-        }
-        Err(e) => Err(e.into()),
     }
 }
 
@@ -165,13 +119,6 @@ pub(super) fn save(
     tag: Option<Tag>,
 ) -> Result<(), ProfileError> {
     overflow_record::record(&ctx.rs, l, o.as_str(), t, measured_at, tag)
-}
-
-/// Whether `last` was written after a cycle began measuring at
-/// `measured_at`, so another writer used the ledger while that cycle held no
-/// lock. A switch record always counts, whatever the clock says.
-pub(super) fn newer_than(last: Option<&LastCycle>, measured_at: i64) -> bool {
-    last.is_some_and(|c| c.outcome == SWITCHED || c.at >= measured_at)
 }
 
 pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError> {
@@ -252,8 +199,14 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     let failed_before = std::mem::replace(&mut ctx.failed_live, m.failed);
     out.emit(
         now(),
-        &msg::cycle(live_name(&first.live), &m.live, &m.others, first.platform()),
+        &msg::cycle(
+            live_name(&first.live),
+            &m.live,
+            &m.others,
+            first.shown_platform(),
+        ),
     );
+    note_home_key(ctx, &mut out, &first);
     if ctx.stopping() {
         out.emit(now(), msg::STOPPED);
         return Ok(CycleOutcome::Stopped);
@@ -273,11 +226,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     }
     let m = match checked.verdict {
         Verdict::Proceed => m,
-        // Issue #1721: only the target changed, and the probes already taken
-        // chose another; from here the cycle is that one. `ctx.failed_live`
-        // stays: a target-only change leaves the live probe, live name and
-        // overflow entries as they were, so `retry.failed == m.failed`. If
-        // the retry rule is ever widened, assign `ctx.failed_live` here.
+        // Issue #1721: only the target changed, and the probes taken chose
+        // another; the cycle is now that one. `ctx.failed_live` stays: the
+        // live probe, live name and overflow entries are as they were, so
+        // `retry.failed == m.failed`. Widen the retry rule, assign it here.
         Verdict::Reconsidered { m, fresh, line } => {
             out.emit(t, &line);
             first = *fresh;
@@ -304,10 +256,13 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         others,
         decision,
         note,
-        tag,
+        mut tag,
         new_blocks,
         next_plan_reset,
+        unknown_plan,
+        key_held,
         measured_at,
+        probed,
         ..
     } = m;
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
@@ -318,15 +273,24 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     }
     let mut swapped = None;
     let outcome = match decision {
-        Decision::Swap { to, reason } => {
+        Decision::Swap { to, reason } => 'swap: {
+            // Issue #1804: a refusal moves nothing and writes no journal.
+            let check = match target_check(ctx, &first, &to) {
+                Ok(check) => check,
+                Err(why) => {
+                    refuse_key(&mut out, &mut l, &to, &why, t);
+                    note_live(&mut l, &first, t);
+                    tag = None;
+                    break 'swap CycleOutcome::Alerted;
+                }
+            };
             let source = match &first.live {
                 LiveId::Known(n) => Source::Profile(n.clone()),
                 _ => Source::Adopt,
             };
             let from = match swap::swap(&ctx.store, &ctx.rs, &ctx.home, source, &to, t) {
                 Ok(from) => from,
-                // A refusal repeats every cycle until a person acts: one
-                // ALERT per reason, and the cycle is recorded.
+                // A refusal repeats each cycle: one ALERT per reason.
                 Err(e @ ProfileError::RotateRefused(_)) => {
                     // Issue #1700: a login without OAuth is refused once per
                     // profile, keyed by the profile it would have made live.
@@ -345,8 +309,19 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             };
             swapped = Some([to.clone(), from.clone()]);
             let target = reading_of(&others, &to);
+            let seen = (next_plan_reset, unknown_plan.len());
+            note_per_token(&mut out, &first, tag, &to, seen, check);
             out.emit(now(), &msg::swap(&from, &to, &live, &target, reason));
-            note_move(&mut out, tag, &from, &to, next_plan_reset, first.platform());
+            let (off_key, onto_key) = (first.platform_live(), first.platform() == Some(&to));
+            note_move(
+                &mut out,
+                tag,
+                &from,
+                &to,
+                next_plan_reset,
+                off_key,
+                onto_key,
+            );
             ctx.failed_live = 0;
             l = ctx.rs.load_ledger()?.unwrap_or_default();
             CycleOutcome::Swapped
@@ -367,19 +342,27 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             note_live(&mut l, &first, t);
             let name = live_name(&first.live);
             let reason = || platform_block_reason(ctx);
-            let (kind, line) = alert_line(&first, tag, &live, &others, reason);
+            let (kind, line) = alert_line(&first, tag, &live, &others, &key_held, reason);
             alert_once(&mut out, &mut l, &alert_key(kind, name), t, &line);
             CycleOutcome::Alerted
         }
     };
     refresh_capacity(
-        ctx.store.root(),
+        ctx,
         live_name(&first.live),
         &live,
         &others,
         t,
         tag,
-        first.platform(),
+        first.shown_platform(),
+    );
+    no_room::record(
+        &mut l,
+        ctx,
+        &first,
+        (&live, &others),
+        probed.as_ref(),
+        measured_at,
     );
     save(ctx, &mut l, outcome, now(), Some(measured_at), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the

@@ -1604,6 +1604,42 @@ fi
     }
 
     #[test]
+    fn a_reclaim_never_removes_a_lock_taken_after_its_holder_check() {
+        // The reclaimer has judged the old holder dead and is about to remove
+        // the lock. The stub `rm` runs in exactly that window: the old holder
+        // lets go and a third process asks for the lock. Both must not get it.
+        let work = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        let lock = work.path().join("install.lock");
+        fs::create_dir(&lock).unwrap();
+        let mut dead = Command::new("true").spawn().unwrap();
+        fs::write(lock.join("pid"), format!("{}\n", dead.id())).unwrap();
+        dead.wait().unwrap();
+        let helper = repo_root().join("claude-plugin/bin/plugin-lock.sh");
+        let (l, w, h) = (lock.display(), work.path().display(), helper.display());
+        let acquire =
+            |who: &str| format!(". '{h}'; if lock_acquire '{l}'; then echo {who} >> '{w}/got'; fi");
+        write_exe(
+            &stub.path().join("rm"),
+            &format!(
+                "#!/bin/sh\nif [ ! -e '{w}/raced' ]; then\n  : > '{w}/raced'\n  /bin/rm -rf '{l}'\n  sh -c \"{}\"\nfi\nexec /bin/rm \"$@\"\n",
+                acquire("third")
+            ),
+        );
+        let out = Command::new("sh")
+            .args(["-c", &acquire("reclaimer")])
+            .env("PATH", format!("{}:/usr/bin:/bin", stub.path().display()))
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{out:?}");
+        assert!(work.path().join("raced").exists(), "the window never ran");
+        let got = fs::read_to_string(work.path().join("got")).unwrap();
+        assert_eq!(got, "reclaimer\n", "the lock must have one holder");
+        assert!(lock.is_dir());
+        assert!(!work.path().join("install.lock.reclaim").exists());
+    }
+
+    #[test]
     fn a_user_managed_runtime_the_user_completes_is_recorded_not_nagged() {
         // The marker must not outlive the gap: once the user installs the
         // missing partner, bootstrap reconciles instead of reporting it.

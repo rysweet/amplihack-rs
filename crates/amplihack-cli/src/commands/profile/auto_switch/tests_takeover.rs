@@ -1,14 +1,19 @@
 //! Whether another login could take over (issue #1801): the one cheap,
 //! read-only check that decides if a capacity wait starts. True when the store
-//! holds a profile on another account than the step's, is not excluded and has
-//! no spend block. A profile's readings do not matter, because it may recover
+//! holds a profile on another account than the step's that the selection could
+//! choose: not excluded, no spend block, a plan login or a usable overflow
+//! profile, and passing the login checks (issue #1804's rule for API keys). A profile's readings do not matter, because it may recover
 //! during the wait. Every read error is `false`, which keeps today's skip.
 //!
 //! Wired from `auto_switch/mod.rs` with `mod tests_takeover;`.
 
+use super::config::{self, FileState};
 use super::fsx;
-use super::takeover::{could_take_over, home_check, is_fresh};
+use super::overflow_inputs::OverflowInputs;
+use super::takeover::{another_login_with, could_take_over, home_check, is_fresh};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::overflow::Gate;
+use crate::commands::profile::rotate::GateSource;
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -258,30 +263,135 @@ fn a_reading_is_fresh_only_after_the_start_and_near_now() {
     assert!(is_fresh(i64::MAX, START, i64::MAX), "no overflow");
 }
 
-// S4: an API-key profile counts like any other until the rotator records an
-// API-key block, which covers every API-key profile.
-fn api_key_b(store: &ProfileStore) {
+// S4 (issue #1804 on main): an API-key profile counts only as the selection
+// would use it, marked `overflow=`, with the gate open, no API-key block and a
+// key Claude can read. An unmarked one never counts, so a capacity wait never
+// starts for a login nothing will choose.
+
+/// `b` is an API-key profile with a `{}` login, as on the host; `overflow`
+/// is the config's `overflow=` value, empty for none.
+fn api_key_b(store: &ProfileStore, overflow: &str) {
+    private(
+        &store.root().join("b").join(".credentials.json"),
+        "{}",
+        0o600,
+    );
     private(
         &store.root().join(".auto-switch"),
-        "enabled=on\nthreshold=90\nexclude=\nkind=b:platform\n",
+        &format!("enabled=on\nthreshold=90\nexclude=\nkind=b:platform\noverflow={overflow}\n"),
         0o600,
     );
 }
 
+/// `b`'s own settings name an API key, so its login check passes.
+fn key_for_b(store: &ProfileStore) {
+    private(
+        &store.root().join("b").join("settings.json"),
+        r#"{"env":{"ANTHROPIC_API_KEY":"SENTINEL"}}"#,
+        0o600,
+    );
+}
+
+/// `a` used up: the step's own plan login at 100% of its week.
+fn a_used_up(store: &ProfileStore) {
+    let now = fsx::now();
+    let body = serde_json::json!({
+        "version": 1,
+        "accounts": {"a": {
+            "seven_day": {"used_percentage": 100.0, "resets_at": now + 4 * 86_400},
+            "observed_at": now,
+            "source": "statusline",
+        }},
+    });
+    private(
+        &store.root().join(".auto-switch.d").join("usage.json"),
+        &body.to_string(),
+        0o600,
+    );
+    fs::set_permissions(
+        store.root().join(".auto-switch.d"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+}
+
+const GATE: Gate = Gate {
+    wait: 1800,
+    unknown_reset: false,
+    session_at: 85,
+    week_at: 90,
+};
+
+/// The takeover check with the overflow gate given, `None` for closed.
+fn takes_over_with_gate(store: &ProfileStore, own: &str, gate: Option<Gate>) -> bool {
+    let FileState::Valid(cfg) = config::read(store.root()) else {
+        panic!("the test config must be valid");
+    };
+    let source = match gate {
+        Some(_) => GateSource::Environment,
+        None => GateSource::Closed("test".to_string()),
+    };
+    let inputs = OverflowInputs::load_with_gate(store.root(), &cfg, (gate, source), fsx::now());
+    another_login_with(store, Some(own), &cfg, &inputs).unwrap_or(false)
+}
+
 #[test]
-fn an_unblocked_api_key_profile_counts() {
+fn an_exhausted_plan_login_and_an_unmarked_api_key_is_false() {
     let tmp = tempfile::tempdir().unwrap();
     let store = store(&tmp, &["a", "b"]);
-    api_key_b(&store);
+    api_key_b(&store, "");
+    key_for_b(&store);
+    a_used_up(&store);
     ledger(&store, r#"{"version":1,"live":"a","alert":null}"#, 0o600);
-    assert!(could_take_over(Some(&store), Some("a")));
+    assert!(
+        !could_take_over(Some(&store), Some("a")),
+        "auto-switch never chooses an unmarked key, so no wait may start for it"
+    );
+    assert!(!takes_over_with_gate(&store, "a", Some(GATE)));
+}
+
+#[test]
+fn a_marked_api_key_with_a_passing_check_and_an_open_gate_counts() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(&tmp, &["a", "b"]);
+    api_key_b(&store, "b");
+    key_for_b(&store);
+    a_used_up(&store);
+    ledger(&store, r#"{"version":1,"live":"a","alert":null}"#, 0o600);
+    assert!(takes_over_with_gate(&store, "a", Some(GATE)));
+}
+
+#[test]
+fn a_marked_api_key_with_the_gate_closed_does_not_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(&tmp, &["a", "b"]);
+    api_key_b(&store, "b");
+    key_for_b(&store);
+    ledger(&store, r#"{"version":1,"live":"a","alert":null}"#, 0o600);
+    assert!(
+        !takes_over_with_gate(&store, "a", None),
+        "a closed gate leaves only plan logins"
+    );
+}
+
+#[test]
+fn a_marked_api_key_that_fails_its_login_check_does_not_count() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(&tmp, &["a", "b"]);
+    api_key_b(&store, "b");
+    ledger(&store, r#"{"version":1,"live":"a","alert":null}"#, 0o600);
+    assert!(
+        !takes_over_with_gate(&store, "a", Some(GATE)),
+        "no key in b's own files: the selection refuses it"
+    );
 }
 
 #[test]
 fn a_platform_blocked_profile_does_not_count() {
     let tmp = tempfile::tempdir().unwrap();
     let store = store(&tmp, &["a", "b"]);
-    api_key_b(&store);
+    api_key_b(&store, "b");
+    key_for_b(&store);
     let now = fsx::now();
     ledger(
         &store,
@@ -292,6 +402,7 @@ fn a_platform_blocked_profile_does_not_count() {
         ),
         0o600,
     );
+    assert!(!takes_over_with_gate(&store, "a", Some(GATE)));
     assert!(!could_take_over(Some(&store), Some("a")));
 }
 
@@ -299,7 +410,8 @@ fn a_platform_blocked_profile_does_not_count() {
 fn an_expired_platform_block_does_not_exclude() {
     let tmp = tempfile::tempdir().unwrap();
     let store = store(&tmp, &["a", "b"]);
-    api_key_b(&store);
+    api_key_b(&store, "b");
+    key_for_b(&store);
     let now = fsx::now();
     ledger(
         &store,
@@ -310,7 +422,7 @@ fn an_expired_platform_block_does_not_exclude() {
         ),
         0o600,
     );
-    assert!(could_take_over(Some(&store), Some("a")));
+    assert!(takes_over_with_gate(&store, "a", Some(GATE)));
 }
 
 #[test]

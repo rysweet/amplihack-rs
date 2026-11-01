@@ -1513,7 +1513,9 @@ qa_chain_mutate() { # qa_chain_mutate <dir> <mutation>: what an agent could leav
 GATE_DIR=""; GATE_OUT=""
 gate_run() { # gate_run <mode> <extra-args...>
   local mode="$1"; shift
-  GATE_DIR="${WORK}/gate-${mode}-${RANDOM}"; mkdir -p "${GATE_DIR}"; chmod 0755 "${GATE_DIR}"
+  # mktemp, not $RANDOM: a repeated name reuses an earlier case's directory and
+  # its planted symlink or extra manifest row, which fails a positive control.
+  GATE_DIR="$(mktemp -d "${WORK}/gate-${mode}-XXXXXX")"; chmod 0755 "${GATE_DIR}"
   local gate_tmp="${GATE_DIR}/tmp"; mkdir -p "${gate_tmp}"
   local -a sd=(--state-dir "${GATE_DIR}") args=()
   local rec_src="" qa_src=""

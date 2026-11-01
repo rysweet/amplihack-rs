@@ -16,14 +16,13 @@
 
 use super::config::{self, Config, FileState};
 use super::fsx;
-use super::rerun::{holds_login, nested_candidate};
+use super::overflow_inputs::OverflowInputs;
+use super::rerun::{Pick, login_ready, nested_candidate};
 use super::state::State;
-use crate::commands::profile::kind::Ctx;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::rotate;
 use crate::commands::profile::rotate::ledger::{RotateState, active_blocks};
-use crate::commands::profile::rotate::{self, platform_block};
 use crate::commands::profile::store::ProfileStore;
-use crate::commands::profile::usage_cmd;
 use std::collections::BTreeSet;
 
 /// How far ahead of the wait's clock a reading may be stamped.
@@ -56,10 +55,15 @@ pub(crate) fn could_take_over(store: Option<&ProfileStore>, own: Option<&str>) -
     store.is_some_and(|s| another_login(s, own).unwrap_or(false))
 }
 
-/// A stored profile on another account than `own` that is not excluded, holds
-/// its own login on this platform and has no active spend block. Compares
-/// accounts as `nested_candidate` does, so a wait never starts for a login
-/// the probe could not choose. `None` on any read error.
+/// A stored profile on another account than `own` that the selection could
+/// choose once its readings allow: not excluded, no active spend block, a plan
+/// login or a usable overflow profile ([`OverflowPool::could_select`]), and
+/// passing the login checks ([`login_ready`]). Both rules are the ones
+/// `nested_candidate` applies, read from the same [`OverflowInputs`], so an
+/// unmarked API-key profile never counts (issue #1804) and a wait never
+/// starts for a login the probe could not choose. `None` on any read error.
+///
+/// [`OverflowPool::could_select`]: super::candidate::OverflowPool::could_select
 fn another_login(store: &ProfileStore, own: Option<&str>) -> Option<bool> {
     let cfg = match config::read(store.root()) {
         FileState::Valid(c) => c,
@@ -69,30 +73,37 @@ fn another_login(store: &ProfileStore, own: Option<&str>) -> Option<bool> {
             return None;
         }
     };
+    let overflow = OverflowInputs::load(store.root(), &cfg, fsx::now());
+    another_login_with(store, own, &cfg, &overflow)
+}
+
+/// [`another_login`] with the config and overflow inputs already read, so a
+/// test can give the overflow gate.
+pub(super) fn another_login_with(
+    store: &ProfileStore,
+    own: Option<&str>,
+    cfg: &Config,
+    overflow: &OverflowInputs,
+) -> Option<bool> {
     let state = State::new(store.root()).ok()?;
     let ledger = RotateState::new(&state.root).load_ledger().ok()?;
     let hosts = state.load_ledger().ok()?;
     let names = store.list().ok()?;
-    let now = fsx::now();
     let blocked = ledger
         .as_ref()
-        .map(|l| active_blocks(l, now))
+        .map(|l| active_blocks(l, fsx::now()))
         .unwrap_or_default();
-    // The API-key block covers every API-key profile.
-    let key_blocked: Vec<ProfileName> = ledger
-        .as_ref()
-        .and_then(|l| platform_block::active(l, now))
-        .map(|_| Ctx::load(store, usage_cmd::home_dir().as_deref()).platform_profiles(store))
-        .unwrap_or_default();
+    let pool = overflow.pool();
     let accounts: BTreeSet<&str> = names
         .iter()
-        .filter(|n| {
+        .filter_map(|n| ProfileName::parse(n).ok().map(|p| (n, p)))
+        .filter(|(n, p)| {
             !blocked.contains_key(*n)
-                && !cfg.exclude.iter().any(|e| e.as_str() == n.as_str())
-                && !key_blocked.iter().any(|k| k.as_str() == n.as_str())
-                && holds_login(&state, n)
+                && !cfg.exclude.iter().any(|e| e == p)
+                && pool.could_select(p)
+                && login_ready(&state, overflow, p)
         })
-        .map(|n| hosts.account_in(n))
+        .map(|(n, _)| hosts.account_in(n))
         .collect();
     Some(match own {
         Some(o) => accounts.iter().any(|a| *a != hosts.account_in(o)),
@@ -116,7 +127,7 @@ pub(crate) fn capacity_candidate(
     inherited: &ProfileName,
     start: i64,
     now: i64,
-) -> Option<ProfileName> {
+) -> Option<Pick> {
     let eff = config::effective(store.root());
     if !eff.on {
         return None;
@@ -148,5 +159,5 @@ pub(crate) fn capacity_candidate(
         account,
         &stale,
     )
-    .filter(|p| p != inherited)
+    .filter(|p| p.profile != *inherited)
 }

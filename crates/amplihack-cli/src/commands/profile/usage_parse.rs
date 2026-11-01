@@ -102,8 +102,10 @@ impl UsageState {
     }
 }
 
-/// One `Current …: N% used[ · resets …]` line. Claude leaves the reset
-/// clause out when the window has not started (no session open).
+/// One `Current …: N% used[ · resets …]` line. A week line may have no
+/// reset clause. A session line at 0% with none, next to an all-models week
+/// line, means the reading has no session limit (issue #1818); the parser
+/// then keeps no session window at all, see [`settle_session`].
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct UsageWindow {
     /// `session`, `all models`, or the model name as printed.
@@ -123,6 +125,11 @@ pub struct UsageReport {
     pub session: Option<UsageWindow>,
     pub week_all: Option<UsageWindow>,
     pub week_models: Vec<UsageWindow>,
+    /// `false` only when a reading showed no session window; `true`
+    /// otherwise, including rows that could not be read. When `false`,
+    /// `session` is `None`, `week_all` is `Some` and the state is `Ok` or
+    /// `WeeklyExhausted`.
+    pub session_limit: bool,
 }
 
 impl UsageReport {
@@ -133,8 +140,33 @@ impl UsageReport {
             session: None,
             week_all: None,
             week_models: Vec::new(),
+            session_limit: true,
         }
     }
+}
+
+/// Issue #1818: the one rule for whether a session limit applies, shared by
+/// both readers. A plan with no session limit is known only on positive
+/// evidence: the all-models week was read (`week_read`), no session reset
+/// was shown (`reset_seen`), and the session window, if one was read, is at
+/// 0%. Then the window is dropped and the result is `false`, which leaves
+/// the state `Ok` or `WeeklyExhausted`. Otherwise the window is kept and the
+/// result is `true`.
+///
+/// A session percentage above 0 keeps the limit even with no reset: a plan
+/// with no session limit has nothing to count there, so a non-zero value
+/// shows that a session window exists and may be exhausted.
+pub(crate) fn settle_session(
+    session: &mut Option<UsageWindow>,
+    reset_seen: bool,
+    week_read: bool,
+) -> bool {
+    let used = session.as_ref().is_some_and(|w| w.used_percentage != 0.0);
+    if week_read && !reset_seen && !used {
+        *session = None;
+        return false;
+    }
+    true
 }
 
 static LINE: LazyLock<Regex> = LazyLock::new(|| {
@@ -157,10 +189,21 @@ static RESET: LazyLock<Regex> = LazyLock::new(|| {
 /// output that parses counts even after a non-zero exit.
 pub fn parse_usage(stdout: &str, stderr: &str, now: i64) -> UsageReport {
     let mut report = UsageReport::empty(UsageState::Unparsed);
+    // Issue #1818: whether any session line showed a reset. Any line that
+    // mentions `Current session` but cannot be read counts as one (S2),
+    // including one with a prefix such as a bullet or an escape code, so a
+    // session line Claude prints in a new form keeps the session limit.
+    let mut reset_seen = false;
     for line in stdout.lines() {
         let Some((week, w)) = parse_line(line, now) else {
+            if line.contains("Current session") {
+                reset_seen = true;
+            }
             continue;
         };
+        if !week && w.resets_text.is_some() {
+            reset_seen = true;
+        }
         // The first session and all-models lines count; repeats are ignored.
         let slot = match (week, w.label.as_str()) {
             (false, _) => &mut report.session,
@@ -180,7 +223,12 @@ pub fn parse_usage(stdout: &str, stderr: &str, now: i64) -> UsageReport {
         |w: &Option<UsageWindow>| w.as_ref().is_some_and(|w| w.used_percentage >= 100.0);
     let any_line =
         report.session.is_some() || report.week_all.is_some() || !report.week_models.is_empty();
-    report.state = if says(SPEND_LIMIT) {
+    let spend = says(SPEND_LIMIT);
+    if !spend {
+        let week_read = report.week_all.is_some();
+        report.session_limit = settle_session(&mut report.session, reset_seen, week_read);
+    }
+    report.state = if spend {
         UsageState::SpendLimit
     } else if exhausted(&report.session) {
         UsageState::SessionExhausted

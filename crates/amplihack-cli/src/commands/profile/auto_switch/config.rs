@@ -249,7 +249,9 @@ pub fn read_editable(root: &Path) -> Result<Config, ProfileError> {
 /// under the auto-switch state lock, so two writers (or a writer and a
 /// rotator cycle) cannot lose each other's change. Waits at most
 /// `CONFIG_LOCK_WAIT`. Returns the resulting settings; nothing is written
-/// when `f` leaves them unchanged or fails.
+/// when `f` leaves them unchanged or fails. A write that changes `enabled`,
+/// or replaces a missing or corrupt file through `on` or `off`, appends a
+/// `change:` line to the rotate log (issue #1803).
 pub fn update(
     root: &Path,
     mode: ReadMode,
@@ -274,7 +276,8 @@ pub fn update_within(
     };
     // `before` is what an unchanged result needs no write for. `on` and
     // `off` always write over a missing or corrupt file, so the file then
-    // says what they set.
+    // says what they set; `was` names that file for the change log.
+    let mut was = None;
     let (before, mut c) = match mode {
         ReadMode::Editable => {
             let c = read_editable(root)
@@ -283,7 +286,14 @@ pub fn update_within(
         }
         ReadMode::DefaultOnInvalid => match read(root) {
             FileState::Valid(c) => (Some(c.clone()), c),
-            FileState::Missing | FileState::Corrupt => (None, Config::default()),
+            other => {
+                was = Some(if other == FileState::Missing {
+                    "unset"
+                } else {
+                    "corrupt"
+                });
+                (None, Config::default())
+            }
         },
     };
     f(&mut c)?;
@@ -296,6 +306,20 @@ pub fn update_within(
         )));
     }
     write(root, &c)?;
+    #[cfg(unix)]
+    {
+        use crate::commands::profile::rotate::change_log::{on_off, record};
+        let old = match (&before, was) {
+            (Some(b), _) if b.enabled != c.enabled => Some(on_off(b.enabled)),
+            (None, Some(w)) => Some(w),
+            _ => None,
+        };
+        if let Some(old) = old {
+            record(root, "auto-switch", old, on_off(c.enabled));
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = was;
     Ok(c)
 }
 

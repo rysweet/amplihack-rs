@@ -1633,20 +1633,86 @@ ryan-ryansweet  subscription  (detected: oauth login)
 wrong detection; `auto` removes the override. See
 [Kind override](../reference/profile-command.md#kind-override).
 
+### Allow the API-key profile to be used
+
+An API-key profile is never used automatically until you mark it. Marking
+is your consent to per-token billing:
+
+```
+$ amplihack profile overflow add api-key
+overflow: added api-key (api-key tier, tier 10)
+note: api-key is billed per token; it is used only when every plan login is measured and none is below 100% on both windows, no credit profile can be used, the earliest plan reset is more than --overflow-wait away and its login check passes.
+```
+
+`overflow list` shows whether it is marked:
+
+```
+$ amplihack profile overflow list
+ryan-mistt-org  tier 1  marked
+api-key  api-key tier  not marked (not used)
+```
+
+After `overflow add api-key` the last line reads `api-key  api-key tier  marked`.
+An API-key profile is always tier 10, the last tier, so `--tier` is refused
+for it. To stop using it, run `amplihack profile overflow remove api-key`,
+which prints `overflow: removed api-key`.
+
+Before each move onto the API-key profile, the rotator and auto-switch run a
+login check. It passes when the profile names a key: a non-empty
+`primaryApiKey` in the profile's `.claude.json`, or a non-empty
+`ANTHROPIC_API_KEY` under `env` or `apiKeyHelper` in its `settings.json`.
+A `.credentials.json` with no OAuth login, `{}` included, is not enough on
+its own. The check reads those files only. It makes no request and does not
+run the helper, so it confirms that a key is configured, not that it works:
+a revoked or unfunded key still passes. If the check fails, nothing moves,
+`~/.claude` is unchanged and the rotator writes:
+
+```
+key_check_refused api-key: no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting
+ALERT: API key profile api-key failed its login check (no primaryApiKey, ANTHROPIC_API_KEY or apiKeyHelper setting); not moving onto it
+```
+
+The ALERT is written once, not on every cycle.
+
+A key in `~/.claude.json` or `~/.claude/settings.json` is different: Claude
+uses it ahead of a plan login, so every session on the host bills per token,
+marked or not. `overflow add` warns about it and the rotator logs
+`ALERT: home_key`. See
+[API-key login check](../reference/profile-command.md#api-key-login-check).
+
+If you upgraded from a release that used API-key profiles without a mark,
+run `amplihack profile overflow add <api-key-profile>` to keep that
+behaviour. Nothing is marked for you. If an unmarked API-key profile is
+live in `~/.claude` at the upgrade, it stays live, billed per token, until a
+plan login has room or a credit profile can take over; `rotate status` shows
+it as `platform_not_marked` meanwhile. To avoid that, mark it or move
+off it by hand with `amplihack profile switch <plan-profile>`.
+
 ### How limits are handled with an API-key profile
 
 When accounts run out of quota, work moves in this order:
 
 1. another plan (subscription) login with capacity;
-2. a credit overflow profile, once the earliest plan reset is further away
+2. another plan login that is past its threshold but still below 100% on
+   both windows, ranked by the
+   [plan-room swap](../reference/profile-command.md#rotate-plan-room-swap):
+   session below the threshold first, then the most weekly room;
+3. only when no measured plan login is below 100% on both windows: a marked credit
+   overflow profile, by tier, once the earliest plan reset is further away
    than the overflow wait;
-3. the API-key profile, once no credit overflow profile can be used and the
-   earliest plan reset is still further away than the wait.
+4. the marked API-key profile (tier 10), once every plan login is measured,
+   no credit overflow profile can be used, the earliest plan reset is still
+   further away than the wait and its login check passes.
+
+Credit profiles are billed too, so they wait until no measured plan login
+has room. Only the API key also waits for a plan login that could not be
+measured (a session on it, or a failed probe), with an ALERT that names it. Earlier releases used them as soon as every plan login had reached
+its threshold.
 
 [Auto-switch](#switch-accounts-automatically) and the
 [rotator](claude-profile-rotation.md#use-an-api-key-as-the-last-resort)
 follow the same order. The rotator moves `~/.claude` off the API key on the
-first cycle after a plan login has capacity again, without waiting for a
+first cycle after a plan login has capacity or room again, without waiting for a
 hold to end. Auto-switch uses the API-key profile only for a new nested
 launch or a usage-limit rerun and never swaps it into a running session; a
 session started on the API-key profile keeps it, and its next nested launch
@@ -1752,9 +1818,12 @@ hours by default:
   the step then runs on that profile, not on the exhausted one.
 
 "Another login could take over" means the profile store holds another
-login that is not excluded from auto-switch
-(`amplihack profile auto-switch exclude`), holds a login on this platform
-and has no spend block.
+login that auto-switch could choose once its readings allow: not excluded
+from auto-switch (`amplihack profile auto-switch exclude`), holding a login
+on this platform, with no spend block, and either a plan login or a marked
+overflow profile while the overflow gate is open. An API-key profile counts
+only when `overflow=` marks it and its key passes the login check; an
+unmarked one never counts, because auto-switch never chooses it.
 A login that is over its threshold or has hit its own weekly limit still
 counts, because it may recover during the wait. With a single stored login
 there is nothing to wait for, and the run ends as before, even when the
