@@ -16,7 +16,7 @@
 //! the limit step 5 uses. Profiles are sorted before use, so the order of
 //! `Inputs::budgets` never changes the decision.
 
-use super::budget::{Headroom, headroom, usable_points};
+use super::budget::{Headroom, headroom, usable_points, weekly_remaining};
 use super::model::{Budget, Decision, DecisionKind, Inputs, Reason, ReasonCode};
 use super::queue::{head, key_for, order_key};
 use super::rate::next_limit;
@@ -142,10 +142,10 @@ pub fn decide(i: &Inputs, now: i64) -> Decision {
     }) else {
         let best = with_session
             .iter()
-            .map(|b| usable_points(b))
+            .map(|b| weekly_remaining(b))
             .fold(0.0, f64::max);
         let message = format!(
-            "ordinary work is held: the best usable remainder is {best:.1} points, at or below the {} point reserve",
+            "ordinary work is held: the best weekly remainder is {best:.1} points, at or below the {} point reserve",
             s.reserve_points
         );
         return made(DecisionKind::Wait, ReasonCode::Reserve, message);

@@ -256,8 +256,10 @@ The weekly window always has these values when its readings allow. The
 session window has them only on a profile with a session window. The rates
 used for feedback are those of the active profile.
 
-A burn rate is **unknown** when there are fewer than two readings, when a
-reset happened between the readings, or when the used percentage went down.
+The burn rate is measured from the oldest to the newest reading taken since
+the window last reset; readings from before the reset are ignored. A burn
+rate is **unknown** when there are fewer than two readings since the reset,
+or when the used percentage went down.
 An unknown rate never changes the limit.
 
 At most one evaluation runs per `governor.eval_interval_secs` (default 60),

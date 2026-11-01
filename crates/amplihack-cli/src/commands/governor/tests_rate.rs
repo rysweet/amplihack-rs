@@ -5,8 +5,9 @@
 //!
 //! Expected API in `rate`:
 //! - `burn_rate(&[Sample]) -> Option<f64>`: points per hour between the
-//!   oldest and newest sample; `None` with fewer than two samples, no elapsed
-//!   time, a reset between them (different `resets_at`) or a falling value.
+//!   oldest and newest sample in the newest sample's reset window; `None`
+//!   with fewer than two samples in that window, no elapsed time or a
+//!   falling value.
 //! - `sustainable(remaining: f64, resets_at: Option<i64>, now) -> Option<f64>`
 //! - `forecast(remaining: f64, burn: Option<f64>, now) -> Option<i64>`
 //! - `WindowRate { burn, sustainable, forecast, resets_at }` and
@@ -61,6 +62,21 @@ fn burn_rate_is_unknown_across_a_reset() {
     let mut later = s(0, 3.0);
     later.resets_at = Some(NOW + 200 * HOUR);
     assert_eq!(burn_rate(&[s(2, 1.0), later]), None);
+}
+
+#[test]
+fn burn_rate_after_a_reset_uses_only_the_current_window() {
+    // A long history from the previous window must not hide the rate of the
+    // current one: two readings after the reset are enough.
+    let new_reset = Some(NOW + 200 * HOUR);
+    let mut history: Vec<Sample> = (3..60).map(|h| s(h, 90.0 - h as f64)).collect();
+    let mut a = s(2, 1.0);
+    a.resets_at = new_reset;
+    let mut b = s(0, 5.0);
+    b.resets_at = new_reset;
+    history.push(b);
+    history.insert(10, a);
+    assert_eq!(burn_rate(&history), Some(2.0));
 }
 
 #[test]

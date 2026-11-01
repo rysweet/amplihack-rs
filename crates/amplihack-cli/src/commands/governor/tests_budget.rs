@@ -104,6 +104,10 @@ fn headroom_classifies_each_case() {
     assert_eq!(h(Some(100.0), 100.0, 10.0), Headroom::WeeklyExhausted);
     assert_eq!(h(Some(10.0), 90.0, 10.0), Headroom::InReserve);
     assert_eq!(h(Some(10.0), 90.0, 0.0), Headroom::Room);
+    // The reserve is weekly only: a nearly spent session with plenty of week
+    // left is not held in reserve.
+    assert_eq!(h(Some(92.0), 40.0, 10.0), Headroom::Room);
+    assert_eq!(h(Some(99.0), 40.0, 10.0), Headroom::Room);
     assert_eq!(h(None, 100.0, 0.0), Headroom::WeeklyExhausted);
     assert_eq!(h(None, 50.0, 0.0), Headroom::Room);
 }

@@ -32,25 +32,19 @@ pub struct WindowRate {
     pub resets_at: Option<i64>,
 }
 
-/// Points per hour between the oldest and newest finite sample. `None` with
-/// fewer than two, without elapsed time, across a reset, or when usage fell.
+/// Points per hour from the oldest to the newest finite sample in the newest
+/// sample's reset window. Samples from earlier windows are ignored, so a rate
+/// is available again from the second reading after a reset. `None` with
+/// fewer than two samples in that window, without elapsed time, or when
+/// usage fell.
 pub fn burn_rate(samples: &[Sample]) -> Option<f64> {
-    let mut valid = samples.iter().filter(|s| s.used_pct.is_finite());
-    let first = valid.next()?;
-    let (mut oldest, mut newest) = (first, first);
-    let mut count = 1usize;
-    for s in valid {
-        count += 1;
-        if s.observed_at < oldest.observed_at {
-            oldest = s;
-        }
-        if s.observed_at > newest.observed_at {
-            newest = s;
-        }
-    }
-    if count < 2 || oldest.resets_at != newest.resets_at {
+    let valid = || samples.iter().filter(|s| s.used_pct.is_finite());
+    let newest = valid().max_by_key(|s| s.observed_at)?;
+    let current = || valid().filter(|s| s.resets_at == newest.resets_at);
+    if current().count() < 2 {
         return None;
     }
+    let oldest = current().min_by_key(|s| s.observed_at)?;
     let elapsed = newest.observed_at.checked_sub(oldest.observed_at)?;
     if elapsed <= 0 {
         return None;

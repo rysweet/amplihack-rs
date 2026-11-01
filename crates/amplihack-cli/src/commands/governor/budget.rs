@@ -11,7 +11,9 @@ pub enum Headroom {
     Room,
     SessionExhausted,
     WeeklyExhausted,
-    /// The usable points are at or below the protected reserve.
+    /// The weekly remainder is at or below the protected reserve (D7). The
+    /// session remainder never counts towards the reserve: a busy session
+    /// resets within hours and is handled by session exhaustion instead.
     InReserve,
 }
 
@@ -62,7 +64,7 @@ pub fn headroom(b: &Budget, reserve_points: f64) -> Headroom {
     if b.session.is_some_and(|s| s.used_pct >= 100.0) {
         return Headroom::SessionExhausted;
     }
-    if usable_points(b) <= reserve_points {
+    if weekly_remaining(b) <= reserve_points {
         return Headroom::InReserve;
     }
     Headroom::Room

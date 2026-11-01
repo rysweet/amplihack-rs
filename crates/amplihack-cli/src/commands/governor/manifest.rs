@@ -10,8 +10,10 @@ const MAX_MANIFEST: u64 = 4096;
 
 /// The manifest workstream's share of the observed tokens: its attributed
 /// tokens over all tokens, unattributed ones included. Empty when the
-/// manifest is not an absolute path to a private regular file of this
-/// user, or has no observed tokens. The path is never printed or logged.
+/// manifest is not an absolute path to a regular file owned by this user
+/// (symlinks are not followed; permissions are not checked, since the file
+/// holds only token counts), or has no observed tokens. The path is never
+/// printed or logged.
 pub(super) fn token_shares(path: &Path) -> BTreeMap<String, f64> {
     use amplihack_utils::secure_files::{euid, read_bounded_nofollow};
     use std::os::unix::fs::MetadataExt;
@@ -22,7 +24,7 @@ pub(super) fn token_shares(path: &Path) -> BTreeMap<String, f64> {
     let raw = match read_bounded_nofollow(path, MAX_MANIFEST) {
         Ok(Some((raw, meta))) if meta.uid() == euid() => raw,
         _ => {
-            tracing::debug!("governor status: usage manifest not readable as a private file");
+            tracing::debug!("governor status: usage manifest not readable as a file of this user");
             return out;
         }
     };
