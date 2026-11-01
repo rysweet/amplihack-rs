@@ -66,7 +66,7 @@ pub enum ReEnableResult {
 /// On any unexpected error the function returns `Enabled` — power-steering
 /// should default to being active.
 pub fn prompt_re_enable_if_disabled(project_root: Option<&Path>) -> ReEnableResult {
-    match try_prompt(project_root) {
+    match try_prompt(project_root, is_noninteractive()) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "critical error in prompt_re_enable_if_disabled");
@@ -76,7 +76,13 @@ pub fn prompt_re_enable_if_disabled(project_root: Option<&Path>) -> ReEnableResu
 }
 
 /// Inner implementation that can propagate errors.
-fn try_prompt(project_root: Option<&Path>) -> Result<ReEnableResult, PowerSteeringError> {
+///
+/// `noninteractive` is [`is_noninteractive`] in production. Tests pass it in:
+/// a test process's stdin can be a terminal, and the prompt would read it.
+fn try_prompt(
+    project_root: Option<&Path>,
+    noninteractive: bool,
+) -> Result<ReEnableResult, PowerSteeringError> {
     let root = match project_root {
         Some(p) => p.to_path_buf(),
         None => std::env::current_dir()?,
@@ -96,7 +102,7 @@ fn try_prompt(project_root: Option<&Path>) -> Result<ReEnableResult, PowerSteeri
         return Ok(ReEnableResult::Enabled);
     }
 
-    if is_noninteractive() {
+    if noninteractive {
         tracing::info!("non-interactive terminal detected, defaulting to YES");
         remove_disabled_file_safe(&disabled_file, Some("(non-interactive, defaulted to YES)"));
         return Ok(ReEnableResult::Enabled);
