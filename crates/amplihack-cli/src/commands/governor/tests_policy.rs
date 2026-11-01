@@ -257,10 +257,17 @@ fn step4_protected_classes_may_spend_the_reserve() {
     }
 }
 
+/// A recipe admitted above the reserve that crosses it part-way through
+/// must finish: its agent steps are nested and are not held at the reserve,
+/// so the run is not abandoned with its points already spent.
 #[test]
-fn step4_reserve_still_holds_nested_ordinary_work() {
+fn step4_reserve_does_not_hold_nested_agent_steps() {
     let mut i = inputs(vec![budget("alpha", true, 0.0, 95.0)], Class::Ordinary);
     i.request.nested = true;
+    i.request.deadline = NOW;
+    check(&decide(&i, NOW), DecisionKind::Admit, ReasonCode::Nested);
+    // The same start at top level is held.
+    i.request.nested = false;
     check(&decide(&i, NOW), DecisionKind::Wait, ReasonCode::Reserve);
 }
 

@@ -16,7 +16,9 @@
 //!
 //! `model::Sample { observed_at, used_pct, resets_at: Option<i64> }`.
 
-use super::model::Sample;
+use super::files::History;
+use super::inputs::rates;
+use super::model::{Budget, Sample, WindowBudget};
 use super::rate::{RateSignal, WindowRate, burn_rate, forecast, next_limit, signal, sustainable};
 
 const NOW: i64 = 1_800_000_000;
@@ -133,13 +135,6 @@ fn signal_under_needs_every_window_under() {
 }
 
 #[test]
-fn forecast_before_reset_is_over() {
-    let mut win = w(Some(0.5), Some(1.0));
-    win.forecast = Some(NOW + HOUR);
-    assert_eq!(signal(&[win], 10), RateSignal::Over);
-}
-
-#[test]
 fn no_burn_rate_is_unknown() {
     assert_eq!(signal(&[], 10), RateSignal::Unknown);
     assert_eq!(signal(&[w(None, Some(1.0))], 10), RateSignal::Unknown);
@@ -173,4 +168,63 @@ fn next_limit_repairs_out_of_range_input() {
     assert_eq!(next_limit(0, RateSignal::Steady, 1, 4), 1);
     assert_eq!(next_limit(99, RateSignal::Steady, 1, 4), 4);
     assert_eq!(next_limit(u32::MAX, RateSignal::Under, u32::MAX, 64), 64);
+}
+
+/// Goes through `inputs::rates`, so the forecast is built from the same
+/// remaining points as the sustainable rate, as in production. 50 points
+/// left with 10 hours to the reset is 5 points per hour sustainable.
+fn production_signal(burn_per_hour: f64) -> RateSignal {
+    let reset = NOW + 10 * HOUR;
+    let budget = Budget {
+        name: "alpha".to_string(),
+        active: true,
+        eligible: true,
+        session: None,
+        weekly: WindowBudget {
+            used_pct: 50.0,
+            resets_at: Some(reset),
+        },
+    };
+    let sample = |ago_h: i64, used_pct: f64| Sample {
+        observed_at: NOW - ago_h * HOUR,
+        used_pct,
+        resets_at: Some(reset),
+    };
+    let mut history = History::default();
+    history.weekly.insert(
+        "alpha".to_string(),
+        vec![sample(2, 50.0 - 2.0 * burn_per_hour), sample(0, 50.0)],
+    );
+    let (per_profile, signal) = rates(&[budget], &history, NOW, 10);
+    let weekly = per_profile["alpha"].weekly;
+    assert_eq!(weekly.sustainable, Some(5.0));
+    assert_eq!(weekly.burn, Some(burn_per_hour));
+    // The forecast is before the reset whenever the burn is above 5.
+    if burn_per_hour > 5.0 {
+        assert!(weekly.forecast.unwrap() < reset, "{weekly:?}");
+    }
+    signal
+}
+
+#[test]
+fn production_signal_holds_inside_the_band_on_both_sides() {
+    // 1.05 x sustainable forecasts exhaustion at 9.5 hours, before the
+    // reset, and is still inside the band: no step down.
+    assert_eq!(production_signal(5.25), RateSignal::Steady);
+    assert_eq!(production_signal(4.75), RateSignal::Steady);
+}
+
+#[test]
+fn production_signal_steps_outside_the_band() {
+    assert_eq!(production_signal(6.0), RateSignal::Over);
+    assert_eq!(production_signal(4.0), RateSignal::Under);
+}
+
+#[test]
+fn signal_ignores_a_forecast_inside_the_band() {
+    let early = WindowRate {
+        forecast: Some(NOW + 9 * HOUR),
+        ..w(Some(1.05), Some(1.0))
+    };
+    assert_eq!(signal(&[early], 10), RateSignal::Steady);
 }

@@ -78,32 +78,37 @@ pub fn forecast(remaining: f64, burn: Option<f64>, now: i64) -> Option<i64> {
 }
 
 /// The signal for a set of windows with a band of `band_pct` percent:
-/// `Over` when any window burns above `sustainable × (1 + band)` or runs out
-/// before its reset; `Under` when every window burns below
-/// `sustainable × (1 − band)`; `Unknown` without a usable window.
+/// `Over` when any window burns above `sustainable × (1 + band)`; `Under`
+/// when every window burns below `sustainable × (1 − band)`; `Unknown`
+/// without a usable window.
+///
+/// The forecast is not consulted. Both it and the sustainable rate come from
+/// the same remaining points and the same `now`, so "runs out before the
+/// reset" is exactly "burns above sustainable": testing it as well would
+/// step the limit down at any burn above sustainable and leave the band to
+/// apply only to stepping up.
 pub fn signal(windows: &[WindowRate], band_pct: u32) -> RateSignal {
     let band = f64::from(band_pct.min(100)) / 100.0;
-    let usable: Vec<(f64, f64, &WindowRate)> = windows
+    let usable: Vec<(f64, f64)> = windows
         .iter()
         .filter_map(|w| {
             let burn = w.burn.filter(|b| b.is_finite())?;
             let sust = w.sustainable.filter(|s| s.is_finite())?;
-            Some((burn, sust, w))
+            Some((burn, sust))
         })
         .collect();
     if usable.is_empty() {
         return RateSignal::Unknown;
     }
-    let over = usable.iter().any(|(burn, sust, w)| {
-        let early = matches!((w.forecast, w.resets_at), (Some(f), Some(r)) if f < r);
-        *burn > sust * (1.0 + band) || early
-    });
+    let over = usable
+        .iter()
+        .any(|(burn, sust)| *burn > sust * (1.0 + band));
     if over {
         return RateSignal::Over;
     }
     if usable
         .iter()
-        .all(|(burn, sust, _)| *burn < sust * (1.0 - band))
+        .all(|(burn, sust)| *burn < sust * (1.0 - band))
     {
         return RateSignal::Under;
     }

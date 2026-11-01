@@ -10,7 +10,7 @@
 //! 4. Ordinary work and no profile above the reserve: wait (`reserve`).
 //! 5. Top-level slots at the limit: wait (`concurrency`).
 //! 6. An earlier request in the fair queue: wait (`queue`).
-//! 7. Admit (`room`); a nested request is admitted after step 4 (`nested`).
+//! 7. Admit (`room`); a nested request is admitted after step 3 (`nested`).
 //!
 //! Rate feedback runs first, at most once per evaluation interval, and sets
 //! the limit step 5 uses. Profiles are sorted before use, so the order of
@@ -121,6 +121,20 @@ pub fn decide(i: &Inputs, now: i64) -> Decision {
         return d;
     }
 
+    // A nested launch runs under its parent's slot, inside work that was
+    // already admitted. It is held by weekly and session exhaustion (steps
+    // 2 and 3), where it would fail against the provider's limit anyway, but
+    // not by the reserve, the concurrency limit or the queue: holding it
+    // there would abandon a running recipe part-way through and waste the
+    // points it has already spent.
+    if i.request.nested {
+        return made(
+            DecisionKind::Admit,
+            ReasonCode::Nested,
+            "nested launch admitted under its parent's slot".into(),
+        );
+    }
+
     // Step 4.
     let class = i.request.class;
     let reserve = if class.protected() {
@@ -150,14 +164,6 @@ pub fn decide(i: &Inputs, now: i64) -> Decision {
         );
         return made(DecisionKind::Wait, ReasonCode::Reserve, message);
     };
-
-    if i.request.nested {
-        return made(
-            DecisionKind::Admit,
-            ReasonCode::Nested,
-            "nested launch admitted under its parent's slot".into(),
-        );
-    }
 
     // Step 5.
     let held = u32::try_from(i.slots.len()).unwrap_or(u32::MAX);

@@ -136,7 +136,7 @@ checks run in this order, and the first that applies decides:
 | 6 | Another waiting request comes first in the [fair queue](#fair-queue) | Wait (`queue`) |
 | 7 | Otherwise | Admit (`room`, or `nested` for a nested request) |
 
-A [nested](#nesting) request skips steps 5 and 6; every other step applies to
+A [nested](#nesting) request skips steps 4, 5 and 6; steps 1 to 3 apply to
 it as usual.
 
 The decision function denies only at step 2, and only when at least one
@@ -223,9 +223,10 @@ Classes, from highest priority to lowest:
 | `ordinary` | Everything else | No |
 
 The **reserve** is `governor.reserve_points` (default 10) points of weekly
-remainder. Ordinary work waits when the best usable profile's weekly
-remainder is at or below the reserve. The other three classes may spend the
-reserve down to 0.
+remainder. A new top-level ordinary start waits when the best usable
+profile's weekly remainder is at or below the reserve. The other three
+classes may spend the reserve down to 0, and so may a
+[nested](#nesting) start inside work that was already admitted.
 
 The reserve is a scheduling preference, not a guarantee: a class can be set
 by any parent process. A session-exhausted pool (step 3) makes every class
@@ -282,7 +283,7 @@ on an admission attempt. With `band = governor.band_pct / 100` (default
 
 | Signal | Condition | Change |
 |--------|-----------|--------|
-| Over | Burn rate above `(1 + band) ×` sustainable rate in any window, or a forecast exhaustion before that window's reset | Limit down by `governor.step` (default 1) |
+| Over | Burn rate above `(1 + band) ×` sustainable rate in any window | Limit down by `governor.step` (default 1) |
 | Under | Burn rate below `(1 - band) ×` sustainable rate in every window | Limit up by `governor.step` |
 | Steady | Neither | No change |
 | Unknown | No burn rate | No change |
@@ -295,7 +296,15 @@ readings are noisy, and holding every ordinary start on the rate signal alone
 could stop all work on a single high reading; keeping one slot free bounds
 the burn without that risk.
 
-The band stops the limit stepping up and down on every evaluation.
+The band stops the limit stepping up and down on every evaluation, in both
+directions. The forecast exhaustion shown in status is not a separate test:
+it and the sustainable rate are computed from the same remaining points at
+the same moment, so a forecast before the reset means the same thing as a
+burn rate above sustainable. Testing it as well would step the limit down at
+any burn above sustainable, bypassing the band. For example, with 50 points
+left and 10 hours to the reset the sustainable rate is 5 points per hour; a
+burn rate of 5.25 points per hour forecasts exhaustion after 9.5 hours, but
+is inside the band, so the signal is steady and the limit holds.
 
 ## Fair queue
 
@@ -366,9 +375,10 @@ ancestry cannot be checked and a matching tree id is trusted.
 A nested launch:
 
 - takes no new slot, and runs under its parent's slot;
-- is not limited by the concurrency limit or the queue (steps 5 and 6);
-- is still held by weekly exhaustion (step 2), session exhaustion (step 3)
-  and the reserve (step 4);
+- is not limited by the reserve, the concurrency limit or the queue
+  (steps 4, 5 and 6);
+- is still held by weekly exhaustion (step 2) and session exhaustion
+  (step 3);
 - is counted in the parent slot's `nested_children` in status.
 
 A top-level `recipe run` usually starts without `AMPLIHACK_TREE_ID`. Before
@@ -396,11 +406,17 @@ released when the parent exits.
 A nested launch whose tree id has no live slot is treated as top-level and
 needs a slot of its own.
 
-Because a nested launch can wait on session exhaustion or the reserve, an
-agent step inside a running recipe can wait for up to the wait time. If that
-wait expires, the step exits 80 in the middle of the run. An agent step
-started while the session limit is exhausted would fail against that limit
-anyway, so the governor does not exempt nested launches from steps 3 and 4.
+Nested launches are exempt from the reserve. A recipe that was admitted
+above the reserve and crosses it part-way through finishes its remaining
+agent steps, spending reserve points, rather than holding each step and
+abandoning the run with the points already spent and a half-built worktree
+left behind. The reserve holds new top-level ordinary work only.
+
+Because a nested launch can still wait on weekly or session exhaustion, an
+agent step inside a running recipe can wait for up to the wait time, and
+exits 80 in the middle of the run if that wait expires. An agent step
+started while either limit is exhausted would fail against that limit
+anyway, so the governor does not exempt nested launches from steps 2 and 3.
 
 ## Waiting, denial and exit code 80
 
@@ -438,7 +454,7 @@ Reason codes are stable and appear in stderr lines and in status JSON.
 | `nested` | Admit | Admitted under the parent's slot |
 | `weekly-exhausted` | Wait or deny | Every usable profile's weekly window is used |
 | `session-exhausted` | Wait | Every usable profile is at its session limit; the message names the reset time |
-| `reserve` | Wait | Ordinary work, and the best weekly remainder is at or below the reserve |
+| `reserve` | Wait | Top-level ordinary work, and the best weekly remainder is at or below the reserve |
 | `concurrency` | Wait | The slots in use are at the limit |
 | `queue` | Wait | Another request comes first |
 | `wait-expired` | Deny | A wait, for any of the reasons above, ran out; set by the admission loop, not the decision function |
@@ -764,7 +780,7 @@ against other processes of the same user: any parent can set
   not read, so anyone who can open an issue that a recipe run picks up
   cannot claim the reserve.
 - **Nesting.** A process nests under a live slot, and is not counted against
-  the concurrency limit, only when the slot's process is its parent or
+  the concurrency limit or held by the reserve, only when the slot's process is its parent or
   another ancestor (on Linux). A tree id or parent marker that leaked into
   an unrelated environment, such as a tmux server started from an agent
   step, therefore nests nothing. A process of the same user can still nest
