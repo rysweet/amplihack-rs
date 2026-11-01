@@ -368,10 +368,6 @@ pub struct Observation {
     pub account: String,
     pub session: Option<ObservedWindow>,
     pub week: Option<ObservedWindow>,
-    /// Issue #1818: `false` when the reading showed no session window, so a
-    /// stored one is cleared rather than kept. In memory only; the usage
-    /// file's format is unchanged.
-    pub session_limit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -521,11 +517,12 @@ pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutco
             let file = file.get_or_insert_with(|| state.load_usage_or_warn());
             let old = file.accounts.get(&o.account);
             let reading = Reading {
-                five_hour: if o.session_limit {
-                    five_hour.or_else(|| still_valid(old.and_then(|r| r.five_hour)))
-                } else {
-                    None
-                },
+                // Issue #1818: a reading with no session limit keeps a stored
+                // session window until its reset passes. A 0%, reset-less
+                // reading may be stale, and a live window that contradicts
+                // it is the cautious answer; the cost is at most one
+                // five-hour window in which the login is passed over.
+                five_hour: five_hour.or_else(|| still_valid(old.and_then(|r| r.five_hour))),
                 seven_day: seven_day.or_else(|| still_valid(old.and_then(|r| r.seven_day))),
                 observed_at: now,
                 // Deliberate: the usage file's format is fixed, and a

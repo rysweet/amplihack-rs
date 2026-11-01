@@ -579,6 +579,13 @@ Known limitations:
 
   Ranking is the same in every case: a missing `five_hour` counts as 0%.
   These views can also be as old as the last recorded reading.
+- When `profile usage` records a reading with no session limit for a login
+  whose stored auto-switch reading has a session window that has not reset,
+  that window is kept until its reset passes. The new reading may come from
+  figures `claude` stored earlier, and a live window contradicts it. The
+  rotator and auto-switch therefore go on treating the login as it was
+  (for example session-exhausted) for at most five hours. See
+  [Refreshing auto-switch readings](#refreshing-auto-switch-readings).
 
 #### States
 
@@ -1144,11 +1151,14 @@ Then, under the lock, for each row:
 - If neither window passes, nothing is recorded for that account. If only
   one passes, the other is kept from the stored reading while its reset time
   is still in the future.
-- A row with [no session limit](#no-session-limit) is the exception: its
-  stored `five_hour` is cleared, not kept, even when its reset time is still
-  in the future. Otherwise a login that has just stopped reporting a session
-  window would stay session-exhausted until an old reset passed. The reading
-  is stored with `seven_day` only.
+- A row with [no session limit](#no-session-limit) follows the same rule:
+  its stored `five_hour` is kept while its reset time is still in the
+  future, and dropped once it has passed. A 0% session line with no reset
+  may come from figures `claude` stored earlier, so it does not override a
+  live session window. A login that has just stopped reporting a session
+  window can therefore stay session-exhausted until the old reset passes,
+  which is at most five hours. No new `five_hour` is recorded for such a
+  row.
 - The reading has `observed_at` set to now and `source` set to `statusline`,
   and is merged with the stored one the usual way.
 
@@ -2296,7 +2306,7 @@ limit (see [Usage-limit reruns](#usage-limit-reruns)).
   `five_hour`: Claude reported no session window for that login (see
   [No session limit](#no-session-limit)), or the status line gave none. It
   is judged on `seven_day` alone. When `profile usage` records such a
-  reading, any stored `five_hour` is cleared; see
+  reading, a stored `five_hour` is kept until its reset time passes; see
   [Refreshing auto-switch readings](#refreshing-auto-switch-readings).
   `usage.json` has no `session_limit` field and its format is unchanged.
 - **Merging.** The reading with the newer `observed_at` wins; on a tie, the

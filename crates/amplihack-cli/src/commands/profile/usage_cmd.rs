@@ -1336,7 +1336,6 @@ pub(super) fn observations(rows: &[Row]) -> Vec<Observation> {
             account: r.account.clone(),
             session: observed(&r.report.session),
             week: observed(&r.report.week_all),
-            session_limit: r.report.session_limit,
         })
         .collect()
 }

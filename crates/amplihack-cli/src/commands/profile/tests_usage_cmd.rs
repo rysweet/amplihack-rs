@@ -1886,8 +1886,11 @@ fn json_session_limit_is_a_bool_on_every_row() {
     }
 }
 
+/// A row with no session limit reaches `record_usage` as a week with no
+/// session window, so a stored session window is kept until its reset
+/// passes (crusty round 3 on PR #1829).
 #[test]
-fn observations_say_whether_a_session_limit_applies() {
+fn observations_of_no_session_limit_rows_have_no_session_window() {
     let rows = vec![
         ok(
             "normal",
@@ -1900,9 +1903,8 @@ fn observations_say_whether_a_session_limit_applies() {
     let obs = observations(&rows);
     let got: Vec<(&str, bool)> = obs
         .iter()
-        .map(|o| (o.profile.as_str(), o.session_limit))
+        .map(|o| (o.profile.as_str(), o.session.is_some()))
         .collect();
     assert_eq!(got, [("normal", true), ("free", false), ("full", false)]);
-    assert!(obs[1].session.is_none());
     assert_eq!(obs[1].week.unwrap().used_percentage, 40.0);
 }
