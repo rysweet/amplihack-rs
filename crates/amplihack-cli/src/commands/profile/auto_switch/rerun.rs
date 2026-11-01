@@ -497,6 +497,12 @@ fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<Profile
     let pick = capacity_candidate(sw.store, &sw.state, &sw.inherited, start, waiter.now())?;
     // A move onto a per-token profile gives its reason line, as any rerun
     // onto one does (#1804).
+    // The run log names the login the retry moves to, as every other move
+    // in this loop does (#1801, item 3).
+    eprintln!(
+        "amplihack: a login has capacity again; rerunning this step under profile {:?} (auto-switch)",
+        pick.profile.as_str()
+    );
     per_token::record(&sw.state.root, pick.per_token.as_deref());
     Some(pick.profile)
 }

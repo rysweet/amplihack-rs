@@ -273,6 +273,13 @@ fn ac13_an_inherited_profile_step_retries_on_the_login_with_capacity() {
     let ev = events(&out);
     assert!(ev[0].contains(" wait=capacity "), "{ev:?}");
     assert_eq!(ev[1..], ["end reason=login capacity", "resume attempt=3"]);
+    assert!(
+        text(&out.stderr).contains(
+            "amplihack: a login has capacity again; rerunning this step under profile \"Y\" (auto-switch)"
+        ),
+        "the run log must name the login the retry moved to: {}",
+        describe(&out)
+    );
     f.assert_isolated("0");
     assert_no_account_detail(&f, &out);
 }

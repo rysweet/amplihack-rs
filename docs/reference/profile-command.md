@@ -6160,6 +6160,14 @@ The retry profile is never the exhausted inherited profile when another
 profile showed capacity. It is passed only as a validated profile name.
 After a reset wait the retry runs under the inherited profile, as before.
 
+When the retry after a capacity wait moves to another profile, the step's
+stderr names it before the retry starts, in the same form as every other
+auto-switch move:
+
+```
+amplihack: a login has capacity again; rerunning this step under profile "personal" (auto-switch)
+```
+
 #### Closing line
 
 When a step ends on a usage limit after a wait could not lift it, the
