@@ -23,11 +23,29 @@ cd "${1:-$(dirname "$0")/..}"
 # control that proves an ambient GIT_DIR really does hijack one.
 allowed_prefix="crates/amplihack-git/"
 
-hits=$(grep -rn --include='*.rs' 'Command::new("git")' . \
-    --exclude-dir=target --exclude-dir=.git --exclude-dir=worktrees \
-    | sed 's|^\./||' \
-    | grep -v "^${allowed_prefix}" \
-    || true)
+# search_rs <grep args>: set $found to the matches in the tree's Rust files.
+# No match is fine; a scan that did not finish stops the guard. This runs in the
+# main shell, not a pipeline or `$(...)`, so the exit status and the `exit` both
+# count.
+search_rs() {
+    local rc=0
+    found=$(grep -rn --include='*.rs' \
+        --exclude-dir=target --exclude-dir=.git --exclude-dir=worktrees \
+        "$@" . | sed 's|^\./||') || rc=$?
+    if [ "$rc" -gt 1 ]; then
+        echo "ERROR: grep failed (exit $rc), so the scan did not finish." >&2
+        exit 2
+    fi
+}
+
+# drop_prefix <prefix>: filter stdin. grep exits 1 when no lines are left, which
+# is the good outcome; anything higher fails the pipeline, and with it the guard.
+drop_prefix() {
+    grep -v "^$1" || [ $? -eq 1 ]
+}
+
+search_rs 'Command::new("git")'
+hits=$(printf '%s\n' "$found" | drop_prefix "$allowed_prefix")
 
 if [ -n "$hits" ]; then
     echo "ERROR: raw Command::new(\"git\") found (issue #1278)." >&2
@@ -54,18 +72,18 @@ fi
 # git may stop on a credential prompt: the #1764 hang. It is for a person at a
 # terminal who typed the URL, nothing else. Typing it is as easy as typing
 # `Command::new("git")`, so each caller is named here and a new one fails until
-# a reviewer adds it. The helper crate defines and tests it.
+# a reviewer adds it. The helper crate defines and tests it. The search matches
+# the whole word so an alias or a function value is caught too, which also means
+# a comment naming it outside the allowlist fails.
 interactive_allowed=(
     "crates/amplihack-git/"
     "crates/amplihack-cli/src/commands/plugin/manager.rs"
 )
 
-interactive_hits=$(grep -rn --include='*.rs' 'interactive_command(' . \
-    --exclude-dir=target --exclude-dir=.git --exclude-dir=worktrees \
-    | sed 's|^\./||' \
-    || true)
+search_rs -w 'interactive_command'
+interactive_hits=$found
 for allowed in "${interactive_allowed[@]}"; do
-    interactive_hits=$(printf '%s\n' "$interactive_hits" | grep -v "^${allowed}" || true)
+    interactive_hits=$(printf '%s\n' "$interactive_hits" | drop_prefix "$allowed")
 done
 
 if [ -n "$interactive_hits" ]; then

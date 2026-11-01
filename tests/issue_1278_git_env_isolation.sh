@@ -197,6 +197,58 @@ else
     record_pass "guard rejects interactive_command() outside its allowlist"
 fi
 
+# The guard matches the whole word: without the call's bracket, an alias or a
+# function value is still a new caller.
+guard_rejects_sample() {
+    local name="$1" sample="$2" tree="$TMPROOT/$1"
+    mkdir -p "$tree/crates/demo/src"
+    printf '%s\n' "$sample" > "$tree/crates/demo/src/lib.rs"
+    if "$GUARD" "$tree" >/dev/null 2>&1; then
+        record_fail "guard rejects $name" "guard exited 0"
+    else
+        record_pass "guard rejects $name"
+    fi
+}
+guard_rejects_sample "alias-import" 'use amplihack_git::interactive_command as ic;'
+guard_rejects_sample "alias-in-group" 'use amplihack_git::{command, interactive_command as ic};'
+guard_rejects_sample "function-value" 'pub fn f() { let g = amplihack_git::interactive_command; g(); }'
+
+# A word that merely contains the name is not a caller.
+longer_tree="$TMPROOT/longer/crates/demo/src"
+mkdir -p "$longer_tree"
+echo 'pub fn not_interactive_command_helper() {}' > "$longer_tree/lib.rs"
+assert "guard accepts a longer name that contains interactive_command" \
+    "$GUARD" "$TMPROOT/longer"
+
+# A scan that did not finish must not report OK. Each fake grep breaks one site
+# and passes everything else to the real grep, so a pass here is not an accident
+# of the first failure. PATH is set for the guard's command only. A fake rather
+# than an unreadable file, because root can read that file.
+real_grep="$(command -v grep)"
+fake_grep_bin="$TMPROOT/fake-grep"
+mkdir -p "$fake_grep_bin"
+cat > "$fake_grep_bin/grep" <<SH
+#!/bin/sh
+case "\$FAKE_GREP_FAILS_ON \$*" in
+    raw-search*'Command::new'*) exit 2 ;;
+    filter*-v*) exit 2 ;;
+    allowlist-search*'-w'*) exit 2 ;;
+esac
+exec "$real_grep" "\$@"
+SH
+chmod +x "$fake_grep_bin/grep"
+for site in raw-search filter allowlist-search; do
+    if out="$(FAKE_GREP_FAILS_ON="$site" PATH="$fake_grep_bin:$PATH" \
+        "$GUARD" "$TMPROOT/clean" 2>&1)"; then
+        record_fail "guard fails when grep fails at: $site" "guard exited 0: $out"
+    else
+        case "$out" in
+            *OK:*) record_fail "guard fails when grep fails at: $site" "printed OK: $out" ;;
+            *) record_pass "guard fails when grep fails at: $site" ;;
+        esac
+    fi
+done
+
 allowed_tree="$TMPROOT/allowed/crates/amplihack-cli/src/commands/plugin"
 mkdir -p "$allowed_tree"
 cp "$interactive_tree/lib.rs" "$allowed_tree/manager.rs"
