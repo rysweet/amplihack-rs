@@ -236,6 +236,7 @@ nav:
   - Reference:
       - Discoveries: claude/context/DISCOVERIES.md
       - Security: SECURITY_RECOMMENDATIONS.md
+      - XPIA Configuration: reference/xpia-configuration.md
       - Testing: testing/TEST_PLAN.md
       - Migration Contract Tests: testing/MIGRATION_CONTRACT_TESTS.md
       - Subprocess Env Isolation Tests: testing/SUBPROCESS_ENV_ISOLATION_TESTS.md

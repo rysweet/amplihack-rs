@@ -696,7 +696,7 @@ Reflection system uses `security.rs` to sanitize all content before GitHub issue
 
 ### XPIA Defense
 
-`xpia_defense.rs` provides Cross-Process Injection Attack protection.
+`xpia_defense.rs` provides Cross-Process Injection Attack protection. It is off by default and runs only when `XPIA_ENABLED` is `1`, `true` or `yes` (any case). The pre-tool-use CWD, commit-on-main and `--no-verify` guards do not depend on it.
 
 ### Permissions
 
