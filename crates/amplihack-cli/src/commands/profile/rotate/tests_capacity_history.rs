@@ -24,7 +24,9 @@ use super::settings;
 use super::tests_swap::{Env, env, n};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
+use crate::commands::profile::usage_cmd::ENV_CREDENTIAL_VARS;
 use crate::commands::profile::usage_history::{self, Entry, Point, from_probes, to_line};
+use crate::test_support::{EnvGuard, env_lock};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -138,6 +140,20 @@ fn from_probes_records_an_exhausted_week_as_100() {
     assert_eq!(s.points["out"].w, 100);
 }
 
+#[test]
+fn from_probes_counts_an_exhausted_probe_without_a_week_as_unknown() {
+    // Only the session window was read: the week is unknown, never 100%.
+    for s in [40.0, 100.0] {
+        let mut out = probed(s, 0.0);
+        out.reading = Reading::Exhausted;
+        out.windows.week = None;
+        let probes = (probed(1.0, 2.0), vec![(n("out"), out)]);
+        let snap = from_probes(T, None, &probes, None);
+        assert!(snap.points.is_empty(), "{s}: {:?}", snap.points);
+        assert_eq!(snap.unknown, ["out"]);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // The cycle appends one line
 // ---------------------------------------------------------------------------
@@ -186,6 +202,14 @@ fn stubbed(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
     Ok(stay(None))
 }
 
+/// The credential variables removed until the guard drops: with one set,
+/// nothing is recorded, so a test that expects a line must not inherit one
+/// from the developer's shell.
+fn without_credential_vars() -> (std::sync::MutexGuard<'static, ()>, EnvGuard) {
+    let lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    (lock, EnvGuard::unset(ENV_CREDENTIAL_VARS))
+}
+
 fn history(e: &Env) -> std::path::PathBuf {
     e.root.join(".auto-switch.d").join(usage_history::FILE)
 }
@@ -200,6 +224,7 @@ fn lines(e: &Env) -> Vec<String> {
 
 #[test]
 fn a_measured_cycle_appends_one_line_with_every_probed_profile() {
+    let _env = without_credential_vars();
     let e = env();
     let mut c = ctx(&e, measured);
     let before = now();
@@ -244,6 +269,7 @@ fn a_cycle_without_probes_appends_nothing() {
 
 #[test]
 fn a_history_that_cannot_be_written_logs_one_line_and_the_cycle_goes_on() {
+    let _env = without_credential_vars();
     let e = env();
     let target = e.root.join("elsewhere");
     fs::write(&target, "").unwrap();

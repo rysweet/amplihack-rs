@@ -10,7 +10,7 @@
 
 use super::auto_switch::{self, Observation, ObservedWindow, RecordOutcome};
 use super::capacity_summary::{self, Summary};
-use super::capacity_weight::{self, Weights};
+use super::capacity_weight;
 use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
 use super::store::ProfileStore;
@@ -40,7 +40,7 @@ pub(super) static PROBE_CANCEL: std::sync::LazyLock<Arc<AtomicBool>> =
     std::sync::LazyLock::new(Arc::default);
 /// With one of these set, `claude` may report that credential's usage rather
 /// than the profile login's, so nothing is recorded.
-const ENV_CREDENTIAL_VARS: [&str; 3] = [
+pub(super) const ENV_CREDENTIAL_VARS: [&str; 3] = [
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_AUTH_TOKEN",
     "CLAUDE_CODE_OAUTH_TOKEN",
@@ -212,33 +212,32 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     order(&mut rows, at);
     // Issue #1797: the capacity summary, from these rows only; no probe.
     // `--raw` is diagnostic output and gets neither summary nor history.
-    let summary = (!raw && output != Output::Json)
-        .then(|| capacity_of(store, &rows, swapped.as_ref(), usable_session_pct, at))
-        .flatten();
+    // `None` when no row is a subscription login: no summary, no history.
+    let current = usage_history::from_rows(at, &rows, swapped.as_ref());
+    let summary = current
+        .as_ref()
+        .filter(|_| !raw && output != Output::Json)
+        .map(|c| capacity_of(store, c, usable_session_pct, at));
     print_output(&rows, output, summary.as_ref(), at, swapped.as_ref());
     #[cfg(unix)]
     for (a, b) in super::duplicates::pairs(&super::duplicates::accounts(store, home.as_deref())) {
         eprintln!("warning: {}", super::duplicates::warning(&a, &b));
     }
     record(store, &rows, swapped.as_ref(), json);
-    if !raw && names.is_empty() {
-        record_history(store, &rows, swapped.as_ref(), at);
+    if let Some(c) = current.as_ref().filter(|_| !raw && names.is_empty()) {
+        record_history(store, c, at);
     }
     Ok(())
 }
 
-/// The capacity summary of `rows`, printing the threshold, weights and
-/// history warnings; `None` when no row is a subscription login.
+/// The capacity summary of `current`, printing the threshold, weights and
+/// history warnings.
 fn capacity_of(
     store: &ProfileStore,
-    rows: &[Row],
-    swapped: Option<&ProfileName>,
+    current: &usage_history::Snapshot,
     flag: Option<u8>,
     now: i64,
-) -> Option<Summary> {
-    if !has_logins(rows) {
-        return None;
-    }
+) -> Summary {
     let env = std::env::var_os(capacity_weight::ENV);
     let (threshold, warning) = capacity_weight::usable_threshold(flag, env.as_deref());
     let (weights, warnings) = capacity_weight::load(store.root());
@@ -247,49 +246,22 @@ fn capacity_of(
     for w in warning.iter().chain(&warnings).chain(&refused) {
         eprintln!("{w}");
     }
-    summary_of(rows, swapped, &weights, threshold, &history, now)
-}
-
-/// Whether any row is a subscription login: not an API-key profile and not
-/// the `~/.claude` row.
-fn has_logins(rows: &[Row]) -> bool {
-    rows.iter().any(|r| !r.api_key && !r.live_in_home)
-}
-
-/// The capacity summary of `rows` at `now`; `None` when no row is a
-/// subscription login. A swapped live profile is unknown.
-pub(super) fn summary_of(
-    rows: &[Row],
-    swapped: Option<&ProfileName>,
-    weights: &Weights,
-    threshold: u8,
-    history: &[usage_history::Entry],
-    now: i64,
-) -> Option<Summary> {
-    if !has_logins(rows) {
-        return None;
-    }
-    let current = usage_history::from_rows(now, rows, swapped);
-    Some(capacity_summary::compute(&capacity_summary::Inputs {
-        current: &current,
-        weights,
+    capacity_summary::compute(&capacity_summary::Inputs {
+        current,
+        weights: &weights,
         threshold,
-        history,
+        history: &history,
         now,
-    }))
+    })
 }
 
 /// Appends this run to the usage history (issue #1797). `append` applies
 /// the recording rules: a trusted root, a private `.auto-switch.d` and no
-/// credential variable. Called only for unfiltered runs without `--raw`. A
-/// failure is one stderr line and never changes the exit status.
-fn record_history(store: &ProfileStore, rows: &[Row], swapped: Option<&ProfileName>, now: i64) {
-    let root = store.root();
-    if !has_logins(rows) {
-        return;
-    }
-    let entry = usage_history::from_rows(now, rows, swapped).entry();
-    if let Err(e) = usage_history::append(root, &entry, now)
+/// credential variable. Called only for unfiltered runs without `--raw`
+/// that have a subscription login. A failure is one stderr line and never
+/// changes the exit status.
+fn record_history(store: &ProfileStore, current: &usage_history::Snapshot, now: i64) {
+    if let Err(e) = usage_history::append(store.root(), &current.entry(), now)
         && let Some(w) = e.warning()
     {
         eprintln!("{w}");

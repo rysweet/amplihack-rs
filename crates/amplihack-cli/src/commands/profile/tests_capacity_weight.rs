@@ -218,6 +218,28 @@ mod load {
     }
 
     #[test]
+    fn a_root_writable_by_other_users_is_refused() {
+        // Group write is allowed for the user's own private group, as for
+        // the usage history; other-write never is.
+        for mode in [0o707, 0o777] {
+            let (t, state) = root();
+            write(&state.join(FILE), br#"{"team": 2.5}"#, 0o600);
+            fs::set_permissions(t.path(), fs::Permissions::from_mode(mode)).unwrap();
+            let (w, warnings) = load(t.path());
+            assert_file_warning(&warnings);
+            assert_uniform(&w);
+        }
+    }
+
+    #[test]
+    fn a_missing_root_is_silent() {
+        let t = tempfile::tempdir().unwrap();
+        let (w, warnings) = load(&t.path().join("absent"));
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_uniform(&w);
+    }
+
+    #[test]
     fn a_symlink_is_refused() {
         let (t, state) = root();
         let real = t.path().join("elsewhere.json");

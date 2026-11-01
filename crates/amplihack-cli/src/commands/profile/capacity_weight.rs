@@ -107,8 +107,14 @@ pub(super) fn load(root: &Path) -> (Weights, Vec<String>) {
     use amplihack_utils::secure_files::{owned_by_euid, read_bounded_nofollow};
     use std::os::unix::fs::MetadataExt;
 
-    let path = root.join(STATE_DIR).join(FILE);
     let refused = |reason: &str| (Weights::default(), vec![file_warning(reason)]);
+    // The same root rule as the usage history's readers and writers.
+    match super::auto_switch::check_root_private(root) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Weights::default(), vec![]),
+        Err(_) => return refused("unsafe file"),
+    }
+    let path = root.join(STATE_DIR).join(FILE);
     let meta = match std::fs::symlink_metadata(&path) {
         Ok(m) => m,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return (Weights::default(), vec![]),

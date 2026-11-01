@@ -1746,9 +1746,30 @@ mod summary_1797 {
     use super::super::capacity_summary::Summary;
     use super::super::capacity_weight::Weights;
     use super::super::name::ProfileName;
-    use super::super::usage_cmd::{render_json, render_summary_json, summary_block, summary_of};
+    use super::super::usage_cmd::{render_json, render_summary_json, summary_block};
     use super::super::usage_parse::{UsageReport, UsageState};
+    use super::super::{capacity_summary, usage_history};
     use super::{DAY, HOUR, NOW, golden_rows, ok, row};
+
+    /// The capacity summary `profile usage` prints for `rows` at `now`;
+    /// `None` when no row is a subscription login.
+    fn summary_of(
+        rows: &[super::Row],
+        swapped: Option<&ProfileName>,
+        weights: &Weights,
+        threshold: u8,
+        history: &[usage_history::Entry],
+        now: i64,
+    ) -> Option<Summary> {
+        let current = usage_history::from_rows(now, rows, swapped)?;
+        Some(capacity_summary::compute(&capacity_summary::Inputs {
+            current: &current,
+            weights,
+            threshold,
+            history,
+            now,
+        }))
+    }
 
     fn parse(text: &str) -> serde_json::Value {
         serde_json::from_str(text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
@@ -1868,6 +1889,7 @@ fn capacity_sources_never_touch_credentials_or_account_identities() {
         ("capacity_summary.rs", include_str!("capacity_summary.rs")),
         ("capacity_weight.rs", include_str!("capacity_weight.rs")),
         ("usage_history.rs", include_str!("usage_history.rs")),
+        ("rotate/history.rs", include_str!("rotate/history.rs")),
     ] {
         for needle in [
             "set_var",

@@ -1020,6 +1020,7 @@ A row's reading is valid only when its weekly figure is known:
 | `ok` or `session_exhausted` with an all-models week | Valid, at that week percentage. |
 | `weekly_exhausted` | Valid, at 100% even when no week percentage was read. |
 | `ok` or `session_exhausted` without an all-models week | Unknown. |
+| A rotator probe that is exhausted but read no all-models week | Unknown: the week is not taken to be full. |
 | `spend_limit`, `not_logged_in`, `timeout`, `unparsed`, `error` | Unknown. |
 | The profile [live in `~/.claude`](#logins-in-claude), when the login in `~/.claude` changed during the probe | Unknown: the numbers may belong to another account. |
 
@@ -1123,7 +1124,8 @@ per run and never written by amplihack. The rules:
 
 | Case | Result |
 |------|--------|
-| No file | Every weight is `1.0`, with no message. |
+| No file, or no profile root | Every weight is `1.0`, with no message. |
+| The profile root is a symlink, is not a directory owned by you, or is writable by other users | Every weight is `1.0`, with the warning below and the reason `unsafe file`. This is the same root rule as the [usage history](#usage-history). |
 | The file is a symlink, larger than 64 KiB, not owned by you, writable by group or others, not valid JSON, or not a JSON object | Every weight is `1.0`, and one warning goes to stderr: `warning: capacity-weights.json ignored (<reason>); every weight is 1.0`. |
 | A value that is not a number, or not above `0` and at most `1000` | That weight is `1.0`, with one warning: `warning: capacity-weights.json: weight for "<name>" ignored (use a number above 0 and at most 1000); using 1.0`. |
 | A name that matches no profile | Ignored. |
@@ -1285,18 +1287,29 @@ Readers take the last 4 MiB of the file, and skip any line longer than
 [name rules](#name-rules), any percentage outside `0`–`100` and any time
 more than 100 years from now. A missing `s` counts as `null`, and times with
 a UTC offset are read as the same instant in UTC. Unknown keys are ignored,
-so a newer writer's lines still read.
+so a newer writer's lines still read. When any line is skipped, one warning
+gives the count, so a corrupted history can be told apart from an empty one.
+Blank lines are not counted:
+
+```
+warning: 3 unreadable usage history lines ignored
+```
 
 Readers check the profile root as writers do. A missing history, or a
 missing `.auto-switch.d/`, is an empty history with no warning. A history
 that exists but is refused, because the root is not trusted, or the file is
-a symlink, is not a regular file, has another owner, is writable by group or
-others, or cannot be opened or read, is also treated as empty, and one
+a symlink, is not a regular file, has another owner, has more than one link,
+has any group or other permission (its mode is not `0600`), or cannot be
+opened or read, is also treated as empty, and one
 warning goes to stderr, from `profile usage` and from `rotate status`:
 
 ```
 warning: usage history ignored (unsafe file)
 ```
+
+Readers and writers accept exactly the same files, so a history that is
+read is also appended to. A history whose mode was changed by hand, to
+`0644` for example, is refused by both until it is set back to `0600`.
 
 The history never decides anything and never fails a command. When it cannot
 be read, the rate is unknown. When a line cannot be written (the lock stays

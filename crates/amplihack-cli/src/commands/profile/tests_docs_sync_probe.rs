@@ -241,6 +241,8 @@ fn the_documented_history_warning_and_reasons_are_the_codes() {
     assert!(REFERENCE.contains(&format!("`{trim}`")), "{trim}");
     let refused = super::usage_history::READ_REFUSED;
     assert!(REFERENCE.contains(refused), "{refused}");
+    let skipped = super::usage_history::skipped_warning(3);
+    assert!(REFERENCE.contains(&skipped), "{skipped}");
 }
 
 #[test]

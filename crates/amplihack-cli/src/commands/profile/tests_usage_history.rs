@@ -12,8 +12,11 @@
 //! - Readers take the last 4 MiB, skip lines over 64 KiB, lines that are not
 //!   JSON, entries with an `at` more than 100 years from now, and profiles
 //!   whose name fails the name rules or whose percentage is outside 0-100
-//!   (the rest of that line is kept). A missing `s` is `null`; offsets are
-//!   read as UTC; unknown keys are ignored.
+//!   (the rest of that line is kept). Skipped lines give one warning with
+//!   their count. A missing `s` is `null`; offsets are read as UTC; unknown
+//!   keys are ignored.
+//! - Readers and writers accept the same files: regular, the user's own,
+//!   one hard link, mode 0600. Any other history is refused by both.
 //! - Writers lock `usage-history.lock` (50 ms retries for 1 s), append one
 //!   line in one write, trim entries older than 8 days, keep the file under
 //!   3 MiB after a rewrite, refuse symlinks, hard links, group or other
@@ -196,7 +199,7 @@ fn from_rows_keeps_valid_subscription_rows_and_lists_the_unknown_ones() {
         home,
         over,
     ];
-    let s: Snapshot = from_rows(T, &rows, None);
+    let s: Snapshot = from_rows(T, &rows, None).unwrap();
     assert_eq!(s.at, T);
     assert_eq!(
         s.points.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -214,7 +217,7 @@ fn from_rows_counts_a_swapped_live_profile_as_unknown() {
         live,
         row("spare", report(UsageState::Ok, Some(1.0), Some(2.0))),
     ];
-    let s = from_rows(T, &rows, Some(&name("work")));
+    let s = from_rows(T, &rows, Some(&name("work"))).unwrap();
     assert!(!s.points.contains_key("work"));
     assert_eq!(s.unknown, ["work"]);
     assert!(s.points.contains_key("spare"));
@@ -226,9 +229,25 @@ fn a_snapshot_entry_holds_only_its_points() {
         row("work", report(UsageState::Ok, Some(20.0), Some(30.0))),
         row("slow", UsageReport::empty(UsageState::Timeout)),
     ];
-    let e = from_rows(T, &rows, None).entry();
+    let e = from_rows(T, &rows, None).unwrap().entry();
     assert_eq!(e.at, T);
     assert_eq!(e.profiles.keys().collect::<Vec<_>>(), ["work"]);
+}
+
+#[test]
+fn from_rows_without_a_subscription_login_is_none() {
+    let mut key = row("key", report(UsageState::Ok, Some(0.0), Some(0.0)));
+    key.api_key = true;
+    let mut home = row("~/.claude", report(UsageState::Ok, Some(1.0), Some(1.0)));
+    home.live_in_home = true;
+    assert!(from_rows(T, &[key, home], None).is_none());
+    assert!(from_rows(T, &[], None).is_none());
+    let slow = row("slow", UsageReport::empty(UsageState::Timeout));
+    assert_eq!(
+        from_rows(T, &[slow], None).map(|s| s.unknown),
+        Some(vec!["slow".to_string()]),
+        "a login with no reading still counts"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -356,7 +375,8 @@ fn the_history_errors_print_fixed_reasons_and_no_directory_is_silent() {
 #[cfg(unix)]
 mod file {
     use super::super::usage_history::{
-        FILE, HistoryError, LOCK, READ_REFUSED, append_with, read_all, read_recent, to_line,
+        FILE, HistoryError, LOCK, READ_REFUSED, append_with, read_all, read_recent,
+        skipped_warning, to_line,
     };
     use super::{DAY, HOUR, T, entry, p};
     use std::fs;
@@ -519,6 +539,72 @@ mod file {
             assert_eq!(read_all(&r.root, T), (Vec::new(), refused()), "{mode:o}");
         }
         assert_eq!(READ_REFUSED, "warning: usage history ignored (unsafe file)");
+    }
+
+    #[test]
+    fn readers_and_writers_refuse_the_same_files() {
+        // Group- or other-readable only: once read but never appended to.
+        for mode in [0o640, 0o644, 0o604] {
+            let r = Root::new();
+            r.seed(&format!("{}\n", to_line(&one(T - HOUR, 1))));
+            fs::set_permissions(r.history(), fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(read_all(&r.root, T), (Vec::new(), refused()), "{mode:o}");
+            assert_eq!(
+                append(&r.root, &one(T, 2), T),
+                Err(HistoryError::UnsafeFile),
+                "{mode:o}"
+            );
+        }
+        // A second hard link.
+        let r = Root::new();
+        r.seed(&format!("{}\n", to_line(&one(T - HOUR, 1))));
+        fs::hard_link(r.history(), r.root.join("other")).unwrap();
+        assert_eq!(read_all(&r.root, T), (Vec::new(), refused()));
+        assert_eq!(
+            append(&r.root, &one(T, 2), T),
+            Err(HistoryError::UnsafeFile)
+        );
+        // A 0600 file with one link is accepted by both.
+        let r = Root::new();
+        r.seed(&format!("{}\n", to_line(&one(T - HOUR, 1))));
+        assert_eq!(read_all(&r.root, T).0.len(), 1);
+        assert_eq!(append(&r.root, &one(T, 2), T), Ok(()));
+        assert_eq!(
+            read_all(&r.root, T),
+            (vec![one(T - HOUR, 1), one(T, 2)], None)
+        );
+    }
+
+    #[test]
+    fn unreadable_lines_are_counted_in_one_warning() {
+        let r = Root::new();
+        let mut body =
+            format!("garbage\n{}\n{{\"at\":\n\n", to_line(&one(T - HOUR, 1))).into_bytes();
+        body.extend_from_slice(b"\xff\xfe\n");
+        fs::write(r.history(), &body).unwrap();
+        fs::set_permissions(r.history(), fs::Permissions::from_mode(0o600)).unwrap();
+        let (entries, warning) = read_all(&r.root, T);
+        assert_eq!(entries, [one(T - HOUR, 1)]);
+        assert_eq!(
+            warning,
+            Some(skipped_warning(3)),
+            "blank lines are not counted"
+        );
+        assert_eq!(
+            skipped_warning(3),
+            "warning: 3 unreadable usage history lines ignored"
+        );
+        assert_eq!(
+            read_recent(&r.root, T, 6 * HOUR).1,
+            Some(skipped_warning(3))
+        );
+    }
+
+    #[test]
+    fn a_fully_corrupted_history_does_not_look_empty() {
+        let r = Root::new();
+        r.seed("not json\nnor this\n");
+        assert_eq!(read_all(&r.root, T), (Vec::new(), Some(skipped_warning(2))));
     }
 
     #[test]

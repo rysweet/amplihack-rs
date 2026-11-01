@@ -176,14 +176,18 @@ pub(super) fn entry_of(r: &UsageReport) -> Option<Point> {
     }
 }
 
-/// The snapshot of a `profile usage` run. API-key rows and the `~/.claude`
-/// row are not logins and are left out; a live profile whose login was
-/// swapped during the probe is unknown, since its numbers may be another
-/// login's.
-pub(super) fn from_rows(at: i64, rows: &[Row], swapped: Option<&ProfileName>) -> Snapshot {
+/// The snapshot of a `profile usage` run; `None` when no row is a
+/// subscription login, which means neither a summary nor a history line.
+/// API-key rows and the `~/.claude` row are not logins and are left out; a
+/// live profile whose login was swapped during the probe is unknown, since
+/// its numbers may be another login's.
+pub(super) fn from_rows(at: i64, rows: &[Row], swapped: Option<&ProfileName>) -> Option<Snapshot> {
     let mut points = BTreeMap::new();
     let mut unknown = Vec::new();
-    for r in rows.iter().filter(|r| !r.api_key && !r.live_in_home) {
+    let logins = rows.iter().filter(|r| !r.api_key && !r.live_in_home);
+    let mut any = false;
+    for r in logins {
+        any = true;
         let moved = swapped.is_some_and(|s| s.as_str() == r.profile);
         match entry_of(&r.report).filter(|_| !moved) {
             Some(p) => {
@@ -193,11 +197,11 @@ pub(super) fn from_rows(at: i64, rows: &[Row], swapped: Option<&ProfileName>) ->
         }
     }
     unknown.sort();
-    Snapshot {
+    any.then_some(Snapshot {
         at,
         points,
         unknown,
-    }
+    })
 }
 
 /// The snapshot of a rotator cycle. The live probe is recorded under
@@ -236,9 +240,9 @@ pub(super) fn from_probes(
 }
 
 /// The validity rule for the rotator's kept probe. An exhausted reading is
-/// a full week when its week reads 100%, or when only the session window
-/// was read and it is not full; otherwise it is a full session with the
-/// week it read. A failed probe is unknown.
+/// a full week when its week reads 100%, and otherwise a full session with
+/// the week it read. A probe without a readable week is unknown, as is a
+/// failed probe: the week is never taken to be 0% or 100% unread.
 #[cfg(unix)]
 fn point_of_probe(p: &super::rotate::Probed) -> Option<Point> {
     use super::rotate::Reading;
@@ -268,13 +272,7 @@ fn point_of_probe(p: &super::rotate::Probed) -> Option<Point> {
                 w_reset,
                 s_reset,
             }),
-            Some(None) => None,
-            None => s.filter(|s| *s < 100).map(|s| Point {
-                s: Some(s),
-                w: 100,
-                w_reset: None,
-                s_reset,
-            }),
+            Some(None) | None => None,
         },
     }
 }
@@ -372,15 +370,30 @@ pub(super) fn parse_line(line: &str, now: i64) -> Option<Entry> {
 }
 
 /// The UTF-8 lines of `bytes`, in file order.
+#[cfg(unix)]
 fn lines(bytes: &[u8]) -> impl Iterator<Item = &str> {
     bytes
         .split(|b| *b == b'\n')
         .filter_map(|l| std::str::from_utf8(l).ok())
 }
 
-/// The readable entries of `bytes`, in file order.
-fn entries_in(bytes: &[u8], now: i64) -> Vec<Entry> {
-    lines(bytes).filter_map(|l| parse_line(l, now)).collect()
+/// The readable entries of `bytes`, in file order, and how many non-empty
+/// lines were not readable (not UTF-8, or refused by [`parse_line`]).
+fn entries_in(bytes: &[u8], now: i64) -> (Vec<Entry>, usize) {
+    let mut skipped = 0;
+    let mut out = Vec::new();
+    for l in bytes.split(|b| *b == b'\n').filter(|l| !l.is_empty()) {
+        match std::str::from_utf8(l).ok().and_then(|l| parse_line(l, now)) {
+            Some(e) => out.push(e),
+            None => skipped += 1,
+        }
+    }
+    (out, skipped)
+}
+
+/// The one warning when lines of a readable history were ignored.
+pub(super) fn skipped_warning(n: usize) -> String {
+    format!("warning: {n} unreadable usage history lines ignored")
 }
 
 // ---------------------------------------------------------------------------
@@ -413,14 +426,15 @@ pub(super) struct ReadRefused;
 
 /// The tail of the history; empty when it or `.auto-switch.d` is missing.
 /// Refused when the profile root is not trusted, or the file cannot be
-/// opened, is a symlink, is not a regular file (a FIFO never blocks the
-/// open), has another owner, is writable by group or others, or cannot be
-/// read.
+/// opened, is a symlink (a FIFO never blocks the open), fails the writers'
+/// rule (`check_private_file`: a regular file of the current user with one
+/// hard link and mode 0600), or cannot be read. Readers and writers
+/// therefore accept exactly the same files.
 #[cfg(unix)]
 fn read_history(root: &Path) -> Result<Vec<u8>, ReadRefused> {
-    use amplihack_utils::secure_files::owned_by_euid;
+    use amplihack_utils::secure_files::check_private_file;
     use std::io::ErrorKind::NotFound;
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
     match super::auto_switch::check_root_private(root) {
         Ok(()) => {}
         Err(e) if e.kind() == NotFound => return Ok(Vec::new()),
@@ -437,9 +451,7 @@ fn read_history(root: &Path) -> Result<Vec<u8>, ReadRefused> {
         Err(_) => return Err(ReadRefused),
     };
     let meta = file.metadata().map_err(|_| ReadRefused)?;
-    if !meta.is_file() || !owned_by_euid(&meta) || meta.mode() & 0o022 != 0 {
-        return Err(ReadRefused);
-    }
+    check_private_file(&meta).map_err(|_| ReadRefused)?;
     read_tail(&file, meta.len()).map_err(|_| ReadRefused)
 }
 
@@ -450,15 +462,17 @@ fn read_history(_root: &Path) -> Result<Vec<u8>, ReadRefused> {
 
 /// Every readable entry, oldest first; entries with the same time stay in
 /// file order. Empty when the history is missing or refused, with
-/// [`READ_REFUSED`] as the warning when refused. One read parses the whole
+/// [`READ_REFUSED`] as the warning when refused. Lines that cannot be read
+/// are skipped and counted in one [`skipped_warning`], so a corrupted
+/// history does not look like an empty one. One read parses the whole
 /// tail, so a caller that needs both the newest entry and the ones before
 /// it reads once.
 pub(super) fn read_all(root: &Path, now: i64) -> (Vec<Entry>, Option<String>) {
     match read_history(root) {
         Ok(bytes) => {
-            let mut out = entries_in(&bytes, now);
+            let (mut out, skipped) = entries_in(&bytes, now);
             out.sort_by_key(|e| e.at);
-            (out, None)
+            (out, (skipped > 0).then(|| skipped_warning(skipped)))
         }
         Err(ReadRefused) => (Vec::new(), Some(READ_REFUSED.to_string())),
     }
