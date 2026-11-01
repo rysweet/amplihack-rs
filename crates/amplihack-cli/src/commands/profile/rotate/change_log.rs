@@ -170,13 +170,16 @@ fn creds(v: &str) -> String {
 /// whose name holds a secret word (`--flag value` and `--flag=value`), a
 /// `Name: value` header whose name holds one, `user:password` after `-u` or
 /// `--user`, the value in `-p<value>`, URL user information and secret URL
-/// query parameters.
+/// query parameters. An argument holding whitespace is redacted word by
+/// word, and a secret header name without its value hides every word after
+/// it.
 fn redact(args: &[String]) -> Vec<String> {
     let mut out = Vec::with_capacity(args.len());
     let mut hide_next = false;
     let mut creds_next = false;
+    let mut hide_rest = false;
     for a in args {
-        if std::mem::take(&mut hide_next) {
+        if hide_rest || std::mem::take(&mut hide_next) {
             out.push(HIDDEN.to_string());
             continue;
         }
@@ -185,6 +188,8 @@ fn redact(args: &[String]) -> Vec<String> {
             continue;
         }
         if let Some(h) = secret_header(a) {
+            // `Authorization:` split from its `Bearer <token>` hides the rest.
+            hide_rest = a.split_once(':').is_some_and(|(_, v)| v.trim().is_empty());
             out.push(h);
             continue;
         }
@@ -227,9 +232,24 @@ fn redact(args: &[String]) -> Vec<String> {
             out.push(format!("{name}={HIDDEN}"));
             continue;
         }
-        out.push(hide_params(&strip_userinfo(a)));
+        if a.contains(char::is_whitespace) {
+            out.push(redact_words(a));
+        } else {
+            out.push(hide_params(&strip_userinfo(a)));
+        }
     }
     out
+}
+
+/// A script argument, such as the one after `bash -c`, redacted word by
+/// word with its quotes dropped, so `export API_TOKEN=...` or `-H
+/// 'Authorization: Bearer ...'` inside it is hidden too.
+fn redact_words(script: &str) -> String {
+    let words: Vec<String> = script
+        .split_whitespace()
+        .map(|w| w.trim_matches(['\'', '"']).to_string())
+        .collect();
+    redact(&words).join(" ")
 }
 
 /// The `parent="..."` value: redacted, sanitised, `"` as `'`, at most 200

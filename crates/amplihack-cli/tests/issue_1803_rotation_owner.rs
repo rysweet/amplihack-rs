@@ -248,6 +248,33 @@ fn status_shows_a_stopped_owner() {
 #[test]
 fn status_shows_the_exhausted_alert() {
     let f = Fixture::new();
+    exhausted_while_off(&f);
+    let lines = status_lines(&f);
+    assert!(
+        lines.contains(
+            &"alert: auto-switch is off while the live login is exhausted (work: 100% used, threshold 90%)"
+                .to_string()
+        ),
+        "{lines:#?}"
+    );
+}
+
+#[test]
+fn a_paused_watch_logs_the_exhausted_alert() {
+    let f = Fixture::new();
+    exhausted_while_off(&f);
+    let w = spawn_watch(&f, &[], &[]);
+    let want = "ALERT: auto-switch is off while the live login is exhausted (work: 100% used, threshold 90%)";
+    wait_for("the ALERT line", Duration::from_secs(20), || {
+        f.log().contains(want)
+    });
+    w.stop();
+    let log = f.log();
+    assert!(log.contains("idle: auto-switch is off"), "{log}");
+}
+
+/// Threshold 90, auto-switch off, and the live login `work` at 100%.
+fn exhausted_while_off(f: &Fixture) {
     f.ok(&["profile", "auto-switch", "threshold", "90"]);
     f.ok(&["profile", "auto-switch", "off"]);
     let now = chrono::Utc::now().timestamp();
@@ -263,14 +290,6 @@ fn status_shows_the_exhausted_alert() {
             r#"{{"version":1,"accounts":{{"work":{{"five_hour":{{"used_percentage":100.0,"resets_at":{}}},"observed_at":{now},"source":"statusline"}}}}}}"#,
             now + 3600
         ),
-    );
-    let lines = status_lines(&f);
-    assert!(
-        lines.contains(
-            &"alert: auto-switch is off while the live login is exhausted (work: 100% used, threshold 90%)"
-                .to_string()
-        ),
-        "{lines:#?}"
     );
 }
 

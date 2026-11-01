@@ -4583,6 +4583,12 @@ The parent command line is redacted before it is written:
 - `user:password@` is removed from URLs, and a query or fragment parameter
   with a secret name, such as `?access_token=...`, `#access_token=...`,
   `&sig=...` or `&X-Amz-Signature=...`, becomes `name=***`.
+- An argument holding whitespace, such as the script after `bash -c`, is
+  split into words, `'` and `"` are dropped from each word's ends, and the
+  words are redacted by the rules above. A secret header name whose value
+  is in the following words, as in `-H 'Authorization: Bearer ...'`, hides
+  every word after it. So `bash -c "export API_TOKEN=t; curl ..."` is
+  written as `bash -c export API_TOKEN=*** curl ...`.
 - Not redacted: a separate password after `-p`, as in `sshpass -p secret`;
   credentials after combined short flags, as in `curl -su user:pw`; and
   `--proxy-user user:pw`.

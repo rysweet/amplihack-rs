@@ -758,7 +758,7 @@ fn quotes_in_the_parent_become_apostrophes() {
         "auto-switch",
         "on",
         "off",
-        &caller(Some(&["sh", "-c", "echo \"hi\" x=\"\""])),
+        &caller(Some(&["sh", "-c", "echo \"hi\" x=\"\"", "a\"b"])),
     );
     let parent = line.split_once("parent=\"").unwrap().1;
     assert_eq!(
@@ -766,7 +766,9 @@ fn quotes_in_the_parent_become_apostrophes() {
         1,
         "only the closing quote: {line}"
     );
-    assert!(parent.contains("echo 'hi'"), "{line}");
+    // A script argument is redacted word by word, without its quotes.
+    assert!(parent.contains("echo hi"), "{line}");
+    assert!(parent.contains("a'b"), "{line}");
 }
 
 #[test]
@@ -885,6 +887,26 @@ fn every_secret_flag_form_is_redacted() {
             "aws https://b/o?X-Amz-Signature=***",
         ),
         (&["x", "oauth://h/x"], "x oauth://h/x"),
+        (
+            &[
+                "bash",
+                "-c",
+                "export API_TOKEN=t11; amplihack x --token t12",
+            ],
+            "bash -c export API_TOKEN=*** amplihack x --token ***",
+        ),
+        (
+            &[
+                "bash",
+                "-c",
+                "curl -H 'Authorization: Bearer t13' https://h",
+            ],
+            "bash -c curl -H Authorization: *** *** *** ***",
+        ),
+        (
+            &["sh", "-c", "git clone https://u:t14@h/r && cd r"],
+            "sh -c git clone https://h/r && cd r",
+        ),
     ];
     for (argv, want) in cases {
         let line = change_log::line("auto-switch", "on", "off", &caller(Some(argv)));
