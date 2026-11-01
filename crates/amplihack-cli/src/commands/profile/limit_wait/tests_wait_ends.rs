@@ -1,11 +1,12 @@
 //! `wait` (issue #1618), continued from `tests_wait.rs` (whose `Fake`
 //! `WaitDeps` this uses): a stop signal, which end wins when several hold
-//! at once, the end of the step's session, and fresh rotator capacity.
+//! at once, the end of the step's session, and fresh rotator capacity. Also
+//! how a capacity wait ends (issue #1801).
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_wait_ends;`.
 
 use super::plan::Bound;
-use super::tests_wait::{Fake, plan_in};
+use super::tests_wait::{Fake, capacity_plan_in, plan_in};
 use super::wait::{End, wait};
 
 #[test]
@@ -66,4 +67,76 @@ fn fresh_rotator_capacity_ends_the_wait_at_the_next_poll() {
         End::RotatorCapacity
     );
     assert_eq!(f.elapsed(), 60);
+}
+
+// --- capacity waits (issue #1801) ----------------------------------------
+
+#[test]
+fn a_capacity_wait_expires_at_max_wait_where_a_reset_wait_reaches_max() {
+    let mut f = Fake::new();
+    assert_eq!(
+        wait(&capacity_plan_in(90, Bound::MaxWait), &mut f),
+        End::CapacityExpired
+    );
+    let mut f = Fake::new();
+    assert_eq!(wait(&plan_in(90, Bound::MaxWait), &mut f), End::MaxReached);
+}
+
+#[test]
+fn a_zero_length_capacity_wait_expires_without_sleeping() {
+    let mut f = Fake::new();
+    assert_eq!(
+        wait(&capacity_plan_in(0, Bound::MaxWait), &mut f),
+        End::CapacityExpired
+    );
+    assert_eq!(f.elapsed(), 0);
+}
+
+#[test]
+fn a_step_timeout_is_still_a_step_timeout_on_a_capacity_wait() {
+    let mut f = Fake::new();
+    assert_eq!(
+        wait(&capacity_plan_in(90, Bound::StepTimeout), &mut f),
+        End::StepTimeout
+    );
+}
+
+#[test]
+fn another_login_with_capacity_ends_the_wait_at_the_next_poll() {
+    let mut f = Fake::new();
+    f.other_from = Some(40);
+    assert_eq!(
+        wait(&capacity_plan_in(1800, Bound::MaxWait), &mut f),
+        End::OtherCapacity
+    );
+    assert_eq!(f.elapsed(), 60);
+}
+
+#[test]
+fn rotator_capacity_is_checked_before_another_logins_capacity() {
+    let mut f = Fake::new();
+    f.capacity_from = Some(40);
+    f.other_from = Some(40);
+    assert_eq!(
+        wait(&capacity_plan_in(1800, Bound::MaxWait), &mut f),
+        End::RotatorCapacity
+    );
+}
+
+#[test]
+fn a_signal_and_a_passed_deadline_outrank_other_capacity() {
+    let mut f = Fake::new();
+    f.signal_from = Some((30, libc::SIGTERM));
+    f.other_from = Some(0);
+    assert_eq!(
+        wait(&capacity_plan_in(1800, Bound::MaxWait), &mut f),
+        End::Signal(libc::SIGTERM)
+    );
+    let mut f = Fake::new();
+    f.other_from = Some(0);
+    assert_eq!(
+        wait(&capacity_plan_in(30, Bound::MaxWait), &mut f),
+        End::CapacityExpired,
+        "the deadline is read before the 30 s probes"
+    );
 }

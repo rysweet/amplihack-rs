@@ -11,6 +11,7 @@ use super::auto_switch::SUPERVISED_ENV;
 use super::fsx;
 use super::limit_wait::plan::{self, WaitFor};
 use super::name::ProfileName;
+use crate::commands::recipe::run::limit_patterns::{self, Harness};
 use crate::commands::recipe::run::{FailureClass, classify_failure_text};
 use anyhow::{Context, Result};
 use std::fs;
@@ -221,6 +222,9 @@ pub(crate) struct Limited {
     pub(crate) ledger_reset: i64,
     /// Whether, and until when, the usage-limit wait may wait.
     pub(crate) wait: WaitFor,
+    /// The limit as read, for a capacity wait (issue #1801). `None` for a
+    /// spend limit, which keeps its skip whatever reset it states.
+    pub(crate) seen: Option<(Harness, Option<i64>)>,
 }
 
 /// `Some` when `attempt` hit its usage limit. `now` is the wait's clock.
@@ -235,9 +239,11 @@ pub(crate) fn usage_limited(attempt: &Attempt, now: i64) -> Option<Limited> {
     let (err, out) = (&attempt.stderr_tail, &out_tail);
     let text = joined(err, out);
     let ledger_reset = classified_reset(&text, err, out, fsx::now())?;
+    let message = limit_patterns::limit_message(err, out, now);
     Some(Limited {
         ledger_reset,
-        wait: plan::wait_for(err, out, now),
+        wait: plan::wait_for_message(message, now),
+        seen: message.filter(|m| !m.spend).map(|m| (m.harness, m.reset)),
     })
 }
 

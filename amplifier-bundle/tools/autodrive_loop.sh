@@ -24,7 +24,8 @@
 #
 #   Exit 0  — the loop converged (DONE) and the round itself verified clean.
 #   Exit 1  — evaluator STUCK (or unreadable), a missing round record under
-#             DONE, or a repeated DONE over an unchanged non-clean round (#1597).
+#             DONE, a repeated DONE over an unchanged non-clean round (#1597),
+#             or a child that failed on a usage limit (USAGE_LIMIT, #1801).
 #   Exit 79 — a child returned the terminal policy refusal. Surfaced, final,
 #             and NEVER retried into.
 #
@@ -85,6 +86,8 @@ LOOP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 # shellcheck source=/dev/null
 . "${LOOP_HOME}/autodrive_state.sh" 2>/dev/null \
   || { echo "ERROR: autodrive_loop.sh: autodrive_state.sh is missing beside it (${LOOP_HOME:-<unknown>}); the state dir cannot be made private" >&2; exit 2; }
+# shellcheck source=autodrive_escalate.sh # escalate, usage_limit_stop (#1801)
+. "${LOOP_HOME}/autodrive_escalate.sh" 2>/dev/null || { echo "ERROR: autodrive_loop.sh: autodrive_escalate.sh is missing beside it (${LOOP_HOME:-<unknown>}); the loop cannot report how it stopped" >&2; exit 2; }
 autodrive_private_dir "$STATE_DIR" || exit 2
 CALLER_UMASK="$(umask)"
 umask 077
@@ -139,15 +142,6 @@ terminal_refusal() {
     | grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)' \
     | grep -qF 'BLOCKED_TERMINAL orchestration_unavailable' && return 0
   return 1
-}
-
-escalate() { # escalate <verdict> <why>
-  echo "AUTO_DRIVE_LOOP: ${1} — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}'." >&2
-  echo "  Reason: ${2}" >&2
-  echo "  Round record: ${RECORD:-<none>}" >&2
-  echo "  This is a judgement about absence of progress, not an attempt count." >&2
-  printf '{"loop":"%s","loop_result":"%s","round_label":"%s","reason":"%s"}\n' \
-    "$LOOP_NAME" "$1" "${ROUND_LABEL:-?}" "$(printf '%s' "$2" | tr -d '"' | tr '\n' ' ')"
 }
 
 # #1528: the review dir (the main checkout) is stamped before each round and
@@ -225,6 +219,7 @@ while :; do
       escalate "TERMINAL_POLICY_REFUSAL" "the before-round step returned the exit-${AUTODRIVE_EXIT_POLICY_REFUSAL} policy refusal"
       exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
     fi
+    usage_limit_stop "$BEFORE_RC" "$BEFORE_LOG" "the before-round step failed on a Claude usage limit that no login lifted"
     if [ "$BEFORE_RC" -ne 0 ]; then
       escalate "BEFORE_ROUND_FAILED" "the before-round step ${BEFORE_ROUND##*/} exited ${BEFORE_RC} (${BEFORE_RESULT:-no before_round_result}); ${ROUND_LABEL} did not run"
       exit 1
@@ -247,6 +242,7 @@ while :; do
     escalate "TERMINAL_POLICY_REFUSAL" "child returned the exit-${AUTODRIVE_EXIT_POLICY_REFUSAL} policy refusal"
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
   fi
+  usage_limit_stop "$ROUND_RC" "$LOG" "round ${ROUND_LABEL} failed on a Claude usage limit that no login lifted; it is not passed to the evaluator"
   check_review_dir "${ROUND_LABEL}${BEFORE_ROUND:+ or its before-round step}"
 
   # --- read the round's STRUCTURED record -----------------------------------
@@ -330,6 +326,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
     escalate "TERMINAL_POLICY_REFUSAL" "loop-health-evaluator returned the policy refusal"
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
   fi
+  usage_limit_stop "$HEALTH_RC" "$HEALTH_LOG" "the loop-health evaluator failed on a Claude usage limit that no login lifted"
   check_review_dir loop-health-evaluator
 
   # The evaluator's step-04 (its last step) prints one LOOP_HEALTH: marker and

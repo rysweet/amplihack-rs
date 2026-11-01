@@ -36,6 +36,8 @@ mod statusline;
 #[cfg(unix)]
 mod swap;
 #[cfg(unix)]
+pub(super) mod takeover;
+#[cfg(unix)]
 mod usage;
 
 #[cfg(all(test, unix))]
@@ -56,6 +58,8 @@ mod tests_mv;
 mod tests_platform_candidate;
 #[cfg(all(test, unix))]
 mod tests_record;
+#[cfg(all(test, unix))]
+mod tests_takeover;
 #[cfg(all(test, unix))]
 mod tests_usage;
 

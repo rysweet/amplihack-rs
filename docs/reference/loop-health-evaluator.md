@@ -27,6 +27,8 @@ It is deliberately **not** an iteration counter. See
 - [Outputs](#outputs)
 - [Using it from a recipe](#using-it-from-a-recipe)
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
+- [A usage limit is not a verdict](#a-usage-limit-is-not-a-verdict)
+  - [Retry inside the step](#retry-inside-the-step)
 - [Fail-safe guarantees](#fail-safe-guarantees)
 - [Worked example — the 2h47m run](#worked-example--the-2h47m-run)
 - [Tests](#tests)
@@ -893,6 +895,61 @@ Known limits, accepted rather than patched with heuristics:
   header as described above. A caller that builds `loop_last_round_output`
   some other way must do the same.
 
+## A usage limit is not a verdict
+
+The evaluator's agent step (step-02) is a Claude call like any other, so it
+can fail on a usage limit. A usage limit says nothing about whether the loop
+is converging, so it never becomes a `STUCK` verdict.
+
+### Retry inside the step
+
+Step-02 runs through `amplihack claude -p`, so its supervisor applies the
+[usage-limit wait](profile-command.md#usage-limit-wait) before the recipe
+runner sees the failure:
+
+1. The first attempt fails on a usage limit.
+2. The supervisor waits. A limit that resets within five hours gets a reset
+   wait. A weekly limit, or one with no readable reset, gets a
+   [capacity wait](profile-command.md#capacity-wait) when another stored
+   login could take over, for up to six hours by default.
+3. The wait ends on `rotator capacity`, `login changed`, `login capacity`
+   or `reset reached`, and step-02 runs once more with the same prompt under
+   whichever login is now live.
+4. The second attempt answers as usual. Step-02 exits `0`, and step-03 and
+   step-04 resolve and enforce its verdict exactly as if the limit had never
+   happened.
+
+The retry happens inside the step, so `loop-health-evaluator.yaml` is
+unchanged. The caller sees one completed evaluator run with an ordinary
+`LOOP_HEALTH:` line, and the step's stderr holds the
+`amplihack.recipe.usage_limit_wait` `start`, `end` and `resume` lines. There
+is at most one wait and one retry per step.
+
+### When the wait does not lift the limit
+
+When the wait is skipped (for example `reset_too_far` with a single stored
+login), expires (`capacity expired`, `step timeout`) or was already used,
+step-02 fails and the recipe runner writes its
+`amplihack.recipe.failure_class` marker with `"class":"usage_limit"`.
+Step-02 does not set `continue_on_error`, so the runner stops the recipe
+there: step-03 and step-04 do not run and no verdict is produced. The
+recipe's shell test checks that step-02 never gains `continue_on_error`,
+because step-03 would then resolve the missing verdict as `STUCK` with
+`verdict_source=missing_verdict`. The caller does not read the failed recipe
+as `STUCK`:
+
+- `autodrive_loop.sh` stops as `USAGE_LIMIT`, exit `1`; see
+  [Usage limits are not STUCK](auto-drive-to-merge.md#usage-limits-are-not-stuck);
+- `hook_repair_evaluate` reports `USAGE_LIMIT` and the repair ends with
+  status `usage_limit`; see
+  [`hook_repair_run`](recipe-commit-hook-repair.md#hook_repair_run).
+
+The verdict rules in this recipe are unchanged. A missing or unparseable
+verdict from an evaluator that **ran** is still `STUCK`. Only the runner's
+own marker, on a non-zero exit, counts as a usage limit: an evaluator or a
+round agent that writes about usage limits, or quotes the marker in its
+output, does not change the verdict.
+
 ## Fail-safe guarantees
 
 Every branch fails toward stopping:
@@ -1020,6 +1077,8 @@ and reports what is not converging instead of consuming the remaining budget.
 | **End-to-end probe** — the real recipe files run through the real `recipe-runner-rs` with only step-02 stubbed as a bash step: `CONTINUE` → exit 0, `STUCK` → exit 1, verdict selection, exit-79 terminal, self-poisoning | same file, section 7 (skipped with a loud notice when `recipe-runner-rs` is not installed; set `RECIPE_RUNNER_RS_PATH` to force it) |
 | Structural + end-to-end wiring, including `evaluator_prompt_states_the_contract_first_and_last` and the [RECIPE_VAR-only read check](#reading-step-outputs-recipe_var-only) for `loop_evidence`, `loop_health` and `loop_health_assessment` | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
 | Collector terminal detectors ignore agent output lines: the real step-01 command run through `bash` in an isolated environment, one test per row of the [agent output table](#agent-output-lines-are-not-refusals), each checking both `terminal_refusal` and, where the table lists one, the `terminal_reason` substring, plus the unfiltered duration count and an agent line followed by a real guard line. Two tests guard the filter itself: `issue_1510_near_miss_prefixes_are_not_filtered` checks that a short timestamp, another tag or a different case is not dropped, and `issue_1510_filter_ere_matches_autodrive_loop_byte_for_byte` fails if the collector and `terminal_refusal()` in `autodrive_loop.sh` drift apart on either half of the rule (the agent-line ERE or the full marker). The round-tail tests run `amplifier-bundle/tools/autodrive_round_tail.sh` and check that a log cut inside an agent line yields only whole lines and no refusal, and that a summary longer than the window keeps its header. The run-summary tests feed a copy of a real successful round log (`tests/integration/fixtures/issue_1510_crusty_round_tail.txt`, with the review quoting the marker and "exit 79" and a `resolved_concerns` id containing `exit-79`) through both detectors and expect no refusal; they keep a guard line placed before the summary terminal, pin the header pair the cut needs, and `issue_1510_summary_cut_awk_is_shared_byte_for_byte` fails if the cut drifts between the collector, `terminal_refusal()` and `autodrive_round_tail.sh` | `tests/integration/issue_1510_collector_agent_prose_test.rs` |
+| Usage limit on step-02, retried: a fake `claude` that prints the weekly-limit message on its first call and a valid verdict on its second, a fake rotator cycle written during the wait, run through a stub `recipe-runner-rs` under an isolated `HOME`. Checks exit `0`, the verdict once, two calls, the `start` and `end reason=rotator capacity` lines, and no `usage_limit` failure class | `crates/amplihack-cli/tests/issue_1801_evaluator_retry.rs` |
+| Usage limit on step-02, retried and expired, as seen by `autodrive_loop.sh`: `1801-evaluator-retry-verdict` records the verdict with no `STUCK`; `1801-evaluator-usage-limit` stops as `USAGE_LIMIT`; negative cases for a nested `class`, the marker with exit `0`, an indented or echoed marker, and wait lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 
 Run them with:
 
@@ -1027,6 +1086,7 @@ Run them with:
 cargo test -p amplihack-cli normalise_loop_verdict
 cargo test -p amplihack --test integration issue_1337_loop_health_evaluator::
 cargo test -p amplihack --test integration issue_1510
+cargo test -p amplihack-cli --test cli_integration issue_1801_evaluator_retry::
 bash amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh
 ```
 
@@ -1090,3 +1150,5 @@ comes from this workspace. A predictable path in a shared directory such as
 - [Recipe Executor Environment](recipe-executor-environment.md) — how context
   vars and step outputs reach bash steps and engine conditions.
 - [Recipe Quick Reference](recipe-quick-reference.md) — recipe authoring basics.
+- [Usage-limit wait](profile-command.md#usage-limit-wait): how an agent step
+  waits for a reset or for another login, and retries once.

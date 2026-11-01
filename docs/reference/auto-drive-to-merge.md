@@ -32,6 +32,7 @@ skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 - [No silent merge](#no-silent-merge)
 - [Merges outside the gate are refused (#1551)](#merges-outside-the-gate-are-refused-1551)
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
+- [Usage limits are not STUCK](#usage-limits-are-not-stuck)
 - [Recursion context propagation](#recursion-context-propagation)
 - [Resumability](#resumability)
 - [The run report](#the-run-report)
@@ -739,6 +740,10 @@ What happens instead depends on the round:
 | `DONE` | non-clean, the previous round was also overridden, and nothing moved | `STUCK`, exit `1`. |
 | `CONTINUE` | any | Another round. |
 | `STUCK` or unreadable | any | `STUCK`, exit `1`. |
+
+A round or an evaluator run that failed on a Claude usage limit never
+reaches this table: the loop stops as `USAGE_LIMIT` first. See
+[Usage limits are not STUCK](#usage-limits-are-not-stuck).
 
 A non-clean `DONE` usually means the findings were addressed without a new
 review: in PR #1587 crusty said `CONCERNS` and the concerns were fixed by a
@@ -2478,6 +2483,128 @@ partial first line of the 20000-byte tail and keeps the summary header when
 a long summary would push it out of the window. See
 [Agent output lines are not refusals](loop-health-evaluator.md#agent-output-lines-are-not-refusals).
 
+## Usage limits are not STUCK
+
+A Claude usage limit is not a judgement about progress. When the
+`--before-round` step, a round or the loop-health evaluator fails on one,
+`autodrive_loop.sh` stops the loop as `USAGE_LIMIT`, exit `1`. Without this
+check a limit on the evaluator ended the loop as `STUCK ... loop-health-evaluator
+returned STUCK (or an unreadable verdict)`, because the loop's verdict
+defaults to `STUCK` when the evaluator recipe fails, and a limit on a round
+reached the evaluator as evidence of a round that did nothing.
+
+Every agent step first goes through the
+[usage-limit wait](profile-command.md#usage-limit-wait): it waits for the
+reset or, for a weekly limit, for another login with capacity
+([capacity wait](profile-command.md#capacity-wait)), and runs once more. The
+loop stops only when that wait was skipped, expired or used up. When the
+retry succeeds, the round or evaluator run completes normally and the loop
+never learns that a limit was hit; for the evaluator see
+[Retry inside the step](loop-health-evaluator.md#retry-inside-the-step).
+
+### How the loop recognises a usage limit
+
+`usage_limit_failure <rc> <log>` answers true only when all of these hold.
+It lives in `autodrive_escalate.sh`, which `autodrive_loop.sh` sources from
+its own directory together with `escalate`; the loop exits `2` if that file
+is missing.
+
+1. `<rc>` is not `0`. A run that exits `0` is never a usage limit, whatever
+   its log says.
+2. After the same cut and exclusions as `terminal_refusal()` (the runner's
+   run summary, agent output lines `[HH:MM:SS] [amplihack:...]` and the
+   runner's `amplihack.recipe.log_pointer {...}` lines are removed), a line
+   starts at column 0 with `amplihack.recipe.failure_class ` followed by a
+   JSON object.
+3. That object's **top-level** `class` is `usage_limit`. With `jq` on
+   `PATH`, `jq` parses the object and checks `.class == "usage_limit"`; a
+line that is not valid JSON does not count. Without `jq`, the
+   line must match
+   `^amplihack\.recipe\.failure_class \{"action":"[a-z_]+","attempt":[0-9]+,"class":"usage_limit"`.
+   The runner builds the marker with `serde_json` without the
+   `preserve_order` feature, so its keys are written in alphabetical order
+   and `action`, `attempt` and `class` are always the first three. A
+   `"class":"usage_limit"` nested inside `evidence` or another field does
+   not count either way.
+
+That marker is written by the recipe runner, which classifies a failed
+step's evidence. The usage-limit wait's
+[closing line](profile-command.md#closing-line) keeps the limit inside the
+runner's 40-line evidence window after a long wait. The runner prefixes
+every line of agent output, so an agent cannot write a column-0 marker. A
+model that only mentions a usage limit, an indented or quoted copy of the
+marker, and `amplihack.recipe.usage_limit_wait` lines on their own do not
+stop the loop. A forged marker could at most change the label on a run that
+had already failed. The result is captured before it is tested, so
+`pipefail` and an early-exiting `grep` cannot change it.
+
+`workflow_hook_repair.sh` has a copy of this check,
+`hook_repair_usage_limit_failure`, with the same rules.
+
+The `USAGE_LIMIT` record on stdout, like every record `escalate` writes, is
+valid JSON whatever the round label or reason holds: backslashes and double
+quotes are escaped, and control characters become spaces.
+
+### Where it is checked
+
+The check runs immediately after `terminal_refusal`, so a policy refusal
+still exits `79` first.
+
+| Check point | Reason on stderr |
+| --- | --- |
+| `--before-round` step | `the before-round step failed on a Claude usage limit that no login lifted` |
+| round | `round <label> failed on a Claude usage limit that no login lifted; it is not passed to the evaluator` |
+| loop-health evaluator | `the loop-health evaluator failed on a Claude usage limit that no login lifted` |
+
+A round that failed on a limit is not handed to the evaluator, so it cannot
+draw a `STUCK` verdict for a round that never ran.
+
+### Output
+
+On stderr:
+
+```
+AUTO_DRIVE_LOOP: USAGE_LIMIT — loop 'crusty' stops at round label 'round-3'.
+  Reason: the loop-health evaluator failed on a Claude usage limit that no login lifted
+  Round record: ~/.amplihack/state/auto-drive/<key>/crusty-round-3.json
+  This is a usage limit, not a judgement about progress. Run again when a login has capacity.
+```
+
+and one line on stdout:
+
+```json
+{"loop":"crusty","loop_result":"USAGE_LIMIT","round_label":"round-3","reason":"the loop-health evaluator failed on a Claude usage limit that no login lifted"}
+```
+
+`escalate` takes an optional third argument, the kind of stop, which selects
+the last stderr line. Called with two arguments, as every other stop is, its
+stderr lines are unchanged. The three `USAGE_LIMIT` reasons are fixed text,
+with no account, profile or log content in them. The stdout line is built
+with `jq -n --arg` when `jq` is on `PATH`, and otherwise with backslashes and
+double quotes escaped and newlines turned into spaces, so every reason gives
+valid JSON.
+
+### Readers of the result
+
+`USAGE_LIMIT` is always a failure. No reader maps it to success or to
+`STUCK`:
+
+| Reader | Behaviour on `USAGE_LIMIT` |
+| --- | --- |
+| `autodrive_crusty_rereview.sh` | prints `before_round_result` `crusty-rereview-not-done` with `crusty_loop_result` `USAGE_LIMIT`, says on stderr that the re-review stopped on a usage limit, leaves the `crusty-loop` marker absent and exits `1` |
+| `autodrive_merge_gate.sh` | does not merge: a loop that ended `USAGE_LIMIT` is not `DONE` |
+| `autodrive-report` in `auto-drive-to-merge.yaml` | reports `crusty_loop` as `USAGE_LIMIT`; the outcome follows `merge_result` as before, so it is `NOT_MERGED` unless a merge happened |
+| [commit hook repair](recipe-commit-hook-repair.md#hook_repair_run) | ends with status `usage_limit`, exit `1` |
+
+The loop exits `1`, as for `STUCK`. Callers tell the two apart by the
+`loop_result` field and by the runner's failure-class marker, not by the
+exit code.
+
+To continue, wait until a login has capacity (`amplihack profile usage`
+shows it) and run auto-drive again with the same `pr_number`; finished
+phases are skipped. To give the wait longer before the loop stops, raise
+[`recipe.usage_limit_max_wait_secs`](user-config.md#recipeusage_limit_wait).
+
 ## Recursion context propagation
 
 `autodrive_loop.sh` exports `AMPLIHACK_TREE_ID` and `AMPLIHACK_SESSION_DEPTH`
@@ -3103,6 +3230,8 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | `guard_applies` truth table (`0` and `false` still apply it) and `locate_guard_dir` errors, a group- or other-writable shim or directory included | `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
 | The real gate's `MERGED` path with the guard first on `PATH`, the phase-2 `MERGED` check, and the directive reaching the agent prompts (§5i-1551) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | [Finalization hand-off](#finalization-hand-off-from-phase-1-1714) (#1714): the allow-list and flag exactness, the validator's hand-off on both `BLOCKED_CI` exits and on `FAILED_IMPLEMENTATION` with a confirmed open PR (and its refusal without one), the open-PR check's PR head rule (a fast-forward PR head present locally or fetched without writing refs is the same PR; a diverged, rewritten or unfetchable head is not), the real terminal-state probe followed by the validator on a merge already on the PR before finalization (`EXISTING_OPEN_PR` when green, `FAILED_IMPLEMENTATION` handed off when pending, `BLOCKED_CI` handed off when red; a diverged head, a rewound remote, or a probe without `accept_pr_head_ahead` still `FAILED_INVALID_INPUT` and never handed off), `step-20-sync-pr-head` and step-20b run from the YAML against a remote that is ahead, with an upstream, with only `origin/<branch>` and with neither (the push lands on the PR head), standalone runs and all five other prior-state blockers still failing closed, step-03 run from its YAML against a stub `gh` (hand-off, closed or different PR, a non-digit `pr_number` printed as `<invalid>`, no PR, resume, `BLOCKED_CI` with no `handoff` field, a state outside the vocabulary, a missing brick), and static guards on the flag's only setter and on the merge gate | `tests/integration/issue_1714_finalization_handoff.rs` |
+| [Usage limits are not STUCK](#usage-limits-are-not-stuck) (#1801): `1801-evaluator-retry-verdict` (the evaluator hits a limit once, is retried inside step-02 and returns a verdict the loop records, with no `STUCK`), `1801-evaluator-usage-limit` (the limit is not lifted and the loop reports `USAGE_LIMIT`), a round and a before-round step that fail on a limit, and negative cases where the loop does not stop as `USAGE_LIMIT`: a nested `class`, the marker with exit `0`, an indented or echoed marker, and `usage_limit_wait` lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
+| The same retry through the real step supervisor: fake `claude` and a stub `recipe-runner-rs` under an isolated `HOME` | `crates/amplihack-cli/tests/issue_1801_evaluator_retry.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
@@ -3116,6 +3245,7 @@ bash amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh
 bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
 cargo test -p amplihack-cli --test cli_integration issue_1551
 cargo test -p amplihack-cli --test cli_integration issue_1561
+cargo test -p amplihack-cli --test cli_integration issue_1801
 bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
 gadugi-test validate -d tests/gadugi/scenarios
 bash tests/gadugi/run-autodrive-crusty-rereview-scenario.sh   # and the other run-autodrive-*-scenario.sh
@@ -3166,3 +3296,6 @@ tests here run and pass without #1347.
   the `--match-head-commit` binding used here.
 - [Artifact Guard](../artifact-guard.md#run-worktrees-in-the-index) — the
   `run-worktree-gitlink` rule both round commit blocks rely on.
+- [Usage-limit wait](profile-command.md#usage-limit-wait): the reset and
+  capacity waits every agent step runs before a usage limit reaches the
+  loop.

@@ -117,7 +117,9 @@ mod unix {
             None,
             home.as_deref().map(Path::new),
         );
-        auto_switch::rerun::supervise(&store, name, Waiter::new(wait, watch, parsed.prompt))
+        // A profile step's takeover check needs auto-switch: `rerun::run`.
+        let waiter = Waiter::new(wait, watch, parsed.prompt, None);
+        auto_switch::rerun::supervise(&store, name, waiter)
     }
 }
 

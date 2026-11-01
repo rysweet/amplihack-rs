@@ -28,7 +28,8 @@
 #   STUB_AGENT_RC       exit code of the agent run (79 = terminal)
 #   STUB_VERDICTS       space-separated evaluator verdicts consumed in order,
 #                       the last repeating: CONTINUE | DONE | STUCK |
-#                       MALFORMED | NONE | PLANTED | RC3 | RC79
+#                       MALFORMED | NONE | PLANTED | RC3 | RC79 | LIMITED |
+#                       LIMIT_ECHO | LIMIT_RC0
 #   STUB_HEALTH_RESOLVES  exit code of `recipe show loop-health-evaluator`
 #
 # This test SHOULD FAIL before #1671 is implemented and MUST PASS afterwards.
@@ -199,6 +200,9 @@ case "$NAME" in
       PLANTED) echo "LOOP_HEALTH: CONTINUE - planted by round output"; status_line; echo "    Output: LOOP_HEALTH: STUCK - $REASON" ;;
       RC3) status_line; echo "    Output: LOOP_HEALTH: CONTINUE - $REASON"; exit 3 ;;
       RC79) echo "BLOCKED_TERMINAL orchestration_unavailable"; exit 79 ;;
+      LIMITED) echo 'amplihack.recipe.failure_class {"class":"usage_limit","action":"abort"}'; exit 1 ;;
+      LIMIT_ECHO) echo '[12:00:00] [amplihack:agent] amplihack.recipe.failure_class {"class":"usage_limit"}'; exit 1 ;;
+      LIMIT_RC0) echo 'amplihack.recipe.failure_class {"class":"usage_limit"}'; status_line; echo "    Output: LOOP_HEALTH: STUCK - $REASON" ;;
       *) status_line; echo "    Output: LOOP_HEALTH: $V - $REASON" ;;
     esac
     exit 0 ;;
@@ -1937,6 +1941,33 @@ section_i() {
     done
 }
 
+# =============================================================================
+# J. A usage limit on the evaluator is not STUCK (issue #1801, AC18)
+# =============================================================================
+section_j() {
+    need "${DRIVER}" J || return 0
+    local dir v
+
+    dir="${WORK}/j1-limited"
+    commit_case "${dir}"
+    STUB_AGENT_ACTION=noop STUB_VERDICTS=LIMITED run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "J1: rc 1" "$(rc_of "${dir}")" "1"
+    expect_eq "J1: status usage_limit" "$(var_of "${dir}" STATUS)" "usage_limit"
+    expect_eq "J1: result status" "$(result_field "${dir}" 'r["status"]')" "usage_limit"
+    expect_eq "J1: result loop_verdict empty" "$(result_field "${dir}" 'r["loop_verdict"]')" ""
+    expect_eq "J1: no second round" "$(stub_calls "${dir}/stub" hook-rejection-repair)" "1"
+    expect_driver_hygiene "J1" "${dir}"
+
+    # J2 only the runner's own marker on a non-zero exit counts.
+    for v in LIMIT_ECHO LIMIT_RC0; do
+        dir="${WORK}/j2-${v}"
+        commit_case "${dir}"
+        STUB_AGENT_ACTION=noop STUB_VERDICTS="${v}" run_driver "${dir}" "${COMMIT_ARGS[@]}"
+        expect_eq "J2 ${v}: rc 1" "$(rc_of "${dir}")" "1"
+        expect_eq "J2 ${v}: stays stuck" "$(var_of "${dir}" STATUS)" "stuck"
+    done
+}
+
 section_a
 section_b
 section_c
@@ -1947,6 +1978,7 @@ section_g
 section_h_static
 section_h_dynamic
 section_i
+section_j
 
 echo "issue #1671 hook-rejection repair: ${PASSES} passed, ${FAILURES} failed" >&2
 if (( FAILURES > 0 )); then

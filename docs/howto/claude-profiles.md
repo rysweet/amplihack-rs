@@ -1703,8 +1703,9 @@ override says otherwise.
 ## Waiting for a usage-limit reset
 
 When a recipe agent step fails because the Claude account reached its usage
-limit, amplihack waits for the limit to reset and then runs that step once
-more, instead of ending the recipe run. Steps that already finished are not
+limit, amplihack waits for the limit to reset, or for another login with
+capacity, and then runs that step once more, instead of ending the recipe
+run. Steps that already finished are not
 repeated. The wait is **on by default** and needs no profiles.
 
 It applies to the `amplihack claude -p` launch of a recipe step
@@ -1729,15 +1730,67 @@ to turn it on there). A failure that is not a usage limit is passed back at once
    - the configured maximum;
    - one minute before the step's timeout.
 3. The step runs once more with the same arguments, environment and input.
-   If it hits the limit again, the run ends with the usual usage-limit
-   message.
+   If it hits the limit again, there is no second wait. The supervisor
+   writes `skipped reason=already_waited` and then the
+   [closing line](../reference/profile-command.md#closing-line),
+   `failed reason=already_waited: usage limit not lifted`, and the step
+   ends as a usage limit.
 
-It does not wait, and the run ends as before, when the limit is an
-organisation spend limit with no reset (one that also says when your
-session limit resets is waited out), when the reset is more than five hours
-away (a weekly limit), when Claude's message states no reset amplihack can
-read, or when the prompt came on a pipe (auto-switch then does not rerun it
-under another profile either).
+### Weekly limits: waiting for another login
+
+A weekly limit, or a limit whose message states no reset amplihack can
+read, will not lift within the run. When another login could take over,
+amplihack waits for **any** login to have capacity instead, for up to six
+hours by default:
+
+- for a step that uses `~/.claude`, until the
+  [login rotator](claude-profile-rotation.md) records a fresh cycle with
+  capacity, or a different account becomes live in `~/.claude`;
+- for a step under an inherited profile with auto-switch on, until a usage
+  reading taken during the wait shows that another profile has capacity;
+  the step then runs on that profile, not on the exhausted one.
+
+"Another login could take over" means the profile store holds another
+login that is not excluded from auto-switch
+(`amplihack profile auto-switch exclude`), holds a login on this platform
+and has no spend block.
+A login that is over its threshold or has hit its own weekly limit still
+counts, because it may recover during the wait. With a single stored login
+there is nothing to wait for, and the run ends as before, even when the
+rotator is running.
+
+If no login has capacity by the deadline, the step is not run again. The
+log ends with:
+
+```
+amplihack.recipe.usage_limit_wait end reason=capacity expired
+amplihack.recipe.usage_limit_wait failed reason=capacity_expired: usage limit not lifted
+```
+
+and the recipe runner records the failure as `usage_limit`.
+[Auto-drive](../reference/auto-drive-to-merge.md#usage-limits-are-not-stuck)
+stops such a loop as `USAGE_LIMIT`, not `STUCK`.
+
+The same applies to the
+[loop-health evaluator](../reference/loop-health-evaluator.md#retry-inside-the-step)
+that auto-drive runs after each round: a limit on its agent step is waited
+out and the step retried, so the loop gets an ordinary verdict.
+
+### When it does not wait
+
+The run ends as before, with no wait, when:
+
+- the limit is an organisation spend limit, with no reset or with a weekly
+  reset (a spend limit that also says when your session limit resets is
+  waited out);
+- the limit is weekly, or states no readable reset, and no other login
+  could take over;
+- the step uses an explicit `CLAUDE_CONFIG_DIR`, an inherited profile with
+  auto-switch off, or a `.default` profile that is not the rotator's live
+  one, and the limit is weekly or states no readable reset;
+- the prompt came on a pipe (auto-switch then does not rerun it under
+  another profile either).
+
 Model output that merely mentions a usage limit never starts a wait.
 
 The wait stops without a rerun when the run is stopped (Ctrl-C, `SIGTERM`
@@ -1760,10 +1813,21 @@ amplihack.recipe.usage_limit_wait end reason=rotator capacity
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
-The [reference](../reference/profile-command.md#usage-limit-wait) lists every
-event and reason.
+A wait for another login has `wait=capacity` on its `start` line, and
+`reset=none` when Claude's message gave no readable reset:
 
-### Turn it off or shorten it
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=2026-11-05 00:00:00 -07:00 until=2026-10-31 15:43:00 -07:00 bound=max_wait
+amplihack.recipe.usage_limit_wait end reason=rotator capacity
+amplihack.recipe.usage_limit_wait resume attempt=2
+```
+
+The [reference](../reference/profile-command.md#usage-limit-wait) lists every
+event and reason, and the
+[capacity wait](../reference/profile-command.md#capacity-wait) section
+describes the weekly-limit case in full.
+
+### Turn it off or change the maximum
 
 For every run, set it in `~/.amplihack/config.toml`:
 
@@ -1779,7 +1843,22 @@ export AMPLIHACK_USAGE_LIMIT_WAIT=0
 export AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=3600
 ```
 
-A maximum only shortens the wait; `0` means no wait but one more attempt.
+The maximum defaults to `21600` seconds (six hours). It shortens a wait for
+a reset, which never lasts beyond the reset plus two minutes, and sets how
+long a wait for another login lasts. `0` means no wait: for a reset, one
+more attempt; for a weekly limit, the step ends at once as a usage limit.
+
+To wait longer than six hours for another login, raise it in your user
+file or the variable:
+
+```bash
+amplihack config set recipe.usage_limit_max_wait_secs 43200   # twelve hours
+```
+
+A project `config.toml` can only lower the maximum. The keys are listed in
+the [user-config reference](../reference/user-config.md#recipeusage_limit_wait)
+and the variables in
+[environment variables](../reference/environment-variables.md#amplihack_usage_limit_max_wait_secs).
 
 ### Limits of the wait
 

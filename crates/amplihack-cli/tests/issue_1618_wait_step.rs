@@ -202,9 +202,13 @@ fn ac7_a_second_limit_is_passed_up_after_one_wait() {
         1,
         "{ev:?}"
     );
+    // Issue #1801: the closing line keeps the class in the runner's evidence.
     assert_eq!(
-        ev.last().map(String::as_str),
-        Some("skipped reason=already_waited")
+        ev[ev.len() - 2..],
+        [
+            "skipped reason=already_waited",
+            "failed reason=already_waited: usage limit not lifted",
+        ]
     );
     assert_eq!(claude_stdout(&out), "attempt 2 output\n");
     let stderr = text(&out.stderr);

@@ -14,9 +14,12 @@ const PREFIX: &str = "amplihack.recipe.usage_limit_wait";
 pub(super) enum Event {
     Start {
         harness: Harness,
-        reset: i64,
+        /// `None` when a capacity wait's limit stated no readable reset.
+        reset: Option<i64>,
         until: i64,
         bound: Bound,
+        /// A capacity wait (issue #1801); a reset wait's line is unchanged.
+        capacity: bool,
     },
     Progress {
         remaining: u64,
@@ -26,6 +29,28 @@ pub(super) enum Event {
         attempt: u32,
     },
     Skipped(Skip),
+    /// The last line of a step that ends on a limit no wait lifted. Its text
+    /// keeps the failure class in the recipe runner's 40-line evidence tail
+    /// when progress lines have pushed the harness's own message out.
+    Failed(FailReason),
+}
+
+/// Why the step ended on a usage limit after a wait could not lift it.
+#[derive(Clone, Copy)]
+pub(super) enum FailReason {
+    CapacityExpired,
+    StepTimeout,
+    AlreadyWaited,
+}
+
+impl FailReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            FailReason::CapacityExpired => "capacity_expired",
+            FailReason::StepTimeout => "step_timeout",
+            FailReason::AlreadyWaited => "already_waited",
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -54,10 +79,12 @@ where
             reset,
             until,
             bound,
+            capacity,
         } => format!(
-            "start reason=usage_limit harness={} reset={} until={} bound={}",
+            "start reason=usage_limit{} harness={} reset={} until={} bound={}",
+            if *capacity { " wait=capacity" } else { "" },
             harness.as_str(),
-            time(*reset),
+            reset.map_or_else(|| "none".to_string(), time),
             time(*until),
             bound.as_str()
         ),
@@ -74,6 +101,7 @@ where
                 Skip::Cannot(why) => why.as_str(),
             }
         ),
+        Event::Failed(why) => format!("failed reason={}: usage limit not lifted", why.as_str()),
     };
     format!("{PREFIX} {rest}")
 }
