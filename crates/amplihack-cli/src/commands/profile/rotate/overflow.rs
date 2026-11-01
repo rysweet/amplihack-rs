@@ -12,7 +12,9 @@
 //!   (`candidate::may_return_to`; `tests_gate_record` checks thresholds 70,
 //!   80 and 90 against 85/90).
 //! - Onto overflow only when the live plan login is at a threshold (and its
-//!   probe did not fail), and the shared [`Gate`] allows it: no plan login
+//!   probe did not fail), no plan candidate's probe is unknown (it timed out
+//!   or could not run, issue #1698), no plan profile is skipped as
+//!   `directory refused`, and the shared [`Gate`] allows it: no plan login
 //!   has capacity and the earliest plan reset is more than `overflow_wait`
 //!   away. An unknown reset allows it only with `--overflow-unknown-reset 1`.
 //!   This replaces the ALERT, and also a threshold swap onto a plan login
@@ -77,6 +79,11 @@ pub struct OverflowInput<'a> {
     pub live_name: Option<&'a ProfileName>,
     pub live: &'a Probed,
     pub candidates: &'a [Measured],
+    /// Profiles skipped as `directory refused` (issue #1698). Their logins
+    /// cannot be checked, so a plan profile among them holds a move onto
+    /// overflow, as an unknown probe does, until its directory is fixed.
+    /// Overflow profiles among them are ignored.
+    pub refused: &'a [ProfileName],
     /// The overflow entries, in any order: they are tried by tier, then in
     /// the order given within a tier.
     pub overflow: &'a [OverflowEntry],
@@ -246,7 +253,18 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
                 .any(|c| &c.name == to && plan_usable(s, &c.reading)),
             _ => false,
         };
-        if i.overflow.is_empty() || !moving_without_capacity || i.live.reading == Reading::Failed {
+        // A failed live probe holds the move onto credits, and so does an
+        // unknown plan probe (a timeout, a `claude` that could not be
+        // started, read or waited for, or a directory refused just before
+        // the spawn) or a plan profile skipped as `directory refused`. That
+        // login might have capacity. A plan login that read `not_logged_in`,
+        // `unparsed`, `spend_limit`, or `ok` with no week figure, does not.
+        if i.overflow.is_empty()
+            || !moving_without_capacity
+            || i.live.reading == Reading::Failed
+            || plan.iter().any(|c| c.unknown)
+            || i.refused.iter().any(|n| !is_overflow(n))
+        {
             return verdict(d, None, None);
         }
         let plan_has_capacity = plan.iter().any(|c| plan_usable(s, &c.reading));

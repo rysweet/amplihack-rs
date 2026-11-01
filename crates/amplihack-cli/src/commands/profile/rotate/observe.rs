@@ -221,6 +221,7 @@ pub(super) fn decide_measured(
         live_name,
         live: &probe,
         candidates: &measured,
+        refused: &identify::refused_dirs(&snap.skips),
         overflow: &snap.overflow,
         blocks: &blocks,
         platform_block: platform_block.as_ref(),

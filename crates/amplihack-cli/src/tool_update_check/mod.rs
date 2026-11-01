@@ -282,10 +282,27 @@ mod tests {
     ///
     /// Verifies the timeout mechanism works — recv_timeout(0) will always
     /// time out before the thread can complete.
+    #[cfg(unix)]
     #[test]
     fn run_npm_with_timeout_zero_duration_returns_none() {
-        // A zero timeout should always return None regardless of npm presence.
-        let result = run_npm_with_timeout(&["--version"], Duration::from_nanos(0));
+        use std::os::unix::fs::PermissionsExt;
+        // The child's PATH holds only a fake npm that sleeps for 60 s, so
+        // the call reaches the timeout path on every host, whether or not
+        // npm is installed, and never starts the host's npm. The child also
+        // gets a temporary HOME and no profile root (issue #1765).
+        let dir = tempfile::tempdir().unwrap();
+        let fake_npm = dir.path().join("npm");
+        std::fs::write(&fake_npm, "#!/bin/sh\nexec /bin/sleep 60\n").unwrap();
+        std::fs::set_permissions(&fake_npm, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let result = run_npm_with_timeout(
+            &["--version"],
+            Duration::from_nanos(0),
+            &|cmd: &mut std::process::Command| {
+                cmd.env("PATH", dir.path())
+                    .env("HOME", dir.path())
+                    .env_remove(crate::commands::profile::ROOT_ENV);
+            },
+        );
         assert!(
             result.is_none(),
             "Zero-duration timeout must return None (timed out before npm could respond)"
@@ -294,15 +311,25 @@ mod tests {
 
     /// WS3-UNIT-14: A non-existent command returns None (npm not found).
     ///
-    /// Tests the fallback path when npm binary is absent from PATH.
-    /// Uses a clearly-bogus command name to ensure it fails.
+    /// Tests the fallback path when npm binary is absent from PATH. The
+    /// child's PATH and HOME are an empty temporary directory, so the spawn
+    /// fails and the installed npm never runs (issue #1765).
     #[test]
     fn run_npm_with_timeout_missing_binary_returns_none() {
+        let empty = tempfile::tempdir().unwrap();
         let result = run_npm_with_timeout(
-            &["totally-invalid-npm-subcommand-that-will-exit-nonzero"],
+            &["--version"],
             Duration::from_millis(500),
+            &|cmd: &mut std::process::Command| {
+                cmd.env("PATH", empty.path())
+                    .env("HOME", empty.path())
+                    .env_remove(crate::commands::profile::ROOT_ENV);
+            },
         );
-        let _ = result; // may be None or Some depending on environment
+        assert!(
+            result.is_none(),
+            "with no npm in the child's PATH the spawn must fail and return None"
+        );
     }
 
     // The `npm list -g --json` parsing tests that lived here went with

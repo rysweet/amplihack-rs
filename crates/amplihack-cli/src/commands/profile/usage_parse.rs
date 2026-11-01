@@ -65,7 +65,7 @@ pub fn classify_key_error(text: &str) -> Option<(&'static str, Option<i64>)> {
 }
 
 /// A percentage above this is not a reading.
-const MAX_PCT: f64 = 1_000_000.0;
+pub(super) const MAX_PCT: f64 = 1_000_000.0;
 const DAY: i64 = 86_400;
 /// How far in the past a time-only reset may be and still mean today.
 /// Claude prints whole minutes, so a reset due in the current minute can
