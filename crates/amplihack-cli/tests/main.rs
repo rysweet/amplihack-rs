@@ -216,6 +216,8 @@ mod issue_1811_fail_open;
 mod issue_1811_fixture;
 #[path = "issue_1811_governor.rs"]
 mod issue_1811_governor;
+#[path = "issue_1811_nesting.rs"]
+mod issue_1811_nesting;
 #[path = "issue_1811_status.rs"]
 mod issue_1811_status;
 #[path = "issue_1818_no_session_limit.rs"]

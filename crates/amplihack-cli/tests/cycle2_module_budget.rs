@@ -70,12 +70,14 @@ fn cycle2_new_test_targets_and_extracted_helpers_obey_300_line_boundary() {
         "src/commands/governor/admit_state.rs",
         "src/commands/governor/nesting.rs",
         "src/commands/governor/files.rs",
+        "src/commands/governor/fail_open.rs",
         "src/commands/governor/guard.rs",
         "src/commands/governor/manifest.rs",
         "src/commands/governor/status.rs",
         "src/commands/governor/status_table.rs",
         "src/commands/governor/tests_policy.rs",
         "src/commands/governor/tests_policy_flow.rs",
+        "src/commands/governor/tests_policy_reserve.rs",
         "src/commands/governor/tests_budget.rs",
         "src/commands/governor/tests_rate.rs",
         "src/commands/governor/tests_queue.rs",
@@ -93,6 +95,7 @@ fn cycle2_new_test_targets_and_extracted_helpers_obey_300_line_boundary() {
         "tests/issue_1811_fail_open.rs",
         "tests/issue_1811_fixture.rs",
         "tests/issue_1811_governor.rs",
+        "tests/issue_1811_nesting.rs",
         "tests/issue_1811_status.rs",
     ] {
         let root = cli.join(relative);

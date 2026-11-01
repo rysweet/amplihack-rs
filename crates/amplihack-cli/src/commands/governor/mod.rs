@@ -11,6 +11,7 @@ mod admit;
 mod admit_state;
 mod budget;
 mod config;
+mod fail_open;
 mod files;
 mod guard;
 mod identity;
@@ -42,6 +43,8 @@ mod tests_nesting;
 mod tests_policy;
 #[cfg(test)]
 mod tests_policy_flow;
+#[cfg(test)]
+mod tests_policy_reserve;
 #[cfg(test)]
 mod tests_queue;
 #[cfg(test)]
