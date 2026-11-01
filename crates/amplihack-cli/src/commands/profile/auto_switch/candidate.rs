@@ -105,6 +105,10 @@ pub struct OverflowPool<'a> {
     /// Every API-key profile, marked or not (issue #1804). None is a plan
     /// login: only `order` makes one a target.
     pub not_plan: &'a [ProfileName],
+    /// Plan-kind profiles the rotator skips as `no login` or `not oauth`
+    /// (`rotate::login_unusable`), so nothing can ever measure them: they
+    /// never make a missing reading "unknown" ([`unread_plan`]).
+    pub no_login: &'a [ProfileName],
     /// Kinds could not be read, so any profile may bill per token: nothing
     /// is selected.
     pub kinds_unknown: bool,
@@ -235,16 +239,18 @@ pub fn earliest_plan_reset(
         .min()
 }
 
-/// How many plan profiles have no reading: their state is unknown, so they
-/// may have room. Each keeps the API key out of step 5 of
-/// [`select_with_overflow`], whether or not it could be moved to; the
-/// `exclude` list is how an operator leaves one out of this count.
-pub fn unread_plan(pool: &Pool<'_>, ov: &OverflowPool<'_>) -> usize {
+/// The plan profiles with no reading: their state is unknown, so they may
+/// have room. Each keeps the API key out of step 5 of
+/// [`select_with_overflow`], even if this selection cannot move to it. As
+/// in the rotator (`Snap::unmeasured_plan`), excluded profiles do not count,
+/// and neither do those with no login that could ever be measured
+/// ([`OverflowPool::no_login`]).
+pub fn unread_plan<'a>(pool: &Pool<'a>, ov: &OverflowPool<'_>) -> Vec<&'a ProfileName> {
     pool.profiles
         .iter()
-        .filter(|p| !pool.exclude.contains(p) && ov.is_plan(p))
+        .filter(|p| !pool.exclude.contains(p) && ov.is_plan(p) && !ov.no_login.contains(p))
         .filter(|p| !pool.readings.contains_key(p.as_str()))
-        .count()
+        .collect()
 }
 
 /// [`select`] with overflow profiles. With a gate, "plan capacity" is the
@@ -374,7 +380,7 @@ pub fn select_with_overflow<'a>(
         return fallback().or_else(|| with_room().filter(beats_current));
     }
     let on_key = ov.not_plan.iter().any(|k| k.as_str() == current);
-    let unread = unread_plan(pool, ov) > 0;
+    let unread = !unread_plan(pool, ov).is_empty();
     if gate.far(earliest, pool.now)
         && let Some(o) = ov.order.iter().find(|o| {
             let n = o.as_str();

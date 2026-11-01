@@ -1758,7 +1758,12 @@ moved ~/.claude off API key profile api-key to ryan-mistt
 
 It never moves from a plan login to credits, or to the API key, while a
 plan login with a usage reading has room below 100%. A plan login with no
-reading may have room, so it keeps auto-switch off the API key too.
+reading may have room, so it keeps auto-switch off the API key too, and
+auto-switch writes the same ALERT to the rotate log and stderr, ending in
+`; auto-switch from <profile>`. As for the rotator, a profile in the
+`exclude` list does not count, and neither does one with no login file or no
+OAuth login: nothing can measure it. The rotator's live login counts, though
+its login file is in `~/.claude`.
 
 ### See when work is on the API key
 

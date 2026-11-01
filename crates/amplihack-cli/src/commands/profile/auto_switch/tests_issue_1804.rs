@@ -320,6 +320,115 @@ fn capacity_counts_no_overflow_profile_without_a_login_file() {
     assert!(!blocked(&f), "live: the file is in ~/.claude");
 }
 
+/// What selection does from `work` with `spare` unread and not eligible, as
+/// a logged-out profile would be, and only `console` to overflow onto.
+fn pick_without_spare(f: &Fx, now: i64) -> Option<String> {
+    let mut readings = used_up(now);
+    readings.remove("spare");
+    let inputs = f.inputs(&cfg(&["console"]), Some(GATE), now);
+    let pool = Pool {
+        profiles: &f.profiles,
+        readings: &readings,
+        threshold: 90,
+        exclude: &[],
+        now,
+    };
+    select_with_overflow(&pool, &inputs.pool(), "work", |p| p.as_str() != "spare")
+        .map(|p| p.to_string())
+}
+
+/// The profiles the rotator skips as `no login` and `not oauth` are not plan
+/// logins that may have room, so they do not keep work off the key.
+#[test]
+fn a_login_the_rotator_skips_does_not_hold_back_the_key() {
+    let now = 2_000_000_000;
+    let f = fx("enabled=on\noverflow=console\n");
+    assert_eq!(pick_without_spare(&f, now), None, "spare may have room");
+
+    fs::remove_file(f.root.join("spare").join(CREDS)).unwrap();
+    assert_eq!(pick_without_spare(&f, now).as_deref(), Some("console"));
+
+    // A login file with no OAuth login, on a profile set to subscription.
+    let f = fx("enabled=on\noverflow=console\nkind=spare:subscription\n");
+    private(&f.root.join("spare").join(CREDS), "{}");
+    assert_eq!(pick_without_spare(&f, now).as_deref(), Some("console"));
+}
+
+/// The rotator's live profile has no file of its own: the login is in
+/// `~/.claude`, so it is a plan login and may have room.
+#[test]
+fn the_rotators_live_login_still_holds_back_the_key() {
+    let now = 2_000_000_000;
+    let f = fx("enabled=on\noverflow=console\n");
+    fs::remove_file(f.root.join("spare").join(CREDS)).unwrap();
+    let rs = RotateState::new(&f.root);
+    rs.ensure().unwrap();
+    rs.save_ledger(&RotateLedger {
+        live: Some("spare".into()),
+        ..RotateLedger::default()
+    })
+    .unwrap();
+    assert_eq!(pick_without_spare(&f, now), None);
+}
+
+/// Without a marked key nothing reads the list, so no login is looked at.
+#[test]
+fn no_login_is_worked_out_only_with_a_marked_key() {
+    let f = fx("enabled=on\n");
+    fs::remove_file(f.root.join("spare").join(CREDS)).unwrap();
+    let now = 2_000_000_000;
+    assert!(
+        f.inputs(&cfg(&["cred"]), Some(GATE), now)
+            .no_login
+            .is_empty()
+    );
+    let marked = f.inputs(&cfg(&["console"]), Some(GATE), now);
+    assert_eq!(marked.no_login, vec![n("spare")]);
+}
+
+/// A login that holds the key back is named, as the rotator's ALERT does.
+#[test]
+fn a_held_key_names_the_login_that_held_it() {
+    let f = fx("enabled=on\noverflow=console\n");
+    let c = cfg(&["console"]);
+    let now = 2_000_000_000;
+    let mut readings = used_up(now);
+    readings.remove("spare");
+    let inputs = f.inputs(&c, Some(GATE), now);
+    let pool = Pool {
+        profiles: &f.profiles,
+        readings: &readings,
+        threshold: 90,
+        exclude: &[],
+        now,
+    };
+    let line = super::per_token::key_held(&pool, &inputs, "work", |p| p.as_str() != "spare");
+    assert_eq!(
+        line.as_deref(),
+        Some(
+            "ALERT: API key not used live=work: no measured plan login has room, \
+             but these were not measured and may have: spare; auto-switch from work"
+        )
+    );
+    // Step 1 takes an eligible unread login: nothing was held back.
+    assert_eq!(
+        super::per_token::key_held(&pool, &inputs, "work", |_| true),
+        None
+    );
+    // A plan reset inside the wait: the key would not be used anyway.
+    let mut soon = used_up(now);
+    soon.remove("spare");
+    soon.insert("work".into(), reading(100.0, 600, now));
+    let pool = Pool {
+        readings: &soon,
+        ..pool
+    };
+    assert_eq!(
+        super::per_token::key_held(&pool, &inputs, "work", |p| p.as_str() != "spare"),
+        None
+    );
+}
+
 /// `swap_check` needs the real `/proc` scan and the real gate.
 #[test]
 fn swap_check_moves_nothing_onto_a_key_with_a_mode_600_login() {

@@ -69,7 +69,7 @@ pub fn nested_candidate(
         exclude: &cfg.exclude,
         now,
     };
-    let profile = candidate::select_with_overflow(&pool, &overflow.pool(), current, |c| {
+    let eligible = |c: &ProfileName| {
         let n = c.as_str();
         !skip.iter().any(|s| s == n)
             && !ledger.hosts.contains_key(n)
@@ -78,8 +78,13 @@ pub fn nested_candidate(
             && (cfg!(target_os = "macos") || fsx::exists(&state.live_creds(n)))
             // Issue #1804: the API key only with a passing login check.
             && overflow.check_note(&state.root, c).is_some()
-    })?
-    .clone();
+    };
+    let picked = candidate::select_with_overflow(&pool, &overflow.pool(), current, eligible);
+    if picked.is_none_or(|p| overflow.platform.as_ref() != Some(p)) {
+        let held = per_token::key_held(&pool, &overflow, current, eligible);
+        per_token::record(&state.root, held.as_deref());
+    }
+    let profile = picked?.clone();
     // Read again for the detail the reason line gives. A key that went away
     // since the check above is refused like any other failed check.
     let check = overflow.check_note(&state.root, &profile)?;

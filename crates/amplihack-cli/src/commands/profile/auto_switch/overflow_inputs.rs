@@ -15,6 +15,8 @@
 //! every API-key profile is in `not_plan`, so none counts as a plan login.
 //! Kinds that cannot be read mean no profile is known to be free of per-token
 //! billing, so `kinds_unknown` stops every selection and capacity write.
+//! `no_login` lists the profiles the rotator skips as `no login` or
+//! `not oauth`, so a missing reading means the same thing to both.
 
 use super::candidate::OverflowPool;
 use super::config::Config;
@@ -51,6 +53,8 @@ pub struct OverflowInputs {
     pub platform: Option<ProfileName>,
     /// Every API-key profile, marked or not: none is a plan login.
     pub not_plan: Vec<ProfileName>,
+    /// See [`OverflowPool::no_login`]. Worked out only with a marked key.
+    pub no_login: Vec<ProfileName>,
     /// Kinds could not be read: `order` and `not_plan` are empty, and
     /// nothing may be selected.
     pub kinds_unknown: bool,
@@ -61,6 +65,26 @@ struct Order {
     order: Vec<ProfileName>,
     platform: Option<ProfileName>,
     not_plan: Vec<ProfileName>,
+    no_login: Vec<ProfileName>,
+}
+
+/// The profiles whose missing reading says nothing, because the rotator's
+/// login tests skip them (`rotate::login_unusable`). The rotator's live
+/// profile stays out of the list: its login is in `~/.claude`, so its own
+/// directory has none. macOS keeps logins in the Keychain, so a missing file
+/// proves nothing there and the list is empty, which only holds the key back.
+fn no_login_of(store: &ProfileStore, kinds: &Ctx) -> Option<Vec<ProfileName>> {
+    if cfg!(target_os = "macos") {
+        return Some(Vec::new());
+    }
+    let names = store.list().ok()?;
+    let names = names.iter().filter_map(|n| ProfileName::parse(n).ok());
+    Some(
+        names
+            .filter(|n| kinds.ledger_live() != Some(n))
+            .filter(|n| rotate::login_unusable(store, kinds, n))
+            .collect(),
+    )
 }
 
 /// The overflow order for `cfg` under `root`, by the rotator's rule
@@ -83,10 +107,16 @@ fn order_of(root: &Path, cfg: &Config, home: Option<&Path>) -> Option<Order> {
         .iter()
         .find(|e| e.tier == overflow::PLATFORM_TIER)
         .map(|e| e.name.clone());
+    // Only the API key waits for unread logins: skip the reads without one.
+    let no_login = match platform {
+        Some(_) => no_login_of(&store, &kinds)?,
+        None => Vec::new(),
+    };
     Some(Order {
         order: tiers.into_iter().map(|e| e.name).collect(),
         platform,
         not_plan,
+        no_login,
     })
 }
 
@@ -136,6 +166,7 @@ impl OverflowInputs {
             order,
             platform,
             not_plan,
+            no_login,
         }: Order,
         gate: Option<Gate>,
         source: &rotate::GateSource,
@@ -162,6 +193,7 @@ impl OverflowInputs {
                     gate,
                     platform,
                     not_plan,
+                    no_login,
                     kinds_unknown: false,
                 }
             }
@@ -173,6 +205,7 @@ impl OverflowInputs {
                     gate: None,
                     platform,
                     not_plan,
+                    no_login,
                     kinds_unknown: false,
                 }
             }
@@ -187,6 +220,7 @@ impl OverflowInputs {
             gate: None,
             platform: None,
             not_plan: o.not_plan,
+            no_login: Vec::new(),
             kinds_unknown: false,
         }
     }
@@ -199,6 +233,7 @@ impl OverflowInputs {
             gate: None,
             platform: None,
             not_plan: Vec::new(),
+            no_login: Vec::new(),
             kinds_unknown: true,
         }
     }
@@ -269,6 +304,7 @@ impl OverflowInputs {
             gate: self.gate,
             platform: self.platform.as_ref(),
             not_plan: &self.not_plan,
+            no_login: &self.no_login,
             kinds_unknown: self.kinds_unknown,
         }
     }

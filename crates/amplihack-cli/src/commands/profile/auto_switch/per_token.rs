@@ -3,7 +3,9 @@
 //! swap. It goes to the rotate log, beside the rotator's own lines, as well
 //! as to stderr, which for a recipe step ends with the step.
 
-use super::candidate::{Pool, earliest_plan_reset, unread_plan};
+use super::candidate::{
+    OverflowPool, Pool, earliest_plan_reset, select_with_overflow, unread_plan,
+};
 use super::config::Config;
 use super::overflow_inputs::OverflowInputs;
 use crate::commands::profile::name::ProfileName;
@@ -44,9 +46,38 @@ pub fn reason(
         let earliest = ov
             .gate
             .and_then(|g| earliest_plan_reset(pool, &ov, &g, current));
-        rotate::per_token_reason(to, tier, earliest, unread_plan(pool, &ov), check)
+        rotate::per_token_reason(to, tier, earliest, unread_plan(pool, &ov).len(), check)
     };
     Some(format!("{line}; auto-switch from {current}"))
+}
+
+/// The rotator's `ALERT: API key not used` line when unread plan profiles are
+/// the only thing that kept this selection off the API key, so the operator
+/// can see why it was not used. `None` otherwise: asked again as if those
+/// profiles were not there, the selection would still not pick the key.
+pub fn key_held(
+    pool: &Pool<'_>,
+    inputs: &OverflowInputs,
+    current: &str,
+    eligible: impl Fn(&ProfileName) -> bool,
+) -> Option<String> {
+    let ov = inputs.pool();
+    let key = ov.platform?;
+    let unread: Vec<ProfileName> = unread_plan(pool, &ov).into_iter().cloned().collect();
+    if unread.is_empty() {
+        return None;
+    }
+    let ignored: Vec<ProfileName> = ov.no_login.iter().chain(&unread).cloned().collect();
+    let unheld = OverflowPool {
+        no_login: &ignored,
+        ..inputs.pool()
+    };
+    (select_with_overflow(pool, &unheld, current, eligible) == Some(key)).then(|| {
+        format!(
+            "{}; auto-switch from {current}",
+            rotate::alert_key_held(current, &unread)
+        )
+    })
 }
 
 /// Writes `line`, if there is one, to stderr and to the rotate log.

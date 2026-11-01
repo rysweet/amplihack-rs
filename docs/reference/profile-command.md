@@ -1831,7 +1831,12 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
      windows, the current one included, whether or not this session could
      use it (one leased to another session still counts, so no money is
      spent while it exists). A plan profile with no reading, or whose probe
-     failed, counts as having no room. A current plan profile at 82%, or at
+     failed, counts as having no room. The API-key profile also waits for
+     every plan profile with no reading, which may have room: it is passed
+     over, and a launch or rerun writes `ALERT: API key not used`, ending in
+     `; auto-switch from <profile>`. Excluded profiles do not count, and
+     neither do those the rotator skips as `no login` or `not oauth`, which
+     nothing can measure. A current plan profile at 82%, or at
      97%, still has room: the rotator would not leave it for overflow, so
      the session stays on it rather than spend, and it cannot move onto
      overflow only to move straight back;

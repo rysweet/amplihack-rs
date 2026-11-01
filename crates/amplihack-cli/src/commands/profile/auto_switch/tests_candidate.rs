@@ -266,6 +266,7 @@ impl Over {
             gate: self.gate,
             platform: None,
             not_plan: &[],
+            no_login: &[],
             kinds_unknown: false,
         }
     }

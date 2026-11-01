@@ -205,6 +205,11 @@ impl Ctx {
         }
     }
 
+    /// The profile the rotate ledger names as live, if any.
+    pub fn ledger_live(&self) -> Option<&ProfileName> {
+        self.ledger_live.as_ref()
+    }
+
     /// `.auto-switch` is unreadable or invalid.
     pub fn corrupt(&self) -> bool {
         self.overrides.is_none()
@@ -248,7 +253,7 @@ impl Ctx {
     /// overrides or logins decide the kind: `kind`, `source`, `own_oauth`
     /// and [`Resolved::may_be_live`] are the same, but `key_setting` may be
     /// false where it is true, so not for [`Resolved::warn_key_setting`].
-    pub(super) fn resolve_kind(&self, store: &ProfileStore, name: &ProfileName) -> Resolved {
+    pub fn resolve_kind(&self, store: &ProfileStore, name: &ProfileName) -> Resolved {
         resolve_from(&self.evidence_with(store, name, false))
     }
 

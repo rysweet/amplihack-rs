@@ -97,6 +97,7 @@ fn compute(
         gate: None,
         platform: None,
         not_plan: &[],
+        no_login: &[],
         kinds_unknown: false,
     };
     super::capacity::compute(profiles, evidence, cfg, &none, now, writer)
@@ -238,6 +239,7 @@ fn overflow_case_cred(
         gate,
         platform: None,
         not_plan: &[],
+        no_login: &[],
         kinds_unknown: false,
     };
     super::capacity::compute(
@@ -314,6 +316,7 @@ fn file_and_selection(threshold: u8, a: Reading, b: Reading, cred_pct: f64) -> (
         gate: Some(GATE),
         platform: None,
         not_plan: &[],
+        no_login: &[],
         kinds_unknown: false,
     };
     let profiles = names(&["a", "b", "cred"]);

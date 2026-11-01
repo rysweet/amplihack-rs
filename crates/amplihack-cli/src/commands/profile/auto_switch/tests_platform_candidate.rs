@@ -65,6 +65,7 @@ struct Case {
     order: Vec<ProfileName>,
     blocked: Vec<String>,
     console: ProfileName,
+    no_login: Vec<ProfileName>,
 }
 
 impl Case {
@@ -83,6 +84,7 @@ impl Case {
             order: vec![n("cred"), n("console")],
             blocked: Vec::new(),
             console: n("console"),
+            no_login: Vec::new(),
         }
     }
 
@@ -93,6 +95,12 @@ impl Case {
 
     fn without(mut self, name: &str) -> Self {
         self.readings.remove(name);
+        self
+    }
+
+    /// `name` holds no login that could be measured.
+    fn logged_out(mut self, name: &str) -> Self {
+        self.no_login.push(n(name));
         self
     }
 
@@ -131,6 +139,7 @@ impl Case {
             gate: Some(GATE),
             platform: Some(&self.console),
             not_plan: &[],
+            no_login: &self.no_login,
             kinds_unknown: false,
         };
         candidate::select_with_overflow(&pool, &ov, current, eligible).map(|p| p.to_string())
@@ -237,11 +246,21 @@ fn a_spend_blocked_credit_session_does_not_move_to_the_api_key_while_a_plan_prof
 #[test]
 fn a_missing_plan_reading_keeps_work_off_the_api_key() {
     // An eligible profile with no reading is step 1's: it costs nothing. One
-    // that cannot be used is unknown, not empty: it may have room, so the
-    // API key waits, as it does for the rotator.
+    // this selection cannot use now (leased, say) still holds a login, so it
+    // is unknown, not empty: the API key waits, as it does for the rotator.
     let c = Case::all_plan_out().no_credits().without("spare");
     assert_eq!(c.pick("work").as_deref(), Some("spare"));
     assert_eq!(c.pick_without("work", "spare"), None);
+}
+
+#[test]
+fn a_plan_profile_with_no_usable_login_does_not_hold_back_the_api_key() {
+    // Nothing can ever measure it, so the rotator leaves it out too.
+    let c = Case::all_plan_out()
+        .no_credits()
+        .without("spare")
+        .logged_out("spare");
+    assert_eq!(c.pick_without("work", "spare").as_deref(), Some("console"));
 }
 
 #[test]

@@ -382,6 +382,7 @@ mod overflow_precheck {
             gate: Some(GATE),
             platform: None,
             not_plan: Vec::new(),
+            no_login: Vec::new(),
             kinds_unknown: false,
         }
     }
