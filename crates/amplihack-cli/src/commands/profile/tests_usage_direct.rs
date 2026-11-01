@@ -34,7 +34,9 @@
 //!   `timeout` is one deadline for the whole read, refresh included: each
 //!   request is given only the time left of it, and a refresh POST is sent
 //!   only with at least `REFRESH_BUDGET` (3 s) left, with connect and read
-//!   steps of at least that budget;
+//!   steps of at least that budget; once the POST may have reached the
+//!   server (any failure after the connect, or a 200 that cannot be used or
+//!   saved) the reason is `refresh not saved`;
 //!   with `cancel` set, a refresh takes no lock and gives `refresh busy`.
 //!   Errors are the fixed texts in `reason`.
 //! - `refreshes_in_progress() -> usize` counts refreshes holding a lock;
@@ -764,10 +766,13 @@ fn a_refresh_with_the_budget_left_saves_the_rotated_token() {
     assert_eq!(l.entries(), [CREDS]);
 }
 
-/// A refresh POST that is sent but not answered still ends at the read's
-/// deadline: the file is untouched and the lock released.
+/// A refresh POST that is sent but answered only after the read's deadline
+/// still ends at the deadline: the file is untouched and the lock released.
+/// The token server rotates the refresh token in that answer, so the old one
+/// on file may be retired: the reason is `refresh not saved`, which prints
+/// the warning to log in again, not `refresh failed`.
 #[test]
-fn a_stalled_refresh_ends_at_the_read_deadline() {
+fn a_refresh_answered_after_the_deadline_is_not_saved() {
     let fake = refreshing(Reply::json(200, &token_answer()).after(Duration::from_secs(8)));
     let l = login();
     let before = fs::read(l.path()).unwrap();
@@ -775,7 +780,11 @@ fn a_stalled_refresh_ends_at_the_read_deadline() {
     let mut req = request(&l, &journals, true);
     req.timeout = Duration::from_millis(3500);
     let start = Instant::now();
-    assert_eq!(read(&endpoints(&fake), &req), Err(reason::REFRESH_FAILED));
+    assert_eq!(
+        read(&endpoints(&fake), &req),
+        Err(reason::REFRESH_NOT_SAVED)
+    );
+    assert!(super::usage_source::not_saved(reason::REFRESH_NOT_SAVED));
     let took = start.elapsed();
     assert!(took < Duration::from_millis(3800), "{took:?}");
     assert_eq!(posts(&fake), 1);
@@ -980,8 +989,10 @@ fn a_token_changed_under_the_lock_is_used_without_a_post() {
     assert!(!l.lock().exists());
 }
 
+/// A 200 means the server issued new tokens and may have retired the old
+/// refresh token; an answer that cannot be used is `refresh not saved`.
 #[test]
-fn an_unusable_new_token_is_refresh_failed_and_the_file_is_untouched() {
+fn an_unusable_new_token_is_refresh_not_saved_and_the_file_is_untouched() {
     for bad in [
         json!("has space"),
         json!(""),
@@ -993,14 +1004,18 @@ fn an_unusable_new_token_is_refresh_failed_and_the_file_is_untouched() {
         let fake = refreshing(Reply::json(200, &answer));
         let l = login();
         let before = fs::read(l.path()).unwrap();
-        assert_eq!(run(&fake, &l, true), Err(reason::REFRESH_FAILED), "{bad}");
+        assert_eq!(
+            run(&fake, &l, true),
+            Err(reason::REFRESH_NOT_SAVED),
+            "{bad}"
+        );
         assert_eq!(fs::read(l.path()).unwrap(), before);
         assert_eq!(l.entries(), [CREDS]);
     }
 }
 
 #[test]
-fn a_bad_expires_in_is_refresh_failed_and_the_file_is_untouched() {
+fn a_bad_expires_in_is_refresh_not_saved_and_the_file_is_untouched() {
     for bad in [
         json!(0),
         json!(-1),
@@ -1013,17 +1028,22 @@ fn a_bad_expires_in_is_refresh_failed_and_the_file_is_untouched() {
         let fake = refreshing(Reply::json(200, &answer));
         let l = login();
         let before = fs::read(l.path()).unwrap();
-        assert_eq!(run(&fake, &l, true), Err(reason::REFRESH_FAILED), "{bad}");
+        assert_eq!(
+            run(&fake, &l, true),
+            Err(reason::REFRESH_NOT_SAVED),
+            "{bad}"
+        );
         assert_eq!(fs::read(l.path()).unwrap(), before);
     }
 }
 
+/// A status the server refused the refresh with leaves the old refresh token
+/// in force: `refresh failed`.
 #[test]
 fn a_failed_refresh_request_leaves_the_file_and_releases_the_lock() {
     for reply in [
         Reply::json(400, &json!({"error": "invalid_grant"})),
         Reply::json(500, &json!({})),
-        Reply::raw(200, "not json"),
         Reply::raw(302, "").header("Location", "/elsewhere"),
     ] {
         let fake = refreshing(reply);
@@ -1034,6 +1054,36 @@ fn a_failed_refresh_request_leaves_the_file_and_releases_the_lock() {
         assert_eq!(l.entries(), [CREDS]);
         assert_eq!(fake.count("GET", "/elsewhere"), 0);
     }
+}
+
+#[test]
+fn a_200_that_is_not_json_is_refresh_not_saved_and_leaves_the_file() {
+    let fake = refreshing(Reply::raw(200, "not json"));
+    let l = login();
+    let before = fs::read(l.path()).unwrap();
+    assert_eq!(run(&fake, &l, true), Err(reason::REFRESH_NOT_SAVED));
+    assert_eq!(fs::read(l.path()).unwrap(), before);
+    assert_eq!(l.entries(), [CREDS]);
+    assert!(!l.lock().exists());
+}
+
+/// A token URL that refuses the connection never received the request, so
+/// the old refresh token still works: `refresh failed`, no warning.
+#[test]
+fn a_refused_token_connection_is_refresh_failed() {
+    let token = format!("{}{TOKEN_PATH}", closed_base());
+    let fake = FakeHttp::start(|_, _| Reply::json(401, &json!({})));
+    let (ep, warnings) =
+        Endpoints::resolve(Some(OsStr::new(&fake.base())), Some(OsStr::new(&token)));
+    assert!(warnings.is_empty(), "{warnings:?}");
+    let l = login();
+    let before = fs::read(l.path()).unwrap();
+    let journals = l.journals();
+    let req = request(&l, &journals, true);
+    assert_eq!(read(&ep, &req), Err(reason::REFRESH_FAILED));
+    assert!(!super::usage_source::not_saved(reason::REFRESH_FAILED));
+    assert_eq!(fs::read(l.path()).unwrap(), before);
+    assert!(!l.lock().exists());
 }
 
 #[test]

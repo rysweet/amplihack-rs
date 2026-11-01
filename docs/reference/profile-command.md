@@ -49,7 +49,7 @@ amplihack launch|claude --profile <name> [...]
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
 | `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
-| `usage [<name>...]` | Asks `claude` for each profile's usage, a few profiles at a time, and shows its session and weekly usage, most capacity first. `--json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings. See [Usage command](#usage-command). |
+| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails; then shows its session and weekly usage, most capacity first. `--json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings. See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
 | `overflow …` | Mark or unmark a credit-backed profile that the rotator may use when every plan login is exhausted, list the marks, or lift a spend-limit block. See [Overflow commands](#overflow-commands). |
 | `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
@@ -291,8 +291,8 @@ the numeric HTTP status class is kept.
 | `usage credits on` | The answer shows `extra_usage.is_enabled` as `true`, or an `extra_usage` amplihack does not recognise. |
 | `refresh busy` | The token needs a refresh, but the refresh lock is held or a swap is in progress. |
 | `refresh refused` | The checks before a refresh failed (see [Token refresh](#token-refresh)). |
-| `refresh failed` | The refresh request failed, or its answer was not usable. |
-| `refresh not saved` | The refresh succeeded, but the new login could not be written. |
+| `refresh failed` | The refresh request did not reach the token server (DNS, connection or TLS handshake failed), or the server refused it with a status other than `200`. The old refresh token is still on file. |
+| `refresh not saved` | The refresh request may have reached the token server, but its new login was not written: the answer did not arrive before the deadline, the connection failed after the request was sent, a `200` answer was not usable, or the write failed. |
 
 Except under `AMPLIHACK_PROFILE_USAGE_PROBE=direct`, a failed direct read
 moves on to the fallback. The table marks the row `(fallback)` and the JSON
@@ -337,9 +337,11 @@ The refresh runs as follows:
    rotator is stopping, nothing is refreshed and the reason is
    `refresh busy`. A lock held by someone else
    is never broken.
-2. Under the lock, read the file again. If `accessToken` or `refreshToken`
-   has changed, `claude` has refreshed it already: the new token is used and
-   no refresh request is sent.
+2. Under the lock, read the file again. If `accessToken` differs from the
+   token the `GET` was sent with, `claude` has refreshed it already: the new
+   token is used and no refresh request is sent. Only `accessToken` is
+   compared; a refresh always replaces it, and a changed `refreshToken`
+   alone does not give a token to send.
 3. Check that the directory is owned by you and not writable by group or
    others, that the file can be replaced safely, and that a private
    temporary file can be created beside it. If any check fails, the reason
@@ -358,13 +360,20 @@ The refresh runs as follows:
    over the old file, and the directory synced), release the lock, and send
    the `GET` once more with the new token.
 
-If the request fails, the file is not touched. If the request succeeded but
-the write failed, the reason is `refresh not saved`. The old refresh token
-may no longer work, so one line goes to stderr in every mode, with or
-without `--raw` (`rotate.err` for a background rotator):
+The file is never touched unless the write in step 6 succeeds. The `POST`
+ends at the read's deadline like every other request, so the 3-second floor
+in step 4 makes an unanswered refresh less likely but cannot rule it out.
+The token server may retire the old refresh token as soon as it handles the
+request, so when the request failed before it could reach the server, or the
+server refused it with a status, the reason is `refresh failed`; in every
+other case (no answer before the deadline, a connection lost after the
+request was sent, a `200` that cannot be used, or a failed write) the reason
+is `refresh not saved`. The old refresh token may no longer work, so one
+line goes to stderr in every mode, with or without `--raw` (`rotate.err`
+for a background rotator):
 
 ```
-warning: profile "spare": token refreshed but not saved; run claude /login for this profile
+warning: profile "spare": token refresh may not have been saved; run claude /login for this profile
 ```
 
 The row then falls back as usual, or reads `error` with

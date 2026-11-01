@@ -319,3 +319,30 @@ fn reference_gives_the_direct_read_step_limits_and_refresh_budget() {
         "the reference still gives a 1 second floor"
     );
 }
+
+/// The command table describes `usage` as the direct read it is, not as a
+/// `claude` run per profile.
+#[test]
+fn reference_command_table_describes_usage_as_a_direct_read() {
+    let row = REFERENCE
+        .lines()
+        .find(|l| l.starts_with("| `usage [<name>...]` |"))
+        .expect("the command table has a usage row");
+    assert!(!row.contains("Asks `claude`"), "{row}");
+    assert!(row.contains("OAuth usage endpoint"), "{row}");
+}
+
+/// Step 2 of "Token refresh" names the one comparison the code makes: the
+/// access token, not the refresh token.
+#[test]
+fn reference_refresh_step_two_compares_only_the_access_token() {
+    assert!(!REFERENCE.contains("If `accessToken` or `refreshToken`"));
+    assert!(REFERENCE.contains("Only `accessToken` is\n   compared"));
+}
+
+/// Both reasons for a refresh that may have reached the token server are
+/// documented as `refresh not saved`, including the late answer.
+#[test]
+fn reference_says_a_late_refresh_answer_is_not_saved() {
+    assert!(REFERENCE.contains("the answer did not arrive before the deadline"));
+}

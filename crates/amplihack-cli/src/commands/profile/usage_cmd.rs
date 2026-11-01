@@ -1531,12 +1531,14 @@ pub(super) fn fallback_notes(rows: &[Row]) -> Vec<String> {
         .collect()
 }
 
-/// SR-10: the fixed line for a profile whose token was refreshed but could
-/// not be saved. Its refresh token on disk may have been retired, so the
-/// user has to log in again.
+/// SR-10: the fixed line for a profile whose refresh request may have
+/// reached the token server but whose answer was not saved: the write
+/// failed, the answer was unusable, or it did not arrive before the
+/// deadline. Its refresh token on disk may have been retired, so the user
+/// has to log in again.
 pub(super) fn not_saved_warning(profile: &str) -> String {
     format!(
-        "warning: profile \"{}\": token refreshed but not saved; run claude /login for this profile",
+        "warning: profile \"{}\": token refresh may not have been saved; run claude /login for this profile",
         sanitize_display(profile, false)
     )
 }

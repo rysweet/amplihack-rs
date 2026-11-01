@@ -421,7 +421,7 @@ fn a_refresh_that_is_not_saved_warns_in_every_mode() {
     let creds = s.f.slot("spare");
     let original = fs::read_to_string(&creds).unwrap();
     let endpoint = unsaveable_refresh(creds.clone());
-    let warning = "warning: profile \"spare\": token refreshed but not saved; run claude /login for this profile";
+    let warning = "warning: profile \"spare\": token refresh may not have been saved; run claude /login for this profile";
     for (mode, json) in [(None, false), (None, true), (Some("direct"), false)] {
         if creds.is_dir() {
             fs::remove_dir_all(&creds).unwrap();
@@ -457,4 +457,52 @@ fn a_refresh_that_is_not_saved_warns_in_every_mode() {
             "the lock is released"
         );
     }
+}
+
+/// SR-10: the token endpoint rotates the refresh token but answers only after
+/// the read's deadline. The answer is never read, so the new token cannot be
+/// saved and the old one may already be retired: the user is told to log in
+/// again, and the file is left as it was.
+#[test]
+fn a_refresh_answered_after_the_deadline_warns() {
+    let s = setup(0);
+    let creds = s.f.slot("spare");
+    let original = fs::read_to_string(&creds).unwrap();
+    let endpoint = Endpoint::serve(|line, _| {
+        if !line.starts_with("POST ") {
+            return (401, "{}".to_string());
+        }
+        std::thread::sleep(Duration::from_secs(8));
+        let answer = serde_json::json!({
+            "access_token": "SENTINEL-ACCESS-new",
+            "refresh_token": "SENTINEL-REFRESH-new",
+            "expires_in": 28_800
+        });
+        (200, answer.to_string())
+    });
+    let warning = "warning: profile \"spare\": token refresh may not have been saved; run claude /login for this profile";
+    let start = Instant::now();
+    let out =
+        s.f.cmd(&["profile", "usage", "spare"])
+            .env(API_BASE_ENV, endpoint.base())
+            .env(TOKEN_URL_ENV, format!("{}/v1/oauth/token", endpoint.base()))
+            .env(PASSIVE_ENV, "0")
+            .env("AMPLIHACK_PROFILE_USAGE_PROBE", "direct")
+            .env("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "4")
+            .output()
+            .unwrap();
+    let took = start.elapsed();
+    let err = text(&out.stderr);
+    assert!(took < Duration::from_secs(7), "{took:?}");
+    assert!(
+        endpoint.requests().iter().any(|r| r.starts_with("POST ")),
+        "the refresh was sent"
+    );
+    assert_eq!(err.matches(warning).count(), 1, "{err}");
+    assert!(!err.contains("SENTINEL"), "{err}");
+    assert_eq!(fs::read_to_string(&creds).unwrap(), original);
+    assert!(
+        !creds.parent().unwrap().join(".oauth_refresh.lock").exists(),
+        "the lock is released"
+    );
 }

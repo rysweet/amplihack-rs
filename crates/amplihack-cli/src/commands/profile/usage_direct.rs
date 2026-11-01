@@ -59,7 +59,9 @@ pub(super) const MIN_STEP: Duration = Duration::from_millis(500);
 /// refresh can retire the old refresh token (RFC 6749 section 6, RFC 9700
 /// section 4.14.2); one given up on before its answer arrives can leave the
 /// login with no working refresh token. Skipping a refresh costs one
-/// `timeout` row; abandoning one can cost the login.
+/// `timeout` row. The budget makes an abandoned refresh less likely but
+/// cannot rule it out; one that is abandoned is reported as
+/// `refresh not saved` ([`post_failure`]), with the warning to log in again.
 pub(super) const REFRESH_BUDGET: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(20);
 
@@ -380,6 +382,35 @@ pub(super) fn map_err(e: &ureq::Error) -> &'static str {
     }
 }
 
+/// The reason for a refresh POST that ended in an error. A status is the
+/// server refusing the request, and a failure before or during the connect
+/// (DNS, TCP, TLS handshake, a bad URL or proxy) comes before any of the
+/// request is written: both are `refresh failed`, and the old refresh token
+/// is still the one on file. Anything else (a timeout or I/O error while
+/// writing the request or waiting for the answer, a malformed answer) can
+/// follow a request the server received and acted on, so it is
+/// `refresh not saved`.
+pub(super) fn post_failure(e: &ureq::Error) -> &'static str {
+    match e {
+        HttpError::Status(..) => reason::REFRESH_FAILED,
+        HttpError::Transport(t) => match t.kind() {
+            ErrorKind::InvalidUrl
+            | ErrorKind::UnknownScheme
+            | ErrorKind::Dns
+            | ErrorKind::InsecureRequestHttpsOnly
+            | ErrorKind::ConnectionFailed
+            | ErrorKind::InvalidProxyUrl
+            | ErrorKind::ProxyConnect
+            | ErrorKind::ProxyUnauthorized => reason::REFRESH_FAILED,
+            ErrorKind::TooManyRedirects
+            | ErrorKind::BadStatus
+            | ErrorKind::BadHeader
+            | ErrorKind::Io
+            | ErrorKind::HTTP => reason::REFRESH_NOT_SAVED,
+        },
+    }
+}
+
 fn timed_out(kind: std::io::ErrorKind) -> bool {
     matches!(
         kind,
@@ -655,7 +686,8 @@ fn refresh(
     // refresh sent then could retire the old refresh token and not be
     // answered in time to save the new one. The POST gets its own agent so
     // that its connect and read steps are not cut below the budget by a
-    // short probe deadline; it still ends by the read's deadline.
+    // short probe deadline; it still ends by the read's deadline, and an
+    // answer that misses it is reported as `refresh not saved` below.
     let left = deadline.left()?;
     if left < REFRESH_BUDGET {
         return Err(reason::TIMEOUT);
@@ -674,36 +706,45 @@ fn refresh(
         "refresh_token": old_refresh.as_str(),
         "client_id": CLIENT_ID,
     });
+    // From here on the request may have reached the token server, which can
+    // retire the old refresh token as soon as it answers. The POST still ends
+    // at the read's deadline, so an answer can arrive too late to be read.
+    // Every failure that can follow a sent request is therefore
+    // `refresh not saved`, which tells the user to log in again; only a
+    // failure that provably came before the request was written, or a status
+    // the server refused it with, is `refresh failed`.
     let resp = post
         .send_string(&payload.to_string())
-        .map_err(|_| reason::REFRESH_FAILED)?;
+        .map_err(|e| post_failure(&e))?;
     if resp.status() != 200 {
         return Err(reason::REFRESH_FAILED);
     }
-    let raw = body(resp).map_err(|_| reason::REFRESH_FAILED)?;
-    let answer: Value = serde_json::from_slice(&raw).map_err(|_| reason::REFRESH_FAILED)?;
+    // A 200 means the server issued new tokens; an answer that cannot be
+    // used leaves the login with a refresh token that may be retired.
+    let raw = body(resp).map_err(|_| reason::REFRESH_NOT_SAVED)?;
+    let answer: Value = serde_json::from_slice(&raw).map_err(|_| reason::REFRESH_NOT_SAVED)?;
     let fresh = answer
         .get("access_token")
         .and_then(Value::as_str)
         .and_then(Token::parse)
-        .ok_or(reason::REFRESH_FAILED)?;
+        .ok_or(reason::REFRESH_NOT_SAVED)?;
     let lifetime = answer
         .get("expires_in")
         .and_then(expires_in)
-        .ok_or(reason::REFRESH_FAILED)?;
+        .ok_or(reason::REFRESH_NOT_SAVED)?;
     let next_refresh = match answer.get("refresh_token") {
         None | Some(Value::Null) => None,
         Some(v) => Some(
             v.as_str()
                 .and_then(Token::parse)
-                .ok_or(reason::REFRESH_FAILED)?,
+                .ok_or(reason::REFRESH_NOT_SAVED)?,
         ),
     };
     let now_ms = chrono::Utc::now().timestamp_millis();
     let expires_at = lifetime
         .checked_mul(1000)
         .and_then(|ms| now_ms.checked_add(ms))
-        .ok_or(reason::REFRESH_FAILED)?;
+        .ok_or(reason::REFRESH_NOT_SAVED)?;
     let mut whole = current.whole;
     let Some(oauth) = whole
         .get_mut("claudeAiOauth")
