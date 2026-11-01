@@ -244,7 +244,7 @@ main() {
     print_success "Amplihack installation completed successfully!"
     print_status "Features installed:"
     echo "  ✅ Amplihack core tools and hooks"
-    echo "  ✅ XPIA security defense system"
+    echo "  ✅ XPIA security defense system (off by default; export XPIA_ENABLED=true to opt in)"
     echo "  ✅ Smart hook configuration merging"
 
     if [ -f "$BACKUP_FILE" ]; then

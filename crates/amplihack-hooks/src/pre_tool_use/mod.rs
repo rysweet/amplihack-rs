@@ -8,7 +8,10 @@
 //! - In an auto-drive run, merges outside the merge gate (#1551)
 //! - tmux `kill-server` / `kill-session -a` without `-S` or `-L`, which act
 //!   on the user's own server when `$TMUX` is set (#1733; all shell tools)
-//! - XPIA prompt injection attacks (all tools)
+//! - XPIA prompt injection attacks (all tools), only when `XPIA_ENABLED=true`
+//!
+//! XPIA is off by default. The other blocks above do not depend on it and
+//! run whether or not XPIA is enabled.
 
 mod command;
 mod cwd;
@@ -344,7 +347,7 @@ impl Hook for PreToolUseHook {
         //
         // This runs first, above XPIA and the merge guard. Those checks
         // answer with a bare `{"block": true, "message": …}`, which Claude
-        // Code does not enforce (#1773), and XPIA, on by default, matches
+        // Code does not enforce (#1773), and XPIA, when opted in, matches
         // `; rm`, `\; kill…` and a `kill…` line, so it would answer first for
         // `tmux kill-server; rm -rf "$SB"` or a `tmux -C attach <<EOF` heredoc
         // and the command would run. The guard only ever denies, so running
@@ -358,7 +361,7 @@ impl Hook for PreToolUseHook {
             return Ok(block);
         }
 
-        // XPIA security validation for all tools.
+        // XPIA security validation for all tools, when opted in (#1734).
         if let Some(block) = xpia::check_xpia(&tool_name, &tool_input) {
             return Ok(block);
         }
