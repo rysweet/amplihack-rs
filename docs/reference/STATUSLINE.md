@@ -325,9 +325,14 @@ In profile mode, for profile `<p>`, the command:
    An original whose command contains `profile statusline` is never run;
    `statusline.sh` is run in its place. When the command was started without
    `--owner` and there is no saved original, `statusline.sh` is run too;
-4. prints the capacity line, when the step 1 checks passed: the account the
-   auto-switch ledger records for `<p>` as the login, falling back to `<p>`,
-   the bars from this run's input, and the spare count excluding `<p>`;
+4. prints the capacity line, when the step 1 checks passed and the line
+   stands in for the home command's: the command was started without
+   `--owner`, or the saved original is the home command or the
+   `statusline.sh` saved in its place. A wrapper around any other original
+   copies that original's output through unchanged and adds no capacity
+   line. The line shows the account the auto-switch ledger records for `<p>`
+   as the login, falling back to `<p>`, the bars from this run's input, and
+   the spare count excluding `<p>`;
 5. prints the capacity notice, when it is due.
 
 New profiles receive the `~/.claude` entry through the shared settings keys,

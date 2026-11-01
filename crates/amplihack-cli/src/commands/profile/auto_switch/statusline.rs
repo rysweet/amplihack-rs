@@ -91,15 +91,25 @@ fn owned(root: Option<&Path>, owner_arg: &str, implicit: bool, input: &[u8]) -> 
             .ok()
             .flatten()
     });
-    let key = session.and_then(|(state, owner)| {
-        std::panic::catch_unwind(|| home_line::owned_line(state, owner, input, fsx::now()))
-            .ok()
-            .flatten()
-    });
     let saved = match (&state, &owner) {
         (Some(s), Some(o)) => saved_original(s, o),
         _ => None,
     };
+    // The capacity line stands in for the home command's: it is added only
+    // without `--owner`, or when the saved original is the home command or
+    // the `statusline.sh` saved in its place. A wrapper around any other
+    // original passes that output through unchanged and adds nothing.
+    let replaces_home = implicit
+        || saved.as_deref().is_some_and(|c| {
+            c.contains(MARKER) || home_line::script_command().as_deref() == Some(c)
+        });
+    let key = session
+        .filter(|_| replaces_home)
+        .and_then(|(state, owner)| {
+            std::panic::catch_unwind(|| home_line::owned_line(state, owner, input, fsx::now()))
+                .ok()
+                .flatten()
+        });
     // A `profile statusline` original is never run: in its place, and
     // without `--owner` when nothing is saved, `statusline.sh` runs.
     let original = match saved {
