@@ -191,7 +191,8 @@ validate_final_pr_scope() {
   local current_branch local_head repo_identity expected_base scoped_json reason created_after
   [ -x "$PR_SCOPE_HELPER" ] || { echo "ERROR: workflow_pr_scope.sh missing or not executable at $PR_SCOPE_HELPER" >&2; return 1; }
   command -v jq >/dev/null 2>&1 || { echo "ERROR: jq CLI not found — cannot validate scoped final PR metadata" >&2; return 127; }
-  current_branch="$(git branch --show-current 2>/dev/null || true)"
+  # #1762: an alias worktree's PR is on <B>, the branch it pushes to.
+  current_branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || { echo "ERROR: workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR" >&2; return 1; }
   local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
   repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
   expected_base="$(resolve_expected_base_branch || true)"
@@ -378,7 +379,7 @@ resolve_open_pr_for_current_branch() {
     [ -z "$repo_top" ] || [ "$cwd_top" != "$repo_top" ] || { branch_pr_lookup_skip "no worktree path recorded and cwd is REPO_PATH"; return 0; }
   fi
 
-  branch="$(git -C "$run_dir" branch --show-current 2>/dev/null || true)"
+  branch="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" "$run_dir")" || { branch_pr_lookup_skip "workflow_remote_branch.sh is missing or failed (#1762)"; return 0; }
   [ -n "$branch" ] || { branch_pr_lookup_skip "detached HEAD"; return 0; }
   expected_branch="$(rv_field worktree_setup branch_name)"
   [ -z "$expected_branch" ] || [ "$branch" = "$expected_branch" ] || { branch_pr_lookup_skip "worktree branch is not the recorded branch"; return 0; }

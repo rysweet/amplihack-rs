@@ -9,6 +9,7 @@ use super::fsx;
 use super::liveness::{self, Liveness};
 use super::mv::{self, MoveError, abort_point};
 use super::overflow_inputs::OverflowInputs;
+use super::per_token;
 use super::state::{
     CLAUDE_JSON, CREDS, HostEntry, Journal, Ledger, Lock, MAX_CLAUDE_JSON, Op, PHASE_INCONSISTENT,
     State,
@@ -16,6 +17,7 @@ use super::state::{
 use super::usage::{self, Attribution, RateLimits};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::rotate::CheckNote;
 use crate::commands::profile::rotate::identify::Account;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -514,10 +516,13 @@ pub fn swap_check(
         now,
     };
     // A candidate's home slot must hold its login; when that slot is its own
-    // directory, no running process may be using the directory.
+    // directory, no running process may be using the directory. An API-key
+    // profile is never swapped into a running session: its `.credentials.json`
+    // is no login on its own, so the session would be logged out (#1804).
     let eligible = |c: &ProfileName| {
         let n = c.as_str();
-        ledger.leased_to(n).is_none()
+        !overflow.not_plan.contains(c)
+            && ledger.leased_to(n).is_none()
             && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
             && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
     };
@@ -535,6 +540,16 @@ pub fn swap_check(
     let Some(ino) = take_refresh_lock(state, owner.as_str()) else {
         return Ok(());
     };
+    // `eligible` keeps every API-key profile out, so no login check applies.
+    let reason = per_token::reason(
+        &pool,
+        &overflow,
+        cfg,
+        &current,
+        &target,
+        CheckNote::NoSpendBlock,
+    );
+    per_token::record(&state.root, reason.as_deref());
     let j = Journal {
         version: 1,
         op: Op::Swap,
@@ -571,14 +586,18 @@ pub fn swap_check(
 /// check may move it, `Some(false)` when it cannot, `None` when the account
 /// is not an overflow profile (the reading alone decides then). It may move
 /// when the profile has a spend block, or when some plan profile may be
-/// moved back to by [`candidate::may_return_to`]: the tests the selection
-/// applies ([`candidate::overflow_usable`] and `may_return_to`, step 2 of
+/// moved back to ([`candidate::way_off`]): the tests the selection applies
+/// ([`candidate::overflow_usable`] and steps 1 and 2 of
 /// `select_with_overflow`), on the same inputs ([`OverflowInputs`]), so the
 /// check does not pass on readings the selection then refuses, nor stop one
 /// it would act on. The overflow profile's own reading plays no part.
 /// Reads the ledger, `usage.json`, the spend blocks and the gate; no
 /// recovery, no `/proc` scan.
 fn overflow_precheck(state: &State, owner: &ProfileName, cfg: &Config, now: i64) -> Option<bool> {
+    // Nothing marked means no overflow account: skip reading every login.
+    if cfg.overflow_order().is_empty() {
+        return None;
+    }
     let ledger = state.load_ledger().ok()?;
     let account = ProfileName::parse(ledger.account_in(owner.as_str())).ok()?;
     // Issue #1700: the API-key profile is in the order too.
@@ -615,8 +634,8 @@ pub(super) fn overflow_may_move(
     readings
         .iter()
         .filter_map(|(name, r)| ProfileName::parse(name).ok().map(|n| (n, r)))
-        .filter(|(n, _)| !overflow.order.contains(n) && !cfg.exclude.contains(n))
-        .any(|(_, r)| candidate::may_return_to(Some(r), overflow.gate.as_ref(), cfg.threshold, now))
+        .filter(|(n, _)| overflow.pool().is_plan(n) && !cfg.exclude.contains(n))
+        .any(|(_, r)| candidate::way_off(Some(r), overflow.gate.as_ref(), cfg.threshold, now))
 }
 
 // ---------------------------------------------------------------------------
