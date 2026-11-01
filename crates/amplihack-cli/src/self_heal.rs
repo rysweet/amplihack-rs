@@ -67,6 +67,8 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     "agent-binary",
     "config",
     "agent",
+    // Usage reporting and explicit publication never need staged framework assets.
+    "usage",
 ];
 
 /// Top-level flags that short-circuit clap and should not pay for an
@@ -1016,6 +1018,25 @@ steps:
         .expect("ok");
         assert_eq!(calls.get(), 0);
         assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+    }
+
+    #[test]
+    fn usage_commands_skip_startup_self_heal() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        for subcommand in ["report", "publish"] {
+            let calls = Cell::new(0u32);
+            let mut notice = Vec::new();
+            ensure_assets_match_binary_version_with(
+                &args(&["amplihack", "usage", subcommand]),
+                &mut notice,
+                counting_installer(&calls, crate::VERSION),
+            )
+            .unwrap();
+            assert_eq!(calls.get(), 0);
+            assert!(notice.is_empty());
+        }
+        assert!(!tmp.path().join(".amplihack").exists());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 title: Dev-Orchestrator Routing Contract
 description: Deterministic routing rules for smart-orchestrator task and workstream execution.
-last_updated: 2026-06-11
+last_updated: 2026-10-29
 review_schedule: quarterly
 owner: amplihack
 doc_type: reference
@@ -9,7 +9,7 @@ doc_type: reference
 
 # Dev-Orchestrator Routing Contract
 
-The dev-orchestrator routes every normalized `Development` workstream to `default-workflow`.
+The dev-orchestrator routes every normalized `Development` workstream to `default-workflow`, except that a small single-workstream task may go to [`quick-change`](./quick-change-recipe.md) when the classifier or `-c workflow=` selects it.
 
 This document defines the routing contract. Rust-helper enforcement runs before workstream execution: model-produced `recipe` fields are advisory input only and cannot override the `Development` routing invariant.
 
@@ -26,16 +26,20 @@ This document defines the routing contract. Rust-helper enforcement runs before 
 
 ## Routing invariant
 
-Any workstream whose normalized classification is `Development` must run `default-workflow`.
+Any workstream whose normalized classification is `Development` must run `default-workflow` or `quick-change`. No other recipe is allowed.
 
-The override applies when the workstream recipe is:
+For a single workstream, `select-workflow` chooses between the two and logs the choice and its reason.
 
-- missing
-- an empty string after trimming
-- whitespace only
-- any recipe other than `default-workflow`
+For a parallel decomposition, `build-workstreams-config` sets each workstream's recipe. The model's `recipe` field never selects `quick-change`, because `quick-change` needs exactly one workstream (row 6 of the [precedence table](./quick-change-recipe.md#precedence)):
+
+- A Development workstream runs `default-workflow`, unless a valid `-c workflow=` override (`quick-change` or `default-workflow`) is set. The override applies only when the top-level `task_type` is Development, and `quick-change` is not applied when `existing_branch` or `pr_number` is set or the task text names its branch with a `Branch: <ref>` line. These are the same rules `select-workflow` applies and logs (W2, W3, W4), so the log line names the recipe the workstreams run.
+- A workstream with any other classification keeps the model's recipe, except that `quick-change`, which commits, pushes and opens a PR, becomes the classification's own recipe: `investigation-workflow`, `qa-workflow` or `consensus-workflow`, and `default-workflow` for Operations. The override never changes these workstreams.
+
+How the single-workstream route chooses between the two is described in [Quick-Change Recipe: Routing from smart-orchestrator](./quick-change-recipe.md#routing-from-smart-orchestrator).
 
 The invariant applies per workstream. A top-level hybrid task can contain multiple workstreams with different classifications, and each workstream must be routed from its own normalized classification.
+
+Prompts that start with `[coord]` are coordination messages between sessions. The workflow classification reminder gives them a short note instead of the routing prompt, unless the body is a work request that starts with a change verb, as in `build #1740` or `fix the parser for #12`. A work request is throttled like the same text without the marker, and receives the note while the throttle holds. A report that starts with a verb used as a noun, such as `fix landed on PR 12` or `fix #12 merged`, receives the note. The note still tells the agent to use dev-orchestrator when the message asks for a code change, so the invariant above holds for marked messages too. See [Coordination Messages](./coordination-messages.md).
 
 ## Classification authority
 
@@ -66,11 +70,16 @@ The deterministic normalization rule is:
 | `Development` | missing | `default-workflow` |
 | `Development` | `""` or whitespace | `default-workflow` |
 | `Development` | `investigation-workflow` | `default-workflow` |
-| `Development` | any non-`default-workflow` value | `default-workflow` |
 | `Development` | `default-workflow` | `default-workflow` |
-| Non-Development | any value | Existing route is preserved |
+| `Development` | `quick-change` | `default-workflow` |
+| `Development` | any other value | `default-workflow` |
+| `Development`, valid `-c workflow=` override, top-level `task_type` Development | any value | the override, except that `quick-change` becomes `default-workflow` when `existing_branch` or `pr_number` is set or the task names its branch |
+| Non-Development, any override | `quick-change` | the classification's own recipe (`investigation-workflow`, `qa-workflow`, `consensus-workflow`, or `default-workflow` for Operations) |
+| Non-Development, any override | any other value | Existing route is preserved |
 
-Non-Development classifications must not be rewritten by the Development invariant. Their existing route selection remains in force:
+This table applies to parallel decompositions, the only case in which `build-workstreams-config` runs. A model-provided `quick-change` is not kept, because `quick-change` needs exactly one workstream; only a valid override selects it, which matches the workflow that `select-workflow` logs. Single-workstream runs use `selected_workflow` from `select-workflow` instead.
+
+Non-Development classifications must not be rewritten by the Development invariant. Apart from the `quick-change` replacement above, their existing route selection remains in force:
 
 | Classification | Existing routing behavior |
 | --- | --- |
@@ -135,14 +144,17 @@ There is no configuration flag that disables the Development routing invariant.
 
 | Setting | Effect on routing |
 | --- | --- |
-| `force_single_workstream=true` | Prevents parallel decomposition, but a single `Development` workstream still runs `default-workflow` |
-| `AMPLIHACK_MAX_DEPTH=0` | Blocks parallel spawning and adapts to single-session execution; `Development` still runs `default-workflow` |
+| `workflow=quick-change` | Forces `quick-change` for every Development workstream. Ignored, with a warning, for non-Development tasks, when `existing_branch` or `pr_number` is set, and when the task text names its branch (`Branch: <ref>`) |
+| `workflow=default-workflow` | Forces `default-workflow` for every Development workstream, even when the classifier recommends `quick-change` |
+| `workflow=<anything else>` | Ignored with `[dev-orchestrator] WARNING: unknown workflow override '<value>' ignored` |
+| `force_single_workstream=true` | Prevents parallel decomposition; a single `Development` workstream runs `default-workflow` or `quick-change` |
+| `AMPLIHACK_MAX_DEPTH=0` | Blocks parallel spawning and adapts to single-session execution; the adaptive path always runs `default-workflow` |
 | `AMPLIHACK_AGENT_BINARY` | Chooses the agent backend; does not affect workflow recipe selection |
 | `AMPLIHACK_HOME` | Locates recipe assets; does not affect the routing invariant |
 
 Prompt text in `dev-orchestrator`, `smart-classify-route`, `smart-execute-routing`, and the routing hook should state the same rule for model guidance:
 
-> Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
+> Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
 
 That prompt text is supportive documentation for the model. The Rust helper is authoritative.
 
@@ -299,13 +311,16 @@ The routing helper must:
 
 - trim recipe strings before checking whether they are empty
 - normalize classification before comparing it to `Development`
-- prevent raw recipe strings from choosing the workflow for Development workstreams
+- never let a raw recipe string select `quick-change`: a Development workstream gets `default-workflow` unless a valid override is set, and a non-Development `quick-change` becomes the classification's own recipe
+- accept a `-c workflow=` override only from the exact list `quick-change`, `default-workflow`
 - avoid building shell commands from model-provided recipe values
-- preserve non-Development behavior without broad fallback logic that masks malformed plans
+- preserve non-Development behavior, apart from the `quick-change` replacement, without broad fallback logic that masks malformed plans
 
 ## Related
 
+- [Quick-Change Recipe](./quick-change-recipe.md) - The single-session recipe for small changes, its diff limits and the `select-workflow` helper
 - [Getting Started with /dev](../tutorials/dev-orchestrator-tutorial.md)
 - [`amplihack orch run`](./orch-run-command.md)
 - [Workflow Classifier](./workflow-classifier.md)
+- [Coordination Messages](./coordination-messages.md)
 - [Smart-Orchestrator Recovery](../concepts/smart-orchestrator-recovery.md)

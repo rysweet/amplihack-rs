@@ -30,7 +30,7 @@ Resolution rules — detect all signals, then apply the FIRST matching rule:
 5. UNDERSTAND present (no IMPLEMENT) → **INVESTIGATE**
 6. SHELL_ONLY present (no FILE_EDIT) → **OPS**
 7. QUESTION present (no FILE_EDIT) → **Q&A**
-8. Ambiguous → **DEV** (safe default)
+8. Ambiguous → **DEV** (safe default). A one-line status question, result report, acknowledgement or PR hand-over is not ambiguous: classify it as **Q&A**, or **OPS** when it asks for one direct action such as retrying a command.
 
 Calibration examples (use these to resolve edge cases):
   "run tests and fix failures" = HYBRID (SHELL_ONLY + IMPLEMENT → both phases)
@@ -43,6 +43,11 @@ Calibration examples (use these to resolve edge cases):
   "what's broken?" = INVESTIGATE. "why is CI failing?" = INVESTIGATE.
   "research rate limiting then implement it" = HYBRID.
   "analyze deps and remove circular imports" = HYBRID (UNDERSTAND + IMPLEMENT).
+  "report your lane status" = Q&A. "what's your status?" = Q&A.
+  "CI passed on PR 12" = Q&A.
+  "handing PR 57 over to you" = Q&A (acknowledge, no workflow).
+  "PR 134 is merged, retry the install" = OPS.
+  "build #1740" = DEV. A leading [coord] marker does not change the classification.
 
 Actions:
   DEV → Say "[auto-routed] DEV → launching dev-orchestrator" then Invoke Skill(skill="dev-orchestrator"). Do not answer inline.
@@ -52,7 +57,7 @@ Actions:
   OPS → Execute directly. No workflow needed.
   SKIP → Respect the bypass.
 
-Downstream invariant: Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
+Downstream invariant: Development classification routes to `default-workflow`, or to `quick-change` for a small change in a single workstream or when `-c workflow=quick-change` forces it; any recipe value the model gives a workstream is coerced to `default-workflow`.
 
 When in doubt, choose DEV. False positive costs minutes. False negative costs quality.
 </system-reminder>
