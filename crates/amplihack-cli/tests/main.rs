@@ -214,6 +214,10 @@ mod issue_1802_auto_drive_light_eligibility;
 mod issue_1802_auto_drive_light_recipe;
 #[path = "issue_1802_auto_drive_light_round.rs"]
 mod issue_1802_auto_drive_light_round;
+#[path = "issue_1803_rotation_owner.rs"]
+mod issue_1803_rotation_owner;
+#[path = "issue_1818_no_session_limit.rs"]
+mod issue_1818_no_session_limit;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

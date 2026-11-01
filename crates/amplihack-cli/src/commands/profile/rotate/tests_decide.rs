@@ -67,6 +67,7 @@ fn report(state: UsageState, session: Option<f64>, week: Option<f64>) -> UsageRe
         session: session.map(|u| window("session", u)),
         week_all: week.map(|u| window("all models", u)),
         week_models: Vec::new(),
+        session_limit: true,
     }
 }
 
@@ -340,4 +341,137 @@ fn a_dry_run_reports_the_outcome_it_previewed() {
         CycleOutcome::Swapped
     );
     assert_eq!(would(&Decision::Alert), CycleOutcome::Alerted);
+}
+
+// --- Issue #1818: plans with no session limit -------------------------------
+
+/// The rotator's reading of a `/usage` text, through the real parser.
+fn read(text: &str) -> Reading {
+    let rep = crate::commands::profile::usage_parse::parse_usage(text, "", NOW);
+    Reading::from_report(&rep)
+}
+
+const RESET: &str = "· resets 3am (UTC)";
+
+fn exhausted_session(week: u32) -> String {
+    format!("Current session: 100% used {RESET}\nCurrent week (all models): {week}% used {RESET}\n")
+}
+
+fn weekly_only(week: u32) -> String {
+    format!("Current week (all models): {week}% used {RESET}\n")
+}
+
+fn no_reset_session(session: u32, week: u32) -> String {
+    format!("Current session: {session}% used\nCurrent week (all models): {week}% used {RESET}\n")
+}
+
+#[test]
+fn a_profile_with_no_session_limit_reads_on_its_week_alone() {
+    assert_eq!(read(&weekly_only(30)), r(0.0, 30.0));
+    assert_eq!(read(&no_reset_session(0, 30)), r(0.0, 30.0));
+    assert_eq!(read(&no_reset_session(0, 89)), r(0.0, 89.0));
+    assert_eq!(read(&weekly_only(100)), Reading::Exhausted);
+    assert_eq!(read(&exhausted_session(30)), Reading::Exhausted);
+}
+
+/// Crusty round 1 on #1829: a session above 0% with no reset clause is a
+/// session window, so the rotator reads it and never picks it when full.
+#[test]
+fn a_session_above_0_with_no_reset_is_read_as_a_session() {
+    assert_eq!(read(&no_reset_session(47, 30)), r(47.0, 30.0));
+    assert_eq!(read(&no_reset_session(100, 30)), Reading::Exhausted);
+    let cands = [
+        c("a-spent", read(&no_reset_session(100, 10))),
+        c("b-free", read(&weekly_only(30))),
+    ];
+    assert_eq!(
+        decide(
+            &settings(),
+            &read(&exhausted_session(20)),
+            &cands,
+            None,
+            NOW
+        ),
+        swap("b-free", Reason::Threshold),
+    );
+}
+
+#[test]
+fn the_rotator_picks_the_no_session_limit_profile_when_the_rest_are_session_exhausted() {
+    for text in [weekly_only(30), no_reset_session(0, 30)] {
+        let cands = [
+            c("a-spent", read(&exhausted_session(10))),
+            c("b-free", read(&text)),
+            c("c-spent", read(&exhausted_session(5))),
+        ];
+        assert_eq!(
+            decide(
+                &settings(),
+                &read(&exhausted_session(20)),
+                &cands,
+                None,
+                NOW
+            ),
+            swap("b-free", Reason::Threshold),
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_live_profile_with_no_session_limit_stays_below_the_week_threshold() {
+    let cands = [c("spare", read(&exhausted_session(0)))];
+    for text in [weekly_only(89), no_reset_session(0, 89)] {
+        assert_eq!(
+            decide(&settings(), &read(&text), &cands, None, NOW),
+            Decision::Stay,
+            "{text}"
+        );
+    }
+}
+
+#[test]
+fn a_live_profile_with_no_session_limit_swaps_at_the_week_threshold() {
+    let cands = [c("spare", r(10.0, 10.0))];
+    for text in [weekly_only(90), no_reset_session(0, 90), weekly_only(100)] {
+        assert_eq!(
+            decide(&settings(), &read(&text), &cands, None, NOW),
+            swap("spare", Reason::Threshold),
+            "{text}"
+        );
+    }
+}
+
+/// Crusty round 2 on #1829: main's plan-room swap (#1804) ranks on
+/// `Reading::Measured` through `plan_room::choose`, not through `decide`.
+/// A weekly-only login reads as `Measured { session: 0, week }`, so it is in
+/// pass 1 and wins over a login with a lower week that is past
+/// `--session-at`; exhausted logins are never chosen.
+#[test]
+fn plan_room_picks_the_no_session_limit_login_in_pass_1() {
+    use super::plan_room::choose;
+    let s = settings();
+    let live = c("live", read(&exhausted_session(20)));
+    let past =
+        format!("Current session: 92% used {RESET}\nCurrent week (all models): 10% used {RESET}\n");
+    for text in [weekly_only(40), no_reset_session(0, 40)] {
+        assert_eq!(read(&text), r(0.0, 40.0), "{text}");
+        let plan = [
+            c("a-spent", read(&exhausted_session(10))),
+            c("b-free", read(&text)),
+            c("c-past", read(&past)),
+        ];
+        assert_eq!(
+            choose(&s, Some(&live), &plan),
+            Some(ProfileName::parse("b-free").unwrap()),
+            "pass 1 holds only the no-session-limit login: {text}"
+        );
+    }
+    // Live on the no-session-limit login, it ranks first and stays.
+    let live = c("b-free", read(&weekly_only(40)));
+    let plan = [
+        c("a-spent", read(&exhausted_session(10))),
+        c("c-past", read(&past)),
+    ];
+    assert_eq!(choose(&s, Some(&live), &plan), None);
 }
