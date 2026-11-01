@@ -22,10 +22,14 @@
 //!   itself and never its target. `owner::clear_checked(root)` first
 //!   refuses a root that is not private, leaving the marker in place.
 //! - `owner::alive(m: &Marker, proc_root: &Path, exe_name: &OsStr) -> bool`.
-//! - `owner::unit_name(flag: Option<&str>, proc_root: &Path) -> String`,
-//!   reading `<proc_root>/self/cgroup`.
+//! - `owner::own_service(proc_root: &Path) -> Option<String>`: the last
+//!   component of the path in `<proc_root>/self/cgroup` when it is a
+//!   `*.service` other than `user@*.service`.
+//! - `owner::unit_name(flag: Option<&str>, proc_root: &Path) -> String`:
+//!   the flag, then `own_service`, then `DEFAULT_UNIT`.
 //! - `owner::supervised(flag: &Option<Option<String>>, env: &dyn Fn(&str) ->
-//!   Option<OsString>) -> bool`.
+//!   Option<OsString>, proc_root: &Path) -> bool`: the flag, or a non-empty
+//!   `INVOCATION_ID` together with `own_service`.
 //! - `owner::describe(root: &Path, proc_root: &Path, exe_name: &OsStr) ->
 //!   String`: the whole `owner: ...` status line.
 //! - `change_log::Caller { pid: u32, ppid: u32, parent: Option<Vec<u8>>,
@@ -522,10 +526,27 @@ fn the_unit_comes_from_a_cgroup_v1_path() {
 }
 
 #[test]
-fn the_last_service_component_is_used() {
+fn only_a_service_as_the_last_component_names_the_unit() {
     let f = fx();
     f.cgroup("0::/user.slice/user@1000.service/app.slice/inner.service/sub\n");
-    assert_eq!(owner::unit_name(None, &f.proc_root), "inner.service");
+    assert_eq!(owner::unit_name(None, &f.proc_root), DEFAULT_UNIT);
+    assert_eq!(owner::own_service(&f.proc_root), None);
+}
+
+#[test]
+fn a_shell_in_a_scope_under_the_user_manager_has_no_service() {
+    let f = fx();
+    f.cgroup("0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-8b86.scope\n");
+    assert_eq!(owner::own_service(&f.proc_root), None);
+    assert_eq!(owner::unit_name(None, &f.proc_root), DEFAULT_UNIT);
+}
+
+#[test]
+fn the_user_manager_itself_is_never_the_unit() {
+    let f = fx();
+    f.cgroup("0::/user.slice/user-1000.slice/user@1000.service\n");
+    assert_eq!(owner::own_service(&f.proc_root), None);
+    assert_eq!(owner::unit_name(None, &f.proc_root), DEFAULT_UNIT);
 }
 
 #[test]
@@ -551,12 +572,41 @@ fn supervised_truth_table() {
     let none: Option<Option<String>> = None;
     let bare: Option<Option<String>> = Some(None);
     let named: Option<Option<String>> = Some(Some("x.service".into()));
-    assert!(!owner::supervised(&none, &no_env));
-    assert!(!owner::supervised(&none, &inv("")), "empty INVOCATION_ID");
-    assert!(owner::supervised(&none, &inv("abc123")));
-    assert!(owner::supervised(&bare, &no_env));
-    assert!(owner::supervised(&named, &no_env));
-    assert!(owner::supervised(&named, &inv("")));
+    let f = fx();
+    f.cgroup("0::/user.slice/user-1000.slice/user@1000.service/app.slice/rot.service\n");
+    let p = &f.proc_root;
+    assert!(!owner::supervised(&none, &no_env, p));
+    assert!(
+        !owner::supervised(&none, &inv(""), p),
+        "empty INVOCATION_ID"
+    );
+    assert!(owner::supervised(&none, &inv("abc123"), p));
+    assert!(owner::supervised(&bare, &no_env, p));
+    assert!(owner::supervised(&named, &no_env, p));
+    assert!(owner::supervised(&named, &inv(""), p));
+}
+
+#[test]
+fn an_inherited_invocation_id_outside_a_service_is_not_supervision() {
+    let inv = |k: &str| (k == "INVOCATION_ID").then(|| OsString::from("abc123"));
+    let none: Option<Option<String>> = None;
+    let f = fx();
+    assert!(
+        !owner::supervised(&none, &inv, &f.proc_root),
+        "no cgroup file"
+    );
+    for cgroup in [
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-8b86.scope\n",
+        "0::/user.slice/user-1000.slice/user@1000.service\n",
+        "0::/user.slice/user-1000.slice/session-3.scope\n",
+    ] {
+        f.cgroup(cgroup);
+        assert!(!owner::supervised(&none, &inv, &f.proc_root), "{cgroup}");
+        assert!(
+            owner::supervised(&Some(None), &inv, &f.proc_root),
+            "{cgroup}"
+        );
+    }
 }
 
 // --- The owner: status line ---------------------------------------------------

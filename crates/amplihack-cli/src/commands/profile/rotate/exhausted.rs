@@ -7,7 +7,7 @@
 //! Read-only: takes no lock, runs no probe and writes nothing. Missing data
 //! (no ledger, no reading, a non-finite value) gives no alert. A ledger or
 //! `usage.json` that fails to load is an error, which `watch` logs as
-//! `rotate: alert check failed: ...` and `status` prints as
+//! `skip: alert check failed: ...` and `status` prints as
 //! `alert: unavailable (...)`.
 
 use super::ledger::RotateState;
@@ -136,6 +136,6 @@ pub fn watch_line(root: &Path, now: i64) -> Option<String> {
     match exhausted_while_off(root, now) {
         Ok(None) => None,
         Ok(Some(e)) => Some(format!("ALERT: {ALERT} ({e})")),
-        Err(m) => Some(format!("rotate: alert check failed: {m}")),
+        Err(m) => Some(format!("skip: alert check failed: {m}")),
     }
 }

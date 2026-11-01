@@ -246,10 +246,11 @@ pub fn watch(
             format!("{}\n", std::process::id()).as_bytes(),
         )?;
         let env = |k: &str| std::env::var_os(k);
-        if owner::supervised(&supervised, &env) {
+        let proc_root = crate::commands::agent::procfs::proc_root();
+        if owner::supervised(&supervised, &env, &proc_root) {
             let flag = supervised.as_ref().and_then(|f| f.as_deref());
             let m = owner::Marker {
-                unit: owner::unit_name(flag, Path::new("/proc")),
+                unit: owner::unit_name(flag, &proc_root),
                 pid: std::process::id(),
                 since: Some(now()),
             };

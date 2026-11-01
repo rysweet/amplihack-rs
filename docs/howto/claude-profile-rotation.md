@@ -546,10 +546,12 @@ A supervised `watch` writes an owner marker,
 marker exists, launches never start a rotator of their own, even when
 autostart is on, so the unit's rotator is the only one. The marker stops
 autostart only: `amplihack profile rotate start` does not read it, so do not
-run `rotate start` while the unit is enabled. Under systemd,
-`INVOCATION_ID` is set, and `watch` records itself even without the flag;
-the flag lets you name the unit. Without a name, the unit is read from
-`/proc/self/cgroup`, and failing that `amplihack-rotator.service` is used.
+run `rotate start` while the unit is enabled. A `watch` that systemd runs
+as a service, where `INVOCATION_ID` is set and the last component of its
+`/proc/self/cgroup` path is a `.service` unit other than `user@<uid>.service`,
+records itself even without the flag; the flag lets you name the unit.
+Without a name, the unit is read from `/proc/self/cgroup`, and failing that
+`amplihack-rotator.service` is used.
 
 `rotate status` shows the owner straight after the autostart line (excerpt):
 
@@ -626,8 +628,11 @@ anyway.
 ### A watch that claims ownership by mistake
 
 systemd sets `INVOCATION_ID` for every process in a unit, including a shell
-inside one. A `rotate watch` you start by hand from such a shell records
-itself as the owner. Stop it, then run `amplihack profile rotate owner clear`.
+inside one. A shell started from a tmux or terminal server that the user
+manager runs inherits it too, but such a shell runs in a `.scope`, so a
+`rotate watch` started from it does not claim ownership. A `rotate watch` you
+start by hand from a shell inside a `.service` unit does record itself as
+the owner. Stop it, then run `amplihack profile rotate owner clear`.
 Rotators started by `rotate start` or by a launch never claim ownership,
 because `INVOCATION_ID` is removed from their environment.
 
@@ -674,7 +679,7 @@ alert: auto-switch is off while the live login is exhausted (spare: 100% used, t
 The percentage is rounded down. A login stopped by a usage limit shows
 `(spare: usage limit reached, resets 2026-11-01T14:00:00Z)` instead, with
 the reset time in UTC. If a ledger or `usage.json` cannot be read, the
-check cannot run: the log shows `rotate: alert check failed: <error>` and
+check cannot run: the log shows `skip: alert check failed: <error>` and
 `status` shows `alert: unavailable (<error>)`.
 
 The ALERT changes nothing by itself. Turn auto-switch back on with

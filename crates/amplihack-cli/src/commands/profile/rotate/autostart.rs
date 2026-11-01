@@ -152,6 +152,9 @@ fn label(v: FileValue) -> &'static str {
 pub fn set(store: &ProfileStore, on: bool) -> Result<(), ProfileError> {
     let rs = RotateState::new(store.root());
     rs.ensure()?;
+    // Read without a lock: two `rotate autostart` commands at the same moment
+    // can log the wrong old value. The change log is best effort, and the
+    // setting itself is written atomically.
     let old = read_setting(store.root());
     let body: &[u8] = if on { b"on\n" } else { b"off\n" };
     write_private_atomic(&rs.dir, FILE, body).map_err(ProfileError::Io)?;

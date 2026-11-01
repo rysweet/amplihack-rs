@@ -870,7 +870,7 @@ fn a_load_failure_is_shown_in_status_and_logged_by_watch() {
     let status = status.expect("a status line");
     let watch = watch.expect("a log line");
     assert!(status.starts_with("alert: unavailable ("), "{status}");
-    assert!(watch.starts_with("rotate: alert check failed: "), "{watch}");
+    assert!(watch.starts_with("skip: alert check failed: "), "{watch}");
 }
 
 #[test]

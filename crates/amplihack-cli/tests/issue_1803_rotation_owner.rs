@@ -370,19 +370,66 @@ fn a_supervised_watch_writes_the_marker_and_leaves_it_on_exit() {
     assert!(owner_file(&f).exists(), "a watch never removes the marker");
 }
 
+/// A synthetic `/proc` holding only `self/cgroup`, passed to the child as
+/// `AMPLIHACK_TEST_PROC_ROOT` so the result does not depend on the cgroup
+/// the test itself runs in.
+fn fake_cgroup(f: &Fixture, cgroup: &str) -> String {
+    let proc_root = f.tmp.path().join("fake-proc");
+    fs::create_dir_all(proc_root.join("self")).unwrap();
+    fs::set_permissions(&proc_root, fs::Permissions::from_mode(0o700)).unwrap();
+    fs::write(proc_root.join("self/cgroup"), cgroup).unwrap();
+    proc_root.to_str().unwrap().to_string()
+}
+
 #[test]
-fn invocation_id_makes_a_watch_supervised() {
+fn invocation_id_in_a_service_makes_a_watch_supervised() {
     let f = paused_fixture();
-    let w = spawn_watch(&f, &[], &[("INVOCATION_ID", "abc123")]);
+    let proc_root = fake_cgroup(
+        &f,
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/amplihack-rotator.service\n",
+    );
+    let w = spawn_watch(
+        &f,
+        &[],
+        &[
+            ("INVOCATION_ID", "abc123"),
+            ("AMPLIHACK_TEST_PROC_ROOT", &proc_root),
+        ],
+    );
     let want = format!("pid={}\n", w.pid());
     wait_for("the owner marker", Duration::from_secs(20), || {
         fs::read_to_string(owner_file(&f)).is_ok_and(|b| b.contains(&want))
     });
     let body = fs::read_to_string(owner_file(&f)).unwrap();
     assert!(
-        body.starts_with("unit=") && body.lines().next().unwrap().ends_with(".service"),
+        body.starts_with("unit=amplihack-rotator.service\n"),
         "{body:?}"
     );
+}
+
+#[test]
+fn an_inherited_invocation_id_in_a_scope_writes_no_marker() {
+    let f = paused_fixture();
+    let proc_root = fake_cgroup(
+        &f,
+        "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-8b86.scope\n",
+    );
+    let w = spawn_watch(
+        &f,
+        &[],
+        &[
+            ("INVOCATION_ID", "abc123"),
+            ("AMPLIHACK_TEST_PROC_ROOT", &proc_root),
+        ],
+    );
+    wait_for("the idle line", Duration::from_secs(20), || {
+        f.log().contains("idle: auto-switch is off")
+    });
+    assert!(
+        !owner_file(&f).exists(),
+        "a shell under the user manager is not a supervised service"
+    );
+    w.stop();
 }
 
 #[test]

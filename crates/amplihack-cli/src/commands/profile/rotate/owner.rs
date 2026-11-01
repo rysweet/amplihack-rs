@@ -134,23 +134,30 @@ pub fn alive(m: &Marker, proc_root: &Path, exe_name: &OsStr) -> bool {
             Ok(Some((raw, _))) if is_rotator(&raw, Some(exe_name)))
 }
 
-/// The last `*.service` component of a cgroup path line, if it is a valid
-/// unit name.
+/// The last component of a cgroup path line, when it is a valid
+/// `*.service` unit name and not a user manager (`user@<uid>.service`). A
+/// process in a `.scope`, such as a shell in a tmux server that the user
+/// manager runs, or in a sub-cgroup of a service, has none.
 fn service_in(path: &str) -> Option<&str> {
     path.rsplit('/')
-        .find(|c| c.ends_with(".service") && valid_unit(c))
+        .next()
+        .filter(|c| c.ends_with(".service") && !c.starts_with("user@") && valid_unit(c))
 }
 
-/// The unit name: `flag`, then the unit in `<proc_root>/self/cgroup`
-/// (preferring the cgroup v2 and `name=systemd` lines), then
-/// [`DEFAULT_UNIT`].
+/// The unit name: `flag`, then [`own_service`], then [`DEFAULT_UNIT`].
 pub fn unit_name(flag: Option<&str>, proc_root: &Path) -> String {
     if let Some(f) = flag.filter(|f| valid_unit(f)) {
         return f.to_string();
     }
+    own_service(proc_root).unwrap_or_else(|| DEFAULT_UNIT.into())
+}
+
+/// The service this process runs directly in, per `<proc_root>/self/cgroup`
+/// (preferring the cgroup v2 and `name=systemd` lines; see [`service_in`]).
+pub fn own_service(proc_root: &Path) -> Option<String> {
     let raw = match read_bounded_nofollow(&proc_root.join("self").join("cgroup"), MAX_CGROUP) {
         Ok(Some((raw, _))) => raw,
-        _ => return DEFAULT_UNIT.into(),
+        _ => return None,
     };
     let text = String::from_utf8_lossy(&raw);
     let mut fallback = None;
@@ -164,17 +171,25 @@ pub fn unit_name(flag: Option<&str>, proc_root: &Path) -> String {
             continue;
         };
         if controllers.is_empty() || controllers == "name=systemd" {
-            return unit.to_string();
+            return Some(unit.to_string());
         }
         fallback.get_or_insert_with(|| unit.to_string());
     }
-    fallback.unwrap_or_else(|| DEFAULT_UNIT.into())
+    fallback
 }
 
 /// Whether a (non-`--spawned`) `watch` records itself as the owner: given
-/// `--supervised[=UNIT]`, or run by systemd (`INVOCATION_ID` non-empty).
-pub fn supervised(flag: &Option<Option<String>>, env: &dyn Fn(&str) -> Option<OsString>) -> bool {
-    flag.is_some() || env("INVOCATION_ID").is_some_and(|v| !v.is_empty())
+/// `--supervised[=UNIT]`, or run by systemd as a service: `INVOCATION_ID`
+/// non-empty and [`own_service`] finds a unit. `INVOCATION_ID` alone is not
+/// enough, because shells started from a terminal or tmux server that the
+/// user manager runs inherit it.
+pub fn supervised(
+    flag: &Option<Option<String>>,
+    env: &dyn Fn(&str) -> Option<OsString>,
+    proc_root: &Path,
+) -> bool {
+    flag.is_some()
+        || (env("INVOCATION_ID").is_some_and(|v| !v.is_empty()) && own_service(proc_root).is_some())
 }
 
 fn shown(unit: &str) -> String {
@@ -244,8 +259,10 @@ pub fn defer(root: &Path, proc_root: &Path, exe_name: &OsStr, err: &mut dyn Writ
     }
 }
 
-/// The note an unsupervised `watch` prints when a marker exists.
+/// The note an unsupervised `watch` prints when a marker exists. Reads the
+/// marker only under a private root.
 pub fn watch_note(root: &Path) -> Option<String> {
+    check_root_private(root).ok()?;
     let rest = "this watch runs anyway and leaves the owner marker in place";
     match read(root) {
         OwnerState::None => None,

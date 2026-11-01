@@ -1075,7 +1075,7 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 | `<root>/.auto-switch.d/` | Auto-switch state. See [State directory](#state-directory). |
 | `AMPLIHACK_ROTATE_AUTOSTART` | `0`/`off` stops launches from starting the rotator, and `1`/`on` lets them, overriding `<root>/.auto-switch.d/rotate/autostart`. Empty means unset. See [Rotate autostart](#rotate-autostart). |
 | `AMPLIHACK_RECIPE_RUN_ID` | Set by `amplihack recipe run` for its steps. When it is set and non-empty, a launch never starts the rotator. See [Rotate autostart](#rotate-autostart). |
-| `INVOCATION_ID` | Set by systemd for the processes of a unit. A `rotate watch` that sees it non-empty records itself as the [rotation owner](#rotate-owner). |
+| `INVOCATION_ID` | Set by systemd for the processes of a unit. A `rotate watch` that sees it non-empty, and runs directly in a service as described in step 2 of [Owner unit name](#owner-unit-name), records itself as the [rotation owner](#rotate-owner). A shell in a `.scope` that inherited it does not. |
 | `<root>/.auto-switch.d/rotate/owner` | The [owner marker](#rotate-owner). While it exists, launches do not start a rotator. Removed only by `rotate owner clear`. |
 | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true` or `1` turns the [usage-limit wait](#usage-limit-wait) on, `false` or `0` off. Outranks `recipe.usage_limit_wait` in `config.toml`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
 | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | Upper bound on one usage-limit wait, in seconds. Only shortens the wait. Outranks `recipe.usage_limit_max_wait_secs`. |
@@ -2931,7 +2931,7 @@ amplihack profile rotate owner [clear]
 | `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no file, moves nothing, and skips both the [prototype check](#rotate-prototype-coexistence) and [recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. Reads the [pin](#rotate-pin): a pin in force prints `would stay (held by switch to <name>)`, or `would stay (pin unreadable)`, and measures nothing. Reports a [hand change](#rotate-hand-change-recovery) as `would recover: <recovered line>`, or as `would alert: <ALERT line>` with its `fix` lines; either way it then stops without measuring, and the alert case ends with outcome `alerted`. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
 | `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Pins the child to its root and records that root; see [Rotate root record](#rotate-root-record). Prints `rotate: started (pid <pid>), checking every <interval>s`, `log: <path>` and `root: <path>`, and returns at once. |
 | `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log, apart from the [owner marker](#rotate-owner) when it runs supervised. |
-| `rotate watch --supervised[=UNIT]` | As `rotate watch`, and records itself as the [rotation owner](#rotate-owner) so that launches do not start a second rotator. `UNIT` names the service manager unit, for example `--supervised=amplihack-rotator.service`; the `=` is required. Without `UNIT` the name is found as described in [Owner unit name](#owner-unit-name). A `watch` started under systemd, where `INVOCATION_ID` is set, records itself without the flag. Like any `watch`, it refuses with status 1 when another verified rotator is running, and then writes no marker; stop that rotator with `rotate stop` before starting the unit. `rotate start --supervised` is refused with `RotateRefused` (`--supervised applies to rotate watch only`, status 1). |
+| `rotate watch --supervised[=UNIT]` | As `rotate watch`, and records itself as the [rotation owner](#rotate-owner) so that launches do not start a second rotator. `UNIT` names the service manager unit, for example `--supervised=amplihack-rotator.service`; the `=` is required. Without `UNIT` the name is found as described in [Owner unit name](#owner-unit-name). A `watch` that systemd runs as a service records itself without the flag: `INVOCATION_ID` is set and the unit is found in `/proc/self/cgroup` as in step 2 of [Owner unit name](#owner-unit-name). Like any `watch`, it refuses with status 1 when another verified rotator is running, and then writes no marker; stop that rotator with `rotate stop` before starting the unit. `rotate start --supervised` is refused with `RotateRefused` (`--supervised applies to rotate watch only`, status 1). |
 | `rotate stop` | Finds the rotator as described in [Rotate root record](#rotate-root-record). Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
 | `rotate status` | **Read-only.** Prints the [status lines](#rotate-status) and exits 0. |
 | `rotate autostart` | **Read-only.** Prints the effective [autostart](#rotate-autostart) state, for example `autostart: on (default)`. |
@@ -4501,7 +4501,7 @@ stdout only, without the time.
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
 | `ALERT: auto-switch is off while the live login is exhausted (<profile>: <reason>)` | `watch` with auto-switch turned off, while the live login has no capacity left; see [Exhausted while off](#exhausted-while-off). Written on every cycle while the condition holds, and does not change what the cycle does. |
-| `rotate: alert check failed: <error>` | `watch` with auto-switch turned off, when a ledger or `usage.json` cannot be read, so the [exhausted-while-off](#exhausted-while-off) check cannot run. Written on every paused cycle until the file loads again. |
+| `skip: alert check failed: <error>` | `watch` with auto-switch turned off, when a ledger or `usage.json` cannot be read, so the [exhausted-while-off](#exhausted-while-off) check cannot run. Written on every paused cycle until the file loads again. |
 | `change: <setting> <old> -> <new> by pid=<p> ppid=<pp> parent="<command>"[ recipe_run=<id>][ invocation=<id>]` | The autostart setting or the auto-switch toggle was changed. See [Rotate change log](#rotate-change-log). |
 | `skip: owner marker not written (<error>)` | A supervised `watch` could not write the [owner marker](#rotate-owner). It carries on without one. |
 | ``skip: held by switch to <name>; run `amplihack profile switch --none` to release`` | The [pin](#rotate-pin) holds rotation; the cycle neither measured nor swapped. |
@@ -4955,7 +4955,8 @@ malformed `since` does not make the marker unreadable.
 - it was not started with `--spawned`, so it is not a child of `rotate start`
   or of autostart;
 - it was given `--supervised` or `--supervised=<UNIT>`, or `INVOCATION_ID` is
-  set and non-empty;
+  set and non-empty and step 2 of [Owner unit name](#owner-unit-name) finds
+  a unit;
 - it has taken the state lock and written `rotate.pid`.
 
 The marker is written atomically with mode `0600`, never through a symlink
@@ -4981,8 +4982,11 @@ The unit name is the first of:
    (U+202A to U+202E, U+2066 to U+2069); any other value is refused with
    `RotateRefused` (`--supervised=UNIT needs a unit name of 1 to 256 bytes
    without '=', control or bidi characters`, status 1);
-2. the last path component ending in `.service` in `/proc/self/cgroup`, read
-   up to 4 KiB, which is where systemd places the unit's processes;
+2. the last component of the path in `/proc/self/cgroup` (read up to 4 KiB,
+   preferring the cgroup v2 and `name=systemd` lines), when it ends in
+   `.service` and is not a user manager (`user@<uid>.service`); this is where
+   systemd places a service's processes, while a shell started from a tmux
+   or terminal server ends in `.scope` and has no unit here;
 3. `amplihack-rotator.service`.
 
 #### Reading the marker
@@ -5038,10 +5042,12 @@ place is safe; launches defer and warn until it is cleared.
 
 #### Owner limitations
 
-- `INVOCATION_ID` is inherited by every process in a systemd unit. A
-  `rotate watch` started by hand from a shell inside a unit, for example a
-  terminal started by a systemd user service, records itself as the owner.
-  Run `rotate owner clear` after stopping it. `rotate start` and autostart
+- `INVOCATION_ID` is inherited by every process in a systemd unit. A shell
+  started from a tmux or terminal server that the user manager runs sits in
+  a `.scope`, so a `rotate watch` started from it does not claim ownership.
+  A `rotate watch` started by hand from a shell whose cgroup is itself a
+  `.service` unit does record itself as the owner. Run `rotate owner clear`
+  after stopping it. `rotate start` and autostart
   are not affected, because they remove `INVOCATION_ID` from the child.
 - An `amplihack` binary older than this feature ignores the marker and may
   still start a rotator from a launch. Upgrade every binary that launches
@@ -5087,7 +5093,7 @@ No rotate ledger, no `live` profile, a live profile with no reading, and a
 non-finite percentage or threshold all give no ALERT. A rotate ledger,
 auto-switch ledger or `usage.json` that exists but cannot be read is not
 taken as "not exhausted": `watch` writes
-`rotate: alert check failed: <error>` on every paused cycle instead, and
+`skip: alert check failed: <error>` on every paused cycle instead, and
 `rotate status` prints `alert: unavailable (<error>)`. The check takes no lock, runs no
 probe and writes nothing. The ALERT does not change what the cycle does: the
 rotator stays idle, and `idle: auto-switch is off` is still written only once

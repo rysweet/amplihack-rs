@@ -252,7 +252,9 @@ A variable with a config key keeps working and outranks the config files. See
 
 The grep above lists only `AMPLIHACK_*` names. amplihack also reads
 `INVOCATION_ID`, which systemd sets for the processes of a unit. When it is
-set and non-empty, `amplihack profile rotate watch` records itself as the
+set and non-empty, and the last component of the process's
+`/proc/self/cgroup` path is a `.service` unit other than
+`user@<uid>.service`, `amplihack profile rotate watch` records itself as the
 [rotation owner](profile-command.md#rotate-owner), and launches stop starting
 a rotator of their own. A `change:` line in the rotate log records it as
 `invocation=<id>`. `rotate start` and launches that start the rotator remove
