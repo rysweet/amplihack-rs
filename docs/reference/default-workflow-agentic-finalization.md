@@ -430,6 +430,10 @@ missing, as on stock macOS:
 | SSH (`git@github.com:…`, `ssh://git@github.com/…`) | `GIT_SSH_COMMAND` is set to the ssh command git would otherwise use (`GIT_SSH_COMMAND`, then `core.sshCommand`, then `GIT_SSH`, then `ssh`) followed by `-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2`. ssh then fails instead of asking for a key passphrase, a password or an unknown host key, gives up on a connection after 15 seconds and drops a dead one after about 30. Options on the command line take precedence over `~/.ssh/config`. A non-OpenSSH `GIT_SSH` program such as plink rejects `-o`, so the fetch fails and there is no signal. |
 | Both | Where `timeout` exists, the whole fetch is also capped at 60 seconds. |
 
+The same setting keeps every other git that amplihack and its tests start
+from waiting on a credential prompt; see
+[Keep Tests from Prompting for Git Credentials](../howto/keep-tests-from-prompting-for-git.md).
+
 A failed fetch is not an error. If the commit is still missing afterwards, or
 `git merge-base --is-ancestor` fails for any reason, there is no signal: a
 missing object is never read as an ancestor.

@@ -12,7 +12,9 @@
 //! Children run with `env_clear()`, so GH_HOST, GH_REPO (which would bypass
 //! `--repo`), GH_TOKEN and every WORKFLOW_*_HELPER override from an enclosing
 //! run are absent: the helper is found through SCRIPT_DIR / BASH_SOURCE.
-//! GIT_ALLOW_PROTOCOL=file keeps git off the network even for a hostile origin.
+//! GIT_ALLOW_PROTOCOL=file keeps git off the network even for a hostile origin,
+//! and `no_git_prompt` (issue #1764) sets the git prompt suppressors and a null
+//! stdin again after `env_clear()`, so no git can wait on a credential prompt.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -248,8 +250,8 @@ impl Fixture {
             .env("GH_RETRY_MAX_RL_WINDOWS", "0")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_ALLOW_PROTOCOL", "file");
+        crate::isolated_amplihack::no_git_prompt(&mut command);
         command
     }
 

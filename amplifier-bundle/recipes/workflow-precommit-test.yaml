@@ -48,6 +48,17 @@ steps:
          cargo test --workspace --locked
          ```
 
+         Run each long command so that a git credential prompt cannot stop it
+         (issue #1764): export `GIT_TERMINAL_PROMPT=0`, then run it as
+         `setsid -w timeout --kill-after=60 <secs> <cmd> </dev/null`, or, where
+         `setsid` is missing, as
+         `timeout --foreground --kill-after=60 <secs> <cmd> </dev/null`. Plain
+         `timeout` puts the command in a background process group. A git that
+         asks for a credential then reads the terminal and `SIGTTIN` stops it:
+         nothing fails, and the run waits until it is killed, indefinitely
+         where `timeout` is stopped too. The wrapper is not part of the
+         reported command; `workspace_command` stays as given below.
+
       4. **Fix any issues:**
          - Linting issues
          - Formatting issues
@@ -136,6 +147,13 @@ steps:
            `go install ./cmd/<name>` followed by invoking the built command.
          - **.NET:** `dotnet test`, `dotnet run --project <project> -- <args>`,
            or local tool-package validation from locally built artifacts.
+         - **Any long command:** export `GIT_TERMINAL_PROMPT=0` and run it as
+           `setsid -w timeout --kill-after=60 <secs> <cmd> </dev/null`, or as
+           `timeout --foreground --kill-after=60 <secs> <cmd> </dev/null` where
+           `setsid` is missing. Plain `timeout` puts the command in a
+           background process group, so a git credential prompt that reads the
+           terminal is stopped by `SIGTTIN`. Nothing fails, and the run waits
+           until it is killed, indefinitely where `timeout` is stopped too.
 
       5. **Execute at least 2 test scenarios:**
          - **Scenario 1 (simple):** Test the most basic user-facing behaviour
