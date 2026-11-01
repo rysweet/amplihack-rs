@@ -106,7 +106,7 @@ impl Env {
     }
 
     fn tick(&self, input: &[u8]) -> Option<String> {
-        tick(&self.root, &self.home, input, now())
+        tick(&self.root, input, now())
     }
 }
 
@@ -316,46 +316,6 @@ fn an_idle_ledger_gives_no_line() {
 }
 
 #[test]
-fn a_ledger_naming_a_profile_with_its_own_login_gives_no_line() {
-    let e = env();
-    e.prototype_ledger(r#"{"live":"X","since":1}"#);
-    private(&e.root.join("X/.credentials.json"), b"{}");
-    assert_eq!(e.tick(&input(34.0, 43.0)), None);
-    assert!(e.usage().is_none(), "nothing recorded");
-}
-
-#[test]
-fn without_a_login_in_the_default_directory_there_is_no_line() {
-    let e = env();
-    e.prototype_ledger(r#"{"live":"X","since":1}"#);
-    fs::remove_file(e.home.join(".claude/.credentials.json")).unwrap();
-    assert_eq!(e.tick(&input(34.0, 43.0)), None);
-}
-
-#[test]
-fn a_rotate_ledger_whose_account_is_not_the_default_login_gives_no_line() {
-    // `claude /login` run by hand in `~/.claude` as another account: the
-    // rotate ledger is stale, so no owner and nothing recorded.
-    let e = env();
-    let account =
-        serde_json::json!({"oauthAccount": {"accountUuid": "u1", "emailAddress": "me@x"}})
-            .to_string();
-    private(&e.home.join(".claude.json"), account.as_bytes());
-    e.rotate_ledger_body(
-        serde_json::json!({"version": 1, "live": "X", "account": "u2", "since": 10}),
-    );
-    assert_eq!(e.tick(&input(34.0, 43.0)), None);
-    assert!(e.usage().is_none(), "nothing recorded");
-
-    e.rotate_ledger_body(
-        serde_json::json!({"version": 1, "live": "X", "account": "u1", "since": 10}),
-    );
-    let line = e.tick(&input(34.0, 43.0)).expect("a capacity line");
-    assert!(line.starts_with(LINE_34_43), "{line}");
-    assert!(e.usage().unwrap()["accounts"].get("X").is_some());
-}
-
-#[test]
 fn the_owner_comes_from_the_ledger_not_from_account_matching() {
     // A `.claude.json` in `~` and in profile Y that match: `profile usage`
     // would mark Y live without a ledger. The status line does not.
@@ -366,6 +326,141 @@ fn the_owner_comes_from_the_ledger_not_from_account_matching() {
     private(&e.home.join(".claude.json"), account.as_bytes());
     private(&e.root.join("Y/.claude.json"), account.as_bytes());
     assert_eq!(e.tick(&input(34.0, 43.0)), None);
+}
+
+#[test]
+fn a_ledger_naming_a_profile_without_a_directory_gives_no_line() {
+    let e = env();
+    e.prototype_ledger(r#"{"live":"Nobody","since":1}"#);
+    assert_eq!(e.tick(&input(34.0, 43.0)), None);
+    // A symlink to a profile is not the profile's own directory.
+    std::os::unix::fs::symlink(e.root.join("X"), e.root.join("Nobody")).unwrap();
+    assert_eq!(e.tick(&input(34.0, 43.0)), None);
+    assert!(e.usage().is_none(), "nothing recorded");
+}
+
+#[test]
+fn a_profile_with_its_own_login_is_not_checked_for_one() {
+    // SR1: the status line never stats a `.credentials.json`.
+    let e = env();
+    e.prototype_ledger(r#"{"live":"X","since":1}"#);
+    private(&e.root.join("X/.credentials.json"), b"{}");
+    assert!(e.tick(&input(34.0, 43.0)).is_some());
+}
+
+// ---------------------------------------------------------------------------
+// tick: when a reading is recorded (D2)
+// ---------------------------------------------------------------------------
+
+fn save_hosts(e: &Env, dir: &str, live: &str, swapped_at: i64) {
+    let state = State::new(&e.root).unwrap();
+    state.ensure().unwrap();
+    state
+        .save_ledger(&Ledger {
+            version: 1,
+            hosts: BTreeMap::from([(
+                dir.to_string(),
+                HostEntry {
+                    live: live.into(),
+                    swapped_at,
+                    pre_swap_fingerprint: None,
+                },
+            )]),
+        })
+        .unwrap();
+}
+
+#[test]
+fn nothing_is_recorded_within_the_cooldown_after_the_ledger_changed() {
+    let e = env();
+    let since = now() - super::usage::COOLDOWN_SECS + 30;
+    e.prototype_ledger(&format!(r#"{{"live":"X","since":{since}}}"#));
+    let line = e
+        .tick(&input(34.0, 43.0))
+        .expect("the line is still printed");
+    assert!(line.starts_with(LINE_34_43), "{line}");
+    assert!(e.usage().is_none(), "nothing recorded");
+
+    let since = now() - super::usage::COOLDOWN_SECS - 1;
+    e.prototype_ledger(&format!(r#"{{"live":"X","since":{since}}}"#));
+    e.tick(&input(34.0, 43.0)).unwrap();
+    assert!(e.usage().unwrap()["accounts"].get("X").is_some());
+}
+
+#[test]
+fn nothing_is_recorded_without_a_since() {
+    let e = env();
+    e.prototype_ledger(r#"{"live":"X"}"#);
+    let line = e
+        .tick(&input(34.0, 43.0))
+        .expect("the line is still printed");
+    assert!(line.starts_with(LINE_34_43), "{line}");
+    assert!(e.usage().is_none());
+}
+
+#[test]
+fn nothing_is_recorded_when_attribution_ignores_the_reading() {
+    // An auto-switch swap into X's directory moments ago.
+    let e = env();
+    e.prototype_ledger(r#"{"live":"X","since":1}"#);
+    save_hosts(&e, "X", "Y", now() - 10);
+    assert!(e.tick(&input(34.0, 43.0)).is_some());
+    assert!(e.usage().is_none(), "nothing recorded");
+}
+
+#[test]
+fn the_reading_is_stored_under_the_attributed_account() {
+    // Auto-switch has Y's login in X's directory: the reading is Y's.
+    let e = env();
+    e.prototype_ledger(r#"{"live":"X","since":1}"#);
+    save_hosts(&e, "X", "Y", now() - 3600);
+    e.tick(&input(34.0, 43.0)).unwrap();
+    let usage = e.usage().unwrap();
+    assert!(usage["accounts"].get("Y").is_some(), "{usage}");
+    assert!(usage["accounts"].get("X").is_none(), "{usage}");
+}
+
+#[test]
+fn nothing_is_recorded_under_a_group_or_world_writable_root() {
+    for m in [0o770, 0o707, 0o777] {
+        let e = env();
+        e.prototype_ledger(r#"{"live":"X","since":1}"#);
+        mode(&e.root, m);
+        // A group holding only the user counts as private (as for the
+        // ledger), so a group-writable root is refused only on hosts where
+        // the group has other members.
+        let refused = super::fsx::check_root_private(&e.root).is_err();
+        let got = e.tick(&input(34.0, 43.0));
+        mode(&e.root, 0o700);
+        assert!(refused || m == 0o770, "{m:o} must be refused");
+        if refused {
+            assert_eq!(got, None, "{m:o}");
+            assert!(!e.state_dir().exists(), "{m:o}");
+        }
+    }
+}
+
+#[test]
+fn a_failed_save_prints_no_spare_count() {
+    if super::fsx::euid() == 0 {
+        return;
+    }
+    let e = env();
+    e.prototype_ledger(r#"{"live":"X","since":1}"#);
+    plant_usage(
+        &e,
+        &serde_json::json!({"version": 1, "accounts": {"Y": usage_entry(20.0, 30.0)}}),
+    );
+    // The lock file exists, but nothing new can be written in the directory.
+    drop(State::new(&e.root).unwrap().lock().unwrap());
+    mode(&e.state_dir(), 0o500);
+    let got = e.tick(&input(34.0, 43.0));
+    mode(&e.state_dir(), 0o700);
+    assert_eq!(
+        got.as_deref(),
+        Some(LINE_34_43),
+        "no count from unsaved data"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -549,7 +644,7 @@ fn a_symlinked_root_is_refused_and_nothing_is_created() {
     e.prototype_ledger(r#"{"live":"X","since":1}"#);
     let link = e.home.join("root-link");
     std::os::unix::fs::symlink(&e.root, &link).unwrap();
-    assert_eq!(tick(&link, &e.home, &input(34.0, 43.0), now()), None);
+    assert_eq!(tick(&link, &input(34.0, 43.0), now()), None);
     assert!(!e.state_dir().exists());
 }
 
@@ -568,7 +663,7 @@ fn a_shared_root_is_refused_and_nothing_is_created() {
 fn a_missing_root_is_not_created() {
     let e = env();
     let missing = e.home.join("no-such-root");
-    assert_eq!(tick(&missing, &e.home, &input(34.0, 43.0), now()), None);
+    assert_eq!(tick(&missing, &input(34.0, 43.0), now()), None);
     assert!(!missing.exists());
 }
 
