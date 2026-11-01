@@ -77,7 +77,7 @@ The statusline shows progress, costs, context usage, and active features for you
 
 ## Configuration
 
-`amplihack install` (explicit, global scope) sets the `statusLine` entry in
+`amplihack install` with global scope sets the `statusLine` entry in
 `~/.claude/settings.json` to the amplihack command:
 
 ```json
@@ -89,21 +89,70 @@ The statusline shows progress, costs, context usage, and active features for you
 }
 ```
 
-That one command prints both lines: the session line from
+That one command prints the session line from
 `~/.amplihack/.claude/tools/statusline.sh` described above, then the
 [login capacity line](#login-capacity-line). See
-[Install wiring](#install-wiring) for when install writes, updates or keeps
-the entry.
+[Install wiring](#install-wiring) for when the entry is written, updated or
+kept.
 
 ## Login capacity line
 
-When the login rotator has moved a profile's login into `~/.claude`, the
-status line shows which login is live and how much of its capacity is used:
+The capacity line shows which login is live and how much of its capacity is
+used. It is printed below the session line:
 
 ```
 ~/src/amplihack-rs (main → origin) [github.com/rysweet/amplihack-rs] Opus 🎫 1.2M 💰$15.67 ⏱1h
-🔑 work  5h ███░░░░░░░ 34%  7d ████░░░░░░ 43%  · 2 spare
+🔑 work  5h ███░░░░░░░ 34%  7d ████░░░░░░ 43%  · 3 spare
 ```
+
+### Command
+
+```
+amplihack profile statusline [--root <path>] [--owner <name>]
+```
+
+Claude Code runs the command on every status-line refresh and sends a JSON
+object on standard input. Both arguments are optional.
+
+| Argument         | Effect                                                                                                                                                          |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--root <path>`  | Uses this profile root. It must be absolute.                                                                                                                    |
+| (no `--root`)    | Resolves the root as other profile commands do: `AMPLIHACK_CLAUDE_PROFILE_ROOT`, then the saved `profile root` setting, then `~/.amplihack/claude-profiles`. |
+| `--owner <name>` | Runs as the [status-line wrapper](./profile-command.md#status-line-wrapper) of profile `<name>`.                                                               |
+
+`--owner` no longer needs `--root`. When the root cannot be resolved, the
+reason goes to stderr and nothing about it is printed on standard output.
+The root is never created.
+
+### Modes
+
+Without `--owner`, the mode is chosen from `CLAUDE_CONFIG_DIR`. The
+variable is canonicalised first: symlinks are resolved and a trailing slash
+is ignored.
+
+| `CLAUDE_CONFIG_DIR`                                                                    | Mode        | Behaviour                                                                                |
+| -------------------------------------------------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------- |
+| Unset, empty, or `$HOME/.claude`                                                       | Home        | Runs `statusline.sh`, then prints the capacity line for the login live in `~/.claude`.   |
+| `<root>/<p>`, where the canonical parent is the canonical root and `<p>` is a valid profile name | Profile     | Behaves exactly like `--owner <p>`. See [Inside profiles](#inside-profiles).             |
+| Anything else                                                                          | Passthrough | Runs `statusline.sh` only. No capacity line and nothing recorded.                        |
+
+A directory reached through a symlink is matched on its canonical path, so a
+symlink to a profile from outside the root is treated as passthrough unless
+it resolves into the root.
+
+With `--owner`, the command always runs in profile mode for that profile.
+
+### Output order
+
+The order is the same in every mode:
+
+1. the original command's output, copied through unchanged; a newline is
+   added only when the output did not end with one;
+2. the capacity line, when there is one;
+3. the [capacity notice](./profile-command.md#capacity-notice), when it is
+   due.
+
+Nothing else is written to standard output.
 
 ### Line format
 
@@ -111,239 +160,277 @@ status line shows which login is live and how much of its capacity is used:
 🔑 <login>  5h <bar> <pct>%  7d <bar> <pct>%  · <n> spare
 ```
 
-Segments are separated by two spaces.
+Segments are separated by two spaces and appear in this order. Each one is
+left out on its own when its value is unknown.
 
-| Segment           | Shows                                          | Notes                                                                                                                 |
-| ----------------- | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `🔑 <login>`      | The profile whose login is live in `~/.claude` | Always present when the line is printed.                                                                              |
-| `5h <bar> <pct>%` | The five-hour session window                   | Left out when the input has no `five_hour` window.                                                                    |
-| `7d <bar> <pct>%` | The seven-day window                           | Left out when the input has no `seven_day` window.                                                                    |
-| `· <n> spare`     | Profiles with room in both windows             | `· 0 spare` is printed. Left out when the readings file cannot be read (see [Failure behaviour](#failure-behaviour)). |
+| Segment           | Shows                                     | Left out when                                                       |
+| ----------------- | ----------------------------------------- | ------------------------------------------------------------------- |
+| `🔑 <login>`      | The live login                            | No login can be resolved.                                           |
+| `5h <bar> <pct>%` | The five-hour session window              | The input has no usable `five_hour` window.                         |
+| `7d <bar> <pct>%` | The seven-day window                      | The input has no usable `seven_day` window.                         |
+| `· <n> spare`     | Profiles with room in both windows        | The profile list, auto-switch state or `usage.json` cannot be read. |
 
-When both windows are missing, the line is not printed.
+`· 0 spare` is printed when the count is known to be zero; an unknown count
+is never shown as 0. A line holding only some segments, even only the spare
+count, is printed. When no segment remains, nothing is printed, not even a
+blank line.
 
-The bar has 10 cells. The number of filled cells (`█`) is
-`floor(clamp(pct, 0, 100) / 10)` and the rest are empty (`░`), so a full bar
-appears only at 100%. The percentage is rounded half away from zero.
+Control characters are removed from the login name before it is printed.
+
+#### Percentages and bars
+
+The percentage is `used_percentage` from the input, rounded half away from
+zero. The line prints the value it is given: a value over 100 is printed as
+reported, with a full bar, and a negative value as `0`. Before that, each
+window passes the same bounds check that `profile usage` applies to its
+readings, which limits `used_percentage` to 0 to 100; Claude Code's input
+therefore never shows more than `100%`. A window is treated as missing when
+its value is not a finite number, or when its `resets_at` is earlier than
+one day before now or later than eight days after now.
+
+The bar has 10 cells. The number of filled cells (`█`) is the percentage
+divided by 10 and rounded half away from zero, limited to 0 to 10. The rest
+are empty (`░`).
 
 | Used | Printed           |
 | ---- | ----------------- |
-| 34   | `███░░░░░░░ 34%`  |
-| 43   | `████░░░░░░ 43%`  |
-| 42.5 | `████░░░░░░ 43%`  |
-| 100  | `██████████ 100%` |
 | 0    | `░░░░░░░░░░ 0%`   |
+| 34   | `███░░░░░░░ 34%`  |
+| 35   | `████░░░░░░ 35%`  |
+| 42.5 | `████░░░░░░ 43%`  |
+| 43   | `████░░░░░░ 43%`  |
+| 96   | `██████████ 96%`  |
+| 112  | `██████████ 112%` |
+| -3   | `░░░░░░░░░░ 0%`   |
 
-#### The 100% cap
-
-Percentages are read from the status-line input and clamped to `0`–`100`
-by the same parser auto-switch uses to record readings. An account past its
-limit therefore shows `██████████ 100%`, never a higher figure.
+The input is read once, up to 16 MiB. Only the first 1 MiB is parsed for
+`rate_limits`; larger input is still passed to the original command in full,
+but gives no bars and records nothing. Missing windows do not hide the login
+or the spare count.
 
 ### Data sources
 
 | Value       | Source                                                                                                                                                         |
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Login name  | The rotator ledger: `<root>/.auto-switch.d/rotate/ledger.json` (written by `profile rotate`) or `<root>/.rotator/ledger.json` (written by an external rotator) |
-| Percentages | The `rate_limits` object in the JSON Claude Code sends on standard input                                                                                       |
-| Spare count | Recorded readings in `<root>/.auto-switch.d/usage.json`                                                                                                        |
+| Login name  | Home mode: the rotator ledgers. Profile mode: the auto-switch ledger entry for that profile.                                                                  |
+| Percentages | The `rate_limits` object in the JSON Claude Code sends on standard input. Nothing is fetched from the network.                                                |
+| Spare count | The profile list, the auto-switch settings and ledger, the overflow marks and the readings in `<root>/.auto-switch.d/usage.json`                               |
 
 `<root>` is the profile root (see
-[Profile root](./profile-command.md#profile-root)). The ledger is read with
-the trust rules in
-[Logins in `~/.claude`](./profile-command.md#logins-in-claude): it must be
-owned by you, not writable by other users, not a symlink, and must name
-a valid profile. When both ledgers are trusted, the one with the later
-`since` decides. A ledger that names a profile whose own
-`<root>/<name>/.credentials.json` still exists is not trusted, as in
-`profile usage`; that check tests only whether the file exists.
+[Profile root](./profile-command.md#profile-root)).
 
-As in `profile usage`, a rotate ledger that records an `account` counts only
-while that account is the one in `~/.claude.json`. If someone runs
-`claude /login` by hand in `~/.claude` as another account, or
-`~/.claude.json` is missing, too large or unreadable, the ledger is not
-trusted: no capacity line is printed and nothing is recorded. That file is
-read once, bounded and without following a symlink. Unlike `profile usage`,
-the status line never falls back to matching accounts across profiles,
-reads no profile's `.claude.json` and does not list the profile
-directories.
+Credentials are never read. The capacity line does not open, test or name
+any `.credentials.json` file, and does not read `~/.claude.json` or any
+profile's `.claude.json`.
 
-Credentials are never opened. The only check made on
-`~/.claude/.credentials.json` is that it exists as a regular file.
+#### Live login in home mode
 
-The percentages shown are the current session's; nothing is fetched from the
-network.
+The live login comes from the two rotator ledgers only:
+
+- `<root>/.auto-switch.d/rotate/ledger.json`, written by `profile rotate`;
+- `<root>/.rotator/ledger.json`, written by an external rotator.
+
+Each ledger is read with the trust rules in
+[Logins in `~/.claude`](./profile-command.md#logins-in-claude): owned by you,
+not writable by other users, not a symlink and within the size limit. An
+empty `live` counts as no ledger. When both ledgers name a login, the one
+with the later `since` wins; on a tie the rotate ledger wins, and a ledger
+with no `since` counts as older.
+
+The name must be a valid profile name, and `<root>/<name>` must be a
+directory itself, not a symlink to one. Otherwise there is no login: the
+`🔑` segment is left out and nothing is recorded.
+
+The ledger is not compared with the account in `~/.claude.json`. If someone
+runs `claude /login` by hand in `~/.claude`, the `🔑` segment can name the
+previous login until the rotator next writes its ledger. Recording is
+protected separately; see [Recording readings](#recording-readings).
 
 ### Recording readings
 
-Each run that resolves a login also records the input's reading for that
-login in `usage.json`, in the same format and under the same 50 ms state
-lock as the [status-line wrapper](./profile-command.md#status-line-wrapper)
-(`source` is `statusline`). It does this whether auto-switch is on or off,
-because the readings feed the spare count and `profile auto-switch`.
+In home mode the command records the input's reading in `usage.json` only
+when all of these hold:
 
-The reading is credited to the login the ledger names. It does not use the
-auto-switch `hosts` attribution, and it never runs auto-switch recovery or
-an in-session swap: the rotator owns `~/.claude`. It writes nothing else; the
-journal, the ledgers and `hosts` are left untouched.
+1. the profile root is private (a real directory owned by you and not
+   writable by other users);
+2. the input has at least one usable window;
+3. the winning ledger has a `since`, and at least 300 seconds have passed
+   since it (the auto-switch swap cool-down);
+4. auto-switch attribution for that profile gives an account to record
+   against: the account auto-switch has live in that profile, or the profile
+   itself when auto-switch has no entry for it. Attribution refuses a
+   reading taken within 300 seconds of an auto-switch swap, or one that
+   matches the figures recorded before that swap.
 
-In the first seconds after the rotator swaps logins, Claude Code may still
-send the previous login's figures, and that reading is credited to the new
-login. The next status-line refresh corrects it.
+The reading is stored under the attributed account, with `source` set to
+`statusline`, merged with any existing reading in the same way as the
+[status-line wrapper](./profile-command.md#status-line-wrapper). The command
+waits at most 50 ms for the state lock; when the lock is busy, it records
+nothing on that run. After recording it updates the
+[capacity file](./profile-command.md#capacity-file) with writer
+`statusline`. Recording happens whether auto-switch is enabled or not.
+
+When any condition fails, nothing is recorded. The capacity line is still
+printed, with the bars from this run's input.
+
+Home mode never runs auto-switch recovery or an in-session swap, because the
+rotator owns `~/.claude`. It writes nothing other than `usage.json` and the
+capacity file: the journal, the ledgers and `hosts` are left untouched.
 
 `profile rotate` does not read `usage.json`. Readings taken in `~/.claude`
-reach the rotator only indirectly, through the spare count and auto-switch.
+reach it only through the spare count and auto-switch.
 
 ### Spare rule
 
-A profile counts as spare when both of these hold:
+Candidates are the profiles that `amplihack profile list` shows, other than:
 
-- its five-hour window is under 50% used, and
-- its seven-day window is under 90% used.
+- the live login;
+- profiles in the auto-switch `exclude` list;
+- profiles marked for [overflow](./profile-command.md#overflow-commands).
+
+For each candidate, the reading is looked up in `usage.json` under the
+account the auto-switch ledger records for that profile, or under the
+profile's own name when it has no entry. A candidate counts as spare when
+all of these hold:
+
+- it has a reading;
+- it is not exhausted: its reading is not a usage-limit failure whose reset
+  time is still in the future;
+- its five-hour window is under 50% used, or the reading has no five-hour
+  window;
+- its seven-day window is present and under 90% used.
 
 Both comparisons are strict, so a profile at exactly 50% or 90% is not
-spare. A window whose `resets_at` has passed counts as 0%. A profile with
-either window missing from its reading is not spare.
-
-Candidates are the entries in `usage.json` other than the live login, whose
-names are valid profile names and whose `<root>/<name>` directory exists.
-Profiles with no recorded reading are not counted. Run
+spare. A window whose reset time has passed counts as 0%. Run
 `amplihack profile usage` to record readings for every profile.
 
-### No-owner mode
-
-`amplihack profile statusline` with no `--owner` is the command written to
-`~/.claude/settings.json`. Each run:
-
-1. reads standard input once, up to 16 MiB;
-2. if `~/.amplihack/.claude/tools/statusline.sh` passes the checks below,
-   runs it as `sh -c '<path>'` (the path single-quoted, as the
-   [status-line wrapper](./profile-command.md#status-line-wrapper) runs an
-   original), feeding it the same input and copying its output through. The
-   script's `#!` line chooses its interpreter, so it must be executable;
-3. resolves the profile root and the live login, records the reading and
-   prints the capacity line.
-
-Only the first 1 MiB is parsed for `rate_limits`. Input larger than 1 MiB is
-still passed to `statusline.sh` in full, but gives no capacity line and
-records nothing.
-
-Both arguments are optional:
-
-| Argument         | Effect                                                                                                                                                       |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--root <path>`  | Uses this profile root. It must be absolute; a relative path means no root, and step 3 is skipped.                                                           |
-| (none)           | Resolves the root as other profile commands do: `AMPLIHACK_CLAUDE_PROFILE_ROOT`, then the saved `profile root` setting, then `~/.amplihack/claude-profiles`. |
-| `--owner <name>` | Selects wrapper mode, used inside profiles (see [Inside profiles](#inside-profiles)). |
-
-In wrapper mode `--root` is required. `--owner` without `--root` prints
-nothing on standard output and one `status line disabled` line on stderr.
-
-The root must already exist and pass the profile-root checks (a real
-directory owned by you and not writable by other users). The command never
-creates it.
-
-`statusline.sh` is run only if it is a regular file, not a symlink, owned by
-you or root, and not writable by other users, and each directory above
-it up to `$HOME` passes the same ownership and mode checks. Otherwise the
-first line is left out and the capacity line is still printed.
-
-#### The inner-run rule
-
-If `CLAUDE_CONFIG_DIR` is set and resolves to a directory other than
-`$HOME/.claude` (symlinks resolved, a trailing slash ignored), the command
-is running inside a profile. It then prints only the first line, and
-records and prints no capacity line. This stops the line from appearing
-twice when a profile's wrapper runs the command as its original.
+When home mode has just recorded a reading, the count uses the `usage.json`
+it saved under the state lock; if the save failed, the spare segment is left
+out. Otherwise the count reads its files without taking the state lock. A
+damaged or half-written `usage.json` leaves the spare segment out for that
+run. A missing `usage.json` holds no readings, so every candidate counts as
+not spare.
 
 ### Inside profiles
 
-New profiles receive the `~/.claude` entry through the shared settings
-keys. `install` and `repair` treat an entry that runs `profile statusline`
-without `--owner` as an ordinary original status line: they save it and
-install the profile's
-[wrapper](./profile-command.md#status-line-wrapper) around it. It is not
-reported as stale.
+In profile mode, for profile `<p>`, the command:
 
-When the wrapper's saved original is this command, the wrapper prints, in
-order:
+1. applies the [status-line wrapper](./profile-command.md#status-line-wrapper)
+   checks: the root is private and `CLAUDE_CONFIG_DIR` resolves to
+   `<root>/<p>`;
+2. waits at most 50 ms for the state lock, runs recovery, records the
+   reading when auto-switch is on and checks for an in-session swap, as the
+   wrapper always has;
+3. runs the saved original from `<root>/.auto-switch.d/statusline/<p>.json`.
+   An original whose command contains `profile statusline` is never run;
+   `statusline.sh` is run in its place. When the command was started without
+   `--owner` and there is no saved original, `statusline.sh` is run too;
+4. prints the capacity line, when the step 1 checks passed: the account the
+   auto-switch ledger records for `<p>` as the login, falling back to `<p>`,
+   the bars from this run's input, and the spare count excluding `<p>`;
+5. prints the capacity notice, when it is due.
 
-1. the original output (the `statusline.sh` line; the inner run prints no
-   capacity line);
-2. the capacity line for the account live in that profile, as the
-   auto-switch ledger records it, falling back to the profile's own name;
-3. the [capacity notice](./profile-command.md#capacity-notice), when it is
-   due.
+New profiles receive the `~/.claude` entry through the shared settings keys,
+so a profile without a wrapper still gets the capacity line for its own
+login. Seeding is unchanged.
 
-The spare count excludes that account. The wrapper reads `usage.json`
-without taking the state lock, and leaves the spare segment out when the file
-is missing or damaged. A wrapper whose saved original is any other command
-prints exactly what it printed before.
+When `profile auto-switch install` or `repair` finds the `~/.claude` entry
+in a profile, it saves `{"type": "command", "command": "'<home>/.amplihack/.claude/tools/statusline.sh'"}`
+as the original and installs the wrapper. The script path is saved only when
+it passes the [script checks](#script-checks); otherwise no original is
+saved and the wrapper prints only the capacity line. A command containing
+`profile statusline` is never saved as an original.
 
-A profile that runs `amplihack profile statusline` with no wrapper around it
-shows only the first line, because of the inner-run rule. Profiles created
-before this change keep their existing status line; nothing is copied into
-them.
+### Script checks
+
+`~/.amplihack/.claude/tools/statusline.sh` is run as `sh -c '<path>'`, with
+the path single-quoted, the same standard input, working directory and
+environment. It is run only if it is a regular file, not a symlink, owned by
+you or root and not writable by other users, and each directory above it up
+to `$HOME` passes the same checks. The script's `#!` line chooses its
+interpreter, so it must be executable.
+
+When the script is missing or fails the checks, nothing is run and only the
+capacity line is printed.
 
 ### Failure behaviour
 
 Every failure gives less output, never an error on standard output.
 
-| Condition                                                                                           | Result                                                                                    |
-| --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| `statusline.sh` missing or failing its checks                                                       | No first line; capacity line printed.                                                     |
-| No root resolves, or the root is relative, a symlink, or writable by other users                    | First line only. Nothing is recorded.                                                     |
-| No ledger, a damaged or untrusted ledger, or a ledger naming a profile that still has its own login | First line only. Nothing is recorded.                                                     |
-| A rotate ledger whose `account` is not the one in `~/.claude.json`                                  | First line only. Nothing is recorded.                                                     |
-| Input has no `rate_limits`, or neither window                                                       | First line only.                                                                          |
-| Input larger than 1 MiB                                                                             | First line only. Nothing is recorded.                                                     |
-| `usage.json` damaged, or the state lock held for more than 50 ms                                    | Capacity line without the `· <n> spare` segment. The reading is not recorded on that run. |
-| Internal panic                                                                                      | First line only, and one generic line on stderr.                                          |
+| Condition                                                                 | Result                                                                    |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| `statusline.sh` missing or failing its checks                             | No first line; capacity line printed.                                     |
+| Home mode: no root resolves, or the root is relative, missing, a symlink or not private | Bars only: no `🔑` or spare segment. Nothing is recorded. The reason is on stderr unless the root does not exist. |
+| Profile mode: the root is not private, or `CLAUDE_CONFIG_DIR` does not resolve to `<root>/<p>` | First line only. Nothing is recorded. A root that is not private is named on stderr. |
+| No ledger, an untrusted ledger, or a name with no profile directory       | No `🔑` segment. Nothing is recorded.                                     |
+| Ledger `since` missing or less than 300 seconds old                       | Capacity line printed. Nothing is recorded.                               |
+| Input has no `rate_limits`, or no usable window                           | No bars. Nothing is recorded.                                             |
+| Input larger than 1 MiB                                                   | No bars. Nothing is recorded.                                             |
+| `usage.json` or auto-switch state damaged or unreadable                   | No spare segment.                                                         |
+| State lock held for more than 50 ms                                       | Capacity line printed. The reading is not recorded on that run.          |
+| Internal panic                                                            | The original command's output only, and one generic line on stderr.      |
 
-The exit code is that of `statusline.sh` when it ran (`1` if a signal ended
-it), and `0` otherwise. In no-owner mode the command prints no paths and adds
-no stderr lines of its own. On non-Unix platforms (Windows) it prints nothing
-and exits `0`.
+The exit code is the original command's when it ran (`1` if a signal ended
+it), and `0` otherwise. Logs name operations and errors only, never input,
+file contents or environment values. On non-Unix platforms the command
+prints nothing and exits `0`.
 
-The capacity work (resolving, reading the ledger, recording and rendering)
-takes well under 200 ms; `statusline.sh` runs separately and is not counted
-in that figure.
+The capacity work (resolving the login, counting spares, rendering and
+recording) takes under 200 ms with 20 or more profiles. Process start-up and
+the original command are not counted.
 
 ### Install wiring
 
-Only `amplihack install` in explicit mode with global scope writes the
-entry. Launch-time auto-repair, implicit installs and repo-local
-`.claude/settings.json` files never add, change or remove `statusLine`.
+Only global-scope installs write the entry: an explicit `amplihack install`
+and the launch-time repair that runs when amplihack's hooks are missing from
+`~/.claude/settings.json`. Implicit installs and repo-local
+`.claude/settings.json` files never add, change or remove `statusLine`, and
+neither does seeding or refreshing profile settings.
 
-| Existing `statusLine` in `~/.claude/settings.json` | What install does                                        | Printed                                                           |
-| -------------------------------------------------- | -------------------------------------------------------- | ----------------------------------------------------------------- |
-| None                                               | Writes `{"type": "command", "command": "<cmd>"}`         | `statusLine: installed`                                           |
-| An amplihack entry with an older command           | Replaces the entry, keeping only `padding`               | `statusLine: updated`                                             |
-| The current command                                | Nothing                                                  | `statusLine: unchanged`                                           |
-| Anything else                                      | Nothing; the entry is kept byte for byte                 | `statusLine: kept your existing entry in ~/.claude/settings.json` |
+| Existing `statusLine` in `~/.claude/settings.json` | What install does                                                         | Printed                                |
+| -------------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------- |
+| None                                               | Writes `{"type": "command", "command": "<cmd>"}`                          | `statusLine: installed`                |
+| amplihack's, with a different command              | Replaces `type` and `command`; `padding` and every other key are kept     | `statusLine: updated`                  |
+| amplihack's, with the current command              | Nothing                                                                   | nothing                                |
+| Anything else                                      | Nothing; the entry is kept byte for byte                                  | `statusLine: kept your existing entry` |
 
-An entry is amplihack's when it is an object whose `command` either
-contains `profile statusline` without `--owner`, or contains
-`.amplihack/.claude/tools/statusline.sh`. The second test matches any
-command that mentions that path, including your own pipeline built around
-the script, and such an entry is replaced; the timestamped backup of
-`settings.json` that install writes keeps the old entry. Fields other than
-`type`, `command` and `padding` are dropped. Everything else is kept as
-yours, including:
+An entry is amplihack's only when it is an object whose `command`, with
+leading and trailing spaces removed, is exactly one of:
 
+- the command this install writes;
+- a single-quoted absolute path to a binary named `amplihack`, followed by
+  ` profile statusline`, as an older install wrote it;
+- `amplihack profile statusline`;
+- the legacy script path and nothing else:
+  `~/.amplihack/.claude/tools/statusline.sh`, the same after `$HOME` or
+  `${HOME}`, or after an absolute path, optionally inside one pair of single
+  or double quotes.
+
+Everything else is kept as yours, byte for byte, including:
+
+- a command that runs the script and does more, such as
+  `bash ~/.amplihack/.claude/tools/statusline.sh | my-filter`;
+- a command that only contains the words, such as
+  `my-profile statusline-helper.sh`;
 - the older example `$CLAUDE_PROJECT_DIR/.claude/tools/statusline.sh`;
 - a profile wrapper (`profile statusline ... --owner ...`) copied in by hand;
-- a value that is not an object or has no `command`.
+- a value that is not an object, or a `settings.json` whose top level is not
+  an object.
 
 To switch a kept entry to amplihack's, delete the `statusLine` key and run
 `amplihack install` again.
 
 `<cmd>` is the installed amplihack binary followed by `profile statusline`,
-with the path single-quoted for `sh`. If the binary cannot be located or
-fails its ownership checks, install prints
-`⚠️  statusLine not installed: <reason>`, leaves the key alone and still
-succeeds. Running install again gives the same file, with one `statusLine`
-key. Other keys keep their values; their order may change.
+with the path single-quoted for `sh`. When the binary cannot be located or
+is refused (it or a directory above it can be changed by other users), or
+its path cannot be quoted safely (for example, it contains a newline),
+install prints a warning and writes no `statusLine` entry. It never falls
+back to a bare `amplihack` found through `PATH`. The `statusLine` decision
+never makes install fail.
+
+Running install again gives the same file, with one `statusLine` key. Other
+keys keep their values; their order may change. `settings.json` is written
+in place after the usual timestamped backup, not through a temporary file.
 
 ## Project Structure
 

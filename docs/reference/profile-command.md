@@ -2484,8 +2484,12 @@ The original `statusLine` object is saved in
 | the canonical wrapper | does not write | does not write |
 | missing | installs the wrapper; uses a saved original if one exists | same as `install` |
 | another command | saves it as the original, then installs the wrapper | same as `install` |
-| `amplihack profile statusline` without `--owner` (the `~/.claude` entry) | saves it as the original, then installs the wrapper | same as `install` |
+| `amplihack profile statusline` without `--owner` (the `~/.claude` entry) | saves `~/.amplihack/.claude/tools/statusline.sh` as the original when that script passes the [script checks](./STATUSLINE.md#script-checks), otherwise saves no original; then installs the wrapper | same as `install` |
 | an old, moved, edited or doubly wrapped wrapper (contains `profile statusline --owner`) | does not write; reports `stale` | rewrites it to the canonical wrapper, keeping the saved original (never saving a wrapper as the original) |
+
+A command containing `profile statusline` is never saved as an original. A
+saved original containing it, left by an older install, is never run:
+`~/.amplihack/.claude/tools/statusline.sh` runs in its place.
 
 The original `padding` is kept. A missing `settings.json` is created at
 `0600`. Writes use a temp file, `rename` and a directory sync. Other keys and
@@ -2515,9 +2519,16 @@ When Claude runs the wrapper, it:
    byte for byte;
 4. runs the [in-session swap](#in-session-swap) check.
 
-While the [capacity notice](#capacity-notice) is due, step 3 adds one line
-after the original output, and step 2 also updates the
-[capacity file](#capacity-file) after recording the reading.
+After the original output, the wrapper prints the
+[login capacity line](./STATUSLINE.md#login-capacity-line) whenever the
+step 1 checks passed, then the [capacity notice](#capacity-notice) while it
+is due. Step 2 also updates the [capacity file](#capacity-file) after
+recording the reading.
+
+`--root` may be left out; the root is then resolved as for other profile
+commands (see [Profile root](#profile-root)). Run without `--owner` inside
+`<root>/<name>`, `amplihack profile statusline` behaves as
+`--owner <name>`; see [Modes](./STATUSLINE.md#modes).
 
 The saved original in `statusline/<name>.json` is run only if it passes the
 [state directory](#state-directory) checks (a regular file owned by you,
@@ -2543,8 +2554,8 @@ covered instead by [nested substitution](#nested-launches-and-auto-switch)
 when they start and by [usage-limit reruns](#usage-limit-reruns) when they
 fail.
 
-The wrapper writes to standard output itself only to add the
-[capacity notice](#capacity-notice) after the original output. Its exit code is the
+The wrapper writes to standard output itself only to add the capacity line
+and the [capacity notice](#capacity-notice) after the original output. Its exit code is the
 original command's, or `0` if there is none or it was not run. Its own errors, including a
 panic, are one line on stderr naming paths only.
 
@@ -2913,7 +2924,7 @@ of them makes an extra network call or probe for it.
 
 | `writer` | Written | Readings used |
 |----------|---------|---------------|
-| `statusline` | By the [status-line wrapper](#status-line-wrapper), each time it records a reading, under the state lock it takes for that. | `usage.json` as just recorded. |
+| `statusline` | By the [status-line wrapper](#status-line-wrapper), and by the [`~/.claude` status line](./STATUSLINE.md#recording-readings), each time it records a reading, under the state lock it takes for that. | `usage.json` as just recorded. |
 | `usage` | By [`profile usage`](#refreshing-auto-switch-readings), each time it records readings, under the state lock it takes for that. | `usage.json` as just recorded. |
 | `rotate` | By the rotator, in a [cycle](#rotate-cycle) that reaches the swap, stay or ALERT, under the lock taken in step 6. | That cycle's probes. A `session_exhausted` or `weekly_exhausted` probe counts as at its limit; a failed probe, including one that timed out, counts as no reading and never as at its limit. Reset times come from the profile's `usage.json` entry while they are in the future, and are otherwise unknown. |
 
