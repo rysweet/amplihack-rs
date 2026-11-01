@@ -34,15 +34,42 @@ pub fn is_account_mismatch(e: &ProfileError) -> bool {
     matches!(e, ProfileError::RotateRefused(m) if m.starts_with(ACCOUNT_MISMATCH))
 }
 
+/// The warning printed when `name`'s record exists but cannot be read, or
+/// the state holding it cannot be opened. Names the profile, never an
+/// account.
+pub(super) fn unchecked(name: &ProfileName) -> String {
+    format!(
+        "warning: the recorded account for profile '{name}' could not be read; \
+         the swap was not checked against it"
+    )
+}
+
 /// Refuses a swap from a profile whose record names another account than
 /// the one in `$HOME/.claude.json`. Otherwise says what [`settle`] records:
 /// the adopted account, or, for a profile without a record, the outgoing
 /// account when the ledger shows it is the one that came out of `from`.
+/// A record that cannot be read counts as none, with one warning.
 pub(super) fn guard(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
     from: &Source,
+) -> Result<Pending, ProfileError> {
+    let mut note = None;
+    let decided = decide(store, rs, home, from, &mut note);
+    if let Some(note) = note {
+        eprintln!("{note}");
+    }
+    decided
+}
+
+/// [`guard`] without the printing: `note` gets the warning, if any.
+pub(super) fn decide(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+    from: &Source,
+    note: &mut Option<String>,
 ) -> Result<Pending, ProfileError> {
     let Some(live) = Account::of_dir(home) else {
         return Ok(Pending::Nothing);
@@ -53,9 +80,14 @@ pub(super) fn guard(
     };
     // A state that cannot be opened reads as no record.
     let Ok(state) = State::new(store.root()) else {
+        *note = Some(unchecked(name));
         return Ok(Pending::Nothing);
     };
-    match expected::recorded(&state, name) {
+    let key = expected::lookup(&state, name).unwrap_or_else(|()| {
+        *note = Some(unchecked(name));
+        None
+    });
+    match key {
         Some(key) if live.matches_key(&key) => Ok(Pending::Nothing),
         Some(_) => Err(ProfileError::RotateRefused(format!(
             "{ACCOUNT_MISMATCH} {name}"

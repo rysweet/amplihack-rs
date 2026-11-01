@@ -6,7 +6,8 @@
 //! `rotate/swap_expect.rs`). Every `.claude.json` is compared against it,
 //! never the other way round. The file is read and written through the
 //! state helpers, so it is atomic, private and never followed through a
-//! symlink. Anything doubtful about it reads as no record, silently.
+//! symlink. Anything doubtful about it reads as no record; only the swap
+//! guard says so, in one line naming the profile.
 
 use super::auto_switch::kit::State;
 use super::name::ProfileName;
@@ -32,11 +33,20 @@ pub fn record(state: &State, name: &ProfileName, account: &Account) -> Result<()
 
 /// The key recorded for `name`, or `None` when there is no usable record.
 pub fn recorded(state: &State, name: &ProfileName) -> Option<String> {
-    let v = state.read_sub_json(SUB, name.as_str()).ok()??;
+    lookup(state, name).ok().flatten()
+}
+
+/// `Ok(None)` without a record, `Ok(Some(key))` for a usable one, and
+/// `Err(())` for a record that exists but cannot be used.
+pub(super) fn lookup(state: &State, name: &ProfileName) -> Result<Option<String>, ()> {
+    let Some(v) = state.read_sub_json(SUB, name.as_str()).map_err(drop)? else {
+        return Ok(None);
+    };
     v.get("account")
         .and_then(serde_json::Value::as_str)
         .filter(|k| safe_account(k))
-        .map(str::to_string)
+        .map(|k| Some(k.to_string()))
+        .ok_or(())
 }
 
 /// `None` without a record; otherwise whether `account` is not the one

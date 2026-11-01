@@ -265,6 +265,37 @@ fn a_damaged_record_is_no_record_and_does_not_refuse() {
     e.assert_finished();
 }
 
+/// Review of PR #1849: a record that exists but cannot be read is still no
+/// record, but the guard warns once, naming the profile and no account. A
+/// missing record stays silent.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_unreadable_record_warns_without_naming_the_account() {
+    use super::swap_expect::{decide, unchecked};
+    let e = env();
+    let from = Source::Profile(n("work"));
+    let mut note = None;
+    decide(&e.store, &e.rs, &e.home, &from, &mut note).unwrap();
+    assert_eq!(note, None, "no record: no warning");
+
+    rec(&e.root, "work", &uuid("u-recorded-other"));
+    private(&expected_dir(&e.root).join("work.json"), "not json");
+    let mut note = None;
+    decide(&e.store, &e.rs, &e.home, &from, &mut note).unwrap();
+    let note = note.expect("an unreadable record warns");
+    assert_eq!(note, unchecked(&n("work")));
+    assert!(note.contains("profile 'work'"), "{note}");
+    assert_no_account(&note);
+
+    private(
+        &expected_dir(&e.root).join("work.json"),
+        &serde_json::json!({ "account": 7 }).to_string(),
+    );
+    let mut note = None;
+    decide(&e.store, &e.rs, &e.home, &from, &mut note).unwrap();
+    assert_eq!(note, Some(unchecked(&n("work"))), "no usable key: warns");
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn a_home_without_an_account_is_not_checked() {

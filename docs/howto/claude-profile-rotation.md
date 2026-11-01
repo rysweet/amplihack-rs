@@ -1700,6 +1700,25 @@ check existed has no record until one of two things happens: its next
 accepted `profile login`, or a swap away from it while the ledger shows the
 outgoing login came from that profile.
 
+A record that exists but cannot be read (not valid JSON, no usable
+`account`, or not a private file) is also treated as no record, so the swap
+is not checked. The rotator then prints one line to stderr, which a
+background rotator appends to `rotate.err`:
+
+```
+warning: the recorded account for profile 'work' could not be read; the swap was not checked against it
+```
+
+Delete the file, as above, to stop the warning; the next accepted
+`profile login work` records the account again.
+
+The comparison is exact. A record written from a login that had an account
+UUID holds that UUID. If `~/.claude.json` later shows the same account by
+email only, with no UUID, the swap is still refused, even though the account
+is the right one. Run plain `claude` and `/login` to that account again, as
+in the steps above, so that `~/.claude.json` names the UUID once more. If
+that is not possible, delete the record instead.
+
 ## Recovery
 
 A swap is two renames and an update to `~/.claude.json`, recorded in a
