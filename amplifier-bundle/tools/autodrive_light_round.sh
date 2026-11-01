@@ -215,7 +215,7 @@ if [ "$REVIEWED" != "$MHEAD" ]; then
     [[ "$v" =~ ^[0-9]{1,6}$ ]] && LIMITS+=("${pair#*:}" "$v")
   done
   ERR="$(mktemp "${TMPDIR:-/tmp}/autodrive-light-measure.XXXXXX")" || none state-unsafe
-  OUT="$(bash "$TOOLS/autodrive_light_eligibility.sh" --repo "$REPO" --base "$MBASE" --head "$REVIEWED" "${LIMITS[@]}" 2>"$ERR")"
+  OUT="$(bash "$TOOLS/autodrive_light_eligibility.sh" --repo "$REPO" --base "$MBASE" --head "$REVIEWED" ${LIMITS[@]+"${LIMITS[@]}"} 2>"$ERR")"
   RC=$?
   FAULT="$(sed -n 's/^AUTODRIVE_LIGHT_ELIGIBILITY=fault reason=\([a-z-]*\)$/\1/p' "$ERR" | head -n 1)"
   rm -f -- "$ERR"
@@ -283,7 +283,8 @@ if [ "$NON_MINOR" != 0 ]; then
   none not-minor-only
 fi
 IDS_JSON="$(printf '%s' "$ROWS" | jq -c 'reduce .[].id as $x ([]; if index([$x]) then . else . + [$x] end)')"
-mapfile -t IDS < <(printf '%s' "$IDS_JSON" | jq -r '.[]')
+IDS=()
+while IFS= read -r l; do IDS+=("$l"); done < <(printf '%s' "$IDS_JSON" | jq -r '.[]')
 
 # --- follow-up issue ---------------------------------------------------------------
 [ -z "$HELPER_MISSING" ] || { echo "ERROR: light round: $HELPER_MISSING is missing from $TOOLS" >&2; none follow-up-failed; }
@@ -355,7 +356,7 @@ fi
 if [ -z "$ISSUE" ]; then
   repo_name || failed pr-repository
   { printf '%s\nMinor review concerns raised by crusty on PR #%s and deferred by the auto-drive-light minor-only rule.\n\n' "$MARK" "$PR"
-    table "${IDS[@]}"; } > "$PRIV/follow-up-body.md" || failed body
+    table ${IDS[@]+"${IDS[@]}"}; } > "$PRIV/follow-up-body.md" || failed body
   LABEL=()
   NAMES="$(gh_call "label list" label list --repo "$GH_REPO_NAME" --limit 500 --json name --jq '.[].name')"
   rc=$?; [ "$rc" -ne 79 ] || exit 79
@@ -363,7 +364,7 @@ if [ -z "$ISSUE" ]; then
     LABEL=(--label follow-up)
   fi
   URL="$(gh_call "issue create" issue create --repo "$GH_REPO_NAME" \
-    --title "Follow-up: minor review concerns from PR #${PR}" --body-file "$PRIV/follow-up-body.md" "${LABEL[@]}")"
+    --title "Follow-up: minor review concerns from PR #${PR}" --body-file "$PRIV/follow-up-body.md" ${LABEL[@]+"${LABEL[@]}"})"
   rc=$?
   [ "$rc" -ne 79 ] || exit 79
   [ "$rc" -eq 0 ] || failed issue-create
@@ -382,15 +383,15 @@ f="$STATE/follow-up-posted-ids"
 # Only lines that are valid ids count; anything else is ignored, so a junk
 # line cannot stop an id from being posted.
 if [ -f "$f" ] && [ ! -L "$f" ]; then
-  mapfile -t POSTED < <(grep -E '^[A-Za-z0-9._-]{1,64}$' -- "$f")
+  while IFS= read -r l; do POSTED+=("$l"); done < <(grep -E '^[A-Za-z0-9._-]{1,64}$' -- "$f")
 fi
 NEW=()
 if [ "$CREATED" = 1 ]; then
-  POSTED+=("${IDS[@]}")
+  POSTED+=(${IDS[@]+"${IDS[@]}"})
 else
-  for id in "${IDS[@]}"; do
+  for id in ${IDS[@]+"${IDS[@]}"}; do
     seen=0
-    for p in "${POSTED[@]}"; do [ "$p" = "$id" ] && { seen=1; break; }; done
+    for p in ${POSTED[@]+"${POSTED[@]}"}; do [ "$p" = "$id" ] && { seen=1; break; }; done
     [ "$seen" = 1 ] || NEW+=("$id")
   done
 fi
@@ -405,7 +406,7 @@ if [ "${#NEW[@]}" -gt 0 ]; then
   POSTED+=("${NEW[@]}")
   echo "INFO: light round: posted ${#NEW[@]} new concern(s) to follow-up issue #${ISSUE}" >&2
 fi
-printf '%s\n' "${POSTED[@]}" | awk 'NF && !seen[$0]++' | write_state follow-up-posted-ids || failed state-write
+printf '%s\n' ${POSTED[@]+"${POSTED[@]}"} | awk 'NF && !seen[$0]++' | write_state follow-up-posted-ids || failed state-write
 
 f="$STATE/follow-up-linked"
 LINKED=""

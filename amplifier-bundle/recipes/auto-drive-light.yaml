@@ -248,7 +248,8 @@ steps:
       amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused before staging; fix the cause, never bypass it (#1528)" >&2; exit 1; }
       git add -A
       amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused after staging; fix the cause, never bypass it (#1528)" >&2; exit 1; }
-      mapfile -d '' FILES < <(git diff --cached --name-only -z --diff-filter=d "$BASE" --)
+      FILES=()
+      while IFS= read -r -d '' f; do FILES+=("$f"); done < <(git diff --cached --name-only -z --diff-filter=d "$BASE" --)
       [ "${#FILES[@]}" -gt 0 ] || { printf 'none'; exit 0; }
       if ! pre-commit run --files "${FILES[@]}" >&2; then
         git add -A
