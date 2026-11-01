@@ -40,6 +40,19 @@
 //! Reuse of a *separate* linked worktree (one that is NOT the caller checkout)
 //! must still succeed (`exit 0`, `created=false`) — we must not over-refuse.
 //!
+//! ## Issue #1762: Gates B and C lead to an alias, not a refusal
+//!
+//! Since #1762, Gates B and C no longer refuse outright. When the bundle's
+//! planner is reachable, step 4 checks the caller's checkout and, if it holds
+//! nothing the task worktree would miss, creates the task worktree on a local
+//! alias `<B>--wt-<n>` tracking origin/<B>. The caller's checkout is still
+//! never used as the task worktree. The Gate B and Gate C cases below set
+//! `AMPLIHACK_HOME` to this worktree so the planner is found; their branch was
+//! never pushed, so the planner stops at its second check: exit 1, no stdout,
+//! no worktree, the caller untouched, and stderr naming origin/<B> and #1762.
+//! Gate A and the other cases keep `AMPLIHACK_HOME` at the fixture. The alias
+//! path itself is covered by `issue_1762_caller_branch_alias_test.rs`.
+//!
 //! Test strategy mirrors `existing_branch_context_test.rs`: parse the recipe
 //! YAML, extract the `step-04-setup-worktree` `command:` block, and drive it as a
 //! `bash -c` subprocess against a real tempdir git repo with a **bare local
@@ -50,7 +63,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use serde_yaml::Value;
 use tempfile::TempDir;
@@ -204,22 +217,13 @@ struct RunResult {
     stderr: String,
 }
 
+/// Every child in this file starts from `isolated(..)` (#1762, D12): a cleared
+/// environment without credentials or `AMPLIHACK_CLAUDE_PROFILE_ROOT`, and a
+/// temp HOME that `base_env` then points at the fixture.
 fn run_bash(script: &str, env: &HashMap<&str, String>, cwd: &Path) -> RunResult {
-    let mut cmd = Command::new("bash");
+    let mut cmd = crate::isolated_amplihack::isolated("bash");
     cmd.arg("-c").arg(script).current_dir(cwd);
-    cmd.env_clear();
-    if let Some(home) = std::env::var_os("HOME") {
-        cmd.env("HOME", home);
-    }
-    let path = env
-        .get("PATH")
-        .cloned()
-        .unwrap_or_else(|| std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()));
-    cmd.env("PATH", path);
     for (k, v) in env {
-        if *k == "PATH" {
-            continue;
-        }
         cmd.env(k, v);
     }
     let out = cmd.output().expect("spawn bash");
@@ -287,37 +291,79 @@ fn assert_refusal(r: &RunResult) {
     );
 }
 
+/// `base_env` with `AMPLIHACK_HOME` at this worktree, so step 4 finds the
+/// #1762 planner and reaches the alias path from Gates B and C.
+fn alias_env(fix: &GitFixture) -> HashMap<&'static str, String> {
+    let mut env = base_env(fix);
+    env.insert(
+        "AMPLIHACK_HOME",
+        workspace_root().to_string_lossy().into_owned(),
+    );
+    env
+}
+
+/// The caller's HEAD and the commit its `branch` points at.
+fn caller_head(fix: &GitFixture, branch: &str) -> (String, String) {
+    let head = git(&fix.repo_path, &["symbolic-ref", "HEAD"]);
+    let tip = git(
+        &fix.repo_path,
+        &["rev-parse", &format!("refs/heads/{branch}")],
+    );
+    (
+        String::from_utf8_lossy(&head.stdout).trim().to_owned(),
+        String::from_utf8_lossy(&tip.stdout).trim().to_owned(),
+    )
+}
+
+/// #1762: the caller is on a branch origin has never seen. The planner stops
+/// at its second check: exit 1, no stdout, no worktree, the caller's HEAD and
+/// branch unchanged, and stderr naming origin/<B> and #1762.
+fn assert_alias_stop(fix: &GitFixture, r: &RunResult, branch: &str, before: &(String, String)) {
+    assert_eq!(
+        r.status, 1,
+        "the caller-branch stop must exit 1; got exit {}\nstdout=\n{}\nstderr=\n{}",
+        r.status, r.stdout, r.stderr
+    );
+    assert!(
+        r.stdout.trim().is_empty(),
+        "a stop must emit ZERO stdout; got stdout=\n{}",
+        r.stdout
+    );
+    assert!(
+        !fix.repo_path.join("worktrees").exists(),
+        "no task worktree may be created when the planner stops"
+    );
+    assert_eq!(
+        &caller_head(fix, branch),
+        before,
+        "the caller's HEAD and branch must not change"
+    );
+    assert!(
+        r.stderr.contains("#1762") && r.stderr.contains(&format!("origin/{branch}")),
+        "the stop must name origin/{branch} and #1762; stderr=\n{}",
+        r.stderr
+    );
+}
+
 // ---------------------------------------------------------------------------
-// Gate C — caller HEAD on the target branch → refuse (HEAD-match vector)
+// Gate C — caller HEAD on the target branch → alias path (HEAD-match vector)
 // ---------------------------------------------------------------------------
 
-/// The caller's own checkout is on the target branch. Reusing it as the task
-/// worktree would let the workflow mutate the operator's tree. Refuse.
+/// The caller's own checkout is on the target branch. It is never used as the
+/// task worktree; with the branch absent from origin, the alias path stops.
 #[test]
 fn gate_c_caller_head_on_target_branch_refused() {
     let fix = GitFixture::new();
     fix.create_local_branch("feat/caller-on-branch");
     fix.checkout("feat/caller-on-branch");
+    let before = caller_head(&fix, "feat/caller-on-branch");
 
     let body = step04_body();
-    let mut env = base_env(&fix);
+    let mut env = alias_env(&fix);
     env.insert("EXISTING_BRANCH", "feat/caller-on-branch".to_owned());
 
     let r = run_bash(&body, &env, &fix.repo_path);
-    assert_refusal(&r);
-
-    // The caller checkout must not have been adopted as a task worktree.
-    assert!(
-        !fix.repo_path.join("worktrees").exists(),
-        "no task worktree should be created under the caller repo on refusal"
-    );
-    // stderr should steer the operator away from running inside their own checkout.
-    let lc = r.stderr.to_lowercase();
-    assert!(
-        lc.contains("caller") || lc.contains("checkout") || lc.contains("worktree"),
-        "refusal must explain the caller-checkout reuse hazard; stderr=\n{}",
-        r.stderr
-    );
+    assert_alias_stop(&fix, &r, "feat/caller-on-branch", &before);
 }
 
 // ---------------------------------------------------------------------------
@@ -325,20 +371,21 @@ fn gate_c_caller_head_on_target_branch_refused() {
 // ---------------------------------------------------------------------------
 
 /// When the caller is on the branch, `git worktree list` resolves the branch's
-/// worktree to REPO_PATH itself. The path-match gate must refuse regardless of
-/// the HEAD gate.
+/// worktree to REPO_PATH itself. The path-match gate leads to the alias path
+/// regardless of the HEAD gate.
 #[test]
 fn gate_b_resolved_worktree_equals_repo_path_refused() {
     let fix = GitFixture::new();
     fix.create_local_branch("feat/path-match");
     fix.checkout("feat/path-match");
+    let before = caller_head(&fix, "feat/path-match");
 
     let body = step04_body();
-    let mut env = base_env(&fix);
+    let mut env = alias_env(&fix);
     env.insert("EXISTING_BRANCH", "feat/path-match".to_owned());
 
     let r = run_bash(&body, &env, &fix.repo_path);
-    assert_refusal(&r);
+    assert_alias_stop(&fix, &r, "feat/path-match", &before);
 }
 
 /// SR-4: a symlinked REPO_PATH must not bypass the path-match gate. Both sides
@@ -348,6 +395,7 @@ fn gate_b_symlinked_repo_path_still_refused() {
     let fix = GitFixture::new();
     fix.create_local_branch("feat/symlink-bypass");
     fix.checkout("feat/symlink-bypass");
+    let before = caller_head(&fix, "feat/symlink-bypass");
 
     // Present REPO_PATH via a symlink pointing at the real on-branch checkout.
     let link_home = TempDir::new().expect("symlink home");
@@ -356,12 +404,12 @@ fn gate_b_symlinked_repo_path_still_refused() {
     std::os::unix::fs::symlink(&fix.repo_path, &link).expect("create symlink");
 
     let body = step04_body();
-    let mut env = base_env(&fix);
+    let mut env = alias_env(&fix);
     env.insert("REPO_PATH", link.to_string_lossy().into_owned());
     env.insert("EXISTING_BRANCH", "feat/symlink-bypass".to_owned());
 
     let r = run_bash(&body, &env, &link);
-    assert_refusal(&r);
+    assert_alias_stop(&fix, &r, "feat/symlink-bypass", &before);
 }
 
 // ---------------------------------------------------------------------------

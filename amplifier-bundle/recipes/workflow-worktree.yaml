@@ -100,8 +100,8 @@ steps:
       # NEW (#342): Existing-branch / PR targeting path. When EXISTING_BRANCH or
       # PR_NUMBER is set, reuse an existing branch instead of deriving a slug from
       # TASK_DESCRIPTION; EXISTING_BRANCH wins on tie (a WARNING goes to stderr).
-      # MIRROR: consensus-workflow.yaml step3-setup-worktree must keep the same
-      # validation gates and resolution algorithm — patch both in one commit.
+      # MIRROR: consensus-issue-worktree.yaml step3-setup-worktree keeps the same gates,
+      # but deliberately still gives the #858 refusal where this step uses an alias (#1762).
       EXISTING_BRANCH="${EXISTING_BRANCH:-}"
       PR_NUMBER="${PR_NUMBER:-}"
 
@@ -156,8 +156,8 @@ steps:
 
         # SECURITY: validate the branch name with the authoritative git ref
         # checker BEFORE using it in any path or git invocation. This rejects
-        # '..', leading '-', shell metachars, and control chars. Re-applied
-        # to gh output so we never trust an upstream API response.
+        # '..', a leading '-' and control characters, but not shell metacharacters,
+        # so the name is always quoted. Re-applied to gh output as well.
         if ! git check-ref-format --branch "$BRANCH_NAME" >/dev/null 2>&1; then
           echo "ERROR: branch name '$BRANCH_NAME' is invalid (git check-ref-format rejection)." >&2
           exit 1
@@ -169,61 +169,65 @@ steps:
         # creates the local remote-tracking ref. Branch name is validated above.
         git fetch origin "+refs/heads/${BRANCH_NAME}:refs/remotes/origin/${BRANCH_NAME}" >&2 2>/dev/null || true
 
-        # Resolve worktree path:
-        #   (a) reuse if a worktree already exists for the branch
-        #   (b) else use REPO_PATH if it is itself checked out on the branch
-        #   (c) else attach a new worktree at MAIN_REPO_PATH/worktrees/<branch> (#1134)
-        WORKTREE_PATH=""
+        # Resolve worktree path: (a) reuse a worktree already on the branch; (b) Gates B/C,
+        # the caller checkout: an alias (#1762); (c) else MAIN_REPO_PATH/worktrees/<branch> (#1134).
+        WORKTREE_PATH=""; LOCAL_BRANCH=""; CALLER_ON_BRANCH=false
         EXISTING_WT="$(git worktree list --porcelain | awk -v b="refs/heads/$BRANCH_NAME" '
           $1=="worktree" { wt=$2 }
           $1=="branch" && $2==b { print wt; exit }
         ')"
+        # #858: the caller checkout is never the task worktree (it may hold another recipe's work).
+        REPO_REAL="$(cd "$REPO_PATH" && pwd -P)"
         if [ -n "$EXISTING_WT" ]; then
-          # #858: never reuse the caller checkout itself as a task worktree — it
-          # may contain unrelated commits or uncommitted files from another recipe.
-          REPO_REAL="$(cd "$REPO_PATH" && pwd -P)"
-          # Gate A (#858): git reports a worktree for the branch but its path is
-          # inaccessible (stale registration leaked by a prior failed run). Refuse
-          # and advise `git worktree prune` rather than emitting a bogus path.
+          # Gate A (#858): the branch's registered worktree path is inaccessible (stale,
+          # leaked by a failed run). Refuse and advise `git worktree prune`; never guess.
           if ! EXISTING_WT_REAL="$(cd "$EXISTING_WT" 2>/dev/null && pwd -P)"; then
             echo "ERROR: git reports an existing worktree for branch '$BRANCH_NAME' at '$EXISTING_WT', but that path is not accessible." >&2
             echo "ERROR: run 'git worktree prune' or remove the stale registration before retrying; refusing to guess a fallback worktree (issue #858)." >&2
             exit 1
           fi
-          if [ "$EXISTING_WT_REAL" = "$REPO_REAL" ]; then
-            echo "ERROR: existing branch '$BRANCH_NAME' is checked out in the caller repository — refusing to use the caller checkout as a recipe task worktree (issue #858)." >&2
-            echo "ERROR: run the recipe from a clean base checkout or detach/switch the caller checkout before targeting this branch." >&2
-            exit 1
-          fi
-          WORKTREE_PATH="$EXISTING_WT"
-          echo "INFO: Reusing existing worktree at '$WORKTREE_PATH'." >&2
+          # Gate B: the branch's worktree is the caller checkout. Any other is reused.
+          [ "$EXISTING_WT_REAL" != "$REPO_REAL" ] || CALLER_ON_BRANCH=true
+          [ "$CALLER_ON_BRANCH" = true ] || { WORKTREE_PATH="$EXISTING_WT"; echo "INFO: Reusing existing worktree at '$WORKTREE_PATH'." >&2; }
+        elif [ "$(git symbolic-ref --short HEAD 2>/dev/null || true)" = "$BRANCH_NAME" ]; then
+          CALLER_ON_BRANCH=true  # Gate C: the caller checkout's HEAD is the branch.
         else
-          HEAD_BRANCH="$(git symbolic-ref --short HEAD 2>/dev/null || true)"
-          if [ "$HEAD_BRANCH" = "$BRANCH_NAME" ]; then
-            # #858: the caller checkout is sitting on the target branch. Do NOT reuse
-            # it as the task worktree; fail closed so salvage is safe.
+          WORKTREE_PATH="${MAIN_REPO_PATH}/worktrees/${BRANCH_NAME}"
+          if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
+            wt_add_idempotent attach "$WORKTREE_PATH" "$BRANCH_NAME"
+          elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+            wt_add_idempotent track "$WORKTREE_PATH" "$BRANCH_NAME" "origin/$BRANCH_NAME"
+          else
+            echo "ERROR: branch '$BRANCH_NAME' not found locally or on origin." >&2
+            exit 1
+          fi
+        fi
+        # Gates B/C (#1762): the planner checks the caller holds nothing the task worktree
+        # would miss and picks <branch>--wt-<n>. Default branch or no planner: #858 refusal.
+        if [ "$CALLER_ON_BRANCH" = true ]; then
+          ALIAS_HELPER="$TOOLS_DIR/workflow_caller_branch_alias.sh"; ALIAS_RC=0
+          if [ -f "$ALIAS_HELPER" ]; then LOCAL_BRANCH="$(bash "$ALIAS_HELPER" "$REPO_REAL" "$MAIN_REPO_PATH" "$BRANCH_NAME")" || ALIAS_RC=$?
+          else echo "WARNING: $ALIAS_HELPER not found; cannot create an alias worktree for '$BRANCH_NAME' (issue #1762)." >&2; ALIAS_RC=3; fi
+          if [ "$ALIAS_RC" -eq 3 ]; then
             echo "ERROR: existing branch '$BRANCH_NAME' is checked out in the caller repository — refusing to use the caller checkout as a recipe task worktree (issue #858)." >&2
             echo "ERROR: run the recipe from a clean base checkout or detach/switch the caller checkout before targeting this branch." >&2
             exit 1
-          else
-            WORKTREE_PATH="${MAIN_REPO_PATH}/worktrees/${BRANCH_NAME}"
-            if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
-              wt_add_idempotent attach "$WORKTREE_PATH" "$BRANCH_NAME"
-            elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
-              wt_add_idempotent track "$WORKTREE_PATH" "$BRANCH_NAME" "origin/$BRANCH_NAME"
-            else
-              echo "ERROR: branch '$BRANCH_NAME' not found locally or on origin." >&2
-              exit 1
-            fi
           fi
+          [ "$ALIAS_RC" -eq 0 ] && [ "${LOCAL_BRANCH#"$BRANCH_NAME--wt-"}" != "$LOCAL_BRANCH" ] && git check-ref-format --branch "$LOCAL_BRANCH" >/dev/null 2>&1 \
+            || { echo "ERROR: cannot set up an alias worktree for '$BRANCH_NAME' (planner exit $ALIAS_RC; issue #1762)." >&2; exit 1; }
+          WORKTREE_PATH="${MAIN_REPO_PATH}/worktrees/${LOCAL_BRANCH}"
+          # Reuse (workflow_alias_reuse.sh): only an alias checked out at its path (else another run is creating it), clean, with nothing unpushed, then fast-forwarded to origin/<B>. A create is `worktree add -b`, so a concurrent create fails and removes nothing (#1762).
+          if git show-ref --verify --quiet "refs/heads/$LOCAL_BRANCH"; then bash "$TOOLS_DIR/workflow_alias_reuse.sh" "$WORKTREE_PATH" "$LOCAL_BRANCH" "$BRANCH_NAME" || { [ -f "$TOOLS_DIR/workflow_alias_reuse.sh" ] || echo "ERROR: $TOOLS_DIR/workflow_alias_reuse.sh not found; cannot check alias '$LOCAL_BRANCH' before reusing it (issue #1762)." >&2; exit 1; }
+          elif [ -f "$ROOT_HELPER" ] && ! bash "$ROOT_HELPER" assert-not-nested "$WORKTREE_PATH" "$MAIN_REPO_PATH"; then exit 1
+          else git worktree add --track -b "$LOCAL_BRANCH" -- "$WORKTREE_PATH" "origin/$BRANCH_NAME" >&2; fi
         fi
 
         # `created=false`: the branch pre-existed (its worktree may still be new).
         CREATED=false
 
-        # Push/upstream best-effort (idempotent on existing PR branches).
-        git -C "$WORKTREE_PATH" push origin "$BRANCH_NAME" > /dev/null 2>&1 || true
-        git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/${BRANCH_NAME}" "$BRANCH_NAME" > /dev/null 2>&1 || true
+        # Push/upstream best-effort (idempotent on existing PR branches); never for an alias.
+        [ -n "$LOCAL_BRANCH" ] || git -C "$WORKTREE_PATH" push origin "$BRANCH_NAME" > /dev/null 2>&1 || true
+        [ -n "$LOCAL_BRANCH" ] || git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/${BRANCH_NAME}" "$BRANCH_NAME" > /dev/null 2>&1 || true
 
         echo "" >&2
         echo "=== Worktree Setup Complete (existing-branch path) ===" >&2
@@ -233,8 +237,9 @@ steps:
         # Consumers accept worktree_setup.worktree_path only as an already-resolved
         # worktree root (#1561 V4), so emit the physical path.
         WORKTREE_PATH="$(cd -P -- "$WORKTREE_PATH" && pwd -P)" || { echo "ERROR: cannot resolve the worktree path to a physical directory (#1561)" >&2; exit 1; }
-        printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "", "base_branch": "", "created": %s}\n' \
-          "$(json_escape "$WORKTREE_PATH")" "$(json_escape "$BRANCH_NAME")" "$CREATED"
+        LB_JSON=""; [ -z "$LOCAL_BRANCH" ] || LB_JSON=", \"local_branch_reason\": \"branch_name is checked out in the caller repository (issue #1762)\", \"local_branch\": \"$(json_escape "$LOCAL_BRANCH")\""  # the runner drops a passing step's stderr, so the reason is in the output too
+        printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "", "base_branch": "", "created": %s%s}\n' \
+          "$(json_escape "$WORKTREE_PATH")" "$(json_escape "$BRANCH_NAME")" "$CREATED" "$LB_JSON"
         exit 0
       fi
 
