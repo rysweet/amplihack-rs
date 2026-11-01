@@ -99,7 +99,7 @@ AUTODRIVE_RECIPES=(
   autodrive-crusty-loop autodrive-merge-evidence autodrive-merge-round
   autodrive-merge-loop
 )
-AUTODRIVE_TOOLS=(autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
+AUTODRIVE_TOOLS=(autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_escalate.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
   autodrive_platform_facts.sh autodrive_pr_head.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh
   autodrive_trust.sh autodrive_unmerged.sh autodrive_worktree_guard.sh)
 # merge-round step-00-tools-dir finds the tools once and every later step of
@@ -278,6 +278,7 @@ STUB
 chmod +x "${STUB_BIN}/amplihack"
 
 LOOP="${TOOLS}/autodrive_loop.sh"
+ESCALATE="${TOOLS}/autodrive_escalate.sh" # escalate and the usage-limit check (#1801)
 GATE="${TOOLS}/autodrive_merge_gate.sh"
 
 # The stub reads its knobs from the ENVIRONMENT, so they must be exported —
@@ -722,7 +723,7 @@ done
 # would resolve "launch-side" recipes from that tree. It must refuse before a
 # single round runs.
 mkdir -p "${TAMPERED}/amplifier-bundle/tools"
-for t in autodrive_loop.sh autodrive_state.sh autodrive_worktree_guard.sh; do
+for t in autodrive_loop.sh autodrive_state.sh autodrive_escalate.sh autodrive_worktree_guard.sh; do
   cp "$(dirname "${LOOP}")/${t}" "${TAMPERED}/amplifier-bundle/tools/${t}"
 done
 LOOP_DIR="${WORK}/loop-inside"; mkdir -p "${LOOP_DIR}"
@@ -790,6 +791,7 @@ cat > "${BR_HOOK}" <<'HOOK'
 #!/usr/bin/env bash
 echo "before $* depth=${AMPLIHACK_SESSION_DEPTH:-unset}" >> "${STUB_CALLS:-/dev/null}"
 echo "the before-round step's own stderr" >&2
+[ -z "${BR_STDERR:-}" ] || printf '%s\n' "$BR_STDERR" >&2
 printf '{"before_round_result":"%s"}\n' "${BR_RESULT:-hook-ran}"
 exit "${BR_RC:-0}"
 HOOK
@@ -862,6 +864,242 @@ if [ "$rc" -eq 2 ] && grep -qF -- "--before-round '${WORK}/no-such-hook.sh' is n
 else
   fail "BEFORE-not-a-file" "rc=${rc} err=$(tr '\n' ' ' < "${LOOP_LOGS}/err")"
 fi
+
+# ---------------------------------------------------------------------------
+# 3d. A usage limit is not STUCK (issue #1801).
+# ---------------------------------------------------------------------------
+# The marker is what the recipe runner writes for a step it classified. Only
+# that line, on a non-zero exit, stops the loop as USAGE_LIMIT.
+UL_MARKER='amplihack.recipe.failure_class {"schema_version":1,"issue":1267,"class":"usage_limit","signal":"usage limit","action":"abort","attempt":1,"retryable":false}'
+UL_NOT_PROGRESS='This is a judgement about absence of progress'
+UL_USAGE_LINE='This is a usage limit, not a judgement about progress. Run again when a login has capacity.'
+
+ul_expect() { # ul_expect <label> <rc> <reason> <evaluator-calls> <why>
+  local bad="" evals
+  evals="$(grep -c '^loop-health-evaluator$' "${LOOP_LOGS}/calls" 2>/dev/null || true)"
+  [ "$UL_RC" = "$2" ] || bad="${bad} rc=${UL_RC}(want $2)"
+  printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"USAGE_LIMIT"' || bad="${bad} no-USAGE_LIMIT-result"
+  grep -qF "  Reason: $3" "${LOOP_LOGS}/err" || bad="${bad} wrong-reason"
+  grep -qF "${UL_USAGE_LINE}" "${LOOP_LOGS}/err" || bad="${bad} no-usage-limit-line"
+  ! grep -qF "${UL_NOT_PROGRESS}" "${LOOP_LOGS}/err" || bad="${bad} says-absence-of-progress"
+  ! grep -qF 'AUTO_DRIVE_LOOP: STUCK' "${LOOP_LOGS}/err" || bad="${bad} says-STUCK"
+  [ "${evals:-0}" = "$4" ] || bad="${bad} evaluator-calls=${evals:-0}(want $4)"
+  if [ -z "$bad" ]; then pass "$1" "$5"; else fail "$1" "${5} --${bad} out=${LOOP_OUT} err=$(tail -n 5 "${LOOP_LOGS}/err" | tr '\n' ' ')"; fi
+}
+
+set_stub '{"crusty_verdict":"CONCERNS"}' 1 "${UL_MARKER}"
+run_loop ul-evaluator; UL_RC=$?
+ul_expect "1801-evaluator-usage-limit" 1 \
+  "the loop-health evaluator failed on a Claude usage limit that no login lifted" 1 \
+  "AC2: an evaluator that failed on a limit stops the loop as USAGE_LIMIT, not STUCK"
+
+set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${H_DONE}" 1
+export STUB_ROUND_STDOUT="${UL_MARKER}"
+run_loop ul-round; UL_RC=$?
+ul_expect "1801-round-usage-limit" 1 \
+  "round round-1 failed on a Claude usage limit that no login lifted; it is not passed to the evaluator" 0 \
+  "AC16: a round that failed on a limit escalates without running the evaluator"
+
+set_stub '{"crusty_verdict":"CLEAN"}' 0 "${H_DONE}"
+export BR_RC=1 BR_RESULT=crusty-rereview-not-done BR_STDERR="${UL_MARKER}"
+run_loop_before ul-before; UL_RC=$?
+unset BR_RC BR_RESULT BR_STDERR
+ul_expect "1801-before-usage-limit" 1 \
+  "the before-round step failed on a Claude usage limit that no login lifted" 0 \
+  "a before-round step that failed on a limit stops the loop, and the round never runs"
+if ! grep -q 'autodrive-crusty-round' "${LOOP_LOGS}/calls" 2>/dev/null; then
+  pass "1801-before-no-round" "no round ran after the before-round limit"
+else
+  fail "1801-before-no-round" "calls: $(tr '\n' '|' < "${LOOP_LOGS}/calls")"
+fi
+
+# AC17: text in a log is not the runner's marker.
+ul_not_limit() { # ul_not_limit <label> <log-text> <why>
+  set_stub '{"crusty_verdict":"CONCERNS"}' 1 "$2"
+  run_loop "$1"; UL_RC=$?
+  if [ "$UL_RC" -eq 1 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"STUCK"' \
+     && ! printf '%s' "${LOOP_OUT}" | grep -qF 'USAGE_LIMIT'; then
+    pass "$1" "$3"
+  else
+    fail "$1" "${3} -- rc=${UL_RC} out=${LOOP_OUT}"
+  fi
+}
+ul_not_limit "1801-agent-echo" "[12:00:00] [amplihack:agent] ${UL_MARKER}" \
+  "AC17: an agent line that quotes the marker is not a usage limit"
+ul_not_limit "1801-summary-echo" "Recipe: loop-health-evaluator"$'\n'"Status: failed"$'\n'"${UL_MARKER}" \
+  "AC17: the marker below the run summary is not a usage limit"
+ul_not_limit "1801-indented-echo" "    Output: ${UL_MARKER}" \
+  "AC17: a step output quoting the marker is not anchored at the line start"
+ul_not_limit "1801-prose" "Claude said: you've hit your usage limit, class usage_limit" \
+  "AC17: a model that mentions a usage limit is not a usage limit"
+ul_not_limit "1801-other-class" 'amplihack.recipe.failure_class {"class":"work","signal":"usage_limit"}' \
+  "AC17: another class that mentions usage_limit is not a usage limit"
+
+set_stub '{"crusty_verdict":"CLEAN"}' 0 "${UL_MARKER}"$'\n'"${H_DONE}"
+run_loop ul-rc-zero; UL_RC=$?
+if [ "$UL_RC" -eq 0 ] && ! printf '%s' "${LOOP_OUT}" | grep -qF 'USAGE_LIMIT'; then
+  pass "1801-exit-zero" "the marker on exit 0 is not a usage limit: rc must be non-zero"
+else
+  fail "1801-exit-zero" "rc=${UL_RC} out=${LOOP_OUT}"
+fi
+
+# G2: the evaluator's agent hit the limit, the nested supervisor waited and
+# ran step-02 again, and the retry returned a verdict. The run exits 0 and its
+# log holds only wait lines, never a failure_class marker. The loop must read
+# the verdict as it would any other.
+UL_WAIT='amplihack.recipe.usage_limit_wait'
+UL_RETRIED="${UL_WAIT} start reason=usage_limit wait=capacity harness=claude reset=none until=2026-10-18 14:00:00 -07:00 bound=max_wait
+${UL_WAIT} end reason=rotator capacity
+${UL_WAIT} resume attempt=2
+${S01}
+${S02}
+${S03}
+${H_DONE}"
+set_stub '{"crusty_verdict":"CLEAN"}' 0 "${UL_RETRIED}"
+run_loop ul-retry-verdict; UL_RC=$?
+UL_EVALS="$(grep -c '^loop-health-evaluator$' "${LOOP_LOGS}/calls" 2>/dev/null || true)"
+if [ "$UL_RC" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"DONE"' \
+   && ! printf '%s' "${LOOP_OUT}" | grep -qF 'USAGE_LIMIT' \
+   && ! grep -qF 'AUTO_DRIVE_LOOP: STUCK' "${LOOP_LOGS}/err" \
+   && [ "${UL_EVALS:-0}" = "1" ]; then
+  pass "1801-evaluator-retry-verdict" "AC2: an evaluator retried inside step-02 gives its verdict, not STUCK or USAGE_LIMIT"
+else
+  fail "1801-evaluator-retry-verdict" "rc=${UL_RC} evals=${UL_EVALS:-0} out=${LOOP_OUT} err=$(tail -n 5 "${LOOP_LOGS}/err" | tr '\n' ' ')"
+fi
+
+# A wait that expired writes wait lines; with no failure_class marker they
+# are not a usage limit (V5). The step's own failure is judged as before.
+ul_not_limit "1801-wait-lines-only" "${UL_WAIT} start reason=usage_limit wait=capacity harness=claude reset=none until=2026-10-18 08:02:00 -07:00 bound=max_wait
+${UL_WAIT} end reason=capacity expired
+${UL_WAIT} failed reason=capacity_expired: usage limit not lifted" \
+  "V5: wait lines without the runner's marker are not a usage limit"
+
+# The runner writes the marker with serde_json's default map, so its keys are
+# in alphabetical order (docs/reference/auto-drive-to-merge.md). A class
+# nested in evidence sorts after the top-level one and must not count (V6).
+UL_RUNNER_MARKER='amplihack.recipe.failure_class {"action":"abort","attempt":1,"class":"usage_limit","issue":1267,"retryable":false,"schema_version":1,"signal":"usage limit"}'
+UL_NESTED_MARKER='amplihack.recipe.failure_class {"action":"abort","attempt":1,"class":"work","evidence":{"class":"usage_limit"},"issue":1267,"retryable":false,"schema_version":1,"signal":"step failed"}'
+
+set_stub '{"crusty_verdict":"CONCERNS"}' 1 "${UL_RUNNER_MARKER}"
+run_loop ul-runner-order; UL_RC=$?
+ul_expect "1801-runner-key-order" 1 \
+  "the loop-health evaluator failed on a Claude usage limit that no login lifted" 1 \
+  "the marker in the runner's own key order is a usage limit"
+
+ul_not_limit "1801-nested-class" "${UL_NESTED_MARKER}" \
+  "V6: a usage_limit class nested below the top level is not a usage limit"
+
+# The same two markers through usage_limit_failure with and without jq on
+# PATH: the jq check and the anchored fallback must agree. Helpers the check
+# calls must be named log_body or usage_limit_* so they are extracted here.
+UL_FUNCS="$(sed -n '/^log_body() {/,/^}/p; /^_\{0,1\}usage_limit[a-z_]*() {/,/^}/p' "${ESCALATE}")"
+UL_NOJQ_BIN="${WORK}/ul-nojq-bin"
+mkdir -p "${UL_NOJQ_BIN}"
+for UL_TOOL in awk grep sed cat tr head; do
+  UL_PATH_TOOL="$(command -v "${UL_TOOL}")" && ln -sf "${UL_PATH_TOOL}" "${UL_NOJQ_BIN}/${UL_TOOL}"
+done
+UL_JQ_BIN="${WORK}/ul-jq-bin"
+mkdir -p "${UL_JQ_BIN}"
+cp -P "${UL_NOJQ_BIN}"/* "${UL_JQ_BIN}/"
+if command -v jq >/dev/null 2>&1; then ln -sf "$(command -v jq)" "${UL_JQ_BIN}/jq"; fi
+ul_check() { # ul_check <bin-dir> <rc> <log-text>: usage_limit_failure's answer, 0 or 1
+  local log="${WORK}/ul-check.log"
+  printf '%s\n' "$3" > "${log}"
+  env -i PATH="$1" "$(command -v bash)" -c "${UL_FUNCS}"$'\n''usage_limit_failure "$1" "$2"' _ "$2" "${log}" >/dev/null 2>&1
+}
+for UL_MODE in jq nojq; do
+  if [ "${UL_MODE}" = jq ]; then UL_BIN="${UL_JQ_BIN}"; else UL_BIN="${UL_NOJQ_BIN}"; fi
+  if [ "${UL_MODE}" = jq ] && [ ! -e "${UL_BIN}/jq" ]; then
+    pass "1801-check-${UL_MODE}" "jq is not installed; the jq case is covered by the fallback"
+    continue
+  fi
+  UL_BAD=""
+  ul_check "${UL_BIN}" 1 "${UL_RUNNER_MARKER}" || UL_BAD="${UL_BAD} runner-order-missed"
+  # Only jq reads a marker whatever its key order; the fallback is anchored
+  # to the runner's alphabetical order.
+  if [ "${UL_MODE}" = jq ]; then
+    ul_check "${UL_BIN}" 1 "${UL_MARKER}" || UL_BAD="${UL_BAD} schema-order-missed"
+  fi
+  ! ul_check "${UL_BIN}" 1 "${UL_NESTED_MARKER}" || UL_BAD="${UL_BAD} nested-class-matched"
+  ! ul_check "${UL_BIN}" 0 "${UL_RUNNER_MARKER}" || UL_BAD="${UL_BAD} exit-zero-matched"
+  ! ul_check "${UL_BIN}" 1 " ${UL_RUNNER_MARKER}" || UL_BAD="${UL_BAD} indented-matched"
+  ! ul_check "${UL_BIN}" 1 "amplihack.recipe.failure_class {\"action\":\"abort\",\"attempt\":1,\"class\":\"usage_limit_other\"}" \
+    || UL_BAD="${UL_BAD} longer-class-matched"
+  if [ "${UL_MODE}" = jq ]; then
+    ! ul_check "${UL_BIN}" 1 'amplihack.recipe.failure_class {"class":"work","evidence":"\"class\":\"usage_limit\""}' \
+      || UL_BAD="${UL_BAD} class-in-string-matched"
+  fi
+  if [ -z "${UL_BAD}" ]; then
+    pass "1801-check-${UL_MODE}" "usage_limit_failure matches only a top-level usage_limit class (${UL_MODE})"
+  else
+    fail "1801-check-${UL_MODE}" "usage_limit_failure (${UL_MODE}):${UL_BAD}"
+  fi
+done
+
+# D4: the USAGE_LIMIT record is valid JSON whatever the round label holds.
+ul_escalate_label() { env -i PATH="/usr/bin:/bin" bash -c "LOOP_NAME=crusty ROUND_LABEL='$1' RECORD=/r.json; ${UL_FUNC}"$'\n''escalate USAGE_LIMIT "fixed reason" usage_limit' 2>/dev/null; }
+UL_FUNC="$(sed -n '/^escalate() {/,/^}/p' "${ESCALATE}")"
+UL_JSON="$(ul_escalate_label 'r\1"x' | tail -n 1)"
+if command -v jq >/dev/null 2>&1; then
+  if printf '%s' "${UL_JSON}" | jq -e '.loop_result == "USAGE_LIMIT" and .round_label == "r\\1\"x"' >/dev/null 2>&1; then
+    pass "1801-escalate-escaped" "D4: the USAGE_LIMIT record escapes backslashes and quotes"
+  else
+    fail "1801-escalate-escaped" "not valid JSON or wrong fields: ${UL_JSON}"
+  fi
+else
+  pass "1801-escalate-escaped" "jq is not installed; JSON escaping not checked here"
+fi
+
+set_stub '{"crusty_verdict":"CONCERNS"}' 79 "${UL_MARKER}"
+run_loop ul-refusal-first; UL_RC=$?
+if [ "$UL_RC" -eq 79 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"TERMINAL_POLICY_REFUSAL"'; then
+  pass "1801-refusal-first" "a policy refusal is checked first and still exits 79"
+else
+  fail "1801-refusal-first" "rc=${UL_RC} out=${LOOP_OUT}"
+fi
+
+# Two-argument escalate is byte-identical; only the third argument changes it.
+UL_FUNC="$(sed -n '/^escalate() {/,/^}/p' "${ESCALATE}")"
+ul_escalate() { env -i PATH="/usr/bin:/bin" bash -c "LOOP_NAME=crusty ROUND_LABEL=round-1 RECORD=/r.json; ${UL_FUNC}"$'\n''escalate "$@"' _ "$@" 2>&1; }
+UL_GOT="$(ul_escalate STUCK 'it did not move')"
+UL_WANT="AUTO_DRIVE_LOOP: STUCK — loop 'crusty' stops at round label 'round-1'.
+  Reason: it did not move
+  Round record: /r.json
+  This is a judgement about absence of progress, not an attempt count.
+{\"loop\":\"crusty\",\"loop_result\":\"STUCK\",\"round_label\":\"round-1\",\"reason\":\"it did not move\"}"
+if [ "${UL_GOT}" = "${UL_WANT}" ]; then
+  pass "1801-escalate-two-args" "two-argument escalate output is byte for byte what it was"
+else
+  fail "1801-escalate-two-args" "got: ${UL_GOT}"
+fi
+
+# AC18: no reader maps USAGE_LIMIT to success or STUCK.
+# The merge gate has no such arm: GATE-usage-limit-no-marker runs it.
+for UL_READER in "${TOOLS}/autodrive_crusty_rereview.sh" \
+    "$(dirname "${TOOLS}")/recipes/auto-drive-to-merge.yaml"; do
+  if grep -qF 'USAGE_LIMIT' "${UL_READER}"; then
+    pass "1801-reader-${UL_READER##*/}" "the reader has an explicit USAGE_LIMIT failure arm"
+  else
+    fail "1801-reader-${UL_READER##*/}" "${UL_READER##*/} does not name USAGE_LIMIT"
+  fi
+done
+
+# workflow_hook_repair.sh is sourced on its own, so it keeps its own copy of
+# log_body's filter. The copies must not drift: a line one reader drops would
+# be a marker to the other.
+ul_filter() { # ul_filter <script> <function>: the function's awk and grep -v
+  sed -n "/^$2() {/,/^}/p" "$1" | grep -oE "awk '[^']*'|grep -vE '[^']*'"
+}
+UL_BODY="$(ul_filter "${ESCALATE}" log_body)"
+for UL_COPY in hook_repair_terminal_refusal hook_repair_usage_limit_failure; do
+  if [ "$(printf '%s\n' "${UL_BODY}" | wc -l)" -eq 2 ] \
+     && [ "$(ul_filter "${TOOLS}/workflow_hook_repair.sh" "${UL_COPY}")" = "${UL_BODY}" ]; then
+    pass "1801-filter-${UL_COPY}" "${UL_COPY} uses the same filter as log_body"
+  else
+    fail "1801-filter-${UL_COPY}" "${UL_COPY} has drifted from log_body in autodrive_escalate.sh"
+  fi
+done
+export STUB_ROUND_STDOUT="round ran"
 
 # ---------------------------------------------------------------------------
 # 3c. A round log that QUOTES the guard's refusal is not a refusal.
@@ -1110,7 +1348,7 @@ loop_writes_round() { # loop_writes_round <dir> <label> <record-text>: what auto
   printf '%s\t%s\t%s\n' "$2" "${f}" "$(git hash-object --no-filters --stdin < "$1/${f}")" >> "$1/crusty-records.tsv"
   chmod 0644 "$1/${f}" "$1/crusty-latest.json"; chmod 0600 "$1/crusty-records.tsv"
 }
-seed_crusty() { # seed_crusty <dir> <clean|concerns|none|legacy-clean>
+seed_crusty() { # seed_crusty <dir> <clean|concerns|none|legacy-clean|usage-limit>
   mkdir -p "$1"; chmod 0755 "$1"
   case "$2" in
     clean|concerns)
@@ -1122,6 +1360,9 @@ seed_crusty() { # seed_crusty <dir> <clean|concerns|none|legacy-clean>
       printf 'crusty-loop\t2026-10-03T00:00:00Z\n' > "$1/phases.tsv"
       printf '{"crusty_verdict":"CLEAN","concerns":[],"summary":"no outstanding concerns"}' > "$1/crusty-latest.json"
       chmod 0644 "$1/phases.tsv" "$1/crusty-latest.json"
+      ;;
+    usage-limit) # a loop that stopped USAGE_LIMIT after a clean round: no marker
+      loop_writes_round "$1" round-1 "$(crusty_record CLEAN "$CR_SHA")"
       ;;
     none) : ;;
   esac
@@ -1190,7 +1431,7 @@ crusty_mutate() { # crusty_mutate <dir> <mutation>: what an agent, or a broken l
 }
 
 # Knobs (exported or set inline by the caller, all optional):
-#   GATE_CRUSTY       clean | concerns | none | legacy-clean   crusty state seeded in --state-dir (default clean)
+#   GATE_CRUSTY       clean | concerns | none | legacy-clean | usage-limit   crusty state seeded in --state-dir (default clean)
 #   GATE_CRUSTY_MUT   a crusty_mutate mutation applied after seeding
 #   GATE_STATE_ARG    given | none | empty      how --state-dir is passed (default given). For
 #                                               none/empty, CLEAN crusty state is planted in the
@@ -1681,6 +1922,8 @@ GATE_SCRIPT="${GATE_LONE_G}/autodrive_merge_gate.sh" gate_blocks "GATE-gadugi-ru
 
 GATE_CRUSTY=none gate_blocks "GATE-crusty-absent" "crusty" \
   "no crusty-loop marker in the state dir never merges" --qa-evidence "$QA"
+GATE_CRUSTY=usage-limit gate_blocks "GATE-usage-limit-no-marker" "crusty-loop phase is not recorded" \
+  "a loop that ended USAGE_LIMIT writes no marker, so even a clean last round never merges" --qa-evidence "$QA"
 GATE_CRUSTY=concerns gate_blocks "GATE-crusty-concerns" "crusty" \
   "a crusty loop that did not end CLEAN never merges" --qa-evidence "$QA"
 GATE_STATE_ARG=none gate_blocks "GATE-crusty-no-state-dir" "crusty" \
@@ -4487,6 +4730,18 @@ loop-health-evaluator 2" ]; then
     pass "RRTOOL-refused-no-evaluator" "no evaluator runs after the refusal"
   else
     fail "RRTOOL-refused-no-evaluator" "calls: $(tr '\n' '|' < "${RRT_LOGS}/calls")"
+  fi
+
+  # Issue #1801, AC18: a usage limit in the re-review.
+  rrt_run clean "${FX}" STUB_ROUND_RECORD="$(crusty_record CONCERNS "${FX_CODE}")" STUB_HEALTH_RC=1 \
+    STUB_HEALTH_STDOUT='amplihack.recipe.failure_class {"class":"usage_limit"}'
+  rrt_expect "RRTOOL-usage-limit" 1 crusty-rereview-not-done crusty-unreviewed-commits 1 absent \
+    "a re-review stopped by a usage limit exits 1 and leaves the marker absent, as any other failure"
+  if [ "$(printf '%s' "${RRT_OUT}" | jq -r .crusty_loop_result 2>/dev/null)" = "USAGE_LIMIT" ] \
+     && grep -qiF 'usage limit' "${RRT_LOGS}/err"; then
+    pass "RRTOOL-usage-limit-named" "USAGE_LIMIT is named in the result and said on stderr"
+  else
+    fail "RRTOOL-usage-limit-named" "out=${RRT_OUT}"
   fi
 
   fx_head "${FX_MERGE}"; rrt_run clean "${FX}" STUB_HEALTH_STDOUT="${H_DONE}"

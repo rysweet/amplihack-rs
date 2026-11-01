@@ -1,11 +1,14 @@
 //! Whether a usage limit can be waited out, and the wait's deadline (issue
-//! #1618). A wait needs the harness's own limit message with a reset at most
-//! five hours away; anything else is skipped, because no amount of waiting
-//! is known to help. The deadline is the earliest row of the deadline table
-//! that applies, a tie named by the earlier row. All arithmetic saturates,
-//! and the result always lies in `now ..= now + 5 h + 120 s`.
+//! #1618). A reset wait needs the harness's own limit message with a reset
+//! at most five hours away. A far or unreadable reset is skipped, because no
+//! amount of waiting is known to help, unless another login could take over:
+//! [`upgrade`] then makes it a capacity wait (issue #1801). The deadline is
+//! the earliest row of the deadline table that applies, a tie named by the
+//! earlier row. All arithmetic saturates. A reset wait's deadline always lies
+//! in `now ..= now + 5 h + 120 s`; a capacity wait has no five-hour ceiling
+//! and also ends at the failed login's own reset plus the margin.
 
-use crate::commands::recipe::run::limit_patterns::{self, Harness};
+use crate::commands::recipe::run::limit_patterns::{Harness, LimitMessage};
 
 /// Added to a reset still in the future.
 pub(crate) const MARGIN: i64 = 120;
@@ -13,6 +16,8 @@ pub(crate) const MARGIN: i64 = 120;
 pub(crate) const FIVE_HOURS: i64 = 5 * 3600;
 /// The wait ends this long before the step timeout.
 pub(crate) const STEP_TIMEOUT_LEAD: i64 = 60;
+/// A capacity wait's length when nothing sets one: the schema's default.
+pub(crate) const CAPACITY_DEFAULT_MAX: u64 = 21_600;
 
 /// Why a usage limit is not waited out.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,16 +46,24 @@ impl NoWait {
     }
 }
 
-/// What a usage-limited attempt allows: a wait for `reset`, or none.
+/// What a usage-limited attempt allows: a wait for `reset`, a wait for
+/// another login with capacity (issue #1801), or none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WaitFor {
-    Reset { harness: Harness, reset: i64 },
+    Reset {
+        harness: Harness,
+        reset: i64,
+    },
+    Capacity {
+        harness: Harness,
+        reset: Option<i64>,
+    },
     Skip(NoWait),
 }
 
-/// Reads the attempt's stderr tail and stdout tail at `now`.
-pub(crate) fn wait_for(stderr: &[u8], stdout: &[u8], now: i64) -> WaitFor {
-    let Some(m) = limit_patterns::limit_message(stderr, stdout, now) else {
+/// What the attempt's parsed limit message allows at `now`.
+pub(crate) fn wait_for_message(message: Option<LimitMessage>, now: i64) -> WaitFor {
+    let Some(m) = message else {
         return WaitFor::Skip(NoWait::NoLimitMessage);
     };
     // A spend-limit line that also says when the session or weekly limit
@@ -77,6 +90,26 @@ pub(crate) fn from_reading(harness: Harness, reset: i64, now: i64) -> WaitFor {
     }
 }
 
+/// `w`, made a capacity wait when it is a far or unreadable reset and another
+/// login could take over. `seen` is the limit as read; `None` for a spend
+/// limit, which another login of the same organisation would not lift.
+/// `takeover` reads the profile store, so it runs only for a limit that
+/// qualifies.
+pub(crate) fn upgrade(
+    w: WaitFor,
+    seen: Option<(Harness, Option<i64>)>,
+    takeover: impl Fn() -> bool,
+) -> WaitFor {
+    match (w, seen) {
+        (WaitFor::Skip(NoWait::ResetTooFar | NoWait::NoReset), Some((harness, reset)))
+            if takeover() =>
+        {
+            WaitFor::Capacity { harness, reset }
+        }
+        _ => w,
+    }
+}
+
 /// Which row set the deadline.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Bound {
@@ -95,16 +128,26 @@ impl Bound {
     }
 }
 
+/// What a wait waits for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PlanKind {
+    /// The limit's own reset, or a login change.
+    Reset,
+    /// Any login with capacity (issue #1801).
+    Capacity,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Plan {
     pub(crate) until: i64,
     pub(crate) bound: Bound,
-    /// The reset as read, for the log line.
-    pub(crate) reset: i64,
+    pub(crate) kind: PlanKind,
+    /// The reset as read, for the log line; a capacity wait may have none.
+    pub(crate) reset: Option<i64>,
 }
 
 /// The deadline for a wait starting at `now` for `reset`, which
-/// [`wait_for`] has kept within five hours. `step` is the step's start and
+/// [`wait_for_message`] has kept within five hours. `step` is the step's start and
 /// its `AMPLIHACK_STEP_TIMEOUT` in seconds; a timeout of 0 does not apply.
 pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>, step: Option<(i64, u64)>) -> Plan {
     let ceiling = now.saturating_add(FIVE_HOURS);
@@ -123,15 +166,60 @@ pub(crate) fn plan(now: i64, reset: i64, max: Option<u64>, step: Option<(i64, u6
     if let Some(max) = max {
         consider(now.saturating_add(secs(max)), Bound::MaxWait);
     }
-    if let Some((start, timeout)) = step.filter(|(_, t)| *t > 0) {
-        let end = start
-            .saturating_add(secs(timeout))
-            .saturating_sub(STEP_TIMEOUT_LEAD);
-        consider(end.max(now), Bound::StepTimeout);
+    if let Some(end) = step_deadline(now, step) {
+        consider(end, Bound::StepTimeout);
     }
     Plan {
         until,
         bound,
+        kind: PlanKind::Reset,
+        reset: Some(reset),
+    }
+}
+
+/// When `step` requires the wait to end, never before `now`; a timeout of 0
+/// does not apply.
+fn step_deadline(now: i64, step: Option<(i64, u64)>) -> Option<i64> {
+    let (start, timeout) = step.filter(|(_, t)| *t > 0)?;
+    Some(
+        start
+            .saturating_add(secs(timeout))
+            .saturating_sub(STEP_TIMEOUT_LEAD)
+            .max(now),
+    )
+}
+
+/// The deadline for a capacity wait starting at `now`: the earliest of the
+/// failed login's own `reset` plus the margin (when still in the future), `max`
+/// from now and the step timeout less its lead, never before `now`. A tie
+/// between the reset and the maximum is named `ResetMargin`, and one between
+/// the maximum and the step timeout `MaxWait`. There is no five-hour ceiling.
+/// Reaching the reset retries the step, because that login has recovered.
+pub(crate) fn plan_capacity(
+    now: i64,
+    reset: Option<i64>,
+    max: Option<u64>,
+    step: Option<(i64, u64)>,
+) -> Plan {
+    let mut until = now.saturating_add(secs(max.unwrap_or(CAPACITY_DEFAULT_MAX)));
+    let mut bound = Bound::MaxWait;
+    if let Some(r) = reset.filter(|r| *r > now) {
+        let end = r.saturating_add(MARGIN);
+        if end <= until {
+            until = end;
+            bound = Bound::ResetMargin;
+        }
+    }
+    if let Some(end) = step_deadline(now, step)
+        && end < until
+    {
+        until = end;
+        bound = Bound::StepTimeout;
+    }
+    Plan {
+        until,
+        bound,
+        kind: PlanKind::Capacity,
         reset,
     }
 }

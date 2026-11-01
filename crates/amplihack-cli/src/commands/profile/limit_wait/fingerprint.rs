@@ -88,6 +88,12 @@ impl Watch {
         self.dir.as_deref()
     }
 
+    /// The step uses `$HOME/.claude`, the one directory the rotator swaps
+    /// logins into.
+    pub(crate) fn is_home(&self) -> bool {
+        matches!(self.kind, Kind::Home { .. })
+    }
+
     /// The fingerprint now; `None` only when no directory is watched.
     pub(crate) fn probe(&self) -> Option<Fingerprint> {
         let dir = self.dir()?;

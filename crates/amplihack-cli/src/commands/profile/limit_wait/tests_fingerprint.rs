@@ -292,3 +292,17 @@ fn home_reads_home_claude_json_not_one_inside_dot_claude() {
     );
     assert!(before != probe(&w), "$HOME/.claude.json is read");
 }
+
+/// Issue #1801: only a `$HOME/.claude` watch is a home watch, including when
+/// `CLAUDE_CONFIG_DIR` names that same directory.
+#[test]
+fn is_home_is_true_only_for_the_home_directory() {
+    let e = env();
+    let claude = e.home.join(".claude");
+    let cfg = e.tmp.join("cfg");
+    assert!(Watch::new(Some(&e.store), None, None, Some(&e.home)).is_home());
+    assert!(Watch::new(Some(&e.store), None, Some(&claude), Some(&e.home)).is_home());
+    assert!(!Watch::new(Some(&e.store), None, Some(&cfg), Some(&e.home)).is_home());
+    assert!(!e.profile("a").is_home());
+    assert!(!Watch::new(None, None, None, None).is_home());
+}
