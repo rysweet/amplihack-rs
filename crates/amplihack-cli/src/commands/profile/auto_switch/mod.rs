@@ -28,6 +28,8 @@ mod mv;
 #[cfg(unix)]
 mod overflow_inputs;
 #[cfg(unix)]
+mod per_token;
+#[cfg(unix)]
 pub(super) mod rerun;
 #[cfg(unix)]
 mod state;
@@ -48,6 +50,8 @@ mod tests_config;
 mod tests_contract;
 #[cfg(all(test, unix))]
 mod tests_exhausted_reset;
+#[cfg(all(test, unix))]
+mod tests_issue_1804;
 #[cfg(all(test, unix))]
 mod tests_liveness;
 #[cfg(all(test, unix))]
@@ -71,7 +75,7 @@ pub const SUPERVISED_ENV: &str = "AMPLIHACK_AUTO_SWITCH_SUPERVISED";
 /// For the rotate tests that check the rotator and auto-switch agree on
 /// when overflow is used (issue #1606).
 #[cfg(all(test, unix))]
-pub(super) use candidate::{OverflowPool, Pool, may_return_to, select_with_overflow};
+pub(super) use candidate::{OverflowPool, Pool, select_with_overflow, way_off};
 #[cfg(unix)]
 pub use cli::AutoSwitchCommand;
 /// File helpers `default_live` reuses for its read-only checks.
@@ -82,6 +86,8 @@ pub(super) use fsx::{check_root_private, euid, exists, read_bounded_nofollow, wr
 pub(super) use liveness::scan;
 #[cfg(all(test, unix))]
 pub(super) use overflow_inputs::OverflowInputs;
+#[cfg(unix)]
+pub(super) use overflow_inputs::can_take_login;
 #[cfg(unix)]
 pub(super) use state::CREDS;
 #[cfg(unix)]
@@ -256,6 +262,7 @@ pub fn substitute_nested(store: &ProfileStore, inherited: &ProfileName) -> Optio
             "{}",
             rerun::substitution_note(inherited, &sub.reason, &sub.profile)
         );
+        per_token::record(&state.root, sub.per_token.as_deref());
         Some(sub.profile)
     }
     #[cfg(not(unix))]

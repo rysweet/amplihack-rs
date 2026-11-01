@@ -18,6 +18,9 @@ pub const DIR: &str = ".auto-switch.d";
 pub const CREDS: &str = ".credentials.json";
 pub const CLAUDE_JSON: &str = ".claude.json";
 const MAX_STATE: u64 = 64 * 1024;
+/// The marker that keeps auto-switch's held-key ALERT to one line per
+/// held set (`per_token::record_key_held`).
+const KEY_HELD: &str = "key-held";
 /// `.claude.json` keeps project history and can grow large.
 pub const MAX_CLAUDE_JSON: u64 = 32 * 1024 * 1024;
 const VERSION: u32 = 1;
@@ -272,6 +275,27 @@ impl State {
         }
         fsx::fsync_dir(&self.dir)?;
         Ok(())
+    }
+
+    /// The plan logins named by the last `ALERT: API key not used` that
+    /// auto-switch wrote to the rotate log, one per line; `None` when there
+    /// is none, or the marker cannot be read, so the ALERT is written again.
+    pub fn load_key_held(&self) -> Option<String> {
+        let raw = self.read_state(KEY_HELD).ok()??;
+        String::from_utf8(raw).ok()
+    }
+
+    pub fn save_key_held(&self, held: &str) -> Result<(), ProfileError> {
+        self.write_state(KEY_HELD, held.as_bytes())
+    }
+
+    /// Forgets the last held set, so the next one is written. Missing is fine.
+    pub fn clear_key_held(&self) -> Result<(), ProfileError> {
+        match fs::remove_file(self.dir.join(KEY_HELD)) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
 
     /// Readings. A missing file is empty; a damaged one (bad JSON, unknown

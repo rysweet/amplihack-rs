@@ -333,7 +333,7 @@ fn custom_thresholds_and_margins_apply() {
 #[test]
 fn a_dry_run_reports_the_outcome_it_previewed() {
     use super::cycle::CycleOutcome;
-    use super::observe::would;
+    use super::dry_run::would;
     assert_eq!(would(&Decision::Stay), CycleOutcome::Stayed);
     assert_eq!(
         would(&swap("spare", Reason::Threshold)),

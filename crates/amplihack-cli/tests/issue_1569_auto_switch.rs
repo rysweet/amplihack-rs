@@ -1152,19 +1152,19 @@ mod swap {
     /// The in-session swap asks the overflow gate (issue #1606): a plan
     /// profile with capacity wins over the overflow profile; with none, and
     /// the plan reset an hour away (beyond the default 30-minute wait), the
-    /// session moves onto the overflow profile. "Capacity" is the rotator's
-    /// test, below 85% session and 90% week, so a plan profile at 87%
-    /// session does not count. No rotator runs here, so the gate is the
-    /// defaults.
+    /// session moves onto the overflow profile. A plan profile at 87% session
+    /// has no capacity by the rotator's test but still has room, so no credit
+    /// is spent (issue #1804): overflow needs every plan profile at 100%. No
+    /// rotator runs here, so the gate is the defaults.
     #[test]
     fn the_swap_uses_overflow_only_when_no_plan_profile_has_capacity() {
-        for (y, to) in [(40.0, "Y"), (87.0, "Z"), (99.0, "Z")] {
+        for (x, y, to) in [(95.0, 40.0, "Y"), (95.0, 87.0, "Y"), (100.0, 100.0, "Z")] {
             let f = Fixture::new();
             prime(&f);
             f.ok(&["profile", "overflow", "add", "Z"]);
             f.seed_usage(&[("Y", y), ("Z", 0.0)]);
             let _session = f.hold("X");
-            let out = f.tick("X", 95.0);
+            let out = f.tick("X", x);
             assert!(out.status.success(), "{}", text(&out.stderr));
             assert_eq!(
                 f.hosts().get("X").map(String::as_str),
@@ -1182,17 +1182,17 @@ mod swap {
     /// default gate (85% session, 90% week), a plan profile whose session
     /// has reset but whose week reads 85% has capacity for the rotator, so
     /// the session leaves the overflow profile for it although 85% is over
-    /// the auto-switch threshold. At 92% week it has none, and the session
-    /// stays on the overflow profile.
+    /// the auto-switch threshold. At 100% week it has no room either (issue
+    /// #1804), and the session stays on the overflow profile.
     #[test]
     fn the_move_back_off_overflow_uses_the_gate_not_the_auto_switch_threshold() {
-        for (y_week, to) in [(85.0, "Y"), (92.0, "Z")] {
+        for (y_week, to) in [(85.0, "Y"), (100.0, "Z")] {
             let f = Fixture::new();
             f.ok(&["profile", "auto-switch", "on", "--threshold", "80"]);
             f.ok(&["profile", "overflow", "add", "Z"]);
-            f.seed_usage(&[("Y", 99.0), ("Z", 0.0)]);
+            f.seed_usage(&[("Y", 100.0), ("Z", 0.0)]);
             let _session = f.hold("X");
-            let out = f.tick("X", 95.0);
+            let out = f.tick("X", 100.0);
             assert!(out.status.success(), "{}", text(&out.stderr));
             assert_eq!(
                 f.hosts().get("X").map(String::as_str),
@@ -1203,7 +1203,7 @@ mod swap {
             // Y's session resets; its week stays at `y_week`. The swap
             // was over five minutes ago.
             f.age_swaps();
-            f.seed_usage_weeks(&[("X", 95.0, 10.0), ("Y", 0.0, y_week), ("Z", 10.0, 10.0)]);
+            f.seed_usage_weeks(&[("X", 100.0, 10.0), ("Y", 0.0, y_week), ("Z", 10.0, 10.0)]);
             let out = f.tick("X", 10.0);
             assert!(out.status.success(), "{}", text(&out.stderr));
             assert_eq!(
