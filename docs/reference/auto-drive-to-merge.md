@@ -18,6 +18,10 @@ until every merge-ready criterion holds, then merge behind an evidence gate.
 It is invocable as a recipe or as the [`auto-drive-to-merge`
 skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 
+For a small change, [`auto-drive-light`](auto-drive-light.md) builds in one
+agent session and uses the same crusty loop, merge loop and gate. It hands the
+PR to this recipe when the change exceeds its eligibility rules.
+
 ## Contents
 
 - [The three phases](#the-three-phases)
@@ -1592,14 +1596,14 @@ form. `autodrive-build` step-03's read of `workflow_result` (#1714) goes
 through `rv_field` inside `workflow_finalization_handoff.sh`, and
 `workflow_result` is the output of a `workflow-finalize.yaml` step, not of an
 autodrive step, so it is outside the checked output set and adds no row;
-`autodrive-build.yaml` only declares it `""` in `context:`. There are 34 in all:
+`autodrive-build.yaml` only declares it `""` in `context:`. There are 35 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
 | `auto-drive-to-merge.yaml` | 4 |
 | `autodrive-build.yaml` | 1 |
 | `autodrive-crusty-loop.yaml` | 7 |
-| `autodrive-crusty-round.yaml` | 8 |
+| `autodrive-crusty-round.yaml` | 9 |
 | `autodrive-merge-loop.yaml` | 6 |
 | `autodrive-merge-round.yaml` | 8 |
 
@@ -3154,6 +3158,8 @@ tests here run and pass without #1347.
 
 ## Related references
 
+- [Auto-Drive-Light Recipe](auto-drive-light.md): the smaller recipe for small
+  changes, which escalates to this one.
 - [Loop-Health Evaluator](loop-health-evaluator.md) — the agentic terminator
   both loops use (ships with PR #1347).
 - [Structured Verdict & Intent Parsing](structured-verdict-parsing.md) — the
