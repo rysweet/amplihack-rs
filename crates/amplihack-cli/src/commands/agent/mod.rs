@@ -135,7 +135,7 @@ mod markers;
 #[cfg(unix)]
 mod pass;
 #[cfg(unix)]
-mod procfs;
+pub(crate) mod procfs;
 #[cfg(unix)]
 mod profile_dir;
 #[cfg(unix)]

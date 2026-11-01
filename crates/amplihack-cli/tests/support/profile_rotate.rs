@@ -193,13 +193,30 @@ impl Fixture {
         Some(serde_json::from_str(&raw).unwrap())
     }
 
+    /// Canned `/usage` output for `p`: a session line with no reset clause,
+    /// then the all-models week line. Issue #1818: a session at 0% with no
+    /// reset reads as "no session limit"; any other session percentage keeps
+    /// the limit, so `usage(p, 100, 40)` is still `session_exhausted`.
     pub fn usage(&self, p: &str, session: u32, week: u32) {
-        fs::write(
-            self.canned.join(format!("{}.out", email(p))),
-            format!(
-                "{BANNER}\n\nCurrent session: {session}% used\n\
+        self.canned_usage(
+            p,
+            &format!(
+                "Current session: {session}% used\n\
                  Current week (all models): {week}% used\n"
             ),
+        );
+    }
+
+    /// Issue #1818: a plan with no session limit. Claude prints only the
+    /// all-models week line.
+    pub fn usage_weekly_only(&self, p: &str, week: u32) {
+        self.canned_usage(p, &format!("Current week (all models): {week}% used\n"));
+    }
+
+    fn canned_usage(&self, p: &str, lines: &str) {
+        fs::write(
+            self.canned.join(format!("{}.out", email(p))),
+            format!("{BANNER}\n\n{lines}"),
         )
         .unwrap();
     }
@@ -397,7 +414,7 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
         line.to_string()
     };
     let kinds = regex::Regex::new(
-        r"^(cycle live=\S+( \S+:(s=\d+%,w=\d+%|failed|per-token))*|swap \S+->\S+ live s=\d+% w=\d+% target s=\d+% w=\d+% reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|would .+)$",
+        r"^(cycle live=\S+( \S+:(s=\d+%,w=\d+%|failed|per-token))*|swap \S+->\S+ live s=\d+% w=\d+% target s=\d+% w=\d+% reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|sessions archive: .+|would .+)$",
     )
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");

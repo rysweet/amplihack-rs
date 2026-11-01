@@ -26,8 +26,10 @@ amplihack profile overflow add|remove|clear <name>
 amplihack profile overflow list
 amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1]
 amplihack profile rotate start|watch [<tuning flags>] [--interval SECS]
+amplihack profile rotate watch [<tuning flags>] [--interval SECS] --supervised[=UNIT]
 amplihack profile rotate stop|status
 amplihack profile rotate autostart [on|off]
+amplihack profile rotate owner [clear]
 amplihack profile kind list
 amplihack profile kind set <name> <subscription|api-key|auto>
 amplihack profile overflow clear --platform
@@ -262,6 +264,12 @@ is kept:
   than 8 days from now: no session or weekly window resets that far ahead,
   so such a time is treated as unknown rather than trusted.
 
+A `five_hour` window at `0` whose `resets_at` key is absent or `null`, or no
+`five_hour` at all, means the reading has
+[no session limit](#no-session-limit) when `seven_day` was read: `session`
+is then `null` and `session_limit` is `false`. A `five_hour` above `0` with
+no reset keeps its window and the session limit.
+
 This page shows such resets as `2026-10-16T23:50:00Z`. That is an example
 of the form: whether `claude` sends fractional seconds, `Z` or an offset
 such as `+00:00` is up to `claude`, and `resets_text` keeps what it sent.
@@ -269,9 +277,10 @@ The other windows in the payload (`seven_day_opus`, `seven_day_sonnet`,
 `seven_day_oauth_apps`) are not used.
 
 The state of an accepted answer is `session_exhausted` when the session is
-at 100% or more, else `weekly_exhausted` when the all-models week is, else
-`ok`. The usage request never gives `spend_limit`, `not_logged_in` or
-`unparsed`: those states come only from the `/usage` text.
+at 100% or more and a session limit applies, else `weekly_exhausted` when
+the all-models week is, else `ok`. The usage request never gives
+`spend_limit`, `not_logged_in` or `unparsed`: those states come only from
+the `/usage` text.
 
 `claude` can answer from figures it stored earlier, without saying how old
 they are. `/usage` shows the same stored figures, so amplihack treats both
@@ -442,10 +451,11 @@ Current week (all models): 68% used · resets Oct 22, 2am (America/Los_Angeles)
 Current week (Fable): 0% used · resets Oct 22, 2am (America/Los_Angeles)
 ```
 
-Claude leaves out the reset when the window has not started, for example
-`Current session: 0% used` when no session is open. Such a line is still
-read: `resets_text` and `resets_at` are `null`, and the table shows `-` for
-the reset.
+Claude leaves out the reset when no session window applies, for example
+`Current session: 0% used`. Such a line at 0% means the reading has
+[no session limit](#no-session-limit) when the all-models week was read. A
+session line above 0% with no reset is read as a session window with no
+known reset.
 
 | Line | Field |
 |------|-------|
@@ -476,6 +486,107 @@ gap) or the text has another form, `resets_at` is `null` and only the text is
 shown. A time that occurs twice (the hour repeated when daylight saving
 ends) resolves to the earlier one.
 
+#### No session limit
+
+Claude sometimes reports the all-models week without a running five-hour
+session window. A reading then has *no session limit*: no active session
+window was reported, and the profile is judged on its all-models week alone.
+The report has `session_limit` set to `false` and `session` set to `null`.
+
+The label describes the reading, not the plan. Claude also leaves out the
+session reset when a session-limited login has not started a session, so an
+idle Pro or Max login reads as having no session limit until a session
+starts. This does not change which login is chosen: the session is at 0%,
+which is not exhausted, and the next reading that has a reset restores the
+session window.
+
+A `/usage` reading has no session limit when the all-models week line was
+read and either of these holds:
+
+- there is no `Current session` line;
+- the `Current session` line is at 0% and has no reset clause, for example
+  `Current session: 0% used`.
+
+```
+Current week (all models): 47% used · resets Oct 22, 2am (America/Los_Angeles)
+```
+
+```
+Current session: 0% used
+Current week (all models): 47% used · resets Oct 22, 2am (America/Los_Angeles)
+```
+
+Both give state `ok`, `session_limit` `false` and `session` `null`. With
+the week at 100% or more the state is `weekly_exhausted`.
+
+A plan with no session limit has nothing to count in the session
+percentage, so a value above 0% shows that a session window exists. The same
+line at `47% used` keeps the session limit with state `ok`, and at
+`100% used` gives `session_exhausted`, as before issue #1818. In both cases
+`resets_text` and `resets_at` are `null`.
+
+The rule fails closed. A session limit still applies, and the session line
+is read as before, in each of these cases:
+
+| Case | Example | Why |
+|------|---------|-----|
+| The session line is above 0%, with or without a reset clause | `Current session: 100% used` | A non-zero percentage shows a session window. With no reset clause `resets_text` and `resets_at` are `null`. |
+| The session line has a reset clause, even one whose time cannot be resolved | `Current session: 3% used · resets 3am (Etc/Unknown)` | A printed reset shows that a session window exists. `resets_at` is `null` and `resets_text` keeps the text. |
+| A line contains `Current session` but does not have the form above, for example because of a prefix | `Current session: unavailable` | A change in Claude's wording must not make an exhausted login look usable. |
+| No all-models week line was read | `Current session: 0% used` alone | Nothing else can rank the profile. The state follows the usual [rules](#states). A session line with no reset clause is still read: `resets_text` and `resets_at` are `null`, and the table shows `-` in `SESSION RESETS`. |
+| The row is `spend_limit` or any failed state | | `session_limit` is `true` on every row that is not `ok` or `weekly_exhausted`. |
+
+An accepted [usage request](#probe-method) has no session limit when
+`rate_limits.seven_day` was read and either `rate_limits.five_hour` is
+absent, or its `utilization` is `0` and its `resets_at` key is absent or
+`null`. A `five_hour` above `0` with no reset keeps the session window and
+the limit, and is `session_exhausted` at 100 or more. The check is on the raw
+key: a `resets_at` that is present but not a valid string, not an RFC 3339
+time or more than 8 days ahead still means a session limit applies, even
+though the row's `resets_at` is then `null`. A `five_hour` whose
+`utilization` is unusable is left out as before and also keeps the limit.
+
+| `rate_limits` | `session_limit` | `session` |
+|---------------|-----------------|-----------|
+| `{"seven_day": {"utilization": 47.0, "resets_at": "2026-10-22T09:00:00Z"}}` | `false` | `null` |
+| `{"five_hour": {"utilization": 0.0, "resets_at": null}, "seven_day": {…}}` | `false` | `null` |
+| `{"five_hour": {"utilization": 0.0}, "seven_day": {…}}` | `false` | `null` |
+| `{"five_hour": {"utilization": 100.0, "resets_at": null}, "seven_day": {…}}` | `true` | the window, with both reset fields `null` |
+| `{"five_hour": {"utilization": 20.0, "resets_at": "2026-10-17T02:00:00Z"}, "seven_day": {…}}` | `true` | the window |
+| `{"five_hour": {"utilization": 20.0, "resets_at": 1792202400}, "seven_day": {…}}` | `true` | the window, with both reset fields `null` |
+
+A profile with no session limit is not exempt from limits: it is
+`weekly_exhausted`, and never chosen, once its all-models week reaches 100%,
+and the rotator and auto-switch apply their usual week thresholds to it. See
+[Rotate decision rule](#rotate-decision-rule) and
+[Candidate selection](#candidate-selection).
+
+Known limitations:
+
+- An idle session-limited login at 0% is labelled `no session limit`, as
+  described above, in `profile usage` and `profile usage --json`.
+- `rotate status` and `auto-switch status` read the stored auto-switch
+  [readings](#readings), which have no field for "a session limit applies
+  but its window is unknown". They therefore print `no session window`, not
+  `no session limit`: a stored reading with `seven_day` and no `five_hour`.
+  That happens for a reading with no session limit, and also when:
+  - a status-line input had no `five_hour`, or one that was rejected (no
+    `resets_at`, an unusable percentage, or a reset outside the bounds in
+    [Readings](#readings));
+  - a `profile usage` row that has a session limit had its session window
+    rejected by the same bounds (for example no reset time), and the stored
+    `five_hour` had already reset.
+
+  Ranking is the same in every case: a missing `five_hour` counts as 0%.
+  These views can also be as old as the last recorded reading.
+- When `profile usage` records a reading with no session limit for a login
+  whose stored auto-switch reading has a session window that has not reset,
+  that window is kept until its reset passes. The new reading may come from
+  figures `claude` stored earlier, and a live window contradicts it. The
+  rotator and auto-switch therefore go on treating the login as it was
+  (for example session-exhausted) for at most five hours. See
+  [Refreshing auto-switch readings](#refreshing-auto-switch-readings).
+
 #### States
 
 Every profile gets exactly one state:
@@ -483,7 +594,7 @@ Every profile gets exactly one state:
 | State | Meaning |
 |-------|---------|
 | `ok` | The session or the all-models week was read, from an accepted usage request or a `/usage` line, and neither is at 100%. |
-| `session_exhausted` | The session is at 100% or more. |
+| `session_exhausted` | The session is at 100% or more and a session limit applies. A reading with [no session limit](#no-session-limit) never has this state. |
 | `weekly_exhausted` | The all-models week is at 100% or more and the session is not. |
 | `spend_limit` | The `/usage` output reported that the organisation's spend limit was reached. Any percentages read are kept. |
 | `not_logged_in` | The `/usage` output had no usage line of any kind (model week lines included) and reported that the profile is not signed in. Run `amplihack profile login <name>`. A profile [live in `~/.claude`](#logins-in-claude) is probed against `~/.claude`, so its missing `.credentials.json` does not give this state. |
@@ -561,12 +672,13 @@ failure to start, write to, read or wait for the usage request is not an
 #### Table output
 
 ```
-PROFILE   MARKS             STATE              SESSION  SESSION RESETS        WEEK  WEEK RESETS
-review    -                 ok                 5%       2026-10-17T04:00:00Z  10%   2026-10-22T09:00:00Z
-work      * hosts:personal  ok                 20%      2026-10-17T02:00:00Z  30%   2026-10-22T09:00:00Z
-team      -                 session_exhausted  100%     2026-10-16T23:50:00Z  68%   2026-10-22T09:00:00Z
-personal  leased→work       not_logged_in      -        -                     -     -
-spare     -                 timeout            -        -                     -     -
+PROFILE   MARKS             STATE              SESSION           SESSION RESETS        WEEK  WEEK RESETS
+review    -                 ok                 5%                2026-10-17T04:00:00Z  10%   2026-10-22T09:00:00Z
+work      * hosts:personal  ok                 20%               2026-10-17T02:00:00Z  30%   2026-10-22T09:00:00Z
+weekly    -                 ok                 no session limit  -                     47%   2026-10-22T09:00:00Z
+team      -                 session_exhausted  100%              2026-10-16T23:50:00Z  68%   2026-10-22T09:00:00Z
+personal  leased→work       not_logged_in      -                 -                     -     -
+spare     -                 timeout            -                 -                     -     -
 ```
 
 `SESSION` and `WEEK` are the session and all-models week. Percentages print
@@ -574,6 +686,14 @@ as a whole number when they are whole and with one decimal place otherwise
 (`12.5%`). `-` means no value. A `timeout` or `error` row shows `-` in every
 percentage and reset column: its usage is unknown. Model-specific week lines
 are not in the table; they are in the JSON.
+
+A row in state `ok` or `weekly_exhausted` with
+[no session limit](#no-session-limit) shows `no session limit` in full in
+`SESSION`, never shortened, and `-` in `SESSION RESETS`. The label means
+that no active session window was reported; the profile is ranked on its
+week. Every other row keeps its usual cells: `timeout`, `error`,
+`unparsed`, `not_logged_in`, `spend_limit` and
+[API-key](#api-key-usage) rows never show the label.
 
 Reset columns show the reset as received, so their form depends on the
 [attempt](#probe-method) that gave the row:
@@ -886,6 +1006,7 @@ there is no version field.
       "resets_text": "2026-10-17T02:00:00Z",
       "resets_at": 1792202400
     },
+    "session_limit": true,
     "week_all": {
       "label": "all models",
       "used_percentage": 30.0,
@@ -915,7 +1036,8 @@ there is no version field.
 | `overflow` | bool | Whether the profile is marked as [credit-backed overflow](#rotate-overflow). Always present. |
 | `overflow_blocked_until` | integer or `null` | Unix epoch seconds until which the rotator has [blocked](#overflow-spend-limit-block) this overflow profile after a spend limit; `null` when it is not blocked or not marked. Always present. |
 | `state` | string | One of the [states](#states). |
-| `session` | window or `null` | The session: `rate_limits.five_hour` from the [usage request](#probe-method), or the `Current session` line from `/usage`. Always `null` for `timeout` and `error`. |
+| `session` | window or `null` | The session: `rate_limits.five_hour` from the [usage request](#probe-method), or the `Current session` line from `/usage`. Always `null` for `timeout` and `error`, and when `session_limit` is `false`. |
+| `session_limit` | bool | `false` only when a reading showed no session window; `true` otherwise, including rows that could not be read. See [No session limit](#no-session-limit). Always present, immediately after `session`. |
 | `week_all` | window or `null` | The all-models week: `rate_limits.seven_day`, or the `Current week (all models)` line. Always `null` for `timeout` and `error`. |
 | `week_models` | array of windows | Each usable `rate_limits.model_scoped` entry, or every other `Current week (<model>)` line, in the order given. Empty if none. |
 | `error` | string or `null` | The [reason](#states) for an `error` row, otherwise `null`. |
@@ -951,6 +1073,34 @@ amplihack profile usage --json | jq -r '.[]
 
 ```
 ryan-mistt-org
+```
+
+The weekly-only row from the [table example](#table-output) reads:
+
+```json
+{
+  "profile": "weekly",
+  "state": "ok",
+  "session": null,
+  "session_limit": false,
+  "week_all": {
+    "label": "all models",
+    "used_percentage": 47.0,
+    "resets_text": "2026-10-22T09:00:00Z",
+    "resets_at": 1792659600
+  }
+}
+```
+
+Its other keys are left out here. To list the profiles with
+[no session limit](#no-session-limit):
+
+```bash
+amplihack profile usage --json | jq -r '.[] | select(.session_limit == false) | .profile'
+```
+
+```
+weekly
 ```
 
 #### Refreshing auto-switch readings
@@ -1001,6 +1151,14 @@ Then, under the lock, for each row:
 - If neither window passes, nothing is recorded for that account. If only
   one passes, the other is kept from the stored reading while its reset time
   is still in the future.
+- A row with [no session limit](#no-session-limit) follows the same rule:
+  its stored `five_hour` is kept while its reset time is still in the
+  future, and dropped once it has passed. A 0% session line with no reset
+  may come from figures `claude` stored earlier, so it does not override a
+  live session window. A login that has just stopped reporting a session
+  window can therefore stay session-exhausted until the old reset passes,
+  which is at most five hours. No new `five_hour` is recorded for such a
+  row.
 - The reading has `observed_at` set to now and `source` set to `statusline`,
   and is merged with the stored one the usual way.
 
@@ -1072,6 +1230,9 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 | `<root>/.auto-switch` | Auto-switch settings. See [Settings file](#settings-file). |
 | `<root>/.auto-switch.d/` | Auto-switch state. See [State directory](#state-directory). |
 | `AMPLIHACK_ROTATE_AUTOSTART` | `0`/`off` stops launches from starting the rotator, and `1`/`on` lets them, overriding `<root>/.auto-switch.d/rotate/autostart`. Empty means unset. See [Rotate autostart](#rotate-autostart). |
+| `AMPLIHACK_RECIPE_RUN_ID` | Set by `amplihack recipe run` for its steps. When it is set and non-empty, a launch never starts the rotator. See [Rotate autostart](#rotate-autostart). |
+| `INVOCATION_ID` | Set by systemd for the processes of a unit. A `rotate watch` that sees it non-empty, and runs directly in a service as described in step 2 of [Owner unit name](#owner-unit-name), records itself as the [rotation owner](#rotate-owner). A shell in a `.scope` that inherited it does not. |
+| `<root>/.auto-switch.d/rotate/owner` | The [owner marker](#rotate-owner). While it exists, launches do not start a rotator. Removed only by `rotate owner clear`. |
 | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true` or `1` turns the [usage-limit wait](#usage-limit-wait) on, `false` or `0` off. Outranks `recipe.usage_limit_wait` in `config.toml`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
 | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | Upper bound on one usage-limit wait, in seconds. Only shortens the wait. Outranks `recipe.usage_limit_max_wait_secs`. |
 
@@ -1920,7 +2081,7 @@ so a login moved while the switch was on stays protected after `off`.
 | Command | Behavior |
 |---------|----------|
 | `auto-switch on [--threshold N] [--exclude a,b]` | Writes `enabled=on`, plus the threshold and exclusions if given, and prints `auto-switch: on (threshold N%)`. If any profile's [status-line wrapper](#status-line-wrapper) is `missing` or `stale`, prints the `profiles without the wrapper` [note](#status-notes) to stderr. |
-| `auto-switch off` | Writes `enabled=off`. The threshold and exclusions are kept. Logins in running sessions are not moved; they return when each session ends. |
+| `auto-switch off` | Writes `enabled=off`. The threshold and exclusions are kept. Logins in running sessions are not moved; they return when each session ends. Like `auto-switch on`, appends a [`change:` line](#rotate-change-log) to the rotate log when `enabled` changes. |
 | `auto-switch status` | **Read-only.** Takes no lock, runs no recovery and changes nothing on disk. Prints the effective setting and where it comes from (`env`, `file`, `default` or `corrupt`), the threshold, the exclusions, whether in-session swaps are available, one row per profile (latest readings, where its login is, wrapper state), the hosted directories, an invariant line, and then any [notes](#status-notes). Prints profile names, percentages and times only. |
 | `auto-switch threshold N` | Sets the threshold, `1` to `100`. Keeps `enabled` and `exclude`. |
 | `auto-switch exclude [names…]` | Replaces the exclusion list. With no names, clears it. Each name must pass the [name rules](#name-rules); it does not have to exist (`status` lists names that do not). Keeps `enabled`, `threshold` and `overflow`. |
@@ -1945,6 +2106,20 @@ When any profile is marked [overflow](#rotate-overflow), the next line is
 overflow gate: wait 7200s, unknown reset waits, plan capacity below 85% session and 90% week (from the rotator, pid 4242)
 overflow gate: wait 1800s, unknown reset waits, plan capacity below 85% session and 90% week (no rotator runs; from AMPLIHACK_ROTATE_* or defaults)
 overflow gate: closed (the running rotator (pid 4242) has not recorded its overflow settings; restart it)
+```
+
+The `5h` cell shows `no session window` when the account's reading has
+`seven_day` and no `five_hour`: no session window was recorded, and the
+account is ranked on its week (see [Readings](#readings)). This is not the
+same as [no session limit](#no-session-limit): the stored reading cannot
+tell a plan with no session limit from a session window that was not
+recorded (see the known limitations there). An account with neither window,
+or no reading, shows `-`.
+
+```
+profile   5h                 7d    observed   login   wrapper
+weekly    no session window  47%   2m ago     home    installed
+work      93%                61%   5m ago     home    installed
 ```
 
 `status` prints `wrapper` as `installed`, `missing`, `stale` (an older or
@@ -2127,6 +2302,13 @@ limit (see [Usage-limit reruns](#usage-limit-reruns)).
   reset times) is still ignored, because it describes the previous account.
   Readings recorded by `profile usage` skip this quiet period; see
   [Refreshing auto-switch readings](#refreshing-auto-switch-readings).
+- **No session window.** A reading may hold `seven_day` with no
+  `five_hour`: Claude reported no session window for that login (see
+  [No session limit](#no-session-limit)), or the status line gave none. It
+  is judged on `seven_day` alone. When `profile usage` records such a
+  reading, a stored `five_hour` is kept until its reset time passes; see
+  [Refreshing auto-switch readings](#refreshing-auto-switch-readings).
+  `usage.json` has no `session_limit` field and its format is unchanged.
 - **Merging.** The reading with the newer `observed_at` wins; on a tie, the
   one with the higher usage wins.
 - **Errors.** A damaged `usage.json` is treated as empty and overwritten by
@@ -2137,7 +2319,10 @@ limit (see [Usage-limit reruns](#usage-limit-reruns)).
 An account is *exhausted* when the higher of its two adjusted windows is
 at or above the threshold (`max(five_hour, seven_day) >= threshold`). An
 *adjusted* window is one whose `resets_at` is at or before now, which counts
-as 0%. A window without `resets_at` is used as read. An account with no
+as 0%. A window without `resets_at` is used as read. A reading with no
+`five_hour` is judged and ranked on `seven_day` alone, so a login with
+[no session limit](#no-session-limit) is eligible while its week is below
+the threshold. An account with no
 reading is not exhausted. Exhausted plan accounts are never chosen; an
 [overflow](#auto-switch-and-overflow-profiles) profile's own reading does
 not count.
@@ -2948,10 +3133,11 @@ that moves old session logs out of `~/.claude/projects`.
 ```
 amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1]
 amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--interval SECS]
-amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--interval SECS]
+amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--overflow-unknown-reset 0|1] [--interval SECS] [--supervised[=UNIT]]
 amplihack profile rotate stop
 amplihack profile rotate status
 amplihack profile rotate autostart [on|off]
+amplihack profile rotate owner [clear]
 ```
 
 | Command | Behaviour |
@@ -2959,11 +3145,14 @@ amplihack profile rotate autostart [on|off]
 | `rotate` | Runs one [cycle](#rotate-cycle): recover, measure, decide, and swap if needed. Prints its log lines to stdout and appends them to the log. Runs whether the toggle is on or off. |
 | `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no file, moves nothing, and skips both the [prototype check](#rotate-prototype-coexistence) and [recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. Reads the [pin](#rotate-pin): a pin in force prints `would stay (held by switch to <name>)`, or `would stay (pin unreadable)`, and measures nothing. Reports a [hand change](#rotate-hand-change-recovery) as `would recover: <recovered line>`, or as `would alert: <ALERT line>` with its `fix` lines; either way it then stops without measuring, and the alert case ends with outcome `alerted`. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
 | `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Pins the child to its root and records that root; see [Rotate root record](#rotate-root-record). Prints `rotate: started (pid <pid>), checking every <interval>s`, `log: <path>` and `root: <path>`, and returns at once. |
-| `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log. |
+| `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log, apart from the [owner marker](#rotate-owner) when it runs supervised. |
+| `rotate watch --supervised[=UNIT]` | As `rotate watch`, and records itself as the [rotation owner](#rotate-owner) so that launches do not start a second rotator. `UNIT` names the service manager unit, for example `--supervised=amplihack-rotator.service`; the `=` is required. Without `UNIT` the name is found as described in [Owner unit name](#owner-unit-name). A `watch` that systemd runs as a service records itself without the flag: `INVOCATION_ID` is set and the unit is found in `/proc/self/cgroup` as in step 2 of [Owner unit name](#owner-unit-name). Like any `watch`, it refuses with status 1 when another verified rotator is running, and then writes no marker; stop that rotator with `rotate stop` before starting the unit. `rotate start --supervised` is refused with `RotateRefused` (`--supervised applies to rotate watch only`, status 1). |
 | `rotate stop` | Finds the rotator as described in [Rotate root record](#rotate-root-record). Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
 | `rotate status` | **Read-only.** Prints the [status lines](#rotate-status) and exits 0. |
 | `rotate autostart` | **Read-only.** Prints the effective [autostart](#rotate-autostart) state, for example `autostart: on (default)`. |
-| `rotate autostart on\|off` | Writes the autostart setting and prints `autostart: on (setting)` or `autostart: off (setting)`. Does not start or stop a rotator. Any other value is a usage error (status 2). |
+| `rotate autostart on\|off` | Writes the autostart setting and prints `autostart: on (setting)` or `autostart: off (setting)`. Does not start or stop a rotator. When the value changes, appends a [`change:` line](#rotate-change-log) to the log. Any other value is a usage error (status 2). |
+| `rotate owner` | **Read-only.** Prints the [owner](#rotate-owner) line, as in `rotate status`, for example `owner: none`. |
+| `rotate owner clear` | Removes the [owner marker](#rotate-owner) and prints `owner: cleared (was <unit>)`, or `owner: none` when there was no marker. Does not stop a running rotator. Under a profile root that is not private, it reads and removes nothing and fails with `RotateRefused` (`profile root <reason>; the owner marker was left in place`, status 1). |
 
 `--dry-run` belongs to the one-shot form only. Tuning flags go after `start`
 or `watch`; `amplihack profile rotate --margin 3 start` is a usage error and
@@ -3365,10 +3554,17 @@ point.
 | Probe result | Session used | Week used | Headroom |
 |--------------|--------------|-----------|----------|
 | `ok` with both windows | as reported | as reported | as computed |
-| `ok` with no session window | `0` | as reported | as computed |
+| `ok` with no session window, including [no session limit](#no-session-limit) | `0` | as reported | as computed |
 | `ok` with no week window | | | probe failed |
 | `session_exhausted` or `weekly_exhausted` | | | `0` |
 | any other [state](#states) | | | probe failed |
+
+A profile with no session limit is ranked on its week alone: its headroom
+is `100 - week_used`, and `session-at` never triggers for it. When every
+other login is session-exhausted, such a profile with weekly room is the
+best candidate. Once its week reaches `week-at` it is treated like any
+other profile over the week threshold, and at 100% it is
+`weekly_exhausted`.
 
 A candidate whose probe failed, or that is exhausted, is never chosen. A
 probe that timed out, or that could not start `claude`, read its output or
@@ -4580,6 +4776,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | `autostart` | The [autostart](#rotate-autostart) setting: `on` or `off` and a newline. Missing means on. |
 | `pin` | The [rotation pin](#rotate-pin): one profile name and a newline. Written by `profile switch <name>`, removed by `profile switch --none`. Not part of the ledger. |
 | `sessions-archive.last` | When the [daily session archive](#rotate-daily-session-archive) last started: epoch seconds and a newline. Written atomically before each run; removed when a run stops early after archiving something, so the next pass carries on. |
+| `owner` | The [owner marker](#rotate-owner): `unit=`, `pid=` and `since=` lines. Written by a supervised `rotate watch`, removed only by `rotate owner clear`. Not part of the ledger. |
 
 The auto-switch `ledger.json` and `journal.json` one level up are separate
 files and are not changed by rotation.
@@ -4664,7 +4861,7 @@ stdout only, without the time.
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows `s=100%,w=100%`, whatever the windows it read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows `s=100%,w=100%`, whatever the windows it read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
 | `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
@@ -4697,6 +4894,10 @@ stdout only, without the time.
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
+| `ALERT: auto-switch is off while the live login is exhausted (<profile>: <reason>)` | `watch` with auto-switch turned off, while the live login has no capacity left; see [Exhausted while off](#exhausted-while-off). Written on every cycle while the condition holds, and does not change what the cycle does. |
+| `skip: alert check failed: <error>` | `watch` with auto-switch turned off, when a ledger or `usage.json` cannot be read, so the [exhausted-while-off](#exhausted-while-off) check cannot run. Written on every paused cycle until the file loads again. |
+| `change: <setting> <old> -> <new> by pid=<p> ppid=<pp> parent="<command>"[ recipe_run=<id>][ invocation=<id>]` | The autostart setting or the auto-switch toggle was changed. See [Rotate change log](#rotate-change-log). |
+| `skip: owner marker not written (<error>)` | A supervised `watch` could not write the [owner marker](#rotate-owner). It carries on without one. |
 | ``skip: held by switch to <name>; run `amplihack profile switch --none` to release`` | The [pin](#rotate-pin) holds rotation; the cycle neither measured nor swapped. |
 | ``skip: pin unreadable; run `amplihack profile switch --none` `` | The pin file cannot be trusted or parsed; the cycle holds. |
 | `skip: pin names missing profile <name>; ignored` | The pin names a removed profile; the cycle runs normally. |
@@ -4716,7 +4917,8 @@ stored in the ledger. The key is cleared when a cycle stays without alerting
 or a swap succeeds, so the same ALERT can be written again later. The
 one-shot `rotate` still prints a repeated ALERT to stdout on every run; only
 the log line is written once. The hand-change guidance and lost-login ALERTs
-have no key: they are written on every cycle while their condition holds.
+have no key: they are written on every cycle while their condition holds,
+and so has the [exhausted-while-off](#exhausted-while-off) ALERT.
 
 Before each write, a log over 1 MiB is renamed to `rotate.log.1`, replacing
 the old one. The log is opened with `O_APPEND`, `O_NOFOLLOW` and `O_CLOEXEC`,
@@ -4728,6 +4930,77 @@ Log lines and stdout contain only profile names (with control characters
 removed), percentages, times, phases, paths under `HOME` and the root, and
 fixed text. They never contain
 account IDs, e-mail addresses, tokens, environment values or Claude's output.
+The one exception is the redacted parent command line and the run ids in a
+[`change:` line](#rotate-change-log).
+
+### Rotate change log
+
+Every change to the [autostart setting](#autostart-setting) or to the
+auto-switch toggle appends one line to `rotate.log`, so that a log shows who
+turned rotation off and when:
+
+```
+2026-11-01T09:14:02Z change: auto-switch on -> off by pid=51877 ppid=51702 parent="bash /home/you/bin/pause-rotation.sh" recipe_run=3f9c2a1e-6b7d-4c1e-9a52-0d8e7b6f4a21
+2026-11-01T09:20:45Z change: rotate-autostart on -> off by pid=52011 ppid=4120 parent="-bash"
+```
+
+| Field | Value |
+|-------|-------|
+| `<setting>` | `rotate-autostart` for `rotate autostart on\|off`; `auto-switch` for any command that changes `enabled` in `<root>/.auto-switch` (`auto-switch on`, `auto-switch off`). |
+| `<old>` | `on` or `off`; `unset` when there was no setting; `corrupt` when the setting could not be trusted. |
+| `<new>` | `on` or `off`. |
+| `pid`, `ppid` | The process that wrote the setting, and its parent. |
+| `parent` | The parent's command line, read from `/proc/<ppid>/cmdline`, with the arguments joined by spaces. `-` when it cannot be read. |
+| `recipe_run` | The value of `AMPLIHACK_RECIPE_RUN_ID`, when set and non-empty. |
+| `invocation` | The value of `INVOCATION_ID`, when set and non-empty. |
+
+Only a write that changes the value is logged. `autostart off` when the
+setting is already `off` writes no line, and `off` then `on` writes two. A
+change from `unset` or `corrupt` is always logged. Changes to the auto-switch
+threshold, exclusions or overflow list are not logged, nor are the
+`AMPLIHACK_ROTATE_AUTOSTART` and `AMPLIHACK_CLAUDE_AUTO_SWITCH` variables,
+which override the settings without changing them.
+
+The parent command line is redacted before it is written:
+
+- `NAME=value` becomes `NAME=***`.
+- A name counts as secret if it contains `key`, `token`, `secret`, `passw`,
+  `auth` or `signature`, or if one of its parts is exactly `pass`, `pwd` or
+  `sig`. So `--pass` and `--db-pwd` are secret, but `--bypass` is not.
+- The argument after a flag with a secret name becomes `***`, and so does
+  the value in `--flag=value` for such a flag.
+- A `Name: value` or `Name:value` argument with a secret name, such as
+  the `Authorization: Bearer ...` or `X-Api-Key: ...` header passed to
+  `curl -H`, becomes `Name: ***`. Other headers, such as
+  `Content-Type: json`, are left as they are.
+- `user:password` given to `-u` or `--user` (`curl -u user:pw`,
+  `--user=user:pw`, `-uuser:pw`) becomes `***`. A value without `:`, such
+  as `git push -u origin`, is kept.
+- The value attached to `-p`, as in `mysql -psecret`, becomes `-p***`. A
+  separate argument after `-p` is kept.
+- `user:password@` is removed from URLs, and a query or fragment parameter
+  with a secret name, such as `?access_token=...`, `#access_token=...`,
+  `&sig=...` or `&X-Amz-Signature=...`, becomes `name=***`.
+- An argument holding whitespace, such as the script after `bash -c`, is
+  split into words, `'` and `"` are dropped from each word's ends, and the
+  words are redacted by the rules above. A secret header name whose value
+  is in the following words, as in `-H 'Authorization: Bearer ...'`, hides
+  every word after it. So `bash -c "export API_TOKEN=t; curl ..."` is
+  written as `bash -c export API_TOKEN=*** curl ...`.
+- Not redacted: a separate password after `-p`, as in `sshpass -p secret`;
+  credentials after combined short flags, as in `curl -su user:pw`; and
+  `--proxy-user user:pw`.
+
+For example, `claude --api-key sk-abc TOKEN=xyz https://u:p@h/x` is written
+as `claude --api-key *** TOKEN=*** https://h/x`. Control, newline and
+bidirectional-override characters are then removed, `"` becomes `'`, and the
+result is cut to 200 characters. The run ids have control characters removed,
+spaces replaced by `_`, and are cut to 64 characters. A value can therefore
+never start a second log line or forge a field.
+
+The line is written through the same path as other log lines, so the mode,
+symlink and size rules above apply. Writing it takes no lock. If it cannot be
+written, the command prints one warning to stderr and still succeeds.
 
 ### Rotate daemon
 
@@ -4742,10 +5015,14 @@ prints outside a cycle, such as start-up notices or a crash.
 pid file. No shell is involved.
 
 The child's environment is the parent's, with every `AMPLIHACK_ROTATE*`
-variable, `CLAUDE_CONFIG_DIR` and `AMPLIHACK_CLAUDE_PROFILE` removed and
+variable, `CLAUDE_CONFIG_DIR`, `AMPLIHACK_CLAUDE_PROFILE` and `INVOCATION_ID`
+removed and
 `AMPLIHACK_CLAUDE_PROFILE_ROOT` set to the absolute root `start` resolved.
 Removing the profile variables means a rotator started from a
-`--profile` launch still probes and swaps `~/.claude`. The child validates that value again when it starts, and
+`--profile` launch still probes and swaps `~/.claude`. Removing
+`INVOCATION_ID` means a rotator started from a shell inside a systemd unit
+does not claim to be that unit's [owner](#rotate-owner); a `--spawned`
+`watch` never writes the owner marker in any case. The child validates that value again when it starts, and
 never reads `~/.amplihack/profile-root`. Changing the variable or the saved
 root, or closing the shell that ran `start`, does not move a running rotator.
 To move it to another root, stop it and start it again.
@@ -4825,11 +5102,28 @@ the process is not responding, not that a cycle was slow.
 root: /home/you/.claude-profiles (source: config)
 rotate: running
 autostart: on (default)
+owner: none
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
 overflow: -
 on overflow: no
+log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+With two profiles whose last reading had no session window:
+
+```
+root: /home/you/.claude-profiles (source: config)
+rotate: running
+autostart: on (default)
+pid: 48213
+live: spare
+last cycle: 2026-10-18T12:50:05Z stayed
+overflow: -
+api key: -
+on overflow: no
+no session window: review, weekly
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
@@ -4839,6 +5133,7 @@ On credits, with a second overflow profile blocked:
 root: /home/you/.claude-profiles (source: config)
 rotate: running
 autostart: on (default)
+owner: none
 pid: 48213
 live: ryan-mistt-org
 last cycle: 2026-10-24T09:10:05Z stayed overflow=on
@@ -4851,17 +5146,21 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 |-----|-------|
 | `root` | Always the first line. `<path> (source: env\|config\|default)` for the resolved root, or `<path> (pinned by running rotator)` when the rotator was found through the [rotate root record](#rotate-root-record). The lines after it describe that root. |
 | `rotate` | `running`, `stopped`, `stale` or `unverifiable`. |
-| `autostart` | `on` or `off`, then the source in brackets: `default`, `setting`, `env` or `corrupt`. See [Rotate autostart](#rotate-autostart). Unix only. |
+| `autostart` | `on` or `off`, then the source in brackets: `default`, `setting`, `env` or `corrupt`. See [Rotate autostart](#rotate-autostart). While an [owner marker](#rotate-owner) exists, ends with ` (deferring to <unit>)`, or ` (deferring to an unreadable owner marker)`. When the root fails the privacy check, ends with ` (skipped: root is not private)` instead, and the marker is not read. Unix only. |
+| `owner` | The [rotation owner](#rotate-owner): `none`; `<unit> pid <n> (running); autostart defers to it`; `<unit> pid <n> (not running); autostart defers to it; run 'amplihack profile rotate owner clear' to release`; `unreadable; autostart defers to it; run 'amplihack profile rotate owner clear' to release`; or `not read (root is not private)`. Unix only. |
 | `pid` | The pid, or `-`. |
 | `live` | The ledger's `live` profile, or `-`. |
 | `last cycle` | The time and outcome (`swapped`, `stayed`, `switched`, `alerted`, `skipped`, `idle` or `held`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; `switched` by [`profile switch`](#rotate-switch), and kept by the held cycles after it; `held` when the [pin](#rotate-pin) held rotation with no switch record; a cycle that could not take the lock records nothing. An [overflow](#rotate-overflow) cycle adds ` overflow=in`, ` overflow=out` or ` overflow=on`. |
 | `hold` | Only while something is at the [pin](#rotate-pin) path: `hold: <name>`, `hold: <name> (profile missing; ignored)` or `hold: unreadable`. |
 | `overflow` | The marked overflow profiles in list order, separated by `, `, each followed by ` (blocked until <time>)` when it has an active [spend block](#overflow-spend-limit-block); `-` when none is marked or `.auto-switch` is corrupt. When the ledger cannot be read, the list ends with ` (blocks unknown)`. |
+| `api key` | The first API-key profile, followed by ` (blocked until <time>, <reason>)` while the ledger records an active API-key block; `-` when there is no API-key profile. Printed between `overflow` and `on overflow`. |
 | `on overflow` | `yes (<name>, held by switch)` when a [pin](#rotate-pin) names the live overflow profile: a `profile switch` onto it is a choice to spend, and the rotator does not move off it until `profile switch --none` (see [Pin and overflow](#pin-and-overflow)). Otherwise `yes (<name>)` when the profile identified as live in `~/.claude` by account is an overflow profile and the ledger's `last_cycle.overflow` is `in` or `on`, which means the rotator found no plan capacity in its last cycle. `no (<name> is overflow; plan capacity remains)` when the live profile is an overflow profile but the last cycle carries no such tag, for example after the login was put in `~/.claude` by hand. `no` when it is a plan profile, `-` when the live profile cannot be identified. `status` runs no probe; the ledger is its only evidence. |
+| `no session window` | Printed only when the list is not empty: the profiles whose current auto-switch [reading](#readings) has `seven_day` and no `five_hour`, sorted by name and separated by `, `. These profiles are ranked on their week. The line does not say `no session limit`: a stored reading also loses its `five_hour` when a session window was not recorded (see the known limitations under [No session limit](#no-session-limit)). Only profiles that exist now are listed. The line comes after `on overflow` and after the `~/.claude is on API key profile ...` line when that is printed, and before `default` and `hold`. It is read from `usage.json` without a lock; if the file is missing, unreadable or unsafe, the line is left out and nothing is printed to stderr. |
 | `default` | Printed only when the [default pointer](#clearing-the-default) names an overflow profile: `<name> (overflow; launches use it directly)`. |
 | `log` | The log path. |
 | `alert` | Zero or more. A current [hand-change](#rotate-hand-change-recovery) guidance line. |
 | `warning` | Zero or more. A profile that lost its login to a manual `/login` in `~/.claude`. |
+| `alert` (exhausted) | `alert: auto-switch is off while the live login is exhausted (<profile>: <reason>)`, printed after the ledger's `alert:` and `warning:` lines when the [exhausted-while-off](#exhausted-while-off) condition holds; or `alert: unavailable (<error>)` when auto-switch is off and a ledger or `usage.json` cannot be read, so the condition cannot be checked. |
 
 Run from a shell where the root now resolves elsewhere, for example cron with
 no saved root, `status` finds the running rotator through the record:
@@ -4870,6 +5169,7 @@ no saved root, `status` finds the running rotator through the record:
 root: /home/you/.claude-profiles (pinned by running rotator)
 rotate: running
 autostart: on (default)
+owner: none
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
@@ -4881,6 +5181,54 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 A pending or inconsistent journal adds a line `journal: pending (phase <phase>)`
 or `journal: inconsistent`, and one that cannot be read `journal: damaged`. A
 ledger that cannot be read shows `live: - (ledger unreadable)`.
+
+Under a systemd unit that owns rotation, `status` shows the owner and the
+deferral:
+
+```
+root: /home/you/.claude-profiles (source: config)
+rotate: running
+autostart: on (default) (deferring to amplihack-rotator.service)
+owner: amplihack-rotator.service pid 48213 (running); autostart defers to it
+pid: 48213
+live: spare
+last cycle: 2026-11-01T09:30:05Z stayed
+overflow: -
+on overflow: no
+log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+`status` reads the owner marker only after the root has passed the same
+privacy check autostart uses at step 2 (a real directory owned by you and not
+writable by others). When the root fails it, the marker is not opened, and
+`status` prints these two lines, because a launch stops at step 2 and starts
+no rotator whatever the marker holds:
+
+```
+autostart: on (default) (skipped: root is not private)
+owner: not read (root is not private)
+```
+
+`owner: unreadable` always has the full form in the table above; it means
+the root is private and the marker failed one of the
+[checks](#reading-the-marker). `status` reads the marker and the usage
+readings without a lock and changes nothing.
+
+With auto-switch off and the live login exhausted:
+
+```
+root: /home/you/.claude-profiles (source: config)
+rotate: running
+autostart: on (default)
+owner: none
+pid: 48213
+live: spare
+last cycle: 2026-11-01T10:10:05Z idle
+overflow: -
+on overflow: no
+alert: auto-switch is off while the live login is exhausted (spare: 100% used, threshold 90%)
+log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
 
 After `last cycle:`, `status` prints one `alert: <line>` for each line of the
 ledger's `guidance`, then one `warning: <line>` for each profile in its
@@ -4914,42 +5262,66 @@ running. The check runs after the launch has resolved its profile and before
 Claude starts. It never fails the launch, never changes its exit status and
 never writes to stdout. On other platforms it does nothing.
 
-It checks, in order, and stops silently at the first that fails. Nothing is
-created on disk before step 8.
+It checks, in order, and stops at the first that fails, silently except at
+step 4. Nothing is created on disk before step 9.
 
 | Step | Check | When it fails |
 |------|-------|---------------|
+| 0 | `AMPLIHACK_RECIPE_RUN_ID` is unset or empty, so the launch is not a step of a recipe run. | Skipped (`recipe-run`). Nothing is read, created or printed. |
 | 1 | Auto-switch is on: `<root>/.auto-switch` says `enabled=on`, or `AMPLIHACK_CLAUDE_AUTO_SWITCH=1`. A missing, damaged or `off` setting counts as off. | No effect. |
-| 2 | The root exists, is a real directory (not a symlink) owned by you, and is not writable by other users. | Skipped. Nothing else under the root is read; in particular the autostart setting is not. |
-| 3 | The effective uid is not `0`. | Skipped. `rotate start` still works as root. |
-| 4 | Autostart is on (see the precedence table below). | No effect. |
-| 5 | Not Docker: no `--docker` flag, and Docker not activated through the environment. The environment activates it only when `AMPLIHACK_USE_DOCKER` is truthy, the process is not already inside a container, and Docker is running. `--auto` launches are not skipped. | Skipped. |
-| 6 | The [daemon state](#rotate-daemon) is not `running` or `unverifiable`. | Already running, or skipped. |
-| 7 | The [prototype lock](#rotate-prototype-coexistence) is free and the root is private, as `start` requires. | Skipped. |
-| 8 | Creates the state directory if needed and tries `<root>/.auto-switch.d/lock` once, without waiting. | Busy: another process holds it. |
-| 9 | Under the lock, the daemon state is still not `running`. | Already running. |
-| 10 | The `AMPLIHACK_ROTATE_*` [settings](#rotate-settings) in the launch's environment are valid. | Failed; no rotator started. |
-| 11 | Starts the [daemon](#rotate-daemon), writes `rotate.pid` and the [root record](#rotate-root-record), then releases the lock. | Failed. If the pid file cannot be written, the child is sent `SIGTERM`. |
+| 2 | The root exists, is a real directory (not a symlink) owned by you, and is not writable by other users. | Skipped. Nothing else under the root is read; in particular neither the owner marker nor the autostart setting is. |
+| 3 | The effective uid is not `0`. | Skipped. `rotate start` still works as root. Root never acts on the owner marker. |
+| 4 | There is no [owner marker](#rotate-owner). | Deferred. Nothing is started or created. Silent when the owner is running; otherwise one line to stderr, shown below. |
+| 5 | Autostart is on (see the precedence table below). | No effect. |
+| 6 | Not Docker: no `--docker` flag, and Docker not activated through the environment. The environment activates it only when `AMPLIHACK_USE_DOCKER` is truthy, the process is not already inside a container, and Docker is running. `--auto` launches are not skipped. | Skipped. |
+| 7 | The [daemon state](#rotate-daemon) is not `running` or `unverifiable`. | Already running, or skipped. |
+| 8 | The [prototype lock](#rotate-prototype-coexistence) is free and the root is private, as `start` requires. | Skipped. |
+| 9 | Creates the state directory if needed and tries `<root>/.auto-switch.d/lock` once, without waiting. | Busy: another process holds it. |
+| 10 | Under the lock, the daemon state is still not `running`. | Already running. |
+| 11 | The `AMPLIHACK_ROTATE_*` [settings](#rotate-settings) in the launch's environment are valid. | Failed; no rotator started. |
+| 12 | Starts the [daemon](#rotate-daemon), writes `rotate.pid` and the [root record](#rotate-root-record), then releases the lock. | Failed. If the pid file cannot be written, the child is sent `SIGTERM`. |
 
-Steps 8 to 11 run under the state lock, and `start` and other launches check
+Steps 9 to 12 run under the state lock, and `start` and other launches check
 under the same lock, so at most one rotator runs per root. Unlike `start`,
 autostart runs no recovery; the daemon's first cycle does.
 
-After step 11 the launch prints one line to stderr:
+After step 12 the launch prints one line to stderr:
 
 ```
 amplihack: started Claude login rotator (pid <pid>); 'amplihack profile rotate autostart off' to disable
 ```
 
 and appends `autostart: started pid <pid> exe <path>` to `rotate.err`. A
-failure at step 10 or 11, or an I/O error at step 8, is appended to
+failure at step 11 or 12, or an I/O error at step 9, is appended to
 `rotate.err` as one `autostart: failed: <error>` line, when that file can be
 written, and is otherwise ignored. Every `rotate.err` line has the
 [log](#rotate-log) time prefix and its control characters removed.
 
-Nested launches inside a recipe run take the same steps, so they start a
-rotator only when none is running. The Claude Code `SessionStart` hook does
-not start the rotator.
+At step 4, a marker whose owner is not running gives one stderr line per
+launch:
+
+```
+amplihack: rotation is owned by amplihack-rotator.service, which is not running; run 'amplihack profile rotate owner clear' to let launches start the rotator
+```
+
+A marker that cannot be read or trusted gives:
+
+```
+amplihack: the rotation owner marker is unreadable; run 'amplihack profile rotate owner clear' to let launches start the rotator
+```
+
+When autostart is [off](#autostart-setting), launches still defer to the
+marker, but the line stops after `which is not running` or `is unreadable`
+and gives no advice: clearing the marker would start nothing.
+
+Neither line fails the launch, and neither is written to `rotate.err`.
+
+Launches inside a recipe run never start the rotator: `amplihack recipe run`
+sets `AMPLIHACK_RECIPE_RUN_ID` for its steps, and step 0 stops there. A
+recipe run therefore cannot start a second rotator beside one run by a
+service manager or by hand. A top-level launch, outside any recipe run,
+starts one as before. The Claude Code `SessionStart` hook does not start the
+rotator.
 
 #### Autostart setting
 
@@ -4977,6 +5349,202 @@ if needed.
 When the variable is set to a valid value, `rotate autostart on|off` still
 writes the file, and then warns on stderr that
 `AMPLIHACK_ROTATE_AUTOSTART=<value>` overrides it in this environment.
+
+`rotate autostart on|off` is the only command that writes the file. When the
+write changes the value, it appends a [`change:` line](#rotate-change-log)
+to the log, for example
+`change: rotate-autostart on -> off by pid=52011 ppid=4120 parent="-bash"`.
+
+### Rotate owner
+
+A rotator run by a service manager, such as a systemd user unit, records
+itself as the rotation owner. While it is recorded, launches do not start a
+second rotator: step 4 of [autostart](#rotate-autostart) defers to it, even
+when autostart is on.
+
+The marker defers autostart only. `rotate start` does not read it: while the
+owner is running, `start` refuses because a verified rotator is already
+running, and while it is not, `start` starts a rotator as usual. That
+rotator then makes the unit's next `watch` refuse.
+
+A supervised `watch` refuses like any other `watch` when a verified rotator
+is already running, whether started by autostart, by `rotate start` or by
+hand. It exits with status 1 before writing the marker, so the service
+manager restarts it and it keeps failing until that rotator stops. Run
+`amplihack profile rotate stop` before you enable the unit.
+
+#### Owner marker
+
+The marker is `<root>/.auto-switch.d/rotate/owner`:
+
+```
+unit=amplihack-rotator.service
+pid=48213
+since=1793524205
+```
+
+`unit` is the unit name, `pid` the rotator's pid and `since` the epoch
+seconds, in decimal, when it was written. The keys are written in that order.
+`since` is informational: no decision reads it, and a missing, duplicated or
+malformed `since` does not make the marker unreadable.
+
+`rotate watch` writes the marker when all of these hold:
+
+- it was not started with `--spawned`, so it is not a child of `rotate start`
+  or of autostart;
+- it was given `--supervised` or `--supervised=<UNIT>`, or `INVOCATION_ID` is
+  set and non-empty and step 2 of [Owner unit name](#owner-unit-name) finds
+  a unit;
+- it has taken the state lock and written `rotate.pid`.
+
+The marker is written atomically with mode `0600`, never through a symlink
+and never over a file owned by another user. If it cannot be written, `watch`
+logs `skip: owner marker not written (<error>)` and runs without one.
+
+Nothing removes the marker except `rotate owner clear`. A `watch` that exits,
+`rotate stop`, `rotate start` and a `watch` without `--supervised` all leave
+it in place. When the service manager restarts the unit, the new `watch`
+replaces it with its own pid. An unsupervised `watch` that finds a marker
+prints one note to stderr and then runs as usual:
+
+```
+rotate: rotation is owned by amplihack-rotator.service; this watch runs anyway and leaves the owner marker in place
+```
+
+#### Owner unit name
+
+The unit name is the first of:
+
+1. the value of `--supervised=<UNIT>`, which must be 1 to 256 bytes with no
+   `=`, control character or bidirectional-override or isolate character
+   (U+202A to U+202E, U+2066 to U+2069); any other value is refused with
+   `RotateRefused` (`--supervised=UNIT needs a unit name of 1 to 256 bytes
+   without '=', control or bidi characters`, status 1);
+2. the last component of the path in `/proc/self/cgroup` (read up to 4 KiB,
+   preferring the cgroup v2 and `name=systemd` lines), when it ends in
+   `.service` and is not a user manager (`user@<uid>.service`); this is where
+   systemd places a service's processes, while a shell started from a tmux
+   or terminal server ends in `.scope` and has no unit here;
+3. `amplihack-rotator.service`.
+
+#### Reading the marker
+
+A marker is read only from a regular file, opened without following
+symlinks and without blocking, that is owned by you, is not writable by group
+or others, and is at most 4 KiB. It holds `key=value` lines. It is
+*unreadable* when any of these checks fails, when `unit` or `pid` is missing
+(a marker with only one of them, or an empty file, is unreadable) or appears
+twice, when `pid` is not a positive decimal number without a sign,
+or when `unit` is empty, longer than 256 bytes, or contains `=` or a control
+character. Unknown keys are ignored.
+
+An unreadable marker still counts as an owner, so autostart defers. A damaged
+or foreign file at that path therefore cannot let a stray rotator start; run
+`rotate owner clear` to remove it. Neither stderr nor `status` ever prints
+the marker's bytes.
+
+#### Owner liveness
+
+The owner is *running* when `/proc/<pid>` exists and is owned by your
+effective uid, and its command line, read up to 64 KiB, is a
+[verified rotator](#rotate-root-record): it contains `profile`, `rotate` and
+`watch`, and its `argv[0]` has the same file name as the running `amplihack`.
+Otherwise it is *not running*. A recycled pid that now belongs to some other
+program is therefore not running.
+If the name of the running `amplihack` cannot be found, `status` and
+`rotate owner` print `owner: <unit> pid <n> (liveness unknown); autostart
+defers to it` instead of claiming the owner has stopped.
+
+| Marker | Owner | Autostart (step 4) | `status` |
+|--------|-------|--------------------|----------|
+| none | - | Carries on to step 5. | `owner: none` |
+| valid | running | Defers silently. | `owner: <unit> pid <n> (running); autostart defers to it` |
+| valid | not running | Defers, and prints the `which is not running` line to stderr. | `owner: <unit> pid <n> (not running); autostart defers to it; run 'amplihack profile rotate owner clear' to release` |
+| unreadable | - | Defers, and prints the `unreadable` line to stderr. | `owner: unreadable; autostart defers to it; run 'amplihack profile rotate owner clear' to release` |
+
+#### Clearing the owner
+
+```bash
+amplihack profile rotate owner clear
+```
+
+```
+owner: cleared (was amplihack-rotator.service)
+```
+
+`clear` removes the path itself; a symlink there is removed, and its target
+is left alone. It prints `owner: cleared (was unreadable)` for an unreadable
+marker and `owner: none` when there is nothing to remove. It does not stop a
+rotator. If the path cannot be removed, it fails with status 1.
+
+Run it when you retire the service: stop and disable the unit, then clear the
+owner, so that launches start the rotator again. Leaving a stale marker in
+place is safe; launches defer and warn until it is cleared.
+
+#### Owner limitations
+
+- `INVOCATION_ID` is inherited by every process in a systemd unit. A shell
+  started from a tmux or terminal server that the user manager runs sits in
+  a `.scope`, so a `rotate watch` started from it does not claim ownership.
+  A `rotate watch` started by hand from a shell whose cgroup is itself a
+  `.service` unit does record itself as the owner. Run `rotate owner clear`
+  after stopping it. `rotate start` and autostart
+  are not affected, because they remove `INVOCATION_ID` from the child.
+- An `amplihack` binary older than this feature ignores the marker and may
+  still start a rotator from a launch. Upgrade every binary that launches
+  Claude against the root.
+- `rotate status` prints the `owner:` line straight after `autostart:`, so a
+  script that reads `status` by line number finds `pid:` one line lower.
+
+### Exhausted while off
+
+When auto-switch has been turned off and the live login has no capacity
+left, nothing moves work onto another login. The background rotator reports
+this as an ALERT on every cycle, and `rotate status` as an `alert:` line:
+
+```
+2026-11-01T10:10:05Z ALERT: auto-switch is off while the live login is exhausted (spare: 100% used, threshold 90%)
+```
+
+The condition holds when all of these are true:
+
+1. Auto-switch has been turned off: `auto-switch off`,
+   `AMPLIHACK_CLAUDE_AUTO_SWITCH=0`, or a corrupt `<root>/.auto-switch`. With
+   no auto-switch setting at all, it is not off.
+2. The rotate ledger names a `live` profile, and the auto-switch ledger maps
+   it to the profile whose login it holds.
+3. That profile has a [reading](#readings) in `usage.json`, and either:
+   - the reading's source is a usage-limit failure whose reset time is still
+     in the future, giving `usage limit reached, resets <time>` (the latest
+     such reset), or
+   - the higher of its session and weekly percentages is at or above the
+     auto-switch threshold, giving `<pct>% used, threshold <t>%`. A window
+     whose reset time has passed counts as 0%, as it does for
+     [candidate selection](#readings): `usage.json` is not refreshed while
+     sessions are stopped, so its stored percentage is out of date once the
+     window resets. A usage-limit failure whose reset has passed is
+     therefore no ALERT, whatever percentage it recorded.
+
+The reason has exactly one of two forms:
+
+| Form | Values |
+|------|--------|
+| `<pct>% used, threshold <t>%` | `<pct>` is the higher percentage rounded down to a whole number, so `99.7` is written `99`; the comparison with the threshold uses the unrounded value. `<t>` is the threshold as a whole number. |
+| `usage limit reached, resets <time>` | `<time>` is the reset time in the RFC 3339 UTC form the log uses for its own timestamps, to the second with a `Z` suffix, for example `2026-11-01T14:00:00Z`. |
+
+When both apply, the usage-limit form is used. The same text appears in the
+log line and in the `alert:` line of `rotate status`.
+
+No rotate ledger, no `live` profile, a live profile with no reading, and a
+non-finite percentage or threshold all give no ALERT. A rotate ledger,
+auto-switch ledger or `usage.json` that exists but cannot be read is not
+taken as "not exhausted": `watch` writes
+`skip: alert check failed: <error>` on every paused cycle instead, and
+`rotate status` prints `alert: unavailable (<error>)`. The check takes no lock, runs no
+probe and writes nothing. The ALERT does not change what the cycle does: the
+rotator stays idle, and `idle: auto-switch is off` is still written only once
+per change. Turn auto-switch back on, or switch logins by hand with
+[`profile switch`](#rotate-switch), to act on it.
 
 ### Rotate daily session archive
 
