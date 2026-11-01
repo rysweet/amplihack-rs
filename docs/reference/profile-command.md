@@ -1230,12 +1230,21 @@ The rate is how many login-weeks were used per hour over the last six hours.
 It is read from the [usage history](#usage-history):
 
 1. The newest end is this run's readings. The oldest end is the oldest
-   history entry no more than six hours older than this run.
-2. If that entry is less than four and a half hours older, there is too
-   little history: `runway unknown`, and the rate and runway are `null` in
-   JSON.
-3. Only logins with a valid reading at both ends count. A login missing from
-   either end, for example one the rotator did not measure, is left out.
+   history entry no more than six hours older than this run that covers
+   every login with a valid reading now: an entry written by `profile
+   usage` (or an older entry without a writer), or a rotator entry that read
+   all of those logins. A rotator entry that skipped a login, for example
+   one running a session, is never the oldest end. Those busy logins are
+   the ones being used, and leaving them out of the rate while their
+   headroom still counts would make the runway far too long. Entries before
+   the oldest end are not used.
+2. If there is no such entry, or it is less than four and a half hours
+   older, there is too little history: `runway unknown`, and the rate and
+   runway are `null` in JSON.
+3. Only logins with a valid reading at both ends count. A login `profile
+   usage` could not read at the start, or one that is unknown now, is left
+   out. Rotator entries between the two ends are used for the logins they
+   read; a login missing from one of them only skips that step.
 4. For each login, the use is its week percentage now minus its week
    percentage at the start. Between each pair of consecutive entries in which
    the login appears, a weekly reset is detected when the earlier entry's
@@ -1407,7 +1416,7 @@ Who writes it:
 | Writer | When |
 |--------|------|
 | `profile usage` | After the probes, when no profile names were given and `--raw` was not given. With or without `--json` and `--summary-json`. |
-| The [rotator](#rotate-cycle) | After every cycle that measured usage, once its state lock is released. It records the profiles it measured, which may be fewer than all; the rate copes with that. The [live login](#rotate-live-profile) is recorded under its profile, and a login in `~/.claude` that belongs to no profile is not recorded. A cycle that measured nothing writes nothing. |
+| The [rotator](#rotate-cycle) | After every cycle that measured usage, once its state lock is released. It records the profiles it measured, and lists as unknown the plan logins it skipped as busy (a session running, leased, hosting or parked), so the entry says how many it did not read. Such an entry is not used as the start of the [rate](#rate-and-runway). The [live login](#rotate-live-profile) is recorded under its profile, and a login in `~/.claude` that belongs to no profile is not recorded. A cycle that measured nothing writes nothing. |
 
 Both writers record only when all of these hold, and otherwise write nothing
 and print nothing about the history:
@@ -5593,7 +5602,9 @@ So that a change in `N` between cycles is not read as a change in usage, the
 line names the writer of the entry after its age: `rotate cycle: probed
 profiles only` or `profile usage: all logins`. An entry written before the
 writer was recorded names none. When the entry lists logins its writer could
-not read, `, M unknown` follows the usable count; they are in no figure.
+not read, `, M unknown` follows the usable count; they are in no figure. A
+rotator entry lists there the logins it skipped as busy as well as those
+whose probe failed, so `M` says how many logins the line leaves out.
 When a profile in that entry has a weight other than `1.0`, the line adds
 `   [weighted: X' of T]` after `(P%)`, as in the summary.
 

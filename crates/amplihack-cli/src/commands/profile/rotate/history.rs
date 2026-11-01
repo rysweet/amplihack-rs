@@ -26,7 +26,8 @@ pub fn record(root: &Path, out: &mut Sink, first: &Snap, probes: &Probes, at: i6
         LiveId::Known(n) => Some(n),
         _ => None,
     };
-    let entry = usage_history::from_probes(at, live, probes, first.platform())
+    let unmeasured = first.unmeasured_plan();
+    let entry = usage_history::from_probes(at, live, probes, first.platform(), &unmeasured)
         .entry(usage_history::Writer::Rotate);
     if let Err(e) = usage_history::append(root, &entry, now())
         && let Some(w) = e.warning()

@@ -17,7 +17,7 @@
 
 use super::capacity_summary::{Inputs, Summary, compute, rounded};
 use super::capacity_weight::Weights;
-use super::usage_history::{Entry, Point, Snapshot};
+use super::usage_history::{Entry, Point, Snapshot, Writer};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -661,6 +661,136 @@ fn profiles_missing_at_either_end_are_left_out_of_the_rate() {
         &[("y", pt(Some(0), 0)), ("z", pt(Some(0), 10))],
     )];
     assert_eq!(rate_of(&cur, &h), json!(0.05));
+}
+
+fn written_by(by: Writer, at: i64, points: &[(&str, Point)], unknown: &[&str]) -> Entry {
+    Entry {
+        by: Some(by),
+        unknown: unknown.iter().map(|n| n.to_string()).collect(),
+        ..entry(at, points)
+    }
+}
+
+/// The crusty round-2 case: four logins, B and C running sessions. Six
+/// hours ago the rotator read only A and D, listing the busy B and C as
+/// unknown; now `profile usage` reads all four.
+fn busy_logins_now() -> Snapshot {
+    snap(
+        T,
+        &[
+            ("a", pt(Some(0), 20)),
+            ("b", pt(Some(0), 80)),
+            ("c", pt(Some(0), 70)),
+            ("d", pt(Some(0), 20)),
+        ],
+        &[],
+    )
+}
+
+fn rotator_line_without_the_busy_logins() -> Entry {
+    written_by(
+        Writer::Rotate,
+        T - 6 * HOUR,
+        &[("a", pt(Some(0), 10)), ("d", pt(Some(0), 20))],
+        &["b", "c"],
+    )
+}
+
+#[test]
+fn a_rotator_line_that_left_out_busy_logins_is_never_the_start() {
+    // Counting only A from that line would give 0.017 login-weeks/h and a
+    // runway of 126 h while B and C are being used up.
+    let cur = busy_logins_now();
+    let s = summary(
+        &cur,
+        &Weights::default(),
+        95,
+        &[rotator_line_without_the_busy_logins()],
+    );
+    assert_eq!(js(&s)["rate_login_weeks_per_hour"], Value::Null);
+    assert_eq!(js(&s)["runway_hours"], Value::Null);
+    assert_eq!(lines(&s)[3], "runway               unknown");
+}
+
+#[test]
+fn the_start_is_the_oldest_line_that_covers_every_current_login() {
+    // The usage line 5 h ago read all four: 8 + 50 + 40 + 0 = 98 points
+    // over 5 h is 0.196 login-weeks/h, and 2.1 login-weeks of headroom last
+    // 10.7 h. The older rotator line is not used.
+    let cur = busy_logins_now();
+    let h = [
+        rotator_line_without_the_busy_logins(),
+        written_by(
+            Writer::Usage,
+            T - 5 * HOUR,
+            &[
+                ("a", pt(Some(0), 12)),
+                ("b", pt(Some(0), 30)),
+                ("c", pt(Some(0), 30)),
+                ("d", pt(Some(0), 20)),
+            ],
+            &[],
+        ),
+    ];
+    let s = summary(&cur, &Weights::default(), 95, &h);
+    assert_eq!(js(&s)["rate_login_weeks_per_hour"], json!(0.196));
+    assert_eq!(js(&s)["runway_hours"], json!(10.7));
+}
+
+#[test]
+fn a_rotator_line_that_read_every_current_login_can_be_the_start() {
+    let cur = snap(T, &[("a", pt(Some(0), 40)), ("b", pt(Some(0), 40))], &[]);
+    let h = [written_by(
+        Writer::Rotate,
+        T - 6 * HOUR,
+        &[("a", pt(Some(0), 10)), ("b", pt(Some(0), 10))],
+        &[],
+    )];
+    // 60 points over 6 h.
+    assert_eq!(rate_of(&cur, &h), json!(0.1));
+}
+
+#[test]
+fn a_usage_start_leaves_out_only_the_logins_it_failed_to_read() {
+    // Issue #1797: a failed reading at either end is left out. The usage
+    // line could not read y, so only z counts: 30 points over 6 h.
+    let cur = snap(T, &[("y", pt(Some(0), 90)), ("z", pt(Some(0), 40))], &[]);
+    let h = [written_by(
+        Writer::Usage,
+        T - 6 * HOUR,
+        &[("z", pt(Some(0), 10))],
+        &["y"],
+    )];
+    assert_eq!(rate_of(&cur, &h), json!(0.05));
+}
+
+#[test]
+fn rotator_lines_between_the_ends_still_find_resets() {
+    // The rotator lines skipped b but saw a's week reset (90, then 5): a
+    // used 10 + 5 + 20 = 35 points and b 30, so 65 points over 6 h.
+    let cur = snap(T, &[("a", pt(Some(0), 25)), ("b", pt(Some(0), 40))], &[]);
+    let h = [
+        written_by(
+            Writer::Usage,
+            T - 6 * HOUR,
+            &[("a", pt(Some(0), 80)), ("b", pt(Some(0), 10))],
+            &[],
+        ),
+        written_by(
+            Writer::Rotate,
+            T - 4 * HOUR,
+            &[("a", pt(Some(0), 90))],
+            &["b"],
+        ),
+        written_by(
+            Writer::Rotate,
+            T - 3 * HOUR,
+            &[("a", pt(Some(0), 5))],
+            &["b"],
+        ),
+    ];
+    let r = rate_of(&cur, &h).as_f64().expect("a rate");
+    assert!((r - 65.0 / 100.0 / 6.0).abs() < 0.001, "{r}");
 }
 
 #[test]

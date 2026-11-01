@@ -253,13 +253,16 @@ pub(super) fn from_rows(at: i64, rows: &[Row], swapped: Option<&ProfileName>) ->
 /// The snapshot of a rotator cycle. The live probe is recorded under
 /// `live`, the live login's profile, and dropped when the login belongs to
 /// no profile. The API-key profile `platform` is not a login and is never
-/// recorded or counted as unknown.
+/// recorded or counted as unknown. `unmeasured` are the plan logins the
+/// cycle skipped as busy (`Snap::unmeasured_plan`): they were not read, so
+/// they are listed as unknown and the line says how many it left out.
 #[cfg(unix)]
 pub(super) fn from_probes(
     at: i64,
     live: Option<&ProfileName>,
     probes: &super::rotate::Probes,
     platform: Option<&ProfileName>,
+    unmeasured: &[ProfileName],
 ) -> Snapshot {
     let (live_probe, others) = probes;
     let mut points = BTreeMap::new();
@@ -274,6 +277,11 @@ pub(super) fn from_probes(
                 points.insert(name.as_str().to_string(), p);
             }
             None => unknown.push(name.as_str().to_string()),
+        }
+    }
+    for name in unmeasured.iter().filter(|n| platform != Some(*n)) {
+        if !points.contains_key(name.as_str()) {
+            unknown.push(name.as_str().to_string());
         }
     }
     unknown.sort();

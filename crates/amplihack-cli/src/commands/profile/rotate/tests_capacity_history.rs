@@ -76,7 +76,7 @@ fn pt(s: Option<u8>, w: u8, w_reset: Option<i64>, s_reset: Option<i64>) -> Point
 #[test]
 fn from_probes_records_the_live_profile_under_its_name() {
     let probes = (probed(10.0, 20.0), vec![(n("spare"), probed(30.4, 40.5))]);
-    let s = from_probes(T, Some(&n("work")), &probes, None);
+    let s = from_probes(T, Some(&n("work")), &probes, None, &[]);
     assert_eq!(s.at, T);
     assert_eq!(
         s.points["work"],
@@ -92,7 +92,7 @@ fn from_probes_records_the_live_profile_under_its_name() {
 #[test]
 fn from_probes_drops_an_unowned_live_login() {
     let probes = (probed(10.0, 20.0), vec![(n("spare"), probed(30.0, 40.0))]);
-    let s = from_probes(T, None, &probes, None);
+    let s = from_probes(T, None, &probes, None, &[]);
     assert_eq!(s.points.keys().collect::<Vec<_>>(), ["spare"]);
 }
 
@@ -105,7 +105,7 @@ fn from_probes_never_records_the_api_key_profile() {
             (n("spare"), probed(30.0, 40.0)),
         ],
     );
-    let s = from_probes(T, None, &probes, Some(&n("key")));
+    let s = from_probes(T, None, &probes, Some(&n("key")), &[]);
     assert_eq!(s.points.keys().collect::<Vec<_>>(), ["spare"]);
     assert!(
         !s.unknown.iter().any(|u| u == "key"),
@@ -129,9 +129,21 @@ fn from_probes_leaves_failed_spend_limited_and_weekless_probes_out() {
             (n("weekless"), weekless),
         ],
     );
-    let s = from_probes(T, Some(&n("live")), &probes, None);
+    let s = from_probes(T, Some(&n("live")), &probes, None, &[]);
     assert_eq!(s.points.keys().collect::<Vec<_>>(), ["live"]);
     assert_eq!(s.unknown, ["failed", "spend", "weekless"]);
+}
+
+#[test]
+fn from_probes_lists_busy_skipped_logins_as_unknown() {
+    // Crusty round 2: the logins a cycle skipped as busy were not read, so
+    // the line lists them as unknown rather than leaving them out silently.
+    // A name that was also read, and the API-key profile, are not added.
+    let probes = (probed(1.0, 2.0), vec![(n("spare"), probed(30.0, 40.0))]);
+    let busy = [n("busy-b"), n("busy-a"), n("spare"), n("key")];
+    let s = from_probes(T, Some(&n("live")), &probes, Some(&n("key")), &busy);
+    assert_eq!(s.points.keys().collect::<Vec<_>>(), ["live", "spare"]);
+    assert_eq!(s.unknown, ["busy-a", "busy-b"]);
 }
 
 #[test]
@@ -139,7 +151,7 @@ fn from_probes_records_an_exhausted_week_as_100() {
     let mut out = probed(40.0, 100.0);
     out.reading = Reading::Exhausted;
     let probes = (probed(1.0, 2.0), vec![(n("out"), out)]);
-    let s = from_probes(T, None, &probes, None);
+    let s = from_probes(T, None, &probes, None, &[]);
     assert_eq!(s.points["out"].w, 100);
 }
 
@@ -151,7 +163,7 @@ fn from_probes_counts_an_exhausted_probe_without_a_week_as_unknown() {
         out.reading = Reading::Exhausted;
         out.windows.week = None;
         let probes = (probed(1.0, 2.0), vec![(n("out"), out)]);
-        let snap = from_probes(T, None, &probes, None);
+        let snap = from_probes(T, None, &probes, None, &[]);
         assert!(snap.points.is_empty(), "{s}: {:?}", snap.points);
         assert_eq!(snap.unknown, ["out"]);
     }
@@ -433,7 +445,7 @@ fn from_probes_a_login_with_no_session_limit_is_usable_now() {
         probed(10.0, 20.0),
         vec![(n("free"), weekly_only(40.0, true))],
     );
-    let s = from_probes(T, None, &probes, None);
+    let s = from_probes(T, None, &probes, None, &[]);
     let p = &s.points["free"];
     assert_eq!((p.s, p.w, p.no_session_limit), (None, 40, true));
     assert!(capacity_summary::usable_now(p, 95));
@@ -445,7 +457,7 @@ fn from_probes_a_session_not_read_is_not_usable_now() {
         probed(10.0, 20.0),
         vec![(n("blank"), weekly_only(40.0, false))],
     );
-    let s = from_probes(T, None, &probes, None);
+    let s = from_probes(T, None, &probes, None, &[]);
     let p = &s.points["blank"];
     assert_eq!((p.s, p.no_session_limit), (None, false));
     assert!(!capacity_summary::usable_now(p, 95));

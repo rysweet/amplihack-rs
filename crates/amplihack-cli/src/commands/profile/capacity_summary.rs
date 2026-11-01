@@ -11,8 +11,9 @@
 //!   session limit at all (issue #1818). A session not read is not usable.
 //! - Next session reset: session-limited logins with weekly capacity and a
 //!   known reset, grouped within 60 s of the earliest.
-//! - Rate: from the oldest entry no more than 6 h old, which must be at
-//!   least 4.5 h old; a reset, seen as `w_reset` passing or a fall in `w`,
+//! - Rate: from the oldest entry no more than 6 h old that covers every
+//!   current login (a `profile usage` line, or a rotator line that read
+//!   them all), which must be at least 4.5 h old; a reset, seen as `w_reset` passing or a fall in `w`,
 //!   adds the earlier `w` back. Runway is weighted headroom over the rate.
 //! - Rounding is half away from zero and happens only when printed; a value
 //!   that is not finite prints as `null`.
@@ -118,9 +119,30 @@ fn used_between(a: &Point, b: &Point, b_at: i64) -> i64 {
     }
 }
 
+/// Whether `e` may be the start of the rate for the logins in `current`.
+///
+/// A rotate cycle records only the logins it probed and never probes the
+/// busy ones (a session running, leased, hosting or parked), which are the
+/// logins being used up. A rotator line that leaves out a current login
+/// would drop that login from the rate while the runway still divides the
+/// headroom of every current login by it, so the runway would come out far
+/// too long. Such a line is therefore never the start: the start is a
+/// `profile usage` line (or an older line without a writer), which reads
+/// every login, or a rotator line that read every current login. A login
+/// that a `profile usage` start could not read is a failed reading and is
+/// left out, as issue #1797 says. Rotator lines still count between the two
+/// ends, where a missing login only skips that step.
+fn can_start(e: &Entry, current: &Snapshot) -> bool {
+    match e.by {
+        Some(Writer::Rotate) => current.points.keys().all(|n| e.profiles.contains_key(n)),
+        Some(Writer::Usage) | None => true,
+    }
+}
+
 /// Weighted login-weeks an hour over the rate window, counting only
-/// profiles valid at both ends. `None` without a start at least 4.5 h old
-/// or with no profile at both ends.
+/// profiles valid at both ends. The start is the oldest entry in the window
+/// that [`can_start`]; entries before it are not used. `None` without such
+/// a start at least 4.5 h old or with no profile at both ends.
 fn rate_of(i: &Inputs<'_>) -> Option<f64> {
     let from = i.now.saturating_sub(RATE_WINDOW);
     let mut window: Vec<&Entry> = i
@@ -129,7 +151,8 @@ fn rate_of(i: &Inputs<'_>) -> Option<f64> {
         .filter(|e| e.at >= from && e.at < i.now)
         .collect();
     window.sort_by_key(|e| e.at);
-    let (start, rest) = window.split_first()?;
+    let first = window.iter().position(|e| can_start(e, i.current))?;
+    let (start, rest) = window[first..].split_first()?;
     let span = i.now.saturating_sub(start.at);
     if span < RATE_MIN_SPAN {
         return None;

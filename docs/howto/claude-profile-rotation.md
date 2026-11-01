@@ -1108,14 +1108,19 @@ full. The table above the summary shows which they are.
 
 The runway needs about six hours of history. Each rotator cycle and each
 `profile usage` run without profile names adds a line to
-`<root>/.auto-switch.d/usage-history.jsonl`, so with the rotator running the
-runway appears within five hours. Until then it reads `unknown`. The rate is
-per hour, worked out from between four and a half and six hours of history.
+`<root>/.auto-switch.d/usage-history.jsonl`. Until there is enough it reads
+`unknown`. The rate is per hour, worked out from between four and a half and
+six hours of history, and it starts from a line that read every login: a
+`profile usage` line, or a rotator line from a cycle that skipped none. A
+rotator cycle does not probe logins that are running a session, so while
+some are busy, run `amplihack profile usage` now and then (every few hours)
+to give the runway a starting point.
 
 `amplihack profile rotate status` prints the same figures in one
 `capacity:` line from the rotator's last cycle, without probing anything.
 That cycle may have measured only some logins, so its `of N` can be smaller
-than in `profile usage`.
+than in `profile usage`; the logins it skipped as busy are counted in its
+`unknown`.
 
 If your logins are on different plans, give the larger ones more weight in
 `<root>/.auto-switch.d/capacity-weights.json`, for example
