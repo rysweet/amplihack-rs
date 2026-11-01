@@ -449,3 +449,167 @@ fn an_untrusted_or_damaged_ledger_is_an_error() {
     );
     fs::set_permissions(&r.state.dir, fs::Permissions::from_mode(0o700)).unwrap();
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1818: a reading with no session limit keeps a stored session window
+// until its reset passes
+// ---------------------------------------------------------------------------
+
+/// `a` has a stored session window at 95% resetting at `resets_at`, and a
+/// week at 40%.
+fn stored_session_window(r: &Root, t: i64, resets_at: i64) {
+    let mut accounts = BTreeMap::new();
+    accounts.insert(
+        "a".to_string(),
+        Reading {
+            five_hour: Some(Window {
+                used_percentage: 95.0,
+                resets_at,
+            }),
+            seven_day: Some(Window {
+                used_percentage: 40.0,
+                resets_at: t + 2 * DAY,
+            }),
+            observed_at: t - 100,
+            source: ReadingSource::Statusline,
+        },
+    );
+    r.state
+        .save_usage(&super::state::UsageFile {
+            version: 1,
+            accounts,
+        })
+        .unwrap();
+}
+
+/// A no-session-limit reading reaches `record_usage` as a week with no
+/// session window: `settle_session` clears the session when it decides no
+/// limit applies. A stored 95% window that has not reset contradicts that
+/// reading, which may be stale, so the window is kept and the login stays
+/// session-exhausted until the reset passes.
+#[test]
+fn no_session_limit_keeps_a_stored_unexpired_session_window() {
+    let r = root(true);
+    let t = now();
+    stored_session_window(&r, t, t + 2 * HOUR);
+    let o = obs("a", "a", None, ow(30.0, Some(t + 3 * DAY)));
+    let out = record_usage(&r.root, &[o]).unwrap();
+    assert_eq!(out, recorded(&["a"], &[]));
+    let a = &r.state.try_load_usage().unwrap().accounts["a"];
+    assert_eq!(
+        a.five_hour,
+        Some(Window {
+            used_percentage: 95.0,
+            resets_at: t + 2 * HOUR
+        }),
+        "an unexpired session window is not erased by a reset-less reading"
+    );
+    assert_eq!(
+        a.seven_day,
+        Some(Window {
+            used_percentage: 30.0,
+            resets_at: t + 3 * DAY
+        })
+    );
+    // The file format is unchanged: no new key is written.
+    let raw = fs::read_to_string(usage_file(&r)).unwrap();
+    assert!(!raw.contains("session_limit"), "{raw}");
+}
+
+#[test]
+fn no_session_limit_drops_a_stored_session_window_once_it_has_reset() {
+    let r = root(true);
+    let t = now();
+    stored_session_window(&r, t, t - 60);
+    let o = obs("a", "a", None, ow(30.0, Some(t + 3 * DAY)));
+    record_usage(&r.root, &[o]).unwrap();
+    let a = &r.state.try_load_usage().unwrap().accounts["a"];
+    assert_eq!(
+        a.five_hour, None,
+        "a window whose reset has passed is dropped"
+    );
+    let raw = fs::read_to_string(usage_file(&r)).unwrap();
+    assert!(!raw.contains("five_hour"), "{raw}");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1818: `no_session_window_profiles`, read by `rotate status`
+// ---------------------------------------------------------------------------
+
+fn seed(r: &Root, readings: &[(&str, bool, bool)]) {
+    let t = now();
+    let accounts = readings
+        .iter()
+        .map(|(name, five, seven)| {
+            let win = |on: bool, pct: f64, at: i64| {
+                on.then_some(Window {
+                    used_percentage: pct,
+                    resets_at: at,
+                })
+            };
+            (
+                name.to_string(),
+                Reading {
+                    five_hour: win(*five, 20.0, t + HOUR),
+                    seven_day: win(*seven, 30.0, t + DAY),
+                    observed_at: t - 10,
+                    source: ReadingSource::Statusline,
+                },
+            )
+        })
+        .collect();
+    r.state
+        .save_usage(&super::state::UsageFile {
+            version: 1,
+            accounts,
+        })
+        .unwrap();
+}
+
+#[test]
+fn no_session_window_profiles_lists_weekly_only_readings_sorted_and_filtered() {
+    use super::no_session_window_profiles;
+    let r = root(true);
+    seed(
+        &r,
+        &[
+            ("zed", false, true),
+            ("amy", false, true),
+            ("both", true, true),
+            ("five", true, false),
+            ("gone", false, true),
+        ],
+    );
+    let names = ["both", "five", "zed", "amy", "never"];
+    assert_eq!(no_session_window_profiles(&r.root, &names), ["amy", "zed"]);
+    assert!(
+        no_session_window_profiles(&r.root, &[]).is_empty(),
+        "only current profiles are listed"
+    );
+}
+
+#[test]
+fn no_session_window_profiles_is_empty_without_state_and_never_creates_it() {
+    use super::no_session_window_profiles;
+    let r = root(false);
+    assert!(no_session_window_profiles(&r.root, &["a"]).is_empty());
+    assert!(!r.root.join(".auto-switch.d").exists(), "read-only");
+}
+
+#[test]
+fn no_session_window_profiles_is_empty_when_usage_json_is_unsafe_or_damaged() {
+    use super::no_session_window_profiles;
+    let r = root(true);
+    seed(&r, &[("amy", false, true)]);
+    assert_eq!(no_session_window_profiles(&r.root, &["amy"]), ["amy"]);
+
+    fs::set_permissions(usage_file(&r), fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(
+        no_session_window_profiles(&r.root, &["amy"]).is_empty(),
+        "group- or world-readable state is not trusted"
+    );
+
+    fs::write(usage_file(&r), "{not json").unwrap();
+    fs::set_permissions(usage_file(&r), fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(no_session_window_profiles(&r.root, &["amy"]).is_empty());
+}

@@ -189,7 +189,7 @@ fn the_pin_gate_runs_before_claude_is_looked_for() {
     let cycle = body_of(&source("cycle.rs"), "run_cycle");
     assert_before(&cycle, "pin::gate", "resolve_claude_binary", "run_cycle");
     assert_before(&cycle, "pin::gate", "measure_and_decide", "run_cycle");
-    let dry = body_of(&source("observe.rs"), "dry_run");
+    let dry = body_of(&source("dry_run.rs"), "dry_run");
     assert_before(&dry, "pin::gate", "resolve_claude_binary", "dry_run");
     assert_before(&dry, "pin::gate", "measure_and_decide", "dry_run");
 }
