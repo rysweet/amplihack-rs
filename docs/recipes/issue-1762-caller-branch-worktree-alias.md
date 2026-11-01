@@ -514,7 +514,8 @@ look up the PR, under the alias name. Reinstall the bundle with
   stops with "this worktree is not on the PR head branch". An alias worktree
   is on `<B>--wt-<n>`, so a round run there stops and commits and pushes
   nothing. To use auto-drive on `<B>`, start it from a checkout that is not on
-  `<B>`.
+  `<B>`. Support for alias worktrees in the guard is tracked in
+  [#1834](https://github.com/rysweet/amplihack-rs/issues/1834).
 - **Nested runs from an alias worktree.** A run started from inside an alias
   worktree of `<B>` and targeting `<B>` finds `<B>` checked out in the original
   caller's checkout. That checkout is not the new run's caller, so the existing
@@ -522,7 +523,10 @@ look up the PR, under the alias name. Reinstall the bundle with
   the original caller's checkout as its task worktree. This goes against the
   intent of #858. The same rule applies to a run that targets `<B>` from any
   third checkout while the original caller is on `<B>`; that behaviour predates
-  #1762.
+  #1762. Until it is fixed, do not start a run that targets `<B>` from an alias
+  worktree of `<B>`. The fix, refusing to reuse a checkout of `<B>` outside
+  `<main>/worktrees/`, is tracked in
+  [#1833](https://github.com/rysweet/amplihack-rs/issues/1833).
 - **The caller later leaves `<B>`.** The next run takes the ordinary path, on
   `<main>/worktrees/<B>`. The old alias worktree stays until the sweep removes
   it.
