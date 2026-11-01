@@ -69,6 +69,7 @@ nav:
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
       - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md
       - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md
+      - Keep Tests from Prompting for Git Credentials: howto/keep-tests-from-prompting-for-git.md
       - Profile Command Reference: reference/profile-command.md
       - Sessions Command Reference: reference/sessions-command.md
       - Agent Command Reference: reference/agent-command.md
