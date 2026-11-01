@@ -26,6 +26,9 @@
 # Every token in this file is an obvious fake.
 
 set -uo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CLAIM="$ROOT/amplifier-bundle/tools/workflow_issue_claim_check.sh"
@@ -410,10 +413,10 @@ STUB="$WORK/stub"; mkdir -p "$STUB"
 for c in git sed awk grep head tr mktemp rm timeout printf env bash cat date basename; do
   p="$(command -v "$c" 2>/dev/null)" && ln -sf "$p" "$STUB/$c"
 done
-OUT="$(env -i PATH="$STUB" HOME="$HOME" GIT_CONFIG_NOSYSTEM=1 bash "$CLAIM" --issue 1084 --repo-path "$WORK/gh" 2>&1)"; RC=$?
+OUT="$(env -i GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true PATH="$STUB" HOME="$HOME" GIT_CONFIG_NOSYSTEM=1 bash "$CLAIM" --issue 1084 --repo-path "$WORK/gh" 2>&1)"; RC=$?
 continues "gh not installed" "gh-not-installed"
 ln -sf "$BIN/gh" "$STUB/gh"
-OUT="$(env -i PATH="$STUB" HOME="$HOME" GIT_CONFIG_NOSYSTEM=1 FAKE_GH=closing_ref bash "$CLAIM" --issue 1084 --repo-path "$WORK/gh" 2>&1)"; RC=$?
+OUT="$(env -i GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true PATH="$STUB" HOME="$HOME" GIT_CONFIG_NOSYSTEM=1 FAKE_GH=closing_ref bash "$CLAIM" --issue 1084 --repo-path "$WORK/gh" 2>&1)"; RC=$?
 continues "jq not installed" "jq-not-installed"
 
 echo "== 4. the closing keyword is earned by the diff =="

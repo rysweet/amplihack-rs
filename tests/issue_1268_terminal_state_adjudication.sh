@@ -30,6 +30,9 @@
 # Run: bash tests/issue_1268_terminal_state_adjudication.sh
 
 set -uo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FINAL_STATUS="$REPO_ROOT/amplifier-bundle/tools/workflow_final_status.sh"
