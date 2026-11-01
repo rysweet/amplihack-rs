@@ -158,10 +158,24 @@ impl ClaudeLauncher {
             return Ok(false);
         }
         info!(repo = %repo, "Checking out repository...");
-        let status = amplihack_git::command()
-            .args(["clone", "--depth", "1", "--", repo])
-            .status()
-            .context("failed to run git clone")?;
+        let mut command = amplihack_git::command();
+        command.args(["clone", "--depth", "1", "--", repo]);
+        // Issue #1808: inside a recipe run, clone into the work root rather
+        // than the current folder, and allow only network transports.
+        if let Some(dest) = run_clone_destination(
+            repo,
+            std::env::var_os("AMPLIHACK_RUN_DIR").as_deref(),
+            std::env::var_os("AMPLIHACK_WORK_ROOT").as_deref(),
+        ) {
+            if let Some(parent) = dest.parent() {
+                create_private_dir_all(parent)?;
+            }
+            info!(dest = %dest.display(), "Cloning into the run's work root");
+            command
+                .arg(&dest)
+                .env("GIT_ALLOW_PROTOCOL", "https:ssh:git");
+        }
+        let status = command.status().context("failed to run git clone")?;
         if !status.success() {
             warn!(repo = %repo, "Repository checkout failed");
             return Ok(false);
@@ -320,6 +334,105 @@ pub fn launch_claude(args: &[String]) -> Result<i32> {
         ..Default::default()
     })
     .launch()
+}
+
+/// Issue #1808: where the launcher clones a repository inside a recipe run:
+/// `<work root>/clones/<sanitised basename>-<first 8 hex of sha256(repo)>`.
+/// `None` outside a run or when the work root is not an absolute path.
+pub(crate) fn run_clone_destination(
+    repo: &str,
+    run_dir: Option<&std::ffi::OsStr>,
+    work_root: Option<&std::ffi::OsStr>,
+) -> Option<PathBuf> {
+    use sha2::{Digest, Sha256};
+    run_dir.filter(|v| !v.is_empty())?;
+    let work_root = PathBuf::from(work_root.filter(|v| !v.is_empty())?);
+    if !work_root.is_absolute() {
+        return None;
+    }
+    let trimmed = repo.trim_end_matches('/');
+    let trimmed = trimmed.strip_suffix(".git").unwrap_or(trimmed);
+    let base = trimmed
+        .rsplit(['/', ':'])
+        .next()
+        .unwrap_or_default()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    let base = match base.as_str() {
+        "" | "." | ".." => "repo".to_string(),
+        _ => base,
+    };
+    let digest = Sha256::digest(repo.as_bytes());
+    let hash: String = digest.iter().take(4).map(|b| format!("{b:02x}")).collect();
+    Some(work_root.join("clones").join(format!("{base}-{hash}")))
+}
+
+#[cfg(unix)]
+fn create_private_dir_all(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .with_context(|| format!("create {}", dir.display()))
+}
+
+#[cfg(not(unix))]
+fn create_private_dir_all(dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dir).with_context(|| format!("create {}", dir.display()))
+}
+
+#[cfg(test)]
+mod issue_1808_clone_destination {
+    use super::run_clone_destination;
+    use std::ffi::OsStr;
+    use std::path::Path;
+
+    #[test]
+    fn outside_a_run_or_with_a_relative_root_there_is_no_destination() {
+        let url = "https://github.com/rysweet/amplihack-rs.git";
+        assert_eq!(
+            run_clone_destination(url, None, Some(OsStr::new("/w"))),
+            None
+        );
+        assert_eq!(
+            run_clone_destination(url, Some(OsStr::new("/w/runs/x")), Some(OsStr::new("rel"))),
+            None
+        );
+    }
+
+    #[test]
+    fn inside_a_run_clones_go_under_work_root_clones_with_a_hash() {
+        let url = "https://github.com/rysweet/amplihack-rs.git";
+        let dest =
+            run_clone_destination(url, Some(OsStr::new("/w/runs/x")), Some(OsStr::new("/w")))
+                .unwrap();
+        assert_eq!(dest.parent(), Some(Path::new("/w/clones")));
+        let name = dest.file_name().unwrap().to_str().unwrap();
+        let hash = name.strip_prefix("amplihack-rs-").unwrap();
+        assert_eq!(hash.len(), 8);
+        assert!(hash.bytes().all(|b| b.is_ascii_hexdigit()));
+        let odd = run_clone_destination(
+            "git@host:org/my repo;x",
+            Some(OsStr::new("/w/runs/x")),
+            Some(OsStr::new("/w")),
+        )
+        .unwrap();
+        assert!(
+            odd.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("my_repo_x-")
+        );
+    }
 }
 
 #[cfg(test)]

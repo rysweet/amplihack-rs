@@ -5,6 +5,7 @@ pub mod agent_binary;
 pub mod append;
 pub mod auto_mode;
 pub mod builder;
+pub mod cleanup;
 pub mod completions;
 pub mod config;
 pub mod cs_validate;
@@ -118,6 +119,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Uninstall => install::run_uninstall(),
         Commands::Profile(cmd) => profile::run_profile(cmd),
         Commands::Usage(cmd) => usage::run(cmd),
+        Commands::Cleanup(args) => cleanup::run(args),
         Commands::Agent(cmd) => agent::run_agent(cmd),
         Commands::Launch {
             resume,

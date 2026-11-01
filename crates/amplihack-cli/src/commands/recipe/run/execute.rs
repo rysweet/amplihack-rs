@@ -586,16 +586,13 @@ pub(super) fn execute_recipe_via_rust(
             .remove("AMPLIHACK_HOME"),
     };
 
-    let runtime_dir = tempfile::Builder::new()
-        .prefix("amplihack-workflow-")
-        .tempdir()
-        .context("failed to create isolated workflow runtime directory")?;
-    let artifact_dir = runtime_dir.path().join("artifacts");
-    let tmp_dir = runtime_dir.path().join("tmp");
-    std::fs::create_dir_all(&artifact_dir)
-        .context("failed to create isolated workflow artifact directory")?;
-    std::fs::create_dir_all(&tmp_dir)
-        .context("failed to create isolated workflow tmp directory")?;
+    // Issue #1808: the run's folder under the work root holds run.json and
+    // owned-paths; its runtime/ (TMPDIR, TMP, TEMP and artifacts) is removed
+    // when the run ends, on every exit path including a panic.
+    let workspace = RefCell::new(crate::commands::cleanup::run_dir::RunWorkspace::begin(
+        &recipe_name,
+        working_dir,
+    )?);
 
     // Issue #964: snapshot the caller checkout's git state BEFORE spawning so a
     // runner that corrupts it (e.g. flips `core.bare=true`, which breaks
@@ -729,10 +726,7 @@ pub(super) fn execute_recipe_via_rust(
         command.env(SESSION_DEPTH_ENV, guard.child_depth.to_string());
         command.env(MAX_DEPTH_ENV, guard.max_depth.to_string());
         command.env("AMPLIHACK_RECIPE_RUN_ID", run_id);
-        command.env("AMPLIHACK_WORKFLOW_RUNTIME_DIR", runtime_dir.path());
-        command.env("AMPLIHACK_RUNTIME_ROOT", runtime_dir.path());
-        command.env("AMPLIHACK_WORKFLOW_ARTIFACT_DIR", &artifact_dir);
-        command.env("TMPDIR", &tmp_dir);
+        command.envs(workspace.borrow().env());
 
         Ok(command)
     };
@@ -764,6 +758,7 @@ pub(super) fn execute_recipe_via_rust(
                 binary.as_path(),
             )
             .with_settings(run_settings.clone());
+            workspace.borrow_mut().record_attempt(correlation.run_id());
             let command = match build_command(correlation.run_id()) {
                 Ok(built) => built,
                 // Failing to BUILD the invocation (temp file, project graph db)
@@ -858,7 +853,7 @@ pub(super) fn execute_recipe_via_rust(
 
     // Attach the classification to the structured result so the agentic layer
     // reads it as DATA (issue #1337's evaluator) instead of scraping prose.
-    match result {
+    let final_result = match result {
         Ok(mut run_result) => {
             if !run_result.success
                 && let Some(verdict) = last_verdict.borrow().as_ref()
@@ -871,7 +866,48 @@ pub(super) fn execute_recipe_via_rust(
             Ok(run_result)
         }
         Err(error) => Err(error),
-    }
+    };
+    finish_workspace(workspace.into_inner(), &final_result);
+    final_result
+}
+
+/// Issue #1808: removes runtime/, finalises run.json with the outcome, step
+/// statuses and log path, and runs the end-of-run sweep.
+fn finish_workspace(
+    workspace: crate::commands::cleanup::run_dir::RunWorkspace,
+    result: &Result<RecipeRunResult>,
+) {
+    use crate::commands::cleanup::run_dir::{Outcome, StepStatus};
+    let (outcome, steps, log_path) = match result {
+        Ok(run_result) => (
+            if run_result.success {
+                Outcome::Success
+            } else {
+                Outcome::Failure
+            },
+            run_result
+                .step_results
+                .iter()
+                .map(|step| StepStatus {
+                    id: step.step_id.clone(),
+                    status: step.status.clone(),
+                })
+                .collect(),
+            known_log_paths(Some(run_result))
+                .get("jsonl")
+                .and_then(JsonValue::as_str)
+                .map(String::from),
+        ),
+        Err(error)
+            if error
+                .downcast_ref::<super::stop_signal::StoppedBySignal>()
+                .is_some() =>
+        {
+            (Outcome::Interrupted, Vec::new(), None)
+        }
+        Err(_) => (Outcome::Failure, Vec::new(), None),
+    };
+    workspace.finish(outcome, steps, log_path);
 }
 
 /// The `action` recorded on the classification attached to a terminal result.

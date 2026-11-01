@@ -57,6 +57,8 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_CLAUDE_BINARY_PATH` | user preference |  | Path to the `claude` executable. |
 | `AMPLIHACK_CLAUDE_PROFILE` | user preference |  | Claude profile to launch with. |
 | `AMPLIHACK_CLAUDE_PROFILE_ROOT` | user preference |  | Directory that holds Claude profiles. The test helper `isolated(..)` removes it from every child; see [Keep Tests out of the Real Profile Root](../howto/keep-tests-out-of-the-real-profile-root.md). |
+| `AMPLIHACK_CLEANUP_KEEP_HOURS` | user preference |  | Hours run-owned worktrees and targets are kept after a run's PR closes or the run ends, and the minimum age of untagged targets and system temporary leftovers (not `run-tmp`); default `24`, maximum `87600`. See [Settings](../howto/clean-up-after-recipe-runs.md#settings). |
+| `AMPLIHACK_CLEANUP_ON_EXIT` | user preference |  | `0` skips the end-of-run cleanup sweep; default `1`. The run's `runtime/` folder is still removed. See [What happens when a run ends](../howto/clean-up-after-recipe-runs.md#what-happens-when-a-run-ends). |
 | `AMPLIHACK_CLI_INTEGRATION_QUIET_CHILD` | test-only |  | Test-support child-process switch. |
 | `AMPLIHACK_CODEX_BINARY_PATH` | test-only |  | Set only by install tests; the lookup itself is `AMPLIHACK_<TOOL>_BINARY_PATH`. |
 | `AMPLIHACK_CODEX_TERMINAL_TEST_FIXTURE` | test-only |  | Launcher test fixture switch. |
@@ -110,6 +112,8 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_LITELLM_TARGET` | user preference |  | Agent CLI routed through the gateway. |
 | `AMPLIHACK_LITELLM_TELEMETRY_FILE` | user preference |  | Preflight telemetry output file. |
 | `AMPLIHACK_LITELLM_TELEMETRY_HMAC_KEY` | user preference |  | Key that signs preflight telemetry. |
+| `AMPLIHACK_LOG_ARCHIVE_DAYS` | user preference |  | Age in days after which `amplihack cleanup` archives recipe and session logs; default `30`, maximum `36500`. |
+| `AMPLIHACK_LOG_ARCHIVE_DIR` | user preference |  | Folder for log archives and `MANIFEST.jsonl`; default `<work root>/archive`. See [Archive and restore logs](../howto/clean-up-after-recipe-runs.md#archive-and-restore-logs). |
 | `AMPLIHACK_MAX_DEPTH` | user preference | `orchestrator.max_depth` | Session-tree recursion ceiling for a new root; can only lower a sealed tree. |
 | `AMPLIHACK_MAX_LOCK_ITERATIONS` | user preference |  | Lock-mode iteration cap in the stop hook. |
 | `AMPLIHACK_MAX_LOG_BYTES` | user preference |  | Multitask log size cap. |
@@ -154,7 +158,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_QUEUE_PATH` | test-only |  | Fleet test fixture. |
 | `AMPLIHACK_RECIPE_LOG_JSONL` | user preference |  | Path for structured runner events. |
 | `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` | user preference |  | Whole-run wall-clock limit for the recipe runner. |
-| `AMPLIHACK_RECIPE_RUN_ID` | internal |  | Run id `recipe run` hands to the runner. |
+| `AMPLIHACK_RECIPE_RUN_ID` | internal |  | Run id `recipe run` hands to the runner; a new one for each attempt, including transient retries. |
 | `AMPLIHACK_RECIPE_TRANSIENT_BUDGET_SECS` | user preference |  | Time budget for transient-failure retries. |
 | `AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS` | user preference |  | Attempt cap for transient-failure retries. |
 | `AMPLIHACK_REFLECTION_BINARY` | user preference |  | CLI the reflection hook runs. |
@@ -178,6 +182,8 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_ROTATE_WEEK_AT` | user preference |  | Default for `amplihack profile rotate --week-at`; also auto-switch's plan-capacity test for overflow while no rotator runs. |
 | `AMPLIHACK_RUNTIME_DIR` | user preference |  | Worktree runtime directory override. |
 | `AMPLIHACK_RUNTIME_ROOT` | internal |  | Runtime root handed to recipe steps. |
+| `AMPLIHACK_RUN_DIR` | internal |  | Run folder `<work root>/runs/<run id>` handed to recipe steps. |
+| `AMPLIHACK_RUN_ID` | internal |  | Id of one `amplihack recipe run` invocation, handed to recipe steps; names the run folder. Differs from `AMPLIHACK_RECIPE_RUN_ID`, which is the id of the current attempt. |
 | `AMPLIHACK_RUST_BINARY` | user preference |  | Binary for the Rust trial. |
 | `AMPLIHACK_RUST_RUNTIME` | internal |  | Marks a process launched by the Rust CLI. |
 | `AMPLIHACK_RUST_TRIAL_HOME` | user preference |  | Home for the Rust trial. |
@@ -241,12 +247,14 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_USE_RECIPES` | user preference |  | Lets the cascade workflow use recipes. |
 | `AMPLIHACK_VERSION` | internal |  | Version exported to children. |
 | `AMPLIHACK_WORKFLOW_ARTIFACT_DIR` | internal |  | Artifact directory handed to recipe steps. |
-| `AMPLIHACK_WORKFLOW_RUNTIME_DIR` | internal |  | Runtime directory handed to recipe steps. |
+| `AMPLIHACK_WORKFLOW_RUNTIME_DIR` | internal |  | Runtime directory `<run dir>/runtime` handed to recipe steps. |
 | `AMPLIHACK_WORKSPACE_MARKER` | internal |  | Not an env var: the install clone's workspace marker constant. |
 | `AMPLIHACK_WORKSTREAM_ISSUE` | internal |  | Issue number handed to a multitask workstream. |
 | `AMPLIHACK_WORKSTREAM_PROGRESS_FILE` | internal |  | Progress file handed to a multitask workstream. |
 | `AMPLIHACK_WORKSTREAM_STATE_FILE` | internal |  | State file handed to a multitask workstream. |
 | `AMPLIHACK_WORKTREE_PATH` | internal |  | Worktree path handed to a multitask workstream. |
+| `AMPLIHACK_WORK_ROOT` | user preference |  | Folder for run folders, targets, clones and the log archive; default `$HOME/.amplihack/work`. When set by the caller (see `AMPLIHACK_WORK_ROOT_EXPLICIT`), worktrees also go under it. Clones are never cleaned up. See [Clean Up After Recipe Runs](../howto/clean-up-after-recipe-runs.md#settings). |
+| `AMPLIHACK_WORK_ROOT_EXPLICIT` | internal |  | Handed to recipe steps; decides whether worktrees move under the work root. Passed through unchanged when already set, so a nested run keeps its parent's value; otherwise `1` when `AMPLIHACK_WORK_ROOT` is set and `0` when not. |
 
 ## Related
 

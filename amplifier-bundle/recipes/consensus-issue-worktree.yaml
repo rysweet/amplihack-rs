@@ -352,6 +352,12 @@ steps:
         fi
         SETUP_STATE="create-from-base"
       fi
+      # Issue #1808: record a worktree this run added so cleanup may remove it later.
+      OWNED_HELPER="$TOOLS_DIR/amplihack_run_owned.sh"
+      if [ "$SETUP_STATE" != "reuse-clean-worktree" ] && [ -n "${AMPLIHACK_RUN_DIR:-}" ] && [ -f "$OWNED_HELPER" ]; then
+        bash "$OWNED_HELPER" record worktree "$(cd -P -- "$WORKTREE_PATH" && pwd -P)" "$BRANCH_NAME" \
+          || echo "WARNING: could not record $WORKTREE_PATH for cleanup (issue #1808)" >&2
+      fi
 
       # Push with tracking (bootstrap-aware). Never forced: a deconflicted run pushes
       # only its own fresh branch, so a kept branch's unpushed commits stay local.

@@ -323,6 +323,13 @@ EOF
     found="$(canonical_dir "$target")" || refuse "the new worktree is not accessible"
     [ "$found" = "$target" ] || refuse "the new worktree did not land at the target path"
     verify_worktree "$found" "$head" "$common" || refuse "the new worktree failed verification"
+    # Issue #1808: record the new worktree so cleanup may remove it later.
+    local recorder
+    recorder="$(dirname -- "${BASH_SOURCE[0]}")/amplihack_run_owned.sh"
+    if [ -n "${AMPLIHACK_RUN_DIR:-}" ] && [ -f "$recorder" ]; then
+        bash "$recorder" record worktree "$found" "$head" \
+            || printf 'WARNING: could not record %s for cleanup (issue #1808)\n' "$found" >&2
+    fi
     printf '%s\n' "$found"
 }
 

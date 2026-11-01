@@ -105,14 +105,72 @@ checkout_hash() {
 # in ~/.cache, not on /tmp: /tmp is small, shared by every process on the host,
 # and filling it breaks everyone. TMPDIR remains the fallback for a host with no
 # usable HOME -- a hook that refuses to run is worse than one on the old path.
+#
+# Issue #1808: inside or outside a recipe run, a validated absolute
+# AMPLIHACK_WORK_ROOT puts the caches under <work root>/targets instead, so a
+# run's build output lives with the rest of its files and `amplihack cleanup`
+# can find it. A relative or unset value keeps the XDG path below.
 cache_root() {
-    local base
+    local base work="${AMPLIHACK_WORK_ROOT:-}"
+    case "$work" in
+        /*)
+            if mkdir -p "$work/targets" 2>/dev/null; then
+                printf '%s' "$work/targets"
+                return 0
+            fi
+            ;;
+    esac
     base="${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}"
     if [ -n "$base" ] && mkdir -p "$base/amplihack" 2>/dev/null; then
         printf '%s' "$base/amplihack"
         return 0
     fi
     printf '%s' "${TMPDIR:-/tmp}"
+}
+
+# Issue #1808: the run id suffix, only for an id cleanup would also accept.
+run_suffix() {
+    local id="${AMPLIHACK_RUN_ID:-}"
+    [ -n "$id" ] || return 0
+    [ "${#id}" -le 64 ] || return 0
+    case "$id" in
+        *[!0-9a-f-]*) return 0 ;;
+    esac
+    printf -- '-run-%s' "$id"
+}
+
+# Issue #1808: write the standard cache directory tag, so backup tools skip
+# the folder (https://bford.info/cachedir/). An existing tag is kept.
+write_cachedir_tag() {
+    local dir="$1"
+    mkdir -p "$dir" 2>/dev/null || return 0
+    [ -e "$dir/CACHEDIR.TAG" ] && return 0
+    printf '%s\n' \
+        'Signature: 8a477f597d28d172789f06886806bc55' \
+        '# This file is a cache directory tag created by amplihack.' \
+        '# For information about cache directory tags see https://bford.info/cachedir/' \
+        > "$dir/CACHEDIR.TAG" 2>/dev/null || true
+}
+
+# Issue #1808: inside a run, record the target in the run's owned-paths so
+# cleanup may remove it once the run is eligible. Only a run folder named
+# after the validated run id is written to, and a symlinked file is refused.
+record_owned_target() {
+    local dir="$1" run_dir="${AMPLIHACK_RUN_DIR:-}" owned line
+    [ -n "$(run_suffix)" ] || return 0
+    case "$run_dir" in
+        /*) ;;
+        *) return 0 ;;
+    esac
+    [ "$(basename -- "$run_dir")" = "$AMPLIHACK_RUN_ID" ] || return 0
+    [ -d "$run_dir" ] && [ ! -L "$run_dir" ] || return 0
+    owned="$run_dir/owned-paths"
+    [ -L "$owned" ] && return 0
+    line="$(printf 'target\t%s\t' "$dir")"
+    if [ -f "$owned" ] && grep -qxF -- "$line" "$owned" 2>/dev/null; then
+        return 0
+    fi
+    (umask 077 && printf 'target\t%s\t\n' "$dir" >> "$owned") 2>/dev/null || true
 }
 
 # Is a build writing into this cache right now?
@@ -144,7 +202,9 @@ cache_in_use() {
     return 0
 }
 
-# Age-based (LRU) reclaim. Every worktree gets its own hash, so parallel agents
+# Age-based (LRU) reclaim. The name pattern matches both the hash-only form
+# and the `-run-<run id>` form (issue #1808); only the user's own folders are
+# considered. Every worktree gets its own hash, so parallel agents
 # multiply these fast; without this the only thing that ever frees the space is
 # a human noticing a full disk.
 reclaim_stale_caches() {
@@ -159,7 +219,7 @@ reclaim_stale_caches() {
             "$CACHE_TTL_DAYS" "$dir" >&2
         rm -rf -- "$dir" 2>/dev/null || true
     done < <(find "$root" -mindepth 1 -maxdepth 1 -type d \
-        -name "$CACHE_PREFIX*" -mtime "+$CACHE_TTL_DAYS" 2>/dev/null)
+        -name "$CACHE_PREFIX*" -user "$(id -u)" -mtime "+$CACHE_TTL_DAYS" 2>/dev/null)
 }
 
 # `df` on the nearest existing ancestor: the cache directory itself may not
@@ -215,8 +275,10 @@ if [ -n "${CARGO_TARGET_DIR:-}" ]; then
 else
     CACHE_OWNED=1
     _cache_root="$(cache_root)"
-    _cache_dir="$_cache_root/$CACHE_PREFIX$(checkout_hash)"
+    _cache_dir="$_cache_root/$CACHE_PREFIX$(checkout_hash)$(run_suffix)"
     export CARGO_TARGET_DIR="$_cache_dir"
+    write_cachedir_tag "$_cache_dir"
+    record_owned_target "$_cache_dir"
     reclaim_stale_caches "$_cache_root" "$_cache_dir"
 fi
 

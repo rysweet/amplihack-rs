@@ -40,6 +40,8 @@ pub enum Commands {
     /// Manage Claude Code login profiles
     #[command(subcommand)]
     Profile(crate::commands::profile::ProfileCommands),
+    /// Remove or archive what recipe runs leave behind (issue #1808)
+    Cleanup(crate::commands::cleanup::CleanupArgs),
     /// Report workstream token observations or explicitly publish a PR summary
     #[command(subcommand)]
     Usage(crate::commands::usage::UsageCommands),
