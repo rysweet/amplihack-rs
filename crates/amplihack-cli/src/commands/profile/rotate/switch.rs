@@ -242,6 +242,9 @@ pub(super) fn not_a_candidate(
     let detail = match skip {
         // Checked by the caller; a live target moves nothing.
         Skip::Live => return None,
+        Skip::Refused => "its directory is a symlink, not owned by you, \
+                          or open to group or other users"
+            .to_string(),
         Skip::NoLogin if !exists(&store.root().join(name.as_str()).join(CREDS)) => {
             return Some(format!(
                 "profile {name} {NO_STORED_LOGIN_HINT} {name}` first"

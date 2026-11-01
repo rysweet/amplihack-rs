@@ -14,6 +14,10 @@ use crate::commands::profile::store::ProfileStore;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Skip {
     Live,
+    /// The profile directory fails the ownership and mode check, so its
+    /// login cannot be checked (issue #1698). A plan profile skipped for
+    /// this holds a move onto overflow until the directory is fixed.
+    Refused,
     NoLogin,
     Excluded,
     SessionRunning,
@@ -30,6 +34,7 @@ impl Skip {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Live => "live",
+            Self::Refused => "directory refused",
             Self::NoLogin => "no login",
             Self::Excluded => "excluded",
             Self::SessionRunning => "session running",
@@ -73,6 +78,14 @@ pub fn candidates(
         let resolved = || resolved.get_or_init(|| kinds.resolve_kind(store, &name));
         let skip = if input.live == Some(&name) {
             Some(Skip::Live)
+        } else if dir.is_none() {
+            // An excluded profile is out of rotation whatever its directory,
+            // so it holds nothing back.
+            Some(if input.exclude.contains(&name) {
+                Skip::Excluded
+            } else {
+                Skip::Refused
+            })
         } else if !dir.as_ref().is_some_and(|d| movable_login(&d.join(CREDS))) {
             Some(Skip::NoLogin)
         } else if !resolved().may_be_live() {
@@ -100,4 +113,13 @@ pub fn candidates(
         }
     }
     Ok((ok, skips))
+}
+
+/// The profiles skipped as [`Skip::Refused`], for the overflow rule.
+pub fn refused_dirs(skips: &[(ProfileName, Skip)]) -> Vec<ProfileName> {
+    skips
+        .iter()
+        .filter(|(_, s)| *s == Skip::Refused)
+        .map(|(n, _)| n.clone())
+        .collect()
 }
