@@ -490,12 +490,6 @@ pub(crate) fn classify_error(error: &anyhow::Error) -> FailureVerdict {
     }
 }
 
-/// Write the greppable classification marker. `action` is what the runner did
-/// about it: `retry`, `terminal`, or `terminal_budget_exhausted`.
-///
-/// Written to stderr AND to `tracing`: stderr is what a supervisor tailing a
-/// tmux pane can see, and issue #1267 called out that an abnormal termination
-/// currently leaves nothing greppable behind at all.
 /// The marker line for `payload`. `serde_json` writes object keys in sorted
 /// order, so the line begins `{"action":…,"attempt":…,"class":…`; the
 /// usage-limit check in `autodrive_escalate.sh` relies on that order when `jq`
@@ -507,6 +501,12 @@ pub(crate) fn marker_line(payload: &JsonValue) -> String {
     )
 }
 
+/// Write the greppable classification marker. `action` is what the runner did
+/// about it: `retry`, `terminal`, or `terminal_budget_exhausted`.
+///
+/// Written to stderr AND to `tracing`: stderr is what a supervisor tailing a
+/// tmux pane can see, and issue #1267 called out that an abnormal termination
+/// currently leaves nothing greppable behind at all.
 pub(crate) fn emit_failure_class_marker(verdict: &FailureVerdict, attempt: u32, action: &str) {
     let payload = verdict.to_json(attempt, action);
     tracing::warn!(
