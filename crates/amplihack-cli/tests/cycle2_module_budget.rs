@@ -88,6 +88,7 @@ fn cycle2_new_test_targets_and_extracted_helpers_obey_300_line_boundary() {
         "src/commands/governor/tests_source_scan.rs",
         "src/commands/profile/governor_view.rs",
         "src/user_config/schema_governor.rs",
+        "tests/issue_1811_fail_open.rs",
         "tests/issue_1811_fixture.rs",
         "tests/issue_1811_governor.rs",
         "tests/issue_1811_status.rs",

@@ -21,34 +21,6 @@ fn no_readings_fails_open_and_status_names_the_reason() {
     assert_eq!(v["fail_open_reason"]["code"], "no-readings", "{v}");
 }
 
-/// P2 (PR 1831): a fault that happens before anything can be saved still
-/// says so on stderr, without an absolute path.
-#[test]
-fn unsafe_state_dir_fails_open_with_one_stderr_line() {
-    let f = Fixture::new();
-    f.readings(&[("alpha", 10.0, 30.0), ("beta", 10.0, 30.0)]);
-    let elsewhere = f.tmp.path().join("elsewhere");
-    fs::create_dir_all(&elsewhere).unwrap();
-    std::os::unix::fs::symlink(&elsewhere, f.gov()).unwrap();
-    let out = f.run(&["claude", "--", "-p", "hi"]);
-    assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(f.claude_runs(), 1, "the work still starts");
-    let err = text(&out.stderr);
-    let lines: Vec<&str> = err
-        .lines()
-        .filter(|l| l.starts_with("amplihack: governor: admitted without a decision (state-dir): "))
-        .collect();
-    assert_eq!(lines.len(), 1, "{}", describe(&out));
-    assert!(lines[0].len() <= 600, "{}", lines[0]);
-    let tmp = f.tmp.path().to_string_lossy();
-    assert!(!lines[0].contains(&*tmp), "absolute path in {:?}", lines[0]);
-    assert!(
-        !text(&out.stdout).contains("governor"),
-        "{}",
-        describe(&out)
-    );
-}
-
 #[test]
 fn weekly_exhaustion_exits_80_without_starting_claude() {
     let f = Fixture::new();
