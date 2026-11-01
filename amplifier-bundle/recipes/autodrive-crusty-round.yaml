@@ -238,6 +238,8 @@ steps:
         COUNT="$(grep -c . "${RECORD}.findings" 2>/dev/null || true)"
       fi
       case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
+      # Issue #1802: a regular light-mode marker sends the concerns to autodrive_light_round.sh (via autodrive_light_steps.sh); minor-only ones may give a light-minor-rule CLEAN.
+      LM="$(dirname -- "${RECORD:-.}")/light-mode"; if [ -n "$RECORD" ] && [ -f "$LM" ] && [ ! -L "$LM" ]; then . "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_light_steps.sh" && autodrive_light_step03 || { [ $? -ne 79 ] || exit 79; echo "WARNING: autodrive_light_steps.sh not found under AUTODRIVE_LAUNCH_TOOLS; the minor-only rule is not applied and CONCERNS stands." >&2; }; fi
       echo "INFO: crusty ${AUTODRIVE_ROUND_LABEL:-round}: verdict=${VERDICT} (source=${SOURCE}) concerns=${COUNT}" >&2
       printf '{"crusty_verdict":"%s","verdict_source":"%s","concern_count":%s}\n' \
         "$VERDICT" "$SOURCE" "${COUNT:-0}"
@@ -374,14 +376,15 @@ steps:
         exit 1
       fi
       LABEL="$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | tr -c 'A-Za-z0-9._-' '_')"
+      SUFFIX=""; LV="${RECIPE_VAR_crusty_verdict:-}"; case "$LV" in *light-minor-rule*) { . "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_light_steps.sh" && autodrive_light_step06 "$LV"; } || { echo "WARNING: light-side-file-invalid: the #1802 light-minor-rule side files failed validation; this round is recorded as CONCERNS." >&2; VERDICT="CONCERNS"; SUFFIX=""; } ;; esac
       # The merge gate reads this record as criterion-3 evidence only when no
       # one else could have written it, so it is created new under umask 077,
       # whatever the caller's umask (autodrive_state.sh, PRIVATE STATE).
       umask 077
       [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings"
       rm -f -- "$RECORD"
-      printf '{"crusty_verdict":"%s","concern_count":%s,"commits_this_round":%s,"head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s","test_signal":"","ci_signal":""}\n' \
-        "$VERDICT" "$COUNT" "$COMMITS" "$SHA" "$REVIEWED" "$LABEL" > "$RECORD"
+      printf '{"crusty_verdict":"%s","concern_count":%s,"commits_this_round":%s,"head_sha":"%s","reviewed_head_sha":"%s","round_label":"%s","test_signal":"","ci_signal":""%s}\n' \
+        "$VERDICT" "$COUNT" "$COMMITS" "$SHA" "$REVIEWED" "$LABEL" "$SUFFIX" > "$RECORD"
       echo "INFO: round record written to ${RECORD}" >&2
       cat "$RECORD"
     output: "crusty_round_record_written"
