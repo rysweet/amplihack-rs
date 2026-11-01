@@ -34,14 +34,15 @@ pub fn record(root: &Path, out: &mut Sink, first: &Snap, probes: &Probes, at: i6
 /// and the weights from the weights file. The age is measured at `now`.
 /// With no readable entry the line is `capacity: no recorded cycle`.
 pub fn capacity(root: &Path, now: i64) -> (String, Vec<String>) {
-    let Some(newest) = usage_history::last(root, now) else {
+    // One read: the newest entry is "now", the rest are the history.
+    let mut entries = usage_history::read_all(root, now);
+    let Some(newest) = entries.pop() else {
         return ("capacity: no recorded cycle".to_string(), Vec::new());
     };
     let env = std::env::var_os(capacity_weight::ENV);
     let (threshold, warning) = capacity_weight::usable_threshold(None, env.as_deref());
     let (weights, weight_warnings) = capacity_weight::load(root);
     let warnings = warning.into_iter().chain(weight_warnings).collect();
-    let history = usage_history::read_recent(root, newest.at, capacity_summary::RATE_WINDOW);
     let current = usage_history::Snapshot {
         at: newest.at,
         points: newest.profiles,
@@ -51,7 +52,7 @@ pub fn capacity(root: &Path, now: i64) -> (String, Vec<String>) {
         current: &current,
         weights: &weights,
         threshold,
-        history: &history,
+        history: &entries,
         now: newest.at,
     });
     (summary.status_line(newest.at, now), warnings)

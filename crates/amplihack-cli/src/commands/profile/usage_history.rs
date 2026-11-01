@@ -35,6 +35,12 @@ const LINE_MAX: usize = 64 * 1024;
 /// Entries older than this are dropped by a rewrite.
 #[cfg_attr(not(unix), allow(dead_code))]
 const RETENTION: i64 = 8 * 86_400;
+/// A rewrite starts only once the first line is this much older than
+/// [`RETENTION`]. Without the slack, a history under 4 MiB would be
+/// rewritten whole on every cycle once it held eight days; with it, at most
+/// once an hour.
+#[cfg(unix)]
+const TRIM_SLACK: i64 = 3600;
 /// Times further than this from now are not believed.
 const MAX_SKEW: i64 = 100 * 31_557_600;
 #[cfg(unix)]
@@ -425,26 +431,33 @@ fn read_history(_root: &Path) -> Option<Vec<u8>> {
     None
 }
 
-/// The entries with `now - window <= at < now`, oldest first. Empty when
-/// the history is missing or cannot be read.
-pub(super) fn read_recent(root: &Path, now: i64, window: i64) -> Vec<Entry> {
+/// Every readable entry, oldest first; entries with the same time stay in
+/// file order. Empty when the history is missing or cannot be read. One
+/// read parses the whole tail, so a caller that needs both the newest entry
+/// and the ones before it reads once.
+pub(super) fn read_all(root: &Path, now: i64) -> Vec<Entry> {
     let Some(bytes) = read_history(root) else {
         return Vec::new();
     };
-    let from = now.saturating_sub(window);
-    let mut out: Vec<Entry> = entries_in(&bytes, now)
-        .into_iter()
-        .filter(|e| e.at >= from && e.at < now)
-        .collect();
+    let mut out = entries_in(&bytes, now);
     out.sort_by_key(|e| e.at);
     out
 }
 
-/// The newest readable entry; `None` when there is none.
-pub(super) fn last(root: &Path, now: i64) -> Option<Entry> {
-    entries_in(&read_history(root)?, now)
+/// The entries with `now - window <= at < now`, oldest first. Empty when
+/// the history is missing or cannot be read.
+pub(super) fn read_recent(root: &Path, now: i64, window: i64) -> Vec<Entry> {
+    let from = now.saturating_sub(window);
+    read_all(root, now)
         .into_iter()
-        .max_by_key(|e| e.at)
+        .filter(|e| e.at >= from && e.at < now)
+        .collect()
+}
+
+/// The newest readable entry; `None` when there is none.
+#[cfg(test)]
+pub(super) fn last(root: &Path, now: i64) -> Option<Entry> {
+    read_all(root, now).pop()
 }
 
 // ---------------------------------------------------------------------------
@@ -481,7 +494,7 @@ fn lock(dir: &Path) -> Result<std::fs::File, HistoryError> {
 }
 
 /// Whether the history needs a rewrite: over 4 MiB, or a first line that
-/// cannot be read or is older than eight days.
+/// cannot be read or is more than an hour older than eight days.
 #[cfg(unix)]
 fn needs_rewrite(file: &std::fs::File, len: u64, now: i64) -> Result<bool, HistoryError> {
     use std::io::{Read, Seek, SeekFrom};
@@ -504,7 +517,8 @@ fn needs_rewrite(file: &std::fs::File, len: u64, now: i64) -> Result<bool, Histo
     let first = std::str::from_utf8(&head[..end])
         .ok()
         .and_then(|l| parse_line(l, now));
-    Ok(first.is_none_or(|e| e.at < now.saturating_sub(RETENTION)))
+    let cutoff = now.saturating_sub(RETENTION).saturating_sub(TRIM_SLACK);
+    Ok(first.is_none_or(|e| e.at < cutoff))
 }
 
 /// The rewritten history: the readable entries of the tail no older than

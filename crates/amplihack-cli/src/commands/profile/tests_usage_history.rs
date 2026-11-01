@@ -599,6 +599,27 @@ mod file {
     }
 
     #[test]
+    fn a_first_line_less_than_an_hour_past_eight_days_is_appended_to_not_rewritten() {
+        let r = Root::new();
+        let old = to_line(&one(T - 8 * DAY - 30 * 60, 1));
+        r.seed(&format!("{old}\n"));
+        let inode = fs::metadata(r.history()).unwrap().ino();
+        append(&r.root, &one(T, 2), T).unwrap();
+        assert_eq!(r.lines(), [old, to_line(&one(T, 2))]);
+        assert_eq!(
+            fs::metadata(r.history()).unwrap().ino(),
+            inode,
+            "appended in place, not replaced by a rewrite"
+        );
+
+        let r = Root::new();
+        let old = to_line(&one(T - 8 * DAY - HOUR - 1, 1));
+        r.seed(&format!("{old}\n"));
+        append(&r.root, &one(T, 2), T).unwrap();
+        assert_eq!(r.lines(), [to_line(&one(T, 2))], "over the slack: trimmed");
+    }
+
+    #[test]
     fn an_unreadable_first_line_triggers_a_rewrite_without_bad_lines() {
         let r = Root::new();
         let kept = to_line(&one(T - HOUR, 2));

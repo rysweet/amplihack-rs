@@ -1257,11 +1257,13 @@ numbers.
 Writers take an exclusive lock on `usage-history.lock` beside it, trying
 every 50 ms for up to one second; the rotator's state lock is never held at
 the same time. Each line is written in one append. Under the lock, entries
-older than eight days are dropped: when the first line is older than that or
-cannot be read, or the file is over 4 MiB, the file is rewritten atomically
-without entries older than eight days or lines that cannot be read, dropping
-the oldest entries until it is under 3 MiB. If the rewrite fails while the
-file is over 4 MiB, nothing is appended.
+older than eight days are dropped: when the first line is more than an hour
+older than that or cannot be read, or the file is over 4 MiB, the file is
+rewritten atomically without entries older than eight days or lines that
+cannot be read, dropping the oldest entries until it is under 3 MiB. The
+hour's slack means a full history is rewritten at most once an hour rather
+than on every cycle. If the rewrite fails while the file is over 4 MiB,
+nothing is appended.
 
 Readers take the last 4 MiB of the file, and skip any line longer than
 64 KiB, any line that is not valid JSON, any profile name that fails the
