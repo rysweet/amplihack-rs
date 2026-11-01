@@ -208,6 +208,8 @@ mod issue_1760_fakes;
 mod issue_1760_fixture;
 #[path = "issue_1760_fixture_files.rs"]
 mod issue_1760_fixture_files;
+#[path = "issue_1797_capacity_summary.rs"]
+mod issue_1797_capacity_summary;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

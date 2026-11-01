@@ -796,6 +796,12 @@ session or all-models weekly limit reached, the table ends with
 `overflow_blocked_until`. See
 [Use usage credits when every plan login is exhausted](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted).
 
+Below the table, a six-line summary gives the weekly headroom across all
+logins, how many can take work now, the next session reset and how long the
+weekly capacity lasts at the recent rate; see
+[See how much capacity is left](claude-profile-rotation.md#see-how-much-capacity-is-left).
+`--summary-json` prints the rows and that summary as one JSON object.
+
 The command exits with status 0 whenever the probes ran, whatever their
 states. Like `profile run`, it is refused under Docker.
 

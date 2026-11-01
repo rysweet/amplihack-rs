@@ -3,6 +3,7 @@
 //! overflow list` and `clear` (issue #1606).
 
 use super::daemon::{DaemonState, current_state, daemon_err};
+use super::history;
 use super::identify::{self, LiveId};
 use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
 use super::log::{msg, timestamp};
@@ -100,8 +101,14 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     };
     let auto = super::autostart_line(store.root());
     println!("rotate: {word}\n{auto}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    // Issue #1797: from the usage history only; no probe and no `claude`.
+    let (capacity, warnings) = history::capacity(store.root(), now());
+    for w in warnings {
+        eprintln!("{w}");
+    }
+    println!("{capacity}");
     println!("overflow: {overflow}\napi key: {api_key}\non overflow: {on_overflow}");
-    if let Some(line) = super::platform_live_line(store.root()) {
+    if let Some(line) = platform_live_line(store.root()) {
         println!("{line}");
     }
     // `.default` bypasses the rotator: say so when it names an overflow profile.
@@ -147,6 +154,28 @@ pub fn status_alerts(l: &RotateLedger) -> Vec<String> {
             format!("warning: {}", sanitize_display(text, false))
         });
     alerts.chain(warnings).collect()
+}
+
+/// The status line while the rotate ledger says the live login is an
+/// API-key profile (issue #1700), for `rotate status` and `auto-switch
+/// status`. The ledger is the only evidence; nothing is probed.
+pub fn platform_live_line(root: &Path) -> Option<String> {
+    let l = RotateState::new(root).load_ledger().ok()??;
+    if l.live_kind.as_deref() != Some(super::ledger::LIVE_KIND_PLATFORM) {
+        return None;
+    }
+    let live = l.live?;
+    let since = l.since.map_or_else(|| "unknown".to_string(), timestamp);
+    Some(format!(
+        "~/.claude is on API key profile {live}: work is billed per token (since {since})"
+    ))
+}
+
+/// The `capacity:` line of `rotate status` (issue #1797); `status` prints it
+/// with its warnings through [`history::capacity`].
+#[cfg(test)]
+pub fn capacity_line(root: &Path, now: i64) -> String {
+    history::capacity(root, now).0
 }
 
 /// `stop`: SIGTERM to a verified rotator only, then up to 10 seconds for it

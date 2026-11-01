@@ -38,6 +38,8 @@ mod handfix;
 #[cfg(unix)]
 mod held;
 #[cfg(unix)]
+mod history;
+#[cfg(unix)]
 mod holders;
 #[cfg(unix)]
 pub(super) mod identify;
@@ -88,6 +90,8 @@ pub use super::rotate_args::{RotateAction, RotateArgs, TuneFlags};
 
 #[cfg(all(test, unix))]
 mod tests_autostart;
+#[cfg(all(test, unix))]
+mod tests_capacity_history;
 #[cfg(all(test, unix))]
 mod tests_daemon;
 #[cfg(all(test, unix))]
@@ -162,9 +166,14 @@ pub(in crate::commands::profile) use autostart::autostart_line;
 #[cfg(unix)]
 pub(crate) use autostart::autostart_on_launch;
 #[cfg(unix)]
-pub(super) use control::{clear_overflow_block, overflow_blocks};
+pub(super) use control::{clear_overflow_block, overflow_blocks, platform_live_line};
 #[cfg(unix)]
 pub(super) use log::timestamp;
+// Issue #1797: the usage history records the rotator's kept probes.
+#[cfg(unix)]
+pub(super) use decide::{Probed, Reading};
+#[cfg(unix)]
+pub(super) use observe::Probes;
 #[cfg(unix)]
 pub(crate) use older_readers::warn_foreign_rotator;
 
@@ -210,24 +219,6 @@ pub(super) fn is_live(
     };
     let rs = ledger::RotateState::new(store.root());
     matches!(identify::live(store, &rs, home), Ok((identify::LiveId::Known(n), _)) if &n == name)
-}
-
-/// The status line while the rotate ledger says the live login is an
-/// API-key profile (issue #1700), for `rotate status` and `auto-switch
-/// status`. The ledger is the only evidence; nothing is probed.
-#[cfg(unix)]
-pub(super) fn platform_live_line(root: &std::path::Path) -> Option<String> {
-    let l = ledger::RotateState::new(root).load_ledger().ok()??;
-    if l.live_kind.as_deref() != Some(ledger::LIVE_KIND_PLATFORM) {
-        return None;
-    }
-    let live = l.live?;
-    let since = l
-        .since
-        .map_or_else(|| "unknown".to_string(), log::timestamp);
-    Some(format!(
-        "~/.claude is on API key profile {live}: work is billed per token (since {since})"
-    ))
 }
 
 /// After a successful `profile switch NAME`: one line on stderr when the

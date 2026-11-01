@@ -5,6 +5,7 @@
 use super::alert::{alert, alert_key, alert_once, clear_alert, refusal_kind};
 use super::decide::Decision;
 use super::held::held_cycle;
+use super::history;
 use super::identify::{LiveId, Skip};
 use super::ledger::{LastCycle, RotateLedger, RotateState, SWITCHED};
 use super::log::msg;
@@ -308,6 +309,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         new_blocks,
         next_plan_reset,
         measured_at,
+        probed,
         ..
     } = m;
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
@@ -385,6 +387,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.
     drop(lock);
+    // Issue #1797: one usage-history line per measured cycle, after the lock.
+    if let Some(p) = &probed {
+        history::record(ctx.store.root(), &mut out, &first, p, measured_at);
+    }
     for p in swapped.iter().flatten() {
         shared_dirs::ensure_for(&ctx.store, p);
     }

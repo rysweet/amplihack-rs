@@ -170,3 +170,123 @@ fn reference_quotes_the_rotators_probe_warnings() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1797: the capacity summary, its history and its settings
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_usable_threshold_variable_has_an_env_row_and_reference_rows() {
+    use super::capacity_weight::ENV;
+    let row = ENV_VARS
+        .lines()
+        .find(|l| l.starts_with(&format!("| `{ENV}`")))
+        .expect("amplihack-env-vars.md has a row for the usable threshold");
+    assert!(
+        row.contains("`1` to `100`") && row.contains("`95`"),
+        "{row}"
+    );
+    assert!(row.contains("--usable-session-pct"), "{row}");
+    assert!(row.contains("profile-command.md#usable-now"), "{row}");
+    assert!(
+        REFERENCE.contains(&format!("| `{ENV}` | `1` to `100` | `95` |")),
+        "reference settings table"
+    );
+}
+
+#[test]
+fn the_documented_threshold_warning_is_the_codes() {
+    let (pct, w) =
+        super::capacity_weight::usable_threshold(None, Some(std::ffi::OsStr::new("most")));
+    assert_eq!(pct, 95);
+    assert!(REFERENCE.contains(&w.unwrap()), "threshold warning drifted");
+}
+
+#[test]
+fn the_documented_weight_warnings_are_the_codes() {
+    let (_, w) = super::capacity_weight::parse(br#"{"team": -1}"#);
+    let value = w[0].replace("\"team\"", "\"<name>\"");
+    assert!(
+        REFERENCE.contains(&value),
+        "weight warning drifted: {value}"
+    );
+    let (_, w) = super::capacity_weight::parse(b"not json");
+    let start = w[0].split('(').next().unwrap();
+    assert!(
+        REFERENCE.contains(&format!("{start}(<reason>); every weight is 1.0")),
+        "file warning drifted: {}",
+        w[0]
+    );
+}
+
+#[test]
+fn the_documented_history_warning_and_reasons_are_the_codes() {
+    use super::usage_history::HistoryError;
+    let busy = HistoryError::LockBusy.warning().unwrap();
+    assert!(REFERENCE.contains(&busy), "{busy}");
+    for e in [
+        HistoryError::LockBusy,
+        HistoryError::UnsafeFile,
+        HistoryError::WriteFailed,
+        HistoryError::TooLarge,
+    ] {
+        let w = e.warning().unwrap();
+        let reason = w.split('(').nth(1).unwrap().trim_end_matches(')');
+        assert!(
+            REFERENCE.contains(&format!("`{reason}`")),
+            "reason {reason}"
+        );
+    }
+}
+
+#[test]
+fn the_documented_history_line_is_what_the_writer_prints() {
+    let line = REFERENCE
+        .lines()
+        .find(|l| l.starts_with("{\"at\":") && l.contains("\"w_reset\""))
+        .expect("the reference shows a history line");
+    let e = super::usage_history::parse_line(line, 1_793_376_900).expect("it reads back");
+    assert_eq!(super::usage_history::to_line(&e), line);
+}
+
+#[test]
+fn summary_flags_and_files_are_documented() {
+    for needle in [
+        "--summary-json",
+        "--usable-session-pct",
+        "capacity-weights.json",
+        "usage-history.jsonl",
+        "usage-history.lock",
+        "capacity: no recorded cycle",
+        "#### Capacity summary",
+        "#### Summary JSON",
+        "#### Usage history",
+        "#### Capacity line",
+    ] {
+        assert!(REFERENCE.contains(needle), "reference lacks {needle}");
+    }
+    for needle in ["weekly headroom", "capacity:"] {
+        assert!(
+            ROTATE_HOWTO.contains(needle),
+            "rotation how-to lacks {needle}"
+        );
+    }
+}
+
+#[test]
+fn the_documented_summary_lines_use_the_codes_labels() {
+    for label in [
+        "weekly headroom      ",
+        "usable now           ",
+        "next session reset   ",
+        "runway               ",
+        "resets in next 24 h  ",
+        "unknown              ",
+    ] {
+        assert_eq!(label.len(), 21);
+        assert!(
+            REFERENCE.lines().any(|l| l.starts_with(label)),
+            "reference has no line starting {label:?}"
+        );
+    }
+}
