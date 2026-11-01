@@ -2,10 +2,17 @@
 //! reads on detached threads and waits only until its deadline; a read
 //! still running then reads as "unknown, still running", its result is used
 //! by a later cycle, and no second read of the same login starts while one
-//! is outstanding. A read in flight longer than [`max_age`] is dropped and
-//! may be started again; its thread ends on its own HTTP or probe deadline.
+//! is outstanding.
+//!
+//! A read's age counts only the time it is working: not the time it waits
+//! in the queue, and not the time it waits for a `claude` slot
+//! ([`job_clock`]). A read working longer than [`max_age`], which is more
+//! than its direct read and its `claude` fallback together may take, is
+//! dropped and may be started again; its thread ends on its own HTTP or
+//! probe deadline. A queued or waiting read is never dropped.
 
 use crate::commands::profile::usage_cmd::PROBE_CANCEL;
+use crate::commands::profile::usage_source::job_clock::{self, Clock, Phase};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,11 +25,13 @@ pub type Job<T> = Box<dyn FnOnce() -> T + Send + 'static>;
 
 /// The jobs started together, run at most `bound` at once.
 const DEFAULT_BOUND: usize = 8;
-/// Slack past two deadlines: a read may refresh its token, so it can make
-/// up to three requests, each within the deadline.
+/// Slack past two deadlines.
 const SLACK: Duration = Duration::from_secs(5);
 
-/// How long a read may stay in flight: `2 * timeout + 5 s`.
+/// How long a read may work before it is dropped: `2 * timeout + 5 s`.
+/// The direct read, its token refresh included, ends within one deadline
+/// (`usage_direct::read`); a `claude` fallback has one deadline of its own,
+/// started once it has its slot, and the clock starts again then too.
 pub fn max_age(timeout: Duration) -> Duration {
     timeout.saturating_mul(2).saturating_add(SLACK)
 }
@@ -44,7 +53,8 @@ pub struct InFlight<K, T> {
     max_age: Duration,
     bound: usize,
     next: u64,
-    running: HashMap<K, (Instant, u64)>,
+    /// Each key in flight: its clock and the start it belongs to.
+    running: HashMap<K, (Clock, u64)>,
     /// Keys whose job panicked, not yet taken by [`Self::take_panicked`].
     panicked: Vec<K>,
     /// `PROBE_CANCEL` unless a test gives its own flag.
@@ -110,7 +120,6 @@ where
     /// `Panicked` or `Cancelled`, unless the receiver is gone. So every key
     /// this marks busy is cleared, and [`Self::wait_all`] always returns.
     pub fn start_all(&mut self, jobs: Vec<(K, Job<T>)>, bound: usize) {
-        let now = Instant::now();
         let mut queue = Vec::new();
         for (k, job) in jobs {
             if self.running.contains_key(&k) {
@@ -118,8 +127,9 @@ where
             }
             let id = self.next;
             self.next += 1;
-            self.running.insert(k.clone(), (now, id));
-            queue.push((k, id, job));
+            let clock = job_clock::new();
+            self.running.insert(k.clone(), (Arc::clone(&clock), id));
+            queue.push((k, id, clock, job));
         }
         if queue.is_empty() {
             return;
@@ -138,7 +148,7 @@ where
                         loop {
                             let cancelled = cancel.load(Ordering::SeqCst);
                             let next = queue.lock().unwrap_or_else(PoisonError::into_inner).next();
-                            let Some((k, id, job)) = next else {
+                            let Some((k, id, clock, job)) = next else {
                                 break;
                             };
                             // On a stop the queue is drained, not left: each
@@ -146,8 +156,10 @@ where
                             let out = if cancelled {
                                 Err(Lost::Cancelled)
                             } else {
-                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(job))
-                                    .map_err(|_| Lost::Panicked)
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    job_clock::run(&clock, job)
+                                }))
+                                .map_err(|_| Lost::Panicked)
                             };
                             // The cycle that started it may have ended and
                             // the receiver with it: the result is not needed.
@@ -217,13 +229,17 @@ where
         got
     }
 
-    /// Drops the keys in flight longer than `max_age` at `now`, and returns
-    /// them. A late result for one is ignored.
+    /// Drops the keys whose read has been working longer than `max_age` at
+    /// `now`, and returns them. A queued read, or one waiting for a `claude`
+    /// slot, is never dropped. A late result for a dropped key is ignored.
     pub fn drop_stale(&mut self, now: Instant) -> Vec<K> {
         let stale: Vec<K> = self
             .running
             .iter()
-            .filter(|(_, (at, _))| now.saturating_duration_since(*at) > self.max_age)
+            .filter(|(_, (clock, _))| match job_clock::read(clock) {
+                Phase::Running(at) => now.saturating_duration_since(at) > self.max_age,
+                Phase::Queued | Phase::Waiting => false,
+            })
             .map(|(k, _)| k.clone())
             .collect();
         for k in &stale {

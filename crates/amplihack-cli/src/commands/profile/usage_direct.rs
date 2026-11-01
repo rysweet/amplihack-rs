@@ -50,8 +50,8 @@ pub(super) const REFRESH_MARGIN_SECS: i64 = 60;
 pub(super) const MAX_TOKEN: usize = 4096;
 /// One year: no token lives longer.
 pub(super) const MAX_EXPIRES_IN: i64 = 31_536_000;
-/// The longest connect and read step; the whole request has the probe
-/// deadline.
+/// The longest connect and read step. The whole read, every request in
+/// it, has the one probe deadline ([`Deadline`]).
 const MAX_STEP: Duration = Duration::from_secs(10);
 const MIN_STEP: Duration = Duration::from_millis(500);
 const POLL: Duration = Duration::from_millis(20);
@@ -400,21 +400,48 @@ fn status_reason(code: u16) -> &'static str {
 
 /// One read: the profile directory whose login is used, the swap journals
 /// that forbid a refresh while they exist, whether a refresh is allowed,
-/// the stop flag that forbids a new refresh once set, the per-request
-/// deadline and the time now.
+/// the stop flag that forbids a new refresh once set, the deadline for the
+/// whole read and the time now.
 pub(super) struct Request<'a> {
     pub(super) creds_dir: &'a Path,
     pub(super) journals: &'a [PathBuf],
     pub(super) allow_refresh: bool,
     /// `PROBE_CANCEL` in production; tests give their own flag.
     pub(super) cancel: &'a AtomicBool,
+    /// The whole read, refresh included, ends within this time.
     pub(super) timeout: Duration,
     pub(super) now_ms: i64,
 }
 
+/// The end of one read, fixed when it starts. ureq's own `timeout` starts
+/// again on every request, so each request is given only the time left:
+/// the GET, the refresh POST and the second GET together take at most the
+/// read's one deadline, not one deadline each.
+#[derive(Debug, Clone, Copy)]
+struct Deadline(Instant);
+
+impl Deadline {
+    fn after(timeout: Duration) -> Self {
+        let now = Instant::now();
+        Self(now.checked_add(timeout).unwrap_or(now))
+    }
+
+    /// The time left, or `timeout` once none is: no request starts then.
+    fn left(self) -> Result<Duration, &'static str> {
+        let left = self.0.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            Err(reason::TIMEOUT)
+        } else {
+            Ok(left)
+        }
+    }
+}
+
 /// The usage of the login in `req.creds_dir`. At most two GETs and one
-/// refresh POST; a 429 is not retried and a redirect is not followed.
+/// refresh POST, all within `req.timeout` from the start of the read; a 429
+/// is not retried and a redirect is not followed.
 pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<UsageReport, &'static str> {
+    let deadline = Deadline::after(req.timeout);
     if !ep.usable() {
         return Err(reason::TRANSPORT);
     }
@@ -427,17 +454,17 @@ pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<UsageReport, &'s
         .is_some_and(|at| at <= req.now_ms.saturating_add(margin_ms));
     if due {
         if req.allow_refresh {
-            let fresh = refresh(ep, &agent, req, &creds.access)?;
-            return get_usage(&agent, ep, &fresh, now_s);
+            let fresh = refresh(ep, &agent, req, &creds.access, deadline)?;
+            return get_usage(&agent, ep, &fresh, now_s, deadline);
         }
         if creds.expires_at_ms.is_some_and(|at| at <= req.now_ms) {
             return Err(reason::EXPIRED);
         }
     }
-    match get_usage(&agent, ep, &creds.access, now_s) {
+    match get_usage(&agent, ep, &creds.access, now_s, deadline) {
         Err(r) if r == reason::HTTP_401 && req.allow_refresh => {
-            let fresh = refresh(ep, &agent, req, &creds.access)?;
-            get_usage(&agent, ep, &fresh, now_s)
+            let fresh = refresh(ep, &agent, req, &creds.access, deadline)?;
+            get_usage(&agent, ep, &fresh, now_s, deadline)
         }
         other => other,
     }
@@ -474,10 +501,12 @@ fn get_usage(
     ep: &Endpoints,
     token: &Token,
     now_s: i64,
+    deadline: Deadline,
 ) -> Result<UsageReport, &'static str> {
     let url = ep.usage_url();
     let req = agent
         .get(&url)
+        .timeout(deadline.left()?)
         .set("Authorization", &token.header())
         .set("anthropic-beta", BETA)
         .set("Accept", "application/json");
@@ -584,6 +613,7 @@ fn refresh(
     agent: &ureq::Agent,
     req: &Request<'_>,
     used: &Token,
+    deadline: Deadline,
 ) -> Result<Token, &'static str> {
     if !dir_private(req.creds_dir) {
         return Err(reason::REFRESH_REFUSED);
@@ -611,8 +641,12 @@ fn refresh(
     // when the result can be saved.
     let temp = PrivateTemp::create(req.creds_dir, CREDS).map_err(|_| reason::REFRESH_REFUSED)?;
     let url = ep.token_url();
+    // No POST starts once the read's time is up: a refresh sent then could
+    // retire the old refresh token and not be answered in time to save the
+    // new one.
     let post = agent
         .post(url)
+        .timeout(deadline.left()?)
         .set("Content-Type", "application/json")
         .set("Accept", "application/json")
         .set("anthropic-beta", BETA);

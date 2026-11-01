@@ -437,12 +437,7 @@ pub fn lease_view(root: &Path) -> Result<Option<LeaseView>, ProfileError> {
 /// plausible window, and when anything cannot be read. Read-only and
 /// silent: it never creates state, takes the lock or prints.
 #[cfg(unix)]
-pub fn fresh_reading(
-    root: &Path,
-    dir: &str,
-    max_age: i64,
-    now: i64,
-) -> Option<(Option<Window>, Option<Window>)> {
+pub fn fresh_reading(root: &Path, dir: &str, max_age: i64, now: i64) -> Option<FreshReading> {
     if max_age <= 0 {
         return None;
     }
@@ -463,7 +458,23 @@ pub fn fresh_reading(
     let ok =
         |w: &Option<Window>| w.and_then(|w| usage::plausible(w.used_percentage, w.resets_at, now));
     let (session, week) = (ok(&r.five_hour), ok(&r.seven_day));
-    (session.is_some() || week.is_some()).then_some((session, week))
+    (session.is_some() || week.is_some()).then_some(FreshReading {
+        session,
+        week,
+        // The same test as [`no_session_window_profiles`]; a stored session
+        // window dropped as implausible is unknown, not absent.
+        no_session_window: r.no_session_window() && week.is_some(),
+    })
+}
+
+/// The plausible windows of a fresh stored reading (issue #1844).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FreshReading {
+    pub session: Option<Window>,
+    pub week: Option<Window>,
+    /// Issue #1818: the reading has a week window and no session window, so
+    /// it has no session limit.
+    pub no_session_window: bool,
 }
 
 /// Issue #1818: the profiles among `names` whose stored reading has a week

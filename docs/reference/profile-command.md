@@ -146,13 +146,15 @@ warning: ignored AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS "ten" (use 0 to 36
 
 A passive row is built from the stored windows: `five_hour` becomes
 `session` and `seven_day` becomes `week_all`. `resets_text` is the reset
-time written as `YYYY-MM-DDTHH:MM:SSZ`, and `week_models` is empty.
-`usage.json` does not record that a login has no session window, so a
-passive row with no `five_hour` has `session` `null` and `session_limit`
-`true`; it never reads as [no session limit](#no-session-limit). A login
-with weekly figures only therefore shows its session as unknown when it is
-read passively. The state
-follows the usual [rule](#states).
+time written as `YYYY-MM-DDTHH:MM:SSZ`, and `week_models` is empty. An
+entry with a plausible `seven_day` and no `five_hour` reads as
+[no session limit](#no-session-limit): `session` is `null` and
+`session_limit` is `false`, as a direct read of the same answer gives,
+and as auto-switch counts a login with no session window.
+So a login with weekly figures only reads the same whether it was read
+directly or passively. An entry whose `five_hour` was stored but fails the
+plausibility check keeps `session_limit` `true`, with the session unknown.
+The state follows the usual [rule](#states).
 
 The status-line wrapper writes these readings during live sessions. Rows
 that `profile usage` and the rotator [record](#refreshing-auto-switch-readings)
@@ -230,6 +232,11 @@ which neither `five_hour` nor `seven_day` has a valid `utilization`, is
 **Timing.** The connect and read timeouts are each
 `min(10 seconds, deadline - 1 second)`, at least 1 second, and the whole
 read, refresh included, must finish within the [deadline](#probe-deadline).
+The deadline is fixed when the read starts, and each request is given only
+the time left of it, so a `GET` that answers `401`, the refresh `POST` and
+the second `GET` together take no longer than one deadline. No request
+starts once the deadline has passed; a refresh `POST` that would start
+then is not sent.
 Redirects are not followed, no proxy is used (`HTTPS_PROXY` and similar are
 ignored), and a `429` is not retried. One read makes at most two `GET`s and
 one refresh `POST`.
@@ -784,9 +791,15 @@ the cycle started, and at least 1 second. Then:
 - The read keeps running. The next cycle collects its result and uses it,
   and starts no second read for that login while one is outstanding. Only
   logins with no result and no read in flight get a new read.
-- A read still in flight `2 × deadline + 5` seconds after it started (245
+- A read that has been working for `2 × deadline + 5` seconds (245
   seconds by default) is dropped, and the next cycle starts a new one. Its
-  thread ends on its own HTTP or `claude` timeout.
+  thread ends on its own HTTP or `claude` timeout. A read is working from
+  when it leaves the queue of the [parallelism bound](#probe-parallelism),
+  and its clock starts again when a `claude` fallback takes its slot; time
+  spent queued or waiting for a slot does not count, and a read in either
+  is never dropped. The direct read, any refresh included, takes at most
+  one deadline, and the fallback one more, so a read still working past
+  this limit has hung.
 
 `--dry-run` waits for every read in full. When the rotator stops, it waits
 up to the deadline plus 1 second for any [token refresh](#token-refresh) in

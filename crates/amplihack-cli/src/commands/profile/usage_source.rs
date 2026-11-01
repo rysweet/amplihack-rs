@@ -283,9 +283,11 @@ impl ClaudeGate {
         }
     }
 
-    /// Runs `job` once a slot is free.
+    /// Runs `job` once a slot is free. The time spent waiting for the slot
+    /// does not count towards the read's age ([`job_clock`]).
     pub(super) fn run<T>(&self, job: impl FnOnce() -> T) -> T {
         let (count, freed) = &*self.inner;
+        job_clock::waiting();
         {
             let mut running = count.lock().unwrap_or_else(PoisonError::into_inner);
             while *running >= self.limit {
@@ -293,6 +295,7 @@ impl ClaudeGate {
             }
             *running += 1;
         }
+        job_clock::restart();
         struct Slot<'a>(&'a (Mutex<usize>, Condvar));
         impl Drop for Slot<'_> {
             fn drop(&mut self) {
@@ -303,5 +306,75 @@ impl ClaudeGate {
         }
         let _slot = Slot(&self.inner);
         job()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The age of a read in the rotator's pool
+// ---------------------------------------------------------------------------
+
+/// How long a read on this thread has been working, for the rotator's pool
+/// of reads that outlast a cycle (issue #1844). The pool gives each job a
+/// clock while it runs; [`ClaudeGate::run`] stops it while the read waits
+/// for a `claude` slot and starts it again once the slot is taken. Outside
+/// the pool no clock is set and these calls do nothing.
+pub(super) mod job_clock {
+    use std::cell::RefCell;
+    use std::sync::{Arc, Mutex, PoisonError};
+    use std::time::Instant;
+
+    /// Where a read is.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(in crate::commands::profile) enum Phase {
+        /// Not yet started: never too old.
+        Queued,
+        /// Waiting for a `claude` slot: never too old.
+        Waiting,
+        /// Working since this instant.
+        Running(Instant),
+    }
+
+    pub(in crate::commands::profile) type Clock = Arc<Mutex<Phase>>;
+
+    thread_local! {
+        static CLOCK: RefCell<Option<Clock>> = const { RefCell::new(None) };
+    }
+
+    pub(in crate::commands::profile) fn new() -> Clock {
+        Arc::new(Mutex::new(Phase::Queued))
+    }
+
+    pub(in crate::commands::profile) fn read(clock: &Clock) -> Phase {
+        *clock.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn set(phase: Phase) {
+        CLOCK.with(|c| {
+            if let Some(clock) = c.borrow().as_ref() {
+                *clock.lock().unwrap_or_else(PoisonError::into_inner) = phase;
+            }
+        });
+    }
+
+    /// Runs `job` on this thread with `clock` started now.
+    pub(in crate::commands::profile) fn run<T>(clock: &Clock, job: impl FnOnce() -> T) -> T {
+        *clock.lock().unwrap_or_else(PoisonError::into_inner) = Phase::Running(Instant::now());
+        CLOCK.with(|c| *c.borrow_mut() = Some(Arc::clone(clock)));
+        struct Unset;
+        impl Drop for Unset {
+            fn drop(&mut self) {
+                CLOCK.with(|c| *c.borrow_mut() = None);
+            }
+        }
+        let _unset = Unset;
+        job()
+    }
+
+    pub(super) fn waiting() {
+        set(Phase::Waiting);
+    }
+
+    pub(super) fn restart() {
+        set(Phase::Running(Instant::now()));
     }
 }

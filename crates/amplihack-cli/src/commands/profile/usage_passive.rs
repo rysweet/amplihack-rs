@@ -15,13 +15,15 @@ use std::path::Path;
 /// as a report, when it was observed at most `max_age` seconds before `now`
 /// and has a plausible window. `max_age` 0 turns passive readings off.
 ///
-/// `usage.json` has no field for "no session limit", so the report keeps
-/// the session limit; a missing session window reads as not yet known.
+/// A reading with a week window and no session window has no session limit
+/// (#1818), as a direct read of the same answer has and as
+/// `auto_switch::no_session_window_profiles` counts it, so a weekly-only
+/// login reads the same whichever way it was read.
 pub(super) fn fresh(root: &Path, dir: &ProfileName, max_age: u64, now: i64) -> Option<UsageReport> {
     let max_age = i64::try_from(max_age).ok()?;
-    let (five_hour, seven_day) = auto_switch::fresh_reading(root, dir.as_str(), max_age, now)?;
-    let session = five_hour.map(|w| window(w, "session"));
-    let week_all = seven_day.map(|w| window(w, "all models"));
+    let reading = auto_switch::fresh_reading(root, dir.as_str(), max_age, now)?;
+    let session = reading.session.map(|w| window(w, "session"));
+    let week_all = reading.week.map(|w| window(w, "all models"));
     let full = |w: &Option<UsageWindow>| w.as_ref().is_some_and(|w| w.used_percentage >= 100.0);
     let state = if full(&session) {
         UsageState::SessionExhausted
@@ -35,7 +37,7 @@ pub(super) fn fresh(root: &Path, dir: &ProfileName, max_age: u64, now: i64) -> O
         session,
         week_all,
         week_models: Vec::new(),
-        session_limit: true,
+        session_limit: !reading.no_session_window,
     })
 }
 

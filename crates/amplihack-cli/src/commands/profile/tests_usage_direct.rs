@@ -31,6 +31,8 @@
 //!   else to `transport`.
 //! - `read(&Endpoints, &Request) -> Result<UsageReport, &'static str>`, with
 //!   `Request { creds_dir, journals, allow_refresh, cancel, timeout, now_ms }`;
+//!   `timeout` is one deadline for the whole read, refresh included: each
+//!   request is given only the time left of it;
 //!   with `cancel` set, a refresh takes no lock and gives `refresh busy`.
 //!   Errors are the fixed texts in `reason`.
 //! - `refreshes_in_progress() -> usize` counts refreshes holding a lock;
@@ -657,6 +659,79 @@ fn a_stalled_server_is_a_timeout_within_the_deadline() {
         "{:?}",
         start.elapsed()
     );
+}
+
+/// Every answer comes after `delay`: a 401 to the old token, the token
+/// answer to the refresh, and 200 to the new token.
+fn slow_refreshing(delay: Duration) -> FakeHttp {
+    FakeHttp::start(move |s, _| {
+        let reply = if s.path == TOKEN_PATH {
+            Reply::json(200, &token_answer())
+        } else if bearer(s) == Some(&format!("Bearer {NEW_ACCESS}")) {
+            Reply::json(200, &body_100_55())
+        } else {
+            Reply::json(401, &json!({"error": "expired"}))
+        };
+        reply.after(delay)
+    })
+}
+
+/// The deadline covers the whole read, not each request: three requests of
+/// 0.8 s each would each fit a 2 s per-request deadline (2.4 s in all), and
+/// the read ends at its one 2 s deadline instead.
+#[test]
+fn a_401_refresh_and_retry_share_one_deadline() {
+    let fake = slow_refreshing(Duration::from_millis(800));
+    let l = login();
+    let journals = l.journals();
+    let mut req = request(&l, &journals, true);
+    req.timeout = Duration::from_secs(2);
+    let start = Instant::now();
+    assert_eq!(read(&endpoints(&fake), &req), Err(reason::TIMEOUT));
+    let took = start.elapsed();
+    assert!(took < Duration::from_millis(2300), "{took:?}");
+    // The refresh was answered in time, so the new token is saved even
+    // though the second GET ran out of time.
+    assert_eq!(posts(&fake), 1);
+    assert_eq!(gets(&fake).len(), 2);
+    assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], NEW_ACCESS);
+    assert_eq!(l.entries(), [CREDS]);
+}
+
+/// With enough time for all three, the same slow sequence reads.
+#[test]
+fn a_slow_refresh_within_the_deadline_still_reads() {
+    let fake = slow_refreshing(Duration::from_millis(300));
+    let l = login();
+    let journals = l.journals();
+    let mut req = request(&l, &journals, true);
+    req.timeout = Duration::from_secs(3);
+    let r = read(&endpoints(&fake), &req).expect("read after a slow refresh");
+    assert_eq!(r.week_all.map(|w| w.used_percentage), Some(55.0));
+}
+
+/// A refresh POST is given only what the first GET left: it fails at the
+/// read's deadline, the file is untouched and the lock released.
+#[test]
+fn a_stalled_refresh_ends_at_the_read_deadline() {
+    let fake = FakeHttp::start(|s, _| {
+        if s.path == TOKEN_PATH {
+            Reply::json(200, &token_answer()).after(Duration::from_secs(4))
+        } else {
+            Reply::json(401, &json!({"error": "expired"})).after(Duration::from_millis(800))
+        }
+    });
+    let l = login();
+    let before = fs::read(l.path()).unwrap();
+    let journals = l.journals();
+    let mut req = request(&l, &journals, true);
+    req.timeout = Duration::from_secs(2);
+    let start = Instant::now();
+    assert_eq!(read(&endpoints(&fake), &req), Err(reason::REFRESH_FAILED));
+    let took = start.elapsed();
+    assert!(took < Duration::from_millis(2300), "{took:?}");
+    assert_eq!(fs::read(l.path()).unwrap(), before);
+    assert_eq!(l.entries(), [CREDS]);
 }
 
 #[test]

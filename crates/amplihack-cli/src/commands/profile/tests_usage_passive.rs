@@ -12,9 +12,12 @@
 //!   `None`.
 //! - The report: `five_hour` is `session` (label `session`), `seven_day` is
 //!   `week_all` (label `all models`), `resets_text` is the reset as
-//!   `YYYY-MM-DDTHH:MM:SSZ`, `week_models` is empty and `session_limit` is
-//!   `true`. The state follows the usual rule: a window at 100% is
-//!   exhausted, session first.
+//!   `YYYY-MM-DDTHH:MM:SSZ` and `week_models` is empty. `session_limit` is
+//!   `false` when the stored entry has a plausible `seven_day` and no
+//!   `five_hour` (#1818, as `auto_switch::no_session_window_profiles` and a
+//!   direct read count it), else `true`; a stored `five_hour` left out as
+//!   implausible keeps the session limit. The state follows the usual rule:
+//!   a window at 100% is exhausted, session first.
 //! - An implausible window is left out; the plausible one is still used.
 //!
 //! Every test uses a temporary profile root.
@@ -187,16 +190,40 @@ fn implausible_windows_are_left_out() {
 }
 
 #[test]
-fn no_session_window_reads_with_the_session_limit_kept() {
+fn no_session_window_reads_as_no_session_limit() {
+    // A weekly-only plan (#1818) reads the same passively as directly.
     let r = root();
     r.usage(json!({"spare": reading(None, Some(40.0), NOW - 10)}));
     let rep = fresh(r.path(), &name("spare"), 300, NOW).unwrap();
     assert_eq!(rep.session, None);
-    assert!(
-        rep.session_limit,
-        "usage.json does not record no session limit"
-    );
+    assert!(!rep.session_limit, "a week window and no session window");
     assert_eq!(rep.state, UsageState::Ok);
+
+    r.usage(json!({"spare": reading(None, Some(100.0), NOW - 10)}));
+    let rep = fresh(r.path(), &name("spare"), 300, NOW).unwrap();
+    assert!(!rep.session_limit);
+    assert_eq!(rep.state, UsageState::WeeklyExhausted);
+}
+
+#[test]
+fn an_implausible_session_window_keeps_the_session_limit() {
+    // The session window was stored but cannot be used: it is unknown, not
+    // absent.
+    let r = root();
+    let mut entry = reading(Some(30.0), Some(40.0), NOW - 10);
+    entry["five_hour"]["resets_at"] = json!(NOW - 2 * DAY);
+    r.usage(json!({"spare": entry}));
+    let rep = fresh(r.path(), &name("spare"), 300, NOW).unwrap();
+    assert_eq!(rep.session, None);
+    assert!(rep.session_limit);
+}
+
+#[test]
+fn both_windows_keep_the_session_limit() {
+    let r = root();
+    r.usage(json!({"spare": reading(Some(30.0), Some(40.0), NOW - 10)}));
+    let rep = fresh(r.path(), &name("spare"), 300, NOW).unwrap();
+    assert!(rep.session_limit);
 }
 
 #[test]

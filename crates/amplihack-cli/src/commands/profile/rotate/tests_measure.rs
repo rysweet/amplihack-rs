@@ -450,7 +450,10 @@ mod bound {
 //   at most `bound` jobs at once, a key already busy is skipped),
 //   `collect()` (finished results, never blocks), `wait(until: Instant)`
 //   (results until every job is done or `until`), `drop_stale(now)` (drops
-//   and returns the keys in flight longer than `max_age`).
+//   and returns the keys that have been working longer than `max_age`). A
+//   read's age counts from when it leaves the queue, and starts again when
+//   it takes a `ClaudeGate` slot: a queued read, or one waiting for a slot,
+//   is never dropped.
 // - `inflight::max_age(timeout) = 2 * timeout + 5 s`.
 // - `measure::cycle_deadline(start, interval)` is `start + interval - 2 s`,
 //   and at least `start + 1 s`.
@@ -687,6 +690,59 @@ fn a_read_in_flight_too_long_is_dropped_and_started_again() {
         Wait::Until(Instant::now() + Duration::from_millis(50)),
     );
     assert_eq!(jobs.started("spare"), 2);
+}
+
+#[test]
+fn a_queued_read_is_not_dropped() {
+    // Bound 1: key 1 waits in the queue while key 0 runs past `max_age`.
+    let mut fl: InFlight<usize, usize> = InFlight::new(Duration::from_millis(200));
+    let jobs: Vec<(usize, Job<usize>)> = (0..2)
+        .map(|i| {
+            let job: Job<usize> = Box::new(move || {
+                if i == 0 {
+                    std::thread::sleep(Duration::from_millis(600));
+                }
+                i
+            });
+            (i, job)
+        })
+        .collect();
+    fl.start_all(jobs, 1);
+    std::thread::sleep(Duration::from_millis(350));
+    assert_eq!(fl.drop_stale(Instant::now()), [0]);
+    assert!(fl.busy(&1), "the queued read is kept");
+    assert_eq!(fl.wait(Instant::now() + Duration::from_secs(5)), [(1, 1)]);
+}
+
+#[test]
+fn a_read_waiting_for_a_claude_slot_is_not_dropped() {
+    use crate::commands::profile::usage_source::ClaudeGate;
+    let gate = ClaudeGate::new(1);
+    let (held, hold) = std::sync::mpsc::channel();
+    let holder = {
+        let gate = gate.clone();
+        std::thread::spawn(move || {
+            gate.run(|| {
+                held.send(()).unwrap();
+                std::thread::sleep(Duration::from_millis(600));
+            })
+        })
+    };
+    hold.recv().unwrap();
+    let mut fl: InFlight<&'static str, u8> = InFlight::new(Duration::from_millis(200));
+    let job: Job<u8> = {
+        let gate = gate.clone();
+        Box::new(move || gate.run(|| 7))
+    };
+    fl.start_all(vec![("spare", job)], 1);
+    std::thread::sleep(Duration::from_millis(350));
+    assert!(fl.drop_stale(Instant::now()).is_empty());
+    assert!(fl.busy(&"spare"));
+    assert_eq!(
+        fl.wait(Instant::now() + Duration::from_secs(5)),
+        [("spare", 7)]
+    );
+    holder.join().unwrap();
 }
 
 #[test]
