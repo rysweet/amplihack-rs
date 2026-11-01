@@ -1,6 +1,6 @@
 //! Step 4 on the alias path (#1762, D5, D6, D8): what it creates, what it
-//! prints, what it reuses, and what it leaves alone. The stops are in
-//! `step04_stops.rs`.
+//! prints, when it reuses an alias and when it refuses to, and what it leaves
+//! alone. The planner's stops are in `step04_stops.rs`.
 
 use std::fs;
 use std::path::Path;
@@ -134,6 +134,19 @@ fn alias_created_when_caller_on_pushed_clean_branch() {
     fx.assert_no_alias_on_origin("step 4 skips its best-effort push on the alias path");
 }
 
+/// Commit on the caller's branch and push it to origin/<B>: the planner's
+/// "push them, then re-run" remedy. Returns the new commit.
+fn push_new_commit_from_caller(fx: &Fx) -> String {
+    fx.commit_in(
+        &fx.caller,
+        "pushed-later.txt",
+        "later\n",
+        "pushed between runs",
+    );
+    fx.git(&fx.caller, &["push", "-q", "origin", BRANCH]);
+    fx.head(&fx.caller)
+}
+
 #[test]
 fn rerun_reuses_alias_worktree() {
     let fx = Fx::new();
@@ -141,8 +154,7 @@ fn rerun_reuses_alias_worktree() {
     let first = fx.step4(BRANCH, &[]);
     assert_eq!(first.code, Some(0), "first run\n{}", first.describe());
     let path = worktree_path(&first);
-    // Left by the first run: the reuse pass takes the worktree as it stands.
-    fx.write_in(Path::new(&path), "left-by-first-run.txt", "kept\n");
+    let first_head = fx.head(Path::new(&path));
 
     let second = fx.step4(BRANCH, &[]);
 
@@ -153,15 +165,181 @@ fn rerun_reuses_alias_worktree() {
         path,
         "the rerun reuses the same worktree"
     );
-    assert!(
-        Path::new(&path).join("left-by-first-run.txt").is_file(),
-        "reuse must not remove and recreate the alias worktree"
+    assert_eq!(
+        fx.head(Path::new(&path)),
+        first_head,
+        "nothing new on origin/<B>: the reused alias stays where it was"
     );
     assert!(
         !fx.local_branch_exists(&alias(2)),
         "a rerun must not create a second alias"
     );
     assert_info_line(&second, &fx.caller, &alias(1));
+}
+
+/// The planner's remedy for unpushed caller commits is "push them, then
+/// re-run". On the re-run the reused alias must contain those commits, so it
+/// is fast-forwarded to the origin/<B> step 4 has just fetched.
+#[test]
+fn rerun_fast_forwards_reused_alias_to_origin() {
+    let fx = Fx::new();
+    fx.on_pushed_branch();
+    let first = fx.step4(BRANCH, &[]);
+    assert_eq!(first.code, Some(0), "first run\n{}", first.describe());
+    let path = worktree_path(&first);
+    let pushed = push_new_commit_from_caller(&fx);
+
+    let second = fx.step4(BRANCH, &[]);
+
+    assert_eq!(second.code, Some(0), "rerun\n{}", second.describe());
+    assert_eq!(worktree_path(&second), path, "the alias worktree is reused");
+    assert_eq!(
+        fx.head(Path::new(&path)),
+        pushed,
+        "the reused alias must be at the commit pushed between runs"
+    );
+    assert_eq!(
+        fx.origin_sha(BRANCH).as_deref(),
+        Some(pushed.as_str()),
+        "step 4 must not move origin/<B>"
+    );
+    fx.assert_no_alias_on_origin("the reuse path pushes nothing");
+}
+
+/// A reused alias with leftovers from an earlier run stops step 4 rather
+/// than letting `git add -A` put them in this run's commit.
+#[test]
+fn rerun_stops_when_reused_alias_is_dirty() {
+    for (case, rel) in [
+        ("untracked file", "left-by-first-run.txt"),
+        ("tracked change", "feature.txt"),
+    ] {
+        let fx = Fx::new();
+        fx.on_pushed_branch();
+        let first = fx.step4(BRANCH, &[]);
+        assert_eq!(
+            first.code,
+            Some(0),
+            "{case}: first run\n{}",
+            first.describe()
+        );
+        let path = worktree_path(&first);
+        fx.write_in(Path::new(&path), rel, "left by an earlier run\n");
+        let pushed = push_new_commit_from_caller(&fx);
+
+        let second = fx.step4(BRANCH, &[]);
+
+        assert_eq!(
+            second.code,
+            Some(1),
+            "{case}: must stop\n{}",
+            second.describe()
+        );
+        assert!(
+            second.stdout.trim().is_empty(),
+            "{case}: a stop prints nothing on stdout\n{}",
+            second.describe()
+        );
+        assert!(
+            second
+                .stderr_line_with(&[
+                    "ERROR:",
+                    &alias(1),
+                    "uncommitted changes or untracked files",
+                    "#1762"
+                ])
+                .is_some(),
+            "{case}: the ERROR line must name the alias and the cause\n{}",
+            second.describe()
+        );
+        assert_eq!(
+            fs::read_to_string(Path::new(&path).join(rel)).unwrap(),
+            "left by an earlier run\n",
+            "{case}: the leftover is not discarded"
+        );
+        assert_ne!(
+            fx.head(Path::new(&path)),
+            pushed,
+            "{case}: a dirty alias is not moved"
+        );
+    }
+}
+
+/// A reused alias holding commits origin/<B> lacks (an earlier run committed
+/// but did not push) stops step 4: the alias would not be at the caller's
+/// commit and step 15 would later fail as diverged.
+#[test]
+fn rerun_stops_when_reused_alias_is_ahead_of_origin() {
+    let fx = Fx::new();
+    fx.on_pushed_branch();
+    let first = fx.step4(BRANCH, &[]);
+    assert_eq!(first.code, Some(0), "first run\n{}", first.describe());
+    let path = worktree_path(&first);
+    fx.commit_in(
+        Path::new(&path),
+        "unpushed.txt",
+        "u\n",
+        "earlier run, not pushed",
+    );
+    let alias_head = fx.head(Path::new(&path));
+
+    let second = fx.step4(BRANCH, &[]);
+
+    assert_eq!(second.code, Some(1), "must stop\n{}", second.describe());
+    assert!(second.stdout.trim().is_empty(), "{}", second.describe());
+    assert!(
+        second
+            .stderr_line_with(&[
+                "ERROR:",
+                &alias(1),
+                &format!("origin/{BRANCH} does not"),
+                "#1762"
+            ])
+            .is_some(),
+        "the ERROR line must name the alias and the unpushed commits\n{}",
+        second.describe()
+    );
+    assert_eq!(
+        fx.head(Path::new(&path)),
+        alias_head,
+        "the alias's commits are kept"
+    );
+}
+
+/// Without the reuse helper the alias cannot be checked, so step 4 stops
+/// rather than reuse it unchecked.
+#[test]
+fn rerun_stops_when_reuse_helper_is_missing() {
+    let fx = Fx::new();
+    fx.on_pushed_branch();
+    let first = fx.step4(BRANCH, &[]);
+    assert_eq!(first.code, Some(0), "first run\n{}", first.describe());
+    let path = worktree_path(&first);
+    let first_head = fx.head(Path::new(&path));
+    push_new_commit_from_caller(&fx);
+    let home = fx.bundle_without("workflow_alias_reuse.sh");
+
+    let second = fx.step4(BRANCH, &[("AMPLIHACK_HOME", home.to_str().unwrap())]);
+
+    assert_eq!(second.code, Some(1), "must stop\n{}", second.describe());
+    assert!(second.stdout.trim().is_empty(), "{}", second.describe());
+    assert!(
+        second
+            .stderr_line_with(&[
+                "ERROR:",
+                "workflow_alias_reuse.sh not found",
+                &alias(1),
+                "#1762"
+            ])
+            .is_some(),
+        "the missing helper must be named\n{}",
+        second.describe()
+    );
+    assert_eq!(
+        fx.head(Path::new(&path)),
+        first_head,
+        "the alias is not moved"
+    );
 }
 
 /// D5: an alias-shaped branch that fails the reuse conditions is skipped and

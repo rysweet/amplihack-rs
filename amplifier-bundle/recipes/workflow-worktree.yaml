@@ -216,8 +216,8 @@ steps:
           [ "$ALIAS_RC" -eq 0 ] && [ "${LOCAL_BRANCH#"$BRANCH_NAME--wt-"}" != "$LOCAL_BRANCH" ] && git check-ref-format --branch "$LOCAL_BRANCH" >/dev/null 2>&1 \
             || { echo "ERROR: cannot set up an alias worktree for '$BRANCH_NAME' (planner exit $ALIAS_RC; issue #1762)." >&2; exit 1; }
           WORKTREE_PATH="${MAIN_REPO_PATH}/worktrees/${LOCAL_BRANCH}"
-          # Reuse only an alias already checked out at its path; otherwise another run is creating it, so stop. A create is `worktree add -b`, so a concurrent create fails and removes nothing.
-          if git show-ref --verify --quiet "refs/heads/$LOCAL_BRANCH"; then [ "$(git -C "$WORKTREE_PATH" symbolic-ref -q --short HEAD 2>/dev/null)" = "$LOCAL_BRANCH" ] || { echo "ERROR: alias '$LOCAL_BRANCH' exists but is not checked out at $WORKTREE_PATH; another run may be creating it. Wait for that run to finish, then re-run (issue #1762)." >&2; exit 1; }; echo "INFO: Reusing existing worktree directory at '$WORKTREE_PATH' (branch matches)." >&2
+          # Reuse (workflow_alias_reuse.sh): only an alias checked out at its path (else another run is creating it), clean, with nothing unpushed, then fast-forwarded to origin/<B>. A create is `worktree add -b`, so a concurrent create fails and removes nothing (#1762).
+          if git show-ref --verify --quiet "refs/heads/$LOCAL_BRANCH"; then bash "$TOOLS_DIR/workflow_alias_reuse.sh" "$WORKTREE_PATH" "$LOCAL_BRANCH" "$BRANCH_NAME" || { [ -f "$TOOLS_DIR/workflow_alias_reuse.sh" ] || echo "ERROR: $TOOLS_DIR/workflow_alias_reuse.sh not found; cannot check alias '$LOCAL_BRANCH' before reusing it (issue #1762)." >&2; exit 1; }
           elif [ -f "$ROOT_HELPER" ] && ! bash "$ROOT_HELPER" assert-not-nested "$WORKTREE_PATH" "$MAIN_REPO_PATH"; then exit 1
           else git worktree add --track -b "$LOCAL_BRANCH" -- "$WORKTREE_PATH" "origin/$BRANCH_NAME" >&2; fi
         fi

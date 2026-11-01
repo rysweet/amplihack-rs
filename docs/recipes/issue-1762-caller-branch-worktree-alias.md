@@ -15,6 +15,7 @@ one updated. The caller's clone is not changed.
 - `amplifier-bundle/recipes/workflow-terminal-state.yaml`: the branch check
 - `amplifier-bundle/tools/workflow_caller_branch_alias.sh` (new): the step-04 planner
 - `amplifier-bundle/tools/workflow_remote_branch.sh` (new): the remote-branch resolver, and the ten tool call sites that use it
+- `amplifier-bundle/tools/workflow_alias_reuse.sh` (new): the checks and fast-forward step 4 runs before reusing an alias worktree
 
 **Closes:** #1762
 
@@ -160,10 +161,25 @@ Step 4 picks the alias in two passes.
 - `git worktree list --porcelain` shows the alias checked out at
   `<main>/worktrees/<alias>`, compared as physical paths.
 
-The worktree is reused as it stands, including any uncommitted changes or
-commits an earlier run left in it. Two runs started one after the other from
-the same caller therefore share one alias worktree. The reuse pass does not
-check whether another run is still using it.
+Before reusing the alias worktree, step 4 runs
+[`workflow_alias_reuse.sh`](../../amplifier-bundle/tools/workflow_alias_reuse.sh),
+which checks the worktree and brings it up to date:
+
+- it must have no uncommitted changes and no untracked files
+  (`git status --porcelain --untracked-files=all` prints nothing);
+- the alias must have no commits that `origin/<B>` lacks;
+- it is then fast-forwarded to the `origin/<B>` that step 4 has just fetched
+  (`git merge --ff-only origin/<B>`).
+
+If any of these fails, step 4 stops with an `ERROR:` line that names the
+alias, its path and the cause, and changes nothing. Remove or push what is
+left in the worktree, or remove the worktree, and re-run. A reused alias
+therefore starts at the same commit a newly created one would: after the
+planner's "push them, then re-run" remedy, the task worktree contains the
+commits the user pushed, and nothing an earlier run left behind is staged
+into this run's commit. Two runs started one after the other from the same
+caller share one alias worktree; a second run started while the first has
+uncommitted work in it stops on the cleanliness check.
 
 **Create pass.** If nothing qualifies for reuse, take the lowest `n` for which:
 
@@ -256,7 +272,8 @@ than a number, and when a candidate alias does not survive
 `git check-ref-format --branch` unchanged. In each case it cannot prove the
 caller's checkout is safe, so it does not go on.
 
-Step 4 also stops when the alias branch exists but is not checked out at
+Step 4 (through `workflow_alias_reuse.sh`) also stops when the alias branch
+exists but is not checked out at
 `<main>/worktrees/<B>--wt-<n>`:
 
 ```text
@@ -466,9 +483,10 @@ look up the PR, under the alias name. Reinstall the bundle with
   missing or stale, so a renamed default branch may not be recognised.
   Refresh it with `git remote set-head origin --auto`, and protect the default
   branch on the server. The local check does not replace branch protection.
-- **Concurrent runs.** The reuse pass does not check whether another run is
-  using an alias worktree, so two runs for `<B>` from the same caller can work
-  in the same worktree at once. Two runs that reach the create pass at the same
+- **Concurrent runs.** The reuse pass has no lock. A second run stops if the
+  first has left uncommitted or unpushed work in the alias worktree, but a
+  second run that starts while the first's worktree is clean and pushed can
+  work in the same worktree at once. Two runs that reach the create pass at the same
   moment choose the same `n`. What the second run's step 4 does depends on how
   far the first run has got:
   - the first has not yet created the alias ref: both try
