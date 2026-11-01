@@ -702,6 +702,28 @@ fn a_ledger_with_overflow_data_written_beside_an_older_rotator_is_one_it_can_rea
     assert!(!raw.contains("overflow"), "{raw}");
 }
 
+/// Issue #1804: the rotator's `no_room` record is set on every measuring
+/// cycle, so it is left out for an older rotator, which would otherwise
+/// reject every ledger this binary writes beside it. The full form keeps it.
+#[test]
+fn a_ledger_with_a_no_room_record_written_beside_an_older_rotator_is_one_it_can_read() {
+    let mut l = ledger();
+    l.no_room = Some(super::plan_room::no_room::NoRoom {
+        at: 130,
+        until: 370,
+        profiles: vec!["work".into()],
+    });
+    assert_eq!(
+        for_older_readers(&l, false),
+        l,
+        "the full form keeps no_room"
+    );
+    let older = serde_json::to_vec(&for_older_readers(&l, true)).unwrap();
+    serde_json::from_slice::<OldLedger>(&older).expect("the old reader accepts it");
+    let raw = String::from_utf8(older).unwrap();
+    assert!(!raw.contains("no_room"), "{raw}");
+}
+
 // --- The hook's reader on overflow ledgers (issue #1606) --------------------
 //
 // The limit-resume hook reads what the rotator writes through

@@ -354,20 +354,3 @@ pub fn is_live(store: &ProfileStore, home: Option<&Path>, name: &ProfileName) ->
     let rs = RotateState::new(store.root());
     matches!(live(store, &rs, home), Ok((LiveId::Known(n), _)) if &n == name)
 }
-
-/// The status line while the rotate ledger says the live login is an
-/// API-key profile (issue #1700), for `rotate status` and `auto-switch
-/// status`. The ledger is the only evidence; nothing is probed.
-pub fn platform_live_line(root: &Path) -> Option<String> {
-    let l = RotateState::new(root).load_ledger().ok()??;
-    if l.live_kind.as_deref() != Some(super::ledger::LIVE_KIND_PLATFORM) {
-        return None;
-    }
-    let live = l.live?;
-    let since = l
-        .since
-        .map_or_else(|| "unknown".to_string(), super::log::timestamp);
-    Some(format!(
-        "~/.claude is on API key profile {live}: work is billed per token (since {since})"
-    ))
-}

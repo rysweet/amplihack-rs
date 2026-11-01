@@ -21,6 +21,7 @@ pub use super::hand_fields::{
 };
 use super::hand_fields::{valid_guidance, valid_lost_login};
 pub use super::older_readers::for_older_readers;
+use super::plan_room::no_room::{self, NoRoom};
 #[cfg(test)]
 pub use super::spend_blocks::KEY_REASONS;
 use super::spend_blocks::valid_overflow;
@@ -51,6 +52,13 @@ pub struct LastCycle {
     /// The credit-backed overflow tag (issue #1606): `in`, `out` or `on`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overflow: Option<String>,
+}
+
+/// Whether `last` was written after a cycle began measuring at
+/// `measured_at`, so another writer used the ledger while that cycle held no
+/// lock. A switch record always counts, whatever the clock says.
+pub fn newer_than(last: Option<&LastCycle>, measured_at: i64) -> bool {
+    last.is_some_and(|c| c.outcome == SWITCHED || c.at >= measured_at)
 }
 
 /// The tags `LastCycle.overflow` may hold.
@@ -143,6 +151,10 @@ pub struct RotateLedger {
     /// The API-key block (issue #1700): it covers every API-key profile.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform_block: Option<OverflowBlock>,
+    /// The logins the last measuring cycle found with no room (issue
+    /// #1804), for auto-switch, which cannot read the login in `~/.claude`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_room: Option<NoRoom>,
 }
 
 impl Default for RotateLedger {
@@ -162,6 +174,7 @@ impl Default for RotateLedger {
             lost_login: Vec::new(),
             live_kind: None,
             platform_block: None,
+            no_room: None,
         }
     }
 }
@@ -314,6 +327,9 @@ impl RotateState {
         }
         if !valid_overflow(&l) {
             return Err(inconsistent(format!("{WHAT}: invalid overflow field")));
+        }
+        if !no_room::valid(l.no_room.as_ref()) {
+            return Err(inconsistent(format!("{WHAT}: invalid no_room")));
         }
         if !valid_guidance(l.guidance.as_deref()) || !valid_lost_login(&l.lost_login) {
             return Err(inconsistent(format!(

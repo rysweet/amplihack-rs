@@ -281,23 +281,33 @@ fn overflow_line(
 /// that tag, `no` for a plan profile, `-` when the live profile cannot be
 /// identified. Runs no probe.
 /// The `api key:` line (issue #1700): the API-key profile the tier uses,
-/// with the active API-key block, or `-`.
+/// `(marked)` or `(not marked)` (issue #1804), with the active API-key
+/// block, or `-`.
 fn api_key_line(
     store: &ProfileStore,
     home: Option<&Path>,
     ledger: Option<&RotateLedger>,
 ) -> String {
+    use crate::commands::profile::overflow::{PLATFORM_TIER, tiers_detail};
+    // Issue #1804: the marked one, else the first by name, labelled.
+    let marked = tiers_detail(store, home)
+        .0
+        .into_iter()
+        .find(|e| e.tier == PLATFORM_TIER)
+        .map(|e| e.name);
     let platforms = crate::commands::profile::kind::Ctx::load(store, home).platform_profiles(store);
-    let Some(first) = platforms.first() else {
-        return "-".into();
+    let (first, label) = match (marked, platforms.into_iter().next()) {
+        (Some(m), _) => (m, "marked"),
+        (None, Some(p)) => (p, "not marked"),
+        (None, None) => return "-".into(),
     };
     match ledger.and_then(|l| super::platform_block::active(l, now())) {
         Some(b) => format!(
-            "{first} (blocked until {}, {})",
+            "{first} ({label}) (blocked until {}, {})",
             timestamp(b.until),
             sanitize_display(&b.reason, false)
         ),
-        None => first.to_string(),
+        None => format!("{first} ({label})"),
     }
 }
 

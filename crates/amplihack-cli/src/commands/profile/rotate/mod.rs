@@ -28,7 +28,9 @@ mod daemon;
 #[cfg(unix)]
 mod damp;
 #[cfg(unix)]
-mod decide;
+pub(super) mod decide;
+#[cfg(unix)]
+mod dry_run;
 #[cfg(unix)]
 mod exhausted;
 #[cfg(unix)]
@@ -45,6 +47,8 @@ mod held;
 mod holders;
 #[cfg(unix)]
 pub(super) mod identify;
+#[cfg(unix)]
+pub(super) mod key_check;
 #[cfg(unix)]
 pub(super) mod ledger;
 #[cfg(unix)]
@@ -67,6 +71,8 @@ mod overflow_record;
 mod owner;
 #[cfg(unix)]
 mod pin;
+#[cfg(unix)]
+pub(super) mod plan_room;
 #[cfg(unix)]
 pub(super) mod platform_block;
 #[cfg(unix)]
@@ -91,6 +97,9 @@ mod switch;
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
 pub use super::rotate_args::{RotateAction, RotateArgs, TuneFlags};
+pub use candidates::login_unusable;
+pub use overflow_msg::{CheckNote, alert_key_held_session, per_token_off_key, per_token_reason};
+pub use overflow_record::append_to_log;
 
 #[cfg(all(test, unix))]
 mod tests_autostart;
@@ -114,6 +123,12 @@ mod tests_handfix_overflow;
 mod tests_home_unreadable;
 #[cfg(all(test, unix))]
 mod tests_identify;
+#[cfg(all(test, unix))]
+mod tests_issue_1804;
+#[cfg(all(test, unix))]
+mod tests_issue_1804_cycle;
+#[cfg(all(test, unix))]
+mod tests_key_check;
 #[cfg(all(test, unix))]
 mod tests_ledger;
 #[cfg(all(test, unix))]
@@ -168,13 +183,13 @@ use super::root_config::RootSource;
 use super::store::ProfileStore;
 
 #[cfg(unix)]
+pub(super) use self::{identify::is_live, platform_block::platform_live_line};
+#[cfg(unix)]
 pub(in crate::commands::profile) use autostart::autostart_line;
 #[cfg(unix)]
 pub(crate) use autostart::autostart_on_launch;
 #[cfg(unix)]
 pub(super) use control::{clear_overflow_block, overflow_blocks};
-#[cfg(unix)]
-pub(super) use identify::{is_live, platform_live_line};
 #[cfg(unix)]
 pub(super) use log::timestamp;
 #[cfg(unix)]
