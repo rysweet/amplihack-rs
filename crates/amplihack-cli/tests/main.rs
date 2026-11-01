@@ -212,6 +212,12 @@ mod issue_1760_fixture_files;
 mod issue_1801_capacity_wait;
 #[path = "issue_1801_evaluator_retry.rs"]
 mod issue_1801_evaluator_retry;
+#[path = "issue_1802_auto_drive_light_eligibility.rs"]
+mod issue_1802_auto_drive_light_eligibility;
+#[path = "issue_1802_auto_drive_light_recipe.rs"]
+mod issue_1802_auto_drive_light_recipe;
+#[path = "issue_1802_auto_drive_light_round.rs"]
+mod issue_1802_auto_drive_light_round;
 #[path = "issue_1803_rotation_owner.rs"]
 mod issue_1803_rotation_owner;
 #[path = "issue_1818_no_session_limit.rs"]
