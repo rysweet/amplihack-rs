@@ -241,8 +241,22 @@ pub fn deferral_suffix(root: &Path) -> String {
 /// The autostart owner gate: `Some(running)` when a marker exists, after one
 /// line to `err` unless its owner is running. The caller has checked the
 /// root and the euid. Creates nothing.
-pub fn defer(root: &Path, proc_root: &Path, exe_name: &OsStr, err: &mut dyn Write) -> Option<bool> {
-    let tail = format!("run {CLEAR} to let launches start the rotator");
+///
+/// The gate defers whatever the autostart setting says, but the line advises
+/// clearing the marker only when `autostart_on`: with autostart off, clearing
+/// it starts nothing.
+pub fn defer(
+    root: &Path,
+    proc_root: &Path,
+    exe_name: &OsStr,
+    autostart_on: bool,
+    err: &mut dyn Write,
+) -> Option<bool> {
+    let tail = if autostart_on {
+        format!("; run {CLEAR} to let launches start the rotator")
+    } else {
+        String::new()
+    };
     // The launch goes on whether or not its stderr takes the line.
     match read(root) {
         OwnerState::None => None,
@@ -251,14 +265,14 @@ pub fn defer(root: &Path, proc_root: &Path, exe_name: &OsStr, err: &mut dyn Writ
             let unit = shown(&m.unit);
             let _ = writeln!(
                 err,
-                "amplihack: rotation is owned by {unit}, which is not running; {tail}"
+                "amplihack: rotation is owned by {unit}, which is not running{tail}"
             );
             Some(false)
         }
         OwnerState::Unreadable => {
             let _ = writeln!(
                 err,
-                "amplihack: the rotation owner marker is unreadable; {tail}"
+                "amplihack: the rotation owner marker is unreadable{tail}"
             );
             Some(false)
         }

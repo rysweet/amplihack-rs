@@ -280,10 +280,12 @@ pub fn run(root: &Path, docker_flag: bool, d: Deps<'_>) -> Outcome {
     if d.euid == 0 {
         return Outcome::Skipped("root-user");
     }
-    if let Some(running) = owner::defer(root, d.proc_root, d.exe_name, d.err) {
+    // The owner wins over the setting, which only shapes the owner warning.
+    let autostart_on = effective(root, d.env).on;
+    if let Some(running) = owner::defer(root, d.proc_root, d.exe_name, autostart_on, d.err) {
         return Outcome::Deferred { running };
     }
-    if !effective(root, d.env).on {
+    if !autostart_on {
         return Outcome::Off;
     }
     if docker_flag || (d.docker_env)() {

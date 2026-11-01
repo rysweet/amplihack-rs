@@ -46,6 +46,9 @@ const EXE: &str = "amplihack-owner-gate-test";
 const OWNER_PID: u32 = 4_300_100;
 const RECIPE: &str = "AMPLIHACK_RECIPE_RUN_ID";
 const DEAD_LINE: &str = "amplihack: rotation is owned by amplihack-rotator.service, which is not running; run 'amplihack profile rotate owner clear' to let launches start the rotator\n";
+const DEAD_LINE_AUTOSTART_OFF: &str =
+    "amplihack: rotation is owned by amplihack-rotator.service, which is not running\n";
+const UNREADABLE_LINE_AUTOSTART_OFF: &str = "amplihack: the rotation owner marker is unreadable\n";
 const UNREADABLE_LINE: &str = "amplihack: the rotation owner marker is unreadable; run 'amplihack profile rotate owner clear' to let launches start the rotator\n";
 
 fn mode(path: &Path, m: u32) {
@@ -457,6 +460,39 @@ fn the_owner_wins_over_autostart_on_and_off() {
 }
 
 #[test]
+fn with_autostart_off_a_dead_owner_defers_without_the_clear_advice() {
+    for (env, setting) in [(Some("0"), None), (None, Some(&b"off\n"[..]))] {
+        let f = fx();
+        f.marker("amplihack-rotator.service", OWNER_PID);
+        if let Some(body) = setting {
+            private_file(&f.rs.dir.join("autostart"), body);
+        }
+        let (o, err) = f.run_with(Opts {
+            env: env.map(|v| vec![(ENV, v)]).unwrap_or_default(),
+            ..Opts::default()
+        });
+        assert_eq!(o, Outcome::Deferred { running: false });
+        assert_eq!(
+            err, DEAD_LINE_AUTOSTART_OFF,
+            "clearing the marker starts nothing while autostart is off"
+        );
+        assert_eq!(f.spawned(), 0);
+    }
+}
+
+#[test]
+fn with_autostart_off_an_unreadable_marker_gives_no_clear_advice() {
+    let f = fx();
+    f.raw_marker(b"not a marker");
+    let (o, err) = f.run_with(Opts {
+        env: vec![(ENV, "0")],
+        ..Opts::default()
+    });
+    assert_eq!(o, Outcome::Deferred { running: false });
+    assert_eq!(err, UNREADABLE_LINE_AUTOSTART_OFF);
+}
+
+#[test]
 fn the_owner_comes_before_docker() {
     let f = fx();
     f.marker("amplihack-rotator.service", OWNER_PID);
@@ -527,7 +563,8 @@ fn source_gate_order_in_run() {
     assert_before(&body, "RECIPE_RUN_ENV", "auto_switch_on");
     assert_before(&body, "check_root_private", "owner::");
     assert_before(&body, "d.euid == 0", "owner::");
-    assert_before(&body, "owner::", "effective(root");
+    assert_before(&body, "d.euid == 0", "effective(root");
+    assert_before(&body, "owner::", "if !autostart_on");
     assert_before(&body, "owner::", "rs.ensure()");
     assert_before(&body, "owner::", "try_lock");
 }
@@ -798,6 +835,51 @@ fn a_usage_limit_that_has_reset_is_not_a_limit_stop() {
         &limit_failure("spare", RESET, 0.0),
     );
     assert_eq!(check(&x.root, RESET + 1), None);
+}
+
+#[test]
+fn a_statusline_reading_whose_windows_have_reset_is_not_exhausted() {
+    // RESET is the reset time of both windows; usage.json is not refreshed
+    // while sessions are stopped, so the stored 95% is stale after it.
+    let x = ex(
+        Some(OFF_90),
+        Some("spare"),
+        &statusline("spare", 95.0, 95.0),
+    );
+    assert!(check(&x.root, RESET - 1).is_some(), "before the reset");
+    assert_eq!(check(&x.root, RESET), None, "at the reset");
+    assert_eq!(check(&x.root, RESET + 1), None, "after the reset");
+    assert_eq!(lines(&x.root, RESET + 1), (None, None));
+}
+
+#[test]
+fn a_full_usage_limit_after_its_reset_is_not_exhausted() {
+    let x = ex(
+        Some(OFF_90),
+        Some("spare"),
+        &limit_failure("spare", RESET, 100.0),
+    );
+    assert_eq!(
+        check(&x.root, RESET + 1),
+        None,
+        "not a limit stop, and not over the threshold either"
+    );
+}
+
+#[test]
+fn only_the_window_that_has_reset_counts_as_zero() {
+    let usage = format!(
+        r#"{{"version":1,"accounts":{{"spare":{{"five_hour":{{"used_percentage":99.0,"resets_at":{NOW}}},"seven_day":{{"used_percentage":92.0,"resets_at":{RESET}}},"observed_at":{NOW},"source":"statusline"}}}}}}"#
+    );
+    let x = ex(Some(OFF_90), Some("spare"), &usage);
+    assert_eq!(
+        check(&x.root, NOW + 1).map(|e| e.reason),
+        Some(Reason::Threshold {
+            pct: 92.0,
+            threshold: 90
+        }),
+        "the session window has reset; the weekly one has not"
+    );
 }
 
 #[test]

@@ -12,7 +12,9 @@
 
 use super::ledger::RotateState;
 use super::log::timestamp;
-use crate::commands::profile::auto_switch::kit::{ReadingSource, Source, State, effective};
+use crate::commands::profile::auto_switch::kit::{
+    ReadingSource, Source, State, adjusted, effective,
+};
 use std::fmt;
 use std::path::Path;
 
@@ -72,7 +74,8 @@ pub(super) fn paused(root: &Path) -> bool {
 /// The rotate ledger names the live directory; the auto-switch ledger maps
 /// it to the account whose login it holds, and that account's reading in
 /// `usage.json` decides. A usage-limit failure with a future reset wins
-/// over the threshold.
+/// over the threshold. A window whose reset has passed counts as 0%, so a
+/// login whose windows have all reset is not exhausted.
 ///
 /// `Ok(None)` when auto-switch is on, a file or entry is missing, or the
 /// login is under its threshold; `Err` when a ledger or `usage.json` exists
@@ -106,7 +109,11 @@ pub fn exhausted_while_off(root: &Path, now: i64) -> Result<Option<Exhausted>, S
     let reason = match limit_reset {
         Some(resets_at) => Reason::LimitStop { resets_at },
         None => {
-            let pct = reading.worst();
+            // A window whose reset has passed counts as 0%, as it does for
+            // every other reader of `usage.json`: nothing refreshes the file
+            // while sessions sit stopped, so its raw percentage goes stale.
+            let pct = adjusted(reading.five_hour.as_ref(), now)
+                .max(adjusted(reading.seven_day.as_ref(), now));
             let threshold = eff.config.threshold;
             if !pct.is_finite() || pct < f64::from(threshold) {
                 return Ok(None);

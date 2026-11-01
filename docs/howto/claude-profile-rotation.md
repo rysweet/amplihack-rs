@@ -583,7 +583,8 @@ and still starts Claude:
 amplihack: rotation is owned by amplihack-rotator.service, which is not running; run 'amplihack profile rotate owner clear' to let launches start the rotator
 ```
 
-and `status` shows:
+With autostart off, the line ends after `which is not running`, since
+clearing the marker would not start a rotator. `status` shows:
 
 ```
 owner: amplihack-rotator.service pid 48213 (not running); autostart defers to it; run 'amplihack profile rotate owner clear' to release

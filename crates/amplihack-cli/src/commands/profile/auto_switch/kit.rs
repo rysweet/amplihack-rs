@@ -4,6 +4,7 @@
 //! usage readings.
 //! Re-exports only.
 
+pub use super::candidate::adjusted;
 pub use super::capacity::{Rotated, refresh_from_rotation as capacity_from_rotation};
 pub use super::config::{Source, effective};
 pub use super::fsx::{

@@ -4894,6 +4894,10 @@ A marker that cannot be read or trusted gives:
 amplihack: the rotation owner marker is unreadable; run 'amplihack profile rotate owner clear' to let launches start the rotator
 ```
 
+When autostart is [off](#autostart-setting), launches still defer to the
+marker, but the line stops after `which is not running` or `is unreadable`
+and gives no advice: clearing the marker would start nothing.
+
 Neither line fails the launch, and neither is written to `rotate.err`.
 
 Launches inside a recipe run never start the rotator: `amplihack recipe run`
@@ -5098,7 +5102,12 @@ The condition holds when all of these are true:
      in the future, giving `usage limit reached, resets <time>` (the latest
      such reset), or
    - the higher of its session and weekly percentages is at or above the
-     auto-switch threshold, giving `<pct>% used, threshold <t>%`.
+     auto-switch threshold, giving `<pct>% used, threshold <t>%`. A window
+     whose reset time has passed counts as 0%, as it does for
+     [candidate selection](#readings): `usage.json` is not refreshed while
+     sessions are stopped, so its stored percentage is out of date once the
+     window resets. A usage-limit failure whose reset has passed is
+     therefore no ALERT, whatever percentage it recorded.
 
 The reason has exactly one of two forms:
 
