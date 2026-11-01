@@ -146,3 +146,20 @@ pub fn clear_reason(root: &Path) -> Result<Option<String>, ProfileError> {
 pub fn clear(root: &Path) -> Result<bool, ProfileError> {
     clear_reason(root).map(|r| r.is_some())
 }
+
+/// The status line while the rotate ledger says the live login is an
+/// API-key profile (issue #1700), for `rotate status` and `auto-switch
+/// status`. The ledger is the only evidence; nothing is probed.
+pub fn platform_live_line(root: &std::path::Path) -> Option<String> {
+    let l = RotateState::new(root).load_ledger().ok()??;
+    if l.live_kind.as_deref() != Some(super::ledger::LIVE_KIND_PLATFORM) {
+        return None;
+    }
+    let live = l.live?;
+    let since = l
+        .since
+        .map_or_else(|| "unknown".to_string(), log::timestamp);
+    Some(format!(
+        "~/.claude is on API key profile {live}: work is billed per token (since {since})"
+    ))
+}

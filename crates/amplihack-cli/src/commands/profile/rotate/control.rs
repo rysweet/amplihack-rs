@@ -2,7 +2,8 @@
 //! signal only a verified rotator. Also the ledger side of `profile
 //! overflow list` and `clear` (issue #1606).
 
-use super::daemon::{DaemonState, current_state, daemon_err};
+use super::daemon::{DaemonState, current_state, daemon_err, exe_name};
+use super::exhausted;
 use super::identify::{self, LiveId};
 use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
 use super::log::{msg, timestamp};
@@ -99,9 +100,21 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         None => "-".into(),
     };
     let auto = super::autostart_line(store.root());
-    println!("rotate: {word}\n{auto}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    // Issue #1803: read only under a private root; never echoes the marker.
+    let exe = exe_name();
+    let owner = super::owner::describe(store.root(), Path::new("/proc"), exe.as_deref());
+    println!("rotate: {word}\n{auto}\n{owner}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
     println!("overflow: {overflow}\napi key: {api_key}\non overflow: {on_overflow}");
     if let Some(line) = super::platform_live_line(store.root()) {
+        println!("{line}");
+    }
+    // Issue #1818: profiles whose stored reading has no session window. Not
+    // labelled "no session limit": the stored reading cannot tell a plan
+    // with none from a session window that was not recorded.
+    let names_now = store.list().unwrap_or_default();
+    if let Some(line) =
+        crate::commands::profile::auto_switch::no_session_window_line(store.root(), &names_now)
+    {
         println!("{line}");
     }
     // `.default` bypasses the rotator: say so when it names an overflow profile.
@@ -119,6 +132,9 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     }
     for line in ledger.as_ref().map(status_alerts).unwrap_or_default() {
         println!("{line}");
+    }
+    if let Some(line) = exhausted::status_line(store.root(), now()) {
+        println!("{}", sanitize_display(&line, false));
     }
     match rs.load_journal() {
         Ok(Some(j)) if j.phase == Phase::Inconsistent => println!("journal: inconsistent"),
@@ -274,23 +290,33 @@ fn overflow_line(
 /// that tag, `no` for a plan profile, `-` when the live profile cannot be
 /// identified. Runs no probe.
 /// The `api key:` line (issue #1700): the API-key profile the tier uses,
-/// with the active API-key block, or `-`.
+/// `(marked)` or `(not marked)` (issue #1804), with the active API-key
+/// block, or `-`.
 fn api_key_line(
     store: &ProfileStore,
     home: Option<&Path>,
     ledger: Option<&RotateLedger>,
 ) -> String {
+    use crate::commands::profile::overflow::{PLATFORM_TIER, tiers_detail};
+    // Issue #1804: the marked one, else the first by name, labelled.
+    let marked = tiers_detail(store, home)
+        .0
+        .into_iter()
+        .find(|e| e.tier == PLATFORM_TIER)
+        .map(|e| e.name);
     let platforms = crate::commands::profile::kind::Ctx::load(store, home).platform_profiles(store);
-    let Some(first) = platforms.first() else {
-        return "-".into();
+    let (first, label) = match (marked, platforms.into_iter().next()) {
+        (Some(m), _) => (m, "marked"),
+        (None, Some(p)) => (p, "not marked"),
+        (None, None) => return "-".into(),
     };
     match ledger.and_then(|l| super::platform_block::active(l, now())) {
         Some(b) => format!(
-            "{first} (blocked until {}, {})",
+            "{first} ({label}) (blocked until {}, {})",
             timestamp(b.until),
             sanitize_display(&b.reason, false)
         ),
-        None => first.to_string(),
+        None => format!("{first} ({label})"),
     }
 }
 

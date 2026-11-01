@@ -84,7 +84,8 @@ fn status_json_has_the_documented_schema_and_writes_nothing() {
     assert_eq!(beta["session"], serde_json::Value::Null);
     let table = f.run(&["governor", "status"]);
     assert!(
-        text(&table.stdout).contains("no session limit"),
+        text(&table.stdout).contains("no session window")
+            && !text(&table.stdout).contains("no session limit"),
         "{}",
         describe(&table)
     );

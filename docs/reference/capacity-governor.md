@@ -45,7 +45,7 @@ Profiles:
     session: 62.0% (resets 2026-11-01 15:00 UTC; burn 2.1/h, sustainable 0.4/h)
     weekly:  71.0% (resets 2026-11-05 09:00 UTC; burn 0.9/h, sustainable 0.3/h)
   beta
-    session: no session limit
+    session: no session window
     weekly:  38.0% (resets 2026-11-07 09:00 UTC; burn 0.6/h, sustainable 0.5/h)
 
 Reserve: 10 points; best weekly remainder 62.0; ordinary work admitted
@@ -191,10 +191,19 @@ A profile whose reading has a weekly window and no session window is
 
 - usable points are the weekly remainder;
 - it is never session-exhausted, and no session reset is expected for it;
-- status shows `session: null` in JSON and `no session limit` in the table.
+- status shows `session: null` and `session_window: false` in JSON and
+  `no session window` in the table. It does not say `no session limit`:
+  the stored reading cannot tell a plan with no session limit from a
+  session window that was not recorded, the same reason `profile rotate
+  status` prints `no session window`.
 
 A profile whose reading has neither window is unknown and is left out of the
-pool. If every profile is unknown, step 1 admits the start.
+pool. So is a profile whose session window was read but holds a percentage
+that is not a finite number between 0 and 100: a damaged session reading is
+never taken as "no session window", which would drop the session limit.
+Status marks such a profile with `invalid_reading: true` in JSON and
+`invalid reading` in the table. If every profile is unknown, step 1 admits
+the start.
 
 ### A session reset never adds weekly capacity
 
@@ -342,11 +351,17 @@ deadlock.
 A launch is **nested** when either of these holds:
 
 - `AMPLIHACK_SESSION_DEPTH` is greater than 0 and `AMPLIHACK_TREE_ID` equals
-  the tree id of a live slot;
+  the tree id of a live slot whose process is this process's parent or
+  another ancestor;
 - `AMPLIHACK_GOVERNOR_PARENT` equals the tree id of a live slot whose
-  process is this process's parent or another ancestor (checked through
-  `/proc` on Linux), so a marker copied into an unrelated environment nests
-  nothing.
+  process is this process's parent or another ancestor.
+
+The ancestry is checked through `/proc` on Linux. Every child of an admitted
+launch inherits the slot's tree id and, under a recipe, a session depth, so a
+tmux server or a background process that a step starts holds both too. A
+start from such an environment is not in the slot's process tree, so neither
+variable nests it and it counts against the limit. Without `/proc` the
+ancestry cannot be checked and a matching tree id is trusted.
 
 A nested launch:
 
@@ -369,8 +384,9 @@ this marker is what lets a `recipe run` started inside the session run under
 the session's slot instead of waiting for a second one. A `recipe run --detach`
 removes the marker from the run it starts in tmux, so a detached run started
 from an interactive session asks for a slot of its own. One started from an
-agent step still carries the step's session depth and tree id, and runs
-under that step's slot.
+agent step also asks for a slot of its own: it still carries the step's
+session depth and tree id, but tmux starts it outside the step's process
+tree, so the ancestry check does not match.
 
 A nested start holds no slot of its own. If it outlives its parent (for
 example a background `recipe run` left running after an interactive session
@@ -580,7 +596,8 @@ entries and renames no corrupt files. A dead slot or queue entry is shown
 with `stale`. With no profile root, or with only `HOME` set, it reports the
 governor state and creates nothing.
 
-The table shows `no session limit` for weekly-only profiles. Profile names
+The table shows `no session window` for weekly-only profiles and
+`invalid reading` for a profile whose reading cannot be trusted. Profile names
 and other strings are printed with control characters replaced by `?` and
 are cut to 64 characters.
 
@@ -600,7 +617,8 @@ are cut to 64 characters.
       "name": "alpha",
       "active": true,
       "eligible": true,
-      "session_limit": true,
+      "session_window": true,
+      "invalid_reading": false,
       "session": {
         "used_pct": 62.0,
         "resets_at": 1793548800,
@@ -623,7 +641,8 @@ are cut to 64 characters.
       "name": "beta",
       "active": false,
       "eligible": true,
-      "session_limit": false,
+      "session_window": false,
+      "invalid_reading": false,
       "session": null,
       "weekly": {
         "used_pct": 38.0,
@@ -680,7 +699,8 @@ are cut to 64 characters.
 | `enabled` | `false` when the kill switch or `governor.enabled` turns the governor off. `limit` is then `null` and every list is empty. |
 | `limit`, `max` | Current concurrency limit and `governor.max_concurrency` |
 | `profiles[]` | Every listed profile, including those left out of the pool; `eligible` is `false` for overflow and API-key profiles |
-| `profiles[].session_limit` | `false` for a weekly-only profile; `session` is then `null` |
+| `profiles[].session_window` | `false` for a weekly-only profile (a week window and no session window); `session` is then `null`. Not "no session limit": the reading cannot tell the two apart |
+| `profiles[].invalid_reading` | `true` when a window holds a percentage that is not a finite number between 0 and 100; the profile is then out of the pool and `session` and `weekly` are `null` |
 | `profiles[].weekly` | `null` for a profile with no usable weekly reading; such a profile is not part of the pool |
 | `profiles[].burn_rate`, `sustainable_rate`, `forecast_exhaustion` | The weekly window's values, repeated for scripts; `null` when unknown |
 | Window objects | `used_pct`, `resets_at` (Unix seconds or `null`), and the window's rate fields |
@@ -743,10 +763,13 @@ against other processes of the same user: any parent can set
   a start's class and so its access to the reserve. Recipe task text is
   not read, so anyone who can open an issue that a recipe run picks up
   cannot claim the reserve.
-- **Nesting.** A process that sets `AMPLIHACK_SESSION_DEPTH` above 0 and an
-  `AMPLIHACK_TREE_ID` matching a live slot nests under that slot and is not
-  counted against the concurrency limit. This is accepted under the
-  same-user model above.
+- **Nesting.** A process nests under a live slot, and is not counted against
+  the concurrency limit, only when the slot's process is its parent or
+  another ancestor (on Linux). A tree id or parent marker that leaked into
+  an unrelated environment, such as a tmux server started from an agent
+  step, therefore nests nothing. A process of the same user can still nest
+  on purpose by running under the slot's process; that is accepted under
+  the same-user model above.
 - **Input.** Workstream ids, wait durations, classes and tree ids are
   validated before use. Classes inferred from recipes come from fixed lists.
   The manifest must be an absolute path to a regular file owned by the

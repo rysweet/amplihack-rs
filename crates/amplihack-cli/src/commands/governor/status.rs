@@ -3,7 +3,7 @@
 //! records are shown as `stale`. JSON schema version 1:
 //! docs/reference/capacity-governor.md#json-output.
 
-use super::budget::{Headroom, headroom, weekly_remaining};
+use super::budget::{Headroom, headroom, invalid_reading, weekly_remaining};
 use super::config::Settings;
 use super::inputs::{self, ProfileRates};
 use super::liveness::alive;
@@ -48,7 +48,14 @@ pub struct ProfileView {
     pub name: String,
     pub active: bool,
     pub eligible: bool,
-    pub session_limit: bool,
+    /// `false` when the reading has a week window and no session window.
+    /// That is not "no session limit": the stored reading cannot tell a plan
+    /// with none from a session window that was not recorded (#1818).
+    pub session_window: bool,
+    /// A window of the reading holds a percentage that cannot be trusted
+    /// (non-finite or outside 0 to 100). The profile is then unknown and out
+    /// of the pool, and `session` and `weekly` are `null`.
+    pub invalid_reading: bool,
     pub session: Option<WindowView>,
     /// `null` for a profile with no weekly reading.
     pub weekly: Option<WindowView>,
@@ -192,7 +199,8 @@ pub fn view(
                 name: display_safe(&s.name),
                 active: s.active,
                 eligible: s.eligible,
-                session_limit: session.is_some(),
+                session_window: !s.no_session_window,
+                invalid_reading: invalid_reading(s),
                 burn_rate: weekly.as_ref().and_then(|w| w.burn_rate),
                 sustainable_rate: weekly.as_ref().and_then(|w| w.sustainable_rate),
                 forecast_exhaustion: weekly.as_ref().and_then(|w| w.forecast_exhaustion),

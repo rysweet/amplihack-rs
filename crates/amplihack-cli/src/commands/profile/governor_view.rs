@@ -29,6 +29,10 @@ pub struct ProfileSnapshot {
     pub seven_day: Option<(f64, i64)>,
     /// When the reading was taken; 0 without a reading.
     pub observed_at: i64,
+    /// The reading has a week window and no session window (issue #1818's
+    /// `Reading::no_session_window`). Not "no session limit": the stored
+    /// reading cannot tell the two apart.
+    pub no_session_window: bool,
 }
 
 /// The profile root for this process's environment, the same one every
@@ -69,7 +73,13 @@ pub fn snapshot(root: &Path, home: Option<&Path>) -> Vec<ProfileSnapshot> {
         None
     });
     let overflow = overflow::overflow_names(root);
+    // Issue #1804: a root whose kinds cannot be resolved must not read as
+    // "no API-key profile", or a per-token profile would join the pool.
+    // Without the list, no profile is eligible.
     let platform = platform_names(&store, home);
+    if platform.is_none() {
+        tracing::debug!("governor: profile kinds unreadable; no profile is eligible");
+    }
     names
         .into_iter()
         .map(|name| {
@@ -81,27 +91,30 @@ pub fn snapshot(root: &Path, home: Option<&Path>) -> Vec<ProfileSnapshot> {
             let parsed = ProfileName::parse(&name).ok();
             let eligible = parsed
                 .as_ref()
-                .is_some_and(|n| !overflow.contains(n) && !platform.contains(n));
+                .zip(platform.as_ref())
+                .is_some_and(|(n, platform)| !overflow.contains(n) && !platform.contains(n));
             ProfileSnapshot {
                 active: active.as_deref() == Some(name.as_str()),
                 eligible,
-                five_hour: reading.and_then(|r| r.0),
-                seven_day: reading.and_then(|r| r.1),
-                observed_at: reading.map_or(0, |r| r.2),
+                five_hour: reading.and_then(|r| r.five_hour),
+                seven_day: reading.and_then(|r| r.seven_day),
+                observed_at: reading.map_or(0, |r| r.observed_at),
+                no_session_window: reading.is_some_and(|r| r.no_session_window),
                 name,
             }
         })
         .collect()
 }
 
-/// The API-key profiles under `store`.
+/// The API-key profiles under `store`, or `None` when the root cannot be
+/// listed (issue #1804's `try_platform_profiles`).
 #[cfg(unix)]
-fn platform_names(store: &ProfileStore, home: Option<&Path>) -> Vec<ProfileName> {
-    super::kind::Ctx::load(store, home).platform_profiles(store)
+fn platform_names(store: &ProfileStore, home: Option<&Path>) -> Option<Vec<ProfileName>> {
+    super::kind::Ctx::load(store, home).try_platform_profiles(store)
 }
 
 /// No login kinds off Unix: no API-key profiles.
 #[cfg(not(unix))]
-fn platform_names(_store: &ProfileStore, _home: Option<&Path>) -> Vec<ProfileName> {
-    Vec::new()
+fn platform_names(_store: &ProfileStore, _home: Option<&Path>) -> Option<Vec<ProfileName>> {
+    Some(Vec::new())
 }

@@ -18,6 +18,7 @@ mod inputs;
 mod liveness;
 mod manifest;
 mod model;
+mod nesting;
 mod policy;
 mod queue;
 mod rate;
@@ -35,6 +36,8 @@ mod tests_config;
 mod tests_identity;
 #[cfg(all(test, unix))]
 mod tests_liveness;
+#[cfg(all(test, unix))]
+mod tests_nesting;
 #[cfg(test)]
 mod tests_policy;
 #[cfg(test)]

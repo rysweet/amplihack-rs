@@ -14,12 +14,15 @@
 //! - `list` has a `KIND` column; `kind list` / `kind set` as documented.
 //! - `usage` shows `api-key (billed per token)` with state `api_key`,
 //!   exits 0, and never probes the API-key profile.
-//! - `overflow add <api-key profile>` is refused; `overflow clear` needs
-//!   exactly one of `<name>` and `--platform`; `overflow list` shows the
-//!   `api-key tier` line.
+//! - Issue #1804: `overflow add <api-key profile>` marks it, the consent to
+//!   per-token billing, and `--tier` is refused with `PlatformTierFixed`
+//!   before anything is written; `overflow list` labels it `api-key tier
+//!   (not marked)` or `api-key tier  marked`. `overflow clear` needs
+//!   exactly one of `<name>` and `--platform`.
 //! - The launch guard refuses a subscription profile with no login of its
 //!   own, before anything is spawned; an API-key profile runs.
-//! - The rotator moves onto the API key only after plan logins and credits,
+//! - The rotator moves onto a marked API key only after plan logins and
+//!   credits, and only when its login check passes,
 //!   by the ordinary journalled rename swap, records `live_kind`, logs the
 //!   move, leaves `$HOME/.claude.json` untouched (no `oauthAccount`), and
 //!   moves off at the next cycle whatever the hold.
@@ -59,6 +62,22 @@ fn add_console(f: &Fixture) -> u64 {
     private_file(&dir.join(".claude.json"), r#"{"numStartups":3}"#);
     private_file(&dir.join(CREDS), "{}");
     ino(&dir.join(CREDS)).unwrap()
+}
+
+/// Puts a key in `~/.claude.json`, where plain `claude` reads it after a
+/// swap, so the login check passes, and marks `console` with `overflow add`
+/// (issue #1804). The key in the profile's own file makes it an API-key
+/// profile by setting, whatever becomes of its login file.
+fn mark_console(f: &Fixture) {
+    private_file(
+        &f.root.join("console").join(".claude.json"),
+        &format!(r#"{{"primaryApiKey":"{CANARY}","numStartups":3}}"#),
+    );
+    let path = f.home.join(".claude.json");
+    let mut home: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    home["primaryApiKey"] = CANARY.into();
+    private_file(&path, &home.to_string());
+    f.ok(&["profile", "overflow", "add", "console"]);
 }
 
 fn add_ghost(f: &Fixture) {
@@ -264,19 +283,49 @@ fn usage_json_carries_the_kind() {
 // --- overflow ------------------------------------------------------------------------
 
 #[test]
-fn an_api_key_profile_cannot_be_marked_as_overflow() {
+fn an_api_key_profile_is_marked_with_overflow_add() {
     let f = Fixture::new();
     add_console(&f);
-    let out = f.run(&["profile", "overflow", "add", "console"]);
-    assert_eq!(out.status.code(), Some(1));
+    let out = f.ok(&["profile", "overflow", "add", "console"]);
+    let s = stdout(&out);
+    assert!(
+        s.contains("overflow: added console (api-key tier, tier 10)"),
+        "{s}"
+    );
+    assert!(
+        s.contains(
+            "note: console is billed per token; it is used only when every plan login is measured and none is below 100% on both windows, no credit profile can be used, the earliest plan reset is more than --overflow-wait away and its login check passes."
+        ),
+        "{s}"
+    );
+    let file = fs::read_to_string(auto_switch(&f)).unwrap();
+    assert!(
+        file.lines().any(|l| l == "overflow=console"),
+        "stored as the bare name: {file}"
+    );
+}
+
+#[test]
+fn overflow_add_tier_on_an_api_key_profile_is_refused_and_writes_nothing() {
+    let f = Fixture::new();
+    add_console(&f);
+    let out = f.run(&["profile", "overflow", "add", "console", "--tier", "3"]);
+    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
     assert!(
         stderr(&out).contains(
-            "profile console is an API-key profile; API-key profiles are always the last overflow tier and cannot be marked"
+            "profile console is an API-key profile; the API-key tier is fixed at 10, so --tier cannot be set"
         ),
         "{}",
         stderr(&out)
     );
     assert!(!auto_switch(&f).exists(), "nothing written");
+
+    // With a file already there, its bytes are left as they were.
+    f.ok(&["profile", "overflow", "add", "extra"]);
+    let before = fs::read(auto_switch(&f)).unwrap();
+    let again = f.run(&["profile", "overflow", "add", "console", "--tier", "10"]);
+    assert_ne!(again.status.code(), Some(0));
+    assert_eq!(fs::read(auto_switch(&f)).unwrap(), before);
 }
 
 #[test]
@@ -285,7 +334,30 @@ fn overflow_list_shows_the_api_key_tier_after_the_marks() {
     add_console(&f);
     f.ok(&["profile", "overflow", "add", "extra"]);
     let s = stdout(&f.ok(&["profile", "overflow", "list"]));
-    assert!(s.starts_with("extra  tier 1\nconsole  api-key tier"), "{s}");
+    assert_eq!(
+        s, "extra  tier 1  marked\nconsole  api-key tier  not marked (not used)\n",
+        "{s}"
+    );
+}
+
+#[test]
+fn t5_overflow_list_labels_the_api_key_not_marked_then_marked() {
+    let f = Fixture::new();
+    add_console(&f);
+    let before = stdout(&f.ok(&["profile", "overflow", "list"]));
+    assert_eq!(
+        before, "console  api-key tier  not marked (not used)\n",
+        "{before}"
+    );
+    f.ok(&["profile", "overflow", "add", "console"]);
+    let after = stdout(&f.ok(&["profile", "overflow", "list"]));
+    assert_eq!(after, "console  api-key tier  marked\n", "{after}");
+    f.ok(&["profile", "overflow", "remove", "console"]);
+    let removed = stdout(&f.ok(&["profile", "overflow", "list"]));
+    assert_eq!(
+        removed, "console  api-key tier  not marked (not used)\n",
+        "{removed}"
+    );
 }
 
 #[test]
@@ -400,6 +472,7 @@ fn a_corrupt_toggle_file_refuses_profiles_without_an_oauth_login() {
 fn a_dry_run_onto_the_api_key_moves_nothing_and_probes_nothing() {
     let f = Fixture::new();
     add_console(&f);
+    mark_console(&f);
     all_plan_logins_out(&f);
     let s = stdout(&f.ok(&["profile", "rotate", "--dry-run"]));
     assert!(s.contains("console"), "{s}");
@@ -412,6 +485,7 @@ fn a_dry_run_onto_the_api_key_moves_nothing_and_probes_nothing() {
 fn credits_are_used_before_the_api_key() {
     let f = Fixture::new();
     add_console(&f);
+    mark_console(&f);
     all_plan_logins_out(&f);
     f.ok(&["profile", "overflow", "add", "extra"]);
     f.ok(&["profile", "rotate"]);
@@ -422,6 +496,7 @@ fn credits_are_used_before_the_api_key() {
 fn the_wait_gate_keeps_work_off_the_api_key() {
     let f = Fixture::new();
     let console = add_console(&f);
+    mark_console(&f);
     f.usage_resetting("work", 100, 40, 3);
     f.usage_resetting("spare", 100, 100, 3);
     // extra is back in 1 hour, within the 2-hour wait given below.
@@ -435,6 +510,7 @@ fn the_wait_gate_keeps_work_off_the_api_key() {
 fn rotate_moves_onto_the_api_key_and_off_it_at_the_next_cycle() {
     let f = Fixture::new();
     let console = add_console(&f);
+    mark_console(&f);
     all_plan_logins_out(&f);
     let home_json = fs::read(f.home.join(".claude.json")).unwrap();
 
@@ -442,6 +518,10 @@ fn rotate_moves_onto_the_api_key_and_off_it_at_the_next_cycle() {
     let log = f.log();
     assert!(
         log.contains("moved ~/.claude onto API key profile console (billed per token)"),
+        "{log}"
+    );
+    assert!(
+        log.contains("marked overflow tier 10; login check passed (primaryApiKey set)"),
         "{log}"
     );
     assert!(
@@ -479,7 +559,7 @@ fn rotate_moves_onto_the_api_key_and_off_it_at_the_next_cycle() {
         "{st}"
     );
     assert!(st.contains("on overflow: yes (console)"), "{st}");
-    assert!(st.contains("api key: console"), "{st}");
+    assert!(st.contains("api key: console (marked)"), "{st}");
     let us = stdout(&f.ok(&["profile", "usage"]));
     assert!(
         us.contains("live: work is running on the API key (billed per token)"),
@@ -517,6 +597,7 @@ fn rotate_moves_onto_the_api_key_and_off_it_at_the_next_cycle() {
 fn rotate_moves_off_the_api_key_to_credits_when_no_plan_login_has_capacity() {
     let f = Fixture::new();
     let console = add_console(&f);
+    mark_console(&f);
     all_plan_logins_out(&f);
     f.ok(&["profile", "rotate"]);
     assert_eq!(ino(&f.home_login()), Some(console));
@@ -529,6 +610,17 @@ fn rotate_moves_off_the_api_key_to_credits_when_no_plan_login_has_capacity() {
         "{}",
         f.log()
     );
+    // Credits bill per token too, so this move writes its reason first
+    // (issue #1804), naming no wait gate because it passes none.
+    let log = f.log();
+    let reason = log
+        .find(
+            "per-token extra: no plan login took the move; leaving the API key, credits cost less; \
+             marked overflow tier 1; probe ok, no spend limit",
+        )
+        .unwrap_or_else(|| panic!("no per-token line: {log}"));
+    let swap = log.find("swap console->extra").expect("swap line");
+    assert!(reason < swap, "{log}");
 }
 
 #[test]
@@ -552,6 +644,7 @@ fn a_subscription_profile_without_an_oauth_login_is_never_swapped_in() {
 fn an_api_key_profile_without_a_login_file_is_never_swapped_in() {
     let f = Fixture::new();
     add_console(&f);
+    mark_console(&f);
     fs::remove_file(f.root.join("console").join(CREDS)).unwrap();
     // Still an API key, by its setting name.
     private_file(
@@ -571,13 +664,14 @@ fn an_api_key_profile_without_a_login_file_is_never_swapped_in() {
 fn a_blocked_api_key_is_not_used_and_clear_platform_lifts_the_block() {
     let f = Fixture::new();
     add_console(&f);
+    mark_console(&f);
     all_plan_logins_out(&f);
     write_platform_block(&f, "key_exhausted");
     f.ok(&["profile", "rotate"]);
     assert_eq!(ino(&f.home_login()), Some(f.live_ino), "{}", f.log());
     let list = stdout(&f.ok(&["profile", "overflow", "list"]));
     assert!(
-        list.contains("console  api-key tier  blocked until "),
+        list.contains("console  api-key tier  marked  blocked until "),
         "{list}"
     );
     assert!(list.contains("(key_exhausted)"), "{list}");

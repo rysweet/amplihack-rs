@@ -26,17 +26,37 @@ fn window(raw: Option<(f64, i64)>) -> Option<WindowBudget> {
     })
 }
 
-/// The budget for one profile. `None` without a usable weekly window: such a
-/// profile is "unknown" and not part of the pool. A missing or invalid
-/// session window gives a weekly-only budget (`session: None`).
+/// The budget for one profile, or `None` when the profile is "unknown" and
+/// not part of the pool. A profile is unknown without a usable weekly window,
+/// and also when a session window was read but cannot be trusted
+/// (non-finite or outside `0..=100`): a damaged session reading never drops
+/// the session limit. Only a reading that [`ProfileSnapshot::no_session_window`]
+/// marks (a week window and no session window, issue #1818) gives a
+/// weekly-only budget (`session: None`).
 pub fn budget_from_snapshot(s: &ProfileSnapshot) -> Option<Budget> {
+    let session = if s.no_session_window {
+        None
+    } else {
+        Some(window(s.five_hour)?)
+    };
     Some(Budget {
         name: s.name.clone(),
         active: s.active,
         eligible: s.eligible,
         weekly: window(s.seven_day)?,
-        session: window(s.five_hour),
+        session,
     })
+}
+
+/// A window of the profile's reading holds a percentage the governor cannot
+/// trust (non-finite or outside `0..=100`), so [`budget_from_snapshot`]
+/// leaves the profile out of the pool. `governor status` shows it as
+/// `invalid reading`, not `no reading`.
+pub fn invalid_reading(s: &ProfileSnapshot) -> bool {
+    [s.five_hour, s.seven_day]
+        .into_iter()
+        .flatten()
+        .any(|w| window(Some(w)).is_none())
 }
 
 fn remaining(w: &WindowBudget) -> f64 {

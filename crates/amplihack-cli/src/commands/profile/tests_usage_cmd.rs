@@ -35,6 +35,7 @@ fn report(
         session: s.map(|(p, at)| win("session", p, at)),
         week_all: w.map(|(p, at)| win("all models", p, at)),
         week_models: Vec::new(),
+        session_limit: true,
     }
 }
 
@@ -438,6 +439,7 @@ fn json_is_an_array_of_rows_with_the_exact_keys() {
                 "overflow_blocked_until",
                 "profile",
                 "session",
+                "session_limit",
                 "state",
                 "week_all",
                 "week_models"
@@ -1402,6 +1404,7 @@ mod request {
     use super::super::ProfileError;
     use super::super::name::ProfileName;
     use super::super::probe_limits::ProbeMode;
+    use super::super::rotate::decide::{Probed, Reading};
     use super::super::store::ProfileStore;
     use super::super::usage_cmd::{Probe, probe_all, probe_with};
     use super::super::usage_parse::UsageState;
@@ -1534,6 +1537,71 @@ mod request {
         assert_eq!(p.raw, None);
         assert_eq!(f.starts(), [ARGS.join(" ")]);
         assert_eq!(f.read("stdin"), Some(format!("{REQUEST_LINE}\n")));
+    }
+
+    /// What Claude 2.1.316 printed for `-p /usage` under a key in `$HOME`.
+    const COST_TEXT: &str =
+        "printf 'Total cost:            $0.0000\\nTotal duration (API):  0s\\n'";
+
+    /// The answer of Claude 2.1.316 under each `$HOME` setting, with the
+    /// fields amplihack reads. See "API-key login check".
+    fn home_key_answer(subscription: Option<&str>, available: bool, limits: bool) -> String {
+        let rate_limits = limits.then(|| {
+            serde_json::json!({
+                "five_hour": {"utilization": 20, "resets_at": "2026-10-16T17:00:00Z"},
+                "seven_day": {"utilization": 30, "resets_at": "2026-10-22T09:00:00Z"}
+            })
+        });
+        serde_json::json!({
+            "type": "control_response",
+            "response": {
+                "subtype": "success",
+                "request_id": REQUEST_ID,
+                "response": {
+                    "subscription_type": subscription,
+                    "rate_limits_available": available,
+                    "rate_limits": rate_limits
+                }
+            }
+        })
+        .to_string()
+    }
+
+    fn reading(p: &Probe) -> Reading {
+        Probed::from_report(&p.report).reading
+    }
+
+    /// `env.ANTHROPIC_API_KEY` and `apiKeyHelper`: plan limits do not apply,
+    /// so the fallback runs, prints cost text, and the live reading fails.
+    #[test]
+    fn a_home_key_in_settings_reads_as_failed_through_the_fallback() {
+        let answer = home_key_answer(None, false, false);
+        let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
+        let p = f.probe(ProbeMode::Auto, 20, false);
+        assert_eq!(reading(&p), Reading::Failed);
+        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+    }
+
+    /// `primaryApiKey` answers like a plain plan login, so figures in that
+    /// answer give a normal reading and `/usage` never runs.
+    #[test]
+    fn a_home_primary_key_with_figures_reads_as_measured() {
+        let answer = home_key_answer(Some("max"), true, true);
+        let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
+        let p = f.probe(ProbeMode::Auto, 20, false);
+        assert!(matches!(reading(&p), Reading::Measured { .. }));
+        assert_eq!(f.starts(), [ARGS.join(" ")]);
+    }
+
+    /// With no figures, as when the usage read failed, `primaryApiKey` ends
+    /// on the same fallback, which fails.
+    #[test]
+    fn a_home_primary_key_without_figures_reads_as_failed_through_the_fallback() {
+        let answer = home_key_answer(Some("max"), true, false);
+        let f = Fake::new(ANSWER, COST_TEXT).answer(&answer);
+        let p = f.probe(ProbeMode::Auto, 20, false);
+        assert_eq!(reading(&p), Reading::Failed);
+        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
     }
 
     #[test]
@@ -1674,4 +1742,169 @@ mod request {
         assert_eq!(session(&probes[1]), 20.0, "plan read with the request");
         assert_eq!(f.starts(), ["-p /usage".to_string(), ARGS.join(" ")]);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1818: no session limit
+// ---------------------------------------------------------------------------
+
+/// A plan with no session limit: no session window, the week read.
+fn weekly_only(name: &str, state: UsageState, week: f64) -> Row {
+    let mut rep = report(state, None, Some((week, Some(NOW + DAY))));
+    rep.session_limit = false;
+    row(name, rep)
+}
+
+fn cells(out: &str, name: &str) -> Vec<String> {
+    let header = out.lines().next().unwrap();
+    let line = out
+        .lines()
+        .find(|l| l.starts_with(name))
+        .unwrap_or_else(|| panic!("no row for {name}: {out}"));
+    // Cut at the header's column starts, so a cell with spaces stays whole.
+    let starts: Vec<usize> = [
+        "PROFILE",
+        "MARKS",
+        "STATE",
+        "SESSION",
+        "SESSION RESETS",
+        "WEEK",
+        "WEEK RESETS",
+    ]
+    .iter()
+    .scan(0, |from, h| {
+        let at = *from + header[*from..].find(h).unwrap();
+        *from = at + h.len();
+        Some(header[..at].chars().count())
+    })
+    .collect();
+    let chars: Vec<char> = line.chars().collect();
+    starts
+        .iter()
+        .enumerate()
+        .map(|(i, &a)| {
+            let b = starts.get(i + 1).copied().unwrap_or(chars.len());
+            chars[a.min(chars.len())..b.min(chars.len())]
+                .iter()
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .collect()
+}
+
+#[test]
+fn the_table_says_no_session_limit_in_full_with_a_dash_for_the_reset() {
+    for (state, word) in [
+        (UsageState::Ok, "ok"),
+        (UsageState::WeeklyExhausted, "weekly_exhausted"),
+    ] {
+        let week = if state == UsageState::Ok { 40.0 } else { 100.0 };
+        let out = render_table(&[weekly_only("free", state, week)]);
+        let c = cells(&out, "free");
+        assert_eq!(c[2], word, "{out}");
+        assert_eq!(c[3], "no session limit", "never clipped: {out}");
+        assert_eq!(c[4], "-", "{out}");
+        assert!(c[5].ends_with('%'), "{out}");
+    }
+}
+
+#[test]
+fn the_label_appears_only_on_rows_with_no_session_limit() {
+    let normal = ok(
+        "normal",
+        Some((20.0, Some(NOW + HOUR))),
+        Some((30.0, Some(NOW + DAY))),
+    );
+    // A failed reading keeps its cells even with no windows.
+    let mut timeout = row("slow", report(UsageState::Timeout, None, None));
+    timeout.report.session_limit = true;
+    let mut key = weekly_only("key", UsageState::Ok, 10.0);
+    key.api_key = true;
+    let out = render_table(&[
+        normal,
+        timeout,
+        row("gone", report(UsageState::NotLoggedIn, None, None)),
+        row("bad", report(UsageState::Unparsed, None, None)),
+        row("err", report(UsageState::Error, None, None)),
+        row(
+            "spent",
+            report(UsageState::SpendLimit, None, Some((10.0, None))),
+        ),
+        key,
+        weekly_only("free", UsageState::Ok, 10.0),
+    ]);
+    assert_eq!(
+        out.matches("no session limit").count(),
+        1,
+        "only the weekly-only row: {out}"
+    );
+    assert_eq!(cells(&out, "normal")[3], "20%");
+    for name in ["slow", "gone", "bad", "err", "spent"] {
+        assert_eq!(cells(&out, name)[3], "-", "{name}: {out}");
+    }
+    assert!(
+        cells(&out, "key")[3].starts_with("api-key"),
+        "API-key rows keep their cell: {out}"
+    );
+}
+
+#[test]
+fn json_rows_carry_session_limit_right_after_session() {
+    let rows = [
+        ok(
+            "normal",
+            Some((20.0, Some(NOW + HOUR))),
+            Some((30.0, Some(NOW + DAY))),
+        ),
+        weekly_only("free", UsageState::Ok, 40.0),
+        row("slow", report(UsageState::Timeout, None, None)),
+    ];
+    let text = render_json(&rows);
+    let v = json(&rows);
+    assert_eq!(v[0]["session_limit"], true);
+    assert_eq!(v[1]["session_limit"], false);
+    assert_eq!(v[1]["session"], serde_json::Value::Null);
+    assert_eq!(v[1]["state"], "ok");
+    assert_eq!(v[1]["week_all"]["used_percentage"], 40.0);
+    assert_eq!(v[2]["session_limit"], true, "a failed row is never false");
+    assert_eq!(v[2]["state"], "timeout");
+    // Field order: `session_limit` is written straight after `session`.
+    for obj in text.split("\"profile\"").skip(1) {
+        let s = obj.find("\"session\":").expect("session key");
+        let l = obj.find("\"session_limit\":").expect("session_limit key");
+        let w = obj.find("\"week_all\":").expect("week_all key");
+        assert!(s < l && l < w, "{text}");
+    }
+}
+
+#[test]
+fn json_session_limit_is_a_bool_on_every_row() {
+    let v = json(&table_rows());
+    for r in v.as_array().unwrap() {
+        assert!(r["session_limit"].is_boolean(), "{r}");
+    }
+}
+
+/// A row with no session limit reaches `record_usage` as a week with no
+/// session window, so a stored session window is kept until its reset
+/// passes (crusty round 3 on PR #1829).
+#[test]
+fn observations_of_no_session_limit_rows_have_no_session_window() {
+    let rows = vec![
+        ok(
+            "normal",
+            Some((20.0, Some(NOW + HOUR))),
+            Some((30.0, Some(NOW + DAY))),
+        ),
+        weekly_only("free", UsageState::Ok, 40.0),
+        weekly_only("full", UsageState::WeeklyExhausted, 100.0),
+    ];
+    let obs = observations(&rows);
+    let got: Vec<(&str, bool)> = obs
+        .iter()
+        .map(|o| (o.profile.as_str(), o.session.is_some()))
+        .collect();
+    assert_eq!(got, [("normal", true), ("free", false), ("full", false)]);
+    assert_eq!(obs[1].week.unwrap().used_percentage, 40.0);
 }

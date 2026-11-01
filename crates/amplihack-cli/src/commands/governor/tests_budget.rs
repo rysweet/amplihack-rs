@@ -6,15 +6,17 @@
 //! Expected API:
 //! - `profile::governor_view::ProfileSnapshot { name: String, active: bool,
 //!   eligible: bool, five_hour: Option<(f64, i64)>, seven_day:
-//!   Option<(f64, i64)>, observed_at: i64 }` (no `Debug`, no `Serialize`).
+//!   Option<(f64, i64)>, observed_at: i64, no_session_window: bool }` (no
+//!   `Debug`, no `Serialize`).
 //! - `budget::budget_from_snapshot(&ProfileSnapshot) -> Option<Budget>`:
-//!   `None` when there is no usable weekly window; a session window that is
-//!   absent gives `session: None`.
+//!   `None` when there is no usable weekly window, or when a session window
+//!   was read but cannot be trusted; only a `no_session_window` reading gives
+//!   `session: None`.
 //! - `budget::usable_points(&Budget) -> f64`: `min(session rem, weekly rem)`.
 //! - `budget::headroom(&Budget, reserve_points: f64) -> Headroom` with
 //!   `Headroom::{Room, SessionExhausted, WeeklyExhausted, InReserve}`.
 
-use super::budget::{Headroom, budget_from_snapshot, headroom, usable_points};
+use super::budget::{Headroom, budget_from_snapshot, headroom, invalid_reading, usable_points};
 use crate::commands::profile::governor_view::ProfileSnapshot;
 
 const NOW: i64 = 1_800_000_000;
@@ -24,6 +26,7 @@ fn snap(five: Option<(f64, i64)>, seven: Option<(f64, i64)>) -> ProfileSnapshot 
         name: "alpha".to_string(),
         active: true,
         eligible: true,
+        no_session_window: seven.is_some() && five.is_none(),
         five_hour: five,
         seven_day: seven,
         observed_at: NOW,
@@ -74,13 +77,39 @@ fn invalid_weekly_percentages_are_unknown() {
     }
 }
 
+/// Crusty round 1 on #1831: a damaged session reading is "unknown", as a
+/// damaged weekly one is. It never yields a weekly-only budget, which would
+/// drop the session limit, and `governor status` reports it.
 #[test]
-fn invalid_session_percentage_never_counts_as_room_or_exhaustion() {
-    let b = budget_from_snapshot(&snap(Some((f64::NAN, NOW)), Some((20.0, NOW + 900))));
-    if let Some(b) = b {
-        assert!(b.session.is_none_or(|s| s.used_pct.is_finite()));
-        assert!(usable_points(&b).is_finite());
+fn invalid_session_percentages_are_unknown_not_weekly_only() {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.5, 100.5, 1e9] {
+        let s = snap(Some((bad, NOW)), Some((20.0, NOW + 900)));
+        assert!(!s.no_session_window);
+        assert!(budget_from_snapshot(&s).is_none(), "{bad}");
+        assert!(invalid_reading(&s), "{bad}");
     }
+}
+
+#[test]
+fn invalid_reading_is_only_a_reading_that_cannot_be_used() {
+    assert!(
+        !invalid_reading(&snap(None, None)),
+        "no reading is not invalid"
+    );
+    assert!(!invalid_reading(&snap(None, Some((20.0, NOW + 900)))));
+    assert!(!invalid_reading(&snap(
+        Some((20.0, NOW)),
+        Some((20.0, NOW + 900))
+    )));
+    assert!(invalid_reading(&snap(
+        Some((20.0, NOW)),
+        Some((f64::NAN, NOW + 900))
+    )));
+    assert!(
+        !invalid_reading(&snap(Some((20.0, NOW)), None)),
+        "a missing week is no reading"
+    );
+    assert!(budget_from_snapshot(&snap(Some((20.0, NOW)), None)).is_none());
 }
 
 #[test]

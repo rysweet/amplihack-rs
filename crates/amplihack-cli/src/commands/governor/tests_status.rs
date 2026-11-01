@@ -85,7 +85,8 @@ fn top_level_and_nested_key_sets_are_exact() {
         "name",
         "active",
         "eligible",
-        "session_limit",
+        "session_window",
+        "invalid_reading",
         "session",
         "weekly",
         "burn_rate",
@@ -135,14 +136,46 @@ fn weekly_only_profile_has_no_session() {
         .find(|p| p["name"] == "beta")
         .unwrap();
     assert_eq!(beta["session"], Value::Null);
-    assert_eq!(beta["session_limit"], false);
+    assert_eq!(beta["session_window"], false);
+    assert_eq!(beta["invalid_reading"], false);
     assert_eq!(beta["active"], false);
     assert_eq!(beta["eligible"], true);
     assert_eq!(beta["weekly"]["used_pct"], 38.0);
     assert!(
         render_table(&view(Some(&r.root), &Settings::default(), None, NOW))
-            .contains("no session limit")
+            .contains("no session window")
     );
+}
+
+/// Crusty round 1 on #1831: the governor never says "no session limit", the
+/// wording #1818 rejected because the reading cannot tell the cases apart.
+#[test]
+fn status_never_says_no_session_limit() {
+    let r = Root::new(&[("alpha", 62.0, 71.0), ("beta", -1.0, 38.0)]);
+    let table = render_table(&view(Some(&r.root), &Settings::default(), None, NOW));
+    assert!(!table.contains("no session limit"), "{table}");
+}
+
+/// Crusty round 1 on #1831: a session reading out of range makes the
+/// profile unknown (out of the pool), and status says why.
+#[test]
+fn an_invalid_session_reading_is_reported_and_leaves_the_pool() {
+    let r = Root::new(&[("alpha", 150.0, 20.0), ("beta", 10.0, 30.0)]);
+    let v = json(Some(&r.root), &Settings::default());
+    let alpha = v["profiles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["name"] == "alpha")
+        .unwrap();
+    assert_eq!(alpha["invalid_reading"], true, "{v}");
+    assert_eq!(alpha["session_window"], true);
+    assert_eq!(alpha["session"], Value::Null);
+    assert_eq!(alpha["weekly"], Value::Null);
+    // beta alone is in the pool: 70 weekly points left, not alpha's 80.
+    assert_eq!(v["reserve"]["best_weekly_remaining"], 70.0);
+    let table = render_table(&view(Some(&r.root), &Settings::default(), None, NOW));
+    assert!(table.contains("invalid reading"), "{table}");
 }
 
 #[test]

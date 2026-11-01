@@ -12,13 +12,13 @@
 //!   `tree_id() -> Option<&str>`; dropping it removes its slot.
 //! - `Denied::code() -> &'static str`; `Denied::report(self) ->
 //!   anyhow::Error` with exit code `EXIT_GOVERNOR_DENIED` (80).
-//! - `nested_parent(depth: Option<&str>, tree_id: Option<&str>, &[Slot])
-//!   -> Option<usize>`.
+//! - Nesting (`nested_parent`, `marked_parent`) is in `nesting` and tested
+//!   in `tests_nesting`.
 //!
 //! Every test passes `wait_secs: 0`, so nothing sleeps.
 
 use super::EXIT_GOVERNOR_DENIED;
-use super::admit::{AdmitContext, admit_with, marked_parent, nested_parent};
+use super::admit::{AdmitContext, admit_with};
 use super::config::Settings;
 use super::liveness::start_time;
 use super::model::{Class, QueueEntry, Slot};
@@ -27,7 +27,7 @@ use super::tests_seed::{Root, Seed};
 use std::fs;
 use std::time::Duration;
 
-fn ctx(r: &Root) -> AdmitContext<'_> {
+pub(super) fn ctx(r: &Root) -> AdmitContext<'_> {
     AdmitContext {
         root: Some(&r.root),
         settings: Settings::default(),
@@ -40,7 +40,7 @@ fn ctx(r: &Root) -> AdmitContext<'_> {
     }
 }
 
-fn me_slot(tree: &str) -> Slot {
+pub(super) fn me_slot(tree: &str) -> Slot {
     let pid = std::process::id();
     Slot {
         pid,
@@ -53,7 +53,7 @@ fn me_slot(tree: &str) -> Slot {
     }
 }
 
-fn save(r: &Root, state: &State, queue: &Queue) {
+pub(super) fn save(r: &Root, state: &State, queue: &Queue) {
     let store = Store::open(&r.root).unwrap();
     let lock = store.lock_exclusive(Duration::from_secs(1)).unwrap();
     store
@@ -61,13 +61,13 @@ fn save(r: &Root, state: &State, queue: &Queue) {
         .unwrap();
 }
 
-fn load(r: &Root) -> (State, Queue) {
+pub(super) fn load(r: &Root) -> (State, Queue) {
     let store = Store::open(&r.root).unwrap();
     let lock = store.lock_exclusive(Duration::from_secs(1)).unwrap();
     (store.load(&lock).unwrap(), store.load(&lock).unwrap())
 }
 
-const ROOMY: &[Seed] = &[("alpha", 10.0, 20.0)];
+pub(super) const ROOMY: &[Seed] = &[("alpha", 10.0, 20.0)];
 
 #[test]
 fn admitted_start_holds_a_slot_until_the_guard_drops() {
@@ -116,65 +116,6 @@ fn an_expired_concurrency_wait_is_wait_expired_and_leaves_no_queue_entry() {
 }
 
 #[test]
-fn nested_launch_runs_under_the_parent_slot() {
-    let r = Root::new(ROOMY);
-    let state = State {
-        limit: 1,
-        slots: vec![me_slot("t-parent")],
-        ..State::default()
-    };
-    save(&r, &state, &Queue::default());
-    let mut c = ctx(&r);
-    c.session_depth = Some("1".into());
-    c.tree_id = Some("t-parent".into());
-    let guard = admit_with(&c).expect("nested is not limited by concurrency");
-    assert!(guard.nested());
-    let (state, _) = load(&r);
-    assert_eq!(state.slots.len(), 1, "a nested launch takes no slot");
-    assert_eq!(state.slots[0].nested_children, 1);
-    drop(guard);
-    assert_eq!(
-        load(&r).0.slots.len(),
-        1,
-        "dropping a nested guard keeps the parent slot"
-    );
-}
-
-/// A `recipe run` inside a top-level `amplihack claude` has no session
-/// depth; the parent marker alone nests it, so limit 1 does not deadlock.
-#[test]
-fn parent_marker_nests_a_start_without_session_depth() {
-    let r = Root::new(ROOMY);
-    let state = State {
-        limit: 1,
-        slots: vec![me_slot("t-claude")],
-        ..State::default()
-    };
-    save(&r, &state, &Queue::default());
-    let mut c = ctx(&r);
-    c.parent = Some("t-claude".into());
-    let guard = admit_with(&c).expect("the marker nests the start");
-    assert!(guard.nested());
-    assert_eq!(load(&r).0.slots[0].nested_children, 1);
-    let slots = [me_slot("t-a")];
-    assert_eq!(marked_parent(Some("t-a"), &slots), Some(0));
-    assert_eq!(marked_parent(Some("t-z"), &slots), None);
-    assert_eq!(marked_parent(Some("t a"), &slots), None);
-    assert_eq!(marked_parent(None, &slots), None);
-}
-
-#[test]
-fn orphaned_nested_launch_is_top_level() {
-    let r = Root::new(ROOMY);
-    let mut c = ctx(&r);
-    c.session_depth = Some("2".into());
-    c.tree_id = Some("t-gone".into());
-    let guard = admit_with(&c).expect("room");
-    assert!(!guard.nested());
-    assert_eq!(load(&r).0.slots.len(), 1);
-}
-
-#[test]
 fn top_level_admission_settles_a_tree_id_and_records_it() {
     let r = Root::new(ROOMY);
     let guard = admit_with(&ctx(&r)).unwrap();
@@ -186,21 +127,6 @@ fn top_level_admission_settles_a_tree_id_and_records_it() {
     c.tree_id = Some("t-inherited".into());
     let guard = admit_with(&c).unwrap();
     assert_eq!(guard.tree_id(), Some("t-inherited"));
-}
-
-#[test]
-fn nested_parent_detection() {
-    let slots = [me_slot("t-a"), me_slot("t-b")];
-    assert_eq!(nested_parent(Some("1"), Some("t-b"), &slots), Some(1));
-    assert_eq!(nested_parent(Some("0"), Some("t-b"), &slots), None);
-    assert_eq!(nested_parent(None, Some("t-b"), &slots), None);
-    assert_eq!(nested_parent(Some("x"), Some("t-b"), &slots), None);
-    assert_eq!(nested_parent(Some("1"), Some("t-c"), &slots), None);
-    assert_eq!(nested_parent(Some("1"), Some("T-B"), &slots), None);
-    assert_eq!(
-        nested_parent(Some("1"), Some(&"t".repeat(129)), &slots),
-        None
-    );
 }
 
 fn fail_open_code(r: &Root, c: &AdmitContext) -> &'static str {

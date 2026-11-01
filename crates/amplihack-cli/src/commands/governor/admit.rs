@@ -10,11 +10,12 @@ use super::config::{GOVERNOR_POLL_SECS, Settings};
 use super::files::{GOVERNOR_QUEUE_CAP, tree_id_ok};
 use super::guard::{Denied, SlotGuard};
 use super::inputs;
-use super::liveness::{reclaim, self_or_ancestor, start_time};
+use super::liveness::{reclaim, start_time};
 use super::model::{
     Admission, Class, DecisionKind, FailOpen, FailOpenCode, Inputs, QueueEntry, ReasonCode,
     Request, Slot,
 };
+use super::nesting::{marked_parent, nested_parent};
 use super::policy::decide;
 use super::queue::prune_window;
 use super::store::{Store, now, repair};
@@ -34,28 +35,6 @@ pub struct AdmitContext<'a> {
     /// `AMPLIHACK_GOVERNOR_PARENT`: the slot tree id of the launch that
     /// started this process.
     pub parent: Option<String>,
-}
-
-/// The index of the live slot a nested launch runs under: a depth above 0
-/// and a tree id equal to a slot's.
-pub fn nested_parent(depth: Option<&str>, tree_id: Option<&str>, slots: &[Slot]) -> Option<usize> {
-    let depth: u32 = depth?.trim().parse().ok()?;
-    let tree = tree_id?;
-    if depth == 0 || !tree_id_ok(tree) {
-        return None;
-    }
-    slots.iter().position(|s| s.tree_id == tree)
-}
-
-/// The index of the live slot named by `AMPLIHACK_GOVERNOR_PARENT` whose
-/// process is an ancestor of this one. A top-level `amplihack claude` sets
-/// no session depth on its children, so a `recipe run` started inside it is
-/// found by this marker instead.
-pub fn marked_parent(marker: Option<&str>, slots: &[Slot]) -> Option<usize> {
-    let tree = marker.filter(|t| tree_id_ok(t))?;
-    slots
-        .iter()
-        .position(|s| s.tree_id == tree && self_or_ancestor(s.pid))
 }
 
 enum Round {
@@ -103,6 +82,12 @@ fn round(
         &l.state.slots,
     )
     .or_else(|| marked_parent(ctx.parent.as_deref(), &l.state.slots));
+    if let Some(i) = parent {
+        tracing::debug!(
+            parent_pid = l.state.slots[i].pid,
+            "governor: nested start, not counted against the limit"
+        );
+    }
     let snaps = inputs::snapshots(root);
     inputs::record(&mut l.history, &snaps);
     let budgets = inputs::budgets(&snaps, now);

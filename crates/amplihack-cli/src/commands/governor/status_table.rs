@@ -82,17 +82,20 @@ pub fn render_table(v: &StatusView) -> String {
             format!(" [{}]", marks.join(", "))
         };
         let _ = writeln!(out, "  {}{marks}", display_safe(&p.name));
-        let session = if p.weekly.is_none() {
-            "no reading".to_string()
+        // "no session window", never "no session limit": the reading cannot
+        // tell a plan with none from a window that was not recorded (#1818).
+        let missing = if p.invalid_reading {
+            "invalid reading"
         } else {
-            window(p.session.as_ref(), "no session limit")
+            "no reading"
+        };
+        let session = if p.weekly.is_none() {
+            missing.to_string()
+        } else {
+            window(p.session.as_ref(), "no session window")
         };
         let _ = writeln!(out, "    session: {session}");
-        let _ = writeln!(
-            out,
-            "    weekly:  {}",
-            window(p.weekly.as_ref(), "no reading")
-        );
+        let _ = writeln!(out, "    weekly:  {}", window(p.weekly.as_ref(), missing));
     }
     let r = &v.reserve;
     let _ = writeln!(

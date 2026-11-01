@@ -986,9 +986,15 @@ fn on_launch_reaching_the_spawner() -> Fx {
         ENV,
         "AMPLIHACK_CLAUDE_AUTO_SWITCH",
         "AMPLIHACK_ROTATE_HOLD",
+        "AMPLIHACK_RECIPE_RUN_ID",
         TEST_HOME_GUARD_ENV,
     ]);
-    let _unset = EnvGuard::unset([TEST_HOME_GUARD_ENV, "AMPLIHACK_ROTATE_HOLD"]);
+    // A test run inside a recipe run would otherwise stop at step 0b (#1803).
+    let _unset = EnvGuard::unset([
+        TEST_HOME_GUARD_ENV,
+        "AMPLIHACK_ROTATE_HOLD",
+        "AMPLIHACK_RECIPE_RUN_ID",
+    ]);
     let _set = EnvGuard::set([
         ("HOME", f.home.to_str().unwrap()),
         (ROOT_ENV, f.root.to_str().unwrap()),

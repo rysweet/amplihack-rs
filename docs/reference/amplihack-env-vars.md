@@ -159,7 +159,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_QUEUE_PATH` | test-only |  | Fleet test fixture. |
 | `AMPLIHACK_RECIPE_LOG_JSONL` | user preference |  | Path for structured runner events. |
 | `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` | user preference |  | Whole-run wall-clock limit for the recipe runner. |
-| `AMPLIHACK_RECIPE_RUN_ID` | internal |  | Run id `recipe run` hands to the runner. |
+| `AMPLIHACK_RECIPE_RUN_ID` | internal |  | Run id `recipe run` hands to the runner. A launch that sees it set and non-empty never starts the profile rotator, and a `change:` line in the rotate log records it as `recipe_run=<id>`; see [Rotate autostart](profile-command.md#rotate-autostart). |
 | `AMPLIHACK_RECIPE_TRANSIENT_BUDGET_SECS` | user preference |  | Time budget for transient-failure retries. |
 | `AMPLIHACK_RECIPE_TRANSIENT_MAX_ATTEMPTS` | user preference |  | Attempt cap for transient-failure retries. |
 | `AMPLIHACK_REFLECTION_BINARY` | user preference |  | CLI the reflection hook runs. |
@@ -253,6 +253,18 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_WORKSTREAM_PROGRESS_FILE` | internal |  | Progress file handed to a multitask workstream. |
 | `AMPLIHACK_WORKSTREAM_STATE_FILE` | internal |  | State file handed to a multitask workstream. |
 | `AMPLIHACK_WORKTREE_PATH` | internal |  | Worktree path handed to a multitask workstream. |
+
+### Variables outside the `AMPLIHACK_*` namespace
+
+The grep above lists only `AMPLIHACK_*` names. amplihack also reads
+`INVOCATION_ID`, which systemd sets for the processes of a unit. When it is
+set and non-empty, and the last component of the process's
+`/proc/self/cgroup` path is a `.service` unit other than
+`user@<uid>.service`, `amplihack profile rotate watch` records itself as the
+[rotation owner](profile-command.md#rotate-owner), and launches stop starting
+a rotator of their own. A `change:` line in the rotate log records it as
+`invocation=<id>`. `rotate start` and launches that start the rotator remove
+it from the rotator's environment. Do not set it by hand.
 
 ## Related
 
