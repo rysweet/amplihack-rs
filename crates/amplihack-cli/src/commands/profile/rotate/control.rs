@@ -2,7 +2,8 @@
 //! signal only a verified rotator. Also the ledger side of `profile
 //! overflow list` and `clear` (issue #1606).
 
-use super::daemon::{DaemonState, current_state, daemon_err};
+use super::daemon::{DaemonState, current_state, daemon_err, exe_name};
+use super::exhausted::{ALERT, exhausted_while_off};
 use super::identify::{self, LiveId};
 use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
 use super::log::{msg, timestamp};
@@ -99,7 +100,10 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         None => "-".into(),
     };
     let auto = super::autostart_line(store.root());
-    println!("rotate: {word}\n{auto}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    // Issue #1803: read only under a private root; never echoes the marker.
+    let exe = exe_name().unwrap_or_default();
+    let owner = super::owner::describe(store.root(), Path::new("/proc"), &exe);
+    println!("rotate: {word}\n{auto}\n{owner}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
     println!("overflow: {overflow}\napi key: {api_key}\non overflow: {on_overflow}");
     if let Some(line) = super::platform_live_line(store.root()) {
         println!("{line}");
@@ -119,6 +123,12 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     }
     for line in ledger.as_ref().map(status_alerts).unwrap_or_default() {
         println!("{line}");
+    }
+    if let Some(e) = exhausted_while_off(store.root(), now()) {
+        println!(
+            "alert: {ALERT} ({})",
+            sanitize_display(&e.to_string(), false)
+        );
     }
     match rs.load_journal() {
         Ok(Some(j)) if j.phase == Phase::Inconsistent => println!("journal: inconsistent"),

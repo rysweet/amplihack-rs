@@ -25,6 +25,8 @@ The exact flags, files, exit codes and log lines are in the
 - [Switch to a login by hand](#switch-to-a-login-by-hand)
 - [Run rotation in the background](#run-rotation-in-the-background)
 - [Start the rotator automatically](#start-the-rotator-automatically)
+- [Run the rotator under a service manager](#run-the-rotator-under-a-service-manager)
+- [See who turned rotation off](#see-who-turned-rotation-off)
 - [Which root the rotator uses](#which-root-the-rotator-uses)
 - [Change the thresholds](#change-the-thresholds)
 - [When a swap happens](#when-a-swap-happens)
@@ -321,6 +323,7 @@ amplihack profile rotate status
 root: /home/you/.claude-profiles (source: config)
 rotate: running
 autostart: on (default)
+owner: none
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
@@ -410,16 +413,24 @@ A launch starts the rotator only when all of these hold:
 - No rotator is running for that root.
 - `rotate start` would not refuse: the
   [tmux prototype](#move-from-the-tmux-prototype) is not holding its lock.
+- The launch is not a step of a recipe run: `AMPLIHACK_RECIPE_RUN_ID` is
+  unset or empty. `amplihack recipe run` sets it for every step.
+- No service manager owns rotation: there is no
+  [owner marker](#run-the-rotator-under-a-service-manager).
 
 When auto-switch is off, a launch does nothing extra: it creates no file,
 takes no lock and prints nothing.
 
 ### Many launches at once
 
-Recipe runs and `multitask` start many Claude sessions in parallel, and
-nested launches inside a recipe run check like any other launch. Only one
-rotator ever runs: a launch that finds the rotator running stops there, and
-otherwise it tries the state lock without waiting. If another launch holds
+Recipe runs and `multitask` start many Claude sessions in parallel. Launches
+inside a recipe run never start the rotator: they see
+`AMPLIHACK_RECIPE_RUN_ID` and stop before reading anything. Start the rotator
+before the run, or let the `amplihack claude` you start the run from start it.
+
+Other launches check as usual, and only one rotator ever runs: a launch that
+finds the rotator running stops there, and otherwise it tries the state lock
+without waiting. If another launch holds
 the lock, it gives up silently. The launch that gets the lock checks again
 before it starts the rotator and writes the pid file while it still holds the
 lock.
@@ -506,6 +517,168 @@ The source in brackets is `default` (no setting), `setting` (from
 `corrupt` (the setting file cannot be trusted; autostart counts as off until
 you run `rotate autostart on` or `off` again).
 
+## Run the rotator under a service manager
+
+To have a service manager such as systemd keep the rotator running, run
+`rotate watch` in the foreground with `--supervised`. In a systemd user unit:
+
+```ini
+ExecStart=/home/you/.cargo/bin/amplihack profile rotate watch --supervised=amplihack-rotator.service --interval 120 --session-at 70
+```
+
+Stop any rotator that is already running before you enable the unit. A
+supervised `watch` refuses to run beside another rotator, exits with status 1
+and writes no owner marker, so the unit would restart and fail until that
+rotator stops:
+
+```bash
+amplihack profile rotate stop
+systemctl --user enable --now amplihack-rotator.service
+```
+
+If `systemctl --user status amplihack-rotator.service` shows the unit
+failing because a rotator is running, a launch started one between the two
+commands. Run `amplihack profile rotate stop` again; the unit's next restart
+then succeeds.
+
+A supervised `watch` writes an owner marker,
+`<root>/.auto-switch.d/rotate/owner`, naming the unit and its pid. While the
+marker exists, launches never start a rotator of their own, even when
+autostart is on, so the unit's rotator is the only one. The marker stops
+autostart only: `amplihack profile rotate start` does not read it, so do not
+run `rotate start` while the unit is enabled. Under systemd,
+`INVOCATION_ID` is set, and `watch` records itself even without the flag;
+the flag lets you name the unit. Without a name, the unit is read from
+`/proc/self/cgroup`, and failing that `amplihack-rotator.service` is used.
+
+`rotate status` shows the owner straight after the autostart line (excerpt):
+
+```
+rotate: running
+autostart: on (default) (deferring to amplihack-rotator.service)
+owner: amplihack-rotator.service pid 48213 (running); autostart defers to it
+pid: 48213
+```
+
+Show the owner on its own with:
+
+```bash
+amplihack profile rotate owner
+```
+
+```
+owner: amplihack-rotator.service pid 48213 (running); autostart defers to it
+```
+
+### When the owner stops
+
+The marker stays when the unit stops, so that launches do not start a rotator
+while the service manager is restarting it. When the unit restarts, the new
+`watch` writes its own pid. Until then, each launch prints one line to stderr
+and still starts Claude:
+
+```
+amplihack: rotation is owned by amplihack-rotator.service, which is not running; 'amplihack profile rotate owner clear' to let launches start the rotator
+```
+
+and `status` shows:
+
+```
+owner: amplihack-rotator.service pid 48213 (not running); autostart defers to it; run 'amplihack profile rotate owner clear' to release
+```
+
+If the marker is damaged, or is not a private file owned by you, launches
+still defer, and the line says the marker is unreadable. `status` then shows:
+
+```
+autostart: on (default) (deferring to an unreadable owner marker)
+owner: unreadable; autostart defers to it; run 'amplihack profile rotate owner clear' to release
+```
+
+If the profile root itself is not private, launches never start a rotator,
+and `status` does not read the marker:
+
+```
+autostart: on (default) (skipped: root is not private)
+owner: not read (root is not private)
+```
+
+### Hand rotation back to launches
+
+When you retire the unit, stop and disable it, then clear the owner:
+
+```bash
+systemctl --user disable --now amplihack-rotator.service
+amplihack profile rotate owner clear
+```
+
+```
+owner: cleared (was amplihack-rotator.service)
+```
+
+The next launch starts the rotator as described in
+[Start the rotator automatically](#start-the-rotator-automatically).
+`owner clear` is the only command that removes the marker: `rotate stop`,
+`rotate start` and a `watch` without `--supervised` leave it alone. A `watch`
+without `--supervised` that finds a marker prints a note to stderr and runs
+anyway.
+
+### A watch that claims ownership by mistake
+
+systemd sets `INVOCATION_ID` for every process in a unit, including a shell
+inside one. A `rotate watch` you start by hand from such a shell records
+itself as the owner. Stop it, then run `amplihack profile rotate owner clear`.
+Rotators started by `rotate start` or by a launch never claim ownership,
+because `INVOCATION_ID` is removed from their environment.
+
+An `amplihack` binary older than this feature ignores the marker. Upgrade
+every binary that launches Claude against the root.
+
+## See who turned rotation off
+
+Each change to the autostart setting or to the auto-switch toggle adds a
+`change:` line to the rotate log, naming the process that made it, its
+parent's command line and, for a recipe step or a systemd unit, the run or
+invocation id:
+
+```bash
+grep ' change: ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+```
+2026-11-01T09:14:02Z change: auto-switch on -> off by pid=51877 ppid=51702 parent="bash /home/you/bin/pause-rotation.sh" recipe_run=3f9c2a1e-6b7d-4c1e-9a52-0d8e7b6f4a21
+2026-11-01T09:20:45Z change: rotate-autostart on -> off by pid=52011 ppid=4120 parent="-bash"
+```
+
+Only real changes are logged: running `off` when the setting is already off
+adds nothing. Threshold and exclusion changes, and the
+`AMPLIHACK_ROTATE_AUTOSTART` and `AMPLIHACK_CLAUDE_AUTO_SWITCH` variables,
+are not logged. Secrets in the parent command line are replaced by `***`
+before the line is written: `NAME=value` pairs, the values of flags such as
+`--api-key` or `--token`, and passwords in URLs. Like the rest of the log,
+the file is private to you (`0600`).
+
+While auto-switch is off, the rotator idles. If the live login is exhausted
+at the same time, it writes an ALERT on every cycle, and `rotate status`
+shows it as an `alert:` line:
+
+```
+2026-11-01T10:10:05Z ALERT: auto-switch is off while the live login is exhausted (spare: 100% used, threshold 90%)
+```
+
+```
+alert: auto-switch is off while the live login is exhausted (spare: 100% used, threshold 90%)
+```
+
+The percentage is rounded down. A login stopped by a usage limit shows
+`(spare: usage limit reached, resets 2026-11-01T14:00:00Z)` instead, with
+the reset time in UTC.
+
+The ALERT changes nothing by itself. Turn auto-switch back on with
+`amplihack profile auto-switch on`, or move the login by hand with
+[`profile switch`](#switch-to-a-login-by-hand). The `change:` lines show what
+turned it off.
+
 ## Which root the rotator uses
 
 The rotator keeps the profile root it was started with. `start` passes that
@@ -527,6 +700,7 @@ env -i HOME="$HOME" PATH="$PATH" amplihack profile rotate status
 root: /home/you/.claude-profiles (pinned by running rotator)
 rotate: running
 autostart: on (default)
+owner: none
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
@@ -740,14 +914,19 @@ To see only swaps and alerts:
 grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
+`change:` lines record who changed the autostart setting or the auto-switch
+toggle; see [See who turned rotation off](#see-who-turned-rotation-off).
+
 The same ALERT is written to the log once. It is written again only after
 something changes: a swap succeeds, a cycle needs no swap, or the reason
 changes. The one-shot `rotate` still prints it on every run. The ALERT for a
 [manual `/login` in `~/.claude`](#after-a-manual-login-in-claude), its `fix`
-lines and the `has no login anywhere` line are the exception: they are
-written on every cycle until the problem is resolved. The log
+lines, the `has no login anywhere` line and the
+[exhausted-while-off](#see-who-turned-rotation-off) ALERT are the exception:
+they are written on every cycle until the problem is resolved. The log
 holds profile names, percentages, fixed text and, in `recovered:` and `fix`
-lines, paths under your home directory and the profile root; it never holds
+lines, paths under your home directory and the profile root. `change:` lines
+also hold a redacted parent command line and run ids. It never holds
 account IDs, e-mail addresses, tokens or Claude's output.
 
 ## Resume sessions stopped by a usage limit
@@ -1186,6 +1365,7 @@ amplihack profile rotate status
 root: /home/you/.claude-profiles (source: config)
 rotate: running
 autostart: on (default)
+owner: none
 pid: 48213
 live: ryan-mistt-org
 last cycle: 2026-10-24T09:10:05Z stayed overflow=on

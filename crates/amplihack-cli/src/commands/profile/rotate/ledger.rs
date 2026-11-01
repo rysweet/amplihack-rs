@@ -232,7 +232,7 @@ pub struct RotateState {
 
 /// A state file amplihack may act on: this user's, and not writable by the
 /// group or others.
-fn trusted(m: &std::fs::Metadata) -> bool {
+pub(super) fn trusted(m: &std::fs::Metadata) -> bool {
     m.uid() == euid() && !writable_by_others(m)
 }
 

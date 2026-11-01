@@ -343,3 +343,31 @@ pub fn home_problem(home: &Path) -> &'static str {
         Some(_) => "its oauthAccount block has no usable accountUuid or emailAddress",
     }
 }
+
+/// Whether rotate live-profile detection names `name` as the login in
+/// `<home>/.claude` (issue #1700: the launch guard's "held"). Any error, a
+/// hand change, an ambiguous or an adopted login is not.
+pub fn is_live(store: &ProfileStore, home: Option<&Path>, name: &ProfileName) -> bool {
+    let Some(home) = home else {
+        return false;
+    };
+    let rs = RotateState::new(store.root());
+    matches!(live(store, &rs, home), Ok((LiveId::Known(n), _)) if &n == name)
+}
+
+/// The status line while the rotate ledger says the live login is an
+/// API-key profile (issue #1700), for `rotate status` and `auto-switch
+/// status`. The ledger is the only evidence; nothing is probed.
+pub fn platform_live_line(root: &Path) -> Option<String> {
+    let l = RotateState::new(root).load_ledger().ok()??;
+    if l.live_kind.as_deref() != Some(super::ledger::LIVE_KIND_PLATFORM) {
+        return None;
+    }
+    let live = l.live?;
+    let since = l
+        .since
+        .map_or_else(|| "unknown".to_string(), super::log::timestamp);
+    Some(format!(
+        "~/.claude is on API key profile {live}: work is billed per token (since {since})"
+    ))
+}
