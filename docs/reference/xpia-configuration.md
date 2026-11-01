@@ -237,7 +237,7 @@ off, and nothing reports the change. To keep XPIA on across resumes, set
 with an `Environment=XPIA_ENABLED=true` line in `tmux-server.service`, or
 `tmux set-environment -g XPIA_ENABLED true` before the resume. Adding
 `XPIA_ENABLED` to `ALLOWLIST` is a change to the security-reviewed list (S21)
-and is not made here.
+and is not made here. The fix is tracked as item 5 of #1737.
 
 ## Other XPIA_* variables
 
