@@ -183,13 +183,14 @@ static RESET: LazyLock<Regex> = LazyLock::new(|| {
 /// output that parses counts even after a non-zero exit.
 pub fn parse_usage(stdout: &str, stderr: &str, now: i64) -> UsageReport {
     let mut report = UsageReport::empty(UsageState::Unparsed);
-    // Issue #1818: whether any session line showed a reset. A `Current
-    // session` line that cannot be read counts as one (S2), so a change in
-    // Claude's wording can never make a login look free of a session limit.
+    // Issue #1818: whether any session line showed a reset. Any line that
+    // mentions `Current session` but cannot be read counts as one (S2),
+    // including one with a prefix such as a bullet or an escape code, so a
+    // session line Claude prints in a new form keeps the session limit.
     let mut reset_seen = false;
     for line in stdout.lines() {
         let Some((week, w)) = parse_line(line, now) else {
-            if line.trim_start().starts_with("Current session") {
+            if line.contains("Current session") {
                 reset_seen = true;
             }
             continue;

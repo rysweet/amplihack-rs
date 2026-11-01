@@ -848,6 +848,9 @@ fn a_session_line_that_does_not_parse_keeps_the_session_limit() {
         "Current session: 100% used · resets",
         "  Current session: 1e3% used",
         "Current session: 1000001% used",
+        "│ Current session: 100% used",
+        "- Current session: 100% used",
+        "\u{1b}[1mCurrent session: 100% used\u{1b}[0m",
     ] {
         let r = parse(&format!("{line}\n{WEEK_LINE}"));
         assert!(r.session_limit, "{line:?}");

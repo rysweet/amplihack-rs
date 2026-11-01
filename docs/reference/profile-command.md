@@ -522,7 +522,7 @@ is read as before, in each of these cases:
 | Case | Example | Why |
 |------|---------|-----|
 | The session line has a reset clause, even one whose time cannot be resolved | `Current session: 3% used · resets 3am (Etc/Unknown)` | A printed reset shows that a session window exists. `resets_at` is `null` and `resets_text` keeps the text. |
-| A line starts with `Current session` but does not have the form above | `Current session: unavailable` | A change in Claude's wording must not make an exhausted login look usable. |
+| A line contains `Current session` but does not have the form above, for example because of a prefix | `Current session: unavailable` | A change in Claude's wording must not make an exhausted login look usable. |
 | No all-models week line was read | `Current session: 0% used` alone | Nothing else can rank the profile. The state follows the usual [rules](#states). A session line with no reset clause is still read: `resets_text` and `resets_at` are `null`, and the table shows `-` in `SESSION RESETS`. |
 | The row is `spend_limit` or any failed state | | `session_limit` is `true` on every row that is not `ok` or `weekly_exhausted`. |
 
