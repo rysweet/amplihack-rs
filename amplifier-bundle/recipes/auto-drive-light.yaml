@@ -72,6 +72,9 @@ context:
   # step sets quick_change_base from light_base before it calls qc_base.
   quick_change_base: ""
   quick_change_checks: ""
+  # Read by autodrive_light_steps.sh, which light-prereqs checks for; the
+  # crusty round sets it before its step-03 and step-06 load that file.
+  crusty_round_context: ""
   light_implementation: ""
   light_checks: ""
   light_precommit_result: ""
