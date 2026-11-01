@@ -47,7 +47,7 @@ pub struct Reading {
 }
 
 impl Reading {
-    fn worst(&self) -> f64 {
+    pub(crate) fn worst(&self) -> f64 {
         let pct = |w: &Option<Window>| w.map_or(0.0, |w| w.used_percentage);
         pct(&self.five_hour).max(pct(&self.seven_day))
     }

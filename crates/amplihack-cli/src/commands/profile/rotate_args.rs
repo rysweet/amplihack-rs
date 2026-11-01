@@ -31,6 +31,18 @@ pub enum RotateAction {
         #[arg(value_parser = ["on", "off"])]
         state: Option<String>,
     },
+    /// Show the rotation owner that launches defer to, or clear it
+    Owner {
+        #[command(subcommand)]
+        action: Option<OwnerAction>,
+    },
+}
+
+/// `profile rotate owner` subcommands.
+#[derive(Debug, Clone, Copy, clap::Subcommand)]
+pub enum OwnerAction {
+    /// Remove the owner marker, so launches start the rotator again
+    Clear,
 }
 
 /// Thresholds and margins. Kept as text so the error can name the flag; see
@@ -70,4 +82,8 @@ pub struct WatchFlags {
     /// Set by `start`: the pid file is already written
     #[arg(long, hide = true)]
     pub spawned: bool,
+    /// `watch` only: record this rotator as the owner launches defer to,
+    /// run by the service manager unit UNIT (found from the cgroup when omitted)
+    #[arg(long, value_name = "UNIT", num_args = 0..=1, require_equals = true)]
+    pub supervised: Option<Option<String>>,
 }
