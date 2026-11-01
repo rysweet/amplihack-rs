@@ -1,7 +1,7 @@
 //! Native plugin management commands.
 
 use crate::command_error::exit_error;
-use crate::util::run_with_timeout;
+use crate::util::run_with_timeout_described;
 use amplihack_state::AtomicJsonFile;
 use anyhow::{Context, Result};
 use serde_json::{Map, Value};
