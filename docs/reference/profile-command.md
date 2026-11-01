@@ -483,10 +483,17 @@ ends) resolves to the earlier one.
 
 #### No session limit
 
-Some logins have no five-hour session window, and Claude reports only the
-week. A reading then has *no session limit*: no active session window was
-reported, and the profile is judged on its all-models week alone. The report
-has `session_limit` set to `false` and `session` set to `null`.
+Claude sometimes reports the all-models week without a running five-hour
+session window. A reading then has *no session limit*: no active session
+window was reported, and the profile is judged on its all-models week alone.
+The report has `session_limit` set to `false` and `session` set to `null`.
+
+The label describes the reading, not the plan. Claude also leaves out the
+session reset when a session-limited login has not started a session, so an
+idle Pro or Max login reads as having no session limit until a session
+starts. This does not change which login is chosen: the session is at 0%,
+which is not exhausted, and the next reading that has a reset restores the
+session window.
 
 A `/usage` reading has no session limit when the all-models week line was
 read and either of these holds:
@@ -540,6 +547,18 @@ A profile with no session limit is not exempt from limits: it is
 and the rotator and auto-switch apply their usual week thresholds to it. See
 [Rotate decision rule](#rotate-decision-rule) and
 [Candidate selection](#candidate-selection).
+
+Known limitations:
+
+- An idle session-limited login is labelled `no session limit`, as described
+  above, in `profile usage`, `profile usage --json`, `rotate status` and
+  `auto-switch status`.
+- A `Current session` line at 100% with no reset clause gives `ok`, not
+  `session_exhausted`, because the session percentage on such a line is not
+  kept.
+- The `no session limit` line in `rotate status` and the `5h` cell in
+  `auto-switch status` come from the stored auto-switch readings, so they can
+  be as old as the last recorded reading.
 
 #### States
 
