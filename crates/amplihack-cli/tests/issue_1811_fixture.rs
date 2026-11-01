@@ -36,12 +36,16 @@ exit 0
 "#;
 
 /// Runs two agent steps through `amplihack claude`, as `recipe-runner-rs`
-/// does, and records that it started.
+/// does, and records that it started. `$STUB_BEFORE_STEPS`, when set, runs
+/// after admission and before the first step, so a test can move the
+/// readings part-way through a run.
 pub const STUB_RUNNER: &str = r#"#!/bin/sh
 case "$1" in
   --version) echo 'recipe-runner-rs 0.0.0 (stub)'; exit 0 ;;
 esac
 echo ran >> "$RECORD_DIR/runner"
+env | grep -E '^AMPLIHACK_GOVERNOR_(PARENT|RECIPE)=' > "$RECORD_DIR/runner.env" || true
+[ -n "$STUB_BEFORE_STEPS" ] && sh -c "$STUB_BEFORE_STEPS"
 for s in 1 2; do
   "$AMPLIHACK_UNDER_TEST" claude --subprocess-safe -- -p "step $s" </dev/null >> "$RECORD_DIR/runner.out" 2>&1 || {
     printf '{"recipe_name":"gov","success":false,"step_results":[],"context":{}}\n'; exit 1; }
@@ -149,6 +153,11 @@ impl Fixture {
         fs::create_dir_all(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         private(&dir.join("config.toml"), &format!("[governor]\n{body}\n"));
+    }
+
+    /// The readings file [`Fixture::readings`] writes.
+    pub fn usage_path(&self) -> PathBuf {
+        self.root.join(".auto-switch.d").join("usage.json")
     }
 
     pub fn gov(&self) -> PathBuf {

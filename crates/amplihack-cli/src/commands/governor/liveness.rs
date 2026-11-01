@@ -53,9 +53,14 @@ const MAX_HOPS: usize = 64;
 /// Whether `pid` is this process or one of its ancestors. A marker that
 /// leaked into an unrelated environment (a tmux server's, say) then names a
 /// slot that is not an ancestor and nests nothing.
-#[cfg(target_os = "linux")]
 pub fn self_or_ancestor(pid: u32) -> bool {
-    let mut current = std::process::id();
+    in_ancestry(std::process::id(), pid)
+}
+
+/// Whether `pid` is `from` or one of `from`'s ancestors.
+#[cfg(target_os = "linux")]
+pub fn in_ancestry(from: u32, pid: u32) -> bool {
+    let mut current = from;
     for _ in 0..MAX_HOPS {
         if current == pid {
             return true;
@@ -75,7 +80,7 @@ pub fn self_or_ancestor(pid: u32) -> bool {
 /// No `/proc` here: the ancestry cannot be checked and the marker is
 /// trusted, as the tree id is.
 #[cfg(not(target_os = "linux"))]
-pub fn self_or_ancestor(_pid: u32) -> bool {
+pub fn in_ancestry(_from: u32, _pid: u32) -> bool {
     true
 }
 

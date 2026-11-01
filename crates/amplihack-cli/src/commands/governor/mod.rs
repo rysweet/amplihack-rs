@@ -73,6 +73,10 @@ pub const GOVERNOR_MANIFEST_ENV: &str = "AMPLIHACK_GOVERNOR_MANIFEST";
 /// Set on the children of a process that holds a slot, to that slot's tree
 /// id, so their own starts run nested under it.
 pub const GOVERNOR_PARENT_ENV: &str = "AMPLIHACK_GOVERNOR_PARENT";
+/// Set on the children of an admitted `recipe run`, to `<pid>:<start time>`
+/// of that run, so its agent steps count as inside a recipe even when the run
+/// is nested under an interactive session and holds no slot of its own.
+pub const GOVERNOR_RECIPE_ENV: &str = "AMPLIHACK_GOVERNOR_RECIPE";
 
 /// The governor's flags on `launch`, `claude` and `recipe run`.
 #[derive(clap::Args, Debug, Clone, Default)]
@@ -167,6 +171,14 @@ pub fn settled_tree_id() -> Option<String> {
     SETTLED_TREE_ID.get().cloned()
 }
 
+static RECIPE_MARKER: OnceLock<String> = OnceLock::new();
+
+/// The [`GOVERNOR_RECIPE_ENV`] value for this process's children, when this
+/// process is an admitted `recipe run`.
+pub fn recipe_marker() -> Option<String> {
+    RECIPE_MARKER.get().cloned()
+}
+
 fn env(key: &str) -> Option<String> {
     std::env::var(key).ok()
 }
@@ -208,6 +220,7 @@ pub fn admit(request: AdmitRequest) -> Result<SlotGuard, Denied> {
         session_depth: env("AMPLIHACK_SESSION_DEPTH"),
         tree_id: env("AMPLIHACK_TREE_ID"),
         parent: env(GOVERNOR_PARENT_ENV),
+        recipe: env(GOVERNOR_RECIPE_ENV),
     };
     let guard = admit::admit_with(&ctx)?;
     if !guard.nested()
@@ -216,6 +229,12 @@ pub fn admit(request: AdmitRequest) -> Result<SlotGuard, Denied> {
         // `set` fails only if `admit` runs twice in one process, which does
         // not happen; the first value would then stand.
         let _ = SETTLED_TREE_ID.set(id.to_string());
+    }
+    // A slot or a nested admission: either way the run was admitted, and its
+    // steps are part of it. A nested run holds no slot, so this marker is
+    // the only record that its steps are inside a recipe.
+    if request.start == model::Start::Recipe && guard.tree_id().is_some() {
+        let _ = RECIPE_MARKER.set(nesting::recipe_marker_for(std::process::id()));
     }
     Ok(guard)
 }

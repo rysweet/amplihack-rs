@@ -5,7 +5,10 @@
 use super::admit::admit_with;
 use super::liveness::start_time;
 use super::model::Slot;
-use super::nesting::{marked_parent, nested_parent};
+use super::model::Start;
+use super::nesting::{
+    marked_parent, nested_parent, parent_start, recipe_between, recipe_marker_for,
+};
 use super::store::{Queue, State};
 use super::tests_admit::{ROOMY, ctx, load, me_slot, save};
 use super::tests_seed::Root;
@@ -155,4 +158,77 @@ fn nested_parent_detection() {
         nested_parent(Some("1"), Some(&"t".repeat(129)), &slots),
         None
     );
+}
+
+/// Weekly remainder 5 points, below the default reserve of 10.
+const BELOW_RESERVE: &[super::tests_seed::Seed] = &[("alpha", 10.0, 95.0)];
+
+/// Crusty round 4 on #1831: a `recipe run` nested under an interactive
+/// session holds no slot, so its agent steps see the session's `agent` slot.
+/// The recipe marker it sets on its children tells them they are inside a
+/// recipe, and they are admitted below the reserve.
+#[test]
+fn an_agent_step_of_a_recipe_nested_under_a_session_skips_the_reserve() {
+    let r = Root::new(BELOW_RESERVE);
+    let state = State {
+        slots: vec![me_slot("t-session")],
+        ..State::default()
+    };
+    save(&r, &state, &Queue::default());
+    let mut c = ctx(&r);
+    c.parent = Some("t-session".into());
+    let held = admit_with(&c)
+        .err()
+        .expect("without the marker the step is held at the reserve");
+    assert_eq!(held.code(), "wait-expired");
+    c.recipe = Some(recipe_marker_for(std::process::id()));
+    let guard = admit_with(&c).expect("a step inside the recipe finishes");
+    assert!(guard.nested());
+    assert_eq!(load(&r).0.slots[0].nested_children, 1);
+}
+
+/// The marker counts only for a live process that is this process or an
+/// ancestor, still has the recorded start time, and itself runs under the
+/// parent slot's process.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_leaked_or_stale_recipe_marker_marks_nothing() {
+    let me = std::process::id();
+    let session = me_slot("t-session");
+    let mine = recipe_marker_for(me);
+    assert!(recipe_between(&session, Some(&mine)));
+    assert_eq!(parent_start(&session, Some(&mine)), Start::Recipe);
+    assert_eq!(parent_start(&session, None), Start::Agent);
+
+    let other = Unrelated::spawn();
+    let leaked = recipe_marker_for(other.0.id());
+    assert!(!recipe_between(&session, Some(&leaked)), "not an ancestor");
+    assert!(
+        !recipe_between(&other.slot("t-other"), Some(&mine)),
+        "the run is not under that slot's process"
+    );
+    let start = start_time(me).expect("linux has a start time");
+    let stale = format!("{me}:{}", start + 1);
+    assert!(!recipe_between(&session, Some(&stale)), "a reused PID");
+    for bad in [
+        "",
+        "x",
+        "1",
+        "0",
+        "-3",
+        &format!("{me}:x"),
+        &format!("{me}:"),
+    ] {
+        assert!(!recipe_between(&session, Some(bad)), "{bad:?}");
+    }
+}
+
+/// A recipe slot needs no marker: its own start says it is a recipe.
+#[test]
+fn a_recipe_slot_is_a_recipe_without_a_marker() {
+    let slot = Slot {
+        start: Start::Recipe,
+        ..me_slot("t-recipe")
+    };
+    assert_eq!(parent_start(&slot, None), Start::Recipe);
 }

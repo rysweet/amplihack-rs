@@ -1,7 +1,8 @@
 //! Issue #1811: nested starts and the weekly reserve, end to end through
-//! the real `amplihack` binary. Only a start under a running `recipe run`'s
-//! slot skips the reserve; one under an interactive session's slot waits
-//! at it. See "Nesting" in docs/reference/capacity-governor.md.
+//! the real `amplihack` binary. Only a start inside a running `recipe run`
+//! skips the reserve: under the run's slot, or under a session's slot with
+//! the run's recipe marker. A start of its own under an interactive
+//! session's slot waits at it. See "Nesting" in docs/reference/capacity-governor.md.
 
 #![cfg(unix)]
 
@@ -82,4 +83,76 @@ fn recipe_run_under_a_running_recipe_below_the_reserve_finishes() {
         .unwrap();
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.claude_runs(), 2, "both agent steps ran");
+}
+
+/// Crusty round 4 on #1831: the usual dev-orchestrator chain. An interactive
+/// session holds an `agent` slot; a `recipe run` inside it is admitted above
+/// the reserve, nested, with no slot of its own; the weekly remainder then
+/// falls below the reserve before its agent steps start. The steps still
+/// name only the session's slot as their parent, but the recipe marker the
+/// run sets on them says they are inside it, so both run and the recipe
+/// finishes.
+#[cfg(target_os = "linux")]
+#[test]
+fn agent_steps_of_a_recipe_nested_under_a_session_finish_below_the_reserve() {
+    let f = Fixture::new();
+    f.readings(&[("alpha", 10.0, 95.0), ("beta", 10.0, 95.0)]);
+    let low = f.records.join("low-usage.json");
+    fs::copy(f.usage_path(), &low).unwrap();
+    f.readings(&[("alpha", 10.0, 50.0), ("beta", 10.0, 50.0)]);
+    parent_slot(&f, "t-session", "agent");
+    let recipe = f.recipe_path();
+    let out = f
+        .cmd(&["recipe", "run"])
+        .arg(&recipe)
+        .arg("-w")
+        .arg(&f.work)
+        .env("AMPLIHACK_GOVERNOR_PARENT", "t-session")
+        .env(
+            "STUB_BEFORE_STEPS",
+            format!("cp '{}' '{}'", low.display(), f.usage_path().display()),
+        )
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.claude_runs(), 2, "both agent steps ran below the reserve");
+    let env = fs::read_to_string(f.records.join("runner.env")).unwrap();
+    assert!(
+        env.contains("AMPLIHACK_GOVERNOR_PARENT=t-session")
+            && env.contains("AMPLIHACK_GOVERNOR_RECIPE="),
+        "the steps see the session as parent and the run as their recipe: {env}"
+    );
+    let state = fs::read_to_string(f.gov().join("state.json")).unwrap();
+    let state: serde_json::Value = serde_json::from_str(&state).unwrap();
+    assert_eq!(
+        state["slots"].as_array().map(Vec::len),
+        Some(1),
+        "the nested run and its steps took no slot: {state}"
+    );
+}
+
+/// The marker is checked against the process tree: one naming a process
+/// that is not an ancestor (a leak into a tmux server, say) does not exempt
+/// a start under the session from the reserve.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_leaked_recipe_marker_does_not_exempt_a_session_start_from_the_reserve() {
+    let f = Fixture::new();
+    f.readings(&[("alpha", 10.0, 95.0), ("beta", 10.0, 95.0)]);
+    parent_slot(&f, "t-session", "agent");
+    let mut other = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .unwrap();
+    let out = f
+        .cmd(&["claude", "--subprocess-safe", "--", "-p", "hello"])
+        .env("AMPLIHACK_GOVERNOR_PARENT", "t-session")
+        .env("AMPLIHACK_GOVERNOR_RECIPE", other.id().to_string())
+        .output()
+        .unwrap();
+    let _ = other.kill();
+    let _ = other.wait();
+    assert_eq!(out.status.code(), Some(DENIED), "{}", describe(&out));
+    assert!(text(&out.stderr).contains("reserve"), "{}", describe(&out));
+    assert_eq!(f.claude_runs(), 0);
 }

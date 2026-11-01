@@ -38,6 +38,7 @@ pub(super) fn ctx(r: &Root) -> AdmitContext<'_> {
         session_depth: None,
         tree_id: None,
         parent: None,
+        recipe: None,
     }
 }
 

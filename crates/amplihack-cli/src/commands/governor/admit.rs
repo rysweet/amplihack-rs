@@ -15,7 +15,7 @@ use super::model::{
     Admission, Class, DecisionKind, FailOpen, FailOpenCode, Inputs, QueueEntry, ReasonCode,
     Request, Slot, Start,
 };
-use super::nesting::{marked_parent, nested_parent};
+use super::nesting::{marked_parent, nested_parent, parent_start};
 use super::policy::decide;
 use super::queue::prune_window;
 use super::store::{Store, now, repair};
@@ -38,6 +38,9 @@ pub struct AdmitContext<'a> {
     /// `AMPLIHACK_GOVERNOR_PARENT`: the slot tree id of the launch that
     /// started this process.
     pub parent: Option<String>,
+    /// `AMPLIHACK_GOVERNOR_RECIPE`: the `recipe run` this process runs
+    /// inside, when that run holds no slot of its own.
+    pub recipe: Option<String>,
 }
 
 enum Round {
@@ -117,7 +120,7 @@ fn round(
             class: ctx.class,
             workstream: ctx.workstream.clone(),
             start: ctx.start,
-            parent: parent.map(|i| l.state.slots[i].start),
+            parent: parent.map(|i| parent_start(&l.state.slots[i], ctx.recipe.as_deref())),
             seq: *ticket,
             deadline,
         },

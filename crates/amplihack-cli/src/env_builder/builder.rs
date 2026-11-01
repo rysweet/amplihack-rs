@@ -91,11 +91,20 @@ impl EnvBuilder {
 
     /// Issue #1811: when this process holds a capacity governor slot, tell
     /// children its tree id, so their own starts run nested under it rather
-    /// than asking for a second slot.
+    /// than asking for a second slot. When this process is an admitted
+    /// `recipe run`, also tell them so, because a run nested under a session
+    /// holds no slot and its steps would otherwise look like the session's.
     fn with_governor_parent(self) -> Self {
-        match crate::commands::governor::settled_tree_id() {
-            Some(tree) => self.set(crate::commands::governor::GOVERNOR_PARENT_ENV, tree),
+        use crate::commands::governor::{
+            GOVERNOR_PARENT_ENV, GOVERNOR_RECIPE_ENV, recipe_marker, settled_tree_id,
+        };
+        let this = match settled_tree_id() {
+            Some(tree) => self.set(GOVERNOR_PARENT_ENV, tree),
             None => self,
+        };
+        match recipe_marker() {
+            Some(marker) => this.set(GOVERNOR_RECIPE_ENV, marker),
+            None => this,
         }
     }
 

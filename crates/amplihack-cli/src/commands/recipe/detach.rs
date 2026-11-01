@@ -144,9 +144,10 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
 
     let started = Command::new("tmux")
         // Issue #1811: a tmux server started here keeps this environment
-        // for every later session; the governor's parent marker must not
-        // reach them.
+        // for every later session; the governor's parent and recipe markers
+        // must not reach them.
         .env_remove(crate::commands::governor::GOVERNOR_PARENT_ENV)
+        .env_remove(crate::commands::governor::GOVERNOR_RECIPE_ENV)
         .args(["new-session", "-d", "-s", &session, "--"])
         .arg(&exe)
         .args(["recipe", "detached-child", "--log"])
@@ -320,8 +321,8 @@ fn session_exists(session: &str) -> bool {
 
 /// The caller's environment for the run: every agent session marker removed,
 /// and the resolved agent binary set with the tag `recipe run` would export.
-/// The capacity governor's parent marker is removed too (issue #1811): a
-/// detached run is independent work and asks for a slot of its own.
+/// The capacity governor's parent and recipe markers are removed too (issue
+/// #1811): a detached run is independent work and asks for a slot of its own.
 fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
     let mut env: BTreeMap<String, String> = std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
@@ -329,6 +330,7 @@ fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
             !SESSION_MARKERS.iter().any(|(marker, _)| marker == k)
                 && !TMUX_VARS.contains(&k.as_str())
                 && k != crate::commands::governor::GOVERNOR_PARENT_ENV
+                && k != crate::commands::governor::GOVERNOR_RECIPE_ENV
         })
         .collect();
     env.insert(BINARY_ENV.to_string(), agent_binary.binary.clone());

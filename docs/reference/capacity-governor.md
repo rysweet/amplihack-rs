@@ -137,9 +137,11 @@ checks run in this order, and the first that applies decides:
 | 6 | Another waiting request comes first in the [fair queue](#fair-queue) | Wait (`queue`) |
 | 7 | Otherwise | Admit (`room`, or `nested` for a nested request) |
 
-A [nested](#nesting) request skips steps 5 and 6. Only a request nested
-under a running `recipe run`'s slot also skips step 4; one nested under an
-interactive session's slot is held at the reserve like a top-level start.
+A [nested](#nesting) request skips steps 5 and 6. Only a request inside a
+running `recipe run` also skips step 4: one under the run's slot, or one
+under an interactive session's slot that carries the run's recipe marker
+because the run is itself nested under that session. Any other request
+nested under a session's slot is held at the reserve like a top-level start.
 Steps 1 to 3 apply to every request.
 
 The decision function denies only at step 2, and only when at least one
@@ -380,13 +382,31 @@ ancestry cannot be checked and a matching tree id is trusted.
 Each slot records what holds it in its `start` field: `recipe` for a
 `recipe run`, `agent` for `amplihack claude` or `amplihack launch`.
 
+A `recipe run` nested under an interactive session takes no slot, so its
+agent steps find only the session's `agent` slot as their parent. To keep
+them inside the recipe, every admitted `recipe run`, nested or not, sets
+`AMPLIHACK_GOVERNOR_RECIPE=<pid>:<start time>` in the environment it builds
+for its children (`<pid>` alone where `/proc` gives no start time). A nested
+start counts as inside a recipe when its parent slot's `start` is `recipe`,
+or when this marker names a process that:
+
+- is still the process that set it (same start time);
+- is this process or one of its ancestors; and
+- itself runs under the parent slot's process.
+
+So the chain session, nested `recipe run`, agent step resolves to "inside a
+recipe" at every depth, and a marker that leaked into a tmux server, a
+background process or an unrelated session marks nothing. `recipe run
+--detach` removes the marker along with `AMPLIHACK_GOVERNOR_PARENT`.
+
 A nested launch:
 
 - takes no new slot, and runs under its parent's slot;
 - is not limited by the concurrency limit or the queue (steps 5 and 6);
-- is not limited by the reserve (step 4) only when its parent slot is a
-  `recipe run`'s; under an `agent` slot it waits at the reserve unless its
-  class is protected;
+- is not limited by the reserve (step 4) only when it is inside a running
+  recipe: its parent slot is a `recipe run`'s, or the recipe marker names a
+  `recipe run` between it and its parent slot. Otherwise, under an `agent`
+  slot, it waits at the reserve unless its class is protected;
 - is still held by weekly exhaustion (step 2) and session exhaustion
   (step 3);
 - is counted in the parent slot's `nested_children` in status.
@@ -419,7 +439,8 @@ needs a slot of its own.
 Only starts inside a running recipe are exempt from the reserve. A recipe
 that was admitted above the reserve and crosses it part-way through
 finishes its remaining agent steps and any sub-recipe it starts with
-`recipe run`, spending reserve points, rather than holding each step and
+`recipe run`, spending reserve points, whether it holds a slot of its own
+or runs nested under an interactive session, rather than holding each step and
 abandoning the run with the points already spent and a half-built worktree
 left behind. A recipe is bounded work that was admitted once, so this
 spends at most what that recipe still needs.
@@ -474,7 +495,7 @@ Reason codes are stable and appear in stderr lines and in status JSON.
 | `nested` | Admit | Admitted under the parent's slot: inside a running recipe, or with room above the reserve (or a protected class) under a session |
 | `weekly-exhausted` | Wait or deny | Every usable profile's weekly window is used |
 | `session-exhausted` | Wait | Every usable profile is at its session limit; the message names the reset time |
-| `reserve` | Wait | Ordinary work that is top-level or nested under a session, and the best weekly remainder is at or below the reserve |
+| `reserve` | Wait | Ordinary work that is top-level, or nested under a session and not inside a recipe run, and the best weekly remainder is at or below the reserve |
 | `concurrency` | Wait | The slots in use are at the limit |
 | `queue` | Wait | Another request comes first |
 | `wait-expired` | Deny | A wait, for any of the reasons above, ran out; set by the admission loop, not the decision function |
@@ -556,6 +577,8 @@ them to your plans and workload.
 | `AMPLIHACK_GOVERNOR_CLASS` | Default class |
 | `AMPLIHACK_GOVERNOR_MANIFEST` | Absolute path to a [workstream usage manifest](./workstream-usage.md); used only by `governor status` for `token_share` |
 | `AMPLIHACK_WORKSTREAM` | Workstream identity |
+| `AMPLIHACK_GOVERNOR_PARENT` | Set by amplihack, not by hand: the tree id of the slot the parent process holds. See [Nesting](#nesting) |
+| `AMPLIHACK_GOVERNOR_RECIPE` | Set by amplihack, not by hand: `<pid>:<start time>` of the admitted `recipe run` a start is inside. See [Nesting](#nesting) |
 
 ## State files
 
@@ -801,11 +824,12 @@ against other processes of the same user: any parent can set
   not read, so anyone who can open an issue that a recipe run picks up
   cannot claim the reserve.
 - **Nesting.** A process nests under a live slot, and is not counted against
-  the concurrency limit (nor held by the reserve, when the slot is a
-  `recipe run`'s), only when the slot's process is its parent or
+  the concurrency limit (nor held by the reserve, when it is inside a
+  `recipe run`), only when the slot's process is its parent or
   another ancestor (on Linux). A tree id or parent marker that leaked into
   an unrelated environment, such as a tmux server started from an agent
-  step, therefore nests nothing. A process of the same user can still nest
+  step, therefore nests nothing, and a leaked recipe marker exempts nothing
+  from the reserve. A process of the same user can still nest
   on purpose by running under the slot's process; that is accepted under
   the same-user model above.
 - **Input.** Workstream ids, wait durations, classes and tree ids are
