@@ -5223,7 +5223,7 @@ listed.
 |---------------|------|-------|-------|
 | `signal` | both | `SIGINT`, `SIGTERM` or `SIGHUP` was received | no; exits `128` + signal |
 | `session ended` | both | the process that started the step exited (the supervisor's parent changed) | no |
-| `reset reached` | reset | the `reset+margin` deadline passed | yes |
+| `reset reached` | both | the `reset+margin` deadline passed; on a capacity wait this is the failed login's own reset | yes |
 | `max reached` | reset | the `max_wait` deadline passed | yes |
 | `capacity expired` | capacity | the `max_wait` deadline passed with no login showing capacity | no; [closing line](#closing-line) |
 | `step timeout` | both | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no; on a capacity wait, also the closing line |
@@ -5318,14 +5318,19 @@ therefore reads the store under that `HOME`, never the real user's.
 
 #### Capacity wait deadline
 
-A capacity wait ends at the earlier of:
+A capacity wait ends at the earliest of:
 
 | Candidate | Applies when | `bound=` |
 |-----------|--------------|----------|
+| the failed login's reset + 120 s | the limit message states a reset that is still in the future | `reset+margin` |
 | now + `max_wait_secs` (default `21600`, 6 hours) | always | `max_wait` |
 | step start + `AMPLIHACK_STEP_TIMEOUT` − 60 s, never before now | the step timeout is set and above 0 | `step_timeout` |
 
-A tie is named `max_wait`. There is no five-hour ceiling: a user file or
+A tie between the reset and the maximum is named `reset+margin`; a tie
+between the maximum and the step timeout is named `max_wait`. A reset
+5 h 30 m away with a six-hour maximum therefore ends the wait at 5 h 32 m
+with `end reason=reset reached` and a retry, because the failed login has
+recovered by then. There is no five-hour ceiling: a user file or
 `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` may set a longer maximum, and a
 capacity wait honours it. A project file can only lower it (see
 [Usage-limit wait settings](#usage-limit-wait-settings)). The arithmetic
@@ -5337,8 +5342,9 @@ indefinitely without one, rather than overflowing.
 retry. The step makes one attempt and ends as a usage limit. A reset wait
 with the same setting still retries once.
 
-Reaching either deadline ends the wait with no retry. The failed attempt's
-result is passed up after the [closing line](#closing-line).
+Reaching the `max_wait` or `step_timeout` deadline ends the wait with no
+retry. The failed attempt's result is passed up after the
+[closing line](#closing-line).
 
 #### Capacity for a profile step
 

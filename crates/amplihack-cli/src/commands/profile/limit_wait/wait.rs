@@ -71,9 +71,11 @@ impl End {
     fn at_deadline(bound: Bound, kind: PlanKind) -> Self {
         match (bound, kind) {
             (Bound::StepTimeout, _) => End::StepTimeout,
-            (Bound::ResetMargin, PlanKind::Reset) => End::ResetReached,
+            // On a capacity wait the reset is the failed login's own: it has
+            // recovered, so the step is retried.
+            (Bound::ResetMargin, _) => End::ResetReached,
             (Bound::MaxWait, PlanKind::Reset) => End::MaxReached,
-            (Bound::ResetMargin | Bound::MaxWait, PlanKind::Capacity) => End::CapacityExpired,
+            (Bound::MaxWait, PlanKind::Capacity) => End::CapacityExpired,
         }
     }
 }

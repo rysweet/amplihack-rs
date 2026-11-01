@@ -417,3 +417,39 @@ fn capacity_maximum_boundaries() {
         assert_eq!(got.bound, Bound::MaxWait);
     }
 }
+
+// R1: the failed login's own reset ends a capacity wait when it comes before
+// the maximum, so a reset between five hours and the maximum is retried at
+// the reset rather than failing at the maximum.
+#[test]
+fn a_capacity_wait_ends_at_the_failed_logins_reset_before_the_maximum() {
+    let reset = NOW + 5 * 3600 + 1800;
+    let got = plan_capacity(NOW, Some(reset), None, None);
+    assert_eq!(
+        (got.until, got.bound, got.kind, got.reset),
+        (
+            reset + MARGIN,
+            Bound::ResetMargin,
+            PlanKind::Capacity,
+            Some(reset)
+        )
+    );
+    let got = plan_capacity(NOW, Some(NOW + 21_600 - MARGIN), Some(21_600), None);
+    assert_eq!(
+        (got.until, got.bound),
+        (NOW + 21_600, Bound::ResetMargin),
+        "a tie with the maximum is named by the reset, which retries"
+    );
+    let got = plan_capacity(NOW, Some(reset), None, Some((NOW, 3600)));
+    assert_eq!(
+        (got.until, got.bound),
+        (NOW + 3540, Bound::StepTimeout),
+        "a step timeout that ends sooner still ends it"
+    );
+    let got = plan_capacity(NOW, Some(NOW - 10), Some(600), None);
+    assert_eq!(
+        (got.until, got.bound),
+        (NOW + 600, Bound::MaxWait),
+        "a reset already past plays no part"
+    );
+}

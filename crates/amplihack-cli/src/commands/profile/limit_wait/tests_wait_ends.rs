@@ -83,6 +83,15 @@ fn a_capacity_wait_expires_at_max_wait_where_a_reset_wait_reaches_max() {
 }
 
 #[test]
+fn a_capacity_wait_that_reaches_the_failed_logins_reset_retries() {
+    let mut f = Fake::new();
+    assert_eq!(
+        wait(&capacity_plan_in(90, Bound::ResetMargin), &mut f),
+        End::ResetReached
+    );
+}
+
+#[test]
 fn a_zero_length_capacity_wait_expires_without_sleeping() {
     let mut f = Fake::new();
     assert_eq!(

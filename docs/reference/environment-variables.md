@@ -997,8 +997,8 @@ Upper bound on one usage-limit wait. For a wait on a reset it only shortens
 the wait, and `0` means no wait but one more attempt; such a wait never
 lasts longer than five hours and 120 seconds. For a
 [capacity wait](./profile-command.md#capacity-wait) on a weekly or
-unreadable reset it sets the length of the wait, with no five-hour ceiling,
-and `0` means the step ends at once as a usage limit. The variable may set a
+unreadable reset it sets the length of the wait, with no five-hour ceiling
+(the wait still ends sooner at the failed login's own reset plus 120 s), and `0` means the step ends at once as a usage limit. The variable may set a
 value above the default. Overrides the config files; empty means unset; an
 invalid value prints one warning, naming the variable only, and is ignored.
 

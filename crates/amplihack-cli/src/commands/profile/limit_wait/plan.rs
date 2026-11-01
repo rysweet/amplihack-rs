@@ -5,7 +5,8 @@
 //! [`upgrade`] then makes it a capacity wait (issue #1801). The deadline is
 //! the earliest row of the deadline table that applies, a tie named by the
 //! earlier row. All arithmetic saturates. A reset wait's deadline always lies
-//! in `now ..= now + 5 h + 120 s`; a capacity wait has no five-hour ceiling.
+//! in `now ..= now + 5 h + 120 s`; a capacity wait has no five-hour ceiling
+//! and also ends at the failed login's own reset plus the margin.
 
 use crate::commands::recipe::run::limit_patterns::{Harness, LimitMessage};
 
@@ -188,20 +189,33 @@ fn step_deadline(now: i64, step: Option<(i64, u64)>) -> Option<i64> {
     )
 }
 
-/// The deadline for a capacity wait starting at `now`: `max` from now or the
-/// step timeout less its lead, never before `now`, a tie named `MaxWait`.
-/// There is no five-hour ceiling, and `reset` plays no part in it.
+/// The deadline for a capacity wait starting at `now`: the earliest of the
+/// failed login's own `reset` plus the margin (when still in the future), `max`
+/// from now and the step timeout less its lead, never before `now`. A tie
+/// between the reset and the maximum is named `ResetMargin`, and one between
+/// the maximum and the step timeout `MaxWait`. There is no five-hour ceiling.
+/// Reaching the reset retries the step, because that login has recovered.
 pub(crate) fn plan_capacity(
     now: i64,
     reset: Option<i64>,
     max: Option<u64>,
     step: Option<(i64, u64)>,
 ) -> Plan {
-    let max_end = now.saturating_add(secs(max.unwrap_or(CAPACITY_DEFAULT_MAX)));
-    let (until, bound) = match step_deadline(now, step) {
-        Some(end) if end < max_end => (end, Bound::StepTimeout),
-        _ => (max_end, Bound::MaxWait),
-    };
+    let mut until = now.saturating_add(secs(max.unwrap_or(CAPACITY_DEFAULT_MAX)));
+    let mut bound = Bound::MaxWait;
+    if let Some(r) = reset.filter(|r| *r > now) {
+        let end = r.saturating_add(MARGIN);
+        if end <= until {
+            until = end;
+            bound = Bound::ResetMargin;
+        }
+    }
+    if let Some(end) = step_deadline(now, step)
+        && end < until
+    {
+        until = end;
+        bound = Bound::StepTimeout;
+    }
     Plan {
         until,
         bound,
