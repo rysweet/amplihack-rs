@@ -273,9 +273,9 @@ the user's server.
 a shell tool: it runs before the XPIA check, the Skill redirect, the merge
 guard and the non-Bash early return. The checks after it answer with a bare
 `{"block": true, "message": …}`, which Claude Code does not act on (#1773).
-XPIA is on unless `XPIA_ENABLED=false`, and its command-injection pattern
-matches a separator or newline followed by `rm`, `kill` and similar words. If
-XPIA ran first, it would answer for `TMUX_TMPDIR=$SB/tmuxsock tmux
+XPIA is off by default (#1734). When a user opts in with `XPIA_ENABLED=true`,
+its command-injection pattern matches a separator or newline followed by `rm`,
+`kill` and similar words. If XPIA ran first, it would answer for `TMUX_TMPDIR=$SB/tmuxsock tmux
 kill-server; rm -rf "$SB"`, for a `tmux -C attach <<EOF` heredoc whose body is
 `kill-server`, and for `tmux new -d 'sleep 1' \; kill-server`, and on Claude
 Code the command would run. Running the guard first gives those commands the

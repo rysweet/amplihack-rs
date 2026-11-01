@@ -51,14 +51,16 @@ pub fn check_health_with(config: &XpiaConfig) -> HealthReport {
 
     let mut checks = Vec::new();
 
-    // Check 1: XPIA enabled
+    // Check 1: XPIA enabled. Off is the default, so this always passes and
+    // only reports the state. `config_summary.enabled` is the machine-readable
+    // answer to whether XPIA is scanning.
     checks.push(CheckResult {
         name: "xpia_enabled".into(),
-        passed: config.enabled,
+        passed: true,
         message: if config.enabled {
             "XPIA defense is enabled".into()
         } else {
-            "XPIA defense is DISABLED — system is unprotected".into()
+            "XPIA defense is disabled (default; set XPIA_ENABLED=true to opt in)".into()
         },
     });
 
@@ -163,17 +165,51 @@ mod tests {
     }
 
     #[test]
-    fn disabled_xpia_is_degraded() {
-        let mut config = XpiaConfig::defaults();
-        config.enabled = false;
-        let report = check_health_with(&config);
-        assert_eq!(report.status, HealthStatus::Degraded);
+    fn disabled_xpia_is_healthy() {
+        // XPIA is off by default (#1734), so off is the expected state and
+        // must not make a default install look unhealthy.
+        let report = check_health_with(&XpiaConfig::defaults());
+        assert_eq!(report.status, HealthStatus::Healthy);
+        assert_eq!(report.checks.iter().filter(|c| !c.passed).count(), 0);
         let enabled = report
             .checks
             .iter()
             .find(|c| c.name == "xpia_enabled")
             .unwrap();
-        assert!(!enabled.passed);
+        assert!(enabled.passed);
+        assert!(
+            enabled.message.contains("disabled"),
+            "message must say XPIA is disabled: {}",
+            enabled.message
+        );
+        assert!(
+            enabled.message.contains("XPIA_ENABLED=true"),
+            "message must say how to opt in: {}",
+            enabled.message
+        );
+        assert!(
+            !enabled.message.contains("unprotected"),
+            "the default state must not be reported as a fault: {}",
+            enabled.message
+        );
+        // The summary still reports the real state.
+        assert_eq!(report.config_summary["enabled"], false);
+    }
+
+    #[test]
+    fn enabled_xpia_is_healthy() {
+        let mut config = XpiaConfig::defaults();
+        config.enabled = true;
+        let report = check_health_with(&config);
+        assert_eq!(report.status, HealthStatus::Healthy);
+        let enabled = report
+            .checks
+            .iter()
+            .find(|c| c.name == "xpia_enabled")
+            .unwrap();
+        assert!(enabled.passed);
+        assert_eq!(enabled.message, "XPIA defense is enabled");
+        assert_eq!(report.config_summary["enabled"], true);
     }
 
     #[test]

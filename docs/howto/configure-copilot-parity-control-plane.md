@@ -33,7 +33,7 @@ Use `python` only when you intentionally need the legacy amplihack hook engine:
 export AMPLIHACK_HOOK_ENGINE=python
 ```
 
-> **Note**: even when the amplihack hook engine is `rust`, the XPIA `pre_tool_use.py` bridge remains the canonical Bash policy entrypoint.
+> **Note**: the sections below that mention `.claude/tools/xpia/hooks/pre_tool_use.py` and `xpia-defend` describe an optional external bridge. That bridge is not shipped in this repository. The XPIA scan that amplihack ships runs inside `amplihack-hooks pre-tool-use`, is off by default, and does not block Bash when it is off. See the [XPIA Configuration Reference](../reference/xpia-configuration.md).
 
 ## 2. Pin the Rust recipe runner if auto-discovery is not enough
 
@@ -79,7 +79,7 @@ You should see:
 
 ## 5. Verify XPIA fail-closed behavior
 
-The parity control plane treats `xpia-defend` as security-critical. If the binary is missing or invalid, Bash stays blocked.
+This section applies only if you have installed the external XPIA bridge; it does not apply to the scan built into `amplihack-hooks`, which is off by default. Where the bridge is installed, the parity control plane treats `xpia-defend` as security-critical: if the binary is missing or invalid, Bash stays blocked.
 
 ```bash
 printf '%s\n' '{"tool_name":"Bash","tool_input":{"command":"pwd"}}' \

@@ -804,6 +804,7 @@ Security guidelines, context preservation, and best practices.
 ### Security Documentation
 
 - [Security Recommendations](SECURITY_RECOMMENDATIONS.md) - Essential security practices
+- [XPIA Configuration Reference](reference/xpia-configuration.md) - XPIA prompt-injection scanning is off by default; opt in with `XPIA_ENABLED=true`, and the CWD, commit-on-main and `--no-verify` guards that stay active either way
 - [Security Context Preservation](SECURITY_CONTEXT_PRESERVATION.md) - Maintain security through sessions
 - [Security Guides](security/README.md) - Comprehensive security documentation
 - [Turn-Failure Error Hygiene](turn-error-hygiene.md) - Bounded, debug-gated turn-failure errors that avoid embedding child output (issue #1092)
