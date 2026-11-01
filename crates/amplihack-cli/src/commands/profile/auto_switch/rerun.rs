@@ -14,7 +14,7 @@ use super::fsx;
 use super::overflow_inputs::OverflowInputs;
 use super::per_token;
 use super::state::{Ledger, State};
-use super::takeover::{capacity_candidate, could_take_over};
+use super::takeover::{capacity_candidate, profile_check};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
     Limited, Signals, note_key_error, run_attempt, usage_limited,
@@ -325,9 +325,10 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // on a nearly-empty window (#1618).
     let mut inherited_has_capacity = false;
     // Whether another login could end a capacity wait: the one read-only
-    // check, made when a limit is seen (#1801).
+    // check, made when a limit is seen (#1801). Both kinds of step need a
+    // running rotator, so a wait never starts when nothing could end it.
     let takeover = |waiter: &Waiter| match &switch {
-        Some(sw) => could_take_over(Some(sw.store), Some(sw.inherited.as_str())),
+        Some(sw) => profile_check(sw.store, sw.inherited.as_str()),
         None => waiter.takeover_home(),
     };
     let probe = |start, now| {
@@ -495,14 +496,14 @@ fn retry_profile(switch: Option<&Switch<'_>>, waiter: &Waiter) -> Option<Profile
     let sw = switch?;
     let start = waiter.capacity_start()?;
     let pick = capacity_candidate(sw.store, &sw.state, &sw.inherited, start, waiter.now())?;
-    // A move onto a per-token profile gives its reason line, as any rerun
-    // onto one does (#1804).
     // The run log names the login the retry moves to, as every other move
     // in this loop does (#1801, item 3).
     eprintln!(
         "amplihack: a login has capacity again; rerunning this step under profile {:?} (auto-switch)",
         pick.profile.as_str()
     );
+    // A move onto a per-token profile gives its reason line, as any rerun
+    // onto one does (#1804).
     per_token::record(&sw.state.root, pick.per_token.as_deref());
     Some(pick.profile)
 }

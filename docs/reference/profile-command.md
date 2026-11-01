@@ -6043,9 +6043,9 @@ with their usual `skipped` reasons.
 |-------|--------------|-------------------------------|--------|
 | Reset within five hours | any | any | reset wait, as before |
 | Weekly limit, or a reset more than five hours away | `$HOME/.claude`, with a rotator running | yes | capacity wait |
-| Weekly limit, or a reset more than five hours away | inherited profile, auto-switch on | yes | capacity wait |
-| No readable reset (`no_reset`) | `$HOME/.claude` with a rotator running, or inherited profile with auto-switch on | yes | capacity wait |
-| Weekly limit or no readable reset | `$HOME/.claude`, no rotator running | any | `skipped reason=reset_too_far` or `no_reset` |
+| Weekly limit, or a reset more than five hours away | inherited profile, auto-switch on, with a rotator running | yes | capacity wait |
+| No readable reset (`no_reset`) | `$HOME/.claude` or inherited profile with auto-switch on, with a rotator running | yes | capacity wait |
+| Weekly limit or no readable reset | `$HOME/.claude` or inherited profile, no rotator running | any | `skipped reason=reset_too_far` or `no_reset` |
 | Weekly limit or no readable reset | any of the above | no | `skipped reason=reset_too_far` or `no_reset` |
 | Weekly limit or no readable reset | inherited profile, auto-switch off | any | `skipped reason=reset_too_far` or `no_reset` |
 | Weekly limit or no readable reset | a profile from the `.default` pointer that is not the rotator's live profile | any | `skipped reason=reset_too_far` or `no_reset` |
@@ -6060,6 +6060,15 @@ checked through its pid file) or the external rotator, which holds
 `<root>/.rotator/lock`. With neither, the step fails at once as before, and
 a reading that shows another login has capacity does not change that,
 because nothing would move that login into `$HOME/.claude`. An explicit
+A step under an inherited profile needs a running rotator for the same
+reason. No `/usage` probe is made, so its wait ends only on a fresh
+[reading](#readings), a rotator cycle, a login change in its own directory
+or its own reset (see [Capacity for a profile step](#capacity-for-a-profile-step)).
+In an unattended recipe run `AMPLIHACK_RECIPE_RUN_ID` stops launches from
+starting the rotator and a `claude -p` step has no status line, so with no
+rotator nothing may record a reading and the wait would run to its six-hour
+maximum. With no rotator running the step therefore fails at once as before.
+An explicit
 `$CLAUDE_CONFIG_DIR` is skipped because the rotator never changes it and it
 is the login the user chose. A spend limit is skipped because it can apply
 to a whole organisation, so another login of the same organisation would

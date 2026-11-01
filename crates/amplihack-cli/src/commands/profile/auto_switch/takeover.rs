@@ -11,8 +11,9 @@
 //! its skip or stays on its wait.
 //!
 //! The issue's other trigger, a rotator cycle on record, is left out on
-//! purpose: rotation needs stored profiles, so the store check covers it. A
-//! `$HOME/.claude` step also needs a running rotator: see [`home_check`].
+//! purpose: rotation needs stored profiles, so the store check covers it.
+//! Every step also needs a running rotator: see [`home_check`] and
+//! [`profile_check`].
 
 use super::config::{self, Config, FileState};
 use super::fsx;
@@ -46,6 +47,18 @@ pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
                 && could_take_over(Some(s), live_profile(s).as_deref())
         })
     })
+}
+
+/// The takeover check for a step that inherited profile `own`. No `/usage`
+/// probe is made, so that step's wait ends only on a fresh reading, a rotator
+/// cycle, a login change in its own directory or its own reset. In an
+/// unattended recipe run no rotator starts and a `claude -p` step has no
+/// status line, so without a running rotator nothing may record a reading and
+/// the wait would run to its maximum. The check therefore holds only while a
+/// rotator is running, as [`home_check`] does, and a far reset stays
+/// `reset_too_far`, failing at once as before.
+pub(crate) fn profile_check(store: &ProfileStore, own: &str) -> bool {
+    rotate::daemon::running(store.root()) && could_take_over(Some(store), Some(own))
 }
 
 /// Another account could take over from a step whose own login is `own`: the

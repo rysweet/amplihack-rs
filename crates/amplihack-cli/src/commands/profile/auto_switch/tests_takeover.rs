@@ -10,7 +10,7 @@
 use super::config::{self, FileState};
 use super::fsx;
 use super::overflow_inputs::OverflowInputs;
-use super::takeover::{another_login_with, could_take_over, home_check, is_fresh};
+use super::takeover::{another_login_with, could_take_over, home_check, is_fresh, profile_check};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::Gate;
 use crate::commands::profile::rotate::GateSource;
@@ -501,4 +501,35 @@ fn a_running_rotator_alone_is_not_enough() {
 #[test]
 fn a_home_step_with_no_store_is_false() {
     assert!(!home_check(None)());
+}
+
+// An inherited-profile step's wait ends only on a fresh reading, a rotator
+// cycle, a login change or its own reset. In an unattended run nothing may
+// record a reading without a rotator, so a far reset keeps its immediate skip
+// there too (#1801).
+#[test]
+fn an_inherited_profile_step_with_two_logins_and_no_rotator_is_false() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(&tmp, &["a", "b"]);
+    assert!(
+        could_take_over(Some(&store), Some("a")),
+        "the store alone qualifies"
+    );
+    assert!(!profile_check(&store, "a"));
+}
+
+#[test]
+fn an_inherited_profile_step_with_two_logins_and_a_running_rotator_is_true() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(&tmp, &["a", "b"]);
+    let _held = rotator_running(&store);
+    assert!(profile_check(&store, "a"));
+}
+
+#[test]
+fn a_running_rotator_alone_is_not_enough_for_a_profile_step() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = store(&tmp, &["a"]);
+    let _held = rotator_running(&store);
+    assert!(!profile_check(&store, "a"));
 }

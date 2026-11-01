@@ -90,8 +90,8 @@ pub(crate) fn x_is_live(f: &Fixture) {
 }
 
 /// Holds the external rotator's lock, as a running prototype rotator does,
-/// until the returned file is dropped. A `$HOME/.claude` step takes a
-/// capacity wait only while a rotator runs (#1801).
+/// until the returned file is dropped. A step takes a capacity wait only
+/// while a rotator runs (#1801).
 pub(crate) fn rotator_running(f: &Fixture) -> fs::File {
     use std::os::fd::AsRawFd;
     let dir = f.profiles.join(".rotator");
@@ -234,6 +234,7 @@ fn ac1_no_readable_reset_also_waits_and_says_none() {
 #[test]
 fn ac13_an_inherited_profile_step_retries_on_the_login_with_capacity() {
     let f = with_profiles();
+    let _rotator = rotator_running(&f);
     let mut c = nested_x(&f);
     // X, then Y, then the retry.
     c.env("LIMIT_CALLS", "2");
@@ -520,6 +521,21 @@ fn a_home_step_with_two_logins_and_no_rotator_skips() {
     x_is_live(&f);
     let out = f.run(&mut home_step(&f));
     assert_skipped(&f, &out, "reset_too_far");
+}
+
+// The same holds for an inherited-profile step: no `/usage` probe is made, and
+// in an unattended run nothing records a reading without a rotator, so the
+// wait would run to its six-hour maximum. A far reset fails at once instead.
+#[test]
+fn an_inherited_profile_step_with_two_logins_and_no_rotator_skips() {
+    let f = with_profiles();
+    let mut c = nested_x(&f);
+    // X, then the auto-switch rerun on Y, are both limited.
+    c.env("LIMIT_CALLS", "2");
+    let out = f.run(&mut c);
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2, "X, then Y, and no retry after them");
+    assert_eq!(events(&out), ["skipped reason=reset_too_far"]);
 }
 
 #[test]
