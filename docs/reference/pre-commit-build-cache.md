@@ -147,10 +147,11 @@ An entry is skipped, and nothing is deleted, when any of these holds:
 - It is a link to something other than a directory, such as a regular file.
   A link whose target does not exist is handled separately; see
   [Dangling links](#dangling-links).
-- Its resolved path is empty, `/`, `$HOME`, the cache root, or the current
-  cache.
-- Its resolved path is an ancestor of the cache root, `$HOME`, the current
+- Its resolved path is empty, `/`, `$HOME`, the cache root, the current
   cache, or the repository top level.
+- Its resolved path is an ancestor of the cache root, `$HOME`, the current
+  cache, or the repository top level, or lies inside the current cache. Two
+  links that point at the same target therefore never delete the cache in use.
 - The link or its resolved target is not owned by the current user.
 - It is not stale (see below).
 - A build is using it (see below).
@@ -345,11 +346,11 @@ wrapper never follows or deletes a link it does not own.
 
 `tests/issue_1771_precommit_symlinked_caches.sh` covers linked caches, dangling
 links, in-use locks under `debug/`, non-Cargo targets, tagging, the guards
-against deleting `$HOME`, the cache root or the checkout, and `CDPATH`. The
-ownership checks need a second user account and are not exercised in CI.
+against deleting `$HOME`, the cache root, the checkout or the current cache
+through a second link, and `CDPATH`. The ownership checks need a second user
+account and are not exercised in CI.
 `tests/issue_1440_precommit_cache_location.sh` covers the location and the
-directory sweep. The `ci.yml` workflow runs both tests on
-every pull request.
+directory sweep. The `ci.yml` workflow runs both tests on every pull request.
 
 ## See also
 

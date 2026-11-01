@@ -29,7 +29,9 @@
 #   12. an exported CDPATH and a relative link target change nothing;
 #   13. TTL 0, or a TTL that is not a positive integer, disables the sweep,
 #       and an invalid TTL is reported once;
-#   14. an explicit CARGO_TARGET_DIR is never swept, cleaned or tagged.
+#   14. an explicit CARGO_TARGET_DIR is never swept, cleaned or tagged;
+#   15. a sibling link to the current cache's target, or into it, never
+#       deletes it.
 #
 # Ownership checks (a link or target owned by another user is kept) cannot be
 # exercised without a second account, so they are documented, not tested here.
@@ -584,6 +586,39 @@ ln -s "$VOL/c14-never" "$dangling14"
 run_wrapper 7 CARGO_TARGET_DIR="$dangling14" "$WRAPPER" true >/dev/null 2>&1 || true
 check "14: a dangling explicit CARGO_TARGET_DIR is not removed" \
     "$dangling14 was removed" is_link "$dangling14"
+
+# ---------------------------------------------------------------------------
+# 15. A stale sibling link that resolves to the current cache's target, or to
+#     a directory inside it, never deletes it. The current cache is a link to
+#     an old, Cargo-shaped, unlocked target, so only the guard keeps it.
+# ---------------------------------------------------------------------------
+new_case c15
+cur15="$(target_dir_for)" || cur15=""
+if [ -n "$cur15" ]; then
+    t15="$VOL/c15-shared"
+    make_target cargo "$t15"
+    mkdir -p "$t15/nested/debug/.fingerprint"
+    : > "$t15/nested/.rustc_info.json"
+    age_tree "$t15"
+    ln -s "$t15" "$cur15"
+    ln -s "$t15" "$C_ROOT/${PREFIX}c15same00000"
+    ln -s "$t15/nested" "$C_ROOT/${PREFIX}c15inside000"
+    if [ "$have_lock_tool" -eq 1 ]; then
+        run_wrapper 7 "$WRAPPER" true >/dev/null 2>&1 || true
+        check "15: a sibling link to the current cache's target never deletes it" \
+            "$t15 was deleted through a sibling link" \
+            exists "$t15/debug/deps/libfixture.rlib"
+        check "15: a sibling link into the current cache never deletes that part" \
+            "$t15/nested was deleted through a sibling link" \
+            exists "$t15/nested/.rustc_info.json"
+        check "15: ...and the current cache link is kept" \
+            "$cur15 was removed" is_link "$cur15"
+    else
+        printf 'skip 15: neither flock nor lsof available\n'
+    fi
+else
+    record_fail "15: the wrapper reports its cache path" "got nothing"
+fi
 
 echo
 echo "passed: $pass, failed: $fail"
