@@ -41,37 +41,9 @@ use std::time::Duration;
 
 pub(super) const LOCK_WAIT: Duration = Duration::from_secs(2);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    OneShot,
-    DryRun,
-    Watch,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CycleOutcome {
-    Swapped,
-    Stayed,
-    Alerted,
-    Skipped,
-    /// A `profile switch` pin stopped the cycle before measuring (#1691).
-    Held,
-    /// `watch` received a signal and abandoned the cycle.
-    Stopped,
-}
-
-impl CycleOutcome {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Swapped => "swapped",
-            Self::Stayed => "stayed",
-            Self::Alerted => "alerted",
-            Self::Skipped => "skipped",
-            Self::Held => "held",
-            Self::Stopped => "stopped",
-        }
-    }
-}
+#[path = "cycle_outcome.rs"]
+mod outcome;
+pub use outcome::{CycleOutcome, Mode};
 
 /// Steps 4 and 5 of a cycle: measure, then decide.
 pub(super) type MeasureFn = fn(&Ctx, &Snap) -> Result<Measurement, ProfileError>;
