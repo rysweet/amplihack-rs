@@ -49,6 +49,9 @@ umask 077
 
 TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 KEYWORDS='sec|auth|secret|token|credential|inject|xss|csrf|cve|vuln|unsafe|privilege|perm'
+# Matched as whole words in the summary and evidence, so that common words such
+# as "second" or "author" do not match.
+TEXT_KEYWORDS='\b(secur[a-z]*|insecure|authenticat[a-z]*|authori[sz][a-z]*|authn|authz|secrets?|tokens?|credentials?|inject[a-z]*|xss|csrf|cve|vuln[a-z]*|unsafe|privileges?|permissions?|sanitis[a-z]*|sanitiz[a-z]*|escap(e|es|ed|ing)|traversal|ssrf|rce|password[a-z]*)\b'
 ZW=$'\xe2\x80\x8b'
 
 usage() {
@@ -188,9 +191,10 @@ current_base() {
     return 1
   fi
   if ! git -C "$REPO" cat-file -e "${oid}^{commit}" 2>/dev/null; then
-    GIT_TERMINAL_PROMPT=0 git -C "$REPO" fetch -q --no-tags origin "refs/heads/$name" </dev/null >/dev/null 2>&1 || true
+    ferr="$(GIT_TERMINAL_PROMPT=0 git -C "$REPO" fetch -q --no-tags origin "refs/heads/$name" </dev/null 2>&1 >/dev/null)" || true
+    ferr="$(printf '%s' "$ferr" | head -n 1 | tr -d '[:cntrl:]' | cut -c 1-200)"
     git -C "$REPO" cat-file -e "${oid}^{commit}" 2>/dev/null \
-      || { echo "INFO: light round: the PR's base tip could not be fetched; measuring from the pinned base" >&2; return 1; }
+      || { echo "INFO: light round: the PR's base tip could not be fetched (${ferr:-no error output}); measuring from the pinned base" >&2; return 1; }
   fi
   mb="$(git -C "$REPO" merge-base "$REVIEWED" "$oid" 2>/dev/null)"
   if ! [[ "$mb" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
@@ -256,7 +260,7 @@ for f in "$STATE/resolved-concerns.txt" "$STATE"/crusty-round-*.json.findings; d
   RETURNING="${RETURNING}$(cat -- "$f")"$'\n'
 done
 
-ROWS="$(printf '%s' "$CONCERNS" | jq -c --arg ret "$RETURNING" --arg kw "$KEYWORDS" '
+ROWS="$(printf '%s' "$CONCERNS" | jq -c --arg ret "$RETURNING" --arg kw "$KEYWORDS" --arg tkw "$TEXT_KEYWORDS" '
   ($ret | split("\n") | map(select(length > 0))) as $r
   | def clean: (if type == "string" then . elif . == null then "" else tojson end)
       | gsub("[[:cntrl:]]"; " ") | .[0:200];
@@ -272,6 +276,7 @@ ROWS="$(printf '%s' "$CONCERNS" | jq -c --arg ret "$RETURNING" --arg kw "$KEYWOR
               elif $sev != "minor" then $sev
               elif any($r[]; . == $id) then "major"
               elif ($id | ascii_downcase | test($kw)) then "major"
+              elif ([$c.summary, $c.evidence] | map(clean) | join(" ") | ascii_downcase | test($tkw)) then "major"
               else "minor" end),
         summary: ($c.summary | clean),
         evidence: ($c.evidence | clean)
@@ -337,7 +342,11 @@ if [ -z "$ISSUE" ]; then
   if [[ "$ME" =~ ^[A-Za-z0-9-]{1,39}$ ]]; then
     HITS="$(gh_call "issue list" issue list --repo "$GH_REPO_NAME" --state open --limit 20 \
       --search "auto-drive-light:pr-${PR} in:body" --json number,state,author,body)"
-    rc=$?; [ "$rc" -ne 79 ] || exit 79; [ "$rc" -eq 0 ] || HITS='[]'
+    rc=$?; [ "$rc" -ne 79 ] || exit 79
+    if [ "$rc" -ne 0 ]; then
+      echo "WARNING: light round: issue list failed; duplicate check skipped" >&2
+      HITS='[]'
+    fi
     n="$(printf '%s' "$HITS" | jq -r --arg me "$ME" --arg m "$MARK" '
       [ (if type == "array" then .[] else empty end)
         | select((.state // "") == "OPEN" and (.author.login // "") == $me

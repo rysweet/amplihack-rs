@@ -403,6 +403,73 @@ fn ids_containing_a_security_keyword_are_major() {
 }
 
 #[test]
+fn a_security_word_in_the_summary_or_evidence_is_major() {
+    if skip() {
+        return;
+    }
+    let cases = [
+        json!({"id": "c3", "severity": "minor", "summary": "Possible SQL injection in the query builder", "evidence": "db.rs line 4"}),
+        json!({"id": "c3", "severity": "minor", "summary": "Leaks the API Token to the log", "evidence": "log.rs"}),
+        json!({"id": "c3", "severity": "minor", "summary": "Tidy this", "evidence": "the path is not sanitised before use"}),
+        json!({"id": "c3", "severity": "minor", "summary": "Missing authorization check", "evidence": null}),
+        json!({"id": "c3", "severity": "minor", "summary": "Insecure default", "evidence": "x"}),
+    ];
+    for c in cases {
+        let e = Env::new();
+        e.light();
+        exit_none(&e.defer(&json!([c]), &[]), "not-minor-only");
+        no_issue_created(&e);
+    }
+}
+
+#[test]
+fn common_words_in_the_summary_do_not_count_as_security_words() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    let c = json!([{"id": "c3", "severity": "minor",
+        "summary": "The second author line repeats the section title",
+        "evidence": "permalink in README.md line 2"}]);
+    deferred(&e.defer(&c, &[]));
+}
+
+#[test]
+fn without_a_follow_up_label_the_issue_is_created_without_one() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    let j = deferred(&e.defer(&two_minor(), &[("FAKE_GH_LABELS", r#"[{"name":"bug"}]"#)]));
+    assert_eq!(j["light_exit"], "minor-deferred");
+    let calls = e.fakes.gh_calls();
+    let c = calls_of(&calls, "issue", "create")[0];
+    assert!(
+        !c.iter().any(|a| a == "--label" || a == "-l"),
+        "no label may be passed: {c:?}"
+    );
+    // Both ids are recorded as posted, from an empty start.
+    assert_eq!(e.read("follow-up-posted-ids"), "naming-1\ndoc-2\n");
+}
+
+#[test]
+fn a_failed_issue_list_is_logged_before_the_duplicate_check_is_skipped() {
+    if skip() {
+        return;
+    }
+    let e = Env::new();
+    e.light();
+    let o = e.defer(&two_minor(), &[("FAKE_GH_FAIL", "issue list")]);
+    assert!(
+        stderr(&o).contains("WARNING: light round: issue list failed; duplicate check skipped"),
+        "{}",
+        show(&o)
+    );
+}
+
+#[test]
 fn an_empty_concerns_array_is_not_minor_only() {
     if skip() {
         return;
