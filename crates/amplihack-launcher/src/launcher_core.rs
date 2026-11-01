@@ -442,7 +442,7 @@ pub(crate) fn checkout_run_clone(repo: &str, dest: &Path, protocols: &str) -> Re
                 .status()
                 .context("failed to run git clone")?;
             anyhow::ensure!(status.success(), "git clone of {repo} failed");
-            Ok(())
+            exclude_worktrees(dest)
         }
         Err(error) => Err(error).with_context(|| format!("cannot inspect {}", dest.display())),
         Ok(meta) => {
@@ -482,6 +482,8 @@ pub(crate) fn checkout_run_clone(repo: &str, dest: &Path, protocols: &str) -> Re
 /// detached HEAD, no upstream, or commits its upstream does not have.
 fn update_run_clone(dest: &Path, protocols: &str) -> Result<()> {
     let shown = dest.display();
+    // Clones made before this rule have no exclude line yet.
+    exclude_worktrees(dest)?;
     let mut status = hardened_git(dest);
     status.args(["status", "--porcelain", "--untracked-files=normal"]);
     let changes = git_stdout(status)
@@ -528,6 +530,43 @@ fn update_run_clone(dest: &Path, protocols: &str) -> Result<()> {
         "cannot move the existing clone {shown} to the fetched {upstream}"
     );
     Ok(())
+}
+
+/// Adds `/worktrees/` to the clone's `info/exclude`. Without a work root set
+/// explicitly, runs put their worktrees under `<clone>/worktrees/`, which
+/// would otherwise show as untracked and make the clone look changed.
+fn exclude_worktrees(dest: &Path) -> Result<()> {
+    const LINE: &str = "/worktrees/";
+    let mut path = hardened_git(dest);
+    path.args(["rev-parse", "--git-path", "info/exclude"]);
+    let path = git_stdout(path)
+        .map(PathBuf::from)
+        .with_context(|| format!("cannot find the exclude file of {}", dest.display()))?;
+    let path = if path.is_absolute() {
+        path
+    } else {
+        dest.join(path)
+    };
+    let current = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(error).with_context(|| format!("cannot read {}", path.display()));
+        }
+    };
+    if current.lines().any(|l| l.trim() == LINE) {
+        return Ok(());
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let mut text = current;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push('\n');
+    }
+    text.push_str(LINE);
+    text.push('\n');
+    std::fs::write(&path, text).with_context(|| format!("cannot write {}", path.display()))
 }
 
 /// Refuses an existing `dir` that is a symbolic link, is not a folder, or is
@@ -637,6 +676,20 @@ mod issue_1808_clone_destination {
         git(&upstream, &["commit", "-q", "-am", "newer"]);
         checkout_run_clone(&url, &dest, "file").unwrap();
         assert_eq!(std::fs::read_to_string(dest.join("f")).unwrap(), "newer");
+    }
+
+    /// Worktrees a run made under `<clone>/worktrees/` do not make the clone
+    /// look changed, so the next checkout still reuses it.
+    #[test]
+    fn worktrees_under_the_clone_do_not_block_reuse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let url = origin(tmp.path(), "a");
+        let dest = tmp.path().join("work/clones/a-12345678");
+        checkout_run_clone(&url, &dest, "file").unwrap();
+        std::fs::create_dir_all(dest.join("worktrees/feat")).unwrap();
+        std::fs::write(dest.join("worktrees/feat/x"), "x").unwrap();
+        checkout_run_clone(&url, &dest, "file").unwrap();
+        assert!(dest.join("worktrees/feat/x").is_file());
     }
 
     /// A reused clone with uncommitted changes or local commits is refused

@@ -647,7 +647,9 @@ longer in the current folder. Cleanup does not remove clones.
 
 The folder name depends only on the URL, so a later run that checks out the
 same repository reuses the clone. It fetches and moves the clone's branch to
-the fetched tip, so the run never works on an old commit. The launch is
+the fetched tip, so the run never works on an old commit. The launcher adds
+`/worktrees/` to the clone's `.git/info/exclude`, so worktrees that runs put
+under `<clone>/worktrees/` do not count as changes. The launch is
 refused, with a message naming the folder and changing nothing, when:
 
 - the folder is not a git checkout of that URL;

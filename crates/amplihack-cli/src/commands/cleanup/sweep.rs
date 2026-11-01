@@ -787,7 +787,7 @@ impl Collector<'_> {
                     Err(reason) => {
                         if o.kind == OwnedKind::Worktree && unknown_worktree.is_none() {
                             unknown_worktree = Some(format!(
-                                "PR state unknown: worktree {} of this run was not checked ({reason})",
+                                "worktree {} of this run is kept: {reason}",
                                 o.path.display()
                             ));
                         }
