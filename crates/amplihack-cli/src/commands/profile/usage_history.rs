@@ -254,7 +254,8 @@ pub(super) fn from_rows(at: i64, rows: &[Row], swapped: Option<&ProfileName>) ->
 /// `live`, the live login's profile, and dropped when the login belongs to
 /// no profile. The API-key profile `platform` is not a login and is never
 /// recorded or counted as unknown. `unmeasured` are the plan logins the
-/// cycle skipped as busy (`Snap::unmeasured_plan`): they were not read, so
+/// cycle did not probe (`Snap::unmeasured_plan`: skipped as busy, or a
+/// `Skip::NoAccount` profile): they were not read, so
 /// they are listed as unknown and the line says how many it left out.
 #[cfg(unix)]
 pub(super) fn from_probes(

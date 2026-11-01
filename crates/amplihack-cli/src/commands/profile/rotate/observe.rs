@@ -82,10 +82,13 @@ impl Snap {
         self.adopted_platform().or(self.platform())
     }
 
-    /// Plan logins skipped as busy, so not measured this cycle: each may
-    /// have room. Excluded, login-less and non-OAuth profiles are not plan
-    /// logins that could be used, and overflow and API-key profiles never
-    /// were (issue #1804).
+    /// Plan logins not measured this cycle, each of which may have room:
+    /// those skipped as busy (a session running, leased, hosting or
+    /// parked), and `no account` profiles, whose `.claude.json` has no
+    /// usable `oauthAccount` but which are still plan profiles. The usage
+    /// history lists them all as unknown. Excluded, login-less and
+    /// non-OAuth profiles are not plan logins that could be used, and
+    /// overflow and API-key profiles never were (issue #1804).
     pub fn unmeasured_plan(&self) -> Vec<ProfileName> {
         self.skips
             .iter()

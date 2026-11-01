@@ -15,6 +15,8 @@
 //!   current login (a `profile usage` line, or a rotator line that read
 //!   them all), which must be at least 4.5 h old; a reset, seen as `w_reset` passing or a fall in `w`,
 //!   adds the earlier `w` back. Runway is weighted headroom over the rate.
+//! - `rotate status` takes no runway from a rotator line that left logins
+//!   out; see [`status_line`].
 //! - Rounding is half away from zero and happens only when printed; a value
 //!   that is not finite prints as `null`.
 
@@ -262,6 +264,74 @@ pub(super) fn compute(i: &Inputs<'_>) -> Summary {
     }
 }
 
+/// Whether `e` read every login it covers. A rotator line that lists a
+/// login as unknown left it out: skipped as busy (and so likely being used
+/// up) or a failed probe. A `profile usage` line, or an older line without
+/// a writer, tried every login; its unknowns are failed readings.
+fn reads_every_login(e: &Entry) -> bool {
+    e.by != Some(Writer::Rotate) || e.unknown.is_empty()
+}
+
+/// The summary of entry `e`, with `history` (entries at or after `e.at` are
+/// ignored by the rate) as the earlier entries.
+fn summary_of(e: &Entry, history: &[Entry], weights: &Weights, threshold: u8) -> Summary {
+    let current = Snapshot {
+        at: e.at,
+        points: e.profiles.clone(),
+        unknown: e.unknown.clone(),
+    };
+    compute(&Inputs {
+        current: &current,
+        weights,
+        threshold,
+        history,
+        now: e.at,
+    })
+}
+
+/// The `capacity:` line of `rotate status`: `newest` is the newest history
+/// entry, standing in for now, and `earlier` the entries before it, oldest
+/// first; `now` gives the age.
+///
+/// Headroom and usable count are always those of `newest`. The runway is
+/// too, when `newest` read every login. A rotator line that left logins out
+/// holds only the idle ones, so its own runway would divide their headroom
+/// by their near-zero use and come out far too long, or not at all, just
+/// while the busy logins are being used up. Its runway is therefore taken
+/// from the newest entry no more than six hours older that read every
+/// login, and printed with that entry's time; with no such entry, or none
+/// with a runway, it is `unknown`. Either way the line says how many logins
+/// the newest cycle left out.
+pub(super) fn status_line(
+    newest: &Entry,
+    earlier: &[Entry],
+    weights: &Weights,
+    threshold: u8,
+    now: i64,
+) -> String {
+    let summary = summary_of(newest, earlier, weights, threshold);
+    if reads_every_login(newest) {
+        return summary.status_line(newest.at, now, newest.by);
+    }
+    let m = newest.unknown.len();
+    let left_out = format!(
+        "this cycle left out {m} login{}",
+        if m == 1 { "" } else { "s" }
+    );
+    let from = newest.at.saturating_sub(RATE_WINDOW);
+    let runway = earlier
+        .iter()
+        .rev()
+        .filter(|e| e.at >= from && e.at < newest.at)
+        .find(|e| reads_every_login(e))
+        .and_then(|e| {
+            let h = summary_of(e, earlier, weights, threshold).runway_hours()?;
+            Some(format!("{h} from the {} entry ({left_out})", iso(e.at)))
+        })
+        .unwrap_or_else(|| format!("unknown ({left_out})"));
+    summary.status_line_with_runway(newest.at, now, newest.by, &runway)
+}
+
 impl Summary {
     fn login_weeks(&self) -> f64 {
         f64::from(self.headroom_points) / 100.0
@@ -375,6 +445,18 @@ impl Summary {
     /// `profile usage` reads every subscription login, a rotate cycle only
     /// the profiles it probed. A line with no known writer names none.
     pub(super) fn status_line(&self, at: i64, now: i64, by: Option<Writer>) -> String {
+        let runway = self.runway_hours().unwrap_or_else(|| "unknown".to_string());
+        self.status_line_with_runway(at, now, by, &runway)
+    }
+
+    /// [`Self::status_line`] with the runway text given by the caller.
+    fn status_line_with_runway(
+        &self,
+        at: i64,
+        now: i64,
+        by: Option<Writer>,
+        runway: &str,
+    ) -> String {
         let age = now.saturating_sub(at).max(0);
         let age = match age {
             a if a < 60 => format!("{a}s"),
@@ -390,7 +472,7 @@ impl Summary {
                 0 => String::new(),
                 m => format!(", {m} unknown"),
             },
-            self.runway_hours().unwrap_or_else(|| "unknown".to_string()),
+            runway,
             iso(at),
             match by {
                 Some(Writer::Usage) => ", profile usage: all logins",

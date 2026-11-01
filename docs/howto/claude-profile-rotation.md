@@ -1119,8 +1119,13 @@ to give the runway a starting point.
 `amplihack profile rotate status` prints the same figures in one
 `capacity:` line from the rotator's last cycle, without probing anything.
 That cycle may have measured only some logins, so its `of N` can be smaller
-than in `profile usage`; the logins it skipped as busy are counted in its
-`unknown`.
+than in `profile usage`; the logins it skipped as busy, and any whose
+`.claude.json` has no usable `oauthAccount`, are counted in its `unknown`.
+When that cycle left logins out, the line does not use it for the runway:
+it shows the runway of the newest line that read every login, with that
+line's time (`runway ~14 h from the <time> entry (this cycle left out 2
+logins)`), or `runway unknown (this cycle left out 2 logins)` when there is
+none in the last six hours.
 
 If your logins are on different plans, give the larger ones more weight in
 `<root>/.auto-switch.d/capacity-weights.json`, for example

@@ -477,7 +477,8 @@ fn the_capacity_line_counts_a_no_limit_login_as_usable_and_names_the_writer() {
     assert_eq!(
         capacity_line(&e.root, T + 60),
         "capacity: headroom 1.20 login-weeks of 2 (60%), usable 1 of 2 logins, 1 unknown, \
-         runway unknown (as of 2026-10-30T16:15:00Z, 1m ago, rotate cycle: probed profiles only)"
+         runway unknown (this cycle left out 1 login) (as of 2026-10-30T16:15:00Z, 1m ago, \
+         rotate cycle: probed profiles only)"
     );
 }
 
@@ -491,5 +492,136 @@ fn the_capacity_line_names_profile_usage_as_covering_all_logins() {
         capacity_line(&e.root, T + 60),
         "capacity: headroom 0.50 login-weeks of 1 (50%), usable 1 of 1 logins, runway unknown \
          (as of 2026-10-30T16:15:00Z, 1m ago, profile usage: all logins)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// A rotator line that skipped busy logins never gives its own runway
+// ---------------------------------------------------------------------------
+
+fn rotator(at: i64, points: &[(&str, Point)], skipped: &[&str]) -> Entry {
+    let mut x = entry(at, points);
+    x.by = Some(Writer::Rotate);
+    x.unknown = skipped.iter().map(|s| s.to_string()).collect();
+    x
+}
+
+fn usage(at: i64, points: &[(&str, Point)]) -> Entry {
+    let mut x = entry(at, points);
+    x.by = Some(Writer::Usage);
+    x
+}
+
+#[test]
+fn a_busy_login_used_up_through_the_window_does_not_lengthen_the_runway() {
+    let e = env();
+    // `busy` runs a session the whole time and climbs from 0% to 90%; the
+    // rotator never probes it. `idle` moves by one point. A runway from the
+    // rotator lines alone would be 0.89 login-weeks at 0.0017 an hour,
+    // about 534 hours.
+    write_history(
+        &e,
+        &[
+            usage(
+                T - 6 * HOUR,
+                &[
+                    ("idle", pt(Some(0), 10, None, None)),
+                    ("busy", pt(Some(0), 0, None, None)),
+                ],
+            ),
+            rotator(
+                T - 3 * HOUR,
+                &[("idle", pt(Some(0), 10, None, None))],
+                &["busy"],
+            ),
+            rotator(T, &[("idle", pt(Some(1), 11, None, None))], &["busy"]),
+        ],
+    );
+    let line = capacity_line(&e.root, T + 60);
+    assert_eq!(
+        line,
+        "capacity: headroom 0.89 login-weeks of 1 (89%), usable 1 of 1 logins, 1 unknown, \
+         runway unknown (this cycle left out 1 login) (as of 2026-10-30T16:15:00Z, 1m ago, \
+         rotate cycle: probed profiles only)"
+    );
+}
+
+#[test]
+fn the_runway_comes_from_the_newest_entry_that_read_every_login() {
+    let e = env();
+    // The 11:15 `profile usage` line read both logins and has six hours of
+    // history behind it: 1 + 60 points in 6 h is 0.102 login-weeks an
+    // hour, and 1.39 left then is about 14 hours.
+    write_history(
+        &e,
+        &[
+            usage(
+                T - 11 * HOUR,
+                &[
+                    ("idle", pt(Some(0), 0, None, None)),
+                    ("busy", pt(Some(0), 0, None, None)),
+                ],
+            ),
+            usage(
+                T - 5 * HOUR,
+                &[
+                    ("idle", pt(Some(0), 1, None, None)),
+                    ("busy", pt(Some(50), 60, None, None)),
+                ],
+            ),
+            rotator(T - HOUR, &[("idle", pt(Some(0), 1, None, None))], &["busy"]),
+            rotator(T, &[("idle", pt(Some(1), 2, None, None))], &["busy"]),
+        ],
+    );
+    assert_eq!(
+        capacity_line(&e.root, T + 60),
+        "capacity: headroom 0.98 login-weeks of 1 (98%), usable 1 of 1 logins, 1 unknown, \
+         runway ~14 h from the 2026-10-30T11:15:00Z entry (this cycle left out 1 login) \
+         (as of 2026-10-30T16:15:00Z, 1m ago, rotate cycle: probed profiles only)"
+    );
+}
+
+#[test]
+fn a_rotator_line_that_skipped_none_gives_its_own_runway() {
+    let e = env();
+    write_history(
+        &e,
+        &[
+            rotator(T - 6 * HOUR, &[("a", pt(Some(0), 0, None, None))], &[]),
+            rotator(T, &[("a", pt(Some(0), 60, None, None))], &[]),
+        ],
+    );
+    assert_eq!(
+        capacity_line(&e.root, T + 60),
+        "capacity: headroom 0.40 login-weeks of 1 (40%), usable 1 of 1 logins, runway ~4 h \
+         (as of 2026-10-30T16:15:00Z, 1m ago, rotate cycle: probed profiles only)"
+    );
+}
+
+#[test]
+fn an_entry_that_read_every_login_older_than_six_hours_gives_no_runway() {
+    let e = env();
+    write_history(
+        &e,
+        &[
+            usage(
+                T - 13 * HOUR,
+                &[
+                    ("a", pt(Some(0), 0, None, None)),
+                    ("b", pt(Some(0), 0, None, None)),
+                ],
+            ),
+            usage(
+                T - 7 * HOUR,
+                &[
+                    ("a", pt(Some(0), 1, None, None)),
+                    ("b", pt(Some(0), 50, None, None)),
+                ],
+            ),
+            rotator(T, &[("a", pt(Some(0), 2, None, None))], &["b"]),
+        ],
+    );
+    assert!(
+        capacity_line(&e.root, T + 60).contains("runway unknown (this cycle left out 1 login)")
     );
 }

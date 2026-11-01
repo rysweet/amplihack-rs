@@ -38,7 +38,8 @@ pub fn record(root: &Path, out: &mut Sink, first: &Snap, probes: &Probes, at: i6
 
 /// The `capacity:` line and the threshold and weights warnings. The newest
 /// history entry is "now" for the figures and the entries up to six hours
-/// before it are the history; the threshold comes from the variable alone
+/// before it are the history (see [`capacity_summary::status_line`] for
+/// where the runway comes from when that entry left logins out); the threshold comes from the variable alone
 /// and the weights from the weights file. The age is measured at `now`.
 /// With no readable entry the line is `capacity: no recorded cycle`, with
 /// the history's warning when it exists but was refused.
@@ -55,19 +56,8 @@ pub fn capacity(root: &Path, now: i64) -> (String, Vec<String>) {
     let (threshold, warning) = capacity_weight::usable_threshold(None, env.as_deref());
     let (weights, weight_warnings) = capacity_weight::load(root);
     let warnings = warning.into_iter().chain(weight_warnings).collect();
-    let current = usage_history::Snapshot {
-        at: newest.at,
-        points: newest.profiles,
-        unknown: newest.unknown,
-    };
-    let summary = capacity_summary::compute(&capacity_summary::Inputs {
-        current: &current,
-        weights: &weights,
-        threshold,
-        history: &entries,
-        now: newest.at,
-    });
-    (summary.status_line(newest.at, now, newest.by), warnings)
+    let line = capacity_summary::status_line(&newest, &entries, &weights, threshold, now);
+    (line, warnings)
 }
 
 /// The `capacity:` line of `rotate status` alone, without its warnings.

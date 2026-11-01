@@ -1416,7 +1416,7 @@ Who writes it:
 | Writer | When |
 |--------|------|
 | `profile usage` | After the probes, when no profile names were given and `--raw` was not given. With or without `--json` and `--summary-json`. |
-| The [rotator](#rotate-cycle) | After every cycle that measured usage, once its state lock is released. It records the profiles it measured, and lists as unknown the plan logins it skipped as busy (a session running, leased, hosting or parked), so the entry says how many it did not read. Such an entry is not used as the start of the [rate](#rate-and-runway). The [live login](#rotate-live-profile) is recorded under its profile, and a login in `~/.claude` that belongs to no profile is not recorded. A cycle that measured nothing writes nothing. |
+| The [rotator](#rotate-cycle) | After every cycle that measured usage, once its state lock is released. It records the profiles it measured, and lists as unknown the plan logins it did not probe: those skipped as busy (a session running, leased, hosting or parked) and those whose `.claude.json` has no usable `oauthAccount` (`no account`). The entry therefore says how many it did not read. Such an entry is not used as the start of the [rate](#rate-and-runway), and `rotate status` does not take a runway from it (see [Capacity line](#capacity-line)). The [live login](#rotate-live-profile) is recorded under its profile, and a login in `~/.claude` that belongs to no profile is not recorded. A cycle that measured nothing writes nothing. |
 
 Both writers record only when all of these hold, and otherwise write nothing
 and print nothing about the history:
@@ -5586,11 +5586,28 @@ follows `last cycle:`:
 capacity: headroom X login-weeks of N (P%), usable U of N logins[, M unknown], runway ~H h (as of <time>, <age> ago[, <writer>])
 ```
 
+When the newest entry is a rotator entry that left logins out, the runway
+reads `runway ~H h from the <time> entry (this cycle left out M logins)` or
+`runway unknown (this cycle left out M logins)` instead.
+
 The newest valid entry stands in for this run's readings, and its `at` for
 now: `N` is the number of profiles in that entry, the headroom and usable
 count are worked out from it as in the [summary](#capacity-summary), and the
 [rate](#rate-and-runway) uses the entries up to six hours before it. The
-runway is `runway unknown` when the rate is. Weights come from
+runway is `runway unknown` when the rate is.
+
+A rotator entry that lists logins as unknown holds only the logins it
+probed, which are the idle ones; the busy logins being used up are the ones
+it left out. Its own runway would divide the idle logins' headroom by their
+small use and come out far too long, or `unknown`, just while capacity is
+being used. So the runway of such an entry is not printed. Instead the line
+takes the runway of the newest entry no more than six hours older that read
+every login (a `profile usage` entry, or a rotator entry with no unknown
+logins) and names that entry's time: `runway ~H h from the <time> entry
+(this cycle left out M logins)`. With no such entry, or one with too little
+history for a rate, it prints `runway unknown (this cycle left out M
+logins)`. Running `amplihack profile usage` every few hours while logins
+are busy gives the line a runway. Weights come from
 [`capacity-weights.json`](#capacity-weights); the usable threshold comes from
 `AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT`, or `95`. `<age>` is how long
 before the clock now that entry was written, in the largest whole unit:
@@ -5603,8 +5620,9 @@ line names the writer of the entry after its age: `rotate cycle: probed
 profiles only` or `profile usage: all logins`. An entry written before the
 writer was recorded names none. When the entry lists logins its writer could
 not read, `, M unknown` follows the usable count; they are in no figure. A
-rotator entry lists there the logins it skipped as busy as well as those
-whose probe failed, so `M` says how many logins the line leaves out.
+rotator entry lists there the logins it skipped as busy, those with no
+usable `oauthAccount` and those whose probe failed, so `M` says how many
+logins the line leaves out.
 When a profile in that entry has a weight other than `1.0`, the line adds
 `   [weighted: X' of T]` after `(P%)`, as in the summary.
 
