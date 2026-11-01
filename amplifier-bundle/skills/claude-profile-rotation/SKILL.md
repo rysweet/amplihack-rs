@@ -46,6 +46,7 @@ the "Rotate" section of `docs/reference/profile-command.md`.
 - Always run a dry run before the first real rotation, and after any threshold
   change.
 - Do not stop the user's `claude-rotator` tmux session without asking them.
+- **tmux:** run `kill-server` and `kill-session -a` only with `-S <private socket>` or `-L <name>`, for a server you started; inside a tmux pane `$TMUX` overrides `TMUX_TMPDIR`, so without them the command reaches the user's own server, and a PreToolUse hook denies it.
 
 ## Prerequisites
 

@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use crate::util::{format_output_diagnostics, run_output_with_timeout};
@@ -18,6 +18,17 @@ pub(crate) fn resolve_checkout_repo(repo_uri: Option<&str>) -> Result<Option<Pat
 }
 
 pub(super) fn resolve_checkout_repo_in(repo_uri: &str, base_dir: &Path) -> Result<PathBuf> {
+    resolve_checkout_repo_in_with(repo_uri, base_dir, &|_| {})
+}
+
+/// [`resolve_checkout_repo_in`] with `configure` applied to the `git clone`
+/// command after the scrub and just before it is spawned. Tests use it to set
+/// the child's PATH and HOME (issue #1765).
+pub(super) fn resolve_checkout_repo_in_with(
+    repo_uri: &str,
+    base_dir: &Path,
+    configure: &dyn Fn(&mut Command),
+) -> Result<PathBuf> {
     let (owner, repo) = parse_github_repo_uri(repo_uri)?;
     let target_dir = base_dir.join(format!("{owner}-{repo}"));
 
@@ -41,6 +52,7 @@ pub(super) fn resolve_checkout_repo_in(repo_uri: &str, base_dir: &Path) -> Resul
         .args(["clone", &clone_url, target_dir_arg.as_ref()])
         .stdin(Stdio::null());
     amplihack_utils::litellm_proxy::scrub_inference_environment(&mut command);
+    configure(&mut command);
     let output = run_output_with_timeout(command, GIT_CLONE_TIMEOUT)
         .context("git clone timed out or failed to execute")?;
     if !output.status.success() {

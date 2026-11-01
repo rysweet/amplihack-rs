@@ -65,12 +65,14 @@ pub(super) enum Outcome {
 /// PATH) or non-zero exit yields `false`. We only need the exit status, so the
 /// child's stdout/stderr are discarded via `Stdio::null()` — this both keeps
 /// the install console quiet and avoids allocating/reading capture pipes.
-fn version_probe_succeeds(bin: &str) -> bool {
+/// `configure` runs last, just before the spawn; production passes a no-op.
+fn version_probe_succeeds(bin: &str, configure: &dyn Fn(&mut Command)) -> bool {
     let mut cmd = Command::new(bin);
     amplihack_utils::litellm_proxy::scrub_inference_environment(&mut cmd);
     cmd.arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
+    configure(&mut cmd);
     run_with_timeout(cmd, VERSION_PROBE_TIMEOUT)
         .map(|status| status.success())
         .unwrap_or(false)
@@ -80,6 +82,13 @@ fn version_probe_succeeds(bin: &str) -> bool {
 /// `Ok` — a missing/broken mmdc must never block `amplihack install`. See the
 /// module docs for the full decision flow.
 pub(super) fn ensure_mermaid_cli() -> Result<Outcome> {
+    ensure_mermaid_cli_with(&|_| {})
+}
+
+/// [`ensure_mermaid_cli`] with `configure` applied to every child (both
+/// probes, the install and the re-probe) just before it is spawned. Tests use
+/// it to give each child its own PATH and HOME (issue #1765).
+pub(super) fn ensure_mermaid_cli_with(configure: &dyn Fn(&mut Command)) -> Result<Outcome> {
     // (1) Opt-out: any non-empty value disables the attempt entirely, taking
     // precedence over every probe (for minimal/offline environments).
     let skip = std::env::var_os("AMPLIHACK_SKIP_MMDC")
@@ -90,12 +99,12 @@ pub(super) fn ensure_mermaid_cli() -> Result<Outcome> {
     }
 
     // (2) Preflight: already installed? Skip without touching npm.
-    if version_probe_succeeds("mmdc") {
+    if version_probe_succeeds("mmdc", configure) {
         return Ok(Outcome::AlreadyPresent);
     }
 
     // (3) Preflight: npm available? If not, skip (not an error).
-    if !version_probe_succeeds("npm") {
+    if !version_probe_succeeds("npm", configure) {
         return Ok(Outcome::SkippedNoNpm);
     }
 
@@ -105,13 +114,14 @@ pub(super) fn ensure_mermaid_cli() -> Result<Outcome> {
     let mut install_cmd = Command::new("npm");
     amplihack_utils::litellm_proxy::scrub_inference_environment(&mut install_cmd);
     install_cmd.args(["install", "-g", MERMAID_CLI_PACKAGE]);
+    configure(&mut install_cmd);
     let install_result = run_with_timeout(install_cmd, NPM_INSTALL_TIMEOUT);
 
     match install_result {
         Ok(status) if status.success() => {
             // (5) Re-probe: npm may have succeeded but placed mmdc in a prefix
             // that isn't on PATH. Don't claim success unless mmdc is reachable.
-            if version_probe_succeeds("mmdc") {
+            if version_probe_succeeds("mmdc", configure) {
                 Ok(Outcome::Installed)
             } else {
                 tracing::warn!(
@@ -139,31 +149,84 @@ pub(super) fn ensure_mermaid_cli() -> Result<Outcome> {
 mod tests {
     #[cfg_attr(not(target_os = "linux"), allow(unused_imports))] // the tests are Linux only
     use super::*;
+    #[cfg(target_os = "linux")]
+    use crate::commands::profile::ROOT_ENV;
+    #[cfg(target_os = "linux")]
+    use std::path::{Path, PathBuf};
 
+    #[cfg(target_os = "linux")]
+    fn write_fake(dir: &Path, name: &str, script: &str) -> PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, script).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path
+    }
+
+    /// `path` in single quotes for a `/bin/sh` script.
+    #[cfg(target_os = "linux")]
+    fn sh_quoted(path: &Path) -> String {
+        let text = path.to_str().expect("temporary paths are UTF-8");
+        assert!(
+            !text.contains(['\'', '\n']),
+            "cannot single-quote {text:?} for /bin/sh"
+        );
+        format!("'{text}'")
+    }
+
+    /// Issue #1765: the fake runs far longer than the bound, so a pass means
+    /// the timeout fired, and the bound is loose enough that a loaded host
+    /// cannot fail it. Nothing is changed in the process environment.
     #[cfg(target_os = "linux")]
     #[test]
     fn version_probe_is_bounded_for_hanging_binaries() {
-        // The fake runs by absolute path, so the test never changes the
-        // process-wide PATH that parallel tests resolve programs from. It
-        // sleeps far longer than the bound asserted below, and the bound is
-        // far above the probe's 500 ms timeout plus tree termination, so the
-        // test proves the probe gives up without depending on host speed
-        // (#1765).
         let temp = tempfile::tempdir().unwrap();
-        let fake_bin = temp.path().join("mmdc");
-        std::fs::write(&fake_bin, "#!/bin/sh\n/bin/sleep 60\nexit 0\n").unwrap();
-        let mut perms = std::fs::metadata(&fake_bin).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-        std::fs::set_permissions(&fake_bin, perms).unwrap();
+        let fake_bin = write_fake(temp.path(), "mmdc", "#!/bin/sh\nexec /bin/sleep 60\n");
 
         let started = std::time::Instant::now();
-        let result = version_probe_succeeds(fake_bin.to_str().unwrap());
+        let result = version_probe_succeeds(fake_bin.to_str().unwrap(), &|cmd: &mut Command| {
+            cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
+        });
         let elapsed = started.elapsed();
 
         assert!(
-            elapsed < std::time::Duration::from_secs(30),
-            "version probes must not hang on a stuck binary; took {elapsed:?}"
+            elapsed < Duration::from_secs(30),
+            "version probes must not hang on a stuck binary, elapsed {elapsed:?}"
         );
         assert!(!result, "timed-out version probes must fail closed");
+    }
+
+    /// Issue #1765 (A2): the hook's environment reaches the probe's child.
+    /// Kept apart from the timeout test, because a fake that is killed at the
+    /// timeout may not have written anything yet. The second line proves the
+    /// removal only when the test process has the variable set; the test
+    /// does not set it, because tests must not change the process
+    /// environment.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn version_probe_child_gets_test_home_without_profile_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let capture = temp.path().join("child-env");
+        let fake_bin = write_fake(
+            temp.path(),
+            "mmdc",
+            &format!(
+                "#!/bin/sh\nif [ -n \"${{{ROOT_ENV}+x}}\" ]; then r=set; else r=unset; fi\nprintf '%s\\n%s\\n' \"$HOME\" \"$r\" > {}\nexit 0\n",
+                sh_quoted(&capture)
+            ),
+        );
+
+        let result = version_probe_succeeds(fake_bin.to_str().unwrap(), &|cmd: &mut Command| {
+            cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
+        });
+
+        assert!(result, "a fake that exits 0 must pass the version probe");
+        let captured = std::fs::read_to_string(&capture).expect("the fake records its environment");
+        assert_eq!(
+            captured.lines().collect::<Vec<_>>(),
+            [temp.path().to_str().unwrap(), "unset"],
+            "the probe's child must get the test HOME and no {ROOT_ENV}"
+        );
     }
 }

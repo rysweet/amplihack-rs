@@ -135,7 +135,6 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_NO_RUST_BOOTSTRAP` | user preference |  | Skips the Rust toolchain bootstrap. |
 | `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND` | user preference |  | Skips the system-prompt append. |
 | `AMPLIHACK_NO_UPDATE_CHECK` | user preference |  | Skips the startup update check. |
-| `AMPLIHACK_NPM_SENTINEL` | test-only |  | Sentinel path for the npm update-check test script. |
 | `AMPLIHACK_NPM_VERSION` | test-only |  | Not an env var: placeholder in the plugin-manifest test. |
 | `AMPLIHACK_ORCHESTRATION_BOOTSTRAP` | test-only |  | Codex front-door contract fixture. |
 | `AMPLIHACK_ORIGINAL_CWD` | internal |  | Original directory handed to an auto-mode child. |
@@ -146,7 +145,9 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_PLUGIN_INSTALL_LOCK` | test-only |  | Plugin-manifest test fixture. |
 | `AMPLIHACK_POST_UPDATE_INSTALL` | internal |  | Marks the install that follows a self-update. |
 | `AMPLIHACK_PROBE_BIN` | test-only |  | Probe binary path in update and install tests. |
-| `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | user preference |  | Timeout for `amplihack profile usage`. |
+| `AMPLIHACK_PROFILE_USAGE_PARALLEL` | user preference |  | Number of usage probes run at once by `amplihack profile usage` and the rotator (whose live probe counts against it), `1` to `16`; derived from CPUs and load when unset or empty. See [Probe parallelism](profile-command.md#probe-parallelism). |
+| `AMPLIHACK_PROFILE_USAGE_PROBE` | user preference |  | How `amplihack profile usage` and the rotator ask `claude` for usage: `auto` (default; the `get_usage` request, falling back to `claude -p /usage`; profiles marked as overflow always get `/usage` only) or `text` (`claude -p /usage` only). Matched exactly; empty counts as unset; any other value warns and uses `auto`. See [Probe method](profile-command.md#probe-method). |
+| `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | user preference |  | Seconds each profile's usage probe may run in `amplihack profile usage` and the rotator, covering the `get_usage` request and any `/usage` fallback, `1` to `600`; default `120`. See [Probe deadline](profile-command.md#probe-deadline). |
 | `AMPLIHACK_PROJECT_ID` | user preference |  | Memory learning project id. |
 | `AMPLIHACK_PROJECT_ROOT` | internal |  | Project root exported by the uvx manager. |
 | `AMPLIHACK_PROMPT_DELIVERY` | user preference |  | Prompt delivery mode for agent subprocesses. |
@@ -225,7 +226,6 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_TEST_NONEXISTENT_456` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_789` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_GET_ERR` | test-only |  | `EnvVar` unit test name. |
-| `AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS` | test-only |  | Shortens the workflow provider timeout in tests. |
 | `AMPLIHACK_TEST_ROOT_SANDBOX_PROBE` | test-only |  | Root-sandbox spawn test probe. |
 | `AMPLIHACK_TEST_SECURITY_MODE` | test-only |  | Hook protocol test mode. |
 | `AMPLIHACK_TEST_SECURITY_TRANSPORT` | test-only |  | Hook protocol test transport. |

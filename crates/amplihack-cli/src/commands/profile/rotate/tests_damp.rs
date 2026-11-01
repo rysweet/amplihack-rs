@@ -58,6 +58,7 @@ fn c(n: &str, reading: Reading) -> Measured {
         reading,
         windows: Windows::default(),
         spend_limit: false,
+        unknown: false,
     }
 }
 

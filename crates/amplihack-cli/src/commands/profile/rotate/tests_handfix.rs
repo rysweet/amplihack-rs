@@ -363,6 +363,7 @@ fn reproduction_27_oct_moves_the_duplicate_aside_and_swaps_to_capacity() {
         },
         windows: Default::default(),
         spend_limit: false,
+        unknown: false,
     };
     let d = decide(&settings(), &Reading::Exhausted, &[target], None, T);
     assert!(

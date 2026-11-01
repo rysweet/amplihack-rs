@@ -151,6 +151,17 @@ See [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-
 this test run` when a test rewrote a real profile's `settings.json`. See
 [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md).
 
+### Tests That Change PATH or HOME
+
+A test that passes alone but fails in a full run with `No such file or
+directory (os error 2)`, or runs another test's fake binary, may be seeing a
+`PATH` or `HOME` that another test set for the whole process. A timeout test
+that fails only on a loaded host is measuring the host's speed. Set `PATH`
+and `HOME` on the child's `Command` through a seam instead of calling
+`std::env::set_var`, and bound a timeout at 30 s against a fake that ends
+with `exec /bin/sleep 60`. See
+[Keep Tests from Changing PATH and HOME](./keep-tests-from-changing-path-and-home.md).
+
 ### Pre-commit Hook Issues
 
 The project uses pre-commit hooks. If they fail:
@@ -167,3 +178,4 @@ pre-commit run --all-files
 - [Code Review](../reference/code-review.md) — code review practices
 - [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md) — test stops and the leak check for `rotate watch` daemons
 - [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md) — profile-root isolation and the real-root guard
+- [Keep Tests from Changing PATH and HOME](./keep-tests-from-changing-path-and-home.md) - giving a child process its `PATH` and `HOME`, and bounding timeouts under load
