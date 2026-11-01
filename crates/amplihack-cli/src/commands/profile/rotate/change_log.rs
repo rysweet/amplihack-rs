@@ -21,7 +21,7 @@ const MAX_PARENT_CHARS: usize = 200;
 const MAX_ID_CHARS: usize = 64;
 /// A name holding any of these is secret: `api-key`, `access_token`,
 /// `passwd`, `Authorization`.
-const SECRET_WORDS: [&str; 5] = ["key", "token", "secret", "passw", "auth"];
+const SECRET_WORDS: [&str; 6] = ["key", "token", "secret", "passw", "auth", "signature"];
 /// A name with one of these as a whole part is secret: `--pass`,
 /// `db_pwd`, `?sig=`. Whole parts only, so `--bypass` is not.
 const SECRET_PARTS: [&str; 3] = ["pass", "pwd", "sig"];
@@ -120,7 +120,7 @@ fn strip_userinfo(s: &str) -> String {
 /// `s` with the value of every secret query or fragment parameter, such
 /// as `?access_token=...` or `&sig=...`, replaced.
 fn hide_params(s: &str) -> String {
-    let Some(q) = s.find('?') else {
+    let Some(q) = s.find(['?', '#']) else {
         return s.to_string();
     };
     let hide = |p: &str| match p.split_once('=') {

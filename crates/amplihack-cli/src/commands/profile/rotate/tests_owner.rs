@@ -30,7 +30,7 @@
 //! - `owner::supervised(flag: &Option<Option<String>>, env: &dyn Fn(&str) ->
 //!   Option<OsString>, proc_root: &Path) -> bool`: the flag, or a non-empty
 //!   `INVOCATION_ID` together with `own_service`.
-//! - `owner::describe(root: &Path, proc_root: &Path, exe_name: &OsStr) ->
+//! - `owner::describe(root: &Path, proc_root: &Path, exe_name: Option<&OsStr>) ->
 //!   String`: the whole `owner: ...` status line.
 //! - `change_log::Caller { pid: u32, ppid: u32, parent: Option<Vec<u8>>,
 //!   recipe_run: Option<String>, invocation: Option<String> }`, where
@@ -615,7 +615,7 @@ fn an_inherited_invocation_id_outside_a_service_is_not_supervision() {
 fn describe_without_a_marker() {
     let f = fx();
     assert_eq!(
-        owner::describe(&f.root, &f.proc_root, OsStr::new(EXE)),
+        owner::describe(&f.root, &f.proc_root, Some(OsStr::new(EXE))),
         "owner: none"
     );
 }
@@ -628,7 +628,7 @@ fn describe_a_running_owner() {
     f.proc_entry(OWNER_PID, &argv);
     owner::write(&f.root, &marker("amplihack-rotator.service", OWNER_PID)).unwrap();
     assert_eq!(
-        owner::describe(&f.root, &f.proc_root, OsStr::new(EXE)),
+        owner::describe(&f.root, &f.proc_root, Some(OsStr::new(EXE))),
         format!(
             "owner: amplihack-rotator.service pid {OWNER_PID} (running); autostart defers to it"
         )
@@ -640,9 +640,21 @@ fn describe_a_stopped_owner() {
     let f = fx();
     owner::write(&f.root, &marker("amplihack-rotator.service", OWNER_PID)).unwrap();
     assert_eq!(
-        owner::describe(&f.root, &f.proc_root, OsStr::new(EXE)),
+        owner::describe(&f.root, &f.proc_root, Some(OsStr::new(EXE))),
         format!(
             "owner: amplihack-rotator.service pid {OWNER_PID} (not running); autostart defers to it; {CLEAR_HINT}"
+        )
+    );
+}
+
+#[test]
+fn describe_without_the_executable_name_does_not_claim_the_owner_stopped() {
+    let f = fx();
+    owner::write(&f.root, &marker("amplihack-rotator.service", OWNER_PID)).unwrap();
+    assert_eq!(
+        owner::describe(&f.root, &f.proc_root, None),
+        format!(
+            "owner: amplihack-rotator.service pid {OWNER_PID} (liveness unknown); autostart defers to it"
         )
     );
 }
@@ -651,7 +663,7 @@ fn describe_a_stopped_owner() {
 fn describe_an_unreadable_marker_never_echoes_its_bytes() {
     let f = fx();
     f.raw(b"unit=SECRET\x1b[31m\npid=nope\n");
-    let line = owner::describe(&f.root, &f.proc_root, OsStr::new(EXE));
+    let line = owner::describe(&f.root, &f.proc_root, Some(OsStr::new(EXE)));
     assert_eq!(
         line,
         format!("owner: unreadable; autostart defers to it; {CLEAR_HINT}")
@@ -664,7 +676,7 @@ fn describe_does_not_read_under_a_root_that_is_not_private() {
     let f = fx();
     owner::write(&f.root, &marker("a.service", 5)).unwrap();
     mode(&f.root, 0o757);
-    let line = owner::describe(&f.root, &f.proc_root, OsStr::new(EXE));
+    let line = owner::describe(&f.root, &f.proc_root, Some(OsStr::new(EXE)));
     mode(&f.root, 0o700);
     assert_eq!(line, "owner: not read (root is not private)");
 }
@@ -675,7 +687,7 @@ fn describe_creates_nothing() {
     mode(tmp.path(), 0o700);
     let root = tmp.path().canonicalize().unwrap();
     assert_eq!(
-        owner::describe(&root, &root.join("proc"), OsStr::new(EXE)),
+        owner::describe(&root, &root.join("proc"), Some(OsStr::new(EXE))),
         "owner: none"
     );
     assert!(!root.join(".auto-switch.d").exists());
@@ -863,6 +875,14 @@ fn every_secret_flag_form_is_redacted() {
         (
             &["az", "https://h/c?sv=1&sig=s9"],
             "az https://h/c?sv=1&sig=***",
+        ),
+        (
+            &["curl", "https://h/cb#access_token=t10"],
+            "curl https://h/cb#access_token=***",
+        ),
+        (
+            &["aws", "https://b/o?X-Amz-Signature=s10"],
+            "aws https://b/o?X-Amz-Signature=***",
         ),
         (&["x", "oauth://h/x"], "x oauth://h/x"),
     ];

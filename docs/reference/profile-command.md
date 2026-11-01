@@ -4566,9 +4566,9 @@ which override the settings without changing them.
 The parent command line is redacted before it is written:
 
 - `NAME=value` becomes `NAME=***`.
-- A name counts as secret if it contains `key`, `token`, `secret`, `passw`
-  or `auth`, or if one of its parts is exactly `pass`, `pwd` or `sig`. So
-  `--pass` and `--db-pwd` are secret, but `--bypass` is not.
+- A name counts as secret if it contains `key`, `token`, `secret`, `passw`,
+  `auth` or `signature`, or if one of its parts is exactly `pass`, `pwd` or
+  `sig`. So `--pass` and `--db-pwd` are secret, but `--bypass` is not.
 - The argument after a flag with a secret name becomes `***`, and so does
   the value in `--flag=value` for such a flag.
 - A `Name: value` or `Name:value` argument with a secret name, such as
@@ -4581,8 +4581,11 @@ The parent command line is redacted before it is written:
 - The value attached to `-p`, as in `mysql -psecret`, becomes `-p***`. A
   separate argument after `-p` is kept.
 - `user:password@` is removed from URLs, and a query or fragment parameter
-  with a secret name, such as `?access_token=...` or `&sig=...`, becomes
-  `name=***`.
+  with a secret name, such as `?access_token=...`, `#access_token=...`,
+  `&sig=...` or `&X-Amz-Signature=...`, becomes `name=***`.
+- Not redacted: a separate password after `-p`, as in `sshpass -p secret`;
+  credentials after combined short flags, as in `curl -su user:pw`; and
+  `--proxy-user user:pw`.
 
 For example, `claude --api-key sk-abc TOKEN=xyz https://u:p@h/x` is written
 as `claude --api-key *** TOKEN=*** https://h/x`. Control, newline and
@@ -5022,6 +5025,9 @@ effective uid, and its command line, read up to 64 KiB, is a
 `watch`, and its `argv[0]` has the same file name as the running `amplihack`.
 Otherwise it is *not running*. A recycled pid that now belongs to some other
 program is therefore not running.
+If the name of the running `amplihack` cannot be found, `status` and
+`rotate owner` print `owner: <unit> pid <n> (liveness unknown); autostart
+defers to it` instead of claiming the owner has stopped.
 
 | Marker | Owner | Autostart (step 4) | `status` |
 |--------|-------|--------------------|----------|

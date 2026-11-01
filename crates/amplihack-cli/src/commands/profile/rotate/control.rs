@@ -101,8 +101,8 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     };
     let auto = super::autostart_line(store.root());
     // Issue #1803: read only under a private root; never echoes the marker.
-    let exe = exe_name().unwrap_or_default();
-    let owner = super::owner::describe(store.root(), Path::new("/proc"), &exe);
+    let exe = exe_name();
+    let owner = super::owner::describe(store.root(), Path::new("/proc"), exe.as_deref());
     println!("rotate: {word}\n{auto}\n{owner}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
     println!("overflow: {overflow}\napi key: {api_key}\non overflow: {on_overflow}");
     if let Some(line) = super::platform_live_line(store.root()) {

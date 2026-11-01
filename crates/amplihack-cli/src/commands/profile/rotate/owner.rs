@@ -197,15 +197,21 @@ fn shown(unit: &str) -> String {
 }
 
 /// The whole `owner:` status line. Reads the marker only under a private
-/// root; creates nothing.
-pub fn describe(root: &Path, proc_root: &Path, exe_name: &OsStr) -> String {
+/// root; creates nothing. Without the executable name liveness cannot be
+/// checked, so the line says so instead of claiming the owner is gone.
+pub fn describe(root: &Path, proc_root: &Path, exe_name: Option<&OsStr>) -> String {
     if check_root_private(root).is_err() {
         return "owner: not read (root is not private)".into();
     }
     let hint = format!("run {CLEAR} to release");
     match read(root) {
         OwnerState::None => "owner: none".into(),
-        OwnerState::Present(m) if alive(&m, proc_root, exe_name) => format!(
+        OwnerState::Present(m) if exe_name.is_none() => format!(
+            "owner: {} pid {} (liveness unknown); autostart defers to it",
+            shown(&m.unit),
+            m.pid
+        ),
+        OwnerState::Present(m) if exe_name.is_some_and(|e| alive(&m, proc_root, e)) => format!(
             "owner: {} pid {} (running); autostart defers to it",
             shown(&m.unit),
             m.pid
@@ -304,8 +310,8 @@ pub fn clear_checked(root: &Path) -> Result<Option<OwnerState>, ProfileError> {
 pub fn cli(store: &ProfileStore, clear_it: bool) -> Result<(), ProfileError> {
     let root = store.root();
     if !clear_it {
-        let exe = daemon::exe_name().unwrap_or_default();
-        println!("{}", describe(root, Path::new("/proc"), &exe));
+        let exe = daemon::exe_name();
+        println!("{}", describe(root, Path::new("/proc"), exe.as_deref()));
         return Ok(());
     }
     match clear_checked(root)? {
