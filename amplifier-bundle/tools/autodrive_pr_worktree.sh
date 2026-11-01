@@ -209,6 +209,11 @@ cmd_resolve() {
     # explicit AMPLIHACK_WORK_ROOT moves these worktrees too.
     local wt_base
     wt_base="$(bash "$root_helper" base "$PWD" 2>/dev/null)" || wt_base="$main_root/worktrees"
+    # A symlinked base would move the worktree elsewhere: refuse it before
+    # resolving the folders above it.
+    if [ -L "$wt_base" ] || { [ -e "$wt_base" ] && [ ! -d "$wt_base" ]; }; then
+        refuse "the worktree base folder is a symlink or not a directory"
+    fi
     if [ -d "$wt_base" ]; then
         wt_base="$(canonical_dir "$wt_base")" || refuse "the worktree base folder is not accessible"
     fi
