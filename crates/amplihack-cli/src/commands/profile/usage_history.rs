@@ -12,7 +12,7 @@
 //! create `.auto-switch.d`. No failure here ever fails a command.
 
 use super::name::ProfileName;
-use super::usage_cmd::Row;
+use super::usage_cmd::{Row, utc_time};
 use super::usage_parse::{UsageReport, UsageState, UsageWindow};
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -22,7 +22,8 @@ use std::path::Path;
 pub(super) const FILE: &str = "usage-history.jsonl";
 /// The writers' lock file, beside the history.
 pub(super) const LOCK: &str = "usage-history.lock";
-const STATE_DIR: &str = ".auto-switch.d";
+#[cfg_attr(not(unix), allow(dead_code))]
+pub(super) const STATE_DIR: &str = ".auto-switch.d";
 /// Readers take at most this many bytes from the end of the file.
 #[cfg_attr(not(unix), allow(dead_code))]
 const TAIL: u64 = 4 * 1024 * 1024;
@@ -276,18 +277,10 @@ struct PointOut {
     w_reset: Option<String>,
 }
 
-/// UTC time as `YYYY-MM-DDTHH:MM:SSZ`, the rotate log's format.
-pub(super) fn iso(t: i64) -> String {
-    chrono::DateTime::from_timestamp(t, 0).map_or_else(
-        || "1970-01-01T00:00:00Z".to_string(),
-        |d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-    )
-}
-
 /// One history line, without the newline. The session reset is not kept.
 pub(super) fn to_line(e: &Entry) -> String {
     let out = LineOut {
-        at: iso(e.at),
+        at: utc_time(e.at),
         profiles: e
             .profiles
             .iter()
@@ -297,7 +290,7 @@ pub(super) fn to_line(e: &Entry) -> String {
                     PointOut {
                         s: p.s,
                         w: p.w,
-                        w_reset: p.w_reset.map(iso),
+                        w_reset: p.w_reset.map(utc_time),
                     },
                 )
             })
@@ -359,14 +352,16 @@ pub(super) fn parse_line(line: &str, now: i64) -> Option<Entry> {
     Some(Entry { at, profiles })
 }
 
-/// The readable entries of `bytes`, in file order.
-fn entries_in(bytes: &[u8], now: i64) -> Vec<Entry> {
+/// The UTF-8 lines of `bytes`, in file order.
+fn lines(bytes: &[u8]) -> impl Iterator<Item = &str> {
     bytes
         .split(|b| *b == b'\n')
-        .filter(|l| l.len() <= LINE_MAX)
         .filter_map(|l| std::str::from_utf8(l).ok())
-        .filter_map(|l| parse_line(l, now))
-        .collect()
+}
+
+/// The readable entries of `bytes`, in file order.
+fn entries_in(bytes: &[u8], now: i64) -> Vec<Entry> {
+    lines(bytes).filter_map(|l| parse_line(l, now)).collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +375,7 @@ pub(super) fn recording_enabled(root: &Path) -> bool {
     return amplihack_utils::secure_files::check_private_dir(&root.join(STATE_DIR)).is_ok();
     #[cfg(not(unix))]
     {
-        let _ = (root, STATE_DIR);
+        let _ = root;
         false
     }
 }
@@ -518,10 +513,7 @@ fn needs_rewrite(file: &std::fs::File, len: u64, now: i64) -> Result<bool, Histo
 #[cfg(unix)]
 fn rewritten(tail: &[u8], line: &str, now: i64) -> Vec<u8> {
     let oldest = now.saturating_sub(RETENTION);
-    let mut kept: Vec<&str> = tail
-        .split(|b| *b == b'\n')
-        .filter(|l| l.len() <= LINE_MAX)
-        .filter_map(|l| std::str::from_utf8(l).ok())
+    let mut kept: Vec<&str> = lines(tail)
         .filter(|l| parse_line(l, now).is_some_and(|e| e.at >= oldest))
         .collect();
     kept.push(line);

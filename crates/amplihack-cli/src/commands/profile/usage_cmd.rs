@@ -1169,7 +1169,7 @@ pub(super) fn marks(row: &Row) -> String {
 }
 
 /// UTC time as `YYYY-MM-DDTHH:MM:SSZ`, the rotate log's format.
-fn utc_time(t: i64) -> String {
+pub(super) fn utc_time(t: i64) -> String {
     chrono::DateTime::from_timestamp(t, 0).map_or_else(
         || "1970-01-01T00:00:00Z".to_string(),
         |d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
@@ -1393,7 +1393,7 @@ struct SummaryOutput<'a> {
 /// `--json` array, and the summary, `null` when there is none.
 pub(super) fn render_summary_json(at: i64, rows: &[Row], summary: Option<&Summary>) -> String {
     let out = SummaryOutput {
-        at: usage_history::iso(at),
+        at: utc_time(at),
         profiles: json_rows(rows),
         summary,
     };

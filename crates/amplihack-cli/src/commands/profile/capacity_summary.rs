@@ -16,8 +16,8 @@
 //!   that is not finite prints as `null`.
 
 use super::capacity_weight::Weights;
-use super::usage_cmd::sanitize_display;
-use super::usage_history::{Entry, Point, Snapshot, iso};
+use super::usage_cmd::{sanitize_display, utc_time as iso};
+use super::usage_history::{Entry, Point, Snapshot};
 use serde::{Serialize, Serializer};
 
 /// How far back the rate looks.

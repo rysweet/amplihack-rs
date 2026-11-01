@@ -12,6 +12,8 @@
 //! `AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT`, else 95.
 
 use super::usage_cmd::sanitize_display;
+#[cfg(unix)]
+use super::usage_history::STATE_DIR;
 use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::path::Path;
@@ -31,7 +33,6 @@ const MAX_WEIGHT: f64 = 1000.0;
 const MAX_SHOWN_VALUE: usize = 32;
 /// Characters of a profile name shown in a weight warning.
 const MAX_SHOWN_NAME: usize = 64;
-const STATE_DIR: &str = ".auto-switch.d";
 
 /// Per-profile capacity weights; a profile not listed weighs 1.0.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -135,7 +136,6 @@ pub(super) fn load(root: &Path) -> (Weights, Vec<String>) {
 /// Without unix ownership checks the file is not read: every weight is 1.0.
 #[cfg(not(unix))]
 pub(super) fn load(_root: &Path) -> (Weights, Vec<String>) {
-    let _ = STATE_DIR;
     (Weights::default(), vec![])
 }
 
