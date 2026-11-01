@@ -1,6 +1,7 @@
 //! Helpers shared by the modules of the `cli_integration` test binary.
 
 pub mod amplihack_bin;
+pub mod auto_drive_light;
 pub mod exec_stub;
 pub mod profile_default;
 pub mod profile_rotate;

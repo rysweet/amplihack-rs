@@ -57,6 +57,7 @@ Set `RECIPE_RUNNER_ENGINE=rust` to use the full feature set.
 - [Recipe YAML Format](#recipe-yaml-format)
 - [SDK Adapters](#sdk-adapters)
 - [Available Recipes](#available-recipes)
+- [Choosing between quick-change, auto-drive-light and auto-drive-to-merge](#choosing-between-quick-change-auto-drive-light-and-auto-drive-to-merge)
 - [Creating Custom Recipes](#creating-custom-recipes)
 - [Integration with Amplihack](#integration-with-amplihack)
 - [UltraThink Recipe Runner Integration](./RECIPE_RUNNER_ULTRATHINK_INTEGRATION.md) - How ultrathink uses Recipe Runner for code-enforced workflow execution
@@ -347,6 +348,31 @@ amplihack ships with recipes covering the most common development workflows.
 | `quick-fix`             | 4     | Lightweight fix for simple, well-understood issues      |
 
 Recipes live in `~/.amplihack/.claude/recipes/`. Run `amplihack recipe list` to see all available recipes including any custom ones you have added.
+
+### Choosing between quick-change, auto-drive-light and auto-drive-to-merge
+
+Three recipes take a task to a pull request with less supervision than `default-workflow` run by hand. They differ in how far they go and how much design work they do.
+
+| | `quick-change` | `auto-drive-light` | `auto-drive-to-merge` |
+| --- | --- | --- | --- |
+| Build | One agent session | One agent session | `default-workflow`, including design and architect steps |
+| Ends at | An open PR | A merged PR | A merged PR |
+| Size check | Diff limits (3 files, 150 lines by default), hands over to `default-workflow` | Eligibility rules (300 lines, no new modules, public API, schema or recipe contract changes by default), escalates to `auto-drive-to-merge` | None |
+| Crusty review loop | No | Yes, with the minor-only rule | Yes |
+| Minor-only concerns | Not reviewed | Deferred to a follow-up issue | Addressed in the PR |
+| Merge gate | No | The same gate as `auto-drive-to-merge` | Yes |
+| Selected by smart-orchestrator | Yes, for small single-workstream tasks | No, run by name | No, run by name or skill |
+| Existing PR | Not supported | `pr_number` or `existing_branch` | `pr_number` or `existing_branch` |
+
+Use `quick-change` when you will review and merge the PR yourself. Use `auto-drive-light` for a small change that should be driven to merge without supervision. Use `auto-drive-to-merge` for a feature, a public interface change or anything that needs design.
+
+```bash
+amplihack recipe run auto-drive-light \
+  -c task_description="Return an error instead of panicking when the round record is empty in autodrive_last_round.sh" \
+  -c repo_path=.
+```
+
+See [Quick-Change Recipe](../reference/quick-change-recipe.md), [Auto-Drive-Light Recipe](../reference/auto-drive-light.md) and [Auto Drive To Merge Reference](../reference/auto-drive-to-merge.md).
 
 ### Recipe Discovery
 

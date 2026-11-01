@@ -1,0 +1,605 @@
+name: "auto-drive-light"
+description: |
+  A smaller drive-to-merge recipe for small changes (issue #1802).
+
+    1. BUILD        - one agent session makes the change on a quick/ branch
+                      (no design, consensus or architect steps), the
+                      repository's checks and pre-commit hooks run, and the
+                      change is committed, pushed and opened as a PR. Skipped
+                      when pr_number or existing_branch names an open PR.
+    2. ELIGIBILITY  - a bash step measures the PR against the base pinned
+                      before the agent ran (autodrive_light_eligibility.sh).
+                      Over any limit, the same PR and state directory are
+                      handed to auto-drive-to-merge, and nothing below runs.
+    3. LIGHT PATH   - a light-mode marker is written, then the unchanged
+                      autodrive-crusty-loop, the #1551 unmerged check and the
+                      unchanged autodrive-merge-loop run on the PR. In light
+                      mode a crusty round that raises only minor concerns
+                      defers them to a follow-up issue (autodrive-crusty-round
+                      step-03 and step-06, autodrive_light_round.sh).
+
+  The merge criteria and the merge gate are those of auto-drive-to-merge,
+  unchanged. Contract: docs/reference/auto-drive-light.md
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["auto-drive", "small-change", "crusty", "merge-ready", "merge", "issue-1802"]
+
+# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
+#
+# NO-TIMEOUT POLICY (issue #439): no step declares a per-step timeout and the
+# recipe declares no default step timeout.
+#
+# PROHIBITIONS (docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions):
+# a hook-skipping commit flag is never passed to git and a branch-protection
+# bypass is never passed to gh. Merging happens only through the merge loop's
+# gate. Bash steps read context only as RECIPE_VAR_* values, load tools from
+# AMPLIHACK_HOME (quick_change_common.sh also from the install locations,
+# never from the worktree), and pass exit code 79 through without a retry.
+#
+# max_total_steps allows for an escalation, whose nested auto-drive-to-merge
+# run counts against the same total.
+
+recursion:
+  max_depth: 6
+  max_total_steps: 200
+
+context:
+  task_description: ""
+  repo_path: "."
+  issue_number: ""
+  # Either names an open PR to drive; the build steps are then skipped.
+  existing_branch: ""
+  pr_number: ""
+  # When set, runs as bash -c in the worktree in place of quick_change_checks.sh.
+  qa_command: ""
+  # Eligibility limits (^[0-9]{1,6}$, base 10). Equal to a limit passes.
+  light_max_lines: "300"
+  light_max_new_modules: "0"
+  light_max_public_api: "0"
+  light_max_schema: "0"
+  light_max_recipe_contract: "0"
+  # Empty: derived from the repository remote and the PR number.
+  autodrive_state_dir: ""
+  autodrive_dry_run: "false"
+  # Governs the build only; passed unchanged to auto-drive-to-merge on escalation.
+  no_merge: "true"
+  # Filled as the steps run.
+  light_prereqs: ""
+  autodrive_pr_input: ""
+  worktree_setup: ""
+  light_base: ""
+  # Read by quick_change_common.sh (qc_base, qc_checks_summary); each build
+  # step sets quick_change_base from light_base before it calls qc_base.
+  quick_change_base: ""
+  quick_change_checks: ""
+  light_implementation: ""
+  light_checks: ""
+  light_precommit_result: ""
+  light_push: ""
+  light_pr_url: ""
+  build_result: ""
+  light_eligibility: ""
+  light_escalation_result: ""
+  light_marker: ""
+  crusty_loop_result: ""
+  autodrive_unmerged_check: ""
+  merge_gate_result: ""
+  light_summary: ""
+
+steps:
+  # Inputs are checked before any work starts. gadugi-test is checked as
+  # auto-drive-to-merge checks it (autodrive_gadugi_required).
+  - id: "light-prereqs"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      die() { echo "ERROR: auto-drive-light/light-prereqs: $1" >&2; exit "${2:-1}"; }
+      command -v jq >/dev/null 2>&1 || die "jq is not on PATH; auto-drive-light needs it"
+      case "${AMPLIHACK_HOME:-}" in /*) ;; *) die "AMPLIHACK_HOME must be an absolute path; tools are loaded only from it" ;; esac
+      T="${AMPLIHACK_HOME}/amplifier-bundle/tools"
+      for f in autodrive_light_eligibility.sh autodrive_light_round.sh autodrive_state.sh autodrive_trust.sh; do
+        [ -f "$T/$f" ] || die "$f not found under AMPLIHACK_HOME"
+      done
+      cd "${RECIPE_VAR_repo_path:-.}" 2>/dev/null || die "cannot enter repo_path"
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "repo_path is not a git work tree"
+      PRN="${RECIPE_VAR_pr_number:-}"; BR="${RECIPE_VAR_existing_branch:-}"
+      ISS="${RECIPE_VAR_issue_number:-}"; SD="${RECIPE_VAR_autodrive_state_dir:-}"
+      [ -z "$PRN" ] || [[ "$PRN" =~ ^[0-9]{1,10}$ ]] || die "pr_number must be 1 to 10 digits" 2
+      [ -z "$ISS" ] || [[ "$ISS" =~ ^[0-9]{1,10}$ ]] || die "issue_number must be 1 to 10 digits" 2
+      if [ -n "$BR" ]; then
+        case "$BR" in -*) die "existing_branch must not begin with '-'" 2 ;; esac
+        git check-ref-format --branch "$BR" >/dev/null 2>&1 || die "existing_branch fails git check-ref-format" 2
+      fi
+      if [ -n "$SD" ]; then
+        case "$SD" in /*) ;; *) die "autodrive_state_dir must be an absolute path" 2 ;; esac
+        case "/$SD/" in */../*) die "autodrive_state_dir must not contain a .. component" 2 ;; esac
+        [[ "$SD" =~ [[:cntrl:]] ]] && die "autodrive_state_dir contains a control character" 2
+      fi
+      for v in "${RECIPE_VAR_light_max_lines:-}" "${RECIPE_VAR_light_max_new_modules:-}" "${RECIPE_VAR_light_max_public_api:-}" \
+               "${RECIPE_VAR_light_max_schema:-}" "${RECIPE_VAR_light_max_recipe_contract:-}"; do
+        [[ "$v" =~ ^[0-9]{1,6}$ ]] || die "every light_max_* limit must match ^[0-9]{1,6}$" 2
+      done
+      if [ -z "$PRN" ] && [ -z "$BR" ] && [ -z "${RECIPE_VAR_task_description:-}" ]; then
+        die "task_description is required unless pr_number or existing_branch is set" 2
+      fi
+      REQ="$(. "$T/autodrive_trust.sh" && autodrive_gadugi_required .)" || REQ=""
+      if [ "$REQ" = "false" ]; then
+        echo "INFO: auto-drive-light prerequisites: criterion 1 does not use gadugi-test in this repository" >&2
+        printf '{"gadugi_test":"not-required"}\n'
+        exit 0
+      fi
+      command -v gadugi-test >/dev/null 2>&1 || die "gadugi-test-not-installed: criterion 1 runs this repository's qa-team scenarios with gadugi-test, which is not on PATH; install it and run again"
+      printf '{"gadugi_test":"found"}\n'
+    output: "light_prereqs"
+
+  # #1543: the operator's own pr_number, kept before any sub-recipe can change pr_number.
+  - id: "light-pr-input"
+    type: "bash"
+    command: |
+      printf '%s' "${RECIPE_VAR_pr_number:-}"
+    output: "autodrive_pr_input"
+
+  # Build, steps 3 to 9: only for a new change.
+  - id: "light-worktree"
+    type: "recipe"
+    condition: "not pr_number and not existing_branch"
+    recipe: "workflow-worktree"
+    context: { branch_prefix: "quick", existing_branch: "", pr_number: "" }
+
+  # Before the agent: check the branch and identity, pin the base, snapshot git config.
+  - id: "light-base-pin"
+    type: "bash"
+    condition: "not pr_number and not existing_branch"
+    command: |
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=light-base-pin; . "${QC:?quick_change_common.sh not found}"
+      git -C "$QC_WT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || qc_die "requires a git repo at $QC_WT"
+      qc_branch >/dev/null
+      qc_require_identity
+      qc_sweep_state
+      BASE="$(git -C "$QC_WT" rev-parse HEAD)"
+      SNAP="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" --snapshot "$QC_WT")"
+      printf '%s\n' "$SNAP" | qc_write git-config.snapshot
+      printf '%s\n' "$BASE" | qc_write base
+      echo "auto-drive-light: base $BASE pinned; state in $QUICK_CHANGE_STATE_DIR" >&2
+      printf '%s' "$BASE"
+    output: "light_base"
+
+  # The only agent session.
+  - id: "light-implement"
+    agent: "amplihack:core:builder"
+    condition: "not pr_number and not existing_branch"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      # Small change
+
+      You are a leaf step inside a recipe that is already running. Make the
+      change described between the markers below in the current worktree, and
+      nothing else.
+
+      ----- TASK START -----
+      {{task_description}}
+      ----- TASK END -----
+
+      Constraints:
+      - Do not start an orchestrator, a recipe, a workflow or another agent
+        session (#1333). Work directly with your own tools.
+      - Do not commit, push, create branches or open a PR; later steps do that.
+      - Do not change git configuration, hooks, remotes or refs.
+      - Keep the change small: a few files and lines, no new modules, no
+        change to a crate's public API, schemas or a recipe's context keys. A
+        later step measures the change and sends larger work to the full
+        review path.
+      - Add or update tests for what you change, and run the relevant checks
+        if they are quick; fix what your change broke.
+
+      [amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop; any other merge attempt is refused.
+
+      End with a short summary of the files you changed.
+    output: "light_implementation"
+
+  # The caller's qa_command, or the repository's own checks. A failure stops
+  # the run before anything is committed or pushed.
+  - id: "light-qa"
+    type: "bash"
+    condition: "not pr_number and not existing_branch"
+    command: |
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=light-qa; . "${QC:?quick_change_common.sh not found}"
+      RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"
+      BASE="$(qc_base)"
+      cd "$QC_WT"
+      if [ -n "${RECIPE_VAR_qa_command:-}" ]; then
+        echo "auto-drive-light: running the caller's qa_command in $QC_WT" >&2
+        rc=0
+        bash -c "$RECIPE_VAR_qa_command" >&2 || rc=$?
+        [ "$rc" -eq 0 ] || qc_die "qa_command failed (exit $rc); nothing is committed or pushed"
+        printf 'qa_command passed'
+        exit 0
+      fi
+      SUMMARY="$(bash "$QC_TOOLS/quick_change_checks.sh" "$QC_WT" "$BASE" "$QUICK_CHANGE_STATE_DIR/checks-table.md")"
+      echo "auto-drive-light: $SUMMARY" >&2
+      case "$SUMMARY" in
+        QUICK_CHANGE_CHECKS=failed*) qc_die "the repository's checks failed; nothing is committed or pushed" ;;
+        QUICK_CHANGE_CHECKS=none*|QUICK_CHANGE_CHECKS=unverified*) echo "WARNING: auto-drive-light: no check built or tested this change; the crusty loop and the merge gate still run" >&2 ;;
+      esac
+      printf '%s' "$SUMMARY"
+    output: "light_checks"
+
+  # Stage the change and run the repository's pre-commit hooks on it. A hook
+  # that rewrites files gets one more run on the rewritten tree.
+  - id: "light-precommit"
+    type: "bash"
+    condition: "not pr_number and not existing_branch"
+    command: |
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=light-precommit; . "${QC:?quick_change_common.sh not found}"
+      RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"
+      BASE="$(qc_base)"
+      cd "$QC_WT"
+      if [ ! -f .pre-commit-config.yaml ]; then
+        echo "auto-drive-light: no .pre-commit-config.yaml; the commit's own hooks still run" >&2
+        printf 'none'; exit 0
+      fi
+      command -v pre-commit >/dev/null 2>&1 || qc_die "pre-commit is not on PATH, and this repository configures it"
+      # quick_change_common.sh already set this; repeated so the guard and the
+      # staging below visibly run under it (#1528).
+      set -euo pipefail
+      amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused before staging; fix the cause, never bypass it (#1528)" >&2; exit 1; }
+      git add -A
+      amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused after staging; fix the cause, never bypass it (#1528)" >&2; exit 1; }
+      mapfile -d '' FILES < <(git diff --cached --name-only -z --diff-filter=d "$BASE" --)
+      [ "${#FILES[@]}" -gt 0 ] || { printf 'none'; exit 0; }
+      if ! pre-commit run --files "${FILES[@]}" >&2; then
+        git add -A
+        pre-commit run --files "${FILES[@]}" >&2 || qc_die "pre-commit hooks failed twice; fix what they report, never bypass them"
+      fi
+      git add -A
+      printf 'passed'
+    output: "light_precommit_result"
+
+  # Commit with -F and the repository's hooks, then push the quick/ branch once
+  # the git configuration snapshot still matches, and check the remote ref.
+  - id: "light-commit-push"
+    type: "bash"
+    condition: "not pr_number and not existing_branch"
+    command: |
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=light-commit-push; . "${QC:?quick_change_common.sh not found}"
+      exec 3>&1 1>&2
+      cd "$QC_WT"
+      BRANCH="$(qc_branch)"
+      RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"
+      BASE="$(qc_base)"
+      for helper in git-identity.sh workflow_hook_repair.sh verify_pushed_ref.sh; do
+        [ -f "$QC_TOOLS/$helper" ] || qc_die "$helper is missing from $QC_TOOLS"
+      done
+      . "$QC_TOOLS/git-identity.sh"
+      . "$QC_TOOLS/workflow_hook_repair.sh"
+      set -euo pipefail
+      amplihack hygiene artifact-guard --repo . --mode pre-publish || { echo "STOP: artifact guard refused before staging; fix the cause, never bypass it (#1528)" >&2; exit 1; }
+      git add -A
+      amplihack hygiene artifact-guard --repo . --mode pre-publish || { echo "STOP: artifact guard refused after staging; fix the cause, never bypass it (#1528)" >&2; exit 1; }
+      ! git diff --cached --quiet || qc_die "nothing staged to commit; the agent made no change"
+      ISSUE="$(qc_issue)"
+      { printf '%s\n\n%s\n' "$(qc_title)" "$(qc_request)"; [ -z "$ISSUE" ] || printf '\nRefs #%s\n' "$ISSUE"; } | qc_write commit-message
+      amplihack_prepare_git_commit_identity
+      [ -n "${GIT_AUTHOR_EMAIL:-}" ] || qc_die "no commit identity (user.email) resolved"
+      hook_repair_run commit light-commit-push -- git commit -F "$QUICK_CHANGE_STATE_DIR/commit-message"
+      SNAP="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" --snapshot "$QC_WT")"
+      [ "$SNAP" = "$(cat "$QUICK_CHANGE_STATE_DIR/git-config.snapshot")" ] \
+        || qc_die "git configuration, hooks or the push URL changed since the base was recorded; not pushing"
+      hook_repair_run push light-commit-push --fix-message "fix: address {hook_ids} pre-push rejection" \
+        -- git push -u origin "refs/heads/$BRANCH:refs/heads/$BRANCH"
+      SHA="$(git rev-parse HEAD)"
+      bash "$QC_TOOLS/verify_pushed_ref.sh" origin "$BRANCH" "$SHA"
+      echo "auto-drive-light: pushed $BRANCH at $SHA" >&2
+      printf '%s' "$SHA" >&3
+    output: "light_push"
+
+  # Open the PR. The body goes through --body-file; gh runs through
+  # _gh_retry_core, and its exit 79 is final, never retried.
+  - id: "light-open-pr"
+    type: "bash"
+    condition: "not pr_number and not existing_branch"
+    command: |
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=light-open-pr; . "${QC:?quick_change_common.sh not found}"
+      cd "$QC_WT"
+      BRANCH="$(qc_branch)"
+      RECIPE_VAR_quick_change_base="${RECIPE_VAR_light_base:-}"
+      BASE="$(qc_base)"
+      [ -f "$QC_TOOLS/workflow_gh_retry.sh" ] || qc_die "workflow_gh_retry.sh is missing from $QC_TOOLS"
+      . "$QC_TOOLS/workflow_gh_retry.sh"
+      DEFAULT="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+      DEFAULT="${DEFAULT#origin/}"; [ -n "$DEFAULT" ] || DEFAULT=main
+      ISSUE="$(qc_issue)"
+      {
+        printf '## Request\n\n%s\n' "$(qc_request)"
+        [ -z "$ISSUE" ] || printf '\nRefs #%s\n' "$ISSUE"
+        printf '\n## Diff\n\n```\n%s\n```\n' "$(git diff --stat "$BASE" HEAD)"
+        printf '\nOpened by auto-drive-light (#1802). It is measured for eligibility, reviewed by the crusty loop and merged only through the auto-drive merge gate.\n'
+      } | qc_write pr-body.md
+      set +e
+      URL="$(GH_RETRY_TMPDIR="$QUICK_CHANGE_STATE_DIR" _gh_retry_core "pr create" pr create --base "$DEFAULT" --head "$BRANCH" \
+        --title "$(qc_title)" --body-file "$QUICK_CHANGE_STATE_DIR/pr-body.md")"
+      rc=$?
+      set -e
+      [ "$rc" -ne 79 ] || { echo "ERROR: light-open-pr: gh exited 79; that code is final and is not retried" >&2; exit 79; }
+      [ "$rc" -eq 0 ] || qc_die "gh pr create failed (exit $rc)"
+      qc_remove_state
+      printf '%s' "${URL##*$'\n'}"
+    output: "light_pr_url"
+
+  # build_result in the shape autodrive-build writes, plus branch, head_sha
+  # and base_sha. A fork PR and an existing_branch without an open PR are
+  # refused. PR code fetched as refs/pull/<N>/head is never checked out,
+  # sourced or run here.
+  - id: "light-resolve-pr"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      die() { echo "ERROR: auto-drive-light/light-resolve-pr: $1" >&2; exit "${2:-1}"; }
+      case "${AMPLIHACK_HOME:-}" in /*) ;; *) die "AMPLIHACK_HOME must be an absolute path" ;; esac
+      T="${AMPLIHACK_HOME}/amplifier-bundle/tools"
+      . "$T/autodrive_state.sh" || die "autodrive_state.sh not found under AMPLIHACK_HOME"
+      . "$T/workflow_gh_retry.sh" || die "workflow_gh_retry.sh not found under AMPLIHACK_HOME"
+      GHT="$(mktemp -d)" || die "cannot create a private directory for gh retries"
+      trap 'rm -rf -- "$GHT"' EXIT
+      ghr() { GH_RETRY_TMPDIR="$GHT" _gh_retry_core "$@"; }
+      cd "${RECIPE_VAR_repo_path:-.}" 2>/dev/null || die "cannot enter repo_path"
+      hex() { [[ "$1" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; }
+      PR="${RECIPE_VAR_pr_number:-}"; BR="${RECIPE_VAR_existing_branch:-}"; NEW="false"
+      if [ -z "$PR" ] && [ -n "$BR" ]; then
+        case "$BR" in -*) die "existing_branch must not begin with '-'" 2 ;; esac
+        git check-ref-format --branch "$BR" >/dev/null 2>&1 || die "existing_branch fails git check-ref-format" 2
+        PR="$(ghr "pr list" pr list --head "$BR" --state open --limit 1 --json number --jq '.[0].number // empty')"
+        rc=$?; [ "$rc" -ne 79 ] || exit 79
+        [ "$rc" -eq 0 ] || die "gh pr list failed for branch '$BR' (exit $rc)"
+        [ -n "$PR" ] || die "light-existing-branch-no-pr: branch '$BR' has no open pull request; open one, or pass pr_number"
+      elif [ -z "$PR" ]; then
+        NEW="true"
+        URL="${RECIPE_VAR_light_pr_url:-}"
+        [[ "$URL" =~ /pull/([0-9]{1,10})$ ]] && PR="${BASH_REMATCH[1]}"
+      fi
+      [[ "$PR" =~ ^[0-9]{1,10}$ ]] || die "no valid pull request number could be resolved; nothing to drive"
+      VIEW="$(ghr "pr view" pr view "$PR" --json number,url,isCrossRepository,headRefOid,headRefName,baseRefName,state)"
+      rc=$?; [ "$rc" -ne 79 ] || exit 79
+      [ "$rc" -eq 0 ] || die "gh pr view failed for PR #${PR} (exit $rc)"
+      g() { printf '%s' "$VIEW" | jq -r "$1 // \"\" | tostring"; }
+      [ "$(g .isCrossRepository)" = "false" ] || die "light-cross-repo: PR #${PR} comes from another repository (isCrossRepository); auto-drive-light drives only same-repository PRs"
+      STATE="$(g .state)"; HEAD_SHA="$(g .headRefOid)"; HEAD_REF="$(g .headRefName)"; BASE_REF="$(g .baseRefName)"; URL="$(g .url)"
+      [ "$STATE" != "CLOSED" ] || die "PR #${PR} is closed"
+      hex "$HEAD_SHA" || die "the head commit of PR #${PR} could not be read"
+      git check-ref-format --branch "$BASE_REF" >/dev/null 2>&1 && [ "${BASE_REF#-}" = "$BASE_REF" ] || die "PR #${PR} has an unusable base branch name"
+      # Fetched as objects only: never checked out, sourced or run here.
+      git fetch --no-tags --quiet origin "refs/pull/${PR}/head" "+refs/heads/${BASE_REF}:refs/remotes/origin/${BASE_REF}" >&2 \
+        || die "could not fetch PR #${PR} and its base branch from origin"
+      git cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null || die "the head commit of PR #${PR} is not available after the fetch"
+      if [ "$NEW" = "true" ]; then
+        BASE_SHA="${RECIPE_VAR_light_base:-}"
+        hex "$BASE_SHA" || die "the base pinned before the agent ran is missing"
+      else
+        BASE_SHA="$(git merge-base --end-of-options "$HEAD_SHA" "refs/remotes/origin/${BASE_REF}" 2>/dev/null)"
+        hex "$BASE_SHA" || die "no merge base between PR #${PR} and origin/${BASE_REF}"
+      fi
+      git merge-base --is-ancestor "$BASE_SHA" "$HEAD_SHA" 2>/dev/null || die "the base is not an ancestor of PR #${PR}'s head"
+      DIR="${RECIPE_VAR_autodrive_state_dir:-}"
+      [ -n "$DIR" ] || DIR="$(autodrive_state_dir . "$PR")" || die "the state directory could not be made private"
+      autodrive_private_dir "$DIR" || exit 1
+      autodrive_mark_phase_done "$DIR" "build"
+      MBR="false"; [ "$STATE" != "MERGED" ] || MBR="true"
+      echo "INFO: auto-drive-light: PR #${PR} head ${HEAD_SHA} base ${BASE_SHA}; state in ${DIR}" >&2
+      jq -nc --arg pr "$PR" --arg url "$URL" --arg br "$HEAD_REF" --arg head_sha "$HEAD_SHA" --arg base "$BASE_SHA" \
+        --arg state_dir "$DIR" --arg mbr "$MBR" \
+        '{pr: $pr, pr_url: $url, branch: $br, head_sha: $head_sha, base_sha: $base, state_dir: $state_dir,
+          merged_before_run: $mbr, terminal_state: "", handed_off: "false"}' \
+        || die "jq could not encode build_result"
+    output: "build_result"
+
+  # The eligibility decision for the PR head. A recorded decision is reused
+  # only at the same head and limits; an earlier escalation is permanent.
+  # On escalate the light-mode marker is removed and escalation.json written.
+  - id: "light-eligibility"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      die() { echo "ERROR: auto-drive-light/light-eligibility: $1" >&2; exit "${2:-1}"; }
+      case "${AMPLIHACK_HOME:-}" in /*) ;; *) die "AMPLIHACK_HOME must be an absolute path" ;; esac
+      T="${AMPLIHACK_HOME}/amplifier-bundle/tools"
+      . "$T/autodrive_state.sh" || die "autodrive_state.sh not found under AMPLIHACK_HOME"
+      LIM=(--max-lines "${RECIPE_VAR_light_max_lines:-}" --max-new-modules "${RECIPE_VAR_light_max_new_modules:-}"
+           --max-public-api "${RECIPE_VAR_light_max_public_api:-}" --max-schema "${RECIPE_VAR_light_max_schema:-}"
+           --max-recipe-contract "${RECIPE_VAR_light_max_recipe_contract:-}")
+      for ((i = 1; i < ${#LIM[@]}; i += 2)); do
+        [[ "${LIM[$i]}" =~ ^[0-9]{1,6}$ ]] || die "${LIM[$((i - 1))]} must match ^[0-9]{1,6}$" 2
+      done
+      b() { printf '%s' "${RECIPE_VAR_build_result:-}" | jq -r --arg k "$1" '.[$k] // "" | tostring' 2>/dev/null; }
+      PR="$(b pr)"; HEAD_SHA="$(b head_sha)"; BASE_SHA="$(b base_sha)"; DIR="$(b state_dir)"
+      [[ "$PR" =~ ^[0-9]{1,10}$ ]] && [[ "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] && [[ "$BASE_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] \
+        || die "build_result is missing the PR, head or base"
+      case "$DIR" in /*) ;; *) die "build_result has no absolute state_dir" ;; esac
+      autodrive_private_dir "$DIR" || exit 1
+      umask 077
+      put() { local t; t="$(mktemp "$DIR/.$1.XXXXXX")" || return 1; cat > "$t" && mv -f -- "$t" "$DIR/$1"; }
+      ELIG="$DIR/light-eligibility.json"; ESC="$DIR/escalation.json"
+      LIMITS="$(jq -nc --argjson l "$((10#${LIM[1]}))" --argjson n "$((10#${LIM[3]}))" --argjson a "$((10#${LIM[5]}))" \
+        --argjson s "$((10#${LIM[7]}))" --argjson r "$((10#${LIM[9]}))" \
+        '{lines: $l, new_modules: $n, public_api: $a, schema: $s, recipe_contract: $r}')"
+      J=""
+      if [ -f "$ELIG" ] && [ ! -L "$ELIG" ] && autodrive_private "$ELIG"; then
+        J="$(jq -ce --arg h "$HEAD_SHA" --arg b "$BASE_SHA" --argjson lim "$LIMITS" \
+          'select(.head == $h and .base == $b and .limits == $lim and (.decision == "light" or .decision == "escalate"))' "$ELIG" 2>/dev/null)" || J=""
+        [ -z "$J" ] || echo "INFO: reusing the eligibility decision recorded for head ${HEAD_SHA}" >&2
+      fi
+      if [ -z "$J" ]; then
+        ERR="$(mktemp "${TMPDIR:-/tmp}/light-eligibility.XXXXXX")" || die "mktemp failed"
+        OUT="$(bash "$T/autodrive_light_eligibility.sh" --repo "${RECIPE_VAR_repo_path:-.}" --base "$BASE_SHA" --head "$HEAD_SHA" "${LIM[@]}" 2>"$ERR")"
+        RC=$?
+        TOKEN="$(sed -n 's/^AUTODRIVE_LIGHT_ELIGIBILITY=fault reason=\([a-z-]*\)$/\1/p' "$ERR" | head -n 1)"
+        cat "$ERR" >&2; rm -f -- "$ERR"
+        if [ "$RC" -eq 0 ]; then
+          J="${OUT#*$'\n'}"
+        else
+          J="$(jq -nc --arg r "fault-${TOKEN:-unknown}" --arg b "$BASE_SHA" --arg h "$HEAD_SHA" --argjson lim "$LIMITS" \
+            '{decision: "escalate", reason: $r, base: $b, head: $h, limits: $lim}')"
+        fi
+      fi
+      if [ -e "$ESC" ] || [ -L "$ESC" ]; then
+        J="$(printf '%s' "$J" | jq -c '.decision = "escalate" | .reason = "previously-escalated"')"
+      fi
+      printf '%s' "$J" | jq -e '(.decision == "light" or .decision == "escalate") and (.reason | type == "string")' >/dev/null 2>&1 \
+        || die "the eligibility measurement could not be read"
+      printf '%s\n' "$J" | put light-eligibility.json || die "light-eligibility.json could not be written"
+      DECISION="$(printf '%s' "$J" | jq -r .decision)"; REASON="$(printf '%s' "$J" | jq -r .reason)"
+      if [ "$DECISION" = "escalate" ]; then
+        rm -f -- "$DIR/light-mode"
+        if [ ! -e "$ESC" ] && [ ! -L "$ESC" ]; then
+          printf '%s' "$J" | jq -c --arg b "$BASE_SHA" --arg h "$HEAD_SHA" '{reason: .reason, measurements: ., base_sha: $b, head_sha: $h}' \
+            | put escalation.json || die "escalation.json could not be written"
+        fi
+      fi
+      echo "AUTODRIVE_LIGHT_ELIGIBILITY=${DECISION} reason=${REASON}" >&2
+      printf '%s\n' "$J"
+    output: "light_eligibility"
+
+  # Escalation: the same PR and state directory, driven by the full recipe.
+  # Its build phase is a no-op because the PR exists.
+  - id: "light-escalate"
+    type: "recipe"
+    condition: "light_eligibility.decision == 'escalate'"
+    recipe: "auto-drive-to-merge"
+    context:
+      task_description: "{{task_description}}"
+      repo_path: "{{repo_path}}"
+      pr_number: "{{build_result.pr}}"
+      existing_branch: ""
+      autodrive_state_dir: "{{build_result.state_dir}}"
+      autodrive_dry_run: "{{autodrive_dry_run}}"
+      no_merge: "{{no_merge}}"
+    output: "light_escalation_result"
+
+  # The light-mode marker: one line, the measured head. Written atomically,
+  # only after a light decision.
+  - id: "light-mode-marker"
+    type: "bash"
+    condition: "light_eligibility.decision == 'light'"
+    command: |
+      set -uo pipefail
+      die() { echo "ERROR: auto-drive-light/light-mode-marker: $1" >&2; exit 1; }
+      DIR="$(printf '%s' "${RECIPE_VAR_build_result:-}" | jq -r '.state_dir // ""' 2>/dev/null)"
+      HEAD_SHA="$(printf '%s' "${RECIPE_VAR_light_eligibility:-}" | jq -r 'select(.decision == "light") | .head // ""' 2>/dev/null)"
+      [ "$HEAD_SHA" = "$(printf '%s' "${RECIPE_VAR_build_result:-}" | jq -r '.head_sha // ""' 2>/dev/null)" ] || die "the light decision is not for the PR head"
+      [[ "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || die "no measured head"
+      case "$DIR" in /*) ;; *) die "no absolute state directory" ;; esac
+      [ -d "$DIR" ] && [ ! -L "$DIR" ] || die "the state directory is missing or a symlink"
+      [ ! -e "$DIR/escalation.json" ] && [ ! -L "$DIR/escalation.json" ] || die "escalation.json exists; light mode is not entered"
+      umask 077
+      TMP="$(mktemp "$DIR/.light-mode.XXXXXX")" || die "mktemp failed"
+      printf '%s\n' "$HEAD_SHA" > "$TMP" && mv -f -- "$TMP" "$DIR/light-mode" || { rm -f -- "$TMP"; die "the marker could not be written"; }
+      echo "INFO: light-mode marker written for ${HEAD_SHA}" >&2
+      printf '%s' "$HEAD_SHA"
+    output: "light_marker"
+
+  - id: "light-crusty-loop"
+    type: "recipe"
+    condition: "light_eligibility.decision == 'light'"
+    recipe: "autodrive-crusty-loop"
+    context:
+      repo_path: "{{repo_path}}"
+      pr_number: "{{build_result.pr}}"
+      autodrive_pr_input: "{{autodrive_pr_input}}"
+      existing_branch: "{{existing_branch}}"
+      pr_url: "{{build_result.pr_url}}"
+      task_description: "{{task_description}}"
+      autodrive_state_dir: "{{build_result.state_dir}}"
+
+  # Issue #1551, as autodrive-check-unmerged in auto-drive-to-merge: a PR
+  # merged outside the gate during the crusty loop stops the run.
+  - id: "light-check-unmerged"
+    type: "bash"
+    condition: "light_eligibility.decision == 'light'"
+    command: |
+      set -uo pipefail
+      cd "${RECIPE_VAR_repo_path:-.}" || { echo "ERROR: #1551: cannot enter repo_path; refusing to check PR state in the wrong repo [light-check-unmerged]" >&2; exit 1; }
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      BR="${RECIPE_VAR_build_result:-}"
+      g() { printf '%s' "$BR" | amplihack orch helper extract-json --require-field "$1" \
+              | amplihack orch helper extract-field --field "$1" --default ''; }
+      PR="$(g pr)"
+      if [ "$(g merged_before_run)" = "true" ]; then
+        echo "INFO: PR #${PR} was already merged when this run started; nothing to check [light-check-unmerged]" >&2
+        exit 0
+      fi
+      case "$PR" in
+        ''|*[!0-9]*) echo "ERROR: #1551: no valid PR number; refusing to continue unverified [light-check-unmerged]" >&2; exit 1 ;;
+      esac
+      STATE_HELPER="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/autodrive_state.sh"
+      case "${AMPLIHACK_HOME:-}" in /*) ;; *) STATE_HELPER="" ;; esac
+      [ -n "$STATE_HELPER" ] && [ -f "$STATE_HELPER" ] || { echo "ERROR: #1551: autodrive_state.sh not found under AMPLIHACK_HOME; cannot check PR #${PR} before the merge loop [light-check-unmerged]" >&2; exit 1; }
+      . "$STATE_HELPER"
+      autodrive_require_unmerged "$PR" "the light crusty loop" || exit 1
+      echo "INFO: PR #${PR} is unmerged after the crusty loop; the merge loop may run" >&2
+    output: "autodrive_unmerged_check"
+
+  - id: "light-merge-loop"
+    type: "recipe"
+    condition: "light_eligibility.decision == 'light'"
+    recipe: "autodrive-merge-loop"
+    context:
+      repo_path: "{{repo_path}}"
+      pr_number: "{{build_result.pr}}"
+      autodrive_pr_input: "{{autodrive_pr_input}}"
+      existing_branch: "{{existing_branch}}"
+      pr_url: "{{build_result.pr_url}}"
+      task_description: "{{task_description}}"
+      autodrive_state_dir: "{{build_result.state_dir}}"
+      autodrive_dry_run: "{{autodrive_dry_run}}"
+
+  # Which path ran (light, escalate, or light-escalated when a crusty round
+  # escalated inside the loop), the reason, the follow-up issue and the merge
+  # gate's result. Only plain tokens and digits reach the report.
+  - id: "light-report"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      j() { printf '%s' "${1:-}" | jq -r --arg k "$2" '.[$k] // "" | tostring' 2>/dev/null; }
+      tok() { [[ "$1" =~ ^[A-Za-z0-9_-]{0,64}$ ]] && printf '%s' "$1"; }
+      PR="$(j "${RECIPE_VAR_build_result:-}" pr)"; [[ "$PR" =~ ^[0-9]{1,10}$ ]] || PR=""
+      DIR="$(j "${RECIPE_VAR_build_result:-}" state_dir)"
+      DECISION="$(tok "$(j "${RECIPE_VAR_light_eligibility:-}" decision)")"
+      REASON="$(tok "$(j "${RECIPE_VAR_light_eligibility:-}" reason)")"
+      PATH_TAKEN="light"
+      if [ "$DECISION" = "escalate" ]; then
+        PATH_TAKEN="escalate"
+      elif [ -n "$DIR" ] && [ -f "$DIR/escalation.json" ] && [ ! -L "$DIR/escalation.json" ]; then
+        PATH_TAKEN="light-escalated"
+        REASON="$(tok "$(jq -r '.reason // "" | tostring' "$DIR/escalation.json" 2>/dev/null)")"
+      fi
+      ISSUE=""
+      if [ -n "$DIR" ] && [ -f "$DIR/follow-up-issue" ] && [ ! -L "$DIR/follow-up-issue" ]; then
+        ISSUE="$(cat "$DIR/follow-up-issue")"; [[ "$ISSUE" =~ ^[0-9]{1,10}$ ]] || ISSUE=""
+      fi
+      MERGE="$(tok "$(j "${RECIPE_VAR_merge_gate_result:-}" merge_result)")"; MERGE="${MERGE:-NOT_MERGED}"
+      case "$MERGE" in
+        MERGED|ALREADY_MERGED) OUTCOME="MERGED" ;;
+        DRY_RUN) OUTCOME="DRY_RUN" ;;
+        *) OUTCOME="NOT_MERGED" ;;
+      esac
+      echo "AUTO_DRIVE_LIGHT: ${OUTCOME} - PR #${PR:-<none>} (path: ${PATH_TAKEN}, reason: ${REASON:-none}, follow-up issue: ${ISSUE:-none}, merge gate: ${MERGE})" >&2
+      jq -nc --arg o "$OUTCOME" --arg pr "$PR" --arg p "$PATH_TAKEN" --arg r "$REASON" --arg i "$ISSUE" --arg m "$MERGE" \
+        '{outcome: $o, pr: $pr, path: $p, reason: $r, follow_up_issue: $i, merge_result: $m}'
+    output: "light_summary"
+
+output:
+  format: "markdown"
+  template: |
+    # auto-drive-light
+
+    **Outcome:** {{light_summary.outcome}} - PR #{{light_summary.pr}}
+
+    | Item | Result |
+    | --- | --- |
+    | Path | {{light_summary.path}} |
+    | Reason | {{light_summary.reason}} |
+    | Follow-up issue | {{light_summary.follow_up_issue}} |
+    | Merge gate | {{light_summary.merge_result}} |
