@@ -1,16 +1,15 @@
 //! `profile statusline` without `--owner` (issue #1745): the command
 //! `amplihack install` writes into `~/.claude/settings.json`.
 //!
-//! It runs `~/.amplihack/.claude/tools/statusline.sh` with the same input as
-//! the first line, then prints the login capacity line for the login the
-//! rotator ledger names in `~/.claude`, and records the reading for that
-//! login whatever the auto-switch setting. It never recovers or swaps, and
-//! never writes the journal, a ledger or the hosts: the rotator owns
-//! `~/.claude`. Every failure gives less output, never an error on stdout.
-//!
-//! Run by a profile's wrapper (`CLAUDE_CONFIG_DIR` naming anything but
-//! `~/.claude`), it prints the first line only; the wrapper prints the
-//! capacity line once, for its own owner ([`wrapper_line`]).
+//! [`mode`] picks the run from `CLAUDE_CONFIG_DIR`. In `~/.claude` (home
+//! mode) it runs `~/.amplihack/.claude/tools/statusline.sh` with the same
+//! input, then prints the login capacity line for the login the rotator
+//! ledgers name, and records the reading when [`should_record`] allows it,
+//! whatever the auto-switch setting. It never recovers or swaps, and never
+//! writes the journal, a ledger or the hosts: the rotator owns `~/.claude`.
+//! In a profile's own directory the run is that profile's, as with
+//! `--owner`; anywhere else only `statusline.sh` runs. Every failure gives
+//! less output, never an error on stdout.
 
 use super::capacity_line;
 use super::fsx;
@@ -29,40 +28,67 @@ use std::path::{Path, PathBuf};
 /// `statusline.sh`, relative to `$HOME`.
 const SCRIPT: [&str; 4] = [".amplihack", ".claude", "tools", "statusline.sh"];
 
-/// One no-owner status-line update with `input` (already read); returns
-/// the exit code of `statusline.sh`, or 0 when it did not run.
-pub fn run(root_arg: Option<&str>, input: &[u8]) -> i32 {
-    let home = root_config::home_from_env();
-    // An unquotable path means no first line.
-    let first = home
-        .as_deref()
-        .and_then(statusline_script)
-        .and_then(|p| statusline::quotable(&p).map(statusline::sh_quote).ok());
-    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
-    let line = home
-        .as_deref()
-        .filter(|h| !inner_run(config_dir.as_deref(), h))
-        .and_then(|_| {
-            let root = root_for(root_arg)?;
-            std::panic::catch_unwind(|| tick(&root, input, fsx::now()))
-                .ok()
-                .flatten()
-        });
-    statusline::stream_command(first.as_deref(), input, &[line])
+/// What a run without `--owner` does (D3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Mode {
+    /// `~/.claude`: the rotator's login.
+    Home,
+    /// A profile's own directory: the same as `--owner <owner>` under the
+    /// canonical `root`.
+    Owned { root: PathBuf, owner: String },
+    /// Anything else: `statusline.sh` only.
+    Passthrough,
 }
 
-/// Whether this run is inside a profile: `CLAUDE_CONFIG_DIR` is set and
-/// names anything but `<home>/.claude` (resolved where possible, a trailing
-/// slash ignored).
-pub(super) fn inner_run(config_dir: Option<&OsStr>, home: &Path) -> bool {
-    let Some(dir) = config_dir.filter(|d| !d.is_empty()) else {
-        return false;
+/// The mode for `CLAUDE_CONFIG_DIR`. Unset, empty or `<home>/.claude`
+/// (resolved where possible, a trailing slash ignored) is home mode.
+/// Otherwise the directory is canonicalised: when its parent is the
+/// canonical `root` and its name is a profile name, the run is that
+/// profile's. Anything else, a symlink that resolves outside the root
+/// included, is passthrough.
+pub(super) fn mode(config_dir: Option<&OsStr>, home: Option<&Path>, root: Option<&Path>) -> Mode {
+    let Some(dir) = config_dir.filter(|d| !d.is_empty()).map(Path::new) else {
+        return Mode::Home;
     };
     let resolve = |p: &Path| {
         p.canonicalize()
             .unwrap_or_else(|_| p.components().collect::<PathBuf>())
     };
-    resolve(Path::new(dir)) != resolve(&home.join(".claude"))
+    if home.is_some_and(|h| resolve(dir) == resolve(&h.join(".claude"))) {
+        return Mode::Home;
+    }
+    let (Ok(dir), Some(Ok(root))) = (dir.canonicalize(), root.map(Path::canonicalize)) else {
+        return Mode::Passthrough;
+    };
+    match (dir.parent(), dir.file_name().and_then(OsStr::to_str)) {
+        (Some(parent), Some(name)) if parent == root && ProfileName::parse(name).is_ok() => {
+            Mode::Owned {
+                owner: name.to_string(),
+                root,
+            }
+        }
+        _ => Mode::Passthrough,
+    }
+}
+
+/// One home-mode update with `input` (already read): `statusline.sh`, then
+/// the capacity line. Returns the exit code of `statusline.sh`, or 0 when it
+/// did not run.
+pub(super) fn run(root: Option<&Path>, input: &[u8]) -> i32 {
+    let line = root.and_then(|root| {
+        std::panic::catch_unwind(|| tick(root, input, fsx::now()))
+            .ok()
+            .flatten()
+    });
+    statusline::stream_command(script_command().as_deref(), input, &[line])
+}
+
+/// `statusline.sh` as a command for `sh -c`, when it may run; an
+/// unquotable path means none.
+pub(super) fn script_command() -> Option<String> {
+    let home = root_config::home_from_env()?;
+    let path = statusline_script(&home)?;
+    statusline::quotable(&path).map(statusline::sh_quote).ok()
 }
 
 /// The profile root: `--root` when given, which must be absolute (a relative
@@ -76,7 +102,7 @@ pub(super) fn root_for(arg: Option<&str>) -> Option<PathBuf> {
             match root_config::resolve_with(|k| std::env::var_os(k), home.as_deref()) {
                 Ok((root, _)) => root,
                 Err(e) => {
-                    tracing::debug!(op = "home status line root", error = %e);
+                    eprintln!("auto-switch: status line: no profile root: {e}");
                     return None;
                 }
             }
@@ -220,11 +246,11 @@ fn unlocked_spare(state: &State, live: &str, now: i64) -> Option<usize> {
         .map(|f| spare(state, &f.accounts, live, now))
 }
 
-/// The capacity line a profile's wrapper adds after the no-owner command
-/// (which printed only its first line there): the login live in `owner`'s
-/// directory, the percentages from `input`, the spare count from recorded
-/// readings, read without the lock. No spare segment without `usage.json`.
-pub(super) fn wrapper_line(
+/// The capacity line in profile `owner`'s own session: the account
+/// auto-switch has live in its directory (else `owner`), the bars from
+/// `input`, and the spare count from recorded readings read without the
+/// lock.
+pub(super) fn owned_line(
     state: &State,
     owner: &ProfileName,
     input: &[u8],
@@ -233,21 +259,12 @@ pub(super) fn wrapper_line(
     let rl = usage::parse_statusline_input(input, now)?;
     let ledger = state
         .load_ledger()
-        .inspect_err(|e| tracing::debug!(op = "wrapper status line ledger", error = %e))
+        .inspect_err(|e| tracing::debug!(op = "profile status line ledger", error = %e))
         .ok();
     let login = ledger
         .as_ref()
         .map_or(owner.as_str(), |l| l.account_in(owner.as_str()));
-    let spare = if fsx::exists(&state.dir.join("usage.json")) {
-        state
-            .try_load_usage()
-            .inspect_err(|e| tracing::debug!(op = "wrapper status line usage", error = %e))
-            .ok()
-            .map(|f| spare(state, &f.accounts, login, now))
-    } else {
-        None
-    };
-    render(login, &rl, spare)
+    render(login, &rl, unlocked_spare(state, login, now))
 }
 
 fn spare(

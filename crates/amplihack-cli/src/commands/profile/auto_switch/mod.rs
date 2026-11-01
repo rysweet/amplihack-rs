@@ -151,14 +151,6 @@ pub fn statusline(root: Option<&str>, owner: Option<&str>) -> i32 {
 /// What every `profile statusline` command contains.
 const MARKER: &str = "profile statusline";
 
-/// Whether `cmd` is the no-owner command (issue #1745). Copied into a
-/// profile by the shared settings keys, it is an original to wrap, never a
-/// stale wrapper; in `~/.claude` it is amplihack's entry, which install may
-/// replace.
-pub fn is_home_command(cmd: &str) -> bool {
-    cmd.contains(MARKER) && !cmd.contains("--owner")
-}
-
 /// The `statusLine` command `amplihack install` writes into
 /// `~/.claude/settings.json` for `exe`: `'<exe>' profile statusline`
 /// (issue #1745). An error when `exe` cannot be quoted for `sh`.

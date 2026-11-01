@@ -4,18 +4,18 @@
 //! The wrapper records the `rate_limits` reading, runs the profile's original
 //! status-line command with the same input and passes its output through
 //! unchanged, then runs the swap check. The only things it writes to stdout
-//! itself come after the original output: the login capacity line when the
-//! original is the no-owner command from `~/.claude` (issue #1745, see
-//! `home_line`), then the no-capacity warning line when every account is
-//! over the auto-switch threshold (see `capacity`).
+//! itself come after the original output: the login capacity line for the
+//! account live in the profile (issue #1745), then the no-capacity warning
+//! line when every account is over the auto-switch threshold (see
+//! `capacity`).
 //!
-//! Without `--owner` the command is the one in `~/.claude` itself; see
+//! Without `--owner` the mode comes from `CLAUDE_CONFIG_DIR`; see
 //! `home_line`.
 
 use super::MARKER;
 use super::config;
 use super::fsx;
-pub use super::is_home_command;
+use super::home_line::{self, Mode};
 use super::state::State;
 use super::swap;
 use super::usage::{self, Attribution};
@@ -44,16 +44,36 @@ pub fn run(root_arg: Option<&str>, owner_arg: Option<&str>) -> i32 {
     // fail-quiet: status-line output contract. An unreadable stdin still runs
     // the original status line, with no input.
     let input = fsx::read_bounded(std::io::stdin().lock(), MAX_PASSTHROUGH).unwrap_or_default();
-    let Some(owner_arg) = owner_arg else {
-        return super::home_line::run(root_arg, &input);
+    if let Some(owner) = owner_arg {
+        // `--root` as given (a relative one is refused with a reason), else
+        // the root this environment resolves to.
+        let root = match root_arg {
+            Some(r) => Some(PathBuf::from(r)),
+            None => home_line::root_for(None),
+        };
+        return owned(root.as_deref(), owner, false, &input);
+    }
+    let root = home_line::root_for(root_arg);
+    let config_dir = std::env::var_os("CLAUDE_CONFIG_DIR");
+    let home = crate::commands::profile::root_config::home_from_env();
+    match home_line::mode(config_dir.as_deref(), home.as_deref(), root.as_deref()) {
+        Mode::Home => home_line::run(root.as_deref(), &input),
+        Mode::Owned { root, owner } => owned(Some(&root), &owner, true, &input),
+        Mode::Passthrough => stream_command(home_line::script_command().as_deref(), &input, &[]),
+    }
+}
+
+/// A profile's own session: `--owner`, or (`implicit`) a run without it
+/// whose `CLAUDE_CONFIG_DIR` is the profile's directory. The checks,
+/// recording and swap check are the same either way.
+fn owned(root: Option<&Path>, owner_arg: &str, implicit: bool, input: &[u8]) -> i32 {
+    let state = match root {
+        Some(r) => open_state(r),
+        None => {
+            eprintln!("auto-switch: status line disabled: no profile root");
+            None
+        }
     };
-    // Every installed wrapper names its root; only the no-owner command
-    // resolves one from the environment.
-    let Some(root_arg) = root_arg else {
-        eprintln!("auto-switch: status line disabled: --owner given without --root");
-        return 0;
-    };
-    let state = open_state(root_arg);
     let owner = ProfileName::parse(owner_arg).ok();
     let session = match (&state, &owner) {
         (Some(s), Some(o)) if session_matches(s, o) => Some((s, o)),
@@ -62,7 +82,7 @@ pub fn run(root_arg: Option<&str>, owner_arg: Option<&str>) -> i32 {
 
     let mut reading = None;
     if let Some((state, owner)) = session {
-        reading = std::panic::catch_unwind(|| record(state, owner, &input)).unwrap_or(None);
+        reading = std::panic::catch_unwind(|| record(state, owner, input)).unwrap_or(None);
     }
 
     // After the reading, so this tick's own reading counts.
@@ -71,24 +91,27 @@ pub fn run(root_arg: Option<&str>, owner_arg: Option<&str>) -> i32 {
             .ok()
             .flatten()
     });
-    let code = match (&state, &owner) {
-        (Some(s), Some(o)) => {
-            let original = saved_original(s, o);
-            // The capacity line only stands in for the one the no-owner
-            // command prints outside a profile, so it is added only there.
-            let key = match session {
-                Some((state, owner)) if original.as_deref().is_some_and(is_home_command) => {
-                    std::panic::catch_unwind(|| {
-                        super::home_line::wrapper_line(state, owner, &input, fsx::now())
-                    })
-                    .ok()
-                    .flatten()
-                }
-                _ => None,
-            };
-            stream_command(original.as_deref(), &input, &[key, notice])
-        }
-        _ => 0,
+    let key = session.and_then(|(state, owner)| {
+        std::panic::catch_unwind(|| home_line::owned_line(state, owner, input, fsx::now()))
+            .ok()
+            .flatten()
+    });
+    let saved = match (&state, &owner) {
+        (Some(s), Some(o)) => saved_original(s, o),
+        _ => None,
+    };
+    // A `profile statusline` original is never run: in its place, and
+    // without `--owner` when nothing is saved, `statusline.sh` runs.
+    let original = match saved {
+        Some(c) if !c.contains(MARKER) => Some(c),
+        Some(_) => home_line::script_command(),
+        None if implicit => home_line::script_command(),
+        None => None,
+    };
+    let code = if implicit || (state.is_some() && owner.is_some()) {
+        stream_command(original.as_deref(), input, &[key, notice])
+    } else {
+        0
     };
 
     if let (Some((state, owner)), Some(rl)) = (session, reading) {
@@ -97,10 +120,9 @@ pub fn run(root_arg: Option<&str>, owner_arg: Option<&str>) -> i32 {
     code
 }
 
-/// The state for `root_arg`, or `None` after one stderr line naming why the
+/// The state for `root`, or `None` after one stderr line naming why the
 /// root is unusable. Stdout stays empty either way (status-line contract).
-fn open_state(root_arg: &str) -> Option<State> {
-    let root = Path::new(root_arg);
+fn open_state(root: &Path) -> Option<State> {
     let opened = if root.is_absolute() {
         State::new(root).map_err(|e| e.to_string()).and_then(|s| {
             match fsx::check_root_private(&s.root) {
@@ -414,7 +436,7 @@ pub fn wrapper_state(store: &ProfileStore, root: &Path, name: &ProfileName) -> W
     let Some(cmd) = settings.get("statusLine").and_then(command_of) else {
         return WrapperState::Missing;
     };
-    if !cmd.contains(MARKER) || is_home_command(cmd) {
+    if !is_wrapper(cmd) {
         return WrapperState::Missing;
     }
     let Ok(exe) = std::env::current_exe().and_then(|e| e.canonicalize()) else {
@@ -452,22 +474,33 @@ pub fn install(store: &ProfileStore, repoint: bool) -> anyhow::Result<()> {
         return Ok(());
     }
     state.ensure()?;
+    let script = home_line::script_command();
     let width = names.iter().map(String::len).max().unwrap_or(0);
     for raw in names {
         let name = ProfileName::parse(&raw)?;
-        let (outcome, detail) = install_one(store, &state, &exe, &name, repoint)?;
+        let (outcome, detail) =
+            install_one(store, &state, &exe, &name, repoint, script.as_deref())?;
         let line = format!("{outcome:<10} {:<width$} {detail}", name.as_str());
         println!("{}", line.trim_end());
     }
     Ok(())
 }
 
+/// Whether `cmd` is a profile's wrapper: `profile statusline` with
+/// `--owner`. Any other `profile statusline` command (the one in
+/// `~/.claude`, copied in by the shared settings keys) is not.
+fn is_wrapper(cmd: &str) -> bool {
+    cmd.contains(MARKER) && cmd.contains("--owner")
+}
+
+/// `script` is `statusline.sh` as a command, when it passes its checks.
 fn install_one(
     store: &ProfileStore,
     state: &State,
     exe: &Path,
     name: &ProfileName,
     repoint: bool,
+    script: Option<&str>,
 ) -> Result<(&'static str, String), ProfileError> {
     let dir = store.verify_profile_dir(name)?;
     let mut settings = read_settings(&dir, name)?;
@@ -480,9 +513,7 @@ fn install_one(
         {
             return Ok(("unchanged", String::new()));
         }
-        // The no-owner command is not a wrapper: it falls through and is
-        // saved as the original below.
-        Some(sl) if command_of(sl).is_some_and(|c| c.contains(MARKER) && !is_home_command(c)) => {
+        Some(sl) if command_of(sl).is_some_and(is_wrapper) => {
             // A wrapper, never saved as the original.
             let ours = command_of(sl).is_some_and(|c| {
                 quotable(exe).is_ok_and(|e| c.starts_with(&format!("{} ", sh_quote(e))))
@@ -495,6 +526,20 @@ fn install_one(
                 ));
             }
             (sl.get("padding").cloned(), ("repaired", why))
+        }
+        // Any other `profile statusline` command is never saved as an
+        // original (SR7): the trusted `statusline.sh` it would run is saved
+        // in its place, or nothing.
+        Some(sl) if command_of(sl).is_some_and(|c| c.contains(MARKER)) => {
+            let detail = match script {
+                Some(cmd) => {
+                    let original = serde_json::json!({"type": "command", "command": cmd});
+                    state.write_sub_json("statusline", name.as_str(), &original)?;
+                    "(wrapped statusline.sh in place of the ~/.claude command)"
+                }
+                None => "(no previous status line)",
+            };
+            (sl.get("padding").cloned(), ("installed", detail))
         }
         Some(sl) => {
             state.write_sub_json("statusline", name.as_str(), sl)?;

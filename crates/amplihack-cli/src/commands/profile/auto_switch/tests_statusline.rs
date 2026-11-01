@@ -2,9 +2,7 @@
 //! treats the no-owner command from `~/.claude` (issue #1745).
 
 use super::super::state::State;
-use super::{
-    WrapperState, home_command, install_one, is_home_command, wrapper_command, wrapper_state,
-};
+use super::{WrapperState, home_command, install_one, is_wrapper, wrapper_command, wrapper_state};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
@@ -87,26 +85,21 @@ fn home_command_is_exact() {
 }
 
 #[test]
-fn is_home_command_means_profile_statusline_without_an_owner() {
-    assert!(is_home_command(
-        "'/usr/local/bin/amplihack' profile statusline"
-    ));
-    assert!(is_home_command(
-        &home_command(Path::new("/x/amplihack")).unwrap()
-    ));
-    assert!(is_home_command(
-        "'/x/amplihack' profile statusline --root '/r'"
-    ));
+fn only_a_profile_statusline_command_with_an_owner_is_a_wrapper() {
     let owner = ProfileName::parse("work").unwrap();
     let wrapper = wrapper_command(Path::new("/x/amplihack"), Path::new("/r"), &owner).unwrap();
-    assert!(!is_home_command(&wrapper));
+    assert!(is_wrapper(&wrapper));
+    assert!(is_wrapper(
+        "'/x/amplihack' profile statusline --owner 'work'"
+    ));
     for other in [
+        "'/usr/local/bin/amplihack' profile statusline",
+        "'/x/amplihack' profile statusline --root '/r'",
         "",
         "bash ~/.amplihack/.claude/tools/statusline.sh",
-        "$CLAUDE_PROJECT_DIR/.claude/tools/statusline.sh",
-        "printf 'abc'",
+        "printf '--owner'",
     ] {
-        assert!(!is_home_command(other), "{other}");
+        assert!(!is_wrapper(other), "{other}");
     }
 }
 
@@ -156,9 +149,10 @@ impl Profiles {
 }
 
 const EXE: &str = "/usr/local/bin/amplihack";
+const SCRIPT: &str = "'/home/u/.amplihack/.claude/tools/statusline.sh'";
 
 #[test]
-fn install_wraps_the_home_command_as_an_original() {
+fn install_saves_the_script_in_place_of_the_home_command() {
     let home = serde_json::json!({
         "type": "command",
         "command": "'/usr/local/bin/amplihack' profile statusline",
@@ -166,17 +160,27 @@ fn install_wraps_the_home_command_as_an_original() {
     });
     for repoint in [false, true] {
         let p = profiles(Some(home.clone()));
-        let (outcome, detail) =
-            install_one(&p.store, &p.state, Path::new(EXE), &p.name, repoint).unwrap();
+        let (outcome, detail) = install_one(
+            &p.store,
+            &p.state,
+            Path::new(EXE),
+            &p.name,
+            repoint,
+            Some(SCRIPT),
+        )
+        .unwrap();
         assert_eq!(
             (outcome, detail.as_str()),
-            ("installed", "(wrapped existing status line)"),
+            (
+                "installed",
+                "(wrapped statusline.sh in place of the ~/.claude command)"
+            ),
             "repoint {repoint}: never stale, never repaired"
         );
         assert_eq!(
             p.state.read_sub_json("statusline", "work").unwrap(),
-            Some(home.clone()),
-            "the home command is saved as the original"
+            Some(serde_json::json!({"type": "command", "command": SCRIPT})),
+            "the script is saved, not the home command"
         );
         let settings = p.settings();
         let want = wrapper_command(Path::new(EXE), &p.root, &p.name).unwrap();
@@ -187,13 +191,68 @@ fn install_wraps_the_home_command_as_an_original() {
 }
 
 #[test]
+fn without_a_usable_script_install_saves_no_original() {
+    let p = profiles(Some(serde_json::json!({
+        "type": "command",
+        "command": "'/usr/local/bin/amplihack' profile statusline",
+    })));
+    let (outcome, detail) =
+        install_one(&p.store, &p.state, Path::new(EXE), &p.name, false, None).unwrap();
+    assert_eq!(
+        (outcome, detail.as_str()),
+        ("installed", "(no previous status line)")
+    );
+    assert_eq!(p.state.read_sub_json("statusline", "work").unwrap(), None);
+}
+
+#[test]
+fn a_profile_statusline_command_is_never_saved_as_an_original() {
+    for cmd in [
+        "'/usr/local/bin/amplihack' profile statusline",
+        "'/x/amplihack' profile statusline --root '/r'",
+        "amplihack profile statusline | tee /tmp/x",
+        "'/x/amplihack' profile statusline --owner 'work'",
+    ] {
+        for (script, repoint) in [(None, false), (Some(SCRIPT), false), (Some(SCRIPT), true)] {
+            let p = profiles(Some(serde_json::json!({"type": "command", "command": cmd})));
+            let _ = install_one(&p.store, &p.state, Path::new(EXE), &p.name, repoint, script);
+            let saved = p.state.read_sub_json("statusline", "work").unwrap();
+            assert!(
+                !saved.is_some_and(|v| v.to_string().contains("profile statusline")),
+                "{cmd}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_original_with_an_owner_is_treated_as_a_wrapper() {
+    let p = profiles(Some(serde_json::json!({
+        "type": "command",
+        "command": "'/x/amplihack' profile statusline --owner 'work'",
+    })));
+    let (outcome, _) = install_one(
+        &p.store,
+        &p.state,
+        Path::new(EXE),
+        &p.name,
+        false,
+        Some(SCRIPT),
+    )
+    .unwrap();
+    assert_eq!(outcome, "stale");
+    assert_eq!(p.state.read_sub_json("statusline", "work").unwrap(), None);
+}
+
+#[test]
 fn install_still_reports_an_owner_wrapper_for_another_binary_as_stale() {
     let owner = ProfileName::parse("work").unwrap();
     let other = wrapper_command(Path::new("/old/amplihack"), Path::new("/r"), &owner).unwrap();
     let p = profiles(Some(
         serde_json::json!({"type": "command", "command": other}),
     ));
-    let (outcome, _) = install_one(&p.store, &p.state, Path::new(EXE), &p.name, false).unwrap();
+    let (outcome, _) =
+        install_one(&p.store, &p.state, Path::new(EXE), &p.name, false, None).unwrap();
     assert_eq!(outcome, "stale");
 }
 

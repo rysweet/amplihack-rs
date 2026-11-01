@@ -1,10 +1,9 @@
-//! No-owner mode of `profile statusline` (issue #1745): the command in
-//! `~/.claude/settings.json`. The inner-run rule, the `statusline.sh` checks,
-//! the root rule, and `tick`: owner from the rotator ledger only, the reading
-//! recorded under the state lock whatever the auto-switch setting, and the
-//! capacity line.
+//! `profile statusline` without `--owner` (issue #1745): the command in
+//! `~/.claude/settings.json`. The mode rule, the `statusline.sh` checks, the
+//! root rule, and `tick`: the login from the rotator ledgers only, the
+//! reading recorded only when it can be trusted, and the capacity line.
 
-use super::home_line::{inner_run, root_for, statusline_script, tick};
+use super::home_line::{Mode, mode as select_mode, root_for, statusline_script, tick};
 use super::state::{HostEntry, Ledger, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
@@ -111,45 +110,99 @@ impl Env {
 }
 
 // ---------------------------------------------------------------------------
-// inner_run
+// mode (D3)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn unset_or_empty_config_dir_is_not_an_inner_run() {
-    let e = env();
-    assert!(!inner_run(None, &e.home));
-    assert!(!inner_run(Some(OsStr::new("")), &e.home));
+impl Env {
+    fn mode(&self, dir: Option<&OsStr>) -> Mode {
+        select_mode(dir, Some(&self.home), Some(&self.root))
+    }
+
+    fn owned(&self, owner: &str) -> Mode {
+        Mode::Owned {
+            root: self.root.clone(),
+            owner: owner.into(),
+        }
+    }
 }
 
 #[test]
-fn the_default_directory_is_not_an_inner_run() {
+fn unset_or_empty_config_dir_is_home_mode() {
+    let e = env();
+    assert_eq!(e.mode(None), Mode::Home);
+    assert_eq!(e.mode(Some(OsStr::new(""))), Mode::Home);
+}
+
+#[test]
+fn the_default_directory_is_home_mode() {
     let e = env();
     let dot = e.home.join(".claude");
-    assert!(!inner_run(Some(dot.as_os_str()), &e.home));
+    assert_eq!(e.mode(Some(dot.as_os_str())), Mode::Home);
     let slash = format!("{}/", dot.display());
-    assert!(
-        !inner_run(Some(OsStr::new(&slash)), &e.home),
+    assert_eq!(
+        e.mode(Some(OsStr::new(&slash))),
+        Mode::Home,
         "a trailing slash is ignored"
+    );
+    let link = e.home.join("claude-link");
+    std::os::unix::fs::symlink(&dot, &link).unwrap();
+    assert_eq!(e.mode(Some(link.as_os_str())), Mode::Home);
+}
+
+#[test]
+fn a_profile_directory_is_that_profiles_run() {
+    let e = env();
+    let x = e.root.join("X");
+    assert_eq!(e.mode(Some(x.as_os_str())), e.owned("X"));
+    let slash = format!("{}/", x.display());
+    assert_eq!(e.mode(Some(OsStr::new(&slash))), e.owned("X"));
+    // A symlink from elsewhere that resolves into the root is the profile.
+    let link = e.home.join("x-link");
+    std::os::unix::fs::symlink(&x, &link).unwrap();
+    assert_eq!(e.mode(Some(link.as_os_str())), e.owned("X"));
+}
+
+#[test]
+fn a_symlink_in_the_root_that_points_outside_it_is_passthrough() {
+    let e = env();
+    let outside = e.home.join("elsewhere/Z");
+    fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, e.root.join("Z")).unwrap();
+    assert_eq!(
+        e.mode(Some(e.root.join("Z").as_os_str())),
+        Mode::Passthrough
     );
 }
 
 #[test]
-fn a_symlink_to_the_default_directory_is_not_an_inner_run() {
+fn anything_else_is_passthrough() {
     let e = env();
-    let link = e.home.join("claude-link");
-    std::os::unix::fs::symlink(e.home.join(".claude"), &link).unwrap();
-    assert!(!inner_run(Some(link.as_os_str()), &e.home));
-}
-
-#[test]
-fn a_profile_directory_is_an_inner_run() {
-    let e = env();
+    let other = e.home.join("other");
+    fs::create_dir(&other).unwrap();
+    let state = e.root.join(".auto-switch.d");
+    fs::create_dir(&state).unwrap();
+    let nested = e.root.join("X/sub");
+    fs::create_dir(&nested).unwrap();
+    for dir in [
+        other,
+        state,
+        nested,
+        e.root.clone(),
+        e.root.join("Missing"),
+        e.home.clone(),
+    ] {
+        assert_eq!(
+            e.mode(Some(dir.as_os_str())),
+            Mode::Passthrough,
+            "{}",
+            dir.display()
+        );
+    }
     let x = e.root.join("X");
-    assert!(inner_run(Some(x.as_os_str()), &e.home));
-    let missing = e.root.join("nowhere");
-    assert!(
-        inner_run(Some(missing.as_os_str()), &e.home),
-        "a directory that does not resolve is still not ~/.claude"
+    assert_eq!(
+        select_mode(Some(x.as_os_str()), Some(&e.home), None),
+        Mode::Passthrough,
+        "no root, no profile"
     );
 }
 
@@ -277,9 +330,13 @@ fn the_rotate_ledger_names_the_owner() {
 
 #[test]
 fn recording_does_not_depend_on_the_auto_switch_setting() {
-    // Auto-switch is off by default and nothing here turns it on.
+    // No auto-switch settings file, so it is off (the environment toggle
+    // is not read here: other tests set it).
     let e = env();
-    assert!(!super::config::effective(&e.root).on);
+    assert!(matches!(
+        super::config::read(&e.root),
+        super::config::FileState::Missing
+    ));
     e.prototype_ledger(r#"{"live":"X","since":1}"#);
     e.tick(&input(34.0, 43.0)).unwrap();
     assert!(e.usage().unwrap()["accounts"].get("X").is_some());

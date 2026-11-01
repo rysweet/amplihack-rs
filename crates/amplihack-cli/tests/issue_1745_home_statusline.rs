@@ -1,8 +1,10 @@
 //! Issue #1745: `amplihack profile statusline` with no `--owner`, the command
-//! `amplihack install` writes into `~/.claude/settings.json`. It runs
-//! `~/.amplihack/.claude/tools/statusline.sh` with the same input, then prints
-//! the login capacity line for the login the rotator ledger names, and
-//! records the reading for that login.
+//! `amplihack install` writes into `~/.claude/settings.json`. In `~/.claude`
+//! it runs `~/.amplihack/.claude/tools/statusline.sh` with the same input,
+//! then prints the login capacity line for the login the rotator ledgers
+//! name, and records the reading when it can be trusted. In a profile's own
+//! directory it runs as that profile's wrapper; anywhere else it runs the
+//! script only.
 //!
 //! Runs the real `amplihack` binary through `isolated(..)` with a temp
 //! `HOME`, a temp profile root and a fake `statusline.sh`. Nothing touches the
@@ -431,20 +433,50 @@ fn input_over_one_mib_reaches_the_script_but_records_nothing() {
 }
 
 // ---------------------------------------------------------------------------
-// The inner-run rule
+// Modes (D3)
 // ---------------------------------------------------------------------------
 
 #[test]
-fn inside_a_profile_only_the_first_line_is_printed() {
+fn inside_a_profile_the_run_is_that_profiles() {
     let f = Fixture::new(Some(FIRST));
     f.prototype_ledger(r#"{"live":"X","since":1}"#);
     let out = f.run(&[], "0", Some(&f.root.join("Y")), &input(34.0, 43.0));
+    let stdout = text(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    assert_eq!(lines[0], "first", "statusline.sh, with nothing saved");
+    assert!(
+        lines[1].starts_with("🔑 Y  5h ███░░░░░░░ 34%"),
+        "Y's line, not the ledger's X: {stdout}"
+    );
+    assert!(f.usage().is_none(), "auto-switch is off: nothing recorded");
+}
+
+#[test]
+fn a_symlinked_config_dir_pointing_outside_the_root_is_passthrough() {
+    let f = Fixture::new(Some(FIRST));
+    f.prototype_ledger(r#"{"live":"X","since":1}"#);
+    let outside = f.home.join("elsewhere/Z");
+    fs::create_dir_all(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, f.root.join("Z")).unwrap();
+    let out = f.run(&[], "1", Some(&f.root.join("Z")), &input(34.0, 43.0));
     assert_eq!(text(&out.stdout), "first\n");
     assert!(f.usage().is_none());
 }
 
 #[test]
-fn claude_config_dir_naming_the_default_directory_is_not_an_inner_run() {
+fn a_foreign_config_dir_is_passthrough() {
+    let f = Fixture::new(Some(FIRST));
+    f.prototype_ledger(r#"{"live":"X","since":1}"#);
+    let other = f.home.join("other");
+    fs::create_dir_all(&other).unwrap();
+    let out = f.run(&[], "1", Some(&other), &input(34.0, 43.0));
+    assert_eq!(text(&out.stdout), "first\n");
+    assert!(f.usage().is_none());
+}
+
+#[test]
+fn claude_config_dir_naming_the_default_directory_is_home_mode() {
     let f = Fixture::new(Some(FIRST));
     f.prototype_ledger(r#"{"live":"X","since":1}"#);
     let dot = f.home.join(".claude");
@@ -484,7 +516,7 @@ fn the_wrapper_prints_the_original_output_then_the_capacity_line() {
 }
 
 #[test]
-fn owner_without_root_is_refused() {
+fn owner_without_root_uses_the_resolved_root() {
     let f = Fixture::new(Some(FIRST));
     f.wrap_home_command_in_x();
     let out = f.run(
@@ -493,14 +525,40 @@ fn owner_without_root_is_refused() {
         Some(&f.root.join("X")),
         &input(34.0, 43.0),
     );
-    assert_eq!(text(&out.stdout), "", "stdout stays empty");
-    assert!(
-        text(&out.stderr).contains("status line disabled"),
-        "{}",
-        text(&out.stderr)
-    );
+    let stdout = text(&out.stdout);
+    assert!(stdout.starts_with("first\n"), "{stdout}");
+    assert!(stdout.contains(LINE_34_43), "{stdout}");
     assert_eq!(out.status.code(), Some(0));
-    assert!(f.usage().is_none(), "nothing recorded");
+}
+
+#[test]
+fn the_home_command_is_never_saved_and_never_run_as_an_original() {
+    let f = Fixture::new(Some(FIRST));
+    f.wrap_home_command_in_x();
+    let saved = f.root.join(".auto-switch.d/statusline/X.json");
+    let raw = fs::read_to_string(&saved).expect("the script is saved");
+    assert!(!raw.contains("profile statusline"), "{raw}");
+    // An older install saved the home command itself: it is not run, the
+    // script runs in its place, and there is still one capacity line.
+    let home = format!("'{}' profile statusline", amplihack_bin().to_str().unwrap());
+    private(
+        &saved,
+        serde_json::json!({"type": "command", "command": home})
+            .to_string()
+            .as_bytes(),
+    );
+    let root = f.root.to_str().unwrap().to_string();
+    let out = f.run(
+        &["--root", &root, "--owner", "X"],
+        "0",
+        Some(&f.root.join("X")),
+        &input(34.0, 43.0),
+    );
+    let stdout = text(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 2, "{stdout}");
+    assert_eq!(lines[0], "first");
+    assert!(lines[1].starts_with(LINE_34_43), "{stdout}");
 }
 
 #[test]
