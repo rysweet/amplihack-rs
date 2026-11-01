@@ -479,7 +479,8 @@ pub(crate) fn checkout_run_clone(repo: &str, dest: &Path, protocols: &str) -> Re
 
 /// Fetches into an existing run clone and moves its branch to the fetched
 /// tip. Refuses, changing nothing, when the clone has uncommitted changes, a
-/// detached HEAD, no upstream, or commits its upstream does not have.
+/// detached HEAD, an upstream that is not a branch of origin, or commits its
+/// upstream does not have.
 fn update_run_clone(dest: &Path, protocols: &str) -> Result<()> {
     let shown = dest.display();
     // Clones made before this rule have no exclude line yet.
@@ -510,6 +511,14 @@ fn update_run_clone(dest: &Path, protocols: &str) -> Result<()> {
     anyhow::ensure!(
         rev("HEAD").is_some() && rev("HEAD") == rev("@{upstream}"),
         "the existing clone {shown} has commits that {upstream} does not; push or remove them, or remove the clone"
+    );
+    // `git fetch origin` updates only refs under `refs/remotes/origin/`, so an
+    // upstream elsewhere would be reset to stale code (PR #1843 review).
+    let mut tracking = hardened_git(dest);
+    tracking.args(["rev-parse", "--symbolic-full-name", "@{upstream}"]);
+    anyhow::ensure!(
+        git_stdout(tracking).is_some_and(|t| t.starts_with("refs/remotes/origin/")),
+        "the existing clone {shown} tracks {upstream}, which is not a branch of origin; switch it back or remove the clone"
     );
     info!(dest = %shown, "Reusing the run clone; fetching");
     let mut fetch = hardened_git(dest);
@@ -676,6 +685,59 @@ mod issue_1808_clone_destination {
         git(&upstream, &["commit", "-q", "-am", "newer"]);
         checkout_run_clone(&url, &dest, "file").unwrap();
         assert_eq!(std::fs::read_to_string(dest.join("f")).unwrap(), "newer");
+    }
+
+    /// A reused clone left on another branch of origin is moved to that
+    /// branch's new tip: tracking it requires a refspec, which the fetch uses.
+    #[test]
+    fn reused_clone_on_another_branch_is_updated_to_its_tip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let url = origin(tmp.path(), "a");
+        let upstream = tmp.path().join("a");
+        git(&upstream, &["branch", "feat"]);
+        let dest = tmp.path().join("work/clones/a-12345678");
+        checkout_run_clone(&url, &dest, "file").unwrap();
+        // A single-branch clone can track `feat` only once its refspec covers it.
+        git(
+            &dest,
+            &["remote", "set-branches", "--add", "origin", "feat"],
+        );
+        git(&dest, &["fetch", "-q", "origin"]);
+        git(
+            &dest,
+            &["checkout", "-q", "-b", "feat", "--track", "origin/feat"],
+        );
+        git(&upstream, &["checkout", "-q", "feat"]);
+        std::fs::write(upstream.join("f"), "feat newer").unwrap();
+        git(&upstream, &["commit", "-q", "-am", "feat newer"]);
+        checkout_run_clone(&url, &dest, "file").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dest.join("f")).unwrap(),
+            "feat newer"
+        );
+    }
+
+    /// A reused clone whose branch tracks another remote is refused, since the
+    /// fetch from origin would not update it.
+    #[test]
+    fn reused_clone_tracking_another_remote_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let url = origin(tmp.path(), "a");
+        let other = origin(tmp.path(), "b");
+        let dest = tmp.path().join("work/clones/a-12345678");
+        checkout_run_clone(&url, &dest, "file").unwrap();
+        git(&dest, &["remote", "add", "other", &other]);
+        git(&dest, &["fetch", "-q", "other"]);
+        git(
+            &dest,
+            &["checkout", "-q", "-b", "o", "--track", "other/main"],
+        );
+        let error = checkout_run_clone(&url, &dest, "file").unwrap_err();
+        assert!(
+            format!("{error:#}").contains("not a branch of origin"),
+            "{error:#}"
+        );
+        assert_eq!(std::fs::read_to_string(dest.join("f")).unwrap(), "b");
     }
 
     /// Worktrees a run made under `<clone>/worktrees/` do not make the clone

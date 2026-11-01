@@ -151,21 +151,8 @@ pub(crate) fn archive_file(source: &Path, archive_root: &Path, relative: &Path) 
             return Err(error);
         }
     };
-    if let Err(error) = fs::rename(&partial, &final_path) {
-        let _ = fs::remove_file(&partial);
-        return Err(error).with_context(|| format!("cannot rename to {}", final_path.display()));
-    }
-
-    // Read the archive back and compare with what was hashed from the source.
-    let content = read_single_entry(&final_path, size)?;
-    let back = hex(&Sha256::digest(&content));
-    if content.len() as u64 != size || back != digest {
-        bail!(
-            "archive {} does not match {}; the original is kept",
-            final_path.display(),
-            source.display()
-        );
-    }
+    verify_and_place(&partial, &final_path, size, &digest)
+        .with_context(|| format!("cannot archive {}; the original is kept", source.display()))?;
 
     let line = ManifestLine {
         original_path: source.display().to_string(),
@@ -190,6 +177,28 @@ pub(crate) fn archive_file(source: &Path, archive_root: &Path, relative: &Path) 
     }
     fs::remove_file(source).with_context(|| format!("cannot remove {}", source.display()))?;
     Ok(final_path)
+}
+
+/// Reads `partial` back, compares it with the size and digest taken from the
+/// source, and only then renames it to `final_path`. On any failure `partial`
+/// is removed, so a failed check leaves no archive behind and a retry does not
+/// add another one (PR #1843 review item 6).
+fn verify_and_place(partial: &Path, final_path: &Path, size: u64, digest: &str) -> Result<()> {
+    let placed = read_single_entry(partial, size)
+        .and_then(|content| {
+            if content.len() as u64 != size || hex(&Sha256::digest(&content)) != digest {
+                bail!("archive {} does not match its source", partial.display());
+            }
+            Ok(())
+        })
+        .and_then(|()| {
+            fs::rename(partial, final_path)
+                .with_context(|| format!("cannot rename to {}", final_path.display()))
+        });
+    if placed.is_err() {
+        let _ = fs::remove_file(partial);
+    }
+    placed
 }
 
 fn write_archive(source: &Path, partial: &Path, name: &str, meta: &fs::Metadata) -> Result<String> {
@@ -479,4 +488,46 @@ fn restore_one(
     let _ = fs::remove_file(&partial);
     result?;
     Ok(destination)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Review item 6: an archive that fails its read-back check is removed,
+    /// the original stays, and a retry leaves no extra file.
+    #[test]
+    fn failed_read_back_leaves_no_archive_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("run.log");
+        fs::write(&source, "log line\n").unwrap();
+        let dir = tmp.path().join("archive");
+        fs::create_dir_all(&dir).unwrap();
+        let meta = fs::symlink_metadata(&source).unwrap();
+        for _ in 0..2 {
+            let final_path = free_archive_path(&dir, "run.log").unwrap();
+            let partial = final_path.with_extension("gz.partial");
+            write_archive(&source, &partial, "run.log", &meta).unwrap();
+            let error =
+                verify_and_place(&partial, &final_path, meta.len(), "0".repeat(64).as_str())
+                    .unwrap_err();
+            assert!(format!("{error:#}").contains("does not match"), "{error:#}");
+        }
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        assert_eq!(fs::read_to_string(&source).unwrap(), "log line\n");
+    }
+
+    #[test]
+    fn matching_read_back_places_the_archive() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("run.log");
+        fs::write(&source, "log line\n").unwrap();
+        let meta = fs::symlink_metadata(&source).unwrap();
+        let final_path = tmp.path().join("run.log.tar.gz");
+        let partial = final_path.with_extension("gz.partial");
+        let digest = write_archive(&source, &partial, "run.log", &meta).unwrap();
+        verify_and_place(&partial, &final_path, meta.len(), &digest).unwrap();
+        assert!(final_path.is_file());
+        assert!(!partial.exists());
+    }
 }

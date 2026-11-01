@@ -266,6 +266,13 @@ relative path, `base` prints the reason and the step stops with
 `cannot work out where worktrees go`. It does not create the worktree under
 `<main checkout>/worktrees/`, the place you asked to avoid.
 
+One exception remains. When the branch a run continues is checked out in the
+caller's own checkout, `default-workflow` step 4 creates an alias worktree,
+`<branch>--wt-<n>`, and that always goes under `<main checkout>/worktrees/`,
+because the #1762 planner and `workflow_alias_reuse.sh` look for it there.
+Alias worktrees are not recorded for the run, and cleanup does not remove
+them. Remove them with `git worktree remove` when you no longer need them.
+
 The default work root (`$HOME/.amplihack/work`) applies to run folders,
 targets, clones and the archive whether or not the variable is set. Only
 worktrees need the variable set explicitly.
@@ -556,16 +563,17 @@ is archived as
 For each file, cleanup:
 
 1. computes the SHA-256 digest;
-2. writes the archive to a `.partial` file with mode `0600`, flushes it to
-   disk and renames it;
-3. reads the archive back, decompresses it and compares the bytes with the
-   original;
+2. writes the archive to a `.partial` file with mode `0600` and flushes it to
+   disk;
+3. reads the `.partial` file back, decompresses it and compares the bytes
+   with the original, then renames it to its final name;
 4. appends a line to `MANIFEST.jsonl`;
 5. checks that the original's size and modification time have not changed;
 6. removes the original.
 
 If any step fails, the original is kept and the entry is reported as failed.
-No log is deleted unless its archive has been verified.
+No log is deleted unless its archive has been verified. An archive that fails
+the read-back check is removed, so a retry does not leave extra files.
 
 A manifest line looks like this:
 
@@ -653,8 +661,9 @@ under `<clone>/worktrees/` do not count as changes. The launch is
 refused, with a message naming the folder and changing nothing, when:
 
 - the folder is not a git checkout of that URL;
-- the clone has uncommitted changes, is not on a branch with an upstream, or
-  has commits its upstream does not have;
+- the clone has uncommitted changes, is not on a branch with an upstream,
+  tracks a branch of a remote other than `origin`, or has commits its
+  upstream does not have;
 - the work root or `clones/` is a symbolic link, belongs to another user, or
   is group- or world-writable, or the clone belongs to another user.
 
