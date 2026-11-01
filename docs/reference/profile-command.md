@@ -3089,7 +3089,7 @@ profile and never appears in `profile list`.
 | `usage.json` | Readings, as shown in [Readings](#readings). |
 | `parked/<name>/.credentials.json` | The home slot of a profile whose directory is hosting another account. |
 | `accounts/<name>.json` | The profile's saved `oauthAccount` block. No tokens. |
-| `expected/<name>.json` | The profile's [recorded account](#recorded-account): `{"account":"<key>"}` only. No `version` field. A damaged file counts as no record, silently. |
+| `expected/<name>.json` | The profile's [recorded account](#recorded-account): `{"account":"<key>"}` only. No `version` field. A damaged file counts as no record; a swap from that profile prints one warning. |
 | `statusline/<name>.json` | The profile's original `statusLine` object. |
 | `rerun/` | Buffered stdout of supervised steps, `<pid>-<n>.out`; see [Usage-limit reruns](#usage-limit-reruns) for how long each is kept. |
 | `capacity.json` | Whether any account has capacity left; see [Capacity file](#capacity-file). Unlike the other state files, it accepts unknown fields and is capped at 16 KiB. |
@@ -4170,7 +4170,7 @@ journal.
 | `s3` | Replace the `oauthAccount` block in `$HOME/.claude.json` with the one from `<root>/<to>/.claude.json`, keeping every other key and the file's mode. |
 | `s4` | Write the ledger: `live=<to>`, `previous=<from>`, `account`, `since` and `swapped_at`. Clear any ALERT key. |
 | | Delete `journal.json`. |
-| | Write the [recorded account](#recorded-account), if one is due: for an adopted login, the outgoing account for the new `default-original[-N]` profile; for `<from>` with no record, the outgoing account, only when the ledger read before `j0` named `<from>` as live and its `account` matched the outgoing account. The record is read again first, and an existing one is never overwritten. Nothing is recorded for `<to>`. A failure prints `warning: the recorded account for profile '<name>' was not saved: <reason>` and the swap still succeeds. |
+| | Write the [recorded account](#recorded-account), if one is due: for an adopted login, the outgoing account for the new `default-original[-N]` profile; for `<from>` with no record, the outgoing account, only when the ledger read before `j0` named `<from>` as live and its `account` matched the outgoing account. For `<from>`, the record is read again first, and a usable one is never overwritten. Nothing is recorded for `<to>`. A failure prints `warning: the recorded account for profile '<name>' was not saved: <reason>` and the swap still succeeds. |
 
 A swap that [recovery](#rotate-recovery) finishes writes no record.
 
@@ -6327,7 +6327,9 @@ A record is written in three cases only:
 | A [swap](#rotate-swap) completes from a profile that has no record | The outgoing account, for the `from` profile, only when the [rotate ledger](#rotate-live-profile) names `from` as live and the outgoing account matches the ledger's `account`. |
 
 Nothing else writes a record. A swap never records the incoming (`to`)
-profile, never overwrites an existing record, and no record is ever derived
+profile and never overwrites a usable record of the outgoing one. An
+adopted login replaces any record left under the new `default-original[-N]`
+name by a removed profile. No record is ever derived
 from a profile name or from `accounts/<name>.json`. A failure to write one
 prints a warning and does not fail the login or the swap:
 
@@ -6337,8 +6339,12 @@ warning: the recorded account for profile 'work' was not saved: <reason>
 
 A record that is missing, unreadable, not `0600`, not owned by you, a
 symlink, over 64 KiB, not valid JSON, or whose `account` is not a usable
-string counts as no record. Nothing is printed for it, and no command fails
-because of it.
+string counts as no record, and no command fails because of it. A swap
+from that profile is not checked and prints one line to stderr:
+
+```
+warning: the recorded account for profile 'work' could not be read; the swap was not checked against it
+```
 
 Records are compared with the [account identity](#account-identity) key
 match: a record matches an account whose uuid equals it, or whose e-mail
