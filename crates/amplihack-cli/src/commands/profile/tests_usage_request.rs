@@ -287,6 +287,8 @@ fn a_payload_that_is_not_an_object_is_rejected() {
     }
 }
 
+/// D10 (issue #1856): the same payloads give windows and a shape through
+/// `parse_limits`, yet `parse_answer` still rejects every one of them.
 #[test]
 fn usage_credits_on_at_either_place_are_rejected() {
     let bad = [
@@ -300,6 +302,18 @@ fn usage_credits_on_at_either_place_are_rejected() {
         json!("off"),
     ];
     for v in bad {
+        let mut p = payload();
+        limits(&mut p)["extra_usage"] = v.clone();
+        assert!(
+            matches!(
+                parse_limits(&p["rate_limits"], NOW),
+                Limits::Report {
+                    credits_on: Some(_),
+                    ..
+                }
+            ),
+            "the direct contract gives windows and a shape for {v}"
+        );
         assert_eq!(
             with(|p| limits(p)["extra_usage"] = v.clone()),
             None,
@@ -740,18 +754,22 @@ fn no_week_window_is_still_handled_as_before() {
 // Issue #1844: `parse_limits`, the one parser the `get_usage` answer and the
 // direct read share.
 //
-// Contract:
-// - `usage_request::Limits` is `Report(UsageReport)`, `CreditsOn` or
-//   `Unparseable`, and derives `Debug` and `PartialEq`.
+// Contract (issue #1856 revises #1844):
+// - `usage_request::Limits` is `Report { report, credits_on }`, `CreditsOn`
+//   or `Unparseable`, and derives `Debug` and `PartialEq`. `credits_on` is
+//   `Option<ExtraUsageShape>`: `Some` exactly when credits are on.
 // - `parse_limits(limits: &Value, now: i64) -> Limits` reads one
 //   `rate_limits`-shaped object (`five_hour`, `seven_day`, `model_scoped`,
 //   `extra_usage`). It is the body of the direct read's answer as it stands
 //   and `response.response.rate_limits` of the control answer.
-// - A value that is not an object, or an object with neither window, is
-//   `Unparseable`. Credits on (`extra_usage` present and not
-//   `{"is_enabled": false}`) is `CreditsOn`. Unknown keys are ignored.
-// - `parse_answer` keeps its signature and maps `CreditsOn` and
-//   `Unparseable` to `None`.
+// - A value that is not an object is `Unparseable`. Credits on
+//   (`extra_usage` present and not `null` or `{"is_enabled": false}`) with
+//   a readable window is `Report` with the shape; with neither window it is
+//   `CreditsOn`. Credits off with neither window is `Unparseable`. Unknown
+//   keys are ignored.
+// - `parse_answer` keeps its signature and accepts only
+//   `Report { credits_on: None }`: the `get_usage` path still rejects
+//   credits-on answers.
 // ---------------------------------------------------------------------------
 
 use super::usage_request::{Limits, parse_limits};
@@ -764,8 +782,11 @@ fn limits_of(edit: impl FnOnce(&mut Value)) -> Limits {
 
 fn report_of(l: Limits) -> UsageReport {
     match l {
-        Limits::Report(r) => r,
-        other => panic!("expected a report, got {other:?}"),
+        Limits::Report {
+            report,
+            credits_on: None,
+        } => report,
+        other => panic!("expected a credits-off report, got {other:?}"),
     }
 }
 
@@ -800,30 +821,96 @@ fn the_control_answer_keeps_the_weekly_figure_when_the_session_is_exhausted() {
     assert_eq!(r.week_all.map(|w| w.used_percentage), Some(55.0));
 }
 
+/// Issue #1856: every enabled shape still gives the windows, with the
+/// shape alongside. The windows are the same as with credits off.
 #[test]
-fn parse_limits_reports_credits_on_for_every_enabled_shape() {
+fn parse_limits_gives_windows_and_a_shape_for_every_enabled_shape() {
+    let off = report_of(parse_limits(&payload()["rate_limits"], NOW));
     for extra in [
         json!({"is_enabled": true}),
         json!({"is_enabled": "false"}),
+        json!({"is_enabled": 0}),
+        json!({"is_enabled": null}),
         json!({}),
         json!(true),
+        json!(false),
         json!("on"),
+        json!(0),
+        json!([]),
     ] {
-        let got = limits_of(|p| limits(p)["extra_usage"] = extra.clone());
-        assert_eq!(got, Limits::CreditsOn, "{extra}");
+        match limits_of(|p| limits(p)["extra_usage"] = extra.clone()) {
+            Limits::Report {
+                report,
+                credits_on: Some(_),
+            } => assert_eq!(report, off, "{extra}: windows as with credits off"),
+            other => panic!("{extra}: expected a report with a shape, got {other:?}"),
+        }
     }
 }
 
 #[test]
-fn parse_limits_reads_credits_off_and_absent_as_a_report() {
+fn parse_limits_reads_credits_off_and_absent_as_a_report_with_no_shape() {
     for extra in [json!(null), json!({"is_enabled": false})] {
         let got = limits_of(|p| limits(p)["extra_usage"] = extra.clone());
-        assert!(matches!(got, Limits::Report(_)), "{extra}: {got:?}");
+        assert!(
+            matches!(
+                got,
+                Limits::Report {
+                    credits_on: None,
+                    ..
+                }
+            ),
+            "{extra}: {got:?}"
+        );
     }
     let got = limits_of(|p| {
         limits(p).as_object_mut().unwrap().remove("extra_usage");
     });
-    assert!(matches!(got, Limits::Report(_)), "{got:?}");
+    assert!(
+        matches!(
+            got,
+            Limits::Report {
+                credits_on: None,
+                ..
+            }
+        ),
+        "{got:?}"
+    );
+}
+
+/// Issue #1856 (C2): credits on and neither window readable is `CreditsOn`,
+/// so the row still goes to the fallback with `usage credits on`.
+#[test]
+fn parse_limits_is_credits_on_only_when_no_window_can_be_read() {
+    let got = limits_of(|p| {
+        limits(p)["extra_usage"] = json!({"is_enabled": true});
+        let o = limits(p).as_object_mut().unwrap();
+        o.remove("five_hour");
+        o.remove("seven_day");
+    });
+    assert_eq!(got, Limits::CreditsOn);
+    let got = limits_of(|p| {
+        limits(p)["extra_usage"] = json!({"is_enabled": true});
+        limits(p)["five_hour"] = json!(null);
+        limits(p)["seven_day"]["utilization"] = json!("high");
+    });
+    assert_eq!(got, Limits::CreditsOn);
+}
+
+/// One readable window is enough with credits on.
+#[test]
+fn parse_limits_with_credits_on_and_one_window_is_a_report() {
+    let got = limits_of(|p| {
+        limits(p)["extra_usage"] = json!({"is_enabled": true});
+        limits(p)["five_hour"] = json!(null);
+    });
+    match got {
+        Limits::Report {
+            report,
+            credits_on: Some(_),
+        } => assert_eq!(report.week_all.map(|w| w.used_percentage), Some(61.0)),
+        other => panic!("expected a report with a shape, got {other:?}"),
+    }
 }
 
 #[test]

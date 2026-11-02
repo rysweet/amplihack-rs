@@ -14,6 +14,7 @@ use super::usage_cmd::{
     raw_lines, sanitize_display, state_label,
 };
 use super::usage_parse::{UsageState, UsageWindow};
+use super::usage_source::Spend;
 use chrono::{DateTime, FixedOffset, Local, TimeZone};
 use std::ffi::OsStr;
 
@@ -267,6 +268,17 @@ fn middle_gap(i: usize) -> usize {
     if i == 3 { STATE_GAP } else { GAP }
 }
 
+/// The marks column of the bar view: the table's marks, then
+/// `spend:<value>` (issue #1856) for every row whose spend is not `n/a`, so
+/// the spend status the table shows in its `SPEND` column is not lost.
+pub(super) fn bar_marks(row: &Row) -> Vec<String> {
+    let mut parts = marks_parts(row, false);
+    if row.spend != Spend::NotApplicable {
+        parts.push(format!("spend:{}", row.spend.as_str()));
+    }
+    parts
+}
+
 /// The bar view: header, rows (each followed by its `--raw` text), the
 /// footers the table also prints, then `times: <zone>` and the order line.
 /// Its layout is not a stable interface; `--json` is.
@@ -315,7 +327,7 @@ pub(super) fn render_bars(rows: &[Row], time: &TimeView, colour: bool) -> String
             Middle::Span(text) => pad(&mut l, &Cell::text(text), span_w, STATE_GAP),
         }
         pad(&mut l, &Cell::text(state_label(row)), sw, GAP);
-        l.push_str(&marks_parts(row, false).join(" "));
+        l.push_str(&bar_marks(row).join(" "));
         out.push_str(&finish(l));
         raw_lines(&mut out, row);
     }

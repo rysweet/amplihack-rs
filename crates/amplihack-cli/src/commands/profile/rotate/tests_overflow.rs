@@ -690,6 +690,8 @@ fn a_refused_plan_profile_directory_blocks_overflow() {
         raw: None,
         source: None,
         direct_failure: None,
+        spend: crate::commands::profile::usage_source::Spend::Unknown,
+        extra_shape: None,
     };
     let spare = reading("spare", &refused);
     assert!(spare.unknown);

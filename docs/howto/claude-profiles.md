@@ -715,8 +715,9 @@ amplihack profile usage
 PROFILE  WEEK             W-RESET      SESSION           S-RESET     STATE
 review   █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░░░░   5%   11-01 14:00 ok
 work     ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00 ok                 *
+mistt    █████░░░░░  52%  11-05 09:00  ███░░░░░░░  35%   11-01 13:00 ok                 spend:not_probed
 team     █████░░░░░  55%  11-05 09:00  ██████████ 100%   11-01 23:50 session_exhausted
-scratch  no reading (not_logged_in)                                  not_logged_in      (fallback)
+scratch  no reading (not_logged_in)                                  not_logged_in      (fallback) spend:unknown
 times: Europe/London
 order: rotator pick (most room in the worse of session and week, then name)
 ```
@@ -734,11 +735,24 @@ Only when that fails, as for `scratch` above, which has no login, does
 amplihack start `claude` with `CLAUDE_CONFIG_DIR` set to that profile. It
 asks with a `get_usage` request, then runs `claude -p /usage` and reads its
 `Current session` and `Current week` lines if it cannot use the answer.
-Such rows are marked `(fallback)`, and a `note:` line on stderr says why
-the direct read failed. A profile marked as
-[overflow](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted),
-or whose account has usage credits turned on, is always read with
-`/usage`, because only `/usage` shows a used-up spend limit. Checking does
+Such rows are marked `(fallback)`, and with `--raw` a `note:` line on
+stderr says why the direct read failed. A profile marked as
+[overflow](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted)
+is always read with `/usage`, because only `/usage` shows a used-up spend
+limit. For any other account with usage credits turned on, such as `mistt`
+above, the session and weekly figures still come from the direct read, no
+`claude` is started, and the row ends in `spend:not_probed` (the `SPEND`
+column with `--table`). To read the spend limit too, add `--spend`:
+
+```bash
+amplihack profile usage --spend mistt
+```
+
+That runs one `/usage` probe per such account, only to fill its spend
+status. `/usage` can take 10 to 20 seconds per profile on a busy host, so
+`--spend` makes the command slower; each probe gets the same 120-second
+deadline as a fallback, and one that does not answer by then shows
+`unknown`. Checking does
 not appear to use quota, and an exhausted account still answers. A profile
 at its session limit shows its weekly figure as reported (`55%` for `team`
 above).
@@ -795,6 +809,17 @@ are refused, as is `--table --json`.
 
 ### Selected profiles, states and scripts
 
+What the spend status means. The bar view shows it as a `spend:<value>`
+mark when it is not `n/a`; `--table` shows it in its `SPEND` column:
+
+| Spend | Meaning |
+|-------|---------|
+| `n/a` | No spend limit was read for this row, and none was needed: usage credits are off, or the row came from a stored reading or is an API-key profile. It does not prove that credits are off. |
+| `ok` | `/usage` gave a usage reading and reported no used-up spend limit. |
+| `limit_reached` | The account's spend limit is used up. It cannot work past its plan limits on credits until the limit is raised or resets. |
+| `unknown` | A probe ran and the spend limit could not be read: a `--spend` probe did not answer in time or `claude` could not be found, `claude` did not give a usage reading (as for `scratch`, which is not logged in), or the row could not be read at all. |
+| `not_probed` | Usage credits are on and no spend probe was asked for: run with `--spend` to read it. Says nothing about the spend limit. |
+
 To check only some profiles, name them:
 
 ```bash
@@ -840,6 +865,7 @@ amplihack profile usage --json | jq -r '.[] | "\(.profile) \(.source)"'
 ```
 review direct
 work passive
+mistt direct
 team direct
 scratch fallback
 ```
@@ -854,8 +880,8 @@ amplihack profile usage --json | jq -r '[.[] | select(.state == "ok")][0].profil
 review
 ```
 
-Each JSON row also has the per-model week lines (`week_models`) and each
-reset as Unix time (`resets_at`); see the
+Each JSON row also has the per-model week lines (`week_models`), each
+reset as Unix time (`resets_at`) and the spend status as `spend`; see the
 [reference](../reference/profile-command.md#json-output).
 
 If [auto-switch](#switch-accounts-automatically) is set up, `profile usage`
@@ -884,6 +910,46 @@ weekly capacity lasts at the recent rate; see
 
 The command exits with status 0 whenever the probes ran, whatever their
 states. Like `profile run`, it is refused under Docker.
+
+### See why an account counts as having usage credits on
+
+If a row without the `(fallback)` mark shows a `spend:` mark (with
+`--table`, a `SPEND` value other than `n/a`), amplihack found usage credits
+on for that account. If you did not
+expect that, run the profile with `--raw` (here with `--spend` as well):
+
+```bash
+amplihack profile usage --raw --spend mistt
+```
+
+Two `note:` lines on stderr describe what the usage endpoint sent in its
+`extra_usage` field:
+
+```
+note: profile "mistt": direct read gave usage credits on; windows direct, spend from claude
+note: profile "mistt": extra_usage: object; keys: currency, is_enabled, monthly_limit, org_id, used_credits; is_enabled: bool true
+```
+
+The second line lists the key names and shows `is_enabled` with its JSON
+type. `is_enabled: bool true` means credits are on. `is_enabled: string "false"`
+or `is_enabled: number 0` means the server sent a string or a number where
+amplihack expects `false`, and amplihack treats that as on. Credits count
+as off only when `extra_usage` is absent, `null`, or an object whose
+`is_enabled` is the JSON value `false`; no shape line is printed then.
+
+The line never contains an e-mail address, an account or organisation
+identifier, a currency or an amount: only key names, types, and bool or
+`null` values. Key names come from Anthropic's server and have every
+character other than letters, digits, `_`, `.` and `-` replaced by `?`.
+Read the line before you share it all the same, since a key name could
+look like an identifier. If the first line ends `spend probe failed`, the
+`--spend` probe ran but did not finish in time or gave no usage reading, and
+the spend status is `unknown`. If it ends `spend not probed`, no `/usage` probe was
+asked for: the run had no `--spend`, or
+`AMPLIHACK_PROFILE_USAGE_PROBE=direct` was set. Then the spend status is
+`not_probed`. See
+[Usage credits on](../reference/profile-command.md#usage-credits-on) for
+every form the line can take.
 
 ### Probes on a busy host
 

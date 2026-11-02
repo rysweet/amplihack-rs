@@ -8,10 +8,10 @@
 
 use super::usage_cmd::{Raw, Row, marks_parts, render_table};
 use super::usage_parse::{UsageReport, UsageState, UsageWindow};
-use super::usage_source::Source;
+use super::usage_source::{Source, Spend};
 use super::usage_view::{
-    TimeView, bar_cell, colour_enabled, label, render_bars, reset_cell, reset_width, zone_label,
-    zone_name,
+    TimeView, bar_cell, bar_marks, colour_enabled, label, render_bars, reset_cell, reset_width,
+    zone_label, zone_name,
 };
 use chrono::{FixedOffset, TimeZone, Utc};
 use std::ffi::OsStr;
@@ -92,6 +92,8 @@ fn row(name: &str, rep: UsageReport) -> Row {
         raw: None,
         source: None,
         direct_failure: None,
+        spend: Spend::NotApplicable,
+        extra_shape: None,
     }
 }
 
@@ -894,7 +896,8 @@ fn a_hostile_name_is_cleaned_before_it_is_clipped() {
 }
 
 // ---------------------------------------------------------------------------
-// (e) --table keeps the old columns and ends with the order line
+// (e) --table keeps the table's columns, `SPEND` (#1856) last, and ends
+// with the order line
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -917,7 +920,8 @@ fn the_table_keeps_its_header_and_ends_with_the_order_line() {
             "SESSION",
             "SESSION RESETS",
             "WEEK",
-            "WEEK RESETS"
+            "WEEK RESETS",
+            "SPEND"
         ]
     );
     assert_eq!(out.lines().last(), Some(ORDER), "{out}");
@@ -927,4 +931,30 @@ fn the_table_keeps_its_header_and_ends_with_the_order_line() {
         line_of(&out, "work").contains("* hosts:personal live in ~/.claude"),
         "the table keeps the live mark: {out}"
     );
+}
+
+/// Issue #1856 in the bar view: every spend other than `n/a` follows the
+/// table's marks as `spend:<value>`; `n/a` adds nothing, so a credits-off
+/// row is as wide as before.
+#[test]
+fn bar_marks_add_the_spend_unless_it_is_n_a() {
+    let mut r = ok("mistt", Some((35.0, None)), Some((52.0, None)));
+    assert!(bar_marks(&r).is_empty());
+    r.default = true;
+    for (spend, mark) in [
+        (Spend::Ok, "spend:ok"),
+        (Spend::LimitReached, "spend:limit_reached"),
+        (Spend::Unknown, "spend:unknown"),
+        (Spend::NotProbed, "spend:not_probed"),
+    ] {
+        r.spend = spend;
+        assert_eq!(bar_marks(&r), ["*", mark]);
+        let out = render_bars(std::slice::from_ref(&r), &TimeView::Utc, false);
+        assert!(
+            line_of(&out, "mistt").ends_with(&format!("* {mark}")),
+            "{out}"
+        );
+    }
+    r.spend = Spend::NotApplicable;
+    assert_eq!(bar_marks(&r), ["*"]);
 }
