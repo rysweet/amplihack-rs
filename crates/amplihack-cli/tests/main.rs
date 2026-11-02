@@ -232,6 +232,8 @@ mod issue_1802_auto_drive_light_recipe;
 mod issue_1802_auto_drive_light_round;
 #[path = "issue_1803_rotation_owner.rs"]
 mod issue_1803_rotation_owner;
+#[path = "issue_1808_run_cleanup.rs"]
+mod issue_1808_run_cleanup;
 #[path = "issue_1811_fail_open.rs"]
 mod issue_1811_fail_open;
 #[path = "issue_1811_fixture.rs"]

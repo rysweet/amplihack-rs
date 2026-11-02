@@ -35,7 +35,7 @@ context:
   workstream: ""
   issue_number: ""
   branch_name: ""
-  worktree_dir: "./worktrees"
+  worktree_dir: ""  # empty: workflow_worktree_root.sh base decides (issue #1808)
   requirements_debate: ""
   n_version_implementations: ""
   refined_implementation: ""

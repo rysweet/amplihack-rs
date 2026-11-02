@@ -5,6 +5,7 @@ pub mod agent_binary;
 pub mod append;
 pub mod auto_mode;
 pub mod builder;
+pub mod cleanup;
 pub mod completions;
 pub mod config;
 pub mod cs_validate;
@@ -125,6 +126,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         #[cfg(unix)]
         Commands::Sessions(cmd) => sessions::run_sessions(cmd),
         Commands::Usage(cmd) => usage::run(cmd),
+        Commands::Cleanup(args) => cleanup::run(args),
         Commands::Governor(cmd) => governor::run(cmd),
         Commands::Agent(cmd) => agent::run_agent(cmd),
         Commands::Launch {
