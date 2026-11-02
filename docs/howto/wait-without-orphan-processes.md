@@ -157,13 +157,22 @@ the guard does not see (such as `bash <<< '…'`, `echo '…' | bash` and
 ## Where agents are told
 
 Agents are told to use `amplihack wait --seconds N`, or a background command
-and `wait $pid`, and never `tail -f /dev/null` or `timeout N tail -f /dev/null`, in two
-places:
+and `wait $pid`, and never `tail -f /dev/null` or `timeout N tail -f /dev/null`,
+in the places below. Each recipe entry reaches only the agent that runs that
+step, on whichever agent CLI it uses.
 
 | Place | Reaches |
 |-------|---------|
-| `step-13-local-testing` in `amplifier-bundle/recipes/workflow-precommit-test.yaml`, in the "Waiting" bullet that follows "Any long command" | Every agent CLI that runs the default workflow |
-| `amplifier-bundle/context/SYSTEM_PROMPT_APPEND.md` | Claude sessions started by amplihack |
+| `step-13-local-testing` in `amplifier-bundle/recipes/workflow-precommit-test.yaml`, in the "Waiting" bullet that follows "Any long command" | The agent running local testing in the default workflow |
+| `step-18b-implement-feedback` in `amplifier-bundle/recipes/workflow-pr-review.yaml`, in the "Waiting" checklist item | The agent implementing review feedback, the step where the orphans in issue #1794 came from |
+| `reflect-round-1`, `reflect-round-2` and `reflect-final` in `amplifier-bundle/recipes/smart-reflect-loop.yaml`, in the "Waiting" paragraph of the PR early-exit section | The reviewer agents that check PR CI status |
+| `amplifier-bundle/context/SYSTEM_PROMPT_APPEND.md` | Claude sessions started by amplihack, in every step |
+
+Any other step relies on the PreToolUse hook: a Copilot or Codex agent there
+learns the supported forms from the deny message on its first refused call.
+`step_13_and_system_prompt_name_the_supported_ways_to_wait` in
+`tests/integration/default_workflow_decomposition_test.rs` fails if any of
+these places loses the guidance.
 
 `AGENTS.md` does not carry this guidance; see
 [issue #1333](https://github.com/rysweet/amplihack-rs/issues/1333).
