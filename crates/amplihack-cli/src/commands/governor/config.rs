@@ -25,6 +25,9 @@ pub struct Settings {
     pub band_pct: u32,
     pub eval_interval_secs: u64,
     pub wait_secs: u64,
+    /// The oldest stored reading the governor uses, in seconds. An older
+    /// reading leaves its profile unknown (see `budget::stale_reading`).
+    pub max_reading_age_secs: u64,
 }
 
 impl Default for Settings {
@@ -37,6 +40,7 @@ impl Default for Settings {
             band_pct: 10,
             eval_interval_secs: 60,
             wait_secs: 600,
+            max_reading_age_secs: 3600,
         }
     }
 }
@@ -125,6 +129,12 @@ pub fn resolve(
         band_pct: small("governor.band_pct", 0, 50, d.band_pct),
         eval_interval_secs: int("governor.eval_interval_secs", 1, 3600, d.eval_interval_secs),
         wait_secs: int("governor.wait_secs", 0, GOVERNOR_WAIT_CAP_SECS, d.wait_secs),
+        max_reading_age_secs: int(
+            "governor.max_reading_age_secs",
+            60,
+            86_400,
+            d.max_reading_age_secs,
+        ),
     }
 }
 

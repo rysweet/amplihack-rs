@@ -15,7 +15,7 @@ use super::tests_seed::Root;
 
 #[test]
 fn nested_launch_runs_under_the_parent_slot() {
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     let state = State {
         limit: 1,
         slots: vec![me_slot("t-parent")],
@@ -42,7 +42,7 @@ fn nested_launch_runs_under_the_parent_slot() {
 /// depth; the parent marker alone nests it, so limit 1 does not deadlock.
 #[test]
 fn parent_marker_nests_a_start_without_session_depth() {
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     let state = State {
         limit: 1,
         slots: vec![me_slot("t-claude")],
@@ -112,7 +112,7 @@ fn a_leaked_tree_id_nests_nothing() {
 #[test]
 fn a_start_with_a_leaked_tree_id_counts_against_the_limit() {
     let other = Unrelated::spawn();
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     let state = State {
         limit: 1,
         slots: vec![other.slot("t-leaked")],
@@ -136,7 +136,7 @@ fn a_start_with_a_leaked_tree_id_counts_against_the_limit() {
 
 #[test]
 fn orphaned_nested_launch_is_top_level() {
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     let mut c = ctx(&r);
     c.session_depth = Some("2".into());
     c.tree_id = Some("t-gone".into());
@@ -169,7 +169,7 @@ const BELOW_RESERVE: &[super::tests_seed::Seed] = &[("alpha", 10.0, 95.0)];
 /// recipe, and they are admitted below the reserve.
 #[test]
 fn an_agent_step_of_a_recipe_nested_under_a_session_skips_the_reserve() {
-    let r = Root::new(BELOW_RESERVE);
+    let r = Root::live(BELOW_RESERVE);
     let state = State {
         slots: vec![me_slot("t-session")],
         ..State::default()

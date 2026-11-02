@@ -88,6 +88,8 @@ fn top_level_and_nested_key_sets_are_exact() {
         "eligible",
         "session_window",
         "invalid_reading",
+        "stale_reading",
+        "observed_at",
         "session",
         "weekly",
         "burn_rate",

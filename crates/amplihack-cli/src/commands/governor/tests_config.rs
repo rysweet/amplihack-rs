@@ -5,7 +5,8 @@
 //!
 //! Expected API in `config`:
 //! - `Settings { enabled: bool, max_concurrency: u32, reserve_points: u32,
-//!   step: u32, band_pct: u32, eval_interval_secs: u64, wait_secs: u64 }`,
+//!   step: u32, band_pct: u32, eval_interval_secs: u64, wait_secs: u64,
+//!   max_reading_age_secs: u64 }`,
 //!   `Default` with the documented defaults.
 //! - `resolve(env: &dyn Fn(&str) -> Option<String>, user: &dyn Fn(&str) ->
 //!   Option<Value>) -> Settings`, where `user` returns the user-scope value
@@ -49,6 +50,7 @@ fn defaults_match_the_documentation() {
         (4, 10, 1, 10)
     );
     assert_eq!((s.eval_interval_secs, s.wait_secs), (60, 600));
+    assert_eq!(s.max_reading_age_secs, 3600);
     assert_eq!(GOVERNOR_POLL_SECS, 15);
     assert_eq!(run(&env(&[]), &user(&[])), s);
 }

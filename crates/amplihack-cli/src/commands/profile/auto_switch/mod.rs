@@ -494,7 +494,9 @@ pub fn usage_view(root: &Path) -> Result<Option<UsageView>, ProfileError> {
 /// `(used percentage, resets_at)`: `None` for a non-finite percentage or a
 /// reset more than one day before or eight days after `now`, and the
 /// percentage clamped to 0 to 100 otherwise. The governor and the rotator
-/// share this one rule, so they classify a stored reading the same way.
+/// share this plausibility rule. It is not the whole of the rotator's test:
+/// [`fresh_reading`] also rejects a reading older than its `max_age`, and the
+/// governor applies its own age limit, `governor.max_reading_age_secs`.
 #[cfg(unix)]
 pub fn plausible_window(pct: f64, resets_at: i64, now: i64) -> Option<(f64, i64)> {
     usage::plausible(pct, resets_at, now).map(|w| (w.used_percentage, w.resets_at))

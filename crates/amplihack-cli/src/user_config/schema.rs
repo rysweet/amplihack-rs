@@ -274,6 +274,7 @@ pub(crate) static KEYS: &[KeyDef] = &[
     super::schema_governor::GOVERNOR_BAND_PCT,
     super::schema_governor::GOVERNOR_EVAL_INTERVAL_SECS,
     super::schema_governor::GOVERNOR_WAIT_SECS,
+    super::schema_governor::GOVERNOR_MAX_READING_AGE_SECS,
 ];
 
 /// The schema entry for `name`.

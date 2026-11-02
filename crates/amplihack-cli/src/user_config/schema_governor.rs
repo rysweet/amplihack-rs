@@ -32,3 +32,5 @@ pub(crate) const GOVERNOR_BAND_PCT: KeyDef = int("governor.band_pct", 0, 50, "10
 pub(crate) const GOVERNOR_EVAL_INTERVAL_SECS: KeyDef =
     int("governor.eval_interval_secs", 1, 3600, "60");
 pub(crate) const GOVERNOR_WAIT_SECS: KeyDef = int("governor.wait_secs", 0, 86_400, "600");
+pub(crate) const GOVERNOR_MAX_READING_AGE_SECS: KeyDef =
+    int("governor.max_reading_age_secs", 60, 86_400, "3600");

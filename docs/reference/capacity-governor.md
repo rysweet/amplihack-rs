@@ -42,9 +42,11 @@ Capacity governor: on; concurrency limit 3 of 4
 
 Profiles:
   alpha [active]
+    reading: 2026-11-01 13:50 UTC
     session: 62.0% (resets 2026-11-01 15:00 UTC; burn 2.1/h, sustainable 0.4/h)
     weekly:  71.0% (resets 2026-11-05 09:00 UTC; burn 0.9/h, sustainable 0.3/h)
   beta
+    reading: 2026-11-01 13:35 UTC
     session: no session window
     weekly:  38.0% (resets 2026-11-07 09:00 UTC; burn 0.6/h, sustainable 0.5/h)
 
@@ -210,15 +212,33 @@ pool. So is a profile with a window that fails the rotator's plausibility
 rule, `usage::plausible` (issue #1844): a percentage that is not finite, or a
 `resets_at` more than one day before or eight days after the time the reading
 was observed. The governor calls that same function rather than keeping a
-rule of its own, so it and the rotator classify a stored reading the same way.
-A percentage outside 0 to 100 is clamped, not rejected: a stored 150% is an
+plausibility rule of its own. A percentage outside 0 to 100 is clamped, not rejected: a stored 150% is an
 exhausted 100%, so the profile stays in the pool and is held as exhausted. The
 check is made against the time of the reading, not the current time, so a
 reading whose reset has since passed is still used and its window counts as
 started again from zero. A damaged session window is never taken as "no
 session window", which would drop the session limit. Status marks such a
 profile with `invalid_reading: true` in JSON and `invalid reading` in the
-table. If every profile is unknown, step 1 admits the start.
+table.
+
+A profile whose reading is older than `governor.max_reading_age_secs`
+(default one hour), or is dated after the current time, is also unknown and
+left out of the pool. Weekly use only rises until the window resets, so an
+old reading can only overstate the room left: a profile read six days ago at
+10% with its reset one day away would otherwise count as 90 points of room,
+and the reserve and exhaustion checks would rest on that figure. The rotator
+applies the same kind of test before it trusts a stored reading
+(`fresh_reading`, issue #1844), with its own limit,
+`AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` (default 300 seconds). That
+limit decides whether a stored reading may stand in for a direct read made
+just before a switch, so it is short. The governor reads only stored
+readings, and a profile that is not in use is read less often, so a
+five-minute limit would leave most idle profiles out of the pool. Status
+marks a profile with an old reading with `stale_reading: true` in JSON and
+`stale reading` in the table, and shows when every reading was taken
+(`observed_at`, and `reading:` in the table).
+
+If every profile is unknown, step 1 admits the start.
 
 ### A session reset never adds weekly capacity
 
@@ -586,6 +606,7 @@ the governor off or loosen it. See [User Configuration](./user-config.md).
 | `governor.band_pct` | integer, 0 to 50 | `10` | |
 | `governor.eval_interval_secs` | integer, 1 to 3600 | `60` | |
 | `governor.wait_secs` | integer, 0 to 86400 | `600` | `--governor-wait`, then `AMPLIHACK_GOVERNOR_WAIT` |
+| `governor.max_reading_age_secs` | integer, 60 to 86400 | `3600` | |
 
 The governor reads `AMPLIHACK_GOVERNOR`, `AMPLIHACK_GOVERNOR_WAIT` and
 `--governor-wait` itself, because they accept values the config file does
@@ -690,8 +711,10 @@ entries and renames no corrupt files. A dead slot or queue entry is shown
 with `stale`. With no profile root, or with only `HOME` set, it reports the
 governor state and creates nothing.
 
-The table shows `no session window` for weekly-only profiles and
-`invalid reading` for a profile whose reading cannot be trusted. Profile names
+The table shows when each profile's reading was taken (`reading:`),
+`no session window` for weekly-only profiles, `invalid reading` for a profile
+whose reading cannot be trusted and `stale reading` for one whose reading is
+older than `governor.max_reading_age_secs`. Profile names
 and other strings are printed with control characters replaced by `?` and
 are cut to 64 characters.
 
@@ -713,6 +736,8 @@ are cut to 64 characters.
       "eligible": true,
       "session_window": true,
       "invalid_reading": false,
+      "stale_reading": false,
+      "observed_at": 1793541000,
       "session": {
         "used_pct": 62.0,
         "resets_at": 1793548800,
@@ -737,6 +762,8 @@ are cut to 64 characters.
       "eligible": true,
       "session_window": false,
       "invalid_reading": false,
+      "stale_reading": false,
+      "observed_at": 1793540100,
       "session": null,
       "weekly": {
         "used_pct": 38.0,
@@ -795,6 +822,8 @@ are cut to 64 characters.
 | `profiles[]` | Every listed profile, including those left out of the pool; `eligible` is `false` for overflow and API-key profiles |
 | `profiles[].session_window` | `false` for a weekly-only profile (a week window and no session window); `session` is then `null`. Not "no session limit": the reading cannot tell the two apart |
 | `profiles[].invalid_reading` | `true` when a window fails `usage::plausible`: a percentage that is not finite, or a `resets_at` more than one day before or eight days after the reading. The profile is then out of the pool and `session` and `weekly` are `null`. A percentage outside 0 to 100 is clamped, not invalid |
+| `profiles[].stale_reading` | `true` when the reading is older than `governor.max_reading_age_secs`, or dated after `generated_at`. The profile is then out of the pool and `session` and `weekly` are `null` |
+| `profiles[].observed_at` | When the reading was taken, in Unix seconds; `null` for a profile with no reading |
 | `profiles[].weekly` | `null` for a profile with no usable weekly reading; such a profile is not part of the pool |
 | `profiles[].burn_rate`, `sustainable_rate`, `forecast_exhaustion` | The weekly window's values, repeated for scripts; `null` when unknown |
 | Window objects | `used_pct`, `resets_at` (Unix seconds or `null`), and the window's rate fields |

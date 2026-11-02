@@ -32,6 +32,7 @@ fn keys_are_in_documented_order() {
             "governor.band_pct",
             "governor.eval_interval_secs",
             "governor.wait_secs",
+            "governor.max_reading_age_secs",
         ]
     );
 }
@@ -73,6 +74,7 @@ fn user_only_keys_are_agent_home_node_log_dir_and_governor() {
             "governor.band_pct",
             "governor.eval_interval_secs",
             "governor.wait_secs",
+            "governor.max_reading_age_secs",
         ]
     );
 }
@@ -180,7 +182,7 @@ fn paths_home_rejects_overlong_values() {
 /// itself.
 #[test]
 fn governor_keys_are_user_only_with_documented_ranges_and_defaults() {
-    let cases: [(&str, Option<Value>, &str, &str); 7] = [
+    let cases: [(&str, Option<Value>, &str, &str); 8] = [
         (
             "governor.enabled",
             Some(Value::Bool(true)),
@@ -202,6 +204,12 @@ fn governor_keys_are_user_only_with_documented_ranges_and_defaults() {
             Some(Value::Int(600)),
             "86400",
             "86401",
+        ),
+        (
+            "governor.max_reading_age_secs",
+            Some(Value::Int(3600)),
+            "60",
+            "59",
         ),
     ];
     for (name, default, ok, bad) in cases {

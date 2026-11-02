@@ -25,6 +25,7 @@ mod queue;
 mod rate;
 mod status;
 mod status_table;
+mod status_views;
 mod store;
 
 #[cfg(all(test, unix))]
@@ -49,6 +50,8 @@ mod tests_policy_reserve;
 mod tests_queue;
 #[cfg(test)]
 mod tests_rate;
+#[cfg(all(test, unix))]
+mod tests_reading_age;
 #[cfg(all(test, unix))]
 mod tests_seed;
 #[cfg(test)]

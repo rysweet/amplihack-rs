@@ -96,7 +96,7 @@ fn round(
     }
     let snaps = inputs::snapshots(root);
     inputs::record(&mut l.history, &snaps);
-    let budgets = inputs::budgets(&snaps, now);
+    let budgets = inputs::budgets(&snaps, now, ctx.settings.max_reading_age_secs);
     let (_, signal) = inputs::rates(&budgets, &l.history, now, ctx.settings.band_pct);
     if parent.is_none() && ticket.is_none() && l.queue.entries.len() >= GOVERNOR_QUEUE_CAP {
         let f = FailOpen::new(

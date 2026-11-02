@@ -74,7 +74,7 @@ pub(super) const ROOMY: &[Seed] = &[("alpha", 10.0, 20.0)];
 
 #[test]
 fn admitted_start_holds_a_slot_until_the_guard_drops() {
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     let guard = admit_with(&ctx(&r)).expect("room");
     assert_eq!(guard.fail_open(), None);
     let (state, _) = load(&r);
@@ -88,7 +88,7 @@ fn admitted_start_holds_a_slot_until_the_guard_drops() {
 
 #[test]
 fn weekly_exhaustion_is_denied_with_exit_80() {
-    let r = Root::new(&[("alpha", 10.0, 100.0), ("beta", -1.0, 100.0)]);
+    let r = Root::live(&[("alpha", 10.0, 100.0), ("beta", -1.0, 100.0)]);
     let denied = admit_with(&ctx(&r)).err().expect("denied");
     assert_eq!(denied.code(), "weekly-exhausted");
     let err = denied.report();
@@ -102,7 +102,7 @@ fn weekly_exhaustion_is_denied_with_exit_80() {
 
 #[test]
 fn an_expired_concurrency_wait_is_wait_expired_and_leaves_no_queue_entry() {
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     let state = State {
         limit: 1,
         slots: vec![me_slot("t-held")],
@@ -120,7 +120,7 @@ fn an_expired_concurrency_wait_is_wait_expired_and_leaves_no_queue_entry() {
 
 #[test]
 fn top_level_admission_settles_a_tree_id_and_records_it() {
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     let guard = admit_with(&ctx(&r)).unwrap();
     let id = guard.tree_id().expect("a tree id").to_string();
     assert!(!id.is_empty() && id.len() <= 128);
@@ -142,28 +142,28 @@ fn fail_open_code(r: &Root, c: &AdmitContext) -> &'static str {
 
 #[test]
 fn every_fault_admits_with_its_code() {
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     let mut c = ctx(&r);
     c.root = None;
     assert_eq!(fail_open_code(&r, &c), "no-root");
 
-    let r = Root::new(&[]);
+    let r = Root::live(&[]);
     assert_eq!(fail_open_code(&r, &ctx(&r)), "no-readings");
 
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     let outside = r.tmp.path().join("outside");
     fs::create_dir(&outside).unwrap();
     std::os::unix::fs::symlink(&outside, r.gov()).unwrap();
     assert_eq!(fail_open_code(&r, &ctx(&r)), "state-dir");
     assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
 
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     Store::open(&r.root).unwrap();
     fs::write(r.gov().join("state.json"), "{bad").unwrap();
     assert_eq!(fail_open_code(&r, &ctx(&r)), "corrupt-state");
     assert!(r.gov().join("state.json.corrupt").exists());
 
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     Store::open(&r.root).unwrap();
     fs::write(r.gov().join("state.json"), r#"{"version":7}"#).unwrap();
     assert_eq!(fail_open_code(&r, &ctx(&r)), "state-version");
@@ -175,7 +175,7 @@ fn every_fault_admits_with_its_code() {
 
 #[test]
 fn a_full_queue_admits_without_queueing() {
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     let pid = std::process::id();
     let entries = (1..=4096)
         .map(|seq| QueueEntry {
@@ -201,7 +201,7 @@ fn a_full_queue_admits_without_queueing() {
 
 #[test]
 fn canary_secrets_never_reach_governor_state() {
-    let r = Root::new(ROOMY);
+    let r = Root::live(ROOMY);
     let auto = r.root.join(".auto-switch.d");
     let ledger = r#"{"version":1,"hosts":{"alpha":{"live":"acct-SECRET","swapped_at":1793000000,"pre_swap_fingerprint":null}}}"#;
     fs::write(auto.join("ledger.json"), ledger).unwrap();

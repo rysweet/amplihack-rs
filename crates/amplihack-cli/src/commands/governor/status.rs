@@ -3,108 +3,24 @@
 //! records are shown as `stale`. JSON schema version 1:
 //! docs/reference/capacity-governor.md#json-output.
 
-use super::budget::{Headroom, headroom, invalid_reading, weekly_remaining};
+use super::budget::{Headroom, headroom, invalid_reading, stale_reading, weekly_remaining};
 use super::config::Settings;
 use super::inputs::{self, ProfileRates};
 use super::liveness::alive;
-use super::model::{Class, WindowBudget};
+use super::model::WindowBudget;
 use super::queue::admissions_to;
 use super::rate::WindowRate;
 use super::store::{History, Peek, Queue, State, Store};
-use serde::Serialize;
 use std::collections::BTreeSet;
 use std::path::Path;
 
 pub use super::status_table::{display_safe, render_table};
+pub use super::status_views::{
+    ProfileView, QueueView, ReasonView, ReserveView, SlotView, StatusView, WindowView,
+    WorkstreamView,
+};
 
 pub const STATUS_VERSION: u32 = 1;
-
-#[derive(Debug, Serialize)]
-pub struct StatusView {
-    pub version: u32,
-    pub generated_at: i64,
-    pub enabled: bool,
-    pub limit: Option<u32>,
-    pub max: u32,
-    pub profiles: Vec<ProfileView>,
-    pub reserve: ReserveView,
-    pub slots: Vec<SlotView>,
-    pub queue: Vec<QueueView>,
-    pub workstreams: Vec<WorkstreamView>,
-    pub fail_open_reason: Option<ReasonView>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct WindowView {
-    pub used_pct: f64,
-    pub resets_at: Option<i64>,
-    pub burn_rate: Option<f64>,
-    pub sustainable_rate: Option<f64>,
-    pub forecast_exhaustion: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ProfileView {
-    pub name: String,
-    pub active: bool,
-    pub eligible: bool,
-    /// `false` when the reading has a week window and no session window.
-    /// That is not "no session limit": the stored reading cannot tell a plan
-    /// with none from a session window that was not recorded (#1818).
-    pub session_window: bool,
-    /// A window fails `usage::plausible` (see `budget::invalid_reading`): the
-    /// profile is out of the pool and `session` and `weekly` are `null`. A
-    /// percentage outside 0 to 100 is clamped, not invalid.
-    pub invalid_reading: bool,
-    pub session: Option<WindowView>,
-    /// `null` for a profile with no weekly reading.
-    pub weekly: Option<WindowView>,
-    pub burn_rate: Option<f64>,
-    pub sustainable_rate: Option<f64>,
-    pub forecast_exhaustion: Option<i64>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ReserveView {
-    pub points: u32,
-    pub best_weekly_remaining: Option<f64>,
-    pub ordinary_held: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct SlotView {
-    pub pid: u32,
-    pub workstream: String,
-    pub class: Class,
-    pub admitted_at: i64,
-    pub nested_children: u32,
-    pub stale: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct QueueView {
-    pub seq: u64,
-    pub workstream: String,
-    pub class: Class,
-    pub pid: u32,
-    pub enqueued_at: i64,
-    pub stale: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct WorkstreamView {
-    pub name: String,
-    pub admissions: usize,
-    pub slots: usize,
-    pub waiting: usize,
-    pub token_share: Option<f64>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ReasonView {
-    pub code: String,
-    pub message: String,
-}
 
 fn window(w: &WindowBudget, r: &WindowRate) -> WindowView {
     WindowView {
@@ -181,7 +97,7 @@ pub fn view(
         });
     }
     let snaps = inputs::snapshots(root);
-    let budgets = inputs::budgets(&snaps, now);
+    let budgets = inputs::budgets(&snaps, now, settings.max_reading_age_secs);
     let (rates, _) = inputs::rates(&budgets, &history, now, settings.band_pct);
     let profiles = snaps
         .iter()
@@ -201,6 +117,9 @@ pub fn view(
                 eligible: s.eligible,
                 session_window: !s.no_session_window,
                 invalid_reading: invalid_reading(s),
+                stale_reading: stale_reading(s, settings.max_reading_age_secs, now),
+                observed_at: (s.five_hour.is_some() || s.seven_day.is_some())
+                    .then_some(s.observed_at),
                 burn_rate: weekly.as_ref().and_then(|w| w.burn_rate),
                 sustainable_rate: weekly.as_ref().and_then(|w| w.sustainable_rate),
                 forecast_exhaustion: weekly.as_ref().and_then(|w| w.forecast_exhaustion),

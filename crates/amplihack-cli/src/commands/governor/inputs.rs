@@ -2,7 +2,7 @@
 //! history: budgets, the samples behind the burn rate, each window's rates
 //! and the rate signal (D4, D12).
 
-use super::budget::budget_from_snapshot;
+use super::budget::{budget_from_snapshot, stale_reading};
 use super::files::{History, push_sample};
 use super::model::{Budget, Sample, WindowBudget};
 use super::rate::{RateSignal, WindowRate, burn_rate, forecast, signal, sustainable};
@@ -36,10 +36,15 @@ fn rolled(w: WindowBudget, now: i64) -> WindowBudget {
     }
 }
 
-/// The budget of every profile with a usable weekly reading.
-pub fn budgets(snaps: &[ProfileSnapshot], now: i64) -> Vec<Budget> {
+/// The budget of every profile with a usable weekly reading taken no more
+/// than `max_age` seconds before `now` (`governor.max_reading_age_secs`). A
+/// stale reading leaves its profile unknown, like an invalid one: an old
+/// weekly reading whose reset is still ahead would otherwise count as room
+/// that later use may already have spent.
+pub fn budgets(snaps: &[ProfileSnapshot], now: i64, max_age: u64) -> Vec<Budget> {
     snaps
         .iter()
+        .filter(|s| !stale_reading(s, max_age, now))
         .filter_map(budget_from_snapshot)
         .map(|mut b| {
             b.weekly = rolled(b.weekly, now);

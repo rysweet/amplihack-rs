@@ -86,6 +86,8 @@ pub fn render_table(v: &StatusView) -> String {
         // tell a plan with none from a window that was not recorded (#1818).
         let missing = if p.invalid_reading {
             "invalid reading"
+        } else if p.stale_reading {
+            "stale reading"
         } else {
             "no reading"
         };
@@ -94,6 +96,9 @@ pub fn render_table(v: &StatusView) -> String {
         } else {
             window(p.session.as_ref(), "no session window")
         };
+        if p.observed_at.is_some() {
+            let _ = writeln!(out, "    reading: {}", time(p.observed_at));
+        }
         let _ = writeln!(out, "    session: {session}");
         let _ = writeln!(out, "    weekly:  {}", window(p.weekly.as_ref(), missing));
     }

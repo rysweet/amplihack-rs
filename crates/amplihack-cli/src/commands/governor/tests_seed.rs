@@ -37,6 +37,17 @@ impl Root {
     /// A root with `profiles`, the first of them active, and readings for
     /// each. An empty slice gives a root with one profile and no readings.
     pub fn new(profiles: &[Seed]) -> Self {
+        Self::new_at(profiles, NOW)
+    }
+
+    /// [`Root::new`] with readings observed now, by the real clock, for
+    /// tests of `admit`, which reads the clock itself and leaves out any
+    /// reading older than `governor.max_reading_age_secs` or dated after now.
+    pub fn live(profiles: &[Seed]) -> Self {
+        Self::new_at(profiles, super::store::now())
+    }
+
+    fn new_at(profiles: &[Seed], at: i64) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("profiles");
         private_dir(&root);
@@ -55,23 +66,23 @@ impl Root {
         private(&root.join(".default"), &format!("{}\n", names[0]));
         let r = Self { tmp, root };
         if !profiles.is_empty() {
-            r.readings(profiles);
+            r.readings_at(profiles, at);
         }
         r
     }
 
-    /// Replaces `usage.json` with these readings, observed at `NOW`.
-    pub fn readings(&self, profiles: &[Seed]) {
+    /// Replaces `usage.json` with these readings, observed at `at`.
+    fn readings_at(&self, profiles: &[Seed], at: i64) {
         let mut accounts = serde_json::Map::new();
         for (name, session, weekly) in profiles {
             let mut reading = serde_json::json!({
-                "seven_day": {"used_percentage": weekly, "resets_at": NOW + 48 * HOUR},
-                "observed_at": NOW,
+                "seven_day": {"used_percentage": weekly, "resets_at": at + 48 * HOUR},
+                "observed_at": at,
                 "source": "statusline",
             });
             if *session >= 0.0 {
                 reading["five_hour"] =
-                    serde_json::json!({"used_percentage": session, "resets_at": NOW + 2 * HOUR});
+                    serde_json::json!({"used_percentage": session, "resets_at": at + 2 * HOUR});
             }
             accounts.insert(name.to_string(), reading);
         }

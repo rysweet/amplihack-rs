@@ -155,6 +155,7 @@ command, so it never prints `flag`.
 | `governor.band_pct` | integer, 0 to 50 | `10` | — | — | user only |
 | `governor.eval_interval_secs` | integer seconds, 1 to 3600 | `60` | — | — | user only |
 | `governor.wait_secs` | integer seconds, 0 to 86400 | `600` | — | — | user only |
+| `governor.max_reading_age_secs` | integer seconds, 60 to 86400 | `3600` | — | — | user only |
 
 Any other key is an error for `config set` and a diagnostic when found in a
 file. A user-only key in a project file is reported and ignored.
@@ -386,8 +387,9 @@ when `recipe run`, `claude` and `launch` may start.
 | `governor.band_pct` | Width of the band around the sustainable rate in which the limit stays put. |
 | `governor.eval_interval_secs` | Shortest time between two rate evaluations. |
 | `governor.wait_secs` | Default longest wait for admission; `0` means do not wait. |
+| `governor.max_reading_age_secs` | Oldest stored usage reading the governor uses; a profile with an older reading is left out of the pool. |
 
-All seven are user-only, so a project file cannot turn the governor off or
+All eight are user-only, so a project file cannot turn the governor off or
 loosen it.
 
 The Keys table lists no environment variable or flag for these keys. The

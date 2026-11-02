@@ -123,7 +123,8 @@ fn platform_names(_store: &ProfileStore, _home: Option<&Path>) -> Option<Vec<Pro
 /// window as `(used percentage, resets_at)`: `None` for a non-finite
 /// percentage or a reset more than one day before or eight days after `now`;
 /// otherwise the percentage clamped to 0 to 100. The governor uses this and
-/// no rule of its own, so it reads a stored window as the rotator does.
+/// no plausibility rule of its own. The reading's age is checked separately,
+/// by `governor::budget::stale_reading`.
 #[cfg(unix)]
 pub fn plausible(pct: f64, resets_at: i64, now: i64) -> Option<(f64, i64)> {
     super::auto_switch::plausible_window(pct, resets_at, now)
