@@ -261,6 +261,7 @@ fn usage_shows_the_api_key_row_without_probing_it() {
         .lines()
         .skip(1)
         .take_while(|l| !l.is_empty())
+        .filter(|l| !l.starts_with("times: ") && !l.starts_with("order: "))
         .filter_map(|l| l.split_whitespace().next())
         .collect();
     assert_eq!(names.last(), Some(&"console"), "{s}");

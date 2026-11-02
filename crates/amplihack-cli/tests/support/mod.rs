@@ -15,5 +15,5 @@ pub mod quiet_process;
 #[path = "../../src/runner_probe.rs"]
 pub mod runner_probe;
 pub mod sessions_archive;
-pub mod socket_tempdir;
+pub mod socket_dir;
 pub mod test_path;

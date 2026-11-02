@@ -41,9 +41,11 @@ fn displays(fx: &Fx) -> Vec<TmuxCall> {
         .collect()
 }
 
-/// A real socket file at `dir/sock`, `dir` created with `mode`.
+/// A real socket file at `dir/sock`, `dir` created with `mode`. `dir` is
+/// under `TMUX_TMPDIR`, which the fixture chose so a socket path fits in
+/// `sun_path`; `name/sock` is no longer than `tmux-<uid>/default`.
 fn socket_in(fx: &Fx, name: &str, mode: u32) -> PathBuf {
-    let dir = fx.root.join(name);
+    let dir = fx.tmux_tmpdir.join(name);
     fs::create_dir_all(&dir).unwrap();
     chmod(&dir, mode);
     let s = dir.join("sock");
