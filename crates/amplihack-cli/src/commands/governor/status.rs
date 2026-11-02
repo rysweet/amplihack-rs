@@ -128,9 +128,19 @@ pub fn view(
             }
         })
         .collect();
+    // The pool step 4 of `policy::decide` reads (`with_session`): eligible,
+    // and neither window exhausted. A stale reading is kept in `budgets` only
+    // when one of its windows is exhausted, so it never enters this pool and
+    // its other window never counts as room, here or at admission.
     let pool: Vec<_> = budgets
         .iter()
-        .filter(|b| b.eligible && headroom(b, 0.0) != Headroom::WeeklyExhausted)
+        .filter(|b| {
+            b.eligible
+                && !matches!(
+                    headroom(b, 0.0),
+                    Headroom::WeeklyExhausted | Headroom::SessionExhausted
+                )
+        })
         .collect();
     let reserve_pts = f64::from(settings.reserve_points);
     let reserve = ReserveView {

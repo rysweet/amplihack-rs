@@ -227,3 +227,35 @@ fn status_shows_a_kept_stale_exhausted_reading() {
     let table = render_table(&v);
     assert!(table.contains("alpha [active, stale reading]"), "{table}");
 }
+
+/// Crusty round 9: a profile kept only because its stale session window is
+/// exhausted adds no weekly room to the status reserve summary, as it adds
+/// none at step 4. Session 100% and weekly 10%, read two hours ago.
+#[test]
+fn status_counts_no_weekly_room_from_a_stale_session_exhausted_reading() {
+    let r = Root::new(&[("alpha", 100.0, 10.0)]);
+    age(&r, "alpha", 2 * HOUR);
+    let v = view(Some(&r.root), &Settings::default(), None, NOW);
+    let json = serde_json::to_value(&v).unwrap();
+    assert_eq!(json["profiles"][0]["stale_reading"], true, "{json}");
+    assert_eq!(json["profiles"][0]["session"]["used_pct"], 100.0, "{json}");
+    assert_ne!(json["reserve"]["best_weekly_remaining"], 90.0, "{json}");
+    assert_eq!(
+        json["reserve"]["best_weekly_remaining"],
+        Value::Null,
+        "{json}"
+    );
+    assert_eq!(json["reserve"]["ordinary_held"], false, "{json}");
+    let table = render_table(&v);
+    assert!(!table.contains("best weekly remainder 90.0"), "{table}");
+}
+
+/// A fresh profile beside it still sets the remainder from its own reading.
+#[test]
+fn status_reserve_uses_the_fresh_profile_beside_a_stale_session_exhausted_one() {
+    let r = Root::new(&[("alpha", 100.0, 10.0), ("beta", 20.0, 70.0)]);
+    age(&r, "alpha", 2 * HOUR);
+    let v = serde_json::to_value(view(Some(&r.root), &Settings::default(), None, NOW)).unwrap();
+    assert_eq!(v["reserve"]["best_weekly_remaining"], 30.0, "{v}");
+    assert_eq!(v["reserve"]["ordinary_held"], false, "{v}");
+}

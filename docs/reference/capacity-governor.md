@@ -842,7 +842,7 @@ are cut to 64 characters.
 | `profiles[].weekly` | `null` for a profile with no usable weekly reading; such a profile is not part of the pool |
 | `profiles[].burn_rate`, `sustainable_rate`, `forecast_exhaustion` | The weekly window's values, repeated for scripts; `null` when unknown |
 | Window objects | `used_pct`, `resets_at` (Unix seconds or `null`), and the window's rate fields |
-| `reserve` | Reserve points, the best usable weekly remainder, and whether ordinary work is currently held |
+| `reserve` | Reserve points, the best usable weekly remainder, and whether ordinary work is currently held. Both are taken over the profiles step 4 reads: eligible, with neither window exhausted. A profile kept only for a stale exhausted window is not among them, so its other window never counts as room. `best_weekly_remaining` is `null` when no profile qualifies |
 | `slots[]`, `queue[]` | As in the state files, without start times or tree ids, plus `stale` |
 | `workstreams[].admissions` | Admissions in the 24-hour fairness window |
 | `workstreams[].token_share` | For the workstream the manifest named by `AMPLIHACK_GOVERNOR_MANIFEST` describes: its attributed tokens divided by every observed token in the manifest's sessions, so unattributed tokens lower the share. `null` for other workstreams, without a manifest, or when the manifest is not an absolute path to a regular file of the current user of at most 4096 bytes. The manifest path is never printed. |

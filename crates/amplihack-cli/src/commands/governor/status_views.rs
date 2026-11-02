@@ -57,6 +57,9 @@ pub struct ProfileView {
     pub forecast_exhaustion: Option<i64>,
 }
 
+/// The reserve summary, over the profiles step 4 of `policy::decide` reads:
+/// eligible, with neither window exhausted. A profile kept for a stale
+/// exhausted window is never among them, so a stale reading adds no room.
 #[derive(Debug, Serialize)]
 pub struct ReserveView {
     pub points: u32,
