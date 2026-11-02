@@ -108,9 +108,12 @@ steps:
       TOOLS_DIR="$(dirname "$DECONFLICT_HELPER")"
       DECONFLICT_HELPER="$TOOLS_DIR/workflow_worktree_deconflict.sh"
       [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
-      # Issue #1808: a caller-supplied worktree_dir wins; else `workflow_worktree_root.sh base`.
+      # Issue #1808: a caller-supplied worktree_dir wins; else `workflow_worktree_root.sh base`, asked only
+      # with AMPLIHACK_WORK_ROOT_EXPLICIT=1 and a work root (older helpers lack `base`; otherwise it is <main>/worktrees).
       ROOT_HELPER="$TOOLS_DIR/workflow_worktree_root.sh"
-      [ -n "${WORKTREE_DIR:-}" ] || [ ! -f "$ROOT_HELPER" ] || WORKTREE_DIR="$(bash "$ROOT_HELPER" base "$(pwd)")" || { echo "ERROR: cannot work out where worktrees go (see above; issue #1808)." >&2; exit 1; }
+      if [ -z "${WORKTREE_DIR:-}" ] && [ -f "$ROOT_HELPER" ] && [ "${AMPLIHACK_WORK_ROOT_EXPLICIT:-0}" = 1 ] && [ -n "${AMPLIHACK_WORK_ROOT:-}" ]; then
+        WORKTREE_DIR="$(bash "$ROOT_HELPER" base "$(pwd)")" || { echo "ERROR: cannot work out where worktrees go (see above; issue #1808)." >&2; exit 1; }
+      fi
       [ -n "$WORKTREE_DIR" ] || WORKTREE_DIR="$(cd "$(git rev-parse --git-common-dir)/.." && pwd -P)/worktrees"
       EXISTING_BRANCH="${EXISTING_BRANCH:-}"
       PR_NUMBER="${PR_NUMBER:-}"

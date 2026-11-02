@@ -38,13 +38,18 @@ steps:
       REPO_PATH="$(pwd -P)"
 
       # Canonical 5-tier helper ladder (#829/#840/#962). Lifecycle logic lives in
-      # tools/ so this recipe stays < 400 lines; a missing helper is a no-op.
+      # tools/ so this recipe stays < 400 lines; a missing helper is a no-op, except pr_number's.
       SWEEP_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="$(pwd)/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       TOOLS_DIR="$(dirname "$SWEEP_HELPER")"
+      # An AMPLIHACK_HOME older than a checkout's recipe lacks newer helpers, so when that tier is
+      # incomplete and the checkout holds every helper in STEP_TOOLS, use the checkout's (#1808).
+      STEP_TOOLS="workflow_worktree_root.sh workflow_branch_name.sh workflow_pr_branch.sh workflow_caller_branch_alias.sh workflow_alias_reuse.sh workflow_worktree_deconflict.sh workflow_fetch_origin.sh amplihack_run_owned.sh workflow_runtime_root.sh"
+      tools_complete() { local t; for t in $STEP_TOOLS; do [ -f "$1/$t" ] || return 1; done; }
+      tools_complete "$TOOLS_DIR" || ! tools_complete "$REPO_PATH/amplifier-bundle/tools" || TOOLS_DIR="$REPO_PATH/amplifier-bundle/tools"
       # Worktree anchoring (#1134): nested recipe RUNNERS are legitimate, and a
       # nested run's cwd is normally a LINKED worktree (`.git` is a FILE pointing at
       # the main repo), so anchoring `worktrees/<branch>` at `pwd -P` built worktrees
@@ -53,10 +58,10 @@ steps:
       MAIN_REPO_PATH="$REPO_PATH"
       if [ -f "$ROOT_HELPER" ]; then bash "$ROOT_HELPER" assert-origin "$REPO_PATH" || exit 1; MAIN_REPO_PATH="$(bash "$ROOT_HELPER" root "$REPO_PATH" || printf '%s' "$REPO_PATH")"; fi
       [ -d "$MAIN_REPO_PATH" ] || MAIN_REPO_PATH="$REPO_PATH"
-      # Worktree base (#1808): under the work root only with AMPLIHACK_WORK_ROOT_EXPLICIT=1,
-      # else <main>/worktrees (#1134). `base` prints its own reason when it fails.
+      # Worktree base (#1808): under the work root only with AMPLIHACK_WORK_ROOT_EXPLICIT=1 and a
+      # work root, else <main>/worktrees (#1134), so `base` (absent from older helpers) is only asked then.
       WT_BASE="${MAIN_REPO_PATH}/worktrees"
-      if [ -f "$ROOT_HELPER" ]; then
+      if [ -f "$ROOT_HELPER" ] && [ "${AMPLIHACK_WORK_ROOT_EXPLICIT:-0}" = 1 ] && [ -n "${AMPLIHACK_WORK_ROOT:-}" ]; then
         WT_BASE="$(bash "$ROOT_HELPER" base "$MAIN_REPO_PATH")" || exit 1
       fi
       [ "$MAIN_REPO_PATH" = "$REPO_PATH" ] || echo "INFO: caller checkout '$REPO_PATH' is a linked worktree — anchoring new worktrees at main repository '$MAIN_REPO_PATH' (issue #1134)." >&2
@@ -245,13 +250,10 @@ steps:
         exit 0
       fi
 
-      # Fetch latest refs and resolve the base branch without assuming origin/main.
-      # A task worktree branches off a fetched remote ref, never the caller's HEAD (#858).
-      for FETCH_TRY in 1 2 3; do
-        git fetch origin --no-tags >&2 && break
-        echo "WARNING: git fetch origin failed (attempt ${FETCH_TRY}/3); after the last attempt, continuing with local refs." >&2
-        [ "$FETCH_TRY" -eq 3 ] || sleep "$FETCH_TRY"
-      done
+      # Fetch with retries (tools/workflow_fetch_origin.sh; one plain fetch without it), then resolve
+      # the base without assuming origin/main: a task worktree never branches off the caller's HEAD (#858).
+      if [ -f "$TOOLS_DIR/workflow_fetch_origin.sh" ]; then bash "$TOOLS_DIR/workflow_fetch_origin.sh"
+      else git fetch origin --no-tags >&2 || true; fi
       resolve_base_ref() {
         local ref
         ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
@@ -364,10 +366,14 @@ steps:
       git -C "${WORKTREE_PATH}" push origin "${BRANCH_NAME}" > /dev/null 2>&1 || true
       git -C "${WORKTREE_PATH}" branch --set-upstream-to="origin/${BRANCH_NAME}" "${BRANCH_NAME}" > /dev/null 2>&1 || true
 
-      # Per-branch runtime root and its folders: tools/workflow_runtime_root.sh (#1808).
+      # Per-branch runtime root and its folders: tools/workflow_runtime_root.sh, else made here (#1808).
       RUNTIME_HELPER="$TOOLS_DIR/workflow_runtime_root.sh"
-      [ -f "$RUNTIME_HELPER" ] || { echo "ERROR: $RUNTIME_HELPER not found; cannot set up the runtime root." >&2; exit 1; }
-      AMPLIHACK_RUNTIME_ROOT="$(bash "$RUNTIME_HELPER" "$BRANCH_NAME")" || exit 1
+      if [ -f "$RUNTIME_HELPER" ]; then
+        AMPLIHACK_RUNTIME_ROOT="$(bash "$RUNTIME_HELPER" "$BRANCH_NAME")" || exit 1
+      else
+        AMPLIHACK_RUNTIME_ROOT="${AMPLIHACK_RUNTIME_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/amplihack-runtime/$BRANCH_NAME}"
+        mkdir -p "$AMPLIHACK_RUNTIME_ROOT"/{locks,reflection,logs,metrics,provenance}
+      fi
       export AMPLIHACK_RUNTIME_ROOT
 
       echo "" >&2

@@ -2,9 +2,10 @@
 # workflow_fetch_origin.sh — fetch origin for a recipe's worktree setup step,
 # retrying a transient failure.
 #
-# Moved out of consensus-issue-worktree.yaml step3-setup-worktree (issue
-# #1808) so that recipe stays under the 400-line brick limit without being
-# compressed; see scripts/check-brick-budget.sh.
+# Moved out of consensus-issue-worktree.yaml step3-setup-worktree and
+# workflow-worktree.yaml step-04-setup-worktree (issue #1808) so those recipes
+# stay under the 400-line brick limit without being compressed; see
+# scripts/check-brick-budget.sh.
 #
 # Usage (executed, never sourced, from inside the repository):
 #   workflow_fetch_origin.sh

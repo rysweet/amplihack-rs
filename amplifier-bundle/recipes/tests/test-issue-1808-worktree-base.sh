@@ -15,7 +15,9 @@
 # them: workflow_fetch_origin.sh (fetch with retry, from
 # consensus-issue-worktree.yaml), and workflow_pr_branch.sh (pr_number to head
 # branch) and workflow_runtime_root.sh (per-branch runtime folders), both from
-# workflow-worktree.yaml.
+# workflow-worktree.yaml. M1-M4 run step-04 with an older AMPLIHACK_HOME
+# bundle that lacks the new tools: it must still set up the worktree, and must
+# prefer a checkout that holds every helper.
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-issue-1808-worktree-base.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -262,6 +264,54 @@ check R2 "pr_number goes through workflow_pr_branch.sh" grep -qF 'workflow_pr_br
 check R3 "no inline gh pr view is left in the recipe" bash -c '! grep -qF "gh pr view" "$1"' _ "$RECIPE"
 check R4 "the runtime root goes through workflow_runtime_root.sh" grep -qF 'workflow_runtime_root.sh' "$RECIPE"
 check R5 "wt_own is not a one-line || chain" bash -c '! grep -qE "^ *wt_own\(\) \{.*\}" "$1"' _ "$RECIPE"
+
+echo "step-04 with an older AMPLIHACK_HOME bundle (recipe and tools from different versions)"
+# The stale bundle lacks workflow_runtime_root.sh and workflow_pr_branch.sh, and
+# its workflow_worktree_root.sh has no `base`, like an install made before #1808.
+STEP04="$WORK/step-04.sh"
+awk '/^  - id: "step-04-setup-worktree"/ { inblk = 1; next }
+     inblk && /^  - id:/ { exit }
+     inblk && /^    command:[[:space:]]*\|/ { grab = 1; next }
+     grab && /^    [A-Za-z_-]+:/ { grab = 0 }
+     grab { sub(/^      /, ""); print }' "$RECIPE" > "$STEP04"
+STALE="$WORK/stale-home"
+mkdir -p "$STALE/amplifier-bundle/tools"
+cp "${REPO_ROOT}"/amplifier-bundle/tools/*.sh "$STALE/amplifier-bundle/tools/"
+rm -f "$STALE/amplifier-bundle/tools/workflow_runtime_root.sh" "$STALE/amplifier-bundle/tools/workflow_pr_branch.sh"
+printf '#!/usr/bin/env bash\n[ "${1:-}" != base ] || { echo "ERROR: unknown operation base." >&2; exit 1; }\nexec bash %q "$@"\n' \
+    "${REPO_ROOT}/amplifier-bundle/tools/workflow_worktree_root.sh" > "$STALE/amplifier-bundle/tools/workflow_worktree_root.sh"
+# new_origin_repo <dir>: a repository with an origin holding main and feat/from-pr.
+new_origin_repo() {
+    git init -q --bare -b main "$1.git"
+    git clone -q "$1.git" "$1" 2>/dev/null
+    echo base > "$1/file.txt"; git -C "$1" add file.txt; git -C "$1" commit -q -m base
+    git -C "$1" push -q origin main 2>/dev/null; git -C "$1" push -q origin main:feat/from-pr 2>/dev/null
+    git -C "$1" remote set-head origin main
+}
+run_step04() {  # run_step04 <repo> [pr_number]; sets out, err, rc
+    out="$(cd "$1" && env -u AMPLIHACK_RUNTIME_ROOT HOME="$WORK/home" AMPLIHACK_HOME="$STALE" \
+        XDG_RUNTIME_DIR="$WORK/xdg-step" PATH="$GH_DIR:$PATH" REPO_PATH="$1" \
+        TASK_DESCRIPTION="stale bundle check" ISSUE_NUMBER=1808 BRANCH_PREFIX=feat PR_NUMBER="${2:-}" \
+        bash "$STEP04" 2>"$WORK/step04.err")"; rc=$?; err="$(cat "$WORK/step04.err")"
+}
+PLAIN="$WORK/plain"
+new_origin_repo "$PLAIN"
+run_step04 "$PLAIN"
+check M1 "a TOOLS_DIR without workflow_runtime_root.sh still sets up the worktree" \
+    bash -c '[[ "$1" = 0 && "$2" = *"\"worktree_path\": \"$3/worktrees/feat/issue-1808-"* ]]' _ "$rc" "$out" "$PLAIN"
+check M1 "the runtime root and its five folders are made inline" \
+    bash -c '[[ "$1" = *"\"runtime_root\": \"$2/xdg-step/amplihack-runtime/feat/issue-1808-"* ]] && ls -d "$2"/xdg-step/amplihack-runtime/feat/issue-1808-*/provenance >/dev/null' _ "$out" "$WORK"
+check M2 "a root helper without \`base\` is not asked for it" bash -c '[[ "$1" != *"unknown operation base"* ]]' _ "$err"
+run_step04 "$PLAIN" 342
+check M3 "pr_number with no tier holding workflow_pr_branch.sh fails with its name" \
+    bash -c '[[ "$1" = 1 && "$2" = *"workflow_pr_branch.sh not found"* ]]' _ "$rc" "$err"
+CHECKOUT="$WORK/checkout"
+new_origin_repo "$CHECKOUT"
+mkdir -p "$CHECKOUT/amplifier-bundle/tools"
+cp "${REPO_ROOT}"/amplifier-bundle/tools/*.sh "$CHECKOUT/amplifier-bundle/tools/"
+run_step04 "$CHECKOUT" 342
+check M4 "a checkout holding every helper is used in place of the stale AMPLIHACK_HOME" \
+    bash -c '[[ "$1" = 0 && "$2" = *"\"branch_name\": \"feat/from-pr\""* ]]' _ "$rc" "$out"
 
 echo
 echo "issue-1808 worktree base: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"

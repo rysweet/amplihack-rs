@@ -648,12 +648,22 @@ fn issue_780_workflow_worktree_exports_one_runtime_root_to_child_flows() {
     let recipe = load_recipe("amplifier-bundle/recipes/workflow-worktree.yaml");
     let command = step_command(&recipe, "step-04-setup-worktree");
 
+    // The root is chosen in tools/workflow_runtime_root.sh; the step calls it,
+    // makes the same root inline when no tier has the tool, and exports it (#1808).
     assert_contains_all(
         "workflow-worktree runtime root setup",
         command,
         &[
-            "AMPLIHACK_RUNTIME_ROOT",
+            "workflow_runtime_root.sh",
+            "${XDG_RUNTIME_DIR:-/tmp}/amplihack-runtime/$BRANCH_NAME",
             "export AMPLIHACK_RUNTIME_ROOT",
+        ],
+    );
+    assert_contains_all(
+        "tools/workflow_runtime_root.sh",
+        &read_repo_file("amplifier-bundle/tools/workflow_runtime_root.sh"),
+        &[
+            "AMPLIHACK_RUNTIME_ROOT",
             "XDG_RUNTIME_DIR",
             "/tmp/amplihack-runtime",
         ],

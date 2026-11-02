@@ -42,7 +42,10 @@
 #              tool. The reason is on stderr. Callers stop and show it; they
 #              never fall back, which would put worktrees in the place the
 #              user asked to avoid. This is the one fallback rule: callers
-#              make a single call and do not add their own.
+#              make a single call and do not add their own. Without the
+#              explicit work root the answer is always <main>/worktrees, so
+#              the recipes call `base` only when it is set: a helper from an
+#              older bundle, which has no `base`, then still works.
 #
 # READ-ONLY INVARIANT (hard): this helper only inspects git state and path
 # strings. It creates, moves, resets and deletes nothing.

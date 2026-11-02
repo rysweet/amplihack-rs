@@ -28,9 +28,11 @@
 #     callers ignore the status (`|| true`), so a failed record never fails
 #     the step. Exit 2 is a usage error.
 #
-# Callers record only after a new `git worktree add` succeeded, adopt after
-# reusing one, and treat a failure as a warning:
-# `... record ... || echo "warning: ..." >&2`.
+# A recipe's worktree setup step calls `setup-worktree` and nothing else:
+# `bash amplihack_run_owned.sh setup-worktree <state> <path> <branch> || true`.
+# It records only after a new `git worktree add` succeeded, adopts after
+# reusing one, and prints its own warning on failure. `record` and `adopt`
+# remain for callers that are not a worktree setup step.
 
 set -u
 umask 077
