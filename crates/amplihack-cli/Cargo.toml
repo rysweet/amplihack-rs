@@ -50,6 +50,8 @@ dialoguer = "0.11"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 # Issue #1578: `profile usage` resolves reset times printed with an IANA zone.
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
+# Issue #1813: the bar view names the local zone; already locked through chrono.
+iana-time-zone = "0.1"
 flate2 = "1"
 libc = { workspace = true }
 semver = "1"

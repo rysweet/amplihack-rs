@@ -10,10 +10,11 @@
 #![cfg(target_os = "linux")]
 
 use crate::support::amplihack_bin::amplihack_bin;
+use crate::support::socket_dir::{SUN_PATH_MAX, tmux_socket_dir, tmux_socket_fits};
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -136,7 +137,10 @@ impl Fx {
     }
 
     /// False, with a message, when no socket directory short enough was
-    /// found, so a test that starts a tmux server cannot run here.
+    /// found, so a test that starts a tmux server cannot run here. The
+    /// directory comes from `support::socket_dir::tmux_socket_dir`: under
+    /// `TMPDIR` when the socket fits, else under `XDG_RUNTIME_DIR`, never
+    /// `/tmp`.
     fn tmux_socket_usable(&self) -> bool {
         let fits = tmux_socket_fits(&self.tmux_dir);
         if !fits {
@@ -226,46 +230,6 @@ impl Drop for Fx {
             }
         }
     }
-}
-
-/// Bytes in `sun_path` (unix(7)), including the terminating NUL.
-const SUN_PATH_MAX: usize = 108;
-
-/// Whether tmux's socket, `<dir>/tmux-<uid>/default`, fits in `sun_path`.
-fn tmux_socket_fits(dir: &Path) -> bool {
-    // SAFETY: getuid has no preconditions and cannot fail.
-    let uid = unsafe { libc::getuid() };
-    let socket = dir.join(format!("tmux-{uid}")).join("default");
-    socket.as_os_str().len() < SUN_PATH_MAX
-}
-
-/// The directory to use as `TMUX_TMPDIR`.
-///
-/// The fixture's own directory under `TMPDIR` is used whenever the socket
-/// path fits. A long `TMPDIR` (a nested workflow runtime directory, for
-/// instance) can push it past the limit; only then is a directory made under
-/// `XDG_RUNTIME_DIR`, the per-user directory meant for sockets. The test
-/// never writes to `/tmp`. If neither fits, the in-`TMPDIR` path is returned
-/// anyway and the tests that start a tmux server skip themselves (see
-/// [`Fx::tmux_socket_usable`]).
-fn tmux_socket_dir(root: &Path) -> (PathBuf, Option<tempfile::TempDir>) {
-    let local = root.join("t");
-    if tmux_socket_fits(&local) {
-        return (local, None);
-    }
-    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
-        && let Ok(runtime) = runtime.canonicalize()
-        && runtime.is_dir()
-    {
-        // tempfile's random suffix is six characters; check the final length.
-        let budget = runtime.join("t000000");
-        if tmux_socket_fits(&budget)
-            && let Ok(dir) = tempfile::Builder::new().prefix("t").tempdir_in(&runtime)
-        {
-            return (dir.path().to_path_buf(), Some(dir));
-        }
-    }
-    (local, None)
 }
 
 fn tmux_available() -> bool {
