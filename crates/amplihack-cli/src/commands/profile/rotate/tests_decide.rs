@@ -1,8 +1,11 @@
 //! `rotate::decide`: the pure decision rule (D1-D5, issue #1592).
 //!
 //! Contract:
-//! - `Reading::{Measured { session: f64, week: f64 }, Exhausted, Failed}`,
-//!   built from a probe with `Reading::from_report(&UsageReport)`.
+//! - `Reading::{Measured { session: f64, week: f64 }, Exhausted { session:
+//!   Option<f64>, week: Option<f64> }, Failed}`, built from a probe with
+//!   `Reading::from_report(&UsageReport)`. An exhausted reading keeps the
+//!   windows read (#1846): the window that ran out is `Some(>= 100)`, the
+//!   other is stored as read, or `None` when the report has no such window.
 //! - `Reading::headroom() -> Option<u8>`: `None` for a failed probe,
 //!   `Some(0)` when exhausted, else `100 - max(session, week)` rounded down
 //!   and clamped to 0..=100.
@@ -33,6 +36,10 @@ fn settings() -> Settings {
 
 fn r(session: f64, week: f64) -> Reading {
     Reading::Measured { session, week }
+}
+
+fn exhausted(session: Option<f64>, week: Option<f64>) -> Reading {
+    Reading::Exhausted { session, week }
 }
 
 fn c(name: &str, reading: Reading) -> Measured {
@@ -79,7 +86,7 @@ fn headroom_is_the_worse_window_rounded_down() {
     assert_eq!(r(85.5, 10.0).headroom(), Some(14));
     assert_eq!(r(0.0, 0.0).headroom(), Some(100));
     assert_eq!(r(120.0, 0.0).headroom(), Some(0), "clamped");
-    assert_eq!(Reading::Exhausted.headroom(), Some(0));
+    assert_eq!(Reading::EXHAUSTED.headroom(), Some(0));
     assert_eq!(Reading::Failed.headroom(), None);
 }
 
@@ -91,12 +98,23 @@ fn readings_from_probe_reports() {
     assert_eq!(no_session, r(0.0, 30.0), "a missing session window is 0%");
     let no_week = Reading::from_report(&report(UsageState::Ok, Some(20.0), None));
     assert_eq!(no_week, Reading::Failed, "a missing week window fails");
-    for s in [UsageState::SessionExhausted, UsageState::WeeklyExhausted] {
-        assert_eq!(
-            Reading::from_report(&report(s, Some(100.0), Some(50.0))),
-            Reading::Exhausted
-        );
-    }
+    assert_eq!(
+        Reading::from_report(&report(
+            UsageState::SessionExhausted,
+            Some(100.0),
+            Some(50.0)
+        )),
+        exhausted(Some(100.0), Some(50.0))
+    );
+    assert_eq!(
+        Reading::from_report(&report(
+            UsageState::WeeklyExhausted,
+            Some(100.0),
+            Some(50.0)
+        )),
+        exhausted(Some(100.0), Some(100.0)),
+        "the exhausted week is never shown below 100%"
+    );
     for s in [
         UsageState::SpendLimit,
         UsageState::NotLoggedIn,
@@ -188,7 +206,7 @@ fn an_exhausted_live_login_needs_a_swap() {
     assert_eq!(
         decide(
             &settings(),
-            &Reading::Exhausted,
+            &Reading::EXHAUSTED,
             &[c("spare", r(50.0, 50.0))],
             None,
             NOW
@@ -209,7 +227,7 @@ fn no_candidates_at_a_threshold_is_an_alert() {
 fn failed_and_exhausted_candidates_are_never_chosen() {
     let cands = [
         c("a-failed", Reading::Failed),
-        c("b-exhausted", Reading::Exhausted),
+        c("b-exhausted", Reading::EXHAUSTED),
     ];
     assert_eq!(
         decide(&settings(), &r(90.0, 0.0), &cands, None, NOW),
@@ -370,8 +388,11 @@ fn a_profile_with_no_session_limit_reads_on_its_week_alone() {
     assert_eq!(read(&weekly_only(30)), r(0.0, 30.0));
     assert_eq!(read(&no_reset_session(0, 30)), r(0.0, 30.0));
     assert_eq!(read(&no_reset_session(0, 89)), r(0.0, 89.0));
-    assert_eq!(read(&weekly_only(100)), Reading::Exhausted);
-    assert_eq!(read(&exhausted_session(30)), Reading::Exhausted);
+    assert_eq!(read(&weekly_only(100)), exhausted(None, Some(100.0)));
+    assert_eq!(
+        read(&exhausted_session(30)),
+        exhausted(Some(100.0), Some(30.0))
+    );
 }
 
 /// Crusty round 1 on #1829: a session above 0% with no reset clause is a
@@ -379,7 +400,10 @@ fn a_profile_with_no_session_limit_reads_on_its_week_alone() {
 #[test]
 fn a_session_above_0_with_no_reset_is_read_as_a_session() {
     assert_eq!(read(&no_reset_session(47, 30)), r(47.0, 30.0));
-    assert_eq!(read(&no_reset_session(100, 30)), Reading::Exhausted);
+    assert_eq!(
+        read(&no_reset_session(100, 30)),
+        exhausted(Some(100.0), Some(30.0))
+    );
     let cands = [
         c("a-spent", read(&no_reset_session(100, 10))),
         c("b-free", read(&weekly_only(30))),
@@ -474,4 +498,116 @@ fn plan_room_picks_the_no_session_limit_login_in_pass_1() {
         c("c-past", read(&past)),
     ];
     assert_eq!(choose(&s, Some(&live), &plan), None);
+}
+
+// --- Issue #1846: an exhausted reading keeps the measured figures -----------
+
+fn from(state: UsageState, session: Option<f64>, week: Option<f64>) -> Reading {
+    Reading::from_report(&report(state, session, week))
+}
+
+#[test]
+fn a_session_exhausted_login_keeps_its_week() {
+    let got = from(UsageState::SessionExhausted, Some(100.0), Some(62.0));
+    assert_eq!(got, exhausted(Some(100.0), Some(62.0)));
+    assert_eq!(got.headroom(), Some(0));
+}
+
+#[test]
+fn a_weekly_exhausted_login_keeps_its_session() {
+    let got = from(UsageState::WeeklyExhausted, Some(30.0), Some(100.0));
+    assert_eq!(got, exhausted(Some(30.0), Some(100.0)));
+    assert_eq!(got.headroom(), Some(0));
+}
+
+#[test]
+fn the_other_window_is_none_when_the_report_has_none() {
+    let got = from(UsageState::SessionExhausted, Some(100.0), None);
+    assert_eq!(got, exhausted(Some(100.0), None));
+    assert_eq!(got.headroom(), Some(0));
+}
+
+#[test]
+fn an_exhausted_window_read_below_100_is_raised_to_100() {
+    assert_eq!(
+        from(UsageState::SessionExhausted, Some(98.0), Some(40.0)),
+        exhausted(Some(100.0), Some(40.0))
+    );
+    assert_eq!(
+        from(UsageState::WeeklyExhausted, Some(30.0), Some(99.6)),
+        exhausted(Some(30.0), Some(100.0))
+    );
+}
+
+#[test]
+fn a_missing_exhausted_window_is_100() {
+    assert_eq!(
+        from(UsageState::SessionExhausted, None, Some(62.0)),
+        exhausted(Some(100.0), Some(62.0))
+    );
+    assert_eq!(
+        from(UsageState::WeeklyExhausted, Some(30.0), None),
+        exhausted(Some(30.0), Some(100.0))
+    );
+}
+
+#[test]
+fn an_exhausted_window_that_is_not_finite_is_100() {
+    for bad in [f64::INFINITY, f64::NEG_INFINITY, f64::NAN, -5.0] {
+        assert_eq!(
+            from(UsageState::SessionExhausted, Some(bad), Some(40.0)),
+            exhausted(Some(100.0), Some(40.0)),
+            "{bad}"
+        );
+        assert_eq!(
+            from(UsageState::WeeklyExhausted, Some(30.0), Some(bad)),
+            exhausted(Some(30.0), Some(100.0)),
+            "{bad}"
+        );
+    }
+}
+
+#[test]
+fn an_exhausted_window_above_100_is_kept() {
+    assert_eq!(
+        from(UsageState::SessionExhausted, Some(104.0), Some(40.0)),
+        exhausted(Some(104.0), Some(40.0))
+    );
+}
+
+#[test]
+fn an_exhausted_login_with_a_low_figure_is_never_chosen() {
+    // Listed first, with a week far lower than the measured login's.
+    let spent = from(UsageState::SessionExhausted, Some(100.0), Some(5.0));
+    let cands = [c("a-spent", spent), c("b-free", r(10.0, 60.0))];
+    assert_eq!(
+        decide(&settings(), &r(90.0, 0.0), &cands, None, NOW),
+        swap("b-free", Reason::Threshold)
+    );
+    let only = [c("a-spent", exhausted(Some(0.0), Some(0.0)))];
+    assert_eq!(
+        decide(&settings(), &r(90.0, 0.0), &only, None, NOW),
+        Decision::Alert,
+        "the stored figures never make an exhausted login a target"
+    );
+}
+
+#[test]
+fn a_live_exhausted_login_with_a_low_figure_still_swaps() {
+    let live = from(UsageState::WeeklyExhausted, Some(0.0), Some(100.0));
+    assert_eq!(
+        decide(&settings(), &live, &[c("spare", r(50.0, 50.0))], None, NOW),
+        swap("spare", Reason::Threshold)
+    );
+    // Within the hold an exhausted live login is still a threshold swap.
+    assert_eq!(
+        decide(
+            &settings(),
+            &exhausted(Some(1.0), Some(1.0)),
+            &[c("spare", r(50.0, 50.0))],
+            Some(NOW - 10),
+            NOW
+        ),
+        swap("spare", Reason::Threshold)
+    );
 }
