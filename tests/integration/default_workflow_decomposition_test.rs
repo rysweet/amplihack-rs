@@ -423,7 +423,7 @@ fn no_duplicate_step_ids_across_subrecipes() {
 /// Codex agents do not read the system-prompt fragment, so the recipe
 /// prompts are their only advance notice.
 #[test]
-fn step_13_and_system_prompt_name_the_supported_ways_to_wait() {
+fn recipe_prompts_and_system_prompt_name_the_supported_ways_to_wait() {
     let fragment_path = recipes_dir()
         .join("..")
         .join("context")

@@ -828,10 +828,15 @@ shell tokeniser in `pre_tool_use/shell.rs`:
 1. The program word, found by `shell::program()`, is `tail`. `program()`
    removes `timeout`, `nohup`, `env`, `nice`, `exec`, `command`, `time`,
    `sudo` and variable assignments. The guard itself also removes `setsid`
-   (with `-w`, `-f`, `-c`) and `stdbuf` (with `-i`, `-o`, `-e` and their
-   values, joined or separate), and `function NAME` before a function body
+   (with `-w`, `-f`, `-c`), `stdbuf` (with `-i`, `-o`, `-e` and their
+   values, joined or separate), `ionice` (with `-c`, `-n` and their values,
+   and `-t`), `chrt` (with its policy flags, `-T`, `-P`, `-D` and their
+   values, and a numeric priority), `taskset` (with `-a`, `-c` and the CPU
+   mask or list), `unbuffer` (with `-p`), and `function NAME` before a function body
    (`function f { tail -f /dev/null; }`), then calls `program()` again. It repeats this
-   up to 8 times, and each round must remove at least one word.
+   up to 8 times, and each round must remove at least one word. `ionice`
+   with `-p`, `-P` or `-u`, and `chrt` or `taskset` with `-p`, act on a
+   running process and start no command, so nothing after them is read.
 2. A follow option is set. Options are read as GNU and uutils `tail` read
    them:
 
@@ -904,6 +909,10 @@ closed.
 | `tail --follow=name //dev//null` | denied |
 | `tail -f --pid=1234 /dev/null` | denied |
 | `setsid -w stdbuf -oL tail -f /dev/null` | denied |
+| `ionice -c3 tail -f /dev/null` | denied |
+| `chrt -i 0 tail -f /dev/null` | denied |
+| `taskset 1 tail -f /dev/null` | denied |
+| `unbuffer tail -f /dev/null` | denied |
 | `bash -lc 'tail -f /dev/null'` | denied |
 | `bash -c -- 'tail -f /dev/null'` | denied |
 | `tail --fo /dev/null` | denied |
@@ -946,6 +955,8 @@ sandbox. It does not see:
 - a device given by expansion (`$DEV`, `$(…)`, globs);
 - `tail` run by `xargs`, `find -exec`, `eval` or `env -S`;
 - `tail` run through a multi-call binary, such as `busybox tail`;
+- `tail` behind a launch wrapper other than those listed under **What it
+  denies**, such as `flock`, `systemd-run`, `cgexec` or `firejail`;
 - `tail` in a script file run by a later command;
 - a script given to a shell as a here-string (`bash <<< 'tail -f /dev/null'`)
   or through a pipe (`echo 'tail -f /dev/null' | bash`): the script is an

@@ -11,8 +11,9 @@
 //! # What is denied
 //!
 //! A simple command whose program word is `tail` (after the wrappers that
-//! [`shell::program`] strips, and `setsid` and `stdbuf`, which this module
-//! strips itself) with a follow option (`-f`, `-F`, `--follow`,
+//! [`shell::program`] strips, and the launch wrappers `setsid`, `stdbuf`,
+//! `ionice`, `chrt`, `taskset` and `unbuffer`, which this module strips
+//! itself) with a follow option (`-f`, `-F`, `--follow`,
 //! `--follow=…`, a shortened form such as `--f`, `--fo` or `--foll=name`, or
 //! `f`/`F` in a short cluster before an option that takes a value) and an
 //! operand that names one of [`DEVICES`] once repeated `/` and `/./` are
@@ -40,7 +41,9 @@
 //!
 //! Device paths given by expansion (`$DEV`, `$(…)`, globs), paths with `..`,
 //! symlinks to a device, `xargs`, `find -exec`, `eval`, `env -S`, scripts run
-//! from files, multi-call wrappers such as `busybox tail`, a script given
+//! from files, multi-call wrappers such as `busybox tail`, launch wrappers
+//! other than those named above (`flock`, `systemd-run`, `cgexec`,
+//! `firejail` and others), a script given
 //! to a shell as a here-string (`bash <<< '…'`) or through a pipe
 //! (`echo '…' | bash`), a substitution inside an expanding heredoc fed to a
 //! program that is not a shell, and nesting deeper than three shells are not
@@ -99,7 +102,7 @@ const MAX_INPUT: usize = 64 * 1024;
 /// Most re-parses of embedded scripts for one command line.
 const MAX_REPARSES: usize = 256;
 
-/// Most `setsid` / `stdbuf` / `function` / [`shell::WRAPPERS`] rounds in one
+/// Most launch-wrapper / `function` / [`shell::WRAPPERS`] rounds in one
 /// command.
 const MAX_UNWRAP: usize = 8;
 
@@ -248,6 +251,10 @@ fn scan_command(command: &SimpleCommand, depth: usize, budget: &mut usize) -> bo
         match name {
             "setsid" => rest = skip_setsid_options(args),
             "stdbuf" => rest = skip_stdbuf_options(args),
+            "ionice" => rest = skip_ionice_options(args),
+            "chrt" => rest = skip_chrt_options(args),
+            "taskset" => rest = skip_taskset_options(args),
+            "unbuffer" => rest = skip_unbuffer_options(args),
             // `function f { …; }`: the body follows the name. The shared
             // tokeniser does not treat `function` as a reserved word.
             "function" => rest = args.get(1..).unwrap_or_default(),
@@ -284,6 +291,114 @@ fn skip_stdbuf_options(args: &[String]) -> &[String] {
         i += if separate_value { 2 } else { 1 };
     }
     args.get(i..).unwrap_or_default()
+}
+
+/// The words after `ionice`'s options. `-c`, `-n`, `-p`, `-P` and `-u`
+/// take their value joined (`-c3`) or as the next word (`-c 3`); the long
+/// forms take it after `=` or as the next word. With `-p`, `-P` or `-u`,
+/// `ionice` acts on running processes and starts no command, so nothing is
+/// returned.
+fn skip_ionice_options(args: &[String]) -> &[String] {
+    let mut i = 0;
+    while let Some(w) = args.get(i) {
+        if !w.starts_with('-') || w == "-" {
+            break;
+        }
+        i += 1;
+        if w == "--" {
+            break;
+        }
+        let (name, joined) = match w.strip_prefix("--") {
+            Some(long) => match long.split_once('=') {
+                Some((name, _)) => (name, true),
+                None => (long, false),
+            },
+            None => {
+                let mut chars = w.chars().skip(1);
+                let Some(c) = chars.next() else { break };
+                let joined = chars.next().is_some();
+                match c {
+                    'c' => ("class", joined),
+                    'n' => ("classdata", joined),
+                    'p' => ("pid", joined),
+                    'P' => ("pgid", joined),
+                    'u' => ("uid", joined),
+                    _ => ("", joined),
+                }
+            }
+        };
+        if matches!(name, "pid" | "pgid" | "uid") {
+            return &[];
+        }
+        if !joined && matches!(name, "class" | "classdata") {
+            i += 1;
+        }
+    }
+    args.get(i..).unwrap_or_default()
+}
+
+/// The words after `chrt`'s options and its priority. `-T`, `-P` and `-D`
+/// (and `--sched-runtime`, `--sched-period`, `--sched-deadline`) take a
+/// value; the policy flags do not. A priority that is all digits is skipped,
+/// since util-linux lets it be left out for some policies. With `-p` or
+/// `--pid`, `chrt` acts on a running process and starts no command, so
+/// nothing is returned.
+fn skip_chrt_options(args: &[String]) -> &[String] {
+    let mut i = 0;
+    while let Some(w) = args.get(i) {
+        if !w.starts_with('-') || w == "-" {
+            break;
+        }
+        i += 1;
+        if w == "--" {
+            break;
+        }
+        if w == "--pid" || (!w.starts_with("--") && w.contains('p')) {
+            return &[];
+        }
+        let separate_value = matches!(
+            w.as_str(),
+            "-T" | "-P" | "-D" | "--sched-runtime" | "--sched-period" | "--sched-deadline"
+        );
+        if separate_value {
+            i += 1;
+        }
+    }
+    if args
+        .get(i)
+        .is_some_and(|w| !w.is_empty() && w.chars().all(|c| c.is_ascii_digit()))
+    {
+        i += 1;
+    }
+    args.get(i..).unwrap_or_default()
+}
+
+/// The words after `taskset`'s options and its CPU mask or list. No option
+/// takes a value; the mask (or the list, with `-c`) is the first word that
+/// is not an option. With `-p` or `--pid`, `taskset` acts on a running
+/// process and starts no command, so nothing is returned.
+fn skip_taskset_options(args: &[String]) -> &[String] {
+    let mut i = 0;
+    while let Some(w) = args.get(i) {
+        if !w.starts_with('-') || w == "-" {
+            break;
+        }
+        i += 1;
+        if w == "--" {
+            break;
+        }
+        if w == "--pid" || (!w.starts_with("--") && w.contains('p')) {
+            return &[];
+        }
+    }
+    // The mask or CPU list.
+    args.get(i + 1..).unwrap_or_default()
+}
+
+/// The words after `unbuffer`'s one option, `-p`.
+fn skip_unbuffer_options(args: &[String]) -> &[String] {
+    let skip = args.iter().take_while(|w| w.as_str() == "-p").count();
+    args.get(skip..).unwrap_or_default()
 }
 
 /// Scans the `-c` operand of a shell, or the heredoc bodies it reads as its

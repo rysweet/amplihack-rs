@@ -130,8 +130,9 @@ and Codex all stop the call. The deny message names the supported ways to
 wait and never repeats the command. No environment variable, flag or setting
 turns the guard off, and it does not depend on XPIA.
 
-The guard sees through wrappers such as `timeout`, `nohup`, `setsid` and
-`stdbuf`, and looks inside `bash -c '…'`, a heredoc fed to a shell, and
+The guard sees through wrappers such as `timeout`, `nohup`, `nice`,
+`ionice`, `chrt`, `taskset`, `unbuffer`, `setsid` and `stdbuf`, and looks
+inside `bash -c '…'`, a heredoc fed to a shell, and
 `$(…)` or backtick substitutions. These are all denied:
 
 ```bash
@@ -170,7 +171,7 @@ step, on whichever agent CLI it uses.
 
 Any other step relies on the PreToolUse hook: a Copilot or Codex agent there
 learns the supported forms from the deny message on its first refused call.
-`step_13_and_system_prompt_name_the_supported_ways_to_wait` in
+`recipe_prompts_and_system_prompt_name_the_supported_ways_to_wait` in
 `tests/integration/default_workflow_decomposition_test.rs` fails if any of
 these places loses the guidance.
 
