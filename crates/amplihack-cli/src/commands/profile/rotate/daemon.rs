@@ -50,6 +50,33 @@ pub(super) fn current_state(rs: &RotateState) -> DaemonState {
     }
 }
 
+/// Whether a login rotator is running for the store at `root`: the built-in
+/// daemon, or the external prototype holding `.rotator/lock` (issue #1801).
+/// Any read error is `false`. Writes nothing, but the prototype check takes
+/// and at once releases a non-blocking exclusive `flock` on `.rotator/lock`
+/// when nothing holds it (see [`prototype_guard`]), so a rotator taking that
+/// lock with `LOCK_NB` in the same instant can be refused once.
+pub(in crate::commands::profile) fn running(root: &Path) -> bool {
+    matches!(
+        current_state(&RotateState::new(root)),
+        DaemonState::Running(_)
+    ) || matches!(
+        prototype_guard(root),
+        Err(ProfileError::RotatePrototypeRunning)
+    )
+}
+
+/// Whether a running rotator is rotating logins: [`running`], and auto-switch
+/// is not turned off. A rotator with auto-switch off stays idle (the watch
+/// loop skips every cycle while [`paused`]), so it records no cycle and makes
+/// no swap. This uses the watch loop's own [`paused`] rule, so the two cannot
+/// drift. `paused` is checked first and needs no lock, so with auto-switch
+/// off `.rotator/lock` is not touched. The auto-switch setting is read in the
+/// calling process, environment first, as everywhere else.
+pub(in crate::commands::profile) fn rotating(root: &Path) -> bool {
+    !paused(root) && running(root)
+}
+
 /// Why `start` refuses before it takes the lock, if it does: the external
 /// rotator holds its lock, or the root is not private. Creates nothing.
 pub(super) fn start_refusal(root: &Path) -> Option<ProfileError> {

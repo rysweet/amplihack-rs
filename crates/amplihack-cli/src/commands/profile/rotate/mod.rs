@@ -23,7 +23,7 @@ mod control;
 #[cfg(unix)]
 mod cycle;
 #[cfg(unix)]
-mod daemon;
+pub(super) mod daemon;
 #[cfg(unix)]
 mod damp;
 #[cfg(unix)]
