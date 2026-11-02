@@ -472,3 +472,53 @@ fn the_documented_summary_lines_use_the_codes_labels() {
         );
     }
 }
+
+/// Issue #1856, crusty round 1: every spend value the code prints is a row
+/// of the reference's spend-status table and is named in the JSON key's
+/// description, and the opt-in `--spend` flag is documented in the flag
+/// table, the env-var reference and the how-to.
+#[test]
+fn spend_values_and_the_spend_flag_are_documented() {
+    use super::usage_source::Spend;
+    let json_row = REFERENCE
+        .lines()
+        .find(|l| l.starts_with("| `spend` | string |"))
+        .expect("the JSON table has a spend row");
+    for v in [
+        Spend::NotApplicable,
+        Spend::Ok,
+        Spend::LimitReached,
+        Spend::Unknown,
+        Spend::NotProbed,
+    ] {
+        let name = v.as_str();
+        assert!(
+            REFERENCE.contains(&format!("\n| `{name}` | ")),
+            "the spend-status table lacks `{name}`"
+        );
+        assert!(json_row.contains(&format!("`\"{name}\"`")), "{json_row}");
+    }
+    assert!(
+        REFERENCE.contains("\n| `--spend` | "),
+        "flag table lacks --spend"
+    );
+    assert!(REFERENCE.contains("##### Spend probe"));
+    assert!(
+        !REFERENCE.contains("shared deadline"),
+        "the 6 s deadline is gone"
+    );
+    // Crusty round 2: a `--spend` probe gets the full per-probe timeout,
+    // so no doc may call it short.
+    for doc in [REFERENCE, HOWTO, ROTATE_HOWTO, ENV_VARS] {
+        for stale in ["short [spend probe", "short `/usage` text probe"] {
+            assert!(!doc.contains(stale), "a doc still says {stale:?}");
+        }
+    }
+    assert!(
+        REFERENCE
+            .contains("under the normal per-probe timeout (`--timeout-secs`, 120 s by default)")
+    );
+    assert!(ENV_VARS.contains("only with `--spend`"));
+    assert!(HOWTO.contains("amplihack profile usage --spend"));
+    assert!(HOWTO.contains("| `not_probed` |"));
+}
