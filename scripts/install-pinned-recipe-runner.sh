@@ -81,6 +81,19 @@ case "$class" in
     ;;
 esac
 
+# Issue #1808: write the standard cache directory tag so backup tools skip the
+# target folder (https://bford.info/cachedir/). An existing tag is kept.
+write_cachedir_tag() {
+  local dir="$1"
+  mkdir -p "$dir" || return 1
+  [ -e "$dir/CACHEDIR.TAG" ] && return 0
+  printf '%s\n' \
+    'Signature: 8a477f597d28d172789f06886806bc55' \
+    '# This file is a cache directory tag created by amplihack.' \
+    '# For information about cache directory tags see https://bford.info/cachedir/' \
+    > "$dir/CACHEDIR.TAG"
+}
+
 if [[ "$install" == 1 ]]; then
   cargo_args=(install
     --git "$runner_url"
@@ -88,6 +101,7 @@ if [[ "$install" == 1 ]]; then
   if [[ "$cargo_force" == 1 ]]; then
     cargo_args+=(--force)
   fi
+  write_cachedir_tag "$base/recipe-runner-target"
   CARGO_TARGET_DIR="$base/recipe-runner-target" cargo "${cargo_args[@]}"
 fi
 test -x "$runner"

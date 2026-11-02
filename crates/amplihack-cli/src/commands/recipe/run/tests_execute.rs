@@ -1782,6 +1782,10 @@ fn parse_whitespace_only_stdout_success_returns_hollow_success_terminal_failure(
 #[test]
 #[cfg(unix)]
 fn test_execute_recipe_via_rust_sets_isolated_runtime_directories() {
+    // Issue #1808: the runtime folder is `<work root>/runs/<run id>/runtime`
+    // (or `<work root>/r/<12 hex>` when `runtime/tmp` would exceed 80 bytes),
+    // TMPDIR, TMP and TEMP all point at its `tmp/`, and it is removed when the
+    // run ends while `run.json` stays.
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -1790,12 +1794,13 @@ fn test_execute_recipe_via_rust_sets_isolated_runtime_directories() {
     let repo = temp.path().join("repo");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
+    let work_root = temp.path().join("work");
     std::fs::create_dir_all(&repo).expect("failed to create repo dir");
     std::fs::create_dir_all(&amplihack_home).expect("failed to create amplihack home");
 
     std::fs::write(
         &runner,
-        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"runtime-isolation-probe\",\"success\":true,\"step_results\":[],\"context\":{\"runtime_dir\":\"$AMPLIHACK_WORKFLOW_RUNTIME_DIR\",\"artifact_dir\":\"$AMPLIHACK_WORKFLOW_ARTIFACT_DIR\",\"tmpdir\":\"$TMPDIR\"}}\nEOF\n",
+        "#!/bin/sh\ncat <<EOF\n{\"recipe_name\":\"runtime-isolation-probe\",\"success\":true,\"step_results\":[],\"context\":{\"runtime_dir\":\"$AMPLIHACK_WORKFLOW_RUNTIME_DIR\",\"artifact_dir\":\"$AMPLIHACK_WORKFLOW_ARTIFACT_DIR\",\"tmpdir\":\"$TMPDIR\",\"tmp\":\"$TMP\",\"temp\":\"$TEMP\",\"run_id\":\"$AMPLIHACK_RUN_ID\",\"run_dir\":\"$AMPLIHACK_RUN_DIR\",\"tmpdir_exists\":\"$(test -d \"$TMPDIR\" && echo yes)\"}}\nEOF\n",
     )
     .expect("failed to write runner stub");
     make_executable(&runner);
@@ -1806,51 +1811,73 @@ fn test_execute_recipe_via_rust_sets_isolated_runtime_directories() {
 
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     let prev_home = std::env::var_os("AMPLIHACK_HOME");
+    let prev_work_root = std::env::var_os("AMPLIHACK_WORK_ROOT");
+    let prev_explicit = std::env::var_os("AMPLIHACK_WORK_ROOT_EXPLICIT");
+    let prev_on_exit = std::env::var_os("AMPLIHACK_CLEANUP_ON_EXIT");
     unsafe {
         std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
         std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+        std::env::set_var("AMPLIHACK_WORK_ROOT", &work_root);
+        std::env::remove_var("AMPLIHACK_WORK_ROOT_EXPLICIT");
+        std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0");
     }
 
     let result =
-        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, false, &repo, &[], None)
-            .expect("recipe run must succeed");
+        execute::execute_recipe_via_rust(&recipe, &BTreeMap::new(), false, false, &repo, &[], None);
 
     restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
     restore_env_var("AMPLIHACK_HOME", prev_home);
+    restore_env_var("AMPLIHACK_WORK_ROOT", prev_work_root);
+    restore_env_var("AMPLIHACK_WORK_ROOT_EXPLICIT", prev_explicit);
+    restore_env_var("AMPLIHACK_CLEANUP_ON_EXIT", prev_on_exit);
+    let result = result.expect("recipe run must succeed");
 
-    let runtime_dir = result
-        .context
-        .get("runtime_dir")
-        .and_then(JsonValue::as_str)
-        .unwrap_or_default();
-    let artifact_dir = result
-        .context
-        .get("artifact_dir")
-        .and_then(JsonValue::as_str)
-        .unwrap_or_default();
-    let tmpdir = result
-        .context
-        .get("tmpdir")
-        .and_then(JsonValue::as_str)
-        .unwrap_or_default();
-    let repo_prefix = repo.to_string_lossy();
-
+    let ctx = |key: &str| {
+        result
+            .context
+            .get(key)
+            .and_then(JsonValue::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    let run_id = ctx("run_id");
     assert!(
-        !runtime_dir.is_empty(),
-        "runtime must expose AMPLIHACK_WORKFLOW_RUNTIME_DIR"
+        uuid::Uuid::parse_str(&run_id).is_ok(),
+        "AMPLIHACK_RUN_ID must be a UUID, got {run_id:?}"
     );
+    let run_dir = work_root.join("runs").join(&run_id);
+    let default_runtime = run_dir.join("runtime");
+    let expected_runtime = if default_runtime.join("tmp").as_os_str().len() <= 80 {
+        default_runtime
+    } else {
+        let short: String = run_id.chars().filter(|c| *c != '-').take(12).collect();
+        work_root.join("r").join(short)
+    };
+    let expected_tmp = expected_runtime.join("tmp");
+
+    assert_eq!(ctx("run_dir"), run_dir.to_string_lossy());
+    assert_eq!(ctx("runtime_dir"), expected_runtime.to_string_lossy());
+    assert_eq!(
+        ctx("artifact_dir"),
+        expected_runtime.join("artifacts").to_string_lossy()
+    );
+    for key in ["tmpdir", "tmp", "temp"] {
+        assert_eq!(
+            ctx(key),
+            expected_tmp.to_string_lossy(),
+            "{key} must be the per-run tmp folder"
+        );
+    }
+    assert_eq!(ctx("tmpdir_exists"), "yes", "tmp/ exists while steps run");
     assert!(
-        !runtime_dir.starts_with(repo_prefix.as_ref()),
+        !ctx("runtime_dir").starts_with(repo.to_string_lossy().as_ref()),
         "workflow runtime dir must be outside the commit worktree"
     );
     assert!(
-        artifact_dir.starts_with(runtime_dir),
-        "workflow artifact dir should be scoped under the isolated runtime dir"
+        !expected_runtime.exists(),
+        "runtime/ must be removed when the run ends"
     );
-    assert!(
-        tmpdir.starts_with(runtime_dir),
-        "TMPDIR should be scoped under the isolated runtime dir for child steps"
-    );
+    assert!(run_dir.join("run.json").is_file(), "run.json must remain");
 }
 
 // Issue #691: recipe-runner-rs owns progress emission. The CLI must not pass

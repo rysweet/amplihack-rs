@@ -159,14 +159,89 @@ checkout_hash() {
 # in ~/.cache, not on /tmp: /tmp is small, shared by every process on the host,
 # and filling it breaks everyone. TMPDIR remains the fallback for a host with no
 # usable HOME -- a hook that refuses to run is worse than one on the old path.
+#
+# Issue #1808: inside or outside a recipe run, a validated absolute
+# AMPLIHACK_WORK_ROOT puts the caches under <work root>/targets instead, so a
+# run's build output lives with the rest of its files and `amplihack cleanup`
+# can find it. Any other value keeps the XDG path below.
+
+# owner_and_mode <path> — "<uid> <octal mode>" (GNU stat, then BSD stat).
+owner_and_mode() {
+    stat -c '%u %a' -- "$1" 2>/dev/null || stat -f '%u %Lp' -- "$1" 2>/dev/null
+}
+
+# work_root_usable <dir> — the work root already exists as a real folder (not
+# a symlink) owned by this user, is not group- or world-writable, and is
+# neither / nor $HOME. The hook never creates the work root itself.
+work_root_usable() {
+    local dir="$1" real home_real stat_out uid mode
+    case "$dir" in
+        /*) ;;
+        *) return 1 ;;
+    esac
+    [ -d "$dir" ] && [ ! -L "$dir" ] || return 1
+    real="$(cd -P -- "$dir" 2>/dev/null && pwd -P)" || return 1
+    [ "$real" != "/" ] || return 1
+    if [ -n "${HOME:-}" ] && home_real="$(cd -P -- "$HOME" 2>/dev/null && pwd -P)"; then
+        [ "$real" != "$home_real" ] || return 1
+    fi
+    stat_out="$(owner_and_mode "$dir")" || return 1
+    uid="${stat_out%% *}"
+    mode="${stat_out##* }"
+    [ "$uid" = "$(id -u)" ] || return 1
+    case "$mode" in
+        *[!0-7]*|"") return 1 ;;
+    esac
+    [ $((8#$mode & 8#022)) -eq 0 ]
+}
+
 cache_root() {
-    local base
+    local base work="${AMPLIHACK_WORK_ROOT:-}"
+    if [ -n "$work" ] && work_root_usable "$work" \
+        && (umask 077 && mkdir -p "$work/targets") 2>/dev/null \
+        && [ -d "$work/targets" ] && [ ! -L "$work/targets" ]; then
+        printf '%s' "$work/targets"
+        return 0
+    fi
     base="${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}"
     if [ -n "$base" ] && mkdir -p "$base/amplihack" 2>/dev/null; then
         printf '%s' "$base/amplihack"
         return 0
     fi
     printf '%s' "${TMPDIR:-/tmp}"
+}
+
+# Issue #1808: the run id suffix, only for an id cleanup would also accept.
+run_suffix() {
+    local id="${AMPLIHACK_RUN_ID:-}"
+    [ -n "$id" ] || return 0
+    [ "${#id}" -le 64 ] || return 0
+    case "$id" in
+        *[!0-9a-f-]*) return 0 ;;
+    esac
+    printf -- '-run-%s' "$id"
+}
+
+# Issue #1808: inside a run, record the target in the run's owned-paths so
+# cleanup may remove it once the run is eligible. Only a run folder named
+# after the validated run id is written to, and a symlinked file is refused.
+record_owned_target() {
+    local dir="$1" run_dir="${AMPLIHACK_RUN_DIR:-}" owned line
+    [ -n "$(run_suffix)" ] || return 0
+    case "$run_dir" in
+        /*) ;;
+        *) return 0 ;;
+    esac
+    [ "$(basename -- "$run_dir")" = "$AMPLIHACK_RUN_ID" ] || return 0
+    [ -d "$run_dir" ] && [ ! -L "$run_dir" ] || return 0
+    owned="$run_dir/owned-paths"
+    [ -L "$owned" ] && return 0
+    line="$(printf 'target\t%s\t' "$dir")"
+    if [ -f "$owned" ] && grep -qxF -- "$line" "$owned" 2>/dev/null; then
+        return 0
+    fi
+    (umask 077 && printf 'target\t%s\t\n' "$dir" >> "$owned") 2>/dev/null \
+        || printf 'amplihack: warning: could not record cache ownership for %s\n' "$dir" >&2
 }
 
 # Is a build writing into this cache right now?
@@ -309,7 +384,9 @@ is_protected_path() {
     return 1
 }
 
-# Age-based (LRU) reclaim. Every worktree gets its own hash, so parallel agents
+# Age-based (LRU) reclaim. CACHE_PREFIX* matches both the hash-only name and
+# the `-run-<run id>` name (issue #1808), and owned_by_me below keeps it to the
+# user's own entries. Every worktree gets its own hash, so parallel agents
 # multiply these fast; without this the only thing that ever frees the space is
 # a human noticing a full disk.
 #
@@ -451,7 +528,7 @@ else
     CACHE_OWNED=1
     MY_UID="$(id -u)"
     _cache_root="$(cache_root)"
-    _cache_dir="$_cache_root/$CACHE_PREFIX$(checkout_hash)"
+    _cache_dir="$_cache_root/$CACHE_PREFIX$(checkout_hash)$(run_suffix)"
     export CARGO_TARGET_DIR="$_cache_dir"
     # Issue #1771, in this order: clear a dangling link at the current path so
     # cargo can create a real directory, reclaim stale siblings, then tag the
@@ -471,6 +548,9 @@ else
     reclaim_stale_caches "$_cache_root" "$_cache_dir"
     if [ "$_cache_dir_ours" -eq 1 ]; then
         write_cachedir_tag "$_cache_dir"
+        # Issue #1808: inside a run, record the (possibly not yet created)
+        # target so cleanup may remove it once the run is eligible.
+        record_owned_target "$_cache_dir"
     fi
 fi
 
