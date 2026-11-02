@@ -91,6 +91,9 @@ pub struct Probed {
     /// The probe timed out or could not run: the login may have capacity,
     /// so it blocks a move onto overflow. Always with `Reading::Failed`.
     pub unknown: bool,
+    /// Issue #1844: the read had not finished when the cycle stopped waiting
+    /// for it. Read only by the log (`log::Shown`); always with `unknown`.
+    pub still_running: bool,
 }
 
 impl Probed {
@@ -102,6 +105,7 @@ impl Probed {
             windows: Windows::from_report(r),
             spend_limit: r.state == UsageState::SpendLimit,
             unknown: matches!(r.state, UsageState::Timeout | UsageState::Error),
+            still_running: false,
         }
     }
 
@@ -118,6 +122,7 @@ impl Probed {
             windows: Windows::default(),
             spend_limit: false,
             unknown: false,
+            still_running: false,
         }
     }
 
@@ -128,6 +133,7 @@ impl Probed {
             windows: Windows::default(),
             spend_limit: false,
             unknown: true,
+            still_running: false,
         }
     }
 }

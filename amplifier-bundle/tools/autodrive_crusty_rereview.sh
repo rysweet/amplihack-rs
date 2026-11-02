@@ -140,6 +140,10 @@ if [ "$RC" -eq 79 ]; then
   echo "ERROR: exit 79 terminal policy refusal in the crusty re-review (#1327/#1332). Final; never retried." >&2
   result crusty-rereview-refused "$RANGE" "${LOOP_RESULT:-TERMINAL_POLICY_REFUSAL}" 79
 fi
+if [ "$LOOP_RESULT" = "USAGE_LIMIT" ]; then
+  echo "ERROR: the crusty re-review stopped on a usage limit (rc=${RC}); the crusty-loop marker stays absent and criterion 3 is not met. Run again when a login has capacity." >&2
+  result crusty-rereview-not-done "$RANGE" USAGE_LIMIT 1
+fi
 if [ "$RC" -ne 0 ] || [ "$LOOP_RESULT" != "DONE" ]; then
   echo "ERROR: the crusty re-review ended '${LOOP_RESULT:-unknown}' (rc=${RC}); the crusty-loop marker stays absent and criterion 3 is not met." >&2
   result crusty-rereview-not-done "$RANGE" "$LOOP_RESULT" 1

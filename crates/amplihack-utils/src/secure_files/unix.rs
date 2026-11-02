@@ -144,31 +144,86 @@ fn check_replaceable(target: &Path) -> io::Result<Option<fs::Metadata>> {
 }
 
 fn write_atomic(dir: &Path, name: &str, bytes: &[u8], mode: u32, sync: bool) -> io::Result<()> {
-    let target = dir.join(name);
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_nanos());
-    let tmp = dir.join(format!(".{name}.tmp.{}.{nanos}", std::process::id()));
-    let mut opts = fs::OpenOptions::new();
-    opts.write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    let result = (|| -> io::Result<()> {
-        let mut f = opts.open(&tmp)?;
+    let temp = PrivateTemp::open(dir, name)?;
+    temp.finish(bytes, mode, sync)
+}
+
+/// A private temporary file opened beside `dir/name` before the bytes are
+/// known (issue #1844, SR-10). A caller that must know it can save a result
+/// before it does something that cannot be undone opens one first, then
+/// calls [`PrivateTemp::commit`]. Dropping it without a commit removes the
+/// file.
+pub struct PrivateTemp {
+    file: Option<fs::File>,
+    dir: PathBuf,
+    target: PathBuf,
+    tmp: PathBuf,
+}
+
+impl PrivateTemp {
+    /// Checks that `dir/name` may be replaced, as [`write_private_atomic`]
+    /// does, and creates a new `0600` file in `dir` without following a
+    /// symlink.
+    pub fn create(dir: &Path, name: &str) -> io::Result<Self> {
+        check_replaceable(&dir.join(name))?;
+        Self::open(dir, name)
+    }
+
+    fn open(dir: &Path, name: &str) -> io::Result<Self> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
+        let tmp = dir.join(format!(".{name}.tmp.{}.{nanos}", std::process::id()));
+        let mut opts = fs::OpenOptions::new();
+        opts.write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+        let file = opts.open(&tmp)?;
+        Ok(Self {
+            file: Some(file),
+            dir: dir.to_path_buf(),
+            target: dir.join(name),
+            tmp,
+        })
+    }
+
+    /// The temporary file.
+    pub fn path(&self) -> &Path {
+        &self.tmp
+    }
+
+    /// Writes `bytes`, syncs the file, renames it over the target and syncs
+    /// the directory. The target ends with mode `0600`.
+    pub fn commit(self, bytes: &[u8]) -> io::Result<()> {
+        self.finish(bytes, 0o600, true)
+    }
+
+    fn finish(mut self, bytes: &[u8], mode: u32, sync: bool) -> io::Result<()> {
+        let Some(mut f) = self.file.take() else {
+            return Err(invalid("was already committed"));
+        };
         // `mode` on open is filtered by the umask; set it exactly.
         f.set_permissions(fs::Permissions::from_mode(mode))?;
         f.write_all(bytes)?;
         if sync {
             f.sync_all()?;
         }
-        fs::rename(&tmp, &target)?;
-        if sync { fsync_dir(dir) } else { Ok(()) }
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&tmp);
+        drop(f);
+        fs::rename(&self.tmp, &self.target)?;
+        // Renamed: nothing is left for `Drop` to remove.
+        self.tmp = PathBuf::new();
+        if sync { fsync_dir(&self.dir) } else { Ok(()) }
     }
-    result
+}
+
+impl Drop for PrivateTemp {
+    fn drop(&mut self) {
+        self.file = None;
+        if !self.tmp.as_os_str().is_empty() {
+            let _ = fs::remove_file(&self.tmp);
+        }
+    }
 }
 
 /// Creates `path` as a private directory (one level only, mode `0700`), or

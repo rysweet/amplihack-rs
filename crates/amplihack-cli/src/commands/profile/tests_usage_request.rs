@@ -735,3 +735,154 @@ fn no_week_window_is_still_handled_as_before() {
         "neither window: fall back"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1844: `parse_limits`, the one parser the `get_usage` answer and the
+// direct read share.
+//
+// Contract:
+// - `usage_request::Limits` is `Report(UsageReport)`, `CreditsOn` or
+//   `Unparseable`, and derives `Debug` and `PartialEq`.
+// - `parse_limits(limits: &Value, now: i64) -> Limits` reads one
+//   `rate_limits`-shaped object (`five_hour`, `seven_day`, `model_scoped`,
+//   `extra_usage`). It is the body of the direct read's answer as it stands
+//   and `response.response.rate_limits` of the control answer.
+// - A value that is not an object, or an object with neither window, is
+//   `Unparseable`. Credits on (`extra_usage` present and not
+//   `{"is_enabled": false}`) is `CreditsOn`. Unknown keys are ignored.
+// - `parse_answer` keeps its signature and maps `CreditsOn` and
+//   `Unparseable` to `None`.
+// ---------------------------------------------------------------------------
+
+use super::usage_request::{Limits, parse_limits};
+
+fn limits_of(edit: impl FnOnce(&mut Value)) -> Limits {
+    let mut p = payload();
+    edit(&mut p);
+    parse_limits(&p["rate_limits"], NOW)
+}
+
+fn report_of(l: Limits) -> UsageReport {
+    match l {
+        Limits::Report(r) => r,
+        other => panic!("expected a report, got {other:?}"),
+    }
+}
+
+#[test]
+fn parse_limits_reads_the_same_report_as_the_control_answer() {
+    let direct = report_of(parse_limits(&payload()["rate_limits"], NOW));
+    let control = parse(&answer(payload())).expect("accepted");
+    assert_eq!(direct, control);
+}
+
+#[test]
+fn parse_limits_keeps_the_weekly_figure_when_the_session_is_exhausted() {
+    // Issue #1844: a login at session 100% and weekly 55% must report 55%,
+    // never 100%, for the week.
+    let r = report_of(limits_of(|p| {
+        limits(p)["five_hour"]["utilization"] = json!(100.0);
+        limits(p)["seven_day"]["utilization"] = json!(55.0);
+    }));
+    assert_eq!(r.state, UsageState::SessionExhausted);
+    assert_eq!(r.session.as_ref().map(|w| w.used_percentage), Some(100.0));
+    assert_eq!(r.week_all.as_ref().map(|w| w.used_percentage), Some(55.0));
+}
+
+#[test]
+fn the_control_answer_keeps_the_weekly_figure_when_the_session_is_exhausted() {
+    let r = with(|p| {
+        limits(p)["five_hour"]["utilization"] = json!(100.0);
+        limits(p)["seven_day"]["utilization"] = json!(55.0);
+    })
+    .expect("accepted");
+    assert_eq!(r.state, UsageState::SessionExhausted);
+    assert_eq!(r.week_all.map(|w| w.used_percentage), Some(55.0));
+}
+
+#[test]
+fn parse_limits_reports_credits_on_for_every_enabled_shape() {
+    for extra in [
+        json!({"is_enabled": true}),
+        json!({"is_enabled": "false"}),
+        json!({}),
+        json!(true),
+        json!("on"),
+    ] {
+        let got = limits_of(|p| limits(p)["extra_usage"] = extra.clone());
+        assert_eq!(got, Limits::CreditsOn, "{extra}");
+    }
+}
+
+#[test]
+fn parse_limits_reads_credits_off_and_absent_as_a_report() {
+    for extra in [json!(null), json!({"is_enabled": false})] {
+        let got = limits_of(|p| limits(p)["extra_usage"] = extra.clone());
+        assert!(matches!(got, Limits::Report(_)), "{extra}: {got:?}");
+    }
+    let got = limits_of(|p| {
+        limits(p).as_object_mut().unwrap().remove("extra_usage");
+    });
+    assert!(matches!(got, Limits::Report(_)), "{got:?}");
+}
+
+#[test]
+fn parse_limits_is_unparseable_for_a_non_object_or_no_window() {
+    for v in [json!(null), json!([]), json!("x"), json!(3), json!({})] {
+        assert_eq!(parse_limits(&v, NOW), Limits::Unparseable, "{v}");
+    }
+    let got = limits_of(|p| {
+        let o = limits(p).as_object_mut().unwrap();
+        o.remove("five_hour");
+        o.remove("seven_day");
+    });
+    assert_eq!(got, Limits::Unparseable);
+    let got = limits_of(|p| {
+        limits(p)["five_hour"] = json!(null);
+        limits(p)["seven_day"]["utilization"] = json!("high");
+    });
+    assert_eq!(got, Limits::Unparseable);
+}
+
+#[test]
+fn parse_limits_ignores_unknown_fields() {
+    let got = report_of(limits_of(|p| {
+        limits(p)["something_new"] = json!({"utilization": 99});
+        limits(p)["five_hour"]["another"] = json!([1, 2, 3]);
+    }));
+    assert_eq!(got.session.map(|w| w.used_percentage), Some(37.0));
+}
+
+#[test]
+fn parse_limits_follows_1818_for_a_missing_or_null_session() {
+    for edit in [
+        (|p: &mut Value| {
+            limits(p).as_object_mut().unwrap().remove("five_hour");
+        }) as fn(&mut Value),
+        |p: &mut Value| limits(p)["five_hour"] = json!(null),
+    ] {
+        let r = report_of(limits_of(edit));
+        assert_eq!(r.session, None);
+        assert!(!r.session_limit, "no session window: no session limit");
+        assert_eq!(r.state, UsageState::Ok);
+        assert_eq!(r.week_all.map(|w| w.used_percentage), Some(61.0));
+    }
+}
+
+#[test]
+fn parse_limits_follows_1818_for_a_zero_session_with_no_reset() {
+    let r = report_of(limits_of(|p| {
+        limits(p)["five_hour"] = json!({"utilization": 0.0, "resets_at": null});
+    }));
+    assert_eq!(r.session, None);
+    assert!(!r.session_limit);
+}
+
+#[test]
+fn parse_answer_still_maps_credits_on_and_unparseable_to_none() {
+    assert_eq!(
+        with(|p| limits(p)["extra_usage"] = json!({"is_enabled": true})),
+        None
+    );
+    assert_eq!(with(|p| p["rate_limits"] = json!({})), None);
+}

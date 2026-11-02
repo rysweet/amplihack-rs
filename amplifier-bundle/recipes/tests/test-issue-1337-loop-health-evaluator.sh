@@ -1145,6 +1145,19 @@ ${E2E_OUT}"
     fi
 fi
 
+# --- Issue #1801: a failed step-02 stops this recipe -------------------------
+# A usage limit on step-02 must reach the caller as a failed recipe with the
+# runner's marker. With continue_on_error, step-03 would turn the missing
+# verdict into STUCK with verdict_source=missing_verdict.
+STEP02="$(awk '/^  - id: "step-02-evaluate-loop-health"/ { on = 1; print; next } /^  - id: / { on = 0 } on' "${RECIPE}")"
+if [[ -z "${STEP02}" ]]; then
+    fail "1801-step-02-stops" "step-02-evaluate-loop-health was not found in the recipe"
+elif grep -qE '^[[:space:]]*(continue_on_error|on_failure)[[:space:]]*:' <<<"${STEP02}"; then
+    fail "1801-step-02-stops" "step-02 must not continue after a failure"
+else
+    pass "1801-step-02-stops" "a failed step-02 stops the recipe, so its usage limit is never read as STUCK"
+fi
+
 echo ""
 echo "--- Summary: ${PASS_COUNT} passed, ${FAIL_COUNT} failed ---"
 if [[ ${SKIPPED_E2E:-0} -eq 1 ]]; then

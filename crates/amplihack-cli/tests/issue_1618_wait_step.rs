@@ -123,6 +123,8 @@ fn limits_a_wait_cannot_outlast_are_passed_up_at_once() {
     let prose = "Done. Note: the usage limit resets 8:30am (America/Los_Angeles).";
     for (message, stdout, reason) in [
         (SPEND_TEXT, "", "spend_limit"),
+        // Single-login (storeless) fixture: no other login can take over, so a
+        // far reset stays reset_too_far rather than becoming a capacity wait.
         (SPEND_WEEKLY_TEXT, "", "reset_too_far"),
         (WEEKLY_TEXT, "", "reset_too_far"),
         (
@@ -202,9 +204,13 @@ fn ac7_a_second_limit_is_passed_up_after_one_wait() {
         1,
         "{ev:?}"
     );
+    // Issue #1801: the closing line keeps the class in the runner's evidence.
     assert_eq!(
-        ev.last().map(String::as_str),
-        Some("skipped reason=already_waited")
+        ev[ev.len() - 2..],
+        [
+            "skipped reason=already_waited",
+            "failed reason=already_waited: usage limit not lifted",
+        ]
     );
     assert_eq!(claude_stdout(&out), "attempt 2 output\n");
     let stderr = text(&out.stderr);
