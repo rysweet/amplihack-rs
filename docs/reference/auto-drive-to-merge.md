@@ -2836,7 +2836,8 @@ When the nested loop stops as `BUDGET_EXHAUSTED`, the re-review prints
 `before_round_result` `crusty-rereview-budget-exhausted`, writes no
 `crusty-loop` marker and exits `1`. The outer loop then reports
 `BUDGET_EXHAUSTED` with the summary rewritten for the outer loop, even when
-the outer limits were not reached on their own.
+the outer limits were not reached on their own. The nested loop has already
+posted its stop as a PR comment, so the outer loop does not post a second one.
 
 ### State files
 

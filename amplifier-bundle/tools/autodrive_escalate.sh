@@ -107,7 +107,8 @@ budget_stop() {
     *) echo "ERROR: loop '${LOOP_NAME}': the budget check exited ${rc} (see above); no agent starts." >&2; exit 2 ;;
   esac
   if [ "$1" = pre ]; then ROUND_LABEL="${label:-?}"; RECORD="${label:+${STATE_DIR}/${LOOP_NAME}-${label}.json}"; fi
-  post_stop "${STATE_DIR}/autodrive-budget-summary.md"
+  # --force: the nested crusty loop has already posted its own stop comment.
+  [ "${2:-}" = --force ] || post_stop "${STATE_DIR}/autodrive-budget-summary.md"
   escalate "BUDGET_EXHAUSTED" "usage budget reached (${hit}); see autodrive-budget-summary.md in the state directory" budget
   exit 1
 }

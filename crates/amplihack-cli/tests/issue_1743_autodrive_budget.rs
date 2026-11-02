@@ -962,6 +962,8 @@ fn a_nested_budget_stop_is_reported_as_budget_exhausted() {
         .state_file("autodrive-budget-summary.md")
         .expect("summary");
     assert!(summary.contains("(before-round step)"), "{summary}");
+    // The nested crusty loop posts its own stop; the outer loop does not post it again.
+    assert!(fx.gh_calls().is_empty(), "a second comment was posted");
 }
 
 #[test]
