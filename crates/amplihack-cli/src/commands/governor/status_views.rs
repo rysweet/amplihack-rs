@@ -42,8 +42,10 @@ pub struct ProfileView {
     /// percentage outside 0 to 100 is clamped, not invalid.
     pub invalid_reading: bool,
     /// The reading is older than `governor.max_reading_age_secs` (see
-    /// `budget::stale_reading`): the profile is out of the pool and
-    /// `session` and `weekly` are `null`.
+    /// `budget::stale_reading`). The profile stays in the pool, as
+    /// exhausted, only while a window of the reading is exhausted with its
+    /// reset still ahead; otherwise it is out of the pool and `session` and
+    /// `weekly` are `null`.
     pub stale_reading: bool,
     /// When the reading was taken (Unix seconds); `null` without a reading.
     pub observed_at: Option<i64>,

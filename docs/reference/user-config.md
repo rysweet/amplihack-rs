@@ -387,7 +387,7 @@ when `recipe run`, `claude` and `launch` may start.
 | `governor.band_pct` | Width of the band around the sustainable rate in which the limit stays put. |
 | `governor.eval_interval_secs` | Shortest time between two rate evaluations. |
 | `governor.wait_secs` | Default longest wait for admission; `0` means do not wait. |
-| `governor.max_reading_age_secs` | Oldest stored usage reading the governor uses; a profile with an older reading is left out of the pool. |
+| `governor.max_reading_age_secs` | Oldest stored usage reading the governor trusts for room; a profile with an older reading is left out of the pool unless that reading shows a window exhausted with its reset still ahead, in which case it stays in the pool as exhausted. |
 
 All eight are user-only, so a project file cannot turn the governor off or
 loosen it.

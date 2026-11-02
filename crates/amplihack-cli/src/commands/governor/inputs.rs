@@ -36,20 +36,36 @@ fn rolled(w: WindowBudget, now: i64) -> WindowBudget {
     }
 }
 
-/// The budget of every profile with a usable weekly reading taken no more
-/// than `max_age` seconds before `now` (`governor.max_reading_age_secs`). A
-/// stale reading leaves its profile unknown, like an invalid one: an old
-/// weekly reading whose reset is still ahead would otherwise count as room
-/// that later use may already have spent.
+/// A window at or above 100% whose reset is still ahead. Run after
+/// [`rolled`], so a window whose reset has passed is never exhausted.
+fn exhausted(b: &Budget) -> bool {
+    b.weekly.used_pct >= 100.0 || b.session.is_some_and(|s| s.used_pct >= 100.0)
+}
+
+/// The budget of every profile with a usable reading, each window rolled
+/// over once its reset has passed.
+///
+/// A reading taken more than `max_age` seconds before `now`
+/// (`governor.max_reading_age_secs`), or dated after it, is stale. Use in a
+/// window only rises until its reset, so a stale reading is a lower bound on
+/// use: it can show that a window is exhausted, never that it has room.
+/// - A stale reading with a window exhausted and its reset still ahead is
+///   kept. The profile then counts as exhausted at steps 2 and 3 and adds no
+///   room, so a hold on it lasts until that reset passes or a fresh reading
+///   arrives. Holding starts stops the readings being refreshed, so dropping
+///   such a profile would empty the pool after `max_age` and step 1 would
+///   admit everything (`no-readings`).
+/// - Any other stale reading leaves its profile unknown, as an invalid one
+///   does: an old 10% with its reset ahead would otherwise count as 90
+///   points of room that later use may already have spent.
 pub fn budgets(snaps: &[ProfileSnapshot], now: i64, max_age: u64) -> Vec<Budget> {
     snaps
         .iter()
-        .filter(|s| !stale_reading(s, max_age, now))
-        .filter_map(budget_from_snapshot)
-        .map(|mut b| {
+        .filter_map(|s| {
+            let mut b = budget_from_snapshot(s)?;
             b.weekly = rolled(b.weekly, now);
-            b.session = b.session.map(|s| rolled(s, now));
-            b
+            b.session = b.session.map(|w| rolled(w, now));
+            (!stale_reading(s, max_age, now) || exhausted(&b)).then_some(b)
         })
         .collect()
 }

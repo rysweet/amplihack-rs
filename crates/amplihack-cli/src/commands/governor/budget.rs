@@ -68,10 +68,11 @@ pub fn invalid_reading(s: &ProfileSnapshot) -> bool {
 
 /// The profile has a reading that is too old to use: it was observed more
 /// than `max_age` seconds before `now`, or after `now`, the same age test as
-/// the rotator's `fresh_reading` (issue #1844). Weekly use only rises until
-/// the window resets, so an old reading can only overstate the room left;
-/// [`super::inputs::budgets`] leaves such a profile out of the pool, as it
-/// does an invalid one. A profile without a reading is never stale.
+/// the rotator's `fresh_reading` (issue #1844). Use only rises until a
+/// window resets, so an old reading is a lower bound on use:
+/// [`super::inputs::budgets`] keeps the profile only while one of its
+/// windows is exhausted with the reset still ahead, and otherwise leaves it
+/// out of the pool. A profile without a reading is never stale.
 /// `governor status` shows it as `stale reading`.
 pub fn stale_reading(s: &ProfileSnapshot, max_age: u64, now: i64) -> bool {
     if s.five_hour.is_none() && s.seven_day.is_none() {

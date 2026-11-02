@@ -76,6 +76,10 @@ pub fn render_table(v: &StatusView) -> String {
         if !p.eligible {
             marks.push("not in pool");
         }
+        // A stale reading kept because it shows a window exhausted.
+        if p.stale_reading && p.weekly.is_some() {
+            marks.push("stale reading");
+        }
         let marks = if marks.is_empty() {
             String::new()
         } else {
