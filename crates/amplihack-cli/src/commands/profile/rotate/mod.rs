@@ -89,6 +89,8 @@ mod recover;
 #[cfg(unix)]
 mod revalidate;
 #[cfg(unix)]
+mod sessions_daily;
+#[cfg(unix)]
 mod settings;
 #[cfg(unix)]
 mod spend_blocks;
@@ -150,6 +152,8 @@ mod tests_revalidate;
 mod tests_revalidate_cause;
 #[cfg(all(test, unix))]
 mod tests_revalidate_unit;
+#[cfg(all(test, unix))]
+mod tests_sessions_daily;
 #[cfg(test)]
 mod tests_source_scan;
 #[cfg(all(test, unix))]
@@ -165,9 +169,7 @@ mod tests_switch_hold;
 #[cfg(all(test, unix))]
 mod tests_switch_race;
 
-use super::name::ProfileName;
-use super::root_config::RootSource;
-use super::store::ProfileStore;
+use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 
 // Issue #1797: `Probes` is what the usage history records from a cycle.
 #[cfg(unix)]
