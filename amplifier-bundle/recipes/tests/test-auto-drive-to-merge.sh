@@ -3473,6 +3473,7 @@ ev_expect() { # ev_expect <label> <field>=<value> ...
     PASS:) ;;
     FAIL:qa-command-failed|FAIL:no-scenarios|FAIL:gadugi-validate-failed|FAIL:gadugi-scenario-unnamed|FAIL:gadugi-run-failed) ;;
     BLOCKED:qa-command-missing|BLOCKED:qa-command-not-installed|BLOCKED:gadugi-test-missing) ;;
+    BLOCKED:qa-config-invalid|QA_UNRESOLVED:qa-unresolved) ;;
     *) bad="${bad} qa_status/qa_reason='$(evf qa_status)/$(evf qa_reason)'(not a valid pair)" ;;
   esac
   want="$(git -C "${EV_REPO}" rev-parse HEAD)"
@@ -6568,18 +6569,53 @@ else
   fail "1763-gate-root" "got '${G1763_GOT}'"
 fi
 fx_head "$G1763_SAVED_HEAD"
-# The source precedence, qa.toml, CI and path-scoping cases live in their own
-# file so this one stays mergeable; a copy of this test without it skips them.
-if [ -f "${SCRIPT_DIR}/test-issue-1763-qa-scope.sh" ]; then
-  if env -u AMPLIHACK_CLAUDE_PROFILE_ROOT HOME="${TEST_HOME}" bash "${SCRIPT_DIR}/test-issue-1763-qa-scope.sh" \
-       >"${WORK}/1763.out" 2>&1 </dev/null; then
-    pass "1763-qa-scope" "test-issue-1763-qa-scope.sh passes"
-  else
-    fail "1763-qa-scope" "test-issue-1763-qa-scope.sh failed: $(grep -E 'FAIL\[|HARNESS-ERROR' "${WORK}/1763.out" | head -n 5 | tr '\n' '|')"
-  fi
-else
-  echo "  SKIP[1763-qa-scope]: test-issue-1763-qa-scope.sh is not beside this copy"
-fi
+# ── Issue #1763: the QA sources on the real evidence step ───────────────────
+# One direct case for each of the four behaviours the issue names, on the
+# step-02 body and stubs of section 6b. The full matrix (qa.toml syntax, CI
+# parsing, path scoping edge cases) is test-issue-1763-qa-scope.sh, which
+# ci.yml runs as its own step. It is not called from here: the Rust harness
+# runs this file three times, and that suite starts every case under env -i,
+# so a nested call repeated the same 2m47s of checks on each run.
+ev_commit() { # ev_commit [base]: commit EV_REPO's work tree on HEAD; `base` also makes it origin/main
+  ( cd "${EV_REPO}" && git add -A && t="$(git write-tree)" && p="$(git rev-parse HEAD)" \
+    && c="$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
+            GIT_COMMITTER_EMAIL=t@example.invalid git commit-tree "$t" -p "$p" -m c)" \
+    && git update-ref HEAD "$c" \
+    && { [ "${1:-}" != base ] || git update-ref refs/remotes/origin/main "$c"; } ) >/dev/null 2>&1 \
+    || { echo "HARNESS-ERROR: could not commit in ${EV_REPO}" >&2; exit 2; }
+}
+ev_put() { # ev_put <relative-file>... : one more line in each file
+  local f; for f in "$@"; do mkdir -p "${EV_REPO}/$(dirname "$f")"; printf 'x\n' >> "${EV_REPO}/$f"; done
+}
+# repo-file: a qa.toml committed at the merge base names the command and dir.
+ev_repo Cargo.toml; ev_put engine/Cargo.toml src/lib.rs
+ev_scen_raw .amplihack/qa.toml 'command = "cargo nextest run --workspace"\ndir = "engine"\n'
+ev_commit base; ev_put src/lib.rs; ev_commit
+ev_run "${EV_FULL}"
+ev_expect "1763-repo-file" qa_status=PASS qa_command_source=repo-file qa_repo_type=configured qa_dir=engine \
+  qa_command="cargo nextest run --workspace" qa_command_paths=src/lib.rs
+if ev_called "cargo nextest run --workspace"; then
+  pass "1763-repo-file-runs" "the qa.toml command is the one that runs"
+else fail "1763-repo-file-runs" "calls: $(tr '\n' '|' < "${EV_CALLS}")"; fi
+# env: AUTODRIVE_QA_COMMAND still wins over the qa.toml in the same tree.
+ev_run "${EV_FULL}" AUTODRIVE_QA_COMMAND="cargo check"
+ev_expect "1763-env-wins" qa_status=PASS qa_command_source=env qa_dir=. qa_command_paths=src/lib.rs
+if ev_called "cargo check" && ! ev_called "cargo nextest"; then
+  pass "1763-env-wins-runs" "only the env command runs; qa.toml is not read"
+else fail "1763-env-wins-runs" "calls: $(tr '\n' '|' < "${EV_CALLS}")"; fi
+# detected, scoped: two Rust projects, and a change inside b runs b's suite.
+ev_repo README.md; ev_put a/Cargo.toml b/Cargo.toml a/src/lib.rs b/src/main.rs; ev_commit base
+ev_put b/src/main.rs; ev_commit
+ev_run "${EV_FULL}"
+ev_expect "1763-scoped" qa_status=PASS qa_command_source=detected qa_repo_type=rust-cli qa_dir=b \
+  qa_command_paths=b/src/main.rs
+# unresolved: a change in both projects names no single suite, and none runs.
+ev_put a/src/lib.rs; ev_commit
+ev_run "${EV_FULL}"
+ev_expect "1763-unresolved" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved qa_candidates="a b" \
+  qa_command="" qa_command_source="" qa_suite_commands_count=0
+if ev_called "cargo "; then fail "1763-unresolved-no-suite" "a suite ran: $(tr '\n' '|' < "${EV_CALLS}")"
+else pass "1763-unresolved-no-suite" "no suite runs when the project is unresolved"; fi
 echo
 echo "═══════════════════════════════"
 echo "Results: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"
