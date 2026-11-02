@@ -5,6 +5,7 @@
 
 use super::cycle::{self, Ctx, CycleOutcome, LOCK_WAIT, Mode, prototype_guard};
 use super::exhausted::{self, paused};
+use super::inflight::{finish_refreshes, refresh_grace};
 use super::ledger::{LastCycle, RotateState};
 use super::log::{Sink, msg, open_or_warn};
 use super::owner;
@@ -340,21 +341,6 @@ pub fn watch(
     }
     remove_own_pid(&rs);
     Ok(())
-}
-
-/// How long a stopping rotator waits for token refreshes: the per-request
-/// deadline and one second.
-pub(super) fn refresh_grace(timeout: Duration) -> Duration {
-    timeout.saturating_add(Duration::from_secs(1))
-}
-
-/// Waits up to `grace` until no token refresh holds Claude's lock, and says
-/// whether none is left. The caller sets `PROBE_CANCEL` first: workers
-/// increment the refresh count and then check the flag, and this waits for
-/// the count to reach zero, so no refresh starts after it returns. It never
-/// sets the flag itself, and a refresh already under way is let finish.
-pub(super) fn finish_refreshes(grace: Duration) -> bool {
-    crate::commands::profile::usage_direct::wait_for_refreshes(grace)
 }
 
 /// The log line for a cycle that failed: a refused swap is an ALERT.

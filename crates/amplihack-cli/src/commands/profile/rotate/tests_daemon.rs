@@ -325,14 +325,14 @@ fn the_leak_scan_matches_the_argv_spawn_builds() {
 // progress, so it never leaves Claude's `.oauth_refresh.lock` behind.
 //
 // Contract:
-// - `daemon::refresh_grace(timeout) = timeout + 1 s`.
-// - `daemon::finish_refreshes(grace) -> bool` waits until no refresh holds
+// - `inflight::refresh_grace(timeout) = timeout + 1 s`.
+// - `inflight::finish_refreshes(grace) -> bool` waits until no refresh holds
 //   a lock (`usage_direct::refreshes_in_progress() == 0`) or `grace` ends,
 //   and says whether none is left. It never sets `PROBE_CANCEL`.
 // ---------------------------------------------------------------------------
 
 mod issue_1844 {
-    use super::super::daemon::{finish_refreshes, refresh_grace};
+    use super::super::inflight::{finish_refreshes, refresh_grace};
     use crate::commands::profile::tests_fake_http::{FakeHttp, Reply};
     use crate::commands::profile::usage_direct::{Endpoints, Request, read};
     use serde_json::json;

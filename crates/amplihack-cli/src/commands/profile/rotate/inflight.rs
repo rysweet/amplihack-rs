@@ -36,6 +36,21 @@ pub fn max_age(timeout: Duration) -> Duration {
     timeout.saturating_mul(2).saturating_add(SLACK)
 }
 
+/// How long a stopping rotator waits for token refreshes: the per-request
+/// deadline and one second.
+pub(super) fn refresh_grace(timeout: Duration) -> Duration {
+    timeout.saturating_add(Duration::from_secs(1))
+}
+
+/// Waits up to `grace` until no token refresh holds Claude's lock, and says
+/// whether none is left. The caller sets `PROBE_CANCEL` first: workers
+/// increment the refresh count and then check the flag, and this waits for
+/// the count to reach zero, so no refresh starts after it returns. It never
+/// sets the flag itself, and a refresh already under way is let finish.
+pub(super) fn finish_refreshes(grace: Duration) -> bool {
+    crate::commands::profile::usage_direct::wait_for_refreshes(grace)
+}
+
 /// Why a finished job has no result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Lost {
