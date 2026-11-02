@@ -11,10 +11,11 @@
 # "kind<TAB>path<TAB>branch" to $AMPLIHACK_RUN_DIR/owned-paths (mode 0600),
 # and refuses relative paths, control characters and a symlinked file.
 # `setup-worktree` is the recipes' single call (record, or adopt on reuse).
-# Two tools exist to keep recipes under the brick limit without compressing
+# Three tools exist to keep recipes under the brick limit without compressing
 # them: workflow_fetch_origin.sh (fetch with retry, from
-# consensus-issue-worktree.yaml) and workflow_pr_branch.sh (pr_number to head
-# branch, from workflow-worktree.yaml).
+# consensus-issue-worktree.yaml), and workflow_pr_branch.sh (pr_number to head
+# branch) and workflow_runtime_root.sh (per-branch runtime folders), both from
+# workflow-worktree.yaml.
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-issue-1808-worktree-base.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -230,12 +231,37 @@ check P3 "a PR gh cannot find is an error" bash -c '[[ "$1" = 1 && "$2" = *"retu
 out="$(PATH=/nonexistent /bin/bash "$PR_BRANCH" 342 2>&1)"; rc=$?
 check P4 "no gh on PATH is an error" bash -c '[[ "$1" = 1 && "$2" = *"not on PATH"* ]]' _ "$rc" "$out"
 
+echo "workflow_runtime_root.sh"
+RT_ROOT="${REPO_ROOT}/amplifier-bundle/tools/workflow_runtime_root.sh"
+rt_dirs_exist() { local d; for d in locks reflection logs metrics provenance; do [[ -d "$1/$d" ]] || return 1; done; }
+out="$(env -u AMPLIHACK_RUNTIME_ROOT XDG_RUNTIME_DIR="$WORK/xdg" bash "$RT_ROOT" feat/x 2>/dev/null)"; rc=$?
+check T1 "XDG_RUNTIME_DIR gives <xdg>/amplihack-runtime/<branch> with its folders" \
+    bash -c '[[ "$1" = 0 && "$2" = "$3/xdg/amplihack-runtime/feat/x" ]]' _ "$rc" "$out" "$WORK"
+check T1 "the five runtime folders exist" rt_dirs_exist "$WORK/xdg/amplihack-runtime/feat/x"
+out="$(AMPLIHACK_RUNTIME_ROOT="$WORK/given" XDG_RUNTIME_DIR="$WORK/xdg" bash "$RT_ROOT" feat/x 2>/dev/null)"; rc=$?
+check T2 "a set AMPLIHACK_RUNTIME_ROOT is kept" bash -c '[[ "$1" = 0 && "$2" = "$3/given" ]]' _ "$rc" "$out" "$WORK"
+check T2 "the five runtime folders exist under it" rt_dirs_exist "$WORK/given"
+# T3 uses the real /tmp, so its branch name is unique and its folder is removed.
+RT_TMP_BRANCH="issue-1808-test-$$-${RANDOM}"
+out="$(env -u AMPLIHACK_RUNTIME_ROOT -u XDG_RUNTIME_DIR bash "$RT_ROOT" "$RT_TMP_BRANCH" 2>/dev/null)"; rc=$?
+check T3 "without XDG_RUNTIME_DIR the root is /tmp/amplihack-runtime/<branch>" \
+    bash -c '[[ "$1" = 0 && "$2" = "/tmp/amplihack-runtime/$3" ]]' _ "$rc" "$out" "$RT_TMP_BRANCH"
+rm -rf "/tmp/amplihack-runtime/${RT_TMP_BRANCH}"
+out="$(bash "$RT_ROOT" 2>&1)"; rc=$?
+check T4 "no branch name is an error" bash -c '[[ "$1" = 1 && "$2" = *usage* ]]' _ "$rc" "$out"
+: > "$WORK/blocker"
+out="$(AMPLIHACK_RUNTIME_ROOT="$WORK/blocker" bash "$RT_ROOT" feat/x 2>/dev/null)"; rc=$?
+check T5 "folders that cannot be created are an error with nothing on stdout" \
+    bash -c '[[ "$1" = 1 && -z "$2" ]]' _ "$rc" "$out"
+
 echo "workflow-worktree.yaml calls the tools"
 RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-worktree.yaml"
 check R1 "ownership goes through amplihack_run_owned.sh setup-worktree" \
     grep -qF 'amplihack_run_owned.sh" setup-worktree "$@"' "$RECIPE"
 check R2 "pr_number goes through workflow_pr_branch.sh" grep -qF 'workflow_pr_branch.sh' "$RECIPE"
 check R3 "no inline gh pr view is left in the recipe" bash -c '! grep -qF "gh pr view" "$1"' _ "$RECIPE"
+check R4 "the runtime root goes through workflow_runtime_root.sh" grep -qF 'workflow_runtime_root.sh' "$RECIPE"
+check R5 "wt_own is not a one-line || chain" bash -c '! grep -qE "^ *wt_own\(\) \{.*\}" "$1"' _ "$RECIPE"
 
 echo
 echo "issue-1808 worktree base: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"

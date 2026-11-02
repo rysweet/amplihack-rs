@@ -82,7 +82,10 @@ steps:
 
       # wt_own STATE WT BRANCH (#1808): record a new worktree for cleanup, or adopt a reused
       # one (STATE reuse-clean-worktree). The tool warns on failure; the step goes on.
-      wt_own() { [ ! -f "$TOOLS_DIR/amplihack_run_owned.sh" ] || bash "$TOOLS_DIR/amplihack_run_owned.sh" setup-worktree "$@" || true; }
+      wt_own() {
+        [ -f "$TOOLS_DIR/amplihack_run_owned.sh" ] || return 0
+        bash "$TOOLS_DIR/amplihack_run_owned.sh" setup-worktree "$@" || true
+      }
       # wt_add_idempotent MODE WT BRANCH [REF] (issue #1121/#642): prune stale regs,
       # reuse dir if it's a worktree on BRANCH else remove+re-add. No add --force.
       wt_add_idempotent() {
@@ -361,20 +364,11 @@ steps:
       git -C "${WORKTREE_PATH}" push origin "${BRANCH_NAME}" > /dev/null 2>&1 || true
       git -C "${WORKTREE_PATH}" branch --set-upstream-to="origin/${BRANCH_NAME}" "${BRANCH_NAME}" > /dev/null 2>&1 || true
 
-      if [ -z "${AMPLIHACK_RUNTIME_ROOT:-}" ]; then
-        if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-          AMPLIHACK_RUNTIME_ROOT="${XDG_RUNTIME_DIR}/amplihack-runtime/${BRANCH_NAME}"
-        else
-          AMPLIHACK_RUNTIME_ROOT="/tmp/amplihack-runtime/${BRANCH_NAME}"
-        fi
-        export AMPLIHACK_RUNTIME_ROOT
-      fi
-      mkdir -p \
-        "${AMPLIHACK_RUNTIME_ROOT}/locks" \
-        "${AMPLIHACK_RUNTIME_ROOT}/reflection" \
-        "${AMPLIHACK_RUNTIME_ROOT}/logs" \
-        "${AMPLIHACK_RUNTIME_ROOT}/metrics" \
-        "${AMPLIHACK_RUNTIME_ROOT}/provenance"
+      # Per-branch runtime root and its folders: tools/workflow_runtime_root.sh (#1808).
+      RUNTIME_HELPER="$TOOLS_DIR/workflow_runtime_root.sh"
+      [ -f "$RUNTIME_HELPER" ] || { echo "ERROR: $RUNTIME_HELPER not found; cannot set up the runtime root." >&2; exit 1; }
+      AMPLIHACK_RUNTIME_ROOT="$(bash "$RUNTIME_HELPER" "$BRANCH_NAME")" || exit 1
+      export AMPLIHACK_RUNTIME_ROOT
 
       echo "" >&2
       echo "=== Worktree Setup Complete ===" >&2
