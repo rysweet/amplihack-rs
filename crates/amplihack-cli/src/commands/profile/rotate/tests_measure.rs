@@ -207,6 +207,7 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     };
     // "a-slow" sorts first, so a tie-break bug would pick it.
     let cands = [measured("a-slow", &slow), measured("b-spare", &spare)];
@@ -488,6 +489,7 @@ fn direct_probe(session: f64, week: f64) -> Probe {
             week_all: Some(w("all models", week)),
             week_models: Vec::new(),
             session_limit: true,
+            observed_at: None,
         },
         error: None,
         raw: None,

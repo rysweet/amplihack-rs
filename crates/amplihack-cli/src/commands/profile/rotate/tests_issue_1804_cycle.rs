@@ -174,10 +174,12 @@ fn all_plan_logins_out(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
                 used: 40.0,
                 resets_at: reset,
             }),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     };
     decide_measured(ctx, snap, out, vec![(n(KEY), Probed::platform())], now())
 }
@@ -228,6 +230,7 @@ fn plenty_of_room(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     };
     decide_measured(ctx, snap, live, vec![(n(KEY), Probed::platform())], now())
 }
@@ -306,6 +309,7 @@ fn live_probe_fails(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError>
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     };
     let spare = Probed {
         reading: Reading::Measured {
@@ -316,6 +320,7 @@ fn live_probe_fails(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError>
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     };
     decide_measured(ctx, snap, failed, vec![(n("spare"), spare)], now())
 }
@@ -737,10 +742,12 @@ fn plan_out_credits_usable(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profil
         windows: Windows {
             session: win(100.0),
             week: win(40.0),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     };
     let credits = Probed {
         reading: Reading::Measured {
@@ -750,10 +757,12 @@ fn plan_out_credits_usable(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profil
         windows: Windows {
             session: win(10.0),
             week: win(10.0),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     };
     decide_measured(
         ctx,
