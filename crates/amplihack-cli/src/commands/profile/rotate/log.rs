@@ -207,8 +207,10 @@ pub mod msg {
     }
 
     /// `s=<n>% w=<n>%` with `sep` between, from the windows read (#1844):
-    /// exhausted shows its stored figures, `s=100%` if no session (#1846); an
-    /// unread week `w=?`, failed `failed`, in flight `unknown, still running`.
+    /// exhausted shows its stored figures; no session window is `s=0%`, as
+    /// in D1 (#1846), so a weekly-only login never logs a session limit it
+    /// does not have. An unread week is `w=?`, failed `failed`, in flight
+    /// `unknown, still running`.
     pub(in super::super) fn usage(r: &Shown, sep: &str) -> String {
         if r.still_running {
             return "unknown, still running".to_string();
@@ -220,7 +222,7 @@ pub mod msg {
                 format!("s={}%{sep}w={}", pct(s), week(r.week))
             }
             Reading::Exhausted { session, week: w } => {
-                let s = session.or(r.session).unwrap_or(100.0);
+                let s = session.or(r.session).unwrap_or(0.0);
                 format!("s={}%{sep}w={}", pct(s), week(w.or(r.week)))
             }
             Reading::Failed => "failed".to_string(),

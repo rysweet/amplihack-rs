@@ -86,7 +86,7 @@ fn message_grammar() {
     );
     // The API-key profile shows as per-token, live or not (#1700). An
     // exhausted reading with no windows read shows `w=?` (#1844), never a
-    // made-up `w=100%`.
+    // made-up `w=100%`, and `s=0%` as in D1 (#1846).
     let key = name("key");
     let platform = m(0.0, 0.0);
     let exhausted = Shown::from_reading(Reading::Exhausted {
@@ -100,7 +100,7 @@ fn message_grammar() {
             &[(key.clone(), platform.clone())],
             Some(&key)
         ),
-        "cycle live=work work:s=100%,w=? key:per-token"
+        "cycle live=work work:s=0%,w=? key:per-token"
     );
     assert_eq!(
         msg::cycle(
@@ -109,7 +109,7 @@ fn message_grammar() {
             &[(name("work"), exhausted)],
             Some(&key)
         ),
-        "cycle live=key key:per-token work:s=100%,w=?"
+        "cycle live=key key:per-token work:s=0%,w=?"
     );
     assert_eq!(
         msg::alert_no_capacity(
@@ -307,11 +307,15 @@ mod issue_1846 {
     }
 
     #[test]
-    fn a_weekly_only_login_logs_a_missing_session_as_100() {
+    fn a_weekly_only_login_logs_a_missing_session_as_0() {
+        // D1: a missing session window is 0% used. A login with no session
+        // limit that reaches its weekly limit has not reached a session
+        // limit, so it logs `s=0%` both before and after the week runs out.
         assert_eq!(
             shown(UsageState::WeeklyExhausted, None, Some(100.0)),
-            "s=100% w=100%"
+            "s=0% w=100%"
         );
+        assert_eq!(shown(UsageState::Ok, None, Some(90.0)), "s=0% w=90%");
     }
 
     #[test]
@@ -337,7 +341,7 @@ mod issue_1846 {
             session: None,
             week: None,
         };
-        assert_eq!(msg::usage(&Shown::from_reading(none), " "), "s=100% w=?");
+        assert_eq!(msg::usage(&Shown::from_reading(none), " "), "s=0% w=?");
     }
 
     #[test]
@@ -376,8 +380,8 @@ mod issue_1846 {
 // - `Shown::from_reading(Reading)` takes the percentages from a
 //   `Measured` reading and has no windows otherwise.
 // - `msg::usage(&Shown, sep)`: `s=<n>%<sep>w=<n>%`; an exhausted reading
-//   shows its own figures first, then the windows, and `s=100%` when no
-//   session is known (#1846); `w=?` when no weekly window is known;
+//   shows its own figures first, then the windows, and `s=0%` when no
+//   session is known, as in D1 (#1846); `w=?` when no weekly window is known;
 //   `failed` for a failed reading; `unknown, still running` when
 //   `still_running` is set, whatever the reading.
 // - `msg::swap` and `msg::cycle` take `&Shown` and use the same format.
@@ -428,7 +432,7 @@ fn an_exhausted_session_shows_the_weekly_figure_read() {
 #[test]
 fn an_exhausted_login_shows_the_session_read() {
     // The session window is shown as read, below 100% (the week ran out)
-    // or above it; with no session read it shows `s=100%` (#1846).
+    // or above it; with no session read it shows `s=0%`, as in D1 (#1846).
     assert_eq!(
         msg::usage(&exhausted(Some(40.0), Some(100.0)), ","),
         "s=40%,w=100%"
@@ -437,10 +441,7 @@ fn an_exhausted_login_shows_the_session_read() {
         msg::usage(&exhausted(Some(130.0), Some(55.0)), ","),
         "s=130%,w=55%"
     );
-    assert_eq!(
-        msg::usage(&exhausted(None, Some(55.0)), ","),
-        "s=100%,w=55%"
-    );
+    assert_eq!(msg::usage(&exhausted(None, Some(55.0)), ","), "s=0%,w=55%");
 }
 
 #[test]

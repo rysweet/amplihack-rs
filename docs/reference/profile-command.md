@@ -1060,7 +1060,7 @@ that has only reached its session limit.
 
 | Window | Shown as |
 |--------|----------|
-| The session | The value read, rounded down; for `session_exhausted` never below `100%`. A missing window shows `100%`. |
+| The session | The value read, rounded down; for `session_exhausted` never below `100%`. A missing window shows `0%`, as in the [decision rule](#rotate-decision-rule), so a login with [no session limit](#no-session-limit) shows `s=0%` whether or not its week has run out. |
 | The all-models week | The value read, rounded down; for `weekly_exhausted` never below `100%`. A missing window shows `w=?` for `session_exhausted` and `100%` for `weekly_exhausted`. |
 
 | Probe result | Session read | Week read | Cycle line |
@@ -1068,13 +1068,14 @@ that has only reached its session limit.
 | `session_exhausted` | 100% | 62% | `<name>:s=100%,w=62%` |
 | `session_exhausted` | 100% | none | `<name>:s=100%,w=?` |
 | `weekly_exhausted` | 30% | 99.6% | `<name>:s=30%,w=100%` |
-| `weekly_exhausted`, [no session limit](#no-session-limit) | none | 100% | `<name>:s=100%,w=100%` |
+| `weekly_exhausted`, [no session limit](#no-session-limit) | none | 100% | `<name>:s=0%,w=100%` |
 | `session_exhausted` | 98% | 40% | `<name>:s=100%,w=40%` |
 
 The same figures are used in the `live` and `target` parts of a `swap` line
 and in the `live=` part of an `ALERT: no profile has capacity` line. A
-login at its weekly limit with no session window shows `s=100%`; that
-figure does not mean a session limit was reached.
+login at its weekly limit with no session window shows `s=0%`, the same
+figure it shows before the week runs out; `s=100%` always means a session
+limit was reached.
 
 The rotator writes one line to stderr (`rotate.err` for a background
 rotator) for each `timeout` or `error` result, with `~/.claude` as the name
