@@ -926,8 +926,8 @@ closed.
 | `echo 'tail -f /dev/null' \| bash` | allowed (known limit) |
 | `["bash", 1]` (argv array with a number) | allowed |
 
-The guard does not panic on any input: it uses no `unwrap`, indexing or byte
-slicing on input words, and reads grouped short options by character.
+The guard does not panic on any input: every index into the command text is
+bounds-checked first, and grouped short options are read by character.
 
 **Response.** The same full-deny shape as the tmux guard, key for key, shown
 under the tmux guard's **Response** above, with `<M>` set to this fixed

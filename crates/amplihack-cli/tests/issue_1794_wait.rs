@@ -41,10 +41,10 @@ fn describe(out: &Output) -> String {
 /// The PIDs listed in `/proc/<pid>/task/*/children`. A task that ends while
 /// it is read is skipped.
 fn children_of(pid: u32) -> Vec<String> {
-    let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
-        return Vec::new();
-    };
-    tasks
+    // The child is alive and unreaped while this runs, so its task
+    // directory must be readable; an empty answer here would pass vacuously.
+    fs::read_dir(format!("/proc/{pid}/task"))
+        .expect("read /proc/<pid>/task of the running wait")
         .flatten()
         .filter_map(|task| fs::read_to_string(task.path().join("children")).ok())
         .flat_map(|text| {
@@ -57,10 +57,8 @@ fn children_of(pid: u32) -> Vec<String> {
 
 /// `(pid, ppid, pgid)` for every process whose stat file can be read.
 fn processes() -> Vec<(u32, u32, u32)> {
-    let Ok(entries) = fs::read_dir("/proc") else {
-        return Vec::new();
-    };
-    entries
+    fs::read_dir("/proc")
+        .expect("read /proc")
         .flatten()
         .filter_map(|entry| {
             let pid: u32 = entry.file_name().to_str()?.parse().ok()?;

@@ -158,8 +158,8 @@ steps:
            `amplihack wait --seconds N`. To wait for work to finish, run it in
            the background and wait on its PID: `cmd & pid=$!; wait $pid`.
            Never use `tail -f /dev/null` or `timeout N tail -f /dev/null` as a
-           sleep (`timeout N tail` in any form): the `tail` outlives the tool
-           call as an orphan, and the PreToolUse hook denies it.
+           sleep: the `tail` outlives the tool call as an orphan, and the
+           PreToolUse hook denies it.
 
       5. **Execute at least 2 test scenarios:**
          - **Scenario 1 (simple):** Test the most basic user-facing behaviour

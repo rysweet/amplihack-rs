@@ -26,7 +26,6 @@ contributors working on the PreToolUse hook.
 - [What the guard denies](#what-the-guard-denies)
 - [Where agents are told](#where-agents-are-told)
 - [Clean up tails left from before the guard](#clean-up-tails-left-from-before-the-guard)
-- [Tests](#tests)
 
 ## Wait for a fixed time
 
@@ -178,18 +177,6 @@ before ending it:
 ```bash
 pgrep -xa tail | grep -F ' -f /dev/null'
 ```
-
-## Tests
-
-| Test | Runs | Checks |
-|------|------|--------|
-| `crates/amplihack-hooks/src/pre_tool_use/tests/tail_follow_guard_tests.rs` | `cargo test -p amplihack-hooks tail_follow` | Each denied and allowed form in the hook specification, including `setsid -w`, `-f` and `-c` and `stdbuf -i`, `-o` and `-e` with joined and separate values; each fail-open limit, including that three nested shells are checked and four are allowed; that an argv array with a non-string element is allowed; the deny shape, that the command is never echoed, and that the guard reads no environment variable |
-| `crates/amplihack-hooks/src/pre_tool_use/tests/pre_tool_use_tests.rs` | `cargo test -p amplihack-hooks pre_tool_use` | A deny through `PreToolUseHook::process` for tool names `Bash`, `bash`, `shell` and `exec_command`, the `cmd` field, the argv array form, and a Copilot `preToolUse` payload |
-| `crates/amplihack-cli/tests/issue_1794_wait.rs` | `cargo test -p amplihack-cli --test cli_integration issue_1794_wait::` | On Linux, `amplihack wait --seconds 2` takes at least 2 s, exits `0` with empty stdout and stderr, and never has a child process or a process in its group while it runs; the invalid values above exit `2` |
-| `tests/integration/default_workflow_decomposition_test.rs` | `cargo test -p amplihack --test integration default_workflow_decomposition::` | Step 13's prompt and `SYSTEM_PROMPT_APPEND.md` both contain `amplihack wait --seconds` and `tail -f /dev/null` |
-
-The wait test runs under `isolated(..)`, so it uses a temporary `HOME` and
-does not inherit `AMPLIHACK_CLAUDE_PROFILE_ROOT`.
 
 ## See also
 

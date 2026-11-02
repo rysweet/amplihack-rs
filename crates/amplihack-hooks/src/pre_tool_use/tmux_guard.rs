@@ -235,8 +235,6 @@
 //! runs the slowest inputs found, each just under [`MAX_INPUT`]; the slowest
 //! takes about 0.3 s in a release build.
 
-#[cfg(test)]
-use super::shell::is_shell_tool;
 use super::shell::{self, SimpleCommand, basename, program};
 use serde_json::Value;
 use std::collections::HashSet;
