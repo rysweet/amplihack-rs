@@ -299,11 +299,10 @@ mod issue_1846 {
     }
 
     #[test]
-    fn a_weekly_exhausted_login_logs_w_100() {
-        // The session shows at least 100% on any exhausted login (#1844).
+    fn a_weekly_exhausted_login_logs_w_100_and_its_real_session() {
         assert_eq!(
             shown(UsageState::WeeklyExhausted, Some(30.0), Some(100.0)),
-            "s=100% w=100%"
+            "s=30% w=100%"
         );
     }
 
@@ -323,7 +322,7 @@ mod issue_1846 {
         );
         assert_eq!(
             shown(UsageState::WeeklyExhausted, Some(30.0), Some(99.6)),
-            "s=100% w=100%"
+            "s=30% w=100%"
         );
     }
 
@@ -376,8 +375,9 @@ mod issue_1846 {
 //   `Probed::still_running`.
 // - `Shown::from_reading(Reading)` takes the percentages from a
 //   `Measured` reading and has no windows otherwise.
-// - `msg::usage(&Shown, sep)`: `s=<n>%<sep>w=<n>%`, with `s=100%` at least
-//   for an exhausted reading and `w=?` when no weekly window is known;
+// - `msg::usage(&Shown, sep)`: `s=<n>%<sep>w=<n>%`; an exhausted reading
+//   shows its own figures first, then the windows, and `s=100%` when no
+//   session is known (#1846); `w=?` when no weekly window is known;
 //   `failed` for a failed reading; `unknown, still running` when
 //   `still_running` is set, whatever the reading.
 // - `msg::swap` and `msg::cycle` take `&Shown` and use the same format.
@@ -426,12 +426,12 @@ fn an_exhausted_session_shows_the_weekly_figure_read() {
 }
 
 #[test]
-fn an_exhausted_login_shows_at_least_100_for_the_session() {
-    // A session window below 100% on an exhausted reading (the week ran
-    // out) still shows `s=100%`; one above 100% shows as read.
+fn an_exhausted_login_shows_the_session_read() {
+    // The session window is shown as read, below 100% (the week ran out)
+    // or above it; with no session read it shows `s=100%` (#1846).
     assert_eq!(
         msg::usage(&exhausted(Some(40.0), Some(100.0)), ","),
-        "s=100%,w=100%"
+        "s=40%,w=100%"
     );
     assert_eq!(
         msg::usage(&exhausted(Some(130.0), Some(55.0)), ","),

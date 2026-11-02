@@ -207,7 +207,7 @@ pub mod msg {
     }
 
     /// `s=<n>% w=<n>%` with `sep` between, from the windows read (#1844):
-    /// exhausted shows at least `s=100%` and the reading's week (#1846), an
+    /// exhausted the reading's figures, `s=100%` if no session (#1846), an
     /// unread week `w=?`, failed `failed`, in flight `unknown, still running`.
     pub(in super::super) fn usage(r: &Shown, sep: &str) -> String {
         if r.still_running {
@@ -220,7 +220,7 @@ pub mod msg {
                 format!("s={}%{sep}w={}", pct(s), week(r.week))
             }
             Reading::Exhausted { session, week: w } => {
-                let s = r.session.or(session).map_or(100.0, |s| s.max(100.0));
+                let s = session.or(r.session).unwrap_or(100.0);
                 format!("s={}%{sep}w={}", pct(s), week(w.or(r.week)))
             }
             Reading::Failed => "failed".to_string(),

@@ -825,9 +825,10 @@ onto
 [usage credits](#use-usage-credits-when-every-plan-login-is-exhausted); see
 [When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured).
 A login that reached a limit shows the figures its probe read, with the
-session never below `100%`, so `work:s=100%,w=62%` is a login at its session
-limit with 38% of its week left. A login at its weekly limit shows `w=100%`,
-and `w=?` means no weekly figure was read. Either way the login has headroom
+window that ran out never below `100%`, so `work:s=100%,w=62%` is a login at
+its session limit with 38% of its week left. A login at its weekly limit
+shows `w=100%` and the session it read, for example `s=30%,w=100%`, and
+`w=?` means no weekly figure was read. Either way the login has headroom
 0 and is not chosen until the window resets. See
 [Exhausted figures](../reference/profile-command.md#rotate-exhausted-figures).
 
