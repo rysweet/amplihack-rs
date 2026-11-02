@@ -441,7 +441,7 @@ amount. It is built as follows.
   | `true` or `false` | `bool true`, `bool false` |
   | A string equal, ignoring ASCII case, to `true`, `false`, `on`, `off`, `yes`, `no`, `enabled`, `disabled`, `0` or `1` | `string "<word>"`, in lower case, for example `string "false"` |
   | Any other string | `string (<n> chars)`, its length in characters |
-  | The number `0` or `1` | `number 0`, `number 1` |
+  | The number `0` or `1`, as an integer or as a float exactly equal to it (`0.0`, `1.0`) | `number 0`, `number 1` |
   | Any other number | `number` |
   | An object or array | `object`, `array` |
 

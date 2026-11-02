@@ -244,7 +244,13 @@ fn enabled_form(v: Option<&Value>) -> String {
             Some(word) => format!("string \"{word}\""),
             None => format!("string ({} chars)", s.chars().count()),
         },
-        Some(Value::Number(n)) => match n.as_u64() {
+        // An integer or a float exactly equal to 0 or 1 is the flag (S3);
+        // no tolerance, so 0.9999 stays a bare `number`.
+        Some(Value::Number(n)) => match n.as_u64().or_else(|| match n.as_f64() {
+            Some(0.0) => Some(0),
+            Some(1.0) => Some(1),
+            _ => None,
+        }) {
             Some(0) => "number 0".to_string(),
             Some(1) => "number 1".to_string(),
             _ => "number".to_string(),

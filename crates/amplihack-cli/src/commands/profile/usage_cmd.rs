@@ -310,17 +310,10 @@ pub(super) fn run(
 
 /// Which login a spend probe reads.
 #[derive(Debug, Clone, Copy)]
-pub(super) enum SpendTarget<'a> {
+enum SpendTarget<'a> {
     /// A profile, against `~/.claude` when the flag is set.
     Profile(&'a ProfileName, bool),
     /// The `~/.claude` row of a login no profile holds.
-    Home,
-}
-
-/// Where a spend result is written back.
-#[derive(Debug, Clone, Copy)]
-enum SpendSlot {
-    Profile(usize),
     Home,
 }
 
@@ -338,34 +331,31 @@ fn spend_pass(
     deadline: Instant,
 ) {
     let needs = |p: &Probe| p.source == Some(Source::Direct) && p.extra_shape.is_some();
-    let mut targets: Vec<(SpendSlot, SpendTarget<'_>)> = probes
-        .iter()
-        .enumerate()
-        .filter(|(_, p)| needs(p))
-        .map(|(i, _)| {
-            let name = &profiles[i];
-            (
-                SpendSlot::Profile(i),
-                SpendTarget::Profile(name, live == Some(name)),
-            )
-        })
+    // A profile's index, or `None` for the `~/.claude` row.
+    let mut slots: Vec<Option<usize>> = (0..probes.len())
+        .filter(|&i| needs(&probes[i]))
+        .map(Some)
         .collect();
     if home.as_deref().is_some_and(needs) {
-        targets.push((SpendSlot::Home, SpendTarget::Home));
+        slots.push(None);
     }
-    if targets.is_empty() {
+    if slots.is_empty() {
         return;
     }
-    let spends = pooled(targets.len(), bound, |j| {
-        reader.spend(targets[j].1, deadline)
+    let spends = pooled(slots.len(), bound, |j| {
+        let target = match slots[j] {
+            Some(i) => SpendTarget::Profile(&profiles[i], live == Some(&profiles[i])),
+            None => SpendTarget::Home,
+        };
+        reader.spend(target, deadline)
     });
-    for ((slot, _), spend) in targets.iter().zip(spends) {
+    for (slot, spend) in slots.into_iter().zip(spends) {
         match slot {
-            SpendSlot::Profile(i) => probes[*i].spend = spend,
-            SpendSlot::Home => {
-                if let Some(h) = home.as_deref_mut() {
-                    h.spend = spend;
-                }
+            Some(i) => probes[i].spend = spend,
+            None => {
+                home.as_deref_mut()
+                    .expect("the home slot is only queued when home is Some")
+                    .spend = spend;
             }
         }
     }
@@ -818,7 +808,7 @@ impl RowReader {
     /// `/usage` run that ends by `deadline`. Its output is never kept and
     /// only the spend leaves here. `NotProbed` when no `claude` started:
     /// none was found, or the deadline passed before a slot was free.
-    pub(super) fn spend(&self, target: SpendTarget<'_>, deadline: Instant) -> Spend {
+    fn spend(&self, target: SpendTarget<'_>, deadline: Instant) -> Spend {
         if Instant::now() >= deadline {
             return Spend::NotProbed;
         }

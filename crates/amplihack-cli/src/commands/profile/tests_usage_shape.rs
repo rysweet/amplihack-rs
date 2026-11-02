@@ -19,7 +19,8 @@
 //! - `is_enabled` is `missing`, `null`, `bool true`, `bool false`,
 //!   `string "<word>"` for one of `true false on off yes no enabled
 //!   disabled 0 1` matched ignoring ASCII case and printed in lower case,
-//!   `string (<n> chars)` for any other string, `number 0`, `number 1`,
+//!   `string (<n> chars)` for any other string, `number 0`, `number 1`
+//!   (integer or float exactly equal to 0 or 1),
 //!   `number` for any other number, `object` or `array`.
 //! - No string or number from the value, other than the allow-listed
 //!   words and `0` and `1`, ever appears in the line.
@@ -163,6 +164,15 @@ fn only_the_numbers_zero_and_one_are_printed() {
         json!(987_654),
         json!(4321.5),
     ] {
+        assert_eq!(enabled(n.clone()), "number", "{n}");
+    }
+}
+
+#[test]
+fn floats_exactly_zero_or_one_are_the_flag() {
+    assert_eq!(enabled(json!(0.0)), "number 0");
+    assert_eq!(enabled(json!(1.0)), "number 1");
+    for n in [json!(0.5), json!(2.0), json!(0.9999), json!(1.0001)] {
         assert_eq!(enabled(n.clone()), "number", "{n}");
     }
 }
