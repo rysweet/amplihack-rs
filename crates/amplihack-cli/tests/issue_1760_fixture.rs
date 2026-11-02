@@ -59,11 +59,22 @@ pub struct Fx {
     /// Working directory of every run, and parent of `dir(..)`.
     pub work: PathBuf,
     pub uid: u32,
+    /// `TMPDIR` of every run: the directory holding `root`.
+    pub tmpdir: PathBuf,
 }
 
 impl Fx {
     pub fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        // A nested workflow can set a `TMPDIR` over 100 bytes long, which
+        // leaves no room for the socket path; then use `/tmp`, and pass it
+        // on as `TMPDIR` so the home guard still finds HOME under it.
+        let base = std::env::temp_dir();
+        let base = if base.as_os_str().len() <= 48 {
+            base
+        } else {
+            PathBuf::from("/tmp")
+        };
+        let tmp = tempfile::tempdir_in(&base).unwrap();
         let root = tmp.path().canonicalize().unwrap();
         // SAFETY: geteuid has no preconditions.
         let uid = unsafe { libc::geteuid() };
@@ -81,6 +92,7 @@ impl Fx {
             socket: j(&format!("tt/tmux-{uid}/default")),
             work: j("work"),
             uid,
+            tmpdir: base.canonicalize().unwrap(),
             root,
             _tmp: tmp,
         };
@@ -116,6 +128,7 @@ impl Fx {
             .current_dir(&self.work)
             .env("PATH", format!("{}:/usr/bin:/bin", self.tools.display()))
             .env("HOME", &self.home)
+            .env("TMPDIR", &self.tmpdir)
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.profiles)
             .env("AMPLIHACK_TEST_PROC_ROOT", &self.proc_root)
