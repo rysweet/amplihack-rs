@@ -504,6 +504,24 @@ fn direct_probe(session: f64, week: f64) -> Probe {
     }
 }
 
+/// Issue #1856 (D6): the rotator runs no spend probe, so a credits-on
+/// direct row reaches it with spend `NotProbed` and a shape. It is judged
+/// by its windows exactly as a credits-off row is, and is never unknown.
+#[test]
+fn a_credits_on_direct_row_is_judged_by_its_windows() {
+    use crate::commands::profile::usage_request::ExtraUsageShape;
+    use crate::commands::profile::usage_source::Spend;
+    let off = direct_probe(30.0, 40.0);
+    let mut on = direct_probe(30.0, 40.0);
+    on.spend = Spend::NotProbed;
+    on.extra_shape = Some(ExtraUsageShape::of(
+        &serde_json::json!({"is_enabled": true, "used_credits": 5}),
+    ));
+    let read = reading("credits", &on);
+    assert!(!read.unknown);
+    assert_eq!(read, reading("plain", &off));
+}
+
 /// Jobs that sleep for the delay given per key and count their starts.
 #[derive(Clone, Default)]
 struct Jobs {
