@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-10-28
+last_updated: 2026-11-01
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -37,6 +37,7 @@ PR to this recipe when the change exceeds its eligibility rules.
 - [Merges outside the gate are refused (#1551)](#merges-outside-the-gate-are-refused-1551)
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
 - [Usage limits are not STUCK](#usage-limits-are-not-stuck)
+- [No-progress stop and usage budget](#no-progress-stop-and-usage-budget)
 - [Recursion context propagation](#recursion-context-propagation)
 - [Resumability](#resumability)
 - [The run report](#the-run-report)
@@ -609,8 +610,8 @@ exits `1` with `FAILED_IMPLEMENTATION`.
 
 ## Why there is no iteration cap
 
-Neither loop has a `max_rounds`, a "backstop" integer, or a wall-clock budget.
-Integer caps fail in both directions:
+Neither loop has a `max_rounds` or a "backstop" integer. Integer caps fail in
+both directions:
 
 - **A cap cuts off work that was about to converge.** Round 12 of a loop
   steadily resolving concerns is the round you least want to kill.
@@ -623,6 +624,14 @@ round therefore ends by invoking the
 evidence — what the round actually produced, which findings are new /
 recurring / resolved, whether test and CI signals moved, whether the same text
 keeps reappearing — and answers `CONTINUE`, `DONE`, or `STUCK`.
+
+Two stops sit in front of the evaluator and are decided in code (#1743). A
+round that is not clean and leaves both the PR head and its open items as
+they were in the previous round stops the loop as `STUCK` without an
+evaluator run. A per-run usage budget, set by the operator and resumable,
+stops the loop as `BUDGET_EXHAUSTED`. The budget is a cost ceiling, not the
+convergence terminator, and `BUDGET_EXHAUSTED` is never success. See
+[No-progress stop and usage budget](#no-progress-stop-and-usage-budget).
 
 `autodrive_loop.sh` carries a round **label** (`round-3`) for reports and the
 round's file names. Nothing compares it to a limit and no branch reads it. A
@@ -748,6 +757,15 @@ What happens instead depends on the round:
 A round or an evaluator run that failed on a Claude usage limit never
 reaches this table: the loop stops as `USAGE_LIMIT` first. See
 [Usage limits are not STUCK](#usage-limits-are-not-stuck).
+
+Two results are decided in code before the evaluator runs, and only for a
+round that is not clean ([No-progress stop and usage
+budget](#no-progress-stop-and-usage-budget)):
+
+| Condition | Result |
+| --- | --- |
+| Previous round not clean, same non-empty head SHA, same open items | `STUCK` (decided in code), exit `1`. The evaluator does not run. |
+| A budget limit is reached | `BUDGET_EXHAUSTED`, exit `1`. The evaluator does not run. |
 
 A non-clean `DONE` usually means the findings were addressed without a new
 review: in PR #1587 crusty said `CONCERNS` and the concerns were fixed by a
@@ -1601,11 +1619,11 @@ form. `autodrive-build` step-03's read of `workflow_result` (#1714) goes
 through `rv_field` inside `workflow_finalization_handoff.sh`, and
 `workflow_result` is the output of a `workflow-finalize.yaml` step, not of an
 autodrive step, so it is outside the checked output set and adds no row;
-`autodrive-build.yaml` only declares it `""` in `context:`. There are 35 in all:
+`autodrive-build.yaml` only declares it `""` in `context:`. There are 36 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
-| `auto-drive-to-merge.yaml` | 4 |
+| `auto-drive-to-merge.yaml` | 5 |
 | `autodrive-build.yaml` | 1 |
 | `autodrive-crusty-loop.yaml` | 7 |
 | `autodrive-crusty-round.yaml` | 9 |
@@ -2611,6 +2629,384 @@ shows it) and run auto-drive again with the same `pr_number`; finished
 phases are skipped. To give the wait longer before the loop stops, raise
 [`recipe.usage_limit_max_wait_secs`](user-config.md#recipeusage_limit_wait).
 
+## No-progress stop and usage budget
+
+Issue #1743 added two stops that are decided by code in the loop driver, not
+by an agent. Both apply to the crusty loop and the merge-ready loop, and both
+exit `1`. Neither changes the evaluator, the [#1597
+override](#advancing-needs-two-independent-signals) or how verdicts are read;
+the loop-health evaluator still decides every other case.
+
+| Stop | `loop_result` | Decided from | Record of the run |
+| --- | --- | --- | --- |
+| No progress | `STUCK` | the PR head SHA and the round's open items, compared with the loop's previous round | `<loop>-stuck-reason.txt`, `<loop>-result.json`, the `escalate` line, a PR comment |
+| Usage budget | `BUDGET_EXHAUSTED` | rounds and wall seconds recorded in the state directory, compared with three limits | `autodrive-budget-summary.md`, `<loop>-result.json`, the `escalate` line, a PR comment |
+
+`BUDGET_EXHAUSTED` is never success. No reader maps it to `DONE`, and the
+merge gate does not merge after it.
+
+### The no-progress rule
+
+After a round that is **not** clean, and before the evaluator runs, the driver
+compares the round with the last row of `<loop>-progress.tsv`. It stops the
+loop as `STUCK` only when all of these hold:
+
+1. the previous row is not clean;
+2. the PR head SHA is non-empty in both rounds and is the same;
+3. the set of open items is the same.
+
+In every other case the round goes to the evaluator as before. A round that
+makes progress, by a new commit or by a change in its open items, is never
+stopped by this rule.
+
+The head SHA is `git -C <repo> rev-parse HEAD` in the PR worktree, read once
+after the round and the review-dir checks. It is the same value the #1597
+override receives. A `git` failure gives an empty SHA, which never matches, so
+an unreadable head sends the round to the evaluator.
+
+The open items are the lines of the round record's findings file,
+`<loop>-round-N.json.findings`. For the crusty loop these are crusty's concern
+ids. For the merge-ready loop they are the blocker ids, plus the
+`measured-evidence-disagrees` line when the measured evidence downgraded the
+verdict. Before comparison each line has `\r` removed and surrounding space
+trimmed; blank lines are dropped; the rest is sorted with duplicates removed
+(`LC_ALL=C sort -u`). A missing findings file is an empty set. Commas, tabs and
+control characters inside an item become `_`, each item is cut to 200 bytes,
+and the joined field is cut to 4 KiB and ends `…(truncated)` when cut.
+
+Exemptions:
+
+- **A clean round.** When the round verdict is the clean token, neither the
+  no-progress check nor the post-round budget check runs. The round goes to
+  the evaluator, which can return `DONE`.
+- **A first round.** A loop with no earlier row in its progress file has
+  nothing to compare with.
+- **A light round that is not clean.** In an
+  [auto-drive-light](auto-drive-light.md) run, `autodrive_light_round.sh`
+  empties `<record>.findings` and writes `<record>.light.json` when it applies
+  the minor-only rule. A minor-deferred round that step-06 accepts is
+  recorded as clean and is covered by the first exemption. When step-06
+  rejects the side files, the round is recorded as `CONCERNS` with an empty
+  findings file, which does not describe its open concerns. The no-progress
+  check therefore does not run when the current round's record has a
+  `<record>.light.json` side file, or when the record of the round named in
+  the previous row has one. The round goes to the evaluator, and its row is
+  appended as usual.
+- **An untrusted progress file.** A progress file that is a symlink, is not a
+  regular file or is readable by group or others is not read. The driver
+  prints a `WARNING` and the evaluator decides. This check fails open, because
+  its worst outcome is an extra evaluator run. The driver checks the file
+  when it starts, before it sets untrusted state entries aside; when the file
+  is untrusted then, the rule stays off for the rest of that run.
+
+The reason is written to `<loop>-stuck-reason.txt` and is also the `reason`
+field of the `escalate` line:
+
+```text
+no progress (decided in code): head 3f9c2a1e6b0d4c7a8e5f1b2c9d0a3e4f5b6c7d8e and open items unchanged since round-4: missing-test-for-budget,unpinned-gh-timeout
+```
+
+When the set is empty, the text after the colon is `none`.
+
+### Budget keys and defaults
+
+The limits are context keys of `auto-drive-to-merge.yaml`. Override them with
+`-c` on the command line:
+
+| Key | Default | Counts |
+| --- | --- | --- |
+| `autodrive_budget_loop_rounds` | `12` | Round recipes run by one loop. Each loop is compared with this limit on its own. |
+| `autodrive_budget_total_rounds` | `20` | Round recipes run by both loops together. |
+| `autodrive_budget_wall_seconds` | `14400` | Seconds spent in children: before-round steps, rounds and evaluator runs, across both loops. |
+
+All three are cumulative across every run that uses the same state
+directory. A relaunch therefore continues counting from the rounds and
+seconds already recorded; it does not start again at zero.
+
+A limit is reached when it is greater than `0` and the recorded use is equal
+to or greater than it. `0` or an empty value means unlimited.
+
+Every value must match `^[0-9]{1,12}$` and is read in base 10, so `012` is
+twelve. Any other value makes `autodrive_loop.sh` exit `2` with a usage error
+naming the key, before the first round. Only the three keys above are
+accepted: an unknown `autodrive_budget_*` key also exits `2`.
+
+The defaults are declared only in `auto-drive-to-merge.yaml`.
+`autodrive-crusty-loop.yaml` and `autodrive-merge-loop.yaml` declare the keys
+with empty defaults, so either loop recipe run on its own is unbudgeted.
+Their step-02 reads the values from `RECIPE_VAR_autodrive_budget_*` and
+passes them to the driver as `--context` arguments; no
+`{{autodrive_budget_*}}` placeholder appears inside a `command:` block. The
+driver keeps them apart from the round context, so they never reach a round
+recipe.
+
+```bash
+# Default limits.
+amplihack recipe run auto-drive-to-merge -c pr_number=1743
+
+# A longer merge-ready loop and a six-hour wall budget.
+amplihack recipe run auto-drive-to-merge -c pr_number=1743 \
+  -c autodrive_budget_loop_rounds=20 \
+  -c autodrive_budget_total_rounds=30 \
+  -c autodrive_budget_wall_seconds=21600
+
+# No budget at all.
+amplihack recipe run auto-drive-to-merge -c pr_number=1743 \
+  -c autodrive_budget_loop_rounds=0 \
+  -c autodrive_budget_total_rounds=0 \
+  -c autodrive_budget_wall_seconds=0
+```
+
+The budget is a cost ceiling chosen by the operator. It is not the
+convergence terminator, and [there is still no iteration
+cap](#why-there-is-no-iteration-cap): a loop ends `DONE` only through the
+evaluator.
+
+### Where the checks run
+
+The order of operations in each round is:
+
+1. **Pre-round budget check**, before the round label is advanced, before the
+   review directory is stamped and before the `--before-round` step. If a
+   limit is reached, the loop stops as `BUDGET_EXHAUSTED` and no agent starts.
+   The `escalate` line carries the last label in the loop's progress file, or
+   `?` when there is none.
+2. The round label is advanced, the baseline taken and the review directory
+   stamped.
+3. The `--before-round` step, timed. If it fails, the budget is checked
+   first. When a limit is reached, the result is `BUDGET_EXHAUSTED`, not
+   `BEFORE_ROUND_FAILED`. Otherwise the existing handling applies.
+4. The round recipe, timed.
+5. The exit-`79` and review-dir checks.
+6. The head SHA and the open items.
+7. For a round that is not clean: the **no-progress check**, giving `STUCK`.
+8. For a round that is not clean: the **post-round budget check**, giving
+   `BUDGET_EXHAUSTED`.
+9. A row is appended to `<loop>-progress.tsv`, for clean rounds as well.
+10. The evaluator, timed, then the existing decision logic.
+
+A clean round is never stopped by the budget after it has run, so a loop that
+has converged keeps its `DONE`. The pre-round check before the next round
+still stops any further agent work.
+
+A terminal refusal (exit `79`) and a [usage limit](#usage-limits-are-not-stuck)
+are checked before either stop and keep their own results.
+
+All comparisons of round counts are made in `autodrive_budget.sh`, against
+counts read from the state directory. `autodrive_loop.sh` never compares
+`ROUND`, and the guard test `no_numeric_iteration_cap_anywhere` covers both
+new helpers.
+
+### The nested crusty loop
+
+The merge-ready loop's `--before-round` step,
+`autodrive_crusty_rereview.sh`, can start the crusty loop again. It forwards
+exactly the three budget keys to that nested loop and drops any other
+`autodrive_budget_*` key with a `WARNING`.
+
+The nested loop records its own rounds under the `crusty` loop, so they count
+towards the crusty per-loop limit and the total. Its progress rows go into the
+same `crusty-progress.tsv`. The outer driver takes a mark of the usage file
+before the before-round step, and afterwards records only what the nested loop
+did not: the step's elapsed seconds minus the seconds the nested loop
+recorded, and one session only when the nested loop recorded none. Each second
+and each session is counted once.
+
+When the nested loop stops as `BUDGET_EXHAUSTED`, the re-review prints
+`before_round_result` `crusty-rereview-budget-exhausted`, writes no
+`crusty-loop` marker and exits `1`. The outer loop then reports
+`BUDGET_EXHAUSTED` with the summary rewritten for the outer loop, even when
+the outer limits were not reached on their own.
+
+### State files
+
+All of these are in the run's state directory, created under `umask 077` with
+mode `0600`. None is written through a symlink. Rewritten files are replaced
+atomically with `mktemp` and `mv -f`; appends are single writes under 4 KiB,
+taken under `flock` where it is available.
+
+| File | Written | Content |
+| --- | --- | --- |
+| `<loop>-progress.tsv` | appended after every round | `round_label`, `head_sha`, `clean` (`0` or `1`), open items joined by `,` |
+| `autodrive-usage.tsv` | appended after every child | `loop`, `round_label`, `phase` (`before`, `round` or `evaluator`), `sessions`, `seconds`, `tokens` |
+| `autodrive-usage.json` | rewritten after every row | totals by loop and overall |
+| `<loop>-stuck-reason.txt` | on a no-progress stop | the reason line |
+| `autodrive-budget-summary.md` | on a budget stop | the summary below |
+| `<loop>-result.json` | on every stop of the loop | the same fields as the `escalate` line |
+
+`<loop>` is `crusty` or `merge-ready`. Rows in `autodrive-usage.tsv` that do
+not parse are skipped with a `WARNING`. A usage file that is a symlink, is not
+a regular file or is readable by group or others makes the budget check exit
+`2` before any agent starts. The loop then exits `2` with an `ERROR` on stderr
+and no `loop_result`: it writes no `<loop>-result.json`, prints no `escalate`
+line and posts no PR comment. This check fails closed, unlike the progress
+check.
+
+`tokens` is an integer only when the agent CLI prints a token count on a line
+the driver recognises. No current CLI does, so the value is `unknown`. It is
+never recorded as `0`, and `autodrive-usage.json` reports the total as
+`unknown` when any row is `unknown`. No token, environment variable, prompt or
+log text is written to these files.
+
+An example `autodrive-usage.json`:
+
+```json
+{"loops":{"crusty":{"rounds":7,"sessions":15,"seconds":5130},"merge-ready":{"rounds":12,"sessions":26,"seconds":8811}},"total":{"rounds":19,"sessions":41,"seconds":13941,"tokens":"unknown"}}
+```
+
+### Output
+
+A no-progress stop prints, on stderr:
+
+```text
+AUTO_DRIVE_LOOP: STUCK — loop 'merge-ready' stops at round label 'round-5'.
+  Reason: no progress (decided in code): head 3f9c2a1e6b0d4c7a8e5f1b2c9d0a3e4f5b6c7d8e and open items unchanged since round-4: ci-red,unresolved-review-thread
+  Round record: ~/.amplihack/state/auto-drive/<key>/merge-ready-round-5.json
+  This is a judgement about absence of progress, not an attempt count.
+```
+
+A budget stop prints, on stderr:
+
+```text
+AUTO_DRIVE_LOOP: BUDGET_EXHAUSTED — loop 'merge-ready' stops at round label 'round-12'.
+  Reason: usage budget reached (autodrive_budget_loop_rounds); see autodrive-budget-summary.md in the state directory
+  Round record: ~/.amplihack/state/auto-drive/<key>/merge-ready-round-12.json
+  This is a usage budget set by the operator, not a judgement about progress. Relaunch with a higher budget to resume from the recorded round.
+```
+
+Each prints one line on stdout and writes the same line to
+`<loop>-result.json`:
+
+```json
+{"loop":"merge-ready","loop_result":"BUDGET_EXHAUSTED","round_label":"round-12","reason":"usage budget reached (autodrive_budget_loop_rounds); see autodrive-budget-summary.md in the state directory"}
+```
+
+The sentence `This is a judgement about absence of progress, not an attempt
+count.` is printed only for `STUCK` results, whether decided by the
+evaluator or by the no-progress rule. `escalate` takes `budget` as its third
+argument for the budget wording.
+
+### The budget summary
+
+`autodrive-budget-summary.md` has a fixed layout:
+
+````markdown
+# Auto-drive usage budget reached
+
+Stopped: loop `merge-ready` at round label `round-12` (post-round check).
+Limits reached: autodrive_budget_loop_rounds
+
+| Measure | Used | Limit |
+| --- | --- | --- |
+| crusty rounds | 7 | 12 |
+| merge-ready rounds | 12 | 12 |
+| total rounds | 19 | 20 |
+| wall seconds | 13941 | 14400 |
+| sessions | 41 | none |
+| tokens | unknown | none |
+
+## Open items of round-12
+
+```text
+ci-red
+unresolved-review-thread
+```
+
+## Remaining work
+
+- Loops without a DONE result: merge-ready
+- The open items above
+
+## Resume
+
+amplihack recipe run auto-drive-to-merge -c pr_number=1743 -c autodrive_budget_loop_rounds=24
+````
+
+The check point is `pre-round check`, `post-round check` or `before-round
+step`. The resume command names each key whose limit was reached, with a
+suggested value of twice the current limit. Only numbers derived from
+validated limits are printed.
+
+### Resuming after BUDGET_EXHAUSTED
+
+Run auto-drive again with the same `pr_number` and a higher value for the key
+named in the summary:
+
+```bash
+amplihack recipe run auto-drive-to-merge -c pr_number=1743 \
+  -c autodrive_budget_loop_rounds=24
+```
+
+Finished phases are skipped as usual ([Resumability](#resumability)). The
+stopped loop labels its next round after the last recorded one, and the
+previous row of its progress file is the last round of the earlier run, so the
+no-progress rule compares across the relaunch. A relaunch with the same or a
+lower limit stops at the pre-round check without starting an agent.
+
+A loop that stopped as `STUCK` by the no-progress rule resumes the same way
+once something has changed: a commit on the PR head or a change in the open
+items. `<loop>-progress.tsv` is kept across relaunches, so the first round of
+a relaunch is compared with the last round of the earlier run. A relaunch with
+nothing changed runs one round and then stops as `STUCK` in code, before the
+evaluator, with the same reason as before. Push a commit, or resolve or add an
+open item, before relaunching.
+
+### Pull request comments
+
+On either stop, when `pr_number` is set, the driver posts one comment with
+`gh pr comment <pr> --body-file <private file>`. The comment holds the
+reason, or the summary for a budget stop. Before posting:
+
+- the PR number must match `^[0-9]{1,10}$`;
+- `@` mentions and `#N` cross-links are neutralised, so the comment notifies
+  no one and links no issue;
+- paths are reduced to their base names;
+- agent-derived text such as open items sits inside a fenced block in which
+  any triple backtick is replaced, so it cannot close the fence;
+- the body is capped at 60,000 bytes.
+
+`gh` runs with `GH_PROMPT_DISABLED=1`, under `timeout 900` (a ceiling on a
+hung post, well above any real one, in keeping with the [no-timeout
+policy](#no-short-timeouts)), in a new session
+where `setsid` is available, and with no terminal on any stream. The last
+point matters on hosts whose `timeout` is the uutils one: a child that reads
+from a terminal there is stopped by `SIGTTIN` and never reaches the deadline.
+A failed post prints a
+`WARNING` with the exit code and does not change the loop result. `gh` is
+used only for `pr comment`; the new helpers never call `gh pr merge`, `gh
+api` or any bypass flag.
+
+Tests never reach GitHub: each suite that drives the loop puts a stub `gh`
+first on `PATH`. Production code has no environment switch that skips the
+post.
+
+### How the run report shows these stops
+
+A loop that stops as `STUCK` or `BUDGET_EXHAUSTED` fails its loop step, and
+the composed recipe stops there as it does for any other loop failure. The
+record of the run is then the `escalate` line, `<loop>-result.json`, the
+reason or summary file and the PR comment. The recipe failure semantics are
+unchanged.
+
+When `autodrive-report` does run with such a result, for example in a dry
+run, it reads both `crusty_loop_result` and `merge_loop_result`, reduces each
+`loop_result` to `^[A-Z_]+$` (anything else is `unknown`), and for `STUCK` or
+`BUDGET_EXHAUSTED` in either loop:
+
+- prints a pointer line on stderr, such as
+  `AUTO_DRIVE_TO_MERGE: the merge-ready loop stopped as BUDGET_EXHAUSTED; see autodrive-budget-summary.md in the state directory.`;
+- reports the outcome as `NOT_MERGED`, whatever `merge_result` says;
+- exits `1`.
+
+### Threat model
+
+The budget is a cost ceiling, not a security boundary. A forged or corrupted
+state file can at most stop a run early: a false `STUCK` or
+`BUDGET_EXHAUSTED` exits `1` and writes no gate evidence, and the merge gate
+remains the only authority that merges. Limits and stored counts are
+validated as integers before any arithmetic, sums are done in `awk`, and no
+state file is ever `eval`'d or sourced.
+
 ## Recursion context propagation
 
 `autodrive_loop.sh` exports `AMPLIHACK_TREE_ID` and `AMPLIHACK_SESSION_DEPTH`
@@ -2714,12 +3110,12 @@ AUTO_DRIVE_TO_MERGE: MERGED — PR #27 (crusty loop: unknown, merge gate: MERGED
 ```
 
 ```json
-{"outcome":"MERGED","pr":"27","crusty_loop":"unknown","merge_result":"MERGED"}
+{"outcome":"MERGED","pr":"27","crusty_loop":"unknown","merge_result":"MERGED","merge_loop":"DONE"}
 ```
 
 Each phase result is read from its `RECIPE_VAR_` name only:
-`${RECIPE_VAR_build_result:-}`, and the same for `merge_gate_result` and
-`crusty_loop_result`. An inherited `BUILD_RESULT`, `MERGE_GATE_RESULT` or
+`${RECIPE_VAR_build_result:-}`, and the same for `merge_gate_result`,
+`crusty_loop_result` and `merge_loop_result`. An inherited `BUILD_RESULT`, `MERGE_GATE_RESULT` or
 `CRUSTY_LOOP_RESULT` is ignored. A skipped phase leaves
 its own result empty, so the report does not depend on it. These fallbacks,
 and with them the `merge_result` read that the #1543 incident showed as
@@ -2748,6 +3144,11 @@ becomes `NOT_MERGED` or `unknown`. The outcome mapping is:
 | `MERGED`, `ALREADY_MERGED` | `MERGED` |
 | `DRY_RUN` | `DRY_RUN` |
 | anything else | `NOT_MERGED` |
+
+`merge_loop` is the merge-ready loop's `loop_result`, reduced to `^[A-Z_]+$`
+or `unknown`. A `STUCK` or `BUDGET_EXHAUSTED` result in either loop overrides
+the table: the outcome is `NOT_MERGED` and the step exits `1` (see [How the
+run report shows these stops](#how-the-run-report-shows-these-stops)).
 
 The report's markdown output also shows how phase 1 ended, from the two
 [`build_result` fields](#the-build-result) (#1714):
@@ -3197,6 +3598,9 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver + merge gate + bookkeeping. |
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`; runs a `--before-round` step at its own depth. |
+| `amplifier-bundle/tools/autodrive_progress.sh` | tool | The [no-progress rule](#the-no-progress-rule): `record` appends a row to `<loop>-progress.tsv`; `check` compares the current round with the last row and exits `10` with `<loop>-stuck-reason.txt` written on no progress. Exits `2` on a usage error. |
+| `amplifier-bundle/tools/autodrive_budget.sh` | tool | The [usage budget](#budget-keys-and-defaults): `mark`, `add`, `totals`, `check` (exits `10` with `autodrive-budget-summary.md` written when a limit is reached) and `post` (the sanitised PR comment). All round-count comparisons live here. |
+| `amplifier-bundle/tools/autodrive_escalate.sh` | tool | `escalate` and its `usage_limit` and `budget` wordings, `usage_limit_stop`, `stops_preflight` (the start-up check of the usage and progress files), `usage_add`, `progress_stop`, `budget_stop`, `post_stop` and `record_result`, which writes `<loop>-result.json`. Sourced by the loop driver. |
 | `amplifier-bundle/tools/autodrive_last_round.sh` | tool | The highest round number a loop already has in the state dir, so a second or resumed loop labels its rounds after it. Writes nothing. |
 | `amplifier-bundle/tools/autodrive_done_override.sh` | tool | What the loop does with a loop-health `DONE` over a non-clean round (#1597): exit `0` runs a re-review round; exit `1` is `STUCK` for a missing record or a repeat with no progress. Writes nothing. |
 | `amplifier-bundle/tools/autodrive_round_tail.sh` | tool | The last 20000 bytes of a round log for the loop-health evaluator, without the partial first line a byte cut leaves, so no prefix-less agent fragment reaches the evidence collector, and with the runner summary's header kept when a long summary pushes it out of the window (#1510). Writes nothing. |
@@ -3238,6 +3642,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | [Finalization hand-off](#finalization-hand-off-from-phase-1-1714) (#1714): the allow-list and flag exactness, the validator's hand-off on both `BLOCKED_CI` exits and on `FAILED_IMPLEMENTATION` with a confirmed open PR (and its refusal without one), the open-PR check's PR head rule (a fast-forward PR head present locally or fetched without writing refs is the same PR; a diverged, rewritten or unfetchable head is not), the real terminal-state probe followed by the validator on a merge already on the PR before finalization (`EXISTING_OPEN_PR` when green, `FAILED_IMPLEMENTATION` handed off when pending, `BLOCKED_CI` handed off when red; a diverged head, a rewound remote, or a probe without `accept_pr_head_ahead` still `FAILED_INVALID_INPUT` and never handed off), `step-20-sync-pr-head` and step-20b run from the YAML against a remote that is ahead, with an upstream, with only `origin/<branch>` and with neither (the push lands on the PR head), standalone runs and all five other prior-state blockers still failing closed, step-03 run from its YAML against a stub `gh` (hand-off, closed or different PR, a non-digit `pr_number` printed as `<invalid>`, no PR, resume, `BLOCKED_CI` with no `handoff` field, a state outside the vocabulary, a missing brick), and static guards on the flag's only setter and on the merge gate | `tests/integration/issue_1714_finalization_handoff.rs` |
 | [Usage limits are not STUCK](#usage-limits-are-not-stuck) (#1801): `1801-evaluator-retry-verdict` (the evaluator hits a limit once, is retried inside step-02 and returns a verdict the loop records, with no `STUCK`), `1801-evaluator-usage-limit` (the limit is not lifted and the loop reports `USAGE_LIMIT`), a round and a before-round step that fail on a limit, and negative cases where the loop does not stop as `USAGE_LIMIT`: a nested `class`, the marker with exit `0`, an indented or echoed marker, and `usage_limit_wait` lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The same retry through the real step supervisor: fake `claude` and a stub `recipe-runner-rs` under an isolated `HOME` | `crates/amplihack-cli/tests/issue_1801_evaluator_retry.rs` |
+| [No-progress stop and usage budget](#no-progress-stop-and-usage-budget) (#1743): `STUCK` in code on an unchanged head and open items, no stop when either changed or the round is clean, no stop when the current or previous round has a `<record>.light.json` side file (two rejected light rounds on the same head with empty findings), `BUDGET_EXHAUSTED` from each of the three limits at the pre-round, post-round and before-round check points, a relaunch with a higher limit resuming from the recorded round and one with the same limit starting no agent, the nested crusty loop counted once, `tokens` recorded as `unknown`, malformed limits and unknown keys exiting `2`, the symlink and `0600` cases, the sanitised PR comment through a stub `gh`, and the `-c` override reaching both loops. Fixture state directories, stub `amplihack`, `gh` and `git` on `PATH`, under `isolated(..)`; nothing under the real `HOME` is read or written | `crates/amplihack-cli/tests/issue_1743_autodrive_budget.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
@@ -3252,6 +3657,7 @@ bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
 cargo test -p amplihack-cli --test cli_integration issue_1551
 cargo test -p amplihack-cli --test cli_integration issue_1561
 cargo test -p amplihack-cli --test cli_integration issue_1801
+cargo test -p amplihack-cli --test cli_integration issue_1743
 bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
 gadugi-test validate -d tests/gadugi/scenarios
 bash tests/gadugi/run-autodrive-crusty-rereview-scenario.sh   # and the other run-autodrive-*-scenario.sh

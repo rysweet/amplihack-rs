@@ -5,8 +5,9 @@ description: |
   has ZERO outstanding concerns, or until the agentic loop-health evaluator
   says the loop has stopped making progress.
 
-  There is NO iteration cap here. Not a max-rounds integer, not a backstop, not
-  a wall-clock budget. The terminator is `loop-health-evaluator` (issue #1337):
+  There is NO iteration cap here. Not a max-rounds integer, not a backstop.
+  The operator's usage budget (#1743) is a resumable cost ceiling, not the
+  convergence terminator. The terminator is `loop-health-evaluator` (issue #1337):
   after each round it reads measured evidence — what the round actually
   produced, which concerns are new / recurring / resolved, whether signals
   moved — and answers CONTINUE / DONE / STUCK. Absence of progress stops the
@@ -44,6 +45,11 @@ context:
   # autodrive_pr_input turns on PR worktree resolution in the preflight.
   autodrive_pr_input: ""
   existing_branch: ""
+  # #1743: the usage budget, read from RECIPE_VAR_* in step-02. Empty here, so
+  # this recipe run on its own is unbudgeted; auto-drive-to-merge sets them.
+  autodrive_budget_loop_rounds: ""
+  autodrive_budget_total_rounds: ""
+  autodrive_budget_wall_seconds: ""
   crusty_loop_result: ""
 
 steps:
@@ -230,7 +236,10 @@ steps:
         --state-dir "$DIR" \
         --context "repo_path=$PR_WORKTREE" \
         --context "pr_number=${PR}" \
-        --context "pr_url=${PR_URL:-}"
+        --context "pr_url=${PR_URL:-}" \
+        --context "autodrive_budget_loop_rounds=${RECIPE_VAR_autodrive_budget_loop_rounds:-}" \
+        --context "autodrive_budget_total_rounds=${RECIPE_VAR_autodrive_budget_total_rounds:-}" \
+        --context "autodrive_budget_wall_seconds=${RECIPE_VAR_autodrive_budget_wall_seconds:-}"
       RC=$?
       if [ "$RC" -eq 79 ]; then
         echo "ERROR: exit 79 terminal policy refusal in the crusty loop (#1327/#1332). Final — surfaced and stopped, never retried into the guard." >&2

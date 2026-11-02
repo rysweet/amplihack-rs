@@ -14,7 +14,10 @@
 //! The loop is driven end to end with a stub `amplihack` first on `PATH` that
 //! records every argv, copies the task file each round names, and plays the
 //! evaluator: CONTINUE after round 1, STUCK after round 2. The loop therefore
-//! runs exactly two rounds and exits 1.
+//! runs exactly two rounds and exits 1. Each stub round commits in the PR
+//! worktree, so the rounds make progress and the no-progress rule of #1743
+//! leaves the decision to the evaluator; a stub `gh` first on `PATH` keeps
+//! any stop comment off GitHub.
 //!
 //! The task no longer passes through the environment, so the payload is
 //! 200 KiB, above the 131,072-byte limit on a single argv or environment
@@ -74,6 +77,11 @@ case "${1:-} ${2:-}" in
     fi
     prev=
     for a in "$@"; do
+      if [ "$prev" = "--working-dir" ]; then
+        t="$(git -C "$a" write-tree)"
+        c="$(git -C "$a" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "stub round $n")"
+        git -C "$a" update-ref HEAD "$c"
+      fi
       if [ "$prev" = "--context-from-file" ]; then
         f=${a#task_description=}
         cp -- "$f" "$STUB_STATE/task-seen-$n"
@@ -86,6 +94,10 @@ case "${1:-} ${2:-}" in
 esac
 exit 0
 "#;
+
+/// #1743: a stop decided in code posts a PR comment; this one goes nowhere.
+const GH_STUB: &str =
+    "#!/usr/bin/env bash\nprintf '%s\\0' \"$@\" >> \"$STUB_STATE/gh-calls\"\nexit 0\n";
 
 fn task_payload() -> String {
     let unit = "Fix E2BIG: héllo € 😀 \"quoted\" 'single' $(touch pwned) `touch pwned2` %s -n\n";
@@ -169,6 +181,7 @@ fn drive(task: Option<&str>) -> Run {
     main_checkout_with_worktree(tmp.path(), &cwd, &repo);
     let stub = bin.join("amplihack");
     crate::support::exec_stub::write_executable(&stub, STUB, 0o755);
+    crate::support::exec_stub::write_executable(&bin.join("gh"), GH_STUB, 0o755);
 
     let script = repo_root().join("amplifier-bundle/tools/autodrive_loop.sh");
     let path = format!(

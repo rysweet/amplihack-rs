@@ -16,12 +16,16 @@ description: |
                       resolved. Then merge behind an evidence gate.
 
   NO ITERATION CAP terminates either loop. Not a max-rounds integer, not a
-  backstop, not a wall-clock budget. Both loops are terminated by
+  backstop. Both loops are terminated by
   `loop-health-evaluator` (issue #1337), which stops and looks at the data
   after every round and answers CONTINUE / DONE / STUCK. A cap cuts off work
   that was about to converge and lets a genuinely stuck loop burn the whole
   budget first; the signal worth acting on is absence of progress, not number
-  of attempts.
+  of attempts. Two stops are decided in code before the evaluator (#1743): a
+  non-clean round that changed neither the PR head nor its open items stops
+  as STUCK, and the operator's resumable usage budget (the
+  autodrive_budget_* keys below) stops as BUDGET_EXHAUSTED. The budget is a
+  cost ceiling, never the convergence terminator, and never success.
 
   Host safety is enforced structurally one layer down — #1327 (sealed
   recursion ceiling) and #1332 (width cap + free-memory floor), both refusing
@@ -95,9 +99,18 @@ context:
   # autodrive_pr_input back unchanged, so it keeps the operator's value.
   autodrive_pr_input: ""
 
+  # #1743: the per-run usage budget, cumulative across runs on the same state
+  # dir and resumable: relaunch with a higher value to continue. 0 or empty is
+  # unlimited. Override with -c. Only this composer declares defaults; a loop
+  # recipe run on its own is unbudgeted.
+  autodrive_budget_loop_rounds: "12"
+  autodrive_budget_total_rounds: "20"
+  autodrive_budget_wall_seconds: "14400"
+
   # Populated as the phases run.
   build_result: ""
   crusty_loop_result: ""
+  merge_loop_result: ""
   merge_gate_result: ""
 
 steps:
@@ -183,6 +196,9 @@ steps:
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
+      autodrive_budget_loop_rounds: "{{autodrive_budget_loop_rounds}}"
+      autodrive_budget_total_rounds: "{{autodrive_budget_total_rounds}}"
+      autodrive_budget_wall_seconds: "{{autodrive_budget_wall_seconds}}"
 
   # Issue #1551: only the merge gate in phase 3 merges. A PR already MERGED
   # here was merged around the gh merge guard during phase 1 or 2; the run
@@ -227,6 +243,9 @@ steps:
       task_description: "{{task_description}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
+      autodrive_budget_loop_rounds: "{{autodrive_budget_loop_rounds}}"
+      autodrive_budget_total_rounds: "{{autodrive_budget_total_rounds}}"
+      autodrive_budget_wall_seconds: "{{autodrive_budget_wall_seconds}}"
 
   - id: "autodrive-report"
     type: "bash"
@@ -247,6 +266,7 @@ steps:
       BR="${RECIPE_VAR_build_result:-}"
       MG="${RECIPE_VAR_merge_gate_result:-}"
       CR="${RECIPE_VAR_crusty_loop_result:-}"
+      ML="${RECIPE_VAR_merge_loop_result:-}"
       PR=""
       for C in "${RECIPE_VAR_pr_number:-}" "$(g "$MG" pr '')" "$(g "$BR" pr '')"; do
         case "$C" in ''|*[!0-9]*) continue ;; esac
@@ -254,9 +274,11 @@ steps:
       done
       MERGE="$(g "$MG" merge_result NOT_MERGED)"
       CRUSTY="$(g "$CR" loop_result unknown)"
+      MLOOP="$(g "$ML" loop_result unknown)"
       # Only plain tokens reach the report; anything else cannot forge a key.
       [[ "$MERGE" =~ ^[A-Za-z0-9_-]*$ ]] || MERGE="NOT_MERGED"
-      [[ "$CRUSTY" =~ ^[A-Za-z0-9_-]*$ ]] || CRUSTY="unknown"
+      [[ "$CRUSTY" =~ ^[A-Z_]+$ ]] || CRUSTY="unknown"
+      [[ "$MLOOP" =~ ^[A-Z_]+$ ]] || MLOOP="unknown"
       case "$MERGE" in
         MERGED|ALREADY_MERGED) OUTCOME="MERGED" ;;
         DRY_RUN) OUTCOME="DRY_RUN" ;;
@@ -267,9 +289,21 @@ steps:
       if [ "$CRUSTY" = "USAGE_LIMIT" ]; then
         echo "AUTO_DRIVE_TO_MERGE: the crusty loop stopped on a usage limit; run again when a login has capacity." >&2
       fi
-      echo "AUTO_DRIVE_TO_MERGE: ${OUTCOME} — PR #${PR:-<none>} (crusty loop: ${CRUSTY}, merge gate: ${MERGE})" >&2
-      printf '{"outcome":"%s","pr":"%s","crusty_loop":"%s","merge_result":"%s"}\n' \
-        "$OUTCOME" "$PR" "$CRUSTY" "$MERGE"
+      # #1743: a STUCK or BUDGET_EXHAUSTED loop is never merged or success.
+      STOPPED=""
+      for P in "crusty:${CRUSTY}" "merge-ready:${MLOOP}"; do
+        case "${P#*:}" in
+          STUCK) F="${P%%:*}-result.json" ;;
+          BUDGET_EXHAUSTED) F="autodrive-budget-summary.md" ;;
+          *) continue ;;
+        esac
+        echo "AUTO_DRIVE_TO_MERGE: the ${P%%:*} loop stopped as ${P#*:}; see ${F} in the state directory." >&2
+        STOPPED=1; OUTCOME="NOT_MERGED"
+      done
+      echo "AUTO_DRIVE_TO_MERGE: ${OUTCOME} — PR #${PR:-<none>} (crusty loop: ${CRUSTY}, merge-ready loop: ${MLOOP}, merge gate: ${MERGE})" >&2
+      printf '{"outcome":"%s","pr":"%s","crusty_loop":"%s","merge_result":"%s","merge_loop":"%s"}\n' \
+        "$OUTCOME" "$PR" "$CRUSTY" "$MERGE" "$MLOOP"
+      [ -z "$STOPPED" ] || exit 1
     output: "autodrive_summary"
 
 output:

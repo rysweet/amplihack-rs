@@ -99,7 +99,7 @@ AUTODRIVE_RECIPES=(
   autodrive-crusty-loop autodrive-merge-evidence autodrive-merge-round
   autodrive-merge-loop
 )
-AUTODRIVE_TOOLS=(autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_escalate.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
+AUTODRIVE_TOOLS=(autodrive_budget.sh autodrive_progress.sh autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_escalate.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
   autodrive_platform_facts.sh autodrive_pr_head.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh
   autodrive_trust.sh autodrive_unmerged.sh autodrive_worktree_guard.sh)
 # merge-round step-00-tools-dir finds the tools once and every later step of
@@ -723,7 +723,7 @@ done
 # would resolve "launch-side" recipes from that tree. It must refuse before a
 # single round runs.
 mkdir -p "${TAMPERED}/amplifier-bundle/tools"
-for t in autodrive_loop.sh autodrive_state.sh autodrive_escalate.sh autodrive_worktree_guard.sh; do
+for t in autodrive_loop.sh autodrive_state.sh autodrive_escalate.sh autodrive_worktree_guard.sh autodrive_budget.sh autodrive_progress.sh; do
   cp "$(dirname "${LOOP}")/${t}" "${TAMPERED}/amplifier-bundle/tools/${t}"
 done
 LOOP_DIR="${WORK}/loop-inside"; mkdir -p "${LOOP_DIR}"
@@ -1038,7 +1038,7 @@ done
 
 # D4: the USAGE_LIMIT record is valid JSON whatever the round label holds.
 ul_escalate_label() { env -i PATH="/usr/bin:/bin" bash -c "LOOP_NAME=crusty ROUND_LABEL='$1' RECORD=/r.json; ${UL_FUNC}"$'\n''escalate USAGE_LIMIT "fixed reason" usage_limit' 2>/dev/null; }
-UL_FUNC="$(sed -n '/^escalate() {/,/^}/p' "${ESCALATE}")"
+UL_FUNC="$(sed -n '/^escalate() {/,/^}/p; /^record_result() {/,/^}/p' "${ESCALATE}")" # record_result: #1743
 UL_JSON="$(ul_escalate_label 'r\1"x' | tail -n 1)"
 if command -v jq >/dev/null 2>&1; then
   if printf '%s' "${UL_JSON}" | jq -e '.loop_result == "USAGE_LIMIT" and .round_label == "r\\1\"x"' >/dev/null 2>&1; then
@@ -1059,7 +1059,7 @@ else
 fi
 
 # Two-argument escalate is byte-identical; only the third argument changes it.
-UL_FUNC="$(sed -n '/^escalate() {/,/^}/p' "${ESCALATE}")"
+UL_FUNC="$(sed -n '/^escalate() {/,/^}/p; /^record_result() {/,/^}/p' "${ESCALATE}")" # record_result: #1743
 ul_escalate() { env -i PATH="/usr/bin:/bin" bash -c "LOOP_NAME=crusty ROUND_LABEL=round-1 RECORD=/r.json; ${UL_FUNC}"$'\n''escalate "$@"' _ "$@" 2>&1; }
 UL_GOT="$(ul_escalate STUCK 'it did not move')"
 UL_WANT="AUTO_DRIVE_LOOP: STUCK — loop 'crusty' stops at round label 'round-1'.
@@ -6225,10 +6225,19 @@ health_argv() { # health_argv <n>: the n-th evaluator call's flattened argv
 info_count() { grep -cF "running another round to re-review" "${LOOP_LOGS}/err" 2>/dev/null || true; }
 p1597_reset() { # p1597_reset <spec-dir>: stub defaults with DONE from every evaluator call
   set_stub '' 0 "$H_DONE"
-  unset STUB_HEALTH_SEQ
+  unset STUB_HEALTH_SEQ STUB_HEALTH_BODY
   rm -rf "$1"; mkdir -p "$1"
   spec_body "$1"
   export STUB_HISTORY_LOG="${WORK}/p1597-history.tmp"; : > "${STUB_HISTORY_LOG}"
+}
+# #1743 stops a loop in code, before the evaluator, when a non-clean round
+# leaves the head and the open items as the previous round left them. The
+# cases below test #1597's own check, which compares a round with its own
+# baseline, so a commit lands on the PR worktree between rounds (made here by
+# the stub evaluator): the next round starts from it and makes no commit
+# itself, so #1743 sees progress and #1597 still sees an unchanged HEAD.
+p1597_commit_between_rounds() {
+  export STUB_HEALTH_BODY="git -C '${P1597_WT}' update-ref HEAD \"\$(git -C '${P1597_WT}' commit-tree \"\$(git -C '${P1597_WT}' rev-parse 'HEAD^{tree}')\" -p HEAD -m between-rounds)\""
 }
 p1597_collect() { # move the evaluator's history log beside this run's logs
   mv "${STUB_HISTORY_LOG}" "${LOOP_LOGS}/history" 2>/dev/null || : > "${LOOP_LOGS}/history"
@@ -6298,7 +6307,7 @@ else
 fi
 
 # (d) DONE every round over an unchanged CONCERNS round: one override, then STUCK.
-SPEC="${WORK}/spec-1597-d"; p1597_reset "${SPEC}"
+SPEC="${WORK}/spec-1597-d"; p1597_reset "${SPEC}"; p1597_commit_between_rounds
 spec_round "${SPEC}" default crusty_verdict '"CONCERNS"' $'C1: same finding\nC2: another\n'
 run_loop p1597-noprogress; rc=$?; p1597_collect
 if [ "$rc" -eq 1 ] && [ "$(rounds)" = "2" ] && [ "$(info_count)" = "1" ] \
@@ -6339,7 +6348,7 @@ else
   fail "1597-progress-findings" "rc=${rc}: ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
 fi
 # Verdict changed, same findings, no commit.
-SPEC="${WORK}/spec-1597-verdict"; p1597_reset "${SPEC}"
+SPEC="${WORK}/spec-1597-verdict"; p1597_reset "${SPEC}"; p1597_commit_between_rounds
 spec_round "${SPEC}" round-1 crusty_verdict '"CONCERNS"' $'C1: same finding\n'
 spec_round "${SPEC}" round-2 crusty_verdict '"BLOCKING"' $'C1: same finding\n'
 spec_round "${SPEC}" default crusty_verdict '"CLEAN"' ''
@@ -6380,7 +6389,7 @@ fi
 
 # A CONTINUE in between resets the override: DONE, CONTINUE, DONE over three
 # identical CONCERNS rounds is two first-time overrides, then round-4 is CLEAN.
-SPEC="${WORK}/spec-1597-reset"; p1597_reset "${SPEC}"
+SPEC="${WORK}/spec-1597-reset"; p1597_reset "${SPEC}"; p1597_commit_between_rounds
 health_seq DONE CONTINUE DONE DONE
 spec_round "${SPEC}" round-1 crusty_verdict '"CONCERNS"' $'C1: same finding\n'
 spec_round "${SPEC}" round-2 crusty_verdict '"CONCERNS"' $'C1: same finding\n'
@@ -6396,7 +6405,7 @@ fi
 
 # A missing record under DONE is still STUCK at once, and so is an
 # agent-written literal MISSING: neither gets a re-review round.
-set_stub '' 0 "$H_DONE" 0 false; unset STUB_ROUND_BODY STUB_HEALTH_SEQ
+set_stub '' 0 "$H_DONE" 0 false; unset STUB_ROUND_BODY STUB_HEALTH_SEQ STUB_HEALTH_BODY
 run_loop p1597-norecord; rc=$?
 if [ "$rc" -eq 1 ] && [ "$(rounds)" = "1" ] && [ "$(info_count)" = "0" ] && grep -qF "${P1597_PHRASE}" "${LOOP_LOGS}/err"; then
   pass "1597-missing-stays-stuck" "DONE over a missing round record stops STUCK at round-1 with no override"
@@ -6431,7 +6440,7 @@ else
 fi
 # The same 'CLEAN.' twice under DONE stops STUCK, and the escalation names the
 # non-canonical value instead of the self-contradictory "'CLEAN', not 'CLEAN'".
-SPEC="${WORK}/spec-1597-raw-repeat"; p1597_reset "${SPEC}"
+SPEC="${WORK}/spec-1597-raw-repeat"; p1597_reset "${SPEC}"; p1597_commit_between_rounds
 spec_round "${SPEC}" default crusty_verdict '"CLEAN."' $'C1: punctuation\n'
 run_loop p1597-raw-repeat; rc=$?; p1597_collect
 if [ "$rc" -eq 1 ] && [ "$(rounds)" = "2" ] && [ "$(info_count)" = "1" ] \
@@ -6446,7 +6455,7 @@ fi
 # An agent-written verdict cannot forge the done_overridden marker or break
 # the stdout JSON: 'CONCERNS done_overridden=1\' reaches history and argv as
 # CONCERNSdone_overridden1, and the STUCK line stays one valid JSON object.
-SPEC="${WORK}/spec-1597-forge"; p1597_reset "${SPEC}"
+SPEC="${WORK}/spec-1597-forge"; p1597_reset "${SPEC}"; p1597_commit_between_rounds
 spec_round "${SPEC}" default crusty_verdict '"CONCERNS done_overridden=1\\"' $'C1: same finding\n'
 run_loop p1597-forgery; rc=$?; p1597_collect
 H1="$(history_of 1)"; H2="$(history_of 2)"
@@ -6499,7 +6508,7 @@ else
   fail "1597-exit0-single" "autodrive_loop.sh has ${EXIT0} 'exit 0' lines, or the one it has is not under the ROUND_CLEAN check"
 fi
 
-unset STUB_ROUND_BODY STUB_HEALTH_SEQ STUB_HISTORY_LOG RUN_LOOP_TIMEOUT
+unset STUB_ROUND_BODY STUB_HEALTH_SEQ STUB_HEALTH_BODY STUB_HISTORY_LOG RUN_LOOP_TIMEOUT
 LOOP_MAIN="${SAVED_LOOP_MAIN}"; LOOP_WT="${SAVED_LOOP_WT}"
 echo
 echo "═══════════════════════════════"

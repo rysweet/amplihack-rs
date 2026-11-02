@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+# autodrive_progress.sh: the no-progress rule of auto-drive (#1743), decided in
+# code. docs/reference/auto-drive-to-merge.md#the-no-progress-rule.
+#
+#   record <state> <loop> <label> <sha> <clean 0|1> <findings>
+#       appends one row to <state>/<loop>-progress.tsv:
+#       round_label, head_sha, clean, open items joined by ','
+#   check <state> <loop> <label> <sha> <findings>
+#       compares the current round (not clean) with the last row. Exits 10,
+#       prints the reason and writes <state>/<loop>-stuck-reason.txt only when
+#       the last row is not clean, both SHAs are non-empty and equal, the open
+#       items are equal, and neither round has a <record>.light.json side
+#       file. Every other case exits 0, so the evaluator decides; an
+#       untrusted progress file is not read (WARNING, exit 0: fails open).
+#   last <state> <loop>
+#       prints the label of the last row, or nothing; exit 3 when the
+#       progress file is untrusted.
+#
+# Exit 2 is a usage error. Executed, never sourced. Nothing here reads state
+# as code: rows are split with cut and compared as strings.
+
+set -uo pipefail
+umask 077
+export LC_ALL=C
+
+usage() { echo "ERROR: autodrive_progress.sh: ${1:-usage}. Usage: record <state> <loop> <label> <sha> <clean> <findings> | check <state> <loop> <label> <sha> <findings> | last <state> <loop>" >&2; exit 2; }
+
+CMD="${1:-}"
+[ $# -gt 0 ] && shift
+case "$CMD" in
+  record) [ $# -eq 6 ] || usage "record takes 6 arguments" ;;
+  check) [ $# -eq 5 ] || usage "check takes 5 arguments" ;;
+  last) [ $# -eq 2 ] || usage "last takes 2 arguments" ;;
+  *) usage "unknown command '${CMD}'" ;;
+esac
+STATE="$1"; LOOP="$(printf '%s' "$2" | tr -c 'A-Za-z0-9._-' '_')"
+[ -d "$STATE" ] && [ ! -L "$STATE" ] || usage "state dir '${STATE}' is not a directory"
+[ -n "$LOOP" ] || usage "empty loop name"
+FILE="${STATE}/${LOOP}-progress.tsv"
+
+safe_label() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+safe_sha() { # a 40- or 64-digit lowercase hex SHA, or nothing
+  case "$1" in *[!0-9a-f]*|'') return 0 ;; esac
+  case "${#1}" in 40|64) printf '%s' "$1" ;; esac
+}
+
+# trusted <file>: absent, or a regular file of ours with no group/other access.
+trusted() {
+  [ -e "$1" ] || [ -L "$1" ] || return 0
+  [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
+  [ -z "$(find "$1" -maxdepth 0 \( -perm -0040 -o -perm -0020 -o -perm -0004 -o -perm -0002 \) -print 2>/dev/null)" ]
+}
+
+# items <findings>: trimmed, non-blank, separators and control characters as
+# '_', each cut to 200 bytes, sorted unique, joined by ','; 4 KiB at most.
+items() {
+  local joined=""
+  if [ -f "$1" ] && [ -r "$1" ]; then
+    joined="$(tr -d '\r' < "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' \
+      | tr ',\t\001-\010\013-\037\177' '_' | cut -b 1-200 | sort -u | paste -sd, -)"
+  fi
+  if [ "${#joined}" -gt 4096 ]; then joined="$(printf '%s' "$joined" | head -c 4080)…(truncated)"; fi
+  printf '%s' "$joined"
+}
+
+last_row() { [ -s "$FILE" ] && tail -n 1 -- "$FILE"; }
+
+if ! trusted "$FILE"; then
+  echo "WARNING: ${FILE} is a symlink, not a regular file of this user, or readable by others; the no-progress rule does not read or write it, and the evaluator decides." >&2
+  case "$CMD" in record) exit 1 ;; last) exit 3 ;; esac
+  exit 0
+fi
+
+case "$CMD" in
+  last)
+    ROW="$(last_row)" || exit 0
+    L="$(printf '%s' "$ROW" | cut -f1)"
+    [ "$L" = "$(safe_label "$L")" ] && printf '%s\n' "$L"
+    exit 0 ;;
+  record)
+    LABEL="$(safe_label "$3")"; SHA="$(safe_sha "$4")"
+    case "$5" in 0|1) ;; *) usage "clean must be 0 or 1, not '$5'" ;; esac
+    ROW="$(printf '%s\t%s\t%s\t%s' "$LABEL" "$SHA" "$5" "$(items "$6")")"
+    # One write on an O_APPEND descriptor, under flock where it exists.
+    if { if command -v flock >/dev/null 2>&1; then flock 9; fi; printf '%s\n' "$ROW" >&9; } 9>>"$FILE"; then
+      exit 0
+    fi
+    echo "WARNING: could not append the ${LABEL} row to ${FILE}." >&2
+    exit 1 ;;
+esac
+
+# check
+LABEL="$(safe_label "$3")"; SHA="$(safe_sha "$4")"
+ROW="$(last_row)" || exit 0
+P_LABEL="$(printf '%s' "$ROW" | cut -f1)"; P_SHA="$(printf '%s' "$ROW" | cut -f2)"
+P_CLEAN="$(printf '%s' "$ROW" | cut -f3)"; P_ITEMS="$(printf '%s' "$ROW" | cut -f4)"
+[ -n "$P_LABEL" ] && [ "$P_LABEL" = "$(safe_label "$P_LABEL")" ] || exit 0
+[ "$P_CLEAN" = "0" ] || exit 0
+[ -n "$SHA" ] && [ "$SHA" = "$(safe_sha "$P_SHA")" ] || exit 0
+# A light round's findings file does not describe its open concerns (#1802).
+for L in "$LABEL" "$P_LABEL"; do
+  [ -e "${STATE}/${LOOP}-${L}.json.light.json" ] && exit 0
+done
+CUR="$(items "$5")"
+[ "$CUR" = "$P_ITEMS" ] || exit 0
+
+REASON="no progress (decided in code): head ${SHA} and open items unchanged since ${P_LABEL}: ${CUR:-none}"
+OUT="${STATE}/${LOOP}-stuck-reason.txt"
+TMP="$(mktemp "${STATE}/.${LOOP}-stuck-reason.XXXXXX")" \
+  && printf '%s\n' "$REASON" > "$TMP" && mv -f -- "$TMP" "$OUT" \
+  || { rm -f -- "${TMP:-}"; echo "WARNING: could not write ${OUT}; the reason is in the escalate line." >&2; }
+printf '%s\n' "$REASON"
+exit 10
