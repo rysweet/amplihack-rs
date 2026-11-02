@@ -5,9 +5,12 @@ archived session back. The [rotator](./profile-command.md#rotate-daily-session-a
 also runs the archive once a day.
 
 Claude Code keeps one log per session under `~/.claude/projects`, and never
-removes them. The directory grows by several GiB a month, and Claude Code's
-`/usage` reads all of it, so every `amplihack profile usage` probe slows down
-as it grows (#1698). `sessions archive` moves each old session into one
+removes them. The directory grows by several GiB a month and fills the root
+filesystem. Since #1844, `amplihack profile usage` reads usage directly and
+starts `claude` only as a [fallback](profile-command.md#how-a-profile-is-probed) (a
+failed direct read, an overflow profile, or usage credits turned on); that
+fallback's `/usage` still reads the whole directory, so it slows down as the
+directory grows (#1698). `sessions archive` moves each old session into one
 compressed archive under `~/.amplihack/session-archive`, and
 `sessions restore` brings one back. Claude Code cannot resume an archived
 session until it is restored; see
