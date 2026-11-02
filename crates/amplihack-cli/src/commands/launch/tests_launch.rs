@@ -996,3 +996,15 @@ fn describe_child_signal_does_not_invent_a_cause_for_every_signal() {
     assert!(message.contains("SIGSEGV"), "{message}");
     assert!(!message.contains("ulimit -u"), "{message}");
 }
+
+#[test]
+fn a_child_exit_status_is_returned_not_exited_on() {
+    // Issue #1811: a non-zero child status comes back as an error carrying
+    // the code, so the caller's governor slot guard is dropped before `main`
+    // exits with that code.
+    assert!(child_status(0).is_ok());
+    let err = child_status(3).unwrap_err();
+    assert_eq!(crate::command_error::exit_code(&err), Some(3));
+    let wrapped = err.context("launch");
+    assert_eq!(crate::command_error::exit_code(&wrapped), Some(3));
+}

@@ -1,4 +1,5 @@
 use super::*;
+use crate::commands::governor::{self, AdmitRequest, Denied, GovernorArgs};
 
 mod binary;
 /// Issue #1570: `--context-file` and `--context-from-file`.
@@ -117,6 +118,7 @@ fn build_search_dirs(recipe_path: &Path, working_dir: &Path) -> Result<Vec<PathB
     Ok(dirs)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run_recipe(
     recipe_path: &str,
     context_args: &[String],
@@ -125,6 +127,7 @@ pub fn run_recipe(
     format: &str,
     working_dir: Option<&str>,
     step_timeout: Option<u64>,
+    governor: &GovernorArgs,
 ) -> Result<()> {
     run_recipe_with(
         recipe_path,
@@ -134,7 +137,7 @@ pub fn run_recipe(
         format,
         working_dir,
         step_timeout,
-        &RootSandboxPreflight::live(),
+        &RootSandboxPreflight::live().governed(governor),
         &mut io::stderr(),
     )
 }
@@ -148,6 +151,9 @@ pub(crate) struct RootSandboxPreflight {
     /// the stderr notice and every step use that one answer.
     pub(crate) agent_binary: fn(&Path) -> amplihack_utils::agent_binary::Resolution,
     pub(crate) decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
+    /// Issue #1811: the capacity governor's flags. `None` (every in-process
+    /// caller but the CLI) runs without asking the governor.
+    pub(crate) governor: Option<GovernorArgs>,
 }
 
 impl RootSandboxPreflight {
@@ -155,7 +161,13 @@ impl RootSandboxPreflight {
         Self {
             agent_binary: crate::env_builder::resolve_agent_binary_in,
             decision: amplihack_utils::root_sandbox::detect,
+            governor: None,
         }
+    }
+
+    fn governed(mut self, governor: &GovernorArgs) -> Self {
+        self.governor = Some(governor.clone());
+        self
     }
 }
 
@@ -232,6 +244,11 @@ pub(crate) fn run_recipe_with(
     }
     // Never refuses: the user may know better than the capacity file.
     crate::commands::profile::capacity_recipe_warning(preflight_out);
+    // Issue #1811: the capacity governor may hold or refuse the run; the
+    // slot is held until the runner returns. A dry run starts nothing.
+    let governed = preflight.governor.as_ref().filter(|_| !dry_run);
+    let request = AdmitRequest::recipe(governed, &recipe.name);
+    let _slot = governor::admit(request).map_err(Denied::report)?;
     let search_dirs = build_search_dirs(&validated_path, &abs_working_dir)?;
     // Issue #1551: auto-drive, and any run nested inside one, gets the `gh`
     // merge guard first on PATH.

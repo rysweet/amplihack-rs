@@ -222,6 +222,9 @@ impl Fixture {
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
             // Launches never start a real background rotator here (autostart).
             .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
+            // These tests cover auto-switch alone; the #1811 capacity
+            // governor would hold exhausted readings and write `.governor.d`.
+            .env("AMPLIHACK_GOVERNOR", "off")
             .env("AMPLIHACK_SKIP_REFLECTION", "1")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
         c

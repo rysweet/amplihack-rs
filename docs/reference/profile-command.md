@@ -3,6 +3,9 @@
 Manage Claude Code login profiles. See the
 [how-to](../howto/claude-profiles.md) for a walkthrough.
 
+See also the [capacity governor](./capacity-governor.md), which reads the
+usage readings described here to decide when new work may start.
+
 ## Synopsis
 
 ```
@@ -6959,6 +6962,11 @@ There are two kinds of wait:
   `max_wait_secs` (see [Capacity wait](#capacity-wait)).
 
 When neither applies, the step is not waited for and the run ends as before.
+
+The [capacity governor](./capacity-governor.md) does not hold an agent step
+of a running recipe at an exhausted weekly or session limit: this wait owns
+that case, so the governor's shorter wait never replaces it (see
+[Exhausted limits inside a recipe](./capacity-governor.md#exhausted-limits-inside-a-recipe)).
 
 ### Gate
 

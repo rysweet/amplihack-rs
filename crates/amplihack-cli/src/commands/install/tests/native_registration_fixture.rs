@@ -4,8 +4,28 @@ use serde_json::Value;
 use std::{
     fs,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Output},
+    time::{Duration, Instant},
 };
+
+/// Runs `command`, retrying while the stub cannot be executed because it is
+/// "busy" (ETXTBSY). [`executable`] rewrites the stub after creating it, and a
+/// process forked by a parallel test in that window inherits the write
+/// descriptor until it execs, so the first exec of the stub can fail.
+fn output(command: &mut Command) -> Output {
+    let started = Instant::now();
+    loop {
+        match command.output() {
+            Err(e)
+                if e.kind() == std::io::ErrorKind::ExecutableFileBusy
+                    && started.elapsed() < Duration::from_secs(5) =>
+            {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            result => return result.unwrap(),
+        }
+    }
+}
 
 pub(super) fn executable(bin: &Path) -> PathBuf {
     let binary = create_exe_stub(bin, "codex");
@@ -57,10 +77,8 @@ fn native_command(binary: &Path, home: &Path, codex_home: &Path) -> Command {
 }
 
 pub(super) fn inventory(binary: &Path, home: &Path, codex_home: &Path) -> Value {
-    let output = native_command(binary, home, codex_home)
-        .args(["plugin", "list", "--json"])
-        .output()
-        .unwrap();
+    let output =
+        output(native_command(binary, home, codex_home).args(["plugin", "list", "--json"]));
     assert!(
         output.status.success(),
         "{}",
@@ -93,10 +111,12 @@ fn fixture_add_reenables_owned_disabled_entry_and_reports_preference_separately(
     let before = inventory(&binary, home, &codex_home);
     assert_eq!(before["installed"][0]["installed"], true);
     assert_eq!(before["installed"][0]["enabled"], false);
-    let output = native_command(&binary, home, &codex_home)
-        .args(["plugin", "add", "amplihack@amplihack-local", "--json"])
-        .output()
-        .unwrap();
+    let output = output(native_command(&binary, home, &codex_home).args([
+        "plugin",
+        "add",
+        "amplihack@amplihack-local",
+        "--json",
+    ]));
     assert!(output.status.success());
     let after = inventory(&binary, home, &codex_home);
     assert_eq!(after["installed"][0]["installed"], true);
