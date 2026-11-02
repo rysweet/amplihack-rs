@@ -1051,7 +1051,7 @@ present, even when the earlier one gives no usable command.
 | --- | --- | --- | --- |
 | 1 | `env` | `AUTODRIVE_QA_COMMAND` (with `AUTODRIVE_QA_DIR`) and `AUTODRIVE_QA_COMMANDS`, from the operator's environment | Either variable is set, even to the empty string. `.amplihack/qa.toml` and the CI workflows are then not read. |
 | 2 | `repo-file` | The `.amplihack/qa.toml` committed at the merge base of the pull request and its base branch; a pull request that changes it is refused | In the merge-base tree, `.amplihack` is anything other than a directory (a symlink included), or `.amplihack/qa.toml` has an entry of any kind; or the pull request changes `.amplihack/qa.toml`. A real `.amplihack` directory with no `qa.toml` in it is not present, and the CI source is tried next. An untracked, modified or ignored copy in the working tree is never read. A file that breaks any rule below gives `BLOCKED` with `qa-config-invalid`; the CI source and detection are not tried. |
-| 3 | `ci` | Exactly one clean test step in the merge base's `.github/workflows/*.yml` or `*.yaml` | The reader finds one. Anything else falls through to detection without a message, because CI is advisory. |
+| 3 | `ci` | Exactly one clean test step in the merge base's `.github/workflows/*.yml` or `*.yaml` | The reader finds one. Anything else falls through to detection, because CI is advisory; the evidence names the reason in `qa_ci_skip`. |
 | 4 | `detected` | The merge base's manifests, scoped to the changed paths | Always tried last. |
 
 For sources 1 to 3, `qa_repo_type` is `configured`; for source 4 it is the
@@ -1134,8 +1134,8 @@ of TOML, from a copy of at most 4097 bytes taken before parsing:
   whose physical path lies inside the repository. This is the one check made
   on disk, because the command runs in that directory of the checkout.
 - The pull request does not change `.amplihack/qa.toml` (`changed-in-pr`),
-  and the changed paths are known and
-  not empty (`paths-unknown`). See
+  the changed paths are known (`paths-unknown`), and the diff is not empty
+  (`paths-empty`). See
   [Declared commands come from the merge base](#declared-commands-come-from-the-merge-base).
 
 Anything else gives `qa_status` `BLOCKED`, `qa_reason` `qa-config-invalid`,
@@ -1154,8 +1154,9 @@ names the problem token only; no part of the file's content is ever printed.
 | `unsafe-command` | A command byte outside the command alphabet. |
 | `unsafe-dir` | A `dir` that breaks the directory rule. |
 | `dir-not-found` | A `dir` that is not an existing directory inside the repository, including one reached through a symlink that leaves it. |
-| `changed-in-pr` | The pull request changes `.amplihack/qa.toml` or a file under `.github/workflows/`. |
-| `paths-unknown` | The changed paths are `(unknown)` or `(none)`, so the tool cannot show that the file is unchanged. With no merge base, the file is looked up in `HEAD` only to decide whether it is present. |
+| `changed-in-pr` | The pull request changes `.amplihack/qa.toml`, or `.amplihack` itself. A workflow edit does not refuse the file. |
+| `paths-empty` | The diff from the merge base to the head is empty, so there is no pull request change to show that the file is unchanged. |
+| `paths-unknown` | The changed paths are `(unknown)`, or no base was given, so the tool cannot show that the file is unchanged. With no merge base, the file is looked up in `HEAD` only to decide whether it is present. |
 
 These tokens are the complete set. The command runs exactly as a word
 command does:
@@ -1202,9 +1203,29 @@ The CI source gives a command only when there is exactly one match in all the
 files and it is clean. The step's own `working-directory`, if present, becomes
 `qa_dir`; it must pass the `dir` rule above and exist. In every other case,
 including zero matches, two clean matches, one clean match beside one that is
-not clean, and a CI file changed by the pull request, the tool uses detection
-and prints nothing about CI. This workflow gives `cargo nextest run
---workspace` in `engine`:
+not clean, and a CI file changed by the pull request, the tool uses detection,
+prints nothing about CI on stderr, and records the reason in the evidence
+field `qa_ci_skip`:
+
+| `qa_ci_skip` | Cause |
+| --- | --- |
+| `paths-empty`, `paths-unknown` | The diff is empty, the changed paths are unknown, or no base was given. |
+| `changed-in-pr` | The pull request changes `.github`, a workflow file or `.amplihack/qa.toml`. |
+| `no-workflows` | `.github` or `.github/workflows` is not a directory in the merge-base tree, or holds no top-level `*.yml` or `*.yaml` file. |
+| `list-failed` | git could not list `.github/workflows`. |
+| `too-many-files` | More than 50 workflow files. |
+| `unsafe-name` | A file name outside `A-Z a-z 0-9 . _ -`. |
+| `not-regular` | An entry is not a regular blob, a symlink included. |
+| `too-large` | A file larger than 256 KiB. |
+| `read-failed` | git or awk failed while reading a file. |
+| `not-clean` | A match that is not clean, anywhere in the files. |
+| `no-match` | No `run:` value matches. |
+| `several-matches` | More than one clean match. |
+| `unsafe-command` | The command holds a byte outside the command alphabet. |
+| `unsafe-dir`, `dir-not-found` | The step's `working-directory` breaks the `dir` rule, or is missing. |
+
+`qa_ci_skip` is `""` when the CI source gave the command or was not read. This
+workflow gives `cargo nextest run --workspace` in `engine`:
 
 ```yaml
 jobs:
@@ -1218,8 +1239,8 @@ jobs:
 
 amplihack-rs's own `ci.yml` has a clean `cargo nextest run --workspace
 --locked` step, a doctest step and a `run: |` block that calls
-`cargo nextest run`. The block scalar makes the CI source ambiguous, so this
-repository uses detection and runs `cargo test --workspace --locked
+`cargo nextest run`. The block scalar makes the match not clean
+(`qa_ci_skip` `not-clean`), so this repository uses detection and runs `cargo test --workspace --locked
 --no-fail-fast` at `.`. A fixture with the same shape pins that result.
 
 ##### Declared commands come from the merge base
@@ -1237,7 +1258,8 @@ CI source gives nothing. A workflow edit does not refuse `qa.toml`, which is
 read from the merge base and cannot be changed by it. Without the rule, a pull request could add `command = "true"` and
 pass criterion 1. When the changed paths are `(unknown)` or `(none)`, the
 tool cannot show that the file is unchanged: the repository file is refused
-with `paths-unknown` and the CI source gives nothing. The usual cause is a
+with `paths-unknown` and the CI source gives nothing. An empty diff is
+reported as `paths-empty` in the same way. The usual cause is a
 missing `AUTODRIVE_QA_BASE` or an unfetched base branch, not a change to the
 file, so the fix is to the run's base wiring rather than to `qa.toml`.
 
@@ -1384,10 +1406,18 @@ rust-cli	.
 
 When `autodrive_qa_scope.sh` is missing, is a symlink, or fails to load,
 `autodrive_trust.sh` defines a fallback `autodrive_qa_target` that prints
-`unknown`, `.`, and `autodrive_gadugi_required` answers `true`. The evidence tool
-checks with `declare -F` that the three scope functions exist, and without
-them writes `BLOCKED` with `qa-command-missing`. A broken install therefore
-blocks; it never passes.
+`unknown`, `.`, and `autodrive_gadugi_required` answers `true`. The declared
+sources, `autodrive_qa_config` and `autodrive_qa_ci`, live in
+`autodrive_qa_sources.sh`, which only the evidence tool loads, from its own
+directory and only as a regular file; the merge gate never loads it. When
+either file is missing, the evidence tool writes `BLOCKED` with
+`qa-command-missing`. A broken install therefore blocks; it never passes.
+
+**Computed once.** `_autodrive_qa_scan` runs the diff and the tree walk, and
+`_autodrive_qa_choose` makes the project choice, once per directory, base and
+head in a shell. The evidence tool asks every question through
+`autodrive_qa_report` in one shell, so a run makes one `git diff` and one
+`git ls-tree -r`; a regression test counts them.
 
 `autodrive_gadugi_required <dir>` returns `true` when
 `AUTODRIVE_QA_SCENARIO_DIR` is set, when the scope file did not load, when the
@@ -1539,6 +1569,7 @@ written under `umask 077`. A failed temporary file gives
 | `qa_command_source` | `env`, `repo-file`, `ci` or `detected`: the [source](#choosing-the-qa-command) that gave the command. `""` when none did. |
 | `qa_command_paths` | The changed paths the choice used, separated by spaces, or `(unknown)` or `(none)`. Filled for every source, `env` included. Bytes outside `A-Z a-z 0-9 . _ / -` become `_`, each entry is cut to 128 bytes, and after ten entries the rest are counted as `(+N more)`. |
 | `qa_candidates` | With `QA_UNRESOLVED`, the candidate directories (`.` for the root), limited in the same way; `""` otherwise. |
+| `qa_ci_skip` | Why the [CI source](#the-ci-workflows) gave no command, as a fixed token, when it was read and gave none; `""` otherwise. |
 | `qa_dir` | The directory the suite command ran in, relative to the repository root, with no trailing slash: `.` for a root manifest, `x/y` for a nested detected project, the `AUTODRIVE_QA_DIR` value with `AUTODRIVE_QA_COMMAND`, the `dir` of `.amplihack/qa.toml` or the CI step's `working-directory` (`.` when absent), `.` with `AUTODRIVE_QA_COMMANDS` alone or when no command was selected (`unknown`, an empty override, `qa-config-invalid`), and `""` with `QA_UNRESOLVED`. A selected command that could not run (`qa-command-not-installed`, or an `AUTODRIVE_QA_DIR` that does not exist) still records the directory it would have run in. Detection never records an absolute path; an absolute `AUTODRIVE_QA_DIR` set by the operator is recorded as given, sanitised. |
 | `qa_command`, `qa_suite_commands_count` | The commands run, joined by `; ` (at most 500 characters, so reference secrets as `$VAR`), and their number. |
 | `qa_exit_code`, `gadugi_run_exit_code`, `gadugi_validate_exit_code` | The first non-zero exit code, `"0"` when all passed, `""` when none ran. |
@@ -3545,7 +3576,9 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_round_evidence.sh` | tool | The merge round's deterministic step bodies, and the crusty range the re-review reads: crusty range and evidence, the qa evidence hash, the measured downgrade, the findings and the round record. |
 | `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, `autodrive_crusty_final`, `autodrive_private`; platform truth for merged-ness. |
 | `amplifier-bundle/tools/autodrive_trust.sh` | tool | Range check and qa evidence chain; `autodrive_repo_type` and `autodrive_gadugi_required`. Loads `autodrive_qa_scope.sh` from its own directory, with a fail-closed fallback. |
-| `amplifier-bundle/tools/autodrive_qa_scope.sh` | tool | Defines functions only: the candidate search, `autodrive_qa_changed_paths`, `autodrive_qa_target`, the `.amplihack/qa.toml` parser `autodrive_qa_config` and the CI reader `autodrive_qa_ci`. Runs nothing it reads. A gate file, so the install mode check covers it. |
+| `amplifier-bundle/tools/autodrive_qa_scope.sh` | tool | Defines functions only: the changed paths, the candidate search and the project choice (`autodrive_qa_changed_paths`, `autodrive_qa_target`), computed once per shell. Runs nothing it reads. A gate file, so the install mode check covers it. |
+| `amplifier-bundle/tools/autodrive_qa_sources.sh` | tool | Defines functions only: the `.amplihack/qa.toml` parser `autodrive_qa_config`, the CI reader `autodrive_qa_ci` and `autodrive_qa_report`, which gives the evidence tool every answer from one scan. Loaded by the evidence tool only. |
+| `amplifier-bundle/tools/autodrive_scenario_name.sh` | tool | Prints the `name:` of one qa-team scenario file for `gadugi-test run --scenario`. Run by the evidence tool. |
 | `amplifier-bundle/tools/autodrive_pr_head.sh` | tool | Read-only PR head and worktree resolver. |
 | `amplifier-bundle/tools/workflow_finalization_handoff.sh` | tool | The [#1714 hand-off](#finalization-hand-off-from-phase-1-1714): the allow-list, the exact-match flag, `finalization_fail_or_handoff` and `finalization_fail_or_handoff_open_pr` for the validator and `autodrive_build_handoff` for step-03. No top-level side effects; safe to source twice. |
 | `amplifier-bundle/skills/auto-drive-to-merge/SKILL.md` | skill | Invocable entry point. |

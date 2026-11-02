@@ -3,13 +3,16 @@
 # the auto-drive-to-merge merge loop. step-02-qa-team-scenarios of
 # autodrive-merge-evidence.yaml runs this file (moved out of the step, PR #1520).
 #
-# Criterion 1 follows qa-team's repo-type table: (1) the suite command from
-# the first source present (#1763): env, .amplihack/qa.toml, one clean CI
-# step, or detected from the project the changed paths pick (QA_UNRESOLVED
-# when they pick none, and nothing runs); (2) where autodrive_gadugi_required
-# says true, the qa-team scenarios, validated with `gadugi-test validate` and
-# run one `gadugi-test run --scenario` per file. Elsewhere gadugi_status is
-# NOT_REQUIRED and gadugi-test is never called. Both always run.
+# Criterion 1 follows qa-team's repo-type table: one or two measurements,
+# both always run so the evidence lists every cause at once. (1) The suite
+# command from the first source present (#1763): env, .amplihack/qa.toml, one
+# clean CI step, or `cargo test`, `npm test` or `pytest` detected in the
+# project the changed paths pick (QA_UNRESOLVED when they pick none, and
+# nothing runs). (2) Only where autodrive_gadugi_required says true (a Node
+# project, or AUTODRIVE_QA_SCENARIO_DIR set): the qa-team scenarios, validated
+# with `gadugi-test validate` and run one `gadugi-test run --scenario` per
+# file. Elsewhere gadugi_status is NOT_REQUIRED and gadugi-test is never
+# called: qa-team's Rust CLI rule substitutes `cargo test`.
 #
 # Input comes from the environment only:
 #   REPO_PATH              the repository to measure (default: the working directory)
@@ -18,41 +21,63 @@
 #   AUTODRIVE_QA_BASE      the base branch name, for the changed paths
 #   AUTODRIVE_QA_COMMAND, AUTODRIVE_QA_DIR, AUTODRIVE_QA_COMMANDS and
 #   AUTODRIVE_QA_SCENARIO_DIR, described where they are read below.
-#
 # Output: one JSON line on stdout, and the same line in AUTODRIVE_QA_EVIDENCE.
 # qa_status is PASS only when every measurement that applies passes. Exit 0
-# whenever evidence was produced, PASS or not. Exit 1 when REPO_PATH, a
+# whenever evidence was produced, PASS or not; exit 1 when REPO_PATH, a
 # temporary file or the helpers beside this file are unavailable, so that no
-# evidence exists. Executed, never sourced. autodrive_state.sh and
-# autodrive_trust.sh are sourced from beside this file and from nowhere else.
-#
+# evidence exists. Executed, never sourced; the helpers are sourced from
+# beside this file and from nowhere else.
 # NO-TIMEOUT POLICY (issue #439): a test suite is never cut off mid-run.
 set -uo pipefail
-# This file's own directory (BASH_SOURCE may be relative, so before the cd).
-# Every decision comes from autodrive_trust.sh there; without it, no evidence.
-# An exported CDPATH would make a relative `cd` resolve elsewhere (#1516).
+# This file's own directory, found before the cd below because BASH_SOURCE may
+# be relative. Without the helpers there the tool cannot tell which
+# measurements apply, so it produces no evidence. An exported CDPATH would
+# make a relative `cd` resolve outside the repository and run the suite there,
+# silently (#1516 security review).
 unset CDPATH
 H="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
-{ [ -n "$H" ] && [ -f "$H/autodrive_state.sh" ] && [ -f "$H/autodrive_trust.sh" ]; } || {
-  echo "ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh and autodrive_trust.sh are not beside autodrive_qa_evidence.sh" >&2; exit 1; }
+{ [ -n "$H" ] && [ -f "$H/autodrive_state.sh" ] && [ -f "$H/autodrive_trust.sh" ]; } \
+  || { echo "ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh or autodrive_trust.sh is missing" >&2; exit 1; }
 cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
 ROOT="$(pwd -P)"
 EVIDENCE="${AUTODRIVE_QA_EVIDENCE:-}"
-KIND="$(. "$H/autodrive_trust.sh" && autodrive_repo_type "$ROOT")" || KIND=""
-GREQ="$(. "$H/autodrive_trust.sh" && autodrive_gadugi_required "$ROOT")" || GREQ=""
+# One shell asks every scope question (autodrive_qa_report), so the diff and the tree walk
+# run once (#1763). Without autodrive_qa_sources.sh or the scope file the evidence is BLOCKED.
+SCAN="$(. "$H/autodrive_trust.sh" || exit 1
+  S="$H/autodrive_qa_sources.sh"
+  # shellcheck source=autodrive_qa_sources.sh # a regular file beside this tool, never a symlink
+  if [ -n "${_AD_SCOPE_OK:-}" ] && [ -f "$S" ] && [ ! -L "$S" ] && . "$S" \
+     && declare -F autodrive_qa_report >/dev/null; then
+    autodrive_qa_report "$ROOT"
+  else
+    printf 'noscope\t1\nkind\t%s\ngreq\t%s\ntarget\t%s\n' "$(autodrive_repo_type "$ROOT")" \
+      "$(autodrive_gadugi_required "$ROOT")" "$(autodrive_qa_target "$ROOT")"
+  fi)" || SCAN=""
+KIND=""; GREQ=""; NOSCOPE=""; TARGET=""; PATHS="(unknown)"; DSRC=""; DDIR=""; DCMD=""; DBAD=""; CISKIP=""
+while IFS=$'\t' read -r key val; do
+  case "$key" in
+    kind) KIND="$val" ;;
+    greq) GREQ="$val" ;;
+    noscope) NOSCOPE="1" ;;
+    target) TARGET="$val" ;;
+    paths) PATHS="$val" ;;
+    source) DSRC="$val" ;;
+    dir) DDIR="$val" ;;
+    command) DCMD="$val" ;;
+    invalid) DBAD="$val" ;;
+    ciskip) CISKIP="$val" ;;
+  esac
+done <<< "$SCAN"
 case "${KIND}:${GREQ}" in
   rust-cli:true|rust-cli:false|node:true|python:true|python:false|unknown:true|unknown:false) ;;
-  *) echo "ERROR: autodrive-qa-helpers-not-found: autodrive_trust.sh beside autodrive_qa_evidence.sh gave no repository type (${KIND:-none}:${GREQ:-none})" >&2; exit 1 ;;
+  *) echo "ERROR: autodrive-qa-helpers-not-found: no repository type (${KIND:-none}:${GREQ:-none})" >&2
+     exit 1 ;;
 esac
-# The scope helper autodrive_trust.sh loads (#1763). Without its functions no
-# source can be read, so the evidence is BLOCKED with qa-command-missing.
-NOSCOPE=""
-(. "$H/autodrive_trust.sh" && [ -n "${_AD_SCOPE_OK:-}" ] \
-  && declare -F autodrive_qa_changed_paths autodrive_qa_config autodrive_qa_ci >/dev/null) || NOSCOPE="1"
-# `<type><TAB><dir>` or `unresolved<TAB><candidates>`, checked again: an odd
-# token, unsafe directory or disagreeing type leaves no detected command.
-# The gadugi decision and the Rust parity directory always follow it.
-TARGET="$(. "$H/autodrive_trust.sh" && autodrive_qa_target "$ROOT")" || TARGET=""
+[ -z "$NOSCOPE" ] || PATHS="(unknown)"
+# Where a detected command runs: `<type><TAB><dir>` or `unresolved<TAB><candidates>`,
+# checked again here: an odd token, an unsafe directory, or a type that
+# disagrees with KIND leaves no detected command, so the evidence is BLOCKED
+# rather than run at the root.
 TKIND="${TARGET%%$'\t'*}"; TDIR="${TARGET#*$'\t'}"; UNRES=""; TBAD=""
 case "$TARGET" in *$'\t'*) ;; *) TBAD="1" ;; esac
 case "$TKIND" in
@@ -62,22 +87,23 @@ case "$TKIND" in
 esac
 case "$TDIR" in ''|/*|*//*|..|../*|*/..|*/../*|*[!A-Za-z0-9._/-]*) TBAD="1" ;; esac
 if [ -n "$TBAD" ]; then
-  echo "ERROR: autodrive_qa_target disagreed with autodrive_repo_type or gave an unsafe directory; no repository test command is detected." >&2
+  echo "ERROR: autodrive_qa_target disagreed with autodrive_repo_type or gave an unsafe directory." >&2
   KIND="unknown"; TDIR="."; UNRES=""
 fi
-PATHS="(unknown)"
-[ -n "$NOSCOPE" ] || PATHS="$(. "$H/autodrive_trust.sh" && autodrive_qa_changed_paths "$ROOT")" || PATHS="(unknown)"
-# Free text is sanitised before it reaches the JSON: no quotes, backslashes
-# or control bytes. ANSI CSI sequences (ECMA-48) go whole; tabs, CRs and
-# newlines become spaces and backslashes '/', so a log keeps its words (#1531).
-san() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr '\t\r\n\\' '   /' | LC_ALL=C tr -d '\000-\037\177"'; }
-# Text cut to a byte length is made ASCII first, so the JSON stays valid UTF-8.
+# Free text is sanitised before it reaches the JSON: no quotes, backslashes or
+# control bytes, so a hostile log line or directory name can neither break the
+# evidence nor carry terminal escapes. ANSI CSI sequences (ECMA-48) go whole;
+# tabs, CRs and newlines become spaces and backslashes '/', so a coloured or
+# tabular runner log keeps its words (#1531).
+san() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr '\t\r\n\\' '   /' \
+  | LC_ALL=C tr -d '\000-\037\177"'; }
+# Text cut to a byte length is made ASCII first: a cut through a multibyte
+# character leaves invalid UTF-8, which every JSON reader rejects.
 ascii() { LC_ALL=C tr -d '\200-\377'; }
 CAUSES=""
 cause() { CAUSES="${CAUSES}${CAUSES:+; }$1"; }
-# The evidence binds to the tree it was measured on. The merge gate
-# refuses evidence whose head_sha is not the SHA being merged, so a
-# PASS left behind by an earlier round cannot stand in for this one.
+# The evidence binds to the tree it was measured on: the merge gate refuses evidence
+# whose head_sha is not the SHA being merged, so an earlier round's PASS cannot stand in.
 HEAD_SHA=""
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || printf '')"
@@ -85,49 +111,47 @@ else
   echo "[skip] not a git repo; the qa evidence records no head sha, so the merge gate refuses it rather than merging unbound evidence" >&2
 fi
 res() { printf '%s\t%s\n' "${1##*/}" "$2" >> "$RES"; } # res <file> <PASS|FAIL|INVALID>
-
 # --- suite commands --------------------------------------------------
-# The first source present wins, even when it gives no usable command:
-#   env        AUTODRIVE_QA_COMMAND (word-split, globbing off, run in
-#              AUTODRIVE_QA_DIR) and AUTODRIVE_QA_COMMANDS (one per line, each
-#              run alone with bash -c from the root); set but empty is "none".
-#   repo-file  autodrive_qa_config; an invalid file is BLOCKED (qa-config-invalid).
-#   ci         autodrive_qa_ci.     detected  autodrive_qa_target's choice.
-QA_DIR="$TDIR"; QD="."; SRC=""; CFG=""; CFGBAD=""; QUNRES=""
+# The first source present wins, even when it gives no usable command: env,
+# repo-file (an invalid qa.toml is BLOCKED, qa-config-invalid), ci (when it
+# gives none, its reason is qa_ci_skip), then detected. The operator variables
+# come from the environment only (a recipe context default would hide them).
+# Set but empty means "no command", never "detect one":
+#   AUTODRIVE_QA_COMMAND   one command, word-split with globbing off, run in
+#                          AUTODRIVE_QA_DIR (the issue #1516 semantics)
+#   AUTODRIVE_QA_COMMANDS  one command per line (blank and # lines skipped),
+#                          each run alone with bash -c from the repository root
+# qa_dir records where the word or detected command ran, else `.`.
+QA_DIR="$TDIR"; QD="."; SRC=""; CFGBAD=""; QUNRES=""
 TYPE="unknown"; KINDS=(); TEXTS=()
 if [ -n "$NOSCOPE" ]; then
-  echo "ERROR: autodrive_qa_scope.sh did not load beside autodrive_trust.sh; no QA command source can be read." >&2
-  cause "the QA scope helper autodrive_qa_scope.sh is missing"
+  echo "ERROR: autodrive_qa_scope.sh or autodrive_qa_sources.sh did not load; no QA command source can be read." >&2
+  cause "the QA scope helper autodrive_qa_scope.sh or autodrive_qa_sources.sh is missing"
 elif [ -n "${AUTODRIVE_QA_COMMAND+x}" ] || [ -n "${AUTODRIVE_QA_COMMANDS+x}" ]; then
   TYPE="configured"; QA_DIR="${AUTODRIVE_QA_DIR:-.}"; SRC="env"
-  if [ -n "${AUTODRIVE_QA_COMMAND:-}" ]; then KINDS+=(word); TEXTS+=("$AUTODRIVE_QA_COMMAND"); QD="$QA_DIR"; fi
+  [ -z "${AUTODRIVE_QA_COMMAND:-}" ] || { KINDS+=(word); TEXTS+=("$AUTODRIVE_QA_COMMAND"); QD="$QA_DIR"; }
   while IFS= read -r line || [ -n "$line" ]; do
     case "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')" in ''|'#'*) continue ;; esac
     KINDS+=(entry); TEXTS+=("$line")
   done <<< "${AUTODRIVE_QA_COMMANDS:-}"
 else
-  SRC="repo-file"; CFG="$(. "$H/autodrive_trust.sh" && autodrive_qa_config "$ROOT")" || CFG="invalid"$'\t'"syntax"
-  if [ "$CFG" = "none" ]; then
-    SRC="ci"; CFG="$(. "$H/autodrive_trust.sh" && autodrive_qa_ci "$ROOT")" || CFG="none"
+  if [ -n "$DBAD" ]; then
+    TYPE="configured"; CFGBAD="$DBAD"
+    case "$CFGBAD" in
+      symlink|not-regular|too-large|syntax|unknown-key|duplicate-key|missing-command|unsafe-command) ;;
+      unsafe-dir|dir-not-found|changed-in-pr|paths-empty|paths-unknown) ;;
+      *) CFGBAD="syntax" ;;
+    esac
+    cause ".amplihack/qa.toml: ${CFGBAD}"
+  elif [ -n "$DCMD" ] && { [ "$DSRC" = "repo-file" ] || [ "$DSRC" = "ci" ]; }; then
+    TYPE="configured"; SRC="$DSRC"; QA_DIR="$DDIR"; QD="$QA_DIR"
+    KINDS+=(word); TEXTS+=("$DCMD")
   fi
-  case "$SRC:$CFG" in
-    *:ok$'\t'*$'\t'?*)
-      TYPE="configured"; CFG="${CFG#ok$'\t'}"; QA_DIR="${CFG%%$'\t'*}"; QD="$QA_DIR"
-      KINDS+=(word); TEXTS+=("${CFG#*$'\t'}") ;;
-    repo-file:*)
-      TYPE="configured"; SRC=""; CFGBAD="${CFG#invalid$'\t'}"
-      case "$CFGBAD" in
-        symlink|not-regular|too-large|syntax|unknown-key|duplicate-key|missing-command|unsafe-command) ;;
-        unsafe-dir|dir-not-found|changed-in-pr|paths-unknown) ;;
-        *) CFGBAD="syntax" ;;
-      esac
-      cause ".amplihack/qa.toml: ${CFGBAD}" ;;
-    *) SRC="" ;;
-  esac
   if [ -z "$SRC" ] && [ -z "$CFGBAD" ]; then
     TYPE="$KIND"
     if [ -n "$UNRES" ]; then
-      QUNRES="$UNRES"; QD=""; cause "unresolved QA project candidates: $(printf '%s' "$UNRES" | san | ascii | cut -c1-1500)"
+      QUNRES="$UNRES"; QD=""
+      cause "unresolved QA project candidates: $(printf '%s' "$UNRES" | san | ascii | cut -c1-1500)"
     else
       case "$KIND" in
         rust-cli) KINDS+=(detected); TEXTS+=("cargo test --workspace --locked --no-fail-fast") ;;
@@ -186,7 +210,6 @@ RC=""; [ "$RAN" -gt 0 ] && RC="${FIRST_NZ:-0}"
 TAIL="$(tail -n 5 "$LOG" | san | ascii | cut -c1-300)"
 tail -n 60 "$LOG" >&2 || true
 rm -f "$LOG"
-
 # --- the scenario directory ------------------------------------------
 # Searched only where gadugi is required. AUTODRIVE_QA_SCENARIO_DIR comes
 # from the environment only. Without it the directory is the first of
@@ -277,31 +300,8 @@ else
     fi
     for f in ${FILES[@]+"${FILES[@]}"}; do
       rel="${SREL}/${f##*/}"
-      # The scenario's name: a top-level `name:`, or `name:` directly
-      # under a top-level `scenario:`, with quotes and comments removed.
-      name="$(LC_ALL=C awk '
-        { sub(/\r$/, "") }
-        /^[^[:space:]#]/ {
-          top = $0; sub(/[[:space:]]*:.*$/, "", top); insc = (top == "scenario"); ind = -1
-          if ($0 ~ /^name[[:space:]]*:/) { v = $0; got = 1; exit }
-          next
-        }
-        insc && /^[[:space:]]+[^[:space:]#]/ {
-          match($0, /^[[:space:]]+/); if (ind < 0) ind = RLENGTH
-          if (RLENGTH == ind && $0 ~ /^[[:space:]]+name[[:space:]]*:/) { v = $0; got = 1; exit }
-        }
-        END {
-          if (!got) exit
-          sub(/^[[:space:]]*name[[:space:]]*:[[:space:]]*/, "", v)
-          q = substr(v, 1, 1)
-          if (q == "\"" || q == "\047") {
-            v = substr(v, 2); n = index(v, q); v = (n > 0) ? substr(v, 1, n - 1) : ""
-          } else {
-            sub(/[[:space:]]+#.*$/, "", v); sub(/[[:space:]]+$/, "", v)
-            if (v ~ /^[|>\[{&*!]/) v = ""
-          }
-          print v
-        }' "$f" 2>/dev/null)"
+      # The scenario's name, from autodrive_scenario_name.sh beside this file.
+      name="$(bash "$H/autodrive_scenario_name.sh" "$f" 2>/dev/null)" || name=""
       # A name gadugi-test could read as an option, or one carrying a
       # control byte, or one over 200 bytes, is no name: the file fails.
       ok="true"
@@ -377,7 +377,7 @@ esac
 SUMMARY="$(printf '%s' "${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}" | san)"
 # The evidence format: every field a string, so a reader never has to guess a type.
 F='{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_dir":"%s","qa_command":"%s",'
-F="${F}"'"qa_command_source":"%s","qa_command_paths":"%s","qa_candidates":"%s",'
+F="${F}"'"qa_command_source":"%s","qa_command_paths":"%s","qa_candidates":"%s","qa_ci_skip":"%s",'
 F="${F}"'"qa_suite_commands_count":"%s","qa_scenarios":"%s","qa_exit_code":"%s",'
 F="${F}"'"qa_summary":"%s","qa_round":"%s","head_sha":"%s","gadugi_required":"%s","gadugi_status":"%s",'
 F="${F}"'"gadugi_validate_exit_code":"%s","gadugi_run_exit_code":"%s",'
@@ -388,7 +388,8 @@ F="${F}"'"gadugi_failed_scenarios":"%s","gadugi_scenario_results":"%s"}\n'
 # shellcheck disable=SC2059 # F is the fixed format above, never input
 OUT="$(printf "$F" \
   "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$QD" | san | ascii | cut -c1-200)" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" \
-  "$SRC" "$(printf '%s' "$PATHS" | san | ascii)" "$(printf '%s' "$QUNRES" | san | ascii)" "$RAN" \
+  "$SRC" "$(printf '%s' "$PATHS" | san | ascii)" "$(printf '%s' "$QUNRES" | san | ascii)" \
+  "$(printf '%s' "$CISKIP" | san | ascii | cut -c1-40)" "$RAN" \
   "$(printf '%s' "$SCEN" | san)" "$RC" "$SUMMARY" "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
   "$GREQ" "$G_STATUS" "$G_VRC" "$G_RRC" "$COUNT" "$(printf '%s' "$SREL" | san)" \
   "$VALIDATED" "$RUNS" "$PASSED" "$FAILED" \

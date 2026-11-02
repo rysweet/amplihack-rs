@@ -48,7 +48,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 17] = [
+const AUTODRIVE_TOOLS: [&str; 19] = [
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
     "autodrive_escalate.sh",
@@ -60,8 +60,10 @@ const AUTODRIVE_TOOLS: [&str; 17] = [
     "autodrive_pr_head.sh",
     "autodrive_qa_evidence.sh",
     "autodrive_qa_scope.sh",
+    "autodrive_qa_sources.sh",
     "autodrive_round_evidence.sh",
     "autodrive_round_tail.sh",
+    "autodrive_scenario_name.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
     "autodrive_unmerged.sh",
@@ -2218,6 +2220,7 @@ fn qa_evidence_runs_one_gadugi_process_per_scenario() {
         "qa_command_source",
         "qa_command_paths",
         "qa_candidates",
+        "qa_ci_skip",
         "qa_suite_commands_count",
         "qa_exit_code",
         "head_sha",

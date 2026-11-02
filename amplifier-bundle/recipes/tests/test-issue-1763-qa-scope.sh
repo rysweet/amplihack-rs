@@ -38,6 +38,8 @@ TOOLS="${REPO_ROOT}/amplifier-bundle/tools"
 TOOL="${TOOLS}/autodrive_qa_evidence.sh"
 TRUST="${TOOLS}/autodrive_trust.sh"
 SCOPE="${TOOLS}/autodrive_qa_scope.sh"
+SOURCES="${TOOLS}/autodrive_qa_sources.sh"
+SNAME="${TOOLS}/autodrive_scenario_name.sh"
 GATE="${TOOLS}/autodrive_merge_gate.sh"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
 
@@ -165,7 +167,11 @@ no_pwned() { # no_pwned <id>
 # scrubbed environment; the whole stdout followed by '#'.
 helper() {
     local fn="$1"; shift
-    env -i HOME="$WORK" PATH="$SYSPATH" "$@" bash -c '. "$1" && "$2" "$3"; printf "#"' _ \
+    # autodrive_qa_sources.sh is loaded too when it is beside the trust file, as the evidence tool does.
+    env -i HOME="$WORK" PATH="$SYSPATH" "$@" bash -c '
+        . "$1" || exit 1
+        [ ! -f "${1%/*}/autodrive_qa_sources.sh" ] || . "${1%/*}/autodrive_qa_sources.sh" || exit 1
+        "$2" "$3"; printf "#"' _ \
         "${TRUST_UNDER_TEST:-$TRUST}" "$fn" "$REPO" 2>/dev/null </dev/null || printf 'ERR#'
 }
 expect_helper() { # expect_helper <id> <fn> <want, no trailing newline> [VAR=value]...
@@ -549,8 +555,9 @@ expect tok-changed-ci "a workflow edit leaves qa.toml in force" qa_command_sourc
 expect_calls tok-changed-ci-calls "the declared command runs" cargo "cargo|engine|nextest run --workspace --locked"
 repo Cargo.toml engine/Cargo.toml src/lib.rs; put .amplihack/qa.toml "$QA_OK"; base
 : > "$CALLS"; run_tool "$B"
-expect tok-paths-none "an empty diff is paths-unknown" qa_status=BLOCKED qa_reason=qa-config-invalid
-expect_summary_has tok-paths-none-token ".amplihack/qa.toml: paths-unknown"
+expect tok-paths-none "an empty diff is paths-empty" qa_status=BLOCKED qa_reason=qa-config-invalid
+expect_summary_has tok-paths-none-token ".amplihack/qa.toml: paths-empty"
+expect_helper tok-paths-none-helper autodrive_qa_config $'invalid\tpaths-empty' "$B"
 : > "$CALLS"; run_tool
 expect tok-paths-unknown "no base is paths-unknown" qa_status=BLOCKED qa_reason=qa-config-invalid
 expect_summary_has tok-paths-unknown-token ".amplihack/qa.toml: paths-unknown"
@@ -568,9 +575,11 @@ expect_calls rf-alphabet-calls "the words run as given" cargo "cargo|.|test -p a
 echo "== #1763 evidence: the CI source =="
 # ci_repo <workflow content> [file name] — root Cargo, engine/, the workflow, a base, a PR change.
 ci_repo() { repo Cargo.toml engine/Cargo.toml src/lib.rs; put ".github/workflows/${2:-ci.yml}" "$1"; base; change src/lib.rs; }
-ci_detected() { # ci_detected <id> <why>: CI gave nothing; detection ran cargo test at the root
+ci_detected() { # ci_detected <id> <why> [qa_ci_skip]: CI gave nothing; detection ran cargo test at the root
     : > "$CALLS"; run_tool "$B"
     expect "$1" "$2: detection is used" qa_status=PASS qa_command_source=detected qa_repo_type=rust-cli qa_dir=.
+    # The reason the CI source gave none is recorded, so an operator can see why it was skipped.
+    [ -z "${3:-}" ] || expect "$1-skip" "$2: qa_ci_skip names the reason" qa_ci_skip="$3"
     expect_calls "$1-calls" "$2: cargo test runs at the root" cargo "cargo|.|$CARGO_ARGS"
     if ! grep -qE 'workflow|\.github|(^|[^A-Za-z])CI([^A-Za-z]|$)' "$ERR" 2>/dev/null; then
         pass "$1-silent" "$2: nothing is printed about CI"
@@ -597,68 +606,68 @@ expect ci-pytest "pytest" qa_status=PASS qa_command_source=ci qa_command="pytest
 expect_calls ci-pytest-calls "pytest runs at the root" pytest "pytest|.|-q"
 
 ci_repo "$(steps $'      - run: cargo test --workspace\n      - run: cargo nextest run\n')"
-ci_detected ci-two-clean "two clean matches"
+ci_detected ci-two-clean "two clean matches" several-matches
 ci_repo "$(steps $'      - run: cargo test --workspace\n      - run: |\n          cargo nextest run --workspace\n')"
-ci_detected ci-clean-plus-block "a clean match beside a block scalar"
+ci_detected ci-clean-plus-block "a clean match beside a block scalar" not-clean
 ci_repo "$(steps $'      - run: >\n          cargo test\n')"
-ci_detected ci-folded "a folded block scalar alone"
+ci_detected ci-folded "a folded block scalar alone" not-clean
 ci_repo "$(steps $'      - run: RUST_LOG=debug cargo test\n')"
-ci_detected ci-env-prefix "an env-assignment prefix"
+ci_detected ci-env-prefix "an env-assignment prefix" not-clean
 ci_repo "$(steps $'      - run: cargo test ${{ matrix.flags }}\n')"
-ci_detected ci-expr "a \${{ expression"
+ci_detected ci-expr "a \${{ expression" not-clean
 ci_repo "$(steps $'      - run: cargo test "x"\n')"
-ci_detected ci-quote "a quote"
+ci_detected ci-quote "a quote" not-clean
 # shellcheck disable=SC2016 # the literal payload must not expand
 ci_repo "$(steps '      - run: cargo test $(touch PWNED)'$'\n')"
-ci_detected ci-subst "a command substitution"
+ci_detected ci-subst "a command substitution" not-clean
 no_pwned ci-subst-exec
 ci_repo "$(steps $'      - run: cargo test && touch PWNED\n')"
-ci_detected ci-and "an &&"
+ci_detected ci-and "an &&" not-clean
 no_pwned ci-and-exec
 ci_repo "$(printf 'defaults:\n  run:\n    working-directory: engine\n%s' "$(steps $'      - run: cargo test\n')")"
-ci_detected ci-defaults "a workflow-level defaults: run: working-directory"
+ci_detected ci-defaults "a workflow-level defaults: run: working-directory" not-clean
 ci_repo "$(printf 'on: [push]\njobs:\n  test:\n    defaults:\n      run:\n        working-directory: engine\n    steps:\n      - run: cargo test\n')"
-ci_detected ci-job-defaults "a job-level defaults: run: working-directory"
+ci_detected ci-job-defaults "a job-level defaults: run: working-directory" not-clean
 ci_repo "$(steps $'      - run: cargo test\n        working-directory: ../x\n')"
-ci_detected ci-wd-unsafe "an unsafe working-directory"
+ci_detected ci-wd-unsafe "an unsafe working-directory" unsafe-dir
 ci_repo "$(steps $'      - run: cargo test\n        working-directory: nope\n')"
-ci_detected ci-wd-missing "a working-directory that does not exist"
+ci_detected ci-wd-missing "a working-directory that does not exist" dir-not-found
 ci_repo "$(steps $'      - run: echo hi\n')"
-ci_detected ci-none "no match"
+ci_detected ci-none "no match" no-match
 
 repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"; base
 put .github/workflows/ci.yml "$(steps $'      - run: cargo test --lib\n')"; snap
-ci_detected ci-changed-in-pr "a workflow changed by the pull request"
+ci_detected ci-changed-in-pr "a workflow changed by the pull request" changed-in-pr
 repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"; base
 : > "$CALLS"; run_tool
-expect ci-nobase "no base: CI gives nothing" qa_command_source=detected qa_dir=.
+expect ci-nobase "no base: CI gives nothing" qa_command_source=detected qa_dir=. qa_ci_skip=paths-unknown
 ci_repo "$CI_CLEAN" "c i.yml"
-ci_detected ci-badname "a file name outside the allowlist"
+ci_detected ci-badname "a file name outside the allowlist" unsafe-name
 repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/sub/ci.yml "$CI_CLEAN"; base; change src/lib.rs
-ci_detected ci-nested "a workflow below the top level"
+ci_detected ci-nested "a workflow below the top level" no-workflows
 repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"
 for i in $(seq 1 50); do put ".github/workflows/w$i.yml" $'on: [push]\n'; done; base; change src/lib.rs
-ci_detected ci-too-many "51 workflow files"
+ci_detected ci-too-many "51 workflow files" too-many-files
 repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"
 for i in $(seq 1 49); do put ".github/workflows/w$i.yml" $'on: [push]\n'; done; base; change src/lib.rs
 : > "$CALLS"; run_tool "$B"
 expect ci-fifty "50 workflow files are still read" qa_status=PASS qa_command_source=ci qa_dir=engine
 repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"
 { printf 'on: [push]\n'; head -c 270000 /dev/zero | tr '\0' '#'; printf '\n'; } > "$REPO/.github/workflows/big.yml"; base; change src/lib.rs
-ci_detected ci-too-large "a workflow over 256 KiB"
+ci_detected ci-too-large "a workflow over 256 KiB" too-large
 repo Cargo.toml engine/Cargo.toml src/lib.rs real/workflows/; put real/workflows/ci.yml "$CI_CLEAN"
 ln -s real "$REPO/.github"; base; change src/lib.rs
-ci_detected ci-symlink-github "a symlinked .github"
+ci_detected ci-symlink-github "a symlinked .github" no-workflows
 repo Cargo.toml engine/Cargo.toml src/lib.rs .github/; put real/ci.yml "$CI_CLEAN"
 ln -s ../real "$REPO/.github/workflows"; base; change src/lib.rs
-ci_detected ci-symlink-workflows "a symlinked .github/workflows"
+ci_detected ci-symlink-workflows "a symlinked .github/workflows" no-workflows
 repo Cargo.toml engine/Cargo.toml src/lib.rs .github/workflows/; put real.yml "$CI_CLEAN"
 ln -s ../../real.yml "$REPO/.github/workflows/ci.yml"; base; change src/lib.rs
-ci_detected ci-symlink-entry "a symlinked workflow file"
+ci_detected ci-symlink-entry "a symlinked workflow file" not-regular
 
 echo "== #1763 evidence: amplihack-rs's own CI shape falls through to cargo test at the root =="
 ci_repo "$(steps $'      - run: cargo nextest run --workspace --locked\n      - name: hook env\n        shell: bash\n        run: |\n          export GIT_DIR=x\n          cargo nextest run --locked \\\n            -p amplihack-git\n      - run: cargo test --workspace --doc --locked\n')"
-ci_detected ci-own-shape "the amplihack-rs ci.yml shape"
+ci_detected ci-own-shape "the amplihack-rs ci.yml shape" not-clean
 repo Cargo.toml crates/a/Cargo.toml src/lib.rs; mkdir -p "$REPO/.github/workflows"
 cp "$REPO_ROOT"/.github/workflows/*.yml "$REPO/.github/workflows/" 2>/dev/null || true
 base; change src/lib.rs
@@ -690,7 +699,7 @@ if git -C "$REPO" ls-tree HEAD -- .amplihack/qa.toml | grep -q '^120000 '; then
 else harness_error "the qa.toml symlink fixture is not mode 120000"; fi
 repo Cargo.toml engine/Cargo.toml src/lib.rs; base; change src/lib.rs
 put .github/workflows/x.yml "$(steps $'      - run: cargo test\n')"
-expect_helper mb-untracked-ci autodrive_qa_ci "none" "$B"
+expect_helper mb-untracked-ci autodrive_qa_ci $'none\tno-workflows' "$B"
 repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"; base; change src/lib.rs
 put .github/workflows/x.yml "$(steps $'      - run: cargo test\n')"
 put .github/workflows/ci.yml "$(steps $'      - run: cargo test --lib\n')"
@@ -744,6 +753,35 @@ for mode in missing symlink; do
         qa_status=BLOCKED qa_reason=qa-command-missing
     expect_calls "fallback-$mode-calls" "cargo is never called" cargo ""
 done
+# The scope file is there but the sources file is not: detection works, yet
+# qa.toml cannot be read, so the evidence blocks rather than ignore it.
+T="$WORK/tools-nosources"; mkdir -p "$T"
+for t in autodrive_qa_evidence.sh autodrive_state.sh autodrive_trust.sh autodrive_unmerged.sh autodrive_qa_scope.sh; do
+    cp "$TOOLS/$t" "$T/"
+done
+repo Cargo.toml src/lib.rs; base; change src/lib.rs
+TRUST_UNDER_TEST="$T/autodrive_trust.sh"
+expect_helper fallback-nosources-target autodrive_qa_target $'rust-cli\t.' "$B"
+unset TRUST_UNDER_TEST
+TOOL_UNDER_TEST="$T/autodrive_qa_evidence.sh"; run_tool "$B"; unset TOOL_UNDER_TEST
+expect fallback-nosources-evidence "the evidence tool blocks without the sources file" \
+    qa_status=BLOCKED qa_reason=qa-command-missing
+expect_calls fallback-nosources-calls "cargo is never called" cargo ""
+
+echo "== #1763 S3: one evidence run computes the diff and the tree walk once =="
+GITBIN="$(command -v git)"; GSTUB="$WORK/gitcount"; mkdir -p "$GSTUB"; GITLOG="$WORK/gitcount.log"
+cat > "$GSTUB/git" <<GITSTUB
+#!/bin/sh
+case " \$* " in *" diff "*) echo diff >> "$GITLOG" ;; *" ls-tree -r "*) echo walk >> "$GITLOG" ;; esac
+exec "$GITBIN" "\$@"
+GITSTUB
+chmod +x "$GSTUB/git"
+repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"; base; change src/lib.rs
+: > "$GITLOG"; : > "$CALLS"; run_tool "$B" PATH="${GSTUB}:${STUBS}:${SYSPATH}"
+expect once-evidence "the counted run still uses the CI source" qa_status=PASS qa_command_source=ci
+if [ "$(grep -c '^diff$' "$GITLOG")" = 1 ] && [ "$(grep -c '^walk$' "$GITLOG")" = 1 ]; then
+    pass once-count "one git diff and one tree walk per evidence run"
+else fail once-count "git diff ran $(grep -c '^diff$' "$GITLOG") times and the tree walk $(grep -c '^walk$' "$GITLOG")"; fi
 
 echo "== #1763 gate wiring: the gate's own base decides gadugi in a mixed repository =="
 repo Cargo.toml web/package.json web/src/app.ts; base; change web/src/app.ts
@@ -764,8 +802,10 @@ expect_helper gate-head-empty autodrive_gadugi_required "true" "$B" AUTODRIVE_QA
 repo Cargo.toml web/package.json web/src/app.ts; base; change web/src/app.ts
 PRH="$(git -C "$REPO" rev-parse HEAD)"; git -C "$REPO" update-ref HEAD refs/remotes/origin/main
 expect_helper gate-head-web autodrive_gadugi_required "true" "$B" AUTODRIVE_QA_HEAD="$PRH"
-GLINE="$(grep -n 'autodrive_gadugi_required' "$GATE" | grep -v '^[0-9]*:[[:space:]]*#' || true)"
-if [ "$(printf '%s\n' "$GLINE" | grep -c .)" = 1 ] \
+# The one statement that asks, from `GADUGI_REQ="$(` to its `|| GADUGI_REQ="true"`.
+GCOUNT="$(grep -v '^[[:space:]]*#' "$GATE" | grep -c 'autodrive_gadugi_required')"
+GLINE="$(awk '/^[[:space:]]*GADUGI_REQ="\$\(/ { on = 1 } on { print } on && /GADUGI_REQ="true"/ { exit }' "$GATE")"
+if [ "$GCOUNT" = 1 ] && printf '%s' "$GLINE" | grep -q 'autodrive_gadugi_required' \
    && printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_BASE=' \
    && printf '%s' "$GLINE" | grep -qF 'baseRefName' \
    && ! printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_BASE:-' \
@@ -776,7 +816,7 @@ else fail gate-line "gate line is: ${GLINE:-<none>}"; fi
 
 # ===========================================================================
 echo "== #1763 static constraints =="
-for t in "$TOOL" "$TRUST" "$SCOPE" "$GATE"; do
+for t in "$TOOL" "$TRUST" "$SCOPE" "$SOURCES" "$SNAME" "$GATE"; do
     if [ ! -f "$t" ]; then fail "lines:${t##*/}" "missing"; continue; fi
     n="$(wc -l < "$t" | tr -d ' ')"
     if [ "$n" -le 400 ]; then pass "lines:${t##*/}" "$n lines (<= 400)"; else fail "lines:${t##*/}" "$n lines (> 400)"; fi
@@ -786,19 +826,28 @@ for y in autodrive-merge-round autodrive-merge-evidence autodrive-merge-loop; do
     if [ "$n" -le 400 ]; then pass "lines:$y" "$n lines (<= 400)"; else fail "lines:$y" "$n lines (> 400)"; fi
 done
 code() { grep -v '^[[:space:]]*#' "$1" 2>/dev/null || true; }
-if [ -f "$SCOPE" ]; then
-    code "$SCOPE" | grep -qE '(^|[;&|[:space:](])eval[[:space:]]' && fail scope-eval "autodrive_qa_scope.sh uses eval" || pass scope-eval "no eval"
-    code "$SCOPE" | grep -qE 'bash -c|sh -c' && fail scope-shell "autodrive_qa_scope.sh starts a shell" || pass scope-shell "no bash -c"
-    code "$SCOPE" | grep -qE '(^|[[:space:]])fetch([[:space:]]|$)' && fail scope-fetch "autodrive_qa_scope.sh fetches" || pass scope-fetch "never fetches"
-    code "$SCOPE" | grep -qE 'system\(|\|[[:space:]]*getline' && fail scope-awk "an awk parser runs commands" || pass scope-awk "awk never runs commands"
-    grep -q 'LC_ALL=C' "$SCOPE" && pass scope-lcall "runs under LC_ALL=C" || fail scope-lcall "no LC_ALL=C"
-    for fn in autodrive_qa_target autodrive_qa_changed_paths autodrive_qa_config autodrive_qa_ci; do
-        grep -q "^${fn}()" "$SCOPE" && pass "scope-fn:$fn" "defined in autodrive_qa_scope.sh" || fail "scope-fn:$fn" "not defined in autodrive_qa_scope.sh"
-    done
-    code "$SCOPE" | grep -q 'ambiguous' && fail scope-token "autodrive_qa_scope.sh still says ambiguous" || pass scope-token "the token is unresolved"
-else
-    fail scope-file "amplifier-bundle/tools/autodrive_qa_scope.sh does not exist"
-fi
+for f in "$SCOPE" "$SOURCES" "$SNAME"; do
+    n="${f##*/}"
+    if [ ! -f "$f" ]; then fail "file:$n" "$n does not exist"; continue; fi
+    code "$f" | grep -qE '(^|[;&|[:space:](])eval[[:space:]]' && fail "eval:$n" "$n uses eval" || pass "eval:$n" "no eval"
+    code "$f" | grep -qE 'bash -c|sh -c' && fail "shell:$n" "$n starts a shell" || pass "shell:$n" "no bash -c"
+    code "$f" | grep -qE '(^|[[:space:]])fetch([[:space:]]|$)' && fail "fetch:$n" "$n fetches" || pass "fetch:$n" "never fetches"
+    code "$f" | grep -qE 'system\(|\|[[:space:]]*getline' && fail "awk:$n" "an awk parser runs commands" \
+        || pass "awk:$n" "awk never runs commands"
+    grep -q 'LC_ALL=C' "$f" && pass "lcall:$n" "runs under LC_ALL=C" || fail "lcall:$n" "no LC_ALL=C"
+    code "$f" | grep -q 'ambiguous' && fail "token:$n" "$n still says ambiguous" || pass "token:$n" "the token is unresolved"
+done
+for fn in autodrive_qa_target autodrive_qa_changed_paths; do
+    grep -q "^${fn}()" "$SCOPE" && pass "scope-fn:$fn" "defined in autodrive_qa_scope.sh" \
+        || fail "scope-fn:$fn" "not defined in autodrive_qa_scope.sh"
+done
+for fn in autodrive_qa_config autodrive_qa_ci autodrive_qa_report; do
+    grep -q "^${fn}()" "$SOURCES" && pass "sources-fn:$fn" "defined in autodrive_qa_sources.sh" \
+        || fail "sources-fn:$fn" "not defined in autodrive_qa_sources.sh"
+done
+# The merge gate needs only the scope file; the declared sources stay out of it.
+code "$TRUST" | grep -q 'autodrive_qa_sources' && fail trust-sources "autodrive_trust.sh loads the sources file" \
+    || pass trust-sources "the gate path never loads autodrive_qa_sources.sh"
 grep -q 'shellcheck source=autodrive_qa_scope.sh' "$TRUST" && pass trust-directive "autodrive_trust.sh has the shellcheck source= directive" \
     || fail trust-directive "autodrive_trust.sh lacks '# shellcheck source=autodrive_qa_scope.sh'"
 grep -q 'BASH_SOURCE' "$TRUST" && grep -q '_AD_SCOPE_OK' "$TRUST" && pass trust-loader "the loader uses BASH_SOURCE and _AD_SCOPE_OK" \
@@ -834,7 +883,7 @@ if grep -q 'test-issue-1763-qa-scope.sh' "$REPO_ROOT/.github/workflows/ci.yml"; 
 else fail ci-wired ".github/workflows/ci.yml does not run test-issue-1763-qa-scope.sh"; fi
 if command -v shellcheck >/dev/null 2>&1; then
     if [ -f "$SCOPE" ] && (cd "$TOOLS" && shellcheck -x -S warning autodrive_qa_scope.sh autodrive_trust.sh autodrive_qa_evidence.sh \
-            autodrive_merge_gate.sh) >/dev/null 2>&1; then
+            autodrive_merge_gate.sh autodrive_qa_sources.sh autodrive_scenario_name.sh) >/dev/null 2>&1; then
         pass shellcheck "the scope file, autodrive_trust.sh, the evidence tool and the gate are clean at -S warning"
     else fail shellcheck "shellcheck -S warning reports problems (or the scope file is missing)"; fi
 else
