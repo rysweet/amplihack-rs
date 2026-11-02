@@ -345,6 +345,7 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "governor.band_pct = 10",
             "governor.eval_interval_secs = 60",
             "governor.wait_secs = 600",
+            "governor.max_reading_age_secs = 3600",
         ]
     );
 }
