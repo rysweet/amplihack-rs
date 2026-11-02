@@ -9,10 +9,8 @@ use super::held::held_cycle;
 use super::identify::{LiveId, Skip};
 use super::key_check::{self, KeyCheckFn};
 use super::ledger::{RotateLedger, RotateState, newer_than};
-use super::log::msg;
-use super::observe::{
-    Measurement, Snap, live_name, measure_and_decide, platform_block_reason, reading_of,
-};
+use super::log::{msg, shown, shown_of};
+use super::observe::{Measurement, Snap, live_name, measure_and_decide, platform_block_reason};
 use super::overflow::Tag;
 use super::overflow_record::{
     self, alert_line, block_spend_limited, note_home_key, note_live, note_move, note_per_token,
@@ -31,7 +29,6 @@ use super::swap::{self, Source};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now, scan_system};
 use crate::commands::profile::name::ProfileName;
-use crate::commands::profile::run::resolve_claude_binary;
 use crate::commands::profile::shared_dirs;
 use crate::commands::profile::store::ProfileStore;
 use std::path::{Path, PathBuf};
@@ -77,6 +74,16 @@ pub struct Ctx {
     pub(super) key_check: KeyCheckFn,
     /// The `$HOME` key setting `note_home_key` last logged.
     pub(super) home_key: Option<&'static str>,
+    /// Issue #1844: reads a watching rotator keeps across cycles. `None`
+    /// makes each cycle wait for every read.
+    pub(super) in_flight: Option<
+        std::sync::Mutex<
+            super::inflight::InFlight<
+                super::measure::Key,
+                crate::commands::profile::usage_cmd::Probe,
+            >,
+        >,
+    >,
 }
 
 impl Ctx {
@@ -98,6 +105,7 @@ impl Ctx {
             pause: |_| std::thread::sleep(revalidate::REREAD_PAUSE),
             key_check: key_check::reachable,
             home_key: None,
+            in_flight: None,
         }
     }
 
@@ -186,23 +194,20 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     }
     drop(lock);
 
-    // Steps 4 and 5: measure without the lock, then decide. Recovery does
-    // not need `claude`, so it is looked for only now.
+    // Steps 4 and 5: measure without the lock, then decide. `claude` is
+    // looked for only when a read falls back to it (issue #1844).
     let m = match ctx.measure {
         Some(stub) => stub(ctx, &first)?,
-        None => {
-            let binary = resolve_claude_binary()
-                .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
-            measure_and_decide(ctx, &binary, &first)?
-        }
+        None => measure_and_decide(ctx, &first)?,
     };
     let failed_before = std::mem::replace(&mut ctx.failed_live, m.failed);
+    let (live_shown, others_shown) = shown(&m);
     out.emit(
         now(),
         &msg::cycle(
             live_name(&first.live),
-            &m.live,
-            &m.others,
+            &live_shown,
+            &others_shown,
             first.shown_platform(),
         ),
     );
@@ -251,6 +256,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             return Ok(CycleOutcome::Skipped);
         }
     };
+    let (live_shown, others_shown) = shown(&m);
     let Measurement {
         live,
         others,
@@ -308,10 +314,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 Err(e) => return Err(e),
             };
             swapped = Some([to.clone(), from.clone()]);
-            let target = reading_of(&others, &to);
+            let target = shown_of(&others_shown, &to);
             let seen = (next_plan_reset, unknown_plan.len());
             note_per_token(&mut out, &first, tag, &to, seen, check);
-            out.emit(now(), &msg::swap(&from, &to, &live, &target, reason));
+            out.emit(now(), &msg::swap(&from, &to, &live_shown, &target, reason));
             let (off_key, onto_key) = (first.platform_live(), first.platform() == Some(&to));
             note_move(
                 &mut out,

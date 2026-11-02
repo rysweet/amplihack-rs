@@ -3,7 +3,7 @@
 //! about to reset never adds capacity beyond what the week has left.
 
 use super::model::{Budget, WindowBudget};
-use crate::commands::profile::governor_view::ProfileSnapshot;
+use crate::commands::profile::governor_view::{ProfileSnapshot, plausible};
 
 /// Why a profile can or cannot take a start.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,10 +17,15 @@ pub enum Headroom {
     InReserve,
 }
 
-/// A percentage the governor can trust: finite and within `0..=100`.
-fn window(raw: Option<(f64, i64)>) -> Option<WindowBudget> {
+/// A window the governor can trust, by the rotator's own rule
+/// ([`plausible`], `usage::plausible` from issue #1844) applied at the time
+/// the reading was observed: a finite percentage, clamped to `0..=100`, and a
+/// reset no more than one day before or eight days after `observed_at`. A
+/// reading that was plausible when taken stays usable after its reset has
+/// passed; [`super::inputs::budgets`] then treats the window as rolled over.
+pub(super) fn window(raw: Option<(f64, i64)>, observed_at: i64) -> Option<WindowBudget> {
     let (used_pct, resets_at) = raw?;
-    (used_pct.is_finite() && (0.0..=100.0).contains(&used_pct)).then_some(WindowBudget {
+    plausible(used_pct, resets_at, observed_at).map(|(used_pct, resets_at)| WindowBudget {
         used_pct,
         resets_at: Some(resets_at),
     })
@@ -28,8 +33,8 @@ fn window(raw: Option<(f64, i64)>) -> Option<WindowBudget> {
 
 /// The budget for one profile, or `None` when the profile is "unknown" and
 /// not part of the pool. A profile is unknown without a usable weekly window,
-/// and also when a session window was read but cannot be trusted
-/// (non-finite or outside `0..=100`): a damaged session reading never drops
+/// and also when a session window was read but fails [`window`] (a
+/// non-finite percentage or an absurd reset time): a damaged session reading never drops
 /// the session limit. Only a reading that [`ProfileSnapshot::no_session_window`]
 /// marks (a week window and no session window, issue #1818) gives a
 /// weekly-only budget (`session: None`).
@@ -37,26 +42,28 @@ pub fn budget_from_snapshot(s: &ProfileSnapshot) -> Option<Budget> {
     let session = if s.no_session_window {
         None
     } else {
-        Some(window(s.five_hour)?)
+        Some(window(s.five_hour, s.observed_at)?)
     };
     Some(Budget {
         name: s.name.clone(),
         active: s.active,
         eligible: s.eligible,
-        weekly: window(s.seven_day)?,
+        weekly: window(s.seven_day, s.observed_at)?,
         session,
     })
 }
 
-/// A window of the profile's reading holds a percentage the governor cannot
-/// trust (non-finite or outside `0..=100`), so [`budget_from_snapshot`]
-/// leaves the profile out of the pool. `governor status` shows it as
+/// A window of the profile's reading fails [`window`]: its percentage is not
+/// finite or its reset is more than one day before or eight days after the
+/// time it was observed. [`budget_from_snapshot`] leaves the profile out of
+/// the pool. A percentage outside `0..=100` is clamped, not invalid: 150%
+/// reads as an exhausted 100%, as it does for the rotator. `governor status` shows it as
 /// `invalid reading`, not `no reading`.
 pub fn invalid_reading(s: &ProfileSnapshot) -> bool {
     [s.five_hour, s.seven_day]
         .into_iter()
         .flatten()
-        .any(|w| window(Some(w)).is_none())
+        .any(|w| window(Some(w), s.observed_at).is_none())
 }
 
 fn remaining(w: &WindowBudget) -> f64 {

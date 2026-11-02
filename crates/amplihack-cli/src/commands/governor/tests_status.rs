@@ -157,11 +157,16 @@ fn status_never_says_no_session_limit() {
     assert!(!table.contains("no session limit"), "{table}");
 }
 
-/// Crusty round 1 on #1831: a session reading out of range makes the
+/// Crusty round 1 on #1831, revised in round 6 for #1854: a session window
+/// that fails `usage::plausible` (here a reset at `i64::MAX`) makes the
 /// profile unknown (out of the pool), and status says why.
 #[test]
 fn an_invalid_session_reading_is_reported_and_leaves_the_pool() {
-    let r = Root::new(&[("alpha", 150.0, 20.0), ("beta", 10.0, 30.0)]);
+    let r = Root::new(&[("alpha", 10.0, 20.0), ("beta", 10.0, 30.0)]);
+    let path = r.root.join(".auto-switch.d").join("usage.json");
+    let mut usage: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    usage["accounts"]["alpha"]["five_hour"]["resets_at"] = i64::MAX.into();
+    std::fs::write(&path, usage.to_string()).unwrap();
     let v = json(Some(&r.root), &Settings::default());
     let alpha = v["profiles"]
         .as_array()
@@ -177,6 +182,18 @@ fn an_invalid_session_reading_is_reported_and_leaves_the_pool() {
     assert_eq!(v["reserve"]["best_weekly_remaining"], 70.0);
     let table = render_table(&view(Some(&r.root), &Settings::default(), None, NOW));
     assert!(table.contains("invalid reading"), "{table}");
+}
+
+/// Crusty round 6 on #1831: a stored 150% is clamped to an exhausted 100%,
+/// as the rotator reads it (`usage::plausible`, #1854), not dropped from the
+/// pool as an invalid reading.
+#[test]
+fn an_out_of_range_percentage_is_clamped_not_invalid() {
+    let r = Root::new(&[("alpha", 150.0, 20.0)]);
+    let v = json(Some(&r.root), &Settings::default());
+    let alpha = &v["profiles"][0];
+    assert_eq!(alpha["invalid_reading"], false, "{v}");
+    assert_eq!(alpha["session"]["used_pct"], 100.0, "{v}");
 }
 
 #[test]

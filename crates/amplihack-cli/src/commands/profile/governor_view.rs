@@ -118,3 +118,20 @@ fn platform_names(store: &ProfileStore, home: Option<&Path>) -> Option<Vec<Profi
 fn platform_names(_store: &ProfileStore, _home: Option<&Path>) -> Option<Vec<ProfileName>> {
     Some(Vec::new())
 }
+
+/// The rotator's plausibility rule (`usage::plausible`, issue #1844) for one
+/// window as `(used percentage, resets_at)`: `None` for a non-finite
+/// percentage or a reset more than one day before or eight days after `now`;
+/// otherwise the percentage clamped to 0 to 100. The governor uses this and
+/// no rule of its own, so it reads a stored window as the rotator does.
+#[cfg(unix)]
+pub fn plausible(pct: f64, resets_at: i64, now: i64) -> Option<(f64, i64)> {
+    super::auto_switch::plausible_window(pct, resets_at, now)
+}
+
+/// No stored readings off Unix ([`snapshot`] never has one), so no window is
+/// plausible.
+#[cfg(not(unix))]
+pub fn plausible(_pct: f64, _resets_at: i64, _now: i64) -> Option<(f64, i64)> {
+    None
+}

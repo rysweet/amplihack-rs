@@ -49,15 +49,18 @@ pub fn budgets(snaps: &[ProfileSnapshot], now: i64) -> Vec<Budget> {
         .collect()
 }
 
+/// A history sample for one window, by the same rule as the budget
+/// ([`super::budget::window`]); `None` without a time of observation.
 fn sample(w: Option<(f64, i64)>, observed_at: i64) -> Option<Sample> {
-    let (used_pct, resets_at) = w?;
-    (observed_at > 0 && used_pct.is_finite() && (0.0..=100.0).contains(&used_pct)).then_some(
-        Sample {
-            observed_at,
-            used_pct,
-            resets_at: Some(resets_at),
-        },
-    )
+    if observed_at <= 0 {
+        return None;
+    }
+    let b = super::budget::window(w, observed_at)?;
+    Some(Sample {
+        observed_at,
+        used_pct: b.used_pct,
+        resets_at: b.resets_at,
+    })
 }
 
 /// Adds each profile's latest reading to its rings and drops the rings of

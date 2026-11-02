@@ -52,9 +52,11 @@ pub struct ProfileView {
     /// That is not "no session limit": the stored reading cannot tell a plan
     /// with none from a session window that was not recorded (#1818).
     pub session_window: bool,
-    /// A window of the reading holds a percentage that cannot be trusted
-    /// (non-finite or outside 0 to 100). The profile is then unknown and out
-    /// of the pool, and `session` and `weekly` are `null`.
+    /// A window of the reading fails the rotator's plausibility rule
+    /// (`usage::plausible`): a non-finite percentage, or a reset more than one
+    /// day before or eight days after the time of the reading. The profile is
+    /// then unknown and out of the pool, and `session` and `weekly` are
+    /// `null`. A percentage outside 0 to 100 is clamped, not invalid.
     pub invalid_reading: bool,
     pub session: Option<WindowView>,
     /// `null` for a profile with no weekly reading.

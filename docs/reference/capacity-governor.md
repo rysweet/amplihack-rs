@@ -206,12 +206,19 @@ A profile whose reading has a weekly window and no session window is
   status` prints `no session window`.
 
 A profile whose reading has neither window is unknown and is left out of the
-pool. So is a profile whose session window was read but holds a percentage
-that is not a finite number between 0 and 100: a damaged session reading is
-never taken as "no session window", which would drop the session limit.
-Status marks such a profile with `invalid_reading: true` in JSON and
-`invalid reading` in the table. If every profile is unknown, step 1 admits
-the start.
+pool. So is a profile with a window that fails the rotator's plausibility
+rule, `usage::plausible` (issue #1844): a percentage that is not finite, or a
+`resets_at` more than one day before or eight days after the time the reading
+was observed. The governor calls that same function rather than keeping a
+rule of its own, so it and the rotator classify a stored reading the same way.
+A percentage outside 0 to 100 is clamped, not rejected: a stored 150% is an
+exhausted 100%, so the profile stays in the pool and is held as exhausted. The
+check is made against the time of the reading, not the current time, so a
+reading whose reset has since passed is still used and its window counts as
+started again from zero. A damaged session window is never taken as "no
+session window", which would drop the session limit. Status marks such a
+profile with `invalid_reading: true` in JSON and `invalid reading` in the
+table. If every profile is unknown, step 1 admits the start.
 
 ### A session reset never adds weekly capacity
 
@@ -787,7 +794,7 @@ are cut to 64 characters.
 | `limit`, `max` | Current concurrency limit and `governor.max_concurrency` |
 | `profiles[]` | Every listed profile, including those left out of the pool; `eligible` is `false` for overflow and API-key profiles |
 | `profiles[].session_window` | `false` for a weekly-only profile (a week window and no session window); `session` is then `null`. Not "no session limit": the reading cannot tell the two apart |
-| `profiles[].invalid_reading` | `true` when a window holds a percentage that is not a finite number between 0 and 100; the profile is then out of the pool and `session` and `weekly` are `null` |
+| `profiles[].invalid_reading` | `true` when a window fails `usage::plausible`: a percentage that is not finite, or a `resets_at` more than one day before or eight days after the reading. The profile is then out of the pool and `session` and `weekly` are `null`. A percentage outside 0 to 100 is clamped, not invalid |
 | `profiles[].weekly` | `null` for a profile with no usable weekly reading; such a profile is not part of the pool |
 | `profiles[].burn_rate`, `sustainable_rate`, `forecast_exhaustion` | The weekly window's values, repeated for scripts; `null` when unknown |
 | Window objects | `used_pct`, `resets_at` (Unix seconds or `null`), and the window's rate fields |

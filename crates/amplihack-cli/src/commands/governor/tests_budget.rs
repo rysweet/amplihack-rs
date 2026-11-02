@@ -17,9 +17,12 @@
 //!   `Headroom::{Room, SessionExhausted, WeeklyExhausted, InReserve}`.
 
 use super::budget::{Headroom, budget_from_snapshot, headroom, invalid_reading, usable_points};
-use crate::commands::profile::governor_view::ProfileSnapshot;
+use super::files::History;
+use super::inputs::record;
+use crate::commands::profile::governor_view::{ProfileSnapshot, plausible};
 
 const NOW: i64 = 1_800_000_000;
+const DAY: i64 = 86_400;
 
 fn snap(five: Option<(f64, i64)>, seven: Option<(f64, i64)>) -> ProfileSnapshot {
     ProfileSnapshot {
@@ -69,7 +72,7 @@ fn eligibility_is_carried_through() {
 
 #[test]
 fn invalid_weekly_percentages_are_unknown() {
-    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.5, 100.5, 1e9] {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert!(
             budget_from_snapshot(&snap(Some((10.0, NOW)), Some((bad, NOW + 900)))).is_none(),
             "{bad}"
@@ -82,7 +85,7 @@ fn invalid_weekly_percentages_are_unknown() {
 /// drop the session limit, and `governor status` reports it.
 #[test]
 fn invalid_session_percentages_are_unknown_not_weekly_only() {
-    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -0.5, 100.5, 1e9] {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let s = snap(Some((bad, NOW)), Some((20.0, NOW + 900)));
         assert!(!s.no_session_window);
         assert!(budget_from_snapshot(&s).is_none(), "{bad}");
@@ -155,4 +158,52 @@ fn reset_time_never_raises_points_above_the_weekly_remainder() {
     // capped by the weekly remainder.
     let b = budget_from_snapshot(&snap(Some((0.0, NOW - 10)), Some((97.0, NOW + 900)))).unwrap();
     assert!(usable_points(&b) <= 3.0, "{}", usable_points(&b));
+}
+
+/// Crusty round 6 on #1831: the governor reads a percentage as the rotator's
+/// `usage::plausible` does (#1854). 150% is an exhausted 100%, not an
+/// invalid reading that would drop the profile from the pool.
+#[test]
+fn out_of_range_percentages_are_clamped_as_the_rotator_clamps_them() {
+    for (raw, clamped) in [(150.0, 100.0), (100.5, 100.0), (1e9, 100.0), (-0.5, 0.0)] {
+        let s = snap(Some((raw, NOW + 60)), Some((raw, NOW + 900)));
+        assert!(!invalid_reading(&s), "{raw}");
+        let b = budget_from_snapshot(&s).expect("clamped, not unknown");
+        assert_eq!(b.weekly.used_pct, clamped, "{raw}");
+        assert_eq!(b.session.unwrap().used_pct, clamped, "{raw}");
+        assert_eq!(plausible(raw, NOW + 900, NOW).unwrap().0, clamped);
+    }
+    let b = budget_from_snapshot(&snap(Some((150.0, NOW + 60)), Some((20.0, NOW + 900)))).unwrap();
+    assert_eq!(headroom(&b, 0.0), Headroom::SessionExhausted);
+    let b = budget_from_snapshot(&snap(None, Some((150.0, NOW + 900)))).unwrap();
+    assert_eq!(headroom(&b, 0.0), Headroom::WeeklyExhausted);
+}
+
+/// Crusty round 6 on #1831: a reset the rotator rejects (more than one day
+/// before or eight days after the reading) is invalid for the governor too,
+/// in either window and in the history samples, so `rolled()` never keeps a
+/// window that cannot reset. The bounds themselves are accepted.
+#[test]
+fn absurd_reset_times_are_invalid_as_the_rotator_rejects_them() {
+    for bad in [i64::MAX, i64::MIN, NOW + 8 * DAY + 1, NOW - DAY - 1] {
+        assert!(plausible(20.0, bad, NOW).is_none(), "{bad}");
+        let mut weekly = snap(Some((20.0, NOW + 60)), Some((20.0, bad)));
+        let mut session = snap(Some((20.0, bad)), Some((20.0, NOW + 900)));
+        weekly.name = "week-bad".to_string();
+        session.name = "session-bad".to_string();
+        for s in [&weekly, &session] {
+            assert!(budget_from_snapshot(s).is_none(), "{bad}");
+            assert!(invalid_reading(s), "{bad}");
+        }
+        let mut history = History::default();
+        record(&mut history, &[weekly, session]);
+        // Only the plausible window of each reading is sampled.
+        assert!(!history.weekly.contains_key("week-bad"), "{bad}");
+        assert!(history.session.contains_key("week-bad"), "{bad}");
+        assert!(!history.session.contains_key("session-bad"), "{bad}");
+        assert!(history.weekly.contains_key("session-bad"), "{bad}");
+    }
+    for ok in [NOW + 8 * DAY, NOW - DAY] {
+        assert!(budget_from_snapshot(&snap(Some((20.0, ok)), Some((20.0, ok)))).is_some());
+    }
 }

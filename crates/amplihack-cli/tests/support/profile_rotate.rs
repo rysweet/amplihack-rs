@@ -318,6 +318,9 @@ impl Fixture {
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
             )
             .env("HOME", &self.home)
+            // Issue #1844: these tests read through `claude`; a reading an
+            // earlier command recorded must not stand in as a passive one.
+            .env("AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS", "0")
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.tools.join("claude"))
             .env("RECORD_DIR", &self.records)
             .env("CANNED", &self.canned)
@@ -414,7 +417,7 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
         line.to_string()
     };
     let kinds = regex::Regex::new(
-        r"^(cycle live=\S+( \S+:(s=\d+%,w=\d+%|failed|per-token))*|swap \S+->\S+ live s=\d+% w=\d+% target s=\d+% w=\d+% reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|would .+)$",
+        r"^(cycle live=\S+( \S+:(s=\d+%,w=(\d+%|\?)|failed|per-token|unknown, still running))*|swap \S+->\S+ live (s=\d+% w=(\d+%|\?)|failed|unknown, still running) target s=\d+% w=(\d+%|\?) reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|change: \S+ \S+ -> \S+ by pid=\d+ ppid=\d+ parent=\x22[^\x22]*\x22( recipe_run=\S+)?( invocation=\S+)?|stop: signal received; cycle abandoned|idle: auto-switch is off|would .+)$",
     )
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");
