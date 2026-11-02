@@ -432,6 +432,10 @@ echo "exit=$?"
 
 Do not run plain `timeout <secs> <command>` from a terminal.
 
+To pause for a fixed time, use `amplihack wait --seconds N` rather than
+`timeout N tail -f /dev/null`; see
+[Wait Without Leaving Orphan Processes](./wait-without-orphan-processes.md).
+
 Agents are told the same in the prompts of `step-12-run-precommit` and
 `step-13-local-testing` in
 `amplifier-bundle/recipes/workflow-precommit-test.yaml`, and of

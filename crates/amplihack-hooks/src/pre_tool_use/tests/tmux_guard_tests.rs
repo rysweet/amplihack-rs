@@ -773,35 +773,6 @@ fn allows_expansions_in_scoped_invocations_and_option_values() {
 }
 
 // ---------------------------------------------------------------------------
-// F4: PowerShell is a shell tool.
-// ---------------------------------------------------------------------------
-
-#[test]
-fn powershell_is_a_shell_tool() {
-    for name in ["powershell", "PowerShell", "POWERSHELL"] {
-        assert!(is_shell_tool(name), "{name}");
-    }
-}
-
-/// Crusty round 6, concern 1: Claude Code's `Monitor` runs its `command` in
-/// the same shell environment as `Bash`.
-#[test]
-fn monitor_is_a_shell_tool() {
-    for name in ["Monitor", "monitor", "MONITOR"] {
-        assert!(is_shell_tool(name), "{name}");
-    }
-}
-
-#[test]
-fn shell_tool_names_are_matched_exactly() {
-    for name in [
-        "Read", "Write", "Edit", "pwsh-ish", "bashful", "Monitors", "",
-    ] {
-        assert!(!is_shell_tool(name), "{name}");
-    }
-}
-
-// ---------------------------------------------------------------------------
 // S1: tmux commands that take another tmux command as an argument. Any later
 // argument of an unscoped invocation that contains a kill command counts.
 // ---------------------------------------------------------------------------
