@@ -1463,8 +1463,9 @@ pub(super) fn footers(rows: &[Row]) -> String {
     }
     if let Some((reason, until)) = rows.iter().find_map(|r| r.api_key_blocked.as_ref()) {
         out.push_str(&format!(
-            "blocked: the API key until {} ({reason})\n",
-            utc_time(*until)
+            "blocked: the API key until {} ({})\n",
+            utc_time(*until),
+            sanitize_display(reason, false)
         ));
     }
     out
@@ -1495,7 +1496,7 @@ pub(super) fn state_label(r: &Row) -> &'static str {
 /// Either is enough. These are the two windows the rotator's capacity test
 /// (`plan_usable` in rotate/overflow.rs) reads; a per-model weekly window is
 /// not. A failed or spend-limited probe is not evidence of credits.
-pub(super) fn plan_limit_reached(r: &Row) -> bool {
+fn plan_limit_reached(r: &Row) -> bool {
     let full = |w: &UsageWindow| w.used_percentage >= 100.0;
     match r.report.state {
         UsageState::SessionExhausted | UsageState::WeeklyExhausted => true,
@@ -1507,7 +1508,7 @@ pub(super) fn plan_limit_reached(r: &Row) -> bool {
     }
 }
 
-pub(super) fn raw_block(out: &mut String, name: &str, text: &str) {
+fn raw_block(out: &mut String, name: &str, text: &str) {
     out.push_str(&format!("  raw {name}:\n"));
     if text.is_empty() {
         out.push_str("    (empty)\n");

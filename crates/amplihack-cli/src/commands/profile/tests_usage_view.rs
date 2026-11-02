@@ -828,9 +828,17 @@ fn hostile_names_and_accounts_cannot_inject_escapes() {
         stdout: format!("out{evil}\nline2"),
         stderr: format!("err{evil}"),
     });
+    // The block reason comes from the rotate ledger on disk.
+    r.api_key_blocked = Some((format!("why{evil}"), nov5_2330()));
     for colour in [false, true] {
         let out = render_bars(std::slice::from_ref(&r), &TimeView::Utc, colour);
         let without = strip_sgr(&out);
+        let footer = without
+            .lines()
+            .find(|l| l.starts_with("blocked: the API key until"))
+            .unwrap_or_else(|| panic!("no blocked footer: {out:?}"));
+        assert!(footer.contains("why"), "{footer:?}");
+        assert!(!footer.chars().any(char::is_control), "{footer:?}");
         assert!(
             !without.contains('\x1b'),
             "escape outside the fixed codes: {out:?}"
