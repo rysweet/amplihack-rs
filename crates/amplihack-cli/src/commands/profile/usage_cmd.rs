@@ -3,8 +3,12 @@
 //! /usage`; issue #1698), prints the session and weekly usage ordered by
 //! capacity, and records what it read as auto-switch readings.
 //!
-//! Claude's text is kept only with `--raw`; error rows carry one of four
-//! fixed reasons. The parent environment is never changed: each child gets
+//! Issue #1844: each row is read in order, a fresh passive reading, then
+//! the OAuth usage endpoint, then `claude` (see `usage_source`), and says
+//! which gave it. `claude` is looked up only when a row needs it.
+//!
+//! Claude's text is kept only with `--raw`; error rows carry a fixed
+//! reason. The parent environment is never changed: each child gets
 //! `CLAUDE_CONFIG_DIR` on its own `Command`, or, for the profile whose login
 //! is live in `~/.claude` (see `default_live`), has it removed.
 
@@ -13,6 +17,7 @@ use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
 use super::store::ProfileStore;
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
+use super::usage_source::{self, ClaudeGate, LazyBinary, Plan, Source, SourceEnv};
 use super::{ProfileError, default_live, pointer, probe_limits, run, usage_request};
 use crate::binary_finder::BinaryInfo;
 use anyhow::Result;
@@ -51,16 +56,29 @@ pub(super) enum ErrorReason {
     StartFailed,
     ReadFailed,
     WaitFailed,
+    /// Issue #1844: a direct read failed with this fixed reason, and the
+    /// mode starts no `claude`.
+    Direct(&'static str),
+    /// Issue #1844: a row needed `claude` and none was found.
+    NoClaude,
 }
 
 impl ErrorReason {
-    pub(super) fn as_str(self) -> &'static str {
+    pub(super) fn as_str(self) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::ProfileRefused => "profile directory refused",
-            Self::StartFailed => "could not start claude",
-            Self::ReadFailed => "could not read claude output",
-            Self::WaitFailed => "could not wait for claude",
+            Self::ProfileRefused => "profile directory refused".into(),
+            Self::StartFailed => "could not start claude".into(),
+            Self::ReadFailed => "could not read claude output".into(),
+            Self::WaitFailed => "could not wait for claude".into(),
+            Self::NoClaude => "claude not found".into(),
+            Self::Direct(why) => format!("direct read: {why}").into(),
         }
+    }
+}
+
+impl std::fmt::Display for ErrorReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.as_str())
     }
 }
 
@@ -77,15 +95,41 @@ pub(super) struct Probe {
     pub(super) report: UsageReport,
     pub(super) error: Option<ErrorReason>,
     pub(super) raw: Option<Raw>,
+    /// Issue #1844: the step that gave the row; `None` when it was never
+    /// read through `usage_source`.
+    pub(super) source: Option<Source>,
+    /// Issue #1844: the direct read's reason when it led to a fallback.
+    pub(super) direct_failure: Option<&'static str>,
 }
 
 impl Probe {
-    fn failed(reason: ErrorReason, raw: Option<Raw>) -> Self {
+    pub(super) fn failed(reason: ErrorReason, raw: Option<Raw>) -> Self {
         Self {
             report: UsageReport::empty(UsageState::Error),
             error: Some(reason),
             raw,
+            source: None,
+            direct_failure: None,
         }
+    }
+
+    /// A row read without `claude`.
+    pub(super) fn read(report: UsageReport, source: Source) -> Self {
+        Self {
+            report,
+            error: None,
+            raw: None,
+            source: Some(source),
+            direct_failure: None,
+        }
+    }
+
+    /// A direct read that failed in a mode that starts no `claude`.
+    pub(super) fn direct_error(why: &'static str) -> Self {
+        let mut p = Self::failed(ErrorReason::Direct(why), None);
+        p.source = Some(Source::Direct);
+        p.direct_failure = Some(why);
+        p
     }
 }
 
@@ -115,6 +159,10 @@ pub(super) struct Row {
     pub(super) report: UsageReport,
     pub(super) error: Option<ErrorReason>,
     pub(super) raw: Option<Raw>,
+    /// Issue #1844: the step that gave the row; `None` for a row never read.
+    pub(super) source: Option<Source>,
+    /// Issue #1844: the direct read's reason when the row fell back.
+    pub(super) direct_failure: Option<&'static str>,
 }
 
 pub(super) fn run(
@@ -143,7 +191,6 @@ pub(super) fn run(
         print_empty(json);
         return Ok(());
     }
-    let binary = run::resolve_claude_binary()?;
     let home = home_dir();
     let (live, home_row) = detect_live(store, home.as_deref(), &profiles);
     // Issue #1700: API-key profiles are never probed; a probe costs tokens
@@ -157,22 +204,36 @@ pub(super) fn run(
     // shows up in the check under the lock as a moved account.
     let marks = read_marks(store);
 
-    let (parallel, warning) = probe_limits::parallel_from_host(profiles.len());
+    let (claude_bound, warning) = probe_limits::parallel_from_host(profiles.len());
+    if let Some(w) = warning {
+        eprintln!("{w}");
+    }
+    let (direct_bound, warning) = probe_limits::direct_parallel_from_env(profiles.len());
     if let Some(w) = warning {
         eprintln!("{w}");
     }
     let now = now_secs();
-    let probes = probe_all(
-        store,
-        &binary,
-        &profiles,
-        live_name.as_ref(),
-        mode,
-        Duration::from_secs(secs),
+    let env = SourceEnv::from_env(mode, Duration::from_secs(secs));
+    // Issue #1844: found only when a row falls back to `claude`.
+    let reader = RowReader {
+        store: store.clone(),
+        env,
+        binary: LazyBinary::claude(),
+        gate: ClaudeGate::new(claude_bound),
+        home: home.clone(),
+        no_refresh: no_refresh_dirs(store),
+        overflow: super::overflow::overflow_names(store.root()),
         now,
-        raw,
-        parallel,
-    );
+        keep_raw: raw,
+    };
+    let pool = match mode {
+        ProbeMode::Auto | ProbeMode::Text => claude_bound,
+        ProbeMode::Ordered | ProbeMode::Direct => direct_bound,
+    };
+    let probes = pooled(profiles.len(), pool, |i| {
+        let name = &profiles[i];
+        reader.profile(name, live_name.as_ref() == Some(name))
+    });
     // The login in `~/.claude` may have been swapped during the probe; its
     // numbers are shown but not recorded against the profile.
     let swapped = swapped_live(store, home.as_deref(), live);
@@ -180,11 +241,20 @@ pub(super) fn run(
     rows.extend(keys.rows(&marks, &keyed));
     // Only when every profile is listed: naming profiles asks about those.
     if home_row && names.is_empty() {
-        let p = probe_home(&binary, mode, Duration::from_secs(secs), now, raw);
-        rows.push(home_row_of(p));
+        rows.push(home_row_of(reader.home()));
     }
     order(&mut rows, now_secs());
     print_output(&rows, json, swapped.as_ref());
+    // SR-10: in every mode, with or without `--raw`.
+    for warning in not_saved_warnings(&rows) {
+        eprintln!("{warning}");
+    }
+    // Issue #1844: why a row fell back, for the detailed mode only.
+    if raw {
+        for note in fallback_notes(&rows) {
+            eprintln!("{note}");
+        }
+    }
     #[cfg(unix)]
     for (a, b) in super::duplicates::pairs(&super::duplicates::accounts(store, home.as_deref())) {
         eprintln!("warning: {}", super::duplicates::warning(&a, &b));
@@ -252,6 +322,8 @@ fn home_row_of(p: Probe) -> Row {
         report: p.report,
         error: p.error,
         raw: p.raw,
+        source: p.source,
+        direct_failure: p.direct_failure,
     }
 }
 
@@ -401,6 +473,8 @@ impl ApiKeys {
                     report: UsageReport::empty(UsageState::Ok),
                     error: None,
                     raw: None,
+                    source: None,
+                    direct_failure: None,
                 }
             })
             .collect()
@@ -445,6 +519,8 @@ fn build_rows(
                 report: p.report,
                 error: p.error,
                 raw: p.raw,
+                source: p.source,
+                direct_failure: p.direct_failure,
             }
         })
         .collect()
@@ -514,38 +590,152 @@ pub(super) fn env_credential_warning(var: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
-// Probing
+// Reading in order (issue #1844)
 // ---------------------------------------------------------------------------
 
-/// Probes every profile by `mode`, at most `parallel` at once (at least
-/// one); `live` is probed against `~/.claude`. Results are in the order of
-/// `profiles`.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn probe_all(
-    store: &ProfileStore,
-    binary: &BinaryInfo,
-    profiles: &[ProfileName],
-    live: Option<&ProfileName>,
-    mode: ProbeMode,
-    timeout: Duration,
-    now: i64,
-    keep_raw: bool,
-    parallel: usize,
-) -> Vec<Probe> {
-    pooled(profiles.len(), parallel, |i| {
-        let name = &profiles[i];
-        probe_profile(
-            store,
-            binary,
-            name,
-            live == Some(name),
-            mode,
-            timeout,
-            now,
-            keep_raw,
-        )
-    })
+/// What every row of one `profile usage` run, or one rotate cycle, shares.
+/// Owned, so a rotate cycle can hand it to reads that outlast it.
+pub(super) struct RowReader {
+    pub(super) store: ProfileStore,
+    pub(super) env: SourceEnv,
+    pub(super) binary: LazyBinary,
+    pub(super) gate: ClaudeGate,
+    /// `$HOME`, whose `.claude` holds the live login.
+    pub(super) home: Option<std::path::PathBuf>,
+    /// Directories whose token is never refreshed; `None` when the leases
+    /// cannot be read, which refreshes none.
+    pub(super) no_refresh: Option<Vec<String>>,
+    pub(super) overflow: Vec<ProfileName>,
+    pub(super) now: i64,
+    pub(super) keep_raw: bool,
 }
+
+impl RowReader {
+    /// One profile, against `~/.claude` when `live`.
+    pub(super) fn profile(&self, name: &ProfileName, live: bool) -> Probe {
+        let claude = |m: ProbeMode| {
+            usage_source::fallback_with(&self.binary, |bin| {
+                self.gate.run(|| {
+                    probe_profile(
+                        &self.store,
+                        bin,
+                        name,
+                        live,
+                        m,
+                        self.env.timeout,
+                        self.now,
+                        self.keep_raw,
+                    )
+                })
+            })
+        };
+        let Some(plan) = self.plan(name, live) else {
+            return Probe::failed(ErrorReason::ProfileRefused, None);
+        };
+        self.finish(usage_source::read(
+            &self.env,
+            &plan,
+            self.store.root(),
+            self.now,
+            claude,
+        ))
+    }
+
+    /// How `name` is read; `None` when its directory is refused.
+    fn plan(&self, name: &ProfileName, live: bool) -> Option<Plan> {
+        let creds_dir = if live {
+            self.home.as_ref().map(|h| h.join(".claude"))
+        } else if matches!(self.env.mode, ProbeMode::Auto | ProbeMode::Text) {
+            // Never read: the named modes go straight to `claude`.
+            Some(self.store.root().join(name.as_str()))
+        } else {
+            match self.store.verify_profile_dir(name) {
+                Ok(dir) => Some(dir),
+                Err(_) => return None,
+            }
+        };
+        let refresh_ok = self
+            .no_refresh
+            .as_ref()
+            .is_some_and(|dirs| !dirs.iter().any(|d| d == name.as_str()));
+        Some(Plan {
+            // With no home, the live login cannot be found: the direct read
+            // finds no file and the row falls back.
+            creds_dir: creds_dir
+                .unwrap_or_else(|| self.store.root().join(name.as_str()).join(".no-home")),
+            passive: Some(name.clone()),
+            // SR-3(d): never the live login's token.
+            allow_refresh: refresh_ok && !live,
+            overflow: self.overflow.contains(name),
+        })
+    }
+
+    /// The `~/.claude` row of a login no profile holds: no passive step and
+    /// no refresh.
+    pub(super) fn home(&self) -> Probe {
+        let claude = |m: ProbeMode| {
+            usage_source::fallback_with(&self.binary, |bin| {
+                self.gate
+                    .run(|| probe_home(bin, m, self.env.timeout, self.now, self.keep_raw))
+            })
+        };
+        let Some(home) = &self.home else {
+            return self.finish(claude(match self.env.mode {
+                ProbeMode::Text => ProbeMode::Text,
+                _ => ProbeMode::Auto,
+            }));
+        };
+        let plan = Plan {
+            creds_dir: home.join(".claude"),
+            passive: None,
+            allow_refresh: false,
+            overflow: false,
+        };
+        self.finish(usage_source::read(
+            &self.env,
+            &plan,
+            self.store.root(),
+            self.now,
+            claude,
+        ))
+    }
+
+    /// With `--raw`, a row read without `claude` gets an empty `raw`, which
+    /// the table shows as one fixed line.
+    fn finish(&self, mut p: Probe) -> Probe {
+        if self.keep_raw
+            && p.raw.is_none()
+            && matches!(p.source, Some(Source::Passive | Source::Direct))
+        {
+            p.raw = Some(Raw {
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
+        p
+    }
+}
+
+/// The directories whose token a direct read may not refresh (SR-3(d)):
+/// any that hosts another account's login or has lent its own. `None`
+/// when the leases cannot be read.
+pub(super) fn no_refresh_dirs(store: &ProfileStore) -> Option<Vec<String>> {
+    let view = auto_switch::lease_view(store.root()).ok()?;
+    Some(view.map_or_else(Vec::new, |v| {
+        let mut dirs: Vec<String> = Vec::new();
+        for (dir, live) in &v.hosts {
+            if dir != live {
+                dirs.push(dir.clone());
+                dirs.push(live.clone());
+            }
+        }
+        dirs
+    }))
+}
+
+// ---------------------------------------------------------------------------
+// Probing
+// ---------------------------------------------------------------------------
 
 /// Probes one profile by `mode`, against `~/.claude` when `live`. A profile
 /// marked as overflow is probed with `/usage` only, the one method that
@@ -637,6 +827,8 @@ pub(super) fn probe_with(
         report,
         error: None,
         raw: output.filter(|_| keep_raw),
+        source: None,
+        direct_failure: None,
     };
     let timed_out = UsageReport::empty(UsageState::Timeout);
     // A cancel is a daemon stopping: its rows are discarded anyway.
@@ -770,6 +962,8 @@ fn text_probe(a: Attempt, now: i64, keep_raw: bool) -> Probe {
         report,
         error: None,
         raw: a.output.filter(|_| keep_raw),
+        source: None,
+        direct_failure: None,
     }
 }
 
@@ -1045,6 +1239,9 @@ pub(super) fn marks(row: &Row) -> String {
             None => "overflow".to_string(),
         });
     }
+    if row.source == Some(Source::Fallback) {
+        parts.push("(fallback)".to_string());
+    }
     if parts.is_empty() {
         "-".to_string()
     } else {
@@ -1158,8 +1355,15 @@ pub(super) fn render_table(rows: &[Row]) -> String {
     for (row, c) in rows.iter().zip(&cells) {
         out.push_str(&line(c));
         if let Some(raw) = &row.raw {
-            raw_block(&mut out, "stdout", &raw.stdout);
-            raw_block(&mut out, "stderr", &raw.stderr);
+            match row.source {
+                Some(s @ (Source::Passive | Source::Direct)) => {
+                    out.push_str(&format!("  ({}: no claude output)\n", s.as_str()));
+                }
+                _ => {
+                    raw_block(&mut out, "stdout", &raw.stdout);
+                    raw_block(&mut out, "stderr", &raw.stderr);
+                }
+            }
         }
     }
     if let Some(r) = rows
@@ -1251,11 +1455,12 @@ struct JsonRow<'a> {
     kind: &'static str,
     api_key_blocked: Option<ApiKeyBlock<'a>>,
     state: &'static str,
+    source: Option<&'static str>,
     session: Option<&'a UsageWindow>,
     session_limit: bool,
     week_all: Option<&'a UsageWindow>,
     week_models: &'a [UsageWindow],
-    error: Option<&'static str>,
+    error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     raw: Option<&'a Raw>,
 }
@@ -1282,11 +1487,12 @@ pub(super) fn render_json(rows: &[Row]) -> String {
                     until: *until,
                 }),
             state: state_label(r),
+            source: r.source.map(Source::as_str),
             session: r.report.session.as_ref(),
             session_limit: r.report.session_limit,
             week_all: r.report.week_all.as_ref(),
             week_models: &r.report.week_models,
-            error: r.error.map(ErrorReason::as_str),
+            error: r.error.map(|e| e.to_string()),
             raw: r.raw.as_ref(),
         })
         .collect();
@@ -1309,6 +1515,43 @@ pub(super) fn error_warnings(rows: &[Row]) -> Vec<String> {
         .collect()
 }
 
+/// Issue #1844: one line per row that fell back after a direct read
+/// failed, naming the fixed reason. Printed with `--raw` only.
+pub(super) fn fallback_notes(rows: &[Row]) -> Vec<String> {
+    rows.iter()
+        .filter(|r| r.source == Some(Source::Fallback))
+        .filter_map(|r| {
+            r.direct_failure.map(|why| {
+                format!(
+                    "note: profile \"{}\": direct read gave {why}; using claude",
+                    sanitize_display(&r.profile, false)
+                )
+            })
+        })
+        .collect()
+}
+
+/// SR-10: the fixed line for a profile whose refresh request may have
+/// reached the token server but whose answer was not saved: the write
+/// failed, the answer was unusable, or it did not arrive before the
+/// deadline. Its refresh token on disk may have been retired, so the user
+/// has to log in again.
+pub(super) fn not_saved_warning(profile: &str) -> String {
+    format!(
+        "warning: profile \"{}\": token refresh may not have been saved; run claude /login for this profile",
+        sanitize_display(profile, false)
+    )
+}
+
+/// One [`not_saved_warning`] per row whose direct read gave
+/// `refresh not saved`, whatever the mode or `--raw`.
+pub(super) fn not_saved_warnings(rows: &[Row]) -> Vec<String> {
+    rows.iter()
+        .filter(|r| r.direct_failure.is_some_and(usage_source::not_saved))
+        .map(|r| not_saved_warning(&r.profile))
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Recording
 // ---------------------------------------------------------------------------
@@ -1324,6 +1567,9 @@ pub(super) fn observations(rows: &[Row]) -> Vec<Observation> {
     };
     rows.iter()
         .filter(|r| !r.api_key)
+        // Issue #1844: a passive row is a stored reading; recording it again
+        // would keep it fresh for ever.
+        .filter(|r| r.source != Some(Source::Passive))
         .filter(|r| {
             !r.live_in_home
                 && matches!(

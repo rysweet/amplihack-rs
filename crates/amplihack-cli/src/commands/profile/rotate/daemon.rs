@@ -5,6 +5,7 @@
 
 use super::cycle::{self, Ctx, CycleOutcome, LOCK_WAIT, Mode, prototype_guard};
 use super::exhausted::{self, paused};
+use super::inflight::{finish_refreshes, refresh_grace};
 use super::ledger::{LastCycle, RotateState};
 use super::log::{Sink, msg, open_or_warn};
 use super::owner;
@@ -299,8 +300,14 @@ pub fn watch(
     }
     let mut ctx = Ctx::new(store.clone(), home, s);
     ctx.stop = Some(stop.clone());
+    // Issue #1844: reads that outlast a cycle are used by the next one.
+    let (probe_secs, _) = crate::commands::profile::probe_limits::timeout_from_env(None);
+    let probe_timeout = Duration::from_secs(probe_secs);
+    ctx.in_flight = Some(std::sync::Mutex::new(super::inflight::InFlight::new(
+        super::inflight::max_age(probe_timeout),
+    )));
     let mut idle = false;
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::SeqCst) {
         if !paused(store.root()) {
             idle = false;
             match cycle::run_cycle(&mut ctx, Mode::Watch) {
@@ -318,9 +325,19 @@ pub fn watch(
             log_line(&rs, &line);
         }
         let until = Instant::now() + Duration::from_secs(s.interval);
-        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+        while Instant::now() < until && !stop.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_secs(1).min(until - Instant::now()));
         }
+    }
+    // SR-9: `stop` is `PROBE_CANCEL`, already set here. A refresh counts
+    // itself before it reads that flag and backs out if it is set, so once
+    // the count reaches zero no refresh can take a lock. Any that counted
+    // in time is let finish, so the lock is never left behind.
+    if !finish_refreshes(refresh_grace(probe_timeout)) {
+        log_line(
+            &rs,
+            "stop: a token refresh was still running; remove .oauth_refresh.lock if it stays",
+        );
     }
     remove_own_pid(&rs);
     Ok(())
