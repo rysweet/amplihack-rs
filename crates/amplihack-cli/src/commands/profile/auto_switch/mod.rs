@@ -539,6 +539,7 @@ pub fn fresh_reading(root: &Path, dir: &str, max_age: i64, now: i64) -> Option<F
         // The same test as [`no_session_window_profiles`]; a stored session
         // window dropped as implausible is unknown, not absent.
         no_session_window: r.no_session_window() && week.is_some(),
+        observed_at: r.observed_at,
     })
 }
 
@@ -550,6 +551,8 @@ pub struct FreshReading {
     /// Issue #1818: the reading has a week window and no session window, so
     /// it has no session limit.
     pub no_session_window: bool,
+    /// When the status line stored the reading, epoch seconds.
+    pub observed_at: i64,
 }
 
 /// Issue #1818: the profiles among `names` whose stored reading has a week

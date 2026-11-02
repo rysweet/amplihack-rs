@@ -280,6 +280,7 @@ mod issue_1846 {
             week_all: week.map(|u| w("all models", u)),
             week_models: Vec::new(),
             session_limit: session.is_some(),
+            observed_at: None,
         }
     }
 
@@ -413,6 +414,7 @@ fn probed(reading: Reading, session: Option<f64>, week: Option<f64>) -> Probed {
         windows: Windows {
             session: session.map(win),
             week: week.map(win),
+            no_session_limit: false,
         },
         ..Probed::failed()
     }

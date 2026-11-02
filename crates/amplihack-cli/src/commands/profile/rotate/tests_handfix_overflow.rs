@@ -44,6 +44,7 @@ fn roomy() -> Probed {
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     }
 }
 
@@ -58,6 +59,7 @@ fn plan_ok() -> Probed {
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     }
 }
 
