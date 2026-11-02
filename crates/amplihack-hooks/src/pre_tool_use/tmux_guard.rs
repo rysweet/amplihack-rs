@@ -172,7 +172,7 @@
 //!   every unquoted `<<` as a heredoc, so the lines between are its body.
 //!   Without such a line the heredoc never ends, the parse is incomplete and
 //!   the text test applies;
-//! - a shell tool whose name is not in [`SHELL_TOOLS`], such as one a new
+//! - a shell tool whose name is not in [`shell::SHELL_TOOLS`], such as one a new
 //!   harness release adds;
 //! - `tmux kill-session` without `-a`, `kill-window`, `kill-pane`, and
 //!   signals sent by other programs (`pkill tmux`, `killall tmux`);
@@ -244,25 +244,6 @@ use tracing::warn;
 /// false-positive case, a command that only mentions the words as text, so
 /// an agent is told the supported way out rather than guessing at one.
 pub(super) const BLOCK_MESSAGE: &str = "Blocked: this command looks like a tmux kill-server or kill-session -a with no -S or -L, which acts on the tmux server named in $TMUX (normally the user's own server, with all of their sessions). TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket; a socket path taken from $TMUX or from tmux itself (`#{socket_path}`) is the user's server. A socket file named `default`, or `-L default`, also counts as the user's server, even under a sandbox directory: give a private server another name (`-S \"$SB/tmux.sock\"`), and end one already running on a `default` path with `tmux -S <path> kill-session -t <name>` for each of its sessions, since by default a server exits when its last session ends. If the command only mentions these words as text, such as a commit message or a task description, pass the text in a file (`git commit -F`, `--body-file`, `--context-from-file`) or run that command in its own tool call.";
-
-/// Tool names the guard checks, compared case-insensitively: Claude Code's
-/// `Bash`, `PowerShell` and `Monitor`, Copilot's `bash` and `powershell`, and
-/// Codex's shell tools in case a host skips the Codex normalisation.
-///
-/// Claude Code's `Monitor` takes a `command` that is a shell command or
-/// script, run in the same shell environment as `Bash`, so it is a shell
-/// tool; its other form, a WebSocket `ws` with no `command`, is not checked.
-/// In Claude Code 2.1.314 the tools that run code and take a `command` are
-/// `Bash`, `PowerShell` and `Monitor`. Check this list against each new
-/// Claude Code release: a shell tool missing from it skips the guard.
-pub(super) const SHELL_TOOLS: &[&str] = &[
-    "bash",
-    "powershell",
-    "monitor",
-    "shell",
-    "exec_command",
-    "shell_command",
-];
 
 /// Programs whose arguments are data: a `tmux … kill-server` in them is text,
 /// as long as no stage of the command line evaluates text as code.
@@ -340,13 +321,6 @@ const MAX_REPARSES: usize = 256;
 /// cost would grow with the square of the number of `tmux` words.
 const MAX_TMUX_PER_COMMAND: usize = 64;
 
-/// Whether the guard checks a tool named `tool_name`.
-pub(super) fn is_shell_tool(tool_name: &str) -> bool {
-    SHELL_TOOLS
-        .iter()
-        .any(|t| t.eq_ignore_ascii_case(tool_name))
-}
-
 /// The deny response for a shell tool's input, or `None`.
 ///
 /// Reads `command` and `cmd`. A string is checked as a command line; an array
@@ -361,7 +335,7 @@ pub(super) fn check_tool_input(tool_input: &Value) -> Option<Value> {
             Some(Value::Array(items)) if !items.is_empty() => {
                 let strings: Vec<&str> = items.iter().filter_map(Value::as_str).collect();
                 if strings.len() == items.len() {
-                    check(&join_argv(&strings))
+                    check(&shell::join_argv(&strings))
                 } else {
                     text_test(&strings.join(" ")).then(deny_response)
                 }
@@ -415,21 +389,6 @@ fn text_test(text: &str) -> bool {
         .map(|c| c.to_ascii_lowercase())
         .collect();
     lower.contains("tmux") && lower.contains("kill-s")
-}
-
-/// Shell-quotes each argument and joins them with spaces.
-fn join_argv(args: &[&str]) -> String {
-    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
-    args.iter()
-        .map(|a| {
-            if !a.is_empty() && a.chars().all(safe) {
-                (*a).to_string()
-            } else {
-                format!("'{}'", a.replace('\'', r"'\''"))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// What a scan of one piece of text found.
@@ -589,7 +548,7 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
         // so `git bisect run tmux kill-server` reads as one command.
         if git && git_runs_commands(args) {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let joined = join_argv(&args);
+            let joined = shell::join_argv(&args);
             if needs_reparse(&joined) {
                 let inner = reparse(&joined, depth, ctx);
                 out.dangerous |= inner.dangerous;

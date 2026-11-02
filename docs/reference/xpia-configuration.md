@@ -26,8 +26,8 @@ working-directory deletion guard and the `--no-verify` guard, do not depend
 on XPIA and run whether XPIA is on or off.
 
 Running a check is not the same as stopping the tool call. On Claude Code and
-Copilot, only the tmux guard's answer stops the call; the XPIA block and the
-other guards' blocks are not acted on (#1773). See
+Copilot, only the tmux guard's and the tail-follow guard's answers stop the
+call; the XPIA block and the other guards' blocks are not acted on (#1773). See
 [Enforcement by agent CLI](#enforcement-by-agent-cli) before relying on any
 of them.
 
@@ -89,13 +89,14 @@ change nothing.
 
 `amplihack-hooks pre-tool-use` checks a tool call in this order and stops at
 the first check that answers. When XPIA is off, step 1 passes every call on
-to the next step and the other steps still run. Step 0 applies to every shell
+to the next step and the other steps still run. Steps 0a and 0b apply to every shell
 tool (`Bash`, `bash`, `Monitor`, Codex's shell tools and others); steps 4 to
 7 apply to the `Bash` tool.
 
 | Step | Check | Default | What it refuses | Answer shape |
 | ---- | ----- | ------- | --------------- | ------------ |
-| 0 | tmux guard (#1733) | on | `tmux kill-server` or `kill-session -a` without `-S` or `-L` | full deny |
+| 0a | tmux guard (#1733) | on | `tmux kill-server` or `kill-session -a` without `-S` or `-L` | full deny |
+| 0b | tail-follow guard (#1794) | on | `tail -f`, `-F` or `--follow` on `/dev/null` or another device that never ends; fails open on input it cannot parse | full deny |
 | 1 | XPIA scan | **off** (opt-in) | Prompt-injection patterns in any tool call | bare `block` |
 | 2 | Skill redirect | on | Tool calls that a skill must handle instead | bare `block` |
 | 3 | Merge guard | off unless its own env var is set | In an auto-drive run, merges outside the merge gate (#1551) | bare `block` |
@@ -104,7 +105,7 @@ tool (`Bash`, `bash`, `Monitor`, Codex's shell tools and others); steps 4 to
 | 6 | Commit on `main` or `master` | on | `git commit` while the checked-out branch is `main` or `master` | bare `block` |
 | 7 | `--no-verify` | on | `git commit`, `push`, `rebase`, `merge`, `cherry-pick` or `am` with `--no-verify` | bare `block` |
 
-Steps 0 and 4 to 7 always run. `XPIA_ENABLED` does not change them, and no
+Steps 0a, 0b and 4 to 7 always run. `XPIA_ENABLED` does not change them, and no
 environment variable turns them off. Whether their answer stops the tool call
 depends on the agent CLI and on the answer shape; see
 [Enforcement by agent CLI](#enforcement-by-agent-cli).
@@ -152,13 +153,13 @@ The hook answers in one of two shapes:
 - **full deny:** the bare fields plus `decision: "block"`, a top-level
   `permissionDecision: "deny"` and
   `hookSpecificOutput.permissionDecision: "deny"`. Only the tmux guard
-  (step 0) answers this way.
+  (step 0a) and the tail-follow guard (step 0b) answer this way.
 
 On the Claude Code path the hook's JSON is written out unchanged. Only the
 Codex path translates a bare `block` into a deny (`codex_output` in
 `crates/amplihack-hooks/src/protocol/codex.rs`).
 
-| Agent CLI | bare `block` (steps 1 to 7) | full deny (step 0) |
+| Agent CLI | bare `block` (steps 1 to 7) | full deny (steps 0a and 0b) |
 | --------- | --------------------------- | ------------------ |
 | Claude Code 2.1.316 | **not acted on; the call runs** | call stopped |
 | Copilot CLI 1.0.105 | **not acted on; the call runs** | call stopped |
@@ -183,8 +184,8 @@ Until #1773 is fixed, on Claude Code and Copilot:
 
 ## What XPIA adds when it is on
 
-With `XPIA_ENABLED=true`, the XPIA scan runs as step 1: after the tmux guard
-and before the other guards above. It checks:
+With `XPIA_ENABLED=true`, the XPIA scan runs as step 1: after the tmux and
+tail-follow guards and before the other guards above. It checks:
 
 - `Bash` commands, for injection and dangerous command patterns;
 - `WebFetch` URLs and prompts, including domain whitelist and blacklist;
@@ -317,5 +318,5 @@ wrote, then set `XPIA_ENABLED` in your shell instead.
 
 - [Settings hook configuration](../howto/settings-hook-configuration.md): how the `pre-tool-use` hook is registered
 - [`/amplihack:xpia` command](../claude/commands/amplihack/xpia.md): status and logs
-- [Hook specifications](./hook-specifications.md): the tmux guard and why it runs first
+- [Hook specifications](./hook-specifications.md): the tmux guard and why it runs first, and the tail-follow guard
 - [Environment variables](./environment-variables.md): every variable amplihack reads

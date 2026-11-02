@@ -15,7 +15,7 @@ use super::auto_switch::kit::{
     writable_by_others,
 };
 use super::usage_parse::UsageReport;
-use super::usage_request::{Limits, parse_limits};
+use super::usage_request::{ExtraUsageShape, Limits, parse_limits};
 use amplihack_utils::secure_files::PrivateTemp;
 use serde_json::{Value, json};
 use std::ffi::{OsStr, OsString};
@@ -536,10 +536,19 @@ impl Deadline {
     }
 }
 
+/// A successful direct read (issue #1856): the windows, and the redacted
+/// shape of `extra_usage` when usage credits are on. The answer's body
+/// itself never leaves [`get_usage`].
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct Direct {
+    pub(super) report: UsageReport,
+    pub(super) credits_on: Option<ExtraUsageShape>,
+}
+
 /// The usage of the login in `req.creds_dir`. At most two GETs and one
 /// refresh POST, all within `req.timeout` from the start of the read; a 429
 /// is not retried and a redirect is not followed.
-pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<UsageReport, &'static str> {
+pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<Direct, &'static str> {
     let deadline = Deadline::after(req.timeout);
     if !ep.usable() {
         return Err(reason::TRANSPORT);
@@ -607,7 +616,7 @@ fn get_usage(
     token: &Token,
     now_s: i64,
     deadline: Deadline,
-) -> Result<UsageReport, &'static str> {
+) -> Result<Direct, &'static str> {
     let url = ep.usage_url();
     let req = agent
         .get(&url)
@@ -628,7 +637,7 @@ fn get_usage(
     let raw = body(resp)?;
     let value: Value = serde_json::from_slice(&raw).map_err(|_| reason::UNPARSEABLE)?;
     match parse_limits(&value, now_s) {
-        Limits::Report(report) => Ok(report),
+        Limits::Report { report, credits_on } => Ok(Direct { report, credits_on }),
         Limits::CreditsOn => Err(reason::CREDITS_ON),
         Limits::Unparseable => Err(reason::UNPARSEABLE),
     }

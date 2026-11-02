@@ -1477,7 +1477,7 @@ uvx --from git+https://github.com/rysweet/amplihack-rs amplihack
 
 #### 5.4.1 XPIA Security Configuration
 
-XPIA is **off by default**. Set `XPIA_ENABLED=true` (or `1` / `yes`, any case) to opt in. The tmux, CWD deletion, CWD rename, commit-on-main and `--no-verify` guards run either way; on Claude Code and Copilot only the tmux guard's answer stops the call (#1773). See the [XPIA Configuration Reference](reference/xpia-configuration.md).
+XPIA is **off by default**. Set `XPIA_ENABLED=true` (or `1` / `yes`, any case) to opt in. The CWD deletion, CWD rename, commit-on-main and `--no-verify` guards run either way; on Claude Code and Copilot those guards' answers do not stop the call (#1773). The tmux guard and the tail-follow guard (#1794) run either way and answer with an enforced deny, which stops the call on every agent CLI. See the [XPIA Configuration Reference](reference/xpia-configuration.md).
 
 **Environment Variables**:
 

@@ -66,10 +66,10 @@ amplihack profile usage
 ```
 
 ```
-PROFILE   MARKS              STATE  SESSION  SESSION RESETS                     WEEK  WEEK RESETS
-spare                        ok     0%       -                                  12%   Oct 23, 9am (Europe/London)
-personal                     ok     20%      Oct 18, 3pm (Europe/London)        35%   Oct 22, 2am (Europe/London)
-work      live in ~/.claude  ok     88%      Oct 18, 1pm (Europe/London)        41%   Oct 21, 6pm (Europe/London)
+PROFILE   MARKS              STATE  SESSION  SESSION RESETS                     WEEK  WEEK RESETS                  SPEND
+spare                        ok     0%       -                                  12%   Oct 23, 9am (Europe/London)  n/a
+personal                     ok     20%      Oct 18, 3pm (Europe/London)        35%   Oct 22, 2am (Europe/London)  n/a
+work      live in ~/.claude  ok     88%      Oct 18, 1pm (Europe/London)        41%   Oct 21, 6pm (Europe/London)  n/a
 ```
 
 Only a profile in state `ok` can be chosen; an exhausted profile, or one whose
@@ -113,10 +113,10 @@ amplihack profile usage
 ```
 
 ```
-PROFILE   MARKS              STATE  SESSION  SESSION RESETS                     WEEK  WEEK RESETS
-spare     live in ~/.claude  ok     0%       -                                  12%   Oct 23, 9am (Europe/London)
-personal                     ok     20%      Oct 18, 3pm (Europe/London)        35%   Oct 22, 2am (Europe/London)
-work                         ok     88%      Oct 18, 1pm (Europe/London)        41%   Oct 21, 6pm (Europe/London)
+PROFILE   MARKS              STATE  SESSION  SESSION RESETS                     WEEK  WEEK RESETS                  SPEND
+spare     live in ~/.claude  ok     0%       -                                  12%   Oct 23, 9am (Europe/London)  n/a
+personal                     ok     20%      Oct 18, 3pm (Europe/London)        35%   Oct 22, 2am (Europe/London)  n/a
+work                         ok     88%      Oct 18, 1pm (Europe/London)        41%   Oct 21, 6pm (Europe/London)  n/a
 ```
 
 A running `claude` picks up the new login when it next reads its credentials;
@@ -2355,8 +2355,8 @@ $ amplihack profile rotate status
 ~/.claude is on API key profile api-key: work is billed per token (since 2026-10-28T14:02:11Z)
 ...
 $ amplihack profile usage api-key
-PROFILE  MARKS              STATE    SESSION                     SESSION RESETS  WEEK  WEEK RESETS
-api-key  live in ~/.claude  api_key  api-key (billed per token)  -               -     -
+PROFILE  MARKS              STATE    SESSION                     SESSION RESETS  WEEK  WEEK RESETS  SPEND
+api-key  live in ~/.claude  api_key  api-key (billed per token)  -               -     -            n/a
 live: work is running on the API key (billed per token)
 ```
 

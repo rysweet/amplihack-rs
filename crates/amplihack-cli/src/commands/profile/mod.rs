@@ -106,6 +106,8 @@ mod tests_usage_parse;
 mod tests_usage_passive;
 #[cfg(test)]
 mod tests_usage_request;
+#[cfg(test)]
+mod tests_usage_shape;
 #[cfg(all(test, unix))]
 mod tests_usage_source;
 #[cfg(test)]
@@ -424,6 +426,9 @@ pub enum ProfileCommands {
         /// Session % below which a login counts as usable now (1-100; default 95, or AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT)
         #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
         usable_session_pct: Option<u8>,
+        /// Also run one /usage probe per usage-credits-on account to fill SPEND (starts claude)
+        #[arg(long)]
+        spend: bool,
         /// Seconds each probe may run (default 120, max 600; or AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS)
         #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(1..=probe_limits::MAX_TIMEOUT_SECS))]
         timeout_secs: Option<u64>,
@@ -568,6 +573,7 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             raw,
             timeout_secs,
             usable_session_pct,
+            spend,
         } => {
             let output = if summary_json {
                 usage_cmd::Output::SummaryJson
@@ -581,6 +587,7 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
                 raw,
                 timeout_secs,
                 usable_session_pct,
+                spend,
             };
             usage_cmd::run(&store, &names, opts)?
         }

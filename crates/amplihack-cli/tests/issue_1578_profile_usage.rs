@@ -1133,8 +1133,13 @@ fn a_request_past_the_deadline_is_timeout_and_usage_never_runs() {
     assert_eq!(cells[0], "a");
     assert!(cells.contains(&"timeout"), "{row}");
     assert!(!row.contains('%'), "{row}");
-    // SESSION, SESSION RESETS, WEEK and WEEK RESETS.
-    assert_eq!(cells[cells.len() - 4..], ["-", "-", "-", "-"], "{row}");
+    // SESSION, SESSION RESETS, WEEK and WEEK RESETS, then SPEND (#1856):
+    // a timed-out fallback row cannot tell the spend.
+    assert_eq!(
+        cells[cells.len() - 5..],
+        ["-", "-", "-", "-", "unknown"],
+        "{row}"
+    );
     assert_eq!(f.recorded("args.a"), None, "no /usage after the deadline");
 
     let (rows, _) = f.json(&["profile", "usage", "--json", "--timeout-secs", "1", "a"]);
