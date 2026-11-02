@@ -764,7 +764,8 @@ effect on a running background process; run `stop` and then `start`.
 
 Each profile's *headroom* is `100 - max(session %, week %)`. A profile with no
 session window yet counts as 0% session use. A profile that is
-`session_exhausted` or `weekly_exhausted` has headroom 0.
+`session_exhausted` or `weekly_exhausted` has headroom 0, whatever its other
+window reads.
 
 On each cycle the rotator compares the live account with the candidate that
 has the most headroom (ties go to the name that sorts first):
@@ -828,9 +829,13 @@ While a plan profile's usage is unknown this way, the rotator does not move
 onto
 [usage credits](#use-usage-credits-when-every-plan-login-is-exhausted); see
 [When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured).
-A percentage of 100 means the probe answered and the account reached that
-limit. A login at its session limit shows its weekly figure as reported,
-for example `work:s=100%,w=55%`; `w=?` means no weekly figure was read.
+A login that reached a limit shows the figures its probe read, with the
+window that ran out never below `100%`, so `work:s=100%,w=62%` is a login at
+its session limit with 38% of its week left. A login at its weekly limit
+shows `w=100%` and the session it read, for example `s=30%,w=100%`, and
+`w=?` means no weekly figure was read. Either way the login has headroom
+0 and is not chosen until the window resets. See
+[Exhausted figures](../reference/profile-command.md#rotate-exhausted-figures).
 
 A login whose read had not finished when the cycle stopped waiting shows as
 `<name>:unknown, still running`. Its usage is unknown for that cycle, as for
@@ -991,6 +996,22 @@ the previous one.
 2026-10-18T19:40:05Z ALERT: no profile has capacity live=personal s=97% w=52%
 2026-10-18T19:50:05Z skip: state lock busy
 2026-10-20T09:00:05Z stay: live probe failed (1/3)
+```
+
+A login at its session limit keeps its weekly figure in the log. Here
+`work` used its five-hour window with 62% of its week used, and the rotator
+moved to `personal`:
+
+```
+2026-11-01T14:40:05Z cycle live=work work:s=100%,w=62% personal:s=20%,w=35%
+2026-11-01T14:40:05Z swap work->personal live s=100% w=62% target s=20% w=35% reason=threshold
+```
+
+To follow one login's weekly use across cycles, including cycles where it
+was exhausted:
+
+```bash
+grep -oE ' work:s=[0-9]+%,w=[0-9]+%' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
 To see only swaps and alerts:
@@ -1997,8 +2018,8 @@ and `rssourcelabs` had capacity, so the same cycle swaps:
 
 ```
 2026-10-27T03:17:05Z skip: ryan-ryansweet (no login)
-2026-10-27T03:17:35Z cycle live=ryan-mistt-org ryan-mistt-org:s=100%,w=100% rssourcelabs:s=12%,w=40%
-2026-10-27T03:17:35Z swap ryan-mistt-org->rssourcelabs live s=100% w=100% target s=12% w=40% reason=threshold
+2026-10-27T03:17:35Z cycle live=ryan-mistt-org ryan-mistt-org:s=37%,w=100% rssourcelabs:s=12%,w=40%
+2026-10-27T03:17:35Z swap ryan-mistt-org->rssourcelabs live s=37% w=100% target s=12% w=40% reason=threshold
 ```
 
 With no candidate that has capacity, it writes the usual

@@ -285,7 +285,7 @@ fn exhausted() -> Probed {
         })
     };
     Probed {
-        reading: Reading::Exhausted,
+        reading: Reading::EXHAUSTED,
         windows: Windows {
             session: win(100.0),
             week: win(100.0),

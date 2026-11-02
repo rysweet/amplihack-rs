@@ -151,7 +151,7 @@ fn from_probes_lists_busy_skipped_logins_as_unknown() {
 #[test]
 fn from_probes_records_an_exhausted_week_as_100() {
     let mut out = probed(40.0, 100.0);
-    out.reading = Reading::Exhausted;
+    out.reading = Reading::EXHAUSTED;
     let probes = (probed(1.0, 2.0), vec![(n("out"), out)]);
     let s = from_probes(T, None, &probes, None, &[]);
     assert_eq!(s.points["out"].w, 100);
@@ -162,7 +162,7 @@ fn from_probes_counts_an_exhausted_probe_without_a_week_as_unknown() {
     // Only the session window was read: the week is unknown, never 100%.
     for s in [40.0, 100.0] {
         let mut out = probed(s, 0.0);
-        out.reading = Reading::Exhausted;
+        out.reading = Reading::EXHAUSTED;
         out.windows.week = None;
         let probes = (probed(1.0, 2.0), vec![(n("out"), out)]);
         let snap = from_probes(T, None, &probes, None, &[]);

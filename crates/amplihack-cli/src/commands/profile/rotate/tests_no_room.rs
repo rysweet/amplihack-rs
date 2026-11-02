@@ -116,7 +116,7 @@ fn fx() -> Fx {
 fn probed(session: f64) -> Probed {
     let resets_at = Some(now() + 4 * 3600);
     let reading = if session >= 100.0 {
-        Reading::Exhausted
+        Reading::EXHAUSTED
     } else {
         Reading::Measured {
             session,
@@ -317,11 +317,11 @@ fn a_failed_probe_and_the_api_key_are_never_recorded() {
                 week: 99.0,
             },
         ),
-        (n(KEY), Reading::Exhausted),
+        (n(KEY), Reading::EXHAUSTED),
     ];
     let r = no_room::of_cycle(
         Some(&n(WORK)),
-        &Reading::Exhausted,
+        &Reading::EXHAUSTED,
         &others,
         Some(&n(KEY)),
         1000,
@@ -480,13 +480,13 @@ fn room_comes_back_at_the_reset_of_the_full_window() {
     assert_eq!(back(&measured(40.0, 100.0), &both), Some(900), "week full");
     assert_eq!(back(&measured(100.0, 100.0), &both), Some(900), "the later");
     assert_eq!(
-        back(&Reading::Exhausted, &w(100.0, Some(50), 3.0, Some(9))),
+        back(&Reading::EXHAUSTED, &w(100.0, Some(50), 3.0, Some(9))),
         Some(50)
     );
     assert_eq!(back(&measured(99.0, 99.0), &both), None, "room");
     assert_eq!(back(&Reading::Failed, &both), None);
     let unknown = w(100.0, None, 3.0, Some(9));
-    assert_eq!(back(&Reading::Exhausted, &unknown), None, "reset unknown");
+    assert_eq!(back(&Reading::EXHAUSTED, &unknown), None, "reset unknown");
 
     // Only a login the record names shortens it, and never below `at`.
     let rec = no_room::of_cycle(

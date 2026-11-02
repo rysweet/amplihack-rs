@@ -225,8 +225,9 @@ pub fn alert_no_capacity_for(
     reading: &Reading,
     others: &[(ProfileName, Reading)],
 ) -> String {
-    let count = |r: Reading| others.iter().filter(|(_, o)| *o == r).count();
-    let (failed, exhausted) = (count(Reading::Failed), count(Reading::Exhausted));
+    let count = |is: fn(&Reading) -> bool| others.iter().filter(|(_, o)| is(o)).count();
+    let failed = count(|r| matches!(r, Reading::Failed));
+    let exhausted = count(|r| matches!(r, Reading::Exhausted { .. }));
     let tail = match failed + exhausted {
         0 => String::new(),
         _ => format!(" (candidates: {failed} failed, {exhausted} exhausted)"),

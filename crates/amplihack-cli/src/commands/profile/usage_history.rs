@@ -353,7 +353,7 @@ fn point_of_probe(p: &super::rotate::decide::Probed) -> Option<Point> {
             s_reset,
             no_session_limit,
         }),
-        Reading::Exhausted => match week.map(|w| whole_pct(w.used)) {
+        Reading::Exhausted { .. } => match week.map(|w| whole_pct(w.used)) {
             Some(Some(100)) => Some(Point {
                 s,
                 w: 100,

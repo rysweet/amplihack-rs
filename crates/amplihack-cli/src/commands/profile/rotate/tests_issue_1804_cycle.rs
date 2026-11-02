@@ -164,7 +164,7 @@ fn all_plan_logins_out(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
     assert_eq!(snap.platform(), Some(&n(KEY)), "api-key is marked");
     let reset = Some(now() + 4 * 3600);
     let out = Probed {
-        reading: Reading::Exhausted,
+        reading: Reading::EXHAUSTED,
         windows: Windows {
             session: Some(Win {
                 used: 100.0,
@@ -469,7 +469,7 @@ fn a_live_api_key_that_fails_its_check_does_not_read_as_ok() {
         "enabled=on\noverflow=api-key\n",
     );
     let t = now();
-    let plan = [(n(WORK), Reading::Exhausted)];
+    let plan = [(n(WORK), Reading::EXHAUSTED)];
     let key = n(KEY);
     let write = |c: &Ctx| {
         let live = Reading::Measured {
@@ -738,7 +738,7 @@ fn plan_out_credits_usable(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profil
         })
     };
     let out = Probed {
-        reading: Reading::Exhausted,
+        reading: Reading::EXHAUSTED,
         windows: Windows {
             session: win(100.0),
             week: win(40.0),

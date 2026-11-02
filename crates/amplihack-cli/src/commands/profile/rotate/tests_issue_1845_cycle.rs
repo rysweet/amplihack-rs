@@ -120,7 +120,10 @@ fn fx() -> Fx {
 fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let reset = Some(now() + 4 * 3600);
     let work = Probed {
-        reading: Reading::Exhausted,
+        reading: Reading::Exhausted {
+            session: Some(100.0),
+            week: Some(40.0),
+        },
         windows: Windows {
             session: Some(Win {
                 used: 100.0,
