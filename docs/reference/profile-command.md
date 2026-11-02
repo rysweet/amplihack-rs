@@ -1060,7 +1060,7 @@ that has only reached its session limit.
 
 | Window | Shown as |
 |--------|----------|
-| The session | The value read, rounded down; for `session_exhausted` never below `100%`. A missing window shows `0%`, as in the [decision rule](#rotate-decision-rule), so a login with [no session limit](#no-session-limit) shows `s=0%` whether or not its week has run out. |
+| The session | The value read, rounded down; for `session_exhausted` never below `100%`. A missing window shows `100%` for `session_exhausted`, the window that ran out, and `0%` for `weekly_exhausted`, as in the [decision rule](#rotate-decision-rule), so a login with [no session limit](#no-session-limit) shows `s=0%` whether or not its week has run out. |
 | The all-models week | The value read, rounded down; for `weekly_exhausted` never below `100%`. A missing window shows `w=?` for `session_exhausted` and `100%` for `weekly_exhausted`. |
 
 | Probe result | Session read | Week read | Cycle line |

@@ -319,6 +319,20 @@ mod issue_1846 {
     }
 
     #[test]
+    fn a_missing_window_that_ran_out_logs_100() {
+        // The window that ran out is raised to 100 even when the report
+        // omits it; only the other window falls back to 0% or `?`.
+        assert_eq!(
+            shown(UsageState::SessionExhausted, None, None),
+            "s=100% w=?"
+        );
+        assert_eq!(
+            shown(UsageState::SessionExhausted, None, Some(40.0)),
+            "s=100% w=40%"
+        );
+    }
+
+    #[test]
     fn an_exhausted_window_read_as_98_logs_100() {
         assert_eq!(
             shown(UsageState::SessionExhausted, Some(98.0), Some(40.0)),
