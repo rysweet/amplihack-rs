@@ -279,4 +279,9 @@ fn deleting_an_out_of_date_record_lets_the_next_cycle_swap() {
     );
     let l = f.rs.load_ledger().unwrap().unwrap();
     assert_eq!(l.alert, None, "a completed swap clears the ALERT key");
+    // No other profile holds `u-work`, so the swap backfills `work`'s record
+    // with the account it now holds, as the reference row for this ALERT says.
+    let st = State::new(&f.root).unwrap();
+    assert_eq!(recorded(&st, &n("work")).as_deref(), Some("u-work"));
+    assert_eq!(recorded(&st, &n("spare")), None);
 }
