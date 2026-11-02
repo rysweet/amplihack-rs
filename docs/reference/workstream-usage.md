@@ -5,7 +5,9 @@ Code and Codex JSONL accounting records without model calls or network access.
 Omit `--format json` for a readable Markdown summary. Source files are opened
 read-only. Only files explicitly listed in the manifest are read; relative paths
 resolve against the manifest's directory. There is no automatic home-directory
-scan, quota governor, daemon, account switching, or pricing download. Usage
+scan, daemon, account switching, or pricing download. Reports do not limit
+work; the [capacity governor](./capacity-governor.md) does that, and reads
+a manifest only to show each workstream's token share. Usage
 commands also skip generic startup asset repair; reporting needs no installed
 framework assets or external tools.
 

@@ -762,6 +762,7 @@ mod capacity_warning {
             &RootSandboxPreflight {
                 agent_binary: claude,
                 decision: || SkipPermissionsEnv::NotRoot,
+                governor: None,
             },
             &mut out,
         );

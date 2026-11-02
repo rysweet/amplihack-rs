@@ -18,6 +18,7 @@ mod default_live;
 mod duplicates;
 #[cfg(unix)]
 pub(in crate::commands::profile) mod expected;
+pub(crate) mod governor_view;
 #[cfg(unix)]
 mod kind;
 #[cfg(unix)]
