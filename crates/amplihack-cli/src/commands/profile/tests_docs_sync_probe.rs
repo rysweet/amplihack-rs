@@ -507,6 +507,17 @@ fn spend_values_and_the_spend_flag_are_documented() {
         !REFERENCE.contains("shared deadline"),
         "the 6 s deadline is gone"
     );
+    // Crusty round 2: a `--spend` probe gets the full per-probe timeout,
+    // so no doc may call it short.
+    for doc in [REFERENCE, HOWTO, ROTATE_HOWTO, ENV_VARS] {
+        for stale in ["short [spend probe", "short `/usage` text probe"] {
+            assert!(!doc.contains(stale), "a doc still says {stale:?}");
+        }
+    }
+    assert!(
+        REFERENCE
+            .contains("under the normal per-probe timeout (`--timeout-secs`, 120 s by default)")
+    );
     assert!(ENV_VARS.contains("only with `--spend`"));
     assert!(HOWTO.contains("amplihack profile usage --spend"));
     assert!(HOWTO.contains("| `not_probed` |"));

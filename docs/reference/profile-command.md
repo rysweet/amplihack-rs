@@ -108,7 +108,7 @@ Every row records which step gave it as its [source](#reading-source):
 |---------|-------|
 | [API-key profile](#api-key-usage) | None. It is not probed, as before. |
 | Marked as [overflow](#rotate-overflow) | Fallback only, as `/usage` text. The spend limit is visible only in `/usage`, so the [spend-limit block](#overflow-spend-limit-block) keeps working. Source `fallback`. Under `AMPLIHACK_PROFILE_USAGE_PROBE=direct` the row is not probed and reads `error`; see [Probe method](#probe-method). |
-| A direct answer shows usage credits turned on (`extra_usage` is not absent, `null` or `{"is_enabled": false}`) | The windows and state come from the direct answer. Source `direct`. Spend `not_probed`, unless `--spend` asks for a short `/usage` text probe that reads only the spend status; see [Usage credits on](#usage-credits-on). If neither window in the answer is usable, the direct read fails with `usage credits on` and the profile goes to the fallback. |
+| A direct answer shows usage credits turned on (`extra_usage` is not absent, `null` or `{"is_enabled": false}`) | The windows and state come from the direct answer. Source `direct`. Spend `not_probed`, unless `--spend` asks for one `/usage` text probe, under the normal per-probe timeout (`--timeout-secs`, 120 s by default), that reads only the spend status; see [Usage credits on](#usage-credits-on). If neither window in the answer is usable, the direct read fails with `usage credits on` and the profile goes to the fallback. |
 | The extra [`~/.claude` row](#logins-in-claude), which no profile owns | Direct, then fallback. No passive reading, because no account is known for it. |
 | Any profile, with `AMPLIHACK_PROFILE_USAGE_PROBE` set to `auto` or `text` | Fallback only, with the method named. See [Probe method](#probe-method). |
 | Any profile, with `AMPLIHACK_PROFILE_USAGE_PROBE=direct` | Passive, then direct. A failed direct read gives state `error`, and the reading starts no `claude`. An account with usage credits on gives its direct windows, with spend `not_probed`, because no spend probe runs, even under `--spend`. Overflow profiles read `error` without a direct read. The one exception is the rotator's [held-cycle spend-limit check](#pin-and-overflow). |
@@ -792,7 +792,8 @@ runs `claude -p /usage` under `direct`. The marks are read from `<root>/.auto-sw
 before probing; a missing or corrupt `.auto-switch` marks no profile. A
 profile that is not marked but whose account has usage credits turned on is
 read directly, and its spend status is `not_probed` unless `--spend` asks
-for a short [spend probe](#spend-probe); when the direct read failed instead, its
+for a [spend probe](#spend-probe), which runs under the normal per-probe
+timeout (`--timeout-secs`, 120 s by default); when the direct read failed instead, its
 usage request answer is not accepted, and it falls back to `/usage`.
 
 `get_usage` is part of an interface that Claude Code marks as experimental,
@@ -1309,7 +1310,7 @@ direct read and its `claude` fallback timed out. The other rows came from
 passive or direct reads. `mistt` and `org2` have
 [usage credits on](#usage-credits-on): their windows come from the direct
 read, and, because this run used `--spend`, the `SPEND` column comes from a
-short [spend probe](#spend-probe), which found `org2`'s spend limit used up.
+[spend probe](#spend-probe) under the normal per-probe timeout, which found `org2`'s spend limit used up.
 Without `--spend` both would show `not_probed`. `SPEND` is the
 [spend status](#spend-status).
 
