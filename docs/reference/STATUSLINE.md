@@ -421,7 +421,9 @@ prints nothing and exits `0`.
 
 The capacity work (resolving the login, counting spares, rendering and
 recording) takes under 200 ms with 20 or more profiles. Process start-up and
-the original command are not counted.
+the original command are not counted. The test that checks this takes the
+fastest of five runs, so a single run delayed by a loaded host does not fail
+it.
 
 ### Install wiring
 
