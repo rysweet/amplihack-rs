@@ -24,6 +24,10 @@ const KEY_HELD: &str = "key-held";
 /// `.claude.json` keeps project history and can grow large.
 pub const MAX_CLAUDE_JSON: u64 = 32 * 1024 * 1024;
 const VERSION: u32 = 1;
+/// The readings that passive reads, `profile rotate` and auto-switch use.
+const USAGE: &str = "usage.json";
+/// Readings taken in `~/.claude`; see [`State::try_load_home_usage`].
+pub const HOME_USAGE: &str = "home-usage.json";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -302,19 +306,35 @@ impl State {
     /// version, or a key that is not a valid profile name) is an error that
     /// names the file and, for bad JSON, only the line and column.
     pub fn try_load_usage(&self) -> Result<UsageFile, ProfileError> {
-        let Some(raw) = self.read_state("usage.json")? else {
+        self.try_load_readings(USAGE)
+    }
+
+    /// Readings recorded by the status line in `~/.claude` (issue #1745),
+    /// with the same rules as [`State::try_load_usage`]. They are kept apart
+    /// from `usage.json` because nothing checks which account `~/.claude`
+    /// really held when they were taken: a hand-run `claude /login`, or a
+    /// session that kept its old token past a swap, files them under the
+    /// wrong login. Only the status line's spare count reads this file;
+    /// passive readings, `profile rotate`, auto-switch and the capacity file
+    /// read `usage.json` alone, so these readings never steer a decision.
+    pub fn try_load_home_usage(&self) -> Result<UsageFile, ProfileError> {
+        self.try_load_readings(HOME_USAGE)
+    }
+
+    fn try_load_readings(&self, file: &str) -> Result<UsageFile, ProfileError> {
+        let Some(raw) = self.read_state(file)? else {
             return Ok(UsageFile {
                 version: VERSION,
                 accounts: BTreeMap::new(),
             });
         };
         let u: UsageFile = serde_json::from_slice(&raw)
-            .map_err(|e| invariant(format!("{DIR}/usage.json: {}", parse_position(&e))))?;
+            .map_err(|e| invariant(format!("{DIR}/{file}: {}", parse_position(&e))))?;
         if u.version != VERSION {
-            return Err(invariant(format!("{DIR}/usage.json: unknown version")));
+            return Err(invariant(format!("{DIR}/{file}: unknown version")));
         }
         if u.accounts.keys().any(|k| ProfileName::parse(k).is_err()) {
-            return Err(invariant(format!("{DIR}/usage.json: invalid profile name")));
+            return Err(invariant(format!("{DIR}/{file}: invalid profile name")));
         }
         Ok(u)
     }
@@ -341,13 +361,22 @@ impl State {
     }
 
     pub fn save_usage(&self, usage: &UsageFile) -> Result<(), ProfileError> {
+        self.save_readings(USAGE, usage)
+    }
+
+    /// Saves the `~/.claude` readings; see [`State::try_load_home_usage`].
+    pub fn save_home_usage(&self, usage: &UsageFile) -> Result<(), ProfileError> {
+        self.save_readings(HOME_USAGE, usage)
+    }
+
+    fn save_readings(&self, file: &str, usage: &UsageFile) -> Result<(), ProfileError> {
         let mut usage = usage.clone();
         usage.version = VERSION;
         usage
             .accounts
             .retain(|name, _| ProfileName::parse(name).is_ok());
         let bytes = serde_json::to_vec_pretty(&usage).map_err(|e| invariant(e.to_string()))?;
-        self.write_state("usage.json", &bytes)
+        self.write_state(file, &bytes)
     }
 
     /// A small JSON file under a state subdirectory (`accounts/`,

@@ -14,11 +14,15 @@ mod candidate;
 #[cfg(unix)]
 pub(super) mod capacity;
 #[cfg(unix)]
+mod capacity_line;
+#[cfg(unix)]
 mod cli;
 #[cfg(unix)]
 pub(super) mod config;
 #[cfg(unix)]
 pub(super) mod fsx;
+#[cfg(unix)]
+mod home_line;
 #[cfg(unix)]
 pub(super) mod kit;
 #[cfg(unix)]
@@ -35,6 +39,7 @@ pub(super) mod rerun;
 mod state;
 #[cfg(unix)]
 mod statusline;
+pub(super) mod statusline_entry;
 #[cfg(unix)]
 mod swap;
 #[cfg(unix)]
@@ -47,11 +52,15 @@ mod tests_candidate;
 #[cfg(all(test, unix))]
 mod tests_capacity;
 #[cfg(all(test, unix))]
+mod tests_capacity_line;
+#[cfg(all(test, unix))]
 mod tests_config;
 #[cfg(test)]
 mod tests_contract;
 #[cfg(all(test, unix))]
 mod tests_exhausted_reset;
+#[cfg(all(test, unix))]
+mod tests_home_line;
 #[cfg(all(test, unix))]
 mod tests_issue_1804;
 #[cfg(all(test, unix))]
@@ -137,14 +146,51 @@ pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> anyhow::Result<()
     }
 }
 
-/// The hidden `profile statusline` command; returns the exit code.
-pub fn statusline(root: &str, owner: &str) -> i32 {
+/// The hidden `profile statusline` command; returns the exit code. Without
+/// `owner` it is the command in `~/.claude` (issue #1745).
+pub fn statusline(root: Option<&str>, owner: Option<&str>) -> i32 {
     #[cfg(unix)]
     return statusline::run(root, owner);
     #[cfg(not(unix))]
     {
         let _ = (root, owner);
         0
+    }
+}
+
+/// What every `profile statusline` command contains.
+const MARKER: &str = "profile statusline";
+
+/// The `statusLine` command `amplihack install` writes into
+/// `~/.claude/settings.json` for `exe`: `'<exe>' profile statusline`
+/// (issue #1745). An error when `exe` cannot be quoted for `sh`.
+pub fn home_statusline_command(exe: &std::path::Path) -> anyhow::Result<String> {
+    #[cfg(unix)]
+    return Ok(statusline::home_command(exe)?);
+    #[cfg(not(unix))]
+    {
+        let _ = exe;
+        anyhow::bail!("the status line is not supported on this platform")
+    }
+}
+
+/// The running amplihack binary, refused if anyone but the user (or root)
+/// can replace it.
+pub fn statusline_binary() -> anyhow::Result<std::path::PathBuf> {
+    #[cfg(unix)]
+    return statusline::installed_binary();
+    #[cfg(not(unix))]
+    anyhow::bail!("the status line is not supported on this platform")
+}
+
+/// `path`, resolved, refused if anyone but the user (or root) can replace it.
+pub fn statusline_binary_at(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    #[cfg(unix)]
+    return statusline::trusted_binary(path);
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        anyhow::bail!("the status line is not supported on this platform")
     }
 }
 

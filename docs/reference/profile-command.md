@@ -3692,6 +3692,15 @@ limit (see [Usage-limit reruns](#usage-limit-reruns)).
   one with the higher usage wins.
 - **Errors.** A damaged `usage.json` is treated as empty and overwritten by
   the next reading.
+- **Readings from `~/.claude`.** The
+  [`~/.claude` status line](./STATUSLINE.md#recording-readings) never writes
+  `usage.json`. It records into `<root>/.auto-switch.d/home-usage.json`,
+  which has the same format and is read only by the status line's spare
+  count: nothing checks which account `~/.claude` held when such a reading
+  was taken (see
+  [Why the readings are kept apart](./STATUSLINE.md#why-the-readings-are-kept-apart)).
+  Passive readings, candidate selection, `profile rotate` and the capacity
+  file never read it.
 
 ### Candidate selection
 
@@ -3863,7 +3872,15 @@ The original `statusLine` object is saved in
 | the canonical wrapper | does not write | does not write |
 | missing | installs the wrapper; uses a saved original if one exists | same as `install` |
 | another command | saves it as the original, then installs the wrapper | same as `install` |
-| an old, moved, edited or doubly wrapped wrapper (contains `profile statusline`) | does not write; reports `stale` | rewrites it to the canonical wrapper, keeping the saved original (never saving a wrapper as the original) |
+| exactly `amplihack profile statusline`, or a quoted path to `amplihack` followed by it, with no `--owner` (the `~/.claude` entry) | saves `~/.amplihack/.claude/tools/statusline.sh` as the original when that script passes the [script checks](./STATUSLINE.md#script-checks), otherwise saves no original; then installs the wrapper | same as `install` |
+| an old, moved, edited or doubly wrapped wrapper (has the words `profile statusline` and `--owner`) | does not write; reports `stale` | rewrites it to the canonical wrapper, keeping the saved original (never saving a wrapper as the original) |
+
+The `~/.claude` entry is never saved as an original, and a saved original
+that is exactly that entry, left by an older install, is never run:
+`~/.amplihack/.claude/tools/statusline.sh` runs in its place. A user's command
+that does more, such as `amplihack profile statusline | my-filter`, is another
+command: it is saved and run, and the inner `profile statusline` runs only
+`statusline.sh` ([details](./STATUSLINE.md#inside-profiles)).
 
 The original `padding` is kept. A missing `settings.json` is created at
 `0600`. Writes use a temp file, `rename` and a directory sync. Other keys and
@@ -3893,9 +3910,21 @@ When Claude runs the wrapper, it:
    byte for byte;
 4. runs the [in-session swap](#in-session-swap) check.
 
-While the [capacity notice](#capacity-notice) is due, step 3 adds one line
-after the original output, and step 2 also updates the
-[capacity file](#capacity-file) after recording the reading.
+After the original output, the wrapper prints the
+[login capacity line](./STATUSLINE.md#login-capacity-line) when the step 1
+checks passed and the saved original is `statusline.sh`. A wrapper around
+your own command adds no capacity line, and a wrapper with no saved original
+prints none (see [Inside profiles](./STATUSLINE.md#inside-profiles)). The
+[capacity notice](#capacity-notice) follows while it is due. Step 2 also
+updates the [capacity file](#capacity-file) when the recorded reading is at or
+over the threshold, or the file reports low or no capacity; any other reading
+cannot change the file.
+
+`--root` may be left out; the root is then resolved as for other profile
+commands (see [Profile root](#profile-root)). Run without `--owner` inside
+`<root>/<name>`, `amplihack profile statusline` behaves as
+`--owner <name>`, except that it never swaps or updates the capacity file;
+see [Modes](./STATUSLINE.md#modes).
 
 The saved original in `statusline/<name>.json` is run only if it passes the
 [state directory](#state-directory) checks (a regular file owned by you,
@@ -3921,8 +3950,8 @@ covered instead by [nested substitution](#nested-launches-and-auto-switch)
 when they start and by [usage-limit reruns](#usage-limit-reruns) when they
 fail.
 
-The wrapper writes to standard output itself only to add the
-[capacity notice](#capacity-notice) after the original output. Its exit code is the
+The wrapper writes to standard output itself only to add the capacity line
+and the [capacity notice](#capacity-notice) after the original output. Its exit code is the
 original command's, or `0` if there is none or it was not run. Its own errors, including a
 panic, are one line on stderr naming paths only.
 
@@ -4291,7 +4320,7 @@ of them makes an extra network call or probe for it.
 
 | `writer` | Written | Readings used |
 |----------|---------|---------------|
-| `statusline` | By the [status-line wrapper](#status-line-wrapper), each time it records a reading, under the state lock it takes for that. | `usage.json` as just recorded. |
+| `statusline` | By the [status-line wrapper](#status-line-wrapper) each time it records a reading, under the state lock it takes for that. The [`~/.claude` status line](./STATUSLINE.md#recording-readings) never writes the file. | `usage.json` as just recorded. |
 | `usage` | By [`profile usage`](#refreshing-auto-switch-readings), each time it records readings, under the state lock it takes for that. | `usage.json` as just recorded. |
 | `rotate` | By the rotator, in a [cycle](#rotate-cycle) that reaches the swap, stay or ALERT, under the lock taken in step 6. | That cycle's probes. A `session_exhausted` or `weekly_exhausted` probe counts as at its limit; a failed probe, including one that timed out, counts as no reading and never as at its limit. Reset times come from the profile's `usage.json` entry while they are in the future, and are otherwise unknown. |
 

@@ -223,6 +223,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_SKIP_REFLECTION` | user preference |  | Skips the stop-hook reflection. |
 | `AMPLIHACK_SKIP_UPDATE_CHECK` | test-only |  | Set only by Codex plugin install tests. |
 | `AMPLIHACK_SOURCE_ROOT` | test-only |  | Codex front-door contract fixture. |
+| `AMPLIHACK_STATUSLINE_NESTED` | internal |  | Set by the status-line wrapper for the command it runs, so an inner `profile statusline` runs only `statusline.sh`. |
 | `AMPLIHACK_STEP_TIMEOUT` | user preference | `recipe.step_timeout` | Per-step timeout ceiling exported to the recipe runner. |
 | `AMPLIHACK_STUB` | test-only |  | Stub binary marker in recipe and remote tests. |
 | `AMPLIHACK_SUPPLIED` | internal |  | Not an env var: suffix of the `OVERRIDE_IS_AMPLIHACK_SUPPLIED` constant. |
