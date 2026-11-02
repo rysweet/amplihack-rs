@@ -371,8 +371,21 @@ fn the_live_profile_is_not_warned_about_against_its_own_home_login() {
 
 #[test]
 fn a_profile_duplicating_the_home_login_is_warned_with_home_first() {
+    // Issue #1845: `work` is the rotator's live profile, so `~/.claude` is
+    // judged by `work`'s record. Without any record amplihack cannot tell
+    // which holder is wrong and says so.
     let f = Fixture::new();
     set_account(&f, "extra", &account_json("work"));
+    let stderr = text(&f.run(&["profile", "usage"]).stderr);
+    assert!(
+        stderr.contains(
+            "warning: profiles '~/.claude' and 'extra' are signed in to the same account and organization (duplicate login); amplihack cannot tell which of them holds the wrong login; fix: run 'amplihack profile login extra' if 'extra' should hold a different account, or plain 'claude' and '/login' if ~/.claude should, "
+        ),
+        "{stderr}"
+    );
+    // Once `work` is recorded as the account `~/.claude` holds, the login
+    // in `~/.claude` is the right one and `extra` is named.
+    record_expected(&f, "work", "uuid-work");
     let stderr = text(&f.run(&["profile", "usage"]).stderr);
     assert!(
         stderr.contains(
