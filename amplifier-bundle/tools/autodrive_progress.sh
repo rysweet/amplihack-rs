@@ -56,15 +56,15 @@ trusted() {
 }
 
 # items <findings>: trimmed, non-blank, separators and control characters as
-# '_', each cut to 200 bytes, sorted unique, joined by ','; at most 3,900
-# bytes, so a whole row (label, SHA, clean flag, items) stays within 4 KiB.
+# '_', each cut to 200 bytes, sorted unique, joined by ','; at most 3,800
+# bytes, so a whole row (label, SHA, clean flag, items, CI signal) stays within 4 KiB.
 items() {
   local joined=""
   if [ -f "$1" ] && [ -r "$1" ]; then
     joined="$(tr -d '\r' < "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' \
       | tr ',\t\001-\010\013-\037\177' '_' | cut -b 1-200 | sort -u | paste -sd, -)"
   fi
-  if [ "$(printf '%s' "$joined" | wc -c)" -gt 3900 ]; then joined="$(printf '%s' "$joined" | head -c 3884)…(truncated)"; fi
+  if [ "$(printf '%s' "$joined" | wc -c)" -gt 3800 ]; then joined="$(printf '%s' "$joined" | head -c 3784)…(truncated)"; fi
   printf '%s' "$joined"
 }
 

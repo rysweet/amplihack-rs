@@ -2679,7 +2679,7 @@ verdict. Before comparison each line has `\r` removed and surrounding space
 trimmed; blank lines are dropped; the rest is sorted with duplicates removed
 (`LC_ALL=C sort -u`). A missing findings file is an empty set. Commas, tabs and
 control characters inside an item become `_`, each item is cut to 200 bytes,
-and the joined field is cut to 3,900 bytes and ends `…(truncated)` when cut,
+and the joined field is cut to 3,800 bytes and ends `…(truncated)` when cut,
 so a whole progress row stays within 4 KiB.
 
 Exemptions:
