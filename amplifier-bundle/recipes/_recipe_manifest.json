@@ -50,7 +50,7 @@
   "workflow-design": "5f9e2b0a27b06f55",
   "workflow-finalize": "824c5bc6245b2231",
   "workflow-pr-review": "64a08e62308ae9d1",
-  "workflow-precommit-test": "6862b817b8c65b8f",
+  "workflow-precommit-test": "646fcf94cfbc3dd3",
   "workflow-prep": "3e1dfe776ced6d26",
   "workflow-publish": "250aae725873ae9f",
   "workflow-refactor-review": "ad94b72c16cecd5d",

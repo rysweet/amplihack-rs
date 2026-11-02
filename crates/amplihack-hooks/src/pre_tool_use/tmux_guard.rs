@@ -361,7 +361,7 @@ pub(super) fn check_tool_input(tool_input: &Value) -> Option<Value> {
             Some(Value::Array(items)) if !items.is_empty() => {
                 let strings: Vec<&str> = items.iter().filter_map(Value::as_str).collect();
                 if strings.len() == items.len() {
-                    check(&join_argv(&strings))
+                    check(&shell::join_argv(&strings))
                 } else {
                     text_test(&strings.join(" ")).then(deny_response)
                 }
@@ -415,21 +415,6 @@ fn text_test(text: &str) -> bool {
         .map(|c| c.to_ascii_lowercase())
         .collect();
     lower.contains("tmux") && lower.contains("kill-s")
-}
-
-/// Shell-quotes each argument and joins them with spaces.
-fn join_argv(args: &[&str]) -> String {
-    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
-    args.iter()
-        .map(|a| {
-            if !a.is_empty() && a.chars().all(safe) {
-                (*a).to_string()
-            } else {
-                format!("'{}'", a.replace('\'', r"'\''"))
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 /// What a scan of one piece of text found.
@@ -589,7 +574,7 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
         // so `git bisect run tmux kill-server` reads as one command.
         if git && git_runs_commands(args) {
             let args: Vec<&str> = args.iter().map(String::as_str).collect();
-            let joined = join_argv(&args);
+            let joined = shell::join_argv(&args);
             if needs_reparse(&joined) {
                 let inner = reparse(&joined, depth, ctx);
                 out.dangerous |= inner.dangerous;

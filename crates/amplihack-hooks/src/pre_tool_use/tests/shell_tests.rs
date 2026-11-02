@@ -483,3 +483,24 @@ fn ansi_c_words_are_decoded_by_the_tokeniser() {
         ])]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1794: `join_argv` moved here from the tmux guard so the tail-follow
+// guard can share it. Its output is unchanged.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn join_argv_quotes_empty_strings_and_single_quotes() {
+    assert_eq!(join_argv(&["tail", "-f", "/dev/null"]), "tail -f /dev/null");
+    assert_eq!(join_argv(&["echo", ""]), "echo ''");
+    assert_eq!(join_argv(&["echo", "it's"]), r"echo 'it'\''s'");
+    assert_eq!(
+        join_argv(&["bash", "-lc", "tail -f /dev/null"]),
+        "bash -lc 'tail -f /dev/null'"
+    );
+    // Each quoted argument reads back as one word.
+    assert_eq!(
+        words(&join_argv(&["echo", "it's", "", "a b"])),
+        vec![owned(&["echo", "it's", "", "a b"])]
+    );
+}

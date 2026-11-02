@@ -412,6 +412,32 @@ fn no_duplicate_step_ids_across_subrecipes() {
     assert!(dups.is_empty(), "duplicate step IDs found: {dups:?}");
 }
 
+/// Issue #1794: agents waited with `tail -f /dev/null`, which outlives the
+/// tool call. Step 13 and the Claude system-prompt fragment name the
+/// supported ways to wait and say the hook denies the old forms.
+#[test]
+fn step_13_and_system_prompt_name_the_supported_ways_to_wait() {
+    let prompt = step_prompt("workflow-precommit-test", "step-13-local-testing");
+    let fragment_path = recipes_dir()
+        .join("..")
+        .join("context")
+        .join("SYSTEM_PROMPT_APPEND.md");
+    let fragment = std::fs::read_to_string(&fragment_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", fragment_path.display()));
+    for (name, text) in [
+        ("step-13-local-testing", prompt),
+        ("SYSTEM_PROMPT_APPEND.md", &fragment),
+    ] {
+        for needle in ["amplihack wait --seconds", "tail -f /dev/null", "wait $pid"] {
+            assert!(text.contains(needle), "{name} lacks {needle:?}");
+        }
+    }
+    assert!(
+        prompt.contains("timeout N tail"),
+        "step 13 must name `timeout N tail` as a form not to use"
+    );
+}
+
 #[test]
 fn step_13_does_not_mandate_uvx_or_remote_git_install_flow() {
     let prompt = step_prompt("workflow-precommit-test", "step-13-local-testing");

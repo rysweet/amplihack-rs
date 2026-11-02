@@ -8,6 +8,9 @@
 //! - In an auto-drive run, merges outside the merge gate (#1551)
 //! - tmux `kill-server` / `kill-session -a` without `-S` or `-L`, which act
 //!   on the user's own server when `$TMUX` is set (#1733; all shell tools)
+//! - `tail` with a follow option on a device that never ends, such as
+//!   `tail -f /dev/null` used as a sleep, which outlives the tool call
+//!   (#1794; all shell tools)
 //! - XPIA prompt injection attacks (all tools), only when `XPIA_ENABLED=true`
 //!
 //! XPIA is off by default. The other blocks above do not depend on it and
@@ -19,6 +22,7 @@ mod git;
 pub mod launcher;
 mod merge_guard;
 mod shell;
+mod tail_follow_guard;
 mod tmux_guard;
 mod xpia;
 
@@ -357,6 +361,16 @@ impl Hook for PreToolUseHook {
         // otherwise skip it.
         if tmux_guard::is_shell_tool(&tool_name)
             && let Some(block) = tmux_guard::check_tool_input(&tool_input)
+        {
+            return Ok(block);
+        }
+
+        // Issue #1794: refuse `tail -f /dev/null` and other follows of a
+        // device that never ends. Agents used it as a sleep, and it outlives
+        // the tool call as an orphan. Same placement and reasons as the tmux
+        // guard above; the tmux deny answers first when both match.
+        if tmux_guard::is_shell_tool(&tool_name)
+            && let Some(block) = tail_follow_guard::check_tool_input(&tool_input)
         {
             return Ok(block);
         }

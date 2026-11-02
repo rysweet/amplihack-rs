@@ -109,6 +109,21 @@ pub(super) fn program(words: &[String]) -> Option<&[String]> {
     None
 }
 
+/// Shell-quotes each argument and joins them with spaces.
+pub(super) fn join_argv(args: &[&str]) -> String {
+    let safe = |c: char| c.is_ascii_alphanumeric() || "_@%+=:,./-".contains(c);
+    args.iter()
+        .map(|a| {
+            if !a.is_empty() && a.chars().all(safe) {
+                (*a).to_string()
+            } else {
+                format!("'{}'", a.replace('\'', r"'\''"))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub(super) fn is_assignment(word: &str) -> bool {
     word.split_once('=').is_some_and(|(name, _)| {
         !name.is_empty()
