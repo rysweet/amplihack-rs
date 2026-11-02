@@ -583,7 +583,7 @@ ci_detected() { # ci_detected <id> <why> [qa_ci_skip]: CI gave nothing; detectio
     expect_calls "$1-calls" "$2: cargo test runs at the root" cargo "cargo|.|$CARGO_ARGS"
     if ! grep -qE 'workflow|\.github|(^|[^A-Za-z])CI([^A-Za-z]|$)' "$ERR" 2>/dev/null; then
         pass "$1-silent" "$2: nothing is printed about CI"
-    else fail "$1-silent" "$2: CI fallthrough printed: $(grep -E 'workflow|\.github|CI' "$ERR" | head -n 2 | tr '\n' '|')"; fi
+    else fail "$1-silent" "$2: CI fallthrough printed: $(awk 'n < 2 && /workflow|\.github|CI/ { printf "%s|", $0; n++ }' "$ERR")"; fi
 }
 steps() { printf 'on: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n%s' "$1"; }
 
