@@ -45,6 +45,8 @@ mod handfix_msg;
 #[cfg(unix)]
 mod held;
 #[cfg(unix)]
+mod history;
+#[cfg(unix)]
 mod holders;
 #[cfg(unix)]
 pub(super) mod identify;
@@ -86,6 +88,8 @@ mod prelude;
 mod recover;
 #[cfg(unix)]
 mod revalidate;
+#[cfg(unix)]
+mod sessions_daily;
 #[cfg(unix)]
 mod settings;
 #[cfg(unix)]
@@ -148,6 +152,8 @@ mod tests_revalidate;
 mod tests_revalidate_cause;
 #[cfg(all(test, unix))]
 mod tests_revalidate_unit;
+#[cfg(all(test, unix))]
+mod tests_sessions_daily;
 #[cfg(test)]
 mod tests_source_scan;
 #[cfg(all(test, unix))]
@@ -163,12 +169,11 @@ mod tests_switch_hold;
 #[cfg(all(test, unix))]
 mod tests_switch_race;
 
-use super::name::ProfileName;
-use super::root_config::RootSource;
-use super::store::ProfileStore;
+use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 
+// Issue #1797: `Probes` is what the usage history records from a cycle.
 #[cfg(unix)]
-pub(super) use self::{identify::is_live, platform_block::platform_live_line};
+pub(super) use self::{identify::is_live, observe::Probes, platform_block::platform_live_line};
 #[cfg(unix)]
 pub(in crate::commands::profile) use autostart::autostart_line;
 #[cfg(unix)]
@@ -226,7 +231,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
     #[cfg(unix)]
     {
         let env = |k: &str| std::env::var_os(k);
-        let home = home_dir();
+        let home = settings::home_dir();
         match args.action {
             None => {
                 let s = settings::resolve(&args.tune, None, &env)?;
@@ -268,15 +273,6 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
     }
 }
 
-/// `$HOME`, which holds the live `~/.claude`.
-#[cfg(unix)]
-fn home_dir() -> Result<std::path::PathBuf, super::ProfileError> {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| super::ProfileError::RotateRefused("HOME is not set".into()))
-}
-
 /// `profile switch NAME` (#1691): swaps NAME's login into `~/.claude`, pins
 /// rotation to it and makes it the default, in three lines. A later failed
 /// write is an error, not a refusal. If the login cannot move, NAME is still
@@ -287,7 +283,7 @@ pub(in crate::commands::profile) fn switch_live(
 ) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        let home = home_dir()?;
+        let home = settings::home_dir()?;
         // Judged before the move, from the profile's own login (or from
         // `~/.claude` when it is already live), as the kind guard does.
         let platform = super::kind::kind_of(store, name, &home) == super::kind::Kind::Platform;

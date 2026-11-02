@@ -40,9 +40,16 @@ pub enum Commands {
     /// Manage Claude Code login profiles
     #[command(subcommand)]
     Profile(crate::commands::profile::ProfileCommands),
+    /// Archive old Claude Code sessions, or restore one
+    #[cfg(unix)]
+    #[command(subcommand)]
+    Sessions(crate::commands::sessions::SessionsCommands),
     /// Report workstream token observations or explicitly publish a PR summary
     #[command(subcommand)]
     Usage(crate::commands::usage::UsageCommands),
+    /// Show the capacity governor's limit, budgets, slots and queue
+    #[command(subcommand)]
+    Governor(crate::commands::governor::GovernorCommands),
     /// Register, supervise and report long-lived agent sessions
     #[command(subcommand)]
     Agent(crate::commands::agent::AgentCommands),
@@ -90,6 +97,8 @@ pub enum Commands {
         /// Use a named Claude login profile (see `amplihack profile`).
         #[arg(long = "profile", value_name = "NAME")]
         profile: Option<String>,
+        #[command(flatten)]
+        governor: crate::commands::governor::GovernorArgs,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -159,6 +168,8 @@ MODEL SELECTION (issues #1421, #1527)
             conflicts_with_all = ["auto", "append", "docker", "checkout_repo"]
         )]
         supervise: Option<String>,
+        #[command(flatten)]
+        governor: crate::commands::governor::GovernorArgs,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,

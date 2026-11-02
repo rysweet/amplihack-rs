@@ -32,7 +32,7 @@ pub fn room(session: f64, week: f64) -> bool {
 pub fn has_room(r: &Reading) -> bool {
     match r {
         Reading::Measured { session, week } => room(*session, *week),
-        Reading::Exhausted | Reading::Failed => false,
+        Reading::Exhausted { .. } | Reading::Failed => false,
     }
 }
 
