@@ -4,12 +4,14 @@
 #
 #   record <state> <loop> <label> <sha> <clean 0|1> <findings> [<ci_signal>]
 #       appends one row to <state>/<loop>-progress.tsv:
-#       round_label, head_sha, clean, open items joined by ',', ci_signal
+#       round_label, head_sha, clean, open items joined by ',' (cut for
+#       display), ci_signal, sha256 of the full sorted open-item set
 #   check <state> <loop> <label> <sha> <findings> [<ci_signal>]
 #       compares the current round (not clean) with the last row. Exits 10,
 #       prints the reason and writes <state>/<loop>-stuck-reason.txt only when
 #       the last row is not clean, both SHAs are non-empty and equal, the open
-#       items are equal, the CI signals are equal and neither says pending
+#       items are equal (by the sha256 of the full set; by the cut text for a
+#       row with no hash), the CI signals are equal and neither says pending
 #       (CI still running is not a stop), and neither round has a
 #       <record>.light.json side file. Every other case exits 0, so the evaluator decides; an
 #       untrusted progress file is not read (WARNING, exit 0: fails open).
@@ -55,17 +57,25 @@ trusted() {
   [ -z "$out" ]
 }
 
-# items <findings>: trimmed, non-blank, separators and control characters as
-# '_', each cut to 200 bytes, sorted unique, joined by ','; at most 3,800
-# bytes, so a whole row (label, SHA, clean flag, items, CI signal) stays within 4 KiB.
+# full_items <findings>: trimmed, non-blank, separators and control characters
+# as '_', each cut to 200 bytes, sorted unique, joined by ','.
+full_items() {
+  [ -f "$1" ] && [ -r "$1" ] || return 0
+  tr -d '\r' < "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' \
+    | tr ',\t\001-\010\013-\037\177' '_' | cut -b 1-200 | sort -u | paste -sd, -
+}
+# items <joined>: the display copy, at most 3,700 bytes, so a whole row (label,
+# SHA, clean flag, items, CI signal, hash) stays within 4 KiB.
 items() {
-  local joined=""
-  if [ -f "$1" ] && [ -r "$1" ]; then
-    joined="$(tr -d '\r' < "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' \
-      | tr ',\t\001-\010\013-\037\177' '_' | cut -b 1-200 | sort -u | paste -sd, -)"
-  fi
-  if [ "$(printf '%s' "$joined" | wc -c)" -gt 3800 ]; then joined="$(printf '%s' "$joined" | head -c 3784)…(truncated)"; fi
-  printf '%s' "$joined"
+  if [ "$(printf '%s' "$1" | wc -c)" -gt 3700 ]; then printf '%s…(truncated)' "$(printf '%s' "$1" | head -c 3684)"; else printf '%s' "$1"; fi
+}
+# items_hash <joined>: sha256 of the full set, or nothing when no tool exists.
+items_hash() {
+  local h
+  if command -v sha256sum >/dev/null 2>&1; then h="$(printf '%s' "$1" | sha256sum)"
+  elif command -v shasum >/dev/null 2>&1; then h="$(printf '%s' "$1" | shasum -a 256)"
+  else return 0; fi
+  safe_sha "${h%% *}"
 }
 
 # A failed `git rev-parse HEAD` in the loop gives an empty SHA; say so.
@@ -91,7 +101,8 @@ case "$CMD" in
     LABEL="$(safe_label "$3")"; SHA="$(safe_sha "$4")"
     case "$5" in 0|1) ;; *) usage "clean must be 0 or 1, not '$5'" ;; esac
     no_sha_warning
-    ROW="$(printf '%s\t%s\t%s\t%s\t%s' "$LABEL" "$SHA" "$5" "$(items "$6")" "$(safe_ci "${7:-}")")"
+    ALL="$(full_items "$6")"
+    ROW="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$LABEL" "$SHA" "$5" "$(items "$ALL")" "$(safe_ci "${7:-}")" "$(items_hash "$ALL")")"
     # One write on an O_APPEND descriptor, under flock where it exists.
     if { if command -v flock >/dev/null 2>&1; then flock -w 10 9 || echo "WARNING: lock on ${FILE} not taken in 10 s; appending without it." >&2; fi; printf '%s\n' "$ROW" >&9; } 9>>"$FILE"; then
       exit 0
@@ -107,6 +118,7 @@ ROW="$(last_row)" || exit 0
 P_LABEL="$(printf '%s' "$ROW" | cut -f1)"; P_SHA="$(printf '%s' "$ROW" | cut -f2)"
 P_CLEAN="$(printf '%s' "$ROW" | cut -f3)"; P_ITEMS="$(printf '%s' "$ROW" | cut -f4)"
 P_CI="$(printf '%s' "$ROW" | cut -s -f5)"; CI="$(safe_ci "${6:-}")"
+P_HASH="$(safe_sha "$(printf '%s' "$ROW" | cut -s -f6)")"
 [ -n "$P_LABEL" ] && [ "$P_LABEL" = "$(safe_label "$P_LABEL")" ] || exit 0
 [ "$P_CLEAN" = "0" ] || exit 0
 [ -n "$SHA" ] && [ "$SHA" = "$(safe_sha "$P_SHA")" ] || exit 0
@@ -114,8 +126,10 @@ P_CI="$(printf '%s' "$ROW" | cut -s -f5)"; CI="$(safe_ci "${6:-}")"
 for L in "$LABEL" "$P_LABEL"; do
   [ -e "${STATE}/${LOOP}-${L}.json.light.json" ] && exit 0
 done
-CUR="$(items "$5")"
-[ "$CUR" = "$P_ITEMS" ] || exit 0
+ALL="$(full_items "$5")"; CUR="$(items "$ALL")"; HASH="$(items_hash "$ALL")"
+# The hash compares the full set; the cut text is only for display.
+if [ -n "$P_HASH" ] && [ -n "$HASH" ]; then [ "$HASH" = "$P_HASH" ] || exit 0
+else [ "$CUR" = "$P_ITEMS" ] || exit 0; fi
 # A change in CI is progress; CI still running is waited on, never a stop.
 [ "$CI" = "$(safe_ci "$P_CI")" ] || exit 0
 case "$(printf '%s' "$CI" | tr 'a-z' 'A-Z')" in *PENDING*) exit 0 ;; esac

@@ -86,6 +86,8 @@ progress_stop() {
   why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings" "${2:-}")"
   rc=$?
   [ "$rc" -eq 10 ] || { [ "$rc" -eq 0 ] || echo "WARNING: the no-progress check exited ${rc}; the evaluator decides." >&2; return 0; }
+  # Record the stopped round too, so a resumed run's summary names it.
+  bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" 0 "${RECORD}.findings" "${2:-}"
   post_stop "${STATE_DIR}/${LOOP_NAME}-stuck-reason.txt"
   escalate "STUCK" "$why"
   exit 1

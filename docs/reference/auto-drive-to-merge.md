@@ -2679,8 +2679,14 @@ verdict. Before comparison each line has `\r` removed and surrounding space
 trimmed; blank lines are dropped; the rest is sorted with duplicates removed
 (`LC_ALL=C sort -u`). A missing findings file is an empty set. Commas, tabs and
 control characters inside an item become `_`, each item is cut to 200 bytes,
-and the joined field is cut to 3,800 bytes and ends `…(truncated)` when cut,
-so a whole progress row stays within 4 KiB.
+and the joined field is cut to 3,700 bytes and ends `…(truncated)` when cut,
+so a whole progress row stays within 4 KiB. The cut text is only for display:
+two rounds are compared by the `sha256` of the full sorted set, stored as the
+last column of the row. A row written before that column existed, or on a host
+with neither `sha256sum` nor `shasum`, is compared by the cut text.
+
+A round stopped as `STUCK` still appends its own progress row before it stops,
+so after a resume the budget summary and `last` name the round that stopped.
 
 Exemptions:
 
@@ -2706,6 +2712,12 @@ Exemptions:
   its worst outcome is an extra evaluator run. The driver checks the file
   when it starts, before it sets untrusted state entries aside; when the file
   is untrusted then, the rule stays off for the rest of that run.
+- **A row that could not be written.** When appending a row fails, the driver
+  prints `WARNING: could not append the <label> row to <file>.` The next
+  round compares with an older row, or with none, so the rule can miss one
+  stop; the evaluator still decides. A missing head SHA (above) has the same
+  effect for one round. Every one of these cases prints a `WARNING` and fails
+  open to the evaluator; none of them stops the loop.
 
 The reason is written to `<loop>-stuck-reason.txt` and is also the `reason`
 field of the `escalate` line:
@@ -2838,7 +2850,7 @@ without it (still one `O_APPEND` write). A file counts as trusted only when
 
 | File | Written | Content |
 | --- | --- | --- |
-| `<loop>-progress.tsv` | appended after every round | `round_label`, `head_sha`, `clean` (`0` or `1`), open items joined by `,`, `ci_signal` (empty for the crusty loop) |
+| `<loop>-progress.tsv` | appended after every round | `round_label`, `head_sha`, `clean` (`0` or `1`), open items joined by `,` (cut for display), `ci_signal` (empty for the crusty loop), `sha256` of the full open-item set |
 | `autodrive-usage.tsv` | appended after every child | `loop`, `round_label`, `phase` (`before`, `round` or `evaluator`), `sessions`, `seconds`, `tokens` |
 | `autodrive-usage.json` | rewritten after every row | totals by loop and overall |
 | `<loop>-stuck-reason.txt` | on a no-progress stop | the reason line |
@@ -2972,7 +2984,9 @@ reason, or the summary for a budget stop. Before posting:
 - the PR number must match `^[0-9]{1,10}$`;
 - `@` mentions and `#N` cross-links are neutralised, so the comment notifies
   no one and links no issue;
-- paths are reduced to their base names;
+- absolute paths are reduced to their base names, including a path after
+  a space, a quote, `(`, `=`, `:` or a backtick (`file:/home/u/x` becomes
+  `file:x`);
 - agent-derived text such as open items sits inside a fenced block in which
   any triple backtick is replaced, so it cannot close the fence;
 - the body is capped at 60,000 bytes.

@@ -137,7 +137,7 @@ case "$CMD" in
     # names, fences unclosable; the text sits inside one fenced block.
     TEXT="$(head -c 59000 -- "$BODY_IN" | tr -d '\r' \
       | sed -E 's/```/'"'''"'/g; s/~~~/'"'''"'/g; s/@/(at)/g; s/#([0-9])/# \1/g' \
-      | sed -E "s#(^|[[:space:](\"'=\`])/([^[:space:]/]+/)+#\\1#g")"
+      | sed -E "s#(^|[[:space:](\"'=:\`])/([^[:space:]/]+/)+#\\1#g")"
     BODY="$(printf 'auto-drive stopped a loop. The record of the run is below.\n\n```text\n%s\n```\n' "$TEXT")"
     F="$(mktemp "${STATE}/.comment.XXXXXX")" || { echo "WARNING: could not create the comment body file; nothing posted on PR #${PR}." >&2; exit 1; }
     printf '%s' "$BODY" | head -c 60000 > "$F"

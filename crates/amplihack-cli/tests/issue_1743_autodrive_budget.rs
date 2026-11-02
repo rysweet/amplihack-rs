@@ -512,7 +512,7 @@ fn a_clean_previous_round_never_matches_and_an_empty_set_reads_none() {
     let first: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
     assert_eq!(
         first,
-        ["round-1", fx.head().as_str(), "1", "", ""],
+        ["round-1", fx.head().as_str(), "1", "", "", h("").as_str()],
         "{rows}"
     );
 }
@@ -731,6 +731,41 @@ fn a_clean_round_is_not_stopped_after_it_ran() {
     assert_eq!(done.status.code(), Some(0), "{}", show(&done));
     assert_eq!(result(&done)["loop_result"], "DONE");
     assert_eq!(fx.evaluator_calls(), ["round-1"]);
+}
+
+/// PR #1862 review: a round stopped as STUCK appends its own row, so a
+/// relaunch that stops at the pre-round budget check names that round and
+/// its open items, not the round before it.
+#[test]
+fn a_resume_after_a_stuck_stop_names_the_stuck_round_in_the_summary() {
+    let Some(fx) = Fixture::new() else { return };
+    fx.plan(&["CONCERNS|0|0|0|a", "CONCERNS|0|0|0|b"]);
+    let o = fx.run("crusty", &[]);
+    let r = result(&o);
+    assert_eq!(r["loop_result"], "STUCK", "{}", show(&o));
+    assert_eq!(r["round_label"], "round-3");
+    let rows = fx.state_file("crusty-progress.tsv").unwrap();
+    assert_eq!(
+        rows.lines().count(),
+        3,
+        "the STUCK round has a row:\n{rows}"
+    );
+    assert!(
+        rows.lines().last().unwrap().starts_with("round-3\t"),
+        "{rows}"
+    );
+
+    let again = run_with(&fx, "crusty", &[(BUDGET_KEYS[0], "3")]);
+    let r = result(&again);
+    assert_eq!(r["loop_result"], "BUDGET_EXHAUSTED", "{}", show(&again));
+    assert_eq!(r["round_label"], "round-3");
+    assert_eq!(fx.round_calls().len(), 3, "a pre-round stop runs no round");
+    let summary = fx.state_file("autodrive-budget-summary.md").unwrap();
+    assert!(
+        summary.contains("at round label `round-3` (pre-round check)"),
+        "{summary}"
+    );
+    assert!(summary.contains("## Open items of round-3"), "{summary}");
 }
 
 #[test]
@@ -968,7 +1003,7 @@ fn the_before_round_step_is_timed_as_its_own_phase() {
 #[test]
 fn the_stop_comment_is_posted_through_gh_and_sanitised() {
     let Some(fx) = Fixture::new() else { return };
-    fx.plan(&["CONCERNS|0|0|0|ping @example-user,see #123,```evil"]);
+    fx.plan(&["CONCERNS|0|0|0|ping @example-user,see #123,```evil,file:/srv/private/secret"]);
     let o = fx.run("crusty", &[]);
     assert!(
         result(&o)["reason"].as_str().unwrap().contains(DECIDED),
@@ -992,6 +1027,9 @@ fn the_stop_comment_is_posted_through_gh_and_sanitised() {
         !body.contains(&fx.state.display().to_string()),
         "absolute paths: {body}"
     );
+    // PR #1862 review: a path after a colon is cut to its base name too.
+    assert!(!body.contains("/srv/private"), "{body}");
+    assert!(body.contains("file:secret"), "{body}");
     assert!(body.len() <= 60_000);
 }
 
@@ -1054,6 +1092,77 @@ fn findings(dir: &Path, name: &str, body: &str) -> String {
 
 const SHA: &str = "3f9c2a1e6b0d4c7a8e5f1b2c9d0a3e4f5b6c7d8e";
 
+/// The sha256 of a joined open-item set, as the last column of a row.
+fn h(joined: &str) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(joined.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// PR #1862 review: two sets that share the first 3,700 bytes (the display
+/// cut) differ, because the rule compares the hash of the full set. A row
+/// with no hash column (written before it existed) compares the cut text.
+#[test]
+fn progress_helper_compares_the_full_set_by_hash_not_the_cut_text() {
+    let tmp = tempfile::tempdir().unwrap();
+    let st = tmp.path().join("state");
+    private_dir(&st);
+    let s = st.display().to_string();
+    let common: String = (0..30)
+        .map(|i| format!("{i:02}-{}\n", "x".repeat(190)))
+        .collect();
+    let a = findings(tmp.path(), "a", &format!("{common}zz-last-a\n"));
+    let b = findings(tmp.path(), "b", &format!("{common}zz-last-b\n"));
+    let o = helper(
+        "autodrive_progress.sh",
+        &["record", &s, "m", "round-1", SHA, "0", &a],
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let rows = std::fs::read_to_string(st.join("m-progress.tsv")).unwrap();
+    assert!(
+        rows.len() <= 4096,
+        "a row stays within 4 KiB: {}",
+        rows.len()
+    );
+    let cols: Vec<&str> = rows.trim_end().split('\t').collect();
+    assert!(cols[3].ends_with("…(truncated)"), "{rows}");
+    let o = helper(
+        "autodrive_progress.sh",
+        &["check", &s, "m", "round-2", SHA, &b],
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "a different full set\n{}",
+        show(&o)
+    );
+    let o = helper(
+        "autodrive_progress.sh",
+        &["check", &s, "m", "round-2", SHA, &a],
+    );
+    assert_eq!(o.status.code(), Some(10), "the same full set\n{}", show(&o));
+
+    // A row without the hash column falls back to the cut text.
+    std::fs::write(
+        st.join("o-progress.tsv"),
+        format!("round-1\t{SHA}\t0\tq\t\n"),
+    )
+    .unwrap();
+    std::fs::set_permissions(
+        st.join("o-progress.tsv"),
+        std::fs::Permissions::from_mode(0o600),
+    )
+    .unwrap();
+    let q = findings(tmp.path(), "q", "q\n");
+    let o = helper(
+        "autodrive_progress.sh",
+        &["check", &s, "o", "round-2", SHA, &q],
+    );
+    assert_eq!(o.status.code(), Some(10), "{}", show(&o));
+}
+
 #[test]
 fn progress_helper_records_and_checks_rows() {
     let tmp = tempfile::tempdir().unwrap();
@@ -1067,7 +1176,7 @@ fn progress_helper_records_and_checks_rows() {
     );
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     let rows = std::fs::read_to_string(st.join("crusty-progress.tsv")).unwrap();
-    assert_eq!(rows, format!("round-1\t{SHA}\t0\ta,b\t\n"));
+    assert_eq!(rows, format!("round-1\t{SHA}\t0\ta,b\t\t{}\n", h("a,b")));
     let mode = std::fs::metadata(st.join("crusty-progress.tsv"))
         .unwrap()
         .permissions()
@@ -1128,7 +1237,10 @@ fn progress_helper_counts_a_ci_change_as_progress_and_never_stops_on_pending_ci(
     );
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     let rows = std::fs::read_to_string(st.join("merge-progress.tsv")).unwrap();
-    assert_eq!(rows, format!("round-1\t{SHA}\t0\tci-red\tPENDING:0/9\n"));
+    assert_eq!(
+        rows,
+        format!("round-1\t{SHA}\t0\tci-red\tPENDING:0/9\t{}\n", h("ci-red"))
+    );
     for (label, ci) in [
         ("pending CI is waited on", "PENDING:0/9"),
         ("a CI change is progress", "RED:1/9"),
@@ -1214,7 +1326,10 @@ fn progress_helper_neutralises_separators_and_refuses_symlinks() {
         &["record", &s, "c", "round-1", SHA, "0", &f],
     );
     let rows = std::fs::read_to_string(st.join("c-progress.tsv")).unwrap();
-    assert_eq!(rows, format!("round-1\t{SHA}\t0\tt_u,x_y\t\n"));
+    assert_eq!(
+        rows,
+        format!("round-1\t{SHA}\t0\tt_u,x_y\t\t{}\n", h("t_u,x_y"))
+    );
 
     let outside = tmp.path().join("outside");
     std::fs::write(&outside, "kept\n").unwrap();
