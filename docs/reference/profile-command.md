@@ -4173,7 +4173,7 @@ journal.
 | `s3` | Replace the `oauthAccount` block in `$HOME/.claude.json` with the one from `<root>/<to>/.claude.json`, keeping every other key and the file's mode. |
 | `s4` | Write the ledger: `live=<to>`, `previous=<from>`, `account`, `since` and `swapped_at`. Clear any ALERT key. |
 | | Delete `journal.json`. |
-| | Write the [recorded account](#recorded-account), if one is due: for an adopted login, the outgoing account for the new `default-original[-N]` profile; for `<from>` with no record, the outgoing account, only when the ledger read before `j0` named `<from>` as live and its `account` matched the outgoing account. For `<from>`, the record is read again first, and a usable one is never overwritten. Nothing is recorded for `<to>`. A failure prints `warning: the recorded account for profile '<name>' was not saved: <reason>` and the swap still succeeds. |
+| | Write the [recorded account](#recorded-account), if one is due: for an adopted login, the outgoing account for the new `default-original[-N]` profile, only when no other profile holds that account and organization or has it recorded (otherwise a record left under that name is deleted); for `<from>` with no record, the outgoing account, only when the ledger read before `j0` named `<from>` as live and its `account` matched the outgoing account. For `<from>`, the record is read again first, and a usable one is never overwritten. Nothing is recorded for `<to>`. A failure prints `warning: the recorded account for profile '<name>' was not saved: <reason>` and the swap still succeeds. |
 
 A swap that [recovery](#rotate-recovery) finishes writes no record.
 
@@ -6593,13 +6593,16 @@ A record is written in three cases only:
 | When | What is recorded |
 |------|------------------|
 | [`profile login <name>`](#login-check) is accepted | The account in the profile's new `.claude.json`. A later accepted login overwrites it. Nothing is recorded when that file has no account (for example a macOS Keychain login with no `oauthAccount` block). |
-| A [swap](#rotate-swap) adopts the login in `~/.claude` as `default-original[-N]` | The account in `~/.claude.json`, for the new profile. |
+| A [swap](#rotate-swap) adopts the login in `~/.claude` as `default-original[-N]` | The account in `~/.claude.json`, for the new profile, only when no existing profile holds the same account and organization or has it recorded. Otherwise nothing is recorded for the new profile, and a record left under its name by a removed profile is deleted. |
 | A [swap](#rotate-swap) completes from a profile that has no record | The outgoing account, for the `from` profile, only when the [rotate ledger](#rotate-live-profile) names `from` as live, the outgoing account matches the ledger's `account`, and no other profile holds the same account and organization or has it recorded. |
 
 Nothing else writes a record. A swap never records the incoming (`to`)
 profile and never overwrites a usable record of the outgoing one. An
 adopted login replaces any record left under the new `default-original[-N]`
-name by a removed profile. No record is ever derived
+name by a removed profile, or deletes it when the adopted login is not
+recorded. The adoption and backfill cases share one rule: an account that
+another profile holds or has recorded is never recorded for a second
+profile, because that other profile may be its owner. No record is ever derived
 from a profile name or from `accounts/<name>.json`. A failure to write one
 prints a warning and does not fail the login or the swap:
 
@@ -6793,11 +6796,15 @@ match it. With no live profile known, `~/.claude` is not judged.
 | `~/.claude` and a profile | the profile has no record; `~/.claude` matches `<live>`'s record, or no live profile is known | profile | the profile |
 | `~/.claude` and a profile | the profile matches its record, both are mismatched, or a live profile is known and neither has a record | cannot tell | none |
 
-Since `profile login` refuses a login another profile already holds, a
-holder whose account matches its record is taken as the rightful one, and
-a holder of the same account without a record is named as the duplicate;
-the rule is the same for two profiles and for `~/.claude`, whose record is
-`<live>`'s. `~/.claude` is not named when only the profile has a record,
+A holder whose account matches its record is taken as the rightful one,
+and a holder of the same account without a record is named as the
+duplicate. This rests on how records are written (see
+[Recorded account](#recorded-account)): `profile login` refuses a login
+another profile already holds, and a swap records an adopted login or a
+backfilled one only when no other profile holds that account or has it
+recorded. So a record for an account another holder also has was written
+before that holder had it. The rule is the same for two profiles and for
+`~/.claude`, whose record is `<live>`'s. `~/.claude` is not named when only the profile has a record,
 because the `~/.claude` form states that it is not `<live>`'s recorded
 account, which is unknown then.
 

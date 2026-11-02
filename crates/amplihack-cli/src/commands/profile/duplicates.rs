@@ -143,12 +143,16 @@ pub(super) fn pairs(list: &[(Holder, Account)]) -> Vec<(Holder, Holder)> {
 /// `~/.claude` is only judged while the live profile is known. Without a
 /// state no record is read.
 ///
-/// `profile login` refuses a login another profile already holds, so when
-/// one holder's account is confirmed by its record, a holder of the same
-/// account without a record is the duplicate. The rule is the same for
-/// both kinds of pair: a backfill can only record a profile's own current
-/// login, so a matching record is trusted alike for a profile and for the
-/// live profile that judges `~/.claude`.
+/// A record is written by three paths, and none of them records an account
+/// another profile already holds or has recorded: `profile login` refuses
+/// such a login, and the swap (`rotate/swap_expect.rs`) gates both the
+/// adoption of `~/.claude` as `default-original[-N]` and the backfill of
+/// the outgoing profile with `claimed_elsewhere`. So when one holder's
+/// account is confirmed by its record, a holder of the same account
+/// without a record is the duplicate. The rule is the same for both kinds
+/// of pair: a matching record is trusted alike for a profile and for the
+/// live profile that judges `~/.claude`. A new record writer must keep
+/// that gate, or this rule blames the rightful holder.
 ///
 /// In a pair of profiles, the one mismatched profile; else, when one
 /// matches its record and the other has none, the one without; `None` when

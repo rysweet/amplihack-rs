@@ -16,7 +16,9 @@
 //! - No check for `Source::Adopt`, for a profile without a record, or when
 //!   `$HOME/.claude.json` names no account.
 //! - After a completed swap: `Adopt` records the outgoing account for the
-//!   new `default-original[-N]`; a `from` without a record is recorded only
+//!   new `default-original[-N]` only when no existing profile holds it or
+//!   has it recorded, and otherwise deletes any record left under that name;
+//!   a `from` without a record is recorded only
 //!   when the ledger read before J0 has `live == from` and its `account`
 //!   matches the outgoing account. `to` is never recorded, and an existing
 //!   record is never overwritten by a swap from that profile.
@@ -433,10 +435,21 @@ fn swapping_back_backfills_the_outgoing_profile_and_never_the_incoming_one() {
     );
 }
 
+/// The fixture's `work` names the adopted account in its `.claude.json`;
+/// the swap only adopts a login no login-less profile matches, so these
+/// tests first point `work` at another account.
+fn work_holds_another_account(e: &super::tests_swap::Env) {
+    private(
+        &e.root.join("work/.claude.json"),
+        &serde_json::json!({"oauthAccount": {"accountUuid": "u-other"}}).to_string(),
+    );
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn an_adopting_swap_records_the_new_profile() {
     let e = env();
+    work_holds_another_account(&e);
     let from = swap(&e.store, &e.rs, &e.home, Source::Adopt, &n("spare"), NOW).unwrap();
     assert_eq!(from, n("default-original"));
     assert_eq!(got(&e.root, "default-original").as_deref(), Some("u-work"));
@@ -454,6 +467,7 @@ fn an_adopting_swap_is_not_checked_and_replaces_a_stale_record() {
     // D8: a record left behind by a removed `default-original` names another
     // account. Adoption is not guarded, and records the adopted login.
     let e = env();
+    work_holds_another_account(&e);
     rec(&e.root, "default-original", &uuid("u-recorded-other"));
     let from = swap(&e.store, &e.rs, &e.home, Source::Adopt, &n("spare"), NOW).unwrap();
     assert_eq!(from, n("default-original"));
@@ -462,6 +476,70 @@ fn an_adopting_swap_is_not_checked_and_replaces_a_stale_record() {
         Some(e.l)
     );
     assert_eq!(got(&e.root, "default-original").as_deref(), Some("u-work"));
+}
+
+/// The duplicate-warning line for the pair `a`, `b`, in either order.
+fn pair_line(e: &super::tests_swap::Env, a: &str, b: &str) -> String {
+    use crate::commands::profile::duplicates::{accounts, warnings};
+    let st = state(&e.root);
+    let list = accounts(&e.store, Some(&e.home));
+    let lines = warnings(Some(&st), &list);
+    let pa = format!("'{a}' and '{b}'");
+    let pb = format!("'{b}' and '{a}'");
+    lines
+        .into_iter()
+        .find(|l| l.contains(&pa) || l.contains(&pb))
+        .unwrap_or_else(|| panic!("no duplicate line for {a} and {b}"))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn adopting_a_login_an_unrecorded_profile_holds_records_nothing_and_blames_no_one() {
+    // `work` existed before records did: it has its own login of `u-work`
+    // and no record. `~/.claude` holds `u-work` too, and there is no
+    // ledger. Adopting it must not record `u-work` for `default-original`,
+    // or the duplicate warning would tell the user to log `work` in again.
+    let e = env();
+    login(&e.root.join("work").join(CREDS));
+    let from = swap(&e.store, &e.rs, &e.home, Source::Adopt, &n("spare"), NOW).unwrap();
+    assert_eq!(from, n("default-original"));
+    assert!(records(&e.root).is_empty(), "{:?}", records(&e.root));
+    let line = pair_line(&e, "work", "default-original");
+    assert!(
+        line.contains("amplihack cannot tell which of them holds the wrong login"),
+        "{line}"
+    );
+    assert!(!line.contains("profile login work'"), "{line}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn adopting_a_login_another_profile_has_recorded_records_nothing() {
+    // `work` has no `.claude.json` account any more, but its record names
+    // `u-work`: the adopted login may be `work`'s, so it is not recorded.
+    let e = env();
+    work_holds_another_account(&e);
+    rec(&e.root, "work", &uuid("u-work"));
+    swap(&e.store, &e.rs, &e.home, Source::Adopt, &n("spare"), NOW).unwrap();
+    assert_eq!(got(&e.root, "default-original"), None);
+    assert_eq!(got(&e.root, "work").as_deref(), Some("u-work"));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn an_unrecorded_adoption_deletes_a_stale_record_under_its_name() {
+    // A removed `default-original` left a record naming another account.
+    // The adopted login is not recorded, and the stale record must not
+    // stand for the new profile either.
+    let e = env();
+    login(&e.root.join("work").join(CREDS));
+    rec(&e.root, "default-original", &uuid("u-recorded-other"));
+    swap(&e.store, &e.rs, &e.home, Source::Adopt, &n("spare"), NOW).unwrap();
+    assert!(
+        !expected_dir(&e.root).join("default-original.json").exists(),
+        "{:?}",
+        records(&e.root)
+    );
 }
 
 #[cfg(target_os = "linux")]

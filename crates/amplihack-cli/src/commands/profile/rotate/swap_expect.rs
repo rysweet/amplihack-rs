@@ -25,6 +25,10 @@ pub(super) enum Pending {
     /// The adopted login, for the new `default-original[-N]`; it replaces
     /// a record left behind by a removed profile of that name.
     Adopted(Account),
+    /// An adopted login that another profile holds or has recorded: the new
+    /// profile gets no record, and a record left behind by a removed
+    /// profile of that name is removed.
+    AdoptedUnrecorded,
     /// The outgoing profile's own login, for a profile with no record yet.
     Backfill(Account),
 }
@@ -47,9 +51,10 @@ pub(super) fn unchecked(name: &ProfileName) -> String {
 
 /// Refuses a swap from a profile whose record names another account than
 /// the one in `$HOME/.claude.json`. Otherwise says what [`settle`] records:
-/// the adopted account, or, for a profile without a record, the outgoing
-/// account when the ledger shows it is the one that came out of `from` and
-/// no other profile holds it or has it recorded.
+/// the adopted account when no profile holds it or has it recorded, or, for
+/// a profile without a record, the outgoing account when the ledger shows
+/// it is the one that came out of `from` and no other profile holds it or
+/// has it recorded.
 /// A record that cannot be read counts as none, with one warning.
 pub(super) fn guard(
     store: &ProfileStore,
@@ -77,7 +82,21 @@ pub(super) fn decide(
         return Ok(Pending::Nothing);
     };
     let name = match from {
-        Source::Adopt => return Ok(Pending::Adopted(live)),
+        // Adoption is never refused. It is recorded under the same rule as
+        // a backfill: an existing profile holding the same login may be its
+        // owner (#1845), and a record here would make the duplicate warning
+        // blame that profile. `default-original[-N]` does not exist yet, so
+        // no profile is excluded.
+        Source::Adopt => {
+            let claimed = State::new(store.root()).map_or(true, |state| {
+                claimed_elsewhere(store, &state, home, None, &live)
+            });
+            return Ok(if claimed {
+                Pending::AdoptedUnrecorded
+            } else {
+                Pending::Adopted(live)
+            });
+        }
         Source::Profile(name) => name,
     };
     // A state that cannot be opened reads as no record.
@@ -101,7 +120,7 @@ pub(super) fn decide(
                     && l.account.as_deref().is_some_and(|k| live.matches_key(k))
             });
             Ok(
-                if came_from && !claimed_elsewhere(store, &state, home, name, &live) {
+                if came_from && !claimed_elsewhere(store, &state, home, Some(name), &live) {
                     Pending::Backfill(live)
                 } else {
                     Pending::Nothing
@@ -111,17 +130,18 @@ pub(super) fn decide(
     }
 }
 
-/// Whether `live` may belong to a profile other than `name`: another
-/// profile holds the same account, or has it recorded. A folder can already
-/// hold another account's login (#1845: one was written by a session, not a
-/// swap), and a backfill would make that wrong account the one the guard
-/// protects. When the other profiles cannot be read, this answers `true`,
-/// so nothing is recorded.
+/// Whether `live` may belong to a profile other than `name` (any profile,
+/// when `name` is `None`): another profile holds the same account, or has
+/// it recorded. A folder can already hold another account's login (#1845:
+/// one was written by a session, not a swap), and a backfill would make
+/// that wrong account the one the guard protects; an adoption would make
+/// the duplicate warning blame the profile that may own it. When the other
+/// profiles cannot be read, this answers `true`, so nothing is recorded.
 fn claimed_elsewhere(
     store: &ProfileStore,
     state: &State,
     home: &Path,
-    name: &ProfileName,
+    name: Option<&ProfileName>,
     live: &Account,
 ) -> bool {
     let Ok(list) = duplicates::try_accounts(store, Some(home)) else {
@@ -129,14 +149,14 @@ fn claimed_elsewhere(
     };
     let held = list
         .iter()
-        .any(|(h, a)| matches!(h, Holder::Profile(n) if n != name) && a.same(live));
+        .any(|(h, a)| matches!(h, Holder::Profile(n) if Some(n) != name) && a.same(live));
     let Ok(names) = store.list() else {
         return true;
     };
     held || names
         .iter()
         .filter_map(|n| ProfileName::parse(n).ok())
-        .filter(|n| n != name)
+        .filter(|n| Some(n) != name)
         .any(|n| matches!(expected::lookup(state, &n), Ok(Some(rec)) if rec.names(live)))
 }
 
@@ -146,6 +166,7 @@ pub(super) fn settle(store: &ProfileStore, from: &ProfileName, pending: Pending)
     match pending {
         Pending::Nothing => {}
         Pending::Adopted(a) => expected::save(store.root(), from, &a, false),
+        Pending::AdoptedUnrecorded => expected::forget(store.root(), from),
         Pending::Backfill(a) => expected::save(store.root(), from, &a, true),
     }
 }

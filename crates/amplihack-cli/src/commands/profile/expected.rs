@@ -3,8 +3,9 @@
 //! `{"account": <key>, "org": <organization uuid or null>}`.
 //!
 //! The record is written only after an accepted `profile login`, an adopted
-//! login, or a swap that moved a profile's own login back (see
-//! `rotate/swap_expect.rs`). Every `.claude.json` is compared against it,
+//! login that no other profile holds or has recorded, or a swap that moved a
+//! profile's own login back that no other profile holds or has recorded
+//! (see `rotate/swap_expect.rs`). Every `.claude.json` is compared against it,
 //! never the other way round, with [`Account::matches_record`]: one user in
 //! two organizations is two accounts. The file is read and written through
 //! the state helpers, so it is atomic, private and never followed through a
@@ -96,5 +97,16 @@ pub fn save(root: &Path, name: &ProfileName, account: &Account, keep: bool) {
     });
     if let Err(e) = saved {
         eprintln!("warning: the recorded account for profile '{name}' was not saved: {e}");
+    }
+}
+
+/// Removes the record for `name` in the state under `root`, printing a
+/// warning when it cannot be removed. For an adopted profile whose login
+/// another profile may own: a record left by a removed profile of the same
+/// name must not stand for it.
+pub fn forget(root: &Path, name: &ProfileName) {
+    let removed = State::new(root).and_then(|state| state.remove_sub_json(SUB, name.as_str()));
+    if let Err(e) = removed {
+        eprintln!("warning: the recorded account for profile '{name}' was not removed: {e}");
     }
 }
