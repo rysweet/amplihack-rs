@@ -245,6 +245,11 @@ pub(super) fn should_record(
 /// is busy nothing is recorded and the count is read without it. `None`
 /// when either readings file is damaged or the save fails, so no count is
 /// shown from unsaved data.
+///
+/// Issue #1745 asked for these readings to feed the rotator through
+/// `usage.json`. They do not, because home mode cannot confirm which account
+/// `~/.claude` holds; see "Differences from issue #1745" in
+/// `docs/reference/STATUSLINE.md`.
 fn record(
     state: &State,
     account: &str,

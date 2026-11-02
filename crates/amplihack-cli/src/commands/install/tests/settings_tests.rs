@@ -794,8 +794,12 @@ mod status_line {
         });
     }
 
+    // A repo-local install is the only production caller that passes `None`.
+    // The launch repair passes `Some(cmd)`; it is tested through
+    // `ensure_framework_installed_with` in `issue_1745_launch_repair_statusline`.
+
     #[test]
-    fn the_repair_path_keeps_an_amplihack_entry() {
+    fn a_repo_local_install_keeps_an_amplihack_entry() {
         with_home(|home| {
             let path = home.join(".claude/settings.json");
             run(home, &path, Some(CMD));
@@ -805,7 +809,7 @@ mod status_line {
     }
 
     #[test]
-    fn the_repair_path_never_adds_an_entry() {
+    fn a_repo_local_install_never_adds_an_entry() {
         with_home(|home| {
             let path = home.join(".claude/settings.json");
             let after = run(home, &path, None);

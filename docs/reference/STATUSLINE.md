@@ -476,6 +476,38 @@ Running install again gives the same file, with one `statusLine` key. Other
 keys keep their values; their order may change. `settings.json` is written
 in place after the usual timestamped backup, not through a temporary file.
 
+The launch repair is tested through `ensure_framework_installed_with`
+(`install/tests/issue_1745_launch_repair_statusline.rs`): it writes the
+entry when there is none and keeps a user's own entry. The repo-local
+path, which passes no command, is tested in `install/tests/settings_tests.rs`
+(`a_repo_local_install_*`).
+
+### Differences from issue #1745
+
+Two parts of the build differ from what issue #1745 asked for. Both are
+recorded on the issue.
+
+1. **Readings from `~/.claude` do not reach the rotator.** The issue asked
+   that home mode record its reading "as the wrapper does today (so readings
+   from ~/.claude sessions also feed the rotator)". Home mode writes
+   `home-usage.json` instead, which only the spare count reads. `profile
+   usage`, `profile rotate` and auto-switch read `usage.json` alone. The
+   reason is in [Why the readings are kept apart](#why-the-readings-are-kept-apart):
+   nothing in home mode can confirm which account `~/.claude` holds, and a
+   reading filed under the wrong login would change which login is
+   measured, picked or rotated to. Under rotation most sessions run in
+   `~/.claude`, so the rotator gets no readings from them and relies on its
+   own measurements. A way to attribute those readings safely is left to a
+   follow-up issue.
+2. **The profile wrapper adds the capacity line only where it stands in for
+   the home command.** The issue said the wrapper "prints the same line after
+   the original command". It does so only when started without `--owner`,
+   or when the saved original is the home command or `statusline.sh` (see
+   [Inside profiles](#inside-profiles), step 4). A wrapper around a user's
+   own status line copies its output through byte for byte, as it did
+   before #1745 and as the #1569 wrapper tests require, so a user's own line
+   is never changed by amplihack.
+
 ## Project Structure
 
 The statusline integrates with amplihack's structure:

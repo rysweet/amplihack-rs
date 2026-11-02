@@ -98,7 +98,9 @@ fn owned(root: Option<&Path>, owner_arg: &str, implicit: bool, input: &[u8]) -> 
     // The capacity line stands in for the home command's: it is added only
     // without `--owner`, or when the saved original is the home command or
     // the `statusline.sh` saved in its place. A wrapper around any other
-    // original passes that output through unchanged and adds nothing.
+    // original passes that output through unchanged and adds nothing. This
+    // is narrower than issue #1745 asked for; see "Differences from issue
+    // #1745" in docs/reference/STATUSLINE.md.
     let replaces_home = implicit
         || saved.as_deref().is_some_and(|c| {
             c.contains(MARKER) || home_line::script_command().as_deref() == Some(c)
