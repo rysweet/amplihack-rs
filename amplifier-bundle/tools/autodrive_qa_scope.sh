@@ -171,6 +171,21 @@ _autodrive_qa_in() {
   return 1
 }
 
+# _autodrive_qa_wd <working-directory>: set _AD_WD to the value with its `.`
+# components removed (leading `./`, inner `/./`, a trailing `/.`), and `.` when
+# that leaves nothing. GitHub Actions accepts `./engine` for `engine`; without
+# this, _autodrive_qa_covers compares `./engine` against `engine/src/` and
+# refuses a step that covers the change. Nothing else is rewritten, so `..`,
+# `//` and a leading `/` still reach the `dir` rule and are refused there.
+_autodrive_qa_wd() {
+  local w="${1:-}"
+  while [[ "$w" == ./* ]]; do w="${w#./}"; done
+  while [[ "$w" == */./* ]]; do w="${w//\/.\//\/}"; done
+  while [[ "$w" == */. ]]; do w="${w%/.}"; done
+  [ -n "$w" ] || w="."
+  _AD_WD="$w"
+}
+
 # _autodrive_qa_covers <dir> <wd>: return 0 when a command run in <wd> covers
 # the change. For each changed path, take the deepest detection candidate
 # that contains it (a path's directory decides, as in _autodrive_qa_choose);

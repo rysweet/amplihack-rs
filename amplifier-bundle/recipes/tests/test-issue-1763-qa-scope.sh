@@ -653,6 +653,24 @@ repo a/Cargo.toml a/src/lib.rs b/Cargo.toml b/src/lib.rs; put .github/workflows/
 : > "$CALLS"; run_tool "$B"
 expect ci-in-scope-docs "a path outside every candidate does not count against the step" \
     qa_command_source=ci qa_dir=a qa_ci_skip=""
+# A `./` working-directory names the same directory (crusty round 4): sibling
+# engine/ and other/ Cargo projects, one clean step in ./engine, a change in engine/.
+for wdf in ./engine ././engine engine/. ./engine/./.; do
+    repo engine/Cargo.toml engine/src/lib.rs other/Cargo.toml other/src/lib.rs
+    put .github/workflows/ci.yml "$(steps "      - run: cargo nextest run --workspace
+        working-directory: $wdf
+")"; base; change engine/src/lib.rs
+    : > "$CALLS"; run_tool "$B"
+    expect "ci-wd-dot-slash[$wdf]" "working-directory $wdf is engine" qa_status=PASS \
+        qa_command_source=ci qa_dir=engine qa_command="cargo nextest run --workspace" qa_ci_skip=""
+    expect_calls "ci-wd-dot-slash-calls[$wdf]" "the declared command runs in engine" cargo "cargo|engine|nextest run --workspace"
+done
+expect_helper ci-wd-dot-slash-helper autodrive_qa_ci $'ok\tengine\tcargo nextest run --workspace' "$B"
+# Removing `.` components does not open the rule: `.//engine` and `./../x` are still unsafe.
+ci_repo "$(steps $'      - run: cargo test\n        working-directory: .//engine\n')"
+ci_detected ci-wd-dot-double-slash "a .// working-directory" unsafe-dir
+ci_repo "$(steps $'      - run: cargo test\n        working-directory: ./../x\n')"
+ci_detected ci-wd-dot-parent "a ./.. working-directory" unsafe-dir
 # jamestown shape: a root pyproject.toml, a nested Rust crate, a root pytest step.
 repo pyproject.toml tests/test_x.py grid-encode-decode/Cargo.toml grid-encode-decode/src/lib.rs
 put .github/workflows/ci.yml "$(steps $'      - run: pytest\n')"; base; change grid-encode-decode/src/lib.rs

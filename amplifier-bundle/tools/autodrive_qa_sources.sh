@@ -174,8 +174,8 @@ _autodrive_qa_workflow_changed() {
 # one line with no `${{`, quote, backtick, `$`, `\`, `&`, `;`, `|`, `<`, `>`
 # or leading NAME=value. A block scalar holding an invocation, a plain value
 # continued on the next line and `defaults: run: working-directory` are not
-# clean. The step's own working-directory, if any, must pass the qa.toml
-# `dir` rule and exist, and must cover the change.
+# clean. The step's own working-directory, `.` components removed, must pass
+# the qa.toml `dir` rule, exist and cover the change (_autodrive_qa_wd).
 autodrive_qa_ci() {
   local -x LC_ALL=C
   local r="${1:-.}" e="" f="" mode="" typ="" oid="" size="" b="" res="" line="" wd="" cmd="" c=0 bad=""
@@ -334,7 +334,7 @@ EOT
   if [ "$c" -eq 0 ]; then printf 'none\tno-match\n'; return 0; fi
   if [ "$c" -gt 1 ]; then printf 'none\tseveral-matches\n'; return 0; fi
   case "$cmd" in ''|*[!A-Za-z0-9\ ._/=+:,@%-]*) printf 'none\tunsafe-command\n'; return 0 ;; esac
-  [ -n "$wd" ] || wd="."
+  _autodrive_qa_wd "$wd"; wd="$_AD_WD"
   _autodrive_qa_dir_check "$r" "$wd"
   case "$?" in
     0) ;;

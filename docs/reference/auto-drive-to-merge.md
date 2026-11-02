@@ -1201,7 +1201,11 @@ the next, more indented line, and any match in a workflow or job with
 
 The CI source gives a command only when there is exactly one match in all the
 files and it is clean. The step's own `working-directory`, if present, becomes
-`qa_dir`; it must pass the `dir` rule above and exist. The step must also
+`qa_dir` once its `.` components are removed, so `./engine`, `././engine` and
+`engine/.` all give `engine` and an empty result gives `.`. Nothing else is
+rewritten: `.//engine` becomes `/engine` and `./../x` becomes `../x`, and both
+still break the `dir` rule. The result must pass the `dir` rule above and
+exist. The step must also
 cover the change. For each changed path, take the deepest detection candidate
 (a directory with `Cargo.toml`, `pyproject.toml`, `setup.py` or
 `package.json`, after the same-ecosystem collapse) that contains it. The
