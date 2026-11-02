@@ -1861,7 +1861,10 @@ earlier: up to `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` before the
 cycle, `300` seconds by default and at most `3600`. The rule is:
 
 - A passive reading at most 300 seconds older than the cycle is recorded at
-  the cycle's `at`. It is out by at most five minutes, under 2% of the 4.5
+  the cycle's `at`. Its age is measured from the cycle's start, the time the
+  reading was accepted at, not from `at`, which `profile usage` takes once
+  every row is in: a slow `claude` fallback for one row never turns another
+  row the table shows as read into an unknown one. It is out by at most five minutes, under 2% of the 4.5
   hours the [rate](#rate-and-runway) needs at least.
 - A passive reading more than 300 seconds older than the cycle is unknown,
   in the history and in the [capacity summary](#capacity-summary) alike: it

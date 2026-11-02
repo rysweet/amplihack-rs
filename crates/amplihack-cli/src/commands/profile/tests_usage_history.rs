@@ -206,7 +206,7 @@ fn from_rows_keeps_valid_subscription_rows_and_lists_the_unknown_ones() {
         home,
         over,
     ];
-    let s: Snapshot = from_rows(T, &rows, None).unwrap();
+    let s: Snapshot = from_rows(T, T, &rows, None).unwrap();
     assert_eq!(s.at, T);
     assert_eq!(
         s.points.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -224,7 +224,7 @@ fn from_rows_counts_a_swapped_live_profile_as_unknown() {
         live,
         row("spare", report(UsageState::Ok, Some(1.0), Some(2.0))),
     ];
-    let s = from_rows(T, &rows, Some(&name("work"))).unwrap();
+    let s = from_rows(T, T, &rows, Some(&name("work"))).unwrap();
     assert!(!s.points.contains_key("work"));
     assert_eq!(s.unknown, ["work"]);
     assert!(s.points.contains_key("spare"));
@@ -236,7 +236,7 @@ fn a_snapshot_entry_holds_only_its_points() {
         row("work", report(UsageState::Ok, Some(20.0), Some(30.0))),
         row("slow", UsageReport::empty(UsageState::Timeout)),
     ];
-    let e = from_rows(T, &rows, None)
+    let e = from_rows(T, T, &rows, None)
         .unwrap()
         .entry(super::usage_history::Writer::Usage);
     assert_eq!(e.at, T);
@@ -249,11 +249,11 @@ fn from_rows_without_a_subscription_login_is_none() {
     key.api_key = true;
     let mut home = row("~/.claude", report(UsageState::Ok, Some(1.0), Some(1.0)));
     home.live_in_home = true;
-    assert!(from_rows(T, &[key, home], None).is_none());
-    assert!(from_rows(T, &[], None).is_none());
+    assert!(from_rows(T, T, &[key, home], None).is_none());
+    assert!(from_rows(T, T, &[], None).is_none());
     let slow = row("slow", UsageReport::empty(UsageState::Timeout));
     assert_eq!(
-        from_rows(T, &[slow], None).map(|s| s.unknown),
+        from_rows(T, T, &[slow], None).map(|s| s.unknown),
         Some(vec!["slow".to_string()]),
         "a login with no reading still counts"
     );
@@ -390,7 +390,7 @@ fn no_limit(state: UsageState, w: f64) -> UsageReport {
 #[test]
 fn from_rows_a_login_with_no_session_limit_is_usable_now() {
     let rows = vec![row("free", no_limit(UsageState::Ok, 40.0))];
-    let s = from_rows(T, &rows, None).unwrap();
+    let s = from_rows(T, T, &rows, None).unwrap();
     let pt = &s.points["free"];
     assert_eq!((pt.s, pt.w, pt.no_session_limit), (None, 40, true));
     assert!(super::capacity_summary::usable_now(pt, 95));
@@ -400,7 +400,7 @@ fn from_rows_a_login_with_no_session_limit_is_usable_now() {
 fn from_rows_a_session_not_read_is_not_usable_now() {
     // `session_limit` stays `true`: the parser saw no evidence either way.
     let rows = vec![row("blank", report(UsageState::Ok, None, Some(40.0)))];
-    let s = from_rows(T, &rows, None).unwrap();
+    let s = from_rows(T, T, &rows, None).unwrap();
     let pt = &s.points["blank"];
     assert_eq!((pt.s, pt.no_session_limit), (None, false));
     assert!(!super::capacity_summary::usable_now(pt, 95));
@@ -409,7 +409,7 @@ fn from_rows_a_session_not_read_is_not_usable_now() {
 #[test]
 fn from_rows_no_session_limit_with_a_full_week_is_not_usable_now() {
     let rows = vec![row("spent", no_limit(UsageState::WeeklyExhausted, 100.0))];
-    let s = from_rows(T, &rows, None).unwrap();
+    let s = from_rows(T, T, &rows, None).unwrap();
     assert!(!super::capacity_summary::usable_now(&s.points["spent"], 95));
 }
 
@@ -429,7 +429,7 @@ fn the_history_line_keeps_no_session_limit_writer_and_unknowns() {
         row("blank", report(UsageState::Ok, None, Some(40.0))),
         row("slow", UsageReport::empty(UsageState::Timeout)),
     ];
-    let e = from_rows(T, &rows, None).unwrap().entry(Writer::Usage);
+    let e = from_rows(T, T, &rows, None).unwrap().entry(Writer::Usage);
     let line = to_line(&e);
     let v: serde_json::Value = serde_json::from_str(&line).unwrap();
     assert_eq!(v["by"], "usage");
@@ -1072,11 +1072,42 @@ fn a_passive_reading_up_to_300_s_old_is_recorded_at_the_cycle_time() {
         passive("edge", 11.0, 21.0, READING_MAX_AGE),
         row("direct", report(UsageState::Ok, Some(12.0), Some(22.0))),
     ];
-    let s = from_rows(T, &rows, None).unwrap();
+    let s = from_rows(T, T, &rows, None).unwrap();
     assert!(s.unknown.is_empty(), "{:?}", s.unknown);
     let e = s.entry(Writer::Usage);
     assert_eq!(e.at, T, "the line's time is the cycle's");
     assert_eq!(e.profiles["edge"].w, 21);
+}
+
+#[test]
+fn a_reading_age_is_judged_when_the_run_started_reading_not_when_it_ended() {
+    // Crusty round 6: `profile usage` accepts passive readings against the
+    // time it started reading, and a `claude` fallback can take tens of
+    // seconds before the line's `at`. A reading exactly 300 s old at the
+    // start is shown as read in the table, so it is counted too, at `at`.
+    let start = T - 45;
+    let mut edge = passive("edge", 11.0, 21.0, 0);
+    edge.report.observed_at = Some(start - READING_MAX_AGE);
+    let mut over = passive("over", 13.0, 23.0, 0);
+    over.report.observed_at = Some(start - READING_MAX_AGE - 1);
+    let rows = vec![
+        edge,
+        over,
+        row("direct", report(UsageState::Ok, Some(12.0), Some(22.0))),
+    ];
+    let s = from_rows(start, T, &rows, None).unwrap();
+    assert_eq!(s.unknown, ["over"], "only the one over 300 s at the start");
+    let e = s.entry(Writer::Usage);
+    assert_eq!(
+        e.at, T,
+        "the line's time is still when the readings were in"
+    );
+    assert_eq!(e.profiles["edge"].w, 21);
+    // Judged on the later clock, `edge` would have been unknown.
+    assert_eq!(
+        from_rows(T, T, &rows, None).unwrap().unknown,
+        ["edge", "over"]
+    );
 }
 
 #[test]
@@ -1089,7 +1120,7 @@ fn a_passive_reading_older_than_300_s_is_unknown_and_never_a_history_point() {
             passive("stale", 10.0, 20.0, age),
             row("direct", report(UsageState::Ok, Some(12.0), Some(22.0))),
         ];
-        let s = from_rows(T, &rows, None).unwrap();
+        let s = from_rows(T, T, &rows, None).unwrap();
         assert_eq!(s.unknown, ["stale"], "age {age}");
         let e = s.entry(Writer::Usage);
         assert!(!e.profiles.contains_key("stale"), "age {age}");
@@ -1117,8 +1148,8 @@ fn a_stale_passive_reading_adds_nothing_to_the_rate() {
         passive("stale", 60.0, 60.0, HOUR),
         row("direct", report(UsageState::Ok, Some(20.0), Some(20.0))),
     ];
-    let current = from_rows(T, &rows, None).unwrap();
-    let only_direct = from_rows(T, &rows[1..], None).unwrap();
+    let current = from_rows(T, T, &rows, None).unwrap();
+    let only_direct = from_rows(T, T, &rows[1..], None).unwrap();
     let js = |c: &Snapshot| {
         let s = compute(&Inputs {
             current: c,
@@ -1176,7 +1207,7 @@ fn a_row_whose_direct_read_failed_is_unknown_and_in_no_figure() {
         fell_back_and_read,
         row("work", report(UsageState::Ok, Some(20.0), Some(30.0))),
     ];
-    let s = from_rows(T, &rows, None).unwrap();
+    let s = from_rows(T, T, &rows, None).unwrap();
     assert_eq!(s.unknown, ["expired", "slow", "unsaved"]);
     assert_eq!(
         s.points.keys().map(String::as_str).collect::<Vec<_>>(),

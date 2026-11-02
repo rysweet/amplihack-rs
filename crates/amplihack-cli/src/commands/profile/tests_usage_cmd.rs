@@ -1858,7 +1858,7 @@ mod summary_1797 {
         history: &[usage_history::Entry],
         now: i64,
     ) -> Option<Summary> {
-        let current = usage_history::from_rows(now, rows, swapped)?;
+        let current = usage_history::from_rows(now, now, rows, swapped)?;
         Some(capacity_summary::compute(&capacity_summary::Inputs {
             current: &current,
             weights,

@@ -267,13 +267,14 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         rows.push(home_row_of(reader.home()));
     }
     // Taken after the probes: the summary, `--summary-json`'s `at` and the
-    // history line are all as of when the readings were in.
+    // history line are all as of when the readings were in. A passive
+    // reading's age is still judged at `now`, the time it was accepted at.
     let at = now_secs();
     order(&mut rows, at);
     // Issue #1797: the capacity summary, from these rows only; no probe.
     // `--raw` is diagnostic output and gets neither summary nor history.
     // `None` when no row is a subscription login: no summary, no history.
-    let current = usage_history::from_rows(at, &rows, swapped.as_ref());
+    let current = usage_history::from_rows(now, at, &rows, swapped.as_ref());
     let summary = current
         .as_ref()
         .filter(|_| !raw && output != Output::Json)

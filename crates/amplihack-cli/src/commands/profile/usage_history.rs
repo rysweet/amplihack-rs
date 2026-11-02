@@ -248,7 +248,18 @@ pub(super) fn entry_of(r: &UsageReport) -> Option<Point> {
 /// [`READING_MAX_AGE`], and so is every row that could not be read: an
 /// `error` row, whether or not a direct read failed first, is never 0% or
 /// 100% used.
-pub(super) fn from_rows(at: i64, rows: &[Row], swapped: Option<&ProfileName>) -> Option<Snapshot> {
+///
+/// Two times: `read_at` is when the run started reading, the `now` its
+/// passive readings were accepted against; `at` is when the readings were
+/// all in, the line's time. A reading's age is judged at `read_at`, the
+/// same clock that accepted it, so a slow `claude` fallback elsewhere in
+/// the run never turns a row the table shows as read into an unknown one.
+pub(super) fn from_rows(
+    read_at: i64,
+    at: i64,
+    rows: &[Row],
+    swapped: Option<&ProfileName>,
+) -> Option<Snapshot> {
     let mut points = BTreeMap::new();
     let mut unknown = Vec::new();
     let logins = rows.iter().filter(|r| !r.api_key && !r.live_in_home);
@@ -256,7 +267,7 @@ pub(super) fn from_rows(at: i64, rows: &[Row], swapped: Option<&ProfileName>) ->
     for r in logins {
         any = true;
         let moved = swapped.is_some_and(|s| s.as_str() == r.profile);
-        let counted = !moved && recent_enough(r.report.observed_at, at);
+        let counted = !moved && recent_enough(r.report.observed_at, read_at);
         match entry_of(&r.report).filter(|_| counted) {
             Some(p) => {
                 points.insert(r.profile.clone(), p);
