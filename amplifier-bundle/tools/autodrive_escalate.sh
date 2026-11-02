@@ -59,10 +59,20 @@ record_result() {
   rm -f -- "$t"; echo "WARNING: could not write ${LOOP_NAME}-result.json in the state dir." >&2
 }
 
-# usage_add <phase> <start SECONDS> [mark]: one usage row for a timed child.
+# wait_ledger <phase>: the path, cleared, a child's usage-limit waits are written
+# to, through AMPLIHACK_USAGE_WAIT_LEDGER (profile-command.md#usage-limit-wait).
+wait_ledger() {
+  local lf="${STATE_DIR}/.wait-${LOOP_NAME}-${ROUND_LABEL}-${1}"
+  rm -f -- "$lf"; printf "%s" "$lf"
+}
+
+# usage_add <phase> <start SECONDS> [mark]: one usage row for a timed child,
+# less the time it waited for a usage limit to lift (a row of its own, #1743).
 usage_add() {
-  bash "${LOOP_HOME}/autodrive_budget.sh" add "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "$((SECONDS - $2))" ${3:+--since "$3"} \
+  local lf="${STATE_DIR}/.wait-${LOOP_NAME}-${ROUND_LABEL}-${1}"
+  bash "${LOOP_HOME}/autodrive_budget.sh" add "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "$((SECONDS - $2))" ${3:+--since "$3"} --waited "$lf" \
     || echo "WARNING: the ${1} usage row for ${ROUND_LABEL} was not recorded (see above)." >&2
+  rm -f -- "$lf"
 }
 
 # post_stop <file>: the PR comment for a stop decided in code; never fatal.

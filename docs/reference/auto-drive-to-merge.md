@@ -2737,7 +2737,31 @@ The limits are context keys of `auto-drive-to-merge.yaml`. Override them with
 | --- | --- | --- |
 | `autodrive_budget_loop_rounds` | `12` | Round recipes run by one loop. Each loop is compared with this limit on its own. |
 | `autodrive_budget_total_rounds` | `20` | Round recipes run by both loops together. |
-| `autodrive_budget_wall_seconds` | `14400` | Seconds spent in children: before-round steps, rounds and evaluator runs, across both loops. |
+| `autodrive_budget_wall_seconds` | `14400` | Seconds spent in children: before-round steps, rounds and evaluator runs, across both loops, less the time they waited for a usage limit to lift. |
+
+Time spent waiting for a usage limit is not counted. An agent step that hits
+a Claude usage limit can wait inside the child for the reset or for another
+login ([Usage-limit wait](profile-command.md#usage-limit-wait)). On a
+workstation that wait is on by default and has no maximum, so it could spend
+the whole budget without any agent working. The driver therefore sets
+`AMPLIHACK_USAGE_WAIT_LEDGER` for each child it times to a file in the state
+directory. Each wait that ends appends its real length in whole seconds to
+that file. The driver takes the total out of the child's row and records it
+as a separate row of phase `wait`, which no limit counts. The summary and
+`autodrive-usage.json` report it as usage-limit wait seconds. A
+`BUDGET_EXHAUSTED` stop is therefore never caused by a wait.
+
+The subtraction is bounded by the child's own time. A ledger that is a
+symlink or not a regular file of this user subtracts nothing, with a
+`WARNING`, and lines that are not integers are skipped with a `WARNING`;
+both err towards counting more time, not less. Waits in a nested crusty loop
+are recorded by that loop and taken out of the outer before-round step with
+its other rows. Waits that run at the same time in parallel steps of one
+round are added together, so a round with parallel waits can have more
+subtracted than any single wait took, up to the round's own length.
+
+The CI wait inside a merge round is agent time for this purpose and is
+counted.
 
 All three are cumulative across every run that uses the same state
 directory. A relaunch therefore continues counting from the rounds and
@@ -2852,7 +2876,7 @@ without it (still one `O_APPEND` write). A file counts as trusted only when
 | File | Written | Content |
 | --- | --- | --- |
 | `<loop>-progress.tsv` | appended after every round | `round_label`, `head_sha`, `clean` (`0` or `1`), open items joined by `,` (cut for display), `ci_signal` (empty for the crusty loop), `sha256` of the full open-item set |
-| `autodrive-usage.tsv` | appended after every child | `loop`, `round_label`, `phase` (`before`, `round` or `evaluator`), `sessions`, `seconds`, `tokens` |
+| `autodrive-usage.tsv` | appended after every child | `loop`, `round_label`, `phase` (`before`, `round`, `evaluator`, or `wait` for the usage-limit waits of the child in the row before it, with `0` sessions), `sessions`, `seconds`, `tokens` |
 | `autodrive-usage.json` | rewritten after every row | totals by loop and overall |
 | `<loop>-stuck-reason.txt` | on a no-progress stop | the reason line |
 | `autodrive-budget-summary.md` | on a budget stop | the summary below |
@@ -2876,7 +2900,7 @@ log text is written to these files.
 An example `autodrive-usage.json`:
 
 ```json
-{"loops":{"crusty":{"rounds":7,"sessions":15,"seconds":5130},"merge-ready":{"rounds":12,"sessions":26,"seconds":8811}},"total":{"rounds":19,"sessions":41,"seconds":13941,"tokens":"unknown"}}
+{"loops":{"crusty":{"rounds":7,"sessions":15,"seconds":5130,"wait_seconds":0},"merge-ready":{"rounds":12,"sessions":26,"seconds":8811,"wait_seconds":5402}},"total":{"rounds":19,"sessions":41,"seconds":13941,"wait_seconds":5402,"tokens":"unknown"}}
 ```
 
 ### Output
@@ -2927,8 +2951,13 @@ Limits reached: autodrive_budget_loop_rounds
 | merge-ready rounds | 12 | 12 |
 | total rounds | 19 | 20 |
 | wall seconds | 13941 | 14400 |
+| usage-limit wait seconds | 5402 | not counted |
 | sessions | 41 | none |
 | tokens | unknown | none |
+
+Wall seconds are the time children ran, less the time they waited for a
+usage limit to lift. Those waits are the usage-limit wait seconds row, and
+no limit counts them.
 
 ## Open items of round-12
 

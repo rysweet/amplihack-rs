@@ -98,8 +98,18 @@ done
 printf '%s\n' "$label" >> "$S/round-calls"
 r="${label#round-}"
 line="$(sed -n "${r}p" "$S/plan")"; [ -n "$line" ] || line="$(tail -n 1 "$S/plan")"
-IFS='|' read -r verdict commit sleep_s light items <<<"$line"
+IFS='|' read -r verdict commit sleep_s light items wait_s <<<"$line"
 [ "${sleep_s:-0}" -gt 0 ] && sleep "$sleep_s"
+# A usage-limit wait, as the real wait reports it: log lines, then its
+# length on the ledger the loop names (profile-command.md#usage-limit-wait).
+if [ "${wait_s:-0}" -gt 0 ]; then
+  echo "amplihack.recipe.usage_limit_wait start reason=usage_limit wait=capacity harness=claude reset=none until=2026-10-18 14:00:00 -07:00 bound=max_wait" >&2
+  sleep "$wait_s"
+  printf '%s\n' "$wait_s" >> "$AMPLIHACK_USAGE_WAIT_LEDGER"
+  echo "amplihack.recipe.usage_limit_wait end reason=rotator capacity" >&2
+  echo "amplihack.recipe.usage_limit_wait resume attempt=2" >&2
+fi
+[ -f "$S/wait_claim" ] && cat -- "$S/wait_claim" >> "$AMPLIHACK_USAGE_WAIT_LEDGER"
 if [ "$commit" = "1" ]; then
   t="$(git -C "$wd" write-tree)"
   c="$(git -C "$wd" -c user.name=t -c user.email=t@t commit-tree "$t" -p HEAD -m "stub $label")"
@@ -207,7 +217,8 @@ impl Fixture {
         Some(fx)
     }
 
-    /// One line per round label: `VERDICT|COMMIT|SLEEP|LIGHT|item,item`.
+    /// One line per round label: `VERDICT|COMMIT|SLEEP|LIGHT|item,item[|WAIT]`,
+    /// where WAIT is the seconds of a usage-limit wait the round reports.
     /// The last line repeats; `-` as the verdict writes no record.
     fn plan(&self, lines: &[&str]) {
         std::fs::write(self.stub.join("plan"), lines.join("\n") + "\n").unwrap();
@@ -720,6 +731,145 @@ fn wall_seconds_counts_child_time() {
         summary.contains("Limits reached: autodrive_budget_wall_seconds"),
         "{summary}"
     );
+}
+
+fn usage_rows(fx: &Fixture) -> Vec<Vec<String>> {
+    fx.state_file("autodrive-usage.tsv")
+        .expect("usage file")
+        .lines()
+        .map(|l| l.split('\t').map(str::to_string).collect())
+        .collect()
+}
+
+#[test]
+fn a_usage_limit_wait_does_not_spend_the_wall_budget() {
+    let Some(fx) = Fixture::new() else { return };
+    // The round waits 3 s for a limit and works for well under 3 s. Without
+    // the wait taken out, the 3 s wall limit would be reached.
+    fx.plan(&["CONCERNS|1|0|0|a|3"]);
+    let o = run_with(
+        &fx,
+        "crusty",
+        &[(BUDGET_KEYS[0], "1"), (BUDGET_KEYS[2], "3")],
+    );
+    let r = result(&o);
+    assert_eq!(r["loop_result"], "BUDGET_EXHAUSTED", "{}", show(&o));
+    let summary = fx.state_file("autodrive-budget-summary.md").unwrap();
+    assert!(
+        summary.contains("Limits reached: autodrive_budget_loop_rounds\n"),
+        "the wait spent the wall budget:\n{summary}"
+    );
+    assert!(
+        summary.contains("| usage-limit wait seconds | 3 | not counted |"),
+        "{summary}"
+    );
+    let rows = usage_rows(&fx);
+    let wait: Vec<_> = rows.iter().filter(|r| r[2] == "wait").collect();
+    assert_eq!(wait.len(), 1, "{rows:?}");
+    assert_eq!(
+        wait[0][..5],
+        ["crusty", "round-1", "wait", "0", "3"],
+        "{rows:?}"
+    );
+    let round = rows.iter().find(|r| r[2] == "round").expect("round row");
+    assert!(round[4].parse::<u64>().unwrap() < 3, "{rows:?}");
+    let json: serde_json::Value =
+        serde_json::from_str(&fx.state_file("autodrive-usage.json").unwrap()).unwrap();
+    assert_eq!(json["total"]["wait_seconds"], 3);
+    assert_eq!(json["total"]["sessions"], 1, "a wait is not a session");
+    assert_eq!(json["loops"]["crusty"]["wait_seconds"], 3);
+    assert!(
+        std::fs::read_dir(&fx.state).unwrap().all(|e| !e
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".wait-")),
+        "a wait ledger was left in the state dir"
+    );
+}
+
+#[test]
+fn a_wait_ledger_never_takes_out_more_than_the_child_ran() {
+    let Some(fx) = Fixture::new() else { return };
+    fx.set("wait_claim", "999999\nnot-a-number\n");
+    fx.plan(&["CONCERNS|1|1|0|a"]);
+    let o = run_with(&fx, "crusty", &[(BUDGET_KEYS[0], "1")]);
+    assert_eq!(
+        result(&o)["loop_result"],
+        "BUDGET_EXHAUSTED",
+        "{}",
+        show(&o)
+    );
+    assert!(
+        stderr(&o).contains("malformed line(s) in the usage-limit wait ledger"),
+        "{}",
+        show(&o)
+    );
+    let rows = usage_rows(&fx);
+    let round = rows.iter().find(|r| r[2] == "round").expect("round row");
+    let wait = rows.iter().find(|r| r[2] == "wait").expect("wait row");
+    assert_eq!(round[4], "0", "{rows:?}");
+    let w: u64 = wait[4].parse().unwrap();
+    assert!(
+        (1..=3).contains(&w),
+        "the wait is capped at the round's own time: {rows:?}"
+    );
+}
+
+#[test]
+fn an_untrusted_wait_ledger_subtracts_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    private_dir(&state);
+    let outside = dir.path().join("outside");
+    std::fs::write(&outside, "50\n").unwrap();
+    let ledger = state.join(".wait-crusty-round-1-round");
+    symlink(&outside, &ledger).unwrap();
+    let st = state.display().to_string();
+    let l = ledger.display().to_string();
+    let o = helper(
+        "autodrive_budget.sh",
+        &[
+            "add", &st, "crusty", "round-1", "round", "60", "--waited", &l,
+        ],
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert!(stderr(&o).contains("WARNING"), "{}", show(&o));
+    let tsv = std::fs::read_to_string(state.join("autodrive-usage.tsv")).unwrap();
+    assert_eq!(tsv, "crusty\tround-1\tround\t1\t60\tunknown\n");
+}
+
+#[test]
+fn a_nested_loops_waits_are_not_counted_again_by_the_outer_step() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    private_dir(&state);
+    let st = state.display().to_string();
+    let add = |a: &[&str]| {
+        let mut all = vec!["add", st.as_str()];
+        all.extend_from_slice(a);
+        let o = helper("autodrive_budget.sh", &all);
+        assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    };
+    let ledger = state.join("nested-ledger");
+    std::fs::write(&ledger, "40\n").unwrap();
+    let l = ledger.display().to_string();
+    // A nested crusty round of 50 s, 40 of them waiting; then the outer
+    // before-round step that ran it for 55 s in all.
+    add(&["crusty", "round-1", "round", "50", "--waited", &l]);
+    add(&["merge-ready", "round-1", "before", "55", "--since", "0"]);
+    let tsv = std::fs::read_to_string(state.join("autodrive-usage.tsv")).unwrap();
+    assert_eq!(
+        tsv,
+        "crusty\tround-1\tround\t1\t10\tunknown\n\
+         crusty\tround-1\twait\t0\t40\tunknown\n\
+         merge-ready\tround-1\tbefore\t0\t5\tunknown\n"
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(state.join("autodrive-usage.json")).unwrap())
+            .unwrap();
+    assert_eq!(json["total"]["seconds"], 15);
+    assert_eq!(json["total"]["wait_seconds"], 40);
 }
 
 #[test]

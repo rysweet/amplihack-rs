@@ -4,11 +4,16 @@
 #
 #   mark <state>
 #       prints the number of rows in <state>/autodrive-usage.tsv.
-#   add <state> <loop> <label> <phase> <seconds> [--since <mark>]
+#   add <state> <loop> <label> <phase> <seconds> [--since <mark>] [--waited <ledger>]
 #       appends one row: loop, round_label, phase (before|round|evaluator),
 #       sessions, seconds, tokens. With --since, the rows appended after
-#       <mark> (a nested loop's) are subtracted, so each second and each
-#       session is counted once. Then rewrites autodrive-usage.json.
+#       <mark> (a nested loop's, wait rows included) are subtracted, so each
+#       second and each session is counted once. With --waited, the seconds
+#       the child spent waiting for a usage limit to lift (one integer per
+#       line of <ledger>, written by the wait through
+#       AMPLIHACK_USAGE_WAIT_LEDGER) are taken out of the row and appended as
+#       a second row of phase `wait` with 0 sessions. The wall budget leaves
+#       wait rows out. Then rewrites autodrive-usage.json.
 #   totals <state>
 #       rewrites autodrive-usage.json from the rows.
 #   check <state> <loop> <pre|post|before> <label> <pr> [--force] [key=value...]
@@ -32,13 +37,13 @@ set -uo pipefail
 umask 077
 export LC_ALL=C
 
-usage() { echo "ERROR: autodrive_budget.sh: ${1:-usage}. Usage: mark <state> | add <state> <loop> <label> <phase> <seconds> [--since <mark>] | totals <state> | check <state> <loop> <pre|post|before> <label> <pr> [--force] [key=value...] | post <state> <pr> <file>" >&2; exit 2; }
+usage() { echo "ERROR: autodrive_budget.sh: ${1:-usage}. Usage: mark <state> | add <state> <loop> <label> <phase> <seconds> [--since <mark>] [--waited <ledger>] | totals <state> | check <state> <loop> <pre|post|before> <label> <pr> [--force] [key=value...] | post <state> <pr> <file>" >&2; exit 2; }
 
 CMD="${1:-}"
 [ $# -gt 0 ] && shift
 case "$CMD" in
   mark|totals) [ $# -eq 1 ] || usage "${CMD} takes 1 argument" ;;
-  add) [ $# -eq 5 ] || [ $# -eq 7 ] || usage "add takes 5 or 7 arguments" ;;
+  add) [ $# -eq 5 ] || [ $# -eq 7 ] || [ $# -eq 9 ] || usage "add takes 5, 7 or 9 arguments" ;;
   check) [ $# -ge 5 ] || usage "check takes at least 5 arguments" ;;
   post) [ $# -eq 3 ] || usage "post takes 3 arguments" ;;
   *) usage "unknown command '${CMD}'" ;;
@@ -78,7 +83,7 @@ rows() {
   [ -f "$USAGE" ] || return 0
   awk -F'\t' -v skip="${1:-0}" '
     NR <= skip { next }
-    NF == 6 && $1 ~ /^[A-Za-z0-9._-]+$/ && $3 ~ /^(before|round|evaluator)$/ \
+    NF == 6 && $1 ~ /^[A-Za-z0-9._-]+$/ && $3 ~ /^(before|round|evaluator|wait)$/ \
       && $4 ~ /^[0-9]+$/ && length($4) <= 12 && $5 ~ /^[0-9]+$/ && length($5) <= 12 \
       && ($6 == "unknown" || ($6 ~ /^[0-9]+$/ && length($6) <= 12)) {
       print $1, $3, $4 + 0, $5 + 0, $6; next }
@@ -86,18 +91,20 @@ rows() {
     END { if (bad) printf "WARNING: skipped %d malformed row(s) in autodrive-usage.tsv\n", bad > "/dev/stderr" }' "$USAGE"
 }
 
-# totals_json: the totals by loop and overall, as one JSON line.
+# totals_json: the totals by loop and overall, as one JSON line. seconds
+# leaves usage-limit waits out; wait_seconds counts them.
 totals_json() {
   rows | awk '
     { if (!($1 in seen)) { seen[$1] = 1; order[++n] = $1 }
       if ($2 == "round") { r[$1]++; R++ }
-      s[$1] += $3; S += $3; w[$1] += $4; W += $4
+      if ($2 == "wait") { x[$1] += $4; X += $4 } else { w[$1] += $4; W += $4 }
+      s[$1] += $3; S += $3
       if ($5 == "unknown") unk = 1; else T += $5 }
     END {
       printf "{\"loops\":{"
       for (i = 1; i <= n; i++) { l = order[i]
-        printf "%s\"%s\":{\"rounds\":%d,\"sessions\":%d,\"seconds\":%d}", (i > 1 ? "," : ""), l, r[l], s[l], w[l] }
-      printf "},\"total\":{\"rounds\":%d,\"sessions\":%d,\"seconds\":%d,\"tokens\":", R, S, W
+        printf "%s\"%s\":{\"rounds\":%d,\"sessions\":%d,\"seconds\":%d,\"wait_seconds\":%d}", (i > 1 ? "," : ""), l, r[l], s[l], w[l], x[l] }
+      printf "},\"total\":{\"rounds\":%d,\"sessions\":%d,\"seconds\":%d,\"wait_seconds\":%d,\"tokens\":", R, S, W, X
       if (unk || NR == 0) printf "\"unknown\"}}\n"; else printf "%d}}\n", T }'
 }
 
@@ -114,15 +121,36 @@ case "$CMD" in
     LOOP="$(safe "$2")"; LABEL="$(safe "$3")"; PHASE="$4"
     case "$PHASE" in before|round|evaluator) ;; *) usage "phase must be before, round or evaluator" ;; esac
     SECS="$(budget_int "$5")" || usage "seconds must be an integer, not '$5'"
-    SESSIONS=1
-    if [ $# -eq 7 ]; then
-      [ "$6" = "--since" ] || usage "unknown option '$6'"
-      MARK="$(budget_int "$7")" || usage "mark must be an integer, not '$7'"
+    SESSIONS=1; MARK=""; LEDGER=""
+    shift 5
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --since) MARK="$(budget_int "$2")" || usage "mark must be an integer, not '$2'" ;;
+        --waited) LEDGER="$2" ;;
+        *) usage "unknown option '$1'" ;;
+      esac
+      shift 2
+    done
+    if [ -n "$MARK" ]; then
       read -r N_SESS N_SECS <<<"$(rows "$MARK" | awk '{ s += $3; w += $4 } END { printf "%d %d\n", s, w }')"
       [ "${N_SESS:-0}" -gt 0 ] && SESSIONS=0
       SECS=$(( SECS > ${N_SECS:-0} ? SECS - ${N_SECS:-0} : 0 ))
     fi
+    WAITED=0 # an unreadable ledger counts no wait: the budget is never undercounted
+    if [ -n "$LEDGER" ] && { [ -e "$LEDGER" ] || [ -L "$LEDGER" ]; }; then
+      if [ -f "$LEDGER" ] && [ ! -L "$LEDGER" ] && [ -O "$LEDGER" ]; then
+        WAITED="$(awk '$0 ~ /^[0-9]+$/ && length($0) <= 12 { w += $0; next } { bad++ }
+          END { if (bad) printf "WARNING: skipped %d malformed line(s) in the usage-limit wait ledger\n", bad > "/dev/stderr"; printf "%d\n", w }' "$LEDGER")" || WAITED=0
+      else
+        echo "WARNING: the usage-limit wait ledger is not a regular file of this user; no wait is subtracted." >&2
+      fi
+    fi
+    WAITED="$(budget_int "${WAITED:-0}")" || WAITED=0
+    [ "$WAITED" -le "$SECS" ] || WAITED="$SECS" # never more than the child's own time
+    SECS=$((SECS - WAITED))
     ROW="$(printf '%s\t%s\t%s\t%s\t%s\tunknown' "$LOOP" "$LABEL" "$PHASE" "$SESSIONS" "$SECS")"
+    [ "$WAITED" -eq 0 ] || ROW="${ROW}
+$(printf '%s\t%s\twait\t0\t%s\tunknown' "$LOOP" "$LABEL" "$WAITED")"
     # One write on an O_APPEND descriptor, under flock (10 s at most) where it exists.
     if ! { if command -v flock >/dev/null 2>&1; then flock -w 10 9 || echo "WARNING: lock on ${USAGE} not taken in 10 s; appending without it." >&2; fi; printf '%s\n' "$ROW" >&9; } 9>>"$USAGE"; then
       echo "WARNING: could not append a usage row to ${USAGE}." >&2; exit 1
@@ -190,10 +218,11 @@ done
 require_trusted
 
 # Use: rounds of this loop, of crusty and merge-ready, of all; seconds; sessions.
-read -r U_LOOP U_CRUSTY U_MERGE U_TOTAL U_WALL U_SESS U_TOK <<<"$(rows | awk -v me="$LOOP" '
+# Wall seconds leave usage-limit waits (phase wait) out; they are reported apart.
+read -r U_LOOP U_CRUSTY U_MERGE U_TOTAL U_WALL U_WAIT U_SESS U_TOK <<<"$(rows | awk -v me="$LOOP" '
   $2 == "round" { t++; if ($1 == me) m++; if ($1 == "crusty") c++; if ($1 == "merge-ready") g++ }
-  { w += $4; s += $3; if ($5 == "unknown") unk = 1; else tok += $5 }
-  END { printf "%d %d %d %d %d %d %s\n", m, c, g, t, w, s, ((unk || NR == 0) ? "unknown" : tok) }')"
+  { if ($2 == "wait") x += $4; else w += $4; s += $3; if ($5 == "unknown") unk = 1; else tok += $5 }
+  END { printf "%d %d %d %d %d %d %d %s\n", m, c, g, t, w, x, s, ((unk || NR == 0) ? "unknown" : tok) }')"
 reached() { [ "$1" -gt 0 ] && [ "$2" -ge "$1" ]; }
 HIT=()
 reached "$L_LOOP" "$U_LOOP" && HIT+=(autodrive_budget_loop_rounds)
@@ -243,8 +272,13 @@ Limits reached: ${HIT_TEXT}
 ${TABLE}
 | total rounds | ${U_TOTAL} | $(lim "$L_TOTAL") |
 | wall seconds | ${U_WALL} | $(lim "$L_WALL") |
+| usage-limit wait seconds | ${U_WAIT} | not counted |
 | sessions | ${U_SESS} | none |
 | tokens | ${U_TOK} | none |
+
+Wall seconds are the time children ran, less the time they waited for a
+usage limit to lift. Those waits are the usage-limit wait seconds row, and
+no limit counts them.
 
 ## Open items of ${LABEL:-?}
 
