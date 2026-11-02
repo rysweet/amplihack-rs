@@ -228,7 +228,7 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
 #[test]
 fn a_timed_out_probe_is_not_treated_as_exhausted() {
     let slow = reading("slow", &timed_out());
-    assert_ne!(slow.reading, Reading::Exhausted);
+    assert!(!matches!(slow.reading, Reading::Exhausted { .. }));
     // The overflow rule: no known reset, no plan capacity, no regain time.
     assert!(!plan_usable(&settings(), &slow.reading));
     assert_eq!(regains(&settings(), &slow.reading, &slow.windows), None);

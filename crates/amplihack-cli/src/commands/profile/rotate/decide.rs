@@ -10,18 +10,40 @@ use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow
 pub enum Reading {
     /// Percent used in the session and weekly (all models) windows.
     Measured { session: f64, week: f64 },
-    /// The session or weekly limit is reached.
-    Exhausted,
+    /// The session or weekly limit is reached. The fields keep the percent
+    /// used as read: the window that ran out is never below 100, the other
+    /// is as measured, and `None` means the report had no such window.
+    /// They are for display only; decisions read `Windows`, not these fields.
+    Exhausted {
+        session: Option<f64>,
+        week: Option<f64>,
+    },
     /// The probe failed or its output was incomplete.
     Failed,
 }
 
 impl Reading {
     /// D1: a missing session window is 0% used; a missing week window, or
-    /// any state other than ok or exhausted, is a failed probe.
+    /// any state other than ok or exhausted, is a failed probe. An exhausted
+    /// report keeps both figures, with the window that ran out raised to 100.
     pub fn from_report(r: &UsageReport) -> Self {
+        let used = |w: &Option<UsageWindow>| w.as_ref().map(|w| w.used_percentage);
+        let full = |w: &Option<UsageWindow>| {
+            Some(
+                used(w)
+                    .filter(|u| u.is_finite())
+                    .map_or(100.0, |u| u.max(100.0)),
+            )
+        };
         match r.state {
-            UsageState::SessionExhausted | UsageState::WeeklyExhausted => Self::Exhausted,
+            UsageState::SessionExhausted => Self::Exhausted {
+                session: full(&r.session),
+                week: used(&r.week_all),
+            },
+            UsageState::WeeklyExhausted => Self::Exhausted {
+                session: used(&r.session),
+                week: full(&r.week_all),
+            },
             UsageState::Ok => match &r.week_all {
                 Some(week) => Self::Measured {
                     session: r.session.as_ref().map_or(0.0, |w| w.used_percentage),
@@ -38,7 +60,7 @@ impl Reading {
     pub fn headroom(&self) -> Option<u8> {
         match self {
             Self::Failed => None,
-            Self::Exhausted => Some(0),
+            Self::Exhausted { .. } => Some(0),
             Self::Measured { session, week } => {
                 let left = (100.0 - session.max(*week)).floor();
                 if left.is_nan() {
@@ -48,6 +70,14 @@ impl Reading {
             }
         }
     }
+
+    /// An exhausted reading with both windows at 100%: the meaning the
+    /// variant had before it kept its figures.
+    #[cfg(test)]
+    pub const EXHAUSTED: Self = Self::Exhausted {
+        session: Some(100.0),
+        week: Some(100.0),
+    };
 }
 
 /// One usage window as measured: percent used and when it resets.
@@ -197,7 +227,7 @@ pub enum Decision {
 /// Whether the live login has reached a threshold. A failed probe counts.
 pub(super) fn needs_swap(s: &Settings, live: &Reading) -> bool {
     match live {
-        Reading::Failed | Reading::Exhausted => true,
+        Reading::Failed | Reading::Exhausted { .. } => true,
         Reading::Measured { session, week } => {
             *session >= f64::from(s.session_at) || *week >= f64::from(s.week_at)
         }
@@ -209,7 +239,7 @@ pub(super) fn needs_swap(s: &Settings, live: &Reading) -> bool {
 pub(super) fn best(candidates: &[Measured]) -> Option<(&ProfileName, u8)> {
     candidates
         .iter()
-        .filter(|c| !matches!(c.reading, Reading::Exhausted))
+        .filter(|c| !matches!(c.reading, Reading::Exhausted { .. }))
         .filter_map(|c| c.reading.headroom().map(|h| (&c.name, h)))
         .min_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.as_str().cmp(b.0.as_str())))
 }

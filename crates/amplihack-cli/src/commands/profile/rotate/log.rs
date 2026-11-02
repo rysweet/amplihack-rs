@@ -202,14 +202,19 @@ pub mod msg {
         }
     }
 
-    /// `s=<n>% w=<n>%` with `sep` between; an exhausted login shows as
-    /// 100%, a failed probe as `failed`.
+    /// `s=<n>% w=<n>%` with `sep` between; an exhausted login shows the
+    /// figures read, with a missing window as 100%; a failed probe shows
+    /// `failed`.
     pub(in super::super) fn usage(r: &Reading, sep: &str) -> String {
         match r {
             Reading::Measured { session, week } => {
                 format!("s={}%{sep}w={}%", pct(*session), pct(*week))
             }
-            Reading::Exhausted => format!("s=100%{sep}w=100%"),
+            Reading::Exhausted { session, week } => format!(
+                "s={}%{sep}w={}%",
+                pct(session.unwrap_or(100.0)),
+                pct(week.unwrap_or(100.0))
+            ),
             Reading::Failed => "failed".to_string(),
         }
     }

@@ -107,7 +107,7 @@ fn message_grammar() {
     assert_eq!(
         msg::cycle(
             Some(&name("work")),
-            &Reading::Exhausted,
+            &Reading::EXHAUSTED,
             &[(key.clone(), platform)],
             Some(&key)
         ),
@@ -117,7 +117,7 @@ fn message_grammar() {
         msg::cycle(
             Some(&key),
             &platform,
-            &[(name("work"), Reading::Exhausted)],
+            &[(name("work"), Reading::EXHAUSTED)],
             Some(&key)
         ),
         "cycle live=key key:per-token work:s=100%,w=100%"
@@ -267,6 +267,107 @@ mod handfix_text {
         assert_eq!(
             msg::lost_login(&name("ryan-ryansweet")),
             "ALERT: profile ryan-ryansweet has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login ryan-ryansweet"
+        );
+    }
+}
+
+// --- Issue #1846: the log shows an exhausted login's measured figures -------
+
+mod issue_1846 {
+    use super::super::decide::Reading;
+    use super::super::log::msg;
+    use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow};
+
+    fn report(state: UsageState, session: Option<f64>, week: Option<f64>) -> UsageReport {
+        let w = |label: &str, used: f64| UsageWindow {
+            label: label.into(),
+            used_percentage: used,
+            resets_text: None,
+            resets_at: None,
+        };
+        UsageReport {
+            state,
+            session: session.map(|u| w("session", u)),
+            week_all: week.map(|u| w("all models", u)),
+            week_models: Vec::new(),
+            session_limit: session.is_some(),
+        }
+    }
+
+    fn shown(state: UsageState, session: Option<f64>, week: Option<f64>) -> String {
+        msg::usage(&Reading::from_report(&report(state, session, week)), " ")
+    }
+
+    #[test]
+    fn a_session_exhausted_login_logs_its_real_week() {
+        assert_eq!(
+            shown(UsageState::SessionExhausted, Some(100.0), Some(62.0)),
+            "s=100% w=62%"
+        );
+    }
+
+    #[test]
+    fn a_weekly_exhausted_login_logs_its_real_session() {
+        assert_eq!(
+            shown(UsageState::WeeklyExhausted, Some(30.0), Some(100.0)),
+            "s=30% w=100%"
+        );
+    }
+
+    #[test]
+    fn a_weekly_only_login_logs_a_missing_session_as_100() {
+        assert_eq!(
+            shown(UsageState::WeeklyExhausted, None, Some(100.0)),
+            "s=100% w=100%"
+        );
+    }
+
+    #[test]
+    fn an_exhausted_window_read_as_98_logs_100() {
+        assert_eq!(
+            shown(UsageState::SessionExhausted, Some(98.0), Some(40.0)),
+            "s=100% w=40%"
+        );
+        assert_eq!(
+            shown(UsageState::WeeklyExhausted, Some(30.0), Some(99.6)),
+            "s=30% w=100%"
+        );
+    }
+
+    #[test]
+    fn the_separator_is_kept_and_stored_figures_are_rounded_down() {
+        let r = Reading::Exhausted {
+            session: Some(100.0),
+            week: Some(62.9),
+        };
+        assert_eq!(msg::usage(&r, ","), "s=100%,w=62%");
+        let none = Reading::Exhausted {
+            session: None,
+            week: None,
+        };
+        assert_eq!(msg::usage(&none, " "), "s=100% w=100%");
+    }
+
+    #[test]
+    fn the_swap_line_shows_the_live_logins_figures() {
+        let name = |s: &str| crate::commands::profile::name::ProfileName::parse(s).unwrap();
+        let live = Reading::Exhausted {
+            session: Some(100.0),
+            week: Some(62.0),
+        };
+        let target = Reading::Measured {
+            session: 10.0,
+            week: 20.0,
+        };
+        assert_eq!(
+            msg::swap(
+                &name("work"),
+                &name("spare"),
+                &live,
+                &target,
+                super::super::decide::Reason::Threshold
+            ),
+            "swap work->spare live s=100% w=62% target s=10% w=20% reason=threshold"
         );
     }
 }
