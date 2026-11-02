@@ -5,10 +5,12 @@
 
 use super::auto_switch::{LeaseView, RecordOutcome};
 use super::usage_cmd::{
-    ErrorReason, Raw, Row, env_credential_var, error_warnings, format_pct, marks, observations,
-    order, persist_messages, render_json, render_table, sanitize_display, swap_warning,
+    ErrorReason, ORDER_LINE, Raw, Row, env_credential_var, error_warnings, format_pct, marks,
+    observations, order, persist_messages, render_json, render_table, sanitize_display,
+    swap_warning,
 };
 use super::usage_parse::{UsageReport, UsageState, UsageWindow};
+use super::usage_source::Spend;
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 
@@ -57,6 +59,8 @@ fn row(name: &str, rep: UsageReport) -> Row {
         raw: None,
         source: None,
         direct_failure: None,
+        spend: Spend::NotApplicable,
+        extra_shape: None,
     }
 }
 
@@ -193,6 +197,186 @@ fn groups_are_usable_then_exhausted_then_unavailable() {
 }
 
 // ---------------------------------------------------------------------------
+// Ordering by the rotator's headroom (issue #1813)
+// ---------------------------------------------------------------------------
+
+/// `floor(100 - max(session, week))`, most first; ties by name only.
+#[test]
+fn usable_rows_sort_by_descending_headroom_of_the_worse_window() {
+    let mut rows = vec![
+        ok("low", Some((10.0, None)), Some((80.0, None))), // 20
+        ok("high", Some((60.0, None)), Some((5.0, None))), // 40
+        ok("mid", Some((30.0, None)), Some((30.0, None))), // 70
+        ok("top", Some((1.0, None)), Some((2.0, None))),   // 98
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["top", "mid", "high", "low"]);
+}
+
+#[test]
+fn equal_headroom_is_broken_by_name_not_by_reset_time() {
+    let mut rows = vec![
+        ok(
+            "z",
+            Some((10.0, Some(NOW + HOUR))),
+            Some((40.0, Some(NOW + DAY))),
+        ),
+        ok(
+            "a",
+            Some((40.0, Some(NOW + 9 * DAY))),
+            Some((10.0, Some(NOW + 9 * DAY))),
+        ),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["a", "z"]);
+}
+
+/// 41.2% and 41.9% both leave a headroom of 58: name decides.
+#[test]
+fn floored_headroom_ties_fall_back_to_name() {
+    let mut rows = vec![
+        ok("b", None, Some((41.2, Some(NOW + DAY)))),
+        ok("a", None, Some((41.9, Some(NOW + DAY)))),
+        ok("c", None, Some((42.0, Some(NOW + DAY)))),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["a", "b", "c"]);
+}
+
+#[test]
+fn a_weekly_only_row_ranks_by_its_weekly_room() {
+    let mut wk = ok("weekly", None, Some((20.0, Some(NOW + DAY))));
+    wk.report.session_limit = false;
+    let mut rows = vec![
+        ok(
+            "busy",
+            Some((50.0, Some(NOW + HOUR))),
+            Some((10.0, Some(NOW + DAY))),
+        ),
+        wk,
+        ok(
+            "idle",
+            Some((5.0, Some(NOW + HOUR))),
+            Some((5.0, Some(NOW + DAY))),
+        ),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["idle", "weekly", "busy"]);
+}
+
+/// D2: a window whose reset has passed counts as 0% for ordering only.
+#[test]
+fn a_passed_window_counts_as_zero_for_ordering() {
+    let mut rows = vec![
+        ok(
+            "fresh",
+            Some((30.0, Some(NOW + HOUR))),
+            Some((30.0, Some(NOW + DAY))),
+        ),
+        ok(
+            "reset",
+            Some((95.0, Some(NOW - 1))),
+            Some((95.0, Some(NOW - 1))),
+        ),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["reset", "fresh"]);
+    assert_eq!(
+        rows[0].report.session.as_ref().unwrap().used_percentage,
+        95.0,
+        "ordering never changes the reading"
+    );
+}
+
+/// D3: an `ok` row with no all-models week is a failed probe to the
+/// rotator, so it sorts after every row that has a headroom, by name.
+#[test]
+fn an_ok_row_without_a_week_window_sorts_last_among_usable_rows() {
+    let mut rows = vec![
+        ok("nowk-b", Some((1.0, Some(NOW + HOUR))), None),
+        ok(
+            "nearly-full",
+            Some((5.0, Some(NOW + HOUR))),
+            Some((99.0, Some(NOW + DAY))),
+        ),
+        ok("nowk-a", None, None),
+        row(
+            "out",
+            report(
+                UsageState::SessionExhausted,
+                Some((100.0, Some(NOW + HOUR))),
+                Some((10.0, Some(NOW + DAY))),
+            ),
+        ),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["nearly-full", "nowk-a", "nowk-b", "out"]);
+}
+
+#[test]
+fn a_nan_reading_sorts_with_the_rows_that_have_no_headroom() {
+    let mut rows = vec![
+        ok("nan", Some((f64::NAN, None)), Some((f64::NAN, None))),
+        ok("full", Some((0.0, None)), Some((99.9, None))),
+        ok("aaa", None, None),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["full", "aaa", "nan"]);
+}
+
+#[test]
+fn every_group_in_order_with_the_live_and_default_rows_placed_by_numbers() {
+    let mut live = ok(
+        "live",
+        Some((70.0, Some(NOW + HOUR))),
+        Some((10.0, Some(NOW + DAY))),
+    );
+    live.live_in = true;
+    live.default = true;
+    let mut api = row("key", UsageReport::empty(UsageState::Ok));
+    api.api_key = true;
+    let mut rows = vec![
+        row("err", report(UsageState::Error, None, None)),
+        row("slow", report(UsageState::Timeout, None, None)),
+        row("garbled", report(UsageState::Unparsed, None, None)),
+        row("anon", report(UsageState::NotLoggedIn, None, None)),
+        api,
+        row("spent", report(UsageState::SpendLimit, None, None)),
+        row(
+            "back-soon",
+            report(
+                UsageState::WeeklyExhausted,
+                Some((10.0, Some(NOW + HOUR))),
+                Some((100.0, Some(NOW + DAY))),
+            ),
+        ),
+        ok("nowk", Some((1.0, None)), None),
+        live,
+        ok(
+            "roomy",
+            Some((10.0, Some(NOW + HOUR))),
+            Some((20.0, Some(NOW + DAY))),
+        ),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(
+        names(&rows),
+        [
+            "roomy",
+            "live",
+            "nowk",
+            "back-soon",
+            "spent",
+            "key",
+            "anon",
+            "slow",
+            "garbled",
+            "err"
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Marks and attribution (D11)
 // ---------------------------------------------------------------------------
 
@@ -274,10 +458,15 @@ fn table_has_the_documented_columns_and_dashes_for_missing_values() {
             "SESSION",
             "SESSION RESETS",
             "WEEK",
-            "WEEK RESETS"
+            "WEEK RESETS",
+            "SPEND"
         ]
     );
-    assert_eq!(lines.len(), 3, "{out}");
+    assert_eq!(lines.len(), 4, "{out}");
+    assert_eq!(
+        lines[3], "order: rotator pick (most room in the worse of session and week, then name)",
+        "{out}"
+    );
     let work: Vec<&str> = lines[1].split_whitespace().collect();
     assert_eq!(work[0], "work");
     assert!(lines[1].contains("* hosts:personal"), "{out}");
@@ -299,7 +488,8 @@ fn table_has_the_documented_columns_and_dashes_for_missing_values() {
             "-",
             "-",
             "-",
-            "-"
+            "-",
+            "n/a"
         ]
     );
     assert!(!out.contains("Fable"), "model lines are JSON-only: {out}");
@@ -444,6 +634,7 @@ fn json_is_an_array_of_rows_with_the_exact_keys() {
                 "session",
                 "session_limit",
                 "source",
+                "spend",
                 "state",
                 "week_all",
                 "week_models"
@@ -943,6 +1134,41 @@ fn swap_warning_names_the_profile_in_fixed_text() {
 }
 
 #[test]
+fn spend_swap_note_names_the_profile_and_says_the_spend_is_unknown() {
+    // Crusty round 5: a swap before or during the live row's `--spend`
+    // probe drops that probe's result; the note says so and is one line.
+    let name = super::name::ProfileName::parse("work").unwrap();
+    let got = super::usage_cmd::spend_swap_note(&name);
+    assert_eq!(
+        got,
+        "note: the login in ~/.claude changed while profile \"work\" was probed \
+         for its spend; its spend is unknown this run"
+    );
+    assert!(!got.contains('\n'), "{got}");
+    // The doc table lists the same text.
+    let doc = include_str!("../../../../../docs/reference/profile-command.md");
+    assert!(
+        doc.contains(&got.replace("\"work\"", "\"<name>\"")),
+        "profile-command.md lists the note"
+    );
+}
+
+#[test]
+fn home_spend_swap_note_is_fixed_text_listed_in_the_docs() {
+    // Crusty round 6: a swap before or during the `~/.claude` row's
+    // `--spend` probe drops that probe's result; the note says so.
+    let got = super::usage_cmd::home_spend_swap_note();
+    assert_eq!(
+        got,
+        "note: the login in ~/.claude changed while the ~/.claude row was probed \
+         for its spend; its spend is unknown this run"
+    );
+    assert!(!got.contains('\n'), "{got}");
+    let doc = include_str!("../../../../../docs/reference/profile-command.md");
+    assert!(doc.contains(&got), "profile-command.md lists the note");
+}
+
+#[test]
 fn swap_warning_is_one_line_that_is_not_a_warning() {
     let name = super::name::ProfileName::parse("work").unwrap();
     let got = swap_warning(&name);
@@ -988,7 +1214,10 @@ fn the_table_says_when_the_live_login_runs_on_overflow() {
     work.live_in = false;
     cred.live_in = true;
     let out = render_table(&[work, cred]);
-    assert!(out.ends_with("running on overflow: cred\n"), "{out}");
+    assert!(
+        out.ends_with(&format!("running on overflow: cred\n{ORDER_LINE}\n")),
+        "{out}"
+    );
 }
 
 #[test]
@@ -1007,7 +1236,7 @@ fn either_plan_limit_on_the_live_marked_login_means_overflow() {
     ] {
         let out = render_table(&[live_cred(state, s, w)]);
         assert!(
-            out.ends_with("running on overflow: cred\n"),
+            out.ends_with(&format!("running on overflow: cred\n{ORDER_LINE}\n")),
             "{state:?} {s}/{w}: {out}"
         );
     }
@@ -1763,6 +1992,81 @@ mod request {
         assert_eq!(session(&probes[1]), 20.0, "plan read with the request");
         assert_eq!(f.starts(), ["-p /usage".to_string(), ARGS.join(" ")]);
     }
+
+    // -----------------------------------------------------------------------
+    // Issue #1856: the spend a `claude` probe gives its row
+    //
+    // - An accepted `get_usage` answer is accepted only with credits off:
+    //   spend `NotApplicable`, with one start.
+    // - `/usage` text gives `Spend::of_text`: `LimitReached` for a spend
+    //   limit, `Ok` for a usage reading, `Unknown` for a login prompt, text
+    //   with no reading, or a probe killed at its deadline.
+    // - `probe_with` never sets `extra_shape`.
+    // -----------------------------------------------------------------------
+
+    use super::super::usage_source::Spend;
+
+    const SPEND_TEXT: &str =
+        "printf 'Current session: 37%% used\\nYour organization has reached its spend limit\\n'";
+    const LOGIN_TEXT: &str = "printf 'Not logged in. Please run /login\\n'";
+    const NOISE_TEXT: &str = "printf 'nothing to see\\n'";
+
+    #[test]
+    fn an_accepted_get_usage_answer_has_no_spend_to_read() {
+        let f = Fake::new(ANSWER, USAGE).answer(&accepted());
+        let p = f.probe(ProbeMode::Auto, 20, false);
+        assert_eq!(f.starts(), [ARGS.join(" ")]);
+        assert_eq!(p.spend, Spend::NotApplicable);
+        assert_eq!(p.extra_shape, None);
+    }
+
+    #[test]
+    fn usage_text_gives_ok_or_limit_reached() {
+        let f = Fake::new(ANSWER, USAGE);
+        let p = f.probe(ProbeMode::Text, 20, false);
+        assert_eq!(p.report.state, UsageState::Ok);
+        assert_eq!(p.spend, Spend::Ok);
+        let f = Fake::new(ANSWER, SPEND_TEXT);
+        let p = f.probe(ProbeMode::Text, 20, false);
+        assert_eq!(p.report.state, UsageState::SpendLimit);
+        assert_eq!(p.spend, Spend::LimitReached);
+        assert_eq!(p.extra_shape, None);
+    }
+
+    #[test]
+    fn the_auto_fallback_to_usage_text_reads_the_spend() {
+        let f = Fake::new(ANSWER, SPEND_TEXT).answer(&error_answer());
+        let p = f.probe(ProbeMode::Auto, 20, false);
+        assert_eq!(f.starts(), [ARGS.join(" "), "-p /usage".to_string()]);
+        assert_eq!(p.spend, Spend::LimitReached);
+    }
+
+    #[test]
+    fn text_with_no_usage_reading_is_never_ok() {
+        for usage in [LOGIN_TEXT, NOISE_TEXT] {
+            let f = Fake::new(ANSWER, usage);
+            let p = f.probe(ProbeMode::Text, 20, false);
+            assert!(
+                matches!(
+                    p.report.state,
+                    UsageState::NotLoggedIn | UsageState::Unparsed
+                ),
+                "{:?}",
+                p.report.state
+            );
+            assert_eq!(p.spend, Spend::Unknown, "{usage}");
+        }
+    }
+
+    #[test]
+    fn a_timed_out_text_probe_has_an_unknown_spend() {
+        let f = Fake::new(ANSWER, "sleep 30");
+        let start = Instant::now();
+        let p = f.probe(ProbeMode::Text, 1, false);
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert_eq!(p.report.state, UsageState::Timeout);
+        assert_eq!(p.spend, Spend::Unknown);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2034,6 +2338,7 @@ fn cells(out: &str, name: &str) -> Vec<String> {
         "SESSION RESETS",
         "WEEK",
         "WEEK RESETS",
+        "SPEND",
     ]
     .iter()
     .scan(0, |from, h| {
@@ -2185,7 +2490,7 @@ fn observations_of_no_session_limit_rows_have_no_session_window() {
 //   never probed) right after `state`.
 // - With `--raw`, a passive or direct row is followed by
 //   `  (<source>: no claude output)` and its JSON `raw` is empty strings.
-// - `fallback_notes(rows)` gives one stderr line per fallback row with a
+// - `source_notes(rows)` (was `fallback_notes`) gives one stderr line per fallback row with a
 //   direct failure: `note: profile "<name>": direct read gave <reason>;
 //   using claude`. It is printed only with `--raw`.
 // - `observations()` leaves out passive rows.
@@ -2193,7 +2498,7 @@ fn observations_of_no_session_limit_rows_have_no_session_window() {
 //   table and the JSON.
 // ---------------------------------------------------------------------------
 
-use super::usage_cmd::fallback_notes;
+use super::usage_cmd::source_notes;
 use super::usage_source::Source;
 
 fn sourced(mut r: Row, source: Option<Source>) -> Row {
@@ -2336,7 +2641,7 @@ fn fallback_notes_name_the_direct_failure() {
         Some(Source::Direct),
     );
     assert_eq!(
-        fallback_notes(&[a, b, c]),
+        source_notes(&[a, b, c]),
         ["note: profile \"aa\": direct read gave http 5xx; using claude"]
     );
 }
@@ -2383,4 +2688,218 @@ fn a_missing_claude_is_an_error_row_with_its_reason() {
     );
     r.error = Some(ErrorReason::NoClaude);
     assert_eq!(json(&[r])[0]["error"], "claude not found");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1856: the `SPEND` column, the JSON `spend` key, and the notes for
+// credits-on rows
+//
+// Contract:
+// - `Row::spend: Spend` and `Row::extra_shape: Option<ExtraUsageShape>`.
+// - The table has eight columns; `SPEND` is the last, showing
+//   `Spend::as_str()`.
+// - JSON has `spend` (a string, always present) right after `source`. The
+//   shape is never in the JSON: no `extra_usage`, `is_enabled`,
+//   `monthly_limit` or `extra_shape` key, and none of its text.
+// - `source_notes(rows)` gives, for each `direct` row with a shape, two
+//   lines:
+//   `note: profile "<name>": direct read gave usage credits on; windows
+//   direct, <ending>` where the ending is `spend from claude` for `Ok` and
+//   `LimitReached`, `spend probe failed` for `Unknown` and `spend not
+//   probed` for `NotProbed`; then `note: profile "<name>": <shape line>`.
+//   Fallback rows keep their single `using claude` line; other rows give
+//   none.
+// - A credits-on direct row with `--raw` still shows
+//   `  (direct: no claude output)`.
+// ---------------------------------------------------------------------------
+
+use super::usage_request::ExtraUsageShape;
+
+fn credits_on_row(name: &str, spend: Spend) -> Row {
+    let mut r = sourced(
+        ok(
+            name,
+            Some((12.0, Some(NOW + HOUR))),
+            Some((34.0, Some(NOW + DAY))),
+        ),
+        Some(Source::Direct),
+    );
+    r.spend = spend;
+    r.extra_shape = Some(ExtraUsageShape::of(&serde_json::json!({
+        "is_enabled": true,
+        "monthly_limit": 987_654,
+        "used_credits": 4321.5,
+        "currency": "SENTINELCUR"
+    })));
+    r
+}
+
+const SHAPE_LINE: &str = "extra_usage: object; keys: currency, is_enabled, monthly_limit, used_credits; is_enabled: bool true";
+
+#[test]
+fn the_spend_column_shows_each_value() {
+    let mut rows = vec![
+        sourced(
+            ok("aa", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Direct),
+        ),
+        credits_on_row("bb", Spend::Ok),
+        credits_on_row("cc", Spend::LimitReached),
+        credits_on_row("dd", Spend::Unknown),
+        credits_on_row("ee", Spend::NotProbed),
+    ];
+    rows[0].spend = Spend::NotApplicable;
+    let out = render_table(&rows);
+    for (name, want) in [
+        ("aa", "n/a"),
+        ("bb", "ok"),
+        ("cc", "limit_reached"),
+        ("dd", "unknown"),
+        ("ee", "not_probed"),
+    ] {
+        let c = cells(&out, name);
+        assert_eq!(c.len(), 8, "{c:?}");
+        assert_eq!(c[7], want, "{name}: {out}");
+        assert_eq!(c[2], "ok", "the spend never changes the state");
+        let session = if name == "aa" { "1%" } else { "12%" };
+        assert_eq!(c[3], session, "the spend never changes the windows");
+    }
+    assert!(
+        !out.contains("SENTINEL") && !out.contains("987654"),
+        "{out}"
+    );
+}
+
+#[test]
+fn json_gives_the_spend_after_the_source_on_every_row() {
+    let rows = vec![
+        credits_on_row("aa", Spend::LimitReached),
+        credits_on_row("bb", Spend::NotProbed),
+        credits_on_row("cc", Spend::Unknown),
+        credits_on_row("dd", Spend::Ok),
+        sourced(ok("ee", None, None), Some(Source::Passive)),
+        ok("ff", None, None),
+    ];
+    let v = json(&rows);
+    let got: Vec<&str> = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["spend"].as_str().expect("spend is a string"))
+        .collect();
+    assert_eq!(
+        got,
+        ["limit_reached", "not_probed", "unknown", "ok", "n/a", "n/a"]
+    );
+    let text = render_json(&rows);
+    let source = text.find("\"source\"").unwrap();
+    let spend = text.find("\"spend\"").unwrap();
+    let session = text.find("\"session\"").unwrap();
+    assert!(
+        source < spend && spend < session,
+        "spend follows source: {text}"
+    );
+}
+
+#[test]
+fn json_never_carries_the_shape() {
+    let rows = vec![credits_on_row("aa", Spend::Ok)];
+    let text = render_json(&rows);
+    for leak in [
+        "extra_usage",
+        "is_enabled",
+        "monthly_limit",
+        "extra_shape",
+        "keys:",
+        "SENTINEL",
+        "987654",
+        "4321.5",
+    ] {
+        assert!(!text.contains(leak), "{leak} in {text}");
+    }
+}
+
+#[test]
+fn notes_for_a_credits_on_row_name_how_the_spend_was_read() {
+    for (spend, ending) in [
+        (Spend::Ok, "spend from claude"),
+        (Spend::LimitReached, "spend from claude"),
+        (Spend::Unknown, "spend probe failed"),
+        (Spend::NotProbed, "spend not probed"),
+    ] {
+        let notes = source_notes(&[credits_on_row("mistt", spend)]);
+        assert_eq!(
+            notes,
+            [
+                format!(
+                    "note: profile \"mistt\": direct read gave usage credits on; windows direct, {ending}"
+                ),
+                format!("note: profile \"mistt\": {SHAPE_LINE}"),
+            ],
+            "{spend:?}"
+        );
+    }
+}
+
+#[test]
+fn notes_cover_fallback_rows_and_skip_credits_off_rows() {
+    let mut fb = sourced(
+        ok("aa", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Fallback),
+    );
+    fb.direct_failure = Some("http 5xx");
+    let off = sourced(
+        ok("bb", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Direct),
+    );
+    let passive = sourced(
+        ok("cc", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Passive),
+    );
+    let on = credits_on_row("dd", Spend::Ok);
+    let notes = source_notes(&[fb, off, passive, on]);
+    assert_eq!(
+        notes,
+        [
+            "note: profile \"aa\": direct read gave http 5xx; using claude".to_string(),
+            "note: profile \"dd\": direct read gave usage credits on; windows direct, spend from claude".to_string(),
+            format!("note: profile \"dd\": {SHAPE_LINE}"),
+        ]
+    );
+}
+
+#[test]
+fn a_profile_name_in_a_note_is_sanitised() {
+    let notes = source_notes(&[credits_on_row("a\u{202e}b", Spend::Ok)]);
+    assert_eq!(notes.len(), 2);
+    for n in &notes {
+        assert!(!n.contains('\u{202e}'), "{n:?}");
+    }
+}
+
+#[test]
+fn a_credits_on_row_keeps_the_direct_raw_line() {
+    let mut r = credits_on_row("aa", Spend::LimitReached);
+    r.raw = Some(Raw {
+        stdout: String::new(),
+        stderr: String::new(),
+    });
+    let out = render_table(&[r]);
+    assert!(out.contains("\n  (direct: no claude output)\n"), "{out}");
+    assert!(!out.contains("raw stdout"), "{out}");
+    assert!(
+        !out.contains("extra_usage"),
+        "the shape is for the notes only: {out}"
+    );
+}
+
+#[test]
+fn the_spend_plays_no_part_in_ordering() {
+    let mut a = credits_on_row("aa", Spend::LimitReached);
+    a.report.session.as_mut().unwrap().used_percentage = 5.0;
+    let mut b = credits_on_row("bb", Spend::Ok);
+    b.report.session.as_mut().unwrap().used_percentage = 50.0;
+    let mut rows = vec![b, a];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["aa", "bb"]);
 }

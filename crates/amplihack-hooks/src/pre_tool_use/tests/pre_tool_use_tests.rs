@@ -1433,3 +1433,119 @@ fn shared_tokeniser_makes_the_merge_guard_refuse_more_forms() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1794: the tail-follow guard runs for every shell tool name, directly
+// after the tmux guard and above XPIA and the `tool_name != "Bash"` return.
+// ---------------------------------------------------------------------------
+
+const TAIL_INCIDENT: &str = "timeout 600 tail -f /dev/null";
+
+fn assert_tail_denied(result: &serde_json::Value) {
+    assert_eq!(result["block"], true, "{result}");
+    assert_eq!(
+        result["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{result}"
+    );
+    assert!(
+        result["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("amplihack wait --seconds")),
+        "{result}"
+    );
+}
+
+#[test]
+fn tail_follow_guard_denies_for_every_shell_tool_name() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    for tool in ["Bash", "bash", "shell", "exec_command", "Monitor"] {
+        let result = PreToolUseHook
+            .process(shell_tool_input(
+                tool,
+                serde_json::json!({"command": TAIL_INCIDENT}),
+            ))
+            .unwrap();
+        assert_tail_denied(&result);
+    }
+}
+
+#[test]
+fn tail_follow_guard_reads_cmd_and_argv_arrays() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    for input in [
+        serde_json::json!({"cmd": TAIL_INCIDENT}),
+        serde_json::json!({"command": ["bash", "-lc", "tail -f /dev/null"]}),
+        serde_json::json!({"cmd": ["tail", "-f", "/dev/null"]}),
+    ] {
+        let result = PreToolUseHook
+            .process(shell_tool_input("exec_command", input))
+            .unwrap();
+        assert_tail_denied(&result);
+    }
+}
+
+#[test]
+fn tail_follow_guard_denies_from_copilot_tool_args_payload() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    let result = PreToolUseHook
+        .process(copilot_pre_tool_use_payload(TAIL_INCIDENT))
+        .unwrap();
+    assert_tail_denied(&result);
+}
+
+#[test]
+fn tail_follow_guard_denies_with_xpia_at_its_default_off() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    let _xpia = unset_xpia_env();
+    for tool in ["Bash", "bash", "Monitor"] {
+        let result = PreToolUseHook
+            .process(shell_tool_input(
+                tool,
+                serde_json::json!({"command": "bash -c 'tail -f /dev/null'"}),
+            ))
+            .unwrap();
+        assert_tail_denied(&result);
+    }
+}
+
+#[test]
+fn tail_follow_guard_skips_non_shell_tools() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let result = PreToolUseHook
+        .process(shell_tool_input(
+            "Read",
+            serde_json::json!({"command": TAIL_INCIDENT, "path": "/tmp/notes.md"}),
+        ))
+        .unwrap();
+    assert!(result.as_object().unwrap().is_empty(), "{result}");
+}
+
+#[test]
+fn tail_follow_guard_allows_tail_on_a_real_file_and_containers() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    for command in [
+        "tail -f build.log | grep --line-buffered error",
+        "docker run -d --rm alpine tail -f /dev/null",
+        "cat > Dockerfile <<'EOF'\nCMD tail -f /dev/null\nEOF",
+        "amplihack wait --seconds 30",
+    ] {
+        let result = PreToolUseHook.process(make_bash_input(command)).unwrap();
+        assert!(result.get("block").is_none(), "{command:?}: {result}");
+    }
+}
+
+/// When a command matches both guards, the tmux guard answers first.
+#[test]
+fn tmux_guard_answers_before_the_tail_follow_guard() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    let result = PreToolUseHook
+        .process(make_bash_input("tmux kill-server; tail -f /dev/null"))
+        .unwrap();
+    assert_tmux_denied(&result);
+}

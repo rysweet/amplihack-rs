@@ -72,6 +72,8 @@ fn row(name: &str, rep: UsageReport) -> Row {
         raw: None,
         source: None,
         direct_failure: None,
+        spend: super::usage_source::Spend::NotApplicable,
+        extra_shape: None,
     }
 }
 

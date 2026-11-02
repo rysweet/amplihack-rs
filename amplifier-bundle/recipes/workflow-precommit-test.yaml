@@ -154,6 +154,12 @@ steps:
            background process group, so a git credential prompt that reads the
            terminal is stopped by `SIGTTIN`. Nothing fails, and the run waits
            until it is killed, indefinitely where `timeout` is stopped too.
+         - **Waiting:** to wait for a fixed time, run
+           `amplihack wait --seconds N`. To wait for work to finish, run it in
+           the background and wait on its PID: `cmd & pid=$!; wait $pid`.
+           Never use `tail -f /dev/null` or `timeout N tail -f /dev/null` as a
+           sleep: the `tail` outlives the tool call as an orphan, and the
+           PreToolUse hook denies it.
 
       5. **Execute at least 2 test scenarios:**
          - **Scenario 1 (simple):** Test the most basic user-facing behaviour

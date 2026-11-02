@@ -299,7 +299,7 @@ fn text(b: &[u8]) -> String {
 }
 
 /// Data rows of the table: lines after the header that start a row (not
-/// indented raw text).
+/// indented raw text, and not the `times:` and `order:` footer lines).
 fn table_rows(stdout: &str) -> Vec<&str> {
     let mut lines = stdout.lines();
     let header = lines.next().unwrap_or_default();
@@ -308,8 +308,12 @@ fn table_rows(stdout: &str) -> Vec<&str> {
     lines
         .take_while(|l| !l.starts_with("weekly headroom "))
         .filter(|l| !l.starts_with(' ') && !l.is_empty())
+        .filter(|l| !l.starts_with("times: ") && !l.starts_with("order: "))
         .collect()
 }
+
+const ORDER_LINE: &str =
+    "order: rotator pick (most room in the worse of session and week, then name)";
 
 fn first_word(l: &str) -> &str {
     l.split_whitespace().next().unwrap_or_default()
@@ -342,7 +346,7 @@ fn warning_lines(stderr: &str) -> Vec<&str> {
 #[test]
 fn table_orders_by_capacity_marks_default_and_leases_and_hides_raw_text() {
     let f = Fixture::new(true);
-    let out = f.ok(&["profile", "usage"]);
+    let out = f.ok(&["profile", "usage", "--table"]);
     let stdout = text(&out.stdout);
     let rows = table_rows(&stdout);
     assert_eq!(
@@ -392,7 +396,7 @@ fn table_orders_by_capacity_marks_default_and_leases_and_hides_raw_text() {
 #[test]
 fn raw_shows_what_claude_printed() {
     let f = Fixture::new(true);
-    let out = f.ok(&["profile", "usage", "--raw"]);
+    let out = f.ok(&["profile", "usage", "--table", "--raw"]);
     let stdout = text(&out.stdout);
     assert!(stdout.contains("  raw stdout:"), "{stdout}");
     assert!(stdout.contains("  raw stderr:"), "{stdout}");
@@ -525,7 +529,7 @@ fn not_set_up_records_nothing_and_says_so_only_in_table_mode() {
 fn an_env_credential_skips_recording_and_is_named_not_echoed() {
     let f = Fixture::new(true);
     let out = f
-        .cmd(&["profile", "usage"])
+        .cmd(&["profile", "usage", "--table"])
         .env("ANTHROPIC_API_KEY", ENV_KEY_VALUE)
         .output()
         .unwrap();
@@ -680,7 +684,7 @@ fn a_timed_out_profile_is_timeout_in_the_table_never_a_percentage() {
     fs::write(f.canned.join("e.slow"), "").unwrap();
     f.canned("e", "Current session: 100% used · resets 4pm (UTC)\n");
     let out = f
-        .cmd(&["profile", "usage", "e"])
+        .cmd(&["profile", "usage", "--table", "e"])
         .env("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "1")
         .output()
         .unwrap();
@@ -804,7 +808,7 @@ impl Fixture {
         assert_eq!(u["accounts"]["c"]["five_hour"]["used_percentage"], 40.0);
         assert_eq!(u["accounts"]["c"]["seven_day"]["used_percentage"], 55.0);
 
-        let out = self.ok(&["profile", "usage"]);
+        let out = self.ok(&["profile", "usage", "--table"]);
         assert_no_secrets(&out);
         let stdout = text(&out.stdout);
         let row = table_rows(&stdout)
@@ -1125,7 +1129,7 @@ fn a_request_past_the_deadline_is_timeout_and_usage_never_runs() {
     f.answers("a", &answer(42.0, 17.0, false));
     fs::write(f.canned.join("a.wait"), "30").unwrap();
     let start = Instant::now();
-    let out = f.ok(&["profile", "usage", "--timeout-secs", "1", "a"]);
+    let out = f.ok(&["profile", "usage", "--table", "--timeout-secs", "1", "a"]);
     assert!(start.elapsed() < Duration::from_secs(15));
     let stdout = text(&out.stdout);
     let row = table_rows(&stdout)[0];
@@ -1133,8 +1137,13 @@ fn a_request_past_the_deadline_is_timeout_and_usage_never_runs() {
     assert_eq!(cells[0], "a");
     assert!(cells.contains(&"timeout"), "{row}");
     assert!(!row.contains('%'), "{row}");
-    // SESSION, SESSION RESETS, WEEK and WEEK RESETS.
-    assert_eq!(cells[cells.len() - 4..], ["-", "-", "-", "-"], "{row}");
+    // SESSION, SESSION RESETS, WEEK and WEEK RESETS, then SPEND (#1856):
+    // a timed-out fallback row cannot tell the spend.
+    assert_eq!(
+        cells[cells.len() - 5..],
+        ["-", "-", "-", "-", "unknown"],
+        "{row}"
+    );
     assert_eq!(f.recorded("args.a"), None, "no /usage after the deadline");
 
     let (rows, _) = f.json(&["profile", "usage", "--json", "--timeout-secs", "1", "a"]);
@@ -1200,4 +1209,119 @@ fn an_overflow_profile_is_probed_with_usage_only() {
     assert_eq!(session(&rows[0]), 20.0, "read from /usage");
     assert_eq!(f.recorded("stdin.a"), None);
     assert_eq!(f.recorded("args-request.a"), None);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1813: the bar view is the default; `--table` keeps the old layout.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_default_is_the_bar_view_in_the_rotator_order_with_no_colour_when_piped() {
+    let f = Fixture::new(true);
+    let out = f
+        .cmd(&["profile", "usage"])
+        .env("TZ", "UTC")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_no_secrets(&out);
+    let stdout = text(&out.stdout);
+    let header: Vec<&str> = stdout.lines().next().unwrap().split_whitespace().collect();
+    assert_eq!(
+        header,
+        ["PROFILE", "WEEK", "W-RESET", "SESSION", "S-RESET", "STATE"],
+        "{stdout}"
+    );
+    assert!(
+        !stdout.contains("\x1b["),
+        "piped output is never coloured: {stdout:?}"
+    );
+    let rows = table_rows(&stdout);
+    assert_eq!(
+        rows.iter().map(|l| first_word(l)).collect::<Vec<_>>(),
+        ["c", "a", "b", "d"],
+        "{stdout}"
+    );
+    assert!(rows[0].contains("█"), "bars: {stdout}");
+    assert!(rows[3].contains("no reading (not_logged_in)"), "{stdout}");
+    // The footers end the bar view; the capacity summary (#1797) follows
+    // after a blank line.
+    let lines: Vec<&str> = stdout.lines().take_while(|l| !l.is_empty()).collect();
+    assert_eq!(lines[lines.len() - 2], "times: UTC", "{stdout}");
+    assert_eq!(lines[lines.len() - 1], ORDER_LINE, "{stdout}");
+    assert!(
+        stdout.contains(&format!("{ORDER_LINE}\n\n")),
+        "the summary follows the order line: {stdout}"
+    );
+}
+
+#[test]
+fn utc_reset_cells_end_in_z_and_the_footer_says_utc() {
+    let f = Fixture::new(true);
+    let out = f.ok(&["profile", "usage", "--utc"]);
+    let stdout = text(&out.stdout);
+    let re = regex::Regex::new(r"\b\d{2}-\d{2} \d{2}:\d{2}Z\b").unwrap();
+    let c = table_rows(&stdout)
+        .into_iter()
+        .find(|l| first_word(l) == "c")
+        .unwrap_or_else(|| panic!("{stdout}"));
+    assert_eq!(re.find_iter(c).count(), 2, "both resets in UTC: {c}");
+    assert!(stdout.lines().any(|l| l == "times: UTC"), "{stdout}");
+}
+
+#[test]
+fn table_keeps_its_header_and_ends_with_the_order_line() {
+    let f = Fixture::new(true);
+    let stdout = text(&f.ok(&["profile", "usage", "--table"]).stdout);
+    let header: Vec<&str> = stdout
+        .lines()
+        .next()
+        .unwrap()
+        .split("  ")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    assert_eq!(
+        header,
+        [
+            "PROFILE",
+            "MARKS",
+            "STATE",
+            "SESSION",
+            "SESSION RESETS",
+            "WEEK",
+            "WEEK RESETS",
+            "SPEND"
+        ]
+    );
+    // The table ends with the order line; the capacity summary (#1797)
+    // follows after a blank line.
+    assert_eq!(
+        stdout.lines().take_while(|l| !l.is_empty()).last(),
+        Some(ORDER_LINE),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("times:"), "{stdout}");
+    assert!(!stdout.contains('█'), "{stdout}");
+}
+
+#[test]
+fn conflicting_output_flags_exit_non_zero_before_probing() {
+    let f = Fixture::new(false);
+    for pair in [
+        ["--table", "--json"],
+        ["--utc", "--json"],
+        ["--utc", "--table"],
+        ["--summary-json", "--table"],
+        ["--summary-json", "--utc"],
+    ] {
+        let out = f.run(&["profile", "usage", pair[0], pair[1]]);
+        assert!(!out.status.success(), "{pair:?} accepted");
+        assert!(
+            text(&out.stderr).contains("cannot be used with"),
+            "{pair:?}: {}",
+            text(&out.stderr)
+        );
+    }
+    assert!(f.probed().is_empty(), "nothing probed: {:?}", f.probed());
 }

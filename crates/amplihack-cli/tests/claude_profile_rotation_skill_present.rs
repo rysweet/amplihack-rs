@@ -100,10 +100,13 @@ fn skill_covers_the_commands_and_the_credential_rule() {
 #[test]
 fn every_flag_the_skill_cites_exists() {
     let content = skill_md();
+    // `profile usage` too: the skill cites its `--utc` and `--table`
+    // (issue #1813).
     let known = format!(
-        "{}\n{}",
+        "{}\n{}\n{}",
         help(&["profile", "rotate"]),
-        help(&["profile", "rotate", "start"])
+        help(&["profile", "rotate", "start"]),
+        help(&["profile", "usage"])
     );
     let re = regex::Regex::new(r"(?:^|[\s`(])(--[a-z][a-z-]+)").unwrap();
     let mut cited: Vec<&str> = re
@@ -125,7 +128,7 @@ fn every_flag_the_skill_cites_exists() {
         }
         assert!(
             known.contains(f),
-            "SKILL.md cites {f}, which rotate does not accept"
+            "SKILL.md cites {f}, which neither rotate nor usage accepts"
         );
     }
     assert!(

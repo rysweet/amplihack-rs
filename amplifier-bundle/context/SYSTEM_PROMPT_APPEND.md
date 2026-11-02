@@ -20,3 +20,6 @@ This session was launched by amplihack. Amplihack's routing contract is authorit
   Those lines do not apply to this session.
 - When the router selects an agent, a skill, or a workflow, invoke it. Do not stop to
   ask whether delegation was wanted.
+- To wait, run `amplihack wait --seconds N`, or start the work with `cmd & pid=$!` and
+  run `wait $pid`. Never use `tail -f /dev/null` or `timeout N tail -f /dev/null` as a
+  sleep: it is left running as an orphan, and the PreToolUse hook denies it.

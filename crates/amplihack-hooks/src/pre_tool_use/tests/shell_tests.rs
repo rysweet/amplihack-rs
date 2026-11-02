@@ -483,3 +483,53 @@ fn ansi_c_words_are_decoded_by_the_tokeniser() {
         ])]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1794: `join_argv` moved here from the tmux guard so the tail-follow
+// guard can share it. Its output is unchanged.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn join_argv_quotes_empty_strings_and_single_quotes() {
+    assert_eq!(join_argv(&["tail", "-f", "/dev/null"]), "tail -f /dev/null");
+    assert_eq!(join_argv(&["echo", ""]), "echo ''");
+    assert_eq!(join_argv(&["echo", "it's"]), r"echo 'it'\''s'");
+    assert_eq!(
+        join_argv(&["bash", "-lc", "tail -f /dev/null"]),
+        "bash -lc 'tail -f /dev/null'"
+    );
+    // Each quoted argument reads back as one word.
+    assert_eq!(
+        words(&join_argv(&["echo", "it's", "", "a b"])),
+        vec![owned(&["echo", "it's", "", "a b"])]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F4: PowerShell is a shell tool.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn powershell_is_a_shell_tool() {
+    for name in ["powershell", "PowerShell", "POWERSHELL"] {
+        assert!(is_shell_tool(name), "{name}");
+    }
+}
+
+/// Crusty round 6, concern 1: Claude Code's `Monitor` runs its `command` in
+/// the same shell environment as `Bash`.
+#[test]
+fn monitor_is_a_shell_tool() {
+    for name in ["Monitor", "monitor", "MONITOR"] {
+        assert!(is_shell_tool(name), "{name}");
+    }
+}
+
+#[test]
+fn shell_tool_names_are_matched_exactly() {
+    for name in [
+        "Read", "Write", "Edit", "pwsh-ish", "bashful", "Monitors", "",
+    ] {
+        assert!(!is_shell_tool(name), "{name}");
+    }
+}
