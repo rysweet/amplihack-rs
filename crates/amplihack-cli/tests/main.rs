@@ -240,6 +240,8 @@ mod issue_1811_limits;
 mod issue_1811_nesting;
 #[path = "issue_1811_status.rs"]
 mod issue_1811_status;
+#[path = "issue_1811_switch.rs"]
+mod issue_1811_switch;
 #[path = "issue_1818_no_session_limit.rs"]
 mod issue_1818_no_session_limit;
 #[path = "issue_1846_exhausted_reading.rs"]

@@ -97,6 +97,7 @@ fn cycle2_new_test_targets_and_extracted_helpers_obey_300_line_boundary() {
         "tests/issue_1811_governor.rs",
         "tests/issue_1811_nesting.rs",
         "tests/issue_1811_status.rs",
+        "tests/issue_1811_switch.rs",
     ] {
         let root = cli.join(relative);
         inspect(&root, &mut violations);
