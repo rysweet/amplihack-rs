@@ -809,7 +809,7 @@ reads no environment variables, files or clock, and it does not depend on
 XPIA.
 
 **Tools it checks.** The same tool names as the tmux guard
-(`tmux_guard::is_shell_tool`): `bash`, `shell`, `shell_command`,
+(`shell::is_shell_tool`): `bash`, `shell`, `shell_command`,
 `exec_command`, `powershell` and `monitor`, compared case-insensitively. It
 reads `tool_input.command`, then `tool_input.cmd`, as a string or as an argv
 array of strings. An array is shell-quoted and joined with the shared
@@ -857,12 +857,21 @@ denied.
 contains `c`, the guard checks the next operand word as a command of its own,
 skipping `--` and long options. The word after `--rcfile` or `--init-file`,
 and after a flag word that ends in `o` or `O` (`-o pipefail`,
-`-euo pipefail`, `+O extglob`), is an option value, not a script. So `bash -c 'tail -f /dev/null'`,
-`bash -lc '…'` and `bash -c -- '…'` are checked. When such a shell has no
-`-c`, each heredoc body given to it is checked in the same way, unless the
-shell is given a script file without `-s` (`bash run.sh <<EOF`), when the
-heredoc is the script's input. A heredoc given to any other program, such as `cat > Dockerfile <<'EOF'`, is not
-checked. `docker`, `podman` and `kubectl` are not unwrapped, so
+`-euo pipefail`, `+O extglob`), is an option value, not a script. So
+`bash -c 'tail -f /dev/null'`, `bash -lc '…'` and `bash -c -- '…'` are
+checked. When such a shell has no `-c`, each heredoc body given to it is
+checked in the same way, unless the shell is given a script file without
+`-s` (`bash run.sh <<EOF`), when the heredoc is the script's input. A heredoc
+given to any other program, such as `cat > Dockerfile <<'EOF'`, is not
+checked.
+
+**Command substitutions.** The body of each `$(…)` and backtick substitution
+that the shell runs is checked as a command of its own, at one more level of
+nesting. That covers a bare substitution and one inside double quotes, so
+`x=$(timeout 5 tail -f /dev/null)` and `` echo "`tail -f /dev/null`" `` are
+denied. A substitution inside single quotes, `$'…'`, a comment or a heredoc
+body is text and is not checked; one inside a `-c` operand is found when that
+operand is checked. `docker`, `podman` and `kubectl` are not unwrapped, so
 `docker run -d alpine tail -f /dev/null`, a container entry point, is
 allowed.
 
@@ -899,6 +908,8 @@ closed.
 | `tail --fo /dev/null` | denied |
 | `bash -euo pipefail -c 'tail -f /dev/null'` | denied |
 | `bash <<'EOF'`, `tail -f /dev/null`, `EOF` on separate lines | denied |
+| `x=$(timeout 5 tail -f /dev/null)` | denied |
+| `` echo `tail -f /dev/null` `` | denied |
 | `["bash","-lc","tail -f /dev/null"]` (argv array) | denied |
 | `tail -f build.log` | allowed |
 | `tail -n 5 /dev/null` | allowed |
@@ -906,9 +917,13 @@ closed.
 | `tail -f +5f` | allowed |
 | `tail -f` and `tail -f -` | allowed |
 | `echo 'tail -f /dev/null'` | allowed |
+| `echo "$(date)"` | allowed |
+| `echo '$(tail -f /dev/null)'` | allowed |
 | `cat > Dockerfile <<'EOF'`, `CMD ["tail","-f","/dev/null"]`, `EOF` | allowed |
 | `docker run -d alpine tail -f /dev/null` | allowed |
 | `tail -f "$DEV"` | allowed |
+| `bash <<< 'tail -f /dev/null'` | allowed (known limit) |
+| `echo 'tail -f /dev/null' \| bash` | allowed (known limit) |
 | `["bash", 1]` (argv array with a number) | allowed |
 
 The guard does not panic on any input: it uses no `unwrap`, indexing or byte
@@ -918,7 +933,7 @@ slicing on input words, and reads grouped short options by character.
 under the tmux guard's **Response** above, with `<M>` set to this fixed
 message:
 
-> Blocked: `tail` following a device that never ends (such as `tail -f /dev/null`) must not be used as a way to wait. The tail outlives the tool call and is left running as an orphan process (#1794). To wait for a fixed time, run `amplihack wait --seconds N`. To wait for work to finish, run it in the background and wait on its PID: `cmd & pid=$!; wait $pid`. Do not use `tail -f /dev/null` or `timeout N tail ...` as a sleep.
+> Blocked: `tail` following a device that never ends (such as `tail -f /dev/null`) must not be used as a way to wait. The tail outlives the tool call and is left running as an orphan process (#1794). To wait for a fixed time, run `amplihack wait --seconds N`. To wait for work to finish, run it in the background and wait on its PID: `cmd & pid=$!; wait $pid`. Do not use `tail -f /dev/null` or `timeout N tail -f /dev/null` as a sleep.
 
 The message is a constant. Neither the deny nor the one `warn!` log line,
 which cites #1794, includes the command, its operands, the working
@@ -931,6 +946,13 @@ sandbox. It does not see:
 - `tail` run by `xargs`, `find -exec`, `eval` or `env -S`;
 - `tail` run through a multi-call binary, such as `busybox tail`;
 - `tail` in a script file run by a later command;
+- a script given to a shell as a here-string (`bash <<< 'tail -f /dev/null'`)
+  or through a pipe (`echo 'tail -f /dev/null' | bash`): the script is an
+  ordinary word or another command's output, and following it would need
+  data-flow tracking;
+- a `$(…)` or backtick substitution inside an expanding heredoc fed to a
+  program that is not a shell, such as `cat <<EOF` with
+  `$(tail -f /dev/null)` in its body;
 - `..` in a device path, or a symbolic link to a device;
 - nesting deeper than three nested shells, input over 64 KiB, or input the
   tokeniser cannot fully parse;

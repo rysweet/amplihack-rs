@@ -4,9 +4,9 @@
 //!
 //! The binary is started through [`crate::isolated_amplihack::isolated`], so
 //! it never sees the real HOME or `AMPLIHACK_CLAUDE_PROFILE_ROOT` (#1699).
-//! The child leads its own process group, so any process it started would
-//! keep that group after the child exits and the `/proc` scan would find it.
-//! The scan only reads `/proc`; it sends no signals.
+//! The child leads its own process group, so any process it started while
+//! it sleeps is found by the `/proc` scan, which runs only until the child
+//! is reaped. The scan only reads `/proc`; it sends no signals.
 
 #![cfg(target_os = "linux")]
 
@@ -14,7 +14,7 @@ use crate::isolated_amplihack::isolated;
 use crate::support::amplihack_bin::amplihack_bin;
 use std::fs;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 /// Generous: the suite runs on hosts with a load average near 100.
@@ -84,14 +84,31 @@ fn descendants_of(pid: u32) -> Vec<(u32, u32, u32)> {
         .collect()
 }
 
+/// Kills and reaps the child it holds when dropped, so a failed assert does
+/// not leave a running `amplihack wait` behind.
+struct KillOnDrop(Option<Child>);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Some(child) = self.0.as_mut() {
+            // The child may already have exited; either result is fine here.
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 #[test]
 fn wait_sleeps_in_process_and_starts_no_children() {
     let mut cmd = wait_command(&["--seconds", "2"]);
     cmd.process_group(0);
     let start = Instant::now();
-    let mut child = cmd.spawn().expect("spawn amplihack wait");
+    let mut guard = KillOnDrop(Some(cmd.spawn().expect("spawn amplihack wait")));
+    let child = guard.0.as_mut().expect("child is held");
     let pid = child.id();
 
+    // Scans run only while the child is unreaped, so its PID cannot have
+    // been reused by another process. No scan runs after it is reaped.
     let mut seen = Vec::new();
     while child.try_wait().expect("try_wait").is_none() {
         seen.extend(children_of(pid));
@@ -99,7 +116,12 @@ fn wait_sleeps_in_process_and_starts_no_children() {
         assert!(start.elapsed() < UPPER_BOUND, "wait did not end");
         std::thread::sleep(Duration::from_millis(50));
     }
-    let out = child.wait_with_output().expect("collect output");
+    let out = guard
+        .0
+        .take()
+        .expect("child is held")
+        .wait_with_output()
+        .expect("collect output");
     let elapsed = start.elapsed();
 
     assert!(seen.is_empty(), "wait started processes: {seen:?}");
@@ -112,8 +134,6 @@ fn wait_sleeps_in_process_and_starts_no_children() {
     assert!(elapsed < UPPER_BOUND, "took {elapsed:?}");
     assert!(out.stdout.is_empty(), "{}", describe(&out));
     assert!(out.stderr.is_empty(), "{}", describe(&out));
-    // Nothing it started is left in its process group after it exits.
-    assert_eq!(descendants_of(pid), Vec::new());
 }
 
 #[test]

@@ -159,6 +159,18 @@ const DENIED: &[&str] = &[
     "bash <<'EOF'\ntail -f /dev/null\nEOF",
     "sh <<EOF\necho hi\ntail -f /dev/null\nEOF",
     "bash -s arg <<'EOF'\ntail -f /dev/null\nEOF",
+    // A command substitution runs its body: `$(…)` and backticks, bare, in
+    // double quotes, nested, and inside a `-c` operand.
+    "x=$(timeout 5 tail -f /dev/null)",
+    "x=$(tail -f /dev/null)",
+    "echo $(tail -f /dev/null)",
+    "echo \"$(tail -f /dev/null)\"",
+    "echo `tail -f /dev/null`",
+    "echo \"`timeout 5 tail -f /dev/null`\"",
+    "echo $(echo $(tail -f /dev/null))",
+    "bash -c 'x=$(tail -f /dev/null)'",
+    "bash -c \"x=\\$(tail -f /dev/null)\"",
+    "echo 'quoted' $(tail -f /dev/null)",
 ];
 
 #[test]
@@ -208,6 +220,17 @@ const ALLOWED: &[&str] = &[
     "git commit -m \"never use tail -f /dev/null as a sleep\"",
     "printf '%s\\n' 'timeout 600 tail -f /dev/null'",
     "bash -c 'echo tail -f /dev/null'",
+    // Substitutions that run something else, or that the shell does not run.
+    "echo \"$(date)\"",
+    "echo `date`",
+    "x=$(cat build.log)",
+    "echo '$(tail -f /dev/null)'",
+    "echo '`tail -f /dev/null`'",
+    "echo $'$(tail -f /dev/null)'",
+    "echo \\`tail -f /dev/null\\`",
+    "true # $(tail -f /dev/null)",
+    "git commit -m \"$(cat <<'EOF'\nfix: never use `tail -f /dev/null` or $(tail -f /dev/null)\nEOF\n)\"",
+    "cat > notes.md <<'EOF'\nx=$(tail -f /dev/null)\nEOF",
     // Heredocs that are written, not executed.
     "cat > Dockerfile <<'EOF'\nCMD [\"tail\", \"-f\", \"/dev/null\"]\nEOF",
     "cat > entry.sh <<'EOF'\ntail -f /dev/null\nEOF",
@@ -227,6 +250,10 @@ const ALLOWED: &[&str] = &[
     "tail -f $DEV",
     "tail -f \"$DEV\"",
     "tail -f $(echo /dev/null)",
+    // A here-string or a pipe into a shell: the script is data until it
+    // runs, and following it would need data-flow tracking.
+    "bash <<< 'tail -f /dev/null'",
+    "echo 'tail -f /dev/null' | bash",
     "tail -f /dev/nu*",
     "tail -f /dev/../dev/null",
     "echo /dev/null | xargs tail -f",

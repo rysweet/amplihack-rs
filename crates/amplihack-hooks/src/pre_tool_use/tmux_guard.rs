@@ -172,7 +172,7 @@
 //!   every unquoted `<<` as a heredoc, so the lines between are its body.
 //!   Without such a line the heredoc never ends, the parse is incomplete and
 //!   the text test applies;
-//! - a shell tool whose name is not in [`SHELL_TOOLS`], such as one a new
+//! - a shell tool whose name is not in [`shell::SHELL_TOOLS`], such as one a new
 //!   harness release adds;
 //! - `tmux kill-session` without `-a`, `kill-window`, `kill-pane`, and
 //!   signals sent by other programs (`pkill tmux`, `killall tmux`);
@@ -235,6 +235,8 @@
 //! runs the slowest inputs found, each just under [`MAX_INPUT`]; the slowest
 //! takes about 0.3 s in a release build.
 
+#[cfg(test)]
+use super::shell::is_shell_tool;
 use super::shell::{self, SimpleCommand, basename, program};
 use serde_json::Value;
 use std::collections::HashSet;
@@ -244,25 +246,6 @@ use tracing::warn;
 /// false-positive case, a command that only mentions the words as text, so
 /// an agent is told the supported way out rather than guessing at one.
 pub(super) const BLOCK_MESSAGE: &str = "Blocked: this command looks like a tmux kill-server or kill-session -a with no -S or -L, which acts on the tmux server named in $TMUX (normally the user's own server, with all of their sessions). TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket; a socket path taken from $TMUX or from tmux itself (`#{socket_path}`) is the user's server. A socket file named `default`, or `-L default`, also counts as the user's server, even under a sandbox directory: give a private server another name (`-S \"$SB/tmux.sock\"`), and end one already running on a `default` path with `tmux -S <path> kill-session -t <name>` for each of its sessions, since by default a server exits when its last session ends. If the command only mentions these words as text, such as a commit message or a task description, pass the text in a file (`git commit -F`, `--body-file`, `--context-from-file`) or run that command in its own tool call.";
-
-/// Tool names the guard checks, compared case-insensitively: Claude Code's
-/// `Bash`, `PowerShell` and `Monitor`, Copilot's `bash` and `powershell`, and
-/// Codex's shell tools in case a host skips the Codex normalisation.
-///
-/// Claude Code's `Monitor` takes a `command` that is a shell command or
-/// script, run in the same shell environment as `Bash`, so it is a shell
-/// tool; its other form, a WebSocket `ws` with no `command`, is not checked.
-/// In Claude Code 2.1.314 the tools that run code and take a `command` are
-/// `Bash`, `PowerShell` and `Monitor`. Check this list against each new
-/// Claude Code release: a shell tool missing from it skips the guard.
-pub(super) const SHELL_TOOLS: &[&str] = &[
-    "bash",
-    "powershell",
-    "monitor",
-    "shell",
-    "exec_command",
-    "shell_command",
-];
 
 /// Programs whose arguments are data: a `tmux … kill-server` in them is text,
 /// as long as no stage of the command line evaluates text as code.
@@ -339,13 +322,6 @@ const MAX_REPARSES: usize = 256;
 /// denied. Each invocation reads the words after it, so without a cap the
 /// cost would grow with the square of the number of `tmux` words.
 const MAX_TMUX_PER_COMMAND: usize = 64;
-
-/// Whether the guard checks a tool named `tool_name`.
-pub(super) fn is_shell_tool(tool_name: &str) -> bool {
-    SHELL_TOOLS
-        .iter()
-        .any(|t| t.eq_ignore_ascii_case(tool_name))
-}
 
 /// The deny response for a shell tool's input, or `None`.
 ///

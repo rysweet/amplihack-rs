@@ -14,14 +14,18 @@
 //! [`shell::program`] strips, and `setsid` and `stdbuf`, which this module
 //! strips itself) with a follow option (`-f`, `-F`, `--follow`,
 //! `--follow=…`, a shortened form such as `--f`, `--fo` or `--foll=name`, or
-//! `f`/`F` in a short cluster before an option that takes a value) and an operand that names one of [`DEVICES`] once repeated `/` and
-//! `/./` are collapsed. Options are read anywhere among the operands, as GNU
-//! and uutils `tail` read them, until `--`.
+//! `f`/`F` in a short cluster before an option that takes a value) and an
+//! operand that names one of [`DEVICES`] once repeated `/` and `/./` are
+//! collapsed. Options are read anywhere among the operands, as GNU and uutils
+//! `tail` read them, until `--`.
 //!
 //! The `-c` operand of `sh`, `bash`, `zsh`, `dash` and `ksh` is parsed again,
 //! and so is each heredoc body fed to one of those shells when there is no
 //! `-c`. A heredoc fed to any other program (`cat > Dockerfile <<EOF`) is
-//! data and is not read.
+//! data and is not read. The body of each command substitution the shell
+//! runs, `$(…)` or backticks, bare or in double quotes, is parsed again too,
+//! so `x=$(timeout 5 tail -f /dev/null)` is denied; one inside single quotes,
+//! `$'…'`, a comment or a heredoc body is not read.
 //!
 //! # Failing open
 //!
@@ -36,8 +40,12 @@
 //!
 //! Device paths given by expansion (`$DEV`, `$(…)`, globs), paths with `..`,
 //! symlinks to a device, `xargs`, `find -exec`, `eval`, `env -S`, scripts run
-//! from files, multi-call wrappers such as `busybox tail` and nesting
-//! deeper than three shells are not matched.
+//! from files, multi-call wrappers such as `busybox tail`, a script given
+//! to a shell as a here-string (`bash <<< '…'`) or through a pipe
+//! (`echo '…' | bash`), a substitution inside an expanding heredoc fed to a
+//! program that is not a shell, and nesting deeper than three shells are not
+//! matched. The last few would need data-flow tracking, and this guard is
+//! not a security boundary.
 //!
 //! The guard reads no environment, file or clock, and nothing turns it off.
 
@@ -51,7 +59,7 @@ const BLOCK_MESSAGE: &str = "Blocked: `tail` following a device that never ends 
 the tool call and is left running as an orphan process (#1794). To wait for a fixed \
 time, run `amplihack wait --seconds N`. To wait for work to finish, run it in the \
 background and wait on its PID: `cmd & pid=$!; wait $pid`. Do not use \
-`tail -f /dev/null` or `timeout N tail ...` as a sleep.";
+`tail -f /dev/null` or `timeout N tail -f /dev/null` as a sleep.";
 
 /// Devices a follow never finishes on, after [`normalise`].
 const DEVICES: &[&str] = &[
@@ -156,6 +164,74 @@ fn scan(text: &str, depth: usize, budget: &mut usize) -> bool {
         .commands
         .iter()
         .any(|command| scan_command(command, depth, budget))
+        || substitution_bodies(text)
+            .iter()
+            .any(|body| reparse(body, depth, budget))
+}
+
+/// The bodies of the command substitutions (`$(…)` and backticks) that the
+/// shell runs when it reads `text`: those outside single quotes, `$'…'`,
+/// comments and heredoc bodies. A substitution inside another is found when
+/// its body is scanned.
+fn substitution_bodies(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut bodies = Vec::new();
+    let mut heredocs = Vec::new();
+    let mut in_double = false;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let word_start = i == 0 || chars[i - 1].is_whitespace() || ";&|(".contains(chars[i - 1]);
+        match c {
+            '\\' => i += 1,
+            '"' => in_double = !in_double,
+            '$' if chars.get(i + 1) == Some(&'(') => {
+                let Some(end) = shell::subst_close(&chars, i) else {
+                    return bodies;
+                };
+                bodies.push(chars[i + 2..end].iter().collect());
+                i = end;
+            }
+            '`' => {
+                let mut end = i + 1;
+                while end < chars.len() && chars[end] != '`' {
+                    end += if chars[end] == '\\' { 2 } else { 1 };
+                }
+                if end >= chars.len() {
+                    return bodies;
+                }
+                bodies.push(chars[i + 1..end].iter().collect());
+                i = end;
+            }
+            _ if in_double => {}
+            '$' if chars.get(i + 1) == Some(&'\'') => {
+                let Some(end) = shell::ansi_c_close(&chars, i + 1) else {
+                    return bodies;
+                };
+                i = end;
+            }
+            '\'' => {
+                i += 1;
+                while i < chars.len() && chars[i] != '\'' {
+                    i += 1;
+                }
+            }
+            '#' if word_start => {
+                while i + 1 < chars.len() && chars[i + 1] != '\n' {
+                    i += 1;
+                }
+            }
+            '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) == Some(&'<') => i += 2,
+            '<' if chars.get(i + 1) == Some(&'<') => {
+                heredocs.push(shell::heredoc_delim(&chars, &mut i));
+                continue;
+            }
+            '\n' => shell::skip_heredoc_bodies(&chars, &mut i, std::mem::take(&mut heredocs)),
+            _ => {}
+        }
+        i += 1;
+    }
+    bodies
 }
 
 fn scan_command(command: &SimpleCommand, depth: usize, budget: &mut usize) -> bool {

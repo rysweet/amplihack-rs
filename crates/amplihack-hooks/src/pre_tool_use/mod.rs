@@ -359,7 +359,7 @@ impl Hook for PreToolUseHook {
         // must also stay above the `tool_name != "Bash"` return below:
         // Copilot's `bash` and Codex's un-normalised shell tool names would
         // otherwise skip it.
-        if tmux_guard::is_shell_tool(&tool_name)
+        if shell::is_shell_tool(&tool_name)
             && let Some(block) = tmux_guard::check_tool_input(&tool_input)
         {
             return Ok(block);
@@ -369,7 +369,7 @@ impl Hook for PreToolUseHook {
         // device that never ends. Agents used it as a sleep, and it outlives
         // the tool call as an orphan. Same placement and reasons as the tmux
         // guard above; the tmux deny answers first when both match.
-        if tmux_guard::is_shell_tool(&tool_name)
+        if shell::is_shell_tool(&tool_name)
             && let Some(block) = tail_follow_guard::check_tool_input(&tool_input)
         {
             return Ok(block);

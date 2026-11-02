@@ -1,5 +1,6 @@
 //! The small shell tokeniser shared by the PreToolUse command guards: the
-//! auto-drive merge guard (#1551) and the tmux server guard (#1733).
+//! auto-drive merge guard (#1551), the tmux server guard (#1733) and the
+//! tail-follow guard (#1794).
 //!
 //! This is not a shell parser and does not try to be one. It splits a command
 //! line into simple commands of unquoted words, finds each command's program
@@ -38,6 +39,32 @@ pub(super) const WRAPPERS: &[(&str, &[&str], usize)] = &[
         0,
     ),
 ];
+
+/// Tool names the command guards check, compared case-insensitively: Claude Code's
+/// `Bash`, `PowerShell` and `Monitor`, Copilot's `bash` and `powershell`, and
+/// Codex's shell tools in case a host skips the Codex normalisation.
+///
+/// Claude Code's `Monitor` takes a `command` that is a shell command or
+/// script, run in the same shell environment as `Bash`, so it is a shell
+/// tool; its other form, a WebSocket `ws` with no `command`, is not checked.
+/// In Claude Code 2.1.314 the tools that run code and take a `command` are
+/// `Bash`, `PowerShell` and `Monitor`. Check this list against each new
+/// Claude Code release: a shell tool missing from it skips the guard.
+pub(super) const SHELL_TOOLS: &[&str] = &[
+    "bash",
+    "powershell",
+    "monitor",
+    "shell",
+    "exec_command",
+    "shell_command",
+];
+
+/// Whether the command guards check a tool named `tool_name`.
+pub(super) fn is_shell_tool(tool_name: &str) -> bool {
+    SHELL_TOOLS
+        .iter()
+        .any(|t| t.eq_ignore_ascii_case(tool_name))
+}
 
 /// Shell reserved words that can precede a command's program word.
 pub(super) const RESERVED: &[&str] = &[
