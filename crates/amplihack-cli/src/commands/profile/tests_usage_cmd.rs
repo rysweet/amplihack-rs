@@ -54,6 +54,8 @@ fn row(name: &str, rep: UsageReport) -> Row {
         report: rep,
         error: None,
         raw: None,
+        source: None,
+        direct_failure: None,
     }
 }
 
@@ -440,6 +442,7 @@ fn json_is_an_array_of_rows_with_the_exact_keys() {
                 "profile",
                 "session",
                 "session_limit",
+                "source",
                 "state",
                 "week_all",
                 "week_models"
@@ -1089,13 +1092,30 @@ fn no_profile_can_be_named_like_the_home_row() {
 // the bound it is given. Fake `claude` scripts only; never a real one.
 // ---------------------------------------------------------------------------
 
+/// Every profile probed by `mode` with `claude`, at most `parallel` at once,
+/// through the pool `profile usage` uses; in the order of `names`.
+#[cfg(unix)]
+fn probe_each(
+    store: &super::store::ProfileStore,
+    bin: &crate::binary_finder::BinaryInfo,
+    names: &[super::name::ProfileName],
+    mode: super::probe_limits::ProbeMode,
+    timeout: std::time::Duration,
+    parallel: usize,
+) -> Vec<super::usage_cmd::Probe> {
+    super::usage_cmd::pooled(names.len(), parallel, |i| {
+        super::usage_cmd::probe_profile(store, bin, &names[i], false, mode, timeout, NOW, false)
+    })
+}
+
 #[cfg(unix)]
 mod under_load {
     use super::super::name::ProfileName;
     use super::super::probe_limits::ProbeMode;
     use super::super::store::ProfileStore;
-    use super::super::usage_cmd::{Row, observations, probe, probe_all, render_json, render_table};
+    use super::super::usage_cmd::{Row, observations, probe, render_json, render_table};
     use super::super::usage_parse::UsageState;
+    use super::probe_each;
     use super::{NOW, row};
     use crate::binary_finder::BinaryInfo;
     use std::fs;
@@ -1259,15 +1279,12 @@ mod under_load {
     }
 
     fn run_pool(p: &Pool, parallel: usize) -> Vec<super::super::usage_cmd::Probe> {
-        probe_all(
+        probe_each(
             &p.store,
             &p.bin,
             &p.names,
-            None,
             ProbeMode::Text,
             Duration::from_secs(60),
-            NOW,
-            false,
             parallel,
         )
     }
@@ -1331,15 +1348,12 @@ mod under_load {
             path,
             version: None,
         };
-        let probes = probe_all(
+        let probes = probe_each(
             &p.store,
             &bin,
             &p.names,
-            None,
             ProbeMode::Text,
             Duration::from_secs(60),
-            NOW,
-            false,
             2,
         );
         let got: Vec<f64> = probes
@@ -1371,15 +1385,12 @@ mod under_load {
             version: None,
         };
         let start = Instant::now();
-        let probes = probe_all(
+        let probes = probe_each(
             &p.store,
             &bin,
             &p.names,
-            None,
             ProbeMode::Text,
             Duration::from_secs(1),
-            NOW,
-            false,
             2,
         );
         assert!(start.elapsed() < Duration::from_secs(15));
@@ -1406,10 +1417,11 @@ mod request {
     use super::super::probe_limits::ProbeMode;
     use super::super::rotate::decide::{Probed, Reading};
     use super::super::store::ProfileStore;
-    use super::super::usage_cmd::{Probe, probe_all, probe_with};
+    use super::super::usage_cmd::{Probe, probe_with};
     use super::super::usage_parse::UsageState;
     use super::super::usage_request::{ARGS, REQUEST_ID, REQUEST_LINE};
     use super::NOW;
+    use super::probe_each;
     use crate::binary_finder::BinaryInfo;
     use std::cell::Cell;
     use std::fs;
@@ -1727,15 +1739,12 @@ mod request {
             path: f.path.clone(),
             version: None,
         };
-        let probes = probe_all(
+        let probes = probe_each(
             &store,
             &bin,
             &names,
-            None,
             ProbeMode::Auto,
             Duration::from_secs(20),
-            NOW,
-            false,
             1,
         );
         assert_eq!(session(&probes[0]), 37.0, "cred read with /usage");
@@ -1907,4 +1916,216 @@ fn observations_of_no_session_limit_rows_have_no_session_window() {
         .collect();
     assert_eq!(got, [("normal", true), ("free", false), ("full", false)]);
     assert_eq!(obs[1].week.unwrap().used_percentage, 40.0);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1844: the reading source, the fallback mark and the weekly figure
+//
+// Contract:
+// - `Row::source: Option<Source>` and `Row::direct_failure:
+//   Option<&'static str>`.
+// - The table shows `(fallback)` in the marks column of a fallback row,
+//   after the other marks; passive and direct rows get no mark.
+// - JSON has `source` (`passive`, `direct`, `fallback` or `null` for a row
+//   never probed) right after `state`.
+// - With `--raw`, a passive or direct row is followed by
+//   `  (<source>: no claude output)` and its JSON `raw` is empty strings.
+// - `fallback_notes(rows)` gives one stderr line per fallback row with a
+//   direct failure: `note: profile "<name>": direct read gave <reason>;
+//   using claude`. It is printed only with `--raw`.
+// - `observations()` leaves out passive rows.
+// - An exhausted session keeps the weekly figure as reported in both the
+//   table and the JSON.
+// ---------------------------------------------------------------------------
+
+use super::usage_cmd::fallback_notes;
+use super::usage_source::Source;
+
+fn sourced(mut r: Row, source: Option<Source>) -> Row {
+    r.source = source;
+    r
+}
+
+fn exhausted_100_55(name: &str) -> Row {
+    row(
+        name,
+        report(
+            UsageState::SessionExhausted,
+            Some((100.0, Some(NOW + HOUR))),
+            Some((55.0, Some(NOW + DAY))),
+        ),
+    )
+}
+
+fn line_of<'a>(out: &'a str, name: &str) -> &'a str {
+    out.lines()
+        .find(|l| l.split_whitespace().next() == Some(name))
+        .unwrap_or_else(|| panic!("no row for {name}: {out}"))
+}
+
+#[test]
+fn a_fallback_row_is_marked_and_others_are_not() {
+    let rows = vec![
+        sourced(
+            ok("aa", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Passive),
+        ),
+        sourced(
+            ok("bb", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Direct),
+        ),
+        sourced(
+            ok("cc", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Fallback),
+        ),
+    ];
+    assert_eq!(marks(&rows[0]), "-");
+    assert_eq!(marks(&rows[1]), "-");
+    assert_eq!(marks(&rows[2]), "(fallback)");
+    let mut def = rows[2].clone();
+    def.default = true;
+    assert_eq!(marks(&def), "* (fallback)");
+    let out = render_table(&rows);
+    assert!(line_of(&out, "cc").contains("(fallback)"), "{out}");
+    assert!(!line_of(&out, "aa").contains("fallback"), "{out}");
+    assert!(!line_of(&out, "bb").contains("fallback"), "{out}");
+}
+
+#[test]
+fn json_gives_the_source_or_null() {
+    let rows = vec![
+        sourced(
+            ok("aa", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Passive),
+        ),
+        sourced(
+            ok("bb", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Direct),
+        ),
+        sourced(
+            ok("cc", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Fallback),
+        ),
+        ok("dd", None, None),
+    ];
+    let v = json(&rows);
+    let got: Vec<&serde_json::Value> = v.as_array().unwrap().iter().map(|r| &r["source"]).collect();
+    assert_eq!(
+        got,
+        [
+            &serde_json::json!("passive"),
+            &serde_json::json!("direct"),
+            &serde_json::json!("fallback"),
+            &serde_json::Value::Null,
+        ]
+    );
+    let text = render_json(&rows);
+    let first = text.find("\"state\"").unwrap();
+    let source = text.find("\"source\"").unwrap();
+    let after = text[first..].find('\n').map(|i| first + i).unwrap();
+    assert!(
+        source > first && source <= after + 20,
+        "source follows state: {text}"
+    );
+}
+
+#[test]
+fn an_exhausted_session_keeps_the_weekly_figure_in_table_and_json() {
+    let rows = vec![sourced(exhausted_100_55("team"), Some(Source::Direct))];
+    let out = render_table(&rows);
+    let l = line_of(&out, "team");
+    assert!(l.contains("100%") && l.contains("55%"), "{l}");
+    let v = json(&rows);
+    assert_eq!(v[0]["state"], "session_exhausted");
+    assert_eq!(v[0]["session"]["used_percentage"], 100.0);
+    assert_eq!(v[0]["week_all"]["used_percentage"], 55.0);
+}
+
+#[test]
+fn raw_shows_a_fixed_line_for_rows_read_without_claude() {
+    let empty = Raw {
+        stdout: String::new(),
+        stderr: String::new(),
+    };
+    let mut p = sourced(
+        ok("aa", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Passive),
+    );
+    p.raw = Some(empty.clone());
+    let mut d = sourced(
+        ok("bb", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Direct),
+    );
+    d.raw = Some(empty);
+    let out = render_table(&[p.clone(), d.clone()]);
+    assert!(out.contains("\n  (passive: no claude output)\n"), "{out}");
+    assert!(out.contains("\n  (direct: no claude output)\n"), "{out}");
+    assert!(!out.contains("raw stdout"), "{out}");
+    let v = json(&[p, d]);
+    assert_eq!(v[0]["raw"], serde_json::json!({"stdout": "", "stderr": ""}));
+}
+
+#[test]
+fn fallback_notes_name_the_direct_failure() {
+    let mut a = sourced(
+        ok("aa", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Fallback),
+    );
+    a.direct_failure = Some("http 5xx");
+    let b = sourced(
+        ok("bb", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Fallback),
+    );
+    let c = sourced(
+        ok("cc", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Direct),
+    );
+    assert_eq!(
+        fallback_notes(&[a, b, c]),
+        ["note: profile \"aa\": direct read gave http 5xx; using claude"]
+    );
+}
+
+#[test]
+fn passive_rows_are_not_recorded_again() {
+    let rows = vec![
+        sourced(
+            ok("aa", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Passive),
+        ),
+        sourced(
+            ok("bb", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Direct),
+        ),
+        sourced(
+            ok("cc", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Fallback),
+        ),
+    ];
+    let names: Vec<String> = observations(&rows).into_iter().map(|o| o.profile).collect();
+    assert_eq!(names, ["bb", "cc"]);
+}
+
+#[test]
+fn a_direct_error_row_shows_its_reason() {
+    let mut r = sourced(
+        row("aa", report(UsageState::Error, None, None)),
+        Some(Source::Direct),
+    );
+    r.error = Some(ErrorReason::Direct("http 5xx"));
+    assert_eq!(
+        error_warnings(&[r.clone()]),
+        ["warning: profile \"aa\": direct read: http 5xx"]
+    );
+    assert_eq!(json(&[r])[0]["error"], "direct read: http 5xx");
+}
+
+#[test]
+fn a_missing_claude_is_an_error_row_with_its_reason() {
+    let mut r = sourced(
+        row("aa", report(UsageState::Error, None, None)),
+        Some(Source::Fallback),
+    );
+    r.error = Some(ErrorReason::NoClaude);
+    assert_eq!(json(&[r])[0]["error"], "claude not found");
 }

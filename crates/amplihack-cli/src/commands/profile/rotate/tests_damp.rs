@@ -24,7 +24,7 @@ use super::alert::{alert_key, should_alert};
 use super::damp::{FAILED_PROBE_LIMIT, damp, next_failed};
 use super::decide::{Decision, Measured, Reading, Reason, Windows, decide, held};
 use super::ledger::RotateLedger;
-use super::log::msg;
+use super::log::{Shown, msg};
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 
@@ -304,8 +304,8 @@ fn failed_probe_log_lines() {
         msg::swap(
             &name("work"),
             &name("spare"),
-            &Reading::Failed,
-            &r(0.0, 12.0),
+            &Shown::from_reading(Reading::Failed),
+            &Shown::from_reading(r(0.0, 12.0)),
             Reason::FailedProbe
         ),
         "swap work->spare live failed target s=0% w=12% reason=failed-probe"

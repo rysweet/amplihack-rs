@@ -7,15 +7,13 @@ use super::handfix;
 use super::ledger::{Phase, spend_reset};
 use super::log::{Sink, msg, timestamp};
 use super::observe::{
-    Measurement, live_alert, live_name, measure_and_decide, platform_block_reason, reading_of,
-    snapshot,
+    Measurement, live_alert, live_name, measure_and_decide, platform_block_reason, snapshot,
 };
 use super::overflow_record::{alert_line, target_check};
 use super::pin::{self, Gate as PinGate};
 use super::swap;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, exists, now};
-use crate::commands::profile::run::resolve_claude_binary;
 
 /// The outcome a live cycle would record for `decision`. `--dry-run` returns
 /// it so the preview reports what it printed; nothing is recorded and the
@@ -79,8 +77,8 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             return Ok(CycleOutcome::Held);
         }
     }
-    let binary = resolve_claude_binary()
-        .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
+    let m = measure_and_decide(ctx, &snap)?;
+    let (live_shown, others_shown) = super::log::shown(&m);
     let Measurement {
         live,
         others,
@@ -90,9 +88,12 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         tag,
         key_held,
         ..
-    } = measure_and_decide(ctx, &binary, &snap)?;
+    } = m;
     let name = live_name(&snap.live);
-    out.emit(0, &msg::cycle(name, &live, &others, snap.shown_platform()));
+    out.emit(
+        0,
+        &msg::cycle(name, &live_shown, &others_shown, snap.shown_platform()),
+    );
     let t = now();
     for n in &new_blocks {
         out.emit(
@@ -138,10 +139,13 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
                 out.emit(0, &msg::would_refuse(&to, &why));
                 return Ok(CycleOutcome::Alerted);
             }
-            let target = reading_of(&others, &to);
+            let target = super::log::shown_of(&others_shown, &to);
             out.emit(
                 0,
-                &format!("would {}", msg::swap(&from, &to, &live, &target, reason)),
+                &format!(
+                    "would {}",
+                    msg::swap(&from, &to, &live_shown, &target, reason)
+                ),
             );
         }
     }

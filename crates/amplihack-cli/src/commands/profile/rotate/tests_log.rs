@@ -10,7 +10,7 @@
 //! - `log::msg::{swap, cycle, alert_no_capacity}` build the documented lines.
 
 use super::decide::Reading;
-use super::log::{MAX_LOG, RotateLog, line, msg};
+use super::log::{MAX_LOG, RotateLog, Shown, line, msg};
 use crate::commands::profile::name::ProfileName;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -57,18 +57,13 @@ fn control_characters_are_removed_from_messages() {
 
 #[test]
 fn message_grammar() {
+    let m = |session: f64, week: f64| Shown::from_reading(Reading::Measured { session, week });
     assert_eq!(
         msg::swap(
             &name("work"),
             &name("spare"),
-            &Reading::Measured {
-                session: 90.0,
-                week: 40.0
-            },
-            &Reading::Measured {
-                session: 10.0,
-                week: 20.0
-            },
+            &m(90.0, 40.0),
+            &m(10.0, 20.0),
             super::decide::Reason::Threshold
         ),
         "swap work->spare live s=90% w=40% target s=10% w=20% reason=threshold"
@@ -76,51 +71,42 @@ fn message_grammar() {
     assert_eq!(
         msg::cycle(
             Some(&name("work")),
-            &Reading::Measured {
-                session: 90.0,
-                week: 40.0
-            },
+            &m(90.0, 40.0),
             &[
-                (name("b"), Reading::Failed),
-                (
-                    name("a"),
-                    Reading::Measured {
-                        session: 1.0,
-                        week: 2.0
-                    }
-                ),
+                (name("b"), Shown::from_reading(Reading::Failed)),
+                (name("a"), m(1.0, 2.0)),
             ],
             None
         ),
         "cycle live=work work:s=90%,w=40% a:s=1%,w=2% b:failed"
     );
     assert_eq!(
-        msg::cycle(None, &Reading::Failed, &[], None),
+        msg::cycle(None, &Shown::from_reading(Reading::Failed), &[], None),
         "cycle live=- -:failed"
     );
-    // The API-key profile shows as per-token, live or not (#1700).
+    // The API-key profile shows as per-token, live or not (#1700). An
+    // exhausted reading with no windows read shows `w=?` (#1844), never a
+    // made-up `w=100%`.
     let key = name("key");
-    let platform = Reading::Measured {
-        session: 0.0,
-        week: 0.0,
-    };
+    let platform = m(0.0, 0.0);
+    let exhausted = Shown::from_reading(Reading::Exhausted);
     assert_eq!(
         msg::cycle(
             Some(&name("work")),
-            &Reading::Exhausted,
-            &[(key.clone(), platform)],
+            &exhausted,
+            &[(key.clone(), platform.clone())],
             Some(&key)
         ),
-        "cycle live=work work:s=100%,w=100% key:per-token"
+        "cycle live=work work:s=100%,w=? key:per-token"
     );
     assert_eq!(
         msg::cycle(
             Some(&key),
             &platform,
-            &[(name("work"), Reading::Exhausted)],
+            &[(name("work"), exhausted)],
             Some(&key)
         ),
-        "cycle live=key key:per-token work:s=100%,w=100%"
+        "cycle live=key key:per-token work:s=100%,w=?"
     );
     assert_eq!(
         msg::alert_no_capacity(
@@ -269,4 +255,176 @@ mod handfix_text {
             "ALERT: profile ryan-ryansweet has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login ryan-ryansweet"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1844: the log shows the windows read, not a fixed `w=100%`.
+//
+// Contract:
+// - `log::Shown { reading, session: Option<f64>, week: Option<f64>,
+//   still_running: bool }` derives `Debug`, `Clone` and `PartialEq`.
+// - `Shown::of(&Probed)` takes the reading and the session and weekly
+//   percentages from `Probed::windows`, and `still_running` from
+//   `Probed::still_running`.
+// - `Shown::from_reading(Reading)` takes the percentages from a
+//   `Measured` reading and has no windows otherwise.
+// - `msg::usage(&Shown, sep)`: `s=<n>%<sep>w=<n>%`, with `s=100%` at least
+//   for an exhausted reading and `w=?` when no weekly window is known;
+//   `failed` for a failed reading; `unknown, still running` when
+//   `still_running` is set, whatever the reading.
+// - `msg::swap` and `msg::cycle` take `&Shown` and use the same format.
+// ---------------------------------------------------------------------------
+
+use super::decide::{Probed, Win, Windows};
+
+fn probed(reading: Reading, session: Option<f64>, week: Option<f64>) -> Probed {
+    let win = |used: f64| Win {
+        used,
+        resets_at: Some(T + 3600),
+    };
+    Probed {
+        reading,
+        windows: Windows {
+            session: session.map(win),
+            week: week.map(win),
+        },
+        ..Probed::failed()
+    }
+}
+
+fn exhausted(session: Option<f64>, week: Option<f64>) -> Shown {
+    let mut p = probed(Reading::Exhausted, session, week);
+    p.unknown = false;
+    Shown::of(&p)
+}
+
+#[test]
+fn an_exhausted_session_shows_the_weekly_figure_read() {
+    assert_eq!(
+        msg::usage(&exhausted(Some(100.0), Some(55.0)), ","),
+        "s=100%,w=55%"
+    );
+    assert_eq!(
+        msg::usage(&exhausted(Some(100.0), Some(55.0)), " "),
+        "s=100% w=55%"
+    );
+}
+
+#[test]
+fn an_exhausted_login_shows_at_least_100_for_the_session() {
+    // A session window below 100% on an exhausted reading (the week ran
+    // out) still shows `s=100%`; one above 100% shows as read.
+    assert_eq!(
+        msg::usage(&exhausted(Some(40.0), Some(100.0)), ","),
+        "s=100%,w=100%"
+    );
+    assert_eq!(
+        msg::usage(&exhausted(Some(130.0), Some(55.0)), ","),
+        "s=130%,w=55%"
+    );
+    assert_eq!(
+        msg::usage(&exhausted(None, Some(55.0)), ","),
+        "s=100%,w=55%"
+    );
+}
+
+#[test]
+fn no_weekly_window_shows_a_question_mark() {
+    assert_eq!(msg::usage(&exhausted(Some(100.0), None), ","), "s=100%,w=?");
+    let mut p = probed(
+        Reading::Measured {
+            session: 20.0,
+            week: 0.0,
+        },
+        Some(20.0),
+        None,
+    );
+    p.unknown = false;
+    assert_eq!(msg::usage(&Shown::of(&p), ","), "s=20%,w=?");
+}
+
+#[test]
+fn a_measured_reading_shows_its_windows_rounded_down() {
+    let mut p = probed(
+        Reading::Measured {
+            session: 41.9,
+            week: 30.2,
+        },
+        Some(41.9),
+        Some(30.2),
+    );
+    p.unknown = false;
+    assert_eq!(msg::usage(&Shown::of(&p), ","), "s=41%,w=30%");
+}
+
+#[test]
+fn a_read_still_running_shows_unknown_still_running() {
+    let mut p = Probed::failed();
+    p.still_running = true;
+    let s = Shown::of(&p);
+    assert!(s.still_running);
+    assert_eq!(msg::usage(&s, ","), "unknown, still running");
+    assert_eq!(
+        msg::cycle(Some(&name("work")), &s, &[], None),
+        "cycle live=work work:unknown, still running"
+    );
+}
+
+#[test]
+fn a_failed_read_still_shows_failed() {
+    let s = Shown::of(&Probed::failed());
+    assert!(!s.still_running);
+    assert_eq!(msg::usage(&s, ","), "failed");
+}
+
+#[test]
+fn probed_is_not_still_running_by_default() {
+    assert!(!Probed::failed().still_running);
+    assert!(!Probed::platform().still_running);
+}
+
+#[test]
+fn swap_and_cycle_lines_show_the_weekly_figure_of_an_exhausted_login() {
+    let live = exhausted(Some(100.0), Some(72.0));
+    let mut t = probed(
+        Reading::Measured {
+            session: 0.0,
+            week: 43.0,
+        },
+        Some(0.0),
+        Some(43.0),
+    );
+    t.unknown = false;
+    let target = Shown::of(&t);
+    assert_eq!(
+        msg::swap(
+            &name("work"),
+            &name("spare"),
+            &live,
+            &target,
+            super::decide::Reason::Threshold
+        ),
+        "swap work->spare live s=100% w=72% target s=0% w=43% reason=threshold"
+    );
+    assert_eq!(
+        msg::cycle(
+            Some(&name("work")),
+            &live,
+            &[(name("team"), exhausted(Some(100.0), Some(55.0)))],
+            None
+        ),
+        "cycle live=work work:s=100%,w=72% team:s=100%,w=55%"
+    );
+}
+
+#[test]
+fn shown_from_reading_keeps_measured_figures() {
+    let s = Shown::from_reading(Reading::Measured {
+        session: 12.0,
+        week: 34.0,
+    });
+    assert_eq!(s.session, Some(12.0));
+    assert_eq!(s.week, Some(34.0));
+    assert!(!s.still_running);
+    assert_eq!(msg::usage(&s, ","), "s=12%,w=34%");
 }

@@ -233,6 +233,6 @@ pub fn alert_no_capacity_for(
     };
     format!(
         "ALERT: no profile has capacity live={live} {}{tail}",
-        usage(reading, " ")
+        usage(&super::log::Shown::from_reading(*reading), " ")
     )
 }

@@ -17,9 +17,16 @@
 //! - `parse_load1(text) -> Option<f64>`: the first field of `/proc/loadavg`;
 //!   `None` when empty, negative or not finite.
 //! - `PROBE_ENV` = `AMPLIHACK_PROFILE_USAGE_PROBE`;
-//!   `probe_mode(env) -> (ProbeMode, Option<String>)`: `auto` or `text`,
+//!   `probe_mode(env) -> (ProbeMode, Option<String>)` (issue #1844):
+//!   unset or empty is `Ordered`; `direct`, `auto` or `text`,
 //!   matched byte for byte; empty means unset; anything else warns, with the
-//!   value shown as for the other variables, and uses `Auto`.
+//!   value shown as for the other variables, and uses `Ordered`.
+//! - Issue #1844: `PASSIVE_MAX_AGE_ENV` =
+//!   `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`, `passive_max_age(env)
+//!   -> (u64, Option<String>)`: 0 to 3600, default 300.
+//!   `DIRECT_PARALLEL_ENV` = `AMPLIHACK_PROFILE_USAGE_DIRECT_PARALLEL`,
+//!   `direct_parallel(env, n) -> (usize, Option<String>)`: 1 to 16,
+//!   default 8, capped at `n` and at least 1.
 //!
 //! Every test calls the pure functions; none reads or changes the process
 //! environment or `/proc`.
@@ -256,23 +263,27 @@ fn a_non_utf8_variable_warns_and_uses_the_derived_bound() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_probe_method_is_auto_unless_text_is_asked_for() {
-    assert_eq!(probe_mode(None), (ProbeMode::Auto, None));
-    assert_eq!(probe_mode(env("")), (ProbeMode::Auto, None));
+fn the_probe_method_is_the_ordered_default_unless_one_is_named() {
+    // Issue #1844: unset means passive, then direct, then fallback.
+    assert_eq!(probe_mode(None), (ProbeMode::Ordered, None));
+    assert_eq!(probe_mode(env("")), (ProbeMode::Ordered, None));
+    assert_eq!(probe_mode(env("direct")), (ProbeMode::Direct, None));
     assert_eq!(probe_mode(env("auto")), (ProbeMode::Auto, None));
     assert_eq!(probe_mode(env("text")), (ProbeMode::Text, None));
 }
 
 #[test]
-fn any_other_probe_method_warns_and_uses_auto() {
-    for bad in ["Text", " auto", "auto ", "AUTO", "txt", "text\n", "0"] {
+fn any_other_probe_method_warns_and_uses_the_default_order() {
+    for bad in [
+        "Text", " auto", "auto ", "AUTO", "txt", "text\n", "0", "Direct", "ordered", "passive",
+    ] {
         let (mode, warning) = probe_mode(env(bad));
-        assert_eq!(mode, ProbeMode::Auto, "{bad:?}");
+        assert_eq!(mode, ProbeMode::Ordered, "{bad:?}");
         assert_eq!(
             warning.as_deref(),
             Some(
                 format!(
-                    "warning: ignored AMPLIHACK_PROFILE_USAGE_PROBE {bad:?} (use auto or text); using auto"
+                    "warning: ignored AMPLIHACK_PROFILE_USAGE_PROBE {bad:?} (use direct, auto or text); using the default order"
                 )
                 .as_str()
             ),
@@ -300,14 +311,14 @@ fn a_hostile_probe_method_is_escaped_and_cut_in_the_warning() {
 
 #[cfg(unix)]
 #[test]
-fn a_non_utf8_probe_method_warns_and_uses_auto() {
+fn a_non_utf8_probe_method_warns_and_uses_the_default_order() {
     use std::os::unix::ffi::OsStrExt;
     let (mode, warning) = probe_mode(Some(OsStr::from_bytes(b"\xff")));
-    assert_eq!(mode, ProbeMode::Auto);
+    assert_eq!(mode, ProbeMode::Ordered);
     let warning = warning.unwrap();
     assert!(warning.contains("\u{fffd}"), "{warning}");
     assert!(
-        warning.ends_with("(use auto or text); using auto"),
+        warning.ends_with("(use direct, auto or text); using the default order"),
         "{warning}"
     );
 }
@@ -333,4 +344,91 @@ fn parse_load1_rejects_what_is_not_a_load() {
     ] {
         assert_eq!(parse_load1(bad), None, "{bad:?}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1844: passive reading age and the direct-read bound
+// ---------------------------------------------------------------------------
+
+use super::probe_limits::{
+    DEFAULT_DIRECT_PARALLEL, DEFAULT_PASSIVE_MAX_AGE_SECS, DIRECT_PARALLEL_ENV,
+    MAX_PASSIVE_MAX_AGE_SECS, PASSIVE_MAX_AGE_ENV, direct_parallel, passive_max_age,
+};
+
+#[test]
+fn new_constants_are_the_documented_values() {
+    assert_eq!(
+        PASSIVE_MAX_AGE_ENV,
+        "AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS"
+    );
+    assert_eq!(
+        DIRECT_PARALLEL_ENV,
+        "AMPLIHACK_PROFILE_USAGE_DIRECT_PARALLEL"
+    );
+    assert_eq!(DEFAULT_PASSIVE_MAX_AGE_SECS, 300);
+    assert_eq!(MAX_PASSIVE_MAX_AGE_SECS, 3600);
+    assert_eq!(DEFAULT_DIRECT_PARALLEL, 8);
+}
+
+#[test]
+fn passive_max_age_is_300_unless_a_valid_value_is_set() {
+    assert_eq!(passive_max_age(None), (300, None));
+    assert_eq!(passive_max_age(env("")), (300, None));
+    assert_eq!(passive_max_age(env("0")), (0, None));
+    assert_eq!(passive_max_age(env("100")), (100, None));
+    assert_eq!(passive_max_age(env("3600")), (3600, None));
+}
+
+#[test]
+fn a_bad_passive_max_age_warns_and_uses_300() {
+    for bad in ["3601", "-1", "ten", " 5", "5 ", "1e3", "300s"] {
+        let (age, warning) = passive_max_age(env(bad));
+        assert_eq!(age, 300, "{bad:?}");
+        assert_eq!(
+            warning.as_deref(),
+            Some(
+                format!(
+                    "warning: ignored AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS {bad:?} (use 0 to 3600); using 300"
+                )
+                .as_str()
+            )
+        );
+    }
+}
+
+#[test]
+fn direct_parallel_is_8_capped_at_the_profiles() {
+    assert_eq!(direct_parallel(None, 20), (8, None));
+    assert_eq!(direct_parallel(env(""), 20), (8, None));
+    assert_eq!(direct_parallel(None, 3), (3, None));
+    assert_eq!(direct_parallel(None, 0), (1, None));
+    assert_eq!(direct_parallel(env("16"), 20), (16, None));
+    assert_eq!(direct_parallel(env("1"), 20), (1, None));
+    assert_eq!(direct_parallel(env("12"), 5), (5, None));
+}
+
+#[test]
+fn a_bad_direct_parallel_warns_and_uses_8() {
+    for bad in ["0", "17", "lots", "-2", " 4"] {
+        let (p, warning) = direct_parallel(env(bad), 20);
+        assert_eq!(p, 8, "{bad:?}");
+        assert_eq!(
+            warning.as_deref(),
+            Some(
+                format!(
+                    "warning: ignored AMPLIHACK_PROFILE_USAGE_DIRECT_PARALLEL {bad:?} (use 1 to 16); using 8"
+                )
+                .as_str()
+            )
+        );
+    }
+}
+
+#[test]
+fn the_claude_bound_keeps_its_variable_and_meaning() {
+    // PARALLEL_ENV still bounds `claude` fallbacks only; the derived bound
+    // of 2 to 4 is unchanged.
+    assert_eq!(PARALLEL_ENV, "AMPLIHACK_PROFILE_USAGE_PARALLEL");
+    assert_eq!(parallel(None, 72, Some(194.0), 16).0, 2);
+    assert_eq!(parallel(None, 64, Some(0.0), 16).0, 4);
 }
