@@ -949,6 +949,26 @@ fn swap_warning_names_the_profile_in_fixed_text() {
 }
 
 #[test]
+fn spend_swap_note_names_the_profile_and_says_the_spend_is_unknown() {
+    // Crusty round 5: a swap before or during the live row's `--spend`
+    // probe drops that probe's result; the note says so and is one line.
+    let name = super::name::ProfileName::parse("work").unwrap();
+    let got = super::usage_cmd::spend_swap_note(&name);
+    assert_eq!(
+        got,
+        "note: the login in ~/.claude changed while profile \"work\" was probed \
+         for its spend; its spend is unknown this run"
+    );
+    assert!(!got.contains('\n'), "{got}");
+    // The doc table lists the same text.
+    let doc = include_str!("../../../../../docs/reference/profile-command.md");
+    assert!(
+        doc.contains(&got.replace("\"work\"", "\"<name>\"")),
+        "profile-command.md lists the note"
+    );
+}
+
+#[test]
 fn swap_warning_is_one_line_that_is_not_a_warning() {
     let name = super::name::ProfileName::parse("work").unwrap();
     let got = swap_warning(&name);

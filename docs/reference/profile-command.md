@@ -1596,8 +1596,11 @@ it is about has a login.
 
 ##### Swaps during the probe
 
-After every probe has finished, the same evidence is checked again: the
-ledger's `live` and `since` fields, or the matched account. `since` is only
+After every window reading has finished, and before any `--spend`
+[spend probe](#spend-probe) starts, the same evidence is checked again: the
+ledger's `live` and `since` fields, or the matched account. A long
+`--spend` pass therefore never widens the time in which a swap stops the
+live profile's windows from being recorded. `since` is only
 compared for equality; it is never printed or stored. If the evidence
 changed or can no longer be read, the login in `~/.claude` may have been
 swapped during the probe. The row is still shown, with its numbers and its
@@ -1618,6 +1621,17 @@ status is unchanged. A run with no swap during the probes prints no note.
 
 On such a row, the numbers and any `--raw` text may belong to the login that
 replaced it. Run the command again for current numbers.
+
+The live profile's spend probe reads `~/.claude`, so with `--spend` the
+evidence is checked again before it starts and once it has finished. If
+either check fails, the probe's result is dropped, the row's spend is
+`unknown` rather than the spend of the login that replaced it, and one note
+goes to stderr. The row's windows were read before the change and are
+recorded as usual:
+
+```
+note: the login in ~/.claude changed while profile "work" was probed for its spend; its spend is unknown this run
+```
 
 The check has two known gaps. Closing them would need a lock on the
 rotator's ledger, which amplihack does not take:
@@ -1643,6 +1657,7 @@ status, and none marks a profile live when there is doubt.
 | `warning: the login rotator's ledger names a profile that still has its own login; it is not marked live in ~/.claude` | The ledger names a profile whose directory still has a `.credentials.json`. |
 | `warning: could not list profiles; no profile is marked live in ~/.claude` | No ledger, and the profile root could not be listed (for example, it is not readable), so no account match was tried. |
 | `note: the login in ~/.claude changed while profile "<name>" was probed; its usage was not recorded this run` | The evidence for the live profile changed during the probe. A note rather than a warning. See [Swaps during the probe](#swaps-during-the-probe). |
+| `note: the login in ~/.claude changed while profile "<name>" was probed for its spend; its spend is unknown this run` | With `--spend`, the evidence for the live profile changed before or during its spend probe. Its spend is `unknown`; its windows are recorded. See [Swaps during the probe](#swaps-during-the-probe). |
 | `warning: profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); …` | Two logins are the same account. One line per pair, after the other warnings. The line names the profile whose login is not its [recorded account](#recorded-account), or `~/.claude` when it is not the live profile's recorded account, or says amplihack cannot tell which one is wrong. See [Duplicate-login warning](#duplicate-login-warning). Printed for `~/.claude` and `M` while a manual `/login` in `~/.claude` has left both with the same account; the next rotate cycle moves `M`'s copy aside when it [safely can](#rotate-hand-change-recovery). |
 
 A manual `/login` in `~/.claude` replaces whatever login was there; the
@@ -2021,7 +2036,7 @@ above, with only the first of the six rows shown:
 
 | Key | Type | Meaning |
 |-----|------|---------|
-| `at` | string | When the summary was worked out, after the probes. |
+| `at` | string | When the summary was worked out: after the window readings and before any [spend probe](#spend-probe), so `--spend` never makes it later. |
 | `profiles` | array | The [`--json`](#json-output) rows, unchanged. |
 | `summary` | object or `null` | `null` when there are no profiles or no row is a subscription profile. |
 | `summary.weekly_headroom_login_weeks` | number | Unweighted headroom, two decimal places. `0.0` with no valid reading. |
@@ -2083,8 +2098,9 @@ earlier: up to `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` before the
 run started, `300` seconds by default and at most `3600`.
 
 A passive reading's age is measured from the start of the run, the time
-it was accepted at. `profile usage` takes `at` later, once every row is
-in, so a slow `claude` fallback for one row never turns another row the
+it was accepted at. `profile usage` takes `at` later, once every row's
+windows are in and before any `--spend` [spend probe](#spend-probe) starts,
+so a slow `claude` fallback for one row never turns another row the
 table shows as read into an unknown one. The
 [rotator](#rotate-cycle) takes one time for both, so for it the start of
 the run and `at` are the same. The rule is:

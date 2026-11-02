@@ -291,32 +291,46 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     });
     // Only when every profile is listed: naming profiles asks about those.
     let mut home_probe = (home_row && names.is_empty()).then(|| reader.home());
+    // The login in `~/.claude` may have been swapped during the probe; its
+    // numbers are shown but not recorded against the profile. Checked
+    // before any spend probe, so that a long `--spend` pass cannot widen
+    // the window in which a swap discards windows that were read correctly.
+    let swapped = swapped_live(store, home.as_deref(), live.clone());
+    // Taken once the window readings are in and before any spend probe:
+    // the summary, `--summary-json`'s `at`, the ordering and the history
+    // line are all as of when the windows were read, however long
+    // `--spend` then takes. A passive reading's age is still judged at
+    // `now`, the time it was accepted at.
+    let at = now_secs();
     // Issue #1856: the spend of credits-on direct rows, read only when
     // `--spend` asks for it, only in the default order and only once every
     // row has its windows. `/usage` can take tens of seconds per profile on
     // a loaded host, so the default run starts no `claude` for these rows.
     if spend && mode == ProbeMode::Ordered {
+        // The live row's spend probe reads `~/.claude`, so its result is
+        // kept only while that login is still the one the windows were
+        // read from: not swapped before the pass, nor during its probe.
+        let still_live = || {
+            swapped.is_none()
+                && live
+                    .as_ref()
+                    .is_some_and(|l| default_live::still_live(store, home.as_deref(), l))
+        };
         spend_pass(
             &reader,
             &profiles,
             live_name.as_ref(),
+            &still_live,
             &mut probes,
             home_probe.as_mut(),
             claude_bound,
         );
     }
-    // The login in `~/.claude` may have been swapped during the probe; its
-    // numbers are shown but not recorded against the profile.
-    let swapped = swapped_live(store, home.as_deref(), live);
     let mut rows = build_rows(&marks, &profiles, probes, live_name.as_ref());
     rows.extend(keys.rows(&marks, &keyed));
     if let Some(p) = home_probe {
         rows.push(home_row_of(p));
     }
-    // Taken after the probes: the summary, `--summary-json`'s `at` and the
-    // history line are all as of when the readings were in. A passive
-    // reading's age is still judged at `now`, the time it was accepted at.
-    let at = now_secs();
     order(&mut rows, at);
     // Issue #1797: the capacity summary, from these rows only; no probe.
     // `--raw` is diagnostic output and gets neither summary nor history.
@@ -368,10 +382,16 @@ enum SpendTarget<'a> {
 /// per-probe timeout. Only each row's
 /// `spend` changes: its windows, state, error and source stay as the
 /// direct read gave them.
+///
+/// The live profile's probe reads `~/.claude`. It is not started unless
+/// `still_live()` holds, and its result is dropped for `Unknown` unless
+/// `still_live()` holds again once it has finished, so a swap before or
+/// during the pass never shows another login's spend on that row.
 fn spend_pass(
     reader: &RowReader,
     profiles: &[ProfileName],
     live: Option<&ProfileName>,
+    still_live: &(dyn Fn() -> bool + Sync),
     probes: &mut [Probe],
     mut home: Option<&mut Probe>,
     bound: usize,
@@ -388,12 +408,10 @@ fn spend_pass(
     if slots.is_empty() {
         return;
     }
-    let spends = pooled(slots.len(), bound, |j| {
-        let target = match slots[j] {
-            Some(i) => SpendTarget::Profile(&profiles[i], live == Some(&profiles[i])),
-            None => SpendTarget::Home,
-        };
-        reader.spend(target)
+    let spends = pooled(slots.len(), bound, |j| match slots[j] {
+        Some(i) if live == Some(&profiles[i]) => live_spend(reader, &profiles[i], still_live),
+        Some(i) => reader.spend(SpendTarget::Profile(&profiles[i], false)),
+        None => reader.spend(SpendTarget::Home),
     });
     for (slot, spend) in slots.into_iter().zip(spends) {
         match slot {
@@ -405,6 +423,23 @@ fn spend_pass(
             }
         }
     }
+}
+
+/// The live profile's spend, read in `~/.claude` only while `still_live()`
+/// holds before and after the probe; `Unknown`, with one note, otherwise.
+fn live_spend(
+    reader: &RowReader,
+    name: &ProfileName,
+    still_live: &(dyn Fn() -> bool + Sync),
+) -> Spend {
+    if still_live() {
+        let spend = reader.spend(SpendTarget::Profile(name, true));
+        if still_live() {
+            return spend;
+        }
+    }
+    eprintln!("{}", spend_swap_note(name));
+    Spend::Unknown
 }
 
 /// The capacity summary of `current`, printing the threshold, weights and
@@ -751,6 +786,16 @@ fn print_output(
 pub(super) fn swap_warning(name: &ProfileName) -> String {
     format!(
         "note: the login in ~/.claude changed while profile \"{}\" was probed; its usage was not recorded this run",
+        sanitize_display(name.as_str(), false)
+    )
+}
+
+/// Issue #1856: the note for a live profile whose `--spend` probe was not
+/// started, or was dropped, because the login in `~/.claude` changed. Its
+/// windows were read before the change and are recorded as usual.
+pub(super) fn spend_swap_note(name: &ProfileName) -> String {
+    format!(
+        "note: the login in ~/.claude changed while profile \"{}\" was probed for its spend; its spend is unknown this run",
         sanitize_display(name.as_str(), false)
     )
 }

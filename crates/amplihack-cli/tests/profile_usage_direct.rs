@@ -842,6 +842,118 @@ fn spend_probes_of_a_slow_claude_end_at_the_probe_timeout() {
     assert_no_sentinel_leaks(&s, &out);
 }
 
+/// Crusty round 5: with `--spend`, the history line's `at` and
+/// `--summary-json`'s `at` are when the windows were read, not when the
+/// spend pass ended. Every spend probe here runs to its 3 s deadline, so a
+/// time taken after the pass would be at least 3 s after the start.
+#[test]
+fn spend_probes_do_not_delay_the_history_and_summary_time() {
+    let s = credits_on();
+    for p in names() {
+        s.slow(&p);
+    }
+    // The history is written only into an existing private state directory.
+    let state = s.f.root.join(".auto-switch.d");
+    fs::create_dir_all(&state).unwrap();
+    fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let start = chrono::Utc::now().timestamp();
+    let out = s.usage_with(
+        &["--summary-json", "--spend", "--timeout-secs", "3"],
+        &[(PARALLEL_ENV, "16")],
+    );
+    let end = chrono::Utc::now().timestamp();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(end - start >= 3, "the spend pass ran: {start}..{end}");
+    assert_eq!(s.usage_runs(), names().len(), "{:?}", s.claude_runs());
+    let secs = |v: &serde_json::Value| {
+        chrono::DateTime::parse_from_rfc3339(v.as_str().unwrap())
+            .unwrap()
+            .timestamp()
+    };
+    let summary: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let at = secs(&summary["at"]);
+    assert!(
+        (start..=end - 2).contains(&at),
+        "summary at {at} is not before the spend pass ({start}..{end})"
+    );
+    let history = state.join("usage-history.jsonl");
+    let raw = fs::read_to_string(&history)
+        .unwrap_or_else(|e| panic!("no history ({e}): {}", text(&out.stderr)));
+    let line: serde_json::Value = serde_json::from_str(raw.lines().last().unwrap()).unwrap();
+    assert_eq!(secs(&line["at"]), at, "{line}");
+    s.assert_no_survivors();
+}
+
+/// Swaps `~/.claude` to `spare`'s login the first time a `/usage` probe
+/// runs in `~/.claude`, then runs the recording `claude`.
+fn swap_on_live_spend_probe(s: &Setup) {
+    let d = &s.f.tools;
+    fs::rename(d.join("claude"), d.join("claude-recording")).unwrap();
+    let spare = s.f.root.join("spare");
+    let script = format!(
+        "#!/bin/sh\n\
+         case \" $* \" in *\" /usage \"*)\n\
+           case \"${{CLAUDE_CONFIG_DIR-}}\" in \"\"|\"$HOME/.claude\")\n\
+             if [ ! -e \"$RECORD_DIR/swapped\" ]; then\n\
+               : > \"$RECORD_DIR/swapped\"\n\
+               cat '{json}' > \"$HOME/.claude.json\"\n\
+               cat '{creds}' > \"$HOME/.claude/.credentials.json\"\n\
+             fi ;;\n\
+           esac ;;\n\
+         esac\n\
+         exec \"$(dirname \"$0\")/claude-recording\" \"$@\"\n",
+        json = spare.join(".claude.json").display(),
+        creds = spare.join(".credentials.json").display(),
+    );
+    write_executable(&d.join("claude"), &script, 0o755);
+}
+
+/// Crusty round 5: a swap of `~/.claude` during the live row's spend probe
+/// leaves that row's spend `unknown` (never the new login's spend), with
+/// one note, and its windows, read before the swap, are still recorded
+/// with no "was not recorded" note.
+#[test]
+fn a_swap_during_the_live_spend_probe_shows_no_foreign_spend() {
+    let s = credits_on();
+    s.usage_text(
+        "spare",
+        "Current session: 10% used\nYour organization has reached its spend limit\n",
+    );
+    swap_on_live_spend_probe(&s);
+    // `usage.json` is written only into an existing private state directory.
+    let state = s.f.root.join(".auto-switch.d");
+    fs::create_dir_all(&state).unwrap();
+    fs::set_permissions(&state, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    let out = s.usage(&["--json", "--spend", "work", "spare"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(s.f.records.join("swapped").exists(), "the live probe ran");
+    let rows = json_rows(&out);
+    let work = row(&rows, "work");
+    assert_eq!(work["spend"], "unknown", "not spare's spend: {work}");
+    assert_eq!(work["session"]["used_percentage"], 100.0, "{work}");
+    assert_eq!(work["source"], "direct", "{work}");
+    assert_eq!(work["week_all"]["used_percentage"], 55.0, "{work}");
+    assert_eq!(row(&rows, "spare")["spend"], "limit_reached");
+    let err = text(&out.stderr);
+    assert_eq!(
+        err.lines()
+            .filter(|l| *l
+                == "note: the login in ~/.claude changed while profile \"work\" was probed \
+                    for its spend; its spend is unknown this run")
+            .count(),
+        1,
+        "{err}"
+    );
+    assert!(!err.contains("its usage was not recorded"), "{err}");
+    let usage: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(state.join("usage.json")).unwrap()).unwrap();
+    assert!(
+        usage["accounts"].get("work").is_some(),
+        "work's windows were read before the swap and are recorded: {usage}"
+    );
+    assert_no_sentinel_leaks(&s, &out);
+}
+
 /// AC5: a used-up spend limit in `/usage` gives `limit_reached`, and the
 /// windows and state still come from the direct read.
 #[test]
