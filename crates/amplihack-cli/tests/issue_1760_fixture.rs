@@ -61,9 +61,22 @@ pub struct Fx {
     pub uid: u32,
 }
 
+/// A temp dir whose path leaves room for `tt/tmux-<uid>/default` under the
+/// 107-byte socket limit. A long `$TMPDIR` (a nested workflow run sets one
+/// over 100 bytes) falls back to `/tmp`, so the tests do not depend on the
+/// caller's environment.
+fn short_tempdir() -> tempfile::TempDir {
+    let base = std::env::temp_dir();
+    if base.as_os_str().len() <= 60 {
+        tempfile::tempdir_in(base).unwrap()
+    } else {
+        tempfile::tempdir_in("/tmp").unwrap()
+    }
+}
+
 impl Fx {
     pub fn new() -> Self {
-        let tmp = tempfile::tempdir().unwrap();
+        let tmp = short_tempdir();
         let root = tmp.path().canonicalize().unwrap();
         // SAFETY: geteuid has no preconditions.
         let uid = unsafe { libc::geteuid() };
@@ -117,6 +130,9 @@ impl Fx {
             .env("PATH", format!("{}:/usr/bin:/bin", self.tools.display()))
             .env("HOME", &self.home)
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
+            // The home guard wants HOME under the child's temp dir, which
+            // `short_tempdir` may have moved away from the caller's `$TMPDIR`.
+            .env("TMPDIR", self.root.parent().unwrap())
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.profiles)
             .env("AMPLIHACK_TEST_PROC_ROOT", &self.proc_root)
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.tools.join("claude"))
