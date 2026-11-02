@@ -30,7 +30,7 @@ use std::time::Duration;
 pub(super) fn ctx(r: &Root) -> AdmitContext<'_> {
     AdmitContext {
         root: Some(&r.root),
-        settings: Settings::default(),
+        settings: Settings::on(),
         class: Class::Ordinary,
         start: super::model::Start::Agent,
         workstream: "ws-test".into(),

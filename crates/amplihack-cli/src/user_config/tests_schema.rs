@@ -33,6 +33,9 @@ fn keys_are_in_documented_order() {
             "governor.eval_interval_secs",
             "governor.wait_secs",
             "governor.max_reading_age_secs",
+            "sessions.daily_archive",
+            "sessions.archive_days",
+            "sessions.archive_dest",
         ]
     );
 }
@@ -53,7 +56,7 @@ fn no_project_scoped_key_names_a_path() {
 }
 
 #[test]
-fn user_only_keys_are_agent_home_node_log_dir_and_governor() {
+fn user_only_keys_are_agent_home_node_log_dir_governor_and_sessions() {
     let user_only: Vec<&str> = KEYS
         .iter()
         .filter(|k| k.scope == Scope::UserOnly)
@@ -75,6 +78,9 @@ fn user_only_keys_are_agent_home_node_log_dir_and_governor() {
             "governor.eval_interval_secs",
             "governor.wait_secs",
             "governor.max_reading_age_secs",
+            "sessions.daily_archive",
+            "sessions.archive_days",
+            "sessions.archive_dest"
         ]
     );
 }
@@ -185,7 +191,7 @@ fn governor_keys_are_user_only_with_documented_ranges_and_defaults() {
     let cases: [(&str, Option<Value>, &str, &str); 8] = [
         (
             "governor.enabled",
-            Some(Value::Bool(true)),
+            Some(Value::Bool(false)), // opt-in: the governor ships off
             "false",
             "maybe",
         ),

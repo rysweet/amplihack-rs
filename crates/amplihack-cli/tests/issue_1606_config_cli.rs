@@ -29,6 +29,9 @@ const SCHEMA_ORDER: &[&str] = &[
     "recipe.usage_limit_wait",
     "recipe.usage_limit_max_wait_secs",
     "orchestrator.max_depth",
+    "sessions.daily_archive",
+    "sessions.archive_days",
+    "sessions.archive_dest",
 ];
 
 /// Records argv and its environment, then reports success in the runner's
@@ -338,7 +341,7 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "recipe.usage_limit_wait = true",
             "recipe.usage_limit_max_wait_secs = 21600",
             "orchestrator.max_depth = 3",
-            "governor.enabled = true",
+            "governor.enabled = false",
             "governor.max_concurrency = 4",
             "governor.reserve_points = 10",
             "governor.step = 1",
@@ -346,6 +349,9 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "governor.eval_interval_secs = 60",
             "governor.wait_secs = 600",
             "governor.max_reading_age_secs = 3600",
+            "sessions.daily_archive = true",
+            "sessions.archive_days = 3",
+            "sessions.archive_dest = (unset)",
         ]
     );
 }

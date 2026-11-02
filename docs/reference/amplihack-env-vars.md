@@ -83,7 +83,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE` | user preference |  | Allows installing an older recipe runner. |
 | `AMPLIHACK_GIT_1278_CHILD` | test-only |  | Re-exec switch for the #1278 git test. |
 | `AMPLIHACK_GIT_1278_PLAIN` | test-only |  | Re-exec switch for the #1278 git test. |
-| `AMPLIHACK_GOVERNOR` | user preference |  | `off`, `0` or `false` turns the [capacity governor](./capacity-governor.md) off. Read by the governor itself; outranks `governor.enabled`. |
+| `AMPLIHACK_GOVERNOR` | user preference |  | `on`, `1` or `true` turns the [capacity governor](./capacity-governor.md) on (it ships off); `off`, `0` or `false` turns it off. Read by the governor itself; outranks `governor.enabled`. |
 | `AMPLIHACK_GOVERNOR_CLASS` | user preference |  | Default admission class for the capacity governor. |
 | `AMPLIHACK_GOVERNOR_MANIFEST` | user preference |  | Usage manifest that `governor status` reads for `token_share`. |
 | `AMPLIHACK_GOVERNOR_PARENT` | internal |  | Tree id of the capacity governor slot held by the parent process; a start that matches a live slot runs nested under it. |

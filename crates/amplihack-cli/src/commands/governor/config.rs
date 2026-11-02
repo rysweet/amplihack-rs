@@ -30,10 +30,20 @@ pub struct Settings {
     pub max_reading_age_secs: u64,
 }
 
+/// Whether the governor runs when neither `AMPLIHACK_GOVERNOR` nor
+/// `governor.enabled` says. Off: the governor is opt-in. The owner retired
+/// every admission control and capacity hold on 2 Nov (no session is held
+/// back or queued behind a concurrency cap because of capacity), so a build
+/// that installs the governor must not turn one back on by itself. Turn it
+/// on with `amplihack config set governor.enabled true` or
+/// `AMPLIHACK_GOVERNOR=1`. `GOVERNOR_ENABLED` in
+/// `user_config::schema_governor` must say the same; a test checks.
+pub const GOVERNOR_ENABLED_DEFAULT: bool = false;
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: GOVERNOR_ENABLED_DEFAULT,
             max_concurrency: 4,
             reserve_points: 10,
             step: 1,
@@ -41,6 +51,18 @@ impl Default for Settings {
             eval_interval_secs: 60,
             wait_secs: 600,
             max_reading_age_secs: 3600,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Settings {
+    /// The defaults with the governor turned on, as a user who opted in
+    /// has them. Tests of admission and status start here.
+    pub(crate) fn on() -> Self {
+        Self {
+            enabled: true,
+            ..Self::default()
         }
     }
 }

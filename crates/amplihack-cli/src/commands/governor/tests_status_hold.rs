@@ -31,7 +31,7 @@ fn age(r: &Root, name: &str, secs: i64) {
 
 /// Runs both and asserts they agree; returns the status JSON and table.
 fn agree(r: &Root) -> (Value, String) {
-    let settings = Settings::default();
+    let settings = Settings::on();
     let b = budgets(&snapshots(&r.root), NOW, settings.max_reading_age_secs);
     let d = decide(&inputs(b, Class::Ordinary), NOW);
     let v = view(Some(&r.root), &settings, None, NOW);

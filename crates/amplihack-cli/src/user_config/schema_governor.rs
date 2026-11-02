@@ -17,12 +17,15 @@ const fn int(name: &'static str, min: u64, max: u64, default: &'static str) -> K
     }
 }
 
+/// Off by default: the governor is opt-in, because the owner retired every
+/// admission control and capacity hold (see
+/// `commands::governor::config::GOVERNOR_ENABLED_DEFAULT`, which must agree).
 pub(crate) const GOVERNOR_ENABLED: KeyDef = KeyDef {
     name: "governor.enabled",
     scope: Scope::UserOnly,
     kind: ValueKind::Bool,
     env: None,
-    default: Some("true"),
+    default: Some("false"),
     lower_only: false,
 };
 pub(crate) const GOVERNOR_MAX_CONCURRENCY: KeyDef = int("governor.max_concurrency", 1, 64, "4");

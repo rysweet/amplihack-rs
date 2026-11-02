@@ -56,7 +56,7 @@ fn seed_state(r: &Root, slot_pid: u32) {
 fn top_level_and_nested_key_sets_are_exact() {
     let r = Root::new(&[("alpha", 62.0, 71.0), ("beta", -1.0, 38.0)]);
     seed_state(&r, std::process::id());
-    let v = json(Some(&r.root), &Settings::default());
+    let v = json(Some(&r.root), &Settings::on());
     assert_eq!(
         keys(&v),
         set(&[
@@ -136,7 +136,7 @@ fn top_level_and_nested_key_sets_are_exact() {
 #[test]
 fn weekly_only_profile_has_no_session() {
     let r = Root::new(&[("alpha", 62.0, 71.0), ("beta", -1.0, 38.0)]);
-    let v = json(Some(&r.root), &Settings::default());
+    let v = json(Some(&r.root), &Settings::on());
     let beta = v["profiles"]
         .as_array()
         .unwrap()
@@ -150,7 +150,7 @@ fn weekly_only_profile_has_no_session() {
     assert_eq!(beta["eligible"], true);
     assert_eq!(beta["weekly"]["used_pct"], 38.0);
     assert!(
-        render_table(&view(Some(&r.root), &Settings::default(), None, NOW))
+        render_table(&view(Some(&r.root), &Settings::on(), None, NOW))
             .contains("no session window")
     );
 }
@@ -160,7 +160,7 @@ fn weekly_only_profile_has_no_session() {
 #[test]
 fn status_never_says_no_session_limit() {
     let r = Root::new(&[("alpha", 62.0, 71.0), ("beta", -1.0, 38.0)]);
-    let table = render_table(&view(Some(&r.root), &Settings::default(), None, NOW));
+    let table = render_table(&view(Some(&r.root), &Settings::on(), None, NOW));
     assert!(!table.contains("no session limit"), "{table}");
 }
 
@@ -174,7 +174,7 @@ fn an_invalid_session_reading_is_reported_and_leaves_the_pool() {
     let mut usage: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     usage["accounts"]["alpha"]["five_hour"]["resets_at"] = i64::MAX.into();
     std::fs::write(&path, usage.to_string()).unwrap();
-    let v = json(Some(&r.root), &Settings::default());
+    let v = json(Some(&r.root), &Settings::on());
     let alpha = v["profiles"]
         .as_array()
         .unwrap()
@@ -187,7 +187,7 @@ fn an_invalid_session_reading_is_reported_and_leaves_the_pool() {
     assert_eq!(alpha["weekly"], Value::Null);
     // beta alone is in the pool: 70 weekly points left, not alpha's 80.
     assert_eq!(v["reserve"]["best_weekly_remaining"], 70.0);
-    let table = render_table(&view(Some(&r.root), &Settings::default(), None, NOW));
+    let table = render_table(&view(Some(&r.root), &Settings::on(), None, NOW));
     assert!(table.contains("invalid reading"), "{table}");
 }
 
@@ -197,7 +197,7 @@ fn an_invalid_session_reading_is_reported_and_leaves_the_pool() {
 #[test]
 fn an_out_of_range_percentage_is_clamped_not_invalid() {
     let r = Root::new(&[("alpha", 150.0, 20.0)]);
-    let v = json(Some(&r.root), &Settings::default());
+    let v = json(Some(&r.root), &Settings::on());
     let alpha = &v["profiles"][0];
     assert_eq!(alpha["invalid_reading"], false, "{v}");
     assert_eq!(alpha["session"]["used_pct"], 100.0, "{v}");
@@ -206,7 +206,7 @@ fn an_out_of_range_percentage_is_clamped_not_invalid() {
 #[test]
 fn reserve_reports_whether_ordinary_work_is_held() {
     let r = Root::new(&[("alpha", 0.0, 95.0)]);
-    let v = json(Some(&r.root), &Settings::default());
+    let v = json(Some(&r.root), &Settings::on());
     assert_eq!(v["reserve"]["points"], 10);
     assert_eq!(v["reserve"]["best_weekly_remaining"], 5.0);
     assert_eq!(v["reserve"]["ordinary_held"], true);
@@ -219,7 +219,7 @@ fn disabled_document_has_null_limit_and_empty_lists() {
     seed_state(&r, std::process::id());
     let off = Settings {
         enabled: false,
-        ..Settings::default()
+        ..Settings::on()
     };
     let v = json(Some(&r.root), &off);
     assert_eq!(v["enabled"], false);
@@ -234,8 +234,8 @@ fn status_changes_nothing_and_marks_dead_slots_stale() {
     let r = Root::new(&[("alpha", 10.0, 10.0)]);
     seed_state(&r, dead_pid());
     let before = r.snapshot();
-    let v = json(Some(&r.root), &Settings::default());
-    let _ = render_table(&view(Some(&r.root), &Settings::default(), None, NOW));
+    let v = json(Some(&r.root), &Settings::on());
+    let _ = render_table(&view(Some(&r.root), &Settings::on(), None, NOW));
     assert_eq!(
         r.snapshot(),
         before,
@@ -248,20 +248,20 @@ fn status_changes_nothing_and_marks_dead_slots_stale() {
 fn status_creates_no_governor_dir_and_leaves_corrupt_state_in_place() {
     let r = Root::new(&[("alpha", 10.0, 10.0)]);
     let before = r.snapshot();
-    let v = json(Some(&r.root), &Settings::default());
+    let v = json(Some(&r.root), &Settings::on());
     assert_eq!(r.snapshot(), before);
     assert!(!r.gov().exists());
     assert_eq!(v["fail_open_reason"], Value::Null);
     std::fs::create_dir(r.gov()).unwrap();
     std::fs::write(r.gov().join("state.json"), "{bad").unwrap();
     let before = r.snapshot();
-    let _ = json(Some(&r.root), &Settings::default());
+    let _ = json(Some(&r.root), &Settings::on());
     assert_eq!(r.snapshot(), before);
 }
 
 #[test]
 fn status_without_a_root_reports_and_creates_nothing() {
-    let v = json(None, &Settings::default());
+    let v = json(None, &Settings::on());
     assert_eq!(v["enabled"], true);
     assert_eq!(v["profiles"], serde_json::json!([]));
 }
@@ -271,7 +271,7 @@ fn manifest_path_is_never_printed() {
     let r = Root::new(&[("alpha", 10.0, 10.0)]);
     let manifest = r.tmp.path().join("SECRET-MANIFEST-PATH.json");
     std::fs::write(&manifest, "{}").unwrap();
-    let sv = view(Some(&r.root), &Settings::default(), Some(&manifest), NOW);
+    let sv = view(Some(&r.root), &Settings::on(), Some(&manifest), NOW);
     let text = format!(
         "{}\n{}",
         serde_json::to_string(&sv).unwrap(),

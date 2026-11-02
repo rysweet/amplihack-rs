@@ -17,7 +17,9 @@
 //!   `AMPLIHACK_GOVERNOR_WAIT`, then the setting.
 //! - `GOVERNOR_POLL_SECS == 15`.
 
-use super::config::{GOVERNOR_POLL_SECS, Settings, parse_wait, resolve, wait_secs};
+use super::config::{
+    GOVERNOR_ENABLED_DEFAULT, GOVERNOR_POLL_SECS, Settings, parse_wait, resolve, wait_secs,
+};
 use crate::user_config::schema::Value;
 use std::collections::BTreeMap;
 
@@ -44,7 +46,7 @@ fn run(e: &Map, u: &BTreeMap<String, Value>) -> Settings {
 #[test]
 fn defaults_match_the_documentation() {
     let s = Settings::default();
-    assert!(s.enabled);
+    assert!(!s.enabled, "the governor ships off; it is opt-in");
     assert_eq!(
         (s.max_concurrency, s.reserve_points, s.step, s.band_pct),
         (4, 10, 1, 10)
@@ -81,7 +83,34 @@ fn env_outranks_config_and_config_applies_without_env() {
 fn unknown_kill_switch_value_is_ignored() {
     let u = user(&[("governor.enabled", Value::Bool(false))]);
     assert!(!run(&env(&[("AMPLIHACK_GOVERNOR", "maybe")]), &u).enabled);
-    assert!(run(&env(&[("AMPLIHACK_GOVERNOR", "maybe")]), &user(&[])).enabled);
+    // An unknown value falls through to the shipped default, which is off.
+    assert!(!run(&env(&[("AMPLIHACK_GOVERNOR", "maybe")]), &user(&[])).enabled);
+    let u = user(&[("governor.enabled", Value::Bool(true))]);
+    assert!(run(&env(&[("AMPLIHACK_GOVERNOR", "maybe")]), &u).enabled);
+}
+
+#[test]
+fn governor_is_opt_in() {
+    // The owner retired every admission control and capacity hold, so
+    // nothing turns the governor on but the user: the variable or the key.
+    assert_eq!(Settings::default().enabled, GOVERNOR_ENABLED_DEFAULT);
+    assert!(!run(&env(&[]), &user(&[])).enabled);
+    for on in ["1", "on", "true"] {
+        assert!(
+            run(&env(&[("AMPLIHACK_GOVERNOR", on)]), &user(&[])).enabled,
+            "{on}"
+        );
+    }
+    let u = user(&[("governor.enabled", Value::Bool(true))]);
+    assert!(run(&env(&[]), &u).enabled);
+}
+
+#[test]
+fn schema_default_agrees_with_the_settings_default() {
+    use crate::user_config::schema_governor::GOVERNOR_ENABLED;
+    assert_eq!(GOVERNOR_ENABLED.default, Some("false"));
+    let schema_says_on = GOVERNOR_ENABLED.default == Some("true");
+    assert_eq!(schema_says_on, GOVERNOR_ENABLED_DEFAULT);
 }
 
 #[test]

@@ -386,6 +386,17 @@ impl State {
         fsx::write_private_atomic(&dir, &format!("{name}.json"), &bytes)
             .map_err(|e| invariant(format!("{DIR}/{sub}/{name}.json: {e}")))
     }
+
+    /// Removes a file written by [`State::write_sub_json`]. A file that is
+    /// already absent is not an error; a symlink is removed, never followed.
+    pub fn remove_sub_json(&self, sub: &str, name: &str) -> Result<(), ProfileError> {
+        let path = self.dir.join(sub).join(format!("{name}.json"));
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(invariant(format!("{DIR}/{sub}/{name}.json: {e}"))),
+        }
+    }
 }
 
 /// Line and column only: a serde message can quote input.

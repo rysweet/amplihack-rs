@@ -8,8 +8,15 @@ record in each profile, and admits work at a rate the remaining session and week
 sustain. It never moves a login between accounts; that remains the
 [rotator's](../howto/claude-profile-rotation.md) job.
 
-The governor is on by default. `AMPLIHACK_GOVERNOR=off` turns it off
-completely.
+The governor is off by default. Turn it on with
+`amplihack config set governor.enabled true`, or for one shell with
+`AMPLIHACK_GOVERNOR=1`. It ships off because the owner has retired every
+admission control and capacity hold: no amplihack-rs session may be paused,
+held back or queued behind a concurrency cap because of capacity unless the
+user asks for it. Turned on, the governor caps concurrent top-level starts
+(4 by default), so a default-on build would put that cap back on every host
+that installs it. `AMPLIHACK_GOVERNOR=off` turns it off again, whatever the
+config says.
 
 ## Contents
 
@@ -603,10 +610,12 @@ exit 80 with `wait-expired` when it runs out.
 
 ## Kill switch and governor keys
 
-`AMPLIHACK_GOVERNOR` set to `off`, `0` or `false` turns the governor off. In
-that state it reads and writes no state, prints nothing, and the commands
-behave as they did before the governor existed. `on`, `1` or `true` turns it
-on. The variable outranks `governor.enabled`.
+The governor is off unless the user turns it on: `governor.enabled` defaults
+to `false`. While it is off it reads and writes no state, prints nothing, and
+the commands behave as they did before the governor existed.
+`AMPLIHACK_GOVERNOR` set to `on`, `1` or `true` turns it on; `off`, `0` or
+`false` turns it off. The variable outranks `governor.enabled`; any other
+value is ignored.
 
 The keys live in the user config file only. A `governor.*` key in a project
 `.amplihack/config.toml` is reported and ignored, so a repository cannot turn
@@ -614,7 +623,7 @@ the governor off or loosen it. See [User Configuration](./user-config.md).
 
 | Key | Type | Default | Overridden by |
 |-----|------|---------|---------------|
-| `governor.enabled` | bool | `true` | `AMPLIHACK_GOVERNOR` |
+| `governor.enabled` | bool | `false` | `AMPLIHACK_GOVERNOR` |
 | `governor.max_concurrency` | integer, 1 to 64 | `4` | |
 | `governor.reserve_points` | integer, 0 to 100 | `10` | |
 | `governor.step` | integer, 1 to 8 | `1` | |
@@ -630,9 +639,9 @@ flags, so `config get --show-origin` never reports `env` or `flag` for a
 `governor.*` key, even when one of them is in effect.
 
 ```sh
+amplihack config set governor.enabled true
 amplihack config set governor.max_concurrency 2
 amplihack config set governor.reserve_points 15
-amplihack config set governor.enabled false
 ```
 
 All defaults are starting values chosen for a host with a few logins; tune

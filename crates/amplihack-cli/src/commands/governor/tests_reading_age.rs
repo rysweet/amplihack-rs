@@ -88,7 +88,7 @@ fn age(r: &Root, name: &str, secs: i64) {
 fn a_stale_reading_cannot_release_the_reserve_and_status_shows_its_age() {
     let r = Root::new(&[("alpha", 0.0, 95.0), ("beta", -1.0, 10.0)]);
     age(&r, "beta", 2 * HOUR);
-    let settings = Settings::default();
+    let settings = Settings::on();
     let v = serde_json::to_value(view(Some(&r.root), &settings, None, NOW)).unwrap();
     let profiles = v["profiles"].as_array().unwrap();
     let alpha = profiles.iter().find(|p| p["name"] == "alpha").unwrap();
@@ -113,7 +113,7 @@ fn the_limit_follows_the_setting() {
     age(&r, "beta", 2 * HOUR);
     let settings = Settings {
         max_reading_age_secs: 3 * 3600,
-        ..Settings::default()
+        ..Settings::on()
     };
     let v = serde_json::to_value(view(Some(&r.root), &settings, None, NOW)).unwrap();
     assert_eq!(v["reserve"]["best_weekly_remaining"], 90.0, "{v}");
@@ -123,7 +123,7 @@ fn the_limit_follows_the_setting() {
 #[test]
 fn a_profile_without_a_reading_has_no_reading_time() {
     let r = Root::new(&[]);
-    let v = serde_json::to_value(view(Some(&r.root), &Settings::default(), None, NOW)).unwrap();
+    let v = serde_json::to_value(view(Some(&r.root), &Settings::on(), None, NOW)).unwrap();
     assert_eq!(v["profiles"][0]["observed_at"], Value::Null, "{v}");
     assert_eq!(v["profiles"][0]["stale_reading"], false);
 }
@@ -220,7 +220,7 @@ fn a_stale_exhausted_profile_adds_no_room() {
 fn status_shows_a_kept_stale_exhausted_reading() {
     let r = Root::new(&[("alpha", -1.0, 100.0)]);
     age(&r, "alpha", 2 * HOUR);
-    let v = view(Some(&r.root), &Settings::default(), None, NOW);
+    let v = view(Some(&r.root), &Settings::on(), None, NOW);
     let json = serde_json::to_value(&v).unwrap();
     assert_eq!(json["profiles"][0]["stale_reading"], true, "{json}");
     assert_eq!(json["profiles"][0]["weekly"]["used_pct"], 100.0, "{json}");
@@ -235,7 +235,7 @@ fn status_shows_a_kept_stale_exhausted_reading() {
 fn status_counts_no_weekly_room_from_a_stale_session_exhausted_reading() {
     let r = Root::new(&[("alpha", 100.0, 10.0)]);
     age(&r, "alpha", 2 * HOUR);
-    let v = view(Some(&r.root), &Settings::default(), None, NOW);
+    let v = view(Some(&r.root), &Settings::on(), None, NOW);
     let json = serde_json::to_value(&v).unwrap();
     assert_eq!(json["profiles"][0]["stale_reading"], true, "{json}");
     assert_eq!(json["profiles"][0]["session"]["used_pct"], 100.0, "{json}");
@@ -265,7 +265,7 @@ fn status_counts_no_weekly_room_from_a_stale_session_exhausted_reading() {
 fn status_reserve_uses_the_fresh_profile_beside_a_stale_session_exhausted_one() {
     let r = Root::new(&[("alpha", 100.0, 10.0), ("beta", 20.0, 70.0)]);
     age(&r, "alpha", 2 * HOUR);
-    let v = serde_json::to_value(view(Some(&r.root), &Settings::default(), None, NOW)).unwrap();
+    let v = serde_json::to_value(view(Some(&r.root), &Settings::on(), None, NOW)).unwrap();
     assert_eq!(v["reserve"]["best_weekly_remaining"], 30.0, "{v}");
     assert_eq!(v["reserve"]["ordinary_held"], false, "{v}");
 }

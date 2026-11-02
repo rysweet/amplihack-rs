@@ -7,7 +7,7 @@
 //!   Admission, Decision, DecisionKind, ReasonCode}` with public fields as
 //!   built in `fixture` below. `Decision` derives `Debug` and `PartialEq`.
 //! - `rate::RateSignal::{Over, Under, Steady, Unknown}`.
-//! - `config::Settings` with `Default` (4, 10, 1, 10, 60, 600, enabled).
+//! - `config::Settings` with `Default` (4, 10, 1, 10, 60, 600, off; `Settings::on()` for tests that need it on).
 //! - `policy::decide(&Inputs, now) -> Decision`. No I/O, no environment.
 //!
 //! `fixture` is shared with `tests_policy_flow` through `pub(super)`.
@@ -71,7 +71,7 @@ pub(super) mod fixture {
             slots: Vec::new(),
             queue: Vec::new(),
             admissions: Vec::new(),
-            settings: Settings::default(),
+            settings: Settings::on(),
             request: request(class),
         }
     }

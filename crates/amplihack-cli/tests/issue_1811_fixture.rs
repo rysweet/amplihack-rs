@@ -7,6 +7,12 @@
 //! `~/.amplihack`, profile root or tmux server. The governor's wait is 0
 //! unless a test says otherwise, so no test sleeps on admission.
 //!
+//! The governor ships off (`governor.enabled` defaults to `false`), so the
+//! fixture turns it on in the user config: every `[governor]` table it
+//! writes says `enabled = true` unless the test sets `enabled` itself.
+//! [`Fixture::without_governor_config`] removes the file, for the tests
+//! that pin the shipped default.
+//!
 //! The stub `claude` answers `--version`, appends `S <ns>` and `E <ns>`
 //! around an optional `$STUB_SLEEP` to `$RECORD_DIR/marks`, writes its argv
 //! to `$RECORD_DIR/args.<pid>`, prints `STUB-OUT` and exits 0.
@@ -118,6 +124,7 @@ impl Fixture {
         }
         give_logins(&f.home, &f.root, "alpha", &["beta"]);
         set_default(&f.root, "alpha");
+        f.governor_config("");
         f
     }
 
@@ -147,12 +154,27 @@ impl Fixture {
         );
     }
 
-    /// Writes `~/.amplihack/config.toml` with a `[governor]` table.
+    /// Writes `~/.amplihack/config.toml` with a `[governor]` table. The
+    /// table opts in with `enabled = true` unless `body` sets `enabled`.
     pub fn governor_config(&self, body: &str) {
         let dir = self.home.join(".amplihack");
         fs::create_dir_all(&dir).unwrap();
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
-        private(&dir.join("config.toml"), &format!("[governor]\n{body}\n"));
+        let opt_in = if body.contains("enabled") {
+            ""
+        } else {
+            "enabled = true\n"
+        };
+        private(
+            &dir.join("config.toml"),
+            &format!("[governor]\n{opt_in}{body}\n"),
+        );
+    }
+
+    /// Removes `~/.amplihack/config.toml`, so the governor runs on its
+    /// shipped default.
+    pub fn without_governor_config(&self) {
+        let _ = fs::remove_file(self.home.join(".amplihack").join("config.toml"));
     }
 
     /// The readings file [`Fixture::readings`] writes.

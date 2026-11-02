@@ -1013,11 +1013,12 @@ invalid value prints one warning, naming the variable only, and is ignored.
 
 **Type:** string (boolean)
 **Values:** `off`, `0` or `false` (off) | `on`, `1` or `true` (on)
-**Default:** on
+**Default:** unset, so `governor.enabled` decides, which is `false`: the governor is opt-in
 **Config key:** none; the governor reads this variable itself. It outranks [`governor.enabled`](./user-config.md#governor-keys).
 **Read by:** `amplihack recipe run`, `amplihack claude`, `amplihack launch`, `amplihack governor status`
 
-Turns the [capacity governor](./capacity-governor.md) off or on. When off,
+Turns the [capacity governor](./capacity-governor.md) on or off. It ships
+off, so `AMPLIHACK_GOVERNOR=1` is how one shell opts in. When off,
 the governor reads and writes no state and prints nothing, and starts
 behave as they did without it. Outranks `governor.enabled`.
 
