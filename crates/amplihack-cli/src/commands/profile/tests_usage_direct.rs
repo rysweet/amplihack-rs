@@ -29,7 +29,9 @@
 //!   `ureq::Error`. Statuses map to `http 401`, `http 403`, `http 429`,
 //!   `http 3xx`, `http 4xx` or `http 5xx`; a timeout to `timeout`; anything
 //!   else to `transport`.
-//! - `read(&Endpoints, &Request) -> Result<UsageReport, &'static str>`, with
+//! - `read(&Endpoints, &Request) -> Result<Direct, &'static str>`, where
+//!   `Direct { report, credits_on: Option<ExtraUsageShape> }` (issue #1856:
+//!   credits on with a readable window is a success carrying the shape), with
 //!   `Request { creds_dir, journals, allow_refresh, cancel, timeout, now_ms }`;
 //!   `timeout` is one deadline for the whole read, refresh included: each
 //!   request is given only the time left of it, and a refresh POST is sent
@@ -47,6 +49,7 @@
 //! real credential or reaches a real endpoint.
 
 use super::tests_fake_http::{FakeHttp, Reply, Seen, closed_base};
+use super::usage_direct::Direct;
 use super::usage_direct::{
     API_BASE_ENV, BETA, CLIENT_ID, Creds, DEFAULT_API_BASE, DEFAULT_TOKEN_URL, Endpoints, MAX_BODY,
     MAX_EXPIRES_IN, MAX_STEP, MAX_TOKEN, MIN_STEP, REFRESH_BUDGET, REFRESH_MARGIN_SECS, Request,
@@ -192,6 +195,11 @@ fn run(
     l: &Login,
     allow_refresh: bool,
 ) -> Result<super::usage_parse::UsageReport, &'static str> {
+    run_direct(fake, l, allow_refresh).map(|d| d.report)
+}
+
+/// The whole success: the report and, when credits are on, the shape.
+fn run_direct(fake: &FakeHttp, l: &Login, allow_refresh: bool) -> Result<Direct, &'static str> {
     let journals = l.journals();
     read(&endpoints(fake), &request(l, &journals, allow_refresh))
 }
@@ -625,10 +633,55 @@ fn a_body_that_is_not_an_object_or_has_no_window_is_unparseable() {
     assert_eq!(run(&fake, &l, true), Err(reason::UNPARSEABLE));
 }
 
+/// Issue #1856: credits on with a readable window is a success. The
+/// windows are the direct read's; the shape names keys and flags only.
 #[test]
-fn credits_on_is_its_own_reason() {
+fn credits_on_with_a_window_gives_the_windows_and_the_shape() {
     let fake = FakeHttp::start(|_, _| {
         let mut b = body_100_55();
+        b["extra_usage"] = json!({
+            "is_enabled": true,
+            "monthly_limit": 987_654,
+            "used_credits": 4321.5,
+            "currency": "SENTINELCUR"
+        });
+        Reply::json(200, &b)
+    });
+    let l = login();
+    let d = run_direct(&fake, &l, true).expect("credits on with windows is read");
+    assert_eq!(d.report.state, UsageState::SessionExhausted);
+    assert_eq!(
+        d.report.week_all.as_ref().map(|w| w.used_percentage),
+        Some(55.0)
+    );
+    let shape = d.credits_on.as_ref().expect("credits on carries the shape");
+    assert_eq!(
+        shape.line(),
+        "extra_usage: object; keys: currency, is_enabled, monthly_limit, used_credits; is_enabled: bool true"
+    );
+    for leak in ["SENTINEL", "987654", "987_654", "4321.5", ACCESS] {
+        assert!(!shape.line().contains(leak), "{leak} in {}", shape.line());
+        assert!(!format!("{d:?}").contains(leak), "{leak} in Debug");
+    }
+}
+
+/// Credits off: no shape.
+#[test]
+fn credits_off_gives_no_shape() {
+    let fake = FakeHttp::start(|_, _| Reply::json(200, &body_100_55()));
+    let l = login();
+    let d = run_direct(&fake, &l, true).expect("read");
+    assert_eq!(d.credits_on, None);
+    assert_eq!(d.report.state, UsageState::SessionExhausted);
+}
+
+/// Credits on with neither window readable is still its own reason.
+#[test]
+fn credits_on_with_no_window_is_its_own_reason() {
+    let fake = FakeHttp::start(|_, _| {
+        let mut b = body_100_55();
+        b["five_hour"] = json!(null);
+        b["seven_day"] = json!({"utilization": "high"});
         b["extra_usage"] = json!({"is_enabled": true, "monthly_limit": 5000});
         Reply::json(200, &b)
     });
@@ -716,7 +769,7 @@ fn a_slow_refresh_within_the_deadline_still_reads() {
     let mut req = request(&l, &journals, true);
     req.timeout = Duration::from_secs(5);
     let r = read(&endpoints(&fake), &req).expect("read after a slow refresh");
-    assert_eq!(r.week_all.map(|w| w.used_percentage), Some(55.0));
+    assert_eq!(r.report.week_all.map(|w| w.used_percentage), Some(55.0));
 }
 
 /// A 401 that leaves less than `REFRESH_BUDGET` of the read sends no
@@ -759,7 +812,7 @@ fn a_refresh_with_the_budget_left_saves_the_rotated_token() {
     let mut req = request(&l, &journals, true);
     req.timeout = Duration::from_millis(3500);
     let r = read(&endpoints(&fake), &req).expect("read after a slow refresh");
-    assert_eq!(r.week_all.map(|w| w.used_percentage), Some(55.0));
+    assert_eq!(r.report.week_all.map(|w| w.used_percentage), Some(55.0));
     assert_eq!(posts(&fake), 1);
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], NEW_ACCESS);
     assert_eq!(l.doc()["claudeAiOauth"]["refreshToken"], NEW_REFRESH);
