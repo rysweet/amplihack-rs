@@ -33,7 +33,8 @@ impl Shown {
     pub fn from_reading(reading: Reading) -> Self {
         let (session, week) = match reading {
             Reading::Measured { session, week } => (Some(session), Some(week)),
-            Reading::Exhausted | Reading::Failed => (None, None),
+            Reading::Exhausted { session, week } => (session, week),
+            Reading::Failed => (None, None),
         };
         Self {
             reading,

@@ -230,6 +230,8 @@ mod issue_1802_auto_drive_light_round;
 mod issue_1803_rotation_owner;
 #[path = "issue_1818_no_session_limit.rs"]
 mod issue_1818_no_session_limit;
+#[path = "issue_1846_exhausted_reading.rs"]
+mod issue_1846_exhausted_reading;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
