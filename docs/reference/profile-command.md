@@ -14,7 +14,7 @@ amplihack profile switch <name> | --none
 amplihack profile remove <name> --yes
 amplihack profile login <name>
 amplihack profile run <name> -- <claude-args>...
-amplihack profile usage [--json] [--raw] [<name>...]
+amplihack profile usage [--json | --table] [--utc] [--raw] [<name>...]
 amplihack profile auto-switch on [--threshold <1-100>] [--exclude <name,...>]
 amplihack profile auto-switch off
 amplihack profile auto-switch status
@@ -49,7 +49,7 @@ amplihack launch|claude --profile <name> [...]
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
 | `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
-| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails; then shows its session and weekly usage, most capacity first. `--json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings. See [Usage command](#usage-command). |
+| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails; then shows its weekly and session usage as bars, sorted by the rotator's headroom. `--table` for the older text table, `--utc` for UTC reset times, `--json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings. See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
 | `overflow …` | Mark or unmark a credit-backed profile that the rotator may use when every plan login is exhausted, list the marks, or lift a spend-limit block. See [Overflow commands](#overflow-commands). |
 | `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
@@ -63,7 +63,7 @@ its own on Unix; see [No silent billing](#no-silent-billing).
 ### Usage command
 
 ```
-amplihack profile usage [--json] [--raw] [<name>...]
+amplihack profile usage [--json | --table] [--utc] [--raw] [<name>...]
 ```
 
 Shows how much of each profile's current session and weekly quota is used
@@ -74,7 +74,9 @@ probed once.
 
 | Flag | Effect |
 |------|--------|
-| `--json` | Print a JSON array instead of the table. See [JSON output](#json-output). |
+| `--json` | Print a JSON array instead of the bar view. See [JSON output](#json-output). Conflicts with `--table` and `--utc`. |
+| `--table` | Print the older seven-column text table instead of the bar view. See [Table output](#table-output). Conflicts with `--json` and `--utc`. |
+| `--utc` | Show reset times in the bar view in UTC, as `MM-DD HH:MMZ`, instead of local time. See [Reset times](#reset-times). Conflicts with `--json` and `--table`. |
 | `--raw` | Also print what `claude` wrote to stdout and stderr, for each profile, from the [attempt](#probe-method) that gave the row. Without it, that output is dropped once parsed. Rows read without `claude` print a fixed line instead. It can include account details; see [Raw output](#raw-output). |
 | `<name>...` | Probe only these profiles, in the [usual order](#ordering). |
 
@@ -932,7 +934,7 @@ is read as before, in each of these cases:
 | The session line is above 0%, with or without a reset clause | `Current session: 100% used` | A non-zero percentage shows a session window. With no reset clause `resets_text` and `resets_at` are `null`. |
 | The session line has a reset clause, even one whose time cannot be resolved | `Current session: 3% used · resets 3am (Etc/Unknown)` | A printed reset shows that a session window exists. `resets_at` is `null` and `resets_text` keeps the text. |
 | A line contains `Current session` but does not have the form above, for example because of a prefix | `Current session: unavailable` | A change in Claude's wording must not make an exhausted login look usable. |
-| No all-models week line was read | `Current session: 0% used` alone | Nothing else can rank the profile. The state follows the usual [rules](#states). A session line with no reset clause is still read: `resets_text` and `resets_at` are `null`, and the table shows `-` in `SESSION RESETS`. |
+| No all-models week line was read | `Current session: 0% used` alone | Nothing else can rank the profile. The state follows the usual [rules](#states). A session line with no reset clause is still read: `resets_text` and `resets_at` are `null`, and the bar view shows `-` in `S-RESET` (`SESSION RESETS` in `--table`). |
 | The row is `spend_limit` or any failed state | | `session_limit` is `true` on every row that is not `ok` or `weekly_exhausted`. |
 
 An accepted [usage request](#probe-method) has no session limit when
@@ -1079,7 +1081,169 @@ the `/usage` attempt.
 | `could not read claude output` | Reading the child's stdout or stderr failed, or a pipe was still open 2 seconds after the child exited (a process that left its group still held it), so the output may be cut short. |
 | `could not wait for claude` | Waiting for the child failed. It is killed and reaped first. |
 
+#### Bar output
+
+By default, `profile usage` prints one row per profile with the weekly and
+session usage drawn as bars:
+
+```
+PROFILE      WEEK             W-RESET      SESSION           S-RESET      STATE
+review       █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░░░░   5%   11-01 14:00  ok
+work (live)  ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00  ok                 * hosts:personal
+weekly       ████░░░░░░  47%  11-05 09:00  no session limit  -            ok
+credit       ██████░░░░  61%  11-06 02:00  ████░░░░░░  40%   11-01 21:00  ok                 overflow (fallback)
+team         █████░░░░░  55%  11-05 09:00  ██████████ 100%   11-01 23:50  session_exhausted
+api          api-key (billed per token)                                   api_key
+personal     no reading (not_logged_in)                                   not_logged_in      leased→work
+spare        no reading (timeout)                                         timeout            (fallback)
+times: Europe/London
+order: rotator headroom (worse of session and week), then name
+```
+
+The columns are:
+
+| Column | Content |
+|--------|---------|
+| `PROFILE` | The profile name, followed by `(live)` when the profile's login is the one in `~/.claude` (the condition for the `live in ~/.claude` [mark](#marks)). |
+| `WEEK` | The all-models week as a [bar](#bars), or `-` when the row has no week reading. |
+| `W-RESET` | When the all-models week resets, as a [reset time](#reset-times). |
+| `SESSION` | The session as a bar; `no session limit` for a reading with [no session limit](#no-session-limit); `-` when the session window is missing. |
+| `S-RESET` | When the session resets; `-` for a row with no session limit. |
+| `STATE` | The [state](#states). |
+| (no heading) | Every other [mark](#marks) (`*`, `leased→<dir>`, `hosts:<account>`, `overflow`, `overflow, blocked until <time>`, `(fallback)`), separated by spaces. Empty when there are none. |
+
+Rows without a reading have no bars and no reset cells. From `WEEK` to the
+end of `S-RESET` they show one message:
+
+| Row | Message |
+|-----|---------|
+| [API-key](#api-key-usage) (`api_key`) | `api-key (billed per token)` |
+| `not_logged_in`, `timeout`, `unparsed`, `error` | `no reading (<state>)`, for example `no reading (timeout)` |
+
+The `STATE` cell and the marks are still shown on these rows. Rows in state
+`ok`, `session_exhausted`, `weekly_exhausted` and `spend_limit` show their
+bars as read, so a window at its limit shows a full red bar.
+
+The `PROFILE` column is as wide as the longest label, up to 31 characters.
+A name longer than 24 characters is cut to its first 23 characters followed
+by `…`, and `(live)` follows the cut name. A row in state `ok` with no marks
+fits in 100 columns for any name, in both local and UTC time. Longer state
+names and the marks column can take a row past 100 columns. Names, accounts
+and other text from files are [cleaned](#table-output) before they are
+printed, as in the table.
+
+After the rows come, in this order: the `--raw` blocks, the
+`running on overflow:`, `live:` and `blocked:` lines described under
+[Marks](#marks) and [API-key usage](#api-key-usage), then `times:` and
+`order:`. With no profiles there are no rows and no footer; the command
+prints the same line as `--table`.
+
+The layout is for people and may change; scripts should use `--json`.
+
+##### Bars
+
+A bar is 10 cells of `█` (used) and `░` (free), one space and the
+percentage, right-aligned in 4 characters:
+
+| Used | Cell |
+|------|------|
+| 0% | `░░░░░░░░░░   0%` |
+| 13% | `█░░░░░░░░░  13%` |
+| 41.9% | `████░░░░░░  41%` |
+| 55% | `█████░░░░░  55%` |
+| 100% | `██████████ 100%` |
+| 130% | `██████████ 130%` |
+
+The percentage is printed as a whole number, rounded down, so every bar
+cell is 15 characters wide and the columns stay aligned. 41.2% and 41.9%
+both read `41%`, and 99.6% reads `99%`, so `100%` appears only when the
+window has reached its limit. `--table` and `--json` keep the decimal
+place (`12.5%`). The number of filled cells is the percentage divided by
+10 and rounded down, between 0 and 10. A percentage above 100 fills the
+bar and is printed rounded down in the same way.
+
+The bars and the percentage show the reading as it was probed, even when
+its reset time has passed. [Ordering](#ordering) counts such a window as 0%.
+
+##### Colour
+
+When stdout is a terminal, each bar and its percentage are coloured by the
+percentage as read, before rounding. Because the printed figure is rounded
+down, it always falls in the same band as the colour:
+
+| Used | Colour |
+|------|--------|
+| Below 70% | Green |
+| 70% to below 90% | Yellow |
+| 90% and above | Red |
+
+Only the bar and the percentage are coloured; the header, labels, states,
+marks and footer lines never are. Set `NO_COLOR` to any non-empty value to
+turn colour off, as described at [no-color.org](https://no-color.org/):
+
+```bash
+NO_COLOR=1 amplihack profile usage
+```
+
+When stdout is a pipe or a file, no colour is used and the output contains
+no escape sequences. Column widths are the same with and without colour.
+`--table` and `--json` are never coloured.
+
+##### Reset times
+
+A reset cell reads `MM-DD HH:MM` in local time, the same width on every
+row. A window with no reset time, or one whose reset amplihack could not
+read as a time, shows `-`. The time zone is named once, in the `times:`
+line at the end:
+
+| Source of the zone | Used when |
+|--------------------|-----------|
+| `TZ` | It is set, not empty, and names an IANA time zone, such as `TZ=Asia/Tokyo` (a leading `:` is ignored). |
+| The system time zone | `TZ` is not usable and the system zone has an IANA name. |
+| The UTC offset, as `UTC+HH:MM` or `UTC-HH:MM` | Neither has a usable name. |
+
+Each time is converted with its own offset, so a reset after a change to or
+from summer time is shown in the offset that applies on that day.
+
+With `--utc`, the cells read `MM-DD HH:MMZ` and the footer reads
+`times: UTC`. A reset at 23:30 UTC on 5 November reads `11-05 23:30Z` with
+`--utc`, `11-06 01:30` at UTC+02:00 and `11-05 22:30` at UTC-01:00:
+
+```bash
+amplihack profile usage --utc
+```
+
+```
+PROFILE      WEEK             W-RESET       SESSION           S-RESET       STATE
+review       █░░░░░░░░░  10%  11-05 09:00Z  ░░░░░░░░░░   5%   11-01 14:00Z  ok
+work (live)  ███░░░░░░░  30%  11-05 09:00Z  ██░░░░░░░░  20%   11-01 12:00Z  ok                 * hosts:personal
+weekly       ████░░░░░░  47%  11-05 09:00Z  no session limit  -             ok
+credit       ██████░░░░  61%  11-06 02:00Z  ████░░░░░░  40%   11-01 21:00Z  ok                 overflow (fallback)
+team         █████░░░░░  55%  11-05 09:00Z  ██████████ 100%   11-01 23:50Z  session_exhausted
+api          api-key (billed per token)                                     api_key
+personal     no reading (not_logged_in)                                     not_logged_in      leased→work
+spare        no reading (timeout)                                           timeout            (fallback)
+times: UTC
+order: rotator headroom (worse of session and week), then name
+```
+
+Reset times taken from Claude's `/usage` text, such as
+`Oct 16, 4:50pm (America/Los_Angeles)`, are shown in the same numeric form
+when amplihack could resolve them to a time, as it does for
+[`resets_at` in the JSON](#json-output). `--table` still shows the text as
+Claude printed it.
+
 #### Table output
+
+`--table` prints the seven-column table that was the default output before
+the [bar view](#bar-output). Its columns and cells are unchanged; only the
+row order follows the [ordering](#ordering) rule, and the table ends with
+the `order:` line. It has no `times:` line, because its reset columns show
+the reset as received.
+
+```bash
+amplihack profile usage --table
+```
 
 ```
 PROFILE   MARKS                STATE              SESSION           SESSION RESETS                     WEEK  WEEK RESETS
@@ -1090,6 +1254,7 @@ credit    overflow (fallback)  ok                 40%               Oct 16, 9pm 
 team      -                    session_exhausted  100%              2026-10-16T23:50:00Z               55%   2026-10-22T09:00:00Z
 personal  leased→work          not_logged_in      -                 -                                  -     -
 spare     (fallback)           timeout            -                 -                                  -     -
+order: rotator headroom (worse of session and week), then name
 ```
 
 `credit` is marked as overflow, so it was probed with `/usage` and shows
@@ -1142,7 +1307,8 @@ With `--raw`, each row whose direct read failed and that went on to
 #### Raw output
 
 With `--raw`, a row read passively or directly is followed by one fixed
-line, because no `claude` ran for it:
+line, because no `claude` ran for it. The examples here use `--table`; the
+bar view prints the same lines under its rows:
 
 ```
 review    -                 ok                 5%                2026-10-17T04:00:00Z  10%   2026-10-22T09:00:00Z
@@ -1181,11 +1347,26 @@ file, and the rotator never collects it.
 
 #### Ordering
 
-Rows are in three groups, and the JSON uses the same order:
+Rows are sorted by the [rotator's headroom](#rotate-decision-rule): the
+room left in the worse of the session and the all-models week. The bar
+view, `--table` and `--json` use the same order, and the bar view and
+`--table` end with a line that states the rule:
 
-1. **Usable** (`ok`): least used first, by the higher of the session and
-   all-models week percentages. A missing window, or one whose reset time has
-   passed, counts as 0%. Then by name.
+```
+order: rotator headroom (worse of session and week), then name
+```
+
+Rows are in four groups:
+
+1. **Usable** (`ok`): most headroom first, then by name. Headroom is the
+   rotator's: `100 - max(session, week)` for the all-models week, rounded
+   down to a whole point. A missing session window, including
+   [no session limit](#no-session-limit), counts as 0%, so a weekly-only
+   profile is ranked by its weekly room. Reset times break no ties: two
+   profiles at 41.2% and 41.9% both have headroom 58 and are sorted by name.
+   After every row with a headroom come the `ok` rows with no all-models
+   week reading, by name. The rotator treats such a reading as a failed
+   probe and never picks it.
 2. **Exhausted** (`session_exhausted`, `weekly_exhausted`, `spend_limit`):
    soonest back first. A profile is back when every window at 100% or more
    has reset, so "back at" is the latest of those reset times. If any of
@@ -1193,8 +1374,31 @@ Rows are in three groups, and the JSON uses the same order:
    profile comes after the others. A `spend_limit` row's back-at time is
    always unknown, because the window resets do not lift a spend limit.
    Then by name.
-3. **Unavailable**: `not_logged_in`, then `timeout`, then `unparsed`, then
+3. **API key** (`api_key`): by name.
+4. **Unavailable**: `not_logged_in`, then `timeout`, then `unparsed`, then
    `error`, each by name.
+
+Only the headroom rule is applied. The rules that decide which profiles
+the rotator may pick at all are not: the [overflow tiers](#overflow-tiers),
+the auto-switch `exclude` list and the other skip reasons under
+[Rotate candidates](#rotate-candidates), and the thresholds in
+[Rotate settings](#rotate-settings) do not change a row's place. The first
+row is therefore not always the login the rotator would pick next. An
+overflow profile at 20% of its session and 30% of its week (headroom 70) is
+listed above a plan login at 50% of its week (headroom 50), although the
+rotator moves to the plan login first and uses the overflow profile only as
+described under [Overflow decision](#overflow-decision). An excluded
+profile is listed by its headroom, although the rotator never picks it.
+
+The headroom used for sorting also differs from the rotator's in one
+respect. A window whose reset time has already passed counts as 0% used
+when the rows are sorted, because the quota it reports has since been
+restored; the bars and percentages still show the reading as probed.
+`profile usage` reads every profile afresh, so this happens only for a
+reading taken just before a reset.
+
+The `live` row, the default profile and overflow profiles are sorted by
+their state and numbers like any other row.
 
 #### Marks
 
@@ -1209,7 +1413,10 @@ Rows are in three groups, and the JSON uses the same order:
 | `overflow, blocked until <time>` | As `overflow`, and the rotator has [blocked](#overflow-spend-limit-block) it after a spend-limit reading until `<time>` (UTC, `YYYY-MM-DDTHH:MM:SSZ`). |
 
 Several marks are separated by a space (`* live in ~/.claude`,
-`overflow (fallback)`); none prints `-`. A row marked `live in ~/.claude` is placed by its state and
+`overflow (fallback)`); none prints `-`. This is the `MARKS` column of
+`--table`. The [bar view](#bar-output) shows `live in ~/.claude` as
+`(live)` after the profile name instead, and the other marks in the
+unlabelled column after `STATE`, which is empty when there are none. A row marked `live in ~/.claude` is placed by its state and
 numbers like any other row. An overflow row is placed by its state like any
 other row too; its session and week numbers are its plan limits, which it can
 work past on credits.
@@ -1217,7 +1424,8 @@ work past on credits.
 When the row marked `live in ~/.claude` is also marked `overflow`, and that
 row's own probe in this run reached the session or weekly limit (state
 `session_exhausted` or `weekly_exhausted`, or the session or all-models
-weekly window at 100%), the table is followed by one line:
+weekly window at 100%), the rows are followed by one line, in the bar view
+and in `--table`:
 
 ```
 running on overflow: ryan-mistt-org
@@ -1629,9 +1837,12 @@ recorded or noted.
 | `1` | Setup failed: Docker is active, the profile root is invalid, or a name is invalid or does not exist. Printed as `error:`/`hint:` like other [errors](#errors). Nothing is probed. A `claude` that cannot be found is not a setup failure: only rows that need a fallback read `error` with `claude not found`. |
 | `2` | Command-line usage error, such as `--timeout-secs 0`. |
 
-With no profiles, the table form prints
+With no profiles, the bar view and `--table` print
 `` no profiles; create one with `amplihack profile add <name>` `` and the JSON
 form prints `[]`.
+
+`--table` with `--json`, and `--utc` with `--json` or `--table`, are usage
+errors (status 2): the second flag would have no effect.
 
 Like `profile run`, `usage` is refused when Docker is activated through the
 environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
@@ -7664,25 +7875,42 @@ a Platform credential on a machine where per-token billing is not wanted.
 ### API-key usage
 
 `profile usage` gives an API-key profile a row with no reading. Its `STATE`
-is `api_key` and its `SESSION` cell is `api-key (billed per token)`; the
-other usage cells are `-`. The `MARKS` cell adds `live in ~/.claude` when
-its login file is live, and `blocked until <time> (<reason>)` while the
+is `api_key`. In the [bar view](#bar-output) the cells from `WEEK` to
+`S-RESET` are replaced by `api-key (billed per token)`; in `--table` its
+`SESSION` cell is `api-key (billed per token)` and the other usage cells are
+`-`. The row is marked live (`(live)` after the name in the bar view,
+`live in ~/.claude` in `--table`) when its login file is live, and has the
+mark `blocked until <time> (<reason>)` while the
 [API-key block](#api-key-block) is active. The row never shows `unparsed`,
 `timeout` or `failed`. API-key rows sort after every usable and exhausted
 plan row and before the rows with no reading.
 
-Below the table, `usage` prints
+Below the rows, `usage` prints
 `live: work is running on the API key (billed per token)` when an API-key
 profile is live in `~/.claude`, and `blocked: the API key until <time>
 (<reason>)` while a block is active:
 
 ```
 $ amplihack profile usage
+PROFILE         WEEK             W-RESET      SESSION           S-RESET      STATE
+ryan-mistt      ██████░░░░  64%  11-01 02:00  ██████████ 100%   10-28 16:50  session_exhausted
+ryan-ryansweet  ███████░░░  71%  11-01 02:00  ██████████ 100%   10-28 17:20  session_exhausted
+api-key (live)  api-key (billed per token)                                   api_key
+live: work is running on the API key (billed per token)
+times: Europe/London
+order: rotator headroom (worse of session and week), then name
+```
+
+The same run with `--table`:
+
+```
+$ amplihack profile usage --table
 PROFILE         MARKS              STATE              SESSION                     SESSION RESETS                  WEEK  WEEK RESETS
 ryan-mistt      -                  session_exhausted  100%                        Oct 28, 4:50pm (Europe/London)  64%   Nov 1, 2am (Europe/London)
 ryan-ryansweet  -                  session_exhausted  100%                        Oct 28, 5:20pm (Europe/London)  71%   Nov 1, 2am (Europe/London)
 api-key         live in ~/.claude  api_key            api-key (billed per token)  -                               -     -
 live: work is running on the API key (billed per token)
+order: rotator headroom (worse of session and week), then name
 ```
 
 In `--json` output every row gains `"kind"`, `"subscription"` or `"api-key"`,

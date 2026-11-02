@@ -1,7 +1,8 @@
 //! `amplihack profile usage` (issue #1578): asks `claude` for its usage under
 //! each profile in parallel (the `get_usage` request, else `claude -p
-//! /usage`; issue #1698), prints the session and weekly usage ordered by
-//! capacity, and records what it read as auto-switch readings.
+//! /usage`; issue #1698), prints the session and weekly usage in the order
+//! the rotator ranks headroom (issue #1813; the bar view is in
+//! `usage_view`), and records what it read as auto-switch readings.
 //!
 //! Issue #1844: each row is read in order, a fresh passive reading, then
 //! the OAuth usage endpoint, then `claude` (see `usage_source`), and says
@@ -15,9 +16,11 @@
 use super::auto_switch::{self, Observation, ObservedWindow, RecordOutcome};
 use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
+use super::rotate::decide::Reading;
 use super::store::ProfileStore;
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
 use super::usage_source::{self, ClaudeGate, LazyBinary, Plan, Source, SourceEnv};
+use super::usage_view::{self, TimeView};
 use super::{ProfileError, default_live, pointer, probe_limits, run, usage_request};
 use crate::binary_finder::BinaryInfo;
 use anyhow::Result;
@@ -165,10 +168,20 @@ pub(super) struct Row {
     pub(super) direct_failure: Option<&'static str>,
 }
 
+/// What `profile usage` prints (issue #1813): the bar view by default,
+/// the old table with `--table`, or the JSON array with `--json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OutputMode {
+    Bars,
+    Table,
+    Json,
+}
+
 pub(super) fn run(
     store: &ProfileStore,
     names: &[String],
-    json: bool,
+    mode_out: OutputMode,
+    time: &TimeView,
     raw: bool,
     timeout_flag: Option<u64>,
 ) -> Result<()> {
@@ -186,6 +199,7 @@ pub(super) fn run(
     if let Some(var) = env_credential_var(|k| std::env::var_os(k)) {
         eprintln!("{}", env_credential_warning(var));
     }
+    let json = mode_out == OutputMode::Json;
     let profiles = selected_profiles(store, names)?;
     if profiles.is_empty() {
         print_empty(json);
@@ -244,7 +258,7 @@ pub(super) fn run(
         rows.push(home_row_of(reader.home()));
     }
     order(&mut rows, now_secs());
-    print_output(&rows, json, swapped.as_ref());
+    print_output(&rows, mode_out, time, swapped.as_ref());
     // SR-10: in every mode, with or without `--raw`.
     for warning in not_saved_warnings(&rows) {
         eprintln!("{warning}");
@@ -532,12 +546,20 @@ fn build_rows(
         .collect()
 }
 
-/// The table or JSON on stdout, then the warnings on stderr.
-fn print_output(rows: &[Row], json: bool, swapped: Option<&ProfileName>) {
-    if json {
-        println!("{}", render_json(rows));
-    } else {
-        print!("{}", render_table(rows));
+/// The bar view, table or JSON on stdout, then the warnings on stderr.
+/// Colour is decided once, for the bar view only (no-color.org).
+fn print_output(rows: &[Row], mode: OutputMode, time: &TimeView, swapped: Option<&ProfileName>) {
+    match mode {
+        OutputMode::Json => println!("{}", render_json(rows)),
+        OutputMode::Table => print!("{}", render_table(rows)),
+        OutputMode::Bars => {
+            use std::io::IsTerminal;
+            let colour = usage_view::colour_enabled(
+                std::io::stdout().is_terminal(),
+                std::env::var_os("NO_COLOR").as_deref(),
+            );
+            print!("{}", usage_view::render_bars(rows, time, colour));
+        }
     }
     for w in error_warnings(rows) {
         eprintln!("{w}");
@@ -1152,23 +1174,29 @@ fn kill_group(_child: &std::process::Child) {}
 // Ordering and marks
 // ---------------------------------------------------------------------------
 
-/// Usable rows by the higher used window (a missing or already reset window
-/// counts as 0), then exhausted rows by when they are back (unknown last),
-/// then unavailable rows by state; ties by name.
+/// The order every view prints (issue #1813): usable rows by the
+/// rotator's headroom, most first, then usable rows with no headroom;
+/// exhausted rows by when they are back (unknown last); API-key rows;
+/// unavailable rows by state. Every tie goes to the name, as in the
+/// rotator's `best()`.
 pub(super) fn order(rows: &mut [Row], now: i64) {
     rows.sort_by(|a, b| {
-        let (ga, gb) = (row_key(a, now), row_key(b, now));
-        ga.0.cmp(&gb.0)
-            .then(ga.1.total_cmp(&gb.1))
+        row_key(a, now)
+            .cmp(&row_key(b, now))
             .then_with(|| a.profile.cmp(&b.profile))
     });
 }
 
+/// The line that states the order, printed last by the bar view and the
+/// table.
+pub(super) const ORDER_LINE: &str =
+    "order: rotator headroom (worse of session and week), then name";
+
 /// [`sort_key`], with API-key rows (issue #1700) after every usable and
 /// exhausted row and before the unavailable ones.
-fn row_key(r: &Row, now: i64) -> (u8, f64) {
+fn row_key(r: &Row, now: i64) -> (u8, i64) {
     if r.api_key {
-        return (2, 0.0);
+        return (2, 0);
     }
     match sort_key(&r.report, now) {
         (g, m) if g >= 2 => (g + 1, m),
@@ -1176,23 +1204,49 @@ fn row_key(r: &Row, now: i64) -> (u8, f64) {
     }
 }
 
-/// `(group, metric)`; a smaller metric sorts first within the group.
-fn sort_key(r: &UsageReport, now: i64) -> (u8, f64) {
+/// Rank of a usable row with no headroom: after every row that has one.
+const NO_HEADROOM: i64 = 101;
+
+/// `(group, rank)`; a smaller rank sorts first within the group.
+///
+/// Usable rows rank by `100 - headroom`, where headroom is the rotator's
+/// [`Reading::headroom`]: the floored points left in the worse of the
+/// session and all-models week windows, a missing session counting as 0%.
+/// One deliberate difference (D2): a window whose reset time has already
+/// passed counts as 0% used here, because it has reset since it was read;
+/// the rotator reads it as probed. The row still shows the probed value.
+/// An `ok` row with no week window is a failed probe to the rotator, which
+/// never picks it, so it ranks after every row that has a headroom (D3), as
+/// does a NaN reading.
+fn sort_key(r: &UsageReport, now: i64) -> (u8, i64) {
     match r.state {
         UsageState::Ok => {
-            let used = |w: &Option<UsageWindow>| match w {
-                Some(w) if w.resets_at.is_none_or(|t| t > now) => w.used_percentage,
-                _ => 0.0,
+            let Some(week) = &r.week_all else {
+                return (0, NO_HEADROOM);
             };
-            (0, used(&r.session).max(used(&r.week_all)))
+            let used = |w: &UsageWindow| {
+                if w.resets_at.is_none_or(|t| t > now) {
+                    w.used_percentage
+                } else {
+                    0.0
+                }
+            };
+            let reading = Reading::Measured {
+                session: r.session.as_ref().map_or(0.0, used),
+                week: used(week),
+            };
+            match reading.headroom() {
+                Some(h) => (0, 100 - i64::from(h)),
+                None => (0, NO_HEADROOM),
+            }
         }
         UsageState::SessionExhausted | UsageState::WeeklyExhausted | UsageState::SpendLimit => {
-            (1, back_at(r).map_or(f64::INFINITY, |t| t as f64))
+            (1, back_at(r).unwrap_or(i64::MAX))
         }
-        UsageState::NotLoggedIn => (2, 0.0),
-        UsageState::Timeout => (2, 1.0),
-        UsageState::Unparsed => (2, 2.0),
-        UsageState::Error => (2, 3.0),
+        UsageState::NotLoggedIn => (2, 0),
+        UsageState::Timeout => (2, 1),
+        UsageState::Unparsed => (2, 2),
+        UsageState::Error => (2, 3),
     }
 }
 
@@ -1222,6 +1276,18 @@ fn back_at(r: &UsageReport) -> Option<i64> {
 /// `*` for the default, `leased→<dir>`, `hosts:<account>`, `live in
 /// ~/.claude`, `overflow[, blocked until <time>]`; `-` for none.
 pub(super) fn marks(row: &Row) -> String {
+    let parts = marks_parts(row, true);
+    if parts.is_empty() {
+        "-".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
+/// The row's marks, each sanitised for display; empty when there are none.
+/// `with_live: false` leaves out `live in ~/.claude`, which the bar view
+/// shows as `(live)` beside the name instead.
+pub(super) fn marks_parts(row: &Row, with_live: bool) -> Vec<String> {
     let mut parts = Vec::new();
     if row.default {
         parts.push("*".to_string());
@@ -1232,7 +1298,7 @@ pub(super) fn marks(row: &Row) -> String {
     if row.account != row.profile {
         parts.push(format!("hosts:{}", row.account));
     }
-    if row.live_in {
+    if row.live_in && with_live {
         // The wording auto-switch uses for a login live in another directory.
         parts.push(format!("live in {}", default_live::LABEL));
     }
@@ -1248,11 +1314,7 @@ pub(super) fn marks(row: &Row) -> String {
     if row.source == Some(Source::Fallback) {
         parts.push("(fallback)".to_string());
     }
-    if parts.is_empty() {
-        "-".to_string()
-    } else {
-        parts.join(" ")
-    }
+    parts.iter().map(|p| sanitize_display(p, false)).collect()
 }
 
 /// UTC time as `YYYY-MM-DDTHH:MM:SSZ`, the rotate log's format.
@@ -1360,18 +1422,33 @@ pub(super) fn render_table(rows: &[Row]) -> String {
     let mut out = line(&HEADER.map(String::from));
     for (row, c) in rows.iter().zip(&cells) {
         out.push_str(&line(c));
-        if let Some(raw) = &row.raw {
-            match row.source {
-                Some(s @ (Source::Passive | Source::Direct)) => {
-                    out.push_str(&format!("  ({}: no claude output)\n", s.as_str()));
-                }
-                _ => {
-                    raw_block(&mut out, "stdout", &raw.stdout);
-                    raw_block(&mut out, "stderr", &raw.stderr);
-                }
+        raw_lines(&mut out, row);
+    }
+    out.push_str(&footers(rows));
+    out.push_str(ORDER_LINE);
+    out.push('\n');
+    out
+}
+
+/// The `--raw` text under a row, when it was kept.
+pub(super) fn raw_lines(out: &mut String, row: &Row) {
+    if let Some(raw) = &row.raw {
+        match row.source {
+            Some(s @ (Source::Passive | Source::Direct)) => {
+                out.push_str(&format!("  ({}: no claude output)\n", s.as_str()));
+            }
+            _ => {
+                raw_block(out, "stdout", &raw.stdout);
+                raw_block(out, "stderr", &raw.stderr);
             }
         }
     }
+}
+
+/// The overflow, API-key `live:` and `blocked:` lines after the rows of
+/// either human view.
+pub(super) fn footers(rows: &[Row]) -> String {
+    let mut out = String::new();
     if let Some(r) = rows
         .iter()
         .find(|r| r.live_in && r.overflow && plan_limit_reached(r))
@@ -1394,18 +1471,18 @@ pub(super) fn render_table(rows: &[Row]) -> String {
 }
 
 /// The `SESSION` cell of an API-key row.
-const API_KEY_CELL: &str = "api-key (billed per token)";
+pub(super) const API_KEY_CELL: &str = "api-key (billed per token)";
 /// The `SESSION` cell of a plan reading with no session window (#1818).
-const NO_SESSION_LIMIT_CELL: &str = "no session limit";
+pub(super) const NO_SESSION_LIMIT_CELL: &str = "no session limit";
 
 /// A usable reading that showed no session window (#1818).
-fn no_session_limit(r: &Row) -> bool {
+pub(super) fn no_session_limit(r: &Row) -> bool {
     !r.report.session_limit
         && matches!(r.report.state, UsageState::Ok | UsageState::WeeklyExhausted)
 }
 
 /// The `STATE` of a row: `api_key` for an API-key profile.
-fn state_label(r: &Row) -> &'static str {
+pub(super) fn state_label(r: &Row) -> &'static str {
     if r.api_key {
         "api_key"
     } else {
@@ -1418,7 +1495,7 @@ fn state_label(r: &Row) -> &'static str {
 /// Either is enough. These are the two windows the rotator's capacity test
 /// (`plan_usable` in rotate/overflow.rs) reads; a per-model weekly window is
 /// not. A failed or spend-limited probe is not evidence of credits.
-fn plan_limit_reached(r: &Row) -> bool {
+pub(super) fn plan_limit_reached(r: &Row) -> bool {
     let full = |w: &UsageWindow| w.used_percentage >= 100.0;
     match r.report.state {
         UsageState::SessionExhausted | UsageState::WeeklyExhausted => true,
@@ -1430,7 +1507,7 @@ fn plan_limit_reached(r: &Row) -> bool {
     }
 }
 
-fn raw_block(out: &mut String, name: &str, text: &str) {
+pub(super) fn raw_block(out: &mut String, name: &str, text: &str) {
     out.push_str(&format!("  raw {name}:\n"));
     if text.is_empty() {
         out.push_str("    (empty)\n");

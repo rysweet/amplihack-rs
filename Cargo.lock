@@ -162,6 +162,7 @@ dependencies = [
  "flate2",
  "fs2",
  "fs4",
+ "iana-time-zone",
  "lbug",
  "libc",
  "lru",

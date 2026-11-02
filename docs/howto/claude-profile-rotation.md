@@ -65,15 +65,20 @@ amplihack profile usage
 ```
 
 ```
-PROFILE   MARKS              STATE  SESSION  SESSION RESETS                     WEEK  WEEK RESETS
-spare                        ok     0%       -                                  12%   Oct 23, 9am (Europe/London)
-personal                     ok     20%      Oct 18, 3pm (Europe/London)        35%   Oct 22, 2am (Europe/London)
-work      live in ~/.claude  ok     88%      Oct 18, 1pm (Europe/London)        41%   Oct 21, 6pm (Europe/London)
+PROFILE      WEEK             W-RESET      SESSION           S-RESET      STATE
+spare        █░░░░░░░░░  12%  10-23 09:00  ░░░░░░░░░░   0%   -            ok
+personal     ███░░░░░░░  35%  10-22 02:00  ██░░░░░░░░  20%   10-18 15:00  ok
+work (live)  ████░░░░░░  41%  10-21 18:00  ████████░░  88%   10-18 13:00  ok
+times: Europe/London
+order: rotator headroom (worse of session and week), then name
 ```
 
-Only a profile in state `ok` can be chosen; an exhausted profile, or one whose
-probe failed, never is. A probe that failed or timed out means the account's
-usage is unknown, not that it is used up: such a profile is not treated as
+The rows are sorted by the rotator's headroom, most room first, and
+`(live)` marks the login in `~/.claude`. Overflow and excluded profiles are
+sorted the same way, so the first row is not always the rotator's next
+pick. Only a profile in state `ok` can be chosen; an exhausted profile, or
+one whose probe failed, never is. A probe that failed or timed out means
+the account's usage is unknown, not that it is used up: such a profile is not treated as
 exhausted and is probed again on the next cycle.
 
 ## Preview a rotation
@@ -112,10 +117,12 @@ amplihack profile usage
 ```
 
 ```
-PROFILE   MARKS              STATE  SESSION  SESSION RESETS                     WEEK  WEEK RESETS
-spare     live in ~/.claude  ok     0%       -                                  12%   Oct 23, 9am (Europe/London)
-personal                     ok     20%      Oct 18, 3pm (Europe/London)        35%   Oct 22, 2am (Europe/London)
-work                         ok     88%      Oct 18, 1pm (Europe/London)        41%   Oct 21, 6pm (Europe/London)
+PROFILE       WEEK             W-RESET      SESSION           S-RESET      STATE
+spare (live)  █░░░░░░░░░  12%  10-23 09:00  ░░░░░░░░░░   0%   -            ok
+personal      ███░░░░░░░  35%  10-22 02:00  ██░░░░░░░░  20%   10-18 15:00  ok
+work          ████░░░░░░  41%  10-21 18:00  ████████░░  88%   10-18 13:00  ok
+times: Europe/London
+order: rotator headroom (worse of session and week), then name
 ```
 
 A running `claude` picks up the new login when it next reads its credentials;
@@ -2276,9 +2283,11 @@ $ amplihack profile rotate status
 ~/.claude is on API key profile api-key: work is billed per token (since 2026-10-28T14:02:11Z)
 ...
 $ amplihack profile usage api-key
-PROFILE  MARKS              STATE    SESSION                     SESSION RESETS  WEEK  WEEK RESETS
-api-key  live in ~/.claude  api_key  api-key (billed per token)  -               -     -
+PROFILE         WEEK             W-RESET      SESSION           S-RESET      STATE
+api-key (live)  api-key (billed per token)                                   api_key
 live: work is running on the API key (billed per token)
+times: Europe/London
+order: rotator headroom (worse of session and week), then name
 ```
 
 `profile usage` runs no `/usage` probe for an API-key profile; there are no

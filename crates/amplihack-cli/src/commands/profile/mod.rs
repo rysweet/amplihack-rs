@@ -43,6 +43,7 @@ mod usage_parse;
 mod usage_passive;
 mod usage_request;
 mod usage_source;
+mod usage_view;
 
 #[cfg(test)]
 mod tests_commands;
@@ -98,6 +99,8 @@ mod tests_usage_passive;
 mod tests_usage_request;
 #[cfg(all(test, unix))]
 mod tests_usage_source;
+#[cfg(test)]
+mod tests_usage_view;
 #[cfg(test)]
 mod tests_verify;
 
@@ -394,13 +397,20 @@ pub enum ProfileCommands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Show each profile's session and weekly usage, most capacity first
+    /// Show each profile's weekly and session usage as a bar view, in the
+    /// order the rotator ranks headroom
     Usage {
         /// Profiles to probe (default: all)
         names: Vec<String>,
-        /// Print a JSON array instead of the table
+        /// Print a JSON array instead of the bar view
         #[arg(long)]
         json: bool,
+        /// Print the previous 7-column table instead of the bar view
+        #[arg(long, conflicts_with = "json")]
+        table: bool,
+        /// Show reset times in UTC instead of local time (bar view only)
+        #[arg(long, conflicts_with_all = ["json", "table"])]
+        utc: bool,
         /// Also print what `claude` wrote to stdout and stderr
         #[arg(long)]
         raw: bool,
@@ -544,9 +554,25 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::Usage {
             names,
             json,
+            table,
+            utc,
             raw,
             timeout_secs,
-        } => usage_cmd::run(&store, &names, json, raw, timeout_secs)?,
+        } => {
+            let mode = if json {
+                usage_cmd::OutputMode::Json
+            } else if table {
+                usage_cmd::OutputMode::Table
+            } else {
+                usage_cmd::OutputMode::Bars
+            };
+            let time = if utc {
+                usage_view::TimeView::Utc
+            } else {
+                usage_view::TimeView::Local
+            };
+            usage_cmd::run(&store, &names, mode, &time, raw, timeout_secs)?
+        }
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
         ProfileCommands::Overflow { command } => overflow::run(&store, command)?,

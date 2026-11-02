@@ -735,3 +735,31 @@ fn docs_describe_no_session_limit() {
     }
     assert!(REFERENCE.contains("#### No session limit"));
 }
+
+/// Issue #1813: the reference documents the bar view's flags, `NO_COLOR`,
+/// and the exact `order:` line the command prints.
+#[test]
+fn docs_describe_the_usage_bar_view() {
+    use super::usage_cmd::ORDER_LINE;
+    for flag in ["`--utc`", "`--table`", "`NO_COLOR`", "#### Bar output"] {
+        assert!(REFERENCE.contains(flag), "reference is missing {flag}");
+    }
+    assert!(
+        REFERENCE
+            .contains("amplihack profile usage [--json | --table] [--utc] [--raw] [<name>...]"),
+        "reference synopsis"
+    );
+    assert!(ORDER_LINE.starts_with("order: "), "{ORDER_LINE}");
+    assert!(!ORDER_LINE.ends_with('\n'), "{ORDER_LINE:?}");
+    assert!(
+        REFERENCE.contains(ORDER_LINE),
+        "reference must show the printed line {ORDER_LINE:?}"
+    );
+    assert!(HOWTO.contains(ORDER_LINE), "howto must show {ORDER_LINE:?}");
+    for (name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        assert!(
+            !doc.contains("most capacity first"),
+            "{name} doc still describes the old order"
+        );
+    }
+}

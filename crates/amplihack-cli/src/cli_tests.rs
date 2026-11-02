@@ -667,11 +667,14 @@ mod tests {
             Commands::Profile(crate::commands::profile::ProfileCommands::Usage {
                 names,
                 json,
+                table,
+                utc,
                 raw,
                 timeout_secs,
             }) => {
                 assert_eq!(names, ["a", "b"]);
                 assert!(json && raw);
+                assert!(!table && !utc);
                 assert_eq!(timeout_secs, None);
             }
             other => panic!("unexpected {other:?}"),
@@ -681,11 +684,85 @@ mod tests {
             Commands::Profile(crate::commands::profile::ProfileCommands::Usage {
                 names,
                 json,
+                table,
+                utc,
                 raw,
                 ..
-            }) => assert!(names.is_empty() && !json && !raw),
+            }) => assert!(names.is_empty() && !json && !table && !utc && !raw),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    /// Issue #1813: `--table` and `--utc` parse, alone and with `--raw`.
+    #[test]
+    fn profile_usage_parses_table_and_utc() {
+        let _env = launcher_env_lock();
+        for (args, want_table, want_utc) in [
+            (&["--table"][..], true, false),
+            (&["--utc"][..], false, true),
+            (&["--table", "--raw", "a"][..], true, false),
+            (&["--utc", "--raw", "a"][..], false, true),
+        ] {
+            let mut argv = vec!["amplihack", "profile", "usage"];
+            argv.extend_from_slice(args);
+            let cli = Cli::try_parse_from(&argv).unwrap_or_else(|e| panic!("{argv:?}: {e}"));
+            match cli.command {
+                Commands::Profile(crate::commands::profile::ProfileCommands::Usage {
+                    json,
+                    table,
+                    utc,
+                    ..
+                }) => {
+                    assert!(!json, "{argv:?}");
+                    assert_eq!((table, utc), (want_table, want_utc), "{argv:?}");
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+    }
+
+    /// Issue #1813: flags that would do nothing together are refused.
+    #[test]
+    fn profile_usage_output_flags_conflict() {
+        let _env = launcher_env_lock();
+        for pair in [
+            ["--table", "--json"],
+            ["--json", "--table"],
+            ["--utc", "--json"],
+            ["--json", "--utc"],
+            ["--utc", "--table"],
+            ["--table", "--utc"],
+        ] {
+            let err = Cli::try_parse_from(["amplihack", "profile", "usage", pair[0], pair[1]])
+                .expect_err(&format!("{pair:?} must be refused"));
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{pair:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_usage_help_describes_the_bar_view_and_new_flags() {
+        let _env = launcher_env_lock();
+        let help = Cli::try_parse_from(["amplihack", "profile", "usage", "--help"])
+            .unwrap_err()
+            .to_string();
+        for want in ["--table", "--utc", "bar view"] {
+            assert!(help.contains(want), "help lists {want}: {help}");
+        }
+        assert!(
+            !help.contains("instead of the table"),
+            "help still calls the table the default: {help}"
+        );
+        let list = Cli::try_parse_from(["amplihack", "profile", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !list.contains("most capacity first"),
+            "summary still says most capacity first: {list}"
+        );
     }
 
     #[test]

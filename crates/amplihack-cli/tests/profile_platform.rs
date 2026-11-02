@@ -259,6 +259,7 @@ fn usage_shows_the_api_key_row_without_probing_it() {
     let names: Vec<&str> = s
         .lines()
         .skip(1)
+        .filter(|l| !l.starts_with("times: ") && !l.starts_with("order: "))
         .filter_map(|l| l.split_whitespace().next())
         .collect();
     assert_eq!(names.last(), Some(&"console"), "{s}");

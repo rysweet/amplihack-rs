@@ -712,11 +712,13 @@ amplihack profile usage
 ```
 
 ```
-PROFILE   MARKS       STATE              SESSION  SESSION RESETS        WEEK  WEEK RESETS
-review    -           ok                 5%       2026-10-17T04:00:00Z  10%   2026-10-22T09:00:00Z
-work      *           ok                 20%      2026-10-17T02:00:00Z  30%   2026-10-22T09:00:00Z
-team      -           session_exhausted  100%     2026-10-16T23:50:00Z  55%   2026-10-22T09:00:00Z
-scratch   (fallback)  not_logged_in      -        -                     -     -
+PROFILE  WEEK             W-RESET      SESSION           S-RESET      STATE
+review   █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░░░░   5%   11-01 14:00  ok
+work     ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00  ok                 *
+team     █████░░░░░  55%  11-05 09:00  ██████████ 100%   11-01 23:50  session_exhausted
+scratch  no reading (not_logged_in)                                   not_logged_in      (fallback)
+times: Europe/London
+order: rotator headroom (worse of session and week), then name
 ```
 
 For each profile, amplihack first uses a reading the status line stored in
@@ -739,12 +741,59 @@ or whose account has usage credits turned on, is always read with
 `/usage`, because only `/usage` shows a used-up spend limit. Checking does
 not appear to use quota, and an exhausted account still answers. A profile
 at its session limit shows its weekly figure as reported (`55%` for `team`
-above). The profiles with the most room come first. Exhausted ones
-follow, soonest back first, and the reset column says when: an ISO 8601
-time as `claude` sent it (the times above are examples of the form), or
-Claude's own words (`Oct 16, 4:50pm (America/Los_Angeles)`) for a profile
-read with `/usage`. Profiles that could not be read come last. `*` marks the
-default.
+above).
+
+### Reading the bar view
+
+Each row shows the all-models week (`WEEK`) and the current session
+(`SESSION`) as a bar of 10 cells and a percentage, and when each resets
+(`W-RESET`, `S-RESET`). Reset times are in your local time zone, as
+`MM-DD HH:MM`, and the `times:` line names the zone. `*` marks the default
+profile, and `(live)` after a name marks the profile whose login is in
+`~/.claude`.
+
+The rows are sorted by the [rotator's](claude-profile-rotation.md)
+headroom, as the `order:` line says: the most room in the worse of the
+session and the week first, then by name. A profile with
+[no session limit](../reference/profile-command.md#no-session-limit) is
+ranked by its week. Exhausted profiles follow, soonest back first, then
+API-key profiles, then the profiles that could not be read. Only the
+headroom rule is applied: overflow profiles and profiles on the `exclude`
+list are sorted like any other, so the first row is not always the login
+the rotator would pick next. The full rule is in the
+[reference](../reference/profile-command.md#ordering).
+
+Percentages in the bar view are whole numbers, rounded down; `--table` and
+`--json` show one decimal place where there is one.
+
+In a terminal, the bars are green below 70%, yellow from 70% and red from
+90%. To turn colour off, set `NO_COLOR`:
+
+```bash
+NO_COLOR=1 amplihack profile usage
+```
+
+Piped output is never coloured, so `amplihack profile usage | less` and
+`amplihack profile usage > usage.txt` contain plain text.
+
+To read reset times in UTC, for example to compare them with the rotate log,
+use `--utc`. The cells then read `MM-DD HH:MMZ`:
+
+```bash
+amplihack profile usage --utc
+```
+
+To see the older table, with Claude's own reset text for a profile read
+with `/usage` (`Oct 16, 4:50pm (America/Los_Angeles)`), use `--table`:
+
+```bash
+amplihack profile usage --table
+```
+
+`--utc` applies only to the bar view, so `--utc --table` and `--utc --json`
+are refused, as is `--table --json`.
+
+### Selected profiles, states and scripts
 
 To check only some profiles, name them:
 
@@ -759,7 +808,7 @@ What the `STATE` column means:
 | `ok` | Ready to use. |
 | `session_exhausted` / `weekly_exhausted` | Wait for the reset shown, or use another profile. |
 | `spend_limit` | Your organisation's spend limit was reached. |
-| `api_key` | An API-key profile, billed per token; its `SESSION` cell reads `api-key (billed per token)` and nothing is probed. Nothing to fix. See [API-key profiles and usage limits](#api-key-profiles-and-usage-limits). |
+| `api_key` | An API-key profile, billed per token; its row reads `api-key (billed per token)` instead of bars and nothing is probed. Nothing to fix. See [API-key profiles and usage limits](#api-key-profiles-and-usage-limits). |
 | `not_logged_in` | `amplihack profile login <name>` |
 | `timeout` | The `claude` fallback did not answer in time (120 seconds by default, for the `get_usage` request and any `/usage` fallback together). The usage is unknown, not exhausted. Try again, or see [Probes on a busy host](#probes-on-a-busy-host). |
 | `unparsed` | Claude printed something unexpected. Run with `--raw` to see it. |
@@ -812,7 +861,7 @@ reset as Unix time (`resets_at`); see the
 If [auto-switch](#switch-accounts-automatically) is set up, `profile usage`
 also refreshes its readings, so it can choose accounts using numbers taken
 now instead of the last status-line update. While auto-switch has state
-(`<root>/.auto-switch.d/`), the table also shows where logins are: `leased→work` on a profile whose login is lent
+(`<root>/.auto-switch.d/`), the output also shows where logins are: `leased→work` on a profile whose login is lent
 to `work`'s session, and `hosts:personal` on the profile holding it. The
 numbers on a `hosts:` row belong to the hosted account. See
 [Refreshing auto-switch readings](../reference/profile-command.md#refreshing-auto-switch-readings)
@@ -822,7 +871,7 @@ A profile marked as credit-backed overflow
 (`amplihack profile overflow add <name>`) shows the mark `overflow`, and
 `overflow, blocked until <time>` after the rotator has blocked it on a spend
 limit. When its login is the one in `~/.claude` and its probe shows the
-session or all-models weekly limit reached, the table ends with
+session or all-models weekly limit reached, the rows are followed by
 `running on overflow: <name>`. In `--json`, every row has `overflow` and
 `overflow_blocked_until`. See
 [Use usage credits when every plan login is exhausted](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted).
@@ -940,12 +989,16 @@ If you use a login rotator that moves one account's login into the default
 `~/.claude` directory, such as
 [`amplihack profile rotate`](claude-profile-rotation.md), that profile's own directory has no login while it is
 there. `profile usage` checks that account through `~/.claude` instead and
-marks the row:
+marks the row with `(live)` after the name:
 
 ```
-PROFILE   MARKS              STATE  SESSION  SESSION RESETS                     WEEK  WEEK RESETS
-team      live in ~/.claude  ok     40%      Oct 16, 8pm (America/Los_Angeles)  55%   Oct 22, 2am (America/Los_Angeles)
+PROFILE      WEEK             W-RESET      SESSION           S-RESET      STATE
+team (live)  █████░░░░░  55%  10-22 02:00  ████░░░░░░  40%   10-16 20:00  ok
+times: America/Los_Angeles
+order: rotator headroom (worse of session and week), then name
 ```
+
+`--table` shows the same mark as `live in ~/.claude` in its `MARKS` column.
 
 The numbers on that row are the account's real usage, and the row is not
 `not_logged_in`. In the JSON the row has `"live_in": "~/.claude"`; every
@@ -1176,7 +1229,7 @@ again. The accepted login records its account, so the next warning, if any,
 names a profile.
 
 `status` prints it as a `note:` line; `usage` prints the same text on stderr
-as a `warning:` line, after the table. The login in `~/.claude` takes part
+as a `warning:` line, after the rows. The login in `~/.claude` takes part
 too, named `~/.claude`. It is judged by the record of the rotator's live
 profile, since that is the account it should hold, and a profile that
 matches its own record is never named. When `~/.claude` is the one off its
@@ -1814,13 +1867,15 @@ session started on the API-key profile keeps it, and its next nested launch
 or rerun goes back to a plan profile.
 
 `profile usage` does not probe an API-key profile. Its `STATE` is `api_key`
-and its `SESSION` cell reads `api-key (billed per token)`:
+and its row reads `api-key (billed per token)` instead of bars:
 
 ```
 $ amplihack profile usage api-key
-PROFILE  MARKS              STATE    SESSION                     SESSION RESETS  WEEK  WEEK RESETS
-api-key  live in ~/.claude  api_key  api-key (billed per token)  -               -     -
+PROFILE         WEEK             W-RESET      SESSION           S-RESET      STATE
+api-key (live)  api-key (billed per token)                                   api_key
 live: work is running on the API key (billed per token)
+times: Europe/London
+order: rotator headroom (worse of session and week), then name
 ```
 
 If the key runs out of funds or is revoked, every API-key profile is
