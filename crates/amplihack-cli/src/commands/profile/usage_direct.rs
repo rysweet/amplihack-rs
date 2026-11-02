@@ -20,9 +20,11 @@ use amplihack_utils::secure_files::PrivateTemp;
 use serde_json::{Value, json};
 use std::ffi::{OsStr, OsString};
 use std::io::Read;
+use std::net::{SocketAddr, ToSocketAddrs};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use ureq::Error as HttpError;
 use ureq::ErrorKind;
@@ -382,17 +384,24 @@ pub(super) fn map_err(e: &ureq::Error) -> &'static str {
     }
 }
 
-/// The reason for a refresh POST that ended in an error. A status is the
-/// server refusing the request, and a failure before or during the connect
-/// (DNS, TCP, TLS handshake, a bad URL or proxy) comes before any of the
-/// request is written: both are `refresh failed`, and the old refresh token
-/// is still the one on file. Anything else (a timeout or I/O error while
-/// writing the request or waiting for the answer, a malformed answer) can
-/// follow a request the server received and acted on, so it is
-/// `refresh not saved`.
+/// The reason for a refresh POST that ended in an error.
+///
+/// `refresh failed` (the old refresh token is still in force) covers only
+/// what provably did not reach the token server or was refused by it: a 4xx
+/// status, and a failure before or during the connect (DNS, TCP, TLS
+/// handshake, a bad URL or proxy), which comes before any of the request is
+/// written. The DNS lookup is bounded by [`bounded_lookup`], so a stalled
+/// resolver ends as `ErrorKind::Dns` and not as an I/O timeout.
+///
+/// Everything else is `refresh not saved`, which comes with the warning to
+/// log in again, because it can follow a request the server received and
+/// acted on: a 5xx (a 502, 504, 520 or 524 from a proxy in front of the
+/// token server can follow a request the origin received and handled), a
+/// timeout or I/O error while writing the request or waiting for the answer,
+/// and a malformed answer.
 pub(super) fn post_failure(e: &ureq::Error) -> &'static str {
     match e {
-        HttpError::Status(..) => reason::REFRESH_FAILED,
+        HttpError::Status(code, _) => refresh_status(*code),
         HttpError::Transport(t) => match t.kind() {
             ErrorKind::InvalidUrl
             | ErrorKind::UnknownScheme
@@ -409,6 +418,58 @@ pub(super) fn post_failure(e: &ureq::Error) -> &'static str {
             | ErrorKind::HTTP => reason::REFRESH_NOT_SAVED,
         },
     }
+}
+
+/// The reason for a refresh answer with a status other than 200. A 3xx (a
+/// redirect, not followed) or 4xx is the request turned away: the old
+/// refresh token is still in force. A 5xx, another 2xx, or any other code
+/// may follow a request the server acted on.
+pub(super) fn refresh_status(code: u16) -> &'static str {
+    match code {
+        300..=499 => reason::REFRESH_FAILED,
+        _ => reason::REFRESH_NOT_SAVED,
+    }
+}
+
+/// A DNS resolver for `ureq` that gives up at `until`.
+///
+/// `ureq` 2 puts no deadline on the lookup (`connect_host` in its
+/// `stream.rs`), and fixes the connect deadline before the lookup starts, so
+/// a slow lookup would end as an I/O timeout, which [`post_failure`] cannot
+/// tell from one after the request was written. Here `lookup` runs on its
+/// own thread; if it has not answered by `until`, the resolver returns a
+/// `TimedOut` error, which `ureq` reports as `ErrorKind::Dns`, and no byte
+/// of the request is sent. A lookup given up on keeps its thread until the
+/// system resolver returns; its answer is dropped.
+pub(super) fn bounded_lookup<L>(
+    until: Instant,
+    lookup: L,
+) -> impl Fn(&str) -> std::io::Result<Vec<SocketAddr>> + Send + Sync + 'static
+where
+    L: Fn(&str) -> std::io::Result<Vec<SocketAddr>> + Send + Sync + Clone + 'static,
+{
+    move |netloc: &str| {
+        let (tx, rx) = mpsc::channel();
+        let name = netloc.to_owned();
+        let lookup = lookup.clone();
+        std::thread::Builder::new()
+            .name("usage-dns".into())
+            .spawn(move || {
+                let _ = tx.send(lookup(&name));
+            })?;
+        match rx.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok(answer) => answer,
+            Err(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "dns lookup timed out",
+            )),
+        }
+    }
+}
+
+/// The system resolver, as `ureq` uses it.
+pub(super) fn system_lookup(netloc: &str) -> std::io::Result<Vec<SocketAddr>> {
+    netloc.to_socket_addrs().map(Iterator::collect)
 }
 
 fn timed_out(kind: std::io::ErrorKind) -> bool {
@@ -484,7 +545,7 @@ pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<UsageReport, &'s
         return Err(reason::TRANSPORT);
     }
     let creds = load(req.creds_dir)?;
-    let agent = agent(ep, req.timeout);
+    let agent = agent(ep, req.timeout, deadline);
     let now_s = req.now_ms.div_euclid(1000);
     let margin_ms = REFRESH_MARGIN_SECS * 1000;
     let due = creds
@@ -508,14 +569,17 @@ pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<UsageReport, &'s
     }
 }
 
-fn agent(ep: &Endpoints, timeout: Duration) -> ureq::Agent {
+/// The agent for the `GET`s. Its DNS lookups end at the read's deadline.
+fn agent(ep: &Endpoints, timeout: Duration, deadline: Deadline) -> ureq::Agent {
     let step = MAX_STEP
         .min(timeout.saturating_sub(Duration::from_secs(1)))
         .max(MIN_STEP);
-    agent_with_step(ep, timeout, step)
+    agent_builder(ep, timeout, step)
+        .resolver(bounded_lookup(deadline.0, system_lookup))
+        .build()
 }
 
-fn agent_with_step(ep: &Endpoints, timeout: Duration, step: Duration) -> ureq::Agent {
+fn agent_builder(ep: &Endpoints, timeout: Duration, step: Duration) -> ureq::AgentBuilder {
     ureq::AgentBuilder::new()
         .timeout_connect(step)
         .timeout_read(step)
@@ -524,7 +588,6 @@ fn agent_with_step(ep: &Endpoints, timeout: Duration, step: Duration) -> ureq::A
         .redirects(0)
         .https_only(ep.https_only())
         .user_agent(USER_AGENT)
-        .build()
 }
 
 /// At most [`MAX_BODY`] bytes of a 200 answer; a longer one is unparseable.
@@ -692,7 +755,18 @@ fn refresh(
     if left < REFRESH_BUDGET {
         return Err(reason::TIMEOUT);
     }
-    let post = agent_with_step(ep, left, left.min(MAX_STEP))
+    // The DNS lookup ends at least MIN_STEP before the connect deadline,
+    // which `ureq` fixes before the lookup starts, so a slow lookup is
+    // `ErrorKind::Dns` (`refresh failed`, nothing sent) and never the
+    // connect deadline's I/O timeout.
+    let step = left.min(MAX_STEP);
+    let dns = bounded_lookup(
+        Instant::now() + step.saturating_sub(MIN_STEP),
+        system_lookup,
+    );
+    let post = agent_builder(ep, left, step)
+        .resolver(dns)
+        .build()
         .post(url)
         .timeout(left)
         .set("Content-Type", "application/json")
@@ -711,13 +785,13 @@ fn refresh(
     // at the read's deadline, so an answer can arrive too late to be read.
     // Every failure that can follow a sent request is therefore
     // `refresh not saved`, which tells the user to log in again; only a
-    // failure that provably came before the request was written, or a status
-    // the server refused it with, is `refresh failed`.
+    // failure that provably came before the request was written, or a 3xx or
+    // 4xx status the server turned it away with, is `refresh failed`.
     let resp = post
         .send_string(&payload.to_string())
         .map_err(|e| post_failure(&e))?;
     if resp.status() != 200 {
-        return Err(reason::REFRESH_FAILED);
+        return Err(refresh_status(resp.status()));
     }
     // A 200 means the server issued new tokens; an answer that cannot be
     // used leaves the login with a refresh token that may be retired.

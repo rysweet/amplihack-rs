@@ -50,8 +50,8 @@ use super::tests_fake_http::{FakeHttp, Reply, Seen, closed_base};
 use super::usage_direct::{
     API_BASE_ENV, BETA, CLIENT_ID, Creds, DEFAULT_API_BASE, DEFAULT_TOKEN_URL, Endpoints, MAX_BODY,
     MAX_EXPIRES_IN, MAX_STEP, MAX_TOKEN, MIN_STEP, REFRESH_BUDGET, REFRESH_MARGIN_SECS, Request,
-    TOKEN_URL_ENV, Token, USAGE_PATH, USER_AGENT, base_ok, expires_in, map_err, read, reason,
-    refreshes_in_progress, wait_for_refreshes,
+    TOKEN_URL_ENV, Token, USAGE_PATH, USER_AGENT, base_ok, bounded_lookup, expires_in, map_err,
+    post_failure, read, reason, refresh_status, refreshes_in_progress, wait_for_refreshes,
 };
 use super::usage_parse::UsageState;
 use serde_json::{Value, json};
@@ -1037,13 +1037,14 @@ fn a_bad_expires_in_is_refresh_not_saved_and_the_file_is_untouched() {
     }
 }
 
-/// A status the server refused the refresh with leaves the old refresh token
-/// in force: `refresh failed`.
+/// A 3xx or 4xx status the server turned the refresh away with leaves the
+/// old refresh token in force: `refresh failed`.
 #[test]
 fn a_failed_refresh_request_leaves_the_file_and_releases_the_lock() {
     for reply in [
         Reply::json(400, &json!({"error": "invalid_grant"})),
-        Reply::json(500, &json!({})),
+        Reply::json(401, &json!({})),
+        Reply::json(429, &json!({})),
         Reply::raw(302, "").header("Location", "/elsewhere"),
     ] {
         let fake = refreshing(reply);
@@ -1054,6 +1055,100 @@ fn a_failed_refresh_request_leaves_the_file_and_releases_the_lock() {
         assert_eq!(l.entries(), [CREDS]);
         assert_eq!(fake.count("GET", "/elsewhere"), 0);
     }
+}
+
+/// A 5xx can come from a proxy in front of the token server after the
+/// server received and handled the request (Cloudflare's 524 is exactly
+/// that), and a 2xx other than 200 is the server accepting it: the old
+/// refresh token may be retired, so these are `refresh not saved`, with the
+/// warning to log in again. The file is left as it was.
+#[test]
+fn a_5xx_or_other_2xx_refresh_answer_is_refresh_not_saved() {
+    for code in [500, 502, 503, 504, 520, 524, 201, 204] {
+        let fake = refreshing(Reply::json(code, &json!({})));
+        let l = login();
+        let before = fs::read(l.path()).unwrap();
+        assert_eq!(
+            run(&fake, &l, true),
+            Err(reason::REFRESH_NOT_SAVED),
+            "{code}"
+        );
+        assert!(super::usage_source::not_saved(reason::REFRESH_NOT_SAVED));
+        assert_eq!(fs::read(l.path()).unwrap(), before, "{code}");
+        assert_eq!(l.entries(), [CREDS], "{code}");
+    }
+}
+
+#[test]
+fn refresh_status_splits_turned_away_from_maybe_handled_by_class() {
+    for code in [300, 302, 399, 400, 401, 403, 404, 429, 499] {
+        assert_eq!(refresh_status(code), reason::REFRESH_FAILED, "{code}");
+    }
+    for code in [100, 201, 204, 299, 500, 502, 504, 520, 524, 599, 600] {
+        assert_eq!(refresh_status(code), reason::REFRESH_NOT_SAVED, "{code}");
+    }
+}
+
+/// A lookup that has not answered by its bound is a `TimedOut` error at the
+/// bound, not a wait for the system resolver.
+#[test]
+fn a_stalled_lookup_gives_up_at_its_bound() {
+    let stall = |_: &str| -> std::io::Result<Vec<std::net::SocketAddr>> {
+        std::thread::sleep(Duration::from_secs(5));
+        Ok(vec!["127.0.0.1:1".parse().unwrap()])
+    };
+    let start = Instant::now();
+    let r = bounded_lookup(start + Duration::from_millis(200), stall)("token.invalid:443");
+    let took = start.elapsed();
+    assert_eq!(r.unwrap_err().kind(), std::io::ErrorKind::TimedOut);
+    assert!(took < Duration::from_secs(2), "{took:?}");
+}
+
+#[test]
+fn a_prompt_lookup_is_returned_as_is() {
+    let addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+    let quick = move |n: &str| -> std::io::Result<Vec<std::net::SocketAddr>> {
+        assert_eq!(n, "token.invalid:443");
+        Ok(vec![addr])
+    };
+    let r = bounded_lookup(Instant::now() + Duration::from_secs(5), quick)("token.invalid:443");
+    assert_eq!(r.unwrap(), vec![addr]);
+}
+
+/// A resolver that stalls past the connect timeout. Without the bound,
+/// `ureq` 2.12.1 would wait for the lookup and then fail the connect
+/// deadline it fixed before the lookup as an I/O timeout (`ErrorKind::Io`),
+/// which is `refresh not saved` and a false warning to log in again. With
+/// the bound the error is `ErrorKind::Dns`, nothing is sent, and the reason
+/// is `refresh failed`.
+#[test]
+fn a_stalled_token_host_lookup_is_refresh_failed_not_refresh_not_saved() {
+    let stall = |_: &str| -> std::io::Result<Vec<std::net::SocketAddr>> {
+        std::thread::sleep(Duration::from_secs(5));
+        Ok(vec!["127.0.0.1:1".parse().unwrap()])
+    };
+    let connect = Duration::from_millis(600);
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(connect)
+        .timeout(Duration::from_secs(10))
+        .resolver(bounded_lookup(
+            Instant::now() + connect.saturating_sub(MIN_STEP),
+            stall,
+        ))
+        .build();
+    let start = Instant::now();
+    let err = agent
+        .post("http://token.invalid/v1/oauth/token")
+        .send_string("{}")
+        .unwrap_err();
+    assert!(
+        start.elapsed() < Duration::from_secs(2),
+        "{:?}",
+        start.elapsed()
+    );
+    assert!(matches!(&err, ureq::Error::Transport(t) if t.kind() == ureq::ErrorKind::Dns));
+    assert_eq!(post_failure(&err), reason::REFRESH_FAILED);
+    assert!(!super::usage_source::not_saved(post_failure(&err)));
 }
 
 #[test]

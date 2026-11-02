@@ -237,6 +237,12 @@ and each request is given only the time left of it, so a `GET` that answers
 `401`, the refresh `POST` and the second `GET` together take no longer than
 one deadline. No request starts once the deadline has passed.
 
+The DNS lookup is inside that deadline too. The HTTP client puts no time
+limit on a lookup of its own, so each lookup is bounded by amplihack: for a
+`GET`, by the read's deadline; for the refresh `POST`, by its connect
+timeout less 500 milliseconds. A lookup that misses its bound ends the
+request as a DNS failure, before any of the request is sent.
+
 A refresh `POST` is sent only when at least 3 seconds of the deadline are
 left; otherwise none is sent and the read is `timeout`. A refresh can
 retire the old refresh token, so one given up on before its answer arrives
@@ -291,8 +297,8 @@ the numeric HTTP status class is kept.
 | `usage credits on` | The answer shows `extra_usage.is_enabled` as `true`, or an `extra_usage` amplihack does not recognise. |
 | `refresh busy` | The token needs a refresh, but the refresh lock is held or a swap is in progress. |
 | `refresh refused` | The checks before a refresh failed (see [Token refresh](#token-refresh)). |
-| `refresh failed` | The refresh request did not reach the token server (DNS, connection or TLS handshake failed), or the server refused it with a status other than `200`. The old refresh token is still on file. |
-| `refresh not saved` | The refresh request may have reached the token server, but its new login was not written: the answer did not arrive before the deadline, the connection failed after the request was sent, a `200` answer was not usable, or the write failed. |
+| `refresh failed` | The refresh request did not reach the token server (a DNS lookup that failed or ran out of time, or a failed connection or TLS handshake), or the server turned it away with a `3xx` or `4xx` status. The old refresh token is still on file. |
+| `refresh not saved` | The refresh request may have reached the token server, but its new login was not written: the answer was a `5xx` or a `2xx` other than `200`, the answer did not arrive before the deadline, the connection failed after the request was sent, a `200` answer was not usable, or the write failed. |
 
 Except under `AMPLIHACK_PROFILE_USAGE_PROBE=direct`, a failed direct read
 moves on to the fallback. The table marks the row `(fallback)` and the JSON
@@ -365,10 +371,13 @@ ends at the read's deadline like every other request, so the 3-second floor
 in step 4 makes an unanswered refresh less likely but cannot rule it out.
 The token server may retire the old refresh token as soon as it handles the
 request, so when the request failed before it could reach the server, or the
-server refused it with a status, the reason is `refresh failed`; in every
-other case (no answer before the deadline, a connection lost after the
-request was sent, a `200` that cannot be used, or a failed write) the reason
-is `refresh not saved`. The old refresh token may no longer work, so one
+server turned it away with a `3xx` or `4xx` status, the reason is
+`refresh failed`; in every other case the reason is `refresh not saved`.
+Those cases are a `5xx` answer (a `502`, `504`, `520` or `524` from a proxy
+in front of the token server can follow a request the server received and
+handled), a `2xx` other than `200`, no answer before the deadline, a
+connection lost after the request was sent, a `200` that cannot be used,
+and a failed write. The old refresh token may no longer work, so one
 line goes to stderr in every mode, with or without `--raw` (`rotate.err`
 for a background rotator):
 
