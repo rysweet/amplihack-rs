@@ -70,6 +70,7 @@ fn report(
         week_all: w.map(|(p, at)| win("all models", p, at)),
         week_models: Vec::new(),
         session_limit: true,
+        observed_at: None,
     }
 }
 

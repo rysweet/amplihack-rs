@@ -671,6 +671,7 @@ mod tests {
                 utc,
                 raw,
                 timeout_secs,
+                ..
             }) => {
                 assert_eq!(names, ["a", "b"]);
                 assert!(json && raw);

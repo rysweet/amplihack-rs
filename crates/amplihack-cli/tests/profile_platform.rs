@@ -256,9 +256,11 @@ fn usage_shows_the_api_key_row_without_probing_it() {
     }
     assert_eq!(console_runs(&f), 0, "never probed");
     // API-key rows come after every subscription row.
+    // The table ends at the blank line before the capacity summary (#1797).
     let names: Vec<&str> = s
         .lines()
         .skip(1)
+        .take_while(|l| !l.is_empty())
         .filter(|l| !l.starts_with("times: ") && !l.starts_with("order: "))
         .filter_map(|l| l.split_whitespace().next())
         .collect();

@@ -71,10 +71,12 @@ fn measured(session: f64, week: f64, reset: Option<i64>) -> Probed {
                 used: week,
                 resets_at: reset,
             }),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     }
 }
 
@@ -90,10 +92,12 @@ fn exhausted(reset: Option<i64>) -> Probed {
                 used: 100.0,
                 resets_at: reset,
             }),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     }
 }
 

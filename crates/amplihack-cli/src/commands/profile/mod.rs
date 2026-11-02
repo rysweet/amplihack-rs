@@ -11,6 +11,8 @@
 #[cfg(unix)]
 mod attempt;
 mod auto_switch;
+mod capacity_summary;
+mod capacity_weight;
 mod default_live;
 #[cfg(unix)]
 mod duplicates;
@@ -38,6 +40,7 @@ mod supervise_gate;
 mod usage_cmd;
 #[cfg(unix)]
 mod usage_direct;
+mod usage_history;
 mod usage_parse;
 #[cfg(unix)]
 mod usage_passive;
@@ -45,6 +48,10 @@ mod usage_request;
 mod usage_source;
 mod usage_view;
 
+#[cfg(test)]
+mod tests_capacity_summary;
+#[cfg(test)]
+mod tests_capacity_weight;
 #[cfg(test)]
 mod tests_commands;
 #[cfg(all(test, unix))]
@@ -91,6 +98,8 @@ mod tests_usage_cmd;
 mod tests_usage_direct;
 #[cfg(all(test, unix))]
 mod tests_usage_direct_scan;
+#[cfg(test)]
+mod tests_usage_history;
 #[cfg(test)]
 mod tests_usage_parse;
 #[cfg(all(test, unix))]
@@ -410,14 +419,20 @@ pub enum ProfileCommands {
         #[arg(long)]
         json: bool,
         /// Print the previous 7-column table instead of the bar view
-        #[arg(long, conflicts_with = "json")]
+        #[arg(long, conflicts_with_all = ["json", "summary_json"])]
         table: bool,
         /// Show reset times in UTC instead of local time (bar view only)
-        #[arg(long, conflicts_with_all = ["json", "table"])]
+        #[arg(long, conflicts_with_all = ["json", "table", "summary_json"])]
         utc: bool,
+        /// Print one JSON object: the --json rows and the capacity summary
+        #[arg(long, conflicts_with_all = ["json", "raw"])]
+        summary_json: bool,
         /// Also print what `claude` wrote to stdout and stderr
         #[arg(long)]
         raw: bool,
+        /// Session % below which a login counts as usable now (1-100; default 95, or AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT)
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
+        usable_session_pct: Option<u8>,
         /// Seconds each probe may run (default 120, max 600; or AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS)
         #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(1..=probe_limits::MAX_TIMEOUT_SECS))]
         timeout_secs: Option<u64>,
@@ -560,22 +575,33 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             json,
             table,
             utc,
+            summary_json,
             raw,
             timeout_secs,
+            usable_session_pct,
         } => {
-            let mode = if json {
-                usage_cmd::OutputMode::Json
+            let output = if summary_json {
+                usage_cmd::Output::SummaryJson
+            } else if json {
+                usage_cmd::Output::Json
             } else if table {
-                usage_cmd::OutputMode::Table
+                usage_cmd::Output::Table
             } else {
-                usage_cmd::OutputMode::Bars
+                usage_cmd::Output::Bars
             };
             let time = if utc {
                 usage_view::TimeView::Utc
             } else {
                 usage_view::TimeView::Local
             };
-            usage_cmd::run(&store, &names, mode, &time, raw, timeout_secs)?
+            let opts = usage_cmd::UsageOpts {
+                output,
+                time,
+                raw,
+                timeout_secs,
+                usable_session_pct,
+            };
+            usage_cmd::run(&store, &names, opts)?
         }
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,

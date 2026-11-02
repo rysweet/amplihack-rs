@@ -35,6 +35,7 @@ The exact flags, files, exit codes and log lines are in the
 - [Which profiles can take over](#which-profiles-can-take-over)
 - [Read the log](#read-the-log)
 - [Resume sessions stopped by a usage limit](#resume-sessions-stopped-by-a-usage-limit)
+- [See how much capacity is left](#see-how-much-capacity-is-left)
 - [When no account has capacity](#when-no-account-has-capacity)
 - [Use usage credits when every plan login is exhausted](#use-usage-credits-when-every-plan-login-is-exhausted)
 - [Move from the tmux prototype](#move-from-the-tmux-prototype)
@@ -334,8 +335,12 @@ owner: none
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
+capacity: headroom 2.07 login-weeks of 4 (52%), usable 2 of 4 logins, runway ~9 h (as of 2026-10-18T12:50:05Z, 3m ago, rotate cycle: probed profiles only)
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
+
+The `capacity:` line is read from the usage history the rotator keeps; see
+[See how much capacity is left](#see-how-much-capacity-is-left).
 
 Stop it:
 
@@ -1178,6 +1183,59 @@ background rotation and auto-switch. With auto-switch off the hook exits at
 once, prints nothing, and reads only the saved root and the toggle. To keep rotation but not
 the resume, delete the `StopFailure` entry from `~/.claude/settings.json`.
 `amplihack install` adds it again.
+
+## See how much capacity is left
+
+`amplihack profile usage` ends with a summary across every login. After
+the table, it prints:
+
+```
+weekly headroom      2.07 login-weeks of 4 (52%)
+usable now           2 of 4 logins (session < 95% and weekly < 100%)
+next session reset   2026-10-30T18:00:00Z  (night, team: +2 usable)
+runway               ~9 h at the last 6 h rate (0.230 login-weeks/h)
+resets in next 24 h  2026-10-31T02:00:00Z night +0.85; 2026-10-31T09:00:00Z work +0.30
+unknown              2 profiles (no valid reading; excluded from all figures)
+```
+
+A login-week is one login's weekly allowance, so `2.07 login-weeks of 4`
+means a little over two logins' worth of weekly capacity is left across the
+four logins that could be read. Logins that could not be read are counted
+as unknown and left out of the figures; they are never counted as empty or
+full. The rows above the summary show which they are.
+
+The runway needs about six hours of history. Each rotator cycle and each
+`profile usage` run without profile names adds a line to
+`<root>/.auto-switch.d/usage-history.jsonl`. Until there is enough it reads
+`unknown`. The rate is per hour, worked out from between four and a half and
+six hours of history, and it starts from a line that read every login: a
+`profile usage` line, or a rotator line from a cycle that skipped none. A
+rotator cycle does not probe logins that are running a session, so while
+some are busy, run `amplihack profile usage` now and then (every few hours)
+to give the runway a starting point.
+
+`amplihack profile rotate status` prints the same figures in one
+`capacity:` line from the rotator's last cycle, without probing anything.
+That cycle may have measured only some logins, so its `of N` can be smaller
+than in `profile usage`; the logins it skipped as busy, and any whose
+`.claude.json` has no usable `oauthAccount`, are counted in its `unknown`.
+When that cycle left logins out, the line does not use it for the runway:
+it shows the runway of the newest line that read every login, with that
+line's time (`runway ~14 h from the <time> entry (this cycle left out 2
+logins)`), or `runway unknown (this cycle left out 2 logins)` when there is
+none in the last six hours.
+
+If your logins are on different plans, give the larger ones more weight in
+`<root>/.auto-switch.d/capacity-weights.json`, for example
+`{ "team": 2.0 }`, and the summary adds a weighted figure. To count a login
+as usable only below a lower session percentage, set
+`AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT=80` or pass
+`--usable-session-pct 80`.
+
+For scripts, `amplihack profile usage --summary-json` prints the rows and the
+summary as one JSON object. The details are in
+[Capacity summary](../reference/profile-command.md#capacity-summary). To
+clear the history, delete `usage-history.jsonl` and `usage-history.lock`.
 
 ## When no account has capacity
 

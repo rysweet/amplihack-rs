@@ -746,8 +746,10 @@ fn docs_describe_the_usage_bar_view() {
         assert!(REFERENCE.contains(flag), "reference is missing {flag}");
     }
     assert!(
-        REFERENCE
-            .contains("amplihack profile usage [--json | --table] [--utc] [--raw] [<name>...]"),
+        REFERENCE.contains(
+            "amplihack profile usage [--json | --summary-json | --table] [--utc] [--raw] \
+             [--usable-session-pct <1-100>] [<name>...]"
+        ),
         "reference synopsis"
     );
     assert!(ORDER_LINE.starts_with("order: "), "{ORDER_LINE}");

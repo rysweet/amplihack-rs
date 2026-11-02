@@ -304,7 +304,9 @@ fn table_rows(stdout: &str) -> Vec<&str> {
     let mut lines = stdout.lines();
     let header = lines.next().unwrap_or_default();
     assert!(header.starts_with("PROFILE"), "header first: {stdout}");
+    // The capacity summary (issue #1797) follows the table.
     lines
+        .take_while(|l| !l.starts_with("weekly headroom "))
         .filter(|l| !l.starts_with(' ') && !l.is_empty())
         .filter(|l| !l.starts_with("times: ") && !l.starts_with("order: "))
         .collect()
@@ -1236,9 +1238,15 @@ fn the_default_is_the_bar_view_in_the_rotator_order_with_no_colour_when_piped() 
     );
     assert!(rows[0].contains("█"), "bars: {stdout}");
     assert!(rows[3].contains("no reading (not_logged_in)"), "{stdout}");
-    let lines: Vec<&str> = stdout.lines().collect();
+    // The footers end the bar view; the capacity summary (#1797) follows
+    // after a blank line.
+    let lines: Vec<&str> = stdout.lines().take_while(|l| !l.is_empty()).collect();
     assert_eq!(lines[lines.len() - 2], "times: UTC", "{stdout}");
     assert_eq!(lines[lines.len() - 1], ORDER_LINE, "{stdout}");
+    assert!(
+        stdout.contains(&format!("{ORDER_LINE}\n\n")),
+        "the summary follows the order line: {stdout}"
+    );
 }
 
 #[test]
@@ -1279,7 +1287,13 @@ fn table_keeps_the_old_header_and_ends_with_the_order_line() {
             "WEEK RESETS"
         ]
     );
-    assert_eq!(stdout.lines().last(), Some(ORDER_LINE), "{stdout}");
+    // The table ends with the order line; the capacity summary (#1797)
+    // follows after a blank line.
+    assert_eq!(
+        stdout.lines().take_while(|l| !l.is_empty()).last(),
+        Some(ORDER_LINE),
+        "{stdout}"
+    );
     assert!(!stdout.contains("times:"), "{stdout}");
     assert!(!stdout.contains('█'), "{stdout}");
 }
@@ -1291,6 +1305,8 @@ fn conflicting_output_flags_exit_non_zero_before_probing() {
         ["--table", "--json"],
         ["--utc", "--json"],
         ["--utc", "--table"],
+        ["--summary-json", "--table"],
+        ["--summary-json", "--utc"],
     ] {
         let out = f.run(&["profile", "usage", pair[0], pair[1]]);
         assert!(!out.status.success(), "{pair:?} accepted");

@@ -165,6 +165,7 @@ impl Fallback {
                 week_all: Some(w("all models", 44.0)),
                 week_models: Vec::new(),
                 session_limit: true,
+                observed_at: None,
             },
             error: None,
             raw: None,

@@ -76,11 +76,20 @@ pub fn open_private_nofollow(path: &Path) -> io::Result<fs::File> {
             e
         }
     })?;
-    let meta = file.metadata()?;
+    check_private_file(&file.metadata()?)?;
+    Ok(file)
+}
+
+/// The rule [`open_private_nofollow`] applies to an opened file: a regular
+/// file owned by the current user with exactly one hard link and no group
+/// or other mode bits. Anything else is an `InvalidData` error. Readers of
+/// a file that writers open with [`open_private_nofollow`] use it so that
+/// both sides accept the same files.
+pub fn check_private_file(meta: &fs::Metadata) -> io::Result<()> {
     if !meta.is_file() {
         return Err(invalid("is not a regular file"));
     }
-    if !owned_by_euid(&meta) {
+    if !owned_by_euid(meta) {
         return Err(invalid("is owned by another user"));
     }
     if meta.nlink() != 1 {
@@ -89,7 +98,7 @@ pub fn open_private_nofollow(path: &Path) -> io::Result<fs::File> {
     if meta.mode() & 0o077 != 0 {
         return Err(invalid("is not private (owner-only mode 0600)"));
     }
-    Ok(file)
+    Ok(())
 }
 
 pub fn invalid(msg: &str) -> io::Error {
