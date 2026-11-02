@@ -158,6 +158,29 @@ fn project_cannot_raise_above_the_default_either() {
     assert_eq!(e.entry("orchestrator.max_depth").origin, Origin::Default);
 }
 
+/// Issue #1801: 21600 is a default a project cannot raise, not a ceiling.
+#[test]
+fn a_project_cannot_raise_the_usage_limit_wait_above_its_default() {
+    let fx = Fx::new();
+    fx.project("[recipe]\nusage_limit_max_wait_secs = 86400\n");
+    let e = fx.load(&[]);
+    assert_eq!(
+        e.entry("recipe.usage_limit_max_wait_secs").value,
+        Some(Value::Int(21_600))
+    );
+}
+
+#[test]
+fn a_project_can_lower_the_usage_limit_wait() {
+    let fx = Fx::new();
+    fx.project("[recipe]\nusage_limit_max_wait_secs = 600\n");
+    let e = fx.load(&[]);
+    assert_eq!(
+        e.entry("recipe.usage_limit_max_wait_secs").value,
+        Some(Value::Int(600))
+    );
+}
+
 #[test]
 fn user_only_keys_in_a_project_file_are_ignored() {
     let fx = Fx::new();

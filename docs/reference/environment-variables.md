@@ -452,7 +452,7 @@ amplihack recipe run recipe.yaml
 
 **Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
 
-**Usage-limit wait:** a Claude agent step that waits for a usage-limit reset ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner. See [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
+**Usage-limit wait:** a Claude agent step that waits on a usage limit, for a reset or for another login with capacity, ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner. See [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
 
 ---
 
@@ -975,8 +975,11 @@ backend configuration reference.
 
 Turns the usage-limit wait on or off: a recipe agent step that fails on a
 Claude usage limit waits for the reset, or for a login with capacity, and
-runs once more instead of ending the run. A spend limit with no reset, a
-reset more than five hours away or an unreadable reset is not waited for. Overrides the
+runs once more instead of ending the run. A reset more than five hours away
+or an unreadable reset is waited out only by a
+[capacity wait](./profile-command.md#capacity-wait), when another login
+could take over. A spend limit is never waited for unless it also states a
+session reset. Overrides the
 config files; empty means unset; an invalid value prints one warning and is
 ignored. See the
 [usage-limit wait reference](./profile-command.md#usage-limit-wait).
@@ -986,14 +989,18 @@ ignored. See the
 ### AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS
 
 **Type:** string (non-negative integer, seconds)
-**Default:** unset (the reported reset plus 120 seconds)
-**Config key:** `recipe.usage_limit_max_wait_secs` in `config.toml`
+**Default:** `21600` (six hours)
+**Config key:** [`recipe.usage_limit_max_wait_secs`](./user-config.md#recipeusage_limit_wait) in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
-Upper bound on one usage-limit wait. It only shortens the wait; `0` means
-no wait but one more attempt. No wait lasts longer than five hours and 120
-seconds. Overrides the config file; empty means unset; an invalid value
-prints one warning and is ignored.
+Upper bound on one usage-limit wait. For a wait on a reset it only shortens
+the wait, and `0` means no wait but one more attempt; such a wait never
+lasts longer than five hours and 120 seconds. For a
+[capacity wait](./profile-command.md#capacity-wait) on a weekly or
+unreadable reset it sets the length of the wait, with no five-hour ceiling
+(the wait still ends sooner at the failed login's own reset plus 120 s), and `0` means the step ends at once as a usage limit. The variable may set a
+value above the default. Overrides the config files; empty means unset; an
+invalid value prints one warning, naming the variable only, and is ignored.
 
 ---
 

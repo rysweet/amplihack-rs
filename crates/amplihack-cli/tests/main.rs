@@ -208,6 +208,10 @@ mod issue_1760_fakes;
 mod issue_1760_fixture;
 #[path = "issue_1760_fixture_files.rs"]
 mod issue_1760_fixture_files;
+#[path = "issue_1801_capacity_wait.rs"]
+mod issue_1801_capacity_wait;
+#[path = "issue_1801_evaluator_retry.rs"]
+mod issue_1801_evaluator_retry;
 #[path = "issue_1802_auto_drive_light_eligibility.rs"]
 mod issue_1802_auto_drive_light_eligibility;
 #[path = "issue_1802_auto_drive_light_recipe.rs"]
