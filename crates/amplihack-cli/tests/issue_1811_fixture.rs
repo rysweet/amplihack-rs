@@ -160,6 +160,23 @@ impl Fixture {
         self.root.join(".auto-switch.d").join("usage.json")
     }
 
+    /// Writes a live slot held by this test process, which is an ancestor
+    /// of every `amplihack` the fixture starts, so `AMPLIHACK_GOVERNOR_PARENT`
+    /// naming `tree` nests a start under it. `start` is what holds the slot:
+    /// `agent` for an interactive session, `recipe` for a running recipe.
+    pub fn parent_slot(&self, tree: &str, start: &str) {
+        fs::create_dir_all(self.gov()).unwrap();
+        fs::set_permissions(self.gov(), fs::Permissions::from_mode(0o700)).unwrap();
+        let state = serde_json::json!({
+            "version": 1, "limit": 4, "last_evaluated_at": now(), "next_seq": 1,
+            "slots": [{"pid": std::process::id(), "start_time": null, "workstream": "ws-session",
+                       "class": "ordinary", "tree_id": tree, "admitted_at": now() - 60,
+                       "nested_children": 0, "start": start}],
+            "admissions": [], "fail_open": null
+        });
+        private(&self.gov().join("state.json"), &state.to_string());
+    }
+
     pub fn gov(&self) -> PathBuf {
         self.root.join(".governor.d")
     }

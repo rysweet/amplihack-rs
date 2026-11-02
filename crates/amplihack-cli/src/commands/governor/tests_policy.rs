@@ -136,10 +136,13 @@ fn step2_denies_at_once_when_the_wait_is_zero() {
     );
 }
 
+/// Every class, top-level or nested under a session's slot. A start inside
+/// a running recipe is left to the usage-limit supervisor instead: see
+/// `inside_a_recipe_exhausted_limits_are_left_to_the_supervisor`.
 #[test]
-fn step2_holds_every_class_and_nested_requests() {
+fn step2_holds_every_class_and_session_nested_requests() {
     for class in CLASSES {
-        for parent in [None, Some(Start::Agent), Some(Start::Recipe)] {
+        for parent in [None, Some(Start::Agent)] {
             let mut i = inputs(vec![weekly_only("alpha", true, 100.0)], class);
             i.request.parent = parent;
             let d = decide(&i, NOW);

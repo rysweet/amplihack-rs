@@ -4,7 +4,7 @@
 //! 1. No eligible reading: admit (`no-readings`).
 //! 2. Every eligible profile weekly-exhausted: wait for the earliest weekly
 //!    reset, or deny when it falls after the deadline (`weekly-exhausted`).
-//!    This is the only step that denies.
+//!    This is the only step that denies. Not applied inside a recipe.
 //! 3. No profile with session room: wait for the earliest session reset
 //!    (`session-exhausted`).
 //! 4. Ordinary work and no profile above the reserve: wait (`reserve`).
@@ -12,9 +12,12 @@
 //! 6. An earlier request in the fair queue: wait (`queue`).
 //! 7. Admit (`room`, or `nested` for a nested request).
 //!
-//! A nested request skips steps 5 and 6. Only a request inside a running
-//! `recipe run` (its parent slot is a recipe's) also skips step 4; one under
-//! an interactive session's slot is new work and is held at the reserve.
+//! A nested request skips steps 5 and 6. A request inside a running
+//! `recipe run` (its parent slot is a recipe's, or it carries the run's
+//! recipe marker) skips steps 2 to 6: the usage-limit supervisor owns the
+//! wait for a limit that is already exhausted, and the reserve does not
+//! abandon a run part-way through. One under an interactive session's slot
+//! is new work and is held by steps 2 to 4 like a top-level request.
 //!
 //! Rate feedback runs first, at most once per evaluation interval, and sets
 //! the limit step 5 uses. Profiles are sorted before use, so the order of
@@ -81,6 +84,26 @@ pub fn decide(i: &Inputs, now: i64) -> Decision {
         );
     }
 
+    // A start inside a running recipe (an agent step, or a sub-recipe) is
+    // part of work that was already admitted, so steps 2 to 4 do not hold
+    // it. An exhausted limit is left to the usage-limit supervisor (#1618,
+    // #1801): the step runs, the provider prints its own limit message with
+    // the reset, and the supervisor waits for that reset (up to five hours)
+    // or for another login with capacity, then reruns the step. Holding the
+    // step here would replace that wait with the governor's (ten minutes by
+    // default) and end the run with exit 80. The reserve (step 4) does not
+    // hold it either: that would abandon the recipe part-way through and
+    // waste the points it has already spent. A nested start under an
+    // interactive session's slot is not exempt: the session can start new
+    // recipe runs for as long as it stays open, and those are new work.
+    if i.request.inside_recipe() {
+        return made(
+            DecisionKind::Admit,
+            ReasonCode::Nested,
+            "admitted under the slot of the running recipe".into(),
+        );
+    }
+
     // Step 2.
     let open: Vec<&Budget> = pool
         .iter()
@@ -123,22 +146,6 @@ pub fn decide(i: &Inputs, now: i64) -> Decision {
         let mut d = made(DecisionKind::Wait, ReasonCode::SessionExhausted, message);
         d.retry_after = reset;
         return d;
-    }
-
-    // A start inside a running recipe (an agent step, or a sub-recipe) is
-    // part of work that was already admitted. It is held by weekly and
-    // session exhaustion (steps 2 and 3), where it would fail against the
-    // provider's limit anyway, but not by the reserve: holding it there
-    // would abandon the recipe part-way through and waste the points it has
-    // already spent. A nested start under an interactive session's slot is
-    // not exempt: the session can start new recipe runs for as long as it
-    // stays open, and those would spend the protected reserve.
-    if i.request.inside_recipe() {
-        return made(
-            DecisionKind::Admit,
-            ReasonCode::Nested,
-            "admitted under the slot of the running recipe".into(),
-        );
     }
 
     // Step 4.

@@ -6,31 +6,10 @@
 
 #![cfg(unix)]
 
-use crate::issue_1811_fixture::{Fixture, describe, now, text};
+use crate::issue_1811_fixture::{Fixture, describe, text};
 use std::fs;
 
 const DENIED: i32 = 80;
-
-/// Writes a live slot held by this test process, which is an ancestor of
-/// every `amplihack` the fixture starts, so `AMPLIHACK_GOVERNOR_PARENT`
-/// naming `tree` nests a start under it. `start` is what holds the slot:
-/// `agent` for an interactive session, `recipe` for a running recipe.
-#[cfg(target_os = "linux")]
-fn parent_slot(f: &Fixture, tree: &str, start: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    fs::create_dir_all(f.gov()).unwrap();
-    fs::set_permissions(f.gov(), fs::Permissions::from_mode(0o700)).unwrap();
-    let state = serde_json::json!({
-        "version": 1, "limit": 4, "last_evaluated_at": now(), "next_seq": 1,
-        "slots": [{"pid": std::process::id(), "start_time": null, "workstream": "ws-session",
-                   "class": "ordinary", "tree_id": tree, "admitted_at": now() - 60,
-                   "nested_children": 0, "start": start}],
-        "admissions": [], "fail_open": null
-    });
-    let path = f.gov().join("state.json");
-    fs::write(&path, state.to_string()).unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-}
 
 /// Crusty round 3 on #1831: an interactive session admitted above the
 /// reserve must not keep starting ordinary `recipe run`s once the weekly
@@ -41,7 +20,7 @@ fn parent_slot(f: &Fixture, tree: &str, start: &str) {
 fn recipe_run_under_a_session_below_the_reserve_waits_at_the_reserve() {
     let f = Fixture::new();
     f.readings(&[("alpha", 10.0, 95.0), ("beta", 10.0, 95.0)]);
-    parent_slot(&f, "t-session", "agent");
+    f.parent_slot("t-session", "agent");
     let recipe = f.recipe_path();
     let out = f
         .cmd(&["recipe", "run"])
@@ -71,7 +50,7 @@ fn recipe_run_under_a_session_below_the_reserve_waits_at_the_reserve() {
 fn recipe_run_under_a_running_recipe_below_the_reserve_finishes() {
     let f = Fixture::new();
     f.readings(&[("alpha", 10.0, 95.0), ("beta", 10.0, 95.0)]);
-    parent_slot(&f, "t-recipe", "recipe");
+    f.parent_slot("t-recipe", "recipe");
     let recipe = f.recipe_path();
     let out = f
         .cmd(&["recipe", "run"])
@@ -100,7 +79,7 @@ fn agent_steps_of_a_recipe_nested_under_a_session_finish_below_the_reserve() {
     let low = f.records.join("low-usage.json");
     fs::copy(f.usage_path(), &low).unwrap();
     f.readings(&[("alpha", 10.0, 50.0), ("beta", 10.0, 50.0)]);
-    parent_slot(&f, "t-session", "agent");
+    f.parent_slot("t-session", "agent");
     let recipe = f.recipe_path();
     let out = f
         .cmd(&["recipe", "run"])
@@ -139,7 +118,7 @@ fn agent_steps_of_a_recipe_nested_under_a_session_finish_below_the_reserve() {
 fn a_leaked_recipe_marker_does_not_exempt_a_session_start_from_the_reserve() {
     let f = Fixture::new();
     f.readings(&[("alpha", 10.0, 95.0), ("beta", 10.0, 95.0)]);
-    parent_slot(&f, "t-session", "agent");
+    f.parent_slot("t-session", "agent");
     let mut other = std::process::Command::new("sleep")
         .arg("60")
         .spawn()

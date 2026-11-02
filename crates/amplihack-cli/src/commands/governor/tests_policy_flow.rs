@@ -211,18 +211,53 @@ fn nested_skips_concurrency_and_queue() {
     }
 }
 
+/// Crusty round 5 on #1831: a start inside a running recipe is not held by
+/// weekly or session exhaustion. The usage-limit supervisor (#1618, #1801)
+/// owns that wait; a governor hold would replace it with a ten-minute
+/// timeout and exit 80. A start under an interactive session's slot, and a
+/// top-level start, are still held.
 #[test]
-fn nested_is_still_held_by_session_exhaustion() {
-    let mut i = inputs(
-        vec![budget("alpha", true, 100.0, 50.0)],
-        Class::Coordination,
-    );
-    i.request.parent = Some(Start::Recipe);
-    check(
-        &decide(&i, NOW),
-        DecisionKind::Wait,
-        ReasonCode::SessionExhausted,
-    );
+fn inside_a_recipe_exhausted_limits_are_left_to_the_supervisor() {
+    let session_out = || {
+        vec![
+            budget("alpha", true, 100.0, 50.0),
+            budget("beta", false, 100.0, 60.0),
+        ]
+    };
+    let weekly_out = || {
+        vec![
+            budget("alpha", true, 0.0, 100.0),
+            weekly_only("beta", false, 100.0),
+        ]
+    };
+    for start in [Start::Agent, Start::Recipe] {
+        for class in [Class::Coordination, Class::Ordinary] {
+            for pool in [session_out(), weekly_out()] {
+                let mut i = inputs(pool, class);
+                i.request.start = start;
+                i.request.parent = Some(Start::Recipe);
+                i.request.deadline = NOW;
+                check(&decide(&i, NOW), DecisionKind::Admit, ReasonCode::Nested);
+            }
+        }
+    }
+    for parent in [None, Some(Start::Agent)] {
+        let mut i = inputs(session_out(), Class::Coordination);
+        i.request.parent = parent;
+        check(
+            &decide(&i, NOW),
+            DecisionKind::Wait,
+            ReasonCode::SessionExhausted,
+        );
+        let mut i = inputs(weekly_out(), Class::Coordination);
+        i.request.parent = parent;
+        i.request.deadline = NOW;
+        check(
+            &decide(&i, NOW),
+            DecisionKind::Deny,
+            ReasonCode::WeeklyExhausted,
+        );
+    }
 }
 
 #[test]

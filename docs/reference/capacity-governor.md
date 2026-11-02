@@ -138,14 +138,17 @@ checks run in this order, and the first that applies decides:
 | 7 | Otherwise | Admit (`room`, or `nested` for a nested request) |
 
 A [nested](#nesting) request skips steps 5 and 6. Only a request inside a
-running `recipe run` also skips step 4: one under the run's slot, or one
-under an interactive session's slot that carries the run's recipe marker
-because the run is itself nested under that session. Any other request
-nested under a session's slot is held at the reserve like a top-level start.
-Steps 1 to 3 apply to every request.
+running `recipe run` also skips steps 2 to 4: one under the run's slot, or
+one under an interactive session's slot that carries the run's recipe
+marker because the run is itself nested under that session. It is admitted
+right after step 1, and an exhausted limit is left to the usage-limit
+supervisor (see
+[Exhausted limits inside a recipe](#exhausted-limits-inside-a-recipe)). Any
+other request nested under a session's slot is held by steps 2 to 4 like a
+top-level start.
 
-The decision function denies only at step 2, and only when at least one
-profile has a reading. Separately, the admission loop ends any wait that runs
+The decision function denies only at step 2, only when at least one
+profile has a reading, and never for a request inside a running recipe. Separately, the admission loop ends any wait that runs
 out, whatever its reason, and the command exits with 80 and the reason
 `wait-expired`; see [Waiting, denial and exit code 80](#waiting-denial-and-exit-code-80).
 No fault inside the governor can deny a start; see
@@ -237,7 +240,9 @@ interactive session is new work and is held at the reserve.
 
 The reserve is a scheduling preference, not a guarantee: a class can be set
 by any parent process. A session-exhausted pool (step 3) makes every class
-wait, because a session window cannot be borrowed from.
+wait, because a session window cannot be borrowed from. A start inside a
+running recipe is the exception: the usage-limit supervisor waits for it
+instead (see [Exhausted limits inside a recipe](#exhausted-limits-inside-a-recipe)).
 
 ### How the class is chosen
 
@@ -403,12 +408,12 @@ A nested launch:
 
 - takes no new slot, and runs under its parent's slot;
 - is not limited by the concurrency limit or the queue (steps 5 and 6);
-- is not limited by the reserve (step 4) only when it is inside a running
-  recipe: its parent slot is a `recipe run`'s, or the recipe marker names a
+- is not held by weekly exhaustion (step 2), session exhaustion (step 3)
+  or the reserve (step 4) only when it is inside a running recipe: its
+  parent slot is a `recipe run`'s, or the recipe marker names a
   `recipe run` between it and its parent slot. Otherwise, under an `agent`
-  slot, it waits at the reserve unless its class is protected;
-- is still held by weekly exhaustion (step 2) and session exhaustion
-  (step 3);
+  slot, steps 2 and 3 hold it, and it waits at the reserve unless its class
+  is protected;
 - is counted in the parent slot's `nested_children` in status.
 
 A top-level `recipe run` usually starts without `AMPLIHACK_TREE_ID`. Before
@@ -453,11 +458,33 @@ at the reserve. Without this rule a session admitted at 60% weekly use could
 spend the whole reserve, and the reserve would gate only the start of
 sessions and detached runs.
 
-Because a nested launch can still wait on weekly or session exhaustion, an
-agent step inside a running recipe can wait for up to the wait time, and
-exits 80 in the middle of the run if that wait expires. An agent step
-started while either limit is exhausted would fail against that limit
-anyway, so the governor does not exempt nested launches from steps 2 and 3.
+### Exhausted limits inside a recipe
+
+A start inside a running recipe is not held by weekly or session
+exhaustion either. The usage-limit supervisor owns that wait
+([usage-limit wait](profile-command.md#usage-limit-wait), issues #1618 and
+#1801), and the governor leaves it to the supervisor rather than running a
+second, shorter wait of its own. The agent step starts, the provider prints
+its own limit message with the reset, and the supervisor waits for that
+reset (up to five hours) or for any login with capacity (up to
+`recipe.usage_limit_max_wait_secs`), then runs the step again. If the
+governor held the step instead, it would wait only `governor.wait_secs`
+(10 minutes by default) and then exit 80. The supervisor does not read the
+governor's exit 80 line as a usage limit, so the run would fail where the
+supervisor would have waited and carried on.
+
+The supervisor's own rules apply unchanged: with every login at its weekly
+limit and the reset more than five hours away, it does not wait, and the
+step fails with the provider's exit code. A start of its own, or one under
+an interactive session's slot, is still held by steps 2 and 3, because no
+supervisor stands behind it.
+
+The tests `crates/amplihack-cli/tests/issue_1811_limits.rs` run a recipe
+nested under a running recipe's slot through the real binary with the
+governor on: one with every login session-exhausted, where the step waits
+for the reset and the recipe finishes, and one with every login
+weekly-exhausted, where the step runs once and fails with the provider's
+exit code, never exit 80.
 
 ## Waiting, denial and exit code 80
 
