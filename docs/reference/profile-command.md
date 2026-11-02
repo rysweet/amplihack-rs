@@ -6786,11 +6786,20 @@ match it. With no live profile known, `~/.claude` is not judged.
 | Pair | Records | Form | `<wrong>` |
 |------|---------|------|-----------|
 | two profiles | exactly one is mismatched (the other matches its record or has none) | profile | the mismatched profile, whether it is `<a>` or `<b>` |
-| two profiles | neither is mismatched, both are, or neither has a record | cannot tell | none |
+| two profiles | one matches its record and the other has none | profile | the profile without a record, whether it is `<a>` or `<b>` |
+| two profiles | both match their records, both are mismatched, or neither has a record | cannot tell | none |
 | `~/.claude` and a profile | `~/.claude` is mismatched; the profile matches its record or has none | `~/.claude` | none; the `/login` fix |
 | `~/.claude` and a profile | the profile is mismatched; `~/.claude` matches `<live>`'s record or is not judged | profile | the profile |
 | `~/.claude` and a profile | the profile has no record; `~/.claude` matches `<live>`'s record, or no live profile is known | profile | the profile |
 | `~/.claude` and a profile | the profile matches its record, both are mismatched, or a live profile is known and neither has a record | cannot tell | none |
+
+Since `profile login` refuses a login another profile already holds, a
+holder whose account matches its record is taken as the rightful one, and
+a holder of the same account without a record is named as the duplicate;
+the rule is the same for two profiles and for `~/.claude`, whose record is
+`<live>`'s. `~/.claude` is not named when only the profile has a record,
+because the `~/.claude` form states that it is not `<live>`'s recorded
+account, which is unknown then.
 
 A profile that matches its record is never named. This keeps the warning in
 step with the rotator: when the login in `~/.claude` is not `<live>`'s

@@ -473,10 +473,17 @@ fn without_records_amplihack_cannot_tell() {
 }
 
 #[test]
-fn a_matching_profile_paired_with_an_unrecorded_one_cannot_be_told() {
+fn a_matching_profile_paired_with_an_unrecorded_one_names_the_unrecorded_one() {
+    // Issue #1845's own case: after 'ryan-mistt-personal' is logged in
+    // again it has a matching record, and 'bbuck', which a backfill will
+    // not record while another profile holds the account, is named.
     let e = dup_a_c();
     e.record("a", "u-same");
-    assert_eq!(e.warnings(), vec![cannot_tell("a", "c")]);
+    assert_eq!(e.warnings(), vec![names("a", "c", "c")]);
+
+    let e = dup_a_c();
+    e.record("c", "u-same");
+    assert_eq!(e.warnings(), vec![names("a", "c", "a")]);
 }
 
 #[test]
@@ -497,8 +504,8 @@ fn when_both_are_mismatched_amplihack_cannot_tell() {
 
 #[test]
 fn a_damaged_record_counts_as_none() {
+    // Undamaged, c's record would name c; damaged, neither has a record.
     let e = dup_a_c();
-    e.record("a", "u-same");
     e.record("c", "u-c-recorded");
     let file = e.store.root().join(".auto-switch.d/expected/c.json");
     private(&file, "not json");
@@ -525,7 +532,7 @@ fn every_pair_gets_its_own_line_in_pair_order() {
         e.warnings(),
         vec![
             names("a", "b", "b"),
-            cannot_tell("a", "c"),
+            names("a", "c", "c"),
             names("b", "c", "b"),
         ]
     );

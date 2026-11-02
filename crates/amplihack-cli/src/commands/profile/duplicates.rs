@@ -143,15 +143,27 @@ pub(super) fn pairs(list: &[(Holder, Account)]) -> Vec<(Holder, Holder)> {
 /// `~/.claude` is only judged while the live profile is known. Without a
 /// state no record is read.
 ///
-/// In a pair of profiles, the one mismatched profile; `None` when neither
-/// or both are. In a pair `(Home, Profile)`:
+/// `profile login` refuses a login another profile already holds, so when
+/// one holder's account is confirmed by its record, a holder of the same
+/// account without a record is the duplicate. The rule is the same for
+/// both kinds of pair: a backfill can only record a profile's own current
+/// login, so a matching record is trusted alike for a profile and for the
+/// live profile that judges `~/.claude`.
+///
+/// In a pair of profiles, the one mismatched profile; else, when one
+/// matches its record and the other has none, the one without; `None` when
+/// both are mismatched, both match, or neither has a record. In a pair
+/// `(Home, Profile)`:
 /// - the one mismatched holder is named, as for profiles;
 /// - a profile that matches its record is never named, whatever
 ///   `~/.claude` holds;
 /// - a profile without a record is named when `~/.claude` matches the live
 ///   profile's record, or when no live profile is known (then `~/.claude`
 ///   is not a profile's login and only the profile can be logged in again);
-/// - otherwise `None`.
+/// - otherwise `None`. `~/.claude` is not named when only the profile has
+///   a matching record: its warning says `~/.claude` is not `<live>`'s
+///   recorded account, which is unknown while `<live>` has no record or no
+///   live profile is known.
 pub(super) fn wrong<'h>(
     state: Option<&State>,
     list: &[(Holder, Account)],
@@ -171,8 +183,9 @@ pub(super) fn wrong<'h>(
         (Some(true), Some(true)) => None,
         (Some(true), _) => Some(a),
         (_, Some(true)) => Some(b),
-        (_, Some(false)) => None,
-        (Some(false), None) if matches!(a, Holder::Home { .. }) => Some(b),
+        (Some(false), Some(false)) => None,
+        (Some(false), None) => Some(b),
+        (None, Some(false)) if matches!(a, Holder::Profile(_)) => Some(a),
         (None, None) if matches!(a, Holder::Home { live: None }) => Some(b),
         _ => None,
     }
