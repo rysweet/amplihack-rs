@@ -75,6 +75,7 @@ fn report(state: UsageState, session: Option<f64>, week: Option<f64>) -> UsageRe
         week_all: week.map(|u| window("all models", u)),
         week_models: Vec::new(),
         session_limit: true,
+        observed_at: None,
     }
 }
 

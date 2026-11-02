@@ -218,6 +218,8 @@ mod issue_1760_fixture;
 mod issue_1760_fixture_files;
 #[path = "issue_1794_wait.rs"]
 mod issue_1794_wait;
+#[path = "issue_1797_capacity_summary.rs"]
+mod issue_1797_capacity_summary;
 #[path = "issue_1801_capacity_wait.rs"]
 mod issue_1801_capacity_wait;
 #[path = "issue_1801_evaluator_retry.rs"]

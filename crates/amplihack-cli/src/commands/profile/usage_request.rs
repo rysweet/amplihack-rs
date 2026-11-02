@@ -117,6 +117,7 @@ pub(super) fn parse_limits(limits: &Value, now: i64) -> Limits {
         week_all,
         week_models,
         session_limit,
+        observed_at: None,
     })
 }
 
