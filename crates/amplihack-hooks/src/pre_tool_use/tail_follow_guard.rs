@@ -99,7 +99,8 @@ const MAX_INPUT: usize = 64 * 1024;
 /// Most re-parses of embedded scripts for one command line.
 const MAX_REPARSES: usize = 256;
 
-/// Most `setsid` / `stdbuf` / [`shell::WRAPPERS`] rounds in one command.
+/// Most `setsid` / `stdbuf` / `function` / [`shell::WRAPPERS`] rounds in one
+/// command.
 const MAX_UNWRAP: usize = 8;
 
 /// The deny response for a shell tool's input, or `None`.
@@ -247,6 +248,9 @@ fn scan_command(command: &SimpleCommand, depth: usize, budget: &mut usize) -> bo
         match name {
             "setsid" => rest = skip_setsid_options(args),
             "stdbuf" => rest = skip_stdbuf_options(args),
+            // `function f { …; }`: the body follows the name. The shared
+            // tokeniser does not treat `function` as a reserved word.
+            "function" => rest = args.get(1..).unwrap_or_default(),
             "tail" => return tail_follows_device(args),
             _ if SHELLS.contains(&name) => {
                 return scan_shell(args, &command.heredocs, depth, budget);

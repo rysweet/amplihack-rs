@@ -829,7 +829,8 @@ shell tokeniser in `pre_tool_use/shell.rs`:
    removes `timeout`, `nohup`, `env`, `nice`, `exec`, `command`, `time`,
    `sudo` and variable assignments. The guard itself also removes `setsid`
    (with `-w`, `-f`, `-c`) and `stdbuf` (with `-i`, `-o`, `-e` and their
-   values, joined or separate), then calls `program()` again. It repeats this
+   values, joined or separate), and `function NAME` before a function body
+   (`function f { tail -f /dev/null; }`), then calls `program()` again. It repeats this
    up to 8 times, and each round must remove at least one word.
 2. A follow option is set. Options are read as GNU and uutils `tail` read
    them:

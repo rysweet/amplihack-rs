@@ -171,6 +171,14 @@ const DENIED: &[&str] = &[
     "bash -c 'x=$(tail -f /dev/null)'",
     "bash -c \"x=\\$(tail -f /dev/null)\"",
     "echo 'quoted' $(tail -f /dev/null)",
+    // A function body, in both definition forms.
+    "f() { tail -f /dev/null; }; f",
+    "function f { tail -f /dev/null; }",
+    "function f() { tail -f /dev/null; }",
+    "function f\n{\ntail -f /dev/null\n}",
+    // Process substitution, which the shell does not wait for at all.
+    "cat <(tail -f /dev/null)",
+    "echo x > >(timeout 5 tail -f /dev/null)",
 ];
 
 #[test]
@@ -220,6 +228,8 @@ const ALLOWED: &[&str] = &[
     "git commit -m \"never use tail -f /dev/null as a sleep\"",
     "printf '%s\\n' 'timeout 600 tail -f /dev/null'",
     "bash -c 'echo tail -f /dev/null'",
+    "function f { echo tail -f /dev/null; }",
+    "function f",
     // Substitutions that run something else, or that the shell does not run.
     "echo \"$(date)\"",
     "echo `date`",

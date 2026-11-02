@@ -178,6 +178,11 @@ before ending it:
 pgrep -xa tail | grep -F ' -f /dev/null'
 ```
 
+The list also shows the `tail -f /dev/null` entry point of any running
+container, since container processes are visible on the host. Leave those
+running: ending one stops its container. An orphan left by a tool call has
+PID 1 or a user `systemd` as its parent (`ps -o ppid= -p <pid>`).
+
 ## See also
 
 - [Hook specifications: tail-follow guard](../reference/hook-specifications.md#tail-follow-guard)
