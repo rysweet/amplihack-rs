@@ -27,16 +27,16 @@ fn dir(p: &Path, mode: u32) -> PathBuf {
     p.to_path_buf()
 }
 
-/// A temp dir short enough to bind a Unix socket a few levels below it.
-/// A long `$TMPDIR` (a nested workflow run sets one over 100 bytes) would
-/// push the path past `SUN_LEN`, so it falls back to `/tmp`.
+// The shared socket temp-dir helper; the one copy lives with the
+// integration-test support code (see its header for why it is shared by path).
+#[path = "../../../tests/support/socket_tempdir.rs"]
+mod socket_tempdir;
+
+/// The deepest path any test here uses under its temp dir.
+const DEEPEST: &str = "shared/tmux-1000/default";
+
 fn short_tempdir() -> tempfile::TempDir {
-    let base = std::env::temp_dir();
-    if base.as_os_str().len() <= 60 {
-        tempfile::tempdir_in(base).unwrap()
-    } else {
-        tempfile::tempdir_in("/tmp").unwrap()
-    }
+    socket_tempdir::socket_tempdir(DEEPEST)
 }
 
 /// A temp root (0700) and `root/tmux-1000` with `mode`.

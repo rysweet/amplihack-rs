@@ -20,6 +20,7 @@
 #![allow(dead_code)]
 
 use crate::support::amplihack_bin::amplihack_bin;
+use crate::support::socket_tempdir::{SUN_PATH_MAX, socket_tempdir};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -61,25 +62,12 @@ pub struct Fx {
     pub uid: u32,
 }
 
-/// A temp dir whose path leaves room for `tt/tmux-<uid>/default` under the
-/// 107-byte socket limit. A long `$TMPDIR` (a nested workflow run sets one
-/// over 100 bytes) falls back to `/tmp`, so the tests do not depend on the
-/// caller's environment.
-fn short_tempdir() -> tempfile::TempDir {
-    let base = std::env::temp_dir();
-    if base.as_os_str().len() <= 60 {
-        tempfile::tempdir_in(base).unwrap()
-    } else {
-        tempfile::tempdir_in("/tmp").unwrap()
-    }
-}
-
 impl Fx {
     pub fn new() -> Self {
-        let tmp = short_tempdir();
-        let root = tmp.path().canonicalize().unwrap();
         // SAFETY: geteuid has no preconditions.
         let uid = unsafe { libc::geteuid() };
+        let tmp = socket_tempdir(&format!("tt/tmux-{uid}/default"));
+        let root = tmp.path().canonicalize().unwrap();
         let j = |p: &str| root.join(p);
         let fx = Self {
             home: j("home"),
@@ -111,8 +99,8 @@ impl Fx {
             chmod(d, 0o700);
         }
         assert!(
-            fx.socket.as_os_str().len() <= 107,
-            "socket path {} is over 107 bytes; set a shorter TMPDIR",
+            fx.socket.as_os_str().len() <= SUN_PATH_MAX,
+            "socket path {} is over {SUN_PATH_MAX} bytes",
             fx.socket.display()
         );
         fx.make_socket();
@@ -130,8 +118,12 @@ impl Fx {
             .env("PATH", format!("{}:/usr/bin:/bin", self.tools.display()))
             .env("HOME", &self.home)
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
-            // The home guard wants HOME under the child's temp dir, which
-            // `short_tempdir` may have moved away from the caller's `$TMPDIR`.
+            // The home guard wants HOME under the child's temp dir. The
+            // child always gets the canonical parent of `root` as TMPDIR:
+            // `/tmp` when `socket_tempdir` fell back to it, otherwise the
+            // caller's `$TMPDIR` with symlinks resolved. Before the
+            // long-TMPDIR fix the child inherited `$TMPDIR` unchanged; the
+            // only difference in the short case is that canonicalisation.
             .env("TMPDIR", self.root.parent().unwrap())
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.profiles)
             .env("AMPLIHACK_TEST_PROC_ROOT", &self.proc_root)
