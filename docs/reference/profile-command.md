@@ -1073,8 +1073,8 @@ that has only reached its session limit.
 
 The same figures are used in the `live` and `target` parts of a `swap` line
 and in the `live=` part of an `ALERT: no profile has capacity` line. A
-login at its weekly limit therefore shows `s=100%`; that figure does not
-mean a session limit was reached.
+login at its weekly limit with no session window shows `s=100%`; that
+figure does not mean a session limit was reached.
 
 The rotator writes one line to stderr (`rotate.err` for a background
 rotator) for each `timeout` or `error` result, with `~/.claude` as the name

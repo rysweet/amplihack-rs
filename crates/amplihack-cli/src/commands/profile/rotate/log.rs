@@ -207,7 +207,7 @@ pub mod msg {
     }
 
     /// `s=<n>% w=<n>%` with `sep` between, from the windows read (#1844):
-    /// exhausted the reading's figures, `s=100%` if no session (#1846), an
+    /// exhausted shows its stored figures, `s=100%` if no session (#1846); an
     /// unread week `w=?`, failed `failed`, in flight `unknown, still running`.
     pub(in super::super) fn usage(r: &Shown, sep: &str) -> String {
         if r.still_running {
