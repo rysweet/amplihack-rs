@@ -30,7 +30,7 @@ fn live_spare() -> Fx {
 /// `work` and `cred` at their limits, the key with its synthetic reading.
 fn rotator_measured(f: &Fx, spare: R, at: i64) {
     let others = [
-        (n("cred"), R::Exhausted),
+        (n("cred"), R::EXHAUSTED),
         (
             n("work"),
             R::Measured {
@@ -38,7 +38,7 @@ fn rotator_measured(f: &Fx, spare: R, at: i64) {
                 week: 40.0,
             },
         ),
-        (n("console"), R::Exhausted),
+        (n("console"), R::EXHAUSTED),
     ];
     let rec = no_room::of_cycle(
         Some(&n("spare")),
@@ -64,7 +64,7 @@ fn the_rotators_reading_of_its_live_login_is_used() {
     let f = live_spare();
     assert_eq!(pick_without_spare(&f, NOW), None, "no reading: held");
 
-    rotator_measured(&f, R::Exhausted, NOW - 60);
+    rotator_measured(&f, R::EXHAUSTED, NOW - 60);
     assert_eq!(pick_without_spare(&f, NOW).as_deref(), Some("console"));
     assert!(
         f.inputs(&cfg(&["console"]), Some(GATE), NOW)
@@ -97,7 +97,7 @@ fn the_rotators_reading_of_its_live_login_is_used() {
     assert_eq!(pick_without_spare(&f, NOW), None);
 
     // Two cycles later the record no longer holds.
-    rotator_measured(&f, R::Exhausted, NOW - 241);
+    rotator_measured(&f, R::EXHAUSTED, NOW - 241);
     assert_eq!(pick_without_spare(&f, NOW), None);
 }
 
@@ -106,7 +106,7 @@ fn the_rotators_reading_of_its_live_login_is_used() {
 #[test]
 fn a_login_the_rotator_moved_off_stays_measured() {
     let f = fx("enabled=on\noverflow=console\n");
-    rotator_measured(&f, R::Exhausted, NOW - 60);
+    rotator_measured(&f, R::EXHAUSTED, NOW - 60);
     let rs = RotateState::new(&f.root);
     let mut l = rs.load_ledger().unwrap().unwrap();
     l.live = Some("work".into());

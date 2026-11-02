@@ -1038,7 +1038,7 @@ result is a reading: the account answered, and a window is at 100% or more.
 |--------|-----------------------|----------|--------------------|------------------|------------|
 | `timeout` | state `timeout`, `-` in every percentage and reset | `"state": "timeout"`, `session`, `week_all` and `error` `null`, `week_models` empty | `<name>:failed` | Unknown: never a target, never counted as exhausted; a plan candidate in this state blocks a move onto [overflow](#overflow-decision) | Next run or cycle; no failed result is kept |
 | `error` | state `error`, `-` in every percentage and reset; reason on stderr | `"state": "error"`, `session` and `week_all` `null`, `week_models` empty, reason in `error` | `<name>:failed` | As for `timeout`, `profile directory refused` included (see [Overflow decision](#overflow-decision)) | As for `timeout` |
-| `session_exhausted`, `weekly_exhausted` | the percentages read | the windows read | `<name>:s=<n>%,w=<n>%` from the windows read, with `s=100%` at least for `session_exhausted`, for example `<name>:s=100%,w=55%` | Headroom `0`: never a target | Next run or cycle |
+| `session_exhausted`, `weekly_exhausted` | the percentages read | the windows read | `<name>:s=<n>%,w=<n>%`, the windows read; see [Exhausted figures](#rotate-exhausted-figures) | Headroom `0`: never a target | Next run or cycle |
 | Still running (rotator only) | - | - | `<name>:unknown, still running` | As for `timeout` | Its result is used by the next cycle; see [Reads that outlast a cycle](#reads-that-outlast-a-cycle) |
 
 `spend_limit`, `not_logged_in` and `unparsed` are also shown as
@@ -1049,6 +1049,35 @@ keep the rotator off credits for good. A failed live probe is handled as in
 [Failed live probes](#rotate-failed-live-probes). Neither `profile usage` nor
 the rotator records a `timeout` or `error` result as an auto-switch
 [reading](#readings), or as exhausted anywhere.
+
+<a id="rotate-exhausted-figures"></a>
+
+#### Exhausted figures
+
+An exhausted reading keeps both windows the probe read. The rotator does not
+use them to decide: an exhausted profile has headroom `0` and is never a
+target, whatever the figures are. They are kept so that the rotate log, and
+anything that reads weekly room from it, sees the weekly use read for a login
+that has only reached its session limit.
+
+| Window | Shown as |
+|--------|----------|
+| The session | The value read, rounded down; for `session_exhausted` never below `100%`. A missing window shows `100%` for `session_exhausted`, the window that ran out, and `0%` for `weekly_exhausted`, as in the [decision rule](#rotate-decision-rule), so a login with [no session limit](#no-session-limit) shows `s=0%` whether or not its week has run out. |
+| The all-models week | The value read, rounded down; for `weekly_exhausted` never below `100%`. A missing window shows `w=?` for `session_exhausted` and `100%` for `weekly_exhausted`. |
+
+| Probe result | Session read | Week read | Cycle line |
+|--------------|--------------|-----------|------------|
+| `session_exhausted` | 100% | 62% | `<name>:s=100%,w=62%` |
+| `session_exhausted` | 100% | none | `<name>:s=100%,w=?` |
+| `weekly_exhausted` | 30% | 99.6% | `<name>:s=30%,w=100%` |
+| `weekly_exhausted`, [no session limit](#no-session-limit) | none | 100% | `<name>:s=0%,w=100%` |
+| `session_exhausted` | 98% | 40% | `<name>:s=100%,w=40%` |
+
+The same figures are used in the `live` and `target` parts of a `swap` line
+and in the `live=` part of an `ALERT: no profile has capacity` line. A
+login at its weekly limit with no session window shows `s=0%`, the same
+figure it shows before the week runs out; `s=100%` always means a session
+limit was reached.
 
 The rotator writes one line to stderr (`rotate.err` for a background
 rotator) for each `timeout` or `error` result, with `~/.claude` as the name
@@ -3796,6 +3825,9 @@ section defines its behaviour. It is separate from [auto-switch](#auto-switch),
 which swaps logins inside profiled sessions, but shares its toggle, its
 exclusion list and its state lock.
 
+The rotator also runs a [daily session archive](#rotate-daily-session-archive)
+that moves old session logs out of `~/.claude/projects`.
+
 ### Rotate commands
 
 ```
@@ -5480,6 +5512,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | `rotate.err` | The background process's own stdout and stderr, and one line from each launch that [started](#rotate-autostart) a rotator or failed to. Not rotated. |
 | `autostart` | The [autostart](#rotate-autostart) setting: `on` or `off` and a newline. Missing means on. |
 | `pin` | The [rotation pin](#rotate-pin): one profile name and a newline. Written by `profile switch <name>`, removed by `profile switch --none`. Not part of the ledger. |
+| `sessions-archive.last` | When the [daily session archive](#rotate-daily-session-archive) last started: epoch seconds and a newline. Written atomically before each run; removed when a run stops early after archiving something, so the next pass carries on. |
 | `owner` | The [owner marker](#rotate-owner): `unit=`, `pid=` and `since=` lines. Written by a supervised `rotate watch`, removed only by `rotate owner clear`. Not part of the ledger. |
 
 The auto-switch `ledger.json` and `journal.json` one level up are separate
@@ -5565,7 +5598,7 @@ stdout only, without the time.
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. A `session_exhausted` profile shows at least `s=100%`, and its weekly figure as reported, for example `team:s=100%,w=55%`. `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
 | `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, and one still running shows `live unknown, still running`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
@@ -5577,7 +5610,7 @@ stdout only, without the time.
 | `ALERT: overflow profile <name> hit its spend limit; not blocked (too many blocks\|no end time)` | A spend-limit reading that could not be stored as a block: the ledger already holds 256 active blocks, or the cycle's time is outside the range for which the next month can be computed. The profile is still not used in that cycle; the ledger is left as it was, so it still loads. |
 | `stay: live probe failed (<k>/3)` | The live probe failed for the `k`th cycle in a row; no swap yet. |
 | `stay: live probe failed; held after last swap (<N>s left)` | The live probe has failed three or more times in a row, but the last swap was less than `--hold` seconds ago. |
-| `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` / `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)` | A threshold is reached and no candidate meets the margin. The suffix is added only when `F + E > 0`: `F` candidates had a failed probe and `E` were exhausted. When every candidate failed, the probes are at fault rather than the accounts. The suffix holds no profile names, and the ALERT key stays `no-capacity`, so a change in the counts does not repeat the ALERT. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`, without the `ALERT: ` prefix, and with the same rule for the suffix. |
+| `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` / `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)` | A threshold is reached and no candidate meets the margin. The suffix is added only when `F + E > 0`: `F` candidates had a failed probe and `E` were exhausted, whatever figures each exhausted candidate read. When every candidate failed, the probes are at fault rather than the accounts. The suffix holds no profile names, and the ALERT key stays `no-capacity`, so a change in the counts does not repeat the ALERT. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`, without the `ALERT: ` prefix, and with the same rule for the suffix. |
 | `ALERT: no login in ~/.claude; no swap` | `~/.claude/.credentials.json` is missing or not a regular file. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); <finding>; no swap` | Hand change that [hand-change recovery](#rotate-hand-change-recovery) could not resolve. Followed by its `fix <n>: <command>` lines. Written every cycle. |
 | `fix <n>: <command>` | A step of the guidance above, in order. |
@@ -5607,6 +5640,10 @@ stdout only, without the time.
 | ``skip: held by switch to <name>; run `amplihack profile switch --none` to release`` | The [pin](#rotate-pin) holds rotation; the cycle neither measured nor swapped. |
 | ``skip: pin unreadable; run `amplihack profile switch --none` `` | The pin file cannot be trusted or parsed; the cycle holds. |
 | `skip: pin names missing profile <name>; ignored` | The pin names a removed profile; the cycle runs normally. |
+| `sessions archive: <summary>` | The [daily session archive](#rotate-daily-session-archive) ran; `<summary>` is the [`sessions archive` summary line](./sessions-command.md#output), followed by the reason if the run stopped early (the 60-second limit, `rotate stop` or a signal). |
+| `sessions archive: cannot read sessions.daily_archive (<why>); not run` | The user config file cannot be used to decide whether the daily run is on, so it does not run; see [turning the daily run off](#turning-the-daily-run-off). |
+| `sessions archive: cannot read <key> (<why>); not run` | `<key>` is `sessions.archive_days` or `sessions.archive_dest`, and the user config file cannot give it a value, so the run does not fall back to the default; see [`sessions` configuration](./sessions-command.md#configuration). |
+| `sessions archive: <error>` | The daily session archive did not run, or stopped; `<error>` is one of the [`sessions` messages](./sessions-command.md#messages) or the lock line. |
 | `switch <from>-><to>` | A swap made by [`profile switch`](#rotate-switch). It has no readings, because `switch` measures nothing, and it does not start with `swap `, so a search for rotator swaps does not match it. |
 | `skip: <name> is already the live login; nothing moved` | `profile switch` found `<name>` already live. |
 | `would swap ...` / `would block <name> (spend limit) until <time>` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would stay (held by switch to <name>)` / `would stay (pin unreadable)` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` / `would recover: <recovered line>` / `would_refuse <name>: <reason>` | `--dry-run` only. `would_refuse` is printed in place of `would swap` when the target is an API-key profile that fails its [login check](#api-key-login-check). |
@@ -6247,6 +6284,113 @@ probe and writes nothing. The ALERT does not change what the cycle does: the
 rotator stays idle, and `idle: auto-switch is off` is still written only once
 per change. Turn auto-switch back on, or switch logins by hand with
 [`profile switch`](#rotate-switch), to act on it.
+
+### Rotate daily session archive
+
+`rotate watch`, including the background rotator, runs
+[`amplihack sessions archive --apply`](./sessions-command.md) at most once a
+day, so old session logs do not build up in `~/.claude/projects`. It is on by
+default, and the config key `sessions.daily_archive` turns it off.
+
+After each pass of the watch loop, before it sleeps, and whether or not the
+rotator is idle or held by a pin, the rotator reads
+`<root>/.auto-switch.d/rotate/sessions-archive.last`. The archive is due when:
+
+- the file is missing, or does not hold a whole number of epoch seconds;
+- 86,400 seconds or more have passed since the time it holds; or
+- the time it holds is in the future, because the clock went back.
+
+When the archive is due, the rotator reads `sessions.daily_archive` from
+`~/.amplihack/config.toml` (see [switching it off](#turning-the-daily-run-off)).
+If the key is `false`, nothing runs and nothing is written. Otherwise the
+rotator writes the current time to the file before the archive starts. A
+crash, a held [lock](./sessions-command.md#lock) or an error therefore waits a
+full day before the next attempt, rather than retrying every cycle. If the
+file cannot be written, the archive does not run and the log gets
+`sessions archive: cannot record the run time (<kind>); not run`.
+
+The archive runs inside the rotator process, with the days and destination
+from the config keys `sessions.archive_days` and `sessions.archive_dest`,
+read from the same file at the same time as the switch, or their defaults
+(3 days, `~/.amplihack/session-archive`). `amplihack sessions archive` and
+`sessions restore` in a shell read the same keys, so `restore` looks in the
+directory the daily run wrote to. If the file cannot give either key a
+value, the archive does not run, the time file is already written, and the
+log gets `sessions archive: cannot read <key> (<why>); not run`. See
+[`sessions` configuration](./sessions-command.md#configuration).
+
+One pass archives for at most 60 seconds, so a large backlog never holds up
+rotation for longer than that. The rotator checks the limit, and its stop
+flag, between sessions, so a pass can run past 60 seconds by the time one
+session takes, and `rotate stop` or a signal ends the run after the session
+in progress. A run that stops early ends its summary line with the reason:
+
+- `; stopped at the 60-second limit; the rest continues at the next pass`
+- `; stopped by rotate stop or a signal; the rest continues at the next pass`
+
+and the rotator removes the time file, so the next pass, after the next
+cycle, carries on where the run stopped. The first run over a backlog of
+thousands of sessions is therefore spread over several passes. If a run
+stops early without archiving any session, the summary ends with
+`; nothing archived, so the next try is a day later` instead, and the time
+file is kept, so sessions that keep failing are not retried on every pass.
+If the file cannot be removed, the log gets
+`sessions archive: cannot remove the run record (<kind>); the rest waits a day`.
+
+Its summary line, or one error line, goes to the [log](#rotate-log) with the
+prefix `sessions archive: `, for example:
+
+```
+2026-10-29T03:15:00Z sessions archive: archived 412 sessions, 0.11 GiB (older than 3 days; 7 live sessions kept; 0 failed)
+```
+
+Each session the archive skips or fails also gets its own line, such as
+`sessions archive: skipped <project>/<id>: symlink`; see the
+[`sessions` messages](./sessions-command.md#messages). No error from the
+archive stops or changes the rotation cycle.
+
+The run moves old logs into the archive directory; it does not delete them.
+Nothing removes archives from that directory, so it keeps growing, at
+roughly a quarter of the rate the session logs grew. See
+[`sessions` disk use](./sessions-command.md#disk-use) for its size, how to
+move it to another disk and how to delete old archives.
+
+#### Turning the daily run off
+
+The switch is the user config key `sessions.daily_archive`:
+
+```
+amplihack config set sessions.daily_archive false
+```
+
+`true`, or no value, means on. The rotator reads the key from
+`~/.amplihack/config.toml` each time a run is due, so the change reaches a
+rotator that is already running, without a restart. Turn the run back on
+with `amplihack config set sessions.daily_archive true`, or remove the key
+with `amplihack config unset sessions.daily_archive`. The key is user-only:
+a project's `.amplihack/config.toml` cannot set it, since it decides whether
+files under `~/.claude/projects` are removed. See
+[user config](./user-config.md).
+
+The switch is a config key, not an environment variable, because the
+background rotator does not inherit the launching shell's
+`AMPLIHACK_ROTATE*` variables (see [Rotate daemon](#rotate-daemon)): a
+variable set where `rotate start` or [autostart](#rotate-autostart) runs
+would never reach it.
+
+Because the run removes files, a config file the rotator cannot use stops
+it rather than counting as on. When the file cannot be read or parsed, the
+key holds a value other than `true` or `false`, or the file is writable by
+group or others, the archive does not run, the time file is written so the
+next try is a day later, and the log gets
+`sessions archive: cannot read sessions.daily_archive (<why>); not run`.
+
+Days and destination are config keys for a related reason. A rotator keeps
+the environment it was started with, and one started by
+[autostart](#rotate-autostart) takes it from whichever launch started it. A
+variable exported later in a shell would therefore reach `sessions restore`
+in that shell but not the rotator, and `restore` would look for the
+session in a different directory from the one the daily run wrote to.
 
 ### Rotate prototype coexistence
 
