@@ -384,17 +384,4 @@ pub mod msg {
             "ALERT: profile {name} has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login {name}"
         )
     }
-
-    /// Hand-change recovery, case A: `m` had no login of its own.
-    pub fn recovered_record(m: &ProfileName, l: &ProfileName) -> String {
-        format!("recovered: ~/.claude holds {m}'s login (ledger named {l}); recorded {m} as live")
-    }
-
-    /// Hand-change recovery, case B: `m`'s own copy was moved to `to`.
-    pub fn recovered_moved(m: &ProfileName, to: &std::path::Path) -> String {
-        format!(
-            "recovered: ~/.claude and {m} held the same account; kept ~/.claude, moved {m}'s copy to {}; recorded {m} as live",
-            to.display()
-        )
-    }
 }

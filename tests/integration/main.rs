@@ -488,3 +488,9 @@ mod journalistic_writing_style_skill;
 // long commands and the how-to links.
 #[path = "issue_1764_git_never_prompts_test.rs"]
 mod issue_1764_git_never_prompts;
+
+// Issue #1771: runs tests/issue_1771_precommit_symlinked_caches.sh, the suite
+// for the symlinked pre-commit cache sweep in scripts/git-hook-cargo.sh, so
+// `cargo test --workspace` covers the shell change as well as CI's lint job.
+#[path = "issue_1771_precommit_symlinked_caches_test.rs"]
+mod issue_1771_precommit_symlinked_caches;
