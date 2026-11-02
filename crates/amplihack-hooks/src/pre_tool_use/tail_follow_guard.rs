@@ -13,8 +13,8 @@
 //! A simple command whose program word is `tail` (after the wrappers that
 //! [`shell::program`] strips, and `setsid` and `stdbuf`, which this module
 //! strips itself) with a follow option (`-f`, `-F`, `--follow`,
-//! `--follow=…`, or `f`/`F` in a short cluster before an option that takes a
-//! value) and an operand that names one of [`DEVICES`] once repeated `/` and
+//! `--follow=…`, a shortened form such as `--f`, `--fo` or `--foll=name`, or
+//! `f`/`F` in a short cluster before an option that takes a value) and an operand that names one of [`DEVICES`] once repeated `/` and
 //! `/./` are collapsed. Options are read anywhere among the operands, as GNU
 //! and uutils `tail` read them, until `--`.
 //!
@@ -36,7 +36,8 @@
 //!
 //! Device paths given by expansion (`$DEV`, `$(…)`, globs), paths with `..`,
 //! symlinks to a device, `xargs`, `find -exec`, `eval`, `env -S`, scripts run
-//! from files and nesting deeper than three shells are not matched.
+//! from files, multi-call wrappers such as `busybox tail` and nesting
+//! deeper than three shells are not matched.
 //!
 //! The guard reads no environment, file or clock, and nothing turns it off.
 
@@ -209,32 +210,45 @@ fn skip_stdbuf_options(args: &[String]) -> &[String] {
 /// script when there is no `-c`.
 fn scan_shell(args: &[String], heredocs: &[String], depth: usize, budget: &mut usize) -> bool {
     let mut has_c = false;
+    let mut has_s = false;
     let mut i = 0;
-    let mut operand = None;
     while let Some(w) = args.get(i) {
         i += 1;
+        if matches!(w.as_str(), "--rcfile" | "--init-file") {
+            // The next word is the file, not a script.
+            i += 1;
+            continue;
+        }
         if w.starts_with("--") {
             // `--norc`, `--login`, or `--` itself.
             continue;
         }
-        if matches!(w.as_str(), "-o" | "+o" | "-O" | "+O") {
-            // `set -o NAME` / `shopt -O NAME`: the next word is the name.
-            i += 1;
-            continue;
-        }
         if (w.starts_with('-') || w.starts_with('+')) && w.chars().count() > 1 {
-            has_c |= w.starts_with('-') && w.chars().skip(1).any(|c| c == 'c');
+            if w.starts_with('-') {
+                has_c |= w.chars().skip(1).any(|c| c == 'c');
+                has_s |= w.chars().skip(1).any(|c| c == 's');
+            }
+            if w.ends_with(['o', 'O']) {
+                // `-o NAME`, `-euo NAME`, `+O NAME`: the next word is the
+                // option name.
+                i += 1;
+            }
             continue;
         }
+        // A word that is not an option is the `-c` operand, a positional
+        // argument after `-s`, or a script file whose standard input is the
+        // heredoc. Options after it are its arguments.
         if has_c {
-            operand = Some(w.as_str());
+            return reparse(w, depth, budget);
         }
-        // A word that is not an option is either the `-c` operand or a
-        // script file; options after it are its arguments.
+        if !has_s {
+            return false;
+        }
         break;
     }
     if has_c {
-        return operand.is_some_and(|script| reparse(script, depth, budget));
+        // `-c` with no operand.
+        return false;
     }
     heredocs.iter().any(|body| reparse(body, depth, budget))
 }
@@ -270,7 +284,9 @@ fn tail_follows_device(args: &[String]) -> bool {
                 Some((name, _)) => (name, true),
                 None => (long, false),
             };
-            if name == "follow" {
+            // `tail` accepts any unique prefix of a long option, and
+            // `follow` is the only one starting with `f`.
+            if !name.is_empty() && "follow".starts_with(name) {
                 follow = true;
             } else if !joined && TAIL_LONG_VALUE_OPTS.contains(&name) {
                 i += 1;

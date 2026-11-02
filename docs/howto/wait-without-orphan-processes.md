@@ -136,7 +136,9 @@ The guard denies a command when all of these hold:
    sees through `timeout`, `nohup`, `env`, `nice`, `exec`, `command`, `time`,
    `sudo`, variable assignments, `setsid` and `stdbuf`.
 2. A follow option is set: `-f`, `-F`, `--follow` or `--follow=name` or
-   `--follow=descriptor`. Short options may be grouped, and are read left to
+   `--follow=descriptor`. Shortened forms such as `--f`, `--fo` and
+   `--foll=name` count too, because `tail` accepts any unique start of a
+   long option name. Short options may be grouped, and are read left to
    right until an option that takes a value (`-n`, `-c`, `-s`), so `-fn0`
    follows and `-n5f` does not. The old form `-5f` also follows.
 3. A file operand is one of these devices, after repeated `/` and `/./` are
@@ -156,7 +158,8 @@ The guard denies a command when all of these hold:
 
 The guard also looks inside the command given to `sh -c`, `bash -c`,
 `bash -lc`, `zsh -c`, `dash -c` and `ksh -c`, and inside a heredoc fed to one
-of those shells, up to three nested shells deep. A fourth nested shell is
+of those shells as its script (not to a script file, as in
+`bash run.sh <<'EOF'`), up to three nested shells deep. A fourth nested shell is
 not checked, and its command is allowed.
 
 Examples of denied commands:
@@ -232,6 +235,7 @@ see:
   or `tail -f /dev/nul*`;
 - `tail` run by `xargs` or `find -exec`;
 - `tail` run by `eval` or `env -S`;
+- `tail` run through a multi-call binary, such as `busybox tail -f /dev/null`;
 - `tail` in a script file run by a later command, such as `bash wait.sh`;
 - a path with `..`, such as `/dev/../dev/null`, or a symbolic link to a
   device;

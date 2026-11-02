@@ -837,6 +837,7 @@ shell tokeniser in `pre_tool_use/shell.rs`:
    | Form | Effect |
    |------|--------|
    | `-f`, `-F`, `--follow`, `--follow=name`, `--follow=descriptor` | Follow |
+   | Any shortened `--follow`, such as `--f`, `--fo`, `--foll=name` | Follow: `tail` accepts any unique start of a long option, and `follow` is its only option starting with `f` |
    | Grouped short options, such as `-fn0`, `-qf` | Read left to right; `f` or `F` before an option that takes a value (`n`, `c`, `s`) follows. `-n5f` does not follow: `5f` is the value of `-n`. |
    | `-` and a digit, such as `-5f` | Old numeric form: a trailing `f` follows |
    | `--lines`, `--bytes`, `--pid`, `--sleep-interval`, `--max-unchanged-stats` | Take the next word as their value, or a value after `=` |
@@ -854,10 +855,13 @@ denied.
 **Nested shells.** When the program word's basename is `sh`, `bash`, `zsh`,
 `dash` or `ksh`, and a flag word (one that starts with `-` but not `--`)
 contains `c`, the guard checks the next operand word as a command of its own,
-skipping `--` and long options. So `bash -c 'tail -f /dev/null'`,
+skipping `--` and long options. The word after `--rcfile` or `--init-file`,
+and after a flag word that ends in `o` or `O` (`-o pipefail`,
+`-euo pipefail`, `+O extglob`), is an option value, not a script. So `bash -c 'tail -f /dev/null'`,
 `bash -lc '…'` and `bash -c -- '…'` are checked. When such a shell has no
-`-c`, each heredoc body given to it is checked in the same way. A heredoc
-given to any other program, such as `cat > Dockerfile <<'EOF'`, is not
+`-c`, each heredoc body given to it is checked in the same way, unless the
+shell is given a script file without `-s` (`bash run.sh <<EOF`), when the
+heredoc is the script's input. A heredoc given to any other program, such as `cat > Dockerfile <<'EOF'`, is not
 checked. `docker`, `podman` and `kubectl` are not unwrapped, so
 `docker run -d alpine tail -f /dev/null`, a container entry point, is
 allowed.
@@ -892,6 +896,8 @@ closed.
 | `setsid -w stdbuf -oL tail -f /dev/null` | denied |
 | `bash -lc 'tail -f /dev/null'` | denied |
 | `bash -c -- 'tail -f /dev/null'` | denied |
+| `tail --fo /dev/null` | denied |
+| `bash -euo pipefail -c 'tail -f /dev/null'` | denied |
 | `bash <<'EOF'`, `tail -f /dev/null`, `EOF` on separate lines | denied |
 | `["bash","-lc","tail -f /dev/null"]` (argv array) | denied |
 | `tail -f build.log` | allowed |
@@ -912,7 +918,7 @@ slicing on input words, and reads grouped short options by character.
 under the tmux guard's **Response** above, with `<M>` set to this fixed
 message:
 
-> Blocked: this command runs `tail -f` or `tail -F` on a device that never ends, such as /dev/null. Used as a wait, the tail can outlive its `timeout` and spin on the host until it is killed (#1794). To wait for a fixed time, run `amplihack wait --seconds N`. To wait for work to finish, run it in the background and wait on its PID (`cmd & pid=$!; wait $pid`). Do not use `tail -f /dev/null` or `timeout N tail …` as a sleep.
+> Blocked: `tail` following a device that never ends (such as `tail -f /dev/null`) must not be used as a way to wait. The tail outlives the tool call and is left running as an orphan process (#1794). To wait for a fixed time, run `amplihack wait --seconds N`. To wait for work to finish, run it in the background and wait on its PID: `cmd & pid=$!; wait $pid`. Do not use `tail -f /dev/null` or `timeout N tail ...` as a sleep.
 
 The message is a constant. Neither the deny nor the one `warn!` log line,
 which cites #1794, includes the command, its operands, the working
@@ -923,6 +929,7 @@ sandbox. It does not see:
 
 - a device given by expansion (`$DEV`, `$(…)`, globs);
 - `tail` run by `xargs`, `find -exec`, `eval` or `env -S`;
+- `tail` run through a multi-call binary, such as `busybox tail`;
 - `tail` in a script file run by a later command;
 - `..` in a device path, or a symbolic link to a device;
 - nesting deeper than three nested shells, input over 64 KiB, or input the

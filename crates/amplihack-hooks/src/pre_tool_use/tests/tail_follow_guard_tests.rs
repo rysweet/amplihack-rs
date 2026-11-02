@@ -54,6 +54,11 @@ const DENIED: &[&str] = &[
     "tail --follow /dev/null",
     "tail --follow=name /dev/null",
     "tail --follow=descriptor /dev/null",
+    // `tail` accepts any unique prefix of a long option.
+    "tail --f /dev/null",
+    "tail --fo /dev/null",
+    "tail --foll=name /dev/null",
+    "timeout 5 tail --fo /dev/zero",
     // Short clusters, read left to right up to an option that takes a value.
     "tail -fn0 /dev/null",
     "tail -qf /dev/null",
@@ -132,6 +137,15 @@ const DENIED: &[&str] = &[
     "bash -c -- 'tail -f /dev/null'",
     "bash -e -c 'tail -f /dev/null'",
     "bash --norc -c 'tail -f /dev/null'",
+    // `-o NAME` alone or ending a cluster: the name is not a script.
+    "bash -o pipefail -c 'tail -f /dev/null'",
+    "bash -euo pipefail -c 'tail -f /dev/null'",
+    "bash +eo pipefail -c 'tail -f /dev/null'",
+    "bash -O extglob -c 'tail -f /dev/null'",
+    "bash -co pipefail 'tail -f /dev/null'",
+    // `--rcfile F` and `--init-file F`: the file is not a script.
+    "bash --rcfile F -c 'tail -f /dev/null'",
+    "bash --init-file F -c 'tail -f /dev/null'",
     "bash -c 'tail -f /dev/null' arg0",
     "sh -c 'tail -f /dev/null'",
     "zsh -c 'tail -f /dev/null'",
@@ -144,6 +158,7 @@ const DENIED: &[&str] = &[
     // A heredoc fed to a shell is executed (D10).
     "bash <<'EOF'\ntail -f /dev/null\nEOF",
     "sh <<EOF\necho hi\ntail -f /dev/null\nEOF",
+    "bash -s arg <<'EOF'\ntail -f /dev/null\nEOF",
 ];
 
 #[test]
@@ -165,6 +180,9 @@ const ALLOWED: &[&str] = &[
     "tail -n 20 /dev/null",
     "tail /dev/null",
     "tail -c 0 /dev/zero",
+    "tail --lines=5 /dev/null",
+    // A shortened `--follow` on a real file.
+    "tail --f app.log",
     // No file operand, or `-` (standard input as a pipe).
     "tail -f",
     "tail -f -",
@@ -215,8 +233,12 @@ const ALLOWED: &[&str] = &[
     "find /dev -name null -exec tail -f {} \\;",
     "eval 'tail -f /dev/null'",
     "env -S 'tail -f /dev/null'",
+    "busybox tail -f /dev/null",
     "bash wait.sh",
     "sh ./wait.sh",
+    // A heredoc fed to a script file is the script's input, not bash's.
+    "bash run.sh <<'EOF'\ntail -f /dev/null\nEOF",
+    "bash -euo pipefail run.sh <<'EOF'\ntail -f /dev/null\nEOF",
     // A shell with no `-c` operand and no heredoc.
     "bash",
     "bash -c",
