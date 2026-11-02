@@ -188,9 +188,13 @@ pub fn cut(s: &str, max: usize) -> String {
     s[..end].to_string()
 }
 
+#[path = "log_shown.rs"]
+mod shown;
+pub use shown::{Shown, shown, shown_of};
+
 /// The message grammar of docs/reference/profile-command.md, Rotate log.
 pub mod msg {
-    use super::{Reading, Reason};
+    use super::{Reading, Reason, Shown};
     use crate::commands::profile::name::ProfileName;
 
     /// A percentage as a whole number, rounded down.
@@ -202,14 +206,23 @@ pub mod msg {
         }
     }
 
-    /// `s=<n>% w=<n>%` with `sep` between; an exhausted login shows as
-    /// 100%, a failed probe as `failed`.
-    pub(in super::super) fn usage(r: &Reading, sep: &str) -> String {
-        match r {
-            Reading::Measured { session, week } => {
-                format!("s={}%{sep}w={}%", pct(*session), pct(*week))
+    /// `s=<n>% w=<n>%` with `sep` between, from the windows read (#1844):
+    /// exhausted shows at least `s=100%`, an unread week `w=?`, a failed
+    /// probe `failed`, and a read still in flight `unknown, still running`.
+    pub(in super::super) fn usage(r: &Shown, sep: &str) -> String {
+        if r.still_running {
+            return "unknown, still running".to_string();
+        }
+        let week = |w: Option<f64>| w.map_or_else(|| "?".to_string(), |w| format!("{}%", pct(w)));
+        match r.reading {
+            Reading::Measured { session, .. } => {
+                let s = r.session.unwrap_or(session);
+                format!("s={}%{sep}w={}", pct(s), week(r.week))
             }
-            Reading::Exhausted => format!("s=100%{sep}w=100%"),
+            Reading::Exhausted => {
+                let s = r.session.map_or(100.0, |s| s.max(100.0));
+                format!("s={}%{sep}w={}", pct(s), week(r.week))
+            }
             Reading::Failed => "failed".to_string(),
         }
     }
@@ -217,8 +230,8 @@ pub mod msg {
     pub fn swap(
         from: &ProfileName,
         to: &ProfileName,
-        live: &Reading,
-        target: &Reading,
+        live: &Shown,
+        target: &Shown,
         reason: Reason,
     ) -> String {
         format!(
@@ -232,8 +245,8 @@ pub mod msg {
     /// Every measured profile, live first; the API-key one as `per-token`.
     pub fn cycle(
         live: Option<&ProfileName>,
-        reading: &Reading,
-        others: &[(ProfileName, Reading)],
+        reading: &Shown,
+        others: &[(ProfileName, Shown)],
         platform: Option<&ProfileName>,
     ) -> String {
         let mut sorted: Vec<_> = others.iter().map(|(n, r)| (Some(n), r)).collect();
@@ -369,19 +382,6 @@ pub mod msg {
     pub fn lost_login_cap(name: &ProfileName) -> String {
         format!(
             "ALERT: profile {name} has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login {name}"
-        )
-    }
-
-    /// Hand-change recovery, case A: `m` had no login of its own.
-    pub fn recovered_record(m: &ProfileName, l: &ProfileName) -> String {
-        format!("recovered: ~/.claude holds {m}'s login (ledger named {l}); recorded {m} as live")
-    }
-
-    /// Hand-change recovery, case B: `m`'s own copy was moved to `to`.
-    pub fn recovered_moved(m: &ProfileName, to: &std::path::Path) -> String {
-        format!(
-            "recovered: ~/.claude and {m} held the same account; kept ~/.claude, moved {m}'s copy to {}; recorded {m} as live",
-            to.display()
         )
     }
 }

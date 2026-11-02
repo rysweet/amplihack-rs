@@ -51,6 +51,7 @@ fn report(state: UsageState, s: Option<f64>, w: Option<f64>) -> UsageReport {
         week_all: w.map(|p| win("all models", p, Some(T + DAY))),
         week_models: Vec::new(),
         session_limit: true,
+        observed_at: None,
     }
 }
 
@@ -69,6 +70,8 @@ fn row(name: &str, rep: UsageReport) -> Row {
         report: rep,
         error: None,
         raw: None,
+        source: None,
+        direct_failure: None,
     }
 }
 
@@ -1035,4 +1038,172 @@ mod file {
         assert_eq!(read_all(&r.root, T), (Vec::new(), refused()));
         assert_eq!(read_recent(&r.root, T, 6 * HOUR), (Vec::new(), refused()));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 5: reading times after #1844, and rows whose direct read
+// failed
+// ---------------------------------------------------------------------------
+
+use super::usage_cmd::ErrorReason;
+use super::usage_history::READING_MAX_AGE;
+use super::usage_source::Source;
+
+/// A row read from a passive reading stored `age` seconds before `T`.
+fn passive(name: &str, s: f64, w: f64, age: i64) -> Row {
+    let mut rep = report(UsageState::Ok, Some(s), Some(w));
+    rep.observed_at = Some(T - age);
+    let mut r = row(name, rep);
+    r.source = Some(Source::Passive);
+    r
+}
+
+#[test]
+fn the_reading_age_limit_is_five_minutes() {
+    // Pinned: the reference says 300 seconds, and that a reading at the
+    // limit is out by under 2% of the 4.5 h the rate needs at least.
+    assert_eq!(READING_MAX_AGE, 300);
+}
+
+#[test]
+fn a_passive_reading_up_to_300_s_old_is_recorded_at_the_cycle_time() {
+    let rows = vec![
+        passive("fresh", 10.0, 20.0, 0),
+        passive("edge", 11.0, 21.0, READING_MAX_AGE),
+        row("direct", report(UsageState::Ok, Some(12.0), Some(22.0))),
+    ];
+    let s = from_rows(T, &rows, None).unwrap();
+    assert!(s.unknown.is_empty(), "{:?}", s.unknown);
+    let e = s.entry(Writer::Usage);
+    assert_eq!(e.at, T, "the line's time is the cycle's");
+    assert_eq!(e.profiles["edge"].w, 21);
+}
+
+#[test]
+fn a_passive_reading_older_than_300_s_is_unknown_and_never_a_history_point() {
+    // AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS allows up to an hour. A
+    // reading that old is never stamped with the cycle's time: it is
+    // unknown, in the summary and in the line.
+    for age in [READING_MAX_AGE + 1, HOUR] {
+        let rows = vec![
+            passive("stale", 10.0, 20.0, age),
+            row("direct", report(UsageState::Ok, Some(12.0), Some(22.0))),
+        ];
+        let s = from_rows(T, &rows, None).unwrap();
+        assert_eq!(s.unknown, ["stale"], "age {age}");
+        let e = s.entry(Writer::Usage);
+        assert!(!e.profiles.contains_key("stale"), "age {age}");
+        assert_eq!(e.unknown, ["stale"], "age {age}");
+        let line = to_line(&e);
+        assert!(line.contains(r#""unknown":["stale"]"#), "{line}");
+    }
+}
+
+#[test]
+fn a_stale_passive_reading_adds_nothing_to_the_rate() {
+    // Six hours of history in which `stale` used 0 points. Its reading now,
+    // an hour old, says 60%. Counted at `T` it would add 60 points to the
+    // rate; as unknown it adds none.
+    use super::capacity_summary::{Inputs, compute};
+    use super::capacity_weight::Weights;
+    let start = entry(
+        T - 5 * HOUR,
+        &[
+            ("stale", p(Some(0), 0, None)),
+            ("direct", p(Some(0), 10, None)),
+        ],
+    );
+    let rows = vec![
+        passive("stale", 60.0, 60.0, HOUR),
+        row("direct", report(UsageState::Ok, Some(20.0), Some(20.0))),
+    ];
+    let current = from_rows(T, &rows, None).unwrap();
+    let only_direct = from_rows(T, &rows[1..], None).unwrap();
+    let js = |c: &Snapshot| {
+        let s = compute(&Inputs {
+            current: c,
+            weights: &Weights::default(),
+            threshold: 95,
+            history: std::slice::from_ref(&start),
+            now: T,
+        });
+        serde_json::to_value(&s).unwrap()
+    };
+    let (with, without) = (js(&current), js(&only_direct));
+    assert!(
+        with["rate_login_weeks_per_hour"].is_number(),
+        "the rate is taken: {with}"
+    );
+    for key in [
+        "weekly_headroom_login_weeks",
+        "weekly_headroom_pct",
+        "valid_readings",
+        "rate_login_weeks_per_hour",
+        "runway_hours",
+    ] {
+        assert_eq!(with[key], without[key], "{key}");
+    }
+    assert_eq!(with["unknown"], serde_json::json!(["stale"]));
+}
+
+/// A row as `profile usage` builds it when the direct read failed with
+/// `why` and the mode starts no `claude` (`Probe::direct_error`).
+fn direct_error(name: &str, why: &'static str) -> Row {
+    let mut r = row(name, UsageReport::empty(UsageState::Error));
+    r.error = Some(ErrorReason::Direct(why));
+    r.source = Some(Source::Direct);
+    r.direct_failure = Some(why);
+    r
+}
+
+#[test]
+fn a_row_whose_direct_read_failed_is_unknown_and_in_no_figure() {
+    #[cfg(unix)]
+    assert_eq!(
+        super::usage_direct::reason::REFRESH_NOT_SAVED,
+        "refresh not saved"
+    );
+    let mut fell_back_and_timed_out = row("slow", UsageReport::empty(UsageState::Timeout));
+    fell_back_and_timed_out.source = Some(Source::Fallback);
+    fell_back_and_timed_out.direct_failure = Some("http 5xx");
+    let mut fell_back_and_read = row("rescued", report(UsageState::Ok, Some(30.0), Some(40.0)));
+    fell_back_and_read.source = Some(Source::Fallback);
+    fell_back_and_read.direct_failure = Some("refresh not saved");
+    let rows = vec![
+        direct_error("unsaved", "refresh not saved"),
+        direct_error("expired", "token expired"),
+        fell_back_and_timed_out,
+        fell_back_and_read,
+        row("work", report(UsageState::Ok, Some(20.0), Some(30.0))),
+    ];
+    let s = from_rows(T, &rows, None).unwrap();
+    assert_eq!(s.unknown, ["expired", "slow", "unsaved"]);
+    assert_eq!(
+        s.points.keys().map(String::as_str).collect::<Vec<_>>(),
+        ["rescued", "work"],
+        "a fallback that read the login is that reading"
+    );
+    let summary = super::capacity_summary::compute(&super::capacity_summary::Inputs {
+        current: &s,
+        weights: &super::capacity_weight::Weights::default(),
+        threshold: 95,
+        history: &[],
+        now: T,
+    });
+    let lines = summary.text_lines();
+    let unknown = lines.iter().find(|l| l.starts_with("unknown")).unwrap();
+    assert_eq!(
+        unknown,
+        "unknown              3 profiles (no valid reading; excluded from all figures)"
+    );
+    let v = serde_json::to_value(&summary).unwrap();
+    assert_eq!(
+        v["valid_readings"],
+        serde_json::json!(2),
+        "two logins, not five"
+    );
+    assert_eq!(
+        v["unknown"],
+        serde_json::json!(["expired", "slow", "unsaved"])
+    );
 }

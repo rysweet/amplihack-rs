@@ -169,7 +169,7 @@ fn the_summary_follows_the_table_and_adds_no_probe() {
         "{table}"
     );
     assert!(table.contains(
-        "\nunknown              0 profiles (readings timed out or failed; excluded from all figures)\n"
+        "\nunknown              0 profiles (no valid reading; excluded from all figures)\n"
     ));
     assert!(
         table.find("PROFILE").unwrap() < table.find("weekly headroom").unwrap(),

@@ -56,6 +56,8 @@ fn probed(s: f64, w: f64) -> Probed {
         },
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 
@@ -167,6 +169,34 @@ fn from_probes_counts_an_exhausted_probe_without_a_week_as_unknown() {
         assert!(snap.points.is_empty(), "{s}: {:?}", snap.points);
         assert_eq!(snap.unknown, ["out"]);
     }
+}
+
+#[test]
+fn from_probes_counts_a_passive_reading_over_300_s_old_as_unknown() {
+    // Crusty round 5: since #1844 the rotator may read a login from a
+    // passive reading stored up to an hour earlier. Over five minutes old it
+    // is unknown, never a point stamped with the cycle's time; up to five
+    // minutes it is recorded.
+    let max = usage_history::READING_MAX_AGE;
+    let aged = |age: i64| {
+        let mut p = probed(10.0, 20.0);
+        p.observed_at = Some(T - age);
+        p
+    };
+    let probes = (
+        aged(max + 1),
+        vec![
+            (n("edge"), aged(max)),
+            (n("hour"), aged(HOUR)),
+            (n("direct"), probed(30.0, 40.0)),
+        ],
+    );
+    let s = from_probes(T, Some(&n("live")), &probes, None, &[]);
+    assert_eq!(s.points.keys().collect::<Vec<_>>(), ["direct", "edge"]);
+    assert_eq!(s.unknown, ["hour", "live"]);
+    let e = s.entry(Writer::Rotate);
+    assert_eq!(e.at, T);
+    assert_eq!(e.unknown, ["hour", "live"], "so no runway is taken from it");
 }
 
 // ---------------------------------------------------------------------------

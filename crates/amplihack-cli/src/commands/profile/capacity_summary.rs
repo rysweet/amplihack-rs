@@ -433,7 +433,7 @@ impl Summary {
             label(
                 "unknown",
                 &format!(
-                    "{m} profile{} (readings timed out or failed; excluded from all figures)",
+                    "{m} profile{} (no valid reading; excluded from all figures)",
                     if m == 1 { "" } else { "s" }
                 ),
             ),

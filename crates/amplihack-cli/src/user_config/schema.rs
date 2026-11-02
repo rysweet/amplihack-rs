@@ -253,7 +253,7 @@ pub(crate) static KEYS: &[KeyDef] = &[
             max: u64::MAX,
         },
         env: Some("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS"),
-        default: None,
+        default: Some("21600"),
         lower_only: true,
     },
     KeyDef {

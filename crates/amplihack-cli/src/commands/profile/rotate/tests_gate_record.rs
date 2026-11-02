@@ -364,6 +364,8 @@ fn probed(session: f64, resets_at: i64) -> Probed {
         },
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 
@@ -482,6 +484,8 @@ fn probed2(session: f64, week: f64) -> Probed {
         },
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 

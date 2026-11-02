@@ -45,6 +45,17 @@ const RETENTION: i64 = 8 * 86_400;
 const TRIM_SLACK: i64 = 3600;
 /// Times further than this from now are not believed.
 const MAX_SKEW: i64 = 100 * 31_557_600;
+/// The oldest reading a cycle counts, in seconds before the cycle's time.
+///
+/// Every point of a line is taken as read at the line's `at`. A reading
+/// from a direct read or `claude` is: it was taken during the cycle. A
+/// passive reading (issue #1844) was stored by Claude's status line up to
+/// `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` earlier, `300` by default
+/// and up to `3600`. Up to 300 s, stamping it with the line's time moves it
+/// by at most 300 s, under 2% of the shortest span a rate is taken over
+/// (4.5 h). An older reading is unknown in the snapshot, so it is in no
+/// figure, no rate and no history point; the line lists it as unknown.
+pub(super) const READING_MAX_AGE: i64 = 300;
 #[cfg(unix)]
 const LOCK_RETRY: std::time::Duration = std::time::Duration::from_millis(50);
 #[cfg(unix)]
@@ -184,6 +195,13 @@ fn pct_of(w: Option<&UsageWindow>) -> Option<u8> {
     w.and_then(|w| whole_pct(w.used_percentage))
 }
 
+/// Whether a reading taken at `observed_at` counts as of `at`: always for
+/// one taken during the read (`None`), and for an earlier one only up to
+/// [`READING_MAX_AGE`] old.
+pub(super) fn recent_enough(observed_at: Option<i64>, at: i64) -> bool {
+    observed_at.is_none_or(|o| at.saturating_sub(o) <= READING_MAX_AGE)
+}
+
 /// The one validity rule. `ok` and `session_exhausted` are valid with a
 /// readable all-models week; `weekly_exhausted` is a known full week even
 /// without one. Every other state, and every reading without a week, is
@@ -226,7 +244,10 @@ pub(super) fn entry_of(r: &UsageReport) -> Option<Point> {
 /// subscription login, which means neither a summary nor a history line.
 /// API-key rows and the `~/.claude` row are not logins and are left out; a
 /// live profile whose login was swapped during the probe is unknown, since
-/// its numbers may be another login's.
+/// its numbers may be another login's. So is a passive reading older than
+/// [`READING_MAX_AGE`], and so is every row that could not be read: an
+/// `error` row, whether or not a direct read failed first, is never 0% or
+/// 100% used.
 pub(super) fn from_rows(at: i64, rows: &[Row], swapped: Option<&ProfileName>) -> Option<Snapshot> {
     let mut points = BTreeMap::new();
     let mut unknown = Vec::new();
@@ -235,7 +256,8 @@ pub(super) fn from_rows(at: i64, rows: &[Row], swapped: Option<&ProfileName>) ->
     for r in logins {
         any = true;
         let moved = swapped.is_some_and(|s| s.as_str() == r.profile);
-        match entry_of(&r.report).filter(|_| !moved) {
+        let counted = !moved && recent_enough(r.report.observed_at, at);
+        match entry_of(&r.report).filter(|_| counted) {
             Some(p) => {
                 points.insert(r.profile.clone(), p);
             }
@@ -256,7 +278,8 @@ pub(super) fn from_rows(at: i64, rows: &[Row], swapped: Option<&ProfileName>) ->
 /// recorded or counted as unknown. `unmeasured` are the plan logins the
 /// cycle did not probe (`Snap::unmeasured_plan`: skipped as busy, or a
 /// `Skip::NoAccount` profile): they were not read, so
-/// they are listed as unknown and the line says how many it left out.
+/// they are listed as unknown and the line says how many it left out. A
+/// passive reading older than [`READING_MAX_AGE`] is unknown too.
 #[cfg(unix)]
 pub(super) fn from_probes(
     at: i64,
@@ -273,7 +296,7 @@ pub(super) fn from_probes(
         .into_iter()
         .chain(others.iter().map(|(n, p)| (n, p)));
     for (name, probe) in named.filter(|(n, _)| platform != Some(*n)) {
-        match point_of_probe(probe) {
+        match point_of_probe(probe).filter(|_| recent_enough(probe.observed_at, at)) {
             Some(p) => {
                 points.insert(name.as_str().to_string(), p);
             }

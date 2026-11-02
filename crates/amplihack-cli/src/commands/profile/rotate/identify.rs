@@ -175,6 +175,29 @@ impl Account {
         self.uuid.as_deref().or(self.email.as_deref()).unwrap_or("")
     }
 
+    /// The organization uuid, when the login names one.
+    pub fn org(&self) -> Option<&str> {
+        self.org.as_deref()
+    }
+
+    /// Whether a stored `key` and `org` name this account. A key that is
+    /// this account's uuid matches only in the same organization (both
+    /// present and equal, or both missing). Any other key falls through to
+    /// [`Self::matches_key`], which matches on e-mail and ignores `org`.
+    ///
+    /// This is not [`Self::same`] semantics. An e-mail-keyed record (written
+    /// from a login with no uuid) matches a current login that has a uuid
+    /// whenever the e-mail agrees, even in another organization, where
+    /// [`Self::same`] would call the two different accounts. A normal OAuth
+    /// login carries a uuid, so such records are rare; the user docs state
+    /// that an e-mail record is compared by e-mail alone.
+    pub fn matches_record(&self, key: &str, org: Option<&str>) -> bool {
+        if self.uuid.as_deref() == Some(key) {
+            return self.org.as_deref() == org;
+        }
+        self.matches_key(key)
+    }
+
     /// Whether a stored key names this account.
     pub fn matches_key(&self, key: &str) -> bool {
         self.uuid.as_deref() == Some(key)

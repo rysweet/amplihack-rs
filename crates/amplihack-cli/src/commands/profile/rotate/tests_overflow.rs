@@ -98,6 +98,8 @@ fn measured(session: f64, week: f64, s_reset: Option<i64>, w_reset: Option<i64>)
         },
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 
@@ -112,6 +114,8 @@ fn exhausted(s_reset: Option<i64>, w_reset: Option<i64>) -> Probed {
         },
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 
@@ -123,6 +127,8 @@ fn failed() -> Probed {
         windows: Windows::default(),
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 
@@ -137,6 +143,8 @@ fn spend_limited() -> Probed {
         windows: Windows::default(),
         spend_limit: true,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 
@@ -252,6 +260,7 @@ fn report(
         week_all: w.map(|(u, r)| uw("all models", u, r)),
         week_models: Vec::new(),
         session_limit: true,
+        observed_at: None,
     }
 }
 
@@ -673,6 +682,8 @@ fn a_refused_plan_profile_directory_blocks_overflow() {
         report: UsageReport::empty(UsageState::Error),
         error: Some(ErrorReason::ProfileRefused),
         raw: None,
+        source: None,
+        direct_failure: None,
     };
     let spare = reading("spare", &refused);
     assert!(spare.unknown);

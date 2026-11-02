@@ -156,7 +156,7 @@ fn the_issue_fixture_prints_the_six_documented_lines() {
             "next session reset   2026-10-30T17:50:00Z  (eelsworth, hharkness: +2 usable)",
             "runway               unknown",
             "resets in next 24 h  2026-10-31T08:00:00Z ryanc2-mistt-personal +1.00",
-            "unknown              0 profiles (readings timed out or failed; excluded from all figures)",
+            "unknown              0 profiles (no valid reading; excluded from all figures)",
         ]
     );
 }
@@ -269,7 +269,7 @@ fn the_reference_example_prints_its_six_lines() {
             "next session reset   2026-10-30T18:00:00Z  (night, team: +2 usable)",
             "runway               ~9 h at the last 6 h rate (0.230 login-weeks/h)",
             "resets in next 24 h  2026-10-31T02:00:00Z night +0.85; 2026-10-31T09:00:00Z work +0.30",
-            "unknown              2 profiles (readings timed out or failed; excluded from all figures)",
+            "unknown              2 profiles (no valid reading; excluded from all figures)",
         ]
     );
 }
@@ -375,7 +375,7 @@ fn the_unknown_line_counts_one_profile_in_the_singular() {
     let s = plain(&snap(T, &[("a", pt(Some(10), 40))], &["slow"]));
     assert_eq!(
         lines(&s)[5],
-        "unknown              1 profile (readings timed out or failed; excluded from all figures)"
+        "unknown              1 profile (no valid reading; excluded from all figures)"
     );
 }
 
@@ -401,7 +401,7 @@ fn zero_valid_readings_give_unknown_headroom_and_no_division_by_zero() {
             "next session reset   none",
             "runway               unknown",
             "resets in next 24 h  none",
-            "unknown              2 profiles (readings timed out or failed; excluded from all figures)",
+            "unknown              2 profiles (no valid reading; excluded from all figures)",
         ]
     );
 }
