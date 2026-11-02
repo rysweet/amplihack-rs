@@ -10,9 +10,11 @@
 # amplihack_run_owned.sh record <kind> <abs path> [branch] appends
 # "kind<TAB>path<TAB>branch" to $AMPLIHACK_RUN_DIR/owned-paths (mode 0600),
 # and refuses relative paths, control characters and a symlinked file.
-# `setup-worktree` is the recipe's single call (record, or adopt on reuse),
-# and workflow_fetch_origin.sh is the fetch-with-retry moved out of
-# consensus-issue-worktree.yaml to keep it under the brick limit.
+# `setup-worktree` is the recipes' single call (record, or adopt on reuse).
+# Two tools exist to keep recipes under the brick limit without compressing
+# them: workflow_fetch_origin.sh (fetch with retry, from
+# consensus-issue-worktree.yaml) and workflow_pr_branch.sh (pr_number to head
+# branch, from workflow-worktree.yaml).
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-issue-1808-worktree-base.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -207,6 +209,33 @@ check F1 "a fetch that keeps failing retries three times and still exits 0" \
 git clone -q "$MAIN" "$WORK/cloned"
 (cd "$WORK/cloned" && bash "$FETCHER" >/dev/null 2>&1); rc=$?
 check F2 "a working fetch exits 0" test "$rc" = 0
+
+echo "workflow_pr_branch.sh"
+# A BASH_ENV file may define a gh function that would hide the shim.
+unset BASH_ENV
+PR_BRANCH="${REPO_ROOT}/amplifier-bundle/tools/workflow_pr_branch.sh"
+GH_DIR="$WORK/gh-shim"
+mkdir -p "$GH_DIR"
+printf '#!/usr/bin/env bash\n[ "$1 $2 $3" = "pr view 342" ] && printf feat/from-pr && exit 0\nexit 1\n' > "$GH_DIR/gh"
+chmod +x "$GH_DIR/gh"
+out="$(PATH="$GH_DIR:$PATH" bash "$PR_BRANCH" 342 2>/dev/null)"; rc=$?
+check P1 "a PR number resolves to its head branch" bash -c '[[ "$1" = 0 && "$2" = feat/from-pr ]]' _ "$rc" "$out"
+for bad in "342 --repo evil/x" "-1" "0" '$(id)' ""; do
+    out="$(PATH="$GH_DIR:$PATH" bash "$PR_BRANCH" "$bad" 2>&1)"; rc=$?
+    check P2 "pr_number '$bad' is refused before gh runs" \
+        bash -c '[[ "$1" = 1 && "$2" = *"arg-injection guard"* ]]' _ "$rc" "$out"
+done
+out="$(PATH="$GH_DIR:$PATH" bash "$PR_BRANCH" 7 2>&1)"; rc=$?
+check P3 "a PR gh cannot find is an error" bash -c '[[ "$1" = 1 && "$2" = *"returned no branch name"* ]]' _ "$rc" "$out"
+out="$(PATH=/nonexistent /bin/bash "$PR_BRANCH" 342 2>&1)"; rc=$?
+check P4 "no gh on PATH is an error" bash -c '[[ "$1" = 1 && "$2" = *"not on PATH"* ]]' _ "$rc" "$out"
+
+echo "workflow-worktree.yaml calls the tools"
+RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/workflow-worktree.yaml"
+check R1 "ownership goes through amplihack_run_owned.sh setup-worktree" \
+    grep -qF 'amplihack_run_owned.sh" setup-worktree "$@"' "$RECIPE"
+check R2 "pr_number goes through workflow_pr_branch.sh" grep -qF 'workflow_pr_branch.sh' "$RECIPE"
+check R3 "no inline gh pr view is left in the recipe" bash -c '! grep -qF "gh pr view" "$1"' _ "$RECIPE"
 
 echo
 echo "issue-1808 worktree base: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"
