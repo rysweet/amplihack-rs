@@ -510,7 +510,11 @@ fn a_clean_previous_round_never_matches_and_an_empty_set_reads_none() {
     assert_eq!(fx.evaluator_calls(), ["round-1", "round-2"]);
     let rows = fx.state_file("crusty-progress.tsv").unwrap();
     let first: Vec<&str> = rows.lines().next().unwrap().split('\t').collect();
-    assert_eq!(first, ["round-1", fx.head().as_str(), "1", ""], "{rows}");
+    assert_eq!(
+        first,
+        ["round-1", fx.head().as_str(), "1", "", ""],
+        "{rows}"
+    );
 }
 
 #[test]
@@ -1063,7 +1067,7 @@ fn progress_helper_records_and_checks_rows() {
     );
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     let rows = std::fs::read_to_string(st.join("crusty-progress.tsv")).unwrap();
-    assert_eq!(rows, format!("round-1\t{SHA}\t0\ta,b\n"));
+    assert_eq!(rows, format!("round-1\t{SHA}\t0\ta,b\t\n"));
     let mode = std::fs::metadata(st.join("crusty-progress.tsv"))
         .unwrap()
         .permissions()
@@ -1098,6 +1102,58 @@ fn progress_helper_records_and_checks_rows() {
         );
         assert_eq!(o.status.code(), Some(0), "{label}\n{}", show(&o));
     }
+}
+
+/// PR #1862 review: a merge round with nothing to commit while CI changes or
+/// is still running made progress or is waiting; it is never STUCK in code.
+#[test]
+fn progress_helper_counts_a_ci_change_as_progress_and_never_stops_on_pending_ci() {
+    let tmp = tempfile::tempdir().unwrap();
+    let st = tmp.path().join("state");
+    private_dir(&st);
+    let s = st.display().to_string();
+    let f = findings(tmp.path(), "f", "ci-red\n");
+    let o = helper(
+        "autodrive_progress.sh",
+        &[
+            "record",
+            &s,
+            "merge",
+            "round-1",
+            SHA,
+            "0",
+            &f,
+            "PENDING:0/9",
+        ],
+    );
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let rows = std::fs::read_to_string(st.join("merge-progress.tsv")).unwrap();
+    assert_eq!(rows, format!("round-1\t{SHA}\t0\tci-red\tPENDING:0/9\n"));
+    for (label, ci) in [
+        ("pending CI is waited on", "PENDING:0/9"),
+        ("a CI change is progress", "RED:1/9"),
+        ("no CI signal differs from one", ""),
+    ] {
+        let o = helper(
+            "autodrive_progress.sh",
+            &["check", &s, "merge", "round-2", SHA, &f, ci],
+        );
+        assert_eq!(o.status.code(), Some(0), "{label}\n{}", show(&o));
+    }
+    helper(
+        "autodrive_progress.sh",
+        &["record", &s, "merge", "round-2", SHA, "0", &f, "RED:1/9"],
+    );
+    let o = helper(
+        "autodrive_progress.sh",
+        &["check", &s, "merge", "round-3", SHA, &f, "RED:1/9"],
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(10),
+        "same head, items and settled CI is no progress\n{}",
+        show(&o)
+    );
 }
 
 #[test]
@@ -1158,7 +1214,7 @@ fn progress_helper_neutralises_separators_and_refuses_symlinks() {
         &["record", &s, "c", "round-1", SHA, "0", &f],
     );
     let rows = std::fs::read_to_string(st.join("c-progress.tsv")).unwrap();
-    assert_eq!(rows, format!("round-1\t{SHA}\t0\tt_u,x_y\n"));
+    assert_eq!(rows, format!("round-1\t{SHA}\t0\tt_u,x_y\t\n"));
 
     let outside = tmp.path().join("outside");
     std::fs::write(&outside, "kept\n").unwrap();

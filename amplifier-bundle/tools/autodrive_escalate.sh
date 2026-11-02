@@ -79,11 +79,11 @@ stops_preflight() {
   [ $? -ne 3 ] || PROGRESS_OFF=1
 }
 
-# progress_stop <head sha>: the no-progress rule for a round that is not clean.
+# progress_stop <head sha> [<ci signal>]: the no-progress rule for a round that is not clean.
 progress_stop() {
   local why rc
   [ -z "${PROGRESS_OFF:-}" ] || return 0
-  why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings")"
+  why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings" "${2:-}")"
   rc=$?
   [ "$rc" -eq 10 ] || { [ "$rc" -eq 0 ] || echo "WARNING: the no-progress check exited ${rc}; the evaluator decides." >&2; return 0; }
   post_stop "${STATE_DIR}/${LOOP_NAME}-stuck-reason.txt"

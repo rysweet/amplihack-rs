@@ -764,7 +764,7 @@ budget](#no-progress-stop-and-usage-budget)):
 
 | Condition | Result |
 | --- | --- |
-| Previous round not clean, same non-empty head SHA, same open items | `STUCK` (decided in code), exit `1`. The evaluator does not run. |
+| Previous round not clean, same non-empty head SHA, same open items, same `ci_signal` with no `PENDING` | `STUCK` (decided in code), exit `1`. The evaluator does not run. |
 | A budget limit is reached | `BUDGET_EXHAUSTED`, exit `1`. The evaluator does not run. |
 
 A non-clean `DONE` usually means the findings were addressed without a new
@@ -2653,11 +2653,16 @@ loop as `STUCK` only when all of these hold:
 
 1. the previous row is not clean;
 2. the PR head SHA is non-empty in both rounds and is the same;
-3. the set of open items is the same.
+3. the set of open items is the same;
+4. the round record's `ci_signal` is the same, and it does not contain
+   `PENDING`.
 
 In every other case the round goes to the evaluator as before. A round that
-makes progress, by a new commit or by a change in its open items, is never
-stopped by this rule.
+makes progress, by a new commit, by a change in its open items or by a change
+in CI, is never stopped by this rule. CI that is still running is something to
+wait for, so it never stops the loop here. The merge round already waits for
+CI before it assesses the PR; condition 4 covers a race with that wait. The
+crusty loop records an empty `ci_signal`, so condition 4 always holds there.
 
 The head SHA is `git -C <repo> rev-parse HEAD` in the PR worktree, read once
 after the round and the review-dir checks. It is the same value the #1597
@@ -2833,7 +2838,7 @@ without it (still one `O_APPEND` write). A file counts as trusted only when
 
 | File | Written | Content |
 | --- | --- | --- |
-| `<loop>-progress.tsv` | appended after every round | `round_label`, `head_sha`, `clean` (`0` or `1`), open items joined by `,` |
+| `<loop>-progress.tsv` | appended after every round | `round_label`, `head_sha`, `clean` (`0` or `1`), open items joined by `,`, `ci_signal` (empty for the crusty loop) |
 | `autodrive-usage.tsv` | appended after every child | `loop`, `round_label`, `phase` (`before`, `round` or `evaluator`), `sessions`, `seconds`, `tokens` |
 | `autodrive-usage.json` | rewritten after every row | totals by loop and overall |
 | `<loop>-stuck-reason.txt` | on a no-progress stop | the reason line |
@@ -3652,7 +3657,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | [Finalization hand-off](#finalization-hand-off-from-phase-1-1714) (#1714): the allow-list and flag exactness, the validator's hand-off on both `BLOCKED_CI` exits and on `FAILED_IMPLEMENTATION` with a confirmed open PR (and its refusal without one), the open-PR check's PR head rule (a fast-forward PR head present locally or fetched without writing refs is the same PR; a diverged, rewritten or unfetchable head is not), the real terminal-state probe followed by the validator on a merge already on the PR before finalization (`EXISTING_OPEN_PR` when green, `FAILED_IMPLEMENTATION` handed off when pending, `BLOCKED_CI` handed off when red; a diverged head, a rewound remote, or a probe without `accept_pr_head_ahead` still `FAILED_INVALID_INPUT` and never handed off), `step-20-sync-pr-head` and step-20b run from the YAML against a remote that is ahead, with an upstream, with only `origin/<branch>` and with neither (the push lands on the PR head), standalone runs and all five other prior-state blockers still failing closed, step-03 run from its YAML against a stub `gh` (hand-off, closed or different PR, a non-digit `pr_number` printed as `<invalid>`, no PR, resume, `BLOCKED_CI` with no `handoff` field, a state outside the vocabulary, a missing brick), and static guards on the flag's only setter and on the merge gate | `tests/integration/issue_1714_finalization_handoff.rs` |
 | [Usage limits are not STUCK](#usage-limits-are-not-stuck) (#1801): `1801-evaluator-retry-verdict` (the evaluator hits a limit once, is retried inside step-02 and returns a verdict the loop records, with no `STUCK`), `1801-evaluator-usage-limit` (the limit is not lifted and the loop reports `USAGE_LIMIT`), a round and a before-round step that fail on a limit, and negative cases where the loop does not stop as `USAGE_LIMIT`: a nested `class`, the marker with exit `0`, an indented or echoed marker, and `usage_limit_wait` lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The same retry through the real step supervisor: fake `claude` and a stub `recipe-runner-rs` under an isolated `HOME` | `crates/amplihack-cli/tests/issue_1801_evaluator_retry.rs` |
-| [No-progress stop and usage budget](#no-progress-stop-and-usage-budget) (#1743): `STUCK` in code on an unchanged head and open items, no stop when either changed or the round is clean, no stop when the current or previous round has a `<record>.light.json` side file (two rejected light rounds on the same head with empty findings), `BUDGET_EXHAUSTED` from each of the three limits at the pre-round, post-round and before-round check points, a relaunch with a higher limit resuming from the recorded round and one with the same limit starting no agent, the nested crusty loop counted once, `tokens` recorded as `unknown`, malformed limits and unknown keys exiting `2`, the symlink and `0600` cases, the sanitised PR comment through a stub `gh`, and the `-c` override reaching both loops. Fixture state directories, stub `amplihack`, `gh` and `git` on `PATH`, under `isolated(..)`; nothing under the real `HOME` is read or written | `crates/amplihack-cli/tests/issue_1743_autodrive_budget.rs` |
+| [No-progress stop and usage budget](#no-progress-stop-and-usage-budget) (#1743): `STUCK` in code on an unchanged head and open items, no stop when either changed, when the CI signal changed or says `PENDING`, or when the round is clean, no stop when the current or previous round has a `<record>.light.json` side file (two rejected light rounds on the same head with empty findings), `BUDGET_EXHAUSTED` from each of the three limits at the pre-round, post-round and before-round check points, a relaunch with a higher limit resuming from the recorded round and one with the same limit starting no agent, the nested crusty loop counted once, `tokens` recorded as `unknown`, malformed limits and unknown keys exiting `2`, the symlink and `0600` cases, the sanitised PR comment through a stub `gh`, and the `-c` override reaching both loops. Fixture state directories, stub `amplihack`, `gh` and `git` on `PATH`, under `isolated(..)`; nothing under the real `HOME` is read or written | `crates/amplihack-cli/tests/issue_1743_autodrive_budget.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 

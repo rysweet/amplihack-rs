@@ -121,8 +121,9 @@ moved — and answers `CONTINUE`, `DONE`, or `STUCK`.
 Two stops are decided in code before the evaluator runs, and only for a round
 that is not clean:
 
-- **No progress.** When the PR head SHA and the sorted set of open items are
-  both the same as in the loop's previous round, the loop stops as `STUCK`
+- **No progress.** When the PR head SHA, the sorted set of open items and the
+  CI signal are all the same as in the loop's previous round, and CI is not
+  still pending, the loop stops as `STUCK`
   without asking the evaluator. Open items are crusty's findings for the crusty
   loop and the merge round's blockers for the merge-ready loop. A light round
   whose record has a `.light.json` side file, or that follows one, is left to

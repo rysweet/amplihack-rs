@@ -2,15 +2,16 @@
 # autodrive_progress.sh: the no-progress rule of auto-drive (#1743), decided in
 # code. docs/reference/auto-drive-to-merge.md#the-no-progress-rule.
 #
-#   record <state> <loop> <label> <sha> <clean 0|1> <findings>
+#   record <state> <loop> <label> <sha> <clean 0|1> <findings> [<ci_signal>]
 #       appends one row to <state>/<loop>-progress.tsv:
-#       round_label, head_sha, clean, open items joined by ','
-#   check <state> <loop> <label> <sha> <findings>
+#       round_label, head_sha, clean, open items joined by ',', ci_signal
+#   check <state> <loop> <label> <sha> <findings> [<ci_signal>]
 #       compares the current round (not clean) with the last row. Exits 10,
 #       prints the reason and writes <state>/<loop>-stuck-reason.txt only when
 #       the last row is not clean, both SHAs are non-empty and equal, the open
-#       items are equal, and neither round has a <record>.light.json side
-#       file. Every other case exits 0, so the evaluator decides; an
+#       items are equal, the CI signals are equal and neither says pending
+#       (CI still running is not a stop), and neither round has a
+#       <record>.light.json side file. Every other case exits 0, so the evaluator decides; an
 #       untrusted progress file is not read (WARNING, exit 0: fails open).
 #   last <state> <loop>
 #       prints the label of the last row, or nothing; exit 3 when the
@@ -23,13 +24,13 @@ set -uo pipefail
 umask 077
 export LC_ALL=C
 
-usage() { echo "ERROR: autodrive_progress.sh: ${1:-usage}. Usage: record <state> <loop> <label> <sha> <clean> <findings> | check <state> <loop> <label> <sha> <findings> | last <state> <loop>" >&2; exit 2; }
+usage() { echo "ERROR: autodrive_progress.sh: ${1:-usage}. Usage: record <state> <loop> <label> <sha> <clean> <findings> [<ci_signal>] | check <state> <loop> <label> <sha> <findings> [<ci_signal>] | last <state> <loop>" >&2; exit 2; }
 
 CMD="${1:-}"
 [ $# -gt 0 ] && shift
 case "$CMD" in
-  record) [ $# -eq 6 ] || usage "record takes 6 arguments" ;;
-  check) [ $# -eq 5 ] || usage "check takes 5 arguments" ;;
+  record) [ $# -eq 6 ] || [ $# -eq 7 ] || usage "record takes 6 or 7 arguments" ;;
+  check) [ $# -eq 5 ] || [ $# -eq 6 ] || usage "check takes 5 or 6 arguments" ;;
   last) [ $# -eq 2 ] || usage "last takes 2 arguments" ;;
   *) usage "unknown command '${CMD}'" ;;
 esac
@@ -39,6 +40,7 @@ STATE="$1"; LOOP="$(printf '%s' "$2" | tr -c 'A-Za-z0-9._-' '_')"
 FILE="${STATE}/${LOOP}-progress.tsv"
 
 safe_label() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+safe_ci() { printf '%s' "$1" | tr -c 'A-Za-z0-9:/._-' '_' | cut -b 1-64; }
 safe_sha() { # a 40- or 64-digit lowercase hex SHA, or nothing
   case "$1" in *[!0-9a-f]*|'') return 0 ;; esac
   case "${#1}" in 40|64) printf '%s' "$1" ;; esac
@@ -89,7 +91,7 @@ case "$CMD" in
     LABEL="$(safe_label "$3")"; SHA="$(safe_sha "$4")"
     case "$5" in 0|1) ;; *) usage "clean must be 0 or 1, not '$5'" ;; esac
     no_sha_warning
-    ROW="$(printf '%s\t%s\t%s\t%s' "$LABEL" "$SHA" "$5" "$(items "$6")")"
+    ROW="$(printf '%s\t%s\t%s\t%s\t%s' "$LABEL" "$SHA" "$5" "$(items "$6")" "$(safe_ci "${7:-}")")"
     # One write on an O_APPEND descriptor, under flock where it exists.
     if { if command -v flock >/dev/null 2>&1; then flock -w 10 9 || echo "WARNING: lock on ${FILE} not taken in 10 s; appending without it." >&2; fi; printf '%s\n' "$ROW" >&9; } 9>>"$FILE"; then
       exit 0
@@ -104,6 +106,7 @@ no_sha_warning
 ROW="$(last_row)" || exit 0
 P_LABEL="$(printf '%s' "$ROW" | cut -f1)"; P_SHA="$(printf '%s' "$ROW" | cut -f2)"
 P_CLEAN="$(printf '%s' "$ROW" | cut -f3)"; P_ITEMS="$(printf '%s' "$ROW" | cut -f4)"
+P_CI="$(printf '%s' "$ROW" | cut -s -f5)"; CI="$(safe_ci "${6:-}")"
 [ -n "$P_LABEL" ] && [ "$P_LABEL" = "$(safe_label "$P_LABEL")" ] || exit 0
 [ "$P_CLEAN" = "0" ] || exit 0
 [ -n "$SHA" ] && [ "$SHA" = "$(safe_sha "$P_SHA")" ] || exit 0
@@ -113,6 +116,9 @@ for L in "$LABEL" "$P_LABEL"; do
 done
 CUR="$(items "$5")"
 [ "$CUR" = "$P_ITEMS" ] || exit 0
+# A change in CI is progress; CI still running is waited on, never a stop.
+[ "$CI" = "$(safe_ci "$P_CI")" ] || exit 0
+case "$(printf '%s' "$CI" | tr 'a-z' 'A-Z')" in *PENDING*) exit 0 ;; esac
 
 REASON="no progress (decided in code): head ${SHA} and open items unchanged since ${P_LABEL}: ${CUR:-none}"
 OUT="${STATE}/${LOOP}-stuck-reason.txt"

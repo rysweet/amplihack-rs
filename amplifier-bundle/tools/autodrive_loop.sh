@@ -7,7 +7,7 @@
 # compared against a limit. It starts after this loop's earlier rounds in the
 # state dir, so a second loop there or a resumed run overwrites nothing.
 # Two stops are decided in code (#1743): a non-clean round that left the PR
-# head and open items unchanged (autodrive_progress.sh, STUCK), and the
+# head, open items and CI signal unchanged (autodrive_progress.sh, STUCK), and the
 # operator's resumable usage budget (autodrive_budget.sh, BUDGET_EXHAUSTED),
 # a cost ceiling and never the convergence terminator; budget keys arrive as
 # --context autodrive_budget_*=N and never reach a round recipe.
@@ -294,12 +294,11 @@ while :; do
     fi
   fi
   # #1743, decided in code before the evaluator: no progress, then the budget.
-  HEAD_NOW="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf '')"
-  [ "$ROUND_CLEAN" = "true" ] || progress_stop "$HEAD_NOW"
-  bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$HEAD_NOW" "$([ "$ROUND_CLEAN" = "true" ] && echo 1 || echo 0)" "${RECORD}.findings"
+  HEAD_NOW="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf '')"; CI_SIGNAL="$(field "$RAW" ci_signal "")"
+  [ "$ROUND_CLEAN" = "true" ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL"
+  bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$HEAD_NOW" "$([ "$ROUND_CLEAN" = "true" ] && echo 1 || echo 0)" "${RECORD}.findings" "$CI_SIGNAL"
   [ "$ROUND_CLEAN" = "true" ] || budget_stop post
   TEST_SIGNAL="$(field "$RAW" test_signal "")"
-  CI_SIGNAL="$(field "$RAW" ci_signal "")"
   HISTORY="${HISTORY}
 ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(printf '%s' "$FINDINGS" | grep -c . || true)${BEFORE_RESULT:+ before=${BEFORE_RESULT}}"
 
