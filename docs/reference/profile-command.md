@@ -3244,6 +3244,15 @@ limit (see [Usage-limit reruns](#usage-limit-reruns)).
   one with the higher usage wins.
 - **Errors.** A damaged `usage.json` is treated as empty and overwritten by
   the next reading.
+- **Readings from `~/.claude`.** The
+  [`~/.claude` status line](./STATUSLINE.md#recording-readings) never writes
+  `usage.json`. It records into `<root>/.auto-switch.d/home-usage.json`,
+  which has the same format and is read only by the status line's spare
+  count: nothing checks which account `~/.claude` held when such a reading
+  was taken (see
+  [Why the readings are kept apart](./STATUSLINE.md#why-the-readings-are-kept-apart)).
+  Passive readings, candidate selection, `profile rotate` and the capacity
+  file never read it.
 
 ### Candidate selection
 
@@ -3855,7 +3864,7 @@ of them makes an extra network call or probe for it.
 
 | `writer` | Written | Readings used |
 |----------|---------|---------------|
-| `statusline` | By the [status-line wrapper](#status-line-wrapper), and by the [`~/.claude` status line](./STATUSLINE.md#recording-readings), each time it records a reading, under the state lock it takes for that. | `usage.json` as just recorded. |
+| `statusline` | By the [status-line wrapper](#status-line-wrapper) each time it records a reading, under the state lock it takes for that. The [`~/.claude` status line](./STATUSLINE.md#recording-readings) never writes the file. | `usage.json` as just recorded. |
 | `usage` | By [`profile usage`](#refreshing-auto-switch-readings), each time it records readings, under the state lock it takes for that. | `usage.json` as just recorded. |
 | `rotate` | By the rotator, in a [cycle](#rotate-cycle) that reaches the swap, stay or ALERT, under the lock taken in step 6. | That cycle's probes. A `session_exhausted` or `weekly_exhausted` probe counts as at its limit; a failed probe, including one that timed out, counts as no reading and never as at its limit. Reset times come from the profile's `usage.json` entry while they are in the future, and are otherwise unknown. |
 

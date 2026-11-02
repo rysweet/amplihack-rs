@@ -101,8 +101,9 @@ impl Env {
         self.root.join(".auto-switch.d")
     }
 
+    /// The readings home mode records, in `home-usage.json`.
     fn usage(&self) -> Option<serde_json::Value> {
-        let raw = fs::read(self.state_dir().join("usage.json")).ok()?;
+        let raw = fs::read(self.state_dir().join("home-usage.json")).ok()?;
         Some(serde_json::from_slice(&raw).unwrap())
     }
 
@@ -882,5 +883,118 @@ fn the_capacity_work_takes_under_two_hundred_milliseconds() {
     assert!(
         owned < Duration::from_millis(200),
         "profile mode: {owned:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// tick: readings from `~/.claude` never steer a decision (crusty round 3)
+// ---------------------------------------------------------------------------
+
+fn plant_home_usage(e: &Env, body: &serde_json::Value) -> PathBuf {
+    let dir = e.state_dir();
+    fs::create_dir_all(&dir).unwrap();
+    mode(&dir, 0o700);
+    let p = dir.join("home-usage.json");
+    private(&p, body.to_string().as_bytes());
+    p
+}
+
+#[test]
+fn a_recorded_reading_leaves_usage_json_byte_identical() {
+    let e = env();
+    e.prototype_ledger(r#"{"live":"X","since":1}"#);
+    let p = plant_usage(
+        &e,
+        &serde_json::json!({"version": 1, "accounts": {"X": usage_entry(5.0, 6.0)}}),
+    );
+    let before = fs::read(&p).unwrap();
+    e.tick(&input(34.0, 43.0)).unwrap();
+    assert_eq!(fs::read(&p).unwrap(), before, "usage.json was written");
+    let home = e.usage().expect("recorded in home-usage.json");
+    assert_eq!(home["accounts"]["X"]["five_hour"]["used_percentage"], 34.0);
+}
+
+#[test]
+fn a_recorded_reading_never_creates_usage_json() {
+    let e = env();
+    e.prototype_ledger(r#"{"live":"X","since":1}"#);
+    e.tick(&input(34.0, 43.0)).unwrap();
+    assert!(e.usage().is_some());
+    assert!(!e.state_dir().join("usage.json").exists());
+}
+
+/// The case crusty raised: `~/.claude` holds some other account (a hand-run
+/// `claude /login`, or a session that kept its old token past a swap), and
+/// auto-switch has no `hosts` entry for the ledger's login, so attribution
+/// files the reading under that login. Nothing in home mode can tell. The
+/// passive reading that `profile usage` and the rotator's `measure` take
+/// (`usage_passive::fresh` → `fresh_reading`) must not use it.
+#[test]
+fn a_misfiled_home_reading_is_never_a_passive_reading() {
+    let e = env();
+    e.prototype_ledger(r#"{"live":"X","since":1}"#);
+    // The figures are another account's; home mode files them under X.
+    e.tick(&input(99.0, 99.0)).unwrap();
+    let home = e.usage().expect("the reading was recorded");
+    assert_eq!(home["accounts"]["X"]["five_hour"]["used_percentage"], 99.0);
+    assert_eq!(
+        super::fresh_reading(&e.root, "X", 3600, now()),
+        None,
+        "a home reading stood in for a measurement of X"
+    );
+    // A checked reading in usage.json is still used, and the home reading,
+    // although newer, does not replace it.
+    plant_usage(
+        &e,
+        &serde_json::json!({"version": 1, "accounts": {"X": usage_entry(5.0, 6.0)}}),
+    );
+    e.tick(&input(99.0, 99.0)).unwrap();
+    let fresh = super::fresh_reading(&e.root, "X", 3600, now()).expect("the checked reading");
+    assert_eq!(fresh.session.unwrap().used_percentage, 5.0);
+    assert_eq!(fresh.week.unwrap().used_percentage, 6.0);
+}
+
+#[test]
+fn a_home_reading_counts_toward_the_spare_count() {
+    // Y was the live login and its reading was taken in `~/.claude`; now X
+    // is live and Y is a candidate.
+    let e = env();
+    e.prototype_ledger(r#"{"live":"X","since":1}"#);
+    plant_home_usage(
+        &e,
+        &serde_json::json!({"version": 1, "accounts": {"Y": usage_entry(20.0, 30.0)}}),
+    );
+    assert!(e.tick(&input(34.0, 43.0)).unwrap().ends_with("· 1 spare"));
+}
+
+#[test]
+fn the_newer_of_the_two_readings_decides_the_spare_count() {
+    let e = env();
+    e.prototype_ledger(r#"{"live":"X","since":1}"#);
+    let mut older = usage_entry(20.0, 30.0);
+    older["observed_at"] = (now() - 600).into();
+    let newer = usage_entry(100.0, 100.0);
+    plant_usage(
+        &e,
+        &serde_json::json!({"version": 1, "accounts": {"Y": older}}),
+    );
+    plant_home_usage(
+        &e,
+        &serde_json::json!({"version": 1, "accounts": {"Y": newer}}),
+    );
+    assert!(e.tick(&input(34.0, 43.0)).unwrap().ends_with("· 0 spare"));
+}
+
+#[test]
+fn a_damaged_home_usage_file_drops_the_spare_segment_and_is_left_alone() {
+    let e = env();
+    e.prototype_ledger(r#"{"live":"X","since":1}"#);
+    let p = plant_home_usage(&e, &serde_json::json!({"version": 1, "accounts": 5}));
+    let before = fs::read(&p).unwrap();
+    assert_eq!(e.tick(&input(34.0, 43.0)).as_deref(), Some(LINE_34_43));
+    assert_eq!(
+        fs::read(&p).unwrap(),
+        before,
+        "a damaged file is not overwritten"
     );
 }

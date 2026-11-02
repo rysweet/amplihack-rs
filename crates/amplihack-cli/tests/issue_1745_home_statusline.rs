@@ -128,8 +128,9 @@ impl Fixture {
         mode(p.parent().unwrap(), 0o700);
     }
 
+    /// The readings home mode records, in `home-usage.json`.
     fn usage(&self) -> Option<serde_json::Value> {
-        let raw = fs::read(self.root.join(".auto-switch.d/usage.json")).ok()?;
+        let raw = fs::read(self.root.join(".auto-switch.d").join("home-usage.json")).ok()?;
         Some(serde_json::from_slice(&raw).unwrap())
     }
 
@@ -721,4 +722,45 @@ fn a_recorded_home_tick_with_auto_switch_on_opens_no_credentials_file() {
     let usage = f.usage().expect("the tick recorded the reading");
     assert_eq!(usage["accounts"]["X"]["five_hour"]["used_percentage"], 34.0);
     assert_eq!(watch.opened(), Vec::<PathBuf>::new(), "credentials opened");
+}
+
+/// Crusty round 3: a reading taken in `~/.claude` while it holds some other
+/// account is filed under the ledger's login, since nothing in home mode
+/// can check the account. `profile usage` (and the rotator's `measure`,
+/// which reads through the same passive step) must not report it as a
+/// measurement of that login.
+#[test]
+fn profile_usage_never_reports_a_home_reading_as_passive() {
+    let f = Fixture::new(None);
+    f.prototype_ledger(r#"{"live":"X","since":1}"#);
+    // Another account's figures, filed under X.
+    let out = f.home_tick(&input(97.0, 98.0));
+    assert!(text(&out.stdout).contains("97%"), "{}", text(&out.stdout));
+    let home = f.usage().expect("the tick recorded the reading");
+    assert_eq!(home["accounts"]["X"]["five_hour"]["used_percentage"], 97.0);
+    assert!(!f.root.join(".auto-switch.d/usage.json").exists());
+
+    let out = f
+        .cmd(&["profile", "usage", "X", "--json"], "0")
+        .env("AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS", "3600")
+        .env("AMPLIHACK_CLAUDE_BINARY_PATH", f.work.join("no-claude"))
+        .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
+        .env("AMPLIHACK_SKIP_REFLECTION", "1")
+        .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
+        .output()
+        .unwrap();
+    let stdout = text(&out.stdout);
+    let rows: serde_json::Value = serde_json::from_str(&stdout)
+        .unwrap_or_else(|e| panic!("{e}: {stdout}\n{}", text(&out.stderr)));
+    let x = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["profile"] == "X")
+        .unwrap_or_else(|| panic!("no row for X: {stdout}"));
+    assert_ne!(x["source"], "passive", "{x}");
+    assert!(
+        !stdout.contains("97"),
+        "the home reading was reported: {stdout}"
+    );
 }

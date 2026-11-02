@@ -168,7 +168,7 @@ left out on its own when its value is unknown.
 | `🔑 <login>`      | The live login                            | No login can be resolved.                                           |
 | `5h <bar> <pct>%` | The five-hour session window              | The input has no usable `five_hour` window.                         |
 | `7d <bar> <pct>%` | The seven-day window                      | The input has no usable `seven_day` window.                         |
-| `· <n> spare`     | Profiles with room in both windows        | The profile list, auto-switch state or `usage.json` cannot be read. |
+| `· <n> spare`     | Profiles with room in both windows        | The profile list, auto-switch state or a readings file cannot be read. |
 
 `· 0 spare` is printed when the count is known to be zero; an unknown count
 is never shown as 0. A line holding only some segments, even only the spare
@@ -214,7 +214,7 @@ or the spare count.
 | ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Login name  | Home mode: the rotator ledgers. Profile mode: the auto-switch ledger entry for that profile.                                                                  |
 | Percentages | The `rate_limits` object in the JSON Claude Code sends on standard input. Nothing is fetched from the network.                                                |
-| Spare count | The profile list, the auto-switch settings and ledger, the overflow marks and the readings in `<root>/.auto-switch.d/usage.json`                               |
+| Spare count | The profile list, the auto-switch settings and ledger, the overflow marks and the readings in `<root>/.auto-switch.d/usage.json` and `<root>/.auto-switch.d/home-usage.json` |
 
 `<root>` is the profile root (see
 [Profile root](./profile-command.md#profile-root)).
@@ -245,12 +245,17 @@ directory itself, not a symlink to one. Otherwise there is no login: the
 
 The ledger is not compared with the account in `~/.claude.json`. If someone
 runs `claude /login` by hand in `~/.claude`, the `🔑` segment can name the
-previous login until the rotator next writes its ledger. Recording is
-protected separately; see [Recording readings](#recording-readings).
+previous login until the rotator next writes its ledger, and a reading
+recorded in that time is filed under that previous login. The same happens
+when a session started before a swap keeps its old token for more than 300
+seconds. Nothing in home mode can detect either case, so its readings go
+into a file that nothing acts on; see
+[Recording readings](#recording-readings).
 
 ### Recording readings
 
-In home mode the command records the input's reading in `usage.json` only
+In home mode the command records the input's reading in
+`<root>/.auto-switch.d/home-usage.json`, never in `usage.json`, and only
 when all of these hold:
 
 1. the profile root is private (a real directory owned by you and not
@@ -265,8 +270,11 @@ when all of these hold:
    matches the figures recorded before that swap.
 
 The reading is stored under the attributed account, with `source` set to
-`statusline`, merged with any existing reading in the same way as the
-[status-line wrapper](./profile-command.md#status-line-wrapper). The command
+`statusline`, merged with any existing reading in `home-usage.json` in the
+same way as the
+[status-line wrapper](./profile-command.md#status-line-wrapper).
+`home-usage.json` has the same format and the same file checks as
+`usage.json`. The command
 waits at most 50 ms for the state lock; when the lock is busy, it records
 nothing on that run. Recording happens whether auto-switch is enabled or
 not. Home mode does not update the
@@ -279,11 +287,36 @@ When any condition fails, nothing is recorded. The capacity line is still
 printed, with the bars from this run's input.
 
 Home mode never runs auto-switch recovery or an in-session swap, because the
-rotator owns `~/.claude`. It writes nothing other than `usage.json`: the
-capacity file, the journal, the ledgers and `hosts` are left untouched.
+rotator owns `~/.claude`. It writes nothing other than `home-usage.json`:
+`usage.json`, the capacity file, the journal, the ledgers and `hosts` are
+left untouched.
 
-`profile rotate` does not read `usage.json`. Readings taken in `~/.claude`
-reach it only through the spare count and auto-switch.
+#### Why the readings are kept apart
+
+Conditions 3 and 4 do not check which account `~/.claude` holds. Rotator
+logins have no auto-switch `hosts` entry, so attribution has no fingerprint
+to compare and files any reading taken more than 300 seconds after the
+ledger's `since` under the ledger's login. A hand-run `claude /login`, or a
+session that kept its old token past a swap, therefore gives a reading for
+the wrong login. Comparing the login with the profile's
+[recorded account](./profile-command.md#recorded-account) would catch the
+first case only: after a swap `~/.claude.json` already names the new
+account while the old session goes on reporting the old one's figures.
+
+`usage.json` is read by every part of amplihack that acts on readings:
+
+- `profile usage` and the rotator's measurement use a fresh entry as a
+  [passive reading](./profile-command.md#passive-readings) in place of a
+  real one;
+- `profile rotate` reads it for the
+  [exhausted-while-off](./profile-command.md#exhausted-while-off) check and
+  for reset times;
+- auto-switch reads it to pick a login, and the capacity writers read it.
+
+So home mode never writes it. `home-usage.json` is read only by the spare
+count below, which a person reads and nothing acts on. A wrong reading
+there can make the count off by one for a while; it cannot change which
+login is measured, picked or rotated to.
 
 ### Spare rule
 
@@ -293,7 +326,8 @@ Candidates are the profiles that `amplihack profile list` shows, other than:
 - profiles in the auto-switch `exclude` list;
 - profiles marked for [overflow](./profile-command.md#overflow-commands).
 
-For each candidate, the reading is looked up in `usage.json` under the
+For each candidate, the reading is looked up in `usage.json` and
+`home-usage.json`, the newer of the two winning, under the
 account the auto-switch ledger records for that profile, or under the
 profile's own name when it has no entry. A candidate counts as spare when
 all of these hold:
@@ -309,12 +343,12 @@ Both comparisons are strict, so a profile at exactly 50% or 90% is not
 spare. A window whose reset time has passed counts as 0%. Run
 `amplihack profile usage` to record readings for every profile.
 
-When home mode has just recorded a reading, the count uses the `usage.json`
-it saved under the state lock; if the save failed, the spare segment is left
-out. Otherwise the count reads its files without taking the state lock. A
-damaged or half-written `usage.json` leaves the spare segment out for that
-run. A missing `usage.json` holds no readings, so every candidate counts as
-not spare.
+When home mode has just recorded a reading, the count uses the
+`home-usage.json` it saved under the state lock; if the save failed, the
+spare segment is left out. Otherwise the count reads its files without
+taking the state lock. A damaged or half-written `usage.json` or
+`home-usage.json` leaves the spare segment out for that run. A missing file
+holds no readings; with neither file, every candidate counts as not spare.
 
 ### Inside profiles
 
@@ -376,7 +410,7 @@ Every failure gives less output, never an error on standard output.
 | Ledger `since` missing or less than 300 seconds old                       | Capacity line printed. Nothing is recorded.                               |
 | Input has no `rate_limits`, or no usable window                           | No bars. Nothing is recorded.                                             |
 | Input larger than 1 MiB                                                   | No bars. Nothing is recorded.                                             |
-| `usage.json` or auto-switch state damaged or unreadable                   | No spare segment.                                                         |
+| `usage.json`, `home-usage.json` or auto-switch state damaged or unreadable | No spare segment.                                                       |
 | State lock held for more than 50 ms                                       | Capacity line printed. The reading is not recorded on that run.          |
 | Internal panic                                                            | The original command's output only, and one generic line on stderr.      |
 

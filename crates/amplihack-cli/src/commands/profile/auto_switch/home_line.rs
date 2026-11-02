@@ -5,9 +5,13 @@
 //! mode) it runs `~/.amplihack/.claude/tools/statusline.sh` with the same
 //! input, then prints the login capacity line for the login the rotator
 //! ledgers name, and records the reading when [`should_record`] allows it,
-//! whatever the auto-switch setting. It never recovers or swaps, and never
-//! writes the journal, a ledger, the hosts or the capacity file: the rotator
-//! owns `~/.claude`. It opens no login credentials file, directly or
+//! whatever the auto-switch setting. It records into `home-usage.json`,
+//! never `usage.json`: nothing here checks which account `~/.claude` really
+//! holds, so these readings feed only the status line's spare count and
+//! never a passive reading, `profile rotate` or auto-switch
+//! (`State::try_load_home_usage`). It never recovers or swaps, and never
+//! writes `usage.json`, the journal, a ledger, the hosts or the capacity
+//! file: the rotator owns `~/.claude`. It opens no login credentials file, directly or
 //! through anything it calls (SR1); the integration test
 //! `a_recorded_home_tick_with_auto_switch_on_opens_no_credentials_file`
 //! checks that with inotify while the binary runs.
@@ -236,10 +240,11 @@ pub(super) fn should_record(
     }
 }
 
-/// Records `rl` against `account` under the state lock and returns the
-/// spare count from the file just saved. When the lock is busy nothing is
-/// recorded and the count is read without it. `None` when `usage.json` is
-/// damaged or the save fails, so no count is shown from unsaved data.
+/// Records `rl` against `account` in `home-usage.json` under the state lock
+/// and returns the spare count from the readings just saved. When the lock
+/// is busy nothing is recorded and the count is read without it. `None`
+/// when either readings file is damaged or the save fails, so no count is
+/// shown from unsaved data.
 fn record(
     state: &State,
     account: &str,
@@ -255,8 +260,8 @@ fn record(
             return unlocked_spare(state, live, now);
         }
     };
-    // A damaged file is left for `profile usage` to report, never replaced.
-    let mut file = match state.try_load_usage() {
+    // A damaged file is left for the user to see, never replaced.
+    let mut file = match state.try_load_home_usage() {
         Ok(f) => f,
         Err(e) => {
             tracing::debug!(op = "home status line usage", error = %e);
@@ -265,7 +270,7 @@ fn record(
     };
     let merged = usage::merge(file.accounts.get(account), usage::reading_from(rl, now));
     file.accounts.insert(account.to_string(), merged);
-    if let Err(e) = state.save_usage(&file) {
+    if let Err(e) = state.save_home_usage(&file) {
         tracing::debug!(op = "home status line save", error = %e);
         return None;
     }
@@ -273,17 +278,40 @@ fn record(
     // kinds, which opens the login credentials file in `~/.claude` and in
     // every profile (`kind::Ctx::load`), and this path never reads credentials (SR1). The
     // capacity file is kept current by the `--owner` wrapper and the rotator.
-    spare(state, &file.accounts, live, now)
-}
-
-/// The spare count from `usage.json` read without the lock; `None` when it
-/// is damaged.
-fn unlocked_spare(state: &State, live: Option<&str>, now: i64) -> Option<usize> {
-    let file = state
+    let checked = state
         .try_load_usage()
         .inspect_err(|e| tracing::debug!(op = "status line usage", error = %e))
         .ok()?;
-    spare(state, &file.accounts, live, now)
+    spare(state, &combined(checked.accounts, file.accounts), live, now)
+}
+
+/// The spare count from both readings files read without the lock; `None`
+/// when either is damaged.
+fn unlocked_spare(state: &State, live: Option<&str>, now: i64) -> Option<usize> {
+    let checked = state.try_load_usage();
+    let home = state.try_load_home_usage();
+    let (checked, home) = match (checked, home) {
+        (Ok(c), Ok(h)) => (c, h),
+        (Err(e), _) | (_, Err(e)) => {
+            tracing::debug!(op = "status line usage", error = %e);
+            return None;
+        }
+    };
+    spare(state, &combined(checked.accounts, home.accounts), live, now)
+}
+
+/// `usage.json` readings with the `~/.claude` readings merged in, for the
+/// spare count only: a person reads it, nothing acts on it. Per account the
+/// newer reading wins, as in [`usage::merge`].
+fn combined(
+    mut checked: BTreeMap<String, Reading>,
+    home: BTreeMap<String, Reading>,
+) -> BTreeMap<String, Reading> {
+    for (account, reading) in home {
+        let merged = usage::merge(checked.get(&account), reading);
+        checked.insert(account, merged);
+    }
+    checked
 }
 
 /// The spare count (D7): the profiles `profile list` shows, less `live`,
