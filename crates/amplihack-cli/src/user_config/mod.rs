@@ -343,6 +343,58 @@ pub(crate) fn max_depth(cwd: &Path) -> Option<u32> {
         .and_then(|depth| u32::try_from(depth).ok())
 }
 
+/// The key that turns the rotator's daily session archive on or off.
+pub(crate) const SESSIONS_DAILY_ARCHIVE: &str = "sessions.daily_archive";
+/// Days for `sessions archive` and the daily run, unless `--days` is given.
+pub(crate) const SESSIONS_ARCHIVE_DAYS: &str = "sessions.archive_days";
+/// DEST for `sessions archive`, `restore` and the daily run, unless
+/// `--dest` is given.
+pub(crate) const SESSIONS_ARCHIVE_DEST: &str = "sessions.archive_dest";
+
+/// `sessions.daily_archive` (default `true`), for the rotator's daily
+/// `sessions archive --apply` run (issue #1746); see [`sessions_key`].
+pub(crate) fn sessions_daily_archive(home: &Path) -> Result<bool, String> {
+    Ok(sessions_key(home, SESSIONS_DAILY_ARCHIVE)?
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true))
+}
+
+/// One `sessions.*` key from `<home>/.amplihack/config.toml`, or `None`
+/// when the file does not set it (issue #1746). The command and the
+/// rotator call this each time they need the key, so a running rotator
+/// follows `config set` without a restart, and both always use the same
+/// values.
+///
+/// Fails closed, because the archive removes files and a wrong DEST splits
+/// the archive: `Err` with the reason when the user file cannot be read or
+/// parsed, when it holds an invalid value for `name` or is writable by
+/// others, or when the test guard forbids `home`. The caller then does not
+/// run.
+pub(crate) fn sessions_key(home: &Path, name: &str) -> Result<Option<Value>, String> {
+    if guard_forbids(home) {
+        return Err(format!(
+            "{TEST_HOME_GUARD_ENV} is set and HOME ({}) is outside the temp dir",
+            display_path(home)
+        ));
+    }
+    let effective = load(&LoadCtx {
+        home: Some(home.to_path_buf()),
+        cwd: PathBuf::from("/"),
+        read_project: false,
+        env: &|_| None,
+        migrate: false,
+    });
+    let user = display_path(&files::user_file(home));
+    let problem = effective
+        .diagnostics
+        .iter()
+        .find(|d| d.path == user && d.key.as_deref().is_none_or(|key| key == name));
+    if let Some(d) = problem {
+        return Err(d.to_string());
+    }
+    Ok(effective.file_value(name).cloned())
+}
+
 /// Save `value` for a user-only or user-scoped key in the user file.
 pub(crate) fn set_user_value(name: &str, value: &Value) -> Result<PathBuf, ConfigError> {
     let def = schema::known_key(name)?;
