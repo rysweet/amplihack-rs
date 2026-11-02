@@ -746,6 +746,18 @@ fn ledger_live_keeps_the_trust_rules() {
 }
 
 #[test]
+fn an_empty_live_counts_as_no_ledger_whichever_ledger_is_later() {
+    // Each way round: the empty ledger is later, and must not hide the other.
+    let e = env();
+    e.ledger(r#"{"live":"","since":2}"#);
+    e.rotate_ledger(r#"{"live":"a","since":1}"#);
+    assert_eq!(e.ledger_live_name(), Some("a".into()));
+    e.ledger(r#"{"live":"a","since":1}"#);
+    e.rotate_ledger(r#"{"live":"","since":2}"#);
+    assert_eq!(e.ledger_live_name(), Some("a".into()));
+}
+
+#[test]
 fn ledger_live_refuses_names_that_are_not_profile_names() {
     let e = env();
     for body in [

@@ -182,6 +182,17 @@ pub fn statusline_binary() -> anyhow::Result<std::path::PathBuf> {
     anyhow::bail!("the status line is not supported on this platform")
 }
 
+/// `path`, resolved, refused if anyone but the user (or root) can replace it.
+pub fn statusline_binary_at(path: &std::path::Path) -> anyhow::Result<std::path::PathBuf> {
+    #[cfg(unix)]
+    return statusline::trusted_binary(path);
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        anyhow::bail!("the status line is not supported on this platform")
+    }
+}
+
 /// Refuses an action on `name` while its login is away from home, after
 /// finishing any interrupted swap and returning ended sessions. Without a
 /// state directory this is one metadata check.

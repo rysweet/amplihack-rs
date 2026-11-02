@@ -120,7 +120,7 @@ pub(crate) use auto_switch::claude_config_dirs;
 use auto_switch::fsx;
 pub(crate) use auto_switch::{
     home_statusline_command, launch_warning as capacity_launch_warning,
-    recipe_warning as capacity_recipe_warning, statusline_binary,
+    recipe_warning as capacity_recipe_warning, statusline_binary, statusline_binary_at,
 };
 use clap::Subcommand;
 use name::ProfileName;

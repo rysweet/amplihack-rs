@@ -65,15 +65,20 @@ pub fn render(
     (!segments.is_empty()).then(|| segments.join("  "))
 }
 
-/// Whether a candidate with reading `r` is spare (D7): not exhausted (a
-/// usage-limit failure with a window still to reset), its five-hour window
+/// Whether `r` records a usage-limit failure with a window still to reset:
+/// the login is out of capacity whatever its percentages say.
+pub fn is_limited(r: &Reading, now: i64) -> bool {
+    r.source == ReadingSource::UsageLimitFailure
+        && (future(r.five_hour.as_ref(), now).is_some()
+            || future(r.seven_day.as_ref(), now).is_some())
+}
+
+/// Whether a candidate with reading `r` is spare (D7): not [`is_limited`],
+/// its five-hour window
 /// under [`SPARE_FIVE_HOUR`] or absent (a plan with no session window,
 /// #1818), and its seven-day window present and under [`SPARE_SEVEN_DAY`].
 /// A window whose reset has passed counts as 0%.
 pub fn is_spare(r: &Reading, now: i64) -> bool {
-    let exhausted = r.source == ReadingSource::UsageLimitFailure
-        && (future(r.five_hour.as_ref(), now).is_some()
-            || future(r.seven_day.as_ref(), now).is_some());
     let used = |w: &Window| {
         if w.resets_at <= now {
             0.0
@@ -81,7 +86,7 @@ pub fn is_spare(r: &Reading, now: i64) -> bool {
             w.used_percentage
         }
     };
-    !exhausted
+    !is_limited(r, now)
         && r.five_hour
             .as_ref()
             .is_none_or(|w| used(w) < SPARE_FIVE_HOUR)

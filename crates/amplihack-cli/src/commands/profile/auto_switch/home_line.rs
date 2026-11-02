@@ -16,8 +16,9 @@
 //! `a_recorded_home_tick_with_auto_switch_on_opens_no_credentials_file`
 //! checks that with inotify while the binary runs.
 //! In a profile's own directory the run is that profile's, as with
-//! `--owner`; anywhere else only `statusline.sh` runs. Every failure gives
-//! less output, never an error on stdout.
+//! `--owner` but with no swap check and no capacity-file refresh, so it too
+//! opens no login file; anywhere else only `statusline.sh` runs. Every
+//! failure gives less output, never an error on stdout.
 
 use super::capacity_line;
 use super::config;
@@ -282,12 +283,14 @@ fn record(
     // No `capacity::refresh` here: with auto-switch on it resolves profile
     // kinds, which opens the login credentials file in `~/.claude` and in
     // every profile (`kind::Ctx::load`), and this path never reads credentials (SR1). The
-    // capacity file is kept current by the `--owner` wrapper and the rotator.
+    // capacity file is kept current by `profile usage`, the rotator and the
+    // `--owner` wrapper once a reading reaches the threshold.
     let checked = state
         .try_load_usage()
         .inspect_err(|e| tracing::debug!(op = "status line usage", error = %e))
         .ok()?;
-    spare(state, &combined(checked.accounts, file.accounts), live, now)
+    let accounts = combined(checked.accounts, file.accounts, now);
+    spare(state, &accounts, live, now)
 }
 
 /// The spare count from both readings files read without the lock; `None`
@@ -302,17 +305,27 @@ fn unlocked_spare(state: &State, live: Option<&str>, now: i64) -> Option<usize> 
             return None;
         }
     };
-    spare(state, &combined(checked.accounts, home.accounts), live, now)
+    let accounts = combined(checked.accounts, home.accounts, now);
+    spare(state, &accounts, live, now)
 }
 
 /// `usage.json` readings with the `~/.claude` readings merged in, for the
 /// spare count only: a person reads it, nothing acts on it. Per account the
-/// newer reading wins, as in [`usage::merge`].
+/// newer reading wins, as in [`usage::merge`], except that a usage-limit
+/// failure stands until its windows reset: a later percentage says nothing
+/// about a limit that has been hit (#1846).
 fn combined(
     mut checked: BTreeMap<String, Reading>,
     home: BTreeMap<String, Reading>,
+    now: i64,
 ) -> BTreeMap<String, Reading> {
     for (account, reading) in home {
+        if checked
+            .get(&account)
+            .is_some_and(|r| capacity_line::is_limited(r, now))
+        {
+            continue;
+        }
         let merged = usage::merge(checked.get(&account), reading);
         checked.insert(account, merged);
     }

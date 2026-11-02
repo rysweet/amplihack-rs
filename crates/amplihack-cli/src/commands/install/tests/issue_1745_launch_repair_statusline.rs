@@ -14,8 +14,8 @@ use serde_json::{Value, json};
 use std::fs;
 use std::path::Path;
 
-/// The command the launch repair should write: the running binary, as
-/// `status_line_command` resolves it.
+/// The command the launch repair should write with nothing deployed: the
+/// running binary, as `stable_self_binary` resolves it.
 fn expected_command() -> String {
     let exe = crate::commands::profile::statusline_binary()
         .expect("the test binary must pass the status-line ownership check");
@@ -63,6 +63,54 @@ fn the_launch_repair_writes_the_status_line_when_absent() {
         "{after}"
     );
     assert_eq!(after["model"], "opus");
+}
+
+/// A home in the trust walk's reach: `/tmp` is writable by others, so a
+/// binary under it would be refused. The test binary's own directory is not.
+fn trusted_home() -> tempfile::TempDir {
+    let exe = std::env::current_exe().unwrap();
+    tempfile::tempdir_in(exe.parent().unwrap()).unwrap()
+}
+
+/// Issue #911 for the status line: a deployed copy is what a durable entry
+/// records, so cleaning the build directory leaves the line working. An
+/// entry left by a build directory is replaced by it.
+#[test]
+fn the_launch_repair_records_the_deployed_binary_not_the_running_one() {
+    for settings in [
+        json!({"model": "opus"}),
+        json!({"statusLine": {
+            "type": "command",
+            "command": "'/gone/target/release/amplihack' profile statusline",
+        }}),
+    ] {
+        let tmp = trusted_home();
+        let deployed = create_exe_stub(&tmp.path().join(".local/bin"), "amplihack");
+        let after = repair(tmp.path(), settings);
+        let want =
+            crate::commands::profile::home_statusline_command(&deployed.canonicalize().unwrap())
+                .unwrap();
+        assert_ne!(want, expected_command());
+        assert_eq!(after["statusLine"]["command"], want.as_str(), "{after}");
+    }
+}
+
+#[test]
+fn a_deployed_binary_other_users_can_replace_is_refused_not_passed_over() {
+    use std::os::unix::fs::PermissionsExt;
+    let tmp = trusted_home();
+    let deployed = create_exe_stub(&tmp.path().join(".local/bin"), "amplihack");
+    fs::set_permissions(&deployed, fs::Permissions::from_mode(0o777)).unwrap();
+    let after = repair(tmp.path(), json!({"model": "opus"}));
+    assert_eq!(after.get("statusLine"), None, "{after}");
+}
+
+#[test]
+fn a_build_output_is_warned_about_and_a_deployed_path_is_not() {
+    let warning = binary::build_output_warning(Path::new("/w/target/release/amplihack"));
+    assert!(warning.is_some_and(|w| w.contains("build output")));
+    let deployed = Path::new("/home/me/.local/bin/amplihack");
+    assert_eq!(binary::build_output_warning(deployed), None);
 }
 
 #[test]

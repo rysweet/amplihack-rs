@@ -133,7 +133,7 @@ is ignored.
 | `CLAUDE_CONFIG_DIR`                                                                    | Mode        | Behaviour                                                                                |
 | -------------------------------------------------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------- |
 | Unset, empty, or `$HOME/.claude`                                                       | Home        | Runs `statusline.sh`, then prints the capacity line for the login live in `~/.claude`.   |
-| `<root>/<p>`, where the canonical parent is the canonical root and `<p>` is a valid profile name | Profile     | Behaves exactly like `--owner <p>`. See [Inside profiles](#inside-profiles).             |
+| `<root>/<p>`, where the canonical parent is the canonical root and `<p>` is a valid profile name | Profile     | Behaves like `--owner <p>`, without the swap check or the capacity-file update. See [Inside profiles](#inside-profiles). |
 | Anything else                                                                          | Passthrough | Runs `statusline.sh` only. No capacity line and nothing recorded.                        |
 
 A directory reached through a symlink is matched on its canonical path, so a
@@ -219,11 +219,35 @@ or the spare count.
 `<root>` is the profile root (see
 [Profile root](./profile-command.md#profile-root)).
 
-Credentials are never read. Neither the capacity line nor anything home
-mode calls opens, tests or names any `.credentials.json` file, and it does
-not read `~/.claude.json` or any profile's `.claude.json`. A test watches
-the credentials files with inotify while the binary records a reading with
-auto-switch on, and fails if any of them is opened.
+#### Credentials
+
+The capacity line, home mode and profile mode without `--owner` never read
+credentials. None of them opens any `.credentials.json` file, and the
+capacity line and home mode also never test or name one, or read
+`~/.claude.json` or any profile's `.claude.json`. Tests watch the credentials
+files with inotify while the binary runs, and fail if any is opened: a home
+tick that records a reading with auto-switch on, and a profile tick without
+`--owner` that is over the threshold with an overflow profile marked.
+
+The installed `--owner` wrapper has one exception. Auto-switch has to tell
+an API-key profile from a plan login, because an API-key profile is never
+swapped into a running session (issue #1804) and does not count towards the
+capacity state, and a login's kind is read from its login file. So the
+wrapper resolves profile kinds in two steps, and only when that step has
+work to do:
+
+- the [capacity file](./profile-command.md#capacity-file) update, when this
+  reading is at or over the threshold, or the file reports low or no
+  capacity;
+- the [in-session swap](./profile-command.md#in-session-swap) check, when
+  this reading is at or over the threshold, or on every tick while an
+  overflow profile is marked.
+
+An ordinary tick, under the threshold with no overflow profile marked and no
+capacity notice in force, opens no login file; a test checks this too.
+Another test checks that a tick at the threshold still updates the capacity
+file, and that a later tick clears it. The file is also kept current by
+`profile usage` and the rotator.
 
 #### Live login in home mode
 
@@ -334,7 +358,8 @@ all of these hold:
 
 - it has a reading;
 - it is not exhausted: its reading is not a usage-limit failure whose reset
-  time is still in the future;
+  time is still in the future. A later reading in `home-usage.json` does not
+  replace such a failure;
 - its five-hour window is under 50% used, or the reading has no five-hour
   window;
 - its seven-day window is present and under 90% used.
@@ -357,9 +382,10 @@ In profile mode, for profile `<p>`, the command:
 1. applies the [status-line wrapper](./profile-command.md#status-line-wrapper)
    checks: the root is private and `CLAUDE_CONFIG_DIR` resolves to
    `<root>/<p>`;
-2. waits at most 50 ms for the state lock, runs recovery, records the
-   reading when auto-switch is on and checks for an in-session swap, as the
-   wrapper always has;
+2. waits at most 50 ms for the state lock, runs recovery and records the
+   reading when auto-switch is on, as the wrapper always has. With `--owner`
+   only, it also updates the capacity file when the reading can change it,
+   and checks for an in-session swap (see [Credentials](#credentials));
 3. runs the saved original from `<root>/.auto-switch.d/statusline/<p>.json`.
    An original whose command contains `profile statusline` is never run;
    `statusline.sh` is run in its place. When the command was started without
@@ -369,20 +395,26 @@ In profile mode, for profile `<p>`, the command:
    `--owner`, or the saved original is the home command or the
    `statusline.sh` saved in its place. A wrapper around any other original
    copies that original's output through unchanged and adds no capacity
-   line. The line shows the account the auto-switch ledger records for `<p>`
+   line, and a wrapper with no saved original prints nothing. The line shows the account the auto-switch ledger records for `<p>`
    as the login, falling back to `<p>`, the bars from this run's input, and
    the spare count excluding `<p>`;
 5. prints the capacity notice, when it is due.
 
 New profiles receive the `~/.claude` entry through the shared settings keys,
 so a profile without a wrapper still gets the capacity line for its own
-login. Seeding is unchanged.
+login. Seeding is unchanged. Such a profile gets no in-session swap:
+auto-switch moves a login only for a profile with the wrapper installed,
+which `profile auto-switch status` reports and `install` adds.
 
 When `profile auto-switch install` or `repair` finds the `~/.claude` entry
 in a profile, it saves `{"type": "command", "command": "'<home>/.amplihack/.claude/tools/statusline.sh'"}`
 as the original and installs the wrapper. The script path is saved only when
 it passes the [script checks](#script-checks); otherwise no original is
-saved and the wrapper prints only the capacity line. A command containing
+saved and the wrapper prints nothing: neither `statusline.sh` nor the capacity
+line. Fixing the script does not change that, and neither does `repair`, which
+leaves a current wrapper alone. To get both lines back, copy the `statusLine`
+entry from `~/.claude/settings.json` into the profile's `settings.json` and run
+`profile auto-switch install`. A command containing
 `profile statusline` is never saved as an original.
 
 ### Script checks
@@ -467,7 +499,10 @@ To switch a kept entry to amplihack's, delete the `statusLine` key and run
 `amplihack install` again.
 
 `<cmd>` is the installed amplihack binary followed by `profile statusline`,
-with the path single-quoted for `sh`. When the binary cannot be located or
+with the path single-quoted for `sh`. The installed binary is the copy in
+`~/.local/bin`, which install has just deployed; when there is none, it is
+the running binary, with a warning if that is a build output, because the
+status line stops working when that directory is cleaned. When the binary cannot be located or
 is refused (it or a directory above it can be changed by other users), or
 its path cannot be quoted safely (for example, it contains a newline),
 install prints a warning and writes no `statusLine` entry. It never falls
@@ -480,14 +515,15 @@ in place after the usual timestamped backup, not through a temporary file.
 
 The launch repair is tested through `ensure_framework_installed_with`
 (`install/tests/issue_1745_launch_repair_statusline.rs`): it writes the
-entry when there is none and keeps a user's own entry. The repo-local
+entry when there is none, keeps a user's own entry and records the deployed
+binary over the running one. The repo-local
 path, which passes no command, is tested in `install/tests/settings_tests.rs`
 (`a_repo_local_install_*`).
 
 ### Differences from issue #1745
 
-Two parts of the build differ from what issue #1745 asked for. Both are
-recorded on the issue.
+Three parts of the build differ from what was asked for on issue #1745. All
+are recorded on the issue.
 
 1. **Readings from `~/.claude` do not reach the rotator.** The issue asked
    that home mode record its reading "as the wrapper does today (so readings
@@ -505,10 +541,19 @@ recorded on the issue.
    the home command.** The issue said the wrapper "prints the same line after
    the original command". It does so only when started without `--owner`,
    or when the saved original is the home command or `statusline.sh` (see
-   [Inside profiles](#inside-profiles), step 4). A wrapper around a user's
+   [Inside profiles](#inside-profiles), step 4). A wrapper with no saved
+   original prints nothing, as the #1569 wrapper tests require. A wrapper around a user's
    own status line copies its output through byte for byte, as it did
    before #1745 and as the #1569 wrapper tests require, so a user's own line
    is never changed by amplihack.
+3. **The `--owner` wrapper can still open login files.** The requirement was
+   that the status-line path never reads credentials. That holds for the
+   capacity line, home mode and profile mode without `--owner`. The installed
+   wrapper keeps the exception in [Credentials](#credentials), because
+   auto-switch cannot choose a swap target safely without each profile's
+   kind, and the kind is read from the login file. Removing the reads would
+   mean removing the in-session swap, or letting it swap an API-key profile
+   into a running session.
 
 ## Project Structure
 

@@ -81,7 +81,9 @@ pub(crate) enum InstallMode {
 /// The `statusLine` command a settings write into `~/.claude` adds, if any
 /// (issue #1745): global scope only, never a repo's settings. An implicit
 /// re-stage never writes settings at all. `exe` is asked only for global
-/// scope. When it fails, or its path cannot be quoted for `sh` (a newline,
+/// scope; callers pass [`binary::stable_self_binary`], so a durable entry
+/// never names a build directory while a deployed copy exists (issue #911).
+/// When it fails, or its path cannot be quoted for `sh` (a newline,
 /// for one), a warning is printed and no entry is written: there is no
 /// fallback to a bare `amplihack` found through `PATH`.
 pub(super) fn status_line_command(
@@ -436,10 +438,8 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     tracing::warn!("hooks not registered in settings.json — auto-repairing");
     let timestamp = unix_timestamp();
     // The launch repair writes the user's own settings, so it is global.
-    let status_line = status_line_command(
-        interactive::HookScope::Global,
-        crate::commands::profile::statusline_binary,
-    );
+    let status_line =
+        status_line_command(interactive::HookScope::Global, binary::stable_self_binary);
     let (settings_ok, _events) = ensure_settings_json(
         &settings_path,
         &staging_dir,
@@ -809,8 +809,7 @@ fn local_install_scoped(
                 effective_scope.display_name(),
                 settings_target.display()
             );
-            let status_line =
-                status_line_command(effective_scope, crate::commands::profile::statusline_binary);
+            let status_line = status_line_command(effective_scope, binary::stable_self_binary);
             let configured = ensure_settings_json(
                 &settings_target,
                 &claude_dir,

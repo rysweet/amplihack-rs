@@ -10,7 +10,14 @@
 //! `capacity`).
 //!
 //! Without `--owner` the mode comes from `CLAUDE_CONFIG_DIR`; see
-//! `home_line`.
+//! `home_line`. A run in a profile's directory without `--owner` opens no
+//! login file: it never swaps and never refreshes the capacity file, so a
+//! profile that only inherited the `~/.claude` entry stays out of both.
+//! The `--owner` wrapper resolves profile kinds, which opens login files,
+//! only for a swap check that needs them and when [`refresh_due`] says so;
+//! see "Credentials" in docs/reference/STATUSLINE.md.
+//!
+//! [`refresh_due`]: super::capacity::refresh_due
 
 use super::MARKER;
 use super::config;
@@ -64,8 +71,10 @@ pub fn run(root_arg: Option<&str>, owner_arg: Option<&str>) -> i32 {
 }
 
 /// A profile's own session: `--owner`, or (`implicit`) a run without it
-/// whose `CLAUDE_CONFIG_DIR` is the profile's directory. The checks,
-/// recording and swap check are the same either way.
+/// whose `CLAUDE_CONFIG_DIR` is the profile's directory. The checks and
+/// recording are the same either way; only the installed `--owner` wrapper
+/// runs the swap check and refreshes the capacity file, the two steps that
+/// resolve profile kinds and so open login files.
 fn owned(root: Option<&Path>, owner_arg: &str, implicit: bool, input: &[u8]) -> i32 {
     let state = match root {
         Some(r) => open_state(r),
@@ -82,7 +91,8 @@ fn owned(root: Option<&Path>, owner_arg: &str, implicit: bool, input: &[u8]) -> 
 
     let mut reading = None;
     if let Some((state, owner)) = session {
-        reading = std::panic::catch_unwind(|| record(state, owner, input)).unwrap_or(None);
+        reading =
+            std::panic::catch_unwind(|| record(state, owner, input, !implicit)).unwrap_or(None);
     }
 
     // After the reading, so this tick's own reading counts.
@@ -98,9 +108,10 @@ fn owned(root: Option<&Path>, owner_arg: &str, implicit: bool, input: &[u8]) -> 
     // The capacity line stands in for the home command's: it is added only
     // without `--owner`, or when the saved original is the home command or
     // the `statusline.sh` saved in its place. A wrapper around any other
-    // original passes that output through unchanged and adds nothing. This
-    // is narrower than issue #1745 asked for; see "Differences from issue
-    // #1745" in docs/reference/STATUSLINE.md.
+    // original passes that output through unchanged and adds nothing, and a
+    // wrapper with no saved original prints nothing at all, which the #1569
+    // wrapper tests require. This is narrower than issue #1745 asked for;
+    // see "Differences from issue #1745" in docs/reference/STATUSLINE.md.
     let replaces_home = implicit
         || saved.as_deref().is_some_and(|c| {
             c.contains(MARKER) || home_line::script_command().as_deref() == Some(c)
@@ -126,7 +137,7 @@ fn owned(root: Option<&Path>, owner_arg: &str, implicit: bool, input: &[u8]) -> 
         0
     };
 
-    if let (Some((state, owner)), Some(rl)) = (session, reading) {
+    if let (false, Some((state, owner)), Some(rl)) = (implicit, session, reading) {
         let _ = std::panic::catch_unwind(|| swap_step(state, owner, &rl));
     }
     code
@@ -172,9 +183,17 @@ fn session_matches(state: &State, owner: &ProfileName) -> bool {
     }
 }
 
-/// Step 1: recovery, and the reading when the switch is on.
-fn record(state: &State, owner: &ProfileName, input: &[u8]) -> Option<usage::RateLimits> {
-    let on = config::effective(&state.root).on;
+/// Step 1: recovery, and the reading when the switch is on. With
+/// `refresh_capacity` (the `--owner` wrapper), the capacity file too when
+/// this reading can change it.
+fn record(
+    state: &State,
+    owner: &ProfileName,
+    input: &[u8],
+    refresh_capacity: bool,
+) -> Option<usage::RateLimits> {
+    let eff = config::effective(&state.root);
+    let on = eff.on;
     if !on && !state.exists() {
         return None;
     }
@@ -200,10 +219,14 @@ fn record(state: &State, owner: &ProfileName, input: &[u8]) -> Option<usage::Rat
         usage::attribute(owner.as_str(), ledger.hosts.get(owner.as_str()), &rl, now)
     {
         let mut file = state.load_usage();
-        let merged = usage::merge(file.accounts.get(&account), usage::reading_from(&rl, now));
+        let reading = usage::reading_from(&rl, now);
+        let due = refresh_capacity
+            && super::capacity::refresh_due(&state.root, &reading, eff.config.threshold, now);
+        let merged = usage::merge(file.accounts.get(&account), reading);
         file.accounts.insert(account, merged);
         match state.save_usage(&file) {
-            Ok(()) => super::capacity::refresh(state, &file, &ledger, "statusline"),
+            Ok(()) if due => super::capacity::refresh(state, &file, &ledger, "statusline"),
+            Ok(()) => {}
             Err(e) => eprintln!("auto-switch: {e}"),
         }
     }
@@ -350,11 +373,16 @@ pub fn home_command(exe: &Path) -> Result<String, ProfileError> {
     Ok(format!("{} {MARKER}", sh_quote(quotable(exe)?)))
 }
 
-/// The running amplihack binary, refused if anyone but the user (or root) can
-/// replace it: the binary and every directory above it must be owned by the
-/// user or root and not writable by other users.
+/// The running amplihack binary, refused as [`trusted_binary`] refuses.
 pub fn installed_binary() -> anyhow::Result<PathBuf> {
-    let exe = std::env::current_exe()?.canonicalize()?;
+    trusted_binary(&std::env::current_exe()?)
+}
+
+/// `path`, resolved, refused if anyone but the user (or root) can replace
+/// it: the binary and every directory above it must be owned by the user or
+/// root and not writable by other users.
+pub fn trusted_binary(path: &Path) -> anyhow::Result<PathBuf> {
+    let exe = path.canonicalize()?;
     let mut cur = Some(exe.as_path());
     while let Some(p) = cur {
         let m = std::fs::symlink_metadata(p)?;

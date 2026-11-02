@@ -108,13 +108,19 @@ pub(super) struct LedgerLive {
 /// rotate` ledger and the prototype's once each, under the same trust rules
 /// as [`detect`], and nothing else: no login file, no `~/.claude.json`, no
 /// profile listing. A ledger that is absent, untrusted or names nobody
-/// counts as absent. With two, the later `since` wins; on a tie the rotate
+/// (`live` missing, null or empty) counts as absent. With two, the later `since` wins; on a tie the rotate
 /// ledger wins, and a ledger without `since` is older. `None` when the
 /// winner's `live` is not a valid profile name.
 #[cfg(unix)]
 pub(super) fn ledger_live(store: &ProfileStore) -> Option<LedgerLive> {
     let named = |l: unix::Ledger| match l {
-        unix::Ledger::Valid(l) if l.live.as_ref().is_some_and(|v| !v.is_null()) => Some(l),
+        unix::Ledger::Valid(l)
+            if l.live
+                .as_ref()
+                .is_some_and(|v| !v.is_null() && v.as_str() != Some("")) =>
+        {
+            Some(l)
+        }
         _ => None,
     };
     let rotate = named(unix::rotate(store.root()));

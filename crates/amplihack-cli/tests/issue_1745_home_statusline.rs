@@ -621,6 +621,35 @@ fn a_wrapper_outside_its_session_adds_no_capacity_line() {
     assert!(!text(&out.stdout).contains("🔑"), "{}", text(&out.stdout));
 }
 
+/// Crusty round 6: nothing is saved when `statusline.sh` fails its checks at
+/// install, and a wrapper with no saved original prints nothing, as the
+/// #1569 wrapper tests require. That lasts once the script is fixed, until
+/// the `~/.claude` entry is put back in the profile and wrapped again, which
+/// is what STATUSLINE.md tells the user to do.
+#[test]
+fn a_wrapper_with_no_saved_original_prints_nothing_until_it_is_wrapped_again() {
+    let f = Fixture::new(None);
+    f.wrap_home_command_in_x();
+    assert!(!f.root.join(".auto-switch.d/statusline/X.json").exists());
+    let root = f.root.to_str().unwrap().to_string();
+    let args = ["--root", root.as_str(), "--owner", "X"];
+    let x = f.root.join("X");
+    let out = f.run(&args, "0", Some(&x), &input(34.0, 43.0));
+    assert_eq!(text(&out.stdout), "", "{}", text(&out.stderr));
+    f.script(FIRST);
+    let out = f.run(&args, "0", Some(&x), &input(34.0, 43.0));
+    assert_eq!(
+        text(&out.stdout),
+        "",
+        "a fixed script alone changes nothing"
+    );
+
+    f.wrap_home_command_in_x();
+    let out = f.run(&args, "0", Some(&x), &input(34.0, 43.0));
+    let stdout = text(&out.stdout);
+    assert!(stdout.starts_with("first\n🔑 X  5h"), "{stdout}");
+}
+
 // ---------------------------------------------------------------------------
 // SR1 at run time: the home tick opens no credentials file
 // ---------------------------------------------------------------------------
@@ -696,12 +725,10 @@ impl Drop for OpenWatch {
     }
 }
 
+/// A login for every profile as well as `~/.claude`, so any kind or login
+/// lookup has a file to open.
 #[cfg(target_os = "linux")]
-#[test]
-fn a_recorded_home_tick_with_auto_switch_on_opens_no_credentials_file() {
-    let f = Fixture::new(Some(FIRST));
-    // Every profile has a login of its own as well as `~/.claude`, so any
-    // kind or login lookup has a file to open.
+fn logins(f: &Fixture) -> Vec<PathBuf> {
     let creds = vec![
         f.home.join(".claude/.credentials.json"),
         f.root.join("X/.credentials.json"),
@@ -710,6 +737,102 @@ fn a_recorded_home_tick_with_auto_switch_on_opens_no_credentials_file() {
     for p in &creds[1..] {
         private(p, br#"{"claudeAiOauth":{}}"#);
     }
+    creds
+}
+
+/// A `usage.json` entry over the default threshold, observed now.
+#[cfg(target_os = "linux")]
+fn over_threshold() -> serde_json::Value {
+    serde_json::json!({
+        "five_hour": {"used_percentage": 99.0, "resets_at": now() + HOUR},
+        "seven_day": {"used_percentage": 43.0, "resets_at": now() + 3 * 86_400},
+        "observed_at": now(),
+        "source": "statusline",
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn state_json(f: &Fixture, file: &str) -> Option<serde_json::Value> {
+    let raw = fs::read(f.root.join(".auto-switch.d").join(file)).ok()?;
+    Some(serde_json::from_slice(&raw).unwrap())
+}
+
+/// The most a profile tick could want from a login file: over the threshold,
+/// with an overflow profile marked and another profile over it too. It
+/// records and prints, but neither swaps nor writes the capacity file.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_profile_tick_without_owner_opens_no_credentials_file() {
+    let f = Fixture::new(Some(FIRST));
+    let creds = logins(&f);
+    private(&f.root.join(".auto-switch"), b"enabled=on\noverflow=X\n");
+    f.plant_usage(serde_json::json!({"X": over_threshold()}));
+    let watch = OpenWatch::new(&creds);
+    let out = f.run(&[], "1", Some(&f.root.join("Y")), &input(99.0, 43.0));
+    let stdout = text(&out.stdout);
+    assert!(stdout.starts_with("first\n🔑 Y"), "{stdout}");
+    let usage = state_json(&f, "usage.json").unwrap();
+    assert_eq!(usage["accounts"]["Y"]["five_hour"]["used_percentage"], 99.0);
+    assert!(state_json(&f, "capacity.json").is_none(), "refreshed");
+    assert_eq!(watch.opened(), Vec::<PathBuf>::new(), "credentials opened");
+    assert!(creds[2].exists(), "no swap without a wrapper");
+}
+
+/// The `--owner` wrapper on an ordinary tick: under the threshold, with no
+/// capacity notice in force and no overflow profile marked, it records the
+/// reading and opens no login file.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_owner_tick_under_the_threshold_opens_no_credentials_file() {
+    let f = Fixture::new(Some(FIRST));
+    let creds = logins(&f);
+    let root = f.root.to_str().unwrap().to_string();
+    let watch = OpenWatch::new(&creds);
+    let out = f.run(
+        &["--root", &root, "--owner", "Y"],
+        "1",
+        Some(&f.root.join("Y")),
+        &input(34.0, 43.0),
+    );
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let usage = state_json(&f, "usage.json").unwrap();
+    assert_eq!(usage["accounts"]["Y"]["five_hour"]["used_percentage"], 34.0);
+    assert_eq!(watch.opened(), Vec::<PathBuf>::new(), "credentials opened");
+}
+
+/// The recorded exception: at the threshold the `--owner` wrapper resolves
+/// profile kinds, because the capacity file and the swap must tell an
+/// API-key profile from a plan login (#1804). It writes the capacity notice,
+/// and a later tick under the threshold clears it.
+#[cfg(target_os = "linux")]
+#[test]
+fn an_owner_tick_at_the_threshold_resolves_kinds_and_keeps_the_notice_current() {
+    let f = Fixture::new(Some(FIRST));
+    let creds = logins(&f);
+    f.plant_usage(serde_json::json!({"X": over_threshold()}));
+    let root = f.root.to_str().unwrap().to_string();
+    let args = ["--root", root.as_str(), "--owner", "Y"];
+    let y = f.root.join("Y");
+    let watch = OpenWatch::new(&creds);
+    f.run(&args, "1", Some(&y), &input(99.0, 43.0));
+    let capacity = state_json(&f, "capacity.json").expect("the notice was written");
+    assert_eq!(capacity["state"], "low", "{capacity}");
+    assert_ne!(watch.opened(), Vec::<PathBuf>::new(), "kinds were resolved");
+
+    // The same second as the tick above would keep its worse reading.
+    let mut earlier = over_threshold();
+    earlier["observed_at"] = (now() - 60).into();
+    f.plant_usage(serde_json::json!({"X": over_threshold(), "Y": earlier}));
+    f.run(&args, "1", Some(&y), &input(20.0, 43.0));
+    let capacity = state_json(&f, "capacity.json").unwrap();
+    assert_eq!(capacity["state"], "ok", "{capacity}");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_recorded_home_tick_with_auto_switch_on_opens_no_credentials_file() {
+    let f = Fixture::new(Some(FIRST));
+    let creds = logins(&f);
     f.prototype_ledger(r#"{"live":"X","since":1}"#);
     let watch = OpenWatch::new(&creds);
     let out = f.run(&[], "1", None, &input(34.0, 43.0));

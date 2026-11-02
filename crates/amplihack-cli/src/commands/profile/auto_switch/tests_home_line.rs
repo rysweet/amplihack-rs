@@ -669,6 +669,31 @@ fn an_exhausted_login_is_not_spare() {
     assert!(e.tick(&input(34.0, 43.0)).unwrap().ends_with("· 0 spare"));
 }
 
+/// The #1846 case: a login hit its weekly limit with its weekly window at
+/// 62%. A later `~/.claude` reading of 30/62 must not make it spare, on the
+/// recording path or the one without the lock, until the windows reset.
+#[test]
+fn a_later_home_reading_does_not_hide_a_usage_limit_failure() {
+    let e = env();
+    e.prototype_ledger(r#"{"live":"X","since":1}"#);
+    let mut y = usage_entry(20.0, 62.0);
+    y["source"] = "usage_limit_failure".into();
+    plant_usage(&e, &serde_json::json!({"version": 1, "accounts": {"Y": y}}));
+    let mut later = usage_entry(30.0, 62.0);
+    later["observed_at"] = now().into();
+    plant_home_usage(
+        &e,
+        &serde_json::json!({"version": 1, "accounts": {"Y": later}}),
+    );
+    assert!(e.tick(&input(34.0, 43.0)).unwrap().ends_with("· 0 spare"));
+    assert!(e.tick(b"{}").unwrap().ends_with("· 0 spare"));
+
+    y["five_hour"]["resets_at"] = (now() - 1).into();
+    y["seven_day"]["resets_at"] = (now() - 1).into();
+    plant_usage(&e, &serde_json::json!({"version": 1, "accounts": {"Y": y}}));
+    assert!(e.tick(&input(34.0, 43.0)).unwrap().ends_with("· 1 spare"));
+}
+
 #[test]
 fn a_weekly_only_reading_can_be_spare() {
     let e = env();

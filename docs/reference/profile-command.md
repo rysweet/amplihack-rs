@@ -3460,15 +3460,20 @@ When Claude runs the wrapper, it:
 4. runs the [in-session swap](#in-session-swap) check.
 
 After the original output, the wrapper prints the
-[login capacity line](./STATUSLINE.md#login-capacity-line) whenever the
-step 1 checks passed, then the [capacity notice](#capacity-notice) while it
-is due. Step 2 also updates the [capacity file](#capacity-file) after
-recording the reading.
+[login capacity line](./STATUSLINE.md#login-capacity-line) when the step 1
+checks passed and the saved original is `statusline.sh`. A wrapper around
+your own command adds no capacity line, and a wrapper with no saved original
+prints none (see [Inside profiles](./STATUSLINE.md#inside-profiles)). The
+[capacity notice](#capacity-notice) follows while it is due. Step 2 also
+updates the [capacity file](#capacity-file) when the recorded reading is at or
+over the threshold, or the file reports low or no capacity; any other reading
+cannot change the file.
 
 `--root` may be left out; the root is then resolved as for other profile
 commands (see [Profile root](#profile-root)). Run without `--owner` inside
 `<root>/<name>`, `amplihack profile statusline` behaves as
-`--owner <name>`; see [Modes](./STATUSLINE.md#modes).
+`--owner <name>`, except that it never swaps or updates the capacity file;
+see [Modes](./STATUSLINE.md#modes).
 
 The saved original in `statusline/<name>.json` is run only if it passes the
 [state directory](#state-directory) checks (a regular file owned by you,
