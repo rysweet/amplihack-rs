@@ -6,6 +6,7 @@ use super::hooks::{
 };
 use super::paths::xpia_hooks_dir;
 use super::types::*;
+use crate::commands::profile::is_amplihack_statusline;
 use anyhow::{Context, Result, bail};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
@@ -150,9 +151,9 @@ impl StatusLineOutcome {
 }
 
 /// Points `settings.statusLine` at `cmd` (issue #1745). Only amplihack's
-/// own entry is replaced (see [`is_amplihack_statusline`]); its `padding`
-/// and every other key are kept. Any other entry is the user's and is not
-/// touched.
+/// own entry is replaced (`cmd` itself, or see [`is_amplihack_statusline`]);
+/// its `padding` and every other key are kept. Any other entry is the user's
+/// and is not touched.
 pub(crate) fn ensure_status_line(settings: &mut Value, cmd: &str) -> StatusLineOutcome {
     let Some(obj) = settings.as_object_mut() else {
         return StatusLineOutcome::KeptUser;
@@ -170,7 +171,7 @@ pub(crate) fn ensure_status_line(settings: &mut Value, cmd: &str) -> StatusLineO
     let ours = sl
         .get("command")
         .and_then(Value::as_str)
-        .is_some_and(|c| is_amplihack_statusline(c, cmd));
+        .is_some_and(|c| c.trim() == cmd.trim() || is_amplihack_statusline(c));
     if !ours {
         return StatusLineOutcome::KeptUser;
     }
@@ -182,64 +183,6 @@ pub(crate) fn ensure_status_line(settings: &mut Value, cmd: &str) -> StatusLineO
     } else {
         StatusLineOutcome::Updated
     }
-}
-
-/// The script older installs pointed the entry at, after `~` or `$HOME`.
-const LEGACY_SCRIPT: &str = "/.amplihack/.claude/tools/statusline.sh";
-
-/// Whether `command` is an entry amplihack wrote (issue #1745). Exact
-/// matches only, after trimming: `cmd` itself; a single-quoted absolute
-/// path to a binary named `amplihack` followed by ` profile statusline`;
-/// the bare `amplihack profile statusline`; or the legacy `statusline.sh`
-/// path alone, quoted or not. Anything else, even a command that runs one
-/// of these, is the user's.
-pub(crate) fn is_amplihack_statusline(command: &str, cmd: &str) -> bool {
-    let c = command.trim();
-    if c == cmd.trim() || c == "amplihack profile statusline" {
-        return true;
-    }
-    if let Some(path) = c.strip_suffix(" profile statusline").and_then(sh_unquote) {
-        return path.starts_with('/')
-            && Path::new(&path).file_name() == Some(std::ffi::OsStr::new("amplihack"));
-    }
-    is_legacy_script(c)
-}
-
-/// `word` as `sh` reads it, when it is single-quoted segments joined by
-/// `\'` (the form `sh_quote` writes); `None` for anything else.
-fn sh_unquote(word: &str) -> Option<String> {
-    let mut out = String::new();
-    let mut rest = word;
-    loop {
-        rest = rest.strip_prefix('\'')?;
-        let end = rest.find('\'')?;
-        out.push_str(&rest[..end]);
-        rest = &rest[end + 1..];
-        if rest.is_empty() {
-            return Some(out);
-        }
-        rest = rest.strip_prefix("\\'")?;
-        out.push('\'');
-        if rest.is_empty() {
-            return Some(out);
-        }
-    }
-}
-
-/// The legacy script path and nothing else: `~`, `$HOME`, `${HOME}` or an
-/// absolute path in front, the whole optionally in one pair of quotes.
-fn is_legacy_script(c: &str) -> bool {
-    let unquoted = ['\'', '"']
-        .iter()
-        .find_map(|q| c.strip_prefix(*q).and_then(|r| r.strip_suffix(*q)))
-        .unwrap_or(c);
-    let Some(prefix) = unquoted.strip_suffix(LEGACY_SCRIPT) else {
-        return false;
-    };
-    matches!(prefix, "~" | "$HOME" | "${HOME}")
-        || (prefix.starts_with('/')
-            && !prefix
-                .contains(|ch: char| ch.is_whitespace() || "'\"$`\\;|&<>(){}*?[]!#~".contains(ch)))
 }
 
 /// The first Claude Code the limit-resume hook (`StopFailure` with

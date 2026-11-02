@@ -98,6 +98,7 @@ fn only_a_profile_statusline_command_with_an_owner_is_a_wrapper() {
         "",
         "bash ~/.amplihack/.claude/tools/statusline.sh",
         "printf '--owner'",
+        "my-profile statusline-helper.sh --owner me",
     ] {
         assert!(!is_wrapper(other), "{other}");
     }
@@ -206,11 +207,10 @@ fn without_a_usable_script_install_saves_no_original() {
 }
 
 #[test]
-fn a_profile_statusline_command_is_never_saved_as_an_original() {
+fn the_home_command_and_a_wrapper_are_never_saved_as_an_original() {
     for cmd in [
         "'/usr/local/bin/amplihack' profile statusline",
-        "'/x/amplihack' profile statusline --root '/r'",
-        "amplihack profile statusline | tee /tmp/x",
+        "amplihack profile statusline",
         "'/x/amplihack' profile statusline --owner 'work'",
     ] {
         for (script, repoint) in [(None, false), (Some(SCRIPT), false), (Some(SCRIPT), true)] {
@@ -221,6 +221,46 @@ fn a_profile_statusline_command_is_never_saved_as_an_original() {
                 !saved.is_some_and(|v| v.to_string().contains("profile statusline")),
                 "{cmd}"
             );
+        }
+    }
+}
+
+/// Home install keeps these as the user's (`settings_tests.rs`), so shared
+/// keys can copy them into a profile; `install` must not lose them there.
+#[test]
+fn install_saves_a_users_command_that_mentions_profile_statusline() {
+    for mine in [
+        "my-profile statusline-helper.sh",
+        "my-profile statusline-helper.sh --owner me",
+        "amplihack profile statusline | my-filter",
+        "'/usr/local/bin/amplihack' profile statusline | my-filter",
+        "'/x/amplihack' profile statusline --root '/r'",
+    ] {
+        for repoint in [false, true] {
+            let entry = serde_json::json!({"type": "command", "command": mine, "padding": 2});
+            let p = profiles(Some(entry.clone()));
+            let (outcome, detail) = install_one(
+                &p.store,
+                &p.state,
+                Path::new(EXE),
+                &p.name,
+                repoint,
+                Some(SCRIPT),
+            )
+            .unwrap();
+            assert_eq!(
+                (outcome, detail.as_str()),
+                ("installed", "(wrapped existing status line)"),
+                "{mine}, repoint {repoint}"
+            );
+            assert_eq!(
+                p.state.read_sub_json("statusline", "work").unwrap(),
+                Some(entry),
+                "{mine}: the user's command is saved whole"
+            );
+            let want = wrapper_command(Path::new(EXE), &p.root, &p.name).unwrap();
+            assert_eq!(p.settings()["statusLine"]["command"], want.as_str());
+            assert_eq!(p.settings()["statusLine"]["padding"], 2);
         }
     }
 }

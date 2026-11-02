@@ -778,6 +778,94 @@ fn a_profile_tick_without_owner_opens_no_credentials_file() {
     assert!(creds[2].exists(), "no swap without a wrapper");
 }
 
+/// A hosts entry whose session has ended: `X` holds `Y`'s login and nothing
+/// is running there, so recovery would hand the login back.
+#[cfg(target_os = "linux")]
+fn stale_host(f: &Fixture, creds: &[PathBuf]) -> Vec<u8> {
+    fs::remove_file(&creds[2]).unwrap();
+    let ledger = serde_json::json!({
+        "version": 1,
+        "hosts": {"X": {"live": "Y", "swapped_at": now() - HOUR, "pre_swap_fingerprint": null}},
+    });
+    let body = ledger.to_string().into_bytes();
+    let dir = f.root.join(".auto-switch.d");
+    fs::create_dir_all(&dir).unwrap();
+    mode(&dir, 0o700);
+    private(&dir.join("ledger.json"), &body);
+    body
+}
+
+/// Recovery is the wrapper's: without `--owner` a stale hosts entry stays and
+/// the hosted login does not move. The same tick with `--owner` does return
+/// it, so this test would see a move.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_profile_tick_without_owner_moves_no_login_for_a_stale_host() {
+    let f = Fixture::new(Some(FIRST));
+    let creds = logins(&f);
+    private(&f.root.join(".auto-switch"), b"enabled=on\n");
+    let ledger = stale_host(&f, &creds);
+    let hosted = fs::read(&creds[1]).unwrap();
+    let y = f.root.join("Y");
+
+    let out = f.run(&[], "1", Some(&y), &input(34.0, 43.0));
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(fs::read(&creds[1]).unwrap(), hosted, "the login moved");
+    assert!(!creds[2].exists(), "the login reached its home");
+    assert_eq!(
+        fs::read(f.root.join(".auto-switch.d/ledger.json")).unwrap(),
+        ledger,
+        "the hosts entry changed"
+    );
+
+    let root = f.root.to_str().unwrap().to_string();
+    f.run(
+        &["--root", &root, "--owner", "Y"],
+        "1",
+        Some(&y),
+        &input(34.0, 43.0),
+    );
+    assert!(creds[2].exists(), "the wrapper returns the login");
+    assert_eq!(
+        state_json(&f, "ledger.json").unwrap()["hosts"],
+        serde_json::json!({})
+    );
+}
+
+/// A swap journal means the live login is not settled: a tick without
+/// `--owner` leaves the journal for the wrapper or `repair` and records
+/// nothing, while still printing.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_profile_tick_without_owner_leaves_a_journal_and_records_nothing() {
+    let f = Fixture::new(Some(FIRST));
+    let creds = logins(&f);
+    private(&f.root.join(".auto-switch"), b"enabled=on\n");
+    let journal = serde_json::json!({
+        "version": 1, "op": "swap", "dir": "Y", "from": "Y", "from_present": true,
+        "to": "X", "phase": "J0", "started_at": now(), "pid": 1,
+        "fingerprint": null, "refresh_lock_ino": null,
+    })
+    .to_string()
+    .into_bytes();
+    let dir = f.root.join(".auto-switch.d");
+    fs::create_dir_all(&dir).unwrap();
+    mode(&dir, 0o700);
+    private(&dir.join("journal.json"), &journal);
+    let before: Vec<_> = creds.iter().map(|c| fs::read(c).unwrap()).collect();
+
+    let out = f.run(&[], "1", Some(&f.root.join("Y")), &input(34.0, 43.0));
+    assert!(
+        text(&out.stdout).starts_with("first\n🔑 Y"),
+        "{}",
+        text(&out.stdout)
+    );
+    assert_eq!(fs::read(dir.join("journal.json")).unwrap(), journal);
+    let after: Vec<_> = creds.iter().map(|c| fs::read(c).unwrap()).collect();
+    assert_eq!(after, before, "a login file changed");
+    assert!(state_json(&f, "usage.json").is_none(), "recorded mid-swap");
+}
+
 /// The `--owner` wrapper on an ordinary tick: under the threshold, with no
 /// capacity notice in force and no overflow profile marked, it records the
 /// reading and opens no login file.
@@ -886,4 +974,80 @@ fn profile_usage_never_reports_a_home_reading_as_passive() {
         !stdout.contains("97"),
         "the home reading was reported: {stdout}"
     );
+}
+
+/// Home mode prints the capacity notice after the capacity line, reading it
+/// from the capacity file the wrapper or `profile usage` wrote.
+#[test]
+fn a_home_tick_prints_the_capacity_notice_when_it_is_due() {
+    let f = Fixture::new(Some(FIRST));
+    f.rotate_ledger("X");
+    let dir = f.root.join(".auto-switch.d");
+    let notice = serde_json::json!({
+        "version": 1,
+        "state": "low",
+        "threshold": 90,
+        "over": ["X", "Y"],
+        "earliest_reset": chrono::Utc::now() + chrono::Duration::hours(2),
+        "written_at": chrono::Utc::now(),
+        "writer": "statusline",
+    });
+    fs::create_dir_all(&dir).unwrap();
+    mode(&dir, 0o700);
+    private(&dir.join("capacity.json"), notice.to_string().as_bytes());
+    private(&f.root.join(".auto-switch"), b"enabled=on\n");
+
+    let stdout = text(&f.run(&[], "1", None, &input(34.0, 43.0)).stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(lines.len(), 3, "{stdout}");
+    assert_eq!(lines[0], "first");
+    assert!(lines[1].starts_with("🔑 X"), "{stdout}");
+    assert!(lines[2].starts_with(PREFIX_LOW), "{stdout}");
+}
+
+#[test]
+fn a_home_tick_prints_no_notice_without_a_capacity_file() {
+    let f = Fixture::new(Some(FIRST));
+    f.rotate_ledger("X");
+    private(&f.root.join(".auto-switch"), b"enabled=on\n");
+    let stdout = text(&f.run(&[], "1", None, &input(34.0, 43.0)).stdout);
+    assert_eq!(stdout.lines().count(), 2, "{stdout}");
+}
+
+/// A user's filter around amplihack's own command is saved by `install`. The
+/// wrapper must run it, and the inner `profile statusline` must end at
+/// `statusline.sh` instead of running the same original again, with or
+/// without `--owner`.
+#[test]
+fn a_saved_filter_around_profile_statusline_runs_once_and_ends() {
+    let f = Fixture::new(Some(FIRST));
+    let mine = format!(
+        "'{}' profile statusline | tr a-z A-Z",
+        amplihack_bin().to_str().unwrap()
+    );
+    let settings = serde_json::json!({"statusLine": {"type": "command", "command": mine}});
+    fs::write(
+        f.root.join("X/settings.json"),
+        serde_json::to_vec_pretty(&settings).unwrap(),
+    )
+    .unwrap();
+    let out = f.ok(&["profile", "auto-switch", "install"], "0");
+    assert!(
+        text(&out.stdout).contains("wrapped existing status line"),
+        "{}",
+        text(&out.stdout)
+    );
+
+    let root = f.root.to_str().unwrap().to_string();
+    let x = f.root.join("X");
+    for args in [vec![], vec!["--root", root.as_str(), "--owner", "X"]] {
+        let out = f.run(&args, "0", Some(&x), &input(34.0, 43.0));
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        assert!(
+            text(&out.stdout).starts_with("FIRST\n"),
+            "{}",
+            text(&out.stdout)
+        );
+        assert_eq!(text(&out.stdout).matches("FIRST").count(), 1, "ran twice");
+    }
 }

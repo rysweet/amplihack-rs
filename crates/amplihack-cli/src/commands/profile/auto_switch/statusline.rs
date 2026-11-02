@@ -10,12 +10,15 @@
 //! `capacity`).
 //!
 //! Without `--owner` the mode comes from `CLAUDE_CONFIG_DIR`; see
-//! `home_line`. A run in a profile's directory without `--owner` opens no
-//! login file: it never swaps and never refreshes the capacity file, so a
-//! profile that only inherited the `~/.claude` entry stays out of both.
+//! `home_line`. A run in a profile's directory without `--owner` opens and
+//! moves no login file: it never recovers, never swaps and never refreshes
+//! the capacity file, so a profile that only inherited the `~/.claude` entry
+//! stays out of all three.
 //! The `--owner` wrapper resolves profile kinds, which opens login files,
-//! only for a swap check that needs them and when [`refresh_due`] says so;
-//! see "Credentials" in docs/reference/STATUSLINE.md.
+//! only for a swap check that needs them and when [`refresh_due`] says so.
+//! Its recovery step moves login files when a swap was interrupted or a
+//! hosting session has ended; see "Credentials" in
+//! docs/reference/STATUSLINE.md.
 //!
 //! [`refresh_due`]: super::capacity::refresh_due
 
@@ -24,6 +27,7 @@ use super::config;
 use super::fsx;
 use super::home_line::{self, Mode};
 use super::state::State;
+use super::statusline_entry::is_home_statusline;
 use super::swap;
 use super::usage::{self, Attribution};
 use crate::commands::profile::ProfileError;
@@ -42,6 +46,12 @@ const MAX_SETTINGS: u64 = 1024 * 1024;
 /// How long a reading waits for the state lock before giving up.
 pub(super) const LOCK_WAIT: Duration = Duration::from_millis(50);
 const SETTINGS: &str = "settings.json";
+/// Set for every command the wrapper runs. A user's original may itself run
+/// `amplihack profile statusline` (`... | my-filter`); that inner run sees
+/// this and runs `statusline.sh` only, because in the same
+/// `CLAUDE_CONFIG_DIR` it would otherwise run the same original again,
+/// without end.
+const NESTED: &str = "AMPLIHACK_STATUSLINE_NESTED";
 
 /// Runs one status-line update and returns the exit code to use.
 pub fn run(root_arg: Option<&str>, owner_arg: Option<&str>) -> i32 {
@@ -51,6 +61,9 @@ pub fn run(root_arg: Option<&str>, owner_arg: Option<&str>) -> i32 {
     // fail-quiet: status-line output contract. An unreadable stdin still runs
     // the original status line, with no input.
     let input = fsx::read_bounded(std::io::stdin().lock(), MAX_PASSTHROUGH).unwrap_or_default();
+    if std::env::var_os(NESTED).is_some() {
+        return stream_command(home_line::script_command().as_deref(), &input, &[]);
+    }
     if let Some(owner) = owner_arg {
         // `--root` as given (a relative one is refused with a reason), else
         // the root this environment resolves to.
@@ -73,8 +86,8 @@ pub fn run(root_arg: Option<&str>, owner_arg: Option<&str>) -> i32 {
 /// A profile's own session: `--owner`, or (`implicit`) a run without it
 /// whose `CLAUDE_CONFIG_DIR` is the profile's directory. The checks and
 /// recording are the same either way; only the installed `--owner` wrapper
-/// runs the swap check and refreshes the capacity file, the two steps that
-/// resolve profile kinds and so open login files.
+/// runs recovery, which can move login files, and the swap check and the
+/// capacity-file refresh, which resolve profile kinds and so open them.
 fn owned(root: Option<&Path>, owner_arg: &str, implicit: bool, input: &[u8]) -> i32 {
     let state = match root {
         Some(r) => open_state(r),
@@ -114,7 +127,7 @@ fn owned(root: Option<&Path>, owner_arg: &str, implicit: bool, input: &[u8]) -> 
     // see "Differences from issue #1745" in docs/reference/STATUSLINE.md.
     let replaces_home = implicit
         || saved.as_deref().is_some_and(|c| {
-            c.contains(MARKER) || home_line::script_command().as_deref() == Some(c)
+            is_home_statusline(c) || home_line::script_command().as_deref() == Some(c)
         });
     let key = session
         .filter(|_| replaces_home)
@@ -123,10 +136,10 @@ fn owned(root: Option<&Path>, owner_arg: &str, implicit: bool, input: &[u8]) -> 
                 .ok()
                 .flatten()
         });
-    // A `profile statusline` original is never run: in its place, and
+    // The home command is never run as an original: in its place, and
     // without `--owner` when nothing is saved, `statusline.sh` runs.
     let original = match saved {
-        Some(c) if !c.contains(MARKER) => Some(c),
+        Some(c) if !is_home_statusline(&c) => Some(c),
         Some(_) => home_line::script_command(),
         None if implicit => home_line::script_command(),
         None => None,
@@ -183,14 +196,15 @@ fn session_matches(state: &State, owner: &ProfileName) -> bool {
     }
 }
 
-/// Step 1: recovery, and the reading when the switch is on. With
-/// `refresh_capacity` (the `--owner` wrapper), the capacity file too when
-/// this reading can change it.
+/// Step 1: the reading when the switch is on. With `wrapper` (the `--owner`
+/// wrapper), recovery first and the capacity file too when this reading can
+/// change it. Without it nothing moves a login, so a run that finds a swap
+/// journal records nothing: which login is live here is not settled.
 fn record(
     state: &State,
     owner: &ProfileName,
     input: &[u8],
-    refresh_capacity: bool,
+    wrapper: bool,
 ) -> Option<usage::RateLimits> {
     let eff = config::effective(&state.root);
     let on = eff.on;
@@ -205,7 +219,11 @@ fn record(
             return None;
         }
     };
-    if let Err(e) = swap::recover(state) {
+    if !wrapper {
+        if swap::pending_journal(state) {
+            return None;
+        }
+    } else if let Err(e) = swap::recover(state) {
         eprintln!("auto-switch: {e}");
         return None;
     }
@@ -220,7 +238,7 @@ fn record(
     {
         let mut file = state.load_usage();
         let reading = usage::reading_from(&rl, now);
-        let due = refresh_capacity
+        let due = wrapper
             && super::capacity::refresh_due(&state.root, &reading, eff.config.threshold, now);
         let merged = usage::merge(file.accounts.get(&account), reading);
         file.accounts.insert(account, merged);
@@ -298,6 +316,7 @@ fn spawn(command: &str, input: &[u8], piped: Option<&mut dyn Write>) -> i32 {
     let mut child = match Command::new("sh")
         .arg("-c")
         .arg(command)
+        .env(NESTED, "1")
         .stdin(Stdio::piped())
         .stdout(if piped.is_some() {
             Stdio::piped()
@@ -526,11 +545,13 @@ pub fn install(store: &ProfileStore, repoint: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Whether `cmd` is a profile's wrapper: `profile statusline` with
-/// `--owner`. Any other `profile statusline` command (the one in
-/// `~/.claude`, copied in by the shared settings keys) is not.
+/// Whether `cmd` is a profile's wrapper: the words `profile statusline` and
+/// `--owner`, each on its own. Any other command is not: neither the one in
+/// `~/.claude`, copied in by the shared settings keys, nor a command that
+/// only contains the same letters, such as `my-profile statusline-helper.sh`.
 fn is_wrapper(cmd: &str) -> bool {
-    cmd.contains(MARKER) && cmd.contains("--owner")
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    words.contains(&"--owner") && words.windows(2).any(|w| w == ["profile", "statusline"])
 }
 
 /// `script` is `statusline.sh` as a command, when it passes its checks.
@@ -567,10 +588,11 @@ fn install_one(
             }
             (sl.get("padding").cloned(), ("repaired", why))
         }
-        // Any other `profile statusline` command is never saved as an
-        // original (SR7): the trusted `statusline.sh` it would run is saved
-        // in its place, or nothing.
-        Some(sl) if command_of(sl).is_some_and(|c| c.contains(MARKER)) => {
+        // The `~/.claude` command is never saved as an original (SR7): the
+        // trusted `statusline.sh` it would run is saved in its place, or
+        // nothing. Only the exact command: anything else is the user's and
+        // is saved below, `NESTED` keeping it from running itself.
+        Some(sl) if command_of(sl).is_some_and(is_home_statusline) => {
             let detail = match script {
                 Some(cmd) => {
                     let original = serde_json::json!({"type": "command", "command": cmd});

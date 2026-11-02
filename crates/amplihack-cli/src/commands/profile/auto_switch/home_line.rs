@@ -4,7 +4,7 @@
 //! [`mode`] picks the run from `CLAUDE_CONFIG_DIR`. In `~/.claude` (home
 //! mode) it runs `~/.amplihack/.claude/tools/statusline.sh` with the same
 //! input, then prints the login capacity line for the login the rotator
-//! ledgers name, and records the reading when [`should_record`] allows it,
+//! ledgers name and the no-capacity notice when it is due, and records the reading when [`should_record`] allows it,
 //! whatever the auto-switch setting. It records into `home-usage.json`,
 //! never `usage.json`: nothing here checks which account `~/.claude` really
 //! holds, so these readings feed only the status line's spare count and
@@ -16,10 +16,12 @@
 //! `a_recorded_home_tick_with_auto_switch_on_opens_no_credentials_file`
 //! checks that with inotify while the binary runs.
 //! In a profile's own directory the run is that profile's, as with
-//! `--owner` but with no swap check and no capacity-file refresh, so it too
-//! opens no login file; anywhere else only `statusline.sh` runs. Every
-//! failure gives less output, never an error on stdout.
+//! `--owner` but with no recovery, no swap check and no capacity-file
+//! refresh, so it too opens and moves no login file; anywhere else only
+//! `statusline.sh` runs. Every failure gives less output, never an error on
+//! stdout.
 
+use super::capacity;
 use super::capacity_line;
 use super::config;
 use super::fsx;
@@ -82,14 +84,23 @@ pub(super) fn mode(config_dir: Option<&OsStr>, home: Option<&Path>, root: Option
     }
 }
 
-/// One home-mode update with `input` (already read): `statusline.sh`, then
-/// the capacity line. Returns the exit code of `statusline.sh`, or 0 when it
-/// did not run.
+/// One home-mode update with `input` (already read): `statusline.sh`, the
+/// capacity line, then the no-capacity notice. The notice reads only the
+/// capacity file, under the same private root as the line. Returns the exit
+/// code of `statusline.sh`, or 0 when it did not run.
 pub(super) fn run(root: Option<&Path>, input: &[u8]) -> i32 {
     let line = std::panic::catch_unwind(|| tick(root, input, fsx::now()))
         .ok()
         .flatten();
-    statusline::stream_command(script_command().as_deref(), input, &[line])
+    // After the reading, as in a profile's session.
+    let notice = root
+        .filter(|r| fsx::check_root_private(r).is_ok())
+        .and_then(|r| {
+            std::panic::catch_unwind(|| capacity::statusline_line(r))
+                .ok()
+                .flatten()
+        });
+    statusline::stream_command(script_command().as_deref(), input, &[line, notice])
 }
 
 /// `statusline.sh` as a command for `sh -c`, when it may run; an

@@ -3872,12 +3872,15 @@ The original `statusLine` object is saved in
 | the canonical wrapper | does not write | does not write |
 | missing | installs the wrapper; uses a saved original if one exists | same as `install` |
 | another command | saves it as the original, then installs the wrapper | same as `install` |
-| `amplihack profile statusline` without `--owner` (the `~/.claude` entry) | saves `~/.amplihack/.claude/tools/statusline.sh` as the original when that script passes the [script checks](./STATUSLINE.md#script-checks), otherwise saves no original; then installs the wrapper | same as `install` |
-| an old, moved, edited or doubly wrapped wrapper (contains `profile statusline --owner`) | does not write; reports `stale` | rewrites it to the canonical wrapper, keeping the saved original (never saving a wrapper as the original) |
+| exactly `amplihack profile statusline`, or a quoted path to `amplihack` followed by it, with no `--owner` (the `~/.claude` entry) | saves `~/.amplihack/.claude/tools/statusline.sh` as the original when that script passes the [script checks](./STATUSLINE.md#script-checks), otherwise saves no original; then installs the wrapper | same as `install` |
+| an old, moved, edited or doubly wrapped wrapper (has the words `profile statusline` and `--owner`) | does not write; reports `stale` | rewrites it to the canonical wrapper, keeping the saved original (never saving a wrapper as the original) |
 
-A command containing `profile statusline` is never saved as an original. A
-saved original containing it, left by an older install, is never run:
-`~/.amplihack/.claude/tools/statusline.sh` runs in its place.
+The `~/.claude` entry is never saved as an original, and a saved original
+that is exactly that entry, left by an older install, is never run:
+`~/.amplihack/.claude/tools/statusline.sh` runs in its place. A user's command
+that does more, such as `amplihack profile statusline | my-filter`, is another
+command: it is saved and run, and the inner `profile statusline` runs only
+`statusline.sh` ([details](./STATUSLINE.md#inside-profiles)).
 
 The original `padding` is kept. A missing `settings.json` is created at
 `0600`. Writes use a temp file, `rename` and a directory sync. Other keys and

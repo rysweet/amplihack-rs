@@ -132,9 +132,9 @@ is ignored.
 
 | `CLAUDE_CONFIG_DIR`                                                                    | Mode        | Behaviour                                                                                |
 | -------------------------------------------------------------------------------------- | ----------- | ---------------------------------------------------------------------------------------- |
-| Unset, empty, or `$HOME/.claude`                                                       | Home        | Runs `statusline.sh`, then prints the capacity line for the login live in `~/.claude`.   |
-| `<root>/<p>`, where the canonical parent is the canonical root and `<p>` is a valid profile name | Profile     | Behaves like `--owner <p>`, without the swap check or the capacity-file update. See [Inside profiles](#inside-profiles). |
-| Anything else                                                                          | Passthrough | Runs `statusline.sh` only. No capacity line and nothing recorded.                        |
+| Unset, empty, or `$HOME/.claude`                                                       | Home        | Runs `statusline.sh`, then prints the capacity line for the login live in `~/.claude` and the capacity notice when it is due. |
+| `<root>/<p>`, where the canonical parent is the canonical root and `<p>` is a valid profile name | Profile     | Behaves like `--owner <p>`, without recovery, the swap check or the capacity-file update. See [Inside profiles](#inside-profiles). |
+| Anything else                                                                          | Passthrough | Runs `statusline.sh` only. No capacity line, no capacity notice and nothing recorded.   |
 
 A directory reached through a symlink is matched on its canonical path, so a
 symlink to a profile from outside the root is treated as passthrough unless
@@ -144,7 +144,8 @@ With `--owner`, the command always runs in profile mode for that profile.
 
 ### Output order
 
-The order is the same in every mode:
+The order is the same in home and profile mode. Passthrough mode prints only
+item 1.
 
 1. the original command's output, copied through unchanged; a newline is
    added only when the output did not end with one;
@@ -234,17 +235,28 @@ an API-key profile from a plan login, because an API-key profile is never
 swapped into a running session (issue #1804) and does not count towards the
 capacity state, and a login's kind is read from its login file. So the
 wrapper resolves profile kinds in two steps, and only when that step has
-work to do:
+work to do. A third step, recovery, moves login files without reading them:
 
 - the [capacity file](./profile-command.md#capacity-file) update, when this
   reading is at or over the threshold, or the file reports low or no
   capacity;
 - the [in-session swap](./profile-command.md#in-session-swap) check, when
   this reading is at or over the threshold, or on every tick while an
-  overflow profile is marked.
+  overflow profile is marked;
+- recovery, on every tick, which does nothing unless a swap journal is
+  waiting or a hosted session has ended. It then renames `.credentials.json`
+  files into place and updates the `.claude.json` account fields.
 
-An ordinary tick, under the threshold with no overflow profile marked and no
-capacity notice in force, opens no login file; a test checks this too.
+Profile mode without `--owner` runs none of the three, so a session with no
+wrapper moves no login. A swap journal stops it recording a reading, because
+which login is live is not settled; the journal stays for the wrapper,
+`repair` or the next command that recovers. Tests check that such a tick
+leaves a stale `hosts` entry, a journal and the login files as they were, and
+that the wrapper does return the login.
+
+An ordinary tick, under the threshold with no overflow profile marked, no
+capacity notice in force and nothing to recover, opens no login file; a test
+checks this too.
 Another test checks that a tick at the threshold still updates the capacity
 file, and that a later tick clears it. The file is also kept current by
 `profile usage` and the rotator.
@@ -301,8 +313,9 @@ same way as the
 `usage.json`. The command
 waits at most 50 ms for the state lock; when the lock is busy, it records
 nothing on that run. Recording happens whether auto-switch is enabled or
-not. Home mode does not update the
-[capacity file](./profile-command.md#capacity-file): working out which
+not. Home mode reads the
+[capacity file](./profile-command.md#capacity-file) to print the notice and
+does not update it: working out which
 profiles are overflow profiles means reading their login files, which this
 path never does. The status-line wrapper and `profile rotate` keep that file
 current.
@@ -382,14 +395,17 @@ In profile mode, for profile `<p>`, the command:
 1. applies the [status-line wrapper](./profile-command.md#status-line-wrapper)
    checks: the root is private and `CLAUDE_CONFIG_DIR` resolves to
    `<root>/<p>`;
-2. waits at most 50 ms for the state lock, runs recovery and records the
-   reading when auto-switch is on, as the wrapper always has. With `--owner`
-   only, it also updates the capacity file when the reading can change it,
+2. waits at most 50 ms for the state lock and records the reading when
+   auto-switch is on, as the wrapper always has. With `--owner` only, it runs
+   recovery first, updates the capacity file when the reading can change it,
    and checks for an in-session swap (see [Credentials](#credentials));
 3. runs the saved original from `<root>/.auto-switch.d/statusline/<p>.json`.
-   An original whose command contains `profile statusline` is never run;
-   `statusline.sh` is run in its place. When the command was started without
-   `--owner` and there is no saved original, `statusline.sh` is run too;
+   An original that is exactly the home command is never run; `statusline.sh`
+   is run in its place. When the command was started without `--owner` and
+   there is no saved original, `statusline.sh` is run too. A user's original
+   can itself run `amplihack profile statusline`, as in `... | my-filter`: the
+   wrapper sets `AMPLIHACK_STATUSLINE_NESTED` for what it runs, and that inner
+   run runs `statusline.sh` only, so it cannot run the original again;
 4. prints the capacity line, when the step 1 checks passed and the line
    stands in for the home command's: the command was started without
    `--owner`, or the saved original is the home command or the
@@ -414,8 +430,14 @@ saved and the wrapper prints nothing: neither `statusline.sh` nor the capacity
 line. Fixing the script does not change that, and neither does `repair`, which
 leaves a current wrapper alone. To get both lines back, copy the `statusLine`
 entry from `~/.claude/settings.json` into the profile's `settings.json` and run
-`profile auto-switch install`. A command containing
-`profile statusline` is never saved as an original.
+`profile auto-switch install`. Only the exact commands listed under
+[Install wiring](#install-wiring) as the `profile statusline` forms are
+treated this way; the same check decides for `install`, `uninstall` and the
+wrapper. A user's command that does more, such as
+`amplihack profile statusline | my-filter`, or only shares the words, such as
+`my-profile statusline-helper.sh`, is saved as the original like any other.
+A wrapper around such a filter prints that filter's output and adds no
+capacity line.
 
 ### Script checks
 
@@ -497,6 +519,14 @@ Everything else is kept as yours, byte for byte, including:
 
 To switch a kept entry to amplihack's, delete the `statusLine` key and run
 `amplihack install` again.
+
+`amplihack uninstall` removes the `statusLine` key from
+`~/.claude/settings.json` when its `command` is one of the `profile
+statusline` forms or the legacy script above, for a binary named `amplihack`.
+Any other entry is kept byte for byte. It changes no other key.
+Uninstall does not touch profile directories: a wrapper in a profile's
+`settings.json` stays and names a binary that is gone, so remove that
+`statusLine` key by hand if you keep the profile.
 
 `<cmd>` is the installed amplihack binary followed by `profile statusline`,
 with the path single-quoted for `sh`. The installed binary is the copy in

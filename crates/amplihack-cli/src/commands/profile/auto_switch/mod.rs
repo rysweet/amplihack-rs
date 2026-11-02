@@ -39,6 +39,7 @@ pub(super) mod rerun;
 mod state;
 #[cfg(unix)]
 mod statusline;
+pub(super) mod statusline_entry;
 #[cfg(unix)]
 mod swap;
 #[cfg(unix)]
