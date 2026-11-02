@@ -59,6 +59,8 @@ pub(super) fn ctx_with(e: &Env, measure: MeasureFn) -> Ctx {
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
     ctx.scan = |_| Liveness::Known(BTreeSet::new());
     ctx.measure = Some(measure);
+    // Issue #1870: no test reads a login; a stale target is unknown.
+    ctx.reread = None;
     ctx
 }
 
@@ -70,6 +72,7 @@ pub(super) fn ok(session: f64, week: f64) -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
     }
 }
 
@@ -81,6 +84,7 @@ pub(super) fn spent() -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
     }
 }
 

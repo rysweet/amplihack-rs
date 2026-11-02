@@ -254,6 +254,14 @@ fn rotate_log_grammar_is_documented() {
         "recovery: rolled back an interrupted swap",
         "recovery: finished an interrupted swap",
         "sessions archive: <summary>",
+        // Issue #1870: the freshness gate and swap-back damping.
+        "reread: <name> reading stale s=<n>% w=<n>%; fresh s=<n>% w=<n>%",
+        "reread: <name> failed; treated as unknown",
+        "reread: <name> limit reached; treated as unknown",
+        "damp: <name> swapped away exhausted; no later reading shows room",
+        "damp: <name> later reading shows room; swap-back allowed",
+        "#### Rotate reading freshness and swap-back damping",
+        "\"swapped_away\": { \"ggrant\": 1793634010 }",
     ] {
         assert!(REFERENCE.contains(line), "reference is missing `{line}`");
     }
