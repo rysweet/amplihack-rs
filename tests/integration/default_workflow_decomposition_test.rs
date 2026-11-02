@@ -30,7 +30,11 @@ use tempfile::TempDir;
 
 const BRICK_LIMIT: usize = 400;
 
-const EXTRA_RECIPE_NAMES: &[&str] = &["default-workflow", "smart-validate-summarize"];
+const EXTRA_RECIPE_NAMES: &[&str] = &[
+    "default-workflow",
+    "smart-validate-summarize",
+    "smart-reflect-loop",
+];
 
 static RECIPE_TEXTS: LazyLock<HashMap<&'static str, String>> = LazyLock::new(|| {
     PHASE_RECIPES
@@ -410,6 +414,43 @@ fn no_duplicate_step_ids_across_subrecipes() {
         }
     }
     assert!(dups.is_empty(), "duplicate step IDs found: {dups:?}");
+}
+
+/// Issue #1794: agents waited with `tail -f /dev/null`, which outlives the
+/// tool call. The orphans came from step 18b, and the reflect steps poll CI,
+/// so those prompts, step 13 and the Claude system-prompt fragment all name
+/// the supported ways to wait and the forms the hook denies. Copilot and
+/// Codex agents do not read the system-prompt fragment, so the recipe
+/// prompts are their only advance notice.
+#[test]
+fn recipe_prompts_and_system_prompt_name_the_supported_ways_to_wait() {
+    let fragment_path = recipes_dir()
+        .join("..")
+        .join("context")
+        .join("SYSTEM_PROMPT_APPEND.md");
+    let fragment = std::fs::read_to_string(&fragment_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", fragment_path.display()));
+    let mut prompts: Vec<(String, &str)> = vec![("SYSTEM_PROMPT_APPEND.md".into(), &fragment)];
+    for (recipe, step) in [
+        ("workflow-precommit-test", "step-13-local-testing"),
+        ("workflow-pr-review", "step-18b-implement-feedback"),
+        ("smart-reflect-loop", "reflect-round-1"),
+        ("smart-reflect-loop", "reflect-round-2"),
+        ("smart-reflect-loop", "reflect-final"),
+    ] {
+        prompts.push((format!("{recipe}/{step}"), step_prompt(recipe, step)));
+    }
+    for (name, text) in &prompts {
+        for needle in ["amplihack wait --seconds", "tail -f /dev/null", "wait $pid"] {
+            assert!(text.contains(needle), "{name} lacks {needle:?}");
+        }
+        if name != "SYSTEM_PROMPT_APPEND.md" {
+            assert!(
+                text.contains("timeout N tail"),
+                "{name} must name `timeout N tail` as a form not to use"
+            );
+        }
+    }
 }
 
 #[test]

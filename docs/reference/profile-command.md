@@ -17,7 +17,7 @@ amplihack profile switch <name> | --none
 amplihack profile remove <name> --yes
 amplihack profile login <name>
 amplihack profile run <name> -- <claude-args>...
-amplihack profile usage [--json | --summary-json] [--raw] [--usable-session-pct <1-100>] [<name>...]
+amplihack profile usage [--json | --summary-json] [--raw] [--spend] [--usable-session-pct <1-100>] [<name>...]
 amplihack profile auto-switch on [--threshold <1-100>] [--exclude <name,...>]
 amplihack profile auto-switch off
 amplihack profile auto-switch status
@@ -52,7 +52,7 @@ amplihack launch|claude --profile <name> [...]
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
 | `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
-| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails; then shows its session and weekly usage, most capacity first, followed by a [capacity summary](#capacity-summary). `--json` or `--summary-json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings and adds to the [usage history](#usage-history). See [Usage command](#usage-command). |
+| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails, or, with `--spend`, to read the spend limit of an account with [usage credits on](#usage-credits-on); then shows its session and weekly usage and its spend status, most capacity first, followed by a [capacity summary](#capacity-summary). `--json` or `--summary-json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings and adds to the [usage history](#usage-history). See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
 | `overflow …` | Mark or unmark a credit-backed profile that the rotator may use when every plan login is exhausted, list the marks, or lift a spend-limit block. See [Overflow commands](#overflow-commands). |
 | `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
@@ -66,7 +66,7 @@ its own on Unix; see [No silent billing](#no-silent-billing).
 ### Usage command
 
 ```
-amplihack profile usage [--json | --summary-json] [--raw] [--usable-session-pct <1-100>] [<name>...]
+amplihack profile usage [--json | --summary-json] [--raw] [--spend] [--usable-session-pct <1-100>] [<name>...]
 ```
 
 Shows how much of each profile's current session and weekly quota is used
@@ -84,7 +84,8 @@ probed once.
 | `--json` | Print a JSON array instead of the table. No summary. See [JSON output](#json-output). |
 | `--summary-json` | Print one JSON object holding the same array and the summary. Cannot be combined with `--json` or `--raw` (exit status 2). See [Summary JSON](#summary-json). |
 | `--usable-session-pct <n>` | Session percentage below which a login counts as usable now in the summary, `1` to `100`; default `95`. Overrides `AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT`. A value out of range is a usage error (exit status 2). See [Usable now](#usable-now). |
-| `--raw` | Also print what `claude` wrote to stdout and stderr, for each profile, from the [attempt](#probe-method) that gave the row. Without it, that output is dropped once parsed. Rows read without `claude` print a fixed line instead. It can include account details; see [Raw output](#raw-output). With `--raw` there is no summary and nothing is added to the [usage history](#usage-history). |
+| `--spend` | Also run one `/usage` probe for each row whose account has [usage credits on](#usage-credits-on), to fill its `SPEND` cell. Without it no `claude` is started for those rows and their spend is `not_probed`. See [Spend probe](#spend-probe). |
+| `--raw` | Also print what `claude` wrote to stdout and stderr, for each profile, from the [attempt](#probe-method) that gave the row. Without it, that output is dropped once parsed. Rows read without `claude` print a fixed line instead. Also prints the `note:` lines for rows that fell back or whose account has [usage credits on](#usage-credits-on). It can include account details; see [Raw output](#raw-output). With `--raw` there is no summary and nothing is added to the [usage history](#usage-history). |
 | `<name>...` | Probe only these profiles, in the [usual order](#ordering). |
 
 #### How a profile is probed
@@ -110,17 +111,20 @@ Every row records which step gave it as its [source](#reading-source):
 |---------|-------|
 | [API-key profile](#api-key-usage) | None. It is not probed, as before. |
 | Marked as [overflow](#rotate-overflow) | Fallback only, as `/usage` text. The spend limit is visible only in `/usage`, so the [spend-limit block](#overflow-spend-limit-block) keeps working. Source `fallback`. Under `AMPLIHACK_PROFILE_USAGE_PROBE=direct` the row is not probed and reads `error`; see [Probe method](#probe-method). |
-| A direct answer shows usage credits turned on (`extra_usage.is_enabled` is `true`) | The direct answer is not used. The profile is probed with `/usage` text, as an overflow profile is. Source `fallback`. |
+| A direct answer shows usage credits turned on (`extra_usage` is not absent, `null` or `{"is_enabled": false}`) | The windows and state come from the direct answer. Source `direct`. Spend `not_probed`, unless `--spend` asks for one `/usage` text probe, under the normal per-probe timeout (`--timeout-secs`, 120 s by default), that reads only the spend status; see [Usage credits on](#usage-credits-on). If neither window in the answer is usable, the direct read fails with `usage credits on` and the profile goes to the fallback. |
 | The extra [`~/.claude` row](#logins-in-claude), which no profile owns | Direct, then fallback. No passive reading, because no account is known for it. |
 | Any profile, with `AMPLIHACK_PROFILE_USAGE_PROBE` set to `auto` or `text` | Fallback only, with the method named. See [Probe method](#probe-method). |
-| Any profile, with `AMPLIHACK_PROFILE_USAGE_PROBE=direct` | Passive, then direct. A failed direct read gives state `error`, and the reading starts no `claude`. Overflow profiles read `error` without a direct read. The one exception is the rotator's [held-cycle spend-limit check](#pin-and-overflow). |
+| Any profile, with `AMPLIHACK_PROFILE_USAGE_PROBE=direct` | Passive, then direct. A failed direct read gives state `error`, and the reading starts no `claude`. An account with usage credits on gives its direct windows, with spend `not_probed`, because no spend probe runs, even under `--spend`. Overflow profiles read `error` without a direct read. The one exception is the rotator's [held-cycle spend-limit check](#pin-and-overflow). |
 
 When every row is passive or direct, no `claude` process is started, and
-amplihack does not look for the `claude` binary at all. It looks for it
-the first time a row needs the fallback, and keeps the result for the rest
-of the command (or the rest of the rotator cycle). If `claude` cannot be
-found then, only the rows that needed it read `error`, with the reason
-`claude not found`; the other rows are unaffected.
+amplihack does not look for the `claude` binary at all, unless `--spend`
+asks for a spend probe of a row with usage credits on. It looks for it the first time a row needs the
+fallback or a [spend probe](#spend-probe), and keeps the result for
+the rest of the command (or the rest of the rotator cycle). If `claude`
+cannot be found then, only the rows that needed it for a reading read
+`error`, with the reason `claude not found`; a row that needed it only for
+a `--spend` probe keeps its windows and shows spend `unknown`. The other rows
+are unaffected.
 
 ##### Passive readings
 
@@ -219,9 +223,11 @@ directory it was read from.
 **The answer.** The body is read up to 64 KiB and parsed as JSON. It has
 the same `five_hour`, `seven_day` and `extra_usage` objects as the
 `rate_limits` object of a [`get_usage` answer](#probe-method), and is read
-by the same code, so the rules for `utilization`, `resets_at`,
-`extra_usage` and [no session limit](#no-session-limit) are the same. For
-example:
+by the same code, so the rules for `utilization`, `resets_at`, what counts
+as credits on, and [no session limit](#no-session-limit) are the same. The
+one difference is what happens when credits are on: the usage request's
+answer is rejected, but a direct answer still gives its windows; see
+[Usage credits on](#usage-credits-on). For example:
 
 ```json
 {
@@ -303,7 +309,7 @@ the numeric HTTP status class is kept.
 | `timeout` | A timeout or the deadline was reached. |
 | `transport` | The connection or TLS failed, or the server closed it. |
 | `unparseable` | The body is over 64 KiB, not a JSON object, or has no usable window. |
-| `usage credits on` | The answer shows `extra_usage.is_enabled` as `true`, or an `extra_usage` amplihack does not recognise. |
+| `usage credits on` | The answer shows usage credits on (`extra_usage.is_enabled` as `true`, or an `extra_usage` amplihack does not recognise), and neither `five_hour` nor `seven_day` has a valid `utilization`. When either window is usable, the read succeeds instead; see [Usage credits on](#usage-credits-on). |
 | `refresh busy` | The token needs a refresh, but the refresh lock is held or a swap is in progress. |
 | `refresh refused` | The checks before a refresh failed (see [Token refresh](#token-refresh)). |
 | `refresh failed` | The refresh request did not reach the token server (a DNS lookup that failed or ran out of time, or a failed connection or TLS handshake), or the server turned it away with a `3xx` or `4xx` status. The old refresh token is still on file. |
@@ -329,6 +335,141 @@ Under `direct`, the row's state is `error` and its reason is
 profile under `direct` is not read at all and reads `error` with
 `direct read: overflow needs /usage`, because it can only be read with
 `/usage`.
+
+##### Usage credits on
+
+A direct answer shows usage credits on when its `extra_usage` is anything
+other than absent, `null` or an object with `"is_enabled": false`. An
+`is_enabled` of `true`, an object with no `is_enabled`, an `is_enabled` of
+`"false"` or `0`, and an `extra_usage` that is not an object all count as
+on. A profile does not need to be marked as [overflow](#rotate-overflow)
+for this.
+
+When credits are on and either window in the answer is usable, the direct
+answer gives the row as for any other account:
+
+- `session`, `week_all`, `session_limit` and `state` come from `five_hour`
+  and `seven_day`;
+- `source` is `direct`, and the row has no `(fallback)` mark;
+- the [ordering](#ordering) uses that state and those windows.
+
+Only `/usage` shows a used-up spend limit. Without `--spend`, no
+`claude` is started for such a row and its
+[spend status](#spend-status) is `not_probed`. With `--spend`, in the
+default [reading order](#how-a-profile-is-probed), `profile usage` runs a
+*spend probe* for each such row. Its result goes only to the row's spend
+status. It never changes the row's state, windows, source or error, so a
+row can be `ok` with spend `limit_reached`.
+
+| Mode | Credits-on account with a usable window |
+|------|-----------------------------------------|
+| unset (default) | Direct windows; spend `not_probed`. With `--spend`, then a spend probe. |
+| `direct` | Direct windows. No spend probe and no `claude`, even with `--spend`; spend `not_probed`. |
+| `auto`, `text` | No direct read. The [fallback](#fallback-probe) reads the row, and its spend status follows from how it was read; see [Spend status](#spend-status). |
+| Marked as overflow, any mode | Unchanged: `/usage` only, or under `direct` the error `direct read: overflow needs /usage`. |
+
+When neither window is usable, the direct read fails with
+`usage credits on` and the row goes to the fallback, as described under
+[Direct read failures](#direct-read-failures).
+
+##### Spend probe
+
+**Why it is opt-in.** The point of reading credits-on accounts directly
+(issue #1856) is that the session and weekly figures no longer wait on
+`claude /usage`, which was reported to take 10 to 20 seconds per profile on
+a loaded host; one probe has taken 71.5 seconds at load 194 (see
+[Probe deadline](#probe-deadline)). A spend probe is that same `/usage`
+run. Started on every run, it would either hold the table up for that long
+or, under a short deadline, be killed before it answered on the hosts that
+need it most, starting and killing `claude` processes for a column that
+read `unknown`. So the default run starts none, and `--spend` asks for
+them when the spend limit is what you want to know.
+
+**What `--spend` runs.** One `claude -p /usage` in the profile's directory
+for each direct row whose account has usage credits on, with the same
+command line and environment as the fallback's
+[text attempt](#fallback-probe), so no token is passed to it. The extra
+[`~/.claude` row](#logins-in-claude) is probed in `~/.claude`. Spend probes
+start only after every passive and direct read has finished, at most the
+[`claude` bound](#probe-parallelism) run at once, and each runs under the
+same [probe deadline](#probe-deadline) as a fallback: 120 seconds by
+default, set by `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`. A probe still
+running at its deadline has its process group killed, and its row shows
+spend `unknown`. No `claude` started for a spend probe outlives the
+command.
+
+The spend probe's output is parsed for the spend status and then dropped.
+It is not shown by `--raw`: the row's raw block stays
+`(direct: no claude output)`.
+
+**Notes with `--raw`.** With `--raw`, each such row prints two `note:`
+lines to stderr:
+
+```
+note: profile "mistt": direct read gave usage credits on; windows direct, spend from claude
+note: profile "mistt": extra_usage: object; keys: currency, is_enabled, monthly_limit, org_id, used_credits; is_enabled: bool true
+```
+
+The first line ends in one of three ways:
+
+| Ending | When | Spend |
+|--------|------|-------|
+| `windows direct, spend from claude` | The spend probe finished and its output gave a usage reading. | `ok` or `limit_reached` |
+| `windows direct, spend probe failed` | `--spend` asked for a spend probe, and it was killed at the [probe deadline](#probe-deadline), could not run (including `claude` not found), or gave output that parsed as `not_logged_in` or `unparsed`. | `unknown` |
+| `windows direct, spend not probed` | No spend probe was asked for: the run had no `--spend`, or `AMPLIHACK_PROFILE_USAGE_PROBE` is `direct`. | `not_probed` |
+
+The second line shows the *shape* of `extra_usage`, so you can see why
+amplihack counts the account as having credits on. It never shows a token,
+an account or organisation identifier, an e-mail address, a currency or an
+amount. It is built as follows.
+
+- **Type.** `extra_usage: object` for an object. Any other value shows only
+  its type, `extra_usage: string`, `extra_usage: number` or
+  `extra_usage: array`, except a bool, which also shows its value:
+  `extra_usage: bool false`. Only an object is followed by keys.
+- **Keys.** `keys: ` and the object's top-level key names, separated by
+  `, `, in byte order. For an object with no keys, `keys: none`.
+  - At most 32 keys are listed. More are counted as `(+N more)` after the
+    32nd.
+  - Every character other than `A` to `Z`, `a` to `z`, `0` to `9`, `_`,
+    `.` and `-` is shown as `?`. This covers spaces, punctuation, control
+    and formatting characters, and letters outside ASCII, so a key name
+    cannot add a field to the line or reorder it on the terminal.
+  - A key longer than 64 characters is cut to 63 and followed by `…`.
+  - An empty key is shown as `""`.
+- **`is_enabled`.** `is_enabled: ` and one of the forms below. The value is
+  printed only when it is one of a fixed set, and then the fixed text is
+  printed, not the bytes received.
+
+  | Value of `is_enabled` | Shown as |
+  |-----------------------|----------|
+  | Absent | `missing` |
+  | `null` | `null` |
+  | `true` or `false` | `bool true`, `bool false` |
+  | A string equal, ignoring ASCII case, to `true`, `false`, `on`, `off`, `yes`, `no`, `enabled`, `disabled`, `0` or `1` | `string "<word>"`, in lower case, for example `string "false"` |
+  | Any other string | `string (<n> chars)`, its length in characters |
+  | The number `0` or `1`, as an integer or as a float exactly equal to it (`0.0`, `1.0`) | `number 0`, `number 1` |
+  | Any other number | `number` |
+  | An object or array | `object`, `array` |
+
+- **Other flags.** Each other member among the 32 listed keys whose value
+  is a bool or `null` is added, in key order, as `; <key>: bool <value>` or
+  `; <key>: null`, with the key shown as in the key list. Members holding a
+  string, a number, an object or an array are shown by key name only. Nested
+  objects and arrays are not looked into.
+
+Two more examples:
+
+```
+note: profile "spare2": extra_usage: object; keys: is_enabled; is_enabled: string "false"
+note: profile "team2": extra_usage: object; keys: limit_reached, overage; is_enabled: missing; limit_reached: bool false; overage: null
+```
+
+The key names are sent by Anthropic's server and printed after the
+replacement and cut above; a key name could itself look like an
+identifier. Without `--raw`, nothing about the shape is printed. The shape
+is never in `--json`, `usage.json`, the rotate log or `rotate.err`, and the
+rotator neither runs spend probes nor prints these lines.
 
 ##### Token refresh
 
@@ -408,7 +549,7 @@ waits on it. Remove it with `rmdir <dir>/.oauth_refresh.lock` when no
 |--------|---------|
 | `passive` | A fresh stored reading. Nothing was asked. |
 | `direct` | The OAuth usage endpoint answered. |
-| `fallback` | `claude` gave the row: the direct read failed, the profile is marked as overflow, the account has usage credits on, or `AMPLIHACK_PROFILE_USAGE_PROBE` is `auto` or `text`. |
+| `fallback` | `claude` gave the row: the direct read failed (including `usage credits on` with no usable window), the profile is marked as overflow, or `AMPLIHACK_PROFILE_USAGE_PROBE` is `auto` or `text`. A [spend probe](#spend-probe) never makes a row `fallback`. |
 
 The table shows `(fallback)` among a fallback row's [marks](#marks). The
 JSON has the `source` key. A row that failed on every step keeps the source
@@ -653,9 +794,10 @@ pinned live overflow profile is separate from these readings and still
 runs `claude -p /usage` under `direct`. The marks are read from `<root>/.auto-switch`
 before probing; a missing or corrupt `.auto-switch` marks no profile. A
 profile that is not marked but whose account has usage credits turned on is
-found by its direct read and probed with `/usage` text; when the direct read
-failed instead, its usage request answer is not accepted, and it falls back
-to `/usage`.
+read directly, and its spend status is `not_probed` unless `--spend` asks
+for a [spend probe](#spend-probe), which runs under the normal per-probe
+timeout (`--timeout-secs`, 120 s by default); when the direct read failed instead, its
+usage request answer is not accepted, and it falls back to `/usage`.
 
 `get_usage` is part of an interface that Claude Code marks as experimental,
 and it may change or be removed. A change that makes its answer
@@ -667,8 +809,8 @@ unrecognisable only makes every fallback go on to `/usage`.
 
 | Value | Behaviour |
 |-------|-----------|
-| unset | The [reading order](#how-a-profile-is-probed): passive, direct, then the fallback. |
-| `direct` | Passive, then direct only. A failed direct read gives state `error`, and no `claude` is started for a reading. Overflow profiles read `error` with `direct read: overflow needs /usage`. The rotator's held-cycle spend-limit check still starts `claude`. |
+| unset | The [reading order](#how-a-profile-is-probed): passive, direct, then the fallback. With `--spend`, also a [spend probe](#spend-probe) for each direct row whose account has usage credits on. |
+| `direct` | Passive, then direct only. A failed direct read gives state `error`, and no `claude` is started for a reading or a [spend probe](#spend-probe); an account with usage credits on gives its direct windows with spend `not_probed`, even under `--spend`. Overflow profiles read `error` with `direct read: overflow needs /usage`. The rotator's held-cycle spend-limit check still starts `claude`. |
 | `auto` | The fallback probe only, as before the direct read existed: the usage request, then `/usage`. No passive or direct reads. |
 | `text` | `claude -p /usage` only, so every probe pays the transcript scan. No passive or direct reads. |
 
@@ -807,6 +949,15 @@ variables. It has no flags for them.
   more probes at once than the bound. An [API-key](#api-key-profiles) live
   login is not probed, so then the bound is derived for the candidates
   alone.
+- **No spend probe.** The rotator does not run [spend probes](#spend-probe).
+  A profile that is not marked as overflow and whose account has usage
+  credits on is read directly and judged by its windows, with spend
+  `not_probed`. Before, such a profile was read with `/usage`, so a used-up
+  spend limit made it `spend_limit`; the rotator no longer sees that.
+  Profiles marked as overflow are still read with `/usage`, so the
+  [spend-limit block](#overflow-spend-limit-block) works as before, and the
+  [held-cycle spend-limit check](#pin-and-overflow) of a pinned live
+  overflow profile is unchanged.
 - **Load.** The bound is derived again on every cycle, so it follows the
   load as it changes.
 
@@ -1035,6 +1186,29 @@ read; a model week line alone is enough to rule them out. New
 wording from Claude that matches none of these gives `unparsed`, never a
 guessed state. Scripts should treat a state they do not know as `unparsed`.
 
+#### Spend status
+
+Every row has a spend status, shown in the `SPEND` column of the
+[table](#table-output) and as the `spend` key of the [JSON](#json-output).
+It says whether `/usage` reported a used-up spend limit for the row. It is
+for reading only: [ordering](#ordering), the [states](#states) and the
+rotator's decisions do not use it.
+
+| Value | Rows |
+|-------|------|
+| `n/a` | No `/usage` text was read for spend, and none was needed: a direct row whose account has usage credits off, a [passive](#passive-readings) row, an [API-key](#api-key-usage) row, and a [fallback](#fallback-probe) row given by an accepted `get_usage` answer, which is accepted only when credits are off. |
+| `ok` | `/usage` text was read, gave a usage reading, and did not report a used-up spend limit: a [spend probe](#spend-probe) whose output parsed as `ok`, `session_exhausted` or `weekly_exhausted`, or a fallback row from `/usage` in one of those states. |
+| `limit_reached` | `/usage` text reported a used-up spend limit: a spend probe whose output parsed as `spend_limit`, or a fallback row in state `spend_limit`. |
+| `unknown` | A probe ran, or was asked for, and the spend status could not be read: a direct row with usage credits on whose `--spend` probe was killed at the [probe deadline](#probe-deadline), could not run (including `claude` not found), or gave output that parsed as `not_logged_in` or `unparsed`; and every fallback row in state `not_logged_in`, `unparsed`, `timeout` or `error`. |
+| `not_probed` | Usage credits are on and no spend probe was asked for: a direct row with usage credits on in a run without `--spend`, or under `AMPLIHACK_PROFILE_USAGE_PROBE=direct`. The rotator's rows are always `not_probed`. |
+
+`n/a` does not mean that usage credits are off. A passive row says nothing
+about credits. `ok` is never guessed: output that `claude` printed but that
+gave no usage reading, such as a login prompt, gives `unknown`, not `ok`.
+A row whose state is `ok` and whose spend is
+`limit_reached` has room in its plan windows, but the account's spend limit
+is used up, so it cannot work past them on credits.
+
 #### Failed and exhausted results
 
 A probe that timed out or could not run says nothing about the account. Its
@@ -1120,21 +1294,28 @@ the `/usage` attempt.
 #### Table output
 
 ```
-PROFILE   MARKS                STATE              SESSION           SESSION RESETS                     WEEK  WEEK RESETS
-review    -                    ok                 5%                2026-10-17T04:00:00Z               10%   2026-10-22T09:00:00Z
-work      * hosts:personal     ok                 20%               2026-10-17T02:00:00Z               30%   2026-10-22T09:00:00Z
-weekly    -                    ok                 no session limit  -                                  47%   2026-10-22T09:00:00Z
-credit    overflow (fallback)  ok                 40%               Oct 16, 9pm (America/Los_Angeles)  61%   Oct 22, 2am (America/Los_Angeles)
-team      -                    session_exhausted  100%              2026-10-16T23:50:00Z               55%   2026-10-22T09:00:00Z
-personal  leased→work          not_logged_in      -                 -                                  -     -
-spare     (fallback)           timeout            -                 -                                  -     -
+PROFILE   MARKS                STATE              SESSION           SESSION RESETS                     WEEK  WEEK RESETS                        SPEND
+review    -                    ok                 5%                2026-10-17T04:00:00Z               10%   2026-10-22T09:00:00Z               n/a
+work      * hosts:personal     ok                 20%               2026-10-17T02:00:00Z               30%   2026-10-22T09:00:00Z               n/a
+weekly    -                    ok                 no session limit  -                                  47%   2026-10-22T09:00:00Z               n/a
+mistt     -                    ok                 35%               2026-10-17T03:00:00Z               52%   2026-10-22T09:00:00Z               ok
+credit    overflow (fallback)  ok                 40%               Oct 16, 9pm (America/Los_Angeles)  61%   Oct 22, 2am (America/Los_Angeles)  ok
+org2      -                    session_exhausted  100%              2026-10-16T22:10:00Z               71%   2026-10-22T09:00:00Z               limit_reached
+team      -                    session_exhausted  100%              2026-10-16T23:50:00Z               55%   2026-10-22T09:00:00Z               n/a
+personal  leased→work          not_logged_in      -                 -                                  -     -                                  unknown
+spare     (fallback)           timeout            -                 -                                  -     -                                  unknown
 ```
 
 `credit` is marked as overflow, so it was probed with `/usage` and shows
 Claude's own reset text. `team` is at its session limit and has used 55%
 of its week; the weekly figure is shown as reported. `spare` failed its
 direct read and its `claude` fallback timed out. The other rows came from
-passive or direct reads.
+passive or direct reads. `mistt` and `org2` have
+[usage credits on](#usage-credits-on): their windows come from the direct
+read, and, because this run used `--spend`, the `SPEND` column comes from a
+[spend probe](#spend-probe) under the normal per-probe timeout, which found `org2`'s spend limit used up.
+Without `--spend` both would show `not_probed`. `SPEND` is the
+[spend status](#spend-status).
 
 `SESSION` and `WEEK` are the session and all-models week. Percentages print
 as a whole number when they are whole and with one decimal place otherwise
@@ -1165,7 +1346,11 @@ terminal: control characters (including escape sequences) and the
 bidirectional override and isolate characters U+202A to U+202E and U+2066
 to U+2069 are replaced with `?`, and reset
 text longer than 64 characters is cut to 64 and followed by `…`. The table's
-layout is for people and may change; scripts should use `--json`.
+layout is for people and may change; scripts should use `--json`. The
+table has eight columns; `SPEND` was added as the last. A script that
+splits rows on whitespace and reads the last field now gets the spend
+status instead of `WEEK RESETS`, and the reset columns can themselves
+contain spaces. Use `--json` instead.
 
 For each `error` row, one line goes to stderr, with or without `--json`:
 
@@ -1175,7 +1360,9 @@ warning: profile "review": could not start claude
 
 With `--raw`, each row whose direct read failed and that went on to
 `claude` also prints one `note:` line to stderr, as shown under
-[Direct read failures](#direct-read-failures).
+[Direct read failures](#direct-read-failures), and each direct row whose
+account has usage credits on prints two, as shown under
+[Usage credits on](#usage-credits-on).
 
 #### Raw output
 
@@ -1188,7 +1375,9 @@ review    -                 ok                 5%                2026-10-17T04:0
 ```
 
 A passive row prints `(passive: no claude output)`. The body of a direct
-answer is never printed. In the JSON, such a row's `raw` is
+answer is never printed. A direct row whose account has usage credits on
+prints the same `(direct: no claude output)` line: the output of its
+[spend probe](#spend-probe) is not shown. In the JSON, such a row's `raw` is
 `{"stdout": "", "stderr": ""}`.
 
 A fallback row is followed by what `claude` printed in the attempt
@@ -1233,6 +1422,8 @@ Rows are in three groups, and the JSON uses the same order:
    Then by name.
 3. **Unavailable**: `not_logged_in`, then `timeout`, then `unparsed`, then
    `error`, each by name.
+
+The [spend status](#spend-status) plays no part in the order.
 
 #### Marks
 
@@ -1408,8 +1599,11 @@ it is about has a login.
 
 ##### Swaps during the probe
 
-After every probe has finished, the same evidence is checked again: the
-ledger's `live` and `since` fields, or the matched account. `since` is only
+After every window reading has finished, and before any `--spend`
+[spend probe](#spend-probe) starts, the same evidence is checked again: the
+ledger's `live` and `since` fields, or the matched account. A long
+`--spend` pass therefore never widens the time in which a swap stops the
+live profile's windows from being recorded. `since` is only
 compared for equality; it is never printed or stored. If the evidence
 changed or can no longer be read, the login in `~/.claude` may have been
 swapped during the probe. The row is still shown, with its numbers and its
@@ -1430,6 +1624,29 @@ status is unchanged. A run with no swap during the probes prints no note.
 
 On such a row, the numbers and any `--raw` text may belong to the login that
 replaced it. Run the command again for current numbers.
+
+The live profile's spend probe reads `~/.claude`, so with `--spend` the
+evidence is checked again before it starts and once it has finished. If
+either check fails, the probe's result is dropped, the row's spend is
+`unknown` rather than the spend of the login that replaced it, and one note
+goes to stderr. The row's windows were read before the change and are
+recorded as usual:
+
+```
+note: the login in ~/.claude changed while profile "work" was probed for its spend; its spend is unknown this run
+```
+
+The `~/.claude` row (a login no profile holds, after a manual `/login`)
+gets the same guard. Its spend probe also reads `~/.claude`, so the account
+in `~/.claude.json` is read when the row is built, before any probe, and
+again before the spend probe starts and once it has finished. If the account
+is different at either check, or cannot be read, the row's spend is
+`unknown` rather than the spend of the login swapped in, and one note goes
+to stderr. The row's windows were read before the change:
+
+```
+note: the login in ~/.claude changed while the ~/.claude row was probed for its spend; its spend is unknown this run
+```
 
 The check has two known gaps. Closing them would need a lock on the
 rotator's ledger, which amplihack does not take:
@@ -1455,6 +1672,8 @@ status, and none marks a profile live when there is doubt.
 | `warning: the login rotator's ledger names a profile that still has its own login; it is not marked live in ~/.claude` | The ledger names a profile whose directory still has a `.credentials.json`. |
 | `warning: could not list profiles; no profile is marked live in ~/.claude` | No ledger, and the profile root could not be listed (for example, it is not readable), so no account match was tried. |
 | `note: the login in ~/.claude changed while profile "<name>" was probed; its usage was not recorded this run` | The evidence for the live profile changed during the probe. A note rather than a warning. See [Swaps during the probe](#swaps-during-the-probe). |
+| `note: the login in ~/.claude changed while profile "<name>" was probed for its spend; its spend is unknown this run` | With `--spend`, the evidence for the live profile changed before or during its spend probe. Its spend is `unknown`; its windows are recorded. See [Swaps during the probe](#swaps-during-the-probe). |
+| `note: the login in ~/.claude changed while the ~/.claude row was probed for its spend; its spend is unknown this run` | With `--spend`, the account in `~/.claude` changed, or could not be read, before or during the `~/.claude` row's spend probe. Its spend is `unknown`. See [Swaps during the probe](#swaps-during-the-probe). |
 | `warning: profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); …` | Two logins are the same account. One line per pair, after the other warnings. The line names the profile whose login is not its [recorded account](#recorded-account), or `~/.claude` when it is not the live profile's recorded account, or says amplihack cannot tell which one is wrong. See [Duplicate-login warning](#duplicate-login-warning). Printed for `~/.claude` and `M` while a manual `/login` in `~/.claude` has left both with the same account; the next rotate cycle moves `M`'s copy aside when it [safely can](#rotate-hand-change-recovery). |
 
 A manual `/login` in `~/.claude` replaces whatever login was there; the
@@ -1482,6 +1701,7 @@ there is no version field.
     "overflow_blocked_until": null,
     "state": "ok",
     "source": "direct",
+    "spend": "n/a",
     "session": {
       "label": "session",
       "used_percentage": 20.0,
@@ -1519,6 +1739,7 @@ there is no version field.
 | `overflow_blocked_until` | integer or `null` | Unix epoch seconds until which the rotator has [blocked](#overflow-spend-limit-block) this overflow profile after a spend limit; `null` when it is not blocked or not marked. Always present. |
 | `state` | string | One of the [states](#states). |
 | `source` | string or `null` | How the row was read: `"passive"`, `"direct"` or `"fallback"`; see [Reading source](#reading-source). A row that failed on every step has the source of its last attempt. `null` for a row that was never probed, such as an [API-key](#api-key-usage) row or a `profile directory refused` row. Always present, immediately after `state`. |
+| `spend` | string | The [spend status](#spend-status): `"n/a"`, `"ok"`, `"limit_reached"`, `"unknown"` or `"not_probed"`. Always present, immediately after `source`. `"unknown"` means a probe was asked for or needed and gave no reading; `"not_probed"` means usage credits are on and no spend probe was asked for (no `--spend`). Neither says anything about the spend limit. `"n/a"` does not mean that usage credits are off. Scripts should treat a value they do not know as `"unknown"`. |
 | `session` | window or `null` | The session: `five_hour` from a [passive reading](#passive-readings), the [direct read](#direct-read) or the [usage request](#probe-method), or the `Current session` line from `/usage`. Always `null` for `timeout` and `error`, and when `session_limit` is `false`. |
 | `session_limit` | bool | `false` only when a reading showed no session window; `true` otherwise, including rows that could not be read. See [No session limit](#no-session-limit). Always present, immediately after `session`. |
 | `week_all` | window or `null` | The all-models week: `seven_day`, or the `Current week (all models)` line. Kept as reported when the session is exhausted. Always `null` for `timeout` and `error`. |
@@ -1831,7 +2052,7 @@ above, with only the first of the six rows shown:
 
 | Key | Type | Meaning |
 |-----|------|---------|
-| `at` | string | When the summary was worked out, after the probes. |
+| `at` | string | When the summary was worked out: after the window readings and before any [spend probe](#spend-probe), so `--spend` never makes it later. |
 | `profiles` | array | The [`--json`](#json-output) rows, unchanged. |
 | `summary` | object or `null` | `null` when there are no profiles or no row is a subscription profile. |
 | `summary.weekly_headroom_login_weeks` | number | Unweighted headroom, two decimal places. `0.0` with no valid reading. |
@@ -1893,8 +2114,9 @@ earlier: up to `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` before the
 run started, `300` seconds by default and at most `3600`.
 
 A passive reading's age is measured from the start of the run, the time
-it was accepted at. `profile usage` takes `at` later, once every row is
-in, so a slow `claude` fallback for one row never turns another row the
+it was accepted at. `profile usage` takes `at` later, once every row's
+windows are in and before any `--spend` [spend probe](#spend-probe) starts,
+so a slow `claude` fallback for one row never turns another row the
 table shows as read into an unknown one. The
 [rotator](#rotate-cycle) takes one time for both, so for it the start of
 the run and `at` are the same. The rule is:
@@ -2117,6 +2339,17 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
   debug-formatted.
 - [Direct read failures](#direct-read-failures) are fixed text. A response
   body other than a `200`'s is never read, and no body is ever printed.
+- For an account with [usage credits on](#usage-credits-on), `--raw` prints
+  only the shape of `extra_usage`: its type, its top-level key names with
+  every character outside `A-Za-z0-9_.-` replaced by `?`, and bool and
+  `null` values. A string or number from the answer is never printed, apart
+  from the fixed words and the numbers `0` and `1` listed for `is_enabled`,
+  so no e-mail address, account or organisation identifier, currency or
+  amount appears. The shape is kept in memory only, and is never in the
+  JSON, a file or the rotator's output.
+- A [spend probe](#spend-probe), run only with `--spend`, is a `claude -p /usage` run like the
+  fallback's: no token is in its command line or environment, and its
+  output is never printed or stored.
 - Claude's text appears only with `--raw`. Without it, it is dropped after
   parsing and never stored, logged or recorded. `--raw` prints Claude's text
   as it is, so it can include account details such as an e-mail address or
@@ -8334,10 +8567,10 @@ profile is live in `~/.claude`, and `blocked: the API key until <time>
 
 ```
 $ amplihack profile usage
-PROFILE         MARKS              STATE              SESSION                     SESSION RESETS                  WEEK  WEEK RESETS
-ryan-mistt      -                  session_exhausted  100%                        Oct 28, 4:50pm (Europe/London)  64%   Nov 1, 2am (Europe/London)
-ryan-ryansweet  -                  session_exhausted  100%                        Oct 28, 5:20pm (Europe/London)  71%   Nov 1, 2am (Europe/London)
-api-key         live in ~/.claude  api_key            api-key (billed per token)  -                               -     -
+PROFILE         MARKS              STATE              SESSION                     SESSION RESETS                  WEEK  WEEK RESETS                 SPEND
+ryan-mistt      -                  session_exhausted  100%                        Oct 28, 4:50pm (Europe/London)  64%   Nov 1, 2am (Europe/London)  n/a
+ryan-ryansweet  -                  session_exhausted  100%                        Oct 28, 5:20pm (Europe/London)  71%   Nov 1, 2am (Europe/London)  n/a
+api-key         live in ~/.claude  api_key            api-key (billed per token)  -                               -     -                           n/a
 live: work is running on the API key (billed per token)
 ```
 

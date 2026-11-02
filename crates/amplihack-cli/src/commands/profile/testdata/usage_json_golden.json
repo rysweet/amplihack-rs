@@ -11,6 +11,7 @@
     "api_key_blocked": null,
     "state": "ok",
     "source": "direct",
+    "spend": "n/a",
     "session": {
       "label": "session",
       "used_percentage": 20.0,
@@ -46,6 +47,7 @@
     "api_key_blocked": null,
     "state": "session_exhausted",
     "source": "passive",
+    "spend": "n/a",
     "session": {
       "label": "session",
       "used_percentage": 100.0,
@@ -74,6 +76,7 @@
     "api_key_blocked": null,
     "state": "weekly_exhausted",
     "source": "fallback",
+    "spend": "n/a",
     "session": null,
     "session_limit": true,
     "week_all": {
@@ -97,6 +100,7 @@
     "api_key_blocked": null,
     "state": "ok",
     "source": null,
+    "spend": "n/a",
     "session": {
       "label": "session",
       "used_percentage": 10.0,
@@ -125,6 +129,7 @@
     "api_key_blocked": null,
     "state": "timeout",
     "source": "fallback",
+    "spend": "n/a",
     "session": null,
     "session_limit": true,
     "week_all": null,
@@ -146,6 +151,7 @@
     },
     "state": "api_key",
     "source": null,
+    "spend": "n/a",
     "session": {
       "label": "session",
       "used_percentage": 0.0,
@@ -174,6 +180,7 @@
     "api_key_blocked": null,
     "state": "ok",
     "source": "direct",
+    "spend": "n/a",
     "session": {
       "label": "session",
       "used_percentage": 1.25,

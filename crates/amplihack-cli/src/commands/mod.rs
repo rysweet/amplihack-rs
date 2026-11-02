@@ -39,6 +39,7 @@ pub mod sessions;
 pub mod signal;
 pub mod usage;
 pub mod uvx_help;
+pub mod wait;
 pub mod workflow;
 
 use crate::{
@@ -488,6 +489,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::AgentBinary { shell, working_dir } => {
             agent_binary::run_agent_binary(shell, working_dir)
         }
+        Commands::Wait { seconds } => wait::run_wait(seconds),
         Commands::Update { skip_install } => crate::update::run_update(skip_install),
         Commands::Fleet { args } => fleet::run_fleet(args),
         Commands::New {

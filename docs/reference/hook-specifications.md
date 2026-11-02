@@ -794,6 +794,186 @@ the reduced `hookSpecificOutput`-only shape), and a real-tmux test of
 `$TMUX` precedence in `crates/amplihack-hooks/tests/tmux_socket_precedence.rs`
 that skips when tmux is not installed.
 
+#### tail-follow guard
+
+The tail-follow guard denies a shell command that runs `tail` with a follow
+option on a device that never ends, such as `/dev/null`. Agents used
+`timeout 10 tail -f /dev/null` as a sleep; under uutils `timeout` the `tail`
+could outlive the wait, and each orphan spun on every write to `/dev/null` on
+the host (#1794). The supported ways to wait are `amplihack wait --seconds N`
+and `cmd & pid=$!; wait $pid`; see
+[Wait Without Leaving Orphan Processes](../howto/wait-without-orphan-processes.md).
+
+It always runs: no environment variable, flag or setting turns it off, it
+reads no environment variables, files or clock, and it does not depend on
+XPIA.
+
+**Tools it checks.** The same tool names as the tmux guard
+(`shell::is_shell_tool`): `bash`, `shell`, `shell_command`,
+`exec_command`, `powershell` and `monitor`, compared case-insensitively. It
+reads `tool_input.command`, then `tool_input.cmd`, as a string or as an argv
+array of strings. An array is shell-quoted and joined with the shared
+`shell::join_argv` before it is checked. An array with a non-string element
+is allowed; this differs from the tmux guard, which joins the string
+elements and checks them.
+
+**Position.** The guard runs in `PreToolUseHook::process` directly after the
+tmux guard, and before the XPIA check, the Skill redirect, the merge guard and
+the non-Bash early return. When both guards match, the tmux guard's deny is
+returned.
+
+**What it denies.** A command in which, after tokenising with the shared
+shell tokeniser in `pre_tool_use/shell.rs`:
+
+1. The program word, found by `shell::program()`, is `tail`. `program()`
+   removes `timeout`, `nohup`, `env`, `nice`, `exec`, `command`, `time`,
+   `sudo` and variable assignments. The guard itself also removes `setsid`
+   (with `-w`, `-f`, `-c`), `stdbuf` (with `-i`, `-o`, `-e` and their
+   values, joined or separate), `ionice` (with `-c`, `-n` and their values,
+   and `-t`), `chrt` (with its policy flags, `-T`, `-P`, `-D` and their
+   values, and a numeric priority), `taskset` (with `-a`, `-c` and the CPU
+   mask or list), `unbuffer` (with `-p`), and `function NAME` before a function body
+   (`function f { tail -f /dev/null; }`), then calls `program()` again. It repeats this
+   up to 8 times, and each round must remove at least one word. `ionice`
+   with `-p`, `-P` or `-u`, and `chrt` or `taskset` with `-p`, act on a
+   running process and start no command, so nothing after them is read.
+2. A follow option is set. Options are read as GNU and uutils `tail` read
+   them:
+
+   | Form | Effect |
+   |------|--------|
+   | `-f`, `-F`, `--follow`, `--follow=name`, `--follow=descriptor` | Follow |
+   | Any shortened `--follow`, such as `--f`, `--fo`, `--foll=name` | Follow: `tail` accepts any unique start of a long option, and `follow` is its only option starting with `f` |
+   | Grouped short options, such as `-fn0`, `-qf` | Read left to right; `f` or `F` before an option that takes a value (`n`, `c`, `s`) follows. `-n5f` does not follow: `5f` is the value of `-n`. |
+   | `-` and a digit, such as `-5f` | Old numeric form: a trailing `f` follows |
+   | `--lines`, `--bytes`, `--pid`, `--sleep-interval`, `--max-unchanged-stats` | Take the next word as their value, or a value after `=` |
+   | `--` | Ends options; later words are operands |
+   | `+5f` | A file operand, not an option |
+
+3. An operand, after repeated `/` and `/./` are collapsed, is one of
+   `/dev/null`, `/dev/zero`, `/dev/random`, `/dev/urandom`, `/dev/full`,
+   `/dev/stdin`, `/dev/tty`, `/dev/fd/0` or `/proc/self/fd/0`. The path is
+   compared as text; the file system is never read.
+
+`--pid=PID` does not exempt a command: `tail -f --pid=1234 /dev/null` is
+denied.
+
+**Nested shells.** When the program word's basename is `sh`, `bash`, `zsh`,
+`dash` or `ksh`, and a flag word (one that starts with `-` but not `--`)
+contains `c`, the guard checks the next operand word as a command of its own,
+skipping `--` and long options. The word after `--rcfile` or `--init-file`,
+and after a flag word that ends in `o` or `O` (`-o pipefail`,
+`-euo pipefail`, `+O extglob`), is an option value, not a script. So
+`bash -c 'tail -f /dev/null'`, `bash -lc '…'` and `bash -c -- '…'` are
+checked. When such a shell has no `-c`, each heredoc body given to it is
+checked in the same way, unless the shell is given a script file without
+`-s` (`bash run.sh <<EOF`), when the heredoc is the script's input. A heredoc
+given to any other program, such as `cat > Dockerfile <<'EOF'`, is not
+checked.
+
+**Command substitutions.** The body of each `$(…)` and backtick substitution
+that the shell runs is checked as a command of its own, at one more level of
+nesting. That covers a bare substitution and one inside double quotes, so
+`x=$(timeout 5 tail -f /dev/null)` and `` echo "`tail -f /dev/null`" `` are
+denied. A substitution inside single quotes, `$'…'`, a comment or a heredoc
+body is text and is not checked; one inside a `-c` operand is found when that
+operand is checked. `docker`, `podman` and `kubectl` are not unwrapped, so
+`docker run -d alpine tail -f /dev/null`, a container entry point, is
+allowed.
+
+**Fails open.** Unlike the tmux guard, this guard allows a command whenever it
+cannot be sure. Each limit below returns no answer, and the command goes on to
+the next check:
+
+| Limit | Value |
+|-------|-------|
+| Input size, for a string or a joined argv array, checked before tokenising | 64 KiB |
+| Nesting of `-c` commands and heredocs (top level is depth 0; stops at `depth >= 4`, so up to three nested shells are checked and a fourth is allowed) | 4 |
+| Re-parses across the whole command, shared by all nesting | 256 |
+| Wrapper-removal rounds per command | 8 |
+| `tokenise(..).complete` is false | Always allowed |
+
+A missed deny leaves at worst one orphaned `tail`. A false deny would block
+ordinary commands that mention the words as data, so the guard does not fail
+closed.
+
+**Examples.**
+
+| Command | Result |
+|---------|--------|
+| `timeout 10 tail -f /dev/null` | denied |
+| `tail -f /dev/null &` | denied |
+| `tail -F /dev/null` | denied |
+| `tail -fn0 /dev/null` | denied |
+| `tail -5f /dev/null` | denied |
+| `tail --follow=name //dev//null` | denied |
+| `tail -f --pid=1234 /dev/null` | denied |
+| `setsid -w stdbuf -oL tail -f /dev/null` | denied |
+| `ionice -c3 tail -f /dev/null` | denied |
+| `chrt -i 0 tail -f /dev/null` | denied |
+| `taskset 1 tail -f /dev/null` | denied |
+| `unbuffer tail -f /dev/null` | denied |
+| `bash -lc 'tail -f /dev/null'` | denied |
+| `bash -c -- 'tail -f /dev/null'` | denied |
+| `tail --fo /dev/null` | denied |
+| `bash -euo pipefail -c 'tail -f /dev/null'` | denied |
+| `bash <<'EOF'`, `tail -f /dev/null`, `EOF` on separate lines | denied |
+| `x=$(timeout 5 tail -f /dev/null)` | denied |
+| `` echo `tail -f /dev/null` `` | denied |
+| `["bash","-lc","tail -f /dev/null"]` (argv array) | denied |
+| `tail -f build.log` | allowed |
+| `tail -n 5 /dev/null` | allowed |
+| `tail -n5f /dev/null` | allowed |
+| `tail -f +5f` | allowed |
+| `tail -f` and `tail -f -` | allowed |
+| `echo 'tail -f /dev/null'` | allowed |
+| `echo "$(date)"` | allowed |
+| `echo '$(tail -f /dev/null)'` | allowed |
+| `cat > Dockerfile <<'EOF'`, `CMD ["tail","-f","/dev/null"]`, `EOF` | allowed |
+| `docker run -d alpine tail -f /dev/null` | allowed |
+| `tail -f "$DEV"` | allowed |
+| `bash <<< 'tail -f /dev/null'` | allowed (known limit) |
+| `echo 'tail -f /dev/null' \| bash` | allowed (known limit) |
+| `["bash", 1]` (argv array with a number) | allowed |
+
+The guard does not panic on any input: every index into the command text is
+bounds-checked first, and grouped short options are read by character.
+
+**Response.** The same full-deny shape as the tmux guard, key for key, shown
+under the tmux guard's **Response** above, with `<M>` set to this fixed
+message:
+
+> Blocked: `tail` following a device that never ends (such as `tail -f /dev/null`) must not be used as a way to wait. The tail outlives the tool call and is left running as an orphan process (#1794). To wait for a fixed time, run `amplihack wait --seconds N`. To wait for work to finish, run it in the background and wait on its PID: `cmd & pid=$!; wait $pid`. Do not use `tail -f /dev/null` or `timeout N tail -f /dev/null` as a sleep.
+
+The message is a constant. Neither the deny nor the one `warn!` log line,
+which cites #1794, includes the command, its operands, the working
+directory, the tool name or any environment variable.
+
+**Known limits.** The guard is a guard rail against agent mistakes, not a
+sandbox. It does not see:
+
+- a device given by expansion (`$DEV`, `$(…)`, globs);
+- `tail` run by `xargs`, `find -exec`, `eval` or `env -S`;
+- `tail` run through a multi-call binary, such as `busybox tail`;
+- `tail` behind a launch wrapper other than those listed under **What it
+  denies**, such as `flock`, `systemd-run`, `cgexec` or `firejail`;
+- `tail` in a script file run by a later command;
+- a script given to a shell as a here-string (`bash <<< 'tail -f /dev/null'`)
+  or through a pipe (`echo 'tail -f /dev/null' | bash`): the script is an
+  ordinary word or another command's output, and following it would need
+  data-flow tracking;
+- a `$(…)` or backtick substitution inside an expanding heredoc fed to a
+  program that is not a shell, such as `cat <<EOF` with
+  `$(tail -f /dev/null)` in its body;
+- `..` in a device path, or a symbolic link to a device;
+- nesting deeper than three nested shells, input over 64 KiB, or input the
+  tokeniser cannot fully parse;
+- `sleep`, or `tail -f` on a regular file.
+
+**Source.** `crates/amplihack-hooks/src/pre_tool_use/tail_follow_guard.rs`,
+with unit tests in `pre_tool_use/tests/tail_follow_guard_tests.rs` and
+`process` path tests in `pre_tool_use/tests/pre_tool_use_tests.rs`.
+
 ### 4. PostToolUse — `post-tool-use`
 
 Runs after every tool call (matcher `*`). Records tool usage metrics. No timeout — fail-open.

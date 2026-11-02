@@ -27,9 +27,21 @@ fn dir(p: &Path, mode: u32) -> PathBuf {
     p.to_path_buf()
 }
 
+// The shared socket temp-dir helper; the one copy lives with the
+// integration-test support code (see its header for why it is shared by path).
+#[path = "../../../tests/support/socket_tempdir.rs"]
+mod socket_tempdir;
+
+/// The deepest path any test here uses under its temp dir.
+const DEEPEST: &str = "shared/tmux-1000/default";
+
+fn short_tempdir() -> tempfile::TempDir {
+    socket_tempdir::socket_tempdir(DEEPEST)
+}
+
 /// A temp root (0700) and `root/tmux-1000` with `mode`.
 fn parent(mode: u32) -> (tempfile::TempDir, PathBuf) {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = short_tempdir();
     dir(tmp.path(), 0o700);
     let p = dir(&tmp.path().join("tmux-1000"), mode);
     (tmp, p)
@@ -94,7 +106,7 @@ fn the_socket_path_must_be_a_socket_and_not_a_symlink() {
 
 #[test]
 fn an_ancestor_writable_by_others_needs_the_sticky_bit() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = short_tempdir();
     dir(tmp.path(), 0o700);
     let shared = dir(&tmp.path().join("shared"), 0o777);
     let p = dir(&shared.join("tmux-1000"), 0o700);
@@ -109,14 +121,14 @@ fn an_ancestor_writable_by_others_needs_the_sticky_bit() {
 
 #[test]
 fn a_missing_parent_is_reported() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = short_tempdir();
     let sock = tmp.path().join("gone/tmux-1000/default");
     assert_eq!(check(&sock), SocketCheck::MissingParent);
 }
 
 #[test]
 fn prepare_creates_missing_directories_at_0700() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = short_tempdir();
     dir(tmp.path(), 0o700);
     let sock = tmp.path().join("a/b/tmux-1000/default");
     prepare(&sock).expect("missing directories are created");
@@ -130,7 +142,7 @@ fn prepare_creates_missing_directories_at_0700() {
 
 #[test]
 fn prepare_refuses_under_an_unsafe_ancestor_and_creates_nothing() {
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = short_tempdir();
     dir(tmp.path(), 0o700);
     let open = dir(&tmp.path().join("open"), 0o777);
     let sock = open.join("tmux-1000/default");
@@ -151,7 +163,7 @@ fn has_session_rows_1_to_3_need_no_tmux() {
     );
     bind(&sock);
     assert_eq!(classify_socket(&sock), None, "tmux is asked");
-    let tmp = tempfile::tempdir().unwrap();
+    let tmp = short_tempdir();
     let gone = tmp.path().join("gone/default");
     assert_eq!(
         classify_socket(&gone),

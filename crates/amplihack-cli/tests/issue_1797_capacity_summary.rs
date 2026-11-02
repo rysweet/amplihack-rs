@@ -22,7 +22,7 @@
 //!   empty, with one fixed warning on stderr, by `profile usage` and by
 //!   `rotate status`; a missing one gives no warning.
 //! - `--summary-json`'s `at` and the history line's `at` are taken after the
-//!   probes.
+//!   window probes (and before any `--spend` probe).
 //! - `rotate status` prints `capacity:` from the history and starts nothing.
 
 #![cfg(target_os = "linux")]

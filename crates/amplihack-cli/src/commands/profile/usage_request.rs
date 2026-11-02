@@ -58,19 +58,30 @@ pub(super) fn parse_answer(stdout: &str, now: i64) -> Option<UsageReport> {
         return None;
     }
     match parse_limits(payload.get("rate_limits")?, now) {
-        Limits::Report(report) => Some(report),
-        Limits::CreditsOn | Limits::Unparseable => None,
+        Limits::Report {
+            report,
+            credits_on: None,
+        } => Some(report),
+        Limits::Report { .. } | Limits::CreditsOn | Limits::Unparseable => None,
     }
 }
 
-/// What one `rate_limits`-shaped object holds (issue #1844).
+/// What one `rate_limits`-shaped object holds (issues #1844 and #1856).
+// One value per read, returned and taken apart at once: boxing the large
+// variant would add an allocation to every read and save nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Limits {
-    /// The windows, read as `profile usage` reports them.
-    Report(UsageReport),
-    /// `extra_usage` is on: only `/usage` reports the spend limit.
+    /// The windows, read as `profile usage` reports them. `credits_on` is
+    /// the redacted shape of `extra_usage` when usage credits are on, and
+    /// `None` when they are off.
+    Report {
+        report: UsageReport,
+        credits_on: Option<ExtraUsageShape>,
+    },
+    /// `extra_usage` is on and neither window could be read.
     CreditsOn,
-    /// Not an object, or neither window could be read.
+    /// Not an object, or credits are off and neither window could be read.
     Unparseable,
 }
 
@@ -82,16 +93,19 @@ pub(super) fn parse_limits(limits: &Value, now: i64) -> Limits {
     let Some(limits) = limits.as_object() else {
         return Limits::Unparseable;
     };
-    if !credits_off(limits) {
-        return Limits::CreditsOn;
-    }
+    let credits_on = (!credits_off(limits))
+        .then(|| ExtraUsageShape::of(limits.get("extra_usage").unwrap_or(&Value::Null)));
     let five_hour = limits.get("five_hour");
     let mut session = five_hour.and_then(|w| window(w, "session", now));
     let week_all = limits
         .get("seven_day")
         .and_then(|w| window(w, "all models", now));
     if session.is_none() && week_all.is_none() {
-        return Limits::Unparseable;
+        return if credits_on.is_some() {
+            Limits::CreditsOn
+        } else {
+            Limits::Unparseable
+        };
     }
     let week_models = limits
         .get("model_scoped")
@@ -111,14 +125,17 @@ pub(super) fn parse_limits(limits: &Value, now: i64) -> Limits {
     } else {
         UsageState::Ok
     };
-    Limits::Report(UsageReport {
-        state,
-        session,
-        week_all,
-        week_models,
-        session_limit,
-        observed_at: None,
-    })
+    Limits::Report {
+        report: UsageReport {
+            state,
+            session,
+            week_all,
+            week_models,
+            session_limit,
+            observed_at: None,
+        },
+        credits_on,
+    }
 }
 
 /// Whether `five_hour` shows a session reset (issue #1818). Only an absent
@@ -142,6 +159,130 @@ fn credits_off(object: &Map<String, Value>) -> bool {
         None | Some(Value::Null) => true,
         Some(Value::Object(o)) => o.get("is_enabled") == Some(&Value::Bool(false)),
         Some(_) => false,
+    }
+}
+
+/// At most this many `extra_usage` keys are listed in a shape line.
+const SHAPE_MAX_KEYS: usize = 32;
+/// A listed key longer than this, in characters, is cut.
+const SHAPE_MAX_KEY: usize = 64;
+/// The `is_enabled` strings a shape line names (issue #1856, D2). The
+/// constant is printed, never the bytes from the reply.
+const ENABLED_WORDS: [&str; 10] = [
+    "true", "false", "on", "off", "yes", "no", "enabled", "disabled", "0", "1",
+];
+
+/// The redacted shape of a credits-on `extra_usage` (issue #1856): its keys
+/// and the JSON type of each member, with the value only of bools, `null`,
+/// and an `is_enabled` that matches [`ENABLED_WORDS`] or is the number zero
+/// or one. No other string or number from the reply is kept. It is built
+/// only by [`ExtraUsageShape::of`] and is never serialised.
+#[derive(Debug, Clone, PartialEq)]
+pub(super) struct ExtraUsageShape {
+    line: String,
+}
+
+impl ExtraUsageShape {
+    /// The shape of `v`. Total: no input fails or panics, and nested values
+    /// are named by type only, never walked.
+    pub(super) fn of(v: &Value) -> Self {
+        let line = match v {
+            Value::Object(o) => object_shape(o),
+            other => format!("extra_usage: {}", scalar_form(other)),
+        };
+        Self { line }
+    }
+
+    /// The text after `note: profile "<name>": `. Printable ASCII and `…`
+    /// only.
+    pub(super) fn line(&self) -> &str {
+        &self.line
+    }
+}
+
+/// `extra_usage: object; keys: …; is_enabled: …` and the listed bool and
+/// `null` members, in byte order of their keys.
+fn object_shape(o: &Map<String, Value>) -> String {
+    let mut keys: Vec<&String> = o.keys().collect();
+    keys.sort_unstable();
+    let listed = &keys[..keys.len().min(SHAPE_MAX_KEYS)];
+    let mut line = String::from("extra_usage: object; keys: ");
+    if listed.is_empty() {
+        line.push_str("none");
+    } else {
+        let names: Vec<String> = listed.iter().map(|k| shape_key(k)).collect();
+        line.push_str(&names.join(", "));
+    }
+    if keys.len() > listed.len() {
+        line.push_str(&format!(" (+{} more)", keys.len() - listed.len()));
+    }
+    line.push_str("; is_enabled: ");
+    line.push_str(&enabled_form(o.get("is_enabled")));
+    for key in listed.iter().filter(|k| k.as_str() != "is_enabled") {
+        match o.get(key.as_str()) {
+            Some(Value::Bool(b)) => line.push_str(&format!("; {}: bool {b}", shape_key(key))),
+            Some(Value::Null) => line.push_str(&format!("; {}: null", shape_key(key))),
+            _ => {}
+        }
+    }
+    line
+}
+
+/// A value other than an object: its type, and a bool's value.
+fn scalar_form(v: &Value) -> String {
+    match v {
+        Value::Null => "null".to_string(),
+        Value::Bool(b) => format!("bool {b}"),
+        Value::Number(_) => "number".to_string(),
+        Value::String(_) => "string".to_string(),
+        Value::Array(_) => "array".to_string(),
+        Value::Object(_) => "object".to_string(),
+    }
+}
+
+/// The form of `is_enabled` (D2).
+fn enabled_form(v: Option<&Value>) -> String {
+    match v {
+        None => "missing".to_string(),
+        Some(Value::String(s)) => match ENABLED_WORDS.iter().find(|w| w.eq_ignore_ascii_case(s)) {
+            Some(word) => format!("string \"{word}\""),
+            None => format!("string ({} chars)", s.chars().count()),
+        },
+        // An integer or a float exactly equal to 0 or 1 is the flag (S3);
+        // no tolerance, so 0.9999 stays a bare `number`.
+        Some(Value::Number(n)) => match n.as_u64().or_else(|| match n.as_f64() {
+            Some(0.0) => Some(0),
+            Some(1.0) => Some(1),
+            _ => None,
+        }) {
+            Some(0) => "number 0".to_string(),
+            Some(1) => "number 1".to_string(),
+            _ => "number".to_string(),
+        },
+        Some(other) => scalar_form(other),
+    }
+}
+
+/// A key as a shape line shows it (S1, S2): every character outside
+/// `[A-Za-z0-9_.-]` becomes `?`, so no key can forge a separator; a key
+/// longer than 64 characters is cut to 63 and `…`; an empty key is `""`.
+fn shape_key(key: &str) -> String {
+    if key.is_empty() {
+        return "\"\"".to_string();
+    }
+    let safe = key.chars().map(|c| {
+        if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') {
+            c
+        } else {
+            '?'
+        }
+    });
+    if key.chars().count() > SHAPE_MAX_KEY {
+        let mut cut: String = safe.take(SHAPE_MAX_KEY - 1).collect();
+        cut.push('…');
+        cut
+    } else {
+        safe.collect()
     }
 }
 
