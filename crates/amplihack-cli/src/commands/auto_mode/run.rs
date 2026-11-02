@@ -38,7 +38,7 @@ pub fn run_auto_mode(
         true,
         &nesting,
     )?;
-    let result = (|| -> Result<()> {
+    let result = (|| -> Result<i32> {
         if ui {
             bail!("--ui is not yet supported in native Rust auto mode");
         }
@@ -55,12 +55,8 @@ pub fn run_auto_mode(
                 &parsed.passthrough_args,
                 &execution.transform_prompt(&parsed.prompt),
             )?;
-            if result.exit_code != 0 {
-                tracker.complete_session(&session_id)?;
-                std::process::exit(result.exit_code);
-            }
             tracker.complete_session(&session_id)?;
-            return Ok(());
+            return Ok(result.exit_code);
         }
 
         let ui_active = ui.then(|| Arc::new(AtomicBool::new(true)));
@@ -117,16 +113,18 @@ pub fn run_auto_mode(
         }
         let exit_code = channel.exit_code();
         tracker.complete_session(&session_id)?;
-        if exit_code != 0 {
-            std::process::exit(exit_code);
-        }
-        Ok(())
+        Ok(exit_code)
     })();
 
     if result.is_err() {
         let _ = tracker.crash_session(&session_id);
     }
-    result
+    // Issue #1811: a non-zero exit is returned, not taken here, so a caller's
+    // governor slot guard is dropped and releases its slot first.
+    match result? {
+        0 => Ok(()),
+        code => Err(crate::command_error::exit_error(code)),
+    }
 }
 
 pub(super) fn render_auto_session_argv(

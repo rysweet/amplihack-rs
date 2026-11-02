@@ -2524,6 +2524,7 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
         "json",
         Some(temp.path().to_str().unwrap()),
         None,
+        &crate::commands::governor::GovernorArgs::default(),
     );
 
     match prev_runner {

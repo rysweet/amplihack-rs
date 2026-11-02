@@ -3,6 +3,9 @@
 Manage Claude Code login profiles. See the
 [how-to](../howto/claude-profiles.md) for a walkthrough.
 
+See also the [capacity governor](./capacity-governor.md), which reads the
+usage readings described here to decide when new work may start.
+
 ## Synopsis
 
 ```
@@ -14,7 +17,7 @@ amplihack profile switch <name> | --none
 amplihack profile remove <name> --yes
 amplihack profile login <name>
 amplihack profile run <name> -- <claude-args>...
-amplihack profile usage [--json] [--raw] [<name>...]
+amplihack profile usage [--json | --summary-json] [--raw] [--usable-session-pct <1-100>] [<name>...]
 amplihack profile auto-switch on [--threshold <1-100>] [--exclude <name,...>]
 amplihack profile auto-switch off
 amplihack profile auto-switch status
@@ -49,7 +52,7 @@ amplihack launch|claude --profile <name> [...]
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
 | `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
-| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails; then shows its session and weekly usage, most capacity first. `--json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings. See [Usage command](#usage-command). |
+| `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails; then shows its session and weekly usage, most capacity first, followed by a [capacity summary](#capacity-summary). `--json` or `--summary-json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings and adds to the [usage history](#usage-history). See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
 | `overflow …` | Mark or unmark a credit-backed profile that the rotator may use when every plan login is exhausted, list the marks, or lift a spend-limit block. See [Overflow commands](#overflow-commands). |
 | `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
@@ -63,19 +66,25 @@ its own on Unix; see [No silent billing](#no-silent-billing).
 ### Usage command
 
 ```
-amplihack profile usage [--json] [--raw] [<name>...]
+amplihack profile usage [--json | --summary-json] [--raw] [--usable-session-pct <1-100>] [<name>...]
 ```
 
 Shows how much of each profile's current session and weekly quota is used
-and when each resets, so you can see which accounts have capacity. With no
+and when each resets, so you can see which accounts have capacity. Below the
+table, a [capacity summary](#capacity-summary) adds the rows up: weekly
+headroom across all logins, how many can take work now, the next session
+reset, how long the weekly capacity lasts at the recent rate, and which
+weekly limits reset in the next 24 hours. With no
 names it covers every profile under the root, as `list` does. Each name must
 pass the [name rules](#name-rules) and must exist. A name given twice is
 probed once.
 
 | Flag | Effect |
 |------|--------|
-| `--json` | Print a JSON array instead of the table. See [JSON output](#json-output). |
-| `--raw` | Also print what `claude` wrote to stdout and stderr, for each profile, from the [attempt](#probe-method) that gave the row. Without it, that output is dropped once parsed. Rows read without `claude` print a fixed line instead. It can include account details; see [Raw output](#raw-output). |
+| `--json` | Print a JSON array instead of the table. No summary. See [JSON output](#json-output). |
+| `--summary-json` | Print one JSON object holding the same array and the summary. Cannot be combined with `--json` or `--raw` (exit status 2). See [Summary JSON](#summary-json). |
+| `--usable-session-pct <n>` | Session percentage below which a login counts as usable now in the summary, `1` to `100`; default `95`. Overrides `AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT`. A value out of range is a usage error (exit status 2). See [Usable now](#usable-now). |
+| `--raw` | Also print what `claude` wrote to stdout and stderr, for each profile, from the [attempt](#probe-method) that gave the row. Without it, that output is dropped once parsed. Rows read without `claude` print a fixed line instead. It can include account details; see [Raw output](#raw-output). With `--raw` there is no summary and nothing is added to the [usage history](#usage-history). |
 | `<name>...` | Probe only these profiles, in the [usual order](#ordering). |
 
 #### How a profile is probed
@@ -1036,7 +1045,7 @@ result is a reading: the account answered, and a window is at 100% or more.
 |--------|-----------------------|----------|--------------------|------------------|------------|
 | `timeout` | state `timeout`, `-` in every percentage and reset | `"state": "timeout"`, `session`, `week_all` and `error` `null`, `week_models` empty | `<name>:failed` | Unknown: never a target, never counted as exhausted; a plan candidate in this state blocks a move onto [overflow](#overflow-decision) | Next run or cycle; no failed result is kept |
 | `error` | state `error`, `-` in every percentage and reset; reason on stderr | `"state": "error"`, `session` and `week_all` `null`, `week_models` empty, reason in `error` | `<name>:failed` | As for `timeout`, `profile directory refused` included (see [Overflow decision](#overflow-decision)) | As for `timeout` |
-| `session_exhausted`, `weekly_exhausted` | the percentages read | the windows read | `<name>:s=<n>%,w=<n>%` from the windows read, with `s=100%` at least for `session_exhausted`, for example `<name>:s=100%,w=55%` | Headroom `0`: never a target | Next run or cycle |
+| `session_exhausted`, `weekly_exhausted` | the percentages read | the windows read | `<name>:s=<n>%,w=<n>%`, the windows read; see [Exhausted figures](#rotate-exhausted-figures) | Headroom `0`: never a target | Next run or cycle |
 | Still running (rotator only) | - | - | `<name>:unknown, still running` | As for `timeout` | Its result is used by the next cycle; see [Reads that outlast a cycle](#reads-that-outlast-a-cycle) |
 
 `spend_limit`, `not_logged_in` and `unparsed` are also shown as
@@ -1047,6 +1056,35 @@ keep the rotator off credits for good. A failed live probe is handled as in
 [Failed live probes](#rotate-failed-live-probes). Neither `profile usage` nor
 the rotator records a `timeout` or `error` result as an auto-switch
 [reading](#readings), or as exhausted anywhere.
+
+<a id="rotate-exhausted-figures"></a>
+
+#### Exhausted figures
+
+An exhausted reading keeps both windows the probe read. The rotator does not
+use them to decide: an exhausted profile has headroom `0` and is never a
+target, whatever the figures are. They are kept so that the rotate log, and
+anything that reads weekly room from it, sees the weekly use read for a login
+that has only reached its session limit.
+
+| Window | Shown as |
+|--------|----------|
+| The session | The value read, rounded down; for `session_exhausted` never below `100%`. A missing window shows `100%` for `session_exhausted`, the window that ran out, and `0%` for `weekly_exhausted`, as in the [decision rule](#rotate-decision-rule), so a login with [no session limit](#no-session-limit) shows `s=0%` whether or not its week has run out. |
+| The all-models week | The value read, rounded down; for `weekly_exhausted` never below `100%`. A missing window shows `w=?` for `session_exhausted` and `100%` for `weekly_exhausted`. |
+
+| Probe result | Session read | Week read | Cycle line |
+|--------------|--------------|-----------|------------|
+| `session_exhausted` | 100% | 62% | `<name>:s=100%,w=62%` |
+| `session_exhausted` | 100% | none | `<name>:s=100%,w=?` |
+| `weekly_exhausted` | 30% | 99.6% | `<name>:s=30%,w=100%` |
+| `weekly_exhausted`, [no session limit](#no-session-limit) | none | 100% | `<name>:s=0%,w=100%` |
+| `session_exhausted` | 98% | 40% | `<name>:s=100%,w=40%` |
+
+The same figures are used in the `live` and `target` parts of a `swap` line
+and in the `live=` part of an `ALERT: no profile has capacity` line. A
+login at its weekly limit with no session window shows `s=0%`, the same
+figure it shows before the week runs out; `s=100%` always means a session
+limit was reached.
 
 The rotator writes one line to stderr (`rotate.err` for a background
 rotator) for each `timeout` or `error` result, with `~/.claude` as the name
@@ -1548,6 +1586,434 @@ amplihack profile usage --json | jq -r '.[] | select(.session_limit == false) | 
 weekly
 ```
 
+#### Capacity summary
+
+After the table, and after the `running on overflow:` line when there is
+one, `profile usage` prints a blank line and six summary lines. The summary
+is worked out from the rows of this run and the [usage history](#usage-history);
+it runs no extra probe and makes no network call. With these rows, and a
+history going back six hours:
+
+```
+PROFILE  MARKS  STATE              SESSION  SESSION RESETS        WEEK  WEEK RESETS
+review   -      ok                 5%       2026-10-30T19:00:00Z  10%   2026-11-03T09:00:00Z
+work     *      ok                 20%      2026-10-30T20:00:00Z  30%   2026-10-31T09:00:00Z
+team     -      session_exhausted  100%     2026-10-30T18:00:00Z  68%   2026-11-04T09:00:00Z
+night    -      session_exhausted  100%     2026-10-30T18:00:40Z  85%   2026-10-31T02:00:00Z
+scratch  -      not_logged_in      -        -                     -     -
+spare    -      timeout            -        -                     -     -
+
+weekly headroom      2.07 login-weeks of 4 (52%)
+usable now           2 of 4 logins (session < 95% and weekly < 100%)
+next session reset   2026-10-30T18:00:00Z  (night, team: +2 usable)
+runway               ~9 h at the last 6 h rate (0.230 login-weeks/h)
+resets in next 24 h  2026-10-31T02:00:00Z night +0.85; 2026-10-31T09:00:00Z work +0.30
+unknown              2 profiles (no valid reading; excluded from all figures)
+```
+
+| Line | Meaning |
+|------|---------|
+| `weekly headroom` | The weekly capacity left across all logins with a [valid reading](#valid-and-unknown-readings), in login-weeks: one login-week is one login's whole weekly allowance. `X login-weeks of N (P%)`, where `N` is the number of valid readings, `X` is the sum of `(100 − week%) / 100` over them, and `P` is `X / N` as a percentage. Followed by `   [weighted: X' of T]` only when some login with a valid reading has a [weight](#capacity-weights) other than `1.0`; a weight for a profile that is not among them, such as a deleted one, does not count. With no valid reading: `unknown (no valid readings)`. |
+| `usable now` | `U of N logins (session < S% and weekly < 100%)`: how many logins with a valid reading can take work now, and the session threshold `S` in force. See [Usable now](#usable-now). |
+| `next session reset` | The earliest session reset among logins stopped only by their session limit, and every such login whose reset falls within 60 seconds of it: `<time>  (<names>: +K usable)`, where `K` is the number of names. `none` when there is no such login. See [Next session reset](#next-session-reset). |
+| `runway` | How long the weekly headroom lasts at the rate it was used over the last six hours: `~H h at the last 6 h rate (R login-weeks/h)`, or `unknown`. The `6 h` is fixed text; the rate is per hour whatever the length of history used. See [Rate and runway](#rate-and-runway). |
+| `resets in next 24 h` | Weekly resets due in the next 24 hours, each `<time> <name> +<login-weeks restored>`, soonest first, separated by `; `. `none` when there are none. |
+| `unknown` | `M profiles (no valid reading; excluded from all figures)`: the number of subscription profiles without a valid reading, `1 profile (…)` for one and `0 profiles (…)` for none. Their names are in the table and in [`summary.unknown`](#summary-json). They are left out of every other line. |
+
+Times are UTC, `YYYY-MM-DDTHH:MM:SSZ`, whichever [attempt](#probe-method)
+gave the row. Percentages are whole numbers, login-weeks have two decimal
+places, the rate three, and the runway whole hours, rounded half away from
+zero. `~0 h` means less than half an hour is left at that rate. Each label
+is padded with spaces to 21 characters, so the values start in one column. Names are cleaned the same way as in the table. The summary's
+layout is for people and may change; scripts should use
+[`--summary-json`](#summary-json).
+
+There is no summary with `--json` or `--raw`, or when no row is a
+subscription profile (for example when every profile is an
+[API-key profile](#api-key-profiles)). With no profiles, the table form
+prints only the `no profiles` line.
+
+##### Valid and unknown readings
+
+The summary counts subscription profiles only. [API-key profile](#api-key-profiles)
+rows and the extra [`~/.claude` row](#logins-in-claude) are not logins in
+the summary and are not listed as unknown. An overflow profile is a
+subscription profile and is counted.
+
+A row's reading is valid only when its weekly figure is known:
+
+| Row | Reading |
+|-----|---------|
+| `ok` or `session_exhausted` with an all-models week | Valid, at that week percentage. |
+| `weekly_exhausted` | Valid, at 100% even when no week percentage was read. |
+| `ok` or `session_exhausted` without an all-models week | Unknown. |
+| A rotator probe that is exhausted but read no all-models week | Unknown: the week is not taken to be full. |
+| `spend_limit`, `not_logged_in`, `timeout`, `unparsed`, `error` | Unknown. |
+| The profile [live in `~/.claude`](#logins-in-claude), when the login in `~/.claude` changed during the probe | Unknown: the numbers may belong to another account. |
+
+An unknown reading is never counted as 0% or 100%. It is left out of `N`,
+of every sum and of the history, and counted on the `unknown` line.
+Percentages are clamped to `0`–`100` first, and sums are kept in whole
+percentage points, so the figures do not drift: 16 valid readings whose week
+percentages add up to 1228 give `(1600 − 1228) / 100 = 3.72` login-weeks and
+exactly 23.25%, shown as `23%` and given in JSON as `23.3`.
+
+##### Usable now
+
+A login with a valid reading is usable now when its week is below 100% and
+either its session is below the threshold or it has no session limit. A login
+has no session limit when its reading showed no session window, that is, when
+its [`session_limit`](#no-session-limit) is `false`; it is usable on its week
+alone. An idle session-limited login at 0% with no reset reads the same way,
+and is usable too. A valid reading whose session was not read for another
+reason, with `session_limit` still `true`, counts towards the headroom but not
+as usable, because nothing shows its session is below the threshold. The
+rotator applies the same rule to the readings it records.
+
+| Setting | Values | Default |
+|---------|--------|---------|
+| `--usable-session-pct <n>` | `1` to `100` | none |
+| `AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT` | `1` to `100` | `95` |
+
+The flag wins over the variable. A flag value out of range is a usage error
+(exit status 2). An empty variable counts as unset. A variable that is not a
+whole number from `1` to `100` prints one warning to stderr, showing the
+value escaped and cut to 32 characters, then uses `95`:
+
+```
+warning: ignored AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT "most" (use 1 to 100); using 95
+```
+
+With the default, a session at 94% is usable and one at 95% is not. The
+line prints the threshold in force, for example
+`2 of 4 logins (session < 80% and weekly < 100%)` with `--usable-session-pct 80`.
+The threshold affects only this line, the `usable_now` key and the usable
+count on the `rotate status` [capacity line](#capacity-line). It does not change
+the rotator's or auto-switch's thresholds.
+
+##### Next session reset
+
+The candidates are logins with a valid reading that are stopped by their
+session limit only: state `session_exhausted`, or a session at 100%, with a
+week below 100% and a known session reset time. A candidate without a reset
+time is left out. The line gives the earliest reset time and every candidate
+whose reset is within 60 seconds of it, by name, because probes of logins
+that reset together report times a few seconds apart. A reset time that has
+already passed is still shown; the next run reads the login again.
+
+##### Rate and runway
+
+The rate is how many login-weeks were used per hour over the last six hours.
+It is read from the [usage history](#usage-history):
+
+1. The newest end is this run's readings. The oldest end is the oldest
+   history entry no more than six hours older than this run that covers
+   every login with a valid reading now: an entry written by `profile
+   usage` (or an older entry without a writer), or a rotator entry that read
+   all of those logins. A rotator entry that skipped a login, for example
+   one running a session, is never the oldest end. Those busy logins are
+   the ones being used, and leaving them out of the rate while their
+   headroom still counts would make the runway far too long. Entries before
+   the oldest end are not used.
+2. If there is no such entry, or it is less than four and a half hours
+   older, there is too little history: `runway unknown`, and the rate and
+   runway are `null` in JSON.
+3. Only logins with a valid reading at both ends count. A login `profile
+   usage` could not read at the start, or one that is unknown now, is left
+   out. Rotator entries between the two ends are used for the logins they
+   read; a login missing from one of them only skips that step.
+4. For each login, the use is its week percentage now minus its week
+   percentage at the start. Between each pair of consecutive entries in which
+   the login appears, a weekly reset is detected when the earlier entry's
+   `w_reset` is at or before the later entry's time, or when the week
+   percentage fell. The earlier entry's percentage is then added back, since
+   that much was used before the reset.
+5. The rate is the sum of each login's use times its [weight](#capacity-weights),
+   divided by 100 and by the hours between the two ends.
+
+The runway is the weighted headroom of this run divided by the rate. When the
+rate is zero or below, nothing was used over the window and the runway is
+`unknown`; JSON still gives the rate. Weights are `1.0` unless set, in which
+case the weighted and unweighted figures are the same.
+
+##### Capacity weights
+
+By default every login counts as one login-week. When accounts have different
+weekly allowances, for example a Max 20x plan next to Pro plans, set a weight
+for each login in `<root>/.auto-switch.d/capacity-weights.json`:
+
+```json
+{ "team": 2.0, "scratch": 0.5 }
+```
+
+With that file, the first summary line above becomes:
+
+```
+weekly headroom      2.07 login-weeks of 4 (52%)   [weighted: 2.39 of 5.00]
+```
+
+The weighted headroom is the sum of `weight × (100 − week%) / 100` over the
+valid readings, out of the sum of their weights `T`, which has two decimal
+places. The first figure stays unweighted. The rate, the runway and
+`restores` on the `resets in next 24 h` line
+are always weighted.
+
+A profile has no settings file of its own, so weights are kept together in
+this one file rather than as a per-profile setting. There is no command to
+set weights; edit the file by hand. It is read once
+per run and never written by amplihack. The rules:
+
+| Case | Result |
+|------|--------|
+| No file, or no profile root | Every weight is `1.0`, with no message. |
+| The profile root is a symlink, is not a directory owned by you, or is writable by other users | Every weight is `1.0`, with the warning below and the reason `unsafe file`. This is the same root rule as the [usage history](#usage-history). |
+| The file is a symlink, larger than 64 KiB, not owned by you, writable by group or others, not valid JSON, or not a JSON object | Every weight is `1.0`, and one warning goes to stderr: `warning: capacity-weights.json ignored (<reason>); every weight is 1.0`. |
+| A value that is not a number, or not above `0` and at most `1000` | That weight is `1.0`, with one warning: `warning: capacity-weights.json: weight for "<name>" ignored (use a number above 0 and at most 1000); using 1.0`. |
+| A name that matches no profile | Ignored. |
+
+Weights are applied when the summary is worked out. They are never written
+to the history, so a change takes effect on the next run, for past entries
+too.
+
+#### Summary JSON
+
+`--summary-json` prints one JSON object instead of the table and summary.
+stdout holds only the JSON; warnings go to stderr. `profiles` is exactly the
+array [`--json`](#json-output) would print in the same run. For the run
+above, with only the first of the six rows shown:
+
+```json
+{
+  "at": "2026-10-30T16:15:00Z",
+  "profiles": [
+    {
+      "profile": "review",
+      "account": "review",
+      "default": false,
+      "leased_to": null,
+      "live_in": null,
+      "overflow": false,
+      "overflow_blocked_until": null,
+      "state": "ok",
+      "session": {
+        "label": "session",
+        "used_percentage": 5.0,
+        "resets_text": "2026-10-30T19:00:00Z",
+        "resets_at": 1793386800
+      },
+      "week_all": {
+        "label": "all models",
+        "used_percentage": 10.0,
+        "resets_text": "2026-11-03T09:00:00Z",
+        "resets_at": 1793696400
+      },
+      "week_models": [],
+      "error": null
+    }
+  ],
+  "summary": {
+    "weekly_headroom_login_weeks": 2.07,
+    "weekly_headroom_pct": 51.8,
+    "weighted_headroom_login_weeks": 2.07,
+    "usable_now": 2,
+    "valid_readings": 4,
+    "unknown": ["scratch", "spare"],
+    "next_session_reset": { "at": "2026-10-30T18:00:00Z", "profiles": ["night", "team"] },
+    "rate_login_weeks_per_hour": 0.23,
+    "runway_hours": 9.0,
+    "weekly_resets_next_24h": [
+      { "at": "2026-10-31T02:00:00Z", "profile": "night", "restores": 0.85 },
+      { "at": "2026-10-31T09:00:00Z", "profile": "work", "restores": 0.3 }
+    ]
+  }
+}
+```
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `at` | string | When the summary was worked out, after the probes. |
+| `profiles` | array | The [`--json`](#json-output) rows, unchanged. |
+| `summary` | object or `null` | `null` when there are no profiles or no row is a subscription profile. |
+| `summary.weekly_headroom_login_weeks` | number | Unweighted headroom, two decimal places. `0.0` with no valid reading. |
+| `summary.weekly_headroom_pct` | number or `null` | Unweighted headroom as a percentage of `valid_readings`, one decimal place. `null` with no valid reading. |
+| `summary.weighted_headroom_login_weeks` | number | Weighted headroom, two decimal places. Equal to the unweighted figure when every weight is `1.0`. |
+| `summary.usable_now` | integer | Logins [usable now](#usable-now). |
+| `summary.valid_readings` | integer | `N`, the logins with a [valid reading](#valid-and-unknown-readings). |
+| `summary.unknown` | array of strings | Subscription profiles without a valid reading, by name. |
+| `summary.next_session_reset` | object or `null` | `{"at": <time>, "profiles": [<names>]}`, as on the [text line](#next-session-reset); `null` for `none`. |
+| `summary.rate_login_weeks_per_hour` | number or `null` | Weighted [rate](#rate-and-runway), three decimal places; `null` with too little history. Can be `0.0` or below. |
+| `summary.runway_hours` | number or `null` | Hours of weighted headroom at that rate, one decimal place; `null` when the rate is `null`, zero or below. |
+| `summary.weekly_resets_next_24h` | array | Valid logins whose weekly reset is after now and no more than 24 hours away, and whose weighted `restores` (`weight × week% / 100`, two decimal places) is above `0`, soonest first, then by name. Each is `{"at", "profile", "restores"}`. |
+
+Numbers are rounded half away from zero only when printed; a value that is
+not finite is printed as `null`. Keys are only ever added, as for `--json`.
+
+Times differ by place, on purpose: inside `profiles`, `resets_at` keeps its
+`--json` form, Unix epoch seconds, so the array matches `--json` byte for
+byte; `at` and every time in `summary` are ISO 8601 UTC strings ending in
+`Z`. To read the runway in a script:
+
+```bash
+amplihack profile usage --summary-json | jq '.summary.runway_hours'
+```
+
+```
+9.0
+```
+
+With no profiles it prints `{"at":"<time>","profiles":[],"summary":null}`.
+
+#### Usage history
+
+The rate needs earlier readings, so `profile usage` and the rotator append
+one line per measured cycle to `<root>/.auto-switch.d/usage-history.jsonl`
+(mode `0600`). Each line is one JSON object:
+
+```json
+{"at":"2026-10-30T16:15:00Z","by":"usage","profiles":{"night":{"s":100,"w":85,"w_reset":"2026-10-31T02:00:00Z"},"review":{"s":5,"w":10,"w_reset":"2026-11-03T09:00:00Z"},"team":{"s":100,"w":68,"w_reset":"2026-11-04T09:00:00Z"},"work":{"s":20,"w":30,"w_reset":"2026-10-31T09:00:00Z"}}}
+```
+
+| Key | Meaning |
+|-----|---------|
+| `at` | When the cycle was measured, UTC. |
+| `by` | Which command wrote the line: `usage` for `profile usage`, which reads every subscription login, or `rotate` for a rotator cycle, which records only the profiles it probed. Absent in lines written before this key existed; such a line, or one with another value, has no known writer. |
+| `profiles` | Profile name to reading, for valid readings only. Unknown readings are left out, not written as 0 or 100. |
+| `s` | Session percentage, a whole number `0`–`100`, or `null` when not read. `session_exhausted` is written as `100`. |
+| `session_limit` | Written only as `false`, beside `"s":null`, when the reading showed no session window (see [Usable now](#usable-now)). Absent otherwise. A missing key, `null`, or `false` beside a session figure, reads as "not read". |
+| `w` | All-models week percentage, a whole number `0`–`100`. `weekly_exhausted` is written as `100`. |
+| `w_reset` | When the week resets, UTC, or `null` when not known. |
+| `unknown` | Names of the logins the writer tried and could not read, sorted. Absent when there are none. Never counted in a figure; a name that also has a reading is ignored on read. |
+
+##### Reading times in the history
+
+Every reading in a line is taken as read at the line's `at`. A row read
+directly or by `claude` was read during the run, so that holds. A
+[passive reading](#passive-readings) was stored by Claude's status line
+earlier: up to `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` before the
+run started, `300` seconds by default and at most `3600`.
+
+A passive reading's age is measured from the start of the run, the time
+it was accepted at. `profile usage` takes `at` later, once every row is
+in, so a slow `claude` fallback for one row never turns another row the
+table shows as read into an unknown one. The
+[rotator](#rotate-cycle) takes one time for both, so for it the start of
+the run and `at` are the same. The rule is:
+
+- A passive reading at most 300 seconds older than the start of the run
+  is recorded at the line's `at`. The recorded time is therefore later
+  than the real one by at most 300 seconds plus the time the run took.
+  For the rotator that is 300 seconds. For `profile usage` there is no
+  fixed bound: each read of a profile may take up to its
+  [deadline](#probe-deadline) (`AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`,
+  `120` seconds by default, `600` at most), a `claude` fallback gets a
+  deadline of its own after a failed direct read, and fallbacks beyond
+  the [parallel limit](#probe-parallelism) wait for a free slot. A run of
+  several minutes is ordinary. A run of 10 minutes gives an error of at
+  most 15 minutes, about 6% of the 4.5 hours the
+  [rate](#rate-and-runway) needs at least.
+- A passive reading more than 300 seconds older than the start of the run
+  is unknown, in the history and in the
+  [capacity summary](#capacity-summary) alike: it is in no figure and no
+  rate, it is listed under `unknown`, and the table still shows its
+  numbers. This happens only when
+  `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` is set above `300`.
+
+A row that could not be read is unknown in the same way, whatever step
+failed. That includes a row whose [direct read](#direct-read) failed, with
+or without a `refresh not saved` warning, and which reads `error` or
+`timeout`: it is never counted as 0% or 100% used. A row whose direct read
+failed but whose `claude` fallback gave a reading is that reading.
+
+A line holds only times, profile names and whole-number percentages. It
+never holds an account, e-mail address, organisation, plan, credential,
+error text or anything Claude printed.
+
+Who writes it:
+
+| Writer | When |
+|--------|------|
+| `profile usage` | After the probes, when no profile names were given and `--raw` was not given. With or without `--json` and `--summary-json`. |
+| The [rotator](#rotate-cycle) | After every cycle that measured usage, once its state lock is released. It records the profiles it measured, and lists as unknown the plan logins it did not probe: those skipped as busy (a session running, leased, hosting or parked) and those whose `.claude.json` has no usable `oauthAccount` (`no account`). The entry therefore says how many it did not read. Such an entry is not used as the start of the [rate](#rate-and-runway), and `rotate status` does not take a runway from it (see [Capacity line](#capacity-line)). The [live login](#rotate-live-profile) is recorded under its profile, and a login in `~/.claude` that belongs to no profile is not recorded. A cycle that measured nothing writes nothing. |
+
+Both writers record only when all of these hold, and otherwise write nothing
+and print nothing about the history:
+
+- The profile root is a real directory, not a symlink, owned by you and not
+  writable by other users.
+- [Auto-switch is set up](#refreshing-auto-switch-readings):
+  `<root>/.auto-switch.d/` exists and is a private directory of yours. It is
+  never created by recording.
+- None of `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
+  `CLAUDE_CODE_OAUTH_TOKEN` is set, because every reading might then show
+  that credential's numbers. The rotator measures anyway and warns about the
+  variable, but does not record.
+
+A filtered `profile usage` run is not recorded either, because the gaps
+would make the rate wrong.
+
+Writers take an exclusive lock on `usage-history.lock` beside it, trying
+every 50 ms for up to one second; the rotator's state lock is never held at
+the same time. Each line is written in one append; when the file's last line
+was cut short, for example by a full disk, a newline is written first so the
+new line stays whole. Under the lock, entries
+older than eight days are dropped: when the first line is more than an hour
+older than that or cannot be read, or the file is over 4 MiB, the file is
+rewritten atomically without entries older than eight days or lines that
+cannot be read, dropping the oldest entries until it is under 3 MiB. The
+hour's slack means a full history is rewritten at most once an hour rather
+than on every cycle. If the rewrite fails while the file is over 4 MiB,
+nothing is appended. If it fails on a smaller file, the line is still
+appended, the trim is tried again on the next cycle, and one warning is
+printed: `warning: usage history not trimmed`.
+
+Readers take the last 4 MiB of the file, and skip any line longer than
+64 KiB, any line that is not valid JSON, any profile name that fails the
+[name rules](#name-rules), any percentage outside `0`–`100` and any time
+more than 100 years from now. A missing `s` counts as `null`, and times with
+a UTC offset are read as the same instant in UTC. Unknown keys are ignored,
+so a newer writer's lines still read. When any line is skipped, one warning
+gives the count, so a corrupted history can be told apart from an empty one.
+Blank lines are not counted:
+
+```
+warning: 3 unreadable usage history lines ignored
+```
+
+Readers check the profile root as writers do. A missing history, or a
+missing `.auto-switch.d/`, is an empty history with no warning. A history
+that exists but is refused, because the root is not trusted, or the file is
+a symlink, is not a regular file, has another owner, has more than one link,
+has any group or other permission (its mode is not `0600`), or cannot be
+opened or read, is also treated as empty, and one
+warning goes to stderr, from `profile usage` and from `rotate status`:
+
+```
+warning: usage history ignored (unsafe file)
+```
+
+Readers and writers accept exactly the same files, so a history that is
+read is also appended to. A history whose mode was changed by hand, to
+`0644` for example, is refused by both until it is set back to `0600`.
+
+The history never decides anything and never fails a command. When it cannot
+be read, the rate is unknown. When a line cannot be written (the lock stays
+busy for a second, the file or lock is a symlink, has another owner, more
+than one link or group or other permissions, or the write fails), one line
+goes to stderr, or to the [rotate log](#rotate-log) for the rotator, and the
+exit status does not change:
+
+```
+warning: usage history not updated (lock busy)
+```
+
+The reason is one of `lock busy`, `unsafe file`, `write failed` or
+`too large`. Paths and system error text are not printed.
+
+To clear the history, delete `usage-history.jsonl` and `usage-history.lock`.
+Nothing else reads them, and both are created again on the next recorded
+cycle. Until the history is four and a half hours old again, the runway is
+`unknown`.
+
 #### Refreshing auto-switch readings
 
 After printing, `profile usage` records what it read as auto-switch
@@ -1625,13 +2091,14 @@ recorded or noted.
 
 | Status | When |
 |--------|------|
-| `0` | The probes ran, whatever states they produced, or there are no profiles. Recording failures do not change it. |
+| `0` | The probes ran, whatever states they produced, or there are no profiles. Recording failures, [usage history](#usage-history) failures and [weight](#capacity-weights) warnings do not change it. |
 | `1` | Setup failed: Docker is active, the profile root is invalid, or a name is invalid or does not exist. Printed as `error:`/`hint:` like other [errors](#errors). Nothing is probed. A `claude` that cannot be found is not a setup failure: only rows that need a fallback read `error` with `claude not found`. |
-| `2` | Command-line usage error, such as `--timeout-secs 0`. |
+| `2` | Command-line usage error, such as `--timeout-secs 0`, `--usable-session-pct 101`, or `--summary-json` with `--json` or `--raw`. |
 
 With no profiles, the table form prints
-`` no profiles; create one with `amplihack profile add <name>` `` and the JSON
-form prints `[]`.
+`` no profiles; create one with `amplihack profile add <name>` ``, the JSON
+form prints `[]`, and the summary JSON form prints
+`{"at":"<time>","profiles":[],"summary":null}`.
 
 Like `profile run`, `usage` is refused when Docker is activated through the
 environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
@@ -1667,6 +2134,11 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
   ledger's other fields and credential paths are never printed. To find the
   live profile, credential files are only checked for existence, without
   following symlinks.
+- The [capacity summary](#capacity-summary), `--summary-json`'s `summary`
+  object and the [usage history](#usage-history) contain profile names,
+  whole-number percentages, counts and times only. They never use the
+  row's `account`, and nothing Claude printed reaches them, even when its
+  output includes an e-mail address.
 
 
 ## Configuration
@@ -3548,10 +4020,14 @@ profile and never appears in `profile list`.
 | `statusline/<name>.json` | The profile's original `statusLine` object. |
 | `rerun/` | Buffered stdout of supervised steps, `<pid>-<n>.out`; see [Usage-limit reruns](#usage-limit-reruns) for how long each is kept. |
 | `capacity.json` | Whether any account has capacity left; see [Capacity file](#capacity-file). Unlike the other state files, it accepts unknown fields and is capped at 16 KiB. |
+| `capacity-weights.json` | Optional, written by you. Each login's weight in the capacity summary; see [Capacity weights](#capacity-weights). A JSON object, capped at 64 KiB, with no `version`. |
+| `usage-history.jsonl` | One line per measured cycle from `profile usage` and the rotator, kept for eight days; see [Usage history](#usage-history). JSON lines, not one JSON document; read from the last 4 MiB. |
+| `usage-history.lock` | Lock for writers of `usage-history.jsonl`. Separate from `lock`. |
 | `key-held` | The unmeasured plan profiles named by the last `ALERT: API key not used session=…` that auto-switch wrote to the rotate log, one name per line, so the same set is logged once. Removed once every plan profile has a reading. Not JSON. |
 | `notice/<session>` | The last capacity state shown in a Claude session; see [Notice records](#notice-records). Unlike the other state files, it is a bare word, not JSON, and is read up to 64 bytes. |
 
-Apart from `capacity.json` and `notice/<session>`, every state file has
+Apart from `capacity.json`, `capacity-weights.json`, `usage-history.jsonl`
+and `notice/<session>`, every state file has
 `"version": 1`, rejects unknown fields and is capped at 64 KiB. Each name in them is checked with the
 [name rules](#name-rules) before it is used in a path. A damaged
 `accounts/` or `statusline/` file is ignored with a warning and not
@@ -3584,6 +4060,9 @@ capacity left by moving logins between `~/.claude` and the profiles. The
 section defines its behaviour. It is separate from [auto-switch](#auto-switch),
 which swaps logins inside profiled sessions, but shares its toggle, its
 exclusion list and its state lock.
+
+The rotator also runs a [daily session archive](#rotate-daily-session-archive)
+that moves old session logs out of `~/.claude/projects`.
 
 ### Rotate commands
 
@@ -5269,6 +5748,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | `rotate.err` | The background process's own stdout and stderr, and one line from each launch that [started](#rotate-autostart) a rotator or failed to. Not rotated. |
 | `autostart` | The [autostart](#rotate-autostart) setting: `on` or `off` and a newline. Missing means on. |
 | `pin` | The [rotation pin](#rotate-pin): one profile name and a newline. Written by `profile switch <name>`, removed by `profile switch --none`. Not part of the ledger. |
+| `sessions-archive.last` | When the [daily session archive](#rotate-daily-session-archive) last started: epoch seconds and a newline. Written atomically before each run; removed when a run stops early after archiving something, so the next pass carries on. |
 | `owner` | The [owner marker](#rotate-owner): `unit=`, `pid=` and `since=` lines. Written by a supervised `rotate watch`, removed only by `rotate owner clear`. Not part of the ledger. |
 
 The auto-switch `ledger.json` and `journal.json` one level up are separate
@@ -5354,7 +5834,7 @@ stdout only, without the time.
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. A `session_exhausted` profile shows at least `s=100%`, and its weekly figure as reported, for example `team:s=100%,w=55%`. `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
 | `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, and one still running shows `live unknown, still running`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
@@ -5366,7 +5846,7 @@ stdout only, without the time.
 | `ALERT: overflow profile <name> hit its spend limit; not blocked (too many blocks\|no end time)` | A spend-limit reading that could not be stored as a block: the ledger already holds 256 active blocks, or the cycle's time is outside the range for which the next month can be computed. The profile is still not used in that cycle; the ledger is left as it was, so it still loads. |
 | `stay: live probe failed (<k>/3)` | The live probe failed for the `k`th cycle in a row; no swap yet. |
 | `stay: live probe failed; held after last swap (<N>s left)` | The live probe has failed three or more times in a row, but the last swap was less than `--hold` seconds ago. |
-| `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` / `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)` | A threshold is reached and no candidate meets the margin. The suffix is added only when `F + E > 0`: `F` candidates had a failed probe and `E` were exhausted. When every candidate failed, the probes are at fault rather than the accounts. The suffix holds no profile names, and the ALERT key stays `no-capacity`, so a change in the counts does not repeat the ALERT. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`, without the `ALERT: ` prefix, and with the same rule for the suffix. |
+| `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` / `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)` | A threshold is reached and no candidate meets the margin. The suffix is added only when `F + E > 0`: `F` candidates had a failed probe and `E` were exhausted, whatever figures each exhausted candidate read. When every candidate failed, the probes are at fault rather than the accounts. The suffix holds no profile names, and the ALERT key stays `no-capacity`, so a change in the counts does not repeat the ALERT. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`, without the `ALERT: ` prefix, and with the same rule for the suffix. |
 | `ALERT: no login in ~/.claude; no swap` | `~/.claude/.credentials.json` is missing or not a regular file. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); <finding>; no swap` | Hand change that [hand-change recovery](#rotate-hand-change-recovery) could not resolve. Followed by its `fix <n>: <command>` lines. Written every cycle. |
 | `fix <n>: <command>` | A step of the guidance above, in order. |
@@ -5396,6 +5876,10 @@ stdout only, without the time.
 | ``skip: held by switch to <name>; run `amplihack profile switch --none` to release`` | The [pin](#rotate-pin) holds rotation; the cycle neither measured nor swapped. |
 | ``skip: pin unreadable; run `amplihack profile switch --none` `` | The pin file cannot be trusted or parsed; the cycle holds. |
 | `skip: pin names missing profile <name>; ignored` | The pin names a removed profile; the cycle runs normally. |
+| `sessions archive: <summary>` | The [daily session archive](#rotate-daily-session-archive) ran; `<summary>` is the [`sessions archive` summary line](./sessions-command.md#output), followed by the reason if the run stopped early (the 60-second limit, `rotate stop` or a signal). |
+| `sessions archive: cannot read sessions.daily_archive (<why>); not run` | The user config file cannot be used to decide whether the daily run is on, so it does not run; see [turning the daily run off](#turning-the-daily-run-off). |
+| `sessions archive: cannot read <key> (<why>); not run` | `<key>` is `sessions.archive_days` or `sessions.archive_dest`, and the user config file cannot give it a value, so the run does not fall back to the default; see [`sessions` configuration](./sessions-command.md#configuration). |
+| `sessions archive: <error>` | The daily session archive did not run, or stopped; `<error>` is one of the [`sessions` messages](./sessions-command.md#messages) or the lock line. |
 | `switch <from>-><to>` | A swap made by [`profile switch`](#rotate-switch). It has no readings, because `switch` measures nothing, and it does not start with `swap `, so a search for rotator swaps does not match it. |
 | `skip: <name> is already the live login; nothing moved` | `profile switch` found `<name>` already live. |
 | `would swap ...` / `would block <name> (spend limit) until <time>` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would stay (held by switch to <name>)` / `would stay (pin unreadable)` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` / `would recover: <recovered line>` / `would_refuse <name>: <reason>` | `--dry-run` only. `would_refuse` is printed in place of `would swap` when the target is an API-key profile that fails its [login check](#api-key-login-check). |
@@ -5597,6 +6081,7 @@ owner: none
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
+capacity: headroom 2.07 login-weeks of 4 (52%), usable 2 of 4 logins, runway ~9 h (as of 2026-10-18T12:50:05Z, 3m ago, rotate cycle: probed profiles only)
 overflow: -
 on overflow: no
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
@@ -5642,6 +6127,7 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `pid` | The pid, or `-`. |
 | `live` | The ledger's `live` profile, or `-`. |
 | `last cycle` | The time and outcome (`swapped`, `stayed`, `switched`, `alerted`, `skipped`, `idle` or `held`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; `switched` by [`profile switch`](#rotate-switch), and kept by the held cycles after it; `held` when the [pin](#rotate-pin) held rotation with no switch record; a cycle that could not take the lock records nothing. An [overflow](#rotate-overflow) cycle adds ` overflow=in`, ` overflow=out` or ` overflow=on`. |
+| `capacity` | The [capacity summary](#capacity-summary) of the newest [usage history](#usage-history) entry. See [Capacity line](#capacity-line). |
 | `hold` | Only while something is at the [pin](#rotate-pin) path: `hold: <name>`, `hold: <name> (profile missing; ignored)` or `hold: unreadable`. |
 | `overflow` | The marked overflow profiles in list order, separated by `, `, each followed by ` (blocked until <time>)` when it has an active [spend block](#overflow-spend-limit-block); `-` when none is marked or `.auto-switch` is corrupt. When the ledger cannot be read, the list ends with ` (blocks unknown)`. |
 | `api key` | The first API-key profile, followed by ` (blocked until <time>, <reason>)` while the ledger records an active API-key block; `-` when there is no API-key profile. Printed between `overflow` and `on overflow`. |
@@ -5669,6 +6155,62 @@ on overflow: no
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
+#### Capacity line
+
+`status` runs no probe, starts no process and does not look for `claude`. The
+`capacity:` line comes from the [usage history](#usage-history) alone, and
+follows `last cycle:`:
+
+```
+capacity: headroom X login-weeks of N (P%), usable U of N logins[, M unknown], runway ~H h (as of <time>, <age> ago[, <writer>])
+```
+
+When the newest entry is a rotator entry that left logins out, the runway
+reads `runway ~H h from the <time> entry (this cycle left out M logins)` or
+`runway unknown (this cycle left out M logins)` instead.
+
+The newest valid entry stands in for this run's readings, and its `at` for
+now: `N` is the number of profiles in that entry, the headroom and usable
+count are worked out from it as in the [summary](#capacity-summary), and the
+[rate](#rate-and-runway) uses the entries up to six hours before it. The
+runway is `runway unknown` when the rate is.
+
+A rotator entry that lists logins as unknown holds only the logins it
+probed, which are the idle ones; the busy logins being used up are the ones
+it left out. Its own runway would divide the idle logins' headroom by their
+small use and come out far too long, or `unknown`, just while capacity is
+being used. So the runway of such an entry is not printed. Instead the line
+takes the runway of the newest entry no more than six hours older that read
+every login (a `profile usage` entry, or a rotator entry with no unknown
+logins) and names that entry's time: `runway ~H h from the <time> entry
+(this cycle left out M logins)`. With no such entry, or one with too little
+history for a rate, it prints `runway unknown (this cycle left out M
+logins)`. Running `amplihack profile usage` every few hours while logins
+are busy gives the line a runway. Weights come from
+[`capacity-weights.json`](#capacity-weights); the usable threshold comes from
+`AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT`, or `95`. `<age>` is how long
+before the clock now that entry was written, in the largest whole unit:
+`45s`, `3m`, `2h` or `1d`. An old entry is shown as it is, with its age.
+When the newest entry came from a [rotator cycle](#usage-history), it holds
+only the profiles that cycle measured, so `N` may be fewer than all
+profiles; `profile usage` with no names records every profile it could read.
+So that a change in `N` between cycles is not read as a change in usage, the
+line names the writer of the entry after its age: `rotate cycle: probed
+profiles only` or `profile usage: all logins`. An entry written before the
+writer was recorded names none. When the entry lists logins its writer could
+not read, `, M unknown` follows the usable count; they are in no figure. A
+rotator entry lists there the logins it skipped as busy, those with no
+usable `oauthAccount` and those whose probe failed, so `M` says how many
+logins the line leaves out.
+When a profile in that entry has a weight other than `1.0`, the line adds
+`   [weighted: X' of T]` after `(P%)`, as in the summary.
+
+| History | Line |
+|---------|------|
+| No file, or no readable entry | `capacity: no recorded cycle` |
+| A file that is refused (see [Usage history](#usage-history)) | `capacity: no recorded cycle`, and `warning: usage history ignored (unsafe file)` on stderr |
+| Newest entry has no profiles | `capacity: headroom unknown (no valid readings), usable 0 of 0 logins, runway unknown (as of <time>, <age> ago)` |
+
 A pending or inconsistent journal adds a line `journal: pending (phase <phase>)`
 or `journal: inconsistent`, and one that cannot be read `journal: damaged`. A
 ledger that cannot be read shows `live: - (ledger unreadable)`.
@@ -5684,6 +6226,7 @@ owner: amplihack-rotator.service pid 48213 (running); autostart defers to it
 pid: 48213
 live: spare
 last cycle: 2026-11-01T09:30:05Z stayed
+capacity: no recorded cycle
 overflow: -
 on overflow: no
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
@@ -5715,13 +6258,14 @@ owner: none
 pid: 48213
 live: spare
 last cycle: 2026-11-01T10:10:05Z idle
+capacity: no recorded cycle
 overflow: -
 on overflow: no
 alert: auto-switch is off while the live login is exhausted (spare: 100% used, threshold 90%)
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
-After `last cycle:`, `status` prints one `alert: <line>` for each line of the
+After `last cycle:` and `capacity:`, `status` prints one `alert: <line>` for each line of the
 ledger's `guidance`, then one `warning: <line>` for each profile in its
 `lost_login`. It does not compare accounts itself; it shows what the last
 cycle decided. Lines are cleaned of control characters again before
@@ -6037,6 +6581,113 @@ rotator stays idle, and `idle: auto-switch is off` is still written only once
 per change. Turn auto-switch back on, or switch logins by hand with
 [`profile switch`](#rotate-switch), to act on it.
 
+### Rotate daily session archive
+
+`rotate watch`, including the background rotator, runs
+[`amplihack sessions archive --apply`](./sessions-command.md) at most once a
+day, so old session logs do not build up in `~/.claude/projects`. It is on by
+default, and the config key `sessions.daily_archive` turns it off.
+
+After each pass of the watch loop, before it sleeps, and whether or not the
+rotator is idle or held by a pin, the rotator reads
+`<root>/.auto-switch.d/rotate/sessions-archive.last`. The archive is due when:
+
+- the file is missing, or does not hold a whole number of epoch seconds;
+- 86,400 seconds or more have passed since the time it holds; or
+- the time it holds is in the future, because the clock went back.
+
+When the archive is due, the rotator reads `sessions.daily_archive` from
+`~/.amplihack/config.toml` (see [switching it off](#turning-the-daily-run-off)).
+If the key is `false`, nothing runs and nothing is written. Otherwise the
+rotator writes the current time to the file before the archive starts. A
+crash, a held [lock](./sessions-command.md#lock) or an error therefore waits a
+full day before the next attempt, rather than retrying every cycle. If the
+file cannot be written, the archive does not run and the log gets
+`sessions archive: cannot record the run time (<kind>); not run`.
+
+The archive runs inside the rotator process, with the days and destination
+from the config keys `sessions.archive_days` and `sessions.archive_dest`,
+read from the same file at the same time as the switch, or their defaults
+(3 days, `~/.amplihack/session-archive`). `amplihack sessions archive` and
+`sessions restore` in a shell read the same keys, so `restore` looks in the
+directory the daily run wrote to. If the file cannot give either key a
+value, the archive does not run, the time file is already written, and the
+log gets `sessions archive: cannot read <key> (<why>); not run`. See
+[`sessions` configuration](./sessions-command.md#configuration).
+
+One pass archives for at most 60 seconds, so a large backlog never holds up
+rotation for longer than that. The rotator checks the limit, and its stop
+flag, between sessions, so a pass can run past 60 seconds by the time one
+session takes, and `rotate stop` or a signal ends the run after the session
+in progress. A run that stops early ends its summary line with the reason:
+
+- `; stopped at the 60-second limit; the rest continues at the next pass`
+- `; stopped by rotate stop or a signal; the rest continues at the next pass`
+
+and the rotator removes the time file, so the next pass, after the next
+cycle, carries on where the run stopped. The first run over a backlog of
+thousands of sessions is therefore spread over several passes. If a run
+stops early without archiving any session, the summary ends with
+`; nothing archived, so the next try is a day later` instead, and the time
+file is kept, so sessions that keep failing are not retried on every pass.
+If the file cannot be removed, the log gets
+`sessions archive: cannot remove the run record (<kind>); the rest waits a day`.
+
+Its summary line, or one error line, goes to the [log](#rotate-log) with the
+prefix `sessions archive: `, for example:
+
+```
+2026-10-29T03:15:00Z sessions archive: archived 412 sessions, 0.11 GiB (older than 3 days; 7 live sessions kept; 0 failed)
+```
+
+Each session the archive skips or fails also gets its own line, such as
+`sessions archive: skipped <project>/<id>: symlink`; see the
+[`sessions` messages](./sessions-command.md#messages). No error from the
+archive stops or changes the rotation cycle.
+
+The run moves old logs into the archive directory; it does not delete them.
+Nothing removes archives from that directory, so it keeps growing, at
+roughly a quarter of the rate the session logs grew. See
+[`sessions` disk use](./sessions-command.md#disk-use) for its size, how to
+move it to another disk and how to delete old archives.
+
+#### Turning the daily run off
+
+The switch is the user config key `sessions.daily_archive`:
+
+```
+amplihack config set sessions.daily_archive false
+```
+
+`true`, or no value, means on. The rotator reads the key from
+`~/.amplihack/config.toml` each time a run is due, so the change reaches a
+rotator that is already running, without a restart. Turn the run back on
+with `amplihack config set sessions.daily_archive true`, or remove the key
+with `amplihack config unset sessions.daily_archive`. The key is user-only:
+a project's `.amplihack/config.toml` cannot set it, since it decides whether
+files under `~/.claude/projects` are removed. See
+[user config](./user-config.md).
+
+The switch is a config key, not an environment variable, because the
+background rotator does not inherit the launching shell's
+`AMPLIHACK_ROTATE*` variables (see [Rotate daemon](#rotate-daemon)): a
+variable set where `rotate start` or [autostart](#rotate-autostart) runs
+would never reach it.
+
+Because the run removes files, a config file the rotator cannot use stops
+it rather than counting as on. When the file cannot be read or parsed, the
+key holds a value other than `true` or `false`, or the file is writable by
+group or others, the archive does not run, the time file is written so the
+next try is a day later, and the log gets
+`sessions archive: cannot read sessions.daily_archive (<why>); not run`.
+
+Days and destination are config keys for a related reason. A rotator keeps
+the environment it was started with, and one started by
+[autostart](#rotate-autostart) takes it from whichever launch started it. A
+variable exported later in a shell would therefore reach `sessions restore`
+in that shell but not the rotator, and `restore` would look for the
+session in a different directory from the one the daily run wrote to.
+
 ### Rotate prototype coexistence
 
 Before a non-dry-run `rotate`, `start` or cycle, the rotator opens
@@ -6311,6 +6962,11 @@ There are two kinds of wait:
   `max_wait_secs` (see [Capacity wait](#capacity-wait)).
 
 When neither applies, the step is not waited for and the run ends as before.
+
+The [capacity governor](./capacity-governor.md) does not hold an agent step
+of a running recipe at an exhausted weekly or session limit: this wait owns
+that case, so the governor's shorter wait never replaces it (see
+[Exhausted limits inside a recipe](./capacity-governor.md#exhausted-limits-inside-a-recipe)).
 
 ### Gate
 

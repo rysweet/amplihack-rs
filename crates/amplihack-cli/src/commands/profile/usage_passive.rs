@@ -38,6 +38,7 @@ pub(super) fn fresh(root: &Path, dir: &ProfileName, max_age: u64, now: i64) -> O
         week_all,
         week_models: Vec::new(),
         session_limit: !reading.no_session_window,
+        observed_at: Some(reading.observed_at),
     })
 }
 
