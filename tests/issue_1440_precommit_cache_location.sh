@@ -202,7 +202,12 @@ mkdir -p "$dir_one"
 : > "$dir_one/.cargo-lock"
 
 age_ok=1
-for d in "$stale" "$locked" "$foreign" "$dir_one"; do
+# The wrapper measures age to depth 2 (#1771), so the stale cache's debug/ is
+# aged as well; a debug/ written moments ago means a build ran moments ago.
+# The locked cache's debug/ and .cargo-lock are aged too, so that it looks
+# stale and only the lock keeps it. Contents are aged before their directory,
+# because touching a file inside a directory does not reset the directory.
+for d in "$stale/debug" "$stale" "$locked/debug" "$locked/.cargo-lock" "$locked" "$foreign" "$dir_one"; do
     touch -d '30 days ago' "$d" 2>/dev/null || age_ok=0
 done
 
@@ -210,10 +215,11 @@ if [ "$age_ok" -eq 1 ]; then
     # A live build holds an exclusive flock on <target>/.cargo-lock for the whole
     # build. Hold it here on our own fd: the sweep runs in a child process whose
     # own flock(1) opens the file fresh, so it sees genuine contention. No
-    # sleeps, no races.
+    # sleeps, no races. Append mode does not truncate the file, so its mtime
+    # stays aged.
     holding=0
     if command -v flock >/dev/null 2>&1; then
-        exec 9>"$locked/.cargo-lock"
+        exec 9>>"$locked/.cargo-lock"
         if flock --nonblock --exclusive 9; then
             holding=1
         fi
