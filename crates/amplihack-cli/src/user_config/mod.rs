@@ -17,6 +17,7 @@ pub(crate) mod load;
 pub(crate) mod migrate;
 pub(crate) mod safe;
 pub(crate) mod schema;
+pub(crate) mod schema_governor;
 
 #[cfg(test)]
 mod tests_load;
@@ -224,7 +225,7 @@ pub(crate) fn load_for(cwd: &Path) -> Effective {
 }
 
 /// [`load_for`] for keys that only the user file can set.
-fn load_user_only() -> Effective {
+pub(crate) fn load_user_only() -> Effective {
     load(&LoadCtx {
         home: home_dir(),
         cwd: PathBuf::from("/"),
