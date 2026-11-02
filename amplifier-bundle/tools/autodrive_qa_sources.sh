@@ -168,13 +168,14 @@ _autodrive_qa_workflow_changed() {
 #   unsafe-command    the command has a byte outside the command alphabet
 #   unsafe-dir / dir-not-found  the step's working-directory fails the
 #                     qa.toml `dir` rule
+#   out-of-scope      the step does not cover the change (_autodrive_qa_covers)
 # A `run:` value matches when it starts with cargo test, cargo nextest run,
 # npm test, npm run test, pytest, or python(3) -m pytest. It is clean only on
 # one line with no `${{`, quote, backtick, `$`, `\`, `&`, `;`, `|`, `<`, `>`
 # or leading NAME=value. A block scalar holding an invocation, a plain value
 # continued on the next line and `defaults: run: working-directory` are not
 # clean. The step's own working-directory, if any, must pass the qa.toml
-# `dir` rule and exist.
+# `dir` rule and exist, and must cover the change.
 autodrive_qa_ci() {
   local -x LC_ALL=C
   local r="${1:-.}" e="" f="" mode="" typ="" oid="" size="" b="" res="" line="" wd="" cmd="" c=0 bad=""
@@ -340,6 +341,7 @@ EOT
     1) printf 'none\tunsafe-dir\n'; return 0 ;;
     *) printf 'none\tdir-not-found\n'; return 0 ;;
   esac
+  _autodrive_qa_covers "$r" "$wd" || { printf 'none\tout-of-scope\n'; return 0; }
   printf 'ok\t%s\t%s\n' "$wd" "$cmd"
 }
 

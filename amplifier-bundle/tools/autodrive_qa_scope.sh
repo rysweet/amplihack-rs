@@ -171,6 +171,31 @@ _autodrive_qa_in() {
   return 1
 }
 
+# _autodrive_qa_covers <dir> <wd>: return 0 when a command run in <wd> covers
+# the change. For each changed path, take the deepest detection candidate
+# that contains it (a path's directory decides, as in _autodrive_qa_choose);
+# <wd> must contain the path and lie inside that candidate. Paths no
+# candidate contains do not count. So a step in a/ never stands for a change
+# in b/, and a root step never stands for a change in a nested project.
+_autodrive_qa_covers() {
+  local p="" cand="" deep="" dd=-1 x=0
+  _autodrive_qa_choose "${1:-.}"
+  for p in ${_AD_PATHS[@]+"${_AD_PATHS[@]}"}; do
+    case "$p" in */*) p="${p%/*}/" ;; *) p="" ;; esac
+    deep=""
+    dd=-1
+    for cand in ${_AD_CANDS[@]+"${_AD_CANDS[@]}"}; do
+      { [ "$cand" != "!" ] && _autodrive_qa_in "$cand" "$p"; } || continue
+      x=0
+      [ "$cand" = "." ] || x=$(( ${#cand} + 1 ))
+      [ "$x" -gt "$dd" ] && { deep="$cand"; dd="$x"; }
+    done
+    [ -n "$deep" ] || continue
+    _autodrive_qa_in "$2" "$p" && _autodrive_qa_in "$deep" "$2/" || return 1
+  done
+  return 0
+}
+
 # _autodrive_qa_choose <dir>: the detection choice, made once per scan. Sets
 # _AD_KIND (rust-cli, python, node, unknown or unresolved), _AD_DIR (the
 # chosen directory), _AD_CANDS (the candidate directories after collapse,

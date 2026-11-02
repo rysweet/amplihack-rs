@@ -462,7 +462,7 @@ expect rf-invalid-env "the env source does not read an invalid qa.toml" qa_statu
 
 echo "== #1763 evidence: presence of .amplihack/qa.toml =="
 repo Cargo.toml engine/Cargo.toml src/lib.rs .amplihack/notes.md
-put .github/workflows/ci.yml "$CI_CLEAN"; base; change src/lib.rs
+put .github/workflows/ci.yml "$CI_CLEAN"; base; change engine/src/lib.rs
 run_tool "$B"
 expect present-dir-only "a real .amplihack without qa.toml falls through to CI" qa_status=PASS \
     qa_command_source=ci qa_repo_type=configured qa_dir=engine qa_command="cargo nextest run --workspace"
@@ -587,7 +587,7 @@ ci_detected() { # ci_detected <id> <why> [qa_ci_skip]: CI gave nothing; detectio
 }
 steps() { printf 'on: [push]\njobs:\n  test:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v4\n%s' "$1"; }
 
-ci_repo "$CI_CLEAN"
+repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"; base; change engine/src/lib.rs
 run_tool "$B"
 expect ci-clean "one clean step with working-directory" qa_status=PASS qa_command_source=ci qa_repo_type=configured \
     qa_dir=engine qa_command="cargo nextest run --workspace"
@@ -635,6 +635,36 @@ ci_detected ci-wd-missing "a working-directory that does not exist" dir-not-foun
 ci_repo "$(steps $'      - run: echo hi\n')"
 ci_detected ci-none "no match" no-match
 
+# The step must cover the change (crusty round 3): two sibling Cargo projects,
+# one clean CI step in a/.
+CI_A="$(steps $'      - run: cargo test\n        working-directory: a\n')"
+repo a/Cargo.toml a/src/lib.rs b/Cargo.toml b/src/lib.rs; put .github/workflows/ci.yml "$CI_A"; base; change b/src/lib.rs
+: > "$CALLS"; run_tool "$B"
+expect ci-out-of-scope "a CI step in a/ does not test a change in b/" qa_status=PASS \
+    qa_command_source=detected qa_repo_type=rust-cli qa_dir=b qa_ci_skip=out-of-scope
+expect_calls ci-out-of-scope-calls "detection runs cargo test in b" cargo "cargo|b|$CARGO_ARGS"
+expect_helper ci-out-of-scope-helper autodrive_qa_ci $'none\tout-of-scope' "$B"
+repo a/Cargo.toml a/src/lib.rs b/Cargo.toml b/src/lib.rs; put .github/workflows/ci.yml "$CI_A"; base; change a/src/lib.rs
+: > "$CALLS"; run_tool "$B"
+expect ci-in-scope "a CI step in a/ covers a change in a/" qa_status=PASS \
+    qa_command_source=ci qa_dir=a qa_command="cargo test" qa_ci_skip=""
+expect_calls ci-in-scope-calls "the CI command runs in a" cargo "cargo|a|test"
+repo a/Cargo.toml a/src/lib.rs b/Cargo.toml b/src/lib.rs; put .github/workflows/ci.yml "$CI_A"; base; change a/src/lib.rs docs/x.md
+: > "$CALLS"; run_tool "$B"
+expect ci-in-scope-docs "a path outside every candidate does not count against the step" \
+    qa_command_source=ci qa_dir=a qa_ci_skip=""
+# jamestown shape: a root pyproject.toml, a nested Rust crate, a root pytest step.
+repo pyproject.toml tests/test_x.py grid-encode-decode/Cargo.toml grid-encode-decode/src/lib.rs
+put .github/workflows/ci.yml "$(steps $'      - run: pytest\n')"; base; change grid-encode-decode/src/lib.rs
+: > "$CALLS"; run_tool "$B"
+expect ci-root-nested "a root pytest step does not test a change in a nested crate" \
+    qa_command_source=detected qa_repo_type=rust-cli qa_dir=grid-encode-decode qa_ci_skip=out-of-scope
+expect_calls ci-root-nested-calls "pytest never runs" pytest ""
+repo pyproject.toml tests/test_x.py grid-encode-decode/Cargo.toml grid-encode-decode/src/lib.rs
+put .github/workflows/ci.yml "$(steps $'      - run: pytest\n')"; base; change tests/test_x.py
+: > "$CALLS"; run_tool "$B"
+expect ci-root-python "the same root step covers a root Python change" qa_command_source=ci qa_dir=. qa_command=pytest
+
 repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"; base
 put .github/workflows/ci.yml "$(steps $'      - run: cargo test --lib\n')"; snap
 ci_detected ci-changed-in-pr "a workflow changed by the pull request" changed-in-pr
@@ -649,7 +679,7 @@ repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_
 for i in $(seq 1 50); do put ".github/workflows/w$i.yml" $'on: [push]\n'; done; base; change src/lib.rs
 ci_detected ci-too-many "51 workflow files" too-many-files
 repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"
-for i in $(seq 1 49); do put ".github/workflows/w$i.yml" $'on: [push]\n'; done; base; change src/lib.rs
+for i in $(seq 1 49); do put ".github/workflows/w$i.yml" $'on: [push]\n'; done; base; change engine/src/lib.rs
 : > "$CALLS"; run_tool "$B"
 expect ci-fifty "50 workflow files are still read" qa_status=PASS qa_command_source=ci qa_dir=engine
 repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"
@@ -700,7 +730,7 @@ else harness_error "the qa.toml symlink fixture is not mode 120000"; fi
 repo Cargo.toml engine/Cargo.toml src/lib.rs; base; change src/lib.rs
 put .github/workflows/x.yml "$(steps $'      - run: cargo test\n')"
 expect_helper mb-untracked-ci autodrive_qa_ci $'none\tno-workflows' "$B"
-repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"; base; change src/lib.rs
+repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"; base; change engine/src/lib.rs
 put .github/workflows/x.yml "$(steps $'      - run: cargo test\n')"
 put .github/workflows/ci.yml "$(steps $'      - run: cargo test --lib\n')"
 expect_helper mb-untracked-ci-base autodrive_qa_ci $'ok\tengine\tcargo nextest run --workspace' "$B"
@@ -776,7 +806,7 @@ case " \$* " in *" diff "*) echo diff >> "$GITLOG" ;; *" ls-tree -r "*) echo wal
 exec "$GITBIN" "\$@"
 GITSTUB
 chmod +x "$GSTUB/git"
-repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"; base; change src/lib.rs
+repo Cargo.toml engine/Cargo.toml src/lib.rs; put .github/workflows/ci.yml "$CI_CLEAN"; base; change engine/src/lib.rs
 : > "$GITLOG"; : > "$CALLS"; run_tool "$B" PATH="${GSTUB}:${STUBS}:${SYSPATH}"
 expect once-evidence "the counted run still uses the CI source" qa_status=PASS qa_command_source=ci
 if [ "$(grep -c '^diff$' "$GITLOG")" = 1 ] && [ "$(grep -c '^walk$' "$GITLOG")" = 1 ]; then

@@ -1201,7 +1201,17 @@ the next, more indented line, and any match in a workflow or job with
 
 The CI source gives a command only when there is exactly one match in all the
 files and it is clean. The step's own `working-directory`, if present, becomes
-`qa_dir`; it must pass the `dir` rule above and exist. In every other case,
+`qa_dir`; it must pass the `dir` rule above and exist. The step must also
+cover the change. For each changed path, take the deepest detection candidate
+(a directory with `Cargo.toml`, `pyproject.toml`, `setup.py` or
+`package.json`, after the same-ecosystem collapse) that contains it. The
+step's directory must contain the path and lie inside that candidate. A clean
+step in `a/` when the pull request changes only `b/src/lib.rs` would test a
+project the pull request did not touch, and so would a root `pytest` step
+when the change lies only in a nested `grid-encode-decode/Cargo.toml` crate.
+In both cases the reader gives nothing and scoped detection chooses the
+changed project. Changed paths outside every candidate, such as
+documentation, do not count against the step. In every other case,
 including zero matches, two clean matches, one clean match beside one that is
 not clean, and a CI file changed by the pull request, the tool uses detection,
 prints nothing about CI on stderr, and records the reason in the evidence
@@ -1223,9 +1233,12 @@ field `qa_ci_skip`:
 | `several-matches` | More than one clean match. |
 | `unsafe-command` | The command holds a byte outside the command alphabet. |
 | `unsafe-dir`, `dir-not-found` | The step's `working-directory` breaks the `dir` rule, or is missing. |
+| `out-of-scope` | For some changed path, the step's `working-directory` does not contain it, or lies above the deepest detection candidate that does. |
 
 `qa_ci_skip` is `""` when the CI source gave the command or was not read. This
-workflow gives `cargo nextest run --workspace` in `engine`:
+workflow gives `cargo nextest run --workspace` in `engine` when every changed
+path that a project contains lies in `engine` and `engine` is, or lies inside,
+the deepest project holding it:
 
 ```yaml
 jobs:
