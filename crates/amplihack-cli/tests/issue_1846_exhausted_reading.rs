@@ -4,7 +4,8 @@
 //! profile root and a fake `claude` that prints canned `/usage` output.
 //! A login at its session limit is logged with its measured weekly figure
 //! (`s=100% w=62%`), not `w=100%`, and is still never chosen as the swap
-//! target; a login at its weekly limit is logged with `w=100%`.
+//! target; a login at its weekly limit is logged with `w=100%`, and any
+//! exhausted login with a session of at least `s=100%`.
 
 #![cfg(target_os = "linux")]
 
@@ -48,7 +49,8 @@ fn an_exhausted_candidate_is_logged_as_read_and_never_chosen() {
         .find(|l| l.contains("cycle live=work"))
         .unwrap_or_else(|| panic!("no cycle line: {ls:?}"));
     assert!(cycle.contains("spare:s=100%,w=5%"), "{cycle}");
-    assert!(cycle.contains("extra:s=30%,w=100%"), "{cycle}");
+    // The session shows at least 100% on any exhausted login (#1844).
+    assert!(cycle.contains("extra:s=100%,w=100%"), "{cycle}");
     assert!(
         !ls.iter().any(|l| l.contains(" swap ")),
         "an exhausted login was chosen: {ls:?}"

@@ -1,10 +1,9 @@
 //! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude`
 //! on the account with the most capacity left, by moving logins between
 //! `~/.claude` and the profiles. One-shot, `--dry-run`, and a background
-//! `watch` with `start`, `stop` and `status`, which launches start on their
-//! own while auto-switch is on (`autostart`). `profile switch NAME` moves a
-//! login with the same swap and pins rotation to it (`switch`, `pin`). See
-//! the Rotate section of docs/reference/profile-command.md.
+//! `watch` with `start`, `stop` and `status` (`autostart`). `profile switch
+//! NAME` moves a login with the same swap and pins rotation to it (`switch`,
+//! `pin`). See Rotate in docs/reference/profile-command.md.
 //!
 //! Login files are never opened, read, copied or hashed: they are checked
 //! with `lstat` and moved with rename and exchange calls only.
@@ -47,6 +46,8 @@ mod held;
 mod holders;
 #[cfg(unix)]
 pub(super) mod identify;
+#[cfg(unix)]
+mod inflight;
 #[cfg(unix)]
 pub(super) mod key_check;
 #[cfg(unix)]

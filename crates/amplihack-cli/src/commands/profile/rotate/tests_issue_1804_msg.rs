@@ -271,6 +271,7 @@ fn measured(session: f64, week: f64) -> Probed {
         },
         spend_limit: false,
         unknown: false,
+        still_running: false,
     }
 }
 
@@ -289,6 +290,7 @@ fn exhausted() -> Probed {
         },
         spend_limit: false,
         unknown: false,
+        still_running: false,
     }
 }
 
