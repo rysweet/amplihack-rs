@@ -47,6 +47,7 @@ mod usage_parse;
 mod usage_passive;
 mod usage_request;
 mod usage_source;
+mod usage_view;
 
 #[cfg(test)]
 mod tests_capacity_summary;
@@ -110,6 +111,8 @@ mod tests_usage_request;
 mod tests_usage_shape;
 #[cfg(all(test, unix))]
 mod tests_usage_source;
+#[cfg(test)]
+mod tests_usage_view;
 #[cfg(test)]
 mod tests_verify;
 
@@ -410,13 +413,20 @@ pub enum ProfileCommands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
-    /// Show each profile's session and weekly usage, most capacity first
+    /// Show each profile's weekly and session usage as a bar view, in the
+    /// order the rotator ranks headroom
     Usage {
         /// Profiles to probe (default: all)
         names: Vec<String>,
-        /// Print a JSON array instead of the table
+        /// Print a JSON array instead of the bar view
         #[arg(long)]
         json: bool,
+        /// Print the previous 7-column table instead of the bar view
+        #[arg(long, conflicts_with_all = ["json", "summary_json"])]
+        table: bool,
+        /// Show reset times in UTC instead of local time (bar view only)
+        #[arg(long, conflicts_with_all = ["json", "table", "summary_json"])]
+        utc: bool,
         /// Print one JSON object: the --json rows and the capacity summary
         #[arg(long, conflicts_with_all = ["json", "raw"])]
         summary_json: bool,
@@ -569,6 +579,8 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::Usage {
             names,
             json,
+            table,
+            utc,
             summary_json,
             raw,
             timeout_secs,
@@ -579,11 +591,19 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
                 usage_cmd::Output::SummaryJson
             } else if json {
                 usage_cmd::Output::Json
-            } else {
+            } else if table {
                 usage_cmd::Output::Table
+            } else {
+                usage_cmd::Output::Bars
+            };
+            let time = if utc {
+                usage_view::TimeView::Utc
+            } else {
+                usage_view::TimeView::Local
             };
             let opts = usage_cmd::UsageOpts {
                 output,
+                time,
                 raw,
                 timeout_secs,
                 usable_session_pct,

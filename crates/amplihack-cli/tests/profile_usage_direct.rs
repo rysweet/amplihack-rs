@@ -758,7 +758,7 @@ fn credits_on_rows_keep_the_direct_windows() {
         s.claude_runs()
     );
 
-    let out = s.usage(&["--spend", "spare"]);
+    let out = s.usage(&["--table", "--spend", "spare"]);
     let table = text(&out.stdout);
     let header: Vec<&str> = table.lines().next().unwrap().split_whitespace().collect();
     assert_eq!(header.last(), Some(&"SPEND"), "{table}");
@@ -766,6 +766,13 @@ fn credits_on_rows_keep_the_direct_windows() {
     assert!(!line.contains("(fallback)"), "{line}");
     assert!(line.contains("55%"), "{line}");
     assert_eq!(spend_cell(line), "ok", "{line}");
+
+    // The bar view (issue #1813) shows the same spend as a mark.
+    let out = s.usage(&["--spend", "spare"]);
+    let bars = text(&out.stdout);
+    let line = table_line(&bars, "spare");
+    assert!(line.contains("55%"), "{line}");
+    assert_eq!(spend_cell(line), "spend:ok", "{line}");
 }
 
 /// AC4 (crusty round 1): a default run reads 16 credits-on profiles whose
@@ -794,7 +801,7 @@ fn sixteen_credits_on_profiles_start_no_claude_by_default() {
     assert!(s.claude_runs().is_empty(), "{:?}", s.claude_runs());
     assert_no_sentinel_leaks(&s, &out);
 
-    let out = s.usage_with(&["--raw"], &[(PARALLEL_ENV, "2")]);
+    let out = s.usage_with(&["--table", "--raw"], &[(PARALLEL_ENV, "2")]);
     let table = text(&out.stdout);
     for p in names() {
         let line = table_line(&table, &p);
@@ -1054,7 +1061,7 @@ fn a_spend_limit_in_usage_text_gives_limit_reached() {
     assert_eq!(r["source"], "direct", "{r}");
     assert_eq!(r["session"]["used_percentage"], 1.0, "{r}");
     assert_eq!(r["week_all"]["used_percentage"], 55.0, "{r}");
-    let out = s.usage(&["--spend", "spare"]);
+    let out = s.usage(&["--table", "--spend", "spare"]);
     let table = text(&out.stdout);
     let line = table_line(&table, "spare");
     assert_eq!(spend_cell(line), "limit_reached", "{line}");
@@ -1145,7 +1152,7 @@ fn a_missing_claude_leaves_credits_on_windows_with_an_unknown_spend() {
 #[test]
 fn credits_off_rows_show_n_a_and_start_no_claude() {
     let s = setup(0);
-    let out = s.usage(&["--raw"]);
+    let out = s.usage(&["--table", "--raw"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let table = text(&out.stdout);
     let header: Vec<&str> = table
@@ -1172,6 +1179,11 @@ fn credits_off_rows_show_n_a_and_start_no_claude() {
     for p in names() {
         assert_eq!(spend_cell(table_line(&table, &p)), "n/a");
     }
+    // The bar view (issue #1813) gives an `n/a` spend no mark.
+    let out = s.usage(&[]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let bars = text(&out.stdout);
+    assert!(!bars.contains("spend:"), "{bars}");
     let err = text(&out.stderr);
     assert!(!err.contains("extra_usage"), "{err}");
     assert!(!err.contains("usage credits on"), "{err}");

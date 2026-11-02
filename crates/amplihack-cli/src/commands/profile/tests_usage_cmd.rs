@@ -5,8 +5,9 @@
 
 use super::auto_switch::{LeaseView, RecordOutcome};
 use super::usage_cmd::{
-    ErrorReason, Raw, Row, env_credential_var, error_warnings, format_pct, marks, observations,
-    order, persist_messages, render_json, render_table, sanitize_display, swap_warning,
+    ErrorReason, ORDER_LINE, Raw, Row, env_credential_var, error_warnings, format_pct, marks,
+    observations, order, persist_messages, render_json, render_table, sanitize_display,
+    swap_warning,
 };
 use super::usage_parse::{UsageReport, UsageState, UsageWindow};
 use super::usage_source::Spend;
@@ -196,6 +197,186 @@ fn groups_are_usable_then_exhausted_then_unavailable() {
 }
 
 // ---------------------------------------------------------------------------
+// Ordering by the rotator's headroom (issue #1813)
+// ---------------------------------------------------------------------------
+
+/// `floor(100 - max(session, week))`, most first; ties by name only.
+#[test]
+fn usable_rows_sort_by_descending_headroom_of_the_worse_window() {
+    let mut rows = vec![
+        ok("low", Some((10.0, None)), Some((80.0, None))), // 20
+        ok("high", Some((60.0, None)), Some((5.0, None))), // 40
+        ok("mid", Some((30.0, None)), Some((30.0, None))), // 70
+        ok("top", Some((1.0, None)), Some((2.0, None))),   // 98
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["top", "mid", "high", "low"]);
+}
+
+#[test]
+fn equal_headroom_is_broken_by_name_not_by_reset_time() {
+    let mut rows = vec![
+        ok(
+            "z",
+            Some((10.0, Some(NOW + HOUR))),
+            Some((40.0, Some(NOW + DAY))),
+        ),
+        ok(
+            "a",
+            Some((40.0, Some(NOW + 9 * DAY))),
+            Some((10.0, Some(NOW + 9 * DAY))),
+        ),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["a", "z"]);
+}
+
+/// 41.2% and 41.9% both leave a headroom of 58: name decides.
+#[test]
+fn floored_headroom_ties_fall_back_to_name() {
+    let mut rows = vec![
+        ok("b", None, Some((41.2, Some(NOW + DAY)))),
+        ok("a", None, Some((41.9, Some(NOW + DAY)))),
+        ok("c", None, Some((42.0, Some(NOW + DAY)))),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["a", "b", "c"]);
+}
+
+#[test]
+fn a_weekly_only_row_ranks_by_its_weekly_room() {
+    let mut wk = ok("weekly", None, Some((20.0, Some(NOW + DAY))));
+    wk.report.session_limit = false;
+    let mut rows = vec![
+        ok(
+            "busy",
+            Some((50.0, Some(NOW + HOUR))),
+            Some((10.0, Some(NOW + DAY))),
+        ),
+        wk,
+        ok(
+            "idle",
+            Some((5.0, Some(NOW + HOUR))),
+            Some((5.0, Some(NOW + DAY))),
+        ),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["idle", "weekly", "busy"]);
+}
+
+/// D2: a window whose reset has passed counts as 0% for ordering only.
+#[test]
+fn a_passed_window_counts_as_zero_for_ordering() {
+    let mut rows = vec![
+        ok(
+            "fresh",
+            Some((30.0, Some(NOW + HOUR))),
+            Some((30.0, Some(NOW + DAY))),
+        ),
+        ok(
+            "reset",
+            Some((95.0, Some(NOW - 1))),
+            Some((95.0, Some(NOW - 1))),
+        ),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["reset", "fresh"]);
+    assert_eq!(
+        rows[0].report.session.as_ref().unwrap().used_percentage,
+        95.0,
+        "ordering never changes the reading"
+    );
+}
+
+/// D3: an `ok` row with no all-models week is a failed probe to the
+/// rotator, so it sorts after every row that has a headroom, by name.
+#[test]
+fn an_ok_row_without_a_week_window_sorts_last_among_usable_rows() {
+    let mut rows = vec![
+        ok("nowk-b", Some((1.0, Some(NOW + HOUR))), None),
+        ok(
+            "nearly-full",
+            Some((5.0, Some(NOW + HOUR))),
+            Some((99.0, Some(NOW + DAY))),
+        ),
+        ok("nowk-a", None, None),
+        row(
+            "out",
+            report(
+                UsageState::SessionExhausted,
+                Some((100.0, Some(NOW + HOUR))),
+                Some((10.0, Some(NOW + DAY))),
+            ),
+        ),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["nearly-full", "nowk-a", "nowk-b", "out"]);
+}
+
+#[test]
+fn a_nan_reading_sorts_with_the_rows_that_have_no_headroom() {
+    let mut rows = vec![
+        ok("nan", Some((f64::NAN, None)), Some((f64::NAN, None))),
+        ok("full", Some((0.0, None)), Some((99.9, None))),
+        ok("aaa", None, None),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(names(&rows), ["full", "aaa", "nan"]);
+}
+
+#[test]
+fn every_group_in_order_with_the_live_and_default_rows_placed_by_numbers() {
+    let mut live = ok(
+        "live",
+        Some((70.0, Some(NOW + HOUR))),
+        Some((10.0, Some(NOW + DAY))),
+    );
+    live.live_in = true;
+    live.default = true;
+    let mut api = row("key", UsageReport::empty(UsageState::Ok));
+    api.api_key = true;
+    let mut rows = vec![
+        row("err", report(UsageState::Error, None, None)),
+        row("slow", report(UsageState::Timeout, None, None)),
+        row("garbled", report(UsageState::Unparsed, None, None)),
+        row("anon", report(UsageState::NotLoggedIn, None, None)),
+        api,
+        row("spent", report(UsageState::SpendLimit, None, None)),
+        row(
+            "back-soon",
+            report(
+                UsageState::WeeklyExhausted,
+                Some((10.0, Some(NOW + HOUR))),
+                Some((100.0, Some(NOW + DAY))),
+            ),
+        ),
+        ok("nowk", Some((1.0, None)), None),
+        live,
+        ok(
+            "roomy",
+            Some((10.0, Some(NOW + HOUR))),
+            Some((20.0, Some(NOW + DAY))),
+        ),
+    ];
+    order(&mut rows, NOW);
+    assert_eq!(
+        names(&rows),
+        [
+            "roomy",
+            "live",
+            "nowk",
+            "back-soon",
+            "spent",
+            "key",
+            "anon",
+            "slow",
+            "garbled",
+            "err"
+        ]
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Marks and attribution (D11)
 // ---------------------------------------------------------------------------
 
@@ -281,7 +462,11 @@ fn table_has_the_documented_columns_and_dashes_for_missing_values() {
             "SPEND"
         ]
     );
-    assert_eq!(lines.len(), 3, "{out}");
+    assert_eq!(lines.len(), 4, "{out}");
+    assert_eq!(
+        lines[3], "order: rotator pick (most room in the worse of session and week, then name)",
+        "{out}"
+    );
     let work: Vec<&str> = lines[1].split_whitespace().collect();
     assert_eq!(work[0], "work");
     assert!(lines[1].contains("* hosts:personal"), "{out}");
@@ -1029,7 +1214,10 @@ fn the_table_says_when_the_live_login_runs_on_overflow() {
     work.live_in = false;
     cred.live_in = true;
     let out = render_table(&[work, cred]);
-    assert!(out.ends_with("running on overflow: cred\n"), "{out}");
+    assert!(
+        out.ends_with(&format!("running on overflow: cred\n{ORDER_LINE}\n")),
+        "{out}"
+    );
 }
 
 #[test]
@@ -1048,7 +1236,7 @@ fn either_plan_limit_on_the_live_marked_login_means_overflow() {
     ] {
         let out = render_table(&[live_cred(state, s, w)]);
         assert!(
-            out.ends_with("running on overflow: cred\n"),
+            out.ends_with(&format!("running on overflow: cred\n{ORDER_LINE}\n")),
             "{state:?} {s}/{w}: {out}"
         );
     }

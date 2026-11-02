@@ -38,13 +38,18 @@ steps:
       REPO_PATH="$(pwd -P)"
 
       # Canonical 5-tier helper ladder (#829/#840/#962). Lifecycle logic lives in
-      # tools/ so this recipe stays < 400 lines; a missing helper is a no-op.
+      # tools/ so this recipe stays < 400 lines; a missing helper is a no-op, except pr_number's.
       SWEEP_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="$(pwd)/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       [ -f "$SWEEP_HELPER" ] || SWEEP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_worktree_sweep.sh"
       TOOLS_DIR="$(dirname "$SWEEP_HELPER")"
+      # An AMPLIHACK_HOME older than a checkout's recipe lacks newer helpers, so when that tier is
+      # incomplete and the checkout holds every helper in STEP_TOOLS, use the checkout's (#1808).
+      STEP_TOOLS="workflow_worktree_root.sh workflow_branch_name.sh workflow_pr_branch.sh workflow_caller_branch_alias.sh workflow_alias_reuse.sh workflow_worktree_deconflict.sh workflow_fetch_origin.sh amplihack_run_owned.sh workflow_runtime_root.sh"
+      tools_complete() { local t; for t in $STEP_TOOLS; do [ -f "$1/$t" ] || return 1; done; }
+      tools_complete "$TOOLS_DIR" || ! tools_complete "$REPO_PATH/amplifier-bundle/tools" || TOOLS_DIR="$REPO_PATH/amplifier-bundle/tools"
       # Worktree anchoring (#1134): nested recipe RUNNERS are legitimate, and a
       # nested run's cwd is normally a LINKED worktree (`.git` is a FILE pointing at
       # the main repo), so anchoring `worktrees/<branch>` at `pwd -P` built worktrees
@@ -53,6 +58,12 @@ steps:
       MAIN_REPO_PATH="$REPO_PATH"
       if [ -f "$ROOT_HELPER" ]; then bash "$ROOT_HELPER" assert-origin "$REPO_PATH" || exit 1; MAIN_REPO_PATH="$(bash "$ROOT_HELPER" root "$REPO_PATH" || printf '%s' "$REPO_PATH")"; fi
       [ -d "$MAIN_REPO_PATH" ] || MAIN_REPO_PATH="$REPO_PATH"
+      # Worktree base (#1808): under the work root only with AMPLIHACK_WORK_ROOT_EXPLICIT=1 and a
+      # work root, else <main>/worktrees (#1134), so `base` (absent from older helpers) is only asked then.
+      WT_BASE="${MAIN_REPO_PATH}/worktrees"
+      if [ -f "$ROOT_HELPER" ] && [ "${AMPLIHACK_WORK_ROOT_EXPLICIT:-0}" = 1 ] && [ -n "${AMPLIHACK_WORK_ROOT:-}" ]; then
+        WT_BASE="$(bash "$ROOT_HELPER" base "$MAIN_REPO_PATH")" || exit 1
+      fi
       [ "$MAIN_REPO_PATH" = "$REPO_PATH" ] || echo "INFO: caller checkout '$REPO_PATH' is a linked worktree — anchoring new worktrees at main repository '$MAIN_REPO_PATH' (issue #1134)." >&2
       # Self-healing orphan sweep (#840): best-effort prune of worktrees/branches
       # leaked by prior FAILED runs so a re-run converges instead of colliding. Never
@@ -74,6 +85,12 @@ steps:
         printf '%s' "$s"
       }
 
+      # wt_own STATE WT BRANCH (#1808): record a new worktree for cleanup, or adopt a reused
+      # one (STATE reuse-clean-worktree). The tool warns on failure; the step goes on.
+      wt_own() {
+        [ -f "$TOOLS_DIR/amplihack_run_owned.sh" ] || return 0
+        bash "$TOOLS_DIR/amplihack_run_owned.sh" setup-worktree "$@" || true
+      }
       # wt_add_idempotent MODE WT BRANCH [REF] (issue #1121/#642): prune stale regs,
       # reuse dir if it's a worktree on BRANCH else remove+re-add. No add --force.
       wt_add_idempotent() {
@@ -85,6 +102,7 @@ steps:
           cur="$(git -C "$wt" symbolic-ref --short HEAD 2>/dev/null || true)"
           if [ "$cur" = "$branch" ]; then
             echo "INFO: Reusing existing worktree directory at '$wt' (branch matches)." >&2
+            wt_own reuse-clean-worktree "$wt" "$branch"
             return 0
           fi
           echo "INFO: Removing stale worktree at '$wt' (was '${cur:-none}', need '$branch')." >&2
@@ -95,6 +113,7 @@ steps:
           create) git worktree add -b "$branch" -- "$wt" "$ref" >&2 ;;
           track)  git worktree add --track -b "$branch" -- "$wt" "$ref" >&2 ;;
         esac
+        wt_own created "$wt" "$branch"
       }
 
       # NEW (#342): Existing-branch / PR targeting path. When EXISTING_BRANCH or
@@ -135,23 +154,10 @@ steps:
         if [ -n "$EXISTING_BRANCH" ]; then
           BRANCH_NAME="$EXISTING_BRANCH"
         else
-          # SECURITY: PR_NUMBER must be a positive integer before passing to gh.
-          # Rejects arg-injection like '342 --repo evil/x', '-1', or '$(rm)'.
-          if ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
-            echo "ERROR: pr_number '$PR_NUMBER' is not a valid positive integer (arg-injection guard)." >&2
-            exit 1
-          fi
-          if ! command -v gh >/dev/null 2>&1; then
-            echo "ERROR: pr_number is set but the 'gh' CLI is not on PATH." >&2
-            exit 1
-          fi
-          # gh stderr suppressed to avoid leaking auth/token diagnostics; we
-          # surface a sanitized error instead.
-          BRANCH_NAME="$(gh pr view "$PR_NUMBER" --json headRefName -q .headRefName 2>/dev/null || true)"
-          if [ -z "$BRANCH_NAME" ]; then
-            echo "ERROR: 'gh pr view $PR_NUMBER' returned no branch name (PR not found, no auth, or gh failure)." >&2
-            exit 1
-          fi
+          # tools/workflow_pr_branch.sh validates PR_NUMBER (arg-injection guard) and asks gh.
+          PR_BRANCH_HELPER="$TOOLS_DIR/workflow_pr_branch.sh"
+          [ -f "$PR_BRANCH_HELPER" ] || { echo "ERROR: $PR_BRANCH_HELPER not found; cannot resolve pr_number '$PR_NUMBER'." >&2; exit 1; }
+          BRANCH_NAME="$(bash "$PR_BRANCH_HELPER" "$PR_NUMBER")" || exit 1
         fi
 
         # SECURITY: validate the branch name with the authoritative git ref
@@ -189,10 +195,11 @@ steps:
           # Gate B: the branch's worktree is the caller checkout. Any other is reused.
           [ "$EXISTING_WT_REAL" != "$REPO_REAL" ] || CALLER_ON_BRANCH=true
           [ "$CALLER_ON_BRANCH" = true ] || { WORKTREE_PATH="$EXISTING_WT"; echo "INFO: Reusing existing worktree at '$WORKTREE_PATH'." >&2; }
+          [ "$CALLER_ON_BRANCH" = true ] || wt_own reuse-clean-worktree "$WORKTREE_PATH" "$BRANCH_NAME"
         elif [ "$(git symbolic-ref --short HEAD 2>/dev/null || true)" = "$BRANCH_NAME" ]; then
           CALLER_ON_BRANCH=true  # Gate C: the caller checkout's HEAD is the branch.
         else
-          WORKTREE_PATH="${MAIN_REPO_PATH}/worktrees/${BRANCH_NAME}"
+          WORKTREE_PATH="${WT_BASE}/${BRANCH_NAME}"
           if git show-ref --verify --quiet "refs/heads/$BRANCH_NAME"; then
             wt_add_idempotent attach "$WORKTREE_PATH" "$BRANCH_NAME"
           elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
@@ -243,13 +250,10 @@ steps:
         exit 0
       fi
 
-      # Fetch latest refs and resolve the base branch without assuming origin/main.
-      # A task worktree branches off a fetched remote ref, never the caller's HEAD (#858).
-      for FETCH_TRY in 1 2 3; do
-        git fetch origin --no-tags >&2 && break
-        echo "WARNING: git fetch origin failed (attempt ${FETCH_TRY}/3); after the last attempt, continuing with local refs." >&2
-        [ "$FETCH_TRY" -eq 3 ] || sleep "$FETCH_TRY"
-      done
+      # Fetch with retries (tools/workflow_fetch_origin.sh; one plain fetch without it), then resolve
+      # the base without assuming origin/main: a task worktree never branches off the caller's HEAD (#858).
+      if [ -f "$TOOLS_DIR/workflow_fetch_origin.sh" ]; then bash "$TOOLS_DIR/workflow_fetch_origin.sh"
+      else git fetch origin --no-tags >&2 || true; fi
       resolve_base_ref() {
         local ref
         ref="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
@@ -300,7 +304,7 @@ steps:
         echo "WARNING: derived branch name '${BRANCH_NAME}' is invalid — falling back to task-unnamed" >&2
         BRANCH_NAME="feat/task-unnamed-$(date +%s)"
       fi
-      WORKTREE_PATH="${MAIN_REPO_PATH}/worktrees/${BRANCH_NAME}"
+      WORKTREE_PATH="${WT_BASE}/${BRANCH_NAME}"
       # --- Deconfliction (#829/#840, #1565): a NEW free name if BRANCH_NAME is held by a
       # FOREIGN worktree or holds work (dirty, or ahead of BASE_REF); else unchanged.
       DECONFLICT_HELPER="$TOOLS_DIR/workflow_worktree_deconflict.sh"
@@ -316,7 +320,7 @@ steps:
         if [ "$RESOLVED_BRANCH" != "$BRANCH_NAME" ]; then
           echo "INFO: using branch '${RESOLVED_BRANCH}' instead of '${BRANCH_NAME}'." >&2
           BRANCH_NAME="$RESOLVED_BRANCH"
-          WORKTREE_PATH="${MAIN_REPO_PATH}/worktrees/${BRANCH_NAME}"
+          WORKTREE_PATH="${WT_BASE}/${BRANCH_NAME}"
         fi
       fi
 
@@ -344,6 +348,7 @@ steps:
         [ -z "$KEPT_DIRTY" ] || refuse_reset yes
         [ "$KEPT_AHEAD" -eq 0 ] || refuse_reset no
         echo "INFO: Branch '${BRANCH_NAME}' and worktree '${WORKTREE_PATH}' already exist and are clean — reusing." >&2
+        wt_own reuse-clean-worktree "${WORKTREE_PATH}" "${BRANCH_NAME}"
         CREATED=false
       elif [ -n "$BRANCH_EXISTS" ]; then
         [ "$KEPT_AHEAD" -eq 0 ] || refuse_reset no
@@ -361,20 +366,15 @@ steps:
       git -C "${WORKTREE_PATH}" push origin "${BRANCH_NAME}" > /dev/null 2>&1 || true
       git -C "${WORKTREE_PATH}" branch --set-upstream-to="origin/${BRANCH_NAME}" "${BRANCH_NAME}" > /dev/null 2>&1 || true
 
-      if [ -z "${AMPLIHACK_RUNTIME_ROOT:-}" ]; then
-        if [ -n "${XDG_RUNTIME_DIR:-}" ]; then
-          AMPLIHACK_RUNTIME_ROOT="${XDG_RUNTIME_DIR}/amplihack-runtime/${BRANCH_NAME}"
-        else
-          AMPLIHACK_RUNTIME_ROOT="/tmp/amplihack-runtime/${BRANCH_NAME}"
-        fi
-        export AMPLIHACK_RUNTIME_ROOT
+      # Per-branch runtime root and its folders: tools/workflow_runtime_root.sh, else made here (#1808).
+      RUNTIME_HELPER="$TOOLS_DIR/workflow_runtime_root.sh"
+      if [ -f "$RUNTIME_HELPER" ]; then
+        AMPLIHACK_RUNTIME_ROOT="$(bash "$RUNTIME_HELPER" "$BRANCH_NAME")" || exit 1
+      else
+        AMPLIHACK_RUNTIME_ROOT="${AMPLIHACK_RUNTIME_ROOT:-${XDG_RUNTIME_DIR:-/tmp}/amplihack-runtime/$BRANCH_NAME}"
+        mkdir -p "$AMPLIHACK_RUNTIME_ROOT"/{locks,reflection,logs,metrics,provenance}
       fi
-      mkdir -p \
-        "${AMPLIHACK_RUNTIME_ROOT}/locks" \
-        "${AMPLIHACK_RUNTIME_ROOT}/reflection" \
-        "${AMPLIHACK_RUNTIME_ROOT}/logs" \
-        "${AMPLIHACK_RUNTIME_ROOT}/metrics" \
-        "${AMPLIHACK_RUNTIME_ROOT}/provenance"
+      export AMPLIHACK_RUNTIME_ROOT
 
       echo "" >&2
       echo "=== Worktree Setup Complete ===" >&2
