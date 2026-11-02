@@ -175,6 +175,9 @@ cmd_base() {
     while [ "${#work}" -gt 1 ] && [ "${work%/}" != "$work" ]; do
         work="${work%/}"
     done
+    # Resolve symbolic links so callers comparing against `git worktree list`
+    # (which records resolved paths) agree on the first run too (#1808).
+    work="$(normalize "$work")"
     name="$(basename -- "$main")"
     name="$(printf '%s' "$name" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_')"
     case "$name" in

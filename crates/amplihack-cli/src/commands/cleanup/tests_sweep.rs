@@ -269,3 +269,29 @@ fn end_of_run_categories_are_run_owned_only() {
         [Category::RunTmp, Category::RunWorktree, Category::RunTarget]
     );
 }
+
+/// `--short` would print `heads/feat` here, which `gh pr list --head` does
+/// not match; the full ref is stripped of `refs/heads/` instead.
+#[test]
+fn checked_out_branch_ignores_a_tag_with_the_same_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        let status = amplihack_git::command_in(dir.path())
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid"])
+            .args(args)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .status()
+            .unwrap();
+        assert!(status.success(), "git {args:?}");
+    };
+    git(&["init", "-q", "-b", "feat"]);
+    git(&["commit", "-q", "--allow-empty", "-m", "x"]);
+    git(&["tag", "feat"]);
+    assert_eq!(
+        checked_out_branch(dir.path()).unwrap().as_deref(),
+        Some("feat")
+    );
+    git(&["checkout", "-q", "--detach"]);
+    assert_eq!(checked_out_branch(dir.path()).unwrap(), None);
+}

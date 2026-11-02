@@ -18,7 +18,7 @@ use super::run_dir::{
 };
 use super::work_root::WorkRoot;
 use crate::commands::hygiene::cleanup::{
-    git_has_dirty_state, git_has_unpushed_commits, hardened_git, sanitized_stderr_short,
+    git_has_dirty_state, hardened_git, has_live_pid_marker, sanitized_stderr_short,
 };
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
@@ -371,6 +371,71 @@ fn main_checkout(common_dir: &Path) -> Option<PathBuf> {
     (common_dir.file_name()? == ".git").then(|| common_dir.parent().map(Path::to_path_buf))?
 }
 
+/// Why `worktree` must be kept for commits that may exist only locally, or
+/// `None` when every commit is on a remote. With an upstream, commits ahead of
+/// it count. When the upstream is gone (the branch was deleted after merge and
+/// pruned), commits reachable from any remote-tracking ref count as pushed, so
+/// a merged worktree is not kept for ever under a false "unpushed" reason.
+fn unpushed_reason(worktree: &Path) -> Option<String> {
+    let count = |range: &[&str]| -> Result<u64> {
+        let mut command = hardened_git();
+        command
+            .arg("-C")
+            .arg(worktree)
+            .args(["rev-list", "--count"])
+            .args(range);
+        let output = crate::util::run_output_with_timeout(command, GIT_TIMEOUT)?;
+        if !output.status.success() {
+            bail!("{}", sanitized_stderr_short(&output.stderr));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().parse()?)
+    };
+    let mut upstream = hardened_git();
+    upstream
+        .arg("-C")
+        .arg(worktree)
+        .args(["rev-parse", "--verify", "--quiet", "@{upstream}"]);
+    let has_upstream = crate::util::run_output_with_timeout(upstream, GIT_TIMEOUT)
+        .is_ok_and(|output| output.status.success());
+    let (result, label) = if has_upstream {
+        (count(&["@{upstream}..HEAD"]), "has unpushed commits")
+    } else {
+        (
+            count(&["HEAD", "--not", "--remotes"]),
+            "has no upstream and commits on no remote branch",
+        )
+    };
+    match result {
+        Ok(0) => None,
+        Ok(_) => Some(label.to_string()),
+        Err(error) => Some(format!("cannot check for unpushed commits: {error:#}")),
+    }
+}
+
+/// The branch checked out in `worktree`, or `None` for a detached HEAD.
+fn checked_out_branch(worktree: &Path) -> Result<Option<String>> {
+    let mut command = hardened_git();
+    command
+        .arg("-C")
+        .arg(worktree)
+        .args(["symbolic-ref", "--quiet", "HEAD"]);
+    let output = crate::util::run_output_with_timeout(command, GIT_TIMEOUT)?;
+    match output.status.code() {
+        // Not `--short`: that prints `heads/<name>` when a tag shares the
+        // name, and `gh pr list --head heads/<name>` then finds no PR.
+        Some(0) => {
+            let full = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            Ok(full.strip_prefix("refs/heads/").map(String::from))
+        }
+        // Exit 1 with --quiet: HEAD is not a symbolic ref (detached).
+        Some(1) => Ok(None),
+        _ => bail!(
+            "git symbolic-ref failed: {}",
+            sanitized_stderr_short(&output.stderr)
+        ),
+    }
+}
+
 /// `git worktree list --porcelain` paths of `main`, first entry first.
 fn worktree_list(main: &Path) -> Result<Vec<PathBuf>> {
     let mut command = hardened_git();
@@ -586,8 +651,24 @@ impl Collector<'_> {
         run: &RunInfo,
         report: &RunReport,
     ) -> Verdict {
-        let Some(branch) = c.owned.branch.as_deref() else {
-            return self.no_pr(report, run);
+        // No branch recorded: ask about the branch the worktree has checked
+        // out, so an open PR on it still keeps the worktree. Only a detached
+        // HEAD falls through to the no-PR rule.
+        let checked_out;
+        let branch = match c.owned.branch.as_deref() {
+            Some(branch) => branch,
+            None => match checked_out_branch(&c.canonical) {
+                Ok(Some(branch)) => {
+                    checked_out = branch;
+                    checked_out.as_str()
+                }
+                Ok(None) => return self.no_pr(report, run),
+                Err(error) => {
+                    return Verdict::Skip {
+                        reason: format!("cannot read the checked-out branch: {error:#}"),
+                    };
+                }
+            },
         };
         if !is_valid_branch(branch) {
             return Verdict::Skip {
@@ -734,6 +815,13 @@ impl Collector<'_> {
                             Category::RunTmp,
                             dir,
                             "run is active",
+                            Some(id),
+                        ));
+                    } else if self.in_use(dir) {
+                        self.items.push(Item::skip(
+                            Category::RunTmp,
+                            dir,
+                            "in use by a running process",
                             Some(id),
                         ));
                     } else {
@@ -893,8 +981,8 @@ impl Collector<'_> {
         if git_has_dirty_state(&c.canonical) {
             return Item::skip(category, path, "has uncommitted changes", Some(id));
         }
-        if git_has_unpushed_commits(&c.canonical) {
-            return Item::skip(category, path, "has unpushed commits", Some(id));
+        if let Some(reason) = unpushed_reason(&c.canonical) {
+            return Item::skip(category, path, reason, Some(id));
         }
         if self.in_use(&c.canonical) {
             return Item::skip(category, path, "in use by a running process", Some(id));
@@ -1068,7 +1156,7 @@ impl Collector<'_> {
             let Some((age, size)) = idle_for(&path, self.now, self.s.keep) else {
                 continue;
             };
-            if self.in_use(&path) {
+            if has_live_pid_marker(&path) || self.in_use(&path) {
                 self.items.push(Item::skip(
                     Category::TmpLeftover,
                     &path,

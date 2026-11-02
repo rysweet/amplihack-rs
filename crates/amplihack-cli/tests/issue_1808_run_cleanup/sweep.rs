@@ -149,6 +149,49 @@ fn dirty_or_unpushed_worktrees_are_skipped() {
     assert!(dirty.join("uncommitted.txt").exists());
 }
 
+/// A worktree recorded without a branch is looked up by the branch it has
+/// checked out, so an open PR on that branch still keeps it.
+#[test]
+fn unrecorded_branch_is_looked_up_from_the_worktree() {
+    let fx = Fx::new();
+    let wt = fx.worktree("no-branch-recorded");
+    fx.gh_open("no-branch-recorded", 1830);
+    fx.seed_run(&SeedRun::ended(72).owns_worktree(&wt, ""));
+
+    let report = fx.cleanup_json(&["--apply", "--keep-hours", "0"]);
+    let e = entry_for(&report, &wt);
+    assert_eq!(e["action"], "skipped", "{e}");
+    assert!(wt.exists());
+    assert!(
+        fx.gh_calls().contains("no-branch-recorded"),
+        "{}",
+        fx.gh_calls()
+    );
+}
+
+/// After a merge, the remote branch is often deleted and its tracking ref
+/// pruned. Commits still reachable from a remote-tracking ref count as pushed;
+/// commits on no remote branch keep the worktree.
+#[test]
+fn pruned_upstream_counts_commits_on_any_remote_as_pushed() {
+    let fx = Fx::new();
+    let (_, pushed, _) = merged_run(&fx, "pruned-pushed", 72);
+    fx.git_ok(&pushed, &["branch", "--unset-upstream"]);
+    let (_, local, _) = merged_run(&fx, "pruned-local", 72);
+    fs::write(local.join("more.txt"), "x").unwrap();
+    fx.git_ok(&local, &["add", "more.txt"]);
+    fx.git_ok(&local, &["commit", "-q", "-m", "local only"]);
+    fx.git_ok(&local, &["branch", "--unset-upstream"]);
+
+    let report = fx.cleanup_json(&["--apply"]);
+    assert_eq!(entry_for(&report, &pushed)["action"], "removed");
+    assert!(!pushed.exists());
+    let e = entry_for(&report, &local);
+    assert_eq!(e["action"], "skipped", "{e}");
+    assert!(reason(&e).contains("no remote branch"), "{e}");
+    assert!(local.exists());
+}
+
 /// A worktree that a live process has as its working folder is kept.
 #[test]
 fn worktree_used_as_cwd_by_a_live_process_is_skipped() {

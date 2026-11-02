@@ -484,6 +484,14 @@ impl RunWorkspace {
             ));
             vars.push(("AMPLIHACK_RUN_ID", scope.run_id.clone().into()));
             vars.push(("AMPLIHACK_RUN_DIR", scope.run_dir.clone().into_os_string()));
+        } else {
+            // Fallback mode: do not let steps inherit a parent run's folder
+            // (they would record into its owned-paths) or a refused explicit
+            // work root (worktrees would still go there). Empty means unset
+            // to every consumer.
+            vars.push((super::work_root::WORK_ROOT_EXPLICIT_ENV, "0".into()));
+            vars.push(("AMPLIHACK_RUN_ID", "".into()));
+            vars.push(("AMPLIHACK_RUN_DIR", "".into()));
         }
         vars
     }
@@ -494,14 +502,20 @@ impl RunWorkspace {
         }
     }
 
-    /// Removes `runtime/`, finalises `run.json` and, unless
-    /// `AMPLIHACK_CLEANUP_ON_EXIT=0`, runs the end-of-run sweep.
-    pub(crate) fn finish(self, outcome: Outcome, steps: Vec<StepStatus>, log_path: Option<String>) {
+    /// Removes `runtime/`, finalises `run.json` and, when `sweep` is true and
+    /// `AMPLIHACK_CLEANUP_ON_EXIT` is not `0`, runs the end-of-run sweep.
+    pub(crate) fn finish(
+        self,
+        outcome: Outcome,
+        steps: Vec<StepStatus>,
+        log_path: Option<String>,
+        sweep: bool,
+    ) {
         match self {
             Self::Scoped { mut scope, guard } => {
                 guard.remove();
                 scope.finish(outcome, steps, log_path);
-                if super::cleanup_on_exit_enabled() {
+                if sweep && super::cleanup_on_exit_enabled() {
                     super::sweep::end_of_run(&scope.work_root);
                 }
             }

@@ -154,6 +154,23 @@ pub(crate) fn archive_file(source: &Path, archive_root: &Path, relative: &Path) 
     verify_and_place(&partial, &final_path, size, &digest)
         .with_context(|| format!("cannot archive {}; the original is kept", source.display()))?;
 
+    // Check for changes BEFORE the manifest line is written: an archive of a
+    // file that changed is removed again, so a later sweep does not leave two
+    // manifest lines for one original with the older copy restored first.
+    let unchanged = fs::symlink_metadata(source).is_ok_and(|after| {
+        after.len() == before.len()
+            && after.mtime() == before.mtime()
+            && after.mtime_nsec() == before.mtime_nsec()
+            && after.ino() == before.ino()
+    });
+    if !unchanged {
+        let _ = fs::remove_file(&final_path);
+        bail!(
+            "{} changed while it was archived; the original is kept",
+            source.display()
+        );
+    }
+
     let line = ManifestLine {
         original_path: source.display().to_string(),
         archive_path: final_path.display().to_string(),
@@ -161,19 +178,11 @@ pub(crate) fn archive_file(source: &Path, archive_root: &Path, relative: &Path) 
         digest: format!("sha256:{digest}"),
         archived_at: now_rfc3339(),
     };
-    append_manifest(&archive_root.join(MANIFEST), &line)?;
-
-    let after = fs::symlink_metadata(source)
-        .with_context(|| format!("cannot inspect {}", source.display()))?;
-    if after.len() != before.len()
-        || after.mtime() != before.mtime()
-        || after.mtime_nsec() != before.mtime_nsec()
-        || after.ino() != before.ino()
-    {
-        bail!(
-            "{} changed while it was archived; the original is kept",
-            source.display()
-        );
+    if let Err(error) = append_manifest(&archive_root.join(MANIFEST), &line) {
+        // Without a manifest line the archive cannot be restored; keep the
+        // original and drop the archive rather than leave an orphan.
+        let _ = fs::remove_file(&final_path);
+        return Err(error);
     }
     fs::remove_file(source).with_context(|| format!("cannot remove {}", source.display()))?;
     Ok(final_path)
@@ -237,32 +246,74 @@ fn write_archive(source: &Path, partial: &Path, name: &str, meta: &fs::Metadata)
 
 fn append_manifest(path: &Path, line: &ManifestLine) -> Result<()> {
     let mut file = fs::OpenOptions::new()
+        .read(true)
         .append(true)
         .create(true)
         .custom_flags(libc::O_NOFOLLOW)
         .mode(0o600)
         .open(path)
         .with_context(|| format!("cannot open {}", path.display()))?;
-    let mut text = serde_json::to_string(line)?;
+    // A write cut short (for example by a full disk) leaves a fragment with
+    // no newline; start on a fresh line so this entry stays readable.
+    let mut text = String::new();
+    if ends_without_newline(&mut file)? {
+        text.push('\n');
+    }
+    text.push_str(&serde_json::to_string(line)?);
     text.push('\n');
-    file.write_all(text.as_bytes())
-        .and_then(|()| file.sync_all())
-        .with_context(|| format!("cannot write {}", path.display()))
+    let before = file.metadata()?.len();
+    let written = file
+        .write_all(text.as_bytes())
+        .and_then(|()| file.sync_all());
+    if written.is_err() {
+        // The caller removes the archive on failure; take the line (or the
+        // fragment) back out so no entry names an archive that is gone.
+        let _ = file.set_len(before);
+    }
+    written.with_context(|| format!("cannot write {}", path.display()))
 }
 
-fn read_manifest(path: &Path) -> Result<Vec<ManifestLine>> {
+/// Whether a non-empty `file` lacks a trailing newline.
+fn ends_without_newline(file: &mut fs::File) -> Result<bool> {
+    use std::io::{Seek, SeekFrom};
+    let len = file.metadata()?.len();
+    if len == 0 {
+        return Ok(false);
+    }
+    let mut last = [0u8; 1];
+    file.seek(SeekFrom::Start(len - 1))?;
+    file.read_exact(&mut last)?;
+    Ok(last[0] != b'\n')
+}
+
+/// The valid lines of a manifest, and a message for each damaged line.
+fn read_manifest_lines(path: &Path) -> Result<(Vec<ManifestLine>, Vec<String>)> {
     let bytes = read_capped_nofollow(path, MANIFEST_MAX_BYTES)
         .with_context(|| format!("cannot read {}", path.display()))?;
     let text = String::from_utf8(bytes).context("manifest is not valid UTF-8")?;
     let mut lines = Vec::new();
+    let mut damaged = Vec::new();
     for (n, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        lines.push(
-            serde_json::from_str(line)
-                .with_context(|| format!("{} line {} is not valid", path.display(), n + 1))?,
-        );
+        // One damaged line must not make every other archive unrestorable.
+        match serde_json::from_str(line) {
+            Ok(parsed) => lines.push(parsed),
+            Err(error) => damaged.push(format!(
+                "{} line {} is not valid and was not restored: {error}",
+                path.display(),
+                n + 1
+            )),
+        }
+    }
+    Ok((lines, damaged))
+}
+
+fn read_manifest(path: &Path) -> Result<Vec<ManifestLine>> {
+    let (lines, damaged) = read_manifest_lines(path)?;
+    for message in damaged {
+        eprintln!("amplihack: warning: {message}");
     }
     Ok(lines)
 }
@@ -325,8 +376,13 @@ pub(crate) fn restore(
     let target =
         fs::canonicalize(target).with_context(|| format!("cannot find {}", target.display()))?;
     let is_manifest = target.file_name().and_then(|n| n.to_str()) == Some(MANIFEST);
+    // A whole-manifest restore reports damaged lines as errors (exit 1), so a
+    // script can tell the restore was incomplete.
+    let mut damaged = Vec::new();
     let (manifest_path, lines) = if is_manifest {
-        (target.clone(), read_manifest(&target)?)
+        let (lines, bad) = read_manifest_lines(&target)?;
+        damaged = bad;
+        (target.clone(), lines)
     } else {
         let manifest_path = target
             .ancestors()
@@ -364,7 +420,10 @@ pub(crate) fn restore(
         );
     }
 
-    let mut outcome = RestoreOutcome::default();
+    let mut outcome = RestoreOutcome {
+        errors: damaged,
+        ..RestoreOutcome::default()
+    };
     for line in &lines {
         match restore_one(line, &archive_root, dest.as_deref(), log_roots) {
             Ok(path) => outcome.restored.push(path),
@@ -529,5 +588,22 @@ mod tests {
         verify_and_place(&partial, &final_path, meta.len(), &digest).unwrap();
         assert!(final_path.is_file());
         assert!(!partial.exists());
+    }
+
+    #[test]
+    fn damaged_manifest_line_does_not_hide_later_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let manifest = dir.path().join(MANIFEST);
+        // A fragment left by a write that was cut short.
+        fs::write(&manifest, b"{\"original_path\":\"/x").unwrap();
+        let line = ManifestLine {
+            original_path: "/logs/a.log".into(),
+            archive_path: "/archive/a.log.tar.gz".into(),
+            size_bytes: 3,
+            digest: "sha256:00".into(),
+            archived_at: "2026-01-01T00:00:00Z".into(),
+        };
+        append_manifest(&manifest, &line).unwrap();
+        assert_eq!(read_manifest(&manifest).unwrap(), vec![line]);
     }
 }

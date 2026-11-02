@@ -103,6 +103,11 @@ pub(super) fn execute(
         Op::Skip | Op::Fail | Op::Archive { .. } => Ok(()),
         Op::RemoveRunTmp { run_dir } => {
             run_still_inactive(run_dir)?;
+            // A child of a killed runner (an agent, cargo) may outlive it and
+            // still use its TMPDIR.
+            if procs.in_use(target) {
+                refuse!("in use by a running process");
+            }
             remove_real_dir(target)
         }
         Op::RemoveDir {
@@ -115,6 +120,9 @@ pub(super) fn execute(
             }
             if *cargo_lock && cargo_lock_held(target) {
                 refuse!("in use: .cargo-lock is held");
+            }
+            if item.category == Category::TmpLeftover && has_live_pid_marker(target) {
+                refuse!("in use: a pid marker names a running process");
             }
             if procs.in_use(target) {
                 refuse!("in use by a running process");
@@ -138,8 +146,8 @@ pub(super) fn execute(
             if git_has_dirty_state(target) {
                 refuse!("has uncommitted changes");
             }
-            if git_has_unpushed_commits(target) {
-                refuse!("has unpushed commits");
+            if let Some(reason) = unpushed_reason(target) {
+                refuse!("{reason}");
             }
             if procs.in_use(target) {
                 refuse!("in use by a running process");

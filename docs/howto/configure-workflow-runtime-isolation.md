@@ -53,10 +53,11 @@ amplihack recipe run default-workflow \
 ```
 
 Use an absolute, private path outside any repository checkout. The runner
-refuses a work root that is `/`, your home folder or one of its ancestors, a
-system folder, the system temporary folder, or a git checkout root. It also
-refuses an existing folder that you do not own or that group or others can
-write to.
+will not use a work root that is `/`, your home folder or one of its
+ancestors, a system folder, the system temporary folder, or a git checkout
+root, nor an existing folder that you do not own or that group or others can
+write to. In those cases the run still goes ahead: it prints a warning and
+uses a private temporary folder, with no run folder and no cleanup.
 
 The runner always sets `AMPLIHACK_RUNTIME_ROOT` for its steps, so setting that
 variable before a run has no effect on where the runtime root goes. Setting

@@ -47,7 +47,9 @@ amplihack cleanup --apply --only run-tmp --only tmp-leftover
 ```
 
 No configuration is needed for the end-of-run cleanup. It runs after every
-`amplihack recipe run` unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set.
+`amplihack recipe run` unless `AMPLIHACK_CLEANUP_ON_EXIT=0` is set. A
+`recipe run --dry-run` still removes its own `runtime/` folder but never runs
+the sweep.
 
 ## Settings
 
@@ -465,11 +467,11 @@ amplihack cleanup --apply --skip-logs
 
 | Category | What it collects | Action |
 | --- | --- | --- |
-| `run-tmp` | `<work root>/runs/<id>/runtime` (or `<work root>/r/<short id>`) left by a run that is no longer active, such as one that was killed. The keep period does not apply: the folder is removed as soon as the run is inactive. | remove |
+| `run-tmp` | `<work root>/runs/<id>/runtime` (or `<work root>/r/<short id>`) left by a run that is no longer active, such as one that was killed. The keep period does not apply: the folder is removed as soon as the run is inactive and no running process (such as a child the killed run left behind) uses it. | remove |
 | `run-worktree` | Worktrees recorded in a run's `owned-paths`, under `<work root>/worktrees/` or `<main checkout>/worktrees/`, once the run is eligible. | `git worktree remove`; the branch is kept |
 | `run-target` | Targets recorded in a run's `owned-paths`, once the run is eligible. | remove |
 | `untagged-target` | Folders directly under `<work root>/targets/`, and `amplihack-precommit-target-*` folders in the hook cache base, that no run recorded and that have not been modified within the keep period. | remove |
-| `tmp-leftover` | Top-level `replay-*`, `release-*` and `amplihack-workflow-*` folders in the system temporary folder that you own, that are older than the keep period, and that no running process has as its working folder or holds a file open in. | remove |
+| `tmp-leftover` | Top-level `replay-*`, `release-*` and `amplihack-workflow-*` folders in the system temporary folder that you own, that are older than the keep period, that hold no `pid` marker naming a live process, and that no running process has as its working folder, holds a file open in, or has as its `TMPDIR`, `TMP` or `TEMP`. | remove |
 | `recipe-log` | Files in `recipe.log_dir` older than `--log-days`. | archive |
 | `session-log` | Files in `${CODEX_HOME:-~/.codex}/sessions`, including its nested date folders, older than `--log-days`. Claude sessions under `~/.claude/projects` are listed but skipped with `awaiting sessions archive (#1766)`. | archive |
 
@@ -689,8 +691,11 @@ outside these folders is reported as skipped.
 A worktree is removed only if all of these hold:
 
 - it is a linked worktree, never the main checkout;
-- it has no uncommitted changes and no unpushed commits;
-- no running process has its working folder inside it;
+- it has no uncommitted changes and no unpushed commits (if its upstream
+  branch is gone, for example deleted after the merge, every commit must be
+  reachable from some remote-tracking branch);
+- no running process has its working folder, an open file, or its
+  `TMPDIR`, `TMP` or `TEMP` inside it;
 - the run that recorded it is not active, and no other active run has
   recorded it (a run whose `run.json` cannot be read counts as active);
 - `git worktree remove` succeeds without `--force`.

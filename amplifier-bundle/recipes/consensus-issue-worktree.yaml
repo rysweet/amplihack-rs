@@ -77,11 +77,11 @@ steps:
       **Task:** {{task_description}}
       **Issue:** {{issue_number}}
       **Requirements:** {{final_requirements}}
-      **Worktree Directory:** {{worktree_dir}}
+      **Worktree Directory:** {{worktree_dir}} (if empty, the commands below work it out)
 
       Create worktree setup:
       1. Branch name format: `feat/issue-{number}-{brief-description}` or `feat/{brief-description}`
-      2. Create worktree in `{{worktree_dir}}/{branch-name}`
+      2. Create the worktree with the commands below; they place it under the worktree directory
       3. Push branch to remote with tracking
 
       Commands to execute:

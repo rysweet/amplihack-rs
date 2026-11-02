@@ -867,15 +867,17 @@ pub(super) fn execute_recipe_via_rust(
         }
         Err(error) => Err(error),
     };
-    finish_workspace(workspace.into_inner(), &final_result);
+    finish_workspace(workspace.into_inner(), &final_result, dry_run);
     final_result
 }
 
 /// Issue #1808: removes runtime/, finalises run.json with the outcome, step
-/// statuses and log path, and runs the end-of-run sweep.
+/// statuses and log path, and runs the end-of-run sweep unless the run was a
+/// dry run (a dry run must not remove anything).
 fn finish_workspace(
     workspace: crate::commands::cleanup::run_dir::RunWorkspace,
     result: &Result<RecipeRunResult>,
+    dry_run: bool,
 ) {
     use crate::commands::cleanup::run_dir::{Outcome, StepStatus};
     let (outcome, steps, log_path) = match result {
@@ -907,7 +909,7 @@ fn finish_workspace(
         }
         Err(_) => (Outcome::Failure, Vec::new(), None),
     };
-    workspace.finish(outcome, steps, log_path);
+    workspace.finish(outcome, steps, log_path, !dry_run);
 }
 
 /// The `action` recorded on the classification attached to a terminal result.

@@ -1,5 +1,5 @@
-//! Which folders running processes use (issue #1808): working folders and
-//! open files read from `/proc`. Moved out of `sweep.rs` unchanged.
+//! Which folders running processes use (issue #1808): working folders, open
+//! files and TMPDIR/TMP/TEMP read from `/proc`. Split out of `sweep.rs`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,6 +30,20 @@ impl ProcScan {
             if let Ok(cwd) = fs::read_link(base.join("cwd")) {
                 paths.push(cwd);
             }
+            // A child of a killed run may have nothing open in its TMPDIR
+            // between writes; its environment still points there.
+            if let Ok(environ) = fs::read(base.join("environ")) {
+                for var in environ.split(|b| *b == 0) {
+                    for key in [&b"TMPDIR="[..], b"TMP=", b"TEMP="] {
+                        if let Some(value) = var.strip_prefix(key)
+                            && value.first() == Some(&b'/')
+                        {
+                            use std::os::unix::ffi::OsStrExt;
+                            paths.push(PathBuf::from(std::ffi::OsStr::from_bytes(value)));
+                        }
+                    }
+                }
+            }
             if let Ok(fds) = fs::read_dir(base.join("fd")) {
                 for fd in fds.flatten() {
                     if let Ok(target) = fs::read_link(fd.path())
@@ -46,7 +60,8 @@ impl ProcScan {
         }
     }
 
-    /// Whether a process has its working folder in `path` or a file open in it.
+    /// Whether a process has its working folder, a file open or its temporary
+    /// folder variable in `path`.
     /// Without `/proc`, everything counts as in use.
     pub(super) fn in_use(&self, path: &Path) -> bool {
         if !self.available {
