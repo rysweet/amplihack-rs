@@ -16,8 +16,8 @@
 //!   recorded round; one with the same limit starts no agent.
 //! - Every stop writes `<loop>-result.json`; `STUCK` writes
 //!   `<loop>-stuck-reason.txt`, `BUDGET_EXHAUSTED` writes
-//!   `autodrive-budget-summary.md`, and both post a sanitised PR comment
-//!   through `gh pr comment --body-file`.
+//!   `autodrive-budget-summary.md`, and both post a sanitised PR comment,
+//!   with secrets masked, through `gh pr comment --body-file`.
 //!
 //! The driver runs end to end under `isolated("bash")` with a stub
 //! `amplihack` (rounds, evaluator, jq-based `orch helper`) and a stub `gh`
@@ -1224,6 +1224,172 @@ fn a_failed_comment_warns_and_keeps_the_result() {
             .any(|l| l.contains("WARNING") && l.contains('7')),
         "{err}"
     );
+}
+
+/// Runs `autodrive_budget.sh post` on `text` with the stub `gh` first on
+/// `PATH`, and returns the comment body the stub received.
+fn posted(text: &str) -> String {
+    let tmp = tempfile::tempdir().unwrap();
+    let st = tmp.path().join("state");
+    private_dir(&st);
+    let bin = tmp.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    crate::support::exec_stub::write_executable(&bin.join("gh"), GH_STUB, 0o755);
+    let body = findings(tmp.path(), "reason.txt", text);
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let o = crate::isolated_amplihack::isolated("bash")
+        .arg(tool("autodrive_budget.sh"))
+        .args(["post", &st.display().to_string(), "1743", &body])
+        .env("PATH", path)
+        .env("STUB_STATE", tmp.path())
+        .env("STUB_LOG", tmp.path())
+        .output()
+        .unwrap();
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    std::fs::read_to_string(tmp.path().join("gh-body-1")).expect("no comment body")
+}
+
+/// PR #1862 review (crusty round 4, #1865 item 1): the stop comment goes to
+/// a public PR, so every credential format the findings could quote is
+/// masked before posting. One case per format. The secrets are assembled at
+/// run time so the test file itself holds none.
+#[test]
+fn the_stop_comment_masks_secrets_one_case_per_format() {
+    let a = |n: usize| "A1b2C3d4E5".repeat(n.div_ceil(10))[..n].to_string();
+    let up = |n: usize| "Q7W3R9T2Y5".repeat(n.div_ceil(10))[..n].to_string();
+    let cases: Vec<(&str, String)> = vec![
+        ("ghp_", format!("gh{}_{}", "p", a(36))),
+        ("gho_", format!("gh{}_{}", "o", a(36))),
+        ("ghu_", format!("gh{}_{}", "u", a(36))),
+        ("ghs_", format!("gh{}_{}", "s", a(36))),
+        ("ghr_", format!("gh{}_{}", "r", a(36))),
+        (
+            "github_pat_",
+            format!("github_{}_{}_{}", "pat", a(22), a(59)),
+        ),
+        ("anthropic sk-ant-", format!("sk-{}-api03-{}", "ant", a(40))),
+        ("openai sk-proj-", format!("sk-{}-{}", "proj", a(40))),
+        ("openai sk-", format!("sk-{}", a(48))),
+        ("aws AKIA", format!("AK{}{}", "IA", up(16))),
+        ("aws ASIA", format!("AS{}{}", "IA", up(16))),
+        (
+            "slack xoxb-",
+            format!("xo{}-{}-{}", "xb", "1234567890", a(24)),
+        ),
+        ("gitlab glpat-", format!("glp{}-{}", "at", a(20))),
+        ("npm_", format!("np{}_{}", "m", a(36))),
+        ("google AIza", format!("AI{}{}", "za", a(35))),
+        (
+            "jwt",
+            format!("ey{}.{}.{}", "JhbGciOiJIUzI1NiJ9", a(20), a(30)),
+        ),
+    ];
+    for (name, secret) in &cases {
+        let body = posted(&format!("crusty quoted: found {secret} in the log\n"));
+        assert!(!body.contains(secret.as_str()), "{name}: {body}");
+        assert!(
+            body.contains("found [REDACTED] in the log"),
+            "{name}: {body}"
+        );
+    }
+
+    // Shapes that only their context gives away.
+    let v = a(24);
+    let contextual: Vec<(&str, String, &str)> = vec![
+        (
+            "bearer header",
+            format!("Authorization: Bearer {v}"),
+            "Authorization: Bearer [REDACTED]",
+        ),
+        (
+            "url credentials",
+            format!("https://x-access-token:{v}(at)github.com/o/r.git"),
+            "https://[REDACTED]",
+        ),
+        (
+            "env token",
+            format!("GITHUB_TOKEN={v}"),
+            "GITHUB_TOKEN=[REDACTED]",
+        ),
+        (
+            "env secret key",
+            format!("AWS_SECRET_ACCESS_KEY={v}"),
+            "AWS_SECRET_ACCESS_KEY=[REDACTED]",
+        ),
+        (
+            "json password",
+            format!(r#"{{"password": "{v} x"}}"#),
+            r#""password": "[REDACTED]""#,
+        ),
+        (
+            "yaml api key",
+            format!("api_key: {v}"),
+            "api_key: [REDACTED]",
+        ),
+        (
+            "azure account key",
+            format!("AccountKey={v}==;EndpointSuffix=core"),
+            "AccountKey=[REDACTED];EndpointSuffix=core",
+        ),
+        (
+            "sas signature",
+            format!("?sv=2024&sig={v}"),
+            "sig=[REDACTED]",
+        ),
+    ];
+    for (name, text, kept) in &contextual {
+        let text = text.replace("(at)", "@");
+        let body = posted(&format!("{text}\n"));
+        assert!(!body.contains(&v), "{name}: {body}");
+        assert!(body.contains(kept), "{name}: {body}");
+    }
+
+    // A private key block, whole and cut off by the 8 KiB findings limit.
+    let pem = format!(
+        "before\n-----BEGIN {k}-----\n{v}\n{v}\n-----END {k}-----\nafter\n",
+        k = "RSA PRIVATE KEY"
+    );
+    let body = posted(&pem);
+    assert!(!body.contains(&v), "{body}");
+    assert!(
+        body.contains("before\n[REDACTED PRIVATE KEY]\nafter"),
+        "{body}"
+    );
+    let body = posted(&format!(
+        "before\n-----BEGIN {}-----\n{v}\n",
+        "OPENSSH PRIVATE KEY"
+    ));
+    assert!(!body.contains(&v), "a cut-off block: {body}");
+
+    // The masking reaches the comment end to end, through the STUCK stop.
+    let Some(fx) = Fixture::new() else { return };
+    let token = format!("gh{}_{}", "p", a(36));
+    fx.plan(&[&format!("CONCERNS|0|0|0|leaked {token}")]);
+    fx.run("crusty", &[]);
+    let calls = fx.gh_calls();
+    assert_eq!(calls.len(), 1);
+    assert!(!calls[0].1.contains(&token), "{}", calls[0].1);
+    assert!(calls[0].1.contains("leaked [REDACTED]"), "{}", calls[0].1);
+}
+
+/// Masking must not eat the text a reader needs: SHAs, counts and prose.
+#[test]
+fn the_stop_comment_keeps_ordinary_text() {
+    let text = format!(
+        "head {SHA}\n12 tokens used; the token budget is unlimited\ndesign=simple, branch: feat/x\n"
+    );
+    let body = posted(&text);
+    assert!(body.contains(SHA), "{body}");
+    assert!(
+        body.contains("12 tokens used; the token budget is unlimited"),
+        "{body}"
+    );
+    assert!(body.contains("design=simple, branch: feat/x"), "{body}");
+    assert!(!body.contains("[REDACTED]"), "{body}");
 }
 
 // ── Helpers on their own ─────────────────────────────────────────────────────

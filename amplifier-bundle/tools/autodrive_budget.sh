@@ -23,8 +23,9 @@
 #       otherwise. A malformed limit, an unknown autodrive_budget_* key or an
 #       untrusted usage file exits 2 (fails closed).
 #   post <state> <pr> <file>
-#       posts <file>, sanitised, as a PR comment with `gh pr comment`. A
-#       failure is a WARNING; it never changes the loop result.
+#       posts <file>, with secrets masked (mask_secrets below) and
+#       sanitised, as a PR comment with `gh pr comment`. A failure is a
+#       WARNING; it never changes the loop result.
 #
 # A limit is reached when it is above 0 and the use is equal to or above it;
 # 0 or empty is unlimited. All round-count comparisons of auto-drive live here.
@@ -36,6 +37,47 @@
 set -uo pipefail
 umask 077
 export LC_ALL=C
+
+# mask_secrets: stdin to stdout, with every credential a stop comment could
+# quote replaced by [REDACTED]. The comment goes to a public PR, and GitHub
+# push protection does not scan comments. Masked, in this order:
+#   - PEM private key blocks, from the BEGIN line to the END line (or to the
+#     end of the text when the END line was cut off), as one marker line;
+#   - user:password@ in URLs;
+#   - GitHub tokens gh[pousr]_ and github_pat_, Anthropic and OpenAI sk-,
+#     AWS access key ids AKIA, ASIA and A3T, Slack xox?-, GitLab glpat-,
+#     npm_, Google AIza, JSON web tokens eyJ*.*.*;
+#   - the credential after the word Bearer, Basic or token;
+#   - the value after = or : of any key whose name ends in token, secret,
+#     password, passwd, api_key, access_key, account_key, private_key,
+#     credential(s), sig or sharedaccesskey (any case; _, - or nothing
+#     between the words), quoted or not.
+# A secret with neither a known shape nor a telling key name is not
+# recognised; the 8 KiB findings cut and the 59,000-byte body cut still apply.
+ci() { awk '{ for (i = 1; i <= length($0); i++) { c = substr($0, i, 1); if (c ~ /[a-z]/) printf "[%s%s]", c, toupper(c); else printf "%s", c } }' <<<"$1"; }
+SECRET_KEYS="$(ci 'token|secret|passw(or)?d|api[_-]?key|access[_-]?key|account[_-]?key|private[_-]?key|credentials?|sig|sharedaccesskey')"
+AUTH_WORDS="$(ci 'bearer|basic|token')"
+mask_secrets() {
+  awk '
+    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/ { print "[REDACTED PRIVATE KEY]"; k = 1 }
+    k && /-----END [A-Z0-9 ]*PRIVATE KEY-----/ { k = 0; next }
+    !k' \
+  | sed -E \
+    -e 's#([A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]+@#\1[REDACTED]@#g' \
+    -e 's#github_pat_[A-Za-z0-9_]{16,}#[REDACTED]#g' \
+    -e 's#gh[pousr]_[A-Za-z0-9]{16,}#[REDACTED]#g' \
+    -e 's#sk-[A-Za-z0-9_-]{16,}#[REDACTED]#g' \
+    -e 's#(A3T[A-Z0-9]|AKIA|ASIA)[A-Z0-9]{16}#[REDACTED]#g' \
+    -e 's#xox[abeoprs]-[A-Za-z0-9-]{10,}#[REDACTED]#g' \
+    -e 's#glpat-[A-Za-z0-9_-]{16,}#[REDACTED]#g' \
+    -e 's#npm_[A-Za-z0-9]{30,}#[REDACTED]#g' \
+    -e 's#AIza[A-Za-z0-9_-]{30,}#[REDACTED]#g' \
+    -e 's#eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}#[REDACTED]#g' \
+    -e "s#(^|[^A-Za-z0-9])(${AUTH_WORDS})[[:space:]]+[A-Za-z0-9._~+/=-]{12,}#\\1\\2 [REDACTED]#g" \
+    -e "s#((^|[^A-Za-z0-9])[A-Za-z0-9_-]*(${SECRET_KEYS})[\"']?[[:space:]]*[:=][[:space:]]*)\"[^\"]*\"#\\1\"[REDACTED]\"#g" \
+    -e "s#((^|[^A-Za-z0-9])[A-Za-z0-9_-]*(${SECRET_KEYS})[\"']?[[:space:]]*[:=][[:space:]]*)'[^']*'#\\1'[REDACTED]'#g" \
+    -e "s#((^|[^A-Za-z0-9])[A-Za-z0-9_-]*(${SECRET_KEYS})[\"']?[[:space:]]*[:=][[:space:]]*)[^][[:space:]\"'\`,;&<>|()]+#\\1[REDACTED]#g"
+}
 
 usage() { echo "ERROR: autodrive_budget.sh: ${1:-usage}. Usage: mark <state> | add <state> <loop> <label> <phase> <seconds> [--since <mark>] [--waited <ledger>] | totals <state> | check <state> <loop> <pre|post|before> <label> <pr> [--force] [key=value...] | post <state> <pr> <file>" >&2; exit 2; }
 
@@ -161,11 +203,15 @@ $(printf '%s\t%s\twait\t0\t%s\tunknown' "$LOOP" "$LABEL" "$WAITED")"
     [[ "$PR" =~ ^[0-9]{1,10}$ ]] || { echo "INFO: no valid pr_number; the stop is not posted as a PR comment." >&2; exit 0; }
     [ -f "$BODY_IN" ] || { echo "WARNING: comment body ${BODY_IN} is missing; nothing posted." >&2; exit 1; }
     command -v gh >/dev/null 2>&1 || { echo "WARNING: gh is not on PATH; the stop is not posted on PR #${PR}." >&2; exit 1; }
-    # @mentions and #N cross-links neutralised, absolute paths cut to base
-    # names, fences unclosable; the text sits inside one fenced block.
-    TEXT="$(head -c 59000 -- "$BODY_IN" | tr -d '\r' \
+    # Secrets masked first (mask_secrets, PR #1862 review), then @mentions
+    # and #N cross-links neutralised, absolute paths cut to base names,
+    # fences unclosable; the text sits inside one fenced block. A masking
+    # failure posts nothing (fails closed).
+    if ! TEXT="$(head -c 59000 -- "$BODY_IN" | tr -d '\r' | mask_secrets \
       | sed -E 's/```/'"'''"'/g; s/~~~/'"'''"'/g; s/@/(at)/g; s/#([0-9])/# \1/g' \
-      | sed -E "s#(^|[[:space:](\"'=:\`])/([^[:space:]/]+/)+#\\1#g")"
+      | sed -E "s#(^|[[:space:](\"'=:\`])/([^[:space:]/]+/)+#\\1#g")"; then
+      echo "WARNING: the comment body could not be masked; nothing posted on PR #${PR}." >&2; exit 1
+    fi
     BODY="$(printf 'auto-drive stopped a loop. The record of the run is below.\n\n```text\n%s\n```\n' "$TEXT")"
     F="$(mktemp "${STATE}/.comment.XXXXXX")" || { echo "WARNING: could not create the comment body file; nothing posted on PR #${PR}." >&2; exit 1; }
     printf '%s' "$BODY" | head -c 60000 > "$F"

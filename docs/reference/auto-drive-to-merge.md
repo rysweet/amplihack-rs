@@ -3391,6 +3391,18 @@ On either stop, when `pr_number` is set, the driver posts one comment with
 reason, or the summary for a budget stop. Before posting:
 
 - the PR number must match `^[0-9]{1,10}$`;
+- secrets are replaced by `[REDACTED]`, because the comment is public and
+  GitHub push protection does not scan comments: PEM private key blocks
+  (to the end of the text when the `END` line was cut off), `user:password@`
+  in URLs, GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`,
+  `github_pat_`), `sk-` keys (Anthropic, OpenAI), AWS access key ids (`AKIA`,
+  `ASIA`, `A3T`), Slack `xox?-`, GitLab `glpat-`, `npm_`, Google `AIza` and
+  JSON web tokens; the credential after `Bearer`, `Basic` or `token`; and
+  the value after `=` or `:` of any key whose name ends in `token`, `secret`,
+  `password`, `passwd`, `api_key`, `access_key`, `account_key`,
+  `private_key`, `credential(s)`, `sig` or `sharedaccesskey`, in any case.
+  A failure of this step posts nothing. A secret with neither a known shape
+  nor a telling key name is not recognised;
 - `@` mentions and `#N` cross-links are neutralised, so the comment notifies
   no one and links no issue;
 - absolute paths are reduced to their base names, including a path after
