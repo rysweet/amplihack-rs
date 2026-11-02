@@ -712,11 +712,11 @@ amplihack profile usage
 ```
 
 ```
-PROFILE  WEEK             W-RESET      SESSION           S-RESET      STATE
-review   █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░░░░   5%   11-01 14:00  ok
-work     ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00  ok                 *
-team     █████░░░░░  55%  11-05 09:00  ██████████ 100%   11-01 23:50  session_exhausted
-scratch  no reading (not_logged_in)                                   not_logged_in      (fallback)
+PROFILE  WEEK             W-RESET      SESSION           S-RESET     STATE
+review   █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░░░░   5%   11-01 14:00 ok
+work     ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00 ok                 *
+team     █████░░░░░  55%  11-05 09:00  ██████████ 100%   11-01 23:50 session_exhausted
+scratch  no reading (not_logged_in)                                  not_logged_in      (fallback)
 times: Europe/London
 order: rotator headroom (worse of session and week), then name
 ```
@@ -992,8 +992,8 @@ there. `profile usage` checks that account through `~/.claude` instead and
 marks the row with `(live)` after the name:
 
 ```
-PROFILE      WEEK             W-RESET      SESSION           S-RESET      STATE
-team (live)  █████░░░░░  55%  10-22 02:00  ████░░░░░░  40%   10-16 20:00  ok
+PROFILE      WEEK             W-RESET      SESSION           S-RESET     STATE
+team (live)  █████░░░░░  55%  10-22 02:00  ████░░░░░░  40%   10-16 20:00 ok
 times: America/Los_Angeles
 order: rotator headroom (worse of session and week), then name
 ```
@@ -1871,8 +1871,8 @@ and its row reads `api-key (billed per token)` instead of bars:
 
 ```
 $ amplihack profile usage api-key
-PROFILE         WEEK             W-RESET      SESSION           S-RESET      STATE
-api-key (live)  api-key (billed per token)                                   api_key
+PROFILE         WEEK             W-RESET      SESSION           S-RESET     STATE
+api-key (live)  api-key (billed per token)                                  api_key
 live: work is running on the API key (billed per token)
 times: Europe/London
 order: rotator headroom (worse of session and week), then name

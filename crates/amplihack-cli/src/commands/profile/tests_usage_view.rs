@@ -151,8 +151,8 @@ fn example_rows() -> Vec<Row> {
 
 /// One line of the bar view, built from the documented widths: label
 /// column, then WEEK (15), W-RESET, SESSION (16), S-RESET, STATE (17 here,
-/// the longest state in the example), each followed by two spaces; trailing
-/// spaces are trimmed.
+/// the longest state in the example), each followed by two spaces except
+/// S-RESET, which is followed by one; trailing spaces are trimmed.
 #[allow(clippy::too_many_arguments)]
 fn line(
     lw: usize,
@@ -166,7 +166,7 @@ fn line(
     marks: &str,
 ) -> String {
     let s = format!(
-        "{name:<lw$}  {week:<15}  {wr:<rw$}  {sess:<16}  {sr:<rw$}  {state:<17}  {marks}",
+        "{name:<lw$}  {week:<15}  {wr:<rw$}  {sess:<16}  {sr:<rw$} {state:<17}  {marks}",
         lw = lw,
         rw = rw
     );
@@ -175,7 +175,7 @@ fn line(
 
 fn span_line(lw: usize, rw: usize, name: &str, msg: &str, state: &str, marks: &str) -> String {
     let span = 15 + 2 + rw + 2 + 16 + 2 + rw;
-    let s = format!("{name:<lw$}  {msg:<span$}  {state:<17}  {marks}");
+    let s = format!("{name:<lw$}  {msg:<span$} {state:<17}  {marks}");
     s.trim_end().to_string()
 }
 
@@ -437,7 +437,7 @@ fn utc_view_matches_the_documented_example() {
     let (lw, rw) = (11, 12);
     let want = [
         format!(
-            "{:<lw$}  {:<15}  {:<rw$}  {:<16}  {:<rw$}  STATE",
+            "{:<lw$}  {:<15}  {:<rw$}  {:<16}  {:<rw$} STATE",
             "PROFILE", "WEEK", "W-RESET", "SESSION", "S-RESET"
         ),
         line(
@@ -699,6 +699,14 @@ fn a_24_character_live_name_fits_in_100_columns_in_both_time_modes() {
     for view in [TimeView::Utc, plus2()] {
         for colour in [false, true] {
             let out = render_bars(std::slice::from_ref(&r), &view, colour);
+            let header = out.lines().next().expect("header");
+            assert!(header.starts_with("PROFILE"), "{header}");
+            assert!(header.ends_with("STATE"), "{header}");
+            assert!(
+                header.chars().count() <= 100,
+                "header is {} columns: {header:?}",
+                header.chars().count()
+            );
             let l = strip_sgr(line_of(&out, name));
             assert!(l.starts_with("abcdefghijklmnopqrstuvwx (live)"), "{l}");
             assert!(

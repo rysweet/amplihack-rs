@@ -1116,15 +1116,15 @@ By default, `profile usage` prints one row per profile with the weekly and
 session usage drawn as bars:
 
 ```
-PROFILE      WEEK             W-RESET      SESSION           S-RESET      STATE
-review       █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░░░░   5%   11-01 14:00  ok
-work (live)  ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00  ok                 * hosts:personal
-weekly       ████░░░░░░  47%  11-05 09:00  no session limit  -            ok
-credit       ██████░░░░  61%  11-06 02:00  ████░░░░░░  40%   11-01 21:00  ok                 overflow (fallback)
-team         █████░░░░░  55%  11-05 09:00  ██████████ 100%   11-01 23:50  session_exhausted
-api          api-key (billed per token)                                   api_key
-personal     no reading (not_logged_in)                                   not_logged_in      leased→work
-spare        no reading (timeout)                                         timeout            (fallback)
+PROFILE      WEEK             W-RESET      SESSION           S-RESET     STATE
+review       █░░░░░░░░░  10%  11-05 09:00  ░░░░░░░░░░   5%   11-01 14:00 ok
+work (live)  ███░░░░░░░  30%  11-05 09:00  ██░░░░░░░░  20%   11-01 12:00 ok                 * hosts:personal
+weekly       ████░░░░░░  47%  11-05 09:00  no session limit  -           ok
+credit       ██████░░░░  61%  11-06 02:00  ████░░░░░░  40%   11-01 21:00 ok                 overflow (fallback)
+team         █████░░░░░  55%  11-05 09:00  ██████████ 100%   11-01 23:50 session_exhausted
+api          api-key (billed per token)                                  api_key
+personal     no reading (not_logged_in)                                  not_logged_in      leased→work
+spare        no reading (timeout)                                        timeout            (fallback)
 times: Europe/London
 order: rotator headroom (worse of session and week), then name
 ```
@@ -1155,8 +1155,9 @@ bars as read, so a window at its limit shows a full red bar.
 
 The `PROFILE` column is as wide as the longest label, up to 31 characters.
 A name longer than 24 characters is cut to its first 23 characters followed
-by `…`, and `(live)` follows the cut name. A row in state `ok` with no marks
-fits in 100 columns for any name, in both local and UTC time. Longer state
+by `…`, and `(live)` follows the cut name. The header line, and a row in
+state `ok` with no marks, fit in 100 columns for any name, in both local and
+UTC time. Longer state
 names and the marks column can take a row past 100 columns. Names, accounts
 and other text from files are [cleaned](#table-output) before they are
 printed, as in the table.
@@ -1243,15 +1244,15 @@ amplihack profile usage --utc
 ```
 
 ```
-PROFILE      WEEK             W-RESET       SESSION           S-RESET       STATE
-review       █░░░░░░░░░  10%  11-05 09:00Z  ░░░░░░░░░░   5%   11-01 14:00Z  ok
-work (live)  ███░░░░░░░  30%  11-05 09:00Z  ██░░░░░░░░  20%   11-01 12:00Z  ok                 * hosts:personal
-weekly       ████░░░░░░  47%  11-05 09:00Z  no session limit  -             ok
-credit       ██████░░░░  61%  11-06 02:00Z  ████░░░░░░  40%   11-01 21:00Z  ok                 overflow (fallback)
-team         █████░░░░░  55%  11-05 09:00Z  ██████████ 100%   11-01 23:50Z  session_exhausted
-api          api-key (billed per token)                                     api_key
-personal     no reading (not_logged_in)                                     not_logged_in      leased→work
-spare        no reading (timeout)                                           timeout            (fallback)
+PROFILE      WEEK             W-RESET       SESSION           S-RESET      STATE
+review       █░░░░░░░░░  10%  11-05 09:00Z  ░░░░░░░░░░   5%   11-01 14:00Z ok
+work (live)  ███░░░░░░░  30%  11-05 09:00Z  ██░░░░░░░░  20%   11-01 12:00Z ok                 * hosts:personal
+weekly       ████░░░░░░  47%  11-05 09:00Z  no session limit  -            ok
+credit       ██████░░░░  61%  11-06 02:00Z  ████░░░░░░  40%   11-01 21:00Z ok                 overflow (fallback)
+team         █████░░░░░  55%  11-05 09:00Z  ██████████ 100%   11-01 23:50Z session_exhausted
+api          api-key (billed per token)                                    api_key
+personal     no reading (not_logged_in)                                    not_logged_in      leased→work
+spare        no reading (timeout)                                          timeout            (fallback)
 times: UTC
 order: rotator headroom (worse of session and week), then name
 ```
@@ -8036,10 +8037,10 @@ profile is live in `~/.claude`, and `blocked: the API key until <time>
 
 ```
 $ amplihack profile usage
-PROFILE         WEEK             W-RESET      SESSION           S-RESET      STATE
-ryan-mistt      ██████░░░░  64%  11-01 02:00  ██████████ 100%   10-28 16:50  session_exhausted
-ryan-ryansweet  ███████░░░  71%  11-01 02:00  ██████████ 100%   10-28 17:20  session_exhausted
-api-key (live)  api-key (billed per token)                                   api_key
+PROFILE         WEEK             W-RESET      SESSION           S-RESET     STATE
+ryan-mistt      ██████░░░░  64%  11-01 02:00  ██████████ 100%   10-28 16:50 session_exhausted
+ryan-ryansweet  ███████░░░  71%  11-01 02:00  ██████████ 100%   10-28 17:20 session_exhausted
+api-key (live)  api-key (billed per token)                                  api_key
 live: work is running on the API key (billed per token)
 times: Europe/London
 order: rotator headroom (worse of session and week), then name

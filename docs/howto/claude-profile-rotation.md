@@ -65,10 +65,10 @@ amplihack profile usage
 ```
 
 ```
-PROFILE      WEEK             W-RESET      SESSION           S-RESET      STATE
-spare        █░░░░░░░░░  12%  10-23 09:00  ░░░░░░░░░░   0%   -            ok
-personal     ███░░░░░░░  35%  10-22 02:00  ██░░░░░░░░  20%   10-18 15:00  ok
-work (live)  ████░░░░░░  41%  10-21 18:00  ████████░░  88%   10-18 13:00  ok
+PROFILE      WEEK             W-RESET      SESSION           S-RESET     STATE
+spare        █░░░░░░░░░  12%  10-23 09:00  ░░░░░░░░░░   0%   -           ok
+personal     ███░░░░░░░  35%  10-22 02:00  ██░░░░░░░░  20%   10-18 15:00 ok
+work (live)  ████░░░░░░  41%  10-21 18:00  ████████░░  88%   10-18 13:00 ok
 times: Europe/London
 order: rotator headroom (worse of session and week), then name
 ```
@@ -117,10 +117,10 @@ amplihack profile usage
 ```
 
 ```
-PROFILE       WEEK             W-RESET      SESSION           S-RESET      STATE
-spare (live)  █░░░░░░░░░  12%  10-23 09:00  ░░░░░░░░░░   0%   -            ok
-personal      ███░░░░░░░  35%  10-22 02:00  ██░░░░░░░░  20%   10-18 15:00  ok
-work          ████░░░░░░  41%  10-21 18:00  ████████░░  88%   10-18 13:00  ok
+PROFILE       WEEK             W-RESET      SESSION           S-RESET     STATE
+spare (live)  █░░░░░░░░░  12%  10-23 09:00  ░░░░░░░░░░   0%   -           ok
+personal      ███░░░░░░░  35%  10-22 02:00  ██░░░░░░░░  20%   10-18 15:00 ok
+work          ████░░░░░░  41%  10-21 18:00  ████████░░  88%   10-18 13:00 ok
 times: Europe/London
 order: rotator headroom (worse of session and week), then name
 ```
@@ -2304,8 +2304,8 @@ $ amplihack profile rotate status
 ~/.claude is on API key profile api-key: work is billed per token (since 2026-10-28T14:02:11Z)
 ...
 $ amplihack profile usage api-key
-PROFILE         WEEK             W-RESET      SESSION           S-RESET      STATE
-api-key (live)  api-key (billed per token)                                   api_key
+PROFILE         WEEK             W-RESET      SESSION           S-RESET     STATE
+api-key (live)  api-key (billed per token)                                  api_key
 live: work is running on the API key (billed per token)
 times: Europe/London
 order: rotator headroom (worse of session and week), then name

@@ -29,6 +29,10 @@ const BAR_W: usize = 15;
 const SESSION_W: usize = 16;
 /// Spaces between columns.
 const GAP: usize = 2;
+/// Spaces before the STATE column: one, so that the header, which ends in
+/// the 5-character `STATE`, fits in 100 columns under `--utc` with a
+/// 24-character live name.
+const STATE_GAP: usize = 1;
 
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
@@ -242,10 +246,15 @@ fn middle(row: &Row, time: &TimeView, colour: bool) -> Middle {
     }
 }
 
-fn pad(out: &mut String, cell: &Cell, width: usize) {
+fn pad(out: &mut String, cell: &Cell, width: usize, gap: usize) {
     out.push_str(&cell.shown);
     let used = cell.plain.chars().count();
-    out.extend(std::iter::repeat_n(' ', width.saturating_sub(used) + GAP));
+    out.extend(std::iter::repeat_n(' ', width.saturating_sub(used) + gap));
+}
+
+/// The gap after the `i`th of the four middle cells.
+fn middle_gap(i: usize) -> usize {
+    if i == 3 { STATE_GAP } else { GAP }
 }
 
 /// The bar view: header, rows (each followed by its `--raw` text), the
@@ -273,25 +282,29 @@ pub(super) fn render_bars(rows: &[Row], time: &TimeView, colour: bool) -> String
     let mut out = String::new();
     {
         let mut h = String::new();
-        pad(&mut h, &Cell::text("PROFILE"), lw);
-        for (name, w) in ["WEEK", "W-RESET", "SESSION", "S-RESET"].iter().zip(widths) {
-            pad(&mut h, &Cell::text(*name), w);
+        pad(&mut h, &Cell::text("PROFILE"), lw, GAP);
+        for (i, (name, w)) in ["WEEK", "W-RESET", "SESSION", "S-RESET"]
+            .iter()
+            .zip(widths)
+            .enumerate()
+        {
+            pad(&mut h, &Cell::text(*name), w, middle_gap(i));
         }
         h.push_str("STATE");
         out.push_str(&finish(h));
     }
     for (row, lab) in rows.iter().zip(labels) {
         let mut l = String::new();
-        pad(&mut l, &Cell::text(lab), lw);
+        pad(&mut l, &Cell::text(lab), lw, GAP);
         match middle(row, time, colour) {
             Middle::Bars(cells) => {
-                for (c, w) in cells.iter().zip(widths) {
-                    pad(&mut l, c, w);
+                for (i, (c, w)) in cells.iter().zip(widths).enumerate() {
+                    pad(&mut l, c, w, middle_gap(i));
                 }
             }
-            Middle::Span(text) => pad(&mut l, &Cell::text(text), span_w),
+            Middle::Span(text) => pad(&mut l, &Cell::text(text), span_w, STATE_GAP),
         }
-        pad(&mut l, &Cell::text(state_label(row)), sw);
+        pad(&mut l, &Cell::text(state_label(row)), sw, GAP);
         l.push_str(&marks_parts(row, false).join(" "));
         out.push_str(&finish(l));
         raw_lines(&mut out, row);
