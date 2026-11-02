@@ -22,7 +22,7 @@
 #![cfg(unix)]
 
 use crate::support::exec_stub::write_executable;
-use crate::support::profile_rotate::{Fixture, PROFILES, private_file, text};
+use crate::support::profile_rotate::{Fixture, PROFILES, email, private_file, text};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -72,6 +72,17 @@ struct Endpoint {
 
 impl Endpoint {
     fn start(profiles: Vec<String>, status: u16) -> Self {
+        Self::start_with(profiles, status, serde_json::json!({"is_enabled": false}))
+    }
+
+    /// Issue #1856 (D11): usage credits on, with sentinel values for every
+    /// field that must never be shown: an e-mail, two identifiers, a limit,
+    /// an amount and a currency.
+    fn start_credits_on(profiles: Vec<String>) -> Self {
+        Self::start_with(profiles, 0, credits_on_extra())
+    }
+
+    fn start_with(profiles: Vec<String>, status: u16, extra: serde_json::Value) -> Self {
         Self::serve(move |_, auth| {
             let now = chrono::Utc::now().timestamp();
             let who = profiles
@@ -86,7 +97,7 @@ impl Endpoint {
                             "resets_at": iso(now + 3600)
                         },
                         "seven_day": {"utilization": 55.0, "resets_at": iso(now + 3 * 86_400)},
-                        "extra_usage": {"is_enabled": false}
+                        "extra_usage": extra
                     })
                     .to_string(),
                 ),
@@ -160,6 +171,10 @@ struct Setup {
 /// 16 profiles, each with its own fake login, and the recording `claude`.
 /// `work` is live in `~/.claude`, so its row reads `~/.claude`'s login.
 fn setup(status: u16) -> Setup {
+    setup_with(|all| Endpoint::start(all, status))
+}
+
+fn setup_with(endpoint: impl FnOnce(Vec<String>) -> Endpoint) -> Setup {
     let f = Fixture::new();
     let all = names();
     for (i, p) in all.iter().enumerate().skip(PROFILES.len()) {
@@ -181,7 +196,7 @@ fn setup(status: u16) -> Setup {
     }
     fs::rename(f.tools.join("claude"), f.tools.join("claude-real")).unwrap();
     write_executable(&f.tools.join("claude"), RECORDING_CLAUDE, 0o755);
-    let endpoint = Endpoint::start(all, status);
+    let endpoint = endpoint(all);
     Setup { f, endpoint }
 }
 
@@ -505,4 +520,467 @@ fn a_refresh_answered_after_the_deadline_warns() {
         !creds.parent().unwrap().join(".oauth_refresh.lock").exists(),
         "the lock is released"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1856: usage credits on
+//
+// The endpoint answers every profile with usable windows (session = the
+// profile's index, week 55%) and an `extra_usage` with credits on and the
+// D11 sentinels. The canned `/usage` text (spare 10/20, extra 50/50, ...)
+// is what the spend probe reads; its figures must never become the row's
+// windows.
+// ---------------------------------------------------------------------------
+
+const PROBE_ENV: &str = "AMPLIHACK_PROFILE_USAGE_PROBE";
+const PARALLEL_ENV: &str = "AMPLIHACK_PROFILE_USAGE_PARALLEL";
+
+fn credits_on_extra() -> serde_json::Value {
+    serde_json::json!({
+        "is_enabled": true,
+        "email": "SENTINEL-EMAIL@example.invalid",
+        "organization_uuid": "00000000-SENTINEL-0000-0000-000000000001",
+        "account_uuid": "00000000-SENTINEL-0000-0000-000000000002",
+        "monthly_limit": 987654,
+        "used_credits": 4321.5,
+        "currency": "SENTINELCUR"
+    })
+}
+
+/// The shape line of [`credits_on_extra`].
+const SHAPE: &str = "extra_usage: object; keys: account_uuid, currency, email, is_enabled, monthly_limit, organization_uuid, used_credits; is_enabled: bool true";
+
+/// The money sentinels, which `assert_no_sentinel_leaks` cannot match.
+const AMOUNTS: [&str; 2] = ["987654", "4321.5"];
+
+fn credits_on() -> Setup {
+    setup_with(Endpoint::start_credits_on)
+}
+
+impl Setup {
+    fn usage_with(&self, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+        let mut c = self.f.cmd(&[&["profile", "usage"], args].concat());
+        c.env(API_BASE_ENV, self.endpoint.base())
+            .env(
+                TOKEN_URL_ENV,
+                format!("{}/v1/oauth/token", self.endpoint.base()),
+            )
+            .env(PASSIVE_ENV, "0")
+            .env("RUST_LOG", "ureq=debug,amplihack=trace");
+        for (k, v) in env {
+            c.env(k, v);
+        }
+        c.output().unwrap()
+    }
+
+    /// The `/usage` text the fake prints for `p`, replacing the canned one.
+    fn usage_text(&self, p: &str, body: &str) {
+        fs::write(self.f.canned.join(format!("{}.out", email(p))), body).unwrap();
+    }
+
+    /// `p`'s `claude` sleeps 30 s before answering.
+    fn slow(&self, p: &str) {
+        fs::write(self.f.canned.join(format!("{}.slow", email(p))), "").unwrap();
+    }
+
+    /// The `-p /usage` starts among the recorded `claude` runs.
+    fn usage_runs(&self) -> usize {
+        self.claude_runs()
+            .iter()
+            .filter(|r| r.lines().next().is_some_and(|l| l.contains("/usage")))
+            .count()
+    }
+
+    /// Processes still running with this fixture's `RECORD_DIR`.
+    fn survivors(&self) -> Vec<String> {
+        let marker = format!("RECORD_DIR={}", self.f.records.display());
+        let mut found = Vec::new();
+        let Ok(rd) = fs::read_dir("/proc") else {
+            return found;
+        };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if !name.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            let Ok(env) = fs::read(e.path().join("environ")) else {
+                continue;
+            };
+            if env.split(|b| *b == 0).any(|v| v == marker.as_bytes()) {
+                let cmd = fs::read(e.path().join("cmdline")).unwrap_or_default();
+                found.push(format!("{name}: {}", String::from_utf8_lossy(&cmd)));
+            }
+        }
+        found
+    }
+
+    /// Waits up to 3 s for every child to be gone.
+    fn assert_no_survivors(&self) {
+        let start = Instant::now();
+        loop {
+            let left = self.survivors();
+            if left.is_empty() {
+                return;
+            }
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "claude children outlived the command: {left:?}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+}
+
+fn row<'a>(rows: &'a [serde_json::Value], p: &str) -> &'a serde_json::Value {
+    rows.iter()
+        .find(|r| r["profile"] == p)
+        .unwrap_or_else(|| panic!("no row for {p}: {rows:#?}"))
+}
+
+fn table_line<'a>(table: &'a str, p: &str) -> &'a str {
+    table
+        .lines()
+        .find(|l| l.split_whitespace().next() == Some(p))
+        .unwrap_or_else(|| panic!("no row for {p}: {table}"))
+}
+
+/// The value of the last column of a table row.
+fn spend_cell(line: &str) -> &str {
+    line.split_whitespace().last().unwrap()
+}
+
+fn assert_no_amounts(s: &Setup, out: &std::process::Output) {
+    let mut texts = vec![
+        ("stdout".to_string(), text(&out.stdout)),
+        ("stderr".to_string(), text(&out.stderr)),
+    ];
+    let mut files = Vec::new();
+    files_under(s.f.tmp.path(), &mut files);
+    for p in files {
+        if p.file_name().is_some_and(|n| n == ".credentials.json") {
+            continue;
+        }
+        let bytes = fs::read(&p).unwrap_or_default();
+        texts.push((
+            p.display().to_string(),
+            String::from_utf8_lossy(&bytes).into(),
+        ));
+    }
+    for (i, run) in s.claude_runs().into_iter().enumerate() {
+        texts.push((format!("claude run {i}"), run));
+    }
+    for (what, t) in texts {
+        for a in AMOUNTS {
+            assert!(!t.contains(a), "{a} in {what}: {t}");
+        }
+    }
+}
+
+/// AC2: with `--raw`, two notes per credits-on row, the second the shape;
+/// no identifier, e-mail, currency or amount anywhere.
+#[test]
+fn raw_prints_the_shape_of_extra_usage_and_nothing_secret() {
+    let s = credits_on();
+    let out = s.usage(&["--raw", "spare"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let err = text(&out.stderr);
+    assert!(
+        err.contains(
+            "note: profile \"spare\": direct read gave usage credits on; windows direct, spend from claude\n"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!("note: profile \"spare\": {SHAPE}\n")),
+        "{err}"
+    );
+    let stdout = text(&out.stdout);
+    assert!(stdout.contains("(direct: no claude output)"), "{stdout}");
+    assert!(
+        !stdout.contains("raw stdout"),
+        "the spend probe's output is not shown: {stdout}"
+    );
+    assert_no_sentinel_leaks(&s, &out);
+    assert_no_amounts(&s, &out);
+
+    let out = s.usage(&["spare"]);
+    let err = text(&out.stderr);
+    assert!(
+        !err.contains("extra_usage"),
+        "the shape is for --raw only: {err}"
+    );
+    assert!(
+        !err.contains("note: profile"),
+        "no source note without --raw: {err}"
+    );
+    assert_no_sentinel_leaks(&s, &out);
+    assert_no_amounts(&s, &out);
+
+    let out = s.usage(&["--json", "spare"]);
+    let json = text(&out.stdout);
+    for key in ["extra_usage", "is_enabled", "monthly_limit", "keys:"] {
+        assert!(!json.contains(key), "{key} in --json: {json}");
+    }
+    assert_no_sentinel_leaks(&s, &out);
+    assert_no_amounts(&s, &out);
+    // No token reaches a spend probe's argv or environment.
+    for run in s.claude_runs() {
+        assert!(!run.contains("SENTINEL-ACCESS"), "{run}");
+        assert!(!run.contains("SENTINEL-REFRESH"), "{run}");
+    }
+}
+
+/// AC3: a credits-on row is `direct`, with the endpoint's windows and the
+/// spend probe's status.
+#[test]
+fn credits_on_rows_keep_the_direct_windows() {
+    let s = credits_on();
+    let out = s.usage(&["--json", "spare", "extra"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let rows = json_rows(&out);
+    for (p, i) in [("spare", 1.0), ("extra", 2.0)] {
+        let r = row(&rows, p);
+        assert_eq!(r["source"], "direct", "{r}");
+        assert_eq!(r["state"], "ok", "{r}");
+        assert_eq!(
+            r["session"]["used_percentage"], i,
+            "not /usage's figure: {r}"
+        );
+        assert_eq!(r["week_all"]["used_percentage"], 55.0, "{r}");
+        assert_eq!(r["spend"], "ok", "{r}");
+        assert_eq!(r["error"], serde_json::Value::Null, "{r}");
+    }
+    assert_eq!(
+        s.usage_runs(),
+        2,
+        "one spend probe per row: {:?}",
+        s.claude_runs()
+    );
+
+    let out = s.usage(&["spare"]);
+    let table = text(&out.stdout);
+    let header: Vec<&str> = table.lines().next().unwrap().split_whitespace().collect();
+    assert_eq!(header.last(), Some(&"SPEND"), "{table}");
+    let line = table_line(&table, "spare");
+    assert!(!line.contains("(fallback)"), "{line}");
+    assert!(line.contains("55%"), "{line}");
+    assert_eq!(spend_cell(line), "ok", "{line}");
+}
+
+/// AC4: 16 credits-on profiles whose `claude` never answers: windows for
+/// every row in under 10 s, every spend `unknown`, no more spend probes
+/// than the bound, and no child left behind.
+#[test]
+fn sixteen_credits_on_profiles_with_a_slow_claude_finish_in_time() {
+    let s = credits_on();
+    for p in names() {
+        s.slow(&p);
+    }
+    let start = Instant::now();
+    let out = s.usage_with(&["--json"], &[(PARALLEL_ENV, "2")]);
+    let took = start.elapsed();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(took < Duration::from_secs(10), "took {took:?}");
+    let rows = json_rows(&out);
+    assert_eq!(rows.len(), 16, "{rows:#?}");
+    for r in &rows {
+        assert_eq!(r["source"], "direct", "{r}");
+        assert_eq!(r["week_all"]["used_percentage"], 55.0, "{r}");
+        assert_eq!(r["spend"], "unknown", "{r}");
+    }
+    assert!(
+        s.usage_runs() <= 2,
+        "the claude bound holds: {:?}",
+        s.claude_runs()
+    );
+    s.assert_no_survivors();
+    assert_no_sentinel_leaks(&s, &out);
+
+    let start = Instant::now();
+    let out = s.usage_with(&["--raw"], &[(PARALLEL_ENV, "2")]);
+    assert!(
+        start.elapsed() < Duration::from_secs(10),
+        "table took {:?}",
+        start.elapsed()
+    );
+    let table = text(&out.stdout);
+    for p in names() {
+        let line = table_line(&table, &p);
+        assert_eq!(spend_cell(line), "unknown", "{line}");
+        assert!(line.contains("55%"), "{line}");
+    }
+    let err = text(&out.stderr);
+    assert!(
+        err.contains("windows direct, spend probe failed")
+            || err.contains("windows direct, spend not probed"),
+        "{err}"
+    );
+    assert!(!err.contains("spend from claude"), "{err}");
+    s.assert_no_survivors();
+}
+
+/// AC5: a used-up spend limit in `/usage` gives `limit_reached`, and the
+/// windows and state still come from the direct read.
+#[test]
+fn a_spend_limit_in_usage_text_gives_limit_reached() {
+    let s = credits_on();
+    s.usage_text(
+        "spare",
+        "Current session: 10% used\nCurrent week (all models): 20% used\n\
+         Your organization has reached its spend limit\n",
+    );
+    let out = s.usage(&["--json", "spare"]);
+    let rows = json_rows(&out);
+    let r = row(&rows, "spare");
+    assert_eq!(r["spend"], "limit_reached", "{r}");
+    assert_eq!(r["state"], "ok", "the spend never changes the state: {r}");
+    assert_eq!(r["source"], "direct", "{r}");
+    assert_eq!(r["session"]["used_percentage"], 1.0, "{r}");
+    assert_eq!(r["week_all"]["used_percentage"], 55.0, "{r}");
+    let out = s.usage(&["spare"]);
+    let table = text(&out.stdout);
+    let line = table_line(&table, "spare");
+    assert_eq!(spend_cell(line), "limit_reached", "{line}");
+    assert!(line.split_whitespace().any(|c| c == "ok"), "{line}");
+}
+
+/// A2: each row gets its own spend.
+#[test]
+fn each_row_gets_its_own_spend() {
+    let s = credits_on();
+    s.usage_text(
+        "spare",
+        "Current session: 10% used\nYour organization has reached its spend limit\n",
+    );
+    s.usage_text("extra", "Not logged in. Please run /login\n");
+    let out = s.usage(&["--json", "spare", "extra", "p01"]);
+    let rows = json_rows(&out);
+    assert_eq!(row(&rows, "spare")["spend"], "limit_reached");
+    assert_eq!(
+        row(&rows, "extra")["spend"],
+        "unknown",
+        "a login prompt is never ok"
+    );
+    assert_eq!(row(&rows, "p01")["spend"], "ok");
+    let out = s.usage(&["--raw", "extra"]);
+    assert!(
+        text(&out.stderr).contains(
+            "note: profile \"extra\": direct read gave usage credits on; windows direct, spend probe failed"
+        ),
+        "{}",
+        text(&out.stderr)
+    );
+}
+
+/// AC6: `direct` mode gives the windows, starts no `claude`, and says the
+/// spend was not probed.
+#[test]
+fn direct_mode_gives_credits_on_windows_and_starts_no_claude() {
+    let s = credits_on();
+    let out = s.usage_with(&["--json", "spare"], &[(PROBE_ENV, "direct")]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let rows = json_rows(&out);
+    let r = row(&rows, "spare");
+    assert_eq!(r["source"], "direct", "{r}");
+    assert_eq!(
+        r["error"],
+        serde_json::Value::Null,
+        "no longer an error row: {r}"
+    );
+    assert_eq!(r["session"]["used_percentage"], 1.0, "{r}");
+    assert_eq!(r["spend"], "unknown", "{r}");
+    let out = s.usage_with(&["--raw", "spare"], &[(PROBE_ENV, "direct")]);
+    let err = text(&out.stderr);
+    assert!(
+        err.contains(
+            "note: profile \"spare\": direct read gave usage credits on; windows direct, spend not probed\n"
+        ),
+        "{err}"
+    );
+    assert!(
+        err.contains(&format!("note: profile \"spare\": {SHAPE}\n")),
+        "{err}"
+    );
+    assert!(s.claude_runs().is_empty(), "{:?}", s.claude_runs());
+    assert_no_sentinel_leaks(&s, &out);
+    assert_no_amounts(&s, &out);
+}
+
+/// AC6: a missing `claude` leaves the windows, with spend `unknown`.
+#[test]
+fn a_missing_claude_leaves_credits_on_windows_with_an_unknown_spend() {
+    let s = credits_on();
+    fs::remove_file(s.f.tools.join("claude")).unwrap();
+    let out = s.usage(&["--json", "spare"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let r = json_rows(&out)[0].clone();
+    assert_eq!(r["state"], "ok", "{r}");
+    assert_eq!(r["error"], serde_json::Value::Null, "{r}");
+    assert_eq!(r["spend"], "unknown", "{r}");
+}
+
+/// AC7: credits off is unchanged apart from the `SPEND` column and the
+/// `spend` key, which read `n/a`; no note and no `claude`.
+#[test]
+fn credits_off_rows_show_n_a_and_start_no_claude() {
+    let s = setup(0);
+    let out = s.usage(&["--raw"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let table = text(&out.stdout);
+    let header: Vec<&str> = table
+        .lines()
+        .next()
+        .unwrap()
+        .split("  ")
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .collect();
+    assert_eq!(
+        header,
+        [
+            "PROFILE",
+            "MARKS",
+            "STATE",
+            "SESSION",
+            "SESSION RESETS",
+            "WEEK",
+            "WEEK RESETS",
+            "SPEND"
+        ]
+    );
+    for p in names() {
+        assert_eq!(spend_cell(table_line(&table, &p)), "n/a");
+    }
+    let err = text(&out.stderr);
+    assert!(!err.contains("extra_usage"), "{err}");
+    assert!(!err.contains("usage credits on"), "{err}");
+    let out = s.usage(&["--json"]);
+    for r in json_rows(&out) {
+        assert_eq!(r["spend"], "n/a", "{r}");
+        let mut keys: Vec<&str> = r.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "account",
+                "api_key_blocked",
+                "default",
+                "error",
+                "kind",
+                "leased_to",
+                "live_in",
+                "overflow",
+                "overflow_blocked_until",
+                "profile",
+                "session",
+                "session_limit",
+                "source",
+                "spend",
+                "state",
+                "week_all",
+                "week_models"
+            ]
+        );
+    }
+    assert!(s.claude_runs().is_empty(), "{:?}", s.claude_runs());
 }

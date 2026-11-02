@@ -92,6 +92,8 @@ mod tests_usage_parse;
 mod tests_usage_passive;
 #[cfg(test)]
 mod tests_usage_request;
+#[cfg(test)]
+mod tests_usage_shape;
 #[cfg(all(test, unix))]
 mod tests_usage_source;
 #[cfg(test)]

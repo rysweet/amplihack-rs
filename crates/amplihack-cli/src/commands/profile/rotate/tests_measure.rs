@@ -50,6 +50,8 @@ fn timed_out() -> Probe {
         raw: None,
         source: None,
         direct_failure: None,
+        spend: crate::commands::profile::usage_source::Spend::Unknown,
+        extra_shape: None,
     }
 }
 
@@ -60,6 +62,8 @@ fn errored() -> Probe {
         raw: None,
         source: None,
         direct_failure: None,
+        spend: crate::commands::profile::usage_source::Spend::Unknown,
+        extra_shape: None,
     }
 }
 
@@ -74,6 +78,8 @@ fn failed_with(reason: ErrorReason) -> Probe {
         raw: None,
         source: None,
         direct_failure: None,
+        spend: crate::commands::profile::usage_source::Spend::Unknown,
+        extra_shape: None,
     }
 }
 
@@ -493,6 +499,8 @@ fn direct_probe(session: f64, week: f64) -> Probe {
         raw: None,
         source: Some(Source::Direct),
         direct_failure: None,
+        spend: crate::commands::profile::usage_source::Spend::NotApplicable,
+        extra_shape: None,
     }
 }
 

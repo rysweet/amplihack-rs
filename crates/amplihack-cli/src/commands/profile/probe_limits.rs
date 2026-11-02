@@ -6,6 +6,7 @@
 
 use std::ffi::OsStr;
 use std::io::Read;
+use std::time::Duration;
 
 pub(super) const PROBE_ENV: &str = "AMPLIHACK_PROFILE_USAGE_PROBE";
 pub(super) const TIMEOUT_ENV: &str = "AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS";
@@ -18,6 +19,10 @@ pub(super) const MAX_PASSIVE_MAX_AGE_SECS: u64 = 3600;
 /// `claude` fallbacks.
 pub(super) const DIRECT_PARALLEL_ENV: &str = "AMPLIHACK_PROFILE_USAGE_DIRECT_PARALLEL";
 pub(super) const DEFAULT_DIRECT_PARALLEL: usize = 8;
+/// Issue #1856: every spend probe of one `profile usage` ends within this
+/// time of the command's start, so credits-on rows never hold up the table
+/// for long. No setting changes it.
+pub(super) const SPEND_DEADLINE: Duration = Duration::from_secs(6);
 /// One probe took 71.5 s at load 194 on a 72-CPU host (issue #1698); 120 s
 /// leaves about 1.7 times that.
 pub(super) const DEFAULT_TIMEOUT_SECS: u64 = 120;

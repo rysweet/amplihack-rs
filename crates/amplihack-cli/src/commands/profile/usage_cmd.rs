@@ -17,7 +17,8 @@ use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
 use super::store::ProfileStore;
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
-use super::usage_source::{self, ClaudeGate, LazyBinary, Plan, Source, SourceEnv};
+use super::usage_request::ExtraUsageShape;
+use super::usage_source::{self, ClaudeGate, LazyBinary, Plan, Source, SourceEnv, Spend};
 use super::{ProfileError, default_live, pointer, probe_limits, run, usage_request};
 use crate::binary_finder::BinaryInfo;
 use anyhow::Result;
@@ -100,6 +101,11 @@ pub(super) struct Probe {
     pub(super) source: Option<Source>,
     /// Issue #1844: the direct read's reason when it led to a fallback.
     pub(super) direct_failure: Option<&'static str>,
+    /// Issue #1856: what is known of the usage-credit spend limit.
+    pub(super) spend: Spend,
+    /// Issue #1856: the redacted `extra_usage` shape of a credits-on direct
+    /// row, for the `--raw` note only. Never serialised.
+    pub(super) extra_shape: Option<ExtraUsageShape>,
 }
 
 impl Probe {
@@ -110,10 +116,13 @@ impl Probe {
             raw,
             source: None,
             direct_failure: None,
+            spend: Spend::Unknown,
+            extra_shape: None,
         }
     }
 
-    /// A row read without `claude`.
+    /// A row read without `claude`, from a source that has no spend limit
+    /// to report.
     pub(super) fn read(report: UsageReport, source: Source) -> Self {
         Self {
             report,
@@ -121,7 +130,21 @@ impl Probe {
             raw: None,
             source: Some(source),
             direct_failure: None,
+            spend: Spend::NotApplicable,
+            extra_shape: None,
         }
+    }
+
+    /// A successful direct read (issue #1856). With credits on, the spend
+    /// is [`Spend::NotProbed`] until a spend probe says otherwise.
+    #[cfg(unix)]
+    pub(super) fn direct(d: super::usage_direct::Direct) -> Self {
+        let mut p = Self::read(d.report, Source::Direct);
+        if d.credits_on.is_some() {
+            p.spend = Spend::NotProbed;
+        }
+        p.extra_shape = d.credits_on;
+        p
     }
 
     /// A direct read that failed in a mode that starts no `claude`.
@@ -163,6 +186,12 @@ pub(super) struct Row {
     pub(super) source: Option<Source>,
     /// Issue #1844: the direct read's reason when the row fell back.
     pub(super) direct_failure: Option<&'static str>,
+    /// Issue #1856: what is known of the usage-credit spend limit. Shown
+    /// only; it plays no part in ordering or recording.
+    pub(super) spend: Spend,
+    /// Issue #1856: the redacted `extra_usage` shape of a credits-on direct
+    /// row, for the `--raw` note only.
+    pub(super) extra_shape: Option<ExtraUsageShape>,
 }
 
 pub(super) fn run(
@@ -173,6 +202,8 @@ pub(super) fn run(
     timeout_flag: Option<u64>,
 ) -> Result<()> {
     super::reject_docker_env()?;
+    // Issue #1856: the spend probes' shared deadline runs from here.
+    let started = Instant::now();
     let (mode, warning) = probe_limits::probe_mode_from_env();
     if let Some(w) = warning {
         eprintln!("{w}");
@@ -230,18 +261,32 @@ pub(super) fn run(
         ProbeMode::Auto | ProbeMode::Text => claude_bound,
         ProbeMode::Ordered | ProbeMode::Direct => direct_bound,
     };
-    let probes = pooled(profiles.len(), pool, |i| {
+    let mut probes = pooled(profiles.len(), pool, |i| {
         let name = &profiles[i];
         reader.profile(name, live_name.as_ref() == Some(name))
     });
+    // Only when every profile is listed: naming profiles asks about those.
+    let mut home_probe = (home_row && names.is_empty()).then(|| reader.home());
+    // Issue #1856: the spend of credits-on direct rows, read only in the
+    // default order and only once every row has its windows.
+    if mode == ProbeMode::Ordered {
+        spend_pass(
+            &reader,
+            &profiles,
+            live_name.as_ref(),
+            &mut probes,
+            home_probe.as_mut(),
+            claude_bound,
+            started + probe_limits::SPEND_DEADLINE,
+        );
+    }
     // The login in `~/.claude` may have been swapped during the probe; its
     // numbers are shown but not recorded against the profile.
     let swapped = swapped_live(store, home.as_deref(), live);
     let mut rows = build_rows(&marks, &profiles, probes, live_name.as_ref());
     rows.extend(keys.rows(&marks, &keyed));
-    // Only when every profile is listed: naming profiles asks about those.
-    if home_row && names.is_empty() {
-        rows.push(home_row_of(reader.home()));
+    if let Some(p) = home_probe {
+        rows.push(home_row_of(p));
     }
     order(&mut rows, now_secs());
     print_output(&rows, json, swapped.as_ref());
@@ -251,7 +296,7 @@ pub(super) fn run(
     }
     // Issue #1844: why a row fell back, for the detailed mode only.
     if raw {
-        for note in fallback_notes(&rows) {
+        for note in source_notes(&rows) {
             eprintln!("{note}");
         }
     }
@@ -261,6 +306,69 @@ pub(super) fn run(
     }
     record(store, &rows, swapped.as_ref(), json);
     Ok(())
+}
+
+/// Which login a spend probe reads.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum SpendTarget<'a> {
+    /// A profile, against `~/.claude` when the flag is set.
+    Profile(&'a ProfileName, bool),
+    /// The `~/.claude` row of a login no profile holds.
+    Home,
+}
+
+/// Where a spend result is written back.
+#[derive(Debug, Clone, Copy)]
+enum SpendSlot {
+    Profile(usize),
+    Home,
+}
+
+/// Issue #1856: one spend-only `/usage` probe per credits-on direct row,
+/// at most `bound` at once, all within the one `deadline`. Only each row's
+/// `spend` changes: its windows, state, error and source stay as the
+/// direct read gave them.
+fn spend_pass(
+    reader: &RowReader,
+    profiles: &[ProfileName],
+    live: Option<&ProfileName>,
+    probes: &mut [Probe],
+    mut home: Option<&mut Probe>,
+    bound: usize,
+    deadline: Instant,
+) {
+    let needs = |p: &Probe| p.source == Some(Source::Direct) && p.extra_shape.is_some();
+    let mut targets: Vec<(SpendSlot, SpendTarget<'_>)> = probes
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| needs(p))
+        .map(|(i, _)| {
+            let name = &profiles[i];
+            (
+                SpendSlot::Profile(i),
+                SpendTarget::Profile(name, live == Some(name)),
+            )
+        })
+        .collect();
+    if home.as_deref().is_some_and(needs) {
+        targets.push((SpendSlot::Home, SpendTarget::Home));
+    }
+    if targets.is_empty() {
+        return;
+    }
+    let spends = pooled(targets.len(), bound, |j| {
+        reader.spend(targets[j].1, deadline)
+    });
+    for ((slot, _), spend) in targets.iter().zip(spends) {
+        match slot {
+            SpendSlot::Profile(i) => probes[*i].spend = spend,
+            SpendSlot::Home => {
+                if let Some(h) = home.as_deref_mut() {
+                    h.spend = spend;
+                }
+            }
+        }
+    }
 }
 
 /// `$HOME` as an absolute path; `None` when it is unset, empty or relative.
@@ -324,6 +432,8 @@ fn home_row_of(p: Probe) -> Row {
         raw: p.raw,
         source: p.source,
         direct_failure: p.direct_failure,
+        spend: p.spend,
+        extra_shape: p.extra_shape,
     }
 }
 
@@ -475,6 +585,8 @@ impl ApiKeys {
                     raw: None,
                     source: None,
                     direct_failure: None,
+                    spend: Spend::NotApplicable,
+                    extra_shape: None,
                 }
             })
             .collect()
@@ -521,6 +633,8 @@ fn build_rows(
                 raw: p.raw,
                 source: p.source,
                 direct_failure: p.direct_failure,
+                spend: p.spend,
+                extra_shape: p.extra_shape,
             }
         })
         .collect()
@@ -700,6 +814,41 @@ impl RowReader {
         ))
     }
 
+    /// Issue #1856: the spend limit of a credits-on login, from one
+    /// `/usage` run that ends by `deadline`. Its output is never kept and
+    /// only the spend leaves here. `NotProbed` when no `claude` started:
+    /// none was found, or the deadline passed before a slot was free.
+    pub(super) fn spend(&self, target: SpendTarget<'_>, deadline: Instant) -> Spend {
+        if Instant::now() >= deadline {
+            return Spend::NotProbed;
+        }
+        let Some(bin) = self.binary.get() else {
+            return Spend::NotProbed;
+        };
+        self.gate.run(|| {
+            let left = deadline
+                .saturating_duration_since(Instant::now())
+                .min(self.env.timeout);
+            if left.is_zero() {
+                return Spend::NotProbed;
+            }
+            let p = match target {
+                SpendTarget::Profile(name, live) => probe_profile(
+                    &self.store,
+                    bin,
+                    name,
+                    live,
+                    ProbeMode::Text,
+                    left,
+                    self.now,
+                    false,
+                ),
+                SpendTarget::Home => probe_home(bin, ProbeMode::Text, left, self.now, false),
+            };
+            p.spend
+        })
+    }
+
     /// With `--raw`, a row read without `claude` gets an empty `raw`, which
     /// the table shows as one fixed line.
     fn finish(&self, mut p: Probe) -> Probe {
@@ -823,30 +972,34 @@ pub(super) fn probe_with(
     let deadline = Instant::now() + timeout;
     let line = format!("{}\n", usage_request::REQUEST_LINE);
     let a = attempt(cmd, Some(line.as_bytes()), deadline);
-    let row = |report, output: Option<Raw>| Probe {
+    // Issue #1856: an accepted answer has credits off, so there is no
+    // spend limit to read; a timed-out request tells nothing of it.
+    let row = |report, output: Option<Raw>, spend| Probe {
         report,
         error: None,
         raw: output.filter(|_| keep_raw),
         source: None,
         direct_failure: None,
+        spend,
+        extra_shape: None,
     };
     let timed_out = UsageReport::empty(UsageState::Timeout);
     // A cancel is a daemon stopping: its rows are discarded anyway.
     if matches!(a.ended, Ended::Cancelled) {
-        return Ok(row(timed_out, a.output));
+        return Ok(row(timed_out, a.output, Spend::Unknown));
     }
     let answer = a
         .output
         .as_ref()
         .and_then(|o| usage_request::parse_answer(&o.stdout, now));
     if let Some(report) = answer {
-        return Ok(row(report, a.output));
+        return Ok(row(report, a.output, Spend::NotApplicable));
     }
     if matches!(a.ended, Ended::Deadline)
         || PROBE_CANCEL.load(Ordering::Relaxed)
         || Instant::now() >= deadline
     {
-        return Ok(row(timed_out, a.output));
+        return Ok(row(timed_out, a.output, Spend::Unknown));
     }
     let cmd = build(&text_args)?;
     Ok(text_probe(attempt(cmd, None, deadline), now, keep_raw))
@@ -958,13 +1111,17 @@ fn text_probe(a: Attempt, now: i64, keep_raw: bool) -> Probe {
         Ended::Deadline | Ended::Cancelled => UsageReport::empty(UsageState::Timeout),
         Ended::Failed(reason) => return Probe::failed(reason, a.output.filter(|_| keep_raw)),
     };
-    Probe {
+    let mut p = Probe {
         report,
         error: None,
         raw: a.output.filter(|_| keep_raw),
         source: None,
         direct_failure: None,
-    }
+        spend: Spend::Unknown,
+        extra_shape: None,
+    };
+    p.spend = Spend::of_text(&p);
+    p
 }
 
 /// How one run of `claude` ended.
@@ -1296,7 +1453,7 @@ fn clip(s: &str) -> String {
 
 /// The human table. Its layout is not a stable interface; `--json` is.
 pub(super) fn render_table(rows: &[Row]) -> String {
-    const HEADER: [&str; 7] = [
+    const HEADER: [&str; 8] = [
         "PROFILE",
         "MARKS",
         "STATE",
@@ -1304,6 +1461,7 @@ pub(super) fn render_table(rows: &[Row]) -> String {
         "SESSION RESETS",
         "WEEK",
         "WEEK RESETS",
+        "SPEND",
     ];
     let pct = |w: &Option<UsageWindow>| {
         w.as_ref()
@@ -1314,7 +1472,7 @@ pub(super) fn render_table(rows: &[Row]) -> String {
             .and_then(|w| w.resets_text.as_deref())
             .map_or("-".into(), clip)
     };
-    let cells: Vec<[String; 7]> = rows
+    let cells: Vec<[String; 8]> = rows
         .iter()
         .map(|r| {
             [
@@ -1331,6 +1489,7 @@ pub(super) fn render_table(rows: &[Row]) -> String {
                 resets(&r.report.session),
                 pct(&r.report.week_all),
                 resets(&r.report.week_all),
+                r.spend.as_str().to_string(),
             ]
         })
         .collect();
@@ -1456,6 +1615,8 @@ struct JsonRow<'a> {
     api_key_blocked: Option<ApiKeyBlock<'a>>,
     state: &'static str,
     source: Option<&'static str>,
+    /// Issue #1856: always present. The `extra_usage` shape never is.
+    spend: &'static str,
     session: Option<&'a UsageWindow>,
     session_limit: bool,
     week_all: Option<&'a UsageWindow>,
@@ -1488,6 +1649,7 @@ pub(super) fn render_json(rows: &[Row]) -> String {
                 }),
             state: state_label(r),
             source: r.source.map(Source::as_str),
+            spend: r.spend.as_str(),
             session: r.report.session.as_ref(),
             session_limit: r.report.session_limit,
             week_all: r.report.week_all.as_ref(),
@@ -1515,20 +1677,37 @@ pub(super) fn error_warnings(rows: &[Row]) -> Vec<String> {
         .collect()
 }
 
-/// Issue #1844: one line per row that fell back after a direct read
-/// failed, naming the fixed reason. Printed with `--raw` only.
-pub(super) fn fallback_notes(rows: &[Row]) -> Vec<String> {
-    rows.iter()
-        .filter(|r| r.source == Some(Source::Fallback))
-        .filter_map(|r| {
-            r.direct_failure.map(|why| {
-                format!(
-                    "note: profile \"{}\": direct read gave {why}; using claude",
-                    sanitize_display(&r.profile, false)
-                )
-            })
-        })
-        .collect()
+/// The notes on where a row's figures came from, printed with `--raw`
+/// only. Issue #1844: one line per row that fell back after a direct read
+/// failed, naming the fixed reason. Issue #1856: two lines per credits-on
+/// direct row, how its spend was read and the redacted `extra_usage` shape.
+pub(super) fn source_notes(rows: &[Row]) -> Vec<String> {
+    let mut notes = Vec::new();
+    for r in rows {
+        let name = sanitize_display(&r.profile, false);
+        match (r.source, &r.extra_shape) {
+            (Some(Source::Fallback), _) => {
+                if let Some(why) = r.direct_failure {
+                    notes.push(format!(
+                        "note: profile \"{name}\": direct read gave {why}; using claude"
+                    ));
+                }
+            }
+            (Some(Source::Direct), Some(shape)) => {
+                let ending = match r.spend {
+                    Spend::Ok | Spend::LimitReached => "spend from claude",
+                    Spend::Unknown => "spend probe failed",
+                    Spend::NotProbed | Spend::NotApplicable => "spend not probed",
+                };
+                notes.push(format!(
+                    "note: profile \"{name}\": direct read gave usage credits on; windows direct, {ending}"
+                ));
+                notes.push(format!("note: profile \"{name}\": {}", shape.line()));
+            }
+            _ => {}
+        }
+    }
+    notes
 }
 
 /// SR-10: the fixed line for a profile whose refresh request may have

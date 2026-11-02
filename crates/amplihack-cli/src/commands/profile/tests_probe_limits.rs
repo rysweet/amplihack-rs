@@ -432,3 +432,13 @@ fn the_claude_bound_keeps_its_variable_and_meaning() {
     assert_eq!(parallel(None, 72, Some(194.0), 16).0, 2);
     assert_eq!(parallel(None, 64, Some(0.0), 16).0, 4);
 }
+
+/// Issue #1856: every spend probe of one `profile usage` shares one
+/// deadline, 6 s after the command started, with no setting for it.
+#[test]
+fn the_spend_deadline_is_six_seconds() {
+    assert_eq!(
+        super::probe_limits::SPEND_DEADLINE,
+        std::time::Duration::from_secs(6)
+    );
+}
