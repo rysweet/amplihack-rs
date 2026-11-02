@@ -2000,8 +2000,10 @@ fn shared_account_is_a_note_without_the_uuid() {
     assert!(
         status.contains(
             "note: profiles 'X' and 'Z' are signed in to the same account and organization \
-             (duplicate login); fix: run 'amplihack profile login Z' with the browser signed \
-             out of claude.ai or in a private window.\n"
+             (duplicate login); amplihack cannot tell which of them holds the wrong login; \
+             fix: run 'amplihack profile login <name>' for the one that should hold a \
+             different account, with the browser signed out of claude.ai or in a private \
+             window.\n"
         ),
         "{status}"
     );
