@@ -183,7 +183,13 @@ fn recovery_settles_the_journal_without_claude_on_path() {
         text(&out.stdout),
         text(&out.stderr)
     );
-    assert_ne!(out.status.code(), Some(0), "no claude to measure with");
+    // Issue #1844: with no `claude` to fall back on, each reading fails on
+    // its own; the cycle still runs and records nothing as measured.
+    assert!(
+        text(&out.stdout).contains(":failed"),
+        "{}",
+        text(&out.stdout)
+    );
     assert!(!f.rotate_dir().join("journal.json").exists());
     assert_eq!(ino(&f.home_login()), Some(f.live_ino));
     assert_eq!(ino(&f.slot("spare")), Some(f.spare_ino));

@@ -1,10 +1,9 @@
 //! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude`
 //! on the account with the most capacity left, by moving logins between
 //! `~/.claude` and the profiles. One-shot, `--dry-run`, and a background
-//! `watch` with `start`, `stop` and `status`, which launches start on their
-//! own while auto-switch is on (`autostart`). `profile switch NAME` moves a
-//! login with the same swap and pins rotation to it (`switch`, `pin`). See
-//! the Rotate section of docs/reference/profile-command.md.
+//! `watch` with `start`, `stop` and `status` (`autostart`). `profile switch
+//! NAME` moves a login with the same swap and pins rotation to it (`switch`,
+//! `pin`). See Rotate in docs/reference/profile-command.md.
 //!
 //! Login files are never opened, read, copied or hashed: they are checked
 //! with `lstat` and moved with rename and exchange calls only.
@@ -24,7 +23,7 @@ mod control;
 #[cfg(unix)]
 mod cycle;
 #[cfg(unix)]
-mod daemon;
+pub(super) mod daemon;
 #[cfg(unix)]
 mod damp;
 #[cfg(unix)]
@@ -42,11 +41,15 @@ mod hand_fields;
 #[cfg(unix)]
 mod handfix;
 #[cfg(unix)]
+mod handfix_msg;
+#[cfg(unix)]
 mod held;
 #[cfg(unix)]
 mod holders;
 #[cfg(unix)]
 pub(super) mod identify;
+#[cfg(unix)]
+mod inflight;
 #[cfg(unix)]
 pub(super) mod key_check;
 #[cfg(unix)]
@@ -94,6 +97,8 @@ mod swap;
 #[cfg(unix)]
 mod swap_check;
 #[cfg(unix)]
+mod swap_expect;
+#[cfg(unix)]
 mod switch;
 #[cfg(all(test, unix))]
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
@@ -104,17 +109,11 @@ pub use overflow_msg::{CheckNote, alert_key_held_session, per_token_off_key, per
 pub use overflow_record::append_to_log;
 
 #[cfg(all(test, unix))]
+mod tests;
+#[cfg(all(test, unix))]
 mod tests_autostart;
 #[cfg(all(test, unix))]
-mod tests_autostart_owner;
-#[cfg(all(test, unix))]
 mod tests_daemon;
-#[cfg(all(test, unix))]
-mod tests_damp;
-#[cfg(all(test, unix))]
-mod tests_decide;
-#[cfg(all(test, unix))]
-mod tests_gate_record;
 #[cfg(all(test, unix))]
 mod tests_handfix;
 #[cfg(all(test, unix))]
@@ -130,31 +129,19 @@ mod tests_issue_1804;
 #[cfg(all(test, unix))]
 mod tests_issue_1804_cycle;
 #[cfg(all(test, unix))]
+mod tests_issue_1845_cycle;
+#[cfg(all(test, unix))]
+mod tests_issue_1845_swap;
+#[cfg(all(test, unix))]
 mod tests_key_check;
-#[cfg(all(test, unix))]
-mod tests_ledger;
-#[cfg(all(test, unix))]
-mod tests_live_readers;
 #[cfg(all(test, unix))]
 mod tests_log;
 #[cfg(all(test, unix))]
 mod tests_measure;
 #[cfg(all(test, unix))]
-mod tests_overflow;
-#[cfg(all(test, unix))]
-mod tests_owner;
-#[cfg(all(test, unix))]
 mod tests_pin;
 #[cfg(all(test, target_os = "linux"))]
 mod tests_pin_overflow;
-#[cfg(all(test, unix))]
-mod tests_pin_platform;
-#[cfg(all(test, unix))]
-mod tests_platform;
-#[cfg(all(test, unix))]
-mod tests_platform_block;
-#[cfg(all(test, unix))]
-mod tests_platform_identify;
 #[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
@@ -165,8 +152,6 @@ mod tests_revalidate_cause;
 mod tests_revalidate_unit;
 #[cfg(all(test, unix))]
 mod tests_sessions_daily;
-#[cfg(all(test, unix))]
-mod tests_settings;
 #[cfg(test)]
 mod tests_source_scan;
 #[cfg(all(test, unix))]
@@ -202,9 +187,8 @@ pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
 pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
 
-/// The tail of the warning printed after `profile switch NAME` (issue
-/// #1691) while a rotator from another amplihack binary runs: one started
-/// before the upgrade does not read the switch hold and may swap away.
+/// The tail of the warning after `profile switch NAME` (#1691) while a rotator
+/// of another amplihack binary, which ignores the switch hold, runs.
 #[cfg(unix)]
 const FOREIGN_IGNORES_HOLD: &str = "runs another amplihack binary and ignores the switch \
     hold; restart it: amplihack profile rotate stop && amplihack profile rotate start";
@@ -295,12 +279,10 @@ fn home_dir() -> Result<std::path::PathBuf, super::ProfileError> {
         .ok_or_else(|| super::ProfileError::RotateRefused("HOME is not set".into()))
 }
 
-/// `profile switch NAME` (issue #1691): moves NAME's login into `~/.claude`
-/// with the rotator's swap, pins rotation to it and makes it the default.
-/// Prints three lines. When the login moved but a later write failed, the
-/// error says so; it is not a refusal, since something did change. When the
-/// live login cannot be moved, NAME is still made the default for new
-/// launches, that is printed, and the refusal exits non-zero.
+/// `profile switch NAME` (#1691): swaps NAME's login into `~/.claude`, pins
+/// rotation to it and makes it the default, in three lines. A later failed
+/// write is an error, not a refusal. If the login cannot move, NAME is still
+/// made the default for new launches and printed, then the refusal exits 1.
 pub(in crate::commands::profile) fn switch_live(
     store: &ProfileStore,
     name: &ProfileName,

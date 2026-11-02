@@ -136,14 +136,143 @@ pub(super) fn pairs(list: &[(Holder, Account)]) -> Vec<(Holder, Holder)> {
     out
 }
 
+/// Issue #1845 (D3): the holder the duplicate warning tells the user to
+/// log in again, or `None` when amplihack cannot tell. A holder is
+/// mismatched when its current account is not the account recorded for it;
+/// for `~/.claude` that is the record of the rotator's live profile, so
+/// `~/.claude` is only judged while the live profile is known. Without a
+/// state no record is read.
+///
+/// A record is written by three paths, and none of them records an account
+/// another profile already holds or has recorded: `profile login` refuses
+/// such a login, and the swap (`rotate/swap_expect.rs`) gates both the
+/// adoption of `~/.claude` as `default-original[-N]` and the backfill of
+/// the outgoing profile with `claimed_elsewhere`. So when one holder's
+/// account is confirmed by its record, a holder of the same account
+/// without a record is the duplicate. The rule is the same for both kinds
+/// of pair: a matching record is trusted alike for a profile and for the
+/// live profile that judges `~/.claude`. A new record writer must keep
+/// that gate, or this rule blames the rightful holder.
+///
+/// In a pair of profiles, the one mismatched profile; else, when one
+/// matches its record and the other has none, the one without; `None` when
+/// both are mismatched, both match, or neither has a record. In a pair
+/// `(Home, Profile)`:
+/// - the one mismatched holder is named, as for profiles;
+/// - a profile that matches its record is never named, whatever
+///   `~/.claude` holds;
+/// - a profile without a record is named when `~/.claude` matches the live
+///   profile's record, or when no live profile is known (then `~/.claude`
+///   is not a profile's login and only the profile can be logged in again);
+/// - otherwise `None`. `~/.claude` is not named when only the profile has
+///   a matching record: its warning says `~/.claude` is not `<live>`'s
+///   recorded account, which is unknown while `<live>` has no record or no
+///   live profile is known.
+pub(super) fn wrong<'h>(
+    state: Option<&State>,
+    list: &[(Holder, Account)],
+    a: &'h Holder,
+    b: &'h Holder,
+) -> Option<&'h Holder> {
+    let mismatched = |h: &Holder| -> Option<bool> {
+        let state = state?;
+        let acc = list.iter().find(|(x, _)| x == h).map(|(_, acc)| acc)?;
+        match h {
+            Holder::Profile(n) => super::expected::mismatched(state, n, acc),
+            Holder::Home { live } => super::expected::mismatched(state, live.as_ref()?, acc),
+        }
+    };
+    let (ma, mb) = (mismatched(a), mismatched(b));
+    match (ma, mb) {
+        (Some(true), Some(true)) => None,
+        (Some(true), _) => Some(a),
+        (_, Some(true)) => Some(b),
+        (Some(false), Some(false)) => None,
+        (Some(false), None) => Some(b),
+        (None, Some(false)) if matches!(a, Holder::Profile(_)) => Some(a),
+        (None, None) if matches!(a, Holder::Home { live: None }) => Some(b),
+        _ => None,
+    }
+}
+
 /// The duplicate-login warning, without a `note: ` or `warning: ` prefix.
-/// The fix names `b`, which is always a profile.
-pub(super) fn warning(a: &Holder, b: &Holder) -> String {
-    let (a, b) = (a.shown(), b.shown());
+/// The fix names `wrong`: a profile is logged in again with `profile
+/// login`; `~/.claude`, which `profile login` refuses while it holds the
+/// live profile's login, with plain `claude` and `/login`. Without `wrong`,
+/// the warning says amplihack cannot tell which holder has the wrong login.
+pub(super) fn warning(a: &Holder, b: &Holder, wrong: Option<&Holder>) -> String {
+    let (sa, sb) = (a.shown(), b.shown());
+    let head = format!(
+        "profiles '{sa}' and '{sb}' are signed in to the same account and organization \
+         (duplicate login)"
+    );
+    match wrong {
+        Some(Holder::Home { live }) => {
+            let live = live
+                .as_ref()
+                .map(|n| sanitize_display(n.as_str(), false))
+                .unwrap_or_default();
+            format!(
+                "{head}; the login in {HOME_LABEL} is not the account recorded for profile \
+                 '{live}'; fix: run plain 'claude' and '/login' to the account '{live}' is meant \
+                 for, with the browser signed out of claude.ai or in a private window."
+            )
+        }
+        Some(w) => format!(
+            "{head}; fix: run 'amplihack profile login {}' with the browser signed out of \
+             claude.ai or in a private window.",
+            w.shown()
+        ),
+        None if matches!(a, Holder::Home { .. }) => format!(
+            "{head}; amplihack cannot tell which of them holds the wrong login; fix: run \
+             'amplihack profile login {sb}' if '{sb}' should hold a different account, or plain \
+             'claude' and '/login' if {HOME_LABEL} should, with the browser signed out of \
+             claude.ai or in a private window."
+        ),
+        None => format!(
+            "{head}; amplihack cannot tell which of them holds the wrong login; \
+             fix: run 'amplihack profile login <name>' for the one that should hold a \
+             different account, with the browser signed out of claude.ai or in a private \
+             window."
+        ),
+    }
+}
+
+/// One warning per duplicate pair in `list`, in [`pairs`] order.
+pub(super) fn warnings(state: Option<&State>, list: &[(Holder, Account)]) -> Vec<String> {
+    pairs(list)
+        .iter()
+        .map(|(a, b)| warning(a, b, wrong(state, list, a, b)))
+        .collect()
+}
+
+/// Issue #1845: one warning per profile whose login is not the account
+/// recorded for it, in `list` order, whether or not it also forms a
+/// duplicate pair. A session started with `CLAUDE_CONFIG_DIR` on a profile
+/// folder can write another account's login there without a duplicate.
+/// Profiles without a usable record are not checked.
+pub(super) fn record_warnings(state: Option<&State>, list: &[(Holder, Account)]) -> Vec<String> {
+    let Some(state) = state else {
+        return Vec::new();
+    };
+    list.iter()
+        .filter_map(|(h, acc)| match h {
+            Holder::Profile(n) if super::expected::mismatched(state, n, acc) == Some(true) => {
+                Some(record_warning(h))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// The warning for a profile whose login is not its recorded account,
+/// without a `warning: ` prefix. Names the profile, never an account.
+pub(super) fn record_warning(h: &Holder) -> String {
+    let shown = h.shown();
     format!(
-        "profiles '{a}' and '{b}' are signed in to the same account and organization \
-         (duplicate login); fix: run 'amplihack profile login {b}' with the browser signed \
-         out of claude.ai or in a private window."
+        "profile '{shown}' holds a login that is not the account recorded for it; fix: run \
+         'amplihack profile login {shown}' with the browser signed out of claude.ai or in a \
+         private window."
     )
 }
 

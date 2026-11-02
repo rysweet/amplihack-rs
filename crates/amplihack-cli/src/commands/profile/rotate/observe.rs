@@ -222,13 +222,6 @@ pub fn live_alert_for(live: &LiveId, home_no_oauth: bool) -> Option<(&'static st
     }
 }
 
-pub fn reading_of(others: &[(ProfileName, Reading)], name: &ProfileName) -> Reading {
-    others
-        .iter()
-        .find(|(n, _)| n == name)
-        .map_or(Reading::Failed, |(_, r)| *r)
-}
-
 /// The live profile's probe and each candidate's.
 pub type Probes = (Probed, Vec<(ProfileName, Probed)>);
 
@@ -260,11 +253,7 @@ pub struct Measurement {
     pub probed: Option<Probes>,
 }
 
-pub fn measure_and_decide(
-    ctx: &Ctx,
-    binary: &crate::binary_finder::BinaryInfo,
-    snap: &Snap,
-) -> Result<Measurement, ProfileError> {
+pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let measured_at = now();
     let platform = snap.platform();
     let live = match &snap.live {
@@ -280,7 +269,7 @@ pub fn measure_and_decide(
         .filter(|c| Some(*c) != platform)
         .cloned()
         .collect();
-    let (probe, mut probes) = measure::measure(&ctx.store, binary, live, &to_probe, measured_at);
+    let (probe, mut probes) = measure::measure_ordered(ctx, live, &to_probe, measured_at);
     if let Some(p) = platform.filter(|p| snap.candidates.contains(p)) {
         probes.push((p.clone(), Probed::platform()));
     }

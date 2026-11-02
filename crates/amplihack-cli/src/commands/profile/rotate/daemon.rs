@@ -5,6 +5,7 @@
 
 use super::cycle::{self, Ctx, CycleOutcome, LOCK_WAIT, Mode, prototype_guard};
 use super::exhausted::{self, paused};
+use super::inflight::{finish_refreshes, refresh_grace};
 use super::ledger::{LastCycle, RotateState};
 use super::log::{Sink, msg, open_or_warn};
 use super::owner;
@@ -48,6 +49,33 @@ pub(super) fn current_state(rs: &RotateState) -> DaemonState {
         Some(name) => state_at(rs, Path::new("/proc"), &name),
         None => DaemonState::Unverifiable,
     }
+}
+
+/// Whether a login rotator is running for the store at `root`: the built-in
+/// daemon, or the external prototype holding `.rotator/lock` (issue #1801).
+/// Any read error is `false`. Writes nothing, but the prototype check takes
+/// and at once releases a non-blocking exclusive `flock` on `.rotator/lock`
+/// when nothing holds it (see [`prototype_guard`]), so a rotator taking that
+/// lock with `LOCK_NB` in the same instant can be refused once.
+pub(in crate::commands::profile) fn running(root: &Path) -> bool {
+    matches!(
+        current_state(&RotateState::new(root)),
+        DaemonState::Running(_)
+    ) || matches!(
+        prototype_guard(root),
+        Err(ProfileError::RotatePrototypeRunning)
+    )
+}
+
+/// Whether a running rotator is rotating logins: [`running`], and auto-switch
+/// is not turned off. A rotator with auto-switch off stays idle (the watch
+/// loop skips every cycle while [`paused`]), so it records no cycle and makes
+/// no swap. This uses the watch loop's own [`paused`] rule, so the two cannot
+/// drift. `paused` is checked first and needs no lock, so with auto-switch
+/// off `.rotator/lock` is not touched. The auto-switch setting is read in the
+/// calling process, environment first, as everywhere else.
+pub(in crate::commands::profile) fn rotating(root: &Path) -> bool {
+    !paused(root) && running(root)
 }
 
 /// Why `start` refuses before it takes the lock, if it does: the external
@@ -273,8 +301,14 @@ pub fn watch(
     let archive_home = home.clone();
     let mut ctx = Ctx::new(store.clone(), home, s);
     ctx.stop = Some(stop.clone());
+    // Issue #1844: reads that outlast a cycle are used by the next one.
+    let (probe_secs, _) = crate::commands::profile::probe_limits::timeout_from_env(None);
+    let probe_timeout = Duration::from_secs(probe_secs);
+    ctx.in_flight = Some(std::sync::Mutex::new(super::inflight::InFlight::new(
+        super::inflight::max_age(probe_timeout),
+    )));
     let mut idle = false;
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.load(Ordering::SeqCst) {
         if !paused(store.root()) {
             idle = false;
             match cycle::run_cycle(&mut ctx, Mode::Watch) {
@@ -293,9 +327,19 @@ pub fn watch(
         }
         super::sessions_daily::tick(&rs, &archive_home, now(), &stop);
         let until = Instant::now() + Duration::from_secs(s.interval);
-        while Instant::now() < until && !stop.load(Ordering::Relaxed) {
+        while Instant::now() < until && !stop.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_secs(1).min(until - Instant::now()));
         }
+    }
+    // SR-9: `stop` is `PROBE_CANCEL`, already set here. A refresh counts
+    // itself before it reads that flag and backs out if it is set, so once
+    // the count reaches zero no refresh can take a lock. Any that counted
+    // in time is let finish, so the lock is never left behind.
+    if !finish_refreshes(refresh_grace(probe_timeout)) {
+        log_line(
+            &rs,
+            "stop: a token refresh was still running; remove .oauth_refresh.lock if it stays",
+        );
     }
     remove_own_pid(&rs);
     Ok(())
