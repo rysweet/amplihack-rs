@@ -329,10 +329,9 @@ fn run_launch_core(
             &extra_args,
         );
         let exit_code = DockerManager::default().run_command(&docker_args, &current_dir)?;
-        if exit_code != 0 {
-            std::process::exit(exit_code);
-        }
-        return Ok(());
+        // Issue #1811: return the code rather than exit here, so the caller's
+        // governor slot guard is dropped and releases its slot first.
+        return child_status(exit_code);
     }
 
     // Issue #1482: decide now, after the Docker hand-off (the container launch
@@ -436,7 +435,7 @@ fn run_launch_core(
         &nesting,
     )?;
 
-    let result = (|| -> Result<()> {
+    let result = (|| -> Result<i32> {
         // Build environment — canonical chain order per design spec.
         // SEC-DATA-01: Never log the full env map (may contain inherited secrets).
         let mut env_builder = EnvBuilder::new()
@@ -544,16 +543,25 @@ fn run_launch_core(
         }
         let exit_code = exit_code?;
         tracker.complete_session(&session_id)?;
-        if exit_code != 0 {
-            std::process::exit(exit_code);
-        }
-        Ok(())
+        Ok(exit_code)
     })();
 
     if result.is_err() {
         let _ = tracker.crash_session(&session_id);
     }
-    result
+    child_status(result?)
+}
+
+/// A child's non-zero exit status as a [`crate::command_error::CliExitError`],
+/// which `main` turns into the same process exit code. Returning it, instead
+/// of calling `std::process::exit` here, lets every guard held by a caller
+/// (such as a governor slot, issue #1811) run its `Drop` first.
+fn child_status(exit_code: i32) -> Result<()> {
+    if exit_code == 0 {
+        Ok(())
+    } else {
+        Err(crate::command_error::exit_error(exit_code))
+    }
 }
 
 pub(crate) fn preflight_claude_proxy_binary(

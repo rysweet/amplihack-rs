@@ -180,6 +180,7 @@ fn recipe_run_stops_before_the_runner_when_claude_would_refuse() {
             &RootSandboxPreflight {
                 agent_binary: claude,
                 decision,
+                governor: None,
             },
             &mut out,
         );
@@ -269,6 +270,7 @@ fn run_as_root_outside_a_sandbox(
         &RootSandboxPreflight {
             agent_binary: crate::env_builder::resolve_agent_binary_in,
             decision: || SkipPermissionsEnv::RootOutsideSandbox,
+            governor: None,
         },
         &mut out,
     );
