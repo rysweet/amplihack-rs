@@ -1855,21 +1855,35 @@ one line per measured cycle to `<root>/.auto-switch.d/usage-history.jsonl`
 ##### Reading times in the history
 
 Every reading in a line is taken as read at the line's `at`. A row read
-directly or by `claude` was read during the cycle, so that holds. A
+directly or by `claude` was read during the run, so that holds. A
 [passive reading](#passive-readings) was stored by Claude's status line
 earlier: up to `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` before the
-cycle, `300` seconds by default and at most `3600`. The rule is:
+run started, `300` seconds by default and at most `3600`.
 
-- A passive reading at most 300 seconds older than the cycle is recorded at
-  the cycle's `at`. Its age is measured from the cycle's start, the time the
-  reading was accepted at, not from `at`, which `profile usage` takes once
-  every row is in: a slow `claude` fallback for one row never turns another
-  row the table shows as read into an unknown one. It is out by at most five minutes, under 2% of the 4.5
-  hours the [rate](#rate-and-runway) needs at least.
-- A passive reading more than 300 seconds older than the cycle is unknown,
-  in the history and in the [capacity summary](#capacity-summary) alike: it
-  is in no figure and no rate, it is listed under `unknown`, and the table
-  still shows its numbers. This happens only when
+A passive reading's age is measured from the start of the run, the time
+it was accepted at. `profile usage` takes `at` later, once every row is
+in, so a slow `claude` fallback for one row never turns another row the
+table shows as read into an unknown one. The
+[rotator](#rotate-cycle) takes one time for both, so for it the start of
+the run and `at` are the same. The rule is:
+
+- A passive reading at most 300 seconds older than the start of the run
+  is recorded at the line's `at`. The recorded time is therefore later
+  than the real one by at most 300 seconds plus the time the run took.
+  For the rotator that is 300 seconds. For `profile usage` there is no
+  fixed bound: each read of a profile may take up to its
+  [deadline](#probe-deadline) (`AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`,
+  `120` seconds by default, `600` at most), a `claude` fallback gets a
+  deadline of its own after a failed direct read, and fallbacks beyond
+  the [parallel limit](#probe-parallelism) wait for a free slot. A run of
+  several minutes is ordinary. A run of 10 minutes gives an error of at
+  most 15 minutes, about 6% of the 4.5 hours the
+  [rate](#rate-and-runway) needs at least.
+- A passive reading more than 300 seconds older than the start of the run
+  is unknown, in the history and in the
+  [capacity summary](#capacity-summary) alike: it is in no figure and no
+  rate, it is listed under `unknown`, and the table still shows its
+  numbers. This happens only when
   `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` is set above `300`.
 
 A row that could not be read is unknown in the same way, whatever step
