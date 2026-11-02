@@ -266,6 +266,12 @@ fn function<'a>(src: &'a str, start: &str) -> &'a str {
     &src[i..i + end]
 }
 
+/// A text check only: it proves these sources do not name a credential
+/// file or a call known to reach one. It cannot follow calls into other
+/// modules (round 2 of PR #1857 found `capacity::refresh` reaching
+/// `kind::Ctx::load` this way), so the property itself is checked at run
+/// time by `a_recorded_home_tick_with_auto_switch_on_opens_no_credentials_file`
+/// in `tests/issue_1745_home_statusline.rs`.
 #[test]
 fn capacity_line_and_home_line_read_no_credentials() {
     let default_live = include_str!("../default_live.rs");
@@ -297,5 +303,21 @@ fn capacity_line_and_home_line_read_no_credentials() {
         for banned in ["TcpStream", "UdpSocket", "std::net", "reqwest", "ureq"] {
             assert!(!src.contains(banned), "{name} uses {banned}");
         }
+    }
+    // Calls known to resolve profile kinds, which opens every
+    // `.credentials.json`.
+    let code: Vec<&str> = include_str!("home_line.rs")
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("//"))
+        .collect();
+    let code = code.join("\n");
+    for banned in [
+        "capacity::refresh(",
+        "OverflowInputs",
+        "kind::",
+        "identify::",
+        "login_kind",
+    ] {
+        assert!(!code.contains(banned), "home_line.rs calls {banned}");
     }
 }

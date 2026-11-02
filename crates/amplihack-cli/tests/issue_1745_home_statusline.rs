@@ -619,3 +619,106 @@ fn a_wrapper_outside_its_session_adds_no_capacity_line() {
     );
     assert!(!text(&out.stdout).contains("🔑"), "{}", text(&out.stdout));
 }
+
+// ---------------------------------------------------------------------------
+// SR1 at run time: the home tick opens no credentials file
+// ---------------------------------------------------------------------------
+
+/// Watches `paths` with inotify for any open, so a test sees what the binary
+/// actually opens rather than what its source text names. The calls a home
+/// tick makes reach `rotate::identify` only through other modules, which no
+/// text search follows (crusty, PR #1857 round 2).
+#[cfg(target_os = "linux")]
+struct OpenWatch {
+    fd: i32,
+    names: std::collections::HashMap<i32, PathBuf>,
+}
+
+#[cfg(target_os = "linux")]
+impl OpenWatch {
+    fn new(paths: &[PathBuf]) -> Self {
+        use std::os::unix::ffi::OsStrExt;
+        // SAFETY: plain syscalls on a descriptor this struct owns.
+        let fd = unsafe { libc::inotify_init1(libc::IN_NONBLOCK | libc::IN_CLOEXEC) };
+        assert!(
+            fd >= 0,
+            "inotify_init1: {}",
+            std::io::Error::last_os_error()
+        );
+        let mut names = std::collections::HashMap::new();
+        for p in paths {
+            let c = std::ffi::CString::new(p.as_os_str().as_bytes()).unwrap();
+            // SAFETY: `c` is a valid NUL-terminated path for the call.
+            let wd = unsafe { libc::inotify_add_watch(fd, c.as_ptr(), libc::IN_OPEN) };
+            assert!(
+                wd >= 0,
+                "watch {}: {}",
+                p.display(),
+                std::io::Error::last_os_error()
+            );
+            names.insert(wd, p.clone());
+        }
+        Self { fd, names }
+    }
+
+    /// The watched paths opened since [`OpenWatch::new`].
+    fn opened(&self) -> Vec<PathBuf> {
+        let mut buf = [0u8; 8192];
+        let mut seen = Vec::new();
+        loop {
+            // SAFETY: `buf` is writable for its whole length.
+            let n = unsafe { libc::read(self.fd, buf.as_mut_ptr().cast(), buf.len()) };
+            if n <= 0 {
+                return seen;
+            }
+            let mut i = 0usize;
+            while i < n as usize {
+                // SAFETY: the kernel writes whole `inotify_event` records.
+                let ev: libc::inotify_event =
+                    unsafe { std::ptr::read_unaligned(buf[i..].as_ptr().cast()) };
+                if ev.mask & libc::IN_OPEN != 0
+                    && let Some(p) = self.names.get(&ev.wd)
+                {
+                    seen.push(p.clone());
+                }
+                i += std::mem::size_of::<libc::inotify_event>() + ev.len as usize;
+            }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for OpenWatch {
+    fn drop(&mut self) {
+        // SAFETY: closes the descriptor `new` opened.
+        unsafe { libc::close(self.fd) };
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_recorded_home_tick_with_auto_switch_on_opens_no_credentials_file() {
+    let f = Fixture::new(Some(FIRST));
+    // Every profile has a login of its own as well as `~/.claude`, so any
+    // kind or login lookup has a file to open.
+    let creds = vec![
+        f.home.join(".claude/.credentials.json"),
+        f.root.join("X/.credentials.json"),
+        f.root.join("Y/.credentials.json"),
+    ];
+    for p in &creds[1..] {
+        private(p, br#"{"claudeAiOauth":{}}"#);
+    }
+    f.prototype_ledger(r#"{"live":"X","since":1}"#);
+    let watch = OpenWatch::new(&creds);
+    let out = f.run(&[], "1", None, &input(34.0, 43.0));
+    assert_eq!(
+        text(&out.stdout),
+        format!("first\n{LINE_34_43}  · 0 spare\n"),
+        "stderr: {}",
+        text(&out.stderr)
+    );
+    let usage = f.usage().expect("the tick recorded the reading");
+    assert_eq!(usage["accounts"]["X"]["five_hour"]["used_percentage"], 34.0);
+    assert_eq!(watch.opened(), Vec::<PathBuf>::new(), "credentials opened");
+}

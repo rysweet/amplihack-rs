@@ -219,9 +219,11 @@ or the spare count.
 `<root>` is the profile root (see
 [Profile root](./profile-command.md#profile-root)).
 
-Credentials are never read. The capacity line does not open, test or name
-any `.credentials.json` file, and does not read `~/.claude.json` or any
-profile's `.claude.json`.
+Credentials are never read. Neither the capacity line nor anything home
+mode calls opens, tests or names any `.credentials.json` file, and it does
+not read `~/.claude.json` or any profile's `.claude.json`. A test watches
+the credentials files with inotify while the binary records a reading with
+auto-switch on, and fails if any of them is opened.
 
 #### Live login in home mode
 
@@ -266,16 +268,19 @@ The reading is stored under the attributed account, with `source` set to
 `statusline`, merged with any existing reading in the same way as the
 [status-line wrapper](./profile-command.md#status-line-wrapper). The command
 waits at most 50 ms for the state lock; when the lock is busy, it records
-nothing on that run. After recording it updates the
-[capacity file](./profile-command.md#capacity-file) with writer
-`statusline`. Recording happens whether auto-switch is enabled or not.
+nothing on that run. Recording happens whether auto-switch is enabled or
+not. Home mode does not update the
+[capacity file](./profile-command.md#capacity-file): working out which
+profiles are overflow profiles means reading their login files, which this
+path never does. The status-line wrapper and `profile rotate` keep that file
+current.
 
 When any condition fails, nothing is recorded. The capacity line is still
 printed, with the bars from this run's input.
 
 Home mode never runs auto-switch recovery or an in-session swap, because the
-rotator owns `~/.claude`. It writes nothing other than `usage.json` and the
-capacity file: the journal, the ledgers and `hosts` are left untouched.
+rotator owns `~/.claude`. It writes nothing other than `usage.json`: the
+capacity file, the journal, the ledgers and `hosts` are left untouched.
 
 `profile rotate` does not read `usage.json`. Readings taken in `~/.claude`
 reach it only through the spare count and auto-switch.

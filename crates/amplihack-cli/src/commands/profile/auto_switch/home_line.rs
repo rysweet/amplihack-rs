@@ -6,7 +6,11 @@
 //! input, then prints the login capacity line for the login the rotator
 //! ledgers name, and records the reading when [`should_record`] allows it,
 //! whatever the auto-switch setting. It never recovers or swaps, and never
-//! writes the journal, a ledger or the hosts: the rotator owns `~/.claude`.
+//! writes the journal, a ledger, the hosts or the capacity file: the rotator
+//! owns `~/.claude`. It opens no login credentials file, directly or
+//! through anything it calls (SR1); the integration test
+//! `a_recorded_home_tick_with_auto_switch_on_opens_no_credentials_file`
+//! checks that with inotify while the binary runs.
 //! In a profile's own directory the run is that profile's, as with
 //! `--owner`; anywhere else only `statusline.sh` runs. Every failure gives
 //! less output, never an error on stdout.
@@ -265,10 +269,10 @@ fn record(
         tracing::debug!(op = "home status line save", error = %e);
         return None;
     }
-    match state.load_ledger() {
-        Ok(ledger) => super::capacity::refresh(state, &file, &ledger, "statusline"),
-        Err(e) => tracing::debug!(op = "home status line ledger", error = %e),
-    }
+    // No `capacity::refresh` here: with auto-switch on it resolves profile
+    // kinds, which opens the login credentials file in `~/.claude` and in
+    // every profile (`kind::Ctx::load`), and this path never reads credentials (SR1). The
+    // capacity file is kept current by the `--owner` wrapper and the rotator.
     spare(state, &file.accounts, live, now)
 }
 

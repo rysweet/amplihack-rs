@@ -19,9 +19,12 @@ use std::path::Path;
 /// parent-directory creation, and atomic-write semantics are keyed off
 /// `settings_path.parent()`.
 ///
-/// `status_line`: the `statusLine` command to install (issue #1745); only
-/// the explicit install into `~/.claude` passes one. With `None` an existing
-/// entry is left as it is.
+/// `status_line`: the `statusLine` command to install (issue #1745). Two
+/// callers pass one, both writing `~/.claude/settings.json`: the explicit
+/// `amplihack install` at global scope (`run_install_scoped`), and the
+/// launch-time hook repair (`ensure_framework_installed_with`), which writes
+/// the user's own settings and so is global too. A repo-local install passes
+/// `None`. With `None` an existing entry is left as it is.
 ///
 /// Returns `(success, registered_event_names)` where `registered_event_names`
 /// is a deduplicated list of event names that were configured.
