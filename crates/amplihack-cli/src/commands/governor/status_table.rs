@@ -112,7 +112,13 @@ pub fn render_table(v: &StatusView) -> String {
         "\nReserve: {} points; best weekly remainder {}; ordinary work {}",
         r.points,
         num(r.best_weekly_remaining),
-        if r.ordinary_held { "held" } else { "admitted" }
+        match r.held_reason {
+            Some("weekly-exhausted") => "held: weekly limit used",
+            Some("session-exhausted") => "held: session limit used",
+            Some("reserve") => "held at the reserve",
+            Some(_) => "held",
+            None => "admitted",
+        }
     );
     let _ = writeln!(out, "\nSlots:");
     if v.slots.is_empty() {

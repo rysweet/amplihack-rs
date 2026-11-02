@@ -105,7 +105,12 @@ fn top_level_and_nested_key_sets_are_exact() {
     assert_eq!(keys(&profiles[0]["session"]), window);
     assert_eq!(
         keys(&v["reserve"]),
-        set(&["points", "best_weekly_remaining", "ordinary_held"])
+        set(&[
+            "points",
+            "best_weekly_remaining",
+            "ordinary_held",
+            "held_reason"
+        ])
     );
     let slot = &v["slots"][0];
     assert_eq!(
@@ -205,6 +210,7 @@ fn reserve_reports_whether_ordinary_work_is_held() {
     assert_eq!(v["reserve"]["points"], 10);
     assert_eq!(v["reserve"]["best_weekly_remaining"], 5.0);
     assert_eq!(v["reserve"]["ordinary_held"], true);
+    assert_eq!(v["reserve"]["held_reason"], "reserve");
 }
 
 #[test]

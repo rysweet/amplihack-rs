@@ -245,9 +245,19 @@ fn status_counts_no_weekly_room_from_a_stale_session_exhausted_reading() {
         Value::Null,
         "{json}"
     );
-    assert_eq!(json["reserve"]["ordinary_held"], false, "{json}");
+    // Crusty round 10: the pool is empty, but `decide` waits at step 3
+    // (session-exhausted), so status reports the hold rather than "admitted".
+    assert_eq!(json["reserve"]["ordinary_held"], true, "{json}");
+    assert_eq!(
+        json["reserve"]["held_reason"], "session-exhausted",
+        "{json}"
+    );
     let table = render_table(&v);
     assert!(!table.contains("best weekly remainder 90.0"), "{table}");
+    assert!(
+        table.contains("ordinary work held: session limit used"),
+        "{table}"
+    );
 }
 
 /// A fresh profile beside it still sets the remainder from its own reading.

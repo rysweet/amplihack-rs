@@ -7,8 +7,10 @@ use super::budget::{Headroom, headroom, invalid_reading, stale_reading, weekly_r
 use super::config::Settings;
 use super::inputs::{self, ProfileRates};
 use super::liveness::alive;
-use super::model::WindowBudget;
+use super::model::{Budget, DecisionKind, Inputs, ReasonCode, Request, Start, WindowBudget};
+use super::policy::decide;
 use super::queue::admissions_to;
+use super::rate::RateSignal;
 use super::rate::WindowRate;
 use super::store::{History, Peek, Queue, State, Store};
 use std::collections::BTreeSet;
@@ -30,6 +32,39 @@ fn window(w: &WindowBudget, r: &WindowRate) -> WindowView {
         sustainable_rate: r.sustainable,
         forecast_exhaustion: r.forecast,
     }
+}
+
+/// Whether `policy::decide` would hold a top-level ordinary start on these
+/// readings, and at which step: `weekly-exhausted` (step 2),
+/// `session-exhausted` (step 3) or `reserve` (step 4). It asks `decide`
+/// itself, with no slots and no queue, so steps 5 and 6 never apply and the
+/// answer cannot drift from admission. `None` when such a start would be
+/// admitted, including the fail-open `no-readings` case (step 1).
+pub(super) fn ordinary_hold(
+    budgets: &[Budget],
+    settings: &Settings,
+    now: i64,
+) -> Option<ReasonCode> {
+    let inputs = Inputs {
+        budgets: budgets.to_vec(),
+        signal: RateSignal::Unknown,
+        limit: settings.max_concurrency.max(1),
+        last_evaluated_at: Some(now),
+        slots: Vec::new(),
+        queue: Vec::new(),
+        admissions: Vec::new(),
+        settings: *settings,
+        request: Request {
+            class: super::model::Class::Ordinary,
+            workstream: String::new(),
+            start: Start::Agent,
+            parent: None,
+            seq: None,
+            deadline: now,
+        },
+    };
+    let d = decide(&inputs, now);
+    (d.kind != DecisionKind::Admit).then_some(d.reason.code)
 }
 
 fn peek<T: super::store::Persisted>(root: &Path, reason: &mut Option<ReasonView>) -> T {
@@ -64,6 +99,7 @@ fn empty(settings: &Settings, now: i64, enabled: bool) -> StatusView {
             points: settings.reserve_points,
             best_weekly_remaining: None,
             ordinary_held: false,
+            held_reason: None,
         },
         slots: Vec::new(),
         queue: Vec::new(),
@@ -142,14 +178,12 @@ pub fn view(
                 )
         })
         .collect();
-    let reserve_pts = f64::from(settings.reserve_points);
+    let held_reason = ordinary_hold(&budgets, settings, now);
     let reserve = ReserveView {
         points: settings.reserve_points,
         best_weekly_remaining: pool.iter().map(|b| weekly_remaining(b)).reduce(f64::max),
-        ordinary_held: !pool.is_empty()
-            && pool
-                .iter()
-                .all(|b| headroom(b, reserve_pts) != Headroom::Room),
+        ordinary_held: held_reason.is_some(),
+        held_reason: held_reason.map(ReasonCode::as_str),
     };
     let max = settings.max_concurrency.max(1);
     let limit = if state.limit == 0 {

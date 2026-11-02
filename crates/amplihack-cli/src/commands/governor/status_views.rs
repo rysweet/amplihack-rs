@@ -57,14 +57,21 @@ pub struct ProfileView {
     pub forecast_exhaustion: Option<i64>,
 }
 
-/// The reserve summary, over the profiles step 4 of `policy::decide` reads:
-/// eligible, with neither window exhausted. A profile kept for a stale
-/// exhausted window is never among them, so a stale reading adds no room.
+/// The reserve summary. `best_weekly_remaining` is taken over the profiles
+/// step 4 of `policy::decide` reads: eligible, with neither window
+/// exhausted. A profile kept for a stale exhausted window is never among
+/// them, so a stale reading adds no room. `ordinary_held` and `held_reason`
+/// come from `policy::decide` itself (see `status::ordinary_hold`), so they
+/// report a hold at steps 2 and 3 as well as at the reserve.
 #[derive(Debug, Serialize)]
 pub struct ReserveView {
     pub points: u32,
     pub best_weekly_remaining: Option<f64>,
     pub ordinary_held: bool,
+    /// The reason code `policy::decide` gives for holding a top-level
+    /// ordinary start (`weekly-exhausted`, `session-exhausted` or
+    /// `reserve`); `None` when it would be admitted.
+    pub held_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Serialize)]

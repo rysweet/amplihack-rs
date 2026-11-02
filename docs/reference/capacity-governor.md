@@ -795,7 +795,8 @@ are cut to 64 characters.
   "reserve": {
     "points": 10,
     "best_weekly_remaining": 62.0,
-    "ordinary_held": false
+    "ordinary_held": false,
+    "held_reason": null
   },
   "slots": [
     {
@@ -842,7 +843,7 @@ are cut to 64 characters.
 | `profiles[].weekly` | `null` for a profile with no usable weekly reading; such a profile is not part of the pool |
 | `profiles[].burn_rate`, `sustainable_rate`, `forecast_exhaustion` | The weekly window's values, repeated for scripts; `null` when unknown |
 | Window objects | `used_pct`, `resets_at` (Unix seconds or `null`), and the window's rate fields |
-| `reserve` | Reserve points, the best usable weekly remainder, and whether ordinary work is currently held. Both are taken over the profiles step 4 reads: eligible, with neither window exhausted. A profile kept only for a stale exhausted window is not among them, so its other window never counts as room. `best_weekly_remaining` is `null` when no profile qualifies |
+| `reserve` | Reserve points, the best usable weekly remainder, and whether a top-level ordinary start would be held now. `best_weekly_remaining` is taken over the profiles step 4 reads: eligible, with neither window exhausted. A profile kept only for a stale exhausted window is not among them, so its other window never counts as room; the value is `null` when no profile qualifies. `ordinary_held` and `held_reason` come from the decision function itself, run for a top-level ordinary start with no slots and no queue, so they cover steps 2 to 4: `held_reason` is `weekly-exhausted` (step 2), `session-exhausted` (step 3) or `reserve` (step 4) when `ordinary_held` is `true`, and `null` otherwise. With every eligible profile session- or weekly-exhausted the step 4 pool is empty and `best_weekly_remaining` is `null`, but `ordinary_held` is `true`. Only step 1 (`no-readings`, no usable reading at all) reports `false` with no remainder, because that start is admitted. Holds at steps 5 and 6 (slots and queue) are not included; see `limit`, `slots[]` and `queue[]` |
 | `slots[]`, `queue[]` | As in the state files, without start times or tree ids, plus `stale` |
 | `workstreams[].admissions` | Admissions in the 24-hour fairness window |
 | `workstreams[].token_share` | For the workstream the manifest named by `AMPLIHACK_GOVERNOR_MANIFEST` describes: its attributed tokens divided by every observed token in the manifest's sessions, so unattributed tokens lower the share. `null` for other workstreams, without a manifest, or when the manifest is not an absolute path to a regular file of the current user of at most 4096 bytes. The manifest path is never printed. |
