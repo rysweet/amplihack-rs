@@ -68,11 +68,16 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     "doctor",
     "help",
     "agent-binary",
+    // Issue #1794: a pure in-process sleep that must start nothing.
+    "wait",
     "config",
     "sessions",
     "agent",
     // Usage reporting and explicit publication never need staged framework assets.
     "usage",
+    // Issue #1808: `cleanup` needs no framework assets, and its dry run must
+    // write nothing at all, not even the bundle-compatibility cache.
+    "cleanup",
 ];
 
 /// Top-level flags that short-circuit clap and should not pay for an
@@ -996,6 +1001,25 @@ steps:
         let mut buf = Vec::new();
         ensure_assets_match_binary_version_with(
             &args(&["amplihack", "agent-binary", "--shell"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+        assert_eq!(calls.get(), 0);
+        assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+    }
+
+    /// Issue #1794: `amplihack wait --seconds N` stands in for `sleep` inside
+    /// agent tool calls. It must stage nothing and start nothing, or a first
+    /// run under a fresh HOME would add processes and break its timing.
+    #[test]
+    fn wait_subcommand_skips() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "wait", "--seconds", "5"]),
             &mut buf,
             counting_installer(&calls, crate::VERSION),
         )

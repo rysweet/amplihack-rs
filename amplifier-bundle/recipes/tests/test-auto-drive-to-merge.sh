@@ -1912,10 +1912,17 @@ else
 fi
 AUTODRIVE_QA_SCENARIO_DIR=tests/agentic gate_blocks "GATE-gadugi-not-required-but-opted-in" "gadugi-test scenarios were not validated" \
   "NOT_REQUIRED evidence never merges when AUTODRIVE_QA_SCENARIO_DIR asks for gadugi" --qa-evidence "$QA_NR"
-: > "${FX}/package.json"
-gate_blocks "GATE-gadugi-not-required-node" "gadugi-test scenarios were not validated" \
+# A Node repository: package.json committed on base branch bnode (#1763 reads
+# the merge-base tree, so a file on disk only would not count).
+GN_SAVED="$(git -C "$FX" rev-parse HEAD)"
+GN_BASE="$(fx_change "$FX_M1" "node base" package.json=x)"; GN_HEAD="$(fx_change "$GN_BASE" "node change" src.js=v1)"
+git -C "$FX" push -q origin "${GN_BASE}:refs/heads/bnode" >/dev/null 2>&1 \
+  && git -C "$FX" update-ref refs/remotes/origin/bnode "$GN_BASE" \
+  || { echo "HARNESS-ERROR: could not create the Node base branch" >&2; exit 2; }
+fx_head "$GN_HEAD"
+GH_BASE=bnode GH_HEAD="$GN_HEAD" gate_blocks "GATE-gadugi-not-required-node" "gadugi-test scenarios were not validated" \
   "NOT_REQUIRED evidence never merges a Node repository, whatever the evidence says" --qa-evidence "$QA_NR"
-rm -f "${FX}/package.json"
+fx_head "$GN_SAVED"
 GATE_LONE_G="${WORK}/gate-lonely-gadugi"; mkdir -p "${GATE_LONE_G}"; cp "${GATE}" "${GATE_LONE_G}/"
 GATE_SCRIPT="${GATE_LONE_G}/autodrive_merge_gate.sh" gate_blocks "GATE-gadugi-rule-unreadable" "gadugi-test scenarios were not validated" \
   "without autodrive_trust.sh beside the gate, gadugi counts as required and NOT_REQUIRED never merges" --qa-evidence "$QA_NR"
@@ -3178,8 +3185,15 @@ else
   S00_GADUGI_BIN="${WORK_PHYS}/s00-gadugi-bin"; S00_NO_GADUGI_BIN="${WORK_PHYS}/s00-no-gadugi-bin"
   mkdir -p "${S00_GADUGI_BIN}" "${S00_NO_GADUGI_BIN}"
   S00_RT="${WORK_PHYS}/s00-rt"
-  for t in node:package.json rust:Cargo.toml python:pyproject.toml; do
+  # Committed repositories: #1763 reads manifests from git, and with no
+  # AUTODRIVE_QA_BASE (a preflight) from HEAD's tree.
+  for t in node:package.json rust:Cargo.toml python:pyproject.toml plain:README.md; do
     mkdir -p "${S00_RT}/${t%%:*}"; : > "${S00_RT}/${t%%:*}/${t#*:}"
+    ( cd "${S00_RT}/${t%%:*}" && git init -q . && git add -A \
+      && c="$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
+              GIT_COMMITTER_EMAIL=t@example.invalid git commit-tree "$(git write-tree)" -m init)" \
+      && git update-ref HEAD "$c" ) >/dev/null 2>&1 \
+      || { echo "HARNESS-ERROR: could not commit the step-00 fixture ${t%%:*}" >&2; exit 2; }
   done
   printf '#!/bin/sh\necho "gadugi-test must not run in step-00" >&2\nexit 99\n' > "${S00_GADUGI_BIN}/gadugi-test"
   chmod +x "${S00_GADUGI_BIN}/gadugi-test"
@@ -3247,7 +3261,7 @@ else
   # qa-team's repo-type table: a Rust CLI or Python repository, or one with
   # no marker file, runs without gadugi-test; AUTODRIVE_QA_SCENARIO_DIR asks for it.
   for rt in rust python plain; do
-    repo="${S00_RT}/${rt}"; [ "$rt" = plain ] && repo=""
+    repo="${S00_RT}/${rt}"
     s00_run "${REPO_ROOT}" "${repo}" "${S00_NO_GADUGI_BIN}"
     if [ "${S00_RC}" -eq 0 ] && [ "$(printf '%s' "${S00_OUT}" | jq -r .skill_md 2>/dev/null)" != "" ] \
        && ! printf '%s' "${S00_ERR}" | grep -q 'gadugi-test-not-installed'; then
@@ -3387,14 +3401,17 @@ if PATH="${EV_NOG}:/usr/bin:/bin" command -v git >/dev/null 2>&1; then :; else
 fi
 
 EV_REPO=""; EV_OUT=""; EV_ERR=""; EV_CALLS=""; EV_N=0
-ev_repo() { # ev_repo <marker-file> -> fresh scratch repo with one commit, written via plumbing (no hooks)
+# ev_repo <marker-file> -> fresh scratch repo with one commit, written via
+# plumbing (no hooks), that is also refs/remotes/origin/main: #1763 reads the
+# manifests from the merge-base tree, and an unknown base requires gadugi.
+ev_repo() {
   EV_N=$((EV_N + 1))
   EV_REPO="${WORK_PHYS}/ev-repo-${EV_N}"; mkdir -p "${EV_REPO}"
   : > "${EV_REPO}/$1"
   ( cd "${EV_REPO}" && git init -q . && git add -A \
     && c="$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
             GIT_COMMITTER_EMAIL=t@example.invalid git commit-tree "$(git write-tree)" -m init)" \
-    && git update-ref HEAD "$c" ) >/dev/null 2>&1 \
+    && git update-ref HEAD "$c" && git update-ref refs/remotes/origin/main "$c" ) >/dev/null 2>&1 \
     || { echo "HARNESS-ERROR: could not create a scratch git repo" >&2; exit 2; }
 }
 ev_scen() { # ev_scen <relative-file> ... -> scenario files named after their base name (a.yaml -> name: a)
@@ -3414,14 +3431,17 @@ ev_script() { # ev_script <relative-file>: an executable suite command that logs
     "${1##*/}" > "${EV_REPO}/$1"
   chmod +x "${EV_REPO}/$1"
 }
+# The step reads the base from merge_sync with `amplihack orch helper`; EV_AMP
+# holds only that binary, so step-02 sees base main as step-01 would give it.
+EV_AMP="${WORK_PHYS}/ev-amplihack"; mkdir -p "${EV_AMP}"; ln -sf "${REAL_AMPLIHACK}" "${EV_AMP}/amplihack"
 ev_run() { # ev_run <stub-dir> [VAR=value ...] -> runs the step; EV_OUT = last stdout line
   local stubs="$1"; shift
   EV_CALLS="${EV_REPO}.calls"; : > "${EV_CALLS}"
   # AMPLIHACK_HOME is this tree, so gadugi_scenario_results comes from the
   # autodrive_trust.sh under test, as in a real run.
-  env -i HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${stubs}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" \
+  env -i HOME="${TEST_HOME}" TMPDIR="${WORK_PHYS}" PATH="${stubs}:${EV_AMP}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" \
     REPO_PATH="${EV_REPO}" AUTODRIVE_ROUND_LABEL="round-7" AUTODRIVE_QA_EVIDENCE="${EV_REPO}.evidence.json" \
-    EV_CALLS="${EV_CALLS}" "$@" \
+    EV_CALLS="${EV_CALLS}" RECIPE_VAR_merge_sync='{"base":"main","conflict":"false"}' "$@" \
     "${BASH}" -c "${EV_BODY}" >"${EV_REPO}.out" 2>"${EV_REPO}.err"
   EV_OUT="$(tail -n 1 "${EV_REPO}.out")"
   EV_ERR="${EV_REPO}.err"
@@ -3453,6 +3473,7 @@ ev_expect() { # ev_expect <label> <field>=<value> ...
     PASS:) ;;
     FAIL:qa-command-failed|FAIL:no-scenarios|FAIL:gadugi-validate-failed|FAIL:gadugi-scenario-unnamed|FAIL:gadugi-run-failed) ;;
     BLOCKED:qa-command-missing|BLOCKED:qa-command-not-installed|BLOCKED:gadugi-test-missing) ;;
+    BLOCKED:qa-config-invalid|QA_UNRESOLVED:qa-unresolved) ;;
     *) bad="${bad} qa_status/qa_reason='$(evf qa_status)/$(evf qa_reason)'(not a valid pair)" ;;
   esac
   want="$(git -C "${EV_REPO}" rev-parse HEAD)"
@@ -4020,6 +4041,11 @@ ev_expect "QA-rust-no-gadugi" qa_status=PASS qa_reason="" qa_repo_type=rust-cli 
 ev_rt_expect_no_gadugi "QA-rust-no-gadugi-calls" "a Rust CLI repository runs cargo test and never calls gadugi-test, as qa-team's Rust CLI line says"
 ev_run "${EV_NOG}"
 ev_expect "QA-rust-gadugi-not-installed" qa_status=PASS qa_reason="" gadugi_required=false gadugi_status=NOT_REQUIRED
+# #1763: merge_sync without a base leaves the merge base unknown, so the
+# evidence step keeps gadugi required even in a Rust CLI repository.
+ev_run "${EV_NOG}" RECIPE_VAR_merge_sync='{"conflict":"false"}'
+ev_expect "QA-rust-no-base-requires-gadugi" qa_status=BLOCKED qa_reason=gadugi-test-missing qa_repo_type=rust-cli \
+  gadugi_required=true gadugi_status=NOT_INSTALLED
 ev_run "${EV_FULL}" STUB_REPO_TEST_RC=101
 ev_expect "QA-rust-cargo-fails" qa_status=FAIL qa_reason=qa-command-failed qa_exit_code=101 \
   gadugi_required=false gadugi_status=NOT_REQUIRED
@@ -6501,6 +6527,95 @@ fi
 
 unset STUB_ROUND_BODY STUB_HEALTH_SEQ STUB_HISTORY_LOG RUN_LOOP_TIMEOUT
 LOOP_MAIN="${SAVED_LOOP_MAIN}"; LOOP_WT="${SAVED_LOOP_WT}"
+
+# ── Issue #1763: the gate scopes gadugi with its own base ────────────────────
+# The gate decides gadugi from the checkout with AUTODRIVE_QA_BASE set from its
+# own `gh pr view --json baseRefName`, overwriting any inherited value. Base
+# b1763 holds a root Cargo.toml and web/package.json. A head that changes only
+# web/ is the Node project (gadugi required, so NOT_REQUIRED evidence is
+# refused); a head that changes a root file is the root crate (not required).
+# An inherited AUTODRIVE_QA_BASE=main, whose diff would also hold the
+# manifests and so pick the root, must not change the answer.
+G1763_SAVED_HEAD="$(git -C "$FX" rev-parse HEAD)"
+G1763_BASE="$(fx_change "$FX_M1" "mixed base" Cargo.toml=x web/package.json=x)"
+G1763_WEB="$(fx_change "$G1763_BASE" "web change" web/app.ts=v1)"
+G1763_ROOT="$(fx_change "$G1763_BASE" "root change" src.rs=v9)"
+git -C "$FX" push -q origin "${G1763_BASE}:refs/heads/b1763" >/dev/null 2>&1 \
+  && git -C "$FX" update-ref refs/remotes/origin/b1763 "$G1763_BASE" \
+  || { echo "HARNESS-ERROR: could not create the #1763 base branch" >&2; exit 2; }
+# The manifests come from the merge-base tree (b1763), never the work tree.
+# Run in this shell, not in $(...), so GATE_OUT below is this run's output.
+g1763_req() { # g1763_req <head> [env NAME=VALUE] -> G1763_GOT, the gate's gadugi_required note
+  fx_head "$1"
+  GH_BASE=b1763 GH_HEAD="$1" GATE_EXTRA_ENV="${2:-}" gate_run green --round-record "$REC" --qa-evidence "$QA_NR" --dry-run
+  G1763_GOT="$(grep -oE 'gadugi_required=[a-z]+' "${GATE_DIR}/err" | head -n 1)"
+}
+g1763_req "$G1763_WEB"
+if [ "$G1763_GOT" = "gadugi_required=true" ] && ! printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_RUN"'; then
+  pass "1763-gate-web" "a head that changes only web/ makes the gate require gadugi, so NOT_REQUIRED evidence is refused"
+else
+  fail "1763-gate-web" "got '${G1763_GOT}': ${GATE_OUT}"
+fi
+g1763_req "$G1763_WEB" AUTODRIVE_QA_BASE=main
+if [ "$G1763_GOT" = "gadugi_required=true" ]; then
+  pass "1763-gate-inherited-base" "an inherited AUTODRIVE_QA_BASE does not override the gate's own baseRefName"
+else
+  fail "1763-gate-inherited-base" "got '${G1763_GOT}' with AUTODRIVE_QA_BASE=main inherited"
+fi
+g1763_req "$G1763_ROOT"
+if [ "$G1763_GOT" = "gadugi_required=false" ]; then
+  pass "1763-gate-root" "a head that changes a root file is the root crate, and gadugi is not required"
+else
+  fail "1763-gate-root" "got '${G1763_GOT}'"
+fi
+fx_head "$G1763_SAVED_HEAD"
+# ── Issue #1763: the QA sources on the real evidence step ───────────────────
+# One direct case for each of the four behaviours the issue names, on the
+# step-02 body and stubs of section 6b. The full matrix (qa.toml syntax, CI
+# parsing, path scoping edge cases) is test-issue-1763-qa-scope.sh, which
+# ci.yml runs as its own step. It is not called from here: the Rust harness
+# runs this file three times, and that suite starts every case under env -i,
+# so a nested call repeated the same 2m47s of checks on each run.
+ev_commit() { # ev_commit [base]: commit EV_REPO's work tree on HEAD; `base` also makes it origin/main
+  ( cd "${EV_REPO}" && git add -A && t="$(git write-tree)" && p="$(git rev-parse HEAD)" \
+    && c="$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
+            GIT_COMMITTER_EMAIL=t@example.invalid git commit-tree "$t" -p "$p" -m c)" \
+    && git update-ref HEAD "$c" \
+    && { [ "${1:-}" != base ] || git update-ref refs/remotes/origin/main "$c"; } ) >/dev/null 2>&1 \
+    || { echo "HARNESS-ERROR: could not commit in ${EV_REPO}" >&2; exit 2; }
+}
+ev_put() { # ev_put <relative-file>... : one more line in each file
+  local f; for f in "$@"; do mkdir -p "${EV_REPO}/$(dirname "$f")"; printf 'x\n' >> "${EV_REPO}/$f"; done
+}
+# repo-file: a qa.toml committed at the merge base names the command and dir.
+ev_repo Cargo.toml; ev_put engine/Cargo.toml src/lib.rs
+ev_scen_raw .amplihack/qa.toml 'command = "cargo nextest run --workspace"\ndir = "engine"\n'
+ev_commit base; ev_put src/lib.rs; ev_commit
+ev_run "${EV_FULL}"
+ev_expect "1763-repo-file" qa_status=PASS qa_command_source=repo-file qa_repo_type=configured qa_dir=engine \
+  qa_command="cargo nextest run --workspace" qa_command_paths=src/lib.rs
+if ev_called "cargo nextest run --workspace"; then
+  pass "1763-repo-file-runs" "the qa.toml command is the one that runs"
+else fail "1763-repo-file-runs" "calls: $(tr '\n' '|' < "${EV_CALLS}")"; fi
+# env: AUTODRIVE_QA_COMMAND still wins over the qa.toml in the same tree.
+ev_run "${EV_FULL}" AUTODRIVE_QA_COMMAND="cargo check"
+ev_expect "1763-env-wins" qa_status=PASS qa_command_source=env qa_dir=. qa_command_paths=src/lib.rs
+if ev_called "cargo check" && ! ev_called "cargo nextest"; then
+  pass "1763-env-wins-runs" "only the env command runs; qa.toml is not read"
+else fail "1763-env-wins-runs" "calls: $(tr '\n' '|' < "${EV_CALLS}")"; fi
+# detected, scoped: two Rust projects, and a change inside b runs b's suite.
+ev_repo README.md; ev_put a/Cargo.toml b/Cargo.toml a/src/lib.rs b/src/main.rs; ev_commit base
+ev_put b/src/main.rs; ev_commit
+ev_run "${EV_FULL}"
+ev_expect "1763-scoped" qa_status=PASS qa_command_source=detected qa_repo_type=rust-cli qa_dir=b \
+  qa_command_paths=b/src/main.rs
+# unresolved: a change in both projects names no single suite, and none runs.
+ev_put a/src/lib.rs; ev_commit
+ev_run "${EV_FULL}"
+ev_expect "1763-unresolved" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved qa_candidates="a b" \
+  qa_command="" qa_command_source="" qa_suite_commands_count=0
+if ev_called "cargo "; then fail "1763-unresolved-no-suite" "a suite ran: $(tr '\n' '|' < "${EV_CALLS}")"
+else pass "1763-unresolved-no-suite" "no suite runs when the project is unresolved"; fi
 echo
 echo "═══════════════════════════════"
 echo "Results: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"

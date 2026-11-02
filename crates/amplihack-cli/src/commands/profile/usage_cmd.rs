@@ -1,7 +1,8 @@
 //! `amplihack profile usage` (issue #1578): asks `claude` for its usage under
 //! each profile in parallel (the `get_usage` request, else `claude -p
-//! /usage`; issue #1698), prints the session and weekly usage ordered by
-//! capacity, and records what it read as auto-switch readings.
+//! /usage`; issue #1698), prints the session and weekly usage in the order
+//! the rotator ranks headroom (issue #1813; the bar view is in
+//! `usage_view`), and records what it read as auto-switch readings.
 //!
 //! Issue #1844: each row is read in order, a fresh passive reading, then
 //! the OAuth usage endpoint, then `claude` (see `usage_source`), and says
@@ -17,9 +18,13 @@ use super::capacity_summary::{self, Summary};
 use super::capacity_weight;
 use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
+use super::rotate::decide::Reading;
+use super::rotate::identify::Account;
 use super::store::ProfileStore;
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
-use super::usage_source::{self, ClaudeGate, LazyBinary, Plan, Source, SourceEnv};
+use super::usage_request::ExtraUsageShape;
+use super::usage_source::{self, ClaudeGate, LazyBinary, Plan, Source, SourceEnv, Spend};
+use super::usage_view::{self, TimeView};
 use super::{ProfileError, default_live, pointer, probe_limits, run, usage_history, usage_request};
 use crate::binary_finder::BinaryInfo;
 use anyhow::Result;
@@ -102,6 +107,11 @@ pub(super) struct Probe {
     pub(super) source: Option<Source>,
     /// Issue #1844: the direct read's reason when it led to a fallback.
     pub(super) direct_failure: Option<&'static str>,
+    /// Issue #1856: what is known of the usage-credit spend limit.
+    pub(super) spend: Spend,
+    /// Issue #1856: the redacted `extra_usage` shape of a credits-on direct
+    /// row, for the `--raw` note only. Never serialised.
+    pub(super) extra_shape: Option<ExtraUsageShape>,
 }
 
 impl Probe {
@@ -112,10 +122,13 @@ impl Probe {
             raw,
             source: None,
             direct_failure: None,
+            spend: Spend::Unknown,
+            extra_shape: None,
         }
     }
 
-    /// A row read without `claude`.
+    /// A row read without `claude`, from a source that has no spend limit
+    /// to report.
     pub(super) fn read(report: UsageReport, source: Source) -> Self {
         Self {
             report,
@@ -123,7 +136,21 @@ impl Probe {
             raw: None,
             source: Some(source),
             direct_failure: None,
+            spend: Spend::NotApplicable,
+            extra_shape: None,
         }
+    }
+
+    /// A successful direct read (issue #1856). With credits on, the spend
+    /// is [`Spend::NotProbed`] until a spend probe says otherwise.
+    #[cfg(unix)]
+    pub(super) fn direct(d: super::usage_direct::Direct) -> Self {
+        let mut p = Self::read(d.report, Source::Direct);
+        if d.credits_on.is_some() {
+            p.spend = Spend::NotProbed;
+        }
+        p.extra_shape = d.credits_on;
+        p
     }
 
     /// A direct read that failed in a mode that starts no `claude`.
@@ -165,12 +192,20 @@ pub(super) struct Row {
     pub(super) source: Option<Source>,
     /// Issue #1844: the direct read's reason when the row fell back.
     pub(super) direct_failure: Option<&'static str>,
+    /// Issue #1856: what is known of the usage-credit spend limit. Shown
+    /// only; it plays no part in ordering or recording.
+    pub(super) spend: Spend,
+    /// Issue #1856: the redacted `extra_usage` shape of a credits-on direct
+    /// row, for the `--raw` note only.
+    pub(super) extra_shape: Option<ExtraUsageShape>,
 }
 
 /// How `profile usage` prints its rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Output {
-    /// The table, then the capacity summary (issue #1797).
+    /// The bar view (issue #1813), then the capacity summary (issue #1797).
+    Bars,
+    /// The `--table` text table, then the capacity summary.
     Table,
     /// The `--json` array, unchanged.
     Json,
@@ -182,19 +217,25 @@ pub(super) enum Output {
 #[derive(Debug, Clone)]
 pub(super) struct UsageOpts {
     pub(super) output: Output,
+    /// The zone the bar view shows reset times in.
+    pub(super) time: TimeView,
     pub(super) raw: bool,
     pub(super) timeout_secs: Option<u64>,
     pub(super) usable_session_pct: Option<u8>,
+    /// Issue #1856: run a spend probe for each credits-on direct row.
+    pub(super) spend: bool,
 }
 
 pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Result<()> {
     let UsageOpts {
         output,
+        time,
         raw,
         timeout_secs: timeout_flag,
         usable_session_pct,
+        spend,
     } = opts;
-    let json = output != Output::Table;
+    let json = matches!(output, Output::Json | Output::SummaryJson);
     super::reject_docker_env()?;
     let (mode, warning) = probe_limits::probe_mode_from_env();
     if let Some(w) = warning {
@@ -216,6 +257,12 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     }
     let home = home_dir();
     let (live, home_row) = detect_live(store, home.as_deref(), &profiles);
+    // The account in `~/.claude` when its row is built, read before any
+    // probe: the `~/.claude` row's spend is kept only while this account is
+    // still the one there (crusty round 6).
+    let home_account = home_row
+        .then(|| home.as_deref().and_then(Account::of_dir))
+        .flatten();
     // Issue #1700: API-key profiles are never probed; a probe costs tokens
     // or times out, and there are no plan limits to read.
     let keys = ApiKeys::load(store, home.as_deref(), &profiles);
@@ -253,23 +300,65 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         ProbeMode::Auto | ProbeMode::Text => claude_bound,
         ProbeMode::Ordered | ProbeMode::Direct => direct_bound,
     };
-    let probes = pooled(profiles.len(), pool, |i| {
+    let mut probes = pooled(profiles.len(), pool, |i| {
         let name = &profiles[i];
         reader.profile(name, live_name.as_ref() == Some(name))
     });
+    // Only when every profile is listed: naming profiles asks about those.
+    let mut home_probe = (home_row && names.is_empty()).then(|| reader.home());
     // The login in `~/.claude` may have been swapped during the probe; its
-    // numbers are shown but not recorded against the profile.
-    let swapped = swapped_live(store, home.as_deref(), live);
+    // numbers are shown but not recorded against the profile. Checked
+    // before any spend probe, so that a long `--spend` pass cannot widen
+    // the window in which a swap discards windows that were read correctly.
+    let swapped = swapped_live(store, home.as_deref(), live.clone());
+    // Taken once the window readings are in and before any spend probe:
+    // the summary, `--summary-json`'s `at`, the ordering and the history
+    // line are all as of when the windows were read, however long
+    // `--spend` then takes. A passive reading's age is still judged at
+    // `now`, the time it was accepted at.
+    let at = now_secs();
+    // Issue #1856: the spend of credits-on direct rows, read only when
+    // `--spend` asks for it, only in the default order and only once every
+    // row has its windows. `/usage` can take tens of seconds per profile on
+    // a loaded host, so the default run starts no `claude` for these rows.
+    if spend && mode == ProbeMode::Ordered {
+        // The live row's spend probe reads `~/.claude`, so its result is
+        // kept only while that login is still the one the windows were
+        // read from: not swapped before the pass, nor during its probe.
+        let still_live = || {
+            swapped.is_none()
+                && live
+                    .as_ref()
+                    .is_some_and(|l| default_live::still_live(store, home.as_deref(), l))
+        };
+        // The `~/.claude` row's spend probe reads `~/.claude` too, so its
+        // result is kept only while the account read before the windows is
+        // still the one there. With no account to compare, it is dropped.
+        let still_home = || {
+            home_account.as_ref().is_some_and(|before| {
+                home.as_deref()
+                    .and_then(Account::of_dir)
+                    .is_some_and(|now| now.same(before))
+            })
+        };
+        spend_pass(
+            &reader,
+            &profiles,
+            live_name.as_ref(),
+            Guards {
+                live: &still_live,
+                home: &still_home,
+            },
+            &mut probes,
+            home_probe.as_mut(),
+            claude_bound,
+        );
+    }
     let mut rows = build_rows(&marks, &profiles, probes, live_name.as_ref());
     rows.extend(keys.rows(&marks, &keyed));
-    // Only when every profile is listed: naming profiles asks about those.
-    if home_row && names.is_empty() {
-        rows.push(home_row_of(reader.home()));
+    if let Some(p) = home_probe {
+        rows.push(home_row_of(p));
     }
-    // Taken after the probes: the summary, `--summary-json`'s `at` and the
-    // history line are all as of when the readings were in. A passive
-    // reading's age is still judged at `now`, the time it was accepted at.
-    let at = now_secs();
     order(&mut rows, at);
     // Issue #1797: the capacity summary, from these rows only; no probe.
     // `--raw` is diagnostic output and gets neither summary nor history.
@@ -279,14 +368,14 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         .as_ref()
         .filter(|_| !raw && output != Output::Json)
         .map(|c| capacity_of(store, c, usable_session_pct, at));
-    print_output(&rows, output, summary.as_ref(), at, swapped.as_ref());
+    print_output(&rows, output, &time, summary.as_ref(), at, swapped.as_ref());
     // SR-10: in every mode, with or without `--raw`.
     for warning in not_saved_warnings(&rows) {
         eprintln!("{warning}");
     }
     // Issue #1844: why a row fell back, for the detailed mode only.
     if raw {
-        for note in fallback_notes(&rows) {
+        for note in source_notes(&rows) {
             eprintln!("{note}");
         }
     }
@@ -305,6 +394,95 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         record_history(store, c, at);
     }
     Ok(())
+}
+
+/// Which login a spend probe reads.
+#[derive(Debug, Clone, Copy)]
+enum SpendTarget<'a> {
+    /// A profile, against `~/.claude` when the flag is set.
+    Profile(&'a ProfileName, bool),
+    /// The `~/.claude` row of a login no profile holds.
+    Home,
+}
+
+/// Issue #1856: with `--spend`, one spend-only `/usage` probe per
+/// credits-on direct row, at most `bound` at once, each under the normal
+/// per-probe timeout. Only each row's
+/// `spend` changes: its windows, state, error and source stay as the
+/// direct read gave them.
+///
+/// Two probes read `~/.claude`: the live profile's and the `~/.claude`
+/// row's. Each is started only while its guard holds, and its result is
+/// dropped for `Unknown` unless the guard holds again once it has finished,
+/// so a swap before or during the pass never shows another login's spend
+/// on either row.
+fn spend_pass(
+    reader: &RowReader,
+    profiles: &[ProfileName],
+    live: Option<&ProfileName>,
+    guards: Guards<'_>,
+    probes: &mut [Probe],
+    mut home: Option<&mut Probe>,
+    bound: usize,
+) {
+    let needs = |p: &Probe| p.source == Some(Source::Direct) && p.extra_shape.is_some();
+    // A profile's index, or `None` for the `~/.claude` row.
+    let mut slots: Vec<Option<usize>> = (0..probes.len())
+        .filter(|&i| needs(&probes[i]))
+        .map(Some)
+        .collect();
+    if home.as_deref().is_some_and(needs) {
+        slots.push(None);
+    }
+    if slots.is_empty() {
+        return;
+    }
+    let spends = pooled(slots.len(), bound, |j| match slots[j] {
+        Some(i) if live == Some(&profiles[i]) => guarded_spend(
+            reader,
+            SpendTarget::Profile(&profiles[i], true),
+            guards.live,
+            || spend_swap_note(&profiles[i]),
+        ),
+        Some(i) => reader.spend(SpendTarget::Profile(&profiles[i], false)),
+        None => guarded_spend(reader, SpendTarget::Home, guards.home, home_spend_swap_note),
+    });
+    for (slot, spend) in slots.into_iter().zip(spends) {
+        match slot {
+            Some(i) => probes[i].spend = spend,
+            None => {
+                home.as_deref_mut()
+                    .expect("the home slot is only queued when home is Some")
+                    .spend = spend;
+            }
+        }
+    }
+}
+
+/// Whether `~/.claude` still holds the login a row's windows were read
+/// from: `live` for the live profile's row, `home` for the `~/.claude` row.
+#[derive(Clone, Copy)]
+struct Guards<'a> {
+    live: &'a (dyn Fn() -> bool + Sync),
+    home: &'a (dyn Fn() -> bool + Sync),
+}
+
+/// A spend read in `~/.claude`, kept only while `still()` holds before and
+/// after the probe; `Unknown`, with one `note()` on stderr, otherwise.
+fn guarded_spend(
+    reader: &RowReader,
+    target: SpendTarget<'_>,
+    still: &(dyn Fn() -> bool + Sync),
+    note: impl FnOnce() -> String,
+) -> Spend {
+    if still() {
+        let spend = reader.spend(target);
+        if still() {
+            return spend;
+        }
+    }
+    eprintln!("{}", note());
+    Spend::Unknown
 }
 
 /// The capacity summary of `current`, printing the threshold, weights and
@@ -359,7 +537,7 @@ fn print_empty(output: Output) {
     match output {
         Output::Json => println!("[]"),
         Output::SummaryJson => println!("{}", render_summary_json(now_secs(), &[], None)),
-        Output::Table => {
+        Output::Bars | Output::Table => {
             println!("no profiles; create one with `amplihack profile add <name>`")
         }
     }
@@ -411,6 +589,8 @@ fn home_row_of(p: Probe) -> Row {
         raw: p.raw,
         source: p.source,
         direct_failure: p.direct_failure,
+        spend: p.spend,
+        extra_shape: p.extra_shape,
     }
 }
 
@@ -562,6 +742,8 @@ impl ApiKeys {
                     raw: None,
                     source: None,
                     direct_failure: None,
+                    spend: Spend::NotApplicable,
+                    extra_shape: None,
                 }
             })
             .collect()
@@ -608,21 +790,36 @@ fn build_rows(
                 raw: p.raw,
                 source: p.source,
                 direct_failure: p.direct_failure,
+                spend: p.spend,
+                extra_shape: p.extra_shape,
             }
         })
         .collect()
 }
 
-/// The table (with the capacity summary) or JSON on stdout, then the
-/// warnings on stderr.
+/// The bar view or table (each with the capacity summary) or JSON on
+/// stdout, then the warnings on stderr. Colour is decided once, for the
+/// bar view only (no-color.org).
 fn print_output(
     rows: &[Row],
     output: Output,
+    time: &TimeView,
     summary: Option<&Summary>,
     at: i64,
     swapped: Option<&ProfileName>,
 ) {
     match output {
+        Output::Bars => {
+            use std::io::IsTerminal;
+            let colour = usage_view::colour_enabled(
+                std::io::stdout().is_terminal(),
+                std::env::var_os("NO_COLOR").as_deref(),
+            );
+            print!("{}", usage_view::render_bars(rows, time, colour));
+            if let Some(s) = summary {
+                print!("{}", summary_block(s));
+            }
+        }
         Output::Table => {
             print!("{}", render_table(rows));
             if let Some(s) = summary {
@@ -647,6 +844,23 @@ pub(super) fn swap_warning(name: &ProfileName) -> String {
         "note: the login in ~/.claude changed while profile \"{}\" was probed; its usage was not recorded this run",
         sanitize_display(name.as_str(), false)
     )
+}
+
+/// Issue #1856: the note for a live profile whose `--spend` probe was not
+/// started, or was dropped, because the login in `~/.claude` changed. Its
+/// windows were read before the change and are recorded as usual.
+pub(super) fn spend_swap_note(name: &ProfileName) -> String {
+    format!(
+        "note: the login in ~/.claude changed while profile \"{}\" was probed for its spend; its spend is unknown this run",
+        sanitize_display(name.as_str(), false)
+    )
+}
+
+/// Crusty round 6: the note for the `~/.claude` row (a login no profile
+/// holds) whose `--spend` probe was not started, or was dropped, because
+/// the account in `~/.claude` changed or could not be read. Fixed text.
+pub(super) fn home_spend_swap_note() -> String {
+    "note: the login in ~/.claude changed while the ~/.claude row was probed for its spend; its spend is unknown this run".to_string()
 }
 
 /// Named profiles (validated, deduplicated, each must exist), or every
@@ -799,6 +1013,35 @@ impl RowReader {
         ))
     }
 
+    /// Issue #1856: the spend limit of a credits-on login, from one
+    /// `/usage` run under the same per-probe timeout as a fallback. Its
+    /// output is never kept and only the spend leaves here. A probe that
+    /// was asked for but could not start (no `claude` found) is `Unknown`,
+    /// like one that ran and gave no reading: `NotProbed` is kept for rows
+    /// no probe was asked for.
+    fn spend(&self, target: SpendTarget<'_>) -> Spend {
+        let Some(bin) = self.binary.get() else {
+            return Spend::Unknown;
+        };
+        self.gate.run(|| {
+            let timeout = self.env.timeout;
+            let p = match target {
+                SpendTarget::Profile(name, live) => probe_profile(
+                    &self.store,
+                    bin,
+                    name,
+                    live,
+                    ProbeMode::Text,
+                    timeout,
+                    self.now,
+                    false,
+                ),
+                SpendTarget::Home => probe_home(bin, ProbeMode::Text, timeout, self.now, false),
+            };
+            p.spend
+        })
+    }
+
     /// With `--raw`, a row read without `claude` gets an empty `raw`, which
     /// the table shows as one fixed line.
     fn finish(&self, mut p: Probe) -> Probe {
@@ -922,30 +1165,34 @@ pub(super) fn probe_with(
     let deadline = Instant::now() + timeout;
     let line = format!("{}\n", usage_request::REQUEST_LINE);
     let a = attempt(cmd, Some(line.as_bytes()), deadline);
-    let row = |report, output: Option<Raw>| Probe {
+    // Issue #1856: an accepted answer has credits off, so there is no
+    // spend limit to read; a timed-out request tells nothing of it.
+    let row = |report, output: Option<Raw>, spend| Probe {
         report,
         error: None,
         raw: output.filter(|_| keep_raw),
         source: None,
         direct_failure: None,
+        spend,
+        extra_shape: None,
     };
     let timed_out = UsageReport::empty(UsageState::Timeout);
     // A cancel is a daemon stopping: its rows are discarded anyway.
     if matches!(a.ended, Ended::Cancelled) {
-        return Ok(row(timed_out, a.output));
+        return Ok(row(timed_out, a.output, Spend::Unknown));
     }
     let answer = a
         .output
         .as_ref()
         .and_then(|o| usage_request::parse_answer(&o.stdout, now));
     if let Some(report) = answer {
-        return Ok(row(report, a.output));
+        return Ok(row(report, a.output, Spend::NotApplicable));
     }
     if matches!(a.ended, Ended::Deadline)
         || PROBE_CANCEL.load(Ordering::Relaxed)
         || Instant::now() >= deadline
     {
-        return Ok(row(timed_out, a.output));
+        return Ok(row(timed_out, a.output, Spend::Unknown));
     }
     let cmd = build(&text_args)?;
     Ok(text_probe(attempt(cmd, None, deadline), now, keep_raw))
@@ -1057,13 +1304,17 @@ fn text_probe(a: Attempt, now: i64, keep_raw: bool) -> Probe {
         Ended::Deadline | Ended::Cancelled => UsageReport::empty(UsageState::Timeout),
         Ended::Failed(reason) => return Probe::failed(reason, a.output.filter(|_| keep_raw)),
     };
-    Probe {
+    let mut p = Probe {
         report,
         error: None,
         raw: a.output.filter(|_| keep_raw),
         source: None,
         direct_failure: None,
-    }
+        spend: Spend::Unknown,
+        extra_shape: None,
+    };
+    p.spend = Spend::of_text(&p);
+    p
 }
 
 /// How one run of `claude` ended.
@@ -1245,23 +1496,29 @@ fn kill_group(_child: &std::process::Child) {}
 // Ordering and marks
 // ---------------------------------------------------------------------------
 
-/// Usable rows by the higher used window (a missing or already reset window
-/// counts as 0), then exhausted rows by when they are back (unknown last),
-/// then unavailable rows by state; ties by name.
+/// The order every view prints (issue #1813): usable rows by the
+/// rotator's headroom, most first, then usable rows with no headroom;
+/// exhausted rows by when they are back (unknown last); API-key rows;
+/// unavailable rows by state. Every tie goes to the name, as in the
+/// rotator's `best()`.
 pub(super) fn order(rows: &mut [Row], now: i64) {
     rows.sort_by(|a, b| {
-        let (ga, gb) = (row_key(a, now), row_key(b, now));
-        ga.0.cmp(&gb.0)
-            .then(ga.1.total_cmp(&gb.1))
+        row_key(a, now)
+            .cmp(&row_key(b, now))
             .then_with(|| a.profile.cmp(&b.profile))
     });
 }
 
+/// The line that states the order, printed last by the bar view and the
+/// table.
+pub(super) const ORDER_LINE: &str =
+    "order: rotator pick (most room in the worse of session and week, then name)";
+
 /// [`sort_key`], with API-key rows (issue #1700) after every usable and
 /// exhausted row and before the unavailable ones.
-fn row_key(r: &Row, now: i64) -> (u8, f64) {
+fn row_key(r: &Row, now: i64) -> (u8, i64) {
     if r.api_key {
-        return (2, 0.0);
+        return (2, 0);
     }
     match sort_key(&r.report, now) {
         (g, m) if g >= 2 => (g + 1, m),
@@ -1269,23 +1526,49 @@ fn row_key(r: &Row, now: i64) -> (u8, f64) {
     }
 }
 
-/// `(group, metric)`; a smaller metric sorts first within the group.
-fn sort_key(r: &UsageReport, now: i64) -> (u8, f64) {
+/// Rank of a usable row with no headroom: after every row that has one.
+const NO_HEADROOM: i64 = 101;
+
+/// `(group, rank)`; a smaller rank sorts first within the group.
+///
+/// Usable rows rank by `100 - headroom`, where headroom is the rotator's
+/// [`Reading::headroom`]: the floored points left in the worse of the
+/// session and all-models week windows, a missing session counting as 0%.
+/// One deliberate difference (D2): a window whose reset time has already
+/// passed counts as 0% used here, because it has reset since it was read;
+/// the rotator reads it as probed. The row still shows the probed value.
+/// An `ok` row with no week window is a failed probe to the rotator, which
+/// never picks it, so it ranks after every row that has a headroom (D3), as
+/// does a NaN reading.
+fn sort_key(r: &UsageReport, now: i64) -> (u8, i64) {
     match r.state {
         UsageState::Ok => {
-            let used = |w: &Option<UsageWindow>| match w {
-                Some(w) if w.resets_at.is_none_or(|t| t > now) => w.used_percentage,
-                _ => 0.0,
+            let Some(week) = &r.week_all else {
+                return (0, NO_HEADROOM);
             };
-            (0, used(&r.session).max(used(&r.week_all)))
+            let used = |w: &UsageWindow| {
+                if w.resets_at.is_none_or(|t| t > now) {
+                    w.used_percentage
+                } else {
+                    0.0
+                }
+            };
+            let reading = Reading::Measured {
+                session: r.session.as_ref().map_or(0.0, used),
+                week: used(week),
+            };
+            match reading.headroom() {
+                Some(h) => (0, 100 - i64::from(h)),
+                None => (0, NO_HEADROOM),
+            }
         }
         UsageState::SessionExhausted | UsageState::WeeklyExhausted | UsageState::SpendLimit => {
-            (1, back_at(r).map_or(f64::INFINITY, |t| t as f64))
+            (1, back_at(r).unwrap_or(i64::MAX))
         }
-        UsageState::NotLoggedIn => (2, 0.0),
-        UsageState::Timeout => (2, 1.0),
-        UsageState::Unparsed => (2, 2.0),
-        UsageState::Error => (2, 3.0),
+        UsageState::NotLoggedIn => (2, 0),
+        UsageState::Timeout => (2, 1),
+        UsageState::Unparsed => (2, 2),
+        UsageState::Error => (2, 3),
     }
 }
 
@@ -1315,6 +1598,18 @@ fn back_at(r: &UsageReport) -> Option<i64> {
 /// `*` for the default, `leased→<dir>`, `hosts:<account>`, `live in
 /// ~/.claude`, `overflow[, blocked until <time>]`; `-` for none.
 pub(super) fn marks(row: &Row) -> String {
+    let parts = marks_parts(row, true);
+    if parts.is_empty() {
+        "-".to_string()
+    } else {
+        parts.join(" ")
+    }
+}
+
+/// The row's marks, each sanitised for display; empty when there are none.
+/// `with_live: false` leaves out `live in ~/.claude`, which the bar view
+/// shows as `(live)` beside the name instead.
+pub(super) fn marks_parts(row: &Row, with_live: bool) -> Vec<String> {
     let mut parts = Vec::new();
     if row.default {
         parts.push("*".to_string());
@@ -1325,7 +1620,7 @@ pub(super) fn marks(row: &Row) -> String {
     if row.account != row.profile {
         parts.push(format!("hosts:{}", row.account));
     }
-    if row.live_in {
+    if row.live_in && with_live {
         // The wording auto-switch uses for a login live in another directory.
         parts.push(format!("live in {}", default_live::LABEL));
     }
@@ -1341,11 +1636,7 @@ pub(super) fn marks(row: &Row) -> String {
     if row.source == Some(Source::Fallback) {
         parts.push("(fallback)".to_string());
     }
-    if parts.is_empty() {
-        "-".to_string()
-    } else {
-        parts.join(" ")
-    }
+    parts.iter().map(|p| sanitize_display(p, false)).collect()
 }
 
 /// UTC time as `YYYY-MM-DDTHH:MM:SSZ`, the rotate log's format.
@@ -1395,7 +1686,7 @@ fn clip(s: &str) -> String {
 
 /// The human table. Its layout is not a stable interface; `--json` is.
 pub(super) fn render_table(rows: &[Row]) -> String {
-    const HEADER: [&str; 7] = [
+    const HEADER: [&str; 8] = [
         "PROFILE",
         "MARKS",
         "STATE",
@@ -1403,6 +1694,7 @@ pub(super) fn render_table(rows: &[Row]) -> String {
         "SESSION RESETS",
         "WEEK",
         "WEEK RESETS",
+        "SPEND",
     ];
     let pct = |w: &Option<UsageWindow>| {
         w.as_ref()
@@ -1413,7 +1705,7 @@ pub(super) fn render_table(rows: &[Row]) -> String {
             .and_then(|w| w.resets_text.as_deref())
             .map_or("-".into(), clip)
     };
-    let cells: Vec<[String; 7]> = rows
+    let cells: Vec<[String; 8]> = rows
         .iter()
         .map(|r| {
             [
@@ -1430,6 +1722,7 @@ pub(super) fn render_table(rows: &[Row]) -> String {
                 resets(&r.report.session),
                 pct(&r.report.week_all),
                 resets(&r.report.week_all),
+                r.spend.as_str().to_string(),
             ]
         })
         .collect();
@@ -1453,18 +1746,33 @@ pub(super) fn render_table(rows: &[Row]) -> String {
     let mut out = line(&HEADER.map(String::from));
     for (row, c) in rows.iter().zip(&cells) {
         out.push_str(&line(c));
-        if let Some(raw) = &row.raw {
-            match row.source {
-                Some(s @ (Source::Passive | Source::Direct)) => {
-                    out.push_str(&format!("  ({}: no claude output)\n", s.as_str()));
-                }
-                _ => {
-                    raw_block(&mut out, "stdout", &raw.stdout);
-                    raw_block(&mut out, "stderr", &raw.stderr);
-                }
+        raw_lines(&mut out, row);
+    }
+    out.push_str(&footers(rows));
+    out.push_str(ORDER_LINE);
+    out.push('\n');
+    out
+}
+
+/// The `--raw` text under a row, when it was kept.
+pub(super) fn raw_lines(out: &mut String, row: &Row) {
+    if let Some(raw) = &row.raw {
+        match row.source {
+            Some(s @ (Source::Passive | Source::Direct)) => {
+                out.push_str(&format!("  ({}: no claude output)\n", s.as_str()));
+            }
+            _ => {
+                raw_block(out, "stdout", &raw.stdout);
+                raw_block(out, "stderr", &raw.stderr);
             }
         }
     }
+}
+
+/// The overflow, API-key `live:` and `blocked:` lines after the rows of
+/// either human view.
+pub(super) fn footers(rows: &[Row]) -> String {
+    let mut out = String::new();
     if let Some(r) = rows
         .iter()
         .find(|r| r.live_in && r.overflow && plan_limit_reached(r))
@@ -1479,26 +1787,27 @@ pub(super) fn render_table(rows: &[Row]) -> String {
     }
     if let Some((reason, until)) = rows.iter().find_map(|r| r.api_key_blocked.as_ref()) {
         out.push_str(&format!(
-            "blocked: the API key until {} ({reason})\n",
-            utc_time(*until)
+            "blocked: the API key until {} ({})\n",
+            utc_time(*until),
+            sanitize_display(reason, false)
         ));
     }
     out
 }
 
 /// The `SESSION` cell of an API-key row.
-const API_KEY_CELL: &str = "api-key (billed per token)";
+pub(super) const API_KEY_CELL: &str = "api-key (billed per token)";
 /// The `SESSION` cell of a plan reading with no session window (#1818).
-const NO_SESSION_LIMIT_CELL: &str = "no session limit";
+pub(super) const NO_SESSION_LIMIT_CELL: &str = "no session limit";
 
 /// A usable reading that showed no session window (#1818).
-fn no_session_limit(r: &Row) -> bool {
+pub(super) fn no_session_limit(r: &Row) -> bool {
     !r.report.session_limit
         && matches!(r.report.state, UsageState::Ok | UsageState::WeeklyExhausted)
 }
 
 /// The `STATE` of a row: `api_key` for an API-key profile.
-fn state_label(r: &Row) -> &'static str {
+pub(super) fn state_label(r: &Row) -> &'static str {
     if r.api_key {
         "api_key"
     } else {
@@ -1555,6 +1864,8 @@ struct JsonRow<'a> {
     api_key_blocked: Option<ApiKeyBlock<'a>>,
     state: &'static str,
     source: Option<&'static str>,
+    /// Issue #1856: always present. The `extra_usage` shape never is.
+    spend: &'static str,
     session: Option<&'a UsageWindow>,
     session_limit: bool,
     week_all: Option<&'a UsageWindow>,
@@ -1620,6 +1931,7 @@ fn json_rows(rows: &[Row]) -> Vec<JsonRow<'_>> {
                 }),
             state: state_label(r),
             source: r.source.map(Source::as_str),
+            spend: r.spend.as_str(),
             session: r.report.session.as_ref(),
             session_limit: r.report.session_limit,
             week_all: r.report.week_all.as_ref(),
@@ -1645,20 +1957,37 @@ pub(super) fn error_warnings(rows: &[Row]) -> Vec<String> {
         .collect()
 }
 
-/// Issue #1844: one line per row that fell back after a direct read
-/// failed, naming the fixed reason. Printed with `--raw` only.
-pub(super) fn fallback_notes(rows: &[Row]) -> Vec<String> {
-    rows.iter()
-        .filter(|r| r.source == Some(Source::Fallback))
-        .filter_map(|r| {
-            r.direct_failure.map(|why| {
-                format!(
-                    "note: profile \"{}\": direct read gave {why}; using claude",
-                    sanitize_display(&r.profile, false)
-                )
-            })
-        })
-        .collect()
+/// The notes on where a row's figures came from, printed with `--raw`
+/// only. Issue #1844: one line per row that fell back after a direct read
+/// failed, naming the fixed reason. Issue #1856: two lines per credits-on
+/// direct row, how its spend was read and the redacted `extra_usage` shape.
+pub(super) fn source_notes(rows: &[Row]) -> Vec<String> {
+    let mut notes = Vec::new();
+    for r in rows {
+        let name = sanitize_display(&r.profile, false);
+        match (r.source, &r.extra_shape) {
+            (Some(Source::Fallback), _) => {
+                if let Some(why) = r.direct_failure {
+                    notes.push(format!(
+                        "note: profile \"{name}\": direct read gave {why}; using claude"
+                    ));
+                }
+            }
+            (Some(Source::Direct), Some(shape)) => {
+                let ending = match r.spend {
+                    Spend::Ok | Spend::LimitReached => "spend from claude",
+                    Spend::Unknown => "spend probe failed",
+                    Spend::NotProbed | Spend::NotApplicable => "spend not probed",
+                };
+                notes.push(format!(
+                    "note: profile \"{name}\": direct read gave usage credits on; windows direct, {ending}"
+                ));
+                notes.push(format!("note: profile \"{name}\": {}", shape.line()));
+            }
+            _ => {}
+        }
+    }
+    notes
 }
 
 /// SR-10: the fixed line for a profile whose refresh request may have

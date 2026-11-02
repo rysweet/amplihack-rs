@@ -105,7 +105,11 @@ steps:
       # so a relative one is not applied twice. It reads AUTODRIVE_QA_EVIDENCE,
       # AUTODRIVE_ROUND_LABEL and the AUTODRIVE_QA_* overrides from this
       # environment, and returns 0 whenever it produced evidence.
-      REPO_PATH="$PWD" bash "$T"
+      # #1763: the base branch from step-01 (merge_sync) scopes the QA command
+      # to the changed paths; an empty base gives `(unknown)` paths.
+      B="$(printf '%s' "${RECIPE_VAR_merge_sync:-}" | amplihack orch helper extract-json --require-field base 2>/dev/null \
+        | amplihack orch helper extract-field --field base --default '' 2>/dev/null)" || B=""
+      AUTODRIVE_QA_BASE="$B" REPO_PATH="$PWD" bash "$T"
     output: "qa_evidence"
 
   - id: "step-03-wait-for-ci"

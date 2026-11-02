@@ -48,7 +48,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 16] = [
+const AUTODRIVE_TOOLS: [&str; 19] = [
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
     "autodrive_escalate.sh",
@@ -59,8 +59,11 @@ const AUTODRIVE_TOOLS: [&str; 16] = [
     "autodrive_platform_facts.sh",
     "autodrive_pr_head.sh",
     "autodrive_qa_evidence.sh",
+    "autodrive_qa_scope.sh",
+    "autodrive_qa_sources.sh",
     "autodrive_round_evidence.sh",
     "autodrive_round_tail.sh",
+    "autodrive_scenario_name.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
     "autodrive_unmerged.sh",
@@ -1522,9 +1525,10 @@ fn every_gadugi_decision_asks_autodrive_gadugi_required() {
             "{name} must ask autodrive_gadugi_required whether gadugi-test is needed"
         );
     }
-    // Only autodrive_trust.sh reads the marker files.
+    // Only autodrive_trust.sh and the scope helper it loads (#1763,
+    // autodrive_qa_scope.sh) read the marker files.
     for path in control_path_files() {
-        if path.ends_with("autodrive_trust.sh") {
+        if path.ends_with("autodrive_trust.sh") || path.ends_with("autodrive_qa_scope.sh") {
             continue;
         }
         for (n, line) in read(&path).lines().enumerate() {
@@ -1593,12 +1597,27 @@ fn autodrive_gadugi_required_follows_the_qa_team_table() {
             fs::create_dir_all(p.parent().expect("marker parent")).expect("marker dir");
             fs::write(p, "").expect("write marker");
         }
+        // #1763 reads the manifests from git, never the work tree: commit
+        // them. With AUTODRIVE_QA_BASE unset (a preflight) HEAD is the merge base.
+        let git = Command::new("bash")
+            .arg("-c")
+            .arg(
+                "git init -q . && git add -A && git -c user.name=t -c user.email=t@example.invalid \
+                 commit -q --allow-empty --no-verify -m init",
+            )
+            .current_dir(tmp.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("run git");
+        assert!(git.status.success(), "commit the fixture: {git:?}");
         let mut cmd = Command::new("bash");
         cmd.arg("-c")
             .arg(r#". "$1" && autodrive_repo_type "$2" && autodrive_gadugi_required "$2""#)
             .arg("bash")
             .arg(&trust)
             .arg(tmp.path())
+            .env_remove("AUTODRIVE_QA_BASE")
             .env_remove("AUTODRIVE_QA_SCENARIO_DIR");
         if let Some(v) = scen {
             cmd.env("AUTODRIVE_QA_SCENARIO_DIR", v);
@@ -1729,12 +1748,14 @@ const AUTODRIVE_AGENT_STEPS: [(&str, &str); 5] = [
     ("loop-health-evaluator", "step-02-evaluate-loop-health"),
 ];
 
-const QA_REASON_TOKENS: [&str; 8] = [
+const QA_REASON_TOKENS: [&str; 10] = [
     "qa-command-failed",
     "no-scenarios",
     "gadugi-validate-failed",
     "gadugi-scenario-unnamed",
     "gadugi-run-failed",
+    "qa-config-invalid",
+    "qa-unresolved",
     "qa-command-missing",
     "qa-command-not-installed",
     "gadugi-test-missing",
@@ -2196,6 +2217,10 @@ fn qa_evidence_runs_one_gadugi_process_per_scenario() {
         "qa_repo_type",
         "qa_dir",
         "qa_command",
+        "qa_command_source",
+        "qa_command_paths",
+        "qa_candidates",
+        "qa_ci_skip",
         "qa_suite_commands_count",
         "qa_exit_code",
         "head_sha",

@@ -83,6 +83,12 @@ steps:
           gh pr checks --required
           # or, for a specific branch: gh pr checks --required <branch>
 
+      Waiting (issue #1794): if checks are still running, do not poll with
+      `tail -f /dev/null` or `timeout N tail -f /dev/null`; the `tail` outlives
+      the tool call as an orphan and the PreToolUse hook denies it. Wait with
+      `amplihack wait --seconds N`, or run a command in the background and
+      `wait $pid`.
+
       Apply this rule UNLESS the environment variable
       AMPLIHACK_DISABLE_PR_GREEN_SHORTCIRCUIT is set to a truthy value
       (`1`/`true`), in which case skip this rule entirely and evaluate normally:
@@ -160,6 +166,12 @@ steps:
       pending/failing/closed/draft/no-PR/empty-required-check-set or unknown
       states — in those cases evaluate normally and prefer continuing.
 
+      Waiting (issue #1794): if checks are still running, do not poll with
+      `tail -f /dev/null` or `timeout N tail -f /dev/null`; the `tail` outlives
+      the tool call as an orphan and the PreToolUse hook denies it. Wait with
+      `amplihack wait --seconds N`, or run a command in the background and
+      `wait $pid`.
+
       End with EXACTLY one JSON object as your final line (issue #1062 finding
       C: the loop reads a structured `goal_status` field, not substring-matched
       prose):
@@ -218,6 +230,12 @@ steps:
       override it. NEVER conclude ACHIEVED via this rule on
       pending/failing/closed/draft/no-PR/empty-required-check-set or unknown
       states; evaluate normally in those cases.
+
+      Waiting (issue #1794): if checks are still running, do not poll with
+      `tail -f /dev/null` or `timeout N tail -f /dev/null`; the `tail` outlives
+      the tool call as an orphan and the PreToolUse hook denies it. Wait with
+      `amplihack wait --seconds N`, or run a command in the background and
+      `wait $pid`.
 
       Was the overall goal achieved? Summarize what was done.
       End with `GOAL_STATUS: ACHIEVED`, `GOAL_STATUS: PARTIAL -- [gaps]`,

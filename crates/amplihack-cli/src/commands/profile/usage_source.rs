@@ -8,8 +8,22 @@
 //! | `auto` / `text` | fallback only | as named |
 //! | overflow, not `direct` | fallback only | `text` |
 //! | overflow, `direct` | none: error `direct read: overflow needs /usage` | - |
-//! | unset | passive, direct, fallback | `auto`; `text` when credits are on |
+//! | unset | passive, direct, fallback | `auto`; `text` when credits are on and no window is read |
 //! | `direct` | passive, direct; a failure is an error row | - |
+//!
+//! Issue #1856: a direct read with usage credits on and a readable window
+//! is a `direct` row with the direct windows, the redacted `extra_usage`
+//! shape and spend [`Spend::NotProbed`]. `profile usage --spend` then runs
+//! a spend-only `/usage` probe for it under the normal per-probe timeout;
+//! the default run and the rotator do not. The spend column:
+//!
+//! | Row | Spend |
+//! |---|---|
+//! | passive, direct with credits off, accepted `get_usage` answer, API key | `n/a` |
+//! | `/usage` text with a usage reading | `ok`, or `limit_reached` on a spend limit |
+//! | `/usage` text with no usage reading, a failed probe, an error row | `unknown` |
+//! | direct with credits on, spend probe asked for but no `claude` found | `unknown` |
+//! | direct with credits on, no spend probe asked for | `not_probed` |
 //!
 //! `claude` is looked up only when a fallback is about to run
 //! ([`LazyBinary`]), and at most a fixed number run at once ([`ClaudeGate`]).
@@ -19,6 +33,7 @@ use super::probe_limits::{self, ProbeMode};
 use super::usage_cmd::{ErrorReason, Probe};
 #[cfg(unix)]
 use super::usage_direct::{self, Endpoints};
+use super::usage_parse::UsageState;
 use crate::binary_finder::BinaryInfo;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -47,6 +62,55 @@ impl Source {
             Self::Passive => "passive",
             Self::Direct => "direct",
             Self::Fallback => "fallback",
+        }
+    }
+}
+
+/// What is known of a row's usage-credit spend limit (issue #1856). It is
+/// shown only: it never changes a row's windows, state or order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Spend {
+    /// The source has no spend limit to report: credits are off, or the
+    /// row is passive or uses an API key.
+    NotApplicable,
+    /// `/usage` text gave a usage reading and no used-up spend limit.
+    Ok,
+    /// `/usage` text reported the spend limit as reached.
+    LimitReached,
+    /// A probe ran, or was asked for and could not start, and gave no
+    /// usage reading.
+    Unknown,
+    /// Credits are on and no spend probe was asked for: `profile usage`
+    /// without `--spend`, `AMPLIHACK_PROFILE_USAGE_PROBE=direct`, or the
+    /// rotator.
+    NotProbed,
+}
+
+impl Spend {
+    pub(super) fn as_str(self) -> &'static str {
+        match self {
+            Self::NotApplicable => "n/a",
+            Self::Ok => "ok",
+            Self::LimitReached => "limit_reached",
+            Self::Unknown => "unknown",
+            Self::NotProbed => "not_probed",
+        }
+    }
+
+    /// The spend that `/usage` text gave. `ok` only for a usage reading:
+    /// an error, a timeout, a login prompt or text that did not parse is
+    /// `unknown`.
+    pub(super) fn of_text(p: &Probe) -> Self {
+        if p.error.is_some() {
+            return Self::Unknown;
+        }
+        match p.report.state {
+            UsageState::SpendLimit => Self::LimitReached,
+            UsageState::Ok | UsageState::SessionExhausted | UsageState::WeeklyExhausted => Self::Ok,
+            UsageState::NotLoggedIn
+            | UsageState::Timeout
+            | UsageState::Unparsed
+            | UsageState::Error => Self::Unknown,
         }
     }
 }
@@ -196,7 +260,7 @@ fn read_without_claude(
         timeout: env.timeout,
         now_ms: chrono::Utc::now().timestamp_millis(),
     };
-    usage_direct::read(&env.endpoints, &req).map(|report| Probe::read(report, Source::Direct))
+    usage_direct::read(&env.endpoints, &req).map(Probe::direct)
 }
 
 /// No direct read off Unix: the credentials checks it needs are Unix-only.

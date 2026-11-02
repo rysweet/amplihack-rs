@@ -16,6 +16,17 @@
 # A root Python or Node project always wins over a nested crate (the
 # mistt-repo/jamestown shape: root pytest suite + grid-encode-decode/Cargo.toml).
 #
+# Issue #1763 changed step 5. Detection is now scoped to the pull request's
+# changed paths (test-issue-1763-qa-scope.sh covers that); with an empty
+# diff, as here, there must be exactly one top-level candidate after
+# same-ecosystem collapse. The manifests come from the merge-base tree, never
+# the working tree, so each fixture's one commit is also refs/remotes/origin/main
+# and AUTODRIVE_QA_BASE=main (with no base, gadugi is always required). Several unrelated candidates, an unsafe directory name, or a
+# search error with no root project are no longer BLOCKED/qa-command-missing
+# but QA_UNRESOLVED/qa-unresolved, with the candidates in qa_candidates, and
+# autodrive_qa_target says `unresolved` where it said `ambiguous`. The search
+# moved to autodrive_qa_scope.sh, which autodrive_trust.sh loads.
+#
 # This runs amplifier-bundle/tools/autodrive_qa_evidence.sh, unmodified, on
 # scratch git repositories, with stub cargo/pytest/npm/gadugi-test on PATH that
 # record only "name|<dir relative to the repo>|argv". It also calls
@@ -31,6 +42,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 TOOL="${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_evidence.sh"
 TRUST="${REPO_ROOT}/amplifier-bundle/tools/autodrive_trust.sh"
+SCOPE="${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_scope.sh"
 
 harness_error() { echo "HARNESS-ERROR: $*" >&2; exit 2; }
 
@@ -81,7 +93,8 @@ SYSPATH="/usr/bin:/bin"
 # --- fixtures --------------------------------------------------------------
 N=0
 # new_repo <path>... — a fresh git repository holding empty files at each
-# relative <path> (a trailing / makes a directory). Sets REPO and CALLS.
+# relative <path> (a trailing / makes a directory), committed as HEAD and
+# refs/remotes/origin/main. Sets REPO and CALLS.
 new_repo() {
     N=$((N + 1))
     REPO="$WORK/r$N/repo"
@@ -98,9 +111,17 @@ new_repo() {
     ( cd "$REPO" && git init -q . && git add -A \
       && c="$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
               GIT_COMMITTER_EMAIL=t@example.invalid git commit-tree "$(git write-tree)" -m init)" \
-      && git update-ref HEAD "$c" ) >/dev/null 2>&1 \
+      && git update-ref HEAD "$c" && git update-ref refs/remotes/origin/main "$c" ) >/dev/null 2>&1 \
       || harness_error "could not create a scratch git repo at $REPO"
 }
+# recommit — commit the work tree again (symlinks included) as HEAD and origin/main.
+recommit() {
+    ( cd "$REPO" && git add -A && c="$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
+          GIT_COMMITTER_EMAIL=t@example.invalid git commit-tree "$(git write-tree)" -p HEAD -m again)" \
+      && git update-ref HEAD "$c" && git update-ref refs/remotes/origin/main "$c" ) >/dev/null 2>&1 \
+      || harness_error "could not commit again in $REPO"
+}
+export AUTODRIVE_QA_BASE=main
 
 # run_tool [VAR=value]... — runs the tool on $REPO with a scrubbed environment
 # (every AUTODRIVE_QA_* unset unless given). Sets OUT (the record) and ERR.
@@ -109,7 +130,7 @@ run_tool() {
     local stdout
     ERR="$WORK/r$N/err"
     stdout="$(env -i HOME="$WORK" TMPDIR="$WORK" PATH="${STUBPATH}:${SYSPATH}" REPO_PATH="$REPO" \
-        FIXTURE_ROOT="$REPO" CALLS="$CALLS" AUTODRIVE_ROUND_LABEL=round-1 "$@" \
+        FIXTURE_ROOT="$REPO" CALLS="$CALLS" AUTODRIVE_ROUND_LABEL=round-1 AUTODRIVE_QA_BASE=main "$@" \
         bash "$TOOL" 2>"$ERR" </dev/null)" || true
     OUT="${stdout##*$'\n'}"
 }
@@ -225,41 +246,41 @@ new_repo target/Cargo.toml
 expect_target d-target $'unknown\t.'
 expect_type_req d-type unknown false
 
-echo "== #1516 (e): two unrelated nested crates are BLOCKED and both are named =="
+echo "== #1516 (e), changed by #1763: two unrelated nested crates are QA_UNRESOLVED and both are named =="
 new_repo alpha/Cargo.toml beta/Cargo.toml
 run_tool
-expect e "two siblings" qa_status=BLOCKED qa_reason=qa-command-missing qa_repo_type=unknown qa_dir=. gadugi_required=false
+expect e "two siblings" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved qa_repo_type=unknown qa_dir="" \
+    qa_command="" qa_command_source="" qa_candidates="alpha beta" gadugi_required=false
 expect_calls e-calls "cargo is never called" cargo ""
 sum="$(f qa_summary)"
-if [[ "$sum" == *"ambiguous nested Cargo"* && "$sum" == *alpha* && "$sum" == *beta* ]]; then
-    pass e-summary "summary names the ambiguity and both candidates"
+if [[ "$sum" == *"unresolved QA project candidates: alpha beta"* ]]; then
+    pass e-summary "summary names both candidates"
 else fail e-summary "summary is '$sum'"; fi
-got="$(target_of "$REPO")"
-want_re="^ambiguous"$'\t'"alpha(/Cargo\\.toml)? beta(/Cargo\\.toml)?"$'\n'"#\$"
-if [[ "$got" =~ $want_re ]]; then
-    pass e-target "autodrive_qa_target: ambiguous, space-separated sorted candidates"
-else fail e-target "autodrive_qa_target printed $(printf '%q' "$got")"; fi
+expect_target e-target $'unresolved\talpha beta'
 expect_type_req e-type unknown false
-if [[ "$OUT" != *"$WORK"* ]]; then pass e-sec-d3 "the ambiguous record holds no host path"
+if [[ "$OUT" != *"$WORK"* ]]; then pass e-sec-d3 "the unresolved record holds no host path"
 else fail e-sec-d3 "host path leaked: $OUT"; fi
 
-echo "== #1516: a string prefix is not an ancestor (ws + ws2) =="
+echo "== #1516, changed by #1763: a string prefix is not an ancestor (ws + ws2) =="
 new_repo ws/Cargo.toml ws2/Cargo.toml
 run_tool
-expect prefix "ws is not an ancestor of ws2" qa_status=BLOCKED qa_repo_type=unknown qa_dir=.
+expect prefix "ws is not an ancestor of ws2" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved qa_repo_type=unknown \
+    qa_candidates="ws ws2"
 expect_calls prefix-calls "cargo is never called" cargo ""
 
-echo "== #1516: the first sorted hit must be an ancestor of every other hit =="
+echo "== #1516, changed by #1763: unrelated top-level candidates are unresolved =="
 new_repo m/Cargo.toml n/o/Cargo.toml
 run_tool
-expect not-ancestor "m and n/o are unrelated" qa_status=BLOCKED qa_repo_type=unknown
+expect not-ancestor "m and n/o are unrelated" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved qa_repo_type=unknown \
+    qa_candidates="m n/o"
 
-echo "== #1516 (e'): the candidate list is capped at 10 =="
+echo "== #1516 (e'), changed by #1763: the candidate list is capped at 10 =="
 set --
 for i in 01 02 03 04 05 06 07 08 09 10 11 12; do set -- "$@" "c$i/Cargo.toml"; done
 new_repo "$@"
 run_tool
-expect e2 "twelve siblings" qa_status=BLOCKED qa_repo_type=unknown
+expect e2 "twelve siblings" qa_status=QA_UNRESOLVED qa_reason=qa-unresolved qa_repo_type=unknown \
+    qa_candidates="c01 c02 c03 c04 c05 c06 c07 c08 c09 c10 (+2 more)"
 sum="$(f qa_summary)"
 if [[ "$sum" == *"(+2 more)"* && "$sum" == *c01* && "$sum" == *c10* && "$sum" != *c11* && "$sum" != *c12* ]]; then
     pass e2-summary "first 10 candidates then '(+2 more)'"
@@ -335,24 +356,25 @@ expect_target rootfile-cargo-root $'rust-cli\t.'
 new_repo requirements.txt pyproject.toml c/Cargo.toml
 expect_target rootfile-pyproject $'python\t.'
 
-echo "== #1516: a find error (unreadable directory) is ambiguous, never the readable crate =="
-if [ "$(id -u)" = 0 ]; then
-    echo "  SKIP[unreadable]: running as root, which can read a mode-000 directory"
-else
-    new_repo a/Cargo.toml a/src/lib.rs z/b/Cargo.toml
-    chmod 000 "$REPO/z"
-    expect_target unreadable-target $'ambiguous\t(search-error) a'
-    expect_type_req unreadable-type unknown false
-    run_tool
-    expect unreadable "a crate hidden in an unreadable directory is BLOCKED" \
-        qa_status=BLOCKED qa_repo_type=unknown
-    case "$(f qa_summary)" in
-        *"ambiguous nested Cargo workspace candidates: (search-error) a"*) pass unreadable-summary "the summary names the search error" ;;
-        *) fail unreadable-summary "summary does not name the search error: $(f qa_summary)" ;;
-    esac
-    expect_calls unreadable-calls "cargo is never called when the search failed" cargo ""
-    chmod 755 "$REPO/z"
-fi
+echo "== #1516, changed by #1763: a search error with no root project is unresolved, never the readable crate =="
+# The search reads the merge-base tree, so a mode-000 directory hides nothing;
+# a missing tree object makes git ls-tree fail part way instead.
+new_repo a/Cargo.toml a/src/lib.rs z/b/Cargo.toml
+zt="$(git -C "$REPO" rev-parse HEAD:z)" && rm -f "$REPO/.git/objects/${zt:0:2}/${zt:2}" || harness_error "could not drop tree z"
+expect_target unreadable-target $'unresolved\t(search-error) a'
+expect_type_req unreadable-type unknown false
+run_tool
+expect unreadable "a crate hidden behind an unreadable tree is QA_UNRESOLVED" \
+    qa_status=QA_UNRESOLVED qa_reason=qa-unresolved qa_repo_type=unknown qa_candidates="(search-error) a"
+case "$(f qa_summary)" in
+    *"unresolved QA project candidates: (search-error) a"*) pass unreadable-summary "the summary names the search error" ;;
+    *) fail unreadable-summary "summary does not name the search error: $(f qa_summary)" ;;
+esac
+expect_calls unreadable-calls "cargo is never called when the search failed" cargo ""
+new_repo a/Cargo.toml a/src/lib.rs z/b/Cargo.toml
+chmod 000 "$REPO/z"
+expect_target unreadable-dir $'unresolved\ta z/b'
+chmod 755 "$REPO/z"
 
 echo "== #1516: installed check accepts ./<command> relative to AUTODRIVE_QA_DIR =="
 new_repo sub/bin/
@@ -379,30 +401,30 @@ echo "== #1516 SEC-V4: symlinks are never followed =="
 mkdir -p "$WORK/outside"
 : > "$WORK/outside/Cargo.toml"
 new_repo README.md
-ln -s "$WORK/outside" "$REPO/x"
+ln -s "$WORK/outside" "$REPO/x"; recommit
 run_tool
 expect sec-v4-dir "a symlinked directory holding a crate is not searched" qa_status=BLOCKED qa_repo_type=unknown qa_dir=.
 expect_calls sec-v4-dir-calls "cargo is never called" cargo ""
 new_repo y/
-ln -s "$WORK/outside/Cargo.toml" "$REPO/y/Cargo.toml"
+ln -s "$WORK/outside/Cargo.toml" "$REPO/y/Cargo.toml"; recommit
 run_tool
 expect sec-v4-file "a symlinked Cargo.toml is not a hit" qa_status=BLOCKED qa_repo_type=unknown qa_dir=.
 expect_calls sec-v4-file-calls "cargo is never called" cargo ""
 
-echo "== #1516 SEC-V1/D2: unsafe directory names are BLOCKED and never reach a shell =="
+echo "== #1516 SEC-V1/D2, changed by #1763: unsafe directory names are QA_UNRESOLVED and never reach a shell =="
 # shellcheck disable=SC2016 # the literal $(...) is the payload; it must not expand
 for d in 'has space' '$(touch PWNED)' 'q"uote' 'back\slash' "$(printf 'tab\tdir')"; do
     new_repo "$d/Cargo.toml"
     run_tool
-    expect "sec-v1:$(printf '%q' "$d")" "unsafe name is BLOCKED with valid JSON" \
-        qa_status=BLOCKED qa_reason=qa-command-missing qa_repo_type=unknown qa_dir=.
+    expect "sec-v1:$(printf '%q' "$d")" "unsafe name is QA_UNRESOLVED with valid JSON" \
+        qa_status=QA_UNRESOLVED qa_reason=qa-unresolved qa_repo_type=unknown qa_dir=""
     expect_calls "sec-v1-calls:$(printf '%q' "$d")" "cargo is never called" cargo ""
     if [ ! -e "$REPO/PWNED" ] && [ ! -e "$REPO/$d/PWNED" ]; then
         pass "sec-v1-exec:$(printf '%q' "$d")" "the name was never executed"
     else fail "sec-v1-exec:$(printf '%q' "$d")" "a command substitution in a directory name ran"; fi
     got="$(target_of "$REPO")"
     case "$got" in
-        ambiguous$'\t'*) pass "sec-v1-target:$(printf '%q' "$d")" "autodrive_qa_target reports ambiguous" ;;
+        unresolved$'\t'*) pass "sec-v1-target:$(printf '%q' "$d")" "autodrive_qa_target reports unresolved" ;;
         *) fail "sec-v1-target:$(printf '%q' "$d")" "autodrive_qa_target printed $(printf '%q' "$got")" ;;
     esac
     cand="${got#*$'\t'}"; cand="${cand%$'\n#'}"
@@ -524,11 +546,13 @@ expect cdpath-word "configured command ignores CDPATH" qa_status=PASS qa_dir=sub
 expect_calls cdpath-word-calls "cargo runs in the repository's sub" cargo "cargo|sub|test"
 # shellcheck source=/dev/null
 got="$(cd "$REPO" && CDPATH="$WORK/cdpath" && export CDPATH && (. "$TRUST" && autodrive_qa_target x/y/..) 2>/dev/null)" || got=""
-if [ "$got" = $'rust-cli\ty' ]; then pass cdpath-target "autodrive_qa_target searches the given directory under CDPATH"
+# <dir> is only where git runs; the tree listed is always the repository's.
+if [ "$got" = $'rust-cli\tx/y' ]; then pass cdpath-target "autodrive_qa_target lists the repository's tree under CDPATH"
 else fail cdpath-target "autodrive_qa_target under CDPATH printed $(printf '%q' "$got")"; fi
 
 echo "== #1516: static constraints =="
-for t in "$TOOL" "$TRUST"; do
+for t in "$TOOL" "$TRUST" "$SCOPE"; do
+    [ -f "$t" ] || { fail "lines:${t##*/}" "missing"; continue; }
     n="$(wc -l < "$t" | tr -d ' ')"
     if [ "$n" -le 400 ]; then pass "lines:${t##*/}" "$n lines (<= 400)"
     else fail "lines:${t##*/}" "$n lines (> 400)"; fi
@@ -536,11 +560,11 @@ done
 if grep -n 'Cargo\.toml\|package\.json\|pyproject\.toml' "$TOOL" | grep -vE '^[0-9]+:[[:space:]]*#' >/dev/null; then
     fail markers "autodrive_qa_evidence.sh names a manifest outside comments; marker detection belongs to autodrive_trust.sh"
 else pass markers "autodrive_qa_evidence.sh leaves manifest names to autodrive_trust.sh"; fi
-if grep -q 'autodrive_qa_target()' "$TRUST" && grep -q 'autodrive_qa_target' "$TOOL"; then
-    pass helper "autodrive_qa_target is defined in autodrive_trust.sh and used by the tool"
-else fail helper "autodrive_qa_target must be defined in autodrive_trust.sh and called by autodrive_qa_evidence.sh"; fi
+if grep -q '^autodrive_qa_target()' "$SCOPE" 2>/dev/null && grep -q 'autodrive_qa_target' "$TOOL"; then
+    pass helper "autodrive_qa_target is defined in autodrive_qa_scope.sh and used by the tool"
+else fail helper "autodrive_qa_target must be defined in autodrive_qa_scope.sh and called by autodrive_qa_evidence.sh"; fi
 if command -v shellcheck >/dev/null 2>&1; then
-    if shellcheck -S warning "$TOOL" "$TRUST" >/dev/null 2>&1; then pass shellcheck "clean at -S warning"
+    if [ -f "$SCOPE" ] && shellcheck -S warning "$TOOL" "$TRUST" "$SCOPE" >/dev/null 2>&1; then pass shellcheck "clean at -S warning"
     else fail shellcheck "shellcheck -S warning reports problems"; fi
 else
     echo "  SKIP[shellcheck]: shellcheck not installed"

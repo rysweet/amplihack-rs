@@ -5,6 +5,7 @@ pub mod agent_binary;
 pub mod append;
 pub mod auto_mode;
 pub mod builder;
+pub mod cleanup;
 pub mod completions;
 pub mod config;
 pub mod cs_validate;
@@ -38,6 +39,7 @@ pub mod sessions;
 pub mod signal;
 pub mod usage;
 pub mod uvx_help;
+pub mod wait;
 pub mod workflow;
 
 use crate::{
@@ -124,6 +126,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         #[cfg(unix)]
         Commands::Sessions(cmd) => sessions::run_sessions(cmd),
         Commands::Usage(cmd) => usage::run(cmd),
+        Commands::Cleanup(args) => cleanup::run(args),
         Commands::Governor(cmd) => governor::run(cmd),
         Commands::Agent(cmd) => agent::run_agent(cmd),
         Commands::Launch {
@@ -486,6 +489,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::AgentBinary { shell, working_dir } => {
             agent_binary::run_agent_binary(shell, working_dir)
         }
+        Commands::Wait { seconds } => wait::run_wait(seconds),
         Commands::Update { skip_install } => crate::update::run_update(skip_install),
         Commands::Fleet { args } => fleet::run_fleet(args),
         Commands::New {

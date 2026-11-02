@@ -218,6 +218,8 @@ mod issue_1760_fakes;
 mod issue_1760_fixture;
 #[path = "issue_1760_fixture_files.rs"]
 mod issue_1760_fixture_files;
+#[path = "issue_1794_wait.rs"]
+mod issue_1794_wait;
 #[path = "issue_1797_capacity_summary.rs"]
 mod issue_1797_capacity_summary;
 #[path = "issue_1801_capacity_wait.rs"]
@@ -232,6 +234,8 @@ mod issue_1802_auto_drive_light_recipe;
 mod issue_1802_auto_drive_light_round;
 #[path = "issue_1803_rotation_owner.rs"]
 mod issue_1803_rotation_owner;
+#[path = "issue_1808_run_cleanup.rs"]
+mod issue_1808_run_cleanup;
 #[path = "issue_1811_fail_open.rs"]
 mod issue_1811_fail_open;
 #[path = "issue_1811_fixture.rs"]

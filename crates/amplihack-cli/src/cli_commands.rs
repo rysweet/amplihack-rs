@@ -40,6 +40,8 @@ pub enum Commands {
     /// Manage Claude Code login profiles
     #[command(subcommand)]
     Profile(crate::commands::profile::ProfileCommands),
+    /// Remove or archive what recipe runs leave behind (issue #1808)
+    Cleanup(crate::commands::cleanup::CleanupArgs),
     /// Archive old Claude Code sessions, or restore one
     #[cfg(unix)]
     #[command(subcommand)]
@@ -394,6 +396,20 @@ MODEL SELECTION (issues #1421, #1527)
         /// (default: the current directory).
         #[arg(short = 'w', long = "working-dir")]
         working_dir: Option<std::path::PathBuf>,
+    },
+    /// Wait for a number of seconds without starting any process.
+    ///
+    /// Use this instead of `tail -f /dev/null` or `timeout N tail -f
+    /// /dev/null`, which outlive the tool call and are left running as
+    /// orphans (the PreToolUse hook denies them). To wait for work to finish
+    /// rather than for a fixed time, run it in the background and wait on its
+    /// PID: `cmd & pid=$!; wait $pid`.
+    ///
+    /// Prints nothing and exits 0. Ctrl-C ends it at once.
+    Wait {
+        /// Whole seconds to wait, from 0 to 86400 (one day).
+        #[arg(long, value_parser = clap::value_parser!(u64).range(0..=86400))]
+        seconds: u64,
     },
     /// Self-update the amplihack binary, then run `install` to refresh framework assets.
     ///

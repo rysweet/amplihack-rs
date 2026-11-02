@@ -191,14 +191,25 @@ remove_worktree_and_branch() {
 # within_worktrees_dir <repo> <path> — true only when <path> is strictly
 # contained under <repo>/worktrees/ after symlink/.. resolution. Containment
 # guard: destructive ops never escape the managed worktrees/ subtree.
+#
+# Issue #1808: with AMPLIHACK_WORK_ROOT_EXPLICIT=1 worktrees live under
+# <work root>/worktrees/<repo>-<hash> (workflow_worktree_root.sh base), so that
+# base counts as managed too.
 within_worktrees_dir() {
-    local repo="$1" path="$2" base resolved
+    local repo="$1" path="$2" base resolved ext helper
     base="$(cd "$repo" 2>/dev/null && pwd -P)/worktrees" || return 1
     resolved="$(cd "$path" 2>/dev/null && pwd -P)" || return 1
     case "$resolved" in
         "$base"/?*) return 0 ;;
-        *) return 1 ;;
     esac
+    helper="$(dirname -- "${BASH_SOURCE[0]}")/workflow_worktree_root.sh"
+    if [ -f "$helper" ] && ext="$(bash "$helper" base "$repo" 2>/dev/null)" && [ -n "$ext" ] \
+        && ext="$(cd "$ext" 2>/dev/null && pwd -P)"; then
+        case "$resolved" in
+            "$ext"/?*) return 0 ;;
+        esac
+    fi
+    return 1
 }
 
 # sweep <repo_path> — best-effort orphan sweep. Always returns 0.

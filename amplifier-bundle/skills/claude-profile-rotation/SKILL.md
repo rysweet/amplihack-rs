@@ -59,7 +59,16 @@ Check each one and tell the user what is missing:
    amplihack profile usage
    ```
    Every profile to be used should show state `ok`. Log one in with
-   `amplihack profile login <name>`.
+   `amplihack profile login <name>`. `profile usage` draws each profile's
+   week and session as bars, marks the login in `~/.claude` with `(live)`,
+   and sorts rows by the rotator's headroom (most room in the worse of
+   session and week, then name), as its `order:` line says. Overflow and
+   excluded profiles are sorted the same way, so the first row is not
+   always the rotator's next pick.
+   Reset times are local (`MM-DD HH:MM`, zone on the `times:` line); add
+   `--utc` to compare them with the rotate log, which is in UTC. `--table`
+   gives the older text table, and `--json` is for scripts. Bars are
+   coloured only in a terminal; `NO_COLOR=1` turns colour off.
 3. A login in `~/.claude`, made with plain `claude` and `/login`.
 4. `~/.claude` and the profile root on the same filesystem.
 
@@ -260,8 +269,8 @@ or its week use reaches the threshold.
 recorded `overflow=in` or `on`; `no (<name> is overflow; plan capacity
 remains)` means it was put there while a plan login had room. A `default:`
 line appears when the default pointer names an overflow profile. `profile
-usage` marks the profile `overflow` and ends with `running on overflow:
-<name>` only when its login is in `~/.claude` and its probe shows the session
+usage` marks the profile `overflow` and prints `running on overflow:
+<name>` after its rows only when its login is in `~/.claude` and its probe shows the session
 or weekly limit reached. Log lines: `reason=overflow-in`,
 `reason=overflow-out`, `overflow: on|staying on|off ...`.
 
@@ -330,7 +339,7 @@ What to tell the user:
 
 - `rotate status` shows `~/.claude is on API key profile <name>: work is
   billed per token (since <ts>)` while it is live; `profile usage` shows
-  `api-key (billed per token)` and `live: work is running on the API key
+  `api-key (billed per token)` on its row and `live: work is running on the API key
   (billed per token)`.
 - Log lines: `per-token <name>: ...; marked overflow tier 10 via profile
   overflow add; login check passed (<detail>)`, then the swap line, then
