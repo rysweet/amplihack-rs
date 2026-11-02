@@ -17,9 +17,10 @@
 use super::backup::{BackupRefusal, first_free, fresh_backup, rejected_dir, stamp};
 use super::cycle::Ctx;
 use super::guide::{self, Fix, Kind, Paths};
+use super::handfix_msg as msg;
 use super::identify::{self, Holders, LiveId};
 use super::ledger::{HOME_UNREADABLE_GRACE, MAX_GUIDANCE_LINE, RotateLedger, RotateState};
-use super::log::{Sink, cut, msg};
+use super::log::{Sink, cut};
 use super::lost;
 pub use super::precheck::Env;
 use super::precheck::{move_check, record_check};

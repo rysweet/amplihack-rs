@@ -12,7 +12,9 @@
 //!   `RotateRefused("{ACCOUNT_MISMATCH} {from}")` when `from` has a record and
 //!   the account in `$HOME/.claude.json` does not match it. The check runs
 //!   before J0 and only reads: logins, locks, journal, ledger and records
-//!   are left as they were.
+//!   are left as they were. The relabel of the outgoing profile's
+//!   `.claude.json` is written after every pre-J0 refusal, so a refusal
+//!   before J0 leaves that file as it was.
 //! - No check for `Source::Adopt`, for a profile without a record, or when
 //!   `$HOME/.claude.json` names no account.
 //! - After a completed swap: `Adopt` records the outgoing account for the
@@ -238,6 +240,43 @@ fn a_swap_goes_ahead_when_the_record_matches() {
         None,
         "the incoming side is never recorded"
     );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_swap_refused_after_the_guard_leaves_the_profile_json_unchanged() {
+    // Crusty round 8: `relabel` is the swap's first write, so a refusal
+    // from a later pre-J0 check (here `HOME is not UTF-8`, which once came
+    // after it) must leave the outgoing profile's `.claude.json` alone.
+    use std::os::unix::ffi::OsStrExt;
+    let e = env();
+    rec(&e.root, "work", &uuid("u-work"));
+    let work_json = e.root.join("work/.claude.json");
+    private(
+        &work_json,
+        &serde_json::json!({"keep": 1, "oauthAccount": {"accountUuid": "u-old"}}).to_string(),
+    );
+    let before = fs::read(&work_json).unwrap();
+    let odd = e
+        .home
+        .with_file_name(std::ffi::OsStr::from_bytes(b"home-\xff"));
+    fs::rename(&e.home, &odd).unwrap();
+    match swap(
+        &e.store,
+        &e.rs,
+        &odd,
+        Source::Profile(n("work")),
+        &n("spare"),
+        NOW,
+    ) {
+        Err(ProfileError::RotateRefused(m)) => assert_eq!(m, "HOME is not UTF-8"),
+        other => panic!("expected the refusal, got {other:?}"),
+    }
+    assert_eq!(fs::read(&work_json).unwrap(), before, "relabel wrote first");
+    assert!(!e.rs.journal.exists());
+    assert_eq!(ino_at(&odd.join(".claude").join(CREDS)), Some(e.l));
+    assert_eq!(ino_at(&e.root.join("spare").join(CREDS)), Some(e.t));
+    assert_eq!(ino_at(&e.root.join("work").join(CREDS)), None);
 }
 
 #[cfg(target_os = "linux")]

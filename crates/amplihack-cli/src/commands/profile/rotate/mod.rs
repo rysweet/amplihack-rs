@@ -1,10 +1,9 @@
 //! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude`
 //! on the account with the most capacity left, by moving logins between
 //! `~/.claude` and the profiles. One-shot, `--dry-run`, and a background
-//! `watch` with `start`, `stop` and `status`, which launches start on their
-//! own while auto-switch is on (`autostart`). `profile switch NAME` moves a
-//! login with the same swap and pins rotation to it (`switch`, `pin`). See
-//! the Rotate section of docs/reference/profile-command.md.
+//! `watch` with `start`, `stop` and `status` (`autostart`). `profile switch
+//! NAME` moves a login with the same swap and pins rotation to it (`switch`,
+//! `pin`). See Rotate in docs/reference/profile-command.md.
 //!
 //! Login files are never opened, read, copied or hashed: they are checked
 //! with `lstat` and moved with rename and exchange calls only.
@@ -42,11 +41,15 @@ mod hand_fields;
 #[cfg(unix)]
 mod handfix;
 #[cfg(unix)]
+mod handfix_msg;
+#[cfg(unix)]
 mod held;
 #[cfg(unix)]
 mod holders;
 #[cfg(unix)]
 pub(super) mod identify;
+#[cfg(unix)]
+mod inflight;
 #[cfg(unix)]
 pub(super) mod key_check;
 #[cfg(unix)]
@@ -104,17 +107,11 @@ pub use overflow_msg::{CheckNote, alert_key_held_session, per_token_off_key, per
 pub use overflow_record::append_to_log;
 
 #[cfg(all(test, unix))]
+mod tests;
+#[cfg(all(test, unix))]
 mod tests_autostart;
 #[cfg(all(test, unix))]
-mod tests_autostart_owner;
-#[cfg(all(test, unix))]
 mod tests_daemon;
-#[cfg(all(test, unix))]
-mod tests_damp;
-#[cfg(all(test, unix))]
-mod tests_decide;
-#[cfg(all(test, unix))]
-mod tests_gate_record;
 #[cfg(all(test, unix))]
 mod tests_handfix;
 #[cfg(all(test, unix))]
@@ -136,29 +133,13 @@ mod tests_issue_1845_swap;
 #[cfg(all(test, unix))]
 mod tests_key_check;
 #[cfg(all(test, unix))]
-mod tests_ledger;
-#[cfg(all(test, unix))]
-mod tests_live_readers;
-#[cfg(all(test, unix))]
 mod tests_log;
 #[cfg(all(test, unix))]
 mod tests_measure;
 #[cfg(all(test, unix))]
-mod tests_overflow;
-#[cfg(all(test, unix))]
-mod tests_owner;
-#[cfg(all(test, unix))]
 mod tests_pin;
 #[cfg(all(test, target_os = "linux"))]
 mod tests_pin_overflow;
-#[cfg(all(test, unix))]
-mod tests_pin_platform;
-#[cfg(all(test, unix))]
-mod tests_platform;
-#[cfg(all(test, unix))]
-mod tests_platform_block;
-#[cfg(all(test, unix))]
-mod tests_platform_identify;
 #[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
@@ -167,8 +148,6 @@ mod tests_revalidate;
 mod tests_revalidate_cause;
 #[cfg(all(test, unix))]
 mod tests_revalidate_unit;
-#[cfg(all(test, unix))]
-mod tests_settings;
 #[cfg(test)]
 mod tests_source_scan;
 #[cfg(all(test, unix))]
