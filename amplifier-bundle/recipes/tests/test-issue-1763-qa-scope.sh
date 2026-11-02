@@ -541,8 +541,12 @@ rf_case tok-dir-escape dir-not-found
 
 rf_repo "$QA_OK"; put .amplihack/qa.toml $'command = "true"\n'; snap
 rf_case tok-changed-qa changed-in-pr
+# qa.toml is read from the merge base, so a workflow edit cannot change it.
 rf_repo "$QA_OK"; change .github/workflows/x.yml
-rf_case tok-changed-ci changed-in-pr
+: > "$CALLS"; run_tool "$B"
+expect tok-changed-ci "a workflow edit leaves qa.toml in force" qa_command_source=repo-file qa_dir=engine \
+    qa_command="cargo nextest run --workspace --locked"
+expect_calls tok-changed-ci-calls "the declared command runs" cargo "cargo|engine|nextest run --workspace --locked"
 repo Cargo.toml engine/Cargo.toml src/lib.rs; put .amplihack/qa.toml "$QA_OK"; base
 : > "$CALLS"; run_tool "$B"
 expect tok-paths-none "an empty diff is paths-unknown" qa_status=BLOCKED qa_reason=qa-config-invalid
@@ -748,13 +752,26 @@ expect_helper gate-mixed-preflight autodrive_gadugi_required "false"
 expect_helper gate-mixed-emptybase autodrive_gadugi_required "true" AUTODRIVE_QA_BASE=
 repo Cargo.toml web/package.json src/lib.rs; base; change src/lib.rs
 expect_helper gate-mixed-root autodrive_gadugi_required "false" "$B"
+# The gate runs in the launch checkout, normally on the base branch, so it
+# decides from headRefOid (AUTODRIVE_QA_HEAD), never the checkout's HEAD.
+repo a/Cargo.toml web/package.json a/src/lib.rs; base; change a/src/lib.rs
+PRH="$(git -C "$REPO" rev-parse HEAD)"; git -C "$REPO" update-ref HEAD refs/remotes/origin/main
+expect_helper gate-head-crate autodrive_gadugi_required "false" "$B" AUTODRIVE_QA_HEAD="$PRH"
+expect_helper gate-head-crate-paths autodrive_qa_changed_paths "a/src/lib.rs" "$B" AUTODRIVE_QA_HEAD="$PRH"
+expect_helper gate-head-missing autodrive_gadugi_required "true" "$B" AUTODRIVE_QA_HEAD="$(printf '%040d' 0)"
+expect_helper gate-head-short autodrive_gadugi_required "true" "$B" AUTODRIVE_QA_HEAD="${PRH:0:12}"
+expect_helper gate-head-empty autodrive_gadugi_required "true" "$B" AUTODRIVE_QA_HEAD=
+repo Cargo.toml web/package.json web/src/app.ts; base; change web/src/app.ts
+PRH="$(git -C "$REPO" rev-parse HEAD)"; git -C "$REPO" update-ref HEAD refs/remotes/origin/main
+expect_helper gate-head-web autodrive_gadugi_required "true" "$B" AUTODRIVE_QA_HEAD="$PRH"
 GLINE="$(grep -n 'autodrive_gadugi_required' "$GATE" | grep -v '^[0-9]*:[[:space:]]*#' || true)"
 if [ "$(printf '%s\n' "$GLINE" | grep -c .)" = 1 ] \
    && printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_BASE=' \
    && printf '%s' "$GLINE" | grep -qF 'baseRefName' \
    && ! printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_BASE:-' \
+   && printf '%s' "$GLINE" | grep -qF 'AUTODRIVE_QA_HEAD="$HEAD_SHA"' \
    && printf '%s' "$GLINE" | grep -qF 'GADUGI_REQ="true"'; then
-    pass gate-line "the gate sets AUTODRIVE_QA_BASE from its own baseRefName, overwriting any inherited value, fail-closed"
+    pass gate-line "the gate sets AUTODRIVE_QA_BASE and AUTODRIVE_QA_HEAD from its own baseRefName and headRefOid, fail-closed"
 else fail gate-line "gate line is: ${GLINE:-<none>}"; fi
 
 # ===========================================================================

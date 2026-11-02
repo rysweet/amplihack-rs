@@ -186,12 +186,12 @@ else
   elif [ -n "$HEAD_SHA" ] && [ "$QA_SHA" != "$HEAD_SHA" ]; then
     block "the qa-team evidence was captured against ${QA_SHA} but the head is now ${HEAD_SHA}; evidence must bind to the SHA being merged"
   fi
-  # Whether gadugi is required is decided here by autodrive_gadugi_required beside
-  # this gate, from the checkout and the gate's own baseRefName (#1763, never an
-  # inherited AUTODRIVE_QA_BASE or the evidence); unreadable means required.
+  # Gadugi need is decided by autodrive_gadugi_required beside this gate from its own
+  # baseRefName and headRefOid (#1763; never an inherited AUTODRIVE_QA_BASE, the
+  # checkout's HEAD or the evidence). A missing head commit or unreadable: required.
   GADUGI_STATUS="$(field "$QA_RAW" gadugi_status MISSING)"
   GADUGI_COUNT="$(field "$QA_RAW" gadugi_scenario_count "")"
-  GADUGI_REQ="$(AUTODRIVE_QA_BASE="$(field "$STATE_JSON" baseRefName "")"; export AUTODRIVE_QA_BASE; . "${GATE_HOME:-/nonexistent}/autodrive_trust.sh" 2>/dev/null && autodrive_gadugi_required .)" || GADUGI_REQ="true"
+  GADUGI_REQ="$(AUTODRIVE_QA_BASE="$(field "$STATE_JSON" baseRefName "")"; AUTODRIVE_QA_HEAD="$HEAD_SHA"; export AUTODRIVE_QA_BASE AUTODRIVE_QA_HEAD; . "${GATE_HOME:-/nonexistent}/autodrive_trust.sh" 2>/dev/null && autodrive_gadugi_required .)" || GADUGI_REQ="true"
   note "gadugi_required=${GADUGI_REQ} gadugi_status=${GADUGI_STATUS} gadugi_scenario_count=${GADUGI_COUNT:-<none>} gadugi_scenario_dir=$(field "$QA_RAW" gadugi_scenario_dir '')"
   if [ "${GADUGI_REQ}:${GADUGI_STATUS}" != "false:NOT_REQUIRED" ]; then
     [ "$GADUGI_STATUS" = "PASS" ] || block "gadugi-test scenarios were not validated and run to a pass in this run (gadugi_status=${GADUGI_STATUS})"

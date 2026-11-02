@@ -4,8 +4,8 @@
 # directory and from nowhere else: never $PWD, REPO_PATH or the pull
 # request's tree. It is a gate file (GATE_FILES in merge_guard.rs).
 #
-# Public functions; each reads AUTODRIVE_QA_BASE, the pull request's base
-# branch name, from the environment:
+# Public functions; each reads AUTODRIVE_QA_BASE (the base branch name) and
+# AUTODRIVE_QA_HEAD (the head commit, default HEAD) from the environment:
 #   autodrive_qa_changed_paths <dir>  the changed paths, `(unknown)` or `(none)`
 #   autodrive_qa_target <dir>         `<type>\t<dir>` or `unresolved\t<list>`
 #   autodrive_qa_config <dir>         .amplihack/qa.toml: none, ok or invalid
@@ -34,24 +34,24 @@ _autodrive_qa_list() {
   printf '%s\n' "$out"
 }
 
-# _autodrive_qa_changed_raw <dir>: sets _AD_PATHS_STATE (known, none or
-# unknown), _AD_PATHS (the raw changed paths) and _AD_MB (the merge base, or
-# empty). AUTODRIVE_QA_BASE unset (a preflight; the gate and evidence always
-# set it): HEAD is the merge base, no paths. Else the base passes the
-# autodrive_base_sha name rules and refs/remotes/origin/<base> must exist.
-# Paths: `git diff --name-only --no-renames -z <merge-base> HEAD`, so a move
-# lists both sides; a git failure (the `\n` marker) or newline is unknown.
+# _autodrive_qa_changed_raw <dir>: sets _AD_PATHS_STATE (known, none, unknown),
+# _AD_PATHS and _AD_MB (merge base or empty). Head: AUTODRIVE_QA_HEAD (the gate's
+# headRefOid; a full SHA in the clone, else unknown) or HEAD. No AUTODRIVE_QA_BASE
+# (a preflight): the head is the merge base. Else the base passes the name rules
+# and refs/remotes/origin/<base> exists. Paths: `git diff --name-only
+# --no-renames -z <merge-base> <head>`; a git failure or newline is unknown.
 _autodrive_qa_changed_raw() {
   local -x LC_ALL=C
-  local d="${1:-.}" b="${AUTODRIVE_QA_BASE:-}" base="" head="" mb="" p=""
+  local d="${1:-.}" b="${AUTODRIVE_QA_BASE:-}" h="${AUTODRIVE_QA_HEAD-HEAD}" base="" head="" mb="" p=""
   _AD_PATHS=(); _AD_PATHS_STATE="unknown"; _AD_MB=""
-  [ -n "${AUTODRIVE_QA_BASE+x}" ] || { head="$(autodrive_trust_git "$d" rev-parse --verify --quiet "HEAD^{commit}" 2>/dev/null)"
-    autodrive_is_sha "$head" && { _AD_MB="$head"; _AD_PATHS_STATE="none"; }; return 0; }
+  [ "$h" = "HEAD" ] || autodrive_is_sha "$h" || return 0
+  head="$(autodrive_trust_git "$d" rev-parse --verify --quiet "${h}^{commit}" 2>/dev/null)" || return 0
+  autodrive_is_sha "$head" || return 0
+  [ -n "${AUTODRIVE_QA_BASE+x}" ] || { _AD_MB="$head"; _AD_PATHS_STATE="none"; return 0; }
   case "$b" in ''|-*|*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/-]*) return 0 ;; esac
   autodrive_trust_git "$d" check-ref-format --branch "$b" >/dev/null 2>&1 || return 0
   base="$(autodrive_trust_git "$d" rev-parse --verify --quiet "refs/remotes/origin/${b}^{commit}" 2>/dev/null)" || return 0
-  head="$(autodrive_trust_git "$d" rev-parse --verify --quiet "HEAD^{commit}" 2>/dev/null)" || return 0
-  { autodrive_is_sha "$base" && autodrive_is_sha "$head"; } || return 0
+  autodrive_is_sha "$base" || return 0
   mb="$(autodrive_trust_git "$d" merge-base --end-of-options "$base" "$head" 2>/dev/null)" || return 0
   autodrive_is_sha "$mb" || return 0
   _AD_MB="$mb"
@@ -99,7 +99,7 @@ _autodrive_qa_entry() {
 # _autodrive_manifest_dirs <dir> -> a `<dir><TAB><cargo|python|node>` line per
 # regular Cargo.toml, pyproject.toml, setup.py or package.json blob in the
 # merge-base tree (HEAD's if unknown; one the pull request adds is never a
-# candidate): the root's (`.`) first, then those 1 to 3 levels down, sorted,
+# candidate): the root's (`.`) first, then those 1 or 2 levels down, sorted,
 # under no directory named target, worktrees, node_modules or `.*`. A git
 # failure (the `!` marker) or a newline in a path (0x01 after tr) is `!`.
 _autodrive_manifest_dirs() {
@@ -228,8 +228,8 @@ autodrive_qa_target() {
 }
 
 # _autodrive_qa_needs_gadugi <dir>: return 0 when the merge base is unknown
-# (HEAD's manifests never make gadugi optional), when the choice is `node`,
-# or when it is unresolved and any candidate directory has a package.json.
+# (a preflight's is the head), when the choice is `node`, or when it is
+# unresolved and any candidate directory has a package.json.
 _autodrive_qa_needs_gadugi() {
   _autodrive_qa_choose "${1:-.}"
   [ -n "$_AD_MB" ] || return 0
@@ -270,7 +270,7 @@ autodrive_qa_config() {
   case "$a" in '') false ;; 040000\ *) [ -n "$q" ] ;; esac || _autodrive_qa_declared_changed qa \
     || { printf 'none\n'; return 0; }
   if [ "$_AD_PATHS_STATE" != "known" ]; then printf 'invalid\tpaths-unknown\n'; return 0; fi
-  if _autodrive_qa_declared_changed all; then printf 'invalid\tchanged-in-pr\n'; return 0; fi
+  if _autodrive_qa_declared_changed qa; then printf 'invalid\tchanged-in-pr\n'; return 0; fi
   case "$a" in 120000\ *) printf 'invalid\tsymlink\n'; return 0 ;; 040000\ tree\ *) ;; *) printf 'invalid\tnot-regular\n'; return 0 ;; esac
   case "$q" in 120000\ *) printf 'invalid\tsymlink\n'; return 0 ;; 100644\ blob\ *|100755\ blob\ *) ;; *) printf 'invalid\tnot-regular\n'; return 0 ;; esac
   read -r _ _ oid size <<< "$q"

@@ -1078,6 +1078,7 @@ parity directory is `.`.
 | `AUTODRIVE_QA_COMMANDS` | unset | One command per line, each run as `( cd -- "$ROOT" && bash -c "$entry" )` after `AUTODRIVE_QA_COMMAND`; blank and `#` lines skipped. Only this variable may run shell source: `.amplihack/qa.toml` and CI commands never go through `bash -c`. |
 | `AUTODRIVE_QA_SCENARIO_DIR` | the first existing of `tests/agentic`, `tests/gadugi/scenarios`, `scenarios`; else `tests/agentic` | The scenario directory, searched only where gadugi is required. Setting it requires gadugi scenarios in any repository type. An override naming a missing directory means no scenarios. |
 | `AUTODRIVE_QA_BASE` | set by the caller | The pull request's base branch name, used to find the merge base and the changed paths. Evidence step-02 sets it from the `base` field of `merge_sync`, and the merge gate sets it from its own `gh pr view --json baseRefName`. Both replace any inherited value, even with an empty one, so an operator does not set it. When it is unset, as in `autodrive-prerequisites` and merge round step-00, which only check that `gadugi-test` is installed where it will be needed, the checkout's committed `HEAD` stands in for the merge base and the changed paths are `(none)`; that answer is advisory, and the evidence step and the gate decide again with the real base. Set but empty or invalid, the merge base and the changed paths are unknown, and [gadugi stays required](#an-unknown-merge-base-keeps-gadugi-required). |
+| `AUTODRIVE_QA_HEAD` | `HEAD` | The commit whose changes are judged. The merge gate sets it to the pull request's `headRefOid`, because it runs in the launch checkout, which is normally on the base branch. It must be a full SHA of a commit in the clone; anything else makes the changed paths unknown and gadugi required. The evidence tool leaves it unset and judges its checkout's `HEAD`, the pull request head. |
 
 A variable set to the empty string still means no command:
 `AUTODRIVE_QA_COMMAND=` gives `BLOCKED` with `qa-command-missing`, records
@@ -1132,8 +1133,8 @@ of TOML, from a copy of at most 4097 bytes taken before parsing:
   component, uses only `A-Z a-z 0-9 . _ / -`, and names an existing directory
   whose physical path lies inside the repository. This is the one check made
   on disk, because the command runs in that directory of the checkout.
-- The pull request does not change `.amplihack/qa.toml` or any file under
-  `.github/workflows/` (`changed-in-pr`), and the changed paths are known and
+- The pull request does not change `.amplihack/qa.toml` (`changed-in-pr`),
+  and the changed paths are known and
   not empty (`paths-unknown`). See
   [Declared commands come from the merge base](#declared-commands-come-from-the-merge-base).
 
@@ -1230,9 +1231,10 @@ request cannot change. An untracked, modified or ignored file in the
 checkout, written by an agent or by branch code from an earlier suite run, is
 never read, and neither is a file whose name differs only in case. When the
 changed
-paths include `.amplihack/qa.toml` or any file under `.github/workflows/`,
-the repository file is refused with `changed-in-pr` and the CI source gives
-nothing. Without the rule, a pull request could add `command = "true"` and
+paths include `.amplihack/qa.toml`, the repository file is refused with
+`changed-in-pr`; when they include any file under `.github/workflows/`, the
+CI source gives nothing. A workflow edit does not refuse `qa.toml`, which is
+read from the merge base and cannot be changed by it. Without the rule, a pull request could add `command = "true"` and
 pass criterion 1. When the changed paths are `(unknown)` or `(none)`, the
 tool cannot show that the file is unchanged: the repository file is refused
 with `paths-unknown` and the CI source gives nothing. The usual cause is a
@@ -1290,7 +1292,7 @@ pull request changes, separated by spaces, or one of two tokens:
 
 | Output | When |
 | --- | --- |
-| The paths | `AUTODRIVE_QA_BASE` is a valid branch name, `refs/remotes/origin/<base>` exists, and the diff from the merge base to `HEAD` lists at least one file. |
+| The paths | `AUTODRIVE_QA_BASE` is a valid branch name, `refs/remotes/origin/<base>` exists, and the diff from the merge base to `AUTODRIVE_QA_HEAD` (default `HEAD`) lists at least one file. |
 | `(unknown)` | `AUTODRIVE_QA_BASE` is empty, starts with `-`, holds a byte outside the branch-name allowlist or fails `git check-ref-format --branch`; the remote-tracking ref is missing; `merge-base` fails; or a path holds a newline. |
 | `(none)` | The diff is empty, or `AUTODRIVE_QA_BASE` is unset (a preflight: `HEAD` is the merge base). |
 
@@ -1336,6 +1338,11 @@ project is nested, such as `ws/Cargo.toml`, from blocking on a pull request
 that edits only its top-level `README.md`: the single top-level candidate
 `ws` is chosen. With two top-level candidates and no root project, such a
 pull request is `unresolved`, as it is with `(unknown)` paths.
+
+This is looser than decision D5 of issue #1763, which treats a changed path
+outside every candidate as unresolved. A pull request that changes `a/x` and
+`shared/y` therefore runs only `a`'s suite. Declare the suite in
+`.amplihack/qa.toml` where shared code needs the whole repository tested.
 
 This scoping changes two results from earlier releases, on purpose. Under a
 root `Cargo.toml` or `pyproject.toml`, a pull request that changes only a
@@ -1527,7 +1534,7 @@ written under `umask 077`. A failed temporary file gives
 | Field | Value |
 | --- | --- |
 | `qa_status`, `qa_reason`, `gadugi_status`, `qa_summary` | As above. `gadugi_status` is `NOT_REQUIRED` where gadugi is not required. |
-| `gadugi_required` | `true` or `false`, from `autodrive_gadugi_required`. The gate decides it again from the merge-base tree of its own checkout and base branch, and does not read this field. |
+| `gadugi_required` | `true` or `false`, from `autodrive_gadugi_required`. The gate decides it again from its own `baseRefName` and `headRefOid` (passed as `AUTODRIVE_QA_HEAD`, not the checkout's `HEAD`, which is normally the base branch), and does not read this field. A head commit missing from the clone makes gadugi required. |
 | `qa_repo_type`, `qa_round` | `configured` for the `env`, `repo-file` and `ci` sources, else the detected `rust-cli`, `node`, `python` or `unknown`; the round label. |
 | `qa_command_source` | `env`, `repo-file`, `ci` or `detected`: the [source](#choosing-the-qa-command) that gave the command. `""` when none did. |
 | `qa_command_paths` | The changed paths the choice used, separated by spaces, or `(unknown)` or `(none)`. Filled for every source, `env` included. Bytes outside `A-Z a-z 0-9 . _ / -` become `_`, each entry is cut to 128 bytes, and after ten entries the rest are counted as `(+N more)`. |
