@@ -17,6 +17,7 @@ use super::capacity_summary::{self, Summary};
 use super::capacity_weight;
 use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
+use super::rotate::identify::Account;
 use super::store::ProfileStore;
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
 use super::usage_request::ExtraUsageShape;
@@ -248,6 +249,12 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     }
     let home = home_dir();
     let (live, home_row) = detect_live(store, home.as_deref(), &profiles);
+    // The account in `~/.claude` when its row is built, read before any
+    // probe: the `~/.claude` row's spend is kept only while this account is
+    // still the one there (crusty round 6).
+    let home_account = home_row
+        .then(|| home.as_deref().and_then(Account::of_dir))
+        .flatten();
     // Issue #1700: API-key profiles are never probed; a probe costs tokens
     // or times out, and there are no plan limits to read.
     let keys = ApiKeys::load(store, home.as_deref(), &profiles);
@@ -316,11 +323,24 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
                     .as_ref()
                     .is_some_and(|l| default_live::still_live(store, home.as_deref(), l))
         };
+        // The `~/.claude` row's spend probe reads `~/.claude` too, so its
+        // result is kept only while the account read before the windows is
+        // still the one there. With no account to compare, it is dropped.
+        let still_home = || {
+            home_account.as_ref().is_some_and(|before| {
+                home.as_deref()
+                    .and_then(Account::of_dir)
+                    .is_some_and(|now| now.same(before))
+            })
+        };
         spend_pass(
             &reader,
             &profiles,
             live_name.as_ref(),
-            &still_live,
+            Guards {
+                live: &still_live,
+                home: &still_home,
+            },
             &mut probes,
             home_probe.as_mut(),
             claude_bound,
@@ -383,15 +403,16 @@ enum SpendTarget<'a> {
 /// `spend` changes: its windows, state, error and source stay as the
 /// direct read gave them.
 ///
-/// The live profile's probe reads `~/.claude`. It is not started unless
-/// `still_live()` holds, and its result is dropped for `Unknown` unless
-/// `still_live()` holds again once it has finished, so a swap before or
-/// during the pass never shows another login's spend on that row.
+/// Two probes read `~/.claude`: the live profile's and the `~/.claude`
+/// row's. Each is started only while its guard holds, and its result is
+/// dropped for `Unknown` unless the guard holds again once it has finished,
+/// so a swap before or during the pass never shows another login's spend
+/// on either row.
 fn spend_pass(
     reader: &RowReader,
     profiles: &[ProfileName],
     live: Option<&ProfileName>,
-    still_live: &(dyn Fn() -> bool + Sync),
+    guards: Guards<'_>,
     probes: &mut [Probe],
     mut home: Option<&mut Probe>,
     bound: usize,
@@ -409,9 +430,14 @@ fn spend_pass(
         return;
     }
     let spends = pooled(slots.len(), bound, |j| match slots[j] {
-        Some(i) if live == Some(&profiles[i]) => live_spend(reader, &profiles[i], still_live),
+        Some(i) if live == Some(&profiles[i]) => guarded_spend(
+            reader,
+            SpendTarget::Profile(&profiles[i], true),
+            guards.live,
+            || spend_swap_note(&profiles[i]),
+        ),
         Some(i) => reader.spend(SpendTarget::Profile(&profiles[i], false)),
-        None => reader.spend(SpendTarget::Home),
+        None => guarded_spend(reader, SpendTarget::Home, guards.home, home_spend_swap_note),
     });
     for (slot, spend) in slots.into_iter().zip(spends) {
         match slot {
@@ -425,20 +451,29 @@ fn spend_pass(
     }
 }
 
-/// The live profile's spend, read in `~/.claude` only while `still_live()`
-/// holds before and after the probe; `Unknown`, with one note, otherwise.
-fn live_spend(
+/// Whether `~/.claude` still holds the login a row's windows were read
+/// from: `live` for the live profile's row, `home` for the `~/.claude` row.
+#[derive(Clone, Copy)]
+struct Guards<'a> {
+    live: &'a (dyn Fn() -> bool + Sync),
+    home: &'a (dyn Fn() -> bool + Sync),
+}
+
+/// A spend read in `~/.claude`, kept only while `still()` holds before and
+/// after the probe; `Unknown`, with one `note()` on stderr, otherwise.
+fn guarded_spend(
     reader: &RowReader,
-    name: &ProfileName,
-    still_live: &(dyn Fn() -> bool + Sync),
+    target: SpendTarget<'_>,
+    still: &(dyn Fn() -> bool + Sync),
+    note: impl FnOnce() -> String,
 ) -> Spend {
-    if still_live() {
-        let spend = reader.spend(SpendTarget::Profile(name, true));
-        if still_live() {
+    if still() {
+        let spend = reader.spend(target);
+        if still() {
             return spend;
         }
     }
-    eprintln!("{}", spend_swap_note(name));
+    eprintln!("{}", note());
     Spend::Unknown
 }
 
@@ -798,6 +833,13 @@ pub(super) fn spend_swap_note(name: &ProfileName) -> String {
         "note: the login in ~/.claude changed while profile \"{}\" was probed for its spend; its spend is unknown this run",
         sanitize_display(name.as_str(), false)
     )
+}
+
+/// Crusty round 6: the note for the `~/.claude` row (a login no profile
+/// holds) whose `--spend` probe was not started, or was dropped, because
+/// the account in `~/.claude` changed or could not be read. Fixed text.
+pub(super) fn home_spend_swap_note() -> String {
+    "note: the login in ~/.claude changed while the ~/.claude row was probed for its spend; its spend is unknown this run".to_string()
 }
 
 /// Named profiles (validated, deduplicated, each must exist), or every

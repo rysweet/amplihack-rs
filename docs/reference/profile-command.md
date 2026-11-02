@@ -1633,6 +1633,18 @@ recorded as usual:
 note: the login in ~/.claude changed while profile "work" was probed for its spend; its spend is unknown this run
 ```
 
+The `~/.claude` row (a login no profile holds, after a manual `/login`)
+gets the same guard. Its spend probe also reads `~/.claude`, so the account
+in `~/.claude.json` is read when the row is built, before any probe, and
+again before the spend probe starts and once it has finished. If the account
+is different at either check, or cannot be read, the row's spend is
+`unknown` rather than the spend of the login swapped in, and one note goes
+to stderr. The row's windows were read before the change:
+
+```
+note: the login in ~/.claude changed while the ~/.claude row was probed for its spend; its spend is unknown this run
+```
+
 The check has two known gaps. Closing them would need a lock on the
 rotator's ledger, which amplihack does not take:
 
@@ -1658,6 +1670,7 @@ status, and none marks a profile live when there is doubt.
 | `warning: could not list profiles; no profile is marked live in ~/.claude` | No ledger, and the profile root could not be listed (for example, it is not readable), so no account match was tried. |
 | `note: the login in ~/.claude changed while profile "<name>" was probed; its usage was not recorded this run` | The evidence for the live profile changed during the probe. A note rather than a warning. See [Swaps during the probe](#swaps-during-the-probe). |
 | `note: the login in ~/.claude changed while profile "<name>" was probed for its spend; its spend is unknown this run` | With `--spend`, the evidence for the live profile changed before or during its spend probe. Its spend is `unknown`; its windows are recorded. See [Swaps during the probe](#swaps-during-the-probe). |
+| `note: the login in ~/.claude changed while the ~/.claude row was probed for its spend; its spend is unknown this run` | With `--spend`, the account in `~/.claude` changed, or could not be read, before or during the `~/.claude` row's spend probe. Its spend is `unknown`. See [Swaps during the probe](#swaps-during-the-probe). |
 | `warning: profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); …` | Two logins are the same account. One line per pair, after the other warnings. The line names the profile whose login is not its [recorded account](#recorded-account), or `~/.claude` when it is not the live profile's recorded account, or says amplihack cannot tell which one is wrong. See [Duplicate-login warning](#duplicate-login-warning). Printed for `~/.claude` and `M` while a manual `/login` in `~/.claude` has left both with the same account; the next rotate cycle moves `M`'s copy aside when it [safely can](#rotate-hand-change-recovery). |
 
 A manual `/login` in `~/.claude` replaces whatever login was there; the

@@ -969,6 +969,21 @@ fn spend_swap_note_names_the_profile_and_says_the_spend_is_unknown() {
 }
 
 #[test]
+fn home_spend_swap_note_is_fixed_text_listed_in_the_docs() {
+    // Crusty round 6: a swap before or during the `~/.claude` row's
+    // `--spend` probe drops that probe's result; the note says so.
+    let got = super::usage_cmd::home_spend_swap_note();
+    assert_eq!(
+        got,
+        "note: the login in ~/.claude changed while the ~/.claude row was probed \
+         for its spend; its spend is unknown this run"
+    );
+    assert!(!got.contains('\n'), "{got}");
+    let doc = include_str!("../../../../../docs/reference/profile-command.md");
+    assert!(doc.contains(&got), "profile-command.md lists the note");
+}
+
+#[test]
 fn swap_warning_is_one_line_that_is_not_a_warning() {
     let name = super::name::ProfileName::parse("work").unwrap();
     let got = swap_warning(&name);
