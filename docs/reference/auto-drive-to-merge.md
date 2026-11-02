@@ -2662,7 +2662,9 @@ stopped by this rule.
 The head SHA is `git -C <repo> rev-parse HEAD` in the PR worktree, read once
 after the round and the review-dir checks. It is the same value the #1597
 override receives. A `git` failure gives an empty SHA, which never matches, so
-an unreadable head sends the round to the evaluator.
+an unreadable head sends the round to the evaluator. `autodrive_progress.sh`
+then prints `WARNING: no valid HEAD SHA for <label>; the no-progress rule is
+off for this round.`
 
 The open items are the lines of the round record's findings file,
 `<loop>-round-N.json.findings`. For the crusty loop these are crusty's concern
@@ -2672,7 +2674,8 @@ verdict. Before comparison each line has `\r` removed and surrounding space
 trimmed; blank lines are dropped; the rest is sorted with duplicates removed
 (`LC_ALL=C sort -u`). A missing findings file is an empty set. Commas, tabs and
 control characters inside an item become `_`, each item is cut to 200 bytes,
-and the joined field is cut to 4 KiB and ends `…(truncated)` when cut.
+and the joined field is cut to 3,900 bytes and ends `…(truncated)` when cut,
+so a whole progress row stays within 4 KiB.
 
 Exemptions:
 
@@ -2822,8 +2825,11 @@ the outer limits were not reached on their own.
 
 All of these are in the run's state directory, created under `umask 077` with
 mode `0600`. None is written through a symlink. Rewritten files are replaced
-atomically with `mktemp` and `mv -f`; appends are single writes under 4 KiB,
-taken under `flock` where it is available.
+atomically with `mktemp` and `mv -f`; appends are single writes of at most
+4 KiB, taken under `flock -w 10` where it is available. When the lock is not
+taken within 10 seconds, a `WARNING` is printed and the row is appended
+without it (still one `O_APPEND` write). A file counts as trusted only when
+`find` can check its mode; a `find` error makes it untrusted.
 
 | File | Written | Content |
 | --- | --- | --- |
@@ -2832,6 +2838,7 @@ taken under `flock` where it is available.
 | `autodrive-usage.json` | rewritten after every row | totals by loop and overall |
 | `<loop>-stuck-reason.txt` | on a no-progress stop | the reason line |
 | `autodrive-budget-summary.md` | on a budget stop | the summary below |
+| `comment-error.log` | when a stop comment fails to post | the error output of `gh pr comment`, at most 4 KiB |
 | `<loop>-result.json` | on every stop of the loop | the same fields as the `escalate` line |
 
 `<loop>` is `crusty` or `merge-ready`. Rows in `autodrive-usage.tsv` that do
@@ -2965,14 +2972,17 @@ reason, or the summary for a budget stop. Before posting:
   any triple backtick is replaced, so it cannot close the fence;
 - the body is capped at 60,000 bytes.
 
-`gh` runs with `GH_PROMPT_DISABLED=1`, under `timeout 900` (a ceiling on a
+`gh` runs with `GH_PROMPT_DISABLED=1` and `GH_NO_UPDATE_NOTIFIER=1`, under `timeout 900` (a ceiling on a
 hung post, well above any real one, in keeping with the [no-timeout
 policy](#no-short-timeouts)), in a new session
 where `setsid` is available, and with no terminal on any stream. The last
 point matters on hosts whose `timeout` is the uutils one: a child that reads
 from a terminal there is stopped by `SIGTTIN` and never reaches the deadline.
 A failed post prints a
-`WARNING` with the exit code and does not change the loop result. `gh` is
+`WARNING` with the exit code and does not change the loop result. The
+`WARNING` does not include `gh`'s error output, which can name the host or
+account; that output goes to `comment-error.log` (mode `0600`) in the state
+directory, and the `WARNING` gives its path. `gh` is
 used only for `pr comment`; the new helpers never call `gh pr merge`, `gh
 api` or any bypass flag.
 

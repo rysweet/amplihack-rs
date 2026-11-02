@@ -55,7 +55,9 @@ safe() { printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
 trusted() {
   [ -e "$1" ] || [ -L "$1" ] || return 0
   [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
-  [ -z "$(find "$1" -maxdepth 0 \( -perm -0040 -o -perm -0020 -o -perm -0004 -o -perm -0002 \) -print 2>/dev/null)" ]
+  local out # a find error is untrusted, never "no match" (fails closed)
+  out="$(find "$1" -maxdepth 0 \( -perm -0040 -o -perm -0020 -o -perm -0004 -o -perm -0002 \) -print)" || return 1
+  [ -z "$out" ]
 }
 require_trusted() {
   trusted "$USAGE" && return 0
@@ -121,7 +123,8 @@ case "$CMD" in
       SECS=$(( SECS > ${N_SECS:-0} ? SECS - ${N_SECS:-0} : 0 ))
     fi
     ROW="$(printf '%s\t%s\t%s\t%s\t%s\tunknown' "$LOOP" "$LABEL" "$PHASE" "$SESSIONS" "$SECS")"
-    if ! { if command -v flock >/dev/null 2>&1; then flock 9; fi; printf '%s\n' "$ROW" >&9; } 9>>"$USAGE"; then
+    # One write on an O_APPEND descriptor, under flock (10 s at most) where it exists.
+    if ! { if command -v flock >/dev/null 2>&1; then flock -w 10 9 || echo "WARNING: lock on ${USAGE} not taken in 10 s; appending without it." >&2; fi; printf '%s\n' "$ROW" >&9; } 9>>"$USAGE"; then
       echo "WARNING: could not append a usage row to ${USAGE}." >&2; exit 1
     fi
     write_atomic "${STATE}/autodrive-usage.json" "$(totals_json)"; exit $? ;;
@@ -141,11 +144,18 @@ case "$CMD" in
     RUN=(gh pr comment "$PR" --body-file "$F")
     command -v setsid >/dev/null 2>&1 && RUN=(setsid -w "${RUN[@]}")
     command -v timeout >/dev/null 2>&1 && RUN=(timeout 900 "${RUN[@]}") # a hung post only; no real post comes near it (#439)
-    ERR="$(GH_PROMPT_DISABLED=1 "${RUN[@]}" </dev/null 2>&1 >/dev/null)"
+    # gh stderr can name the host or account: it goes to a 0600 file in the
+    # private state dir, never into the WARNING (exit code only).
+    ERRLOG="${STATE}/comment-error.log"
+    ERR="$(GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 "${RUN[@]}" </dev/null 2>&1 >/dev/null)"
     RC=$?
     rm -f -- "$F"
     if [ "$RC" -ne 0 ]; then
-      echo "WARNING: gh pr comment on PR #${PR} exited ${RC}; the loop result is unchanged. $(printf '%s' "$ERR" | tr '\n' ' ' | head -c 300)" >&2
+      if rm -f -- "$ERRLOG" && printf '%s\n' "$ERR" | head -c 4096 > "$ERRLOG"; then
+        echo "WARNING: gh pr comment on PR #${PR} exited ${RC}; the loop result is unchanged. Its error output is in ${ERRLOG}." >&2
+      else
+        echo "WARNING: gh pr comment on PR #${PR} exited ${RC}; the loop result is unchanged. Its error output could not be saved." >&2
+      fi
       exit 1
     fi
     echo "INFO: the stop is posted as a comment on PR #${PR}." >&2

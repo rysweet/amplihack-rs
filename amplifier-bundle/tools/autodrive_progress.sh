@@ -48,19 +48,27 @@ safe_sha() { # a 40- or 64-digit lowercase hex SHA, or nothing
 trusted() {
   [ -e "$1" ] || [ -L "$1" ] || return 0
   [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ] || return 1
-  [ -z "$(find "$1" -maxdepth 0 \( -perm -0040 -o -perm -0020 -o -perm -0004 -o -perm -0002 \) -print 2>/dev/null)" ]
+  local out # a find error is untrusted, never "no match" (fails closed)
+  out="$(find "$1" -maxdepth 0 \( -perm -0040 -o -perm -0020 -o -perm -0004 -o -perm -0002 \) -print)" || return 1
+  [ -z "$out" ]
 }
 
 # items <findings>: trimmed, non-blank, separators and control characters as
-# '_', each cut to 200 bytes, sorted unique, joined by ','; 4 KiB at most.
+# '_', each cut to 200 bytes, sorted unique, joined by ','; at most 3,900
+# bytes, so a whole row (label, SHA, clean flag, items) stays within 4 KiB.
 items() {
   local joined=""
   if [ -f "$1" ] && [ -r "$1" ]; then
     joined="$(tr -d '\r' < "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | grep -v '^$' \
       | tr ',\t\001-\010\013-\037\177' '_' | cut -b 1-200 | sort -u | paste -sd, -)"
   fi
-  if [ "${#joined}" -gt 4096 ]; then joined="$(printf '%s' "$joined" | head -c 4080)…(truncated)"; fi
+  if [ "$(printf '%s' "$joined" | wc -c)" -gt 3900 ]; then joined="$(printf '%s' "$joined" | head -c 3884)…(truncated)"; fi
   printf '%s' "$joined"
+}
+
+# A failed `git rev-parse HEAD` in the loop gives an empty SHA; say so.
+no_sha_warning() {
+  [ -n "$SHA" ] || echo "WARNING: no valid HEAD SHA for ${LABEL}; the no-progress rule is off for this round." >&2
 }
 
 last_row() { [ -s "$FILE" ] && tail -n 1 -- "$FILE"; }
@@ -80,9 +88,10 @@ case "$CMD" in
   record)
     LABEL="$(safe_label "$3")"; SHA="$(safe_sha "$4")"
     case "$5" in 0|1) ;; *) usage "clean must be 0 or 1, not '$5'" ;; esac
+    no_sha_warning
     ROW="$(printf '%s\t%s\t%s\t%s' "$LABEL" "$SHA" "$5" "$(items "$6")")"
     # One write on an O_APPEND descriptor, under flock where it exists.
-    if { if command -v flock >/dev/null 2>&1; then flock 9; fi; printf '%s\n' "$ROW" >&9; } 9>>"$FILE"; then
+    if { if command -v flock >/dev/null 2>&1; then flock -w 10 9 || echo "WARNING: lock on ${FILE} not taken in 10 s; appending without it." >&2; fi; printf '%s\n' "$ROW" >&9; } 9>>"$FILE"; then
       exit 0
     fi
     echo "WARNING: could not append the ${LABEL} row to ${FILE}." >&2
@@ -91,6 +100,7 @@ esac
 
 # check
 LABEL="$(safe_label "$3")"; SHA="$(safe_sha "$4")"
+no_sha_warning
 ROW="$(last_row)" || exit 0
 P_LABEL="$(printf '%s' "$ROW" | cut -f1)"; P_SHA="$(printf '%s' "$ROW" | cut -f2)"
 P_CLEAN="$(printf '%s' "$ROW" | cut -f3)"; P_ITEMS="$(printf '%s' "$ROW" | cut -f4)"
