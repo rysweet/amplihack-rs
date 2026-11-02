@@ -102,6 +102,60 @@ pub fn scan(proc_root: &Path, root: &Path, self_pid: u32, uid: u32) -> Liveness 
     Liveness::Known(live)
 }
 
+/// The `CLAUDE_CONFIG_DIR` of every process of `uid` other than `self_pid`
+/// that is not a zombie, for the session archive's live check (issue #1746).
+/// A relative value is taken from the process's working directory.
+/// Only the value is kept. Fails closed, like [`scan`]: an unreadable
+/// `proc_root`, or a Claude-like process whose environment or working
+/// directory cannot be read, is an error. Other unreadable processes (such
+/// as a non-dumpable `ssh-agent`) and processes that exited are skipped.
+pub(crate) fn claude_config_dirs(
+    proc_root: &Path,
+    self_pid: u32,
+    uid: u32,
+) -> std::io::Result<Vec<PathBuf>> {
+    use std::os::unix::ffi::OsStrExt;
+    let entries = std::fs::read_dir(proc_root)?;
+    let mut dirs = Vec::new();
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let dir = entry.path();
+        if pid == self_pid
+            || !matches!(status(&dir), Some((state, owner)) if owner == uid && state != 'Z')
+        {
+            continue;
+        }
+        let environ = match fsx::read_bounded_nofollow(&dir.join("environ"), MAX_ENVIRON) {
+            Ok(Some((raw, _))) => raw,
+            Ok(None) => continue, // exited
+            Err(e) if looks_like_claude(&dir) => return Err(e),
+            Err(_) => continue,
+        };
+        let value = environ
+            .split(|&b| b == 0)
+            .find_map(|e| e.strip_prefix(KEY))
+            .filter(|v| !v.is_empty())
+            .map(|v| PathBuf::from(std::ffi::OsStr::from_bytes(v)));
+        drop(environ);
+        match value {
+            Some(p) if p.is_absolute() => dirs.push(p),
+            Some(p) => match std::fs::read_link(dir.join("cwd")) {
+                Ok(cwd) => dirs.push(cwd.join(p)),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {} // exited
+                Err(e) => return Err(e),
+            },
+            None => {}
+        }
+    }
+    Ok(dirs)
+}
+
 /// `(state letter, real uid)` from `/proc/<pid>/status`.
 fn status(dir: &Path) -> Option<(char, u32)> {
     let (raw, _) = fsx::read_bounded_nofollow(&dir.join("status"), MAX_SMALL).ok()??;
