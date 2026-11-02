@@ -74,7 +74,7 @@ items_hash() {
   local h
   if command -v sha256sum >/dev/null 2>&1; then h="$(printf '%s' "$1" | sha256sum)"
   elif command -v shasum >/dev/null 2>&1; then h="$(printf '%s' "$1" | shasum -a 256)"
-  else return 0; fi
+  else echo "WARNING: no sha256sum or shasum; open items are compared by their shortened text." >&2; return 0; fi
   safe_sha "${h%% *}"
 }
 
@@ -119,7 +119,7 @@ P_LABEL="$(printf '%s' "$ROW" | cut -f1)"; P_SHA="$(printf '%s' "$ROW" | cut -f2
 P_CLEAN="$(printf '%s' "$ROW" | cut -f3)"; P_ITEMS="$(printf '%s' "$ROW" | cut -f4)"
 P_CI="$(printf '%s' "$ROW" | cut -s -f5)"; CI="$(safe_ci "${6:-}")"
 P_HASH="$(safe_sha "$(printf '%s' "$ROW" | cut -s -f6)")"
-[ -n "$P_LABEL" ] && [ "$P_LABEL" = "$(safe_label "$P_LABEL")" ] || exit 0
+[ -n "$P_LABEL" ] && [ "$P_LABEL" = "$(safe_label "$P_LABEL")" ] || { echo "WARNING: the last progress row has no valid round label; the no-progress rule is off this round." >&2; exit 0; }
 [ "$P_CLEAN" = "0" ] || exit 0
 [ -n "$SHA" ] && [ "$SHA" = "$(safe_sha "$P_SHA")" ] || exit 0
 # A light round's findings file does not describe its open concerns (#1802).

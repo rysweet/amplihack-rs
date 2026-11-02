@@ -294,7 +294,7 @@ while :; do
     fi
   fi
   # #1743, decided in code before the evaluator: no progress, then the budget.
-  HEAD_NOW="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf '')"; CI_SIGNAL="$(field "$RAW" ci_signal "")"
+  HEAD_NOW="$(git -C "$REPO" rev-parse HEAD || printf '')"; CI_SIGNAL="$(field "$RAW" ci_signal "")"
   [ "$ROUND_CLEAN" = "true" ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL"
   bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$HEAD_NOW" "$([ "$ROUND_CLEAN" = "true" ] && echo 1 || echo 0)" "${RECORD}.findings" "$CI_SIGNAL"
   [ "$ROUND_CLEAN" = "true" ] || budget_stop post

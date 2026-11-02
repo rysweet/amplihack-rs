@@ -66,7 +66,7 @@ usage_add() {
 }
 
 # post_stop <file>: the PR comment for a stop decided in code; never fatal.
-post_stop() { bash "${LOOP_HOME}/autodrive_budget.sh" post "$STATE_DIR" "${AD_PR:-}" "$1" || true; }
+post_stop() { bash "${LOOP_HOME}/autodrive_budget.sh" post "$STATE_DIR" "${AD_PR:-}" "$1" || echo "WARNING: the stop comment was not posted (see above); the loop result is unchanged." >&2; }
 
 # stops_preflight: runs before autodrive_private_dir sets untrusted state
 # entries aside. An untrusted usage file stops the run (return 1, the caller
