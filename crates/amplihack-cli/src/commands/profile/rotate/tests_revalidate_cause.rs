@@ -59,8 +59,6 @@ pub(super) fn ctx_with(e: &Env, measure: MeasureFn) -> Ctx {
     let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
     ctx.scan = |_| Liveness::Known(BTreeSet::new());
     ctx.measure = Some(measure);
-    // Issue #1870: no test reads a login; a stale target is unknown.
-    ctx.reread = None;
     ctx
 }
 

@@ -78,7 +78,11 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             return Ok(CycleOutcome::Held);
         }
     }
-    let m = measure_and_decide(ctx, &snap)?;
+    // Tests stub the measurement as for a real cycle.
+    let m = match ctx.measure {
+        Some(stub) => stub(ctx, &snap)?,
+        None => measure_and_decide(ctx, &snap)?,
+    };
     let (live_shown, others_shown) = super::log::shown(&m);
     let name = live_name(&snap.live);
     out.emit(

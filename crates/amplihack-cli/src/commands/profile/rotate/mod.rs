@@ -254,6 +254,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                     warn_foreign_rotator(Some(store.root()));
                 }
                 let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
+                ctx.reread = Some(fresh::reread_direct);
                 cycle::run_cycle(&mut ctx, mode)?;
             }
             Some(RotateAction::Start(w)) => {

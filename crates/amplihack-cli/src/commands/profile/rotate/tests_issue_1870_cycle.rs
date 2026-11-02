@@ -590,3 +590,45 @@ fn sr3_revalidation_treats_a_stale_retry_target_as_unknown_without_reading() {
     assert!(!log.contains("damp:"), "{log}");
     assert!(log.contains(msg::CHANGED), "{log}");
 }
+
+// --- SR-9: --dry-run reads again but leaves the ledger as it was ---------------
+
+static CALLS_DRY: Calls = Mutex::new(Vec::new());
+
+fn reread_dry(_: &Ctx, name: &ProfileName) -> Probed {
+    record(&CALLS_DRY, name);
+    rd(11.0, 20.0, None)
+}
+
+/// `work` past --week-at; `spare`, damped two minutes ago, has a passive
+/// reading older than the live one.
+fn measure_dry(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let at = now();
+    let probes = probes_for(snap, &[("spare", rd(11.0, 95.0, Some(at - 60)))]);
+    decide_measured(ctx, snap, rd(0.0, 97.0, None), probes, at)
+}
+
+#[test]
+fn sr9_a_dry_run_reads_again_and_leaves_the_ledger_bytes_unchanged() {
+    let e = env();
+    let at = now();
+    let mut l = super::ledger::RotateLedger::default();
+    l.swapped_away.insert("spare".into(), at - 120);
+    l.swapped_away.insert("third".into(), at - 30);
+    e.rs.save_ledger(&l).unwrap();
+    let before = fs::read(&e.rs.ledger).unwrap();
+    let mut c = ctx(&e, measure_dry, Some(reread_dry));
+    let got = run_cycle(&mut c, Mode::DryRun).unwrap();
+    assert_eq!(calls(&CALLS_DRY), ["spare"], "the dry run reads again");
+    assert_eq!(
+        got,
+        CycleOutcome::Swapped,
+        "the fresh reading shows room, so a real cycle would swap"
+    );
+    assert_eq!(
+        fs::read(&e.rs.ledger).unwrap(),
+        before,
+        "SR-9: no damping is lifted, recorded or pruned"
+    );
+    assert_eq!(ino_at(&e.live()), Some(e.l), "work's login stays live");
+}

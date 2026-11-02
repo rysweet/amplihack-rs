@@ -42,16 +42,18 @@ pub fn prune(map: &mut BTreeMap<String, i64>, now: i64) {
     cap(map);
 }
 
+/// Keeps the newest [`MAX_ENTRIES`], dropping the oldest first (by time, then
+/// name). One sort, so a hand-edited ledger with many entries costs
+/// O(n log n) on load rather than a scan per dropped entry.
 fn cap(map: &mut BTreeMap<String, i64>) {
-    while map.len() > MAX_ENTRIES {
-        let oldest = map
-            .iter()
-            .min_by_key(|(name, at)| (**at, (*name).clone()))
-            .map(|(name, _)| name.clone());
-        match oldest {
-            Some(name) => map.remove(&name),
-            None => break,
-        };
+    let excess = map.len().saturating_sub(MAX_ENTRIES);
+    if excess == 0 {
+        return;
+    }
+    let mut by_age: Vec<(i64, String)> = map.iter().map(|(n, at)| (*at, n.clone())).collect();
+    by_age.sort_unstable();
+    for (_, name) in by_age.into_iter().take(excess) {
+        map.remove(&name);
     }
 }
 

@@ -5103,6 +5103,13 @@ that is stale once 3 re-reads have been made is treated as unknown, with
 `reread: <name> limit reached; treated as unknown`, and the decision runs
 once more.
 
+Each candidate is read again at most once and made unknown at most once, so
+for `n` candidates the decision runs at most `2n` more times. The decision
+rule never chooses an unknown target, so the gate settles well within that
+bound. If a decision still names a stale target once the bound is reached,
+the cycle stops with the error `rotation gate did not settle` and makes no
+swap. `rotate watch` logs the error and decides again on the next cycle.
+
 A re-read that times out or fails makes the target *unknown* for this
 cycle, as a [failed probe](#rotate-decision-rule) does, with
 `reread: <name> failed; treated as unknown`. It is not chosen and is not

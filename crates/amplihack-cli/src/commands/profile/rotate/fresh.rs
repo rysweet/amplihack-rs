@@ -88,15 +88,34 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
 
 /// Applies the gate to `m`, decided on `snap`. While the chosen target is
 /// stale it is read again (with [`Reread::Allowed`] and a hook), or made
-/// unknown, and the decision is made again. Each name is handled at most
-/// once and at most [`MAX_REREADS_PER_CYCLE`] reads are made, so the loop
-/// ends. The failed live probe count is unchanged. A ledger that cannot be
-/// read is an error, never an empty damping map.
+/// unknown, and the decision is made again. Each name is read at most once
+/// and made unknown at most once, and at most [`MAX_REREADS_PER_CYCLE`]
+/// reads are made. The loop is capped at `2n + 1` passes for `n` probes; a
+/// decision that still names a stale target at the cap is an error
+/// ([`ProfileError::GateUnsettled`]), so no swap is made. The failed live
+/// probe count is unchanged. A ledger that cannot be read is an error, never
+/// an empty damping map.
 pub fn gate(
     ctx: &Ctx,
     snap: &Snap,
+    m: Measurement,
+    mode: Reread,
+) -> Result<Measurement, ProfileError> {
+    settle(ctx, m, mode, |live, probes, at| {
+        decide_measured(ctx, snap, live, probes, at)
+    })
+}
+
+/// The other logins' probes, by name.
+type Probes = Vec<(ProfileName, Probed)>;
+
+/// [`gate`] with the decision passed in ([`decide_measured`] outside
+/// tests), so a test can check the cap.
+pub(super) fn settle(
+    ctx: &Ctx,
     mut m: Measurement,
     mode: Reread,
+    mut decide: impl FnMut(Probed, Probes, i64) -> Result<Measurement, ProfileError>,
 ) -> Result<Measurement, ProfileError> {
     if gated_target(&m.decision).is_none() {
         return Ok(m);
@@ -115,6 +134,10 @@ pub fn gate(
     let mut lines = std::mem::take(&mut m.fresh_lines);
     let mut done: Vec<ProfileName> = Vec::new();
     let mut reads = 0;
+    // Each name is handled at most twice: read (or made unknown), then made
+    // unknown. One more pass finds the settled decision.
+    let max_handled = 2 * probes.len();
+    let mut handled = 0;
     while let Some(to) = gated_target(&m.decision).cloned() {
         let Some(i) = probes.iter().position(|(n, _)| n == &to) else {
             break;
@@ -124,6 +147,10 @@ pub fn gate(
         if !stale(read_at(&probes[i].1, m.measured_at), live_at, damped_at, t) {
             break;
         }
+        if handled >= max_handled {
+            return Err(ProfileError::GateUnsettled);
+        }
+        handled += 1;
         let new = if done.contains(&to) || mode == Reread::Never {
             // Under the lock, or a re-read that is still not strictly later
             // than the damping time (a clock step): unknown, with no read.
@@ -139,9 +166,11 @@ pub fn gate(
             // No hook: nothing may be read, so the target is unknown.
             Probed::failed()
         };
-        done.push(to);
+        if !done.contains(&to) {
+            done.push(to);
+        }
         probes[i].1 = new;
-        let again = decide_measured(ctx, snap, live.clone(), probes.clone(), m.measured_at)?;
+        let again = decide(live.clone(), probes.clone(), m.measured_at)?;
         debug_assert_eq!(
             again.failed, m.failed,
             "the gate counts the live probe once"

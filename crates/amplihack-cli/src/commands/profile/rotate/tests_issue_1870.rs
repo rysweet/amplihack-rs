@@ -412,11 +412,67 @@ fn spare_full(_: &Ctx, name: &ProfileName) -> Probed {
 }
 
 #[test]
-fn production_contexts_read_again_and_the_hook_is_replaceable() {
+fn only_production_call_sites_wire_the_direct_reread() {
     let e = env();
     let s = super::settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let c = Ctx::new(e.store.clone(), e.home.clone(), s);
-    assert!(c.reread.is_some(), "Ctx::new wires the direct re-read");
+    assert!(
+        c.reread.is_none(),
+        "SR-10: Ctx::new reads nothing, so no test reaches a live read"
+    );
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile/rotate");
+    // One-shot and --dry-run (mod.rs), watch (daemon.rs) and switch.
+    for file in ["mod.rs", "daemon.rs", "switch.rs"] {
+        let text = fs::read_to_string(dir.join(file)).unwrap();
+        let wired = text.lines().any(|l| {
+            let code = l.split("//").next().unwrap_or_default();
+            code.contains(".reread = Some(") && code.contains("fresh::reread_direct)")
+        });
+        assert!(wired, "rotate/{file} no longer wires fresh::reread_direct");
+    }
+}
+
+static STUCK_READS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn stuck_read(_: &Ctx, name: &ProfileName) -> Probed {
+    STUCK_READS.lock().unwrap().push(name.to_string());
+    Probed::failed()
+}
+
+#[test]
+fn a_decision_that_keeps_naming_an_unknown_target_is_an_error_within_the_cap() {
+    let e = env();
+    let c = gate_ctx(&e, Some(stuck_read));
+    let s = snap(&c);
+    let at = now();
+    let m = decide_measured(
+        &c,
+        &s,
+        spent(),
+        vec![(n("spare"), rd(11.0, 20.0, Some(at - 60)))],
+        at,
+    )
+    .unwrap();
+    let stuck = Decision::Swap {
+        to: n("spare"),
+        reason: Reason::Threshold,
+    };
+    assert_eq!(m.decision, stuck, "the stale reading wins first");
+    let mut decisions = 0;
+    // A decision rule that, unlike decide, picks a failed target.
+    let got = fresh::settle(&c, m, Reread::Allowed, |live, probes, at| {
+        decisions += 1;
+        let mut again = decide_measured(&c, &s, live, probes, at)?;
+        again.decision = stuck.clone();
+        Ok(again)
+    });
+    assert!(
+        matches!(got, Err(ProfileError::GateUnsettled)),
+        "no swap onto an unknown target: {:?}",
+        got.map(|m| m.decision)
+    );
+    assert_eq!(decisions, 2, "one name: read once, made unknown once");
+    assert_eq!(*STUCK_READS.lock().unwrap(), ["spare"], "read once");
 }
 
 #[test]

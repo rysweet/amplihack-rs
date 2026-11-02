@@ -106,7 +106,7 @@ impl Ctx {
             failed_live: 0,
             scan: scan_system,
             measure: None,
-            reread: Some(fresh::reread_direct),
+            reread: None,
             probe_held: None,
             pause: |_| std::thread::sleep(revalidate::REREAD_PAUSE),
             key_check: key_check::reachable,
