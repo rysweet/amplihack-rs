@@ -299,8 +299,9 @@ if [[ -z "$RESOLVED" ]]; then
 else
   rm -f "$WORK/qa.json" "$WORK/cargo.pwd"
   # #1520: the step runs the launch tree's autodrive_qa_evidence.sh.
+  # #1763: step-01's merge_sync gives the base; without it gadugi stays required.
   run_body "$QA_STEP" REPO_PATH="$RESOLVED" AMPLIHACK_HOME="$REPO_ROOT" AUTODRIVE_QA_EVIDENCE="$WORK/qa.json" \
-    CARGO_PWD_MARKER="$WORK/cargo.pwd" AUTODRIVE_ROUND_LABEL=round-1
+    CARGO_PWD_MARKER="$WORK/cargo.pwd" AUTODRIVE_ROUND_LABEL=round-1 RECIPE_VAR_merge_sync='{"base":"main","conflict":"false"}'
   check_eq T1-QA-sha "qa evidence head_sha is the PR head" "$SHA_B" "$(field "$OUT" head_sha)"
   check_eq T1-QA-status "qa-team ran (stub runner passed)" PASS "$(field "$OUT" qa_status)"
   check_eq T1-QA-pwd "the scenario runner ran inside the PR worktree" "$WT" "$(cat "$WORK/cargo.pwd" 2>/dev/null)"

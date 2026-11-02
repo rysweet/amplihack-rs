@@ -323,6 +323,8 @@ steps:
         delete or weaken a failing scenario to reach a pass. If
         `gadugi_scenario_dir` is absolute or outside this repository, write
         nothing there; report `gadugi-scenario-dir-outside-repo`.
+      - **`qa-unresolved`**, **`qa-config-invalid`**: operator action, not a code fix: set
+        AUTODRIVE_QA_COMMAND or fix/add .amplihack/qa.toml; keep the blocker.
       - **`gadugi-test-missing`**: only a person can install `gadugi-test`. Do
         not install, stub or work around it; keep this blocker in your report.
       - **`quality-audit-convergence-crusty-not-done-clean`**: do not run a
