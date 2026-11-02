@@ -68,15 +68,19 @@ pub(super) fn ok(session: f64, week: f64) -> Probed {
         windows: Windows::default(),
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 
 pub(super) fn spent() -> Probed {
     Probed {
-        reading: Reading::Exhausted,
+        reading: Reading::EXHAUSTED,
         windows: Windows::default(),
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 

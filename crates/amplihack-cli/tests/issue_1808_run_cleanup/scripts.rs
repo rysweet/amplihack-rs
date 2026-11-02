@@ -42,6 +42,20 @@ fn hook_target(fx: &Fx, vars: &[(&str, &Path)], strs: &[(&str, &str)]) -> (PathB
     )
 }
 
+/// The hook follows #1771: a missing target is left for cargo to create
+/// (cargo writes CACHEDIR.TAG into a target it creates), and a target that
+/// exists without a tag is tagged on the next hook run. `run` invokes the
+/// hook with the same environment each time.
+fn assert_left_for_cargo_then_tagged(target: &Path, run: impl Fn() -> PathBuf) {
+    assert!(
+        !target.exists(),
+        "the hook must leave a missing target for cargo to create: {target:?}"
+    );
+    fs::create_dir_all(target).unwrap();
+    assert_eq!(run(), target, "the second run must choose the same target");
+    assert_tagged(target);
+}
+
 fn assert_tagged(dir: &Path) {
     let tag = fs::read_to_string(dir.join("CACHEDIR.TAG"))
         .unwrap_or_else(|_| panic!("{dir:?} has no CACHEDIR.TAG"));
@@ -53,21 +67,25 @@ fn assert_tagged(dir: &Path) {
 
 /// AC6: inside a run, the hook target is
 /// `<work>/targets/amplihack-precommit-target-<hash>-run-<run id>`, is
-/// created with CACHEDIR.TAG, and is recorded in `owned-paths`.
+/// tagged once it exists, and is recorded in `owned-paths`.
 #[test]
 fn ac6_hook_target_inside_a_run_is_tagged_named_and_recorded() {
     let fx = Fx::new();
     let run_id = uuid::Uuid::new_v4().to_string();
     let run_dir = fx.work.join("runs").join(&run_id);
     mkdir_0700(&run_dir);
-    let (target, _) = hook_target(
-        &fx,
-        &[
-            ("AMPLIHACK_WORK_ROOT", &fx.work),
-            ("AMPLIHACK_RUN_DIR", &run_dir),
-        ],
-        &[("AMPLIHACK_RUN_ID", &run_id)],
-    );
+    let run = || {
+        hook_target(
+            &fx,
+            &[
+                ("AMPLIHACK_WORK_ROOT", &fx.work),
+                ("AMPLIHACK_RUN_DIR", &run_dir),
+            ],
+            &[("AMPLIHACK_RUN_ID", &run_id)],
+        )
+        .0
+    };
+    let target = run();
     assert_eq!(target.parent(), Some(fx.work.join("targets").as_path()));
     let name = target.file_name().unwrap().to_string_lossy().into_owned();
     let hash = name
@@ -75,11 +93,14 @@ fn ac6_hook_target_inside_a_run_is_tagged_named_and_recorded() {
         .and_then(|rest| rest.strip_suffix(&format!("-run-{run_id}")))
         .unwrap_or_else(|| panic!("unexpected name {name}"));
     assert_eq!(hash.len(), 12, "{name}");
-    assert_tagged(&target);
+    assert_left_for_cargo_then_tagged(&target, run);
     let owned = fs::read_to_string(run_dir.join("owned-paths")).expect("owned-paths written");
-    assert!(
-        owned.contains(&format!("target\t{}\t", target.display())),
-        "{owned:?}"
+    assert_eq!(
+        owned
+            .matches(&format!("target\t{}\t", target.display()))
+            .count(),
+        1,
+        "recorded once across both hook runs: {owned:?}"
     );
 }
 
@@ -87,24 +108,50 @@ fn ac6_hook_target_inside_a_run_is_tagged_named_and_recorded() {
 #[test]
 fn ac6_hook_target_outside_a_run_keeps_hash_only_name() {
     let fx = Fx::new();
-    let (target, _) = hook_target(&fx, &[("AMPLIHACK_WORK_ROOT", &fx.work)], &[]);
+    let run = || hook_target(&fx, &[("AMPLIHACK_WORK_ROOT", &fx.work)], &[]).0;
+    let target = run();
     assert_eq!(target.parent(), Some(fx.work.join("targets").as_path()));
     let name = target.file_name().unwrap().to_string_lossy().into_owned();
     let hash = name.strip_prefix("amplihack-precommit-target-").unwrap();
     assert_eq!(hash.len(), 12, "hash-only name: {name}");
-    assert_tagged(&target);
+    assert_left_for_cargo_then_tagged(&target, run);
 }
 
-/// Without `AMPLIHACK_WORK_ROOT` the XDG cache path stays, now tagged.
+/// Without `AMPLIHACK_WORK_ROOT` the XDG cache path stays, tagged once it
+/// exists.
 #[test]
 fn hook_target_without_work_root_uses_xdg_cache_and_is_tagged() {
     let fx = Fx::new();
-    let (target, _) = hook_target(&fx, &[], &[]);
+    let run = || hook_target(&fx, &[], &[]).0;
+    let target = run();
     assert_eq!(
         target.parent(),
         Some(fx.home.join(".cache/amplihack").as_path())
     );
-    assert_tagged(&target);
+    assert_left_for_cargo_then_tagged(&target, run);
+}
+
+/// #1771 and https://bford.info/cachedir/: a link named CACHEDIR.TAG, even a
+/// dangling one, is never written through, and the hook still runs.
+#[test]
+fn hook_never_writes_through_a_cachedir_tag_link() {
+    let fx = Fx::new();
+    let (target, _) = hook_target(&fx, &[("AMPLIHACK_WORK_ROOT", &fx.work)], &[]);
+    fs::create_dir_all(&target).unwrap();
+    let outside = fx.root.join("tag-link-target");
+    std::os::unix::fs::symlink(&outside, target.join("CACHEDIR.TAG")).unwrap();
+    let (again, _) = hook_target(&fx, &[("AMPLIHACK_WORK_ROOT", &fx.work)], &[]);
+    assert_eq!(again, target);
+    assert!(
+        !outside.exists(),
+        "the hook wrote through a dangling CACHEDIR.TAG link"
+    );
+    assert!(
+        fs::symlink_metadata(target.join("CACHEDIR.TAG"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
 }
 
 /// A run id that does not match `^[0-9a-f-]{1,64}$` adds no suffix and is
@@ -135,7 +182,6 @@ fn hook_ignores_relative_work_root() {
         target.parent(),
         Some(fx.home.join(".cache/amplihack").as_path())
     );
-    assert_tagged(&target);
     assert!(!fx.repo.join("relative").exists());
 }
 

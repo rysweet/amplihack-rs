@@ -395,7 +395,7 @@ fn the_no_capacity_alert_counts_failed_and_exhausted_candidates() {
     let others = [
         (n("a"), Reading::Failed),
         (n("b"), Reading::Failed),
-        (n("c"), Reading::Exhausted),
+        (n("c"), Reading::EXHAUSTED),
     ];
     assert_eq!(
         msg::alert_no_capacity_for("work", &live, &others),
@@ -405,7 +405,7 @@ fn the_no_capacity_alert_counts_failed_and_exhausted_candidates() {
 
 #[test]
 fn the_alert_has_no_suffix_when_every_candidate_measured() {
-    let live = Reading::Exhausted;
+    let live = Reading::EXHAUSTED;
     let others = [(
         n("a"),
         Reading::Measured {
@@ -421,12 +421,47 @@ fn the_alert_has_no_suffix_when_every_candidate_measured() {
 #[test]
 fn the_alert_suffix_names_no_profile() {
     let others = [(n("secretname"), Reading::Failed)];
-    let line = msg::alert_no_capacity_for("-", &Reading::Exhausted, &others);
+    let line = msg::alert_no_capacity_for("-", &Reading::EXHAUSTED, &others);
     assert!(
         line.ends_with(" (candidates: 1 failed, 0 exhausted)"),
         "{line}"
     );
     assert!(!line.contains("secretname"), "{line}");
+}
+
+/// #1846: exhausted candidates with different figures all count, including
+/// one whose figures are NaN, which `==` would never match.
+#[test]
+fn the_alert_counts_exhausted_candidates_whatever_their_figures() {
+    let others = [
+        (n("a"), Reading::Failed),
+        (
+            n("b"),
+            Reading::Exhausted {
+                session: Some(100.0),
+                week: Some(62.0),
+            },
+        ),
+        (
+            n("c"),
+            Reading::Exhausted {
+                session: Some(30.0),
+                week: Some(100.0),
+            },
+        ),
+        (
+            n("d"),
+            Reading::Exhausted {
+                session: None,
+                week: Some(f64::NAN),
+            },
+        ),
+    ];
+    let line = msg::alert_no_capacity_for("work", &Reading::EXHAUSTED, &others);
+    assert!(
+        line.ends_with(" (candidates: 1 failed, 3 exhausted)"),
+        "{line}"
+    );
 }
 
 // --- `Measurement::probed` ---------------------------------------------------

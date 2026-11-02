@@ -490,6 +490,17 @@ pub(crate) fn classify_error(error: &anyhow::Error) -> FailureVerdict {
     }
 }
 
+/// The marker line for `payload`. `serde_json` writes object keys in sorted
+/// order, so the line begins `{"action":…,"attempt":…,"class":…`; the
+/// usage-limit check in `autodrive_escalate.sh` relies on that order when `jq`
+/// is missing (#1801), and `tests_failure_class.rs` holds it.
+pub(crate) fn marker_line(payload: &JsonValue) -> String {
+    format!(
+        "{FAILURE_CLASS_MARKER_PREFIX}{}",
+        serde_json::to_string(payload).unwrap_or_else(|_| "{}".to_string())
+    )
+}
+
 /// Write the greppable classification marker. `action` is what the runner did
 /// about it: `retry`, `terminal`, or `terminal_budget_exhausted`.
 ///
@@ -505,10 +516,7 @@ pub(crate) fn emit_failure_class_marker(verdict: &FailureVerdict, attempt: u32, 
         attempt,
         "recipe run failure classified (issue #1267)"
     );
-    let line = format!(
-        "{FAILURE_CLASS_MARKER_PREFIX}{}",
-        serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
-    );
+    let line = marker_line(&payload);
     let stderr = std::io::stderr();
     let _ = writeln!(stderr.lock(), "{line}");
 }

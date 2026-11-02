@@ -43,7 +43,16 @@ pub(crate) const END_OF_RUN_CATEGORIES: [Category; 3] =
     [Category::RunTmp, Category::RunWorktree, Category::RunTarget];
 
 pub(crate) const REASON_LOCK_HELD: &str = "cleanup lock held";
-pub(crate) const REASON_AWAITING_1766: &str = "awaiting sessions archive (#1766)";
+/// Claude Code sessions under `~/.claude/projects` belong to
+/// `amplihack sessions archive` (#1746/#1766), which the login rotator runs
+/// once a day. That command archives a whole session (its `.jsonl` and its
+/// folder) as one restorable unit, refuses any session a live `claude`
+/// process in any profile still names, and keeps the manifest that
+/// `amplihack sessions restore` reads. Archiving the same files here, one by
+/// one and by age alone, would split sessions, could take a file from a live
+/// session, and would put them where `sessions restore` cannot find them, so
+/// cleanup lists them and leaves them to that command.
+pub(crate) const REASON_SESSIONS_ARCHIVE: &str = "archived by `amplihack sessions archive`";
 
 /// Everything a sweep needs to know.
 #[derive(Debug, Clone)]
@@ -1237,7 +1246,7 @@ impl Collector<'_> {
                     .is_some_and(|age| age >= self.s.log_age);
                 if old {
                     let mut item =
-                        Item::skip(Category::SessionLog, &path, REASON_AWAITING_1766, None);
+                        Item::skip(Category::SessionLog, &path, REASON_SESSIONS_ARCHIVE, None);
                     item.size_bytes = Some(meta.len());
                     self.items.push(item);
                 }

@@ -71,15 +71,18 @@ fn measured(session: f64, week: f64, reset: Option<i64>) -> Probed {
                 used: week,
                 resets_at: reset,
             }),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 
 fn exhausted(reset: Option<i64>) -> Probed {
     Probed {
-        reading: Reading::Exhausted,
+        reading: Reading::EXHAUSTED,
         windows: Windows {
             session: Some(Win {
                 used: 100.0,
@@ -89,9 +92,12 @@ fn exhausted(reset: Option<i64>) -> Probed {
                 used: 100.0,
                 resets_at: reset,
             }),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 
@@ -233,7 +239,7 @@ fn room_means_a_measured_reading_below_100_in_both_windows() {
         !has_room(&r(f64::NAN, 10.0)),
         "an unreadable value is no room"
     );
-    assert!(!has_room(&Reading::Exhausted));
+    assert!(!has_room(&Reading::EXHAUSTED));
     assert!(!has_room(&Reading::Failed), "a failed probe never has room");
 }
 

@@ -268,9 +268,12 @@ fn measured(session: f64, week: f64) -> Probed {
         windows: Windows {
             session: win(session),
             week: win(week),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 
@@ -282,13 +285,16 @@ fn exhausted() -> Probed {
         })
     };
     Probed {
-        reading: Reading::Exhausted,
+        reading: Reading::EXHAUSTED,
         windows: Windows {
             session: win(100.0),
             week: win(100.0),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 

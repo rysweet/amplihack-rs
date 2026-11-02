@@ -401,7 +401,7 @@ run-worktree    skipped                        612 KiB  /home/ryan/.amplihack/wo
 recipe-log      would-archive                  88 KiB   /home/ryan/.amplihack/recipe-logs/0d4e2c1a-7f33-4b5c-9e8d-1a2b3c4d5e6f.log
                 reason: modified 41 days ago
 session-log     skipped                        2.1 MiB  /home/ryan/.claude/projects/-home-ryan-src-amplihack-rs/5c1f....jsonl
-                reason: awaiting sessions archive (#1766)
+                reason: archived by `amplihack sessions archive`
 ```
 
 The dry run reads only. It does not create the work root, the archive folder
@@ -473,7 +473,7 @@ amplihack cleanup --apply --skip-logs
 | `untagged-target` | Folders directly under `<work root>/targets/`, and `amplihack-precommit-target-*` folders in the hook cache base, that no run recorded and that have not been modified within the keep period. | remove |
 | `tmp-leftover` | Top-level `replay-*`, `release-*` and `amplihack-workflow-*` folders in the system temporary folder that you own, that are older than the keep period, that hold no `pid` marker naming a live process, and that no running process has as its working folder, holds a file open in, or has as its `TMPDIR`, `TMP` or `TEMP`. | remove |
 | `recipe-log` | Files in `recipe.log_dir` older than `--log-days`. | archive |
-| `session-log` | Files in `${CODEX_HOME:-~/.codex}/sessions`, including its nested date folders, older than `--log-days`. Claude sessions under `~/.claude/projects` are listed but skipped with `awaiting sessions archive (#1766)`. | archive |
+| `session-log` | Files in `${CODEX_HOME:-~/.codex}/sessions`, including its nested date folders, older than `--log-days`. Claude sessions under `~/.claude/projects` are listed but skipped with ``archived by `amplihack sessions archive` ``: that command archives each whole session as one restorable unit, never touches a session a running `claude` still uses, and runs once a day from the login rotator. See [the sessions command](../reference/sessions-command.md). | archive |
 
 `amplihack-workflow-*` folders were the per-run temporary folders of earlier
 releases. Runs now use `<run dir>/runtime` instead, so new ones no longer
@@ -501,7 +501,11 @@ Signature: 8a477f597d28d172789f06886806bc55
 
 The tag is written by:
 
-- `scripts/git-hook-cargo.sh`, for the pre-commit and pre-push target;
+- `scripts/git-hook-cargo.sh`, for the pre-commit and pre-push target. It
+  follows the #1771 rules: it tags a target that already exists without a
+  tag, leaves a missing target for cargo to create (cargo writes its own
+  tag, with "created by cargo" on the second line), and never writes through
+  a `CACHEDIR.TAG` that is a link, dangling or not;
 - `scripts/install-pinned-recipe-runner.sh` and `scripts/dev-space.sh`, when
   they create a target folder;
 - the Rust helper `create_tagged_target_dir`.

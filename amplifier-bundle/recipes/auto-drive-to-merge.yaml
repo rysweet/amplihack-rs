@@ -262,6 +262,11 @@ steps:
         DRY_RUN) OUTCOME="DRY_RUN" ;;
         *) OUTCOME="NOT_MERGED" ;;
       esac
+      # USAGE_LIMIT is a failure, never success or STUCK; the outcome still
+      # follows merge_result, because the gate blocks without a DONE crusty loop.
+      if [ "$CRUSTY" = "USAGE_LIMIT" ]; then
+        echo "AUTO_DRIVE_TO_MERGE: the crusty loop stopped on a usage limit; run again when a login has capacity." >&2
+      fi
       echo "AUTO_DRIVE_TO_MERGE: ${OUTCOME} — PR #${PR:-<none>} (crusty loop: ${CRUSTY}, merge gate: ${MERGE})" >&2
       printf '{"outcome":"%s","pr":"%s","crusty_loop":"%s","merge_result":"%s"}\n' \
         "$OUTCOME" "$PR" "$CRUSTY" "$MERGE"

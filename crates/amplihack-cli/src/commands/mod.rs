@@ -33,6 +33,8 @@ pub mod reflect;
 pub mod remote;
 pub mod rustyclawd;
 pub mod session_tree;
+#[cfg(unix)]
+pub mod sessions;
 pub mod signal;
 pub mod usage;
 pub mod uvx_help;
@@ -118,6 +120,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Internal { command } => crate::runner_validation::run(command),
         Commands::Uninstall => install::run_uninstall(),
         Commands::Profile(cmd) => profile::run_profile(cmd),
+        #[cfg(unix)]
+        Commands::Sessions(cmd) => sessions::run_sessions(cmd),
         Commands::Usage(cmd) => usage::run(cmd),
         Commands::Cleanup(args) => cleanup::run(args),
         Commands::Agent(cmd) => agent::run_agent(cmd),

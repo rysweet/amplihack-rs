@@ -10,6 +10,9 @@
 # amplihack_run_owned.sh record <kind> <abs path> [branch] appends
 # "kind<TAB>path<TAB>branch" to $AMPLIHACK_RUN_DIR/owned-paths (mode 0600),
 # and refuses relative paths, control characters and a symlinked file.
+# `setup-worktree` is the recipe's single call (record, or adopt on reuse),
+# and workflow_fetch_origin.sh is the fetch-with-retry moved out of
+# consensus-issue-worktree.yaml to keep it under the brick limit.
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-issue-1808-worktree-base.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -170,7 +173,40 @@ else
     adopt "$MAIN/worktrees/link" >/dev/null 2>&1; rc=$?
     check A3 "adopt does not match a path that is only a prefix" \
         bash -c '! grep -qF "$(printf "worktree\t%s\t" "$1")" "$2"' _ "$MAIN/worktrees/link" "$NEXT_RUN/owned-paths"
+
+    # setup-worktree: the recipe's single call (consensus-issue-worktree.yaml).
+    SETUP_RUN="$WORK/runs/9b2e3f4a-0000-4b8a-9f57-2c41d0e7a6b3"
+    mkdir -p "$SETUP_RUN" "$WORK/alias"
+    ln -s "$MAIN/worktrees/linked" "$WORK/alias/linked-link"
+    setup() { AMPLIHACK_RUN_DIR="$SETUP_RUN" bash "$RECORDER" setup-worktree "$@"; }
+    setup create-from-base "$WORK/alias/linked-link" linked; rc=$?
+    check S1 "setup-worktree records the physical path for a new worktree" \
+        bash -c '[[ "$1" = 0 ]] && grep -qxF "$(printf "worktree\t%s\tlinked" "$2")" "$3"' \
+        _ "$rc" "$MAIN/worktrees/linked" "$SETUP_RUN/owned-paths"
+    REUSE_RUN="$WORK/runs/9b2e3f4a-1111-4b8a-9f57-2c41d0e7a6b3"
+    mkdir -p "$REUSE_RUN" "$MAIN/worktrees/by-hand"
+    AMPLIHACK_RUN_DIR="$REUSE_RUN" bash "$RECORDER" setup-worktree reuse-clean-worktree "$MAIN/worktrees/by-hand" by-hand; rc=$?
+    check S2 "setup-worktree adopts on reuse, so a worktree no run recorded stays unrecorded" \
+        bash -c '[[ "$1" = 0 ]] && ! grep -qsF "by-hand" "$2"' _ "$rc" "$REUSE_RUN/owned-paths"
+    out="$(setup create-from-base "$WORK/missing-worktree" x 2>&1)"; rc=$?
+    check S3 "setup-worktree warns and exits 1 when the path cannot be resolved" \
+        bash -c '[[ "$1" = 1 ]] && [[ "$2" = *"WARNING: could not record"*"for cleanup (issue #1808)"* ]]' _ "$rc" "$out"
+    (unset AMPLIHACK_RUN_DIR; bash "$RECORDER" setup-worktree create-from-base "$WORK/missing-worktree" x); rc=$?
+    check S4 "setup-worktree does nothing outside a run" test "$rc" = 0
+    bash "$RECORDER" setup-worktree create-from-base >/dev/null 2>&1; rc=$?
+    check S5 "setup-worktree without a path is a usage error" test "$rc" = 2
 fi
+
+echo "workflow_fetch_origin.sh"
+FETCHER="${REPO_ROOT}/amplifier-bundle/tools/workflow_fetch_origin.sh"
+NO_REMOTE="$WORK/no-remote"
+new_repo "$NO_REMOTE"
+out="$(cd "$NO_REMOTE" && bash "$FETCHER" 2>&1)"; rc=$?
+check F1 "a fetch that keeps failing retries three times and still exits 0" \
+    bash -c '[[ "$1" = 0 ]] && [[ "$2" = *"retrying (2/3)"* ]] && [[ "$2" = *"after 3 attempts"* ]]' _ "$rc" "$out"
+git clone -q "$MAIN" "$WORK/cloned"
+(cd "$WORK/cloned" && bash "$FETCHER" >/dev/null 2>&1); rc=$?
+check F2 "a working fetch exits 0" test "$rc" = 0
 
 echo
 echo "issue-1808 worktree base: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"

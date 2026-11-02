@@ -42,6 +42,10 @@ pub enum Commands {
     Profile(crate::commands::profile::ProfileCommands),
     /// Remove or archive what recipe runs leave behind (issue #1808)
     Cleanup(crate::commands::cleanup::CleanupArgs),
+    /// Archive old Claude Code sessions, or restore one
+    #[cfg(unix)]
+    #[command(subcommand)]
+    Sessions(crate::commands::sessions::SessionsCommands),
     /// Report workstream token observations or explicitly publish a PR summary
     #[command(subcommand)]
     Usage(crate::commands::usage::UsageCommands),

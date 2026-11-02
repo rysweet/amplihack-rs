@@ -168,6 +168,14 @@ mod issue_1740_routing_recipes;
 mod issue_1740_select_workflow;
 #[path = "issue_1740_state_gates.rs"]
 mod issue_1740_state_gates;
+#[path = "issue_1746_daily_archive_rotator.rs"]
+mod issue_1746_daily_archive_rotator;
+#[path = "issue_1746_sessions_archive.rs"]
+mod issue_1746_sessions_archive;
+#[path = "issue_1746_sessions_live.rs"]
+mod issue_1746_sessions_live;
+#[path = "issue_1746_sessions_lock_restore.rs"]
+mod issue_1746_sessions_lock_restore;
 #[path = "issue_1760_agent_markers.rs"]
 mod issue_1760_agent_markers;
 #[path = "issue_1760_agent_profile_resolved.rs"]
@@ -208,12 +216,26 @@ mod issue_1760_fakes;
 mod issue_1760_fixture;
 #[path = "issue_1760_fixture_files.rs"]
 mod issue_1760_fixture_files;
+#[path = "issue_1797_capacity_summary.rs"]
+mod issue_1797_capacity_summary;
+#[path = "issue_1801_capacity_wait.rs"]
+mod issue_1801_capacity_wait;
+#[path = "issue_1801_evaluator_retry.rs"]
+mod issue_1801_evaluator_retry;
+#[path = "issue_1802_auto_drive_light_eligibility.rs"]
+mod issue_1802_auto_drive_light_eligibility;
+#[path = "issue_1802_auto_drive_light_recipe.rs"]
+mod issue_1802_auto_drive_light_recipe;
+#[path = "issue_1802_auto_drive_light_round.rs"]
+mod issue_1802_auto_drive_light_round;
 #[path = "issue_1803_rotation_owner.rs"]
 mod issue_1803_rotation_owner;
 #[path = "issue_1808_run_cleanup.rs"]
 mod issue_1808_run_cleanup;
 #[path = "issue_1818_no_session_limit.rs"]
 mod issue_1818_no_session_limit;
+#[path = "issue_1846_exhausted_reading.rs"]
+mod issue_1846_exhausted_reading;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -248,6 +270,8 @@ mod profile_issue_1804;
 mod profile_overflow;
 #[path = "profile_platform.rs"]
 mod profile_platform;
+#[path = "profile_usage_direct.rs"]
+mod profile_usage_direct;
 #[path = "remote_cli_contract.rs"]
 mod remote_cli_contract;
 #[path = "runner_probe_cleanup.rs"]

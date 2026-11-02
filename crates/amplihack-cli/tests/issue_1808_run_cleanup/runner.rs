@@ -227,9 +227,12 @@ printf 'WT_BASE=%s\n' "$(bash "{wt}" base "{repo}")" >> "$RECORD_DIR/env"
     let name = target.file_name().unwrap().to_string_lossy().into_owned();
     assert!(name.starts_with("amplihack-precommit-target-"), "{name}");
     assert!(name.ends_with(&format!("-run-{run_id}")), "{name}");
+    // #1771: the hook leaves a missing target for cargo to create (cargo
+    // tags a target it creates); the stand-in command here is not cargo.
+    // Tagging an existing target is covered in `scripts.rs`.
     assert!(
-        target.join("CACHEDIR.TAG").is_file(),
-        "hook target must be tagged"
+        !target.exists(),
+        "the hook must leave a missing target for cargo to create"
     );
 
     let owned = fs::read_to_string(fx.runs_dir().join(&run_id).join("owned-paths"))
@@ -334,6 +337,14 @@ fn end_of_run_sweep_leaves_untagged_targets_alone() {
 
 /// D5: the end-of-run sweep never waits for a held lock and never changes the
 /// run's exit status.
+///
+/// No wall-clock limit: the whole `recipe run` is timed by the host's load,
+/// not by the lock, and a fixed limit failed on a loaded host. The proof is
+/// the skip line, printed only by the non-blocking `try_lock` branch, plus the
+/// expired target still being there. The holder keeps the lock until the
+/// fixture drops, so a sweep that waited for it could only finish after the
+/// holder's `sleep 600` ends, and would then remove the target and fail the
+/// last assertion.
 #[test]
 fn end_of_run_sweep_is_skipped_when_cleanup_lock_is_held() {
     let mut fx = Fx::new();
@@ -342,12 +353,13 @@ fn end_of_run_sweep_is_skipped_when_cleanup_lock_is_held() {
     let lock = fx.work.join(".cleanup.lock");
     fx.hold_flock(&lock);
 
-    let started = std::time::Instant::now();
     let out = fx.recipe_run(&success_runner(), |_| {});
     assert!(out.status.success(), "{}", describe(&out));
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(60),
-        "must not block on the lock"
+        String::from_utf8_lossy(&out.stderr)
+            .contains("amplihack: end-of-run cleanup skipped: cleanup lock held"),
+        "the sweep must take the non-blocking skip branch: {}",
+        describe(&out)
     );
     let run_id = fx.recorded_env()["AMPLIHACK_RUN_ID"].clone();
     assert!(

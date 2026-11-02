@@ -168,6 +168,7 @@ amplihack copilot
 - [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
 - [Keep Tests from Prompting for Git Credentials](howto/keep-tests-from-prompting-for-git.md) - Why git under plain `timeout` stops on `SIGTTIN`, the settings that stop test and amplihack git from prompting, and how to run long commands safely
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
+- [`amplihack sessions` Reference](reference/sessions-command.md) - Archive old Claude Code session logs out of `~/.claude/projects`, restore one, and the rotator's daily run
 - [`amplihack agent` Reference](reference/agent-command.md) - Register flags, `amplihack claude --supervise`, the supervisor pass, result texts, status formats, the registry and the systemd unit
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
@@ -300,6 +301,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Dev-Orchestrator Routing Contract](reference/dev-orchestrator-routing.md) - Issue #749 target rules for Development and hybrid workstream routing
 - [Verify Dev-Orchestrator Routing](howto/verify-dev-orchestrator-routing.md) - Check deterministic Development-to-default-workflow routing from the CLI
 - [Quick-Change Recipe](reference/quick-change-recipe.md) - Single-session recipe for small changes: diff limits, hand-over to default-workflow, routing precedence and the `Workflow:` log line, `-c workflow=`
+- [Auto-Drive-Light Recipe](reference/auto-drive-light.md) - Smaller drive-to-merge recipe for small PRs: eligibility rules, escalation to auto-drive-to-merge, the minor-only review rule and its follow-up issue
 - [Correlate Recipe Runs with Logs](howto/correlate-recipe-runs.md) - Match terminal output, final JSON, child process IDs, and runner log paths by run ID
 - [Recipe Executor Environment](reference/recipe-executor-environment.md) - Step-level variables plus subprocess environment contract for forced non-interactive recipe execution
 - [Recipe Commit Hook Repair](reference/recipe-commit-hook-repair.md) - How checkpoint and publish steps hand a rejected git `pre-commit` or `pre-push` hook to a fixing agent, retry under loop-health evaluation, and refuse changes to hook configuration

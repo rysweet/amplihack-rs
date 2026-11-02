@@ -161,10 +161,11 @@ fn ac9_codex_session_logs_keep_their_nested_path() {
     assert!(!log.exists());
 }
 
-/// AC9 (Claude sessions, #1766 not merged): listed as skipped with
-/// `awaiting sessions archive (#1766)` and left untouched.
+/// AC9 (Claude sessions): `amplihack sessions archive` (#1766) owns them,
+/// so cleanup lists them as skipped with a reason naming that command and
+/// leaves them untouched.
 #[test]
-fn ac9_claude_project_sessions_await_1766() {
+fn ac9_claude_project_sessions_are_left_to_sessions_archive() {
     let fx = Fx::new();
     let log = old_log(
         &fx.home.join(".claude/projects/-tmp-proj"),
@@ -177,7 +178,7 @@ fn ac9_claude_project_sessions_await_1766() {
     let e = entry_for(&report, &log);
     assert_eq!(e["category"], "session-log");
     assert_eq!(e["action"], "skipped");
-    assert_eq!(e["reason"], "awaiting sessions archive (#1766)");
+    assert_eq!(e["reason"], "archived by `amplihack sessions archive`");
     assert_eq!(fs::metadata(&log).unwrap().modified().unwrap(), before);
 }
 

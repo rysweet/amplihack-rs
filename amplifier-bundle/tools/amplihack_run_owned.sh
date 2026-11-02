@@ -19,6 +19,14 @@
 #     reused worktree then stays owned by every run that used it, and cleanup
 #     keeps it while any of them is active. A worktree no run created (one
 #     made by hand) is never recorded. Exit codes as for `record`.
+#   amplihack_run_owned.sh setup-worktree <setup state> <worktree path> [branch]
+#     For a recipe's worktree setup step: resolves <worktree path> to its
+#     physical path, then runs `adopt` when <setup state> is
+#     reuse-clean-worktree and `record` otherwise. Outside a run it does
+#     nothing. On any failure it prints
+#     `WARNING: could not record <path> for cleanup (issue #1808)` and exits 1;
+#     callers ignore the status (`|| true`), so a failed record never fails
+#     the step. Exit 2 is a usage error.
 #
 # Callers record only after a new `git worktree add` succeeded, adopt after
 # reusing one, and treat a failure as a warning:
@@ -32,6 +40,7 @@ log() { printf 'amplihack_run_owned: %s\n' "$*" >&2; }
 usage() {
     log "usage: amplihack_run_owned.sh record <worktree|target> <absolute path> [branch]"
     log "       amplihack_run_owned.sh adopt worktree <absolute path> [branch]"
+    log "       amplihack_run_owned.sh setup-worktree <setup state> <worktree path> [branch]"
 }
 
 has_control_chars() {
@@ -118,11 +127,30 @@ cmd_adopt() {
     return 0
 }
 
+# The worktree setup step's single call: pick record or adopt from the setup
+# state and turn any failure into one warning line.
+cmd_setup_worktree() {
+    local state="${1:-}" path="${2:-}" branch="${3:-}" real op=record
+    if [ -z "$state" ] || [ -z "$path" ] || [ "$#" -gt 3 ]; then
+        usage
+        return 2
+    fi
+    [ -n "${AMPLIHACK_RUN_DIR:-}" ] || return 0
+    [ "$state" != reuse-clean-worktree ] || op=adopt
+    if real="$(cd -P -- "$path" 2>/dev/null && pwd -P)" \
+        && "cmd_$op" worktree "$real" "$branch"; then
+        return 0
+    fi
+    printf 'WARNING: could not record %s for cleanup (issue #1808)\n' "$path" >&2
+    return 1
+}
+
 main() {
     local op="${1:-}"
     case "$op" in
         record) shift; cmd_record "$@" ;;
         adopt) shift; cmd_adopt "$@" ;;
+        setup-worktree) shift; cmd_setup_worktree "$@" ;;
         -h|--help|help) usage; return 0 ;;
         *) usage; return 2 ;;
     esac

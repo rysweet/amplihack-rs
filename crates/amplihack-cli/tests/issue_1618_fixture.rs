@@ -205,12 +205,17 @@ impl Fixture {
         self.home.join(".amplihack").join("rerun")
     }
 
-    /// AC13: every path a call recorded lies under the temporary root.
+    /// AC13: every path a call recorded lies under the temporary root. An
+    /// unset `CLAUDE_CONFIG_DIR` means `$HOME/.claude`, which the `HOME`
+    /// check already places under the root.
     pub fn assert_isolated(&self, step: &str) {
         for n in 1..=self.count(step) {
             let call = self.call(step, n);
             for key in ["PWD", "HOME", "CLAUDE_CONFIG_DIR"] {
                 let v = &call[key];
+                if key == "CLAUDE_CONFIG_DIR" && v == "<unset>" {
+                    continue;
+                }
                 assert!(
                     Path::new(v).starts_with(&self.root),
                     "call {n} {key}={v} is outside the test root {}",

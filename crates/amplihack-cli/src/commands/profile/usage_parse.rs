@@ -130,6 +130,11 @@ pub struct UsageReport {
     /// `session` is `None`, `week_all` is `Some` and the state is `Ok` or
     /// `WeeklyExhausted`.
     pub session_limit: bool,
+    /// Issue #1797: when the reading was taken, epoch seconds, if that was
+    /// before the read. Set only for a passive reading (issue #1844), which
+    /// may be up to `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` old;
+    /// `None` for a reading taken by the read itself.
+    pub observed_at: Option<i64>,
 }
 
 impl UsageReport {
@@ -141,6 +146,7 @@ impl UsageReport {
             week_all: None,
             week_models: Vec::new(),
             session_limit: true,
+            observed_at: None,
         }
     }
 }

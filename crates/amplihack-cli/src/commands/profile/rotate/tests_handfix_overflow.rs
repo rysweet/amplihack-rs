@@ -43,6 +43,8 @@ fn roomy() -> Probed {
         windows: Windows::default(),
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 
@@ -56,6 +58,8 @@ fn plan_ok() -> Probed {
         windows: Windows::default(),
         spend_limit: false,
         unknown: false,
+        still_running: false,
+        observed_at: None,
     }
 }
 

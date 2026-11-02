@@ -25,7 +25,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Tools symlinked into `bin/`. Missing ones are skipped.
 const TOOLS: &[&str] = &[
@@ -109,6 +109,8 @@ pub struct Fx {
     pub records: PathBuf,
     pub recipe: PathBuf,
     children: Vec<Child>,
+    /// Files whose `flock` the test holds; see [`Fx::hold_flock`].
+    held_locks: Vec<fs::File>,
 }
 
 impl Drop for Fx {
@@ -161,6 +163,7 @@ impl Fx {
             root,
             _tmp: tmp,
             children: Vec::new(),
+            held_locks: Vec::new(),
         };
         for d in [&fx.tmp, &fx.home, &fx.work, &fx.bin, &fx.gh, &fx.records] {
             mkdir_0700(d);
@@ -458,39 +461,30 @@ impl Fx {
     }
 
     /// Holds an exclusive `flock` on `file` until the fixture drops.
+    ///
+    /// The lock is taken in this process: `flock` locks belong to the open
+    /// file description, so the `amplihack` child under test sees it as held
+    /// by another process. An earlier version ran `flock(1) ... sleep 600`;
+    /// dropping the fixture killed `flock` but left the `sleep` running,
+    /// holding the lock and the test's output pipes for ten minutes, and the
+    /// readiness poll added its own wait.
     pub fn hold_flock(&mut self, file: &Path) {
-        assert!(
-            self.bin.join("flock").exists(),
-            "flock(1) is needed for this test"
-        );
-        fs::OpenOptions::new()
+        use std::os::fd::AsRawFd;
+        let handle = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(file)
             .unwrap();
-        let ready = self
-            .root
-            .join(format!("flock-ready-{}", self.children.len()));
-        let child = Command::new(self.bin.join("flock"))
-            .arg("--exclusive")
-            .arg(file)
-            .arg(self.bin.join("sh"))
-            .arg("-c")
-            .arg("touch \"$1\"; exec sleep 600")
-            .arg("sh")
-            .arg(&ready)
-            .env("PATH", &self.bin)
-            .stdin(Stdio::null())
-            .spawn()
-            .unwrap();
-        self.children.push(child);
-        for _ in 0..200 {
-            if ready.exists() {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(25));
-        }
-        panic!("flock holder never started");
+        // SAFETY: the fd is valid for the life of `handle`, which the
+        // fixture keeps until it drops; closing it releases the lock.
+        let rc = unsafe { libc::flock(handle.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+        assert_eq!(
+            rc,
+            0,
+            "could not lock {file:?}: {}",
+            std::io::Error::last_os_error()
+        );
+        self.held_locks.push(handle);
     }
 }
 
