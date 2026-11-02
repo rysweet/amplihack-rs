@@ -377,6 +377,11 @@ pub mod msg {
         format!("recovered: ~/.claude holds {m}'s login (ledger named {l}); recorded {m} as live")
     }
 
+    /// Hand-change recovery when `l`'s own record names the new login.
+    pub fn recovered_relogin(l: &ProfileName) -> String {
+        format!("recovered: ~/.claude holds the account recorded for {l}; kept {l} as live")
+    }
+
     /// Hand-change recovery, case B: `m`'s own copy was moved to `to`.
     pub fn recovered_moved(m: &ProfileName, to: &std::path::Path) -> String {
         format!(

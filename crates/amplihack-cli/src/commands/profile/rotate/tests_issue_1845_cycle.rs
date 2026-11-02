@@ -14,6 +14,10 @@
 //!   recorded for profile work` line over two cycles. The ledger's ALERT key
 //!   is `account_mismatch:work`.
 //! - One-shot: the cycle returns the `RotateRefused` error.
+//! - The documented fix, a `/login` in `~/.claude` to the recorded account,
+//!   is kept as `work` by hand-change recovery, and the next swap goes
+//!   ahead and writes that account into `work/.claude.json`. When that file
+//!   cannot be written, the swap is refused before anything moves.
 //! - No line names an account, an e-mail or a token.
 
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
@@ -284,4 +288,108 @@ fn deleting_an_out_of_date_record_lets_the_next_cycle_swap() {
     let st = State::new(&f.root).unwrap();
     assert_eq!(recorded(&st, &n("work")).as_deref(), Some("u-work"));
     assert_eq!(recorded(&st, &n("spare")), None);
+}
+
+/// Simulates the documented fix: a `/login` in `~/.claude` to the account
+/// recorded for `work` replaces the login there and its `oauthAccount`.
+/// `work/.claude.json` still names the account before. Returns the new
+/// login's inode.
+fn relogin_to_recorded(f: &Fx) -> u64 {
+    private(
+        &f.home.join(".claude.json"),
+        &serde_json::json!({
+            "theme": "dark",
+            "oauthAccount": {"accountUuid": "u-SENTINEL-recorded"},
+        })
+        .to_string(),
+    );
+    login(&f.home.join(".claude").join(CREDS))
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_relogin_to_the_recorded_account_lets_the_next_cycle_swap() {
+    // The fix the how-to gives first (crusty round 7): refuse, `/login` in
+    // `~/.claude` to the recorded account, and the next cycle swaps.
+    let f = fx();
+    private(
+        &f.root.join("work/.claude.json"),
+        &serde_json::json!({
+            "keep": 1,
+            "oauthAccount": {"accountUuid": "u-work", "emailAddress": "work@example.com"},
+        })
+        .to_string(),
+    );
+    let mut c = f.ctx();
+    assert_eq!(
+        run_cycle(&mut c, Mode::Watch).unwrap(),
+        CycleOutcome::Alerted
+    );
+    let relogged = relogin_to_recorded(&f);
+    assert_eq!(
+        run_cycle(&mut c, Mode::Watch).unwrap(),
+        CycleOutcome::Swapped,
+        "{:?}",
+        f.logged()
+    );
+    let log = f.logged();
+    assert!(
+        log.iter()
+            .any(|l| l
+                == "recovered: ~/.claude holds the account recorded for work; kept work as live"),
+        "{log:?}"
+    );
+    assert!(!log.iter().any(|l| l.contains("no profile has")), "{log:?}");
+    assert_no_account(&log);
+    assert_eq!(
+        ino_at(&f.root.join("work").join(CREDS)),
+        Some(relogged),
+        "the corrected login went to work"
+    );
+    assert_eq!(ino_at(&f.home.join(".claude").join(CREDS)), Some(f.spare));
+    // `work/.claude.json` now names the recorded account, other keys kept,
+    // so the next swap back into `work` puts that account in ~/.claude.json.
+    let work: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(f.root.join("work/.claude.json")).unwrap())
+            .unwrap();
+    assert_eq!(work["keep"], 1);
+    let a = Account::of_dir(&f.root.join("work")).unwrap();
+    assert!(a.matches_record("u-SENTINEL-recorded", None), "{work}");
+    let l = f.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(l.live.as_deref(), Some("spare"));
+    assert_eq!(l.previous.as_deref(), Some("work"));
+    assert_eq!(l.alert, None);
+    let st = State::new(&f.root).unwrap();
+    assert_eq!(
+        recorded(&st, &n("work")).as_deref(),
+        Some("u-SENTINEL-recorded")
+    );
+    assert_eq!(recorded(&st, &n("spare")), None);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_profile_json_that_cannot_be_updated_refuses_before_anything_moves() {
+    let f = fx();
+    private(&f.root.join("work/.claude.json"), "[]");
+    let relogged = relogin_to_recorded(&f);
+    let mut c = f.ctx();
+    match run_cycle(&mut c, Mode::OneShot) {
+        Err(ProfileError::RotateRefused(m)) => assert_eq!(
+            m,
+            format!(
+                "{} work: it is not a JSON object",
+                super::swap_expect::NOT_RELABELLED
+            )
+        ),
+        other => panic!("expected the refusal, got {other:?}"),
+    }
+    assert_eq!(ino_at(&f.home.join(".claude").join(CREDS)), Some(relogged));
+    assert_eq!(ino_at(&f.root.join("spare").join(CREDS)), Some(f.spare));
+    assert_eq!(ino_at(&f.root.join("work").join(CREDS)), None);
+    assert!(!f.rs.journal.exists());
+    assert_eq!(
+        fs::read_to_string(f.root.join("work/.claude.json")).unwrap(),
+        "[]"
+    );
 }

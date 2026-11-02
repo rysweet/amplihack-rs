@@ -1631,6 +1631,7 @@ hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotatio
 | `Claude holds its refresh lock; the swap waits for the next cycle` | A `claude` session is refreshing its token in `~/.claude` or the target profile. The rotator never breaks that lock; it tries again on the next cycle. If it repeats with no `claude` running, see "Stale refresh lock" under Limits. |
 | `~/.claude.json is not a JSON object` | The swap could not record the new account in `~/.claude.json`, so it refuses before anything moves. Repair the file so it holds a JSON object. |
 | `the login in ~/.claude is not the account recorded for profile <name>` | The live login would go back to `<name>`, but it is not the account recorded for `<name>`. Saving it there would leave `<name>` holding another account's login. See [The live login is not the profile's account](#the-live-login-is-not-the-profiles-account). |
+| `the recorded account could not be written to the .claude.json of profile <name>: <reason>` | The login in `~/.claude` is the account recorded for `<name>`, but `<root>/<name>/.claude.json` names another account and could not be updated. Moving the login there would leave the file naming the wrong account. Repair the file so it holds a JSON object, or check its ownership and mode; the next cycle writes it. |
 
 Three situations write an ALERT instead of refusing:
 
@@ -1680,10 +1681,22 @@ it, put the right login back in `~/.claude`:
 1. Sign out of claude.ai in the browser, or open a private window.
 2. Run plain `claude`, then `/login`, and sign in to the account `work` is
    meant for.
-3. Run `amplihack profile rotate` once, or wait for the next cycle. When a
-   swap is due, it now goes ahead instead of being refused. While the login
-   is still wrong, the one-shot command prints the refusal and exits 1.
-   `--dry-run` does not run this check, so it cannot confirm the fix.
+3. Run `amplihack profile rotate` once, or wait for the next cycle. The
+   ledger still names the account that was there before, so the cycle sees
+   a hand change. Because the new login is the account recorded for `work`,
+   it keeps `work` as the live profile and logs:
+
+   ```
+   2026-11-01T09:52:05Z recovered: ~/.claude holds the account recorded for work; kept work as live
+   ```
+
+   When a swap is due, it now goes ahead instead of being refused. Before
+   moving the login into `work`, the swap writes its account into
+   `<root>/work/.claude.json`, which still named the account before the
+   `/login`, so the next swap back into `work` puts the right account in
+   `~/.claude.json`. While the login is still wrong, the one-shot command
+   prints the refusal and exits 1. `--dry-run` does not run this check, so
+   it cannot confirm the fix.
 
 `amplihack profile login work` does not help here: `work` is the live
 profile, so `login` refuses it before Claude starts.

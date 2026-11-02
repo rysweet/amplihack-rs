@@ -7,7 +7,7 @@
 //! Contract:
 //! - `swap_expect::ACCOUNT_MISMATCH ==
 //!   "the login in ~/.claude is not the account recorded for profile"`, one
-//!   of `swap::DOCUMENTED` (12 entries).
+//!   of `swap::DOCUMENTED` (13 entries, with `NOT_RELABELLED`).
 //! - `swap(.., Source::Profile(from), to, ..)` refuses with
 //!   `RotateRefused("{ACCOUNT_MISMATCH} {from}")` when `from` has a record and
 //!   the account in `$HOME/.claude.json` does not match it. The check runs
@@ -122,7 +122,7 @@ fn assert_no_account(s: &str) {
 fn the_refusal_reason_is_documented() {
     assert_eq!(super::swap_expect::ACCOUNT_MISMATCH, MISMATCH);
     assert!(super::swap::DOCUMENTED.contains(&MISMATCH));
-    assert_eq!(super::swap::DOCUMENTED.len(), 12);
+    assert_eq!(super::swap::DOCUMENTED.len(), 13);
 }
 
 #[test]

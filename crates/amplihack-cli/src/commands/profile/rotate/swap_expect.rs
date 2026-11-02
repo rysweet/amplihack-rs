@@ -2,13 +2,19 @@
 //! runs before J0 and only reads: it refuses to save the login in
 //! `~/.claude` into a profile recorded as another account, and decides what
 //! the swap may record. [`settle`] writes that record once the swap has
-//! finished; a failure there is a warning, never an error.
+//! finished; a failure there is a warning, never an error. [`relabel`]
+//! runs before J0: when the outgoing profile's record names the live login
+//! but its `.claude.json` does not, it writes the live `oauthAccount` block
+//! there, so the next swap back into that profile names the right account.
 
 use super::identify::Account;
 use super::ledger::RotateState;
 use super::swap::Source;
+use super::swap_check::account_block;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::State;
+use crate::commands::profile::auto_switch::kit::{
+    CLAUDE_JSON, State, exists, read_claude_json, write_atomic_keep_mode,
+};
 use crate::commands::profile::duplicates::{self, Holder};
 use crate::commands::profile::expected;
 use crate::commands::profile::name::ProfileName;
@@ -18,10 +24,18 @@ use std::path::Path;
 /// The refusal reason, followed by the outgoing profile's name.
 pub const ACCOUNT_MISMATCH: &str = "the login in ~/.claude is not the account recorded for profile";
 
+/// The refusal when [`relabel`] cannot write, followed by the profile's name.
+pub const NOT_RELABELLED: &str =
+    "the recorded account could not be written to the .claude.json of profile";
+
 /// What a completed swap records for the outgoing profile.
 pub(super) enum Pending {
     /// Nothing.
     Nothing,
+    /// The outgoing profile's record names the live login, but its
+    /// `.claude.json` does not: [`relabel`] writes this `oauthAccount`
+    /// block there before J0. Nothing is recorded.
+    Relabel(serde_json::Value),
     /// The adopted login, for the new `default-original[-N]`; it replaces
     /// a record left behind by a removed profile of that name.
     Adopted(Account),
@@ -109,7 +123,7 @@ pub(super) fn decide(
         None
     });
     match key {
-        Some(rec) if rec.names(&live) => Ok(Pending::Nothing),
+        Some(rec) if rec.names(&live) => Ok(relabel_for(store, home, name, &live)),
         Some(_) => Err(ProfileError::RotateRefused(format!(
             "{ACCOUNT_MISMATCH} {name}"
         ))),
@@ -128,6 +142,41 @@ pub(super) fn decide(
             )
         }
     }
+}
+
+/// [`Pending::Relabel`] with the block in `~/.claude.json` when `name`'s
+/// `.claude.json` does not name `live`, the account its record names; after
+/// a `/login` in `~/.claude` to that account it still names the one before.
+fn relabel_for(store: &ProfileStore, home: &Path, name: &ProfileName, live: &Account) -> Pending {
+    let dir = store.root().join(name.as_str());
+    if Account::of_dir(&dir).is_some_and(|a| a.same(live)) {
+        return Pending::Nothing;
+    }
+    account_block(home).map_or(Pending::Nothing, Pending::Relabel)
+}
+
+/// Writes the block of [`Pending::Relabel`] into the outgoing profile's
+/// `.claude.json`, keeping every other key and the file's mode; a missing
+/// file is created. A failure is a refusal, before anything has moved: the
+/// login would otherwise go into a folder that names another account.
+pub(super) fn relabel(
+    store: &ProfileStore,
+    from: &Source,
+    pending: &Pending,
+) -> Result<(), ProfileError> {
+    let (Source::Profile(name), Pending::Relabel(block)) = (from, pending) else {
+        return Ok(());
+    };
+    let dir = store.root().join(name.as_str());
+    let fail = |why: String| ProfileError::RotateRefused(format!("{NOT_RELABELLED} {name}: {why}"));
+    let mut v = match read_claude_json(&dir) {
+        Some((v, _)) => v,
+        None if !exists(&dir.join(CLAUDE_JSON)) => serde_json::json!({}),
+        None => return Err(fail("it is not a JSON object".into())),
+    };
+    v["oauthAccount"] = block.clone();
+    let bytes = serde_json::to_vec_pretty(&v).map_err(|e| fail(e.to_string()))?;
+    write_atomic_keep_mode(&dir, CLAUDE_JSON, &bytes).map_err(|e| fail(e.to_string()))
 }
 
 /// Whether `live` may belong to a profile other than `name` (any profile,
@@ -164,7 +213,7 @@ fn claimed_elsewhere(
 /// backfill is skipped when a record appeared in between.
 pub(super) fn settle(store: &ProfileStore, from: &ProfileName, pending: Pending) {
     match pending {
-        Pending::Nothing => {}
+        Pending::Nothing | Pending::Relabel(_) => {}
         Pending::Adopted(a) => expected::save(store.root(), from, &a, false),
         Pending::AdoptedUnrecorded => expected::forget(store.root(), from),
         Pending::Backfill(a) => expected::save(store.root(), from, &a, true),

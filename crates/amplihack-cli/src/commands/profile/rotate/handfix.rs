@@ -1,16 +1,18 @@
 //! Hand-change recovery (issue #1693). A manual `/login` in `~/.claude`
 //! replaces whatever login was there, and the rotate ledger then names a
-//! profile `L` whose account is no longer in `~/.claude.json`. When exactly
-//! one profile `M` holds that account, `M` is recorded as live; if `M` also
-//! has its own login, that copy is first renamed into a fresh
-//! `<root>/.rejected-logins/rotate-<M>-<time>/`. Anything else gives exact
+//! profile `L` whose account is no longer in `~/.claude.json`. When `L`'s
+//! own recorded account (#1845) is that account, `L` stays live with it.
+//! Otherwise, when exactly one profile `M` holds that account, `M` is
+//! recorded as live; if `M` also has its own login, that copy is first
+//! renamed into a fresh `<root>/.rejected-logins/rotate-<M>-<time>/`. Anything else gives exact
 //! guidance, written every cycle until resolved. A `~/.claude.json` with no
 //! readable account is not a hand change; once it has stayed so for
 //! `HOME_UNREADABLE_GRACE` it gets guidance too (#1702 review). See "Rotate
 //! hand-change recovery" in docs/reference/profile-command.md.
 //!
-//! Only `.claude.json` files and metadata are read; a login is moved only by
-//! `move_login` (rename without replace) and never opened, copied or deleted.
+//! Only `.claude.json` files, `L`'s record and metadata are read; a login
+//! is moved only by `move_login` (rename without replace) and never opened,
+//! copied or deleted.
 
 use super::backup::{BackupRefusal, first_free, fresh_backup, rejected_dir, stamp};
 use super::cycle::Ctx;
@@ -26,6 +28,7 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
     CREDS, MoveError, State, abort_point, movable_login, move_login,
 };
+use crate::commands::profile::expected;
 use crate::commands::profile::login_check::REJECTED_DIR;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
@@ -53,11 +56,12 @@ struct Case {
 }
 
 enum Plan<'a> {
-    /// Case A: record `m`; nothing moves.
+    /// Case A: record `m`; nothing moves. `line` is the recovery line.
     Record {
         case: Case,
         m: ProfileName,
         key: String,
+        line: String,
     },
     /// Case B: move `m`'s own copy aside, then record `m`.
     Move {
@@ -166,6 +170,26 @@ fn plan_hand_change<'a>(
         let lines = guide::lines(&case.l, case.l_lost, &kind, &case.paths);
         Ok(Plan::Guide(lines, case.skip()))
     };
+    // #1845: L's own record names the new login, so the `/login` put back
+    // the account L is meant for. L stays live; the swap away from L then
+    // writes that account into L's `.claude.json`.
+    let has_login = !matches!(holders, Holders::HomeNoLogin | Holders::HomeUnreadable);
+    if let Some(key) = key
+        .as_deref()
+        .filter(|_| has_login && recorded_here(store, home, &case.l))
+    {
+        let l = case.l.clone();
+        if let Some(why) = record_check(store, rs, home) {
+            return Ok(refused(&case, &l, false, why));
+        }
+        let (key, line) = (key.to_string(), msg::recovered_relogin(&l));
+        return Ok(Plan::Record {
+            case,
+            m: l,
+            key,
+            line,
+        });
+    }
     let (m, own_login, key) = match (holders, key) {
         (Holders::One { name, own_login }, Some(key)) => (name, own_login, key),
         (Holders::One { .. } | Holders::HomeUnreadable, _) => return guide(Kind::HomeUnreadable),
@@ -178,12 +202,22 @@ fn plan_hand_change<'a>(
         return Ok(refused(&case, &m, own_login, why));
     }
     if !own_login {
-        return Ok(Plan::Record { case, m, key });
+        let line = msg::recovered_record(&m, &case.l);
+        return Ok(Plan::Record { case, m, key, line });
     }
     if let Some(why) = move_check(store, home, &m, &env) {
         return Ok(refused(&case, &m, own_login, why));
     }
     Ok(Plan::Move { case, m, key, env })
+}
+
+/// Whether `l` has a usable record that names the account in `~/.claude`.
+fn recorded_here(store: &ProfileStore, home: &Path, l: &ProfileName) -> bool {
+    let Some(live) = identify::Account::of_dir(home) else {
+        return false;
+    };
+    State::new(store.root())
+        .is_ok_and(|state| matches!(expected::lookup(&state, l), Ok(Some(rec)) if rec.names(&live)))
 }
 
 /// Case B after the checks: create the backup, check `~/.claude.json`
@@ -266,14 +300,7 @@ pub fn step_with<'a>(
             skip = s;
             (Step::Guided, lines)
         }
-        Some(Plan::Record { case, m, key }) => record(
-            &mut ledger,
-            &case,
-            &m,
-            &key,
-            t,
-            msg::recovered_record(&m, &case.l),
-        ),
+        Some(Plan::Record { case, m, key, line }) => record(&mut ledger, &case, &m, &key, t, line),
         Some(Plan::Move { case, m, key, env }) => {
             match move_aside(store, home, &m, &key, &env, t) {
                 Ok(to) => {
@@ -329,7 +356,7 @@ pub fn preview<'a>(
     };
     let lines = match plan {
         Plan::Guide(lines, _) => lines,
-        Plan::Record { case, m, .. } => return Ok(would(msg::recovered_record(&m, &case.l))),
+        Plan::Record { line, .. } => return Ok(would(line)),
         Plan::Move { case, m, .. } => match first_free(&store.root().join(REJECTED_DIR), &m, t) {
             Some(dir) => return Ok(would(msg::recovered_moved(&m, &dir.join(CREDS)))),
             None => {

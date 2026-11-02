@@ -4154,6 +4154,16 @@ fails with `RotateRefused` and nothing changes:
   because moving that login into `<from>` would save another account's
   login there. A profile with no record, and a `$HOME/.claude.json` with no
   account, are not checked here. This check only reads;
+- when `<from>`'s record names the account in `$HOME/.claude.json` but
+  `<root>/<from>/.claude.json` does not name that account, its
+  `oauthAccount` block is replaced with the one from `$HOME/.claude.json`,
+  keeping every other key and the file's mode (a missing file is created,
+  mode `0600`). This follows a `/login` in `~/.claude` to the recorded
+  account, after which the profile's file still names the account before;
+  without it the next swap into `<from>` would put that account back in
+  `$HOME/.claude.json`. It is the only write before `j0`. If the file is
+  not a JSON object or cannot be written, the swap is refused with
+  `the recorded account could not be written to the .claude.json of profile <from>: <reason>`;
 - `~/.claude` and the profile root are on the same device;
 - the platform has an atomic exchange. Only Linux
   (`renameat2(RENAME_EXCHANGE)`) qualifies. macOS has `renamex_np`, but Claude
@@ -4258,6 +4268,21 @@ cycle measures and applies the overflow policy as for any cycle that starts
 on credits: with a plan login that has capacity it moves off `M`, and `M`'s
 login (the one from the manual `/login`) goes back to `<root>/<M>/`, so `M`
 is never added to `lost_login`.
+
+#### The live profile's own record
+
+Before the holders are looked at, when `~/.claude/.credentials.json` is a
+regular file and `L` has a usable [recorded account](#recorded-account) that
+names the account in `~/.claude.json`, the `/login` put back the account `L`
+is meant for. After the same checks as before recording (below), `L` stays
+live: the ledger's `account` becomes that account, nothing moves, no
+profile is added to `lost_login`, and the log line is
+`recovered: ~/.claude holds the account recorded for <L>; kept <L> as live`.
+`<root>/<L>/.claude.json` still names the account before the `/login`; the
+next [swap](#rotate-swap) away from `L` writes the new one there before it
+moves the login. This is the fix for the
+`the login in ~/.claude is not the account recorded for profile <L>`
+refusal.
 
 #### Holders
 
@@ -4891,13 +4916,14 @@ stdout only, without the time.
 | `ALERT: no login in ~/.claude; no swap` | `~/.claude/.credentials.json` is missing or not a regular file. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); <finding>; no swap` | Hand change that [hand-change recovery](#rotate-hand-change-recovery) could not resolve. Followed by its `fix <n>: <command>` lines. Written every cycle. |
 | `fix <n>: <command>` | A step of the guidance above, in order. |
+| `recovered: ~/.claude holds the account recorded for <L>; kept <L> as live` | Hand-change recovery kept the live profile, whose [recorded account](#recorded-account) is the new login in `~/.claude`. |
 | `recovered: ~/.claude holds <M>'s login (ledger named <L>); recorded <M> as live` | Hand-change recovery recorded the profile whose login is in `~/.claude`. |
 | `recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <path>; recorded <M> as live` | Hand-change recovery moved `M`'s duplicate login to a backup. |
 | `ALERT: profile <L> has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login <L>` | `L` is in the ledger's `lost_login`. Written every cycle. |
 | `ALERT: profile <L> has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login <L>` | `L` lost its login but `lost_login` already holds 64 profiles. Written once. |
 | `ALERT: more than one profile matches the account in ~/.claude; no swap` | Two or more login-less profiles have the account in `~/.claude.json`. |
 | `ALERT: swap refused: <reason>` | A [pre-swap check](#rotate-swap) failed; written once per reason. The one-shot command also prints it and exits with `RotateRefused`. |
-| `ALERT: swap refused: the login in ~/.claude is not the account recorded for profile <from>` | The login in `~/.claude` is not the [recorded account](#recorded-account) of the live profile `<from>`, so it was not moved back there. Written once per profile (ALERT key `account_mismatch:<from>`), not on every cycle, although every cycle refuses until it is fixed. Names the profile only, never an account. `profile login <from>` is refused while `<from>` is the live profile, so fix it in `~/.claude`: run plain `claude` and `/login` to the account `<from>` is meant for. If the record itself is out of date, delete `<root>/.auto-switch.d/expected/<from>.json` instead; the next cycle swaps as before, and that swap records the account `<from>` then holds, unless another profile holds that account or has it recorded, in which case nothing is recorded for `<from>`. See [Recorded account](#recorded-account). |
+| `ALERT: swap refused: the login in ~/.claude is not the account recorded for profile <from>` | The login in `~/.claude` is not the [recorded account](#recorded-account) of the live profile `<from>`, so it was not moved back there. Written once per profile (ALERT key `account_mismatch:<from>`), not on every cycle, although every cycle refuses until it is fixed. Names the profile only, never an account. `profile login <from>` is refused while `<from>` is the live profile, so fix it in `~/.claude`: run plain `claude` and `/login` to the account `<from>` is meant for. The next cycle's [hand-change recovery](#rotate-hand-change-recovery) then keeps `<from>` live because its record names the new login, and the swap goes ahead after writing that account into `<root>/<from>/.claude.json`. If the record itself is out of date, delete `<root>/.auto-switch.d/expected/<from>.json` instead; the next cycle swaps as before, and that swap records the account `<from>` then holds, unless another profile holds that account or has it recorded, in which case nothing is recorded for `<from>`. See [Recorded account](#recorded-account). |
 | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` | See [Rotate recovery](#rotate-recovery). |
 | `ALERT: auto-switch recovery is inconsistent; no swap` | Auto-switch state needs `auto-switch repair`. |
 | `recovery: rolled back an interrupted swap <from>-><to>` / `recovery: finished an interrupted swap <from>-><to>` | Recovery acted. |

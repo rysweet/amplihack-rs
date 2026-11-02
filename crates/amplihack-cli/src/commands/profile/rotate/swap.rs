@@ -25,7 +25,7 @@ pub use super::swap_check::is_no_oauth;
 use super::swap_check::{account_block, may_go_live, no_oauth};
 pub(super) use super::swap_check::{ino_at, show};
 pub use super::swap_expect::is_account_mismatch;
-use super::swap_expect::{guard, settle};
+use super::swap_expect::{guard, relabel, settle};
 
 const ADOPT_NAME: &str = "default-original";
 
@@ -44,7 +44,7 @@ const HOME_JSON_UNREADABLE: &str = "~/.claude.json is not a JSON object";
 pub const NO_STORED_LOGIN_HINT: &str = "has no stored login; run `amplihack profile login";
 
 #[cfg(test)]
-pub const DOCUMENTED: [&str; 12] = [
+pub const DOCUMENTED: [&str; 13] = [
     HOME_NOT_OWNED,
     DOT_CLAUDE_NOT_PRIVATE,
     LOGIN_NOT_MOVABLE,
@@ -57,6 +57,7 @@ pub const DOCUMENTED: [&str; 12] = [
     NO_STORED_LOGIN_HINT,
     super::FOREIGN_IGNORES_HOLD,
     super::swap_expect::ACCOUNT_MISMATCH,
+    super::swap_expect::NOT_RELABELLED,
 ];
 
 /// Where the outgoing login goes.
@@ -154,6 +155,7 @@ pub fn swap(
         }
     }
     let pending = guard(store, rs, home, &from)?; // Issue #1845: reads only.
+    relabel(store, &from, &pending)?;
     let home_str = home.to_str().ok_or_else(|| refused("HOME is not UTF-8"))?;
     let (Some(live_ino), Some(target_ino)) = (ino_at(&l), ino_at(&t)) else {
         return Err(refused(LOGIN_NOT_MOVABLE));
