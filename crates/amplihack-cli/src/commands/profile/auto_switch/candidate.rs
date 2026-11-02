@@ -123,6 +123,21 @@ impl OverflowPool<'_> {
     pub fn is_plan(&self, p: &ProfileName) -> bool {
         !self.order.contains(p) && !self.not_plan.contains(p)
     }
+
+    /// Whether [`select_with_overflow`] could ever choose `p`, whatever the
+    /// readings say: a plan login, or an overflow profile while the gate is
+    /// open and no spend block holds it. Nothing while kinds are unknown, so
+    /// an unmarked API-key profile (in `not_plan`, never in `order`) is never
+    /// one (issue #1804). The takeover check (`takeover::could_take_over`,
+    /// issue #1801) asks this before any reading exists, so it must stay the
+    /// rule the selection applies.
+    pub fn could_select(&self, p: &ProfileName) -> bool {
+        !self.kinds_unknown
+            && (self.is_plan(p)
+                || (self.gate.is_some()
+                    && self.order.contains(p)
+                    && overflow_usable(p.as_str(), self.blocked)))
+    }
 }
 
 /// A reading's adjusted (session, week) use: five-hour and seven-day, 0 for
