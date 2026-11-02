@@ -1132,7 +1132,7 @@ api          api-key (billed per token)                                  api_key
 personal     no reading (not_logged_in)                                  not_logged_in      leased→work
 spare        no reading (timeout)                                        timeout            (fallback)
 times: Europe/London
-order: rotator headroom (worse of session and week), then name
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
 The columns are:
@@ -1235,8 +1235,8 @@ line at the end:
 | Source of the zone | Used when |
 |--------------------|-----------|
 | `TZ` | It is set, not empty, and names an IANA time zone, such as `TZ=Asia/Tokyo` (a leading `:` is ignored). |
-| The system time zone | `TZ` is not usable and the system zone has an IANA name. |
-| The UTC offset, as `UTC+HH:MM` or `UTC-HH:MM` | Neither has a usable name. |
+| The system time zone | `TZ` is unset or empty and the system zone has an IANA name. |
+| The UTC offset, as `UTC+HH:MM` or `UTC-HH:MM` | Neither has a usable name, or `TZ` is set to something other than an IANA name, such as a POSIX rule (`TZ=JST-9`) or a file path. The times follow such a `TZ`, so the system zone's name would not match them. |
 
 Each time is converted with its own offset, so a reset after a change to or
 from summer time is shown in the offset that applies on that day.
@@ -1260,7 +1260,7 @@ api          api-key (billed per token)                                    api_k
 personal     no reading (not_logged_in)                                    not_logged_in      leased→work
 spare        no reading (timeout)                                          timeout            (fallback)
 times: UTC
-order: rotator headroom (worse of session and week), then name
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
 Reset times taken from Claude's `/usage` text, such as
@@ -1290,7 +1290,7 @@ credit    overflow (fallback)  ok                 40%               Oct 16, 9pm 
 team      -                    session_exhausted  100%              2026-10-16T23:50:00Z               55%   2026-10-22T09:00:00Z
 personal  leased→work          not_logged_in      -                 -                                  -     -
 spare     (fallback)           timeout            -                 -                                  -     -
-order: rotator headroom (worse of session and week), then name
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
 `credit` is marked as overflow, so it was probed with `/usage` and shows
@@ -1389,7 +1389,7 @@ view, `--table` and `--json` use the same order, and the bar view and
 `--table` end with a line that states the rule:
 
 ```
-order: rotator headroom (worse of session and week), then name
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
 Rows are in four groups:
@@ -8548,7 +8548,7 @@ ryan-ryansweet  ███████░░░  71%  11-01 02:00  ████�
 api-key (live)  api-key (billed per token)                                  api_key
 live: work is running on the API key (billed per token)
 times: Europe/London
-order: rotator headroom (worse of session and week), then name
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
 The same run with `--table`:
@@ -8560,7 +8560,7 @@ ryan-mistt      -                  session_exhausted  100%                      
 ryan-ryansweet  -                  session_exhausted  100%                        Oct 28, 5:20pm (Europe/London)  71%   Nov 1, 2am (Europe/London)
 api-key         live in ~/.claude  api_key            api-key (billed per token)  -                               -     -
 live: work is running on the API key (billed per token)
-order: rotator headroom (worse of session and week), then name
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
 In `--json` output every row gains `"kind"`, `"subscription"` or `"api-key"`,

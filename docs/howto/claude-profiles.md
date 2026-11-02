@@ -718,7 +718,7 @@ work     ███░░░░░░░  30%  11-05 09:00  ██░░░░░
 team     █████░░░░░  55%  11-05 09:00  ██████████ 100%   11-01 23:50 session_exhausted
 scratch  no reading (not_logged_in)                                  not_logged_in      (fallback)
 times: Europe/London
-order: rotator headroom (worse of session and week), then name
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
 For each profile, amplihack first uses a reading the status line stored in
@@ -1001,7 +1001,7 @@ marks the row with `(live)` after the name:
 PROFILE      WEEK             W-RESET      SESSION           S-RESET     STATE
 team (live)  █████░░░░░  55%  10-22 02:00  ████░░░░░░  40%   10-16 20:00 ok
 times: America/Los_Angeles
-order: rotator headroom (worse of session and week), then name
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
 `--table` shows the same mark as `live in ~/.claude` in its `MARKS` column.
@@ -1881,7 +1881,7 @@ PROFILE         WEEK             W-RESET      SESSION           S-RESET     STAT
 api-key (live)  api-key (billed per token)                                  api_key
 live: work is running on the API key (billed per token)
 times: Europe/London
-order: rotator headroom (worse of session and week), then name
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
 If the key runs out of funds or is revoked, every API-key profile is

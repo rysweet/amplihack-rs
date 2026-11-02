@@ -460,7 +460,7 @@ fn table_has_the_documented_columns_and_dashes_for_missing_values() {
     );
     assert_eq!(lines.len(), 4, "{out}");
     assert_eq!(
-        lines[3], "order: rotator headroom (worse of session and week), then name",
+        lines[3], "order: rotator pick (most room in the worse of session and week, then name)",
         "{out}"
     );
     let work: Vec<&str> = lines[1].split_whitespace().collect();

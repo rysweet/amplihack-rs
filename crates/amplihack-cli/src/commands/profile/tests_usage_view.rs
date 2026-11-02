@@ -11,11 +11,12 @@ use super::usage_parse::{UsageReport, UsageState, UsageWindow};
 use super::usage_source::Source;
 use super::usage_view::{
     TimeView, bar_cell, colour_enabled, label, render_bars, reset_cell, reset_width, zone_label,
+    zone_name,
 };
 use chrono::{FixedOffset, TimeZone, Utc};
 use std::ffi::OsStr;
 
-const ORDER: &str = "order: rotator headroom (worse of session and week), then name";
+const ORDER: &str = "order: rotator pick (most room in the worse of session and week, then name)";
 const GREEN: &str = "\x1b[32m";
 const YELLOW: &str = "\x1b[33m";
 const RED: &str = "\x1b[31m";
@@ -393,6 +394,25 @@ fn zone_labels_name_the_view() {
     assert_eq!(zone_label(&TimeView::Utc), "UTC");
     assert_eq!(zone_label(&plus2()), "UTC+02:00");
     assert_eq!(zone_label(&minus1()), "UTC-01:00");
+}
+
+/// The `times:` zone: a known `TZ`, else the system zone only when `TZ` is
+/// unset or empty, else the offset. A POSIX or path `TZ` drives chrono's
+/// `Local`, so naming the system zone for it would contradict the times.
+#[test]
+fn the_zone_name_follows_tz_then_the_system_then_the_offset() {
+    let sys = || Some("Europe/London".to_string());
+    let off = || "UTC+09:00".to_string();
+    assert_eq!(zone_name(Some("Asia/Tokyo"), sys, off), "Asia/Tokyo");
+    assert_eq!(zone_name(Some(":Asia/Tokyo"), sys, off), "Asia/Tokyo");
+    assert_eq!(zone_name(None, sys, off), "Europe/London");
+    assert_eq!(zone_name(Some(""), sys, off), "Europe/London");
+    assert_eq!(zone_name(Some(":"), sys, off), "Europe/London");
+    assert_eq!(zone_name(Some("JST-9"), sys, off), "UTC+09:00");
+    assert_eq!(zone_name(Some("/etc/localtime"), sys, off), "UTC+09:00");
+    assert_eq!(zone_name(Some("\x1b[31mevil"), sys, off), "UTC+09:00");
+    assert_eq!(zone_name(None, || Some("bogus".into()), off), "UTC+09:00");
+    assert_eq!(zone_name(None, || None, off), "UTC+09:00");
 }
 
 #[test]

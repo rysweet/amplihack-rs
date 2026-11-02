@@ -312,7 +312,8 @@ fn table_rows(stdout: &str) -> Vec<&str> {
         .collect()
 }
 
-const ORDER_LINE: &str = "order: rotator headroom (worse of session and week), then name";
+const ORDER_LINE: &str =
+    "order: rotator pick (most room in the worse of session and week, then name)";
 
 fn first_word(l: &str) -> &str {
     l.split_whitespace().next().unwrap_or_default()

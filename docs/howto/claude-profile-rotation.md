@@ -71,7 +71,7 @@ spare        █░░░░░░░░░  12%  10-23 09:00  ░░░░░�
 personal     ███░░░░░░░  35%  10-22 02:00  ██░░░░░░░░  20%   10-18 15:00 ok
 work (live)  ████░░░░░░  41%  10-21 18:00  ████████░░  88%   10-18 13:00 ok
 times: Europe/London
-order: rotator headroom (worse of session and week), then name
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
 The rows are sorted by the rotator's headroom, most room first, and
@@ -123,7 +123,7 @@ spare (live)  █░░░░░░░░░  12%  10-23 09:00  ░░░░░�
 personal      ███░░░░░░░  35%  10-22 02:00  ██░░░░░░░░  20%   10-18 15:00 ok
 work          ████░░░░░░  41%  10-21 18:00  ████████░░  88%   10-18 13:00 ok
 times: Europe/London
-order: rotator headroom (worse of session and week), then name
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
 A running `claude` picks up the new login when it next reads its credentials;
@@ -2366,7 +2366,7 @@ PROFILE         WEEK             W-RESET      SESSION           S-RESET     STAT
 api-key (live)  api-key (billed per token)                                  api_key
 live: work is running on the API key (billed per token)
 times: Europe/London
-order: rotator headroom (worse of session and week), then name
+order: rotator pick (most room in the worse of session and week, then name)
 ```
 
 `profile usage` runs no `/usage` probe for an API-key profile; there are no

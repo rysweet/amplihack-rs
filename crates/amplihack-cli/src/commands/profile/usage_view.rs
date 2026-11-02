@@ -141,26 +141,36 @@ pub(super) fn zone_label(time: &TimeView) -> String {
     }
 }
 
-/// The local zone's name: `TZ` when it names a known zone (chrono's `Local`
-/// honours `TZ`, so the name matches the times), else the system zone, else
-/// the current offset as `UTC±HH:MM`. A name is printed only when it parses
-/// as a known zone, so nothing else from the environment reaches the output.
+/// The local zone's name, from the host's `TZ`, system zone and offset.
 fn local_zone_name() -> String {
+    zone_name(
+        std::env::var("TZ").ok().as_deref(),
+        || iana_time_zone::get_timezone().ok(),
+        || format!("UTC{}", Local::now().offset()),
+    )
+}
+
+/// The zone named on the `times:` line: `TZ` when it names a known zone;
+/// the system zone only when `TZ` is unset or empty; else `offset`, the
+/// current offset as `UTC±HH:MM`. chrono's `Local` honours any non-empty
+/// `TZ`, including POSIX rules such as `JST-9` and file paths, so such a
+/// `TZ` must not be named as the system zone, which the times do not use.
+/// A name is printed only when it parses as a known zone, so nothing else
+/// from the environment reaches the output.
+pub(super) fn zone_name(
+    tz: Option<&str>,
+    system: impl FnOnce() -> Option<String>,
+    offset: impl FnOnce() -> String,
+) -> String {
     let known = |name: &str| {
         name.parse::<chrono_tz::Tz>()
             .ok()
             .map(|tz| tz.name().to_string())
     };
-    if let Some(tz) = std::env::var("TZ").ok().and_then(|v| {
-        let v = v.trim_start_matches(':');
-        (!v.is_empty()).then(|| known(v)).flatten()
-    }) {
-        return tz;
+    match tz.map(|v| v.trim_start_matches(':')) {
+        Some(v) if !v.is_empty() => known(v).unwrap_or_else(offset),
+        _ => system().and_then(|v| known(&v)).unwrap_or_else(offset),
     }
-    if let Some(tz) = iana_time_zone::get_timezone().ok().and_then(|v| known(&v)) {
-        return tz;
-    }
-    format!("UTC{}", Local::now().offset())
 }
 
 /// The label column: the sanitised name, clipped to 23 characters and `…`

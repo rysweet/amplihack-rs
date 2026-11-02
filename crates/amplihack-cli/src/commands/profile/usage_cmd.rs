@@ -1282,7 +1282,7 @@ pub(super) fn order(rows: &mut [Row], now: i64) {
 /// The line that states the order, printed last by the bar view and the
 /// table.
 pub(super) const ORDER_LINE: &str =
-    "order: rotator headroom (worse of session and week), then name";
+    "order: rotator pick (most room in the worse of session and week, then name)";
 
 /// [`sort_key`], with API-key rows (issue #1700) after every usable and
 /// exhausted row and before the unavailable ones.
