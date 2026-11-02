@@ -118,10 +118,11 @@ fn wait_sleeps_in_process_and_starts_no_children() {
 
 #[test]
 fn wait_runs_one_second_to_completion() {
+    // Build the command first: the first `amplihack_bin()` call runs
+    // `cargo build`, which must not count against the timing bounds.
+    let mut cmd = wait_command(&["--seconds", "1"]);
     let start = Instant::now();
-    let out = wait_command(&["--seconds", "1"])
-        .output()
-        .expect("run amplihack wait");
+    let out = cmd.output().expect("run amplihack wait");
     let elapsed = start.elapsed();
     assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
     assert!(
@@ -135,10 +136,9 @@ fn wait_runs_one_second_to_completion() {
 
 #[test]
 fn wait_zero_seconds_returns_at_once() {
+    let mut cmd = wait_command(&["--seconds", "0"]);
     let start = Instant::now();
-    let out = wait_command(&["--seconds", "0"])
-        .output()
-        .expect("run amplihack wait");
+    let out = cmd.output().expect("run amplihack wait");
     assert_eq!(out.status.code(), Some(0), "{}", describe(&out));
     assert!(start.elapsed() < UPPER_BOUND);
     assert!(out.stdout.is_empty(), "{}", describe(&out));
@@ -168,8 +168,9 @@ fn wait_rejects_invalid_input_with_a_usage_error() {
         &["--seconds", "1", "extra"],
         &["5"],
     ] {
+        let mut cmd = wait_command(args);
         let start = Instant::now();
-        let out = wait_command(args).output().expect("run amplihack wait");
+        let out = cmd.output().expect("run amplihack wait");
         assert_eq!(out.status.code(), Some(2), "{args:?}: {}", describe(&out));
         assert!(!out.stderr.is_empty(), "{args:?}: {}", describe(&out));
         assert!(
