@@ -85,6 +85,9 @@ pub use cli::AutoSwitchCommand;
 /// File helpers `default_live` reuses for its read-only checks.
 #[cfg(unix)]
 pub(super) use fsx::{check_root_private, euid, exists, read_bounded_nofollow, writable_by_others};
+/// For the session archive's live check (issue #1746).
+#[cfg(unix)]
+pub(crate) use liveness::claude_config_dirs;
 /// For the shared-session liveness tests (issue #1634).
 #[cfg(all(test, unix))]
 pub(super) use liveness::scan;
@@ -468,6 +471,7 @@ pub fn fresh_reading(root: &Path, dir: &str, max_age: i64, now: i64) -> Option<F
         // The same test as [`no_session_window_profiles`]; a stored session
         // window dropped as implausible is unknown, not absent.
         no_session_window: r.no_session_window() && week.is_some(),
+        observed_at: r.observed_at,
     })
 }
 
@@ -479,6 +483,8 @@ pub struct FreshReading {
     /// Issue #1818: the reading has a week window and no session window, so
     /// it has no session limit.
     pub no_session_window: bool,
+    /// When the status line stored the reading, epoch seconds.
+    pub observed_at: i64,
 }
 
 /// Issue #1818: the profiles among `names` whose stored reading has a week

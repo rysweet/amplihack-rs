@@ -67,6 +67,9 @@ pub(super) fn parse_answer(stdout: &str, now: i64) -> Option<UsageReport> {
 }
 
 /// What one `rate_limits`-shaped object holds (issues #1844 and #1856).
+// One value per read, returned and taken apart at once: boxing the large
+// variant would add an allocation to every read and save nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq)]
 pub(super) enum Limits {
     /// The windows, read as `profile usage` reports them. `credits_on` is
@@ -129,6 +132,7 @@ pub(super) fn parse_limits(limits: &Value, now: i64) -> Limits {
             week_all,
             week_models,
             session_limit,
+            observed_at: None,
         },
         credits_on,
     }

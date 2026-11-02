@@ -29,7 +29,7 @@
 //!   with neither window falls back (`Text`, `usage credits on`).
 //! - `Spend` is `NotApplicable`, `Ok`, `LimitReached`, `Unknown` or
 //!   `NotProbed`; `as_str()` gives `n/a`, `ok`, `limit_reached`, `unknown`
-//!   and `unknown`. `Spend::of_text(&Probe)` is `Unknown` for any error and
+//!   and `not_probed`: a probe that failed and one never asked for differ. `Spend::of_text(&Probe)` is `Unknown` for any error and
 //!   for the states `error`, `timeout`, `not_logged_in` and `unparsed`,
 //!   `LimitReached` for `spend_limit`, and `Ok` otherwise: `ok` is never
 //!   guessed.
@@ -188,6 +188,7 @@ impl Fallback {
                 week_all: Some(w("all models", 44.0)),
                 week_models: Vec::new(),
                 session_limit: true,
+                observed_at: None,
             },
             error: None,
             raw: None,
@@ -606,7 +607,7 @@ fn spend_values_have_the_documented_names() {
     assert_eq!(Spend::Ok.as_str(), "ok");
     assert_eq!(Spend::LimitReached.as_str(), "limit_reached");
     assert_eq!(Spend::Unknown.as_str(), "unknown");
-    assert_eq!(Spend::NotProbed.as_str(), "unknown");
+    assert_eq!(Spend::NotProbed.as_str(), "not_probed");
 }
 
 fn text_probe(state: UsageState) -> Probe {

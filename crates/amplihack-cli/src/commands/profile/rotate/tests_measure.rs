@@ -213,6 +213,7 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     };
     // "a-slow" sorts first, so a tie-break bug would pick it.
     let cands = [measured("a-slow", &slow), measured("b-spare", &spare)];
@@ -241,7 +242,7 @@ fn a_timed_out_candidate_does_not_hide_a_usable_one() {
 #[test]
 fn a_timed_out_probe_is_not_treated_as_exhausted() {
     let slow = reading("slow", &timed_out());
-    assert_ne!(slow.reading, Reading::Exhausted);
+    assert!(!matches!(slow.reading, Reading::Exhausted { .. }));
     // The overflow rule: no known reset, no plan capacity, no regain time.
     assert!(!plan_usable(&settings(), &slow.reading));
     assert_eq!(regains(&settings(), &slow.reading, &slow.windows), None);
@@ -494,6 +495,7 @@ fn direct_probe(session: f64, week: f64) -> Probe {
             week_all: Some(w("all models", week)),
             week_models: Vec::new(),
             session_limit: true,
+            observed_at: None,
         },
         error: None,
         raw: None,

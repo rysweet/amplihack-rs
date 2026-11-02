@@ -529,7 +529,8 @@ fn a_refresh_answered_after_the_deadline_warns() {
 // profile's index, week 55%) and an `extra_usage` with credits on and the
 // D11 sentinels. The canned `/usage` text (spare 10/20, extra 50/50, ...)
 // is what the spend probe reads; its figures must never become the row's
-// windows.
+// windows. Spend probes run only under `--spend`: a default run starts no
+// `claude` for a credits-on row and gives it spend `not_probed`.
 // ---------------------------------------------------------------------------
 
 const PROBE_ENV: &str = "AMPLIHACK_PROFILE_USAGE_PROBE";
@@ -681,7 +682,7 @@ fn assert_no_amounts(s: &Setup, out: &std::process::Output) {
 #[test]
 fn raw_prints_the_shape_of_extra_usage_and_nothing_secret() {
     let s = credits_on();
-    let out = s.usage(&["--raw", "spare"]);
+    let out = s.usage(&["--raw", "--spend", "spare"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let err = text(&out.stderr);
     assert!(
@@ -730,12 +731,12 @@ fn raw_prints_the_shape_of_extra_usage_and_nothing_secret() {
     }
 }
 
-/// AC3: a credits-on row is `direct`, with the endpoint's windows and the
-/// spend probe's status.
+/// AC3: a credits-on row is `direct`, with the endpoint's windows and,
+/// under `--spend`, the spend probe's status.
 #[test]
 fn credits_on_rows_keep_the_direct_windows() {
     let s = credits_on();
-    let out = s.usage(&["--json", "spare", "extra"]);
+    let out = s.usage(&["--json", "--spend", "spare", "extra"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let rows = json_rows(&out);
     for (p, i) in [("spare", 1.0), ("extra", 2.0)] {
@@ -757,7 +758,7 @@ fn credits_on_rows_keep_the_direct_windows() {
         s.claude_runs()
     );
 
-    let out = s.usage(&["spare"]);
+    let out = s.usage(&["--spend", "spare"]);
     let table = text(&out.stdout);
     let header: Vec<&str> = table.lines().next().unwrap().split_whitespace().collect();
     assert_eq!(header.last(), Some(&"SPEND"), "{table}");
@@ -767,11 +768,13 @@ fn credits_on_rows_keep_the_direct_windows() {
     assert_eq!(spend_cell(line), "ok", "{line}");
 }
 
-/// AC4: 16 credits-on profiles whose `claude` never answers: windows for
-/// every row in under 10 s, every spend `unknown`, no more spend probes
-/// than the bound, and no child left behind.
+/// AC4 (crusty round 1): a default run reads 16 credits-on profiles whose
+/// `claude` never answers without starting `claude` at all. The windows
+/// come from the direct read, every spend is `not_probed` (no probe was
+/// asked for, which `--json` keeps apart from a failed one), and nothing
+/// waits on `/usage`.
 #[test]
-fn sixteen_credits_on_profiles_with_a_slow_claude_finish_in_time() {
+fn sixteen_credits_on_profiles_start_no_claude_by_default() {
     let s = credits_on();
     for p in names() {
         s.slow(&p);
@@ -786,37 +789,57 @@ fn sixteen_credits_on_profiles_with_a_slow_claude_finish_in_time() {
     for r in &rows {
         assert_eq!(r["source"], "direct", "{r}");
         assert_eq!(r["week_all"]["used_percentage"], 55.0, "{r}");
-        assert_eq!(r["spend"], "unknown", "{r}");
+        assert_eq!(r["spend"], "not_probed", "{r}");
     }
-    assert!(
-        s.usage_runs() <= 2,
-        "the claude bound holds: {:?}",
-        s.claude_runs()
-    );
-    s.assert_no_survivors();
+    assert!(s.claude_runs().is_empty(), "{:?}", s.claude_runs());
     assert_no_sentinel_leaks(&s, &out);
 
-    let start = Instant::now();
     let out = s.usage_with(&["--raw"], &[(PARALLEL_ENV, "2")]);
-    assert!(
-        start.elapsed() < Duration::from_secs(10),
-        "table took {:?}",
-        start.elapsed()
-    );
     let table = text(&out.stdout);
     for p in names() {
         let line = table_line(&table, &p);
-        assert_eq!(spend_cell(line), "unknown", "{line}");
+        assert_eq!(spend_cell(line), "not_probed", "{line}");
         assert!(line.contains("55%"), "{line}");
     }
     let err = text(&out.stderr);
-    assert!(
-        err.contains("windows direct, spend probe failed")
-            || err.contains("windows direct, spend not probed"),
-        "{err}"
+    assert!(err.contains("windows direct, spend not probed"), "{err}");
+    assert!(!err.contains("spend probe failed"), "{err}");
+    assert!(s.claude_runs().is_empty(), "{:?}", s.claude_runs());
+}
+
+/// AC4 (crusty round 1): under `--spend` a `claude` that never answers is
+/// stopped at the normal per-probe timeout, not at a fixed short deadline.
+/// Every probe asked for runs, at most `AMPLIHACK_PROFILE_USAGE_PARALLEL`
+/// at once, each row's spend is `unknown` (probed and failed, not
+/// `not_probed`), and no child is left behind.
+#[test]
+fn spend_probes_of_a_slow_claude_end_at_the_probe_timeout() {
+    let s = credits_on();
+    let four = ["p01", "p02", "p03", "p04"];
+    for p in four {
+        s.slow(p);
+    }
+    let start = Instant::now();
+    let out = s.usage_with(
+        &[&["--json", "--spend", "--timeout-secs", "2"][..], &four[..]].concat(),
+        &[(PARALLEL_ENV, "2")],
     );
-    assert!(!err.contains("spend from claude"), "{err}");
+    let took = start.elapsed();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    // Two rounds of two 2 s probes: the bound holds, and no probe was cut
+    // short of its timeout.
+    assert!(took >= Duration::from_secs(4), "took {took:?}");
+    assert!(took < Duration::from_secs(25), "took {took:?}");
+    let rows = json_rows(&out);
+    assert_eq!(rows.len(), 4, "{rows:#?}");
+    for r in &rows {
+        assert_eq!(r["source"], "direct", "{r}");
+        assert_eq!(r["week_all"]["used_percentage"], 55.0, "{r}");
+        assert_eq!(r["spend"], "unknown", "{r}");
+    }
+    assert_eq!(s.usage_runs(), 4, "{:?}", s.claude_runs());
     s.assert_no_survivors();
+    assert_no_sentinel_leaks(&s, &out);
 }
 
 /// AC5: a used-up spend limit in `/usage` gives `limit_reached`, and the
@@ -829,7 +852,7 @@ fn a_spend_limit_in_usage_text_gives_limit_reached() {
         "Current session: 10% used\nCurrent week (all models): 20% used\n\
          Your organization has reached its spend limit\n",
     );
-    let out = s.usage(&["--json", "spare"]);
+    let out = s.usage(&["--json", "--spend", "spare"]);
     let rows = json_rows(&out);
     let r = row(&rows, "spare");
     assert_eq!(r["spend"], "limit_reached", "{r}");
@@ -837,7 +860,7 @@ fn a_spend_limit_in_usage_text_gives_limit_reached() {
     assert_eq!(r["source"], "direct", "{r}");
     assert_eq!(r["session"]["used_percentage"], 1.0, "{r}");
     assert_eq!(r["week_all"]["used_percentage"], 55.0, "{r}");
-    let out = s.usage(&["spare"]);
+    let out = s.usage(&["--spend", "spare"]);
     let table = text(&out.stdout);
     let line = table_line(&table, "spare");
     assert_eq!(spend_cell(line), "limit_reached", "{line}");
@@ -853,7 +876,7 @@ fn each_row_gets_its_own_spend() {
         "Current session: 10% used\nYour organization has reached its spend limit\n",
     );
     s.usage_text("extra", "Not logged in. Please run /login\n");
-    let out = s.usage(&["--json", "spare", "extra", "p01"]);
+    let out = s.usage(&["--json", "--spend", "spare", "extra", "p01"]);
     let rows = json_rows(&out);
     assert_eq!(row(&rows, "spare")["spend"], "limit_reached");
     assert_eq!(
@@ -862,7 +885,7 @@ fn each_row_gets_its_own_spend() {
         "a login prompt is never ok"
     );
     assert_eq!(row(&rows, "p01")["spend"], "ok");
-    let out = s.usage(&["--raw", "extra"]);
+    let out = s.usage(&["--raw", "--spend", "extra"]);
     assert!(
         text(&out.stderr).contains(
             "note: profile \"extra\": direct read gave usage credits on; windows direct, spend probe failed"
@@ -872,12 +895,12 @@ fn each_row_gets_its_own_spend() {
     );
 }
 
-/// AC6: `direct` mode gives the windows, starts no `claude`, and says the
-/// spend was not probed.
+/// AC6: `direct` mode gives the windows, starts no `claude` even under
+/// `--spend`, and says the spend was not probed.
 #[test]
 fn direct_mode_gives_credits_on_windows_and_starts_no_claude() {
     let s = credits_on();
-    let out = s.usage_with(&["--json", "spare"], &[(PROBE_ENV, "direct")]);
+    let out = s.usage_with(&["--json", "--spend", "spare"], &[(PROBE_ENV, "direct")]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let rows = json_rows(&out);
     let r = row(&rows, "spare");
@@ -888,7 +911,7 @@ fn direct_mode_gives_credits_on_windows_and_starts_no_claude() {
         "no longer an error row: {r}"
     );
     assert_eq!(r["session"]["used_percentage"], 1.0, "{r}");
-    assert_eq!(r["spend"], "unknown", "{r}");
+    assert_eq!(r["spend"], "not_probed", "{r}");
     let out = s.usage_with(&["--raw", "spare"], &[(PROBE_ENV, "direct")]);
     let err = text(&out.stderr);
     assert!(
@@ -906,17 +929,21 @@ fn direct_mode_gives_credits_on_windows_and_starts_no_claude() {
     assert_no_amounts(&s, &out);
 }
 
-/// AC6: a missing `claude` leaves the windows, with spend `unknown`.
+/// AC6: under `--spend`, a missing `claude` leaves the windows, with
+/// spend `unknown`: the probe was asked for and gave nothing.
 #[test]
 fn a_missing_claude_leaves_credits_on_windows_with_an_unknown_spend() {
     let s = credits_on();
     fs::remove_file(s.f.tools.join("claude")).unwrap();
-    let out = s.usage(&["--json", "spare"]);
+    let out = s.usage(&["--json", "--spend", "spare"]);
     assert!(out.status.success(), "{}", text(&out.stderr));
     let r = json_rows(&out)[0].clone();
     assert_eq!(r["state"], "ok", "{r}");
     assert_eq!(r["error"], serde_json::Value::Null, "{r}");
     assert_eq!(r["spend"], "unknown", "{r}");
+    let out = s.usage(&["--raw", "--spend", "spare"]);
+    let err = text(&out.stderr);
+    assert!(err.contains("windows direct, spend probe failed"), "{err}");
 }
 
 /// AC7: credits off is unchanged apart from the `SPEND` column and the

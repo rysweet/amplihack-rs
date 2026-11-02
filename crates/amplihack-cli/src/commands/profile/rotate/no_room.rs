@@ -106,7 +106,7 @@ pub fn room_back(reading: &Reading, windows: &Windows) -> Option<i64> {
     let (session, week) = match reading {
         Reading::Failed => return None,
         Reading::Measured { session, week } => (Some(*session), Some(*week)),
-        Reading::Exhausted => (
+        Reading::Exhausted { .. } => (
             windows.session.map(|w| w.used),
             windows.week.map(|w| w.used),
         ),

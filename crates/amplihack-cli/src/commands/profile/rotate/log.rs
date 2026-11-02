@@ -207,8 +207,10 @@ pub mod msg {
     }
 
     /// `s=<n>% w=<n>%` with `sep` between, from the windows read (#1844):
-    /// exhausted shows at least `s=100%`, an unread week `w=?`, a failed
-    /// probe `failed`, and a read still in flight `unknown, still running`.
+    /// exhausted shows its stored figures; no session window is `s=0%`, as
+    /// in D1 (#1846), so a weekly-only login never logs a session limit it
+    /// does not have. An unread week is `w=?`, failed `failed`, in flight
+    /// `unknown, still running`.
     pub(in super::super) fn usage(r: &Shown, sep: &str) -> String {
         if r.still_running {
             return "unknown, still running".to_string();
@@ -219,9 +221,9 @@ pub mod msg {
                 let s = r.session.unwrap_or(session);
                 format!("s={}%{sep}w={}", pct(s), week(r.week))
             }
-            Reading::Exhausted => {
-                let s = r.session.map_or(100.0, |s| s.max(100.0));
-                format!("s={}%{sep}w={}", pct(s), week(r.week))
+            Reading::Exhausted { session, week: w } => {
+                let s = session.or(r.session).unwrap_or(0.0);
+                format!("s={}%{sep}w={}", pct(s), week(w.or(r.week)))
             }
             Reading::Failed => "failed".to_string(),
         }
@@ -382,19 +384,6 @@ pub mod msg {
     pub fn lost_login_cap(name: &ProfileName) -> String {
         format!(
             "ALERT: profile {name} has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login {name}"
-        )
-    }
-
-    /// Hand-change recovery, case A: `m` had no login of its own.
-    pub fn recovered_record(m: &ProfileName, l: &ProfileName) -> String {
-        format!("recovered: ~/.claude holds {m}'s login (ledger named {l}); recorded {m} as live")
-    }
-
-    /// Hand-change recovery, case B: `m`'s own copy was moved to `to`.
-    pub fn recovered_moved(m: &ProfileName, to: &std::path::Path) -> String {
-        format!(
-            "recovered: ~/.claude and {m} held the same account; kept ~/.claude, moved {m}'s copy to {}; recorded {m} as live",
-            to.display()
         )
     }
 }

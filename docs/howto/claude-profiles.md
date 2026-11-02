@@ -400,7 +400,10 @@ always runs the `claude` binary (not the configured launch binary) with
 `CLAUDE_CONFIG_DIR` pointing at the profile so the login is stored there.
 If the new login is an account another profile already has, `login` refuses
 it and puts the previous login back; see
-[Duplicate logins](#duplicate-logins).
+[Duplicate logins](#duplicate-logins). An accepted login also records the
+account as the one the profile is meant to hold. The duplicate-login warning
+and the rotator compare against this record; see
+[Recorded account](../reference/profile-command.md#recorded-account).
 
 ## Choose a profile
 
@@ -712,7 +715,7 @@ amplihack profile usage
 PROFILE   MARKS       STATE              SESSION  SESSION RESETS        WEEK  WEEK RESETS           SPEND
 review    -           ok                 5%       2026-10-17T04:00:00Z  10%   2026-10-22T09:00:00Z  n/a
 work      *           ok                 20%      2026-10-17T02:00:00Z  30%   2026-10-22T09:00:00Z  n/a
-mistt     -           ok                 35%      2026-10-17T03:00:00Z  52%   2026-10-22T09:00:00Z  ok
+mistt     -           ok                 35%      2026-10-17T03:00:00Z  52%   2026-10-22T09:00:00Z  not_probed
 team      -           session_exhausted  100%     2026-10-16T23:50:00Z  55%   2026-10-22T09:00:00Z  n/a
 scratch   (fallback)  not_logged_in      -        -                     -     -                     unknown
 ```
@@ -735,12 +738,19 @@ stderr says why the direct read failed. A profile marked as
 [overflow](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted)
 is always read with `/usage`, because only `/usage` shows a used-up spend
 limit. For any other account with usage credits turned on, such as `mistt`
-above, the session and weekly figures still come from the direct read, and
-amplihack then runs a short `/usage` probe only to fill the `SPEND` column.
-Those probes share a 6-second deadline counted from the start of the
-command, so they do not hold up the table; a probe that has not answered by
-then leaves `SPEND` as `unknown`. If the direct reads themselves are slow,
-the probes may get little or no time and show `unknown` too. Checking does
+above, the session and weekly figures still come from the direct read, no
+`claude` is started, and `SPEND` shows `not_probed`. To read the spend limit
+too, add `--spend`:
+
+```bash
+amplihack profile usage --spend mistt
+```
+
+That runs one `/usage` probe per such account, only to fill the `SPEND`
+column. `/usage` can take 10 to 20 seconds per profile on a busy host, so
+`--spend` makes the command slower; each probe gets the same 120-second
+deadline as a fallback, and one that does not answer by then shows
+`unknown`. Checking does
 not appear to use quota, and an exhausted account still answers. A profile
 at its session limit shows its weekly figure as reported (`55%` for `team`
 above). The profiles with the most room come first. Exhausted ones
@@ -757,7 +767,8 @@ What the `SPEND` column means:
 | `n/a` | No spend limit was read for this row, and none was needed: usage credits are off, or the row came from a stored reading or is an API-key profile. It does not prove that credits are off. |
 | `ok` | `/usage` gave a usage reading and reported no used-up spend limit. |
 | `limit_reached` | The account's spend limit is used up. It cannot work past its plan limits on credits until the limit is raised or resets. |
-| `unknown` | The spend limit could not be read in time, `claude` did not give a usage reading (as for `scratch`, which is not logged in), or the row could not be read at all. |
+| `unknown` | A probe ran and the spend limit could not be read: a `--spend` probe did not answer in time or `claude` could not be found, `claude` did not give a usage reading (as for `scratch`, which is not logged in), or the row could not be read at all. |
+| `not_probed` | Usage credits are on and no spend probe was asked for: run with `--spend` to read it. Says nothing about the spend limit. |
 
 To check only some profiles, name them:
 
@@ -841,6 +852,12 @@ session or all-models weekly limit reached, the table ends with
 `overflow_blocked_until`. See
 [Use usage credits when every plan login is exhausted](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted).
 
+Below the table, a six-line summary gives the weekly headroom across all
+logins, how many can take work now, the next session reset and how long the
+weekly capacity lasts at the recent rate; see
+[See how much capacity is left](claude-profile-rotation.md#see-how-much-capacity-is-left).
+`--summary-json` prints the rows and that summary as one JSON object.
+
 The command exits with status 0 whenever the probes ran, whatever their
 states. Like `profile run`, it is refused under Docker.
 
@@ -848,10 +865,10 @@ states. Like `profile run`, it is refused under Docker.
 
 If a row without the `(fallback)` mark shows a `SPEND` value other than
 `n/a`, amplihack found usage credits on for that account. If you did not
-expect that, run the profile with `--raw`:
+expect that, run the profile with `--raw` (here with `--spend` as well):
 
 ```bash
-amplihack profile usage --raw mistt
+amplihack profile usage --raw --spend mistt
 ```
 
 Two `note:` lines on stderr describe what the usage endpoint sent in its
@@ -875,10 +892,11 @@ identifier, a currency or an amount: only key names, types, and bool or
 character other than letters, digits, `_`, `.` and `-` replaced by `?`.
 Read the line before you share it all the same, since a key name could
 look like an identifier. If the first line ends `spend probe failed`, the
-`/usage` probe ran but did not finish in time or gave no usage reading. If
-it ends `spend not probed`, no `/usage` probe ran for the row, for example
-under `AMPLIHACK_PROFILE_USAGE_PROBE=direct`. In both cases `SPEND` is
-`unknown`. See
+`--spend` probe ran but did not finish in time or gave no usage reading, and
+`SPEND` is `unknown`. If it ends `spend not probed`, no `/usage` probe was
+asked for: the run had no `--spend`, or
+`AMPLIHACK_PROFILE_USAGE_PROBE=direct` was set. Then `SPEND` is
+`not_probed`. See
 [Usage credits on](../reference/profile-command.md#usage-credits-on) for
 every form the line can take.
 
@@ -1206,17 +1224,54 @@ Running `/login` inside a Claude session is not checked when it happens.
 duplicate afterwards:
 
 ```
-note: profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login ryan-ryansweet' with the browser signed out of claude.ai or in a private window.
+note: profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login rssourcelabs' with the browser signed out of claude.ai or in a private window.
 ```
 
-Profile names are listed in sorted order and the fix names the second one.
-If the second profile is the one with the right login, log in the first one
-again instead.
+Profile names are listed in sorted order. The fix names the profile whose
+login is not the account recorded for it. amplihack records a profile's
+account when `profile login` accepts a login, and in some rotator swaps; see
+[Recorded account](../reference/profile-command.md#recorded-account). Here
+`rssourcelabs` was recorded with another account, so it is the one to log in
+again.
+
+When neither profile has a record, both match their records, or both
+differ, amplihack cannot tell which login is wrong and says so:
+
+```
+note: profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); amplihack cannot tell which of them holds the wrong login; fix: run 'amplihack profile login <name>' for the one that should hold a different account, with the browser signed out of claude.ai or in a private window.
+```
+
+Decide which profile should hold another account, and log that one in
+again. The accepted login records its account, so the next warning, if any,
+names a profile.
 
 `status` prints it as a `note:` line; `usage` prints the same text on stderr
 as a `warning:` line, after the table. The login in `~/.claude` takes part
-too, named `~/.claude`. The rotator's live profile is not compared with
-`~/.claude`, since that is where its own login is.
+too, named `~/.claude`. It is judged by the record of the rotator's live
+profile, since that is the account it should hold, and a profile that
+matches its own record is never named. When `~/.claude` is the one off its
+record, the fix is a `/login` there rather than `profile login`:
+
+```
+note: profiles '~/.claude' and 'bbuck' are signed in to the same account and organization (duplicate login); the login in ~/.claude is not the account recorded for profile 'work'; fix: run plain 'claude' and '/login' to the account 'work' is meant for, with the browser signed out of claude.ai or in a private window.
+```
+
+The rotator refuses to swap in the same state, with the same reason. The
+rotator's live profile is not compared with `~/.claude`, since that is
+where its own login is. See
+[Duplicate-login warning](../reference/profile-command.md#duplicate-login-warning)
+for every form.
+
+A profile can also hold the wrong login without forming a duplicate, for
+example when a Claude session started with `CLAUDE_CONFIG_DIR` pointing at
+that profile's folder signed in to another account. `status` and `usage`
+compare every profile that has a record with its record, the same user in
+another organization counting as another account, and print one line for
+each that differs:
+
+```
+warning: profile 'bbuck' holds a login that is not the account recorded for it; fix: run 'amplihack profile login bbuck' with the browser signed out of claude.ai or in a private window.
+```
 
 ## Switch accounts automatically
 

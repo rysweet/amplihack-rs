@@ -13,16 +13,17 @@
 //!
 //! Issue #1856: a direct read with usage credits on and a readable window
 //! is a `direct` row with the direct windows, the redacted `extra_usage`
-//! shape and spend [`Spend::NotProbed`]. `profile usage` then runs a
-//! spend-only `/usage` probe for it under one shared deadline; the rotator
-//! does not. The spend column:
+//! shape and spend [`Spend::NotProbed`]. `profile usage --spend` then runs
+//! a spend-only `/usage` probe for it under the normal per-probe timeout;
+//! the default run and the rotator do not. The spend column:
 //!
 //! | Row | Spend |
 //! |---|---|
 //! | passive, direct with credits off, accepted `get_usage` answer, API key | `n/a` |
 //! | `/usage` text with a usage reading | `ok`, or `limit_reached` on a spend limit |
 //! | `/usage` text with no usage reading, a failed probe, an error row | `unknown` |
-//! | direct with credits on, no spend probe finished | `unknown` |
+//! | direct with credits on, spend probe asked for but no `claude` found | `unknown` |
+//! | direct with credits on, no spend probe asked for | `not_probed` |
 //!
 //! `claude` is looked up only when a fallback is about to run
 //! ([`LazyBinary`]), and at most a fixed number run at once ([`ClaudeGate`]).
@@ -76,9 +77,12 @@ pub(super) enum Spend {
     Ok,
     /// `/usage` text reported the spend limit as reached.
     LimitReached,
-    /// A probe ran or was needed and gave no usage reading.
+    /// A probe ran, or was asked for and could not start, and gave no
+    /// usage reading.
     Unknown,
-    /// Credits are on and no spend probe has finished for the row.
+    /// Credits are on and no spend probe was asked for: `profile usage`
+    /// without `--spend`, `AMPLIHACK_PROFILE_USAGE_PROBE=direct`, or the
+    /// rotator.
     NotProbed,
 }
 
@@ -88,7 +92,8 @@ impl Spend {
             Self::NotApplicable => "n/a",
             Self::Ok => "ok",
             Self::LimitReached => "limit_reached",
-            Self::Unknown | Self::NotProbed => "unknown",
+            Self::Unknown => "unknown",
+            Self::NotProbed => "not_probed",
         }
     }
 

@@ -94,24 +94,28 @@ fn measured(session: f64, week: f64, s_reset: Option<i64>, w_reset: Option<i64>)
         windows: Windows {
             session: win(session, s_reset),
             week: win(week, w_reset),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     }
 }
 
 /// An exhausted reading (session at 100%) with reset times.
 fn exhausted(s_reset: Option<i64>, w_reset: Option<i64>) -> Probed {
     Probed {
-        reading: Reading::Exhausted,
+        reading: Reading::EXHAUSTED,
         windows: Windows {
             session: win(100.0, s_reset),
             week: win(100.0, w_reset),
+            no_session_limit: false,
         },
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     }
 }
 
@@ -124,6 +128,7 @@ fn failed() -> Probed {
         spend_limit: false,
         unknown: false,
         still_running: false,
+        observed_at: None,
     }
 }
 
@@ -139,6 +144,7 @@ fn spend_limited() -> Probed {
         spend_limit: true,
         unknown: false,
         still_running: false,
+        observed_at: None,
     }
 }
 
@@ -254,6 +260,7 @@ fn report(
         week_all: w.map(|(u, r)| uw("all models", u, r)),
         week_models: Vec::new(),
         session_limit: true,
+        observed_at: None,
     }
 }
 
@@ -264,7 +271,13 @@ fn probed_keeps_reset_times_for_exhausted_readings() {
         Some((100.0, Some(NOW + HOUR))),
         Some((40.0, Some(NOW + 50 * HOUR))),
     ));
-    assert_eq!(p.reading, Reading::Exhausted);
+    assert!(matches!(
+        p.reading,
+        Reading::Exhausted {
+            session: Some(s),
+            week: Some(w),
+        } if s == 100.0 && w == 40.0
+    ));
     assert!(!p.spend_limit);
     assert_eq!(p.windows.session, win(100.0, Some(NOW + HOUR)));
     assert_eq!(p.windows.week, win(40.0, Some(NOW + 50 * HOUR)));

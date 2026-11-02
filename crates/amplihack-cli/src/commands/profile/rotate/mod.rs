@@ -41,7 +41,11 @@ mod hand_fields;
 #[cfg(unix)]
 mod handfix;
 #[cfg(unix)]
+mod handfix_msg;
+#[cfg(unix)]
 mod held;
+#[cfg(unix)]
+mod history;
 #[cfg(unix)]
 mod holders;
 #[cfg(unix)]
@@ -85,6 +89,8 @@ mod recover;
 #[cfg(unix)]
 mod revalidate;
 #[cfg(unix)]
+mod sessions_daily;
+#[cfg(unix)]
 mod settings;
 #[cfg(unix)]
 mod spend_blocks;
@@ -92,6 +98,8 @@ mod spend_blocks;
 mod swap;
 #[cfg(unix)]
 mod swap_check;
+#[cfg(unix)]
+mod swap_expect;
 #[cfg(unix)]
 mod switch;
 #[cfg(all(test, unix))]
@@ -103,17 +111,11 @@ pub use overflow_msg::{CheckNote, alert_key_held_session, per_token_off_key, per
 pub use overflow_record::append_to_log;
 
 #[cfg(all(test, unix))]
+mod tests;
+#[cfg(all(test, unix))]
 mod tests_autostart;
 #[cfg(all(test, unix))]
-mod tests_autostart_owner;
-#[cfg(all(test, unix))]
 mod tests_daemon;
-#[cfg(all(test, unix))]
-mod tests_damp;
-#[cfg(all(test, unix))]
-mod tests_decide;
-#[cfg(all(test, unix))]
-mod tests_gate_record;
 #[cfg(all(test, unix))]
 mod tests_handfix;
 #[cfg(all(test, unix))]
@@ -129,31 +131,19 @@ mod tests_issue_1804;
 #[cfg(all(test, unix))]
 mod tests_issue_1804_cycle;
 #[cfg(all(test, unix))]
+mod tests_issue_1845_cycle;
+#[cfg(all(test, unix))]
+mod tests_issue_1845_swap;
+#[cfg(all(test, unix))]
 mod tests_key_check;
-#[cfg(all(test, unix))]
-mod tests_ledger;
-#[cfg(all(test, unix))]
-mod tests_live_readers;
 #[cfg(all(test, unix))]
 mod tests_log;
 #[cfg(all(test, unix))]
 mod tests_measure;
 #[cfg(all(test, unix))]
-mod tests_overflow;
-#[cfg(all(test, unix))]
-mod tests_owner;
-#[cfg(all(test, unix))]
 mod tests_pin;
 #[cfg(all(test, target_os = "linux"))]
 mod tests_pin_overflow;
-#[cfg(all(test, unix))]
-mod tests_pin_platform;
-#[cfg(all(test, unix))]
-mod tests_platform;
-#[cfg(all(test, unix))]
-mod tests_platform_block;
-#[cfg(all(test, unix))]
-mod tests_platform_identify;
 #[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
@@ -163,7 +153,7 @@ mod tests_revalidate_cause;
 #[cfg(all(test, unix))]
 mod tests_revalidate_unit;
 #[cfg(all(test, unix))]
-mod tests_settings;
+mod tests_sessions_daily;
 #[cfg(test)]
 mod tests_source_scan;
 #[cfg(all(test, unix))]
@@ -179,22 +169,19 @@ mod tests_switch_hold;
 #[cfg(all(test, unix))]
 mod tests_switch_race;
 
-use super::name::ProfileName;
-use super::root_config::RootSource;
-use super::store::ProfileStore;
+use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 
+// Issue #1797: `Probes` is what the usage history records from a cycle.
 #[cfg(unix)]
-pub(super) use self::{identify::is_live, platform_block::platform_live_line};
+pub(super) use self::{identify::is_live, observe::Probes, platform_block::platform_live_line};
 #[cfg(unix)]
 pub(in crate::commands::profile) use autostart::autostart_line;
-#[cfg(unix)]
-pub(crate) use autostart::autostart_on_launch;
 #[cfg(unix)]
 pub(super) use control::{clear_overflow_block, overflow_blocks};
 #[cfg(unix)]
 pub(super) use log::timestamp;
 #[cfg(unix)]
-pub(crate) use older_readers::warn_foreign_rotator;
+pub(crate) use {autostart::autostart_on_launch, older_readers::warn_foreign_rotator};
 
 // Auto-switch's overflow gate (`gate_record`): the running rotator's own
 // settings, or, when no rotator runs, the `AMPLIHACK_ROTATE_*` variables.
@@ -203,9 +190,8 @@ pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
 pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
 
-/// The tail of the warning printed after `profile switch NAME` (issue
-/// #1691) while a rotator from another amplihack binary runs: one started
-/// before the upgrade does not read the switch hold and may swap away.
+/// The tail of the warning after `profile switch NAME` (#1691) while a rotator
+/// of another amplihack binary, which ignores the switch hold, runs.
 #[cfg(unix)]
 const FOREIGN_IGNORES_HOLD: &str = "runs another amplihack binary and ignores the switch \
     hold; restart it: amplihack profile rotate stop && amplihack profile rotate start";
@@ -245,7 +231,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
     #[cfg(unix)]
     {
         let env = |k: &str| std::env::var_os(k);
-        let home = home_dir();
+        let home = settings::home_dir();
         match args.action {
             None => {
                 let s = settings::resolve(&args.tune, None, &env)?;
@@ -287,28 +273,17 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
     }
 }
 
-/// `$HOME`, which holds the live `~/.claude`.
-#[cfg(unix)]
-fn home_dir() -> Result<std::path::PathBuf, super::ProfileError> {
-    std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(std::path::PathBuf::from)
-        .ok_or_else(|| super::ProfileError::RotateRefused("HOME is not set".into()))
-}
-
-/// `profile switch NAME` (issue #1691): moves NAME's login into `~/.claude`
-/// with the rotator's swap, pins rotation to it and makes it the default.
-/// Prints three lines. When the login moved but a later write failed, the
-/// error says so; it is not a refusal, since something did change. When the
-/// live login cannot be moved, NAME is still made the default for new
-/// launches, that is printed, and the refusal exits non-zero.
+/// `profile switch NAME` (#1691): swaps NAME's login into `~/.claude`, pins
+/// rotation to it and makes it the default, in three lines. A later failed
+/// write is an error, not a refusal. If the login cannot move, NAME is still
+/// made the default for new launches and printed, then the refusal exits 1.
 pub(in crate::commands::profile) fn switch_live(
     store: &ProfileStore,
     name: &ProfileName,
 ) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        let home = home_dir()?;
+        let home = settings::home_dir()?;
         // Judged before the move, from the profile's own login (or from
         // `~/.claude` when it is already live), as the kind guard does.
         let platform = super::kind::kind_of(store, name, &home) == super::kind::Kind::Platform;

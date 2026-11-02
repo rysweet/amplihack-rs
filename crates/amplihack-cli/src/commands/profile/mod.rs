@@ -11,9 +11,13 @@
 #[cfg(unix)]
 mod attempt;
 mod auto_switch;
+mod capacity_summary;
+mod capacity_weight;
 mod default_live;
 #[cfg(unix)]
 mod duplicates;
+#[cfg(unix)]
+pub(in crate::commands::profile) mod expected;
 #[cfg(unix)]
 mod kind;
 #[cfg(unix)]
@@ -36,12 +40,17 @@ mod supervise_gate;
 mod usage_cmd;
 #[cfg(unix)]
 mod usage_direct;
+mod usage_history;
 mod usage_parse;
 #[cfg(unix)]
 mod usage_passive;
 mod usage_request;
 mod usage_source;
 
+#[cfg(test)]
+mod tests_capacity_summary;
+#[cfg(test)]
+mod tests_capacity_weight;
 #[cfg(test)]
 mod tests_commands;
 #[cfg(all(test, unix))]
@@ -54,6 +63,8 @@ mod tests_docs_sync_platform;
 mod tests_docs_sync_probe;
 #[cfg(all(test, unix))]
 mod tests_duplicates;
+#[cfg(all(test, unix))]
+mod tests_expected;
 #[cfg(all(test, unix))]
 mod tests_fake_http;
 #[cfg(all(test, unix))]
@@ -87,6 +98,8 @@ mod tests_usage_direct;
 #[cfg(all(test, unix))]
 mod tests_usage_direct_scan;
 #[cfg(test)]
+mod tests_usage_history;
+#[cfg(test)]
 mod tests_usage_parse;
 #[cfg(all(test, unix))]
 mod tests_usage_passive;
@@ -100,6 +113,9 @@ mod tests_usage_source;
 mod tests_verify;
 
 use anyhow::Result;
+/// For `amplihack sessions` (issue #1746): the live check and profile root.
+#[cfg(unix)]
+pub(crate) use auto_switch::claude_config_dirs;
 /// File helpers shared with the usage-limit wait (#1618).
 #[cfg(unix)]
 use auto_switch::fsx;
@@ -110,6 +126,7 @@ use clap::Subcommand;
 use name::ProfileName;
 #[cfg(test)]
 use root_cmd::{render_list, render_show};
+pub(crate) use root_config::store_from_env;
 pub(crate) use rotate::autostart_on_launch;
 #[cfg(unix)]
 pub(crate) use rotate::warn_foreign_rotator;
@@ -117,7 +134,7 @@ pub(crate) use settings_refresh::{Refresh, refresh_profile_settings};
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::PathBuf;
-use store::ProfileStore;
+pub(crate) use store::ProfileStore;
 pub(crate) use store::ROOT_ENV;
 pub use supervise_gate::maybe_supervise;
 
@@ -399,9 +416,18 @@ pub enum ProfileCommands {
         /// Print a JSON array instead of the table
         #[arg(long)]
         json: bool,
+        /// Print one JSON object: the --json rows and the capacity summary
+        #[arg(long, conflicts_with_all = ["json", "raw"])]
+        summary_json: bool,
         /// Also print what `claude` wrote to stdout and stderr
         #[arg(long)]
         raw: bool,
+        /// Session % below which a login counts as usable now (1-100; default 95, or AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT)
+        #[arg(long, value_parser = clap::value_parser!(u8).range(1..=100))]
+        usable_session_pct: Option<u8>,
+        /// Also run one /usage probe per usage-credits-on account to fill SPEND (starts claude)
+        #[arg(long)]
+        spend: bool,
         /// Seconds each probe may run (default 120, max 600; or AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS)
         #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(1..=probe_limits::MAX_TIMEOUT_SECS))]
         timeout_secs: Option<u64>,
@@ -542,9 +568,28 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::Usage {
             names,
             json,
+            summary_json,
             raw,
             timeout_secs,
-        } => usage_cmd::run(&store, &names, json, raw, timeout_secs)?,
+            usable_session_pct,
+            spend,
+        } => {
+            let output = if summary_json {
+                usage_cmd::Output::SummaryJson
+            } else if json {
+                usage_cmd::Output::Json
+            } else {
+                usage_cmd::Output::Table
+            };
+            let opts = usage_cmd::UsageOpts {
+                output,
+                raw,
+                timeout_secs,
+                usable_session_pct,
+                spend,
+            };
+            usage_cmd::run(&store, &names, opts)?
+        }
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
         ProfileCommands::Overflow { command } => overflow::run(&store, command)?,
