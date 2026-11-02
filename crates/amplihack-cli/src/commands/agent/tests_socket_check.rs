@@ -21,16 +21,21 @@ use std::path::{Path, PathBuf};
 
 const NOT_PRIVATE: &str = "socket directory is not private";
 
-/// A temp dir whose socket paths fit in `sun_path` (108 bytes). A nested
-/// workflow can set a `TMPDIR` over 100 bytes long; then use `/tmp`.
+/// The `sun_path` rule shared with the `cli_integration` tests.
+#[path = "../../../tests/support/socket_dir.rs"]
+mod socket_dir;
+
+/// The longest socket path these tests bind under a temp root.
+const BOUND_TAIL: &str = "tmux-1000/default";
+
+/// A temp root in which `tmux-1000/default` can be bound: under `TMPDIR`
+/// when it fits in `sun_path`, else under `XDG_RUNTIME_DIR` (see
+/// `tests/support/socket_dir.rs`). When neither fits, a plain temp dir; the
+/// tests that bind a socket then skip (see [`bind`]), and the rest, which
+/// only inspect paths, still run.
 fn short_tempdir() -> tempfile::TempDir {
-    let base = std::env::temp_dir();
-    let base = if base.as_os_str().len() <= 48 {
-        base
-    } else {
-        PathBuf::from("/tmp")
-    };
-    tempfile::tempdir_in(base).unwrap()
+    socket_dir::socket_tempdir(Path::new(BOUND_TAIL))
+        .unwrap_or_else(|| tempfile::tempdir().unwrap())
 }
 
 fn dir(p: &Path, mode: u32) -> PathBuf {
@@ -47,8 +52,16 @@ fn parent(mode: u32) -> (tempfile::TempDir, PathBuf) {
     (tmp, p)
 }
 
-fn bind(p: &Path) {
+/// Binds a socket at `p`; false, with a message, when `p` does not fit in
+/// `sun_path`, so the calling test skips.
+#[must_use]
+fn bind(p: &Path) -> bool {
+    if !socket_dir::fits(p) {
+        eprintln!("{}", socket_dir::skip_message(p));
+        return false;
+    }
     drop(std::os::unix::net::UnixListener::bind(p).unwrap());
+    true
 }
 
 fn mode(p: &Path) -> u32 {
@@ -59,7 +72,9 @@ fn mode(p: &Path) -> u32 {
 fn a_private_parent_passes_with_or_without_a_socket() {
     let (_t, p) = parent(0o700);
     assert_eq!(check(&p.join("default")), SocketCheck::Ok);
-    bind(&p.join("default"));
+    if !bind(&p.join("default")) {
+        return;
+    }
     assert_eq!(check(&p.join("default")), SocketCheck::Ok);
     let (_t, p) = parent(0o750);
     assert_eq!(
@@ -95,7 +110,9 @@ fn the_socket_path_must_be_a_socket_and_not_a_symlink() {
         "regular file"
     );
     let (_t, p) = parent(0o700);
-    bind(&p.join("real"));
+    if !bind(&p.join("real")) {
+        return;
+    }
     std::os::unix::fs::symlink(p.join("real"), p.join("default")).unwrap();
     assert_eq!(
         check(&p.join("default")),
@@ -161,7 +178,9 @@ fn has_session_rows_1_to_3_need_no_tmux() {
         Some(SessionState::Absent),
         "no socket file"
     );
-    bind(&sock);
+    if !bind(&sock) {
+        return;
+    }
     assert_eq!(classify_socket(&sock), None, "tmux is asked");
     let tmp = short_tempdir();
     let gone = tmp.path().join("gone/default");

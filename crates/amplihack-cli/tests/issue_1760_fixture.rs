@@ -5,7 +5,9 @@
 //! first. `HOME`, `~/.claude`, the profile root (`AMPLIHACK_CLAUDE_PROFILE_ROOT`),
 //! `TMUX_TMPDIR` and a synthetic `/proc` (`AMPLIHACK_TEST_PROC_ROOT`, honoured
 //! only with the home guard that `isolated` sets) all lie under one temp
-//! directory. No real `~/.claude`, `~/.amplihack`, profile root, tmux server
+//! directory. The one exception is `TMUX_TMPDIR` when the temp directory is
+//! too long for a socket path: it then moves under `XDG_RUNTIME_DIR`, by the
+//! rule in `support::socket_dir`. No real `~/.claude`, `~/.amplihack`, profile root, tmux server
 //! or `/proc` entry of another process is read or written.
 //!
 //! The socket at `socket` is a real Unix socket file nobody listens on, so
@@ -20,6 +22,7 @@
 #![allow(dead_code)]
 
 use crate::support::amplihack_bin::amplihack_bin;
+use crate::support::socket_dir;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -37,6 +40,8 @@ pub const SELF_PID: u32 = 999_999;
 
 pub struct Fx {
     _tmp: tempfile::TempDir,
+    /// Set only when `TMUX_TMPDIR` had to leave the temp root.
+    _tmux_tmp: Option<tempfile::TempDir>,
     /// Canonical temp root; every path a run may touch lies under it.
     pub root: PathBuf,
     pub home: PathBuf,
@@ -50,7 +55,9 @@ pub struct Fx {
     pub records: PathBuf,
     /// State and call log of the fake `tmux`.
     pub tmux_state: PathBuf,
-    /// `TMUX_TMPDIR`.
+    /// `TMUX_TMPDIR`: `root/tt`, or a directory under `XDG_RUNTIME_DIR` when
+    /// the socket path under `root` would not fit in `sun_path`. Tests that
+    /// bind their own sockets put them here too.
     pub tmux_tmpdir: PathBuf,
     /// `TMUX_TMPDIR/tmux-<uid>`, mode 0700.
     pub socket_dir: PathBuf,
@@ -59,26 +66,17 @@ pub struct Fx {
     /// Working directory of every run, and parent of `dir(..)`.
     pub work: PathBuf,
     pub uid: u32,
-    /// `TMPDIR` of every run: the directory holding `root`.
-    pub tmpdir: PathBuf,
 }
 
 impl Fx {
     pub fn new() -> Self {
-        // A nested workflow can set a `TMPDIR` over 100 bytes long, which
-        // leaves no room for the socket path; then use `/tmp`, and pass it
-        // on as `TMPDIR` so the home guard still finds HOME under it.
-        let base = std::env::temp_dir();
-        let base = if base.as_os_str().len() <= 48 {
-            base
-        } else {
-            PathBuf::from("/tmp")
-        };
-        let tmp = tempfile::tempdir_in(&base).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
         // SAFETY: geteuid has no preconditions.
         let uid = unsafe { libc::geteuid() };
         let j = |p: &str| root.join(p);
+        let (tmux_tmpdir, tmux_tmp) = socket_dir::tmux_socket_dir_named(&root, "tt");
+        let socket_dir = tmux_tmpdir.join(format!("tmux-{uid}"));
         let fx = Self {
             home: j("home"),
             claude_dir: j("home/.claude"),
@@ -87,14 +85,14 @@ impl Fx {
             proc_root: j("proc"),
             records: j("records"),
             tmux_state: j("tmux-state"),
-            tmux_tmpdir: j("tt"),
-            socket_dir: j(&format!("tt/tmux-{uid}")),
-            socket: j(&format!("tt/tmux-{uid}/default")),
+            socket: socket_dir.join("default"),
+            socket_dir,
+            tmux_tmpdir,
             work: j("work"),
             uid,
-            tmpdir: base.canonicalize().unwrap(),
             root,
             _tmp: tmp,
+            _tmux_tmp: tmux_tmp,
         };
         for d in [&fx.home, &fx.records, &fx.tmux_state, &fx.work, &fx.tools] {
             fs::create_dir_all(d).unwrap();
@@ -109,10 +107,13 @@ impl Fx {
             fs::create_dir_all(d).unwrap();
             chmod(d, 0o700);
         }
+        // Every test using `Fx` needs this socket file to exist, so when no
+        // directory fits the fixture stops with the reason rather than
+        // skipping each test one by one.
         assert!(
-            fx.socket.as_os_str().len() <= 107,
-            "socket path {} is over 107 bytes; set a shorter TMPDIR",
-            fx.socket.display()
+            socket_dir::fits(&fx.socket),
+            "{}",
+            socket_dir::skip_message(&fx.socket)
         );
         fx.make_socket();
         fx.install_fakes();
@@ -128,7 +129,6 @@ impl Fx {
             .current_dir(&self.work)
             .env("PATH", format!("{}:/usr/bin:/bin", self.tools.display()))
             .env("HOME", &self.home)
-            .env("TMPDIR", &self.tmpdir)
             .env("TMUX_TMPDIR", &self.tmux_tmpdir)
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.profiles)
             .env("AMPLIHACK_TEST_PROC_ROOT", &self.proc_root)
