@@ -146,7 +146,12 @@ Effective config:
   recipe.detach = "none"  # default
   recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
   recipe.log_dir = (unset)  # default
+  recipe.usage_limit_wait = true  # default
+  recipe.usage_limit_max_wait_secs = (unset)  # default
   orchestrator.max_depth = 3  # default
+  sessions.daily_archive = true  # default
+  sessions.archive_days = 3  # default
+  sessions.archive_dest = (unset)  # default
 ```
 
 ## Example: Two Failures

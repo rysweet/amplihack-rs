@@ -42,6 +42,8 @@ mod statusline;
 #[cfg(unix)]
 mod swap;
 #[cfg(unix)]
+pub(super) mod takeover;
+#[cfg(unix)]
 mod usage;
 
 #[cfg(all(test, unix))]
@@ -69,6 +71,8 @@ mod tests_platform_candidate;
 #[cfg(all(test, unix))]
 mod tests_record;
 #[cfg(all(test, unix))]
+mod tests_takeover;
+#[cfg(all(test, unix))]
 mod tests_usage;
 
 use super::ProfileError;
@@ -89,6 +93,9 @@ pub use cli::AutoSwitchCommand;
 /// File helpers `default_live` reuses for its read-only checks.
 #[cfg(unix)]
 pub(super) use fsx::{check_root_private, euid, exists, read_bounded_nofollow, writable_by_others};
+/// For the session archive's live check (issue #1746).
+#[cfg(unix)]
+pub(crate) use liveness::claude_config_dirs;
 /// For the shared-session liveness tests (issue #1634).
 #[cfg(all(test, unix))]
 pub(super) use liveness::scan;
@@ -102,8 +109,10 @@ pub(super) use state::CREDS;
 pub(super) use swap::read_claude_json;
 #[cfg(all(test, unix))]
 pub(crate) use swap::rerun_owner;
+#[cfg(unix)]
+pub(super) use usage::Window;
 #[cfg(all(test, unix))]
-pub(super) use usage::{Reading as SwitchReading, ReadingSource, Window};
+pub(super) use usage::{Reading as SwitchReading, ReadingSource};
 #[cfg(unix)]
 pub(crate) use {swap::sweep_rerun, usage::reset_or_default};
 
@@ -460,6 +469,124 @@ pub fn lease_view(root: &Path) -> Result<Option<LeaseView>, ProfileError> {
         let _ = root;
         Ok(None)
     }
+}
+
+/// One account's reading as [`usage_view`] gives it to the capacity
+/// governor (issue #1811). Each window is `(used percentage, resets_at)`.
+#[derive(Debug, Clone, Copy)]
+pub struct UsageViewReading {
+    pub five_hour: Option<(f64, i64)>,
+    pub seven_day: Option<(f64, i64)>,
+    pub observed_at: i64,
+    /// [`usage::Reading::no_session_window`] (issue #1818): a week window
+    /// and no session window. The stored reading cannot tell a plan with no
+    /// session limit from a session window that was not recorded, so the
+    /// governor labels this `no session window`, as `rotate status` does.
+    pub no_session_window: bool,
+}
+
+/// Readings by account for [`usage_view`].
+pub type UsageView = std::collections::BTreeMap<String, UsageViewReading>;
+
+/// Readings by account from `usage.json`, read without the lock, for the
+/// capacity governor (issue #1811). `None` without a state directory. The
+/// same trust checks as [`lease_view`]; nothing is created or written.
+pub fn usage_view(root: &Path) -> Result<Option<UsageView>, ProfileError> {
+    #[cfg(unix)]
+    {
+        if !fsx::exists(&root.join(state::DIR)) {
+            return Ok(None);
+        }
+        let state = state::State::new(root)?;
+        fsx::check_root_private(&state.root)
+            .map_err(|e| ProfileError::AutoSwitchInvariant(format!("profile root {e}")))?;
+        fsx::check_private_dir(&state.dir)
+            .map_err(|e| ProfileError::AutoSwitchInvariant(format!("{}: {e}", state::DIR)))?;
+        let window = |w: Option<usage::Window>| w.map(|w| (w.used_percentage, w.resets_at));
+        Ok(Some(
+            state
+                .try_load_usage()?
+                .accounts
+                .into_iter()
+                .map(|(account, r)| {
+                    let view = UsageViewReading {
+                        no_session_window: r.no_session_window(),
+                        five_hour: window(r.five_hour),
+                        seven_day: window(r.seven_day),
+                        observed_at: r.observed_at,
+                    };
+                    (account, view)
+                })
+                .collect(),
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        Ok(None)
+    }
+}
+
+/// [`usage::plausible`] for the capacity governor (issue #1811), as
+/// `(used percentage, resets_at)`: `None` for a non-finite percentage or a
+/// reset more than one day before or eight days after `now`, and the
+/// percentage clamped to 0 to 100 otherwise. The governor and the rotator
+/// share this plausibility rule. It is not the whole of the rotator's test:
+/// [`fresh_reading`] also rejects a reading older than its `max_age`, and the
+/// governor applies its own age limit, `governor.max_reading_age_secs`.
+#[cfg(unix)]
+pub fn plausible_window(pct: f64, resets_at: i64, now: i64) -> Option<(f64, i64)> {
+    usage::plausible(pct, resets_at, now).map(|w| (w.used_percentage, w.resets_at))
+}
+
+/// Issue #1844: the stored reading for the account whose login is in
+/// directory `dir`, when it was observed no more than `max_age` seconds
+/// before `now` (and not after it), with each window that passes
+/// [`usage::plausible`]. `None` without auto-switch state, a reading, or a
+/// plausible window, and when anything cannot be read. Read-only and
+/// silent: it never creates state, takes the lock or prints.
+#[cfg(unix)]
+pub fn fresh_reading(root: &Path, dir: &str, max_age: i64, now: i64) -> Option<FreshReading> {
+    if max_age <= 0 {
+        return None;
+    }
+    let state = state::State::new(root).ok()?;
+    if !state.exists() {
+        return None;
+    }
+    fsx::check_root_private(&state.root).ok()?;
+    fsx::check_private_dir(&state.dir).ok()?;
+    let ledger = state.load_ledger().ok()?;
+    let account = ledger.account_in(dir);
+    let file = state.try_load_usage().ok()?;
+    let r = file.accounts.get(account)?;
+    let age = now.checked_sub(r.observed_at)?;
+    if !(0..=max_age).contains(&age) {
+        return None;
+    }
+    let ok =
+        |w: &Option<Window>| w.and_then(|w| usage::plausible(w.used_percentage, w.resets_at, now));
+    let (session, week) = (ok(&r.five_hour), ok(&r.seven_day));
+    (session.is_some() || week.is_some()).then_some(FreshReading {
+        session,
+        week,
+        // The same test as [`no_session_window_profiles`]; a stored session
+        // window dropped as implausible is unknown, not absent.
+        no_session_window: r.no_session_window() && week.is_some(),
+        observed_at: r.observed_at,
+    })
+}
+
+/// The plausible windows of a fresh stored reading (issue #1844).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FreshReading {
+    pub session: Option<Window>,
+    pub week: Option<Window>,
+    /// Issue #1818: the reading has a week window and no session window, so
+    /// it has no session limit.
+    pub no_session_window: bool,
+    /// When the status line stored the reading, epoch seconds.
+    pub observed_at: i64,
 }
 
 /// Issue #1818: the profiles among `names` whose stored reading has a week

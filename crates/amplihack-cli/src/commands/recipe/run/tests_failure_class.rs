@@ -13,7 +13,7 @@
 use super::super::{RecipeRunResult, RecipeRunStepResult};
 use super::failure_class::{
     FAILURE_CLASS_RESULT_KEY, FailureClass, FailureVerdict, classify_error, classify_failure_text,
-    classify_run_failure, usage_limit_reset_hint,
+    classify_run_failure, marker_line, usage_limit_reset_hint,
 };
 use super::retry::{AttemptOutcome, StopReason, TransientRetryLimits, run_with_transient_retry};
 use amplihack_utils::backoff::BackoffPolicy;
@@ -311,6 +311,27 @@ fn verdict_json_names_the_class_the_signal_and_the_action() {
     );
     // The key the agentic layer reads is stable.
     assert_eq!(FAILURE_CLASS_RESULT_KEY, "failure_classification");
+}
+
+/// `autodrive_escalate.sh` reads a usage-limit marker without `jq` by anchoring
+/// on the key order `serde_json` writes (#1801). A change to that order, such
+/// as turning on `preserve_order`, must fail here and not silently in the loop.
+#[test]
+fn the_marker_line_starts_with_the_keys_the_shell_check_anchors_on() {
+    let verdict = FailureVerdict {
+        class: FailureClass::UsageLimit,
+        signal: Some("weekly limit"),
+        evidence: "You've hit your weekly limit".to_string(),
+        failed_steps: vec!["step-08-implement".to_string()],
+        completed_steps: Vec::new(),
+    };
+    for action in ["retry", "terminal", "terminal_budget_exhausted"] {
+        let line = marker_line(&verdict.to_json(3, action));
+        let want = format!(
+            "amplihack.recipe.failure_class {{\"action\":\"{action}\",\"attempt\":3,\"class\":\"usage_limit\","
+        );
+        assert!(line.starts_with(&want), "{line}");
+    }
 }
 
 // ---------------------------------------------------------------------------

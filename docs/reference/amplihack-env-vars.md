@@ -83,6 +83,11 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE` | user preference |  | Allows installing an older recipe runner. |
 | `AMPLIHACK_GIT_1278_CHILD` | test-only |  | Re-exec switch for the #1278 git test. |
 | `AMPLIHACK_GIT_1278_PLAIN` | test-only |  | Re-exec switch for the #1278 git test. |
+| `AMPLIHACK_GOVERNOR` | user preference |  | `on`, `1` or `true` turns the [capacity governor](./capacity-governor.md) on (it ships off); `off`, `0` or `false` turns it off. Read by the governor itself; outranks `governor.enabled`. |
+| `AMPLIHACK_GOVERNOR_CLASS` | user preference |  | Default admission class for the capacity governor. |
+| `AMPLIHACK_GOVERNOR_MANIFEST` | user preference |  | Usage manifest that `governor status` reads for `token_share`. |
+| `AMPLIHACK_GOVERNOR_PARENT` | internal |  | Tree id of the capacity governor slot held by the parent process; a start that matches a live slot runs nested under it. |
+| `AMPLIHACK_GOVERNOR_WAIT` | user preference |  | Default `--governor-wait`. Read by the governor itself; outranks `governor.wait_secs`. |
 | `AMPLIHACK_GRAPH_DB_PATH` | internal |  | Code-graph database path exported to children. |
 | `AMPLIHACK_HOME` | user preference | `paths.home` | Root for framework assets, hooks and runtime state. |
 | `AMPLIHACK_HOOK_CONTRACT` | internal |  | Not an env var: suffix of the `CANONICAL_AMPLIHACK_HOOK_CONTRACT` constant. |
@@ -145,9 +150,14 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_PLUGIN_INSTALL_LOCK` | test-only |  | Plugin-manifest test fixture. |
 | `AMPLIHACK_POST_UPDATE_INSTALL` | internal |  | Marks the install that follows a self-update. |
 | `AMPLIHACK_PROBE_BIN` | test-only |  | Probe binary path in update and install tests. |
-| `AMPLIHACK_PROFILE_USAGE_PARALLEL` | user preference |  | Number of usage probes run at once by `amplihack profile usage` and the rotator (whose live probe counts against it), `1` to `16`; derived from CPUs and load when unset or empty. See [Probe parallelism](profile-command.md#probe-parallelism). |
-| `AMPLIHACK_PROFILE_USAGE_PROBE` | user preference |  | How `amplihack profile usage` and the rotator ask `claude` for usage: `auto` (default; the `get_usage` request, falling back to `claude -p /usage`; profiles marked as overflow always get `/usage` only) or `text` (`claude -p /usage` only). Matched exactly; empty counts as unset; any other value warns and uses `auto`. See [Probe method](profile-command.md#probe-method). |
-| `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | user preference |  | Seconds each profile's usage probe may run in `amplihack profile usage` and the rotator, covering the `get_usage` request and any `/usage` fallback, `1` to `600`; default `120`. See [Probe deadline](profile-command.md#probe-deadline). |
+| `AMPLIHACK_PROFILE_USAGE_API_BASE` | user preference |  | Base URL of the OAuth usage endpoint for direct usage reads by `amplihack profile usage` and the rotator; default `https://api.anthropic.com`. Only `https://`, or `http://` on `127.0.0.1`, `[::1]` or `localhost`; any other value warns, without repeating it, and uses the default. See [Direct read](profile-command.md#direct-read). |
+| `AMPLIHACK_PROFILE_USAGE_DIRECT_PARALLEL` | user preference |  | Number of passive and direct usage reads run at once by `amplihack profile usage` and the rotator, `1` to `16`; default `8`. See [Probe parallelism](profile-command.md#probe-parallelism). |
+| `AMPLIHACK_PROFILE_USAGE_PARALLEL` | user preference |  | Number of `claude` usage probes (fallbacks) run at once by `amplihack profile usage` and the rotator (whose live probe counts against it), `1` to `16`; derived from CPUs and load when unset or empty. See [Probe parallelism](profile-command.md#probe-parallelism). |
+| `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` | user preference |  | Seconds a stored status-line reading in `usage.json` stays fresh enough for `amplihack profile usage` and the rotator to use without asking, `0` to `3600`; default `300`; `0` turns passive readings off. See [Passive readings](profile-command.md#passive-readings). |
+| `AMPLIHACK_PROFILE_USAGE_PROBE` | user preference |  | How `amplihack profile usage` and the rotator read usage. Unset (default): a fresh passive reading, then a direct read of the OAuth usage endpoint, then `claude` (the `get_usage` request, then `claude -p /usage`) only if the direct read fails. `direct`: passive, then direct only; a failure reads `error`, no `claude` is started for a reading, and overflow profiles read `error` (the rotator's held-cycle spend-limit check still starts `claude`). `auto`: `claude` only, the `get_usage` request with the `/usage` fallback. `text`: `claude -p /usage` only. Outside `direct`, profiles marked as overflow get `/usage` only. Matched exactly; empty counts as unset; any other value warns and uses the default order. See [Probe method](profile-command.md#probe-method). |
+| `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | user preference |  | Seconds each profile's usage read may run in `amplihack profile usage` and the rotator, `1` to `600`; default `120`. It bounds a direct read, refresh included, and separately a `claude` fallback, covering the `get_usage` request and any `/usage` attempt. See [Probe deadline](profile-command.md#probe-deadline). |
+| `AMPLIHACK_PROFILE_USAGE_TOKEN_URL` | user preference |  | OAuth token URL used to refresh an expired login during a direct usage read; default `https://platform.claude.com/v1/oauth/token`. Same rules as `AMPLIHACK_PROFILE_USAGE_API_BASE`. See [Token refresh](profile-command.md#token-refresh). |
+| `AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT` | user preference |  | Session percentage below which a login counts as usable now in the capacity summary of `amplihack profile usage` and the `capacity:` line of `amplihack profile rotate status`, `1` to `100`; default `95`. `--usable-session-pct` overrides it. Does not change any rotation or auto-switch threshold. See [Usable now](profile-command.md#usable-now). |
 | `AMPLIHACK_PROJECT_ID` | user preference |  | Memory learning project id. |
 | `AMPLIHACK_PROJECT_ROOT` | internal |  | Project root exported by the uvx manager. |
 | `AMPLIHACK_PROMPT_DELIVERY` | user preference |  | Prompt delivery mode for agent subprocesses. |
@@ -243,7 +253,8 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_WORKFLOW_ARTIFACT_DIR` | internal |  | Artifact directory handed to recipe steps. |
 | `AMPLIHACK_WORKFLOW_RUNTIME_DIR` | internal |  | Runtime directory handed to recipe steps. |
 | `AMPLIHACK_WORKSPACE_MARKER` | internal |  | Not an env var: the install clone's workspace marker constant. |
-| `AMPLIHACK_WORKSTREAM_ISSUE` | internal |  | Issue number handed to a multitask workstream. |
+| `AMPLIHACK_WORKSTREAM` | user preference |  | Workstream identity for the capacity governor's fair queue. |
+| `AMPLIHACK_WORKSTREAM_ISSUE` | internal |  | Issue number handed to a multitask workstream. The capacity governor also uses it as the workstream `ws-<n>`. |
 | `AMPLIHACK_WORKSTREAM_PROGRESS_FILE` | internal |  | Progress file handed to a multitask workstream. |
 | `AMPLIHACK_WORKSTREAM_STATE_FILE` | internal |  | State file handed to a multitask workstream. |
 | `AMPLIHACK_WORKTREE_PATH` | internal |  | Worktree path handed to a multitask workstream. |

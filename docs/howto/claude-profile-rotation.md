@@ -35,6 +35,7 @@ The exact flags, files, exit codes and log lines are in the
 - [Which profiles can take over](#which-profiles-can-take-over)
 - [Read the log](#read-the-log)
 - [Resume sessions stopped by a usage limit](#resume-sessions-stopped-by-a-usage-limit)
+- [See how much capacity is left](#see-how-much-capacity-is-left)
 - [When no account has capacity](#when-no-account-has-capacity)
 - [Use usage credits when every plan login is exhausted](#use-usage-credits-when-every-plan-login-is-exhausted)
 - [Move from the tmux prototype](#move-from-the-tmux-prototype)
@@ -327,8 +328,12 @@ owner: none
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
+capacity: headroom 2.07 login-weeks of 4 (52%), usable 2 of 4 logins, runway ~9 h (as of 2026-10-18T12:50:05Z, 3m ago, rotate cycle: probed profiles only)
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
+
+The `capacity:` line is read from the usage history the rotator keeps; see
+[See how much capacity is left](#see-how-much-capacity-is-left).
 
 Stop it:
 
@@ -759,7 +764,8 @@ effect on a running background process; run `stop` and then `start`.
 
 Each profile's *headroom* is `100 - max(session %, week %)`. A profile with no
 session window yet counts as 0% session use. A profile that is
-`session_exhausted` or `weekly_exhausted` has headroom 0.
+`session_exhausted` or `weekly_exhausted` has headroom 0, whatever its other
+window reads.
 
 On each cycle the rotator compares the live account with the candidate that
 has the most headroom (ties go to the name that sorts first):
@@ -815,7 +821,7 @@ before. When every account is at or above a threshold, the rotator writes
 one `ALERT` and stays, as before.
 
 A probe that timed out or could not run shows as `<name>:failed` in the
-cycle line, never as `s=100%,w=100%`, and writes
+cycle line, never as a percentage, and writes
 `warning: rotate: probe of <name> timed out` (or `failed: <reason>`) to
 `rotate.err`. Its usage is unknown: the rotator does not choose it, does not
 count or record it as exhausted, and probes it again on the next cycle.
@@ -823,8 +829,18 @@ While a plan profile's usage is unknown this way, the rotator does not move
 onto
 [usage credits](#use-usage-credits-when-every-plan-login-is-exhausted); see
 [When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured).
-`s=100%,w=100%` means the probe answered and the account reached its
-session or weekly limit.
+A login that reached a limit shows the figures its probe read, with the
+window that ran out never below `100%`, so `work:s=100%,w=62%` is a login at
+its session limit with 38% of its week left. A login at its weekly limit
+shows `w=100%` and the session it read, for example `s=30%,w=100%`, and
+`w=?` means no weekly figure was read. Either way the login has headroom
+0 and is not chosen until the window resets. See
+[Exhausted figures](../reference/profile-command.md#rotate-exhausted-figures).
+
+A login whose read had not finished when the cycle stopped waiting shows as
+`<name>:unknown, still running`. Its usage is unknown for that cycle, as for
+`failed`, and the next cycle uses the result when it arrives; see
+[Readings that take longer than a cycle](#readings-that-take-longer-than-a-cycle).
 
 To see why a probe fails, run `amplihack profile usage --raw`. If the state
 is `timeout`, see
@@ -833,19 +849,24 @@ is `timeout`, see
 ## When the host is heavily loaded
 
 The rotator measures each login as
-[`profile usage`](claude-profiles.md#check-usage-across-profiles) does: it
-asks `claude` with a `get_usage` request, which does not appear to make
-Claude read the session transcripts, and falls back to `claude -p /usage`,
-which reads every transcript the profile can see. That fallback can take a
-minute or more of CPU on a busy host, and a profile marked as overflow is
-always probed with `/usage` alone. So the rotator gives each login's probe 120
-seconds, for the request and any fallback together, and runs only a few
-probes at once: between 2 and 4, fewer as the load average rises towards
-the number of CPUs. The live login's probe counts as one of those. A
-`claude` that answers `get_usage` but does not exit keeps its place among
-those few until its 120 seconds are up; it is then stopped and its answer is
-still used. The formula is in the
-[reference](../reference/profile-command.md#probe-parallelism).
+[`profile usage`](claude-profiles.md#check-usage-across-profiles) does:
+
+1. it uses a reading the status line stored in the last 300 seconds, if
+   there is one;
+2. otherwise it asks Anthropic's OAuth usage endpoint directly, with the
+   login stored in the profile, which takes well under a second and starts
+   no `claude` process;
+3. only if that fails does it start `claude`, first with a `get_usage`
+   request and then with `claude -p /usage`.
+
+The last step is the slow one: `/usage` reads every transcript the profile
+can see, which can take a minute or more of CPU on a busy host. A profile
+marked as overflow is always probed with `/usage` alone, because only
+`/usage` shows a used-up spend limit. So each login's `claude` probe gets
+120 seconds, and only a few run at once: between 2 and 4, fewer as the load
+average rises towards the number of CPUs. Direct reads have their own
+bound, 8 by default. The live login counts as one of each. The formula is
+in the [reference](../reference/profile-command.md#probe-parallelism).
 
 If probes still time out, give them longer, run fewer at once, or both. The
 rotator reads these variables from the environment it was started in, so
@@ -866,19 +887,78 @@ in another shell does nothing to a running rotator.
 |----------|--------|---------|
 | `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | `1` to `600` seconds | `120` |
 | `AMPLIHACK_PROFILE_USAGE_PARALLEL` | `1` to `16` | derived from CPUs and load |
-| `AMPLIHACK_PROFILE_USAGE_PROBE` | `auto` or `text` | `auto` |
+| `AMPLIHACK_PROFILE_USAGE_DIRECT_PARALLEL` | `1` to `16` | `8` |
+| `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` | `0` to `3600` seconds; `0` turns passive readings off | `300` |
+| `AMPLIHACK_PROFILE_USAGE_PROBE` | `direct`, `auto` or `text` | unset: passive, direct, then `claude` |
+| `AMPLIHACK_PROFILE_USAGE_API_BASE` | an `https://` URL, or `http://` on a loopback address | `https://api.anthropic.com` |
+| `AMPLIHACK_PROFILE_USAGE_TOKEN_URL` | an `https://` URL, or `http://` on a loopback address | `https://platform.claude.com/v1/oauth/token` |
 
-On an idle host with many profiles, a higher
+On an idle host with many profiles that need `claude`, a higher
 `AMPLIHACK_PROFILE_USAGE_PARALLEL` makes each cycle shorter.
-`AMPLIHACK_PROFILE_USAGE_PROBE=text` skips the `get_usage` request; use it
-only if that request gives wrong figures (see
+`AMPLIHACK_PROFILE_USAGE_PROBE=direct` starts no `claude` to measure a
+login: a login whose direct read fails reads as failed for that cycle, and
+overflow logins always do, with `direct read: overflow needs /usage`, so the
+rotator never moves onto one. The one `claude` it still starts is the
+spend-limit check of a held cycle whose pinned live login is an overflow
+profile; see [Pin and overflow](../reference/profile-command.md#pin-and-overflow). `AMPLIHACK_PROFILE_USAGE_PROBE=auto` goes back to the behaviour before
+direct reads (the `get_usage` request, then `/usage`), and `text` uses
+`/usage` alone; use them only if the direct read gives wrong figures (see
 [Compare the two probe methods](claude-profiles.md#compare-the-two-probe-methods)),
-because every probe then reads the transcripts. An empty value is treated as
+because every probe then starts `claude`. An empty value is treated as
 unset. An invalid value is reported once per cycle in `rotate.err` beside
 the log, and the default is used instead.
 
-A slow cycle can take longer than `--interval`. Cycles do not overlap: the
-next one starts `--interval` seconds after the previous one ends.
+When a direct read fails and the login is measured with `claude` instead,
+the rotator writes nothing about it to its log or `rotate.err`; the cycle
+line shows the figures as usual. To see why a login fell back, run
+`amplihack profile usage --raw <name>`.
+
+The direct read may refresh a candidate's expired token, under Claude's own
+refresh lock, and write the new token back to that profile's
+`.credentials.json`. It never refreshes the login in `~/.claude` or a login
+lent to or from another directory; `claude` does that itself. The details
+are in the [reference](../reference/profile-command.md#token-refresh).
+
+### Readings that take longer than a cycle
+
+A cycle does not wait for every reading. It waits until 2 seconds before
+`--interval` is up, counted from the start of the cycle, and at least
+1 second. A login whose reading has not finished by then shows as
+`<name>:unknown, still running` in the cycle line and counts as unmeasured
+for that cycle. Its reading keeps running, and the next cycle uses the
+result; no second reading of that login starts while one is outstanding.
+With `--interval 120`:
+
+```
+2026-11-01T10:00:00Z cycle live=work work:s=41%,w=30% spare:unknown, still running third:s=5%,w=12%
+2026-11-01T10:02:01Z cycle live=work work:s=43%,w=30% spare:s=0%,w=8% third:s=5%,w=12%
+```
+
+A reading still outstanding after twice the probe deadline plus 5 seconds
+(245 seconds by default) is given up, and the next cycle starts a new one.
+When the rotator stops, it waits a little over the deadline for any token
+refresh in progress, so that it does not leave Claude's refresh lock
+behind.
+
+Cycles do not overlap: the next one starts `--interval` seconds after the
+previous one ends.
+
+Each cycle stores the readings it took, and later cycles use a stored
+reading while it is younger than `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`
+(300 seconds by default). With `--interval 120`, a login is therefore asked
+afresh only about every third cycle, and a swap can rest on a reading up to
+five minutes old. For the rotator to react sooner, lower the age in the
+shell that starts it:
+
+```bash
+export AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS=100
+amplihack profile rotate stop
+amplihack profile rotate start --interval 120 --session-at 70
+```
+
+A value just under `--interval` makes every cycle ask each login again, at
+the cost of one direct read per login per cycle; `0` does the same and also
+ignores the status line's own readings.
 
 ## Which profiles can take over
 
@@ -916,6 +996,22 @@ the previous one.
 2026-10-18T19:40:05Z ALERT: no profile has capacity live=personal s=97% w=52%
 2026-10-18T19:50:05Z skip: state lock busy
 2026-10-20T09:00:05Z stay: live probe failed (1/3)
+```
+
+A login at its session limit keeps its weekly figure in the log. Here
+`work` used its five-hour window with 62% of its week used, and the rotator
+moved to `personal`:
+
+```
+2026-11-01T14:40:05Z cycle live=work work:s=100%,w=62% personal:s=20%,w=35%
+2026-11-01T14:40:05Z swap work->personal live s=100% w=62% target s=20% w=35% reason=threshold
+```
+
+To follow one login's weekly use across cycles, including cycles where it
+was exhausted:
+
+```bash
+grep -oE ' work:s=[0-9]+%,w=[0-9]+%' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
 To see only swaps and alerts:
@@ -1080,6 +1176,59 @@ background rotation and auto-switch. With auto-switch off the hook exits at
 once, prints nothing, and reads only the saved root and the toggle. To keep rotation but not
 the resume, delete the `StopFailure` entry from `~/.claude/settings.json`.
 `amplihack install` adds it again.
+
+## See how much capacity is left
+
+`amplihack profile usage` ends with a summary across every login. After
+the table, it prints:
+
+```
+weekly headroom      2.07 login-weeks of 4 (52%)
+usable now           2 of 4 logins (session < 95% and weekly < 100%)
+next session reset   2026-10-30T18:00:00Z  (night, team: +2 usable)
+runway               ~9 h at the last 6 h rate (0.230 login-weeks/h)
+resets in next 24 h  2026-10-31T02:00:00Z night +0.85; 2026-10-31T09:00:00Z work +0.30
+unknown              2 profiles (no valid reading; excluded from all figures)
+```
+
+A login-week is one login's weekly allowance, so `2.07 login-weeks of 4`
+means a little over two logins' worth of weekly capacity is left across the
+four logins that could be read. Logins that could not be read are counted
+as unknown and left out of the figures; they are never counted as empty or
+full. The table above the summary shows which they are.
+
+The runway needs about six hours of history. Each rotator cycle and each
+`profile usage` run without profile names adds a line to
+`<root>/.auto-switch.d/usage-history.jsonl`. Until there is enough it reads
+`unknown`. The rate is per hour, worked out from between four and a half and
+six hours of history, and it starts from a line that read every login: a
+`profile usage` line, or a rotator line from a cycle that skipped none. A
+rotator cycle does not probe logins that are running a session, so while
+some are busy, run `amplihack profile usage` now and then (every few hours)
+to give the runway a starting point.
+
+`amplihack profile rotate status` prints the same figures in one
+`capacity:` line from the rotator's last cycle, without probing anything.
+That cycle may have measured only some logins, so its `of N` can be smaller
+than in `profile usage`; the logins it skipped as busy, and any whose
+`.claude.json` has no usable `oauthAccount`, are counted in its `unknown`.
+When that cycle left logins out, the line does not use it for the runway:
+it shows the runway of the newest line that read every login, with that
+line's time (`runway ~14 h from the <time> entry (this cycle left out 2
+logins)`), or `runway unknown (this cycle left out 2 logins)` when there is
+none in the last six hours.
+
+If your logins are on different plans, give the larger ones more weight in
+`<root>/.auto-switch.d/capacity-weights.json`, for example
+`{ "team": 2.0 }`, and the summary adds a weighted figure. To count a login
+as usable only below a lower session percentage, set
+`AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT=80` or pass
+`--usable-session-pct 80`.
+
+For scripts, `amplihack profile usage --summary-json` prints the rows and the
+summary as one JSON object. The details are in
+[Capacity summary](../reference/profile-command.md#capacity-summary). To
+clear the history, delete `usage-history.jsonl` and `usage-history.lock`.
 
 ## When no account has capacity
 
@@ -1630,6 +1779,8 @@ hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotatio
 | `atomic exchange is not supported here` | The system or filesystem cannot swap two files in one step. Only Linux can. Nothing was moved. |
 | `Claude holds its refresh lock; the swap waits for the next cycle` | A `claude` session is refreshing its token in `~/.claude` or the target profile. The rotator never breaks that lock; it tries again on the next cycle. If it repeats with no `claude` running, see "Stale refresh lock" under Limits. |
 | `~/.claude.json is not a JSON object` | The swap could not record the new account in `~/.claude.json`, so it refuses before anything moves. Repair the file so it holds a JSON object. |
+| `the login in ~/.claude is not the account recorded for profile <name>` | The live login would go back to `<name>`, but it is not the account recorded for `<name>`. Saving it there would leave `<name>` holding another account's login. See [The live login is not the profile's account](#the-live-login-is-not-the-profiles-account). |
+| `the recorded account could not be written to the .claude.json of profile <name>: <reason>` | The login in `~/.claude` is the account recorded for `<name>`, but `<root>/<name>/.claude.json` names another account and could not be updated. Moving the login there would leave the file naming the wrong account. Repair the file so it holds a JSON object, or check its ownership and mode; the next cycle writes it. |
 
 Three situations write an ALERT instead of refusing:
 
@@ -1645,6 +1796,95 @@ Three situations write an ALERT instead of refusing:
   [After a manual /login in ~/.claude](#after-a-manual-login-in-claude).
 - `ALERT: auto-switch recovery is inconsistent; no swap`. Run
   `amplihack profile auto-switch repair`.
+
+### The live login is not the profile's account
+
+amplihack records the account each profile is meant to hold when you run
+`amplihack profile login <name>` and the login is accepted. A swap that
+adopts a login into `default-original` records that profile too, and a
+swap away from a profile with no record records it when the ledger shows the
+outgoing login came from that profile and no other profile holds or has
+recorded the same account. The record is
+`<root>/.auto-switch.d/expected/<name>.json` and holds the account and its
+organization. The same user in another organization counts as another
+account, so a `/login` to your personal organization is refused for a
+profile recorded with your team organization.
+
+Before a swap moves the login in `~/.claude` back to the live profile, the
+rotator compares it with that profile's record. If they differ, the swap is
+refused and nothing moves:
+
+```
+2026-11-01T09:40:05Z ALERT: swap refused: the login in ~/.claude is not the account recorded for profile work
+```
+
+The ALERT is written to the log once for `work`, not on every cycle, but
+every cycle refuses to swap until it is fixed. It names the profile and
+never the account. `amplihack profile switch` reports the same refusal and
+exits 1.
+
+This usually follows a `/login` in `~/.claude` to the wrong account, or a
+browser that signed Claude in to whichever account it already had. To fix
+it, put the right login back in `~/.claude`:
+
+1. Sign out of claude.ai in the browser, or open a private window.
+2. Run plain `claude`, then `/login`, and sign in to the account `work` is
+   meant for.
+3. Run `amplihack profile rotate` once, or wait for the next cycle. The
+   ledger still names the account that was there before, so the cycle sees
+   a hand change. Because the new login is the account recorded for `work`,
+   it keeps `work` as the live profile and logs:
+
+   ```
+   2026-11-01T09:52:05Z recovered: ~/.claude holds the account recorded for work; kept work as live
+   ```
+
+   When a swap is due, it now goes ahead instead of being refused. Before
+   moving the login into `work`, the swap writes its account into
+   `<root>/work/.claude.json`, which still named the account before the
+   `/login`, so the next swap back into `work` puts the right account in
+   `~/.claude.json`. While the login is still wrong, the one-shot command
+   prints the refusal and exits 1. `--dry-run` does not run this check, so
+   it cannot confirm the fix.
+
+`amplihack profile login work` does not help here: `work` is the live
+profile, so `login` refuses it before Claude starts.
+
+If `work` is now meant to hold the other account, the record is out of date.
+Delete it, and the next cycle swaps as before. With the default profile
+root:
+
+```bash
+rm ~/.amplihack/claude-profiles/.auto-switch.d/expected/work.json
+```
+
+If you saved another root, the file is under that root instead;
+`amplihack profile root` prints it.
+
+Profiles with no record are not checked. A profile created before this
+check existed has no record until one of two things happens: its next
+accepted `profile login`, or a swap away from it while the ledger shows the
+outgoing login came from that profile and no other profile holds that
+account.
+
+A record that exists but cannot be read (not valid JSON, no usable
+`account` or `org`, or not a private file) is also treated as no record, so the swap
+is not checked. The rotator then prints one line to stderr, which a
+background rotator appends to `rotate.err`:
+
+```
+warning: the recorded account for profile 'work' could not be read; the swap was not checked against it
+```
+
+Delete the file, as above, to stop the warning; the next accepted
+`profile login work` records the account again.
+
+The comparison is exact. A record written from a login that had an account
+UUID holds that UUID. If `~/.claude.json` later shows the same account by
+email only, with no UUID, the swap is still refused, even though the account
+is the right one. Run plain `claude` and `/login` to that account again, as
+in the steps above, so that `~/.claude.json` names the UUID once more. If
+that is not possible, delete the record instead.
 
 ## Recovery
 
@@ -1778,8 +2018,8 @@ and `rssourcelabs` had capacity, so the same cycle swaps:
 
 ```
 2026-10-27T03:17:05Z skip: ryan-ryansweet (no login)
-2026-10-27T03:17:35Z cycle live=ryan-mistt-org ryan-mistt-org:s=100%,w=100% rssourcelabs:s=12%,w=40%
-2026-10-27T03:17:35Z swap ryan-mistt-org->rssourcelabs live s=100% w=100% target s=12% w=40% reason=threshold
+2026-10-27T03:17:35Z cycle live=ryan-mistt-org ryan-mistt-org:s=37%,w=100% rssourcelabs:s=12%,w=40%
+2026-10-27T03:17:35Z swap ryan-mistt-org->rssourcelabs live s=37% w=100% target s=12% w=40% reason=threshold
 ```
 
 With no candidate that has capacity, it writes the usual

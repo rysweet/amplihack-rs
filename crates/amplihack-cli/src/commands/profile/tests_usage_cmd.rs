@@ -36,6 +36,7 @@ fn report(
         week_all: w.map(|(p, at)| win("all models", p, at)),
         week_models: Vec::new(),
         session_limit: true,
+        observed_at: None,
     }
 }
 
@@ -54,6 +55,8 @@ fn row(name: &str, rep: UsageReport) -> Row {
         report: rep,
         error: None,
         raw: None,
+        source: None,
+        direct_failure: None,
     }
 }
 
@@ -440,6 +443,7 @@ fn json_is_an_array_of_rows_with_the_exact_keys() {
                 "profile",
                 "session",
                 "session_limit",
+                "source",
                 "state",
                 "week_all",
                 "week_models"
@@ -928,11 +932,22 @@ fn which_live_warnings_apply_to_the_selected_profiles() {
 
 #[test]
 fn swap_warning_names_the_profile_in_fixed_text() {
+    // Issue #1845 (D7): a rotator swap during a probe is expected, so it is
+    // a note that says what happened, not a warning.
     let name = super::name::ProfileName::parse("work").unwrap();
     assert_eq!(
         swap_warning(&name),
-        "warning: the login in ~/.claude changed while profile \"work\" was probed; its usage was not recorded"
+        "note: the login in ~/.claude changed while profile \"work\" was probed; \
+         its usage was not recorded this run"
     );
+}
+
+#[test]
+fn swap_warning_is_one_line_that_is_not_a_warning() {
+    let name = super::name::ProfileName::parse("work").unwrap();
+    let got = swap_warning(&name);
+    assert!(!got.starts_with("warning:"), "{got}");
+    assert!(!got.contains('\n'), "{got}");
 }
 
 // ---------------------------------------------------------------------------
@@ -1089,13 +1104,30 @@ fn no_profile_can_be_named_like_the_home_row() {
 // the bound it is given. Fake `claude` scripts only; never a real one.
 // ---------------------------------------------------------------------------
 
+/// Every profile probed by `mode` with `claude`, at most `parallel` at once,
+/// through the pool `profile usage` uses; in the order of `names`.
+#[cfg(unix)]
+fn probe_each(
+    store: &super::store::ProfileStore,
+    bin: &crate::binary_finder::BinaryInfo,
+    names: &[super::name::ProfileName],
+    mode: super::probe_limits::ProbeMode,
+    timeout: std::time::Duration,
+    parallel: usize,
+) -> Vec<super::usage_cmd::Probe> {
+    super::usage_cmd::pooled(names.len(), parallel, |i| {
+        super::usage_cmd::probe_profile(store, bin, &names[i], false, mode, timeout, NOW, false)
+    })
+}
+
 #[cfg(unix)]
 mod under_load {
     use super::super::name::ProfileName;
     use super::super::probe_limits::ProbeMode;
     use super::super::store::ProfileStore;
-    use super::super::usage_cmd::{Row, observations, probe, probe_all, render_json, render_table};
+    use super::super::usage_cmd::{Row, observations, probe, render_json, render_table};
     use super::super::usage_parse::UsageState;
+    use super::probe_each;
     use super::{NOW, row};
     use crate::binary_finder::BinaryInfo;
     use std::fs;
@@ -1259,15 +1291,12 @@ mod under_load {
     }
 
     fn run_pool(p: &Pool, parallel: usize) -> Vec<super::super::usage_cmd::Probe> {
-        probe_all(
+        probe_each(
             &p.store,
             &p.bin,
             &p.names,
-            None,
             ProbeMode::Text,
             Duration::from_secs(60),
-            NOW,
-            false,
             parallel,
         )
     }
@@ -1331,15 +1360,12 @@ mod under_load {
             path,
             version: None,
         };
-        let probes = probe_all(
+        let probes = probe_each(
             &p.store,
             &bin,
             &p.names,
-            None,
             ProbeMode::Text,
             Duration::from_secs(60),
-            NOW,
-            false,
             2,
         );
         let got: Vec<f64> = probes
@@ -1371,15 +1397,12 @@ mod under_load {
             version: None,
         };
         let start = Instant::now();
-        let probes = probe_all(
+        let probes = probe_each(
             &p.store,
             &bin,
             &p.names,
-            None,
             ProbeMode::Text,
             Duration::from_secs(1),
-            NOW,
-            false,
             2,
         );
         assert!(start.elapsed() < Duration::from_secs(15));
@@ -1406,10 +1429,11 @@ mod request {
     use super::super::probe_limits::ProbeMode;
     use super::super::rotate::decide::{Probed, Reading};
     use super::super::store::ProfileStore;
-    use super::super::usage_cmd::{Probe, probe_all, probe_with};
+    use super::super::usage_cmd::{Probe, probe_with};
     use super::super::usage_parse::UsageState;
     use super::super::usage_request::{ARGS, REQUEST_ID, REQUEST_LINE};
     use super::NOW;
+    use super::probe_each;
     use crate::binary_finder::BinaryInfo;
     use std::cell::Cell;
     use std::fs;
@@ -1727,20 +1751,260 @@ mod request {
             path: f.path.clone(),
             version: None,
         };
-        let probes = probe_all(
+        let probes = probe_each(
             &store,
             &bin,
             &names,
-            None,
             ProbeMode::Auto,
             Duration::from_secs(20),
-            NOW,
-            false,
             1,
         );
         assert_eq!(session(&probes[0]), 37.0, "cred read with /usage");
         assert_eq!(session(&probes[1]), 20.0, "plan read with the request");
         assert_eq!(f.starts(), ["-p /usage".to_string(), ARGS.join(" ")]);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1797: `--json` is unchanged byte for byte, and `--summary-json`
+// holds the same array
+// ---------------------------------------------------------------------------
+
+/// Every kind of row `--json` can print, in display order, with the
+/// `source` field #1844 added (this PR adds none): a default,
+/// leased row with per-model windows; an exhausted overflow row with a
+/// block; a timed-out error row; the `~/.claude` row; an API-key row with a
+/// block; and a row whose text needs JSON escaping.
+fn golden_rows() -> Vec<Row> {
+    let mut work = ok(
+        "work",
+        Some((20.0, Some(NOW + HOUR))),
+        Some((30.5, Some(NOW + DAY))),
+    );
+    work.account = "personal".to_string();
+    work.default = true;
+    work.report
+        .week_models
+        .push(win("Fable", 12.0, Some(NOW + 2 * DAY)));
+    let mut spare = row(
+        "spare",
+        report(
+            UsageState::SessionExhausted,
+            Some((100.0, Some(NOW + 2 * HOUR))),
+            Some((68.0, None)),
+        ),
+    );
+    spare.leased_to = Some("work".to_string());
+    spare.live_in = true;
+    let mut extra = row(
+        "extra",
+        report(
+            UsageState::WeeklyExhausted,
+            None,
+            Some((100.0, Some(NOW + 3 * DAY))),
+        ),
+    );
+    extra.overflow = true;
+    extra.overflow_blocked_until = Some(NOW + 5 * HOUR);
+    let mut slow = row("slow", UsageReport::empty(UsageState::Timeout));
+    slow.error = Some(ErrorReason::ReadFailed);
+    let mut key = row(
+        "key",
+        report(UsageState::Ok, Some((0.0, None)), Some((0.0, None))),
+    );
+    key.api_key = true;
+    key.api_key_blocked = Some(("spend limit".to_string(), NOW + DAY));
+    let mut odd = ok("odd", Some((1.25, None)), Some((2.0, None)));
+    odd.account = "quote\"back\\slash\u{1b}[0m".to_string();
+    // Issue #1844's `source`: each step once, and `null` for the API-key
+    // row, which is never read.
+    work.source = Some(Source::Direct);
+    spare.source = Some(Source::Passive);
+    extra.source = Some(Source::Fallback);
+    slow.source = Some(Source::Fallback);
+    odd.source = Some(Source::Direct);
+    vec![work, spare, extra, home_row(), slow, key, odd]
+}
+
+#[test]
+fn json_output_matches_the_golden_file_byte_for_byte() {
+    let want = include_str!("testdata/usage_json_golden.json");
+    assert_eq!(
+        render_json(&golden_rows()),
+        want.strip_suffix('\n').unwrap_or(want),
+        "`--json` must not change (issue #1797)"
+    );
+}
+
+mod summary_1797 {
+    //! `--summary-json`, the text block and the summary seam in `usage_cmd`.
+    //! The arithmetic is in `tests_capacity_summary.rs`.
+
+    use super::super::capacity_summary::Summary;
+    use super::super::capacity_weight::Weights;
+    use super::super::name::ProfileName;
+    use super::super::usage_cmd::{render_json, render_summary_json, summary_block};
+    use super::super::usage_parse::{UsageReport, UsageState};
+    use super::super::{capacity_summary, usage_history};
+    use super::{DAY, HOUR, NOW, golden_rows, ok, row};
+
+    /// The capacity summary `profile usage` prints for `rows` at `now`;
+    /// `None` when no row is a subscription login.
+    fn summary_of(
+        rows: &[super::Row],
+        swapped: Option<&ProfileName>,
+        weights: &Weights,
+        threshold: u8,
+        history: &[usage_history::Entry],
+        now: i64,
+    ) -> Option<Summary> {
+        let current = usage_history::from_rows(now, now, rows, swapped)?;
+        Some(capacity_summary::compute(&capacity_summary::Inputs {
+            current: &current,
+            weights,
+            threshold,
+            history,
+            now,
+        }))
+    }
+
+    fn parse(text: &str) -> serde_json::Value {
+        serde_json::from_str(text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"))
+    }
+
+    fn summary(rows: &[super::Row]) -> Option<Summary> {
+        summary_of(rows, None, &Weights::default(), 95, &[], NOW)
+    }
+
+    #[test]
+    fn summary_json_profiles_are_exactly_the_json_array() {
+        let rows = golden_rows();
+        let s = summary(&rows);
+        let v = parse(&render_summary_json(NOW, &rows, s.as_ref()));
+        assert_eq!(v["profiles"], parse(&render_json(&rows)));
+        let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["at", "profiles", "summary"]);
+    }
+
+    #[test]
+    fn summary_json_at_is_iso_utc_and_profile_times_stay_epoch() {
+        let rows = golden_rows();
+        let v = parse(&render_summary_json(NOW, &rows, summary(&rows).as_ref()));
+        assert_eq!(v["at"], "2026-10-16T12:00:00Z");
+        assert!(v["profiles"][0]["session"]["resets_at"].is_i64());
+    }
+
+    #[test]
+    fn summary_json_with_no_profiles_has_an_empty_array_and_null_summary() {
+        let v = parse(&render_summary_json(NOW, &[], None));
+        assert_eq!(
+            v,
+            serde_json::json!({"at": "2026-10-16T12:00:00Z", "profiles": [], "summary": null})
+        );
+    }
+
+    #[test]
+    fn the_golden_rows_summarise_only_subscription_logins() {
+        // work 30.5 -> 31 (rounded), spare 68, extra 100, odd 2; the
+        // ~/.claude row and the API-key row are not logins; slow is unknown.
+        let s = summary(&golden_rows()).expect("there are subscription rows");
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["valid_readings"], 4);
+        assert_eq!(v["unknown"], serde_json::json!(["slow"]));
+        assert_eq!(v["weekly_headroom_login_weeks"], 1.99);
+    }
+
+    #[test]
+    fn no_subscription_row_means_no_summary() {
+        let mut key = ok("key", Some((0.0, None)), Some((0.0, None)));
+        key.api_key = true;
+        assert!(summary(&[key]).is_none());
+        assert!(summary(&[]).is_none());
+    }
+
+    #[test]
+    fn a_swapped_live_profile_is_unknown_in_the_summary() {
+        let mut live = ok("work", Some((10.0, None)), Some((20.0, None)));
+        live.live_in = true;
+        let rows = [live, ok("spare", Some((10.0, None)), Some((40.0, None)))];
+        let swapped = ProfileName::parse("work").unwrap();
+        let s = summary_of(&rows, Some(&swapped), &Weights::default(), 95, &[], NOW).unwrap();
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["valid_readings"], 1);
+        assert_eq!(v["unknown"], serde_json::json!(["work"]));
+    }
+
+    #[test]
+    fn the_text_block_is_a_blank_line_then_six_lines() {
+        let rows = [
+            ok(
+                "a",
+                Some((10.0, Some(NOW + HOUR))),
+                Some((40.0, Some(NOW + DAY))),
+            ),
+            row("b", UsageReport::empty(UsageState::Timeout)),
+        ];
+        let block = summary_block(&summary(&rows).unwrap());
+        assert!(
+            block.starts_with("\nweekly headroom      0.60 login-weeks of 1 (60%)\n"),
+            "{block}"
+        );
+        assert!(block.ends_with('\n'));
+        assert_eq!(block.lines().count(), 7, "{block}");
+        assert!(
+            block.contains("\nunknown              1 profile ("),
+            "{block}"
+        );
+    }
+
+    #[test]
+    fn nothing_from_the_account_or_claude_output_reaches_the_summary() {
+        let mut r = ok("work", Some((10.0, None)), Some((40.0, None)));
+        r.account = "someone@example.com".to_string();
+        if let Some(w) = r.report.week_all.as_mut() {
+            w.resets_text = Some("resets for someone@example.com".to_string());
+        }
+        let s = summary(&[r.clone()]).unwrap();
+        let text = summary_block(&s);
+        let json = serde_json::to_string(&s).unwrap();
+        for out in [&text, &json] {
+            assert!(!out.contains("example.com"), "{out}");
+        }
+        let whole = render_summary_json(NOW, &[r], Some(&s));
+        assert_eq!(
+            whole.matches("someone@example.com").count(),
+            2,
+            "only in profiles"
+        );
+    }
+}
+
+#[test]
+fn capacity_sources_never_touch_credentials_or_account_identities() {
+    for (name, src) in [
+        ("capacity_summary.rs", include_str!("capacity_summary.rs")),
+        ("capacity_weight.rs", include_str!("capacity_weight.rs")),
+        ("usage_history.rs", include_str!("usage_history.rs")),
+        ("rotate/history.rs", include_str!("rotate/history.rs")),
+    ] {
+        for needle in [
+            "set_var",
+            "remove_var",
+            "Command::new",
+            ".credentials.json",
+            ".claude.json",
+            "CREDS",
+            "oauthAccount",
+            "accessToken",
+            "emailAddress",
+            "account",
+            "email",
+            "resets_text",
+            "Raw",
+        ] {
+            assert!(!src.contains(needle), "{name} must not contain {needle:?}");
+        }
     }
 }
 
@@ -1907,4 +2171,216 @@ fn observations_of_no_session_limit_rows_have_no_session_window() {
         .collect();
     assert_eq!(got, [("normal", true), ("free", false), ("full", false)]);
     assert_eq!(obs[1].week.unwrap().used_percentage, 40.0);
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1844: the reading source, the fallback mark and the weekly figure
+//
+// Contract:
+// - `Row::source: Option<Source>` and `Row::direct_failure:
+//   Option<&'static str>`.
+// - The table shows `(fallback)` in the marks column of a fallback row,
+//   after the other marks; passive and direct rows get no mark.
+// - JSON has `source` (`passive`, `direct`, `fallback` or `null` for a row
+//   never probed) right after `state`.
+// - With `--raw`, a passive or direct row is followed by
+//   `  (<source>: no claude output)` and its JSON `raw` is empty strings.
+// - `fallback_notes(rows)` gives one stderr line per fallback row with a
+//   direct failure: `note: profile "<name>": direct read gave <reason>;
+//   using claude`. It is printed only with `--raw`.
+// - `observations()` leaves out passive rows.
+// - An exhausted session keeps the weekly figure as reported in both the
+//   table and the JSON.
+// ---------------------------------------------------------------------------
+
+use super::usage_cmd::fallback_notes;
+use super::usage_source::Source;
+
+fn sourced(mut r: Row, source: Option<Source>) -> Row {
+    r.source = source;
+    r
+}
+
+fn exhausted_100_55(name: &str) -> Row {
+    row(
+        name,
+        report(
+            UsageState::SessionExhausted,
+            Some((100.0, Some(NOW + HOUR))),
+            Some((55.0, Some(NOW + DAY))),
+        ),
+    )
+}
+
+fn line_of<'a>(out: &'a str, name: &str) -> &'a str {
+    out.lines()
+        .find(|l| l.split_whitespace().next() == Some(name))
+        .unwrap_or_else(|| panic!("no row for {name}: {out}"))
+}
+
+#[test]
+fn a_fallback_row_is_marked_and_others_are_not() {
+    let rows = vec![
+        sourced(
+            ok("aa", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Passive),
+        ),
+        sourced(
+            ok("bb", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Direct),
+        ),
+        sourced(
+            ok("cc", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Fallback),
+        ),
+    ];
+    assert_eq!(marks(&rows[0]), "-");
+    assert_eq!(marks(&rows[1]), "-");
+    assert_eq!(marks(&rows[2]), "(fallback)");
+    let mut def = rows[2].clone();
+    def.default = true;
+    assert_eq!(marks(&def), "* (fallback)");
+    let out = render_table(&rows);
+    assert!(line_of(&out, "cc").contains("(fallback)"), "{out}");
+    assert!(!line_of(&out, "aa").contains("fallback"), "{out}");
+    assert!(!line_of(&out, "bb").contains("fallback"), "{out}");
+}
+
+#[test]
+fn json_gives_the_source_or_null() {
+    let rows = vec![
+        sourced(
+            ok("aa", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Passive),
+        ),
+        sourced(
+            ok("bb", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Direct),
+        ),
+        sourced(
+            ok("cc", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Fallback),
+        ),
+        ok("dd", None, None),
+    ];
+    let v = json(&rows);
+    let got: Vec<&serde_json::Value> = v.as_array().unwrap().iter().map(|r| &r["source"]).collect();
+    assert_eq!(
+        got,
+        [
+            &serde_json::json!("passive"),
+            &serde_json::json!("direct"),
+            &serde_json::json!("fallback"),
+            &serde_json::Value::Null,
+        ]
+    );
+    let text = render_json(&rows);
+    let first = text.find("\"state\"").unwrap();
+    let source = text.find("\"source\"").unwrap();
+    let after = text[first..].find('\n').map(|i| first + i).unwrap();
+    assert!(
+        source > first && source <= after + 20,
+        "source follows state: {text}"
+    );
+}
+
+#[test]
+fn an_exhausted_session_keeps_the_weekly_figure_in_table_and_json() {
+    let rows = vec![sourced(exhausted_100_55("team"), Some(Source::Direct))];
+    let out = render_table(&rows);
+    let l = line_of(&out, "team");
+    assert!(l.contains("100%") && l.contains("55%"), "{l}");
+    let v = json(&rows);
+    assert_eq!(v[0]["state"], "session_exhausted");
+    assert_eq!(v[0]["session"]["used_percentage"], 100.0);
+    assert_eq!(v[0]["week_all"]["used_percentage"], 55.0);
+}
+
+#[test]
+fn raw_shows_a_fixed_line_for_rows_read_without_claude() {
+    let empty = Raw {
+        stdout: String::new(),
+        stderr: String::new(),
+    };
+    let mut p = sourced(
+        ok("aa", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Passive),
+    );
+    p.raw = Some(empty.clone());
+    let mut d = sourced(
+        ok("bb", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Direct),
+    );
+    d.raw = Some(empty);
+    let out = render_table(&[p.clone(), d.clone()]);
+    assert!(out.contains("\n  (passive: no claude output)\n"), "{out}");
+    assert!(out.contains("\n  (direct: no claude output)\n"), "{out}");
+    assert!(!out.contains("raw stdout"), "{out}");
+    let v = json(&[p, d]);
+    assert_eq!(v[0]["raw"], serde_json::json!({"stdout": "", "stderr": ""}));
+}
+
+#[test]
+fn fallback_notes_name_the_direct_failure() {
+    let mut a = sourced(
+        ok("aa", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Fallback),
+    );
+    a.direct_failure = Some("http 5xx");
+    let b = sourced(
+        ok("bb", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Fallback),
+    );
+    let c = sourced(
+        ok("cc", Some((1.0, None)), Some((2.0, None))),
+        Some(Source::Direct),
+    );
+    assert_eq!(
+        fallback_notes(&[a, b, c]),
+        ["note: profile \"aa\": direct read gave http 5xx; using claude"]
+    );
+}
+
+#[test]
+fn passive_rows_are_not_recorded_again() {
+    let rows = vec![
+        sourced(
+            ok("aa", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Passive),
+        ),
+        sourced(
+            ok("bb", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Direct),
+        ),
+        sourced(
+            ok("cc", Some((1.0, None)), Some((2.0, None))),
+            Some(Source::Fallback),
+        ),
+    ];
+    let names: Vec<String> = observations(&rows).into_iter().map(|o| o.profile).collect();
+    assert_eq!(names, ["bb", "cc"]);
+}
+
+#[test]
+fn a_direct_error_row_shows_its_reason() {
+    let mut r = sourced(
+        row("aa", report(UsageState::Error, None, None)),
+        Some(Source::Direct),
+    );
+    r.error = Some(ErrorReason::Direct("http 5xx"));
+    assert_eq!(
+        error_warnings(&[r.clone()]),
+        ["warning: profile \"aa\": direct read: http 5xx"]
+    );
+    assert_eq!(json(&[r])[0]["error"], "direct read: http 5xx");
+}
+
+#[test]
+fn a_missing_claude_is_an_error_row_with_its_reason() {
+    let mut r = sourced(
+        row("aa", report(UsageState::Error, None, None)),
+        Some(Source::Fallback),
+    );
+    r.error = Some(ErrorReason::NoClaude);
+    assert_eq!(json(&[r])[0]["error"], "claude not found");
 }

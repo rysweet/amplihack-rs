@@ -68,7 +68,7 @@ fn ac4_a_step_timeout_of_sixty_seconds_or_less_ends_the_step_without_a_retry() {
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
     assert_eq!(f.count("0"), 1, "no retry after a step timeout");
     let ev = events(&out);
-    assert_eq!(ev.len(), 2, "{ev:?}");
+    assert_eq!(ev.len(), 3, "{ev:?}");
     assert!(
         ev[0].starts_with(
             "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until="
@@ -77,6 +77,8 @@ fn ac4_a_step_timeout_of_sixty_seconds_or_less_ends_the_step_without_a_retry() {
     );
     assert!(ev[0].ends_with(" bound=step_timeout"), "{ev:?}");
     assert_eq!(ev[1], "end reason=step timeout");
+    // The closing line keeps the step classed usage_limit (#1801).
+    assert_eq!(ev[2], "failed reason=step_timeout: usage limit not lifted");
     assert_eq!(
         claude_stdout(&out),
         "attempt 1 output\n",

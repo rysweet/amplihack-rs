@@ -155,6 +155,9 @@ impl Fixture {
             // Auto-switch is on in these runs, so without this every launch
             // starts a real rotator that outlives the test by an hour.
             .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
+            // These tests cover the usage-limit wait; the #1811 capacity
+            // governor would hold their exhausted readings first.
+            .env("AMPLIHACK_GOVERNOR", "off")
             .env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW", TEST_NOW.to_string())
             .env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "1000000")
             .env("LIMIT_CALLS", "1")
@@ -205,12 +208,17 @@ impl Fixture {
         self.home.join(".amplihack").join("rerun")
     }
 
-    /// AC13: every path a call recorded lies under the temporary root.
+    /// AC13: every path a call recorded lies under the temporary root. An
+    /// unset `CLAUDE_CONFIG_DIR` means `$HOME/.claude`, which the `HOME`
+    /// check already places under the root.
     pub fn assert_isolated(&self, step: &str) {
         for n in 1..=self.count(step) {
             let call = self.call(step, n);
             for key in ["PWD", "HOME", "CLAUDE_CONFIG_DIR"] {
                 let v = &call[key];
+                if key == "CLAUDE_CONFIG_DIR" && v == "<unset>" {
+                    continue;
+                }
                 assert!(
                     Path::new(v).starts_with(&self.root),
                     "call {n} {key}={v} is outside the test root {}",

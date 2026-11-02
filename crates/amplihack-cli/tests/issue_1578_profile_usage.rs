@@ -238,6 +238,9 @@ impl Fixture {
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
             // Launches never start a real background rotator here (autostart).
             .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
+            // Issue #1844: these tests read through `claude`; a reading an
+            // earlier command recorded must not stand in as a passive one.
+            .env("AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS", "0")
             .env("AMPLIHACK_SKIP_REFLECTION", "1")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
         c
@@ -301,7 +304,9 @@ fn table_rows(stdout: &str) -> Vec<&str> {
     let mut lines = stdout.lines();
     let header = lines.next().unwrap_or_default();
     assert!(header.starts_with("PROFILE"), "header first: {stdout}");
+    // The capacity summary (issue #1797) follows the table.
     lines
+        .take_while(|l| !l.starts_with("weekly headroom "))
         .filter(|l| !l.starts_with(' ') && !l.is_empty())
         .collect()
 }
@@ -739,10 +744,12 @@ fn setup_failures_exit_non_zero_before_probing() {
         .env("PATH", empty.path())
         .output()
         .unwrap();
-    assert_eq!(
-        out.status.code(),
-        Some(1),
-        "claude not found: {}",
+    // Issue #1844: `claude` is looked up only when a row needs it, and a
+    // missing one fails only those rows, not the command.
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains(": claude not found"),
+        "{}",
         text(&out.stderr)
     );
     assert!(f.probed().is_empty());
@@ -881,7 +888,13 @@ fn a_swap_during_the_probe_is_warned_and_not_recorded() {
     let out = f.ok(&["profile", "usage", "--json"]);
     assert_no_secrets(&out);
     let stderr = text(&out.stderr);
-    let warning = "warning: the login in ~/.claude changed while profile \"c\" was probed; its usage was not recorded";
+    // Issue #1845 (D7): a note, not a warning.
+    let warning = "note: the login in ~/.claude changed while profile \"c\" was probed; \
+                   its usage was not recorded this run";
+    assert!(
+        !stderr.contains("warning: the login in ~/.claude changed while profile"),
+        "the old warning text is gone: {stderr}"
+    );
     assert_eq!(
         stderr.lines().filter(|l| *l == warning).count(),
         1,
@@ -1085,7 +1098,9 @@ fn a_bad_method_warns_once_and_still_uses_the_request() {
         .collect();
     assert_eq!(
         warnings,
-        ["warning: ignored AMPLIHACK_PROFILE_USAGE_PROBE \"Text\" (use auto or text); using auto"]
+        [
+            "warning: ignored AMPLIHACK_PROFILE_USAGE_PROBE \"Text\" (use direct, auto or text); using the default order"
+        ]
     );
     let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(session(&rows[0]), 42.0);

@@ -222,6 +222,9 @@ impl Fixture {
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
             // Launches never start a real background rotator here (autostart).
             .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
+            // These tests cover auto-switch alone; the #1811 capacity
+            // governor would hold exhausted readings and write `.governor.d`.
+            .env("AMPLIHACK_GOVERNOR", "off")
             .env("AMPLIHACK_SKIP_REFLECTION", "1")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
         c
@@ -2000,8 +2003,10 @@ fn shared_account_is_a_note_without_the_uuid() {
     assert!(
         status.contains(
             "note: profiles 'X' and 'Z' are signed in to the same account and organization \
-             (duplicate login); fix: run 'amplihack profile login Z' with the browser signed \
-             out of claude.ai or in a private window.\n"
+             (duplicate login); amplihack cannot tell which of them holds the wrong login; \
+             fix: run 'amplihack profile login <name>' for the one that should hold a \
+             different account, with the browser signed out of claude.ai or in a private \
+             window.\n"
         ),
         "{status}"
     );

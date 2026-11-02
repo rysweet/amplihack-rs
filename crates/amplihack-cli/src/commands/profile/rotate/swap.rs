@@ -21,10 +21,11 @@ use std::path::Path;
 
 pub use super::recover::{RecoverOutcome, recover};
 pub(super) use super::swap_check::check_home;
-pub use super::swap_check::is_no_oauth;
 use super::swap_check::{account_block, may_go_live, no_oauth};
-
-const ADOPT_NAME: &str = "default-original";
+pub use super::swap_check::{adoption_name, is_no_oauth};
+pub(super) use super::swap_check::{ino_at, show};
+pub use super::swap_expect::is_account_mismatch;
+use super::swap_expect::{guard, relabel, settle};
 
 // The reasons the how-to quotes word for word, held there by `tests_docs_sync`.
 pub(super) const HOME_NOT_OWNED: &str = "HOME is not a directory owned by you";
@@ -41,7 +42,7 @@ const HOME_JSON_UNREADABLE: &str = "~/.claude.json is not a JSON object";
 pub const NO_STORED_LOGIN_HINT: &str = "has no stored login; run `amplihack profile login";
 
 #[cfg(test)]
-pub const DOCUMENTED: [&str; 11] = [
+pub const DOCUMENTED: [&str; 13] = [
     HOME_NOT_OWNED,
     DOT_CLAUDE_NOT_PRIVATE,
     LOGIN_NOT_MOVABLE,
@@ -53,6 +54,8 @@ pub const DOCUMENTED: [&str; 11] = [
     HOME_JSON_UNREADABLE,
     NO_STORED_LOGIN_HINT,
     super::FOREIGN_IGNORES_HOLD,
+    super::swap_expect::ACCOUNT_MISMATCH,
+    super::swap_expect::NOT_RELABELLED,
 ];
 
 /// Where the outgoing login goes.
@@ -75,33 +78,11 @@ pub(super) fn describe(e: MoveError) -> String {
     }
 }
 
-pub(super) fn ino_at(path: &Path) -> Option<u64> {
-    fs::symlink_metadata(path).ok().map(|m| m.ino())
-}
-
-pub(super) fn show(p: &Path) -> String {
-    let parent = p.parent().and_then(Path::file_name).unwrap_or_default();
-    format!("{}/{}", parent.to_string_lossy(), CREDS)
-}
-
-/// The first free `default-original`, `default-original-2`, ... name.
-pub fn adoption_name(store: &ProfileStore) -> Result<ProfileName, ProfileError> {
-    for n in 1..=1000 {
-        let raw = if n == 1 {
-            ADOPT_NAME.to_string()
-        } else {
-            format!("{ADOPT_NAME}-{n}")
-        };
-        if !exists(&store.root().join(&raw)) {
-            return ProfileName::parse(&raw);
-        }
-    }
-    Err(refused("no free default-original name"))
-}
-
 /// Runs the swap; returns the profile the outgoing login went to. Every
 /// check runs before anything is written; a failure there is
-/// `RotateRefused` and nothing changes.
+/// `RotateRefused` and nothing changes. The first write is `relabel`
+/// (#1845), after those checks. A swap abandoned after it leaves the
+/// outgoing profile's `.claude.json` naming the account its record names.
 pub fn swap(
     store: &ProfileStore,
     rs: &RotateState,
@@ -158,10 +139,15 @@ pub fn swap(
             return Err(refused(format!("profile {name} {ALREADY_LOGGED_IN}")));
         }
     }
+    let pending = guard(store, rs, home, &from)?; // Issue #1845: reads only.
     let home_str = home.to_str().ok_or_else(|| refused("HOME is not UTF-8"))?;
     let (Some(live_ino), Some(target_ino)) = (ino_at(&l), ino_at(&t)) else {
         return Err(refused(LOGIN_NOT_MOVABLE));
     };
+    // The one write before J0, after the last check that refuses with
+    // nothing written. `Profile` and `Adopt` exclude each other, so the
+    // adoption below never follows a relabel.
+    relabel(store, &from, &pending)?;
     let (from, adopt) = match from {
         Source::Profile(name) => (name, false),
         Source::Adopt => (adopt(store, home)?, true),
@@ -238,6 +224,7 @@ pub fn swap(
     drop_locks(store, rs, home, &mut j)?;
     step(rs, &mut j, Phase::S2)?;
     finish(store, rs, home, &j)?;
+    settle(store, &from, pending);
     Ok(from)
 }
 

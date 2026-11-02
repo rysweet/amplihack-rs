@@ -1,6 +1,7 @@
 //! Helpers shared by the modules of the `cli_integration` test binary.
 
 pub mod amplihack_bin;
+pub mod auto_drive_light;
 pub mod exec_stub;
 pub mod profile_default;
 pub mod profile_rotate;
@@ -13,4 +14,5 @@ pub mod quiet_process;
 #[cfg(unix)]
 #[path = "../../src/runner_probe.rs"]
 pub mod runner_probe;
+pub mod sessions_archive;
 pub mod test_path;

@@ -253,7 +253,7 @@ pub(crate) static KEYS: &[KeyDef] = &[
             max: u64::MAX,
         },
         env: Some("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS"),
-        default: None,
+        default: Some("21600"),
         lower_only: true,
     },
     KeyDef {
@@ -266,6 +266,54 @@ pub(crate) static KEYS: &[KeyDef] = &[
         env: Some("AMPLIHACK_MAX_DEPTH"),
         default: Some(DEFAULT_MAX_DEPTH),
         lower_only: true,
+    },
+    super::schema_governor::GOVERNOR_ENABLED,
+    super::schema_governor::GOVERNOR_MAX_CONCURRENCY,
+    super::schema_governor::GOVERNOR_RESERVE_POINTS,
+    super::schema_governor::GOVERNOR_STEP,
+    super::schema_governor::GOVERNOR_BAND_PCT,
+    super::schema_governor::GOVERNOR_EVAL_INTERVAL_SECS,
+    super::schema_governor::GOVERNOR_WAIT_SECS,
+    super::schema_governor::GOVERNOR_MAX_READING_AGE_SECS,
+    KeyDef {
+        name: "sessions.daily_archive",
+        // Turns on a job that removes files from ~/.claude/projects; a
+        // cloned repository must not decide that, and the rotator that
+        // reads it has no project. No variable: the background rotator is
+        // started without the launching shell's AMPLIHACK_ROTATE_*
+        // variables, so only the file reaches it (issue #1746).
+        scope: Scope::UserOnly,
+        kind: ValueKind::Bool,
+        env: None,
+        default: Some("true"),
+        lower_only: false,
+    },
+    KeyDef {
+        name: "sessions.archive_days",
+        // Read by the rotator's daily run as well as `sessions archive`, so
+        // it has no variable, for the same reason as the switch: a rotator
+        // keeps the environment it was started with, and the two would
+        // disagree (issue #1746). A test pins the default to
+        // `sessions::config::DEFAULT_DAYS`.
+        scope: Scope::UserOnly,
+        kind: ValueKind::Int {
+            min: 1,
+            max: u32::MAX as u64,
+        },
+        env: None,
+        default: Some("3"),
+        lower_only: false,
+    },
+    KeyDef {
+        name: "sessions.archive_dest",
+        // A path, so user-only; no variable, as above, so `sessions
+        // restore` in a shell looks where the daily run wrote. Unset means
+        // `~/.amplihack/session-archive`.
+        scope: Scope::UserOnly,
+        kind: ValueKind::AbsPath,
+        env: None,
+        default: None,
+        lower_only: false,
     },
 ];
 
