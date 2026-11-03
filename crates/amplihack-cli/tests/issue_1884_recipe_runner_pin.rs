@@ -1,15 +1,19 @@
-//! Issue #1884: the plugin pins recipe-runner-rs v0.5.2
-//! (`01cf296f21089045c8fd4d1564360354fa664fb2`).
+//! Issue #1884: the plugin pins recipe-runner-rs v0.5.2.
 //!
-//! `claude-plugin/recipe-runner.rev` is the single source of the pin. The
-//! tests below check that the pin is that exact revision in the form the
-//! install scripts accept, and that the unit-test fixtures, the tc_sec_20
-//! allowlist and the documentation quote the same revision.
+//! `claude-plugin/recipe-runner.rev` is the single source of the pin. None of
+//! the tests below names a revision: they read the pin from that file, so a
+//! correct pin bump needs no edit here. The CI "Recipe runner pin ancestry"
+//! check is what stops the pin moving backwards.
+//!
+//! The tests check that the file is in the form the install scripts accept,
+//! that the tc_sec_20 allowlist holds the same revision, and that the
+//! documentation never quotes a revision other than the current pin where it
+//! talks about `recipe-runner.rev`. The unit-test fixtures in
+//! `runner_validation.rs` and `runner_ancestry.rs` read the same file through
+//! `freshness::RECIPE_RUNNER_REV`, so they cannot drift from it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-
-const V0_5_2: &str = "01cf296f21089045c8fd4d1564360354fa664fb2";
 
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -29,27 +33,25 @@ fn pin() -> String {
         .to_string()
 }
 
-#[test]
-fn pin_is_recipe_runner_v0_5_2() {
-    assert_eq!(
-        read("claude-plugin/recipe-runner.rev"),
-        format!("{V0_5_2}\n"),
-        "recipe-runner.rev must hold the v0.5.2 commit followed by one newline"
-    );
+fn is_lower_hex(s: &str) -> bool {
+    s.bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 #[test]
-fn unit_test_fixtures_name_the_pinned_revision() {
-    let pin = pin();
-    let validation = read("crates/amplihack-cli/src/runner_validation.rs");
-    assert!(
-        validation.contains(&format!("const SHA: &str = \"{pin}\";")),
-        "runner_validation.rs installed_revision_tests::SHA must equal the pin {pin}"
+fn pin_file_is_a_full_lowercase_sha_and_one_newline() {
+    let raw = read("claude-plugin/recipe-runner.rev");
+    let sha = raw
+        .strip_suffix('\n')
+        .expect("recipe-runner.rev must end with a newline");
+    assert_eq!(
+        sha.len(),
+        40,
+        "recipe-runner.rev must hold a 40-character SHA, found {sha:?}"
     );
-    let ancestry = read("crates/amplihack-cli/src/runner_ancestry.rs");
     assert!(
-        ancestry.contains(&format!("let pin = \"{pin}\";")),
-        "runner_ancestry.rs unknown_and_equal_need_no_git must use the pin {pin}"
+        is_lower_hex(sha),
+        "recipe-runner.rev must be lowercase hex, found {sha:?}"
     );
 }
 
@@ -77,18 +79,50 @@ fn security_allowlist_names_the_pin_once() {
     );
 }
 
+/// Backticked tokens of 7 to 40 lowercase hex characters, the forms a commit
+/// is quoted in.
+fn quoted_revisions(text: &str) -> Vec<&str> {
+    text.split('`')
+        .skip(1)
+        .step_by(2)
+        .filter(|t| (7..=40).contains(&t.len()) && is_lower_hex(t))
+        .collect()
+}
+
 #[test]
-fn docs_quote_the_short_form_of_the_pin() {
-    let short = format!("`{}`", &pin()[..7]);
-    for (doc, expected) in [
-        ("docs/reference/profile-command.md", 1),
-        ("docs/reference/large-payload-delivery.md", 2),
-        ("docs/concepts/large-payload-delivery.md", 1),
+fn docs_quote_no_stale_pin() {
+    let pin = pin();
+    for doc in [
+        "docs/reference/profile-command.md",
+        "docs/reference/large-payload-delivery.md",
+        "docs/concepts/large-payload-delivery.md",
     ] {
-        let found = read(doc).matches(short.as_str()).count();
-        assert_eq!(
-            found, expected,
-            "{doc} must quote the pinned runner as {short} {expected} time(s), found {found}"
+        let text = read(doc);
+        // A paragraph (or table row) that names the pin file is one that
+        // states which runner revision a claim was checked at.
+        let quotes: Vec<&str> = text
+            .split("\n\n")
+            .filter(|para| para.contains("recipe-runner.rev"))
+            .flat_map(quoted_revisions)
+            .collect();
+        assert!(
+            !quotes.is_empty(),
+            "{doc} no longer quotes the pinned runner revision beside recipe-runner.rev; \
+             update the doc or this list"
         );
+        for quoted in quotes {
+            assert!(
+                pin.starts_with(quoted),
+                "{doc} quotes `{quoted}` beside recipe-runner.rev, but the pin is {pin}; \
+                 recheck the claim at the new pin and update the quote"
+            );
+        }
     }
+}
+
+#[test]
+fn quoted_revisions_finds_only_hex_tokens() {
+    let text = "pinned in `claude-plugin/recipe-runner.rev` (`01cf296`), not `4d5187e` \
+                or `AMPLIHACK_HOME` or `abc`";
+    assert_eq!(quoted_revisions(text), ["01cf296", "4d5187e"]);
 }

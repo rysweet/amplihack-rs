@@ -463,7 +463,7 @@ mod tests {
     fn unknown_and_equal_need_no_git() {
         // A source that cannot be read at all still answers these two.
         let source = AncestrySource::Fixed(PathBuf::from("/nonexistent/runner-fixture"));
-        let pin = "01cf296f21089045c8fd4d1564360354fa664fb2";
+        let pin = crate::freshness::RECIPE_RUNNER_REV.trim_ascii_end();
         assert_eq!(classify(None, pin, &source), RunnerOrder::Unknown);
         assert_eq!(classify(Some(pin), pin, &source), RunnerOrder::Equal);
     }
