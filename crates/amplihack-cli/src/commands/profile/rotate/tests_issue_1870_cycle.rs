@@ -13,6 +13,14 @@
 //!
 //! Lettered tests follow requirement 7 of the issue's final requirements.
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 use super::cycle::{Ctx, CycleOutcome, MeasureFn, Mode, run_cycle};
 use super::decide::{Decision, Probed, Reason};
 use super::fresh::RereadFn;

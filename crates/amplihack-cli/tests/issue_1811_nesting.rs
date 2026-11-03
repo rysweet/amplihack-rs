@@ -4,11 +4,19 @@
 //! the run's recipe marker. A start of its own under an interactive
 //! session's slot waits at it. See "Nesting" in docs/reference/capacity-governor.md.
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 #![cfg(unix)]
 
 use crate::issue_1811_fixture::{Fixture, describe, text};
 use std::fs;
 
+#[cfg(target_os = "linux")]
 const DENIED: i32 = 80;
 
 /// Crusty round 3 on #1831: an interactive session admitted above the

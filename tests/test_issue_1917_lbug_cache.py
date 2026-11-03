@@ -141,6 +141,12 @@ fn main() {
         self.run_build({"CARGO_TARGET_DIR": str(self.root / "second target")})
         self.assertEqual(self.events(), ["source", "managed", "managed"])
 
+    def test_absent_optional_upstream_include_directory_still_populates_cache(self):
+        # The pinned registry crate lacks this optional upstream include root.
+        # Match that layout instead of making the native collector's input complete.
+        shutil.rmtree(Path(self.env["TEST_SOURCE"]) / "third_party/nlohmann_json")
+        self.populate()
+
     def test_corruption_invalidates_warm_managed_output_without_repair(self):
         entry = self.populate()
         self.run_build()

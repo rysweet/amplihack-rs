@@ -15,6 +15,10 @@
 //! launches (issue #1691, "keeps the `.default` pointer behaviour"); the last
 //! section runs the whole switch with `/proc` unscannable, as on macOS.
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(dead_code, reason = "Shared fixtures also serve Linux-only test cases")
+)]
 use super::TuneFlags;
 use super::cycle::Ctx;
 use super::identify::{LiveId, Skip};

@@ -9,6 +9,13 @@
 //! `gh pr merge` with that `PATH`. `AMPLIHACK_HOME` points at a fixture bundle
 //! holding only `amplifier-bundle/tools/gh-merge-guard/gh`.
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 #![cfg(unix)]
 
 use crate::support::amplihack_bin::amplihack_bin;

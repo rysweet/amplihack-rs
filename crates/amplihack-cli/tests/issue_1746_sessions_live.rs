@@ -8,6 +8,14 @@
 //! The check fails closed. Contract: docs/reference/sessions-command.md
 //! (Live sessions, Messages).
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 #![cfg(unix)]
 
 use crate::support::sessions_archive::*;

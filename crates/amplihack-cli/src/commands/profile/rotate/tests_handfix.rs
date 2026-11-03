@@ -23,6 +23,14 @@
 //! - `control::status_alerts(&RotateLedger) -> Vec<String>`: the `alert:`
 //!   and `warning:` lines of `rotate status`.
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 use super::backup::{BackupRefusal, fresh_backup, rejected_dir};
 use super::control::status_alerts;
 use super::decide::{Decision, Measured, Reading, decide};

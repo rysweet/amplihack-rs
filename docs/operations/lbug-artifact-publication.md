@@ -48,6 +48,17 @@ warm-target invalidation, source-output preservation, cooperating misses,
 interruption and manifest rejection. Its native producer is a substitute. Keep
 that evidence separate from actual lbug builds and runtime acceptance.
 
+Retain the registry crate's include layout exactly as shipped, including absent
+optional directories. Compare substitute-producer fixtures with that layout;
+creating an optional directory can hide a native collection failure. Keep a
+lockfile comparison when using a minimal Cargo consumer, and record dependency
+differences before describing its results as workspace qualification.
+
+For task-owned HOME fixtures, supply the already provisioned toolchain through
+its exact `RUSTUP_HOME` and executable PATH, with `RUSTUP_AUTO_INSTALL=0`. Retain
+toolchain setup failures and corrected-run receipts. Fixture HOME paths provide
+test hygiene; audit the executed commands for access to real profiles.
+
 Required final-head CI, hooks and independent CLEAN reviews remain completion
 gates. Record effective review-launch settings rather than inferring them from
 requested settings. The macOS `/proc/self/stat` canonical-preflight limitation

@@ -12,6 +12,14 @@
 //! a plan login. Here M is marked overflow. The stubs replace only probing;
 //! the decision is the real one ([`decide_measured`]).
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::{Probed, Reading, Windows};
 use super::identify::LiveId;

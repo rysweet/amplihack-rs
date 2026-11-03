@@ -3,10 +3,9 @@
 use crate::support::exec_stub::write_executable;
 use crate::support::quiet_process::in_quiet_process;
 use crate::support::runner_probe;
-use std::{
-    fs,
-    time::{Duration, Instant},
-};
+#[cfg(target_os = "linux")]
+use std::fs;
+use std::time::{Duration, Instant};
 
 #[test]
 fn timeout_and_cleanup_failure_are_both_reported_with_bounded_reader_release() {
