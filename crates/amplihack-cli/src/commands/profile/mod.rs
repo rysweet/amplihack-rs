@@ -34,6 +34,7 @@ mod root_config;
 mod rotate;
 mod rotate_args;
 mod run;
+mod settings_env;
 mod settings_refresh;
 mod shared_dirs;
 mod store;
@@ -87,6 +88,8 @@ mod tests_root_save;
 mod tests_run;
 #[cfg(test)]
 mod tests_seed;
+#[cfg(all(test, unix))]
+mod tests_settings_env;
 #[cfg(all(test, unix))]
 mod tests_settings_refresh;
 #[cfg(all(test, unix))]
@@ -496,6 +499,10 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
     match cmd {
         ProfileCommands::Add { name } => {
             let dir = store.add(&ProfileName::parse(&name)?)?;
+            settings_env::report(&settings_env::after_add(
+                &dir,
+                usage_cmd::home_dir().as_deref(),
+            ));
             println!("created profile {name} at {}", dir.display());
             println!("next: amplihack profile login {name}");
             root_cmd::record_after_add(&store);
@@ -539,6 +546,11 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             // `launch` and `claude` redirect that profile to `~/.claude`.
             #[cfg(unix)]
             kind_guard(&store, &name, usage_cmd::home_dir().as_deref(), true)?;
+            settings_env::report(&settings_env::ensure_for(
+                &store,
+                &name,
+                usage_cmd::home_dir().as_deref(),
+            ));
             rotate::switch_live(&store, &name)?;
         }
         ProfileCommands::Remove { name, yes } => {
@@ -561,6 +573,11 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             }
             // Login spawns claude itself, not through the pre-spawn check.
             shared_dirs::ensure_for(&store, &name);
+            settings_env::report(&settings_env::ensure_for(
+                &store,
+                &name,
+                usage_cmd::home_dir().as_deref(),
+            ));
             #[cfg(unix)]
             login_check::login_checked(&store, &name, usage_cmd::home_dir().as_deref(), || {
                 run::login(&store, &name)

@@ -396,6 +396,22 @@ pub(crate) fn sessions_key(home: &Path, name: &str) -> Result<Option<Value>, Str
     Ok(effective.file_value(name).cloned())
 }
 
+/// Issue #1877: the env template path for profiles.
+pub(crate) const PROFILE_SETTINGS_TEMPLATE: &str = "profile.settings_template";
+
+/// `profile.settings_template` from `<home>/.amplihack/config.toml` only
+/// (a project file cannot set it). `Ok(None)` when unset. `Err` with the
+/// reason when the user file cannot be read, holds an invalid value, or the
+/// test guard forbids `home`; the caller then skips rather than falling back
+/// to `~/.claude/settings.json`.
+pub(crate) fn profile_settings_template(home: &Path) -> Result<Option<PathBuf>, String> {
+    match sessions_key(home, PROFILE_SETTINGS_TEMPLATE)? {
+        None => Ok(None),
+        Some(Value::Text(path)) => Ok(Some(PathBuf::from(path))),
+        Some(_) => Err(format!("{PROFILE_SETTINGS_TEMPLATE} is not a string")),
+    }
+}
+
 /// Save `value` for a user-only or user-scoped key in the user file.
 pub(crate) fn set_user_value(name: &str, value: &Value) -> Result<PathBuf, ConfigError> {
     let def = schema::known_key(name)?;

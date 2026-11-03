@@ -8,8 +8,11 @@ fn backticked(line: &str) -> Vec<&str> {
 }
 
 #[test]
-fn constant_has_the_twelve_documented_keys() {
-    assert_eq!(SHARED_SETTINGS_KEYS.len(), 12);
+fn constant_has_the_thirteen_documented_keys() {
+    assert_eq!(SHARED_SETTINGS_KEYS.len(), 13);
+    // Issue #1877: `env` is seeded so profiles inherit XPIA_ENABLED.
+    assert!(SHARED_SETTINGS_KEYS.contains(&"env"));
+    assert!(!SHARED_SETTINGS_KEYS.contains(&"apiKeyHelper"));
 }
 
 #[test]

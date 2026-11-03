@@ -50,7 +50,7 @@ the official [environment variable reference](https://code.claude.com/docs/en/en
 |--------|---------|
 | `CLAUDE.md` | Your global instructions |
 | `agents/`, `commands/`, `output-styles/`, `rules/`, `skills/` | Copied recursively |
-| `settings.json` (filtered) | Only allowlisted top-level keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` |
+| `settings.json` (filtered) | Only allowlisted top-level keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `env`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` |
 
 The copy is made once, when the profile is added. After that, `amplihack install`
 keeps the amplihack hooks in each profile's `settings.json` current: it replaces
@@ -60,7 +60,7 @@ left without one.
 
 Never copied: `.credentials.json`, `.claude.json`, `history*`,
 `sessions/`, `todos/`, `statsig/`, `shell-snapshots/`, `ide/`, and anything else not
-on the allowlist (so plugins and MCP server settings are not carried over), and the `env` and `apiKeyHelper` settings keys (and any other
+on the allowlist (so plugins and MCP server settings are not carried over), and the `apiKeyHelper` settings key (and any other
 key not on the allowlist). `projects/`, `file-history/` and `session-env/` are
 not copied either: they are linked, see
 [Share sessions across profiles](#share-sessions-across-profiles). If
@@ -69,11 +69,129 @@ links.
 If the path exists but is not a directory, `profile add` fails and removes the
 new profile directory rather than silently creating an unseeded profile.
 
+### Environment settings follow you into every profile
+
+The `env` block of `~/.claude/settings.json` holds environment variables that
+Claude Code sets for every session, such as `XPIA_ENABLED`. Each profile reads
+its own `settings.json`, so a profile without that block runs with Claude
+Code's defaults instead of yours. amplihack copies the block for you:
+
+- `profile add` writes it into the new profile's `settings.json`.
+- `profile login <name>`, `profile switch <name>` and
+  `profile auto-switch repair` add it to a profile that lacks
+  `env.XPIA_ENABLED`, including profiles created before this was copied.
+
+Values already in the profile always win. Only keys the profile lacks are
+added, and nothing outside `env` changes:
+
+```bash
+cat ~/.claude/settings.json
+# {"env": {"XPIA_ENABLED": "false", "BASH_DEFAULT_TIMEOUT_MS": "600000"}}
+
+cat ~/.amplihack/claude-profiles/work/settings.json
+# {"env": {"BASH_DEFAULT_TIMEOUT_MS": "120000"}, "model": "opus"}
+
+amplihack profile login work
+# ... after login:
+cat ~/.amplihack/claude-profiles/work/settings.json
+# {"env": {"BASH_DEFAULT_TIMEOUT_MS": "120000", "XPIA_ENABLED": "false"}, "model": "opus"}
+```
+
+A profile that already has `env.XPIA_ENABLED` is not touched; its file stays
+byte-identical. To give a profile a different value, set it in that
+profile's `settings.json`. amplihack never replaces it.
+
+To fill in every existing profile at once:
+
+```bash
+amplihack profile auto-switch repair
+# env: work updated
+# env: personal updated
+```
+
+#### Use a template instead of `~/.claude/settings.json`
+
+If the profiles should get a different `env` from the one in
+`~/.claude/settings.json`, point amplihack at a template file. Only its `env`
+block is read:
+
+```bash
+cat > ~/.amplihack/profile-settings.json <<'JSON'
+{"env": {"XPIA_ENABLED": "false"}}
+JSON
+chmod 600 ~/.amplihack/profile-settings.json
+amplihack config set profile.settings_template "$HOME/.amplihack/profile-settings.json"
+```
+
+The path must be absolute. The file must belong to you (or root) and must not
+be writable by group or others. When a template is set, it replaces
+`~/.claude/settings.json` as the source for `profile add`, login, switch and
+repair: a new profile gets the template's `env` and none of the `env` in
+`~/.claude`. If the template is missing, unreadable, not valid JSON or not
+safe, amplihack warns and copies no `env` at all; it does not fall back to
+`~/.claude`. Fix the
+file, or remove the setting with
+`amplihack config unset profile.settings_template`. See
+[`profile.settings_template`](../reference/user-config.md#profilesettings_template).
+
+#### What to keep out of `env`
+
+Every key in the source `env` reaches every profile. Two cases need care:
+
+- **API keys.** An `ANTHROPIC_API_KEY` under `env` makes every profile bill
+  per token instead of using its plan login. Use `apiKeyHelper` in the one
+  profile that needs a key; it is never copied.
+- **Security switches.** `XPIA_ENABLED=false` in the source turns XPIA off in
+  every profile that has not set its own value.
+
+amplihack never prints `env` values. A problem with the source is a warning
+that names the path and the reason, and the command carries on:
+
+```text
+profile work: env not inherited from /home/you/.amplihack/profile-settings.json: file is writable by group or others
+```
+
+Entries in the source whose name is not a valid variable name
+(`[A-Za-z_][A-Za-z0-9_]*`, at most 256 bytes) or whose value is not a string
+are dropped. The other keys are still added, and each dropped one gets its
+own line that names the key only:
+
+```text
+profile work: env key BASH_DEFAULT_TIMEOUT_MS not inherited from /home/you/.claude/settings.json: value is not a string
+```
+
+`.credentials.json` and `.claude.json` are never read for this, and a
+template path that names either file is refused.
+
+#### Keep `~/.claude/settings.json` a regular, private file
+
+The same checks apply to `~/.claude/settings.json` when no template is set:
+it must be a regular file (not a symlink), owned by you or root, not writable
+by group or others, and at most 1 MiB. If you manage it with a dotfile tool
+that links it into place, or it is group-writable, no profile inherits its
+`env` and each command warns:
+
+```text
+profile work: env not inherited from /home/you/.claude/settings.json: file is a symlink
+```
+
+`profile add` already copies nothing from a symlinked `settings.json`, so a
+new profile gets none of its keys either. Replace the link with a copy, or
+set `profile.settings_template` to a regular file, as above. To check:
+
+```bash
+ls -l ~/.claude/settings.json
+# -rw------- 1 you you 812 ... /home/you/.claude/settings.json
+```
+
 Caveats:
 
 - **Copy by value.** The allowlisted assets are copies, not links. Later
   edits to `~/.claude` do not propagate to existing profiles; re-add the
   profile to pick them up. The only links are the three session directories.
+  The exception is `env`: login, switch and repair add missing keys while
+  the profile lacks `env.XPIA_ENABLED` (see
+  [Environment settings follow you into every profile](#environment-settings-follow-you-into-every-profile)).
 - **Allowlisted setting values are copied verbatim.** Review hooks and
   status-line commands for embedded secrets or machine-specific paths before
   adding a profile; what they contain is your responsibility. Values are never

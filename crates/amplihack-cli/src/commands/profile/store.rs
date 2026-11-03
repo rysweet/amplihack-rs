@@ -29,6 +29,7 @@ pub(super) const SHARED_SETTINGS_KEYS: &[&str] = &[
     "alwaysThinkingEnabled",
     "attribution",
     "cleanupPeriodDays",
+    "env",
     "hooks",
     "includeCoAuthoredBy",
     "language",

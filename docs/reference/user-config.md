@@ -22,6 +22,7 @@ files.
   - [Governor keys](#governor-keys)
   - [sessions.daily_archive](#sessionsdaily_archive)
   - [sessions.archive_days and sessions.archive_dest](#sessionsarchive_days-and-sessionsarchive_dest)
+  - [profile.settings_template](#profilesettings_template)
 - [The config command](#the-config-command)
   - [config get](#config-get)
   - [config set](#config-set)
@@ -65,6 +66,7 @@ orchestrator.max_depth = 3  # default
 sessions.daily_archive = true  # default
 sessions.archive_days = 3  # default
 sessions.archive_dest = (unset)  # default
+profile.settings_template = (unset)  # default
 ```
 
 `amplihack agent-binary` now answers `claude (user_config)`, even inside a tmux
@@ -164,6 +166,7 @@ command, so it never prints `flag`.
 | `sessions.daily_archive` | bool | `true` | — | — | user only |
 | `sessions.archive_days` | integer days, 1 to 4294967295 | `3` | — | `--days` | user only |
 | `sessions.archive_dest` | absolute path | (unset: `~/.amplihack/session-archive`) | — | `--dest` | user only |
+| `profile.settings_template` | absolute path to a JSON file | (unset: `~/.claude/settings.json`) | — | — | user only |
 
 Any other key is an error for `config set` and a diagnostic when found in a
 file. A user-only key in a project file is reported and ignored.
@@ -467,6 +470,36 @@ value is not replaced by the default. The command prints
 `cannot read <key> (<why>)` and exits 1, and the daily run logs
 `sessions archive: cannot read <key> (<why>); not run`. A flag still works,
 because the key is then not read.
+
+### profile.settings_template
+
+The file whose `env` block Claude login profiles inherit, in place of
+`~/.claude/settings.json`. `amplihack profile add`, `profile login`,
+`profile switch` and `profile auto-switch repair` read it; see
+[Environment inheritance](./profile-command.md#environment-inheritance).
+Only its `env` key is used, and keys a profile already has are never
+replaced.
+
+```sh
+printf '{"env":{"XPIA_ENABLED":"false"}}\n' > ~/.amplihack/profile-settings.json
+chmod 600 ~/.amplihack/profile-settings.json
+amplihack config set profile.settings_template "$HOME/.amplihack/profile-settings.json"
+```
+
+The value must be an absolute path; `~` is not expanded, so a relative path
+or `~/...` is a usage error (exit 2). The file is checked each time it is
+read, not when the key is set. It must be a regular file, not a symlink, of
+at most 1 MiB, owned by you or root and not writable by group or others, and
+must not be named `.credentials.json` or `.claude.json`. The same checks apply
+to `~/.claude/settings.json` when the key is unset. See
+[Source checks](./profile-command.md#source-checks).
+
+The key has no environment variable and no default, and it is user-only; a
+project file's value is reported and ignored. If the key cannot be read, or
+the file it names is missing, unsafe or not valid JSON, the profile command
+warns and copies no `env`. It does not fall back to `~/.claude/settings.json`,
+so a mistake in the template is not hidden. `amplihack config unset
+profile.settings_template` goes back to `~/.claude/settings.json`.
 
 ## The config command
 

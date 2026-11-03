@@ -36,6 +36,7 @@ fn keys_are_in_documented_order() {
             "sessions.daily_archive",
             "sessions.archive_days",
             "sessions.archive_dest",
+            "profile.settings_template",
         ]
     );
 }
@@ -80,7 +81,8 @@ fn user_only_keys_are_agent_home_node_log_dir_governor_and_sessions() {
             "governor.max_reading_age_secs",
             "sessions.daily_archive",
             "sessions.archive_days",
-            "sessions.archive_dest"
+            "sessions.archive_dest",
+            "profile.settings_template"
         ]
     );
 }
@@ -229,4 +231,19 @@ fn governor_keys_are_user_only_with_documented_ranges_and_defaults() {
     }
     assert!(parse_cli("governor.wait_secs", "0").is_ok());
     assert!(parse_cli("governor.reserve_points", "100").is_ok());
+}
+
+/// Issue #1877: the env template is a path, so user-only, with no variable,
+/// no default and no `~` expansion (relative paths are rejected).
+#[test]
+fn profile_settings_template_is_a_user_only_absolute_path() {
+    let k = key_def("profile.settings_template").expect("profile.settings_template missing");
+    assert_eq!(k.scope, Scope::UserOnly);
+    assert!(matches!(k.kind, ValueKind::AbsPath));
+    assert_eq!(k.env, None);
+    assert_eq!(k.default_value(), None);
+    assert!(!k.lower_only);
+    assert!(parse_cli("profile.settings_template", "/etc/amplihack/settings.json").is_ok());
+    assert!(parse_cli("profile.settings_template", "relative/settings.json").is_err());
+    assert!(parse_cli("profile.settings_template", "~/settings.json").is_err());
 }

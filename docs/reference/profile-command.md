@@ -43,14 +43,14 @@ amplihack launch|claude --profile <name> [...]
 
 | Command | Behavior |
 |---------|----------|
-| `add <name>` | Copy allowlisted shared assets from `~/.claude` into a private staging directory, then atomically publish `<root>/<name>/` (mode `0700` on Unix; Windows uses its inherited ACL). Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. Then links `projects/`, `file-history/` and `session-env/` to `~/.claude` when it exists; see [Shared session directories](#shared-session-directories). The first `add` also saves the root it used; see [Saved on the first add](#saved-on-the-first-add). |
+| `add <name>` | Copy allowlisted shared assets from `~/.claude` into a private staging directory, then atomically publish `<root>/<name>/` (mode `0700` on Unix; Windows uses its inherited ACL). Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. Then links `projects/`, `file-history/` and `session-env/` to `~/.claude` when it exists; see [Shared session directories](#shared-session-directories). The first `add` also saves the root it used; see [Saved on the first add](#saved-on-the-first-add). The new profile gets the `env` block of `~/.claude/settings.json` or of `profile.settings_template`; see [Environment inheritance](#environment-inheritance). |
 | `root [<dir>]` | Print the profile root in use and where it came from, or save `<dir>` as the root. See [Profile root](#profile-root). |
 | `list` | First line `root: <path> (source: env\|config\|default)`; see [Profile root](#profile-root). Then one profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
-| `switch <name>` | Moves the profile's login into `~/.claude` with the rotator's [swap](#rotate-swap), under the rotator's lock, then pins rotation to it, writes the default pointer and records the switch in the rotate ledger, so sessions stopped on a usage limit before it are resumed. The profile must exist. Then checks the [shared session links](#shared-session-directories) of both profiles in the swap; messages go to stderr. When the live login cannot be moved (any system but Linux, a profile open in a session, no login in `~/.claude`, ...), it still writes the default pointer, holds nothing and exits 1. See [Rotate switch](#rotate-switch). |
+| `switch <name>` | Moves the profile's login into `~/.claude` with the rotator's [swap](#rotate-swap), under the rotator's lock, then pins rotation to it, writes the default pointer and records the switch in the rotate ledger, so sessions stopped on a usage limit before it are resumed. The profile must exist. Before the move it adds missing `env` keys to the profile's `settings.json`; see [Environment inheritance](#environment-inheritance). Then checks the [shared session links](#shared-session-directories) of both profiles in the swap; messages go to stderr. When the live login cannot be moved (any system but Linux, a profile open in a session, no login in `~/.claude`, ...), it still writes the default pointer, holds nothing and exits 1. See [Rotate switch](#rotate-switch). |
 | `switch --none` | Removes the default pointer and the [rotation pin](#rotate-pin). Prints `Default profile cleared.`, or `No default profile was set.` when there was none, plus `Rotation released; the rotator picks the best login on its next cycle.` when a pin was removed; exits 0 either way. Moves no login. Conflicts with a name; `switch` with neither is a usage error. See [Clearing the default](#clearing-the-default). |
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
-| `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
+| `login <name>` | Checks the profile's [shared session links](#shared-session-directories) and adds missing `env` keys to its `settings.json` (see [Environment inheritance](#environment-inheritance)), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
 | `usage [<name>...]` | Reads each profile's usage from Anthropic's OAuth usage endpoint with the profile's own token, several profiles at a time, and starts `claude` only for a profile whose direct read fails, or, with `--spend`, to read the spend limit of an account with [usage credits on](#usage-credits-on); then shows its weekly and session usage as bars and its spend status as a mark, sorted by the rotator's headroom, followed by a [capacity summary](#capacity-summary). `--table` for the text table, `--utc` for UTC reset times, `--json` or `--summary-json` for scripts, `--raw` to include Claude's output. Refreshes auto-switch readings and adds to the [usage history](#usage-history). See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
@@ -2625,13 +2625,15 @@ constants:
 |----------|----------|
 | `SHARED_ASSET_FILES` | `CLAUDE.md` |
 | `SHARED_ASSET_DIRS` | `agents`, `commands`, `output-styles`, `rules`, `skills` |
-| `SHARED_SETTINGS_KEYS` | top-level `settings.json` keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` (12 keys) |
+| `SHARED_SETTINGS_KEYS` | top-level `settings.json` keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `env`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` (13 keys) |
 
 Rules:
 
 - `settings.json` is parsed and only `SHARED_SETTINGS_KEYS` are written to the
   profile's `settings.json`. If nothing survives the filter, no file is
-  written. `env`, `apiKeyHelper` and all unknown keys are dropped.
+  written. `apiKeyHelper` and all unknown keys are dropped. `env` is copied;
+  when `profile.settings_template` is set, `add` then replaces it with the
+  template's `env` (see [Environment inheritance](#environment-inheritance)).
 - `amplihack install` (user scope) refreshes the hooks in every profile's
   existing `settings.json` (issue #1661): it applies the same hook update as
   for `~/.claude/settings.json`, so amplihack's entries are replaced and all
@@ -2688,7 +2690,7 @@ Rules:
 - On Unix, directories are created `0700` and files `0600`; Windows uses
   inherited ACLs. Files use `create_new` (`O_EXCL` on Unix), so nothing is
   overwritten and no destination symlink is followed.
-- The 12-key list is kept in sync with the code by `tests_docs_sync.rs`, which
+- The 13-key list is kept in sync with the code by `tests_docs_sync.rs`, which
   checks both directions (every constant key is documented here and in the
   how-to guide, and no extra key is documented).
 - A symlinked source root fails with `SymlinkRefused`. Nested symlinks and
@@ -2732,7 +2734,156 @@ Rules:
 - Values are never logged; messages contain paths and counts only.
 - No sync after creation: later edits to `~/.claude` do not update profiles.
   The three shared session directories are links, not copies, so they are
-  always current.
+  always current. The one exception is the `env` backfill described in
+  [Environment inheritance](#environment-inheritance).
+
+### Environment inheritance
+
+Each profile's `settings.json` holds the `env` block that Claude Code
+applies to its sessions (issue #1877). Without it a profile runs with
+defaults, for example XPIA on when `~/.claude/settings.json` turns it off.
+
+#### Source
+
+| `profile.settings_template` | Source of `env` |
+|-----------------------------|-----------------|
+| unset | `<shared_assets>/settings.json`, normally `$HOME/.claude/settings.json` |
+| an absolute path | that file; `~/.claude/settings.json` is not used for `env` |
+
+Only the source's `env` key is read; every other key in it is ignored. See
+[`profile.settings_template`](./user-config.md#profilesettings_template).
+
+#### Merge rule
+
+The [XPIA gate](#when-it-runs) decides whether the merge runs at all. When it
+runs, the merge is per key inside `env`:
+
+- A key the profile already has keeps its value.
+- A source key the profile lacks is added.
+- Keys outside `env` are never read for the merge or changed.
+- A profile `env` that is not a JSON object is left as it is, and nothing is
+  written.
+
+| Profile `env` | Source `env` | Result |
+|---------------|--------------|--------|
+| `{"FOO":"1","BAR":"9"}` | `{"XPIA_ENABLED":"false","BAR":"2"}` | `{"FOO":"1","BAR":"9","XPIA_ENABLED":"false"}`, reported `Updated` |
+| absent | `{"XPIA_ENABLED":"false"}` | `{"XPIA_ENABLED":"false"}`, reported `Updated` |
+| `{"XPIA_ENABLED":"true"}` | `{"XPIA_ENABLED":"false","BAR":"2"}` | unchanged: the gate stops the merge before the source is read, reported `Unchanged` |
+| `"oops"` (not an object) | `{"XPIA_ENABLED":"false"}` | unchanged, reported `Skipped` |
+
+#### When it runs
+
+| Command | What happens |
+|---------|--------------|
+| `add <name>` | Seeding copies `env` with the other allowlisted keys. When a template is set, the seeded `env` is removed and the template's `env` is merged in, so the new profile's `env` is the template's. A broken template leaves the profile with no `env`. |
+| `login <name>` | After the [shared session links](#shared-session-directories) are checked, before `claude` starts. |
+| `switch <name>` | Before the login is moved into `~/.claude`. `switch --none` does not run it. |
+| `auto-switch repair` | For every profile in the root, after the status-line install. Prints `env: <name> updated` for each profile it changed and a warning for each one it skipped. |
+
+Read-only commands (`list`, `show`, `usage`, `auto-switch status`, …) and
+`run`/launch never run it.
+
+**XPIA gate.** On login, switch and repair the backfill runs only when the
+profile's `settings.json` is missing or has no `env.XPIA_ENABLED`. It then
+adds every source key the profile lacks. When `env.XPIA_ENABLED` is present
+the result is `Unchanged`: neither the source nor the template is opened,
+nothing is written, and the file stays byte-identical. `add` has no gate,
+because the seeded `env` is removed before a template's `env` is merged in.
+
+#### Results
+
+| Result | Meaning | Warnings |
+|--------|---------|----------|
+| `Updated` | `settings.json` was rewritten (or created) with the merged `env`. | One per source key that was dropped, if any. |
+| `Unchanged` | Nothing to do: the profile has `env.XPIA_ENABLED`, the default source is missing, the source has no `env` key or an empty `env` object, every source key is already in the profile, or `$HOME` or the shared-assets path is unknown. Nothing is written to the profile. | None, except one per dropped source key when every usable key was already present. |
+| `Skipped` | Something stopped it, including a source `env` that is not an object. Nothing is written. | Exactly one. |
+
+The backfill never fails a command. Warnings go to stderr and have two
+fixed forms. When nothing was inherited:
+
+```text
+profile <name>: env not inherited from <path>: <reason>
+```
+
+`<reason>` is an I/O error, `invalid JSON at line <L> column <C>`, the error
+of an invalid `profile.settings_template` value, or one of these fixed
+strings. `<path>` is the file that caused it: the source or template, the
+profile's own `settings.json` for a problem with that file, or
+`~/.amplihack/config.toml` when the template setting cannot be read.
+
+| Reason | Cause |
+|--------|-------|
+| `file is a symlink` | The file's last path component is a symbolic link. |
+| `file is not a regular file` | The file is a directory, FIFO or device. |
+| `file does not exist` | The configured template is missing. A missing default source is `Unchanged`, not `Skipped`. |
+| `file is not owned by the current user` | The source is owned by someone other than you or root, or the profile's file by someone other than you. |
+| `file is writable by group or others` | The source has a group or other write bit. |
+| `file is larger than 1 MiB` | The source is over the read cap. |
+| `refusing credential file` | The template's file name is `.credentials.json` or `.claude.json`. |
+| `source settings.json is not a JSON object` | The source parses but is not an object. |
+| `source env is not an object` | The source's `env` is present but not a JSON object. |
+| `profile env is not an object` | The profile's `env` is present but not a JSON object. |
+| `profile settings.json is not a JSON object` | The profile file parses but is not an object. |
+
+When the rest of the `env` was inherited but one source entry was not, one
+line per dropped key:
+
+```text
+profile <name>: env key <KEY> not inherited from <path>: <reason>
+```
+
+Here `<reason>` is `value is not a string` or `invalid variable name`. A key
+that fails the name rule is shown escaped and cut to 64 characters. No
+warning ever contains an `env` value.
+
+#### Writes
+
+- An existing profile `settings.json` is updated with the same checks and
+  atomic write as the hook refresh: a regular file owned by the current user,
+  never a symlink, read up to 1 MiB, rewritten atomically with mode `0600`. A file that is not valid
+  JSON or not a JSON object is reported `Skipped` and never overwritten.
+- A missing `settings.json` is created as `{"env":{…}}` only when the source
+  `env` is a non-empty object. It is opened with `create_new`, mode `0600`,
+  `O_NOFOLLOW|O_CLOEXEC`, and synced before close. If another process creates
+  it first, the backfill retries once as an update. A partial write removes
+  only a file this call created.
+- The backfill never writes `hooks`, so the hooks-path check of the install
+  refresh (issue #1699) does not apply to it.
+
+#### Source checks
+
+- The source is read with a no-follow, bounded read (1 MiB cap) and parsed
+  only into a JSON value.
+- These checks apply to every source: the template and the default
+  `~/.claude/settings.json` alike. A `~/.claude/settings.json` that is a
+  symlink (as many dotfile managers make it) or group-writable gives
+  `Skipped` and a warning, and no profile inherits from it.
+- On Unix the file must be owned by the current user or root and must have no
+  group or other write bit. Otherwise the result is `Skipped`, with no
+  fallback to `~/.claude`.
+- A template whose file name is `.credentials.json` or `.claude.json` is
+  refused before it is opened. No part of the backfill opens either file.
+- Source entries whose key does not match `^[A-Za-z_][A-Za-z0-9_]*$`, is
+  longer than 256 bytes, or whose value is not a string are dropped and named
+  in a warning. The profile's own entries are never checked or changed.
+- A source `env` that is not an object gives `Skipped` with the reason
+  `source env is not an object`.
+- On non-Unix platforms the backfill and the template step of `add` do not
+  run; a debug-level log line records that. Seeding still copies `env`.
+
+#### Accepted risks
+
+- Every source `env` key, including API keys and switches such as
+  `XPIA_ENABLED=false`, is copied into every profile that lacks it. An
+  `ANTHROPIC_API_KEY` there makes every profile bill per token; use
+  `apiKeyHelper` in a single profile instead.
+- A profile's own value always wins, so a profile with an old
+  `XPIA_ENABLED` keeps it until you edit that file.
+- Only the last path component of the source is protected against symlinks.
+- Seeding also refuses a symlinked `~/.claude/settings.json`: `add` copies no
+  `settings.json` keys from it at all, as before this change. Replace the
+  link with a regular file (or point `profile.settings_template` at a regular
+  file) for profiles to get any settings.
 
 ## Shared session directories
 
@@ -3465,7 +3616,7 @@ so a login moved while the switch was on stays protected after `off`.
 | `auto-switch threshold N` | Sets the threshold, `1` to `100`. Keeps `enabled` and `exclude`. |
 | `auto-switch exclude [names…]` | Replaces the exclusion list. With no names, clears it. Each name must pass the [name rules](#name-rules); it does not have to exist (`status` lists names that do not). Keeps `enabled`, `threshold` and `overflow`. |
 | `auto-switch install` | Adds the [status-line wrapper](#status-line-wrapper) to every profile that does not have it. Leaves a stale wrapper alone and reports it. Prints the root it acts on. |
-| `auto-switch repair` | If `<root>/.auto-switch.d/` exists, takes the global lock and runs [recovery](#session-end-and-recovery). Then does everything `install` does, and also rewrites stale wrappers (old or moved binary path, wrapped twice, edited by hand) to the canonical one. Prints the install lines, then one `recovery:` line per thing recovery did, or `recovery: nothing to do`. This is the only command whose purpose is recovery. |
+| `auto-switch repair` | If `<root>/.auto-switch.d/` exists, takes the global lock and runs [recovery](#session-end-and-recovery). Then does everything `install` does, and also rewrites stale wrappers (old or moved binary path, wrapped twice, edited by hand) to the canonical one, and adds missing `env` keys to every profile's `settings.json` (see [Environment inheritance](#environment-inheritance)). Prints the install lines, one `env: <name> updated` line per profile it changed, then one `recovery:` line per thing recovery did, or `recovery: nothing to do`. This is the only command whose purpose is recovery. |
 
 On Unix, `status` prints an `autostart:` line right after the `switch:`
 line, in the format described in [Rotate status](#rotate-status). When
@@ -8061,7 +8212,8 @@ on them are `renameat2(RENAME_NOREPLACE)` between two directories under the
 root, `utimensat` (without following symlinks) to set the modification time,
 metadata checks, and syncing the directories that contain them. Each account's
 login is in exactly one place at any moment. `.claude.json` and
-`settings.json` may contain secrets (`primaryApiKey`, `env`, `apiKeyHelper`):
+`settings.json` may contain secrets (`primaryApiKey`, `env`, `apiKeyHelper`;
+`env` is copied into profiles, see [Environment inheritance](#environment-inheritance)):
 only the `oauthAccount` key is copied out of `.claude.json`, rewrites of
 `.claude.json` and `settings.json` keep the file's existing permission bits
 (setuid, setgid and sticky are dropped; a new `settings.json` is `0600`), and parse errors report the path, line and

@@ -32,6 +32,7 @@ const SCHEMA_ORDER: &[&str] = &[
     "sessions.daily_archive",
     "sessions.archive_days",
     "sessions.archive_dest",
+    "profile.settings_template",
 ];
 
 /// Records argv and its environment, then reports success in the runner's
@@ -352,6 +353,7 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "sessions.daily_archive = true",
             "sessions.archive_days = 3",
             "sessions.archive_dest = (unset)",
+            "profile.settings_template = (unset)",
         ]
     );
 }
