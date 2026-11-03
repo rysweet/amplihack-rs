@@ -423,3 +423,22 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");
     assert_text_has_no_secrets(line);
 }
+
+/// Waits until the wall clock enters the next whole second. A rotator swap
+/// records the login it left full at a whole second, and a later reading
+/// must be strictly later than that to count (#1870). A test that swaps
+/// away from a login and then expects a swap back onto it calls this
+/// between the two runs.
+pub fn next_second() {
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    let secs = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after 1970")
+            .as_secs()
+    };
+    let start = secs();
+    while secs() == start {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
