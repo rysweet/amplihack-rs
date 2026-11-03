@@ -209,11 +209,15 @@ pub mod msg {
     /// `s=<n>% w=<n>%` with `sep` between, from the windows read (#1844):
     /// exhausted shows its stored figures; no session window is `s=0%`, as
     /// in D1 (#1846), so a weekly-only login never logs a session limit it
-    /// does not have. An unread week is `w=?`, failed `failed`, in flight
+    /// does not have. An unread week is `w=?`, failed `failed`, a plan spend
+    /// limit read as exhausted `spend limit` (#1880), in flight
     /// `unknown, still running`.
     pub(in super::super) fn usage(r: &Shown, sep: &str) -> String {
         if r.still_running {
             return "unknown, still running".to_string();
+        }
+        if r.spend_limit {
+            return "spend limit".to_string();
         }
         let week = |w: Option<f64>| w.map_or_else(|| "?".to_string(), |w| format!("{}%", pct(w)));
         match r.reading {
@@ -278,11 +282,6 @@ pub mod msg {
     /// The live probe failed for the `k`th cycle in a row; no swap yet.
     pub fn stay_failed_probe(k: u32, limit: u32) -> String {
         format!("stay: live probe failed ({k}/{limit})")
-    }
-
-    /// Failed live probes would swap, but the last swap is `secs` too recent.
-    pub fn stay_held_failed(secs: u64) -> String {
-        format!("stay: live probe failed; held after last swap ({secs}s left)")
     }
 
     /// Failed live probes would swap, but a `$HOME` key applies to whichever

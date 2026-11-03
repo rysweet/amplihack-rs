@@ -342,7 +342,16 @@ fn failing(f: &Fx) -> Ctx {
     let mut c = f.ctx(|_| panic!("no move onto the API key here"));
     c.measure = Some(live_probe_fails);
     c.failed_live = 2;
+    // Issue #1880: a cycle loads the count from the ledger.
+    seed_failed_live(&f.rs, "work", 2);
     c
+}
+
+/// Writes `failed_live` into the ledger file as stored by issue #1880.
+fn seed_failed_live(rs: &RotateState, profile: &str, count: u32) {
+    let mut v: serde_json::Value = serde_json::from_slice(&fs::read(&rs.ledger).unwrap()).unwrap();
+    v["failed_live"] = serde_json::json!({"profile": profile, "count": count});
+    rs.write("ledger.json", v.to_string().as_bytes()).unwrap();
 }
 
 /// The control for the test below: without the key this swap does happen.

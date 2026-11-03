@@ -5028,7 +5028,7 @@ failed or that were exhausted.
 
 | Condition (all comparisons inclusive) | Outcome |
 |---------------------------------------|---------|
-| Live probe failed, or `session_used >= session-at`, or `week_used >= week-at`; and `best - live >= margin` | Swap to best, `reason=threshold`. A failed live probe counts as headroom `0`, and the swap is then subject to [failed-probe damping](#rotate-failed-live-probes). |
+| Live probe failed, or `session_used >= session-at`, or `week_used >= week-at`; and `best - live >= margin` | Swap to best, `reason=threshold`. A failed live probe counts as headroom `0`, and the swap is then subject to [failed-probe damping](#rotate-failed-live-probes). A live plan login at its [spend limit](#spend-limit-on-a-plan-login) counts as exhausted, and the swap is logged `reason=spend-limit`. |
 | As above, but no candidate meets the margin, or there are no candidates | ALERT `no-capacity`. No swap. |
 | No threshold reached, `now - swapped_at >= hold` (or no earlier swap), and `best - live >= upgrade-margin` and `best - live > 0` | Swap to best, `reason=upgrade`. |
 | Otherwise | Stay. |
@@ -5036,7 +5036,8 @@ failed or that were exhausted.
 `swapped_at` and `previous` (the profile swapped out) come from the
 [ledger](#rotate-state-directory). During the hold no upgrade happens at
 all, so `previous` cannot come straight back by upgrade. Threshold swaps on
-a measured reading are never held.
+a measured reading, on an exhausted or spend-limited live login and after
+three failed live probes are never held.
 
 The table ranks every candidate on the reading it has, which may be minutes
 old. Before a swap stands, its target passes the
@@ -5047,27 +5048,155 @@ rotator last swapped away from it while it was full, is read again (by the
 
 #### Rotate failed live probes
 
-When the table above gives a threshold swap only because the live probe
-failed, the rotator applies these rules in order. `k` is the number of
-consecutive cycles, including this one, whose live probe failed.
+Before the [decision rule](#rotate-decision-rule) runs, each cycle sorts the
+live login's probe into one of the classes below. Only the live probe is
+classified this way; a candidate whose probe failed is simply not chosen.
+
+| Live probe this cycle | Class | What the decision does | Stored count |
+|-----------------------|-------|------------------------|--------------|
+| `ok`, from a read that started and finished in this cycle, or a [passive reading](#passive-readings) | Fresh | Uses the figures, as in the table above. | Cleared. |
+| `ok`, from a read [started in an earlier cycle](#reads-that-outlast-a-cycle) | Carried | Uses the figures, as in the table above. | Unchanged. |
+| `session_exhausted` or `weekly_exhausted` | Exhausted | Threshold swap at once, `reason=threshold`. Never damped. | Cleared. |
+| `spend_limit` on a plan profile | Spend limit | Read as exhausted: swap on the first cycle that reads it, `reason=spend-limit`. See [Spend limit on a plan login](#spend-limit-on-a-plan-login). | Cleared. |
+| `spend_limit` on an [overflow](#rotate-overflow) profile | Overflow blocked | The [spend block](#overflow-spend-limit-block) applies. | Unchanged. |
+| Timed out, `unknown, still running`, could not run, `not_logged_in`, `unparsed`, or an `http 429` or other error from the [usage request](#probe-method) | Unknown | The failed-probe rules below. | Plus one. |
+
+A `429` from the usage request is unknown, not a limit: it may mean the
+endpoint is throttling requests, not that the account has run out. The
+rotator does not read rate-limit text from `/usage` output; only the states
+in the table above are used.
+
+##### Failed-probe rules
+
+For an unknown live probe the rotator applies these rules in order. `k` is
+the number of consecutive cycles, including this one, whose live probe was
+unknown for the same live profile: the [stored count](#stored-failed-probe-count)
+plus one when it names the live profile, otherwise `1`.
 
 | Condition | Outcome | Log line |
 |-----------|---------|----------|
 | `k < 3` | Stay. | `stay: live probe failed (<k>/3)` |
-| `k >= 3` and `now - swapped_at < hold` | Stay. | `stay: live probe failed; held after last swap (<N>s left)`, where `N = hold - (now - swapped_at)`, or `hold` if `swapped_at` is in the future |
 | The [API-key login check](#api-key-login-check) passes on the `$HOME` files and the API key is not live | Stay. | `stay: live probe failed; home key (<detail>) applies to every login once live, a swap changes nothing`; see [API-key login check](#api-key-login-check) |
 | Otherwise | Swap to best. | `swap <from>-><to> live failed target s=<n>% w=<n>% reason=failed-probe` |
 
-`k` is kept in memory by `watch`. It is reset to `0` by a cycle whose live
-probe does not fail, by a completed swap, and by restarting the rotator. The
-one-shot `rotate` always uses `k = 1`, so it never swaps on a failed live
-probe alone. With `--hold 0` the second rule never applies, but the first
-still limits these swaps to one every three cycles.
+The failed live login counts as headroom `0`. When no candidate meets the
+margin and `k >= 3`, the [plan-room swap](#rotate-plan-room-swap) runs as it
+does for a measured threshold, and its swap is also logged with
+`reason=failed-probe`. A failed live probe never moves work onto an
+[overflow](#overflow-decision) profile or the API key, whatever `k` is: with
+room only on overflow profiles, no swap is made (below `k = 3` the
+failed-probe stay, from `k = 3` the no-capacity ALERT).
 
-Nothing else changes: an ALERT when no candidate meets the margin, swaps on
-a measured threshold, swaps on an exhausted live login and upgrade swaps
-behave as in the table above. A damped stay counts as a stay without an
-alert, so it clears the stored ALERT key.
+`--hold` does not apply to these swaps. The hold stops an upgrade swap
+straight after a swap; it never keeps a login that is exhausted, at its
+spend limit or failing on three cycles in a row. A swap clears the count,
+so the login swapped in needs three new consecutive failures of its own
+before the next failed-probe swap, and
+[swap-back damping](#swap-back-damping) and the
+[freshness gate](#rotate-reading-freshness-and-swap-back-damping) still
+apply to the target. With the default `--interval` of 600 seconds, the
+rotator makes at most one failed-probe swap every 30 minutes.
+
+A damped stay counts as a stay without an alert, so it clears the stored
+ALERT key. Swaps on a measured threshold, on an exhausted live login and
+upgrade swaps behave as in the table above.
+
+##### Stored failed-probe count
+
+The count is stored in the [ledger](#rotate-state-directory) as
+`failed_live`, so it survives a restart of `rotate watch` and counts across
+separate runs of the one-shot `rotate`:
+
+```json
+"failed_live": { "profile": "work", "count": 2 }
+```
+
+The field holds a profile name and a whole number, and nothing else: no
+account, e-mail address, token or probe output. It is written in the
+[record step](#rotate-cycle), under the ledger lock and with the same atomic,
+private (mode `0600`) write as the rest of the ledger, and only when its
+value changes. A cycle that ends in `skip:` writes nothing.
+
+| Cycle | Effect on `failed_live` |
+|-------|-------------------------|
+| Unknown live probe, `failed_live` names the live profile | `count` plus one |
+| Unknown live probe, `failed_live` absent or naming another profile | `{ live, 1 }` |
+| Fresh `ok` live reading | Removed |
+| Exhausted, or spend limit on a plan login | Removed; the swap follows |
+| Carried `ok` live reading | Unchanged |
+| Spend limit on a live overflow profile | Unchanged |
+| The login in `~/.claude` is not the one the ledger names ([hand change](#rotate-hand-change-recovery) or adoption) | Unchanged; `k` is `1`, so no failed-probe swap |
+| A completed swap | Removed |
+
+The count is keyed by profile name only, matched exactly and with case
+significant. A count stored for any other profile is read as `0`.
+
+A `failed_live` value that is not an object with a valid
+profile name (see [Name rules](#name-rules)) and a whole-number `count` is ignored: it
+reads as absent, the rest of the ledger loads as usual, and nothing about
+the value is logged. A `count` of `0` reads as absent, and a count above
+1000 reads as 1000. Raising the count by hand can only bring a failed-probe
+swap forward, and only onto one of your own plan logins: the target still
+passes the margin, the freshness gate and the
+[home-key check](#api-key-login-check), and never an overflow or API-key
+profile.
+
+While a rotator from an older amplihack binary runs, `failed_live` is left
+out of the ledger so that rotator can read the file. An older binary that
+rewrites the ledger drops the count, which delays a failed-probe swap by at
+most two cycles.
+
+`--dry-run` reads the stored count and reports what the next real cycle
+would do with it, but writes nothing: the ledger is not changed and no lock
+file is created. With `failed_live` at `{ "work", 1 }` and the live probe
+still failing:
+
+```
+$ amplihack profile rotate --dry-run
+cycle live=work work:failed personal:s=20%,w=35% spare:s=0%,w=12%
+would stay (live probe failed (2/3))
+```
+
+With the count at `2`, every dry run prints the swap the next cycle would
+make:
+
+```
+would swap work->spare live failed target s=0% w=12% reason=failed-probe
+```
+
+##### Spend limit on a plan login
+
+A `spend_limit` probe of a live plan profile means the account has reached a
+spend limit set at <https://claude.ai/settings/usage>. It is read as
+exhausted, so:
+
+- the rotator swaps on the first cycle that reads it, by the
+  [decision rule](#rotate-decision-rule) or, when no candidate meets the margin, the
+  [plan-room swap](#rotate-plan-room-swap), and logs `reason=spend-limit`
+  instead of `threshold` or `plan-room`;
+- it is not a failed probe and does not count towards `k`;
+- `--hold` does not delay it;
+- the [home-key check](#api-key-login-check) does not stop it, because the
+  limit belongs to the account and not to the key;
+- the target passes the
+  [freshness gate](#rotate-reading-freshness-and-swap-back-damping) as any
+  other swap does;
+- the login swapped away from is recorded in
+  [`swapped_away`](#swap-back-damping) as an exhausted login, so the rotator
+  does not swap straight back to it.
+
+The cycle and swap lines show such a login as `spend limit`. In this
+example the last swap was 586 seconds ago with `--hold 3600`, and the only
+other plan login, `ffarmer`, is above `--session-at` but below 100%. No
+candidate meets the margin, so the plan-room swap chooses `ffarmer`:
+
+```
+2026-11-03T10:00:05Z cycle live=oole oole:spend limit ffarmer:s=90%,w=26%
+2026-11-03T10:00:06Z swap oole->ffarmer live spend limit target s=90% w=26% reason=spend-limit
+```
+
+When no plan login has room, the cycle continues with the
+[overflow decision](#overflow-decision) as for any exhausted plan login.
 
 #### Rotate reading freshness and swap-back damping
 
@@ -5081,7 +5210,7 @@ target's reading is fresh, and reads the target again when it is not, the
 way [`AMPLIHACK_PROFILE_USAGE_PROBE`](#probe-method) says.
 
 The gate applies to swaps with `reason=threshold`, `upgrade`,
-`failed-probe`, `plan-room` and `overflow-out`, in the one-shot `rotate`,
+`failed-probe`, `spend-limit`, `plan-room` and `overflow-out`, in the one-shot `rotate`,
 in `rotate watch` and in `--dry-run`. It does not apply to `overflow-in`,
 whose target is chosen by [tier](#overflow-tiers), not by a reading, or to
 a stay or an ALERT. It checks only the target the decision chose, after
@@ -5298,8 +5427,10 @@ While the live login is a plan profile, the rotator considers a plan-room
 swap only when both hold:
 
 - the live login has reached `--session-at` or `--week-at` on a measured
-  reading (a failed live probe is left to the
-  [failed-probe rules](#rotate-failed-live-probes));
+  reading, is exhausted, is at its
+  [spend limit](#spend-limit-on-a-plan-login), or has failed its probe on
+  three consecutive cycles (below three, a failed live probe is left to the
+  [failed-probe rules](#rotate-failed-live-probes), which stay);
 - the table above gives `ALERT no-capacity`.
 
 It never fires while the live login is below both thresholds, so it adds no
@@ -5548,13 +5679,15 @@ While the live login is a plan profile, the rotator first applies the
 [decision rule](#rotate-decision-rule) and the
 [failed-probe rules](#rotate-failed-live-probes) to the plan pool alone.
 A threshold or upgrade swap onto a plan login with room always stands. Only
-when that gives `ALERT no-capacity` on a measured live reading does the
+when that gives `ALERT no-capacity` on a measured live reading (an
+exhausted or [spend-limited](#spend-limit-on-a-plan-login) one included), or
+on the third consecutive failed live probe, does the
 [plan-room swap](#rotate-plan-room-swap) run, and only when no measured plan
 login, the live one included, has room does it consider overflow:
 
 | Condition | Outcome |
 |-----------|---------|
-| Live probe failed | As without overflow. A failed live probe never moves work onto credits. |
+| Live probe failed | As without overflow. A failed live probe never moves work onto credits, however many cycles in a row it fails. |
 | A plan login, the live one included, has room below 100% on both windows | No overflow. The [plan-room swap](#rotate-plan-room-swap) moves to the best-ranked plan login, or the cycle stays with `ALERT no-capacity` when the live login ranks first. Neither credits nor the API key are used while a plan login has room. |
 | A plan candidate's probe in this cycle ended in `timeout` or `error` (`claude` could not be started, written to, read or waited for, or the profile directory was refused just before the spawn) | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity. That login might have capacity, so such a probe never moves work onto credits or the API key. It is probed again on the next cycle. The [plan-room swap](#rotate-plan-room-swap) is not held: it costs nothing. |
 | A plan profile is skipped as [`directory refused`](#rotate-candidates) | As without overflow. Its login cannot be checked and might have capacity. The skip, and so the hold, comes back on every cycle until the directory is fixed. |
@@ -5563,6 +5696,9 @@ login, the live one included, has room does it consider overflow:
 | `earliest plan reset - now <= overflow-wait` | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity, which costs nothing. |
 | Earliest plan reset unknown | As without overflow. With `--overflow-unknown-reset 1`, as for a reset beyond the wait. |
 | No overflow candidate is eligible | As without overflow: `ALERT no-capacity`. |
+| The live plan login is at its [spend limit](#spend-limit-on-a-plan-login) | A plan login at its spend limit counts as having no room. When no other plan login has room and every plan reset is beyond the overflow wait, the rotator moves to an overflow profile with `reason=overflow-in`. A reset inside the wait keeps it where it is, even though a reset does not lift a spend limit. |
+
+The spend-limit relabel applies to any live login, including one changed by hand or adopted; only the failed-probe count is limited to a known profile.
 
 For example, with the live login at `s=95%,w=60%` and a plan candidate at
 `s=87%,w=50%`, both have room, so the rotator makes the free swap onto the
@@ -5710,9 +5846,12 @@ removed from the ledger the next time the rotator records a cycle. The reset
 time Claude prints in the spend-limit message is not read; a spend limit
 raised or credits added before the 1st need `overflow clear`.
 
-A `spend_limit` reading on a plan profile is a failed probe, as it always
-was. A `spend_limit` reading on a live overflow profile does not count
-towards the three failed live probes.
+A `spend_limit` reading on a live plan profile is read as exhausted, and
+the first cycle that reads it swaps away with `reason=spend-limit`; see
+[Spend limit on a plan login](#spend-limit-on-a-plan-login). A `spend_limit`
+reading on a live overflow profile does not count towards the three failed
+live probes and leaves the [stored count](#stored-failed-probe-count) as it
+is.
 
 The block depends on the spend-limit text appearing in the output of
 `claude -p /usage` for that login. The [usage request](#probe-method) has no
@@ -5724,10 +5863,10 @@ like a plan login. If the text does not appear, the rotator cannot see that cred
 that login keep failing. The two ways out behave differently:
 
 - `profile overflow remove <name>` makes the login a plan profile. A
-  `spend_limit` reading on it is then a failed live probe, so the
-  [failed-probe rules](#rotate-failed-live-probes) swap it out only after
-  three consecutive failed cycles, and only to a plan candidate. Any other
-  reading is judged by the ordinary decision rule, as described above.
+  `spend_limit` reading on it is then a
+  [spend limit on a plan login](#spend-limit-on-a-plan-login), so the first
+  cycle that reads it swaps it out with `reason=spend-limit`. Any other reading is judged
+  by the ordinary decision rule, as described above.
 - `profile rotate stop` stops all swapping and leaves the login in
   `~/.claude`. Nothing moves it until you start the rotator again.
 
@@ -6486,7 +6625,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 
 | Path | Contents |
 |------|----------|
-| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when it started measuring usage, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally `home_unreadable_since`, the epoch seconds when a [stuck `~/.claude.json`](#stuck-claudejson) spell started. Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since` and `swapped_away` are left out so that rotator can read the file. |
+| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when it started measuring usage, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally `home_unreadable_since`, the epoch seconds when a [stuck `~/.claude.json`](#stuck-claudejson) spell started. Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). Optionally `failed_live`, the live profile and its count of consecutive failed live probes; see [Stored failed-probe count](#stored-failed-probe-count). An invalid `failed_live` is ignored and never makes the ledger fail to load. While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `swapped_away` and `failed_live` are left out so that rotator can read the file. |
 | `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at` and `pid`. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `gate.json` | Written by `rotate watch` when it starts: `version`, `pid`, and the [overflow](#rotate-overflow) gate it resolved from its flags (`overflow_wait`, `overflow_unknown_reset`, `session_at`, `week_at`). [Auto-switch](#auto-switch-and-overflow-profiles) uses it only while the rotator with that pid runs. If it cannot be written, the log says `overflow: gate not recorded, auto-switch will not use overflow (<error>)` and auto-switch uses no overflow profile. |
@@ -6583,8 +6722,8 @@ run and prints their `reread:` lines; see
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
-| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, and one still running shows `live unknown, still running`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down and come from the windows read. An exhausted profile (`session_exhausted` or `weekly_exhausted`) shows the figures read, with the window that ran out never below `100%`, for example `team:s=100%,w=55%` or `team:s=30%,w=100%`; see [Exhausted figures](#rotate-exhausted-figures). `w=?` means no weekly window was read. A profile whose probe timed out or could not run shows `<name>:failed`, never a percentage: its usage is unknown, and it is probed again on the next cycle. A profile whose read had not finished when the cycle stopped waiting shows `<name>:unknown, still running`; its result is used by the next cycle. `spend_limit`, `not_logged_in` and `unparsed` also show `<name>:failed`, except that a live plan profile at its [spend limit](#spend-limit-on-a-plan-login) shows `<name>:spend limit`. A profile with [no session limit](#no-session-limit) shows `s=0%`. A skipped profile is not listed. A login no profile owns is shown as `-`. An API-key profile is never probed. A marked one shows as `<name>:per-token`, live or not. An unmarked one is listed, as `<name>:per-token`, only while it is live; otherwise it is not listed. |
+| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|spend-limit\|plan-room\|overflow-in\|overflow-out` | A completed swap. The readings are formatted as in the `cycle` line, with a space in place of the comma, so an exhausted target can show `target s=100% w=55%`. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`, and one still running shows `live unknown, still running`. A live plan login at its spend limit shows `live spend limit`. `reason=failed-probe` is a swap made after three consecutive failed live probes, whatever `--hold` says; see [Failed live probes](#rotate-failed-live-probes). `reason=spend-limit` is a swap away from a live plan login at its [spend limit](#spend-limit-on-a-plan-login), made on the first cycle that reads the spend limit. `reason=plan-room` is a [plan-room swap](#rotate-plan-room-swap). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `per-token <name>: no measured plan login below 100%, 0 not measured; <gate>; marked overflow tier <N>; <check>` | Written before the `swap` line of every move onto a per-token profile, credit or API key, by the rotator or by auto-switch. Auto-switch writes it before it swaps a session's login or starts a launch or a rerun on the profile, also prints it on stderr, and ends the line with `; auto-switch from <profile>`; the rotate log is created if no rotator has run. `<gate>` is `earliest reset <time> beyond overflow_wait`, with `--overflow-unknown-reset 1` `reset unknown`, or `leaving the API key, credits cost less` for a move off the API key, which passes no gate. `<N>` is the profile's [tier](#overflow-tiers), `10` for an API-key profile. `<check>` is `login check passed (<detail>)` for an API-key profile, with `<detail>` from [API-key login check](#api-key-login-check), or `probe ok, no spend limit` for a credit profile the rotator probed. Auto-switch runs no probe, so for a credit profile `<check>` is `no spend block`. The line never holds a key value. |
 | `key_check_refused <name>: <reason>` | The [API-key login check](#api-key-login-check) failed for the target `<name>`; no swap was made. |
 | `ALERT: home_key (<detail>): <effect>` | A key is in `~/.claude.json` or `~/.claude/settings.json` while a plan login is live, so sessions bill per token. Written once, and again if the setting changes; see [API-key login check](#api-key-login-check). The cycle carries on. |
@@ -6593,8 +6732,7 @@ run and prints their `reread:` lines; see
 | `overflow: off <name>; back on plan profile <name>` | Written after an `overflow-out` swap. |
 | `ALERT: overflow profile <name> hit its spend limit; blocked until <time>` | A [spend block](#overflow-spend-limit-block) was recorded. Written once per block. |
 | `ALERT: overflow profile <name> hit its spend limit; not blocked (too many blocks\|no end time)` | A spend-limit reading that could not be stored as a block: the ledger already holds 256 active blocks, or the cycle's time is outside the range for which the next month can be computed. The profile is still not used in that cycle; the ledger is left as it was, so it still loads. |
-| `stay: live probe failed (<k>/3)` | The live probe failed for the `k`th cycle in a row; no swap yet. |
-| `stay: live probe failed; held after last swap (<N>s left)` | The live probe has failed three or more times in a row, but the last swap was less than `--hold` seconds ago. |
+| `stay: live probe failed (<k>/3)` | The live probe failed for the `k`th cycle in a row, counted across restarts and one-shot runs by the [stored count](#stored-failed-probe-count); no swap yet. |
 | `reread: <name> reading stale s=<n>% w=<n>%; fresh s=<n>% w=<n>%` | The chosen swap target's reading failed the [freshness gate](#rotate-reading-freshness-and-swap-back-damping) and was read again by the [probe method](#probe-method), with passive readings off. The first figures are those the decision used, the second those of the new read, formatted as in the `swap` line (`w=?` when no weekly window was read). The decision was then made again on the new figures. |
 | `reread: <name> failed; treated as unknown` | The re-read timed out or failed. `<name>` is unknown for this cycle: not chosen, not recorded as exhausted, and counted in `F` of the no-capacity ALERT's suffix. |
 | `reread: <name> limit reached; treated as unknown` | The chosen target was stale, but this cycle had already made 3 re-reads. `<name>` is unknown for this cycle. |
@@ -9377,7 +9515,8 @@ On a cycle with a failed live reading:
 - The rotator does not try the per-token tier
   ([decision order](#rotate-decision-order)). That loses nothing: Claude is
   already using the key, and the move would not change what is billed.
-- The rotator makes no [failed-probe swap](#rotate-failed-live-probes). The
+- The rotator makes no [failed-probe swap](#rotate-failed-live-probes),
+  however many cycles in a row the live probe fails. The
   other logins still read normally, because each is probed through its own
   directory and not these files. But the key applies to whichever
   login is live, so the login swapped in would fail its live probe the same
@@ -9397,6 +9536,10 @@ The failed-probe stay uses the check above: it needs a key in a file that
 check accepts. With a key only in a file the check rejects, the swap goes
 ahead. It may be useless, but a stay on a login that is really dead would be
 worse.
+
+A live plan login at its [spend limit](#spend-limit-on-a-plan-login) is
+swapped out whatever the key: the probe read the account's own limit, so
+another login does change what happens.
 
 The ALERT and the warning do not use the check above. That check decides
 whether a move is allowed, so it refuses a symlink, a file others can write

@@ -5,8 +5,8 @@
 
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    check_root_private, ensure_private_dir, euid, fsync_dir, now, read_bounded_nofollow,
-    writable_by_others, write_private_atomic,
+    check_root_private, ensure_private_dir, euid, fsync_dir, now, parse_position as position,
+    read_bounded_nofollow, writable_by_others, write_private_atomic,
 };
 use crate::commands::profile::name::ProfileName;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+use super::failed_store::{self as stored, FailedLive};
 pub use super::hand_fields::{
     HOME_UNREADABLE_GRACE, MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES, MAX_LOST_LOGIN, unprintable,
 };
@@ -156,6 +157,9 @@ pub struct RotateLedger {
     /// Logins left while full, by name, at the swap's epoch seconds (#1870).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub swapped_away: BTreeMap<String, i64>,
+    /// Consecutive failed live probes, by live profile (#1880); `failed_store`.
+    #[serde(default, skip_serializing_if = "Option::is_none", with = "stored")]
+    pub failed_live: Option<FailedLive>,
 }
 
 impl Default for RotateLedger {
@@ -177,6 +181,7 @@ impl Default for RotateLedger {
             platform_block: None,
             no_room: None,
             swapped_away: BTreeMap::new(),
+            failed_live: None,
         }
     }
 }
@@ -391,9 +396,4 @@ impl RotateState {
             Err(e) => Err(e.into()),
         }
     }
-}
-
-/// Line and column only: a serde message can quote input.
-fn position(e: &serde_json::Error) -> String {
-    format!("invalid JSON at line {} column {}", e.line(), e.column())
 }

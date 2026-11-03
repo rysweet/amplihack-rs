@@ -78,6 +78,8 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             return Ok(CycleOutcome::Held);
         }
     }
+    // Issue #1880: the stored count, read only; the preview writes nothing.
+    ctx.failed_live = super::failed_store::load(ctx, &snap.live);
     // Tests stub the measurement as for a real cycle.
     let m = match ctx.measure {
         Some(stub) => stub(ctx, &snap)?,

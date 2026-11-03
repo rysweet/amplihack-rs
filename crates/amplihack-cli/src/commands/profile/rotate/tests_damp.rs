@@ -10,10 +10,8 @@
 //!   Option<String>)`. Acts only on `(Reading::Failed, Swap { reason:
 //!   Threshold, .. })`:
 //!   1. `k < 3`: `Stay`, note `stay: live probe failed (k/3)`;
-//!   2. `decide::held(s.hold, swapped_at, now)`: `Stay`, note
-//!      `stay: live probe failed; held after last swap (Ns left)`, with
-//!      `N = hold - (now - swapped_at)`, or `hold` for a future `swapped_at`;
-//!   3. otherwise `Swap { to, reason: Reason::FailedProbe }`, no note.
+//!   2. otherwise `Swap { to, reason: Reason::FailedProbe }`, no note.
+//!      Issue #1880: the hold no longer applies; `swapped_at` is ignored.
 //!
 //!   Every other input comes back unchanged with no note.
 //! - `decide::held(hold: u64, swapped_at: Option<i64>, now: i64) -> bool` is
@@ -170,6 +168,7 @@ fn the_third_failure_swaps_with_the_failed_probe_reason() {
 
 #[test]
 fn a_recent_swap_holds_a_failed_probe_swap() {
+    // #1880: the hold no longer applies to a failed live login at the limit.
     let (d, note) = damp(
         threshold_swap(),
         &Reading::Failed,
@@ -178,15 +177,13 @@ fn a_recent_swap_holds_a_failed_probe_swap() {
         NOW,
         &settings(),
     );
-    assert_eq!(d, Decision::Stay);
-    assert_eq!(
-        note.as_deref(),
-        Some("stay: live probe failed; held after last swap (1800s left)")
-    );
+    assert_eq!(d, swap("spare", Reason::FailedProbe));
+    assert_eq!(note, None);
 }
 
 #[test]
 fn one_second_left_still_holds() {
+    // #1880: one second of hold left no longer stops the swap.
     let (d, note) = damp(
         threshold_swap(),
         &Reading::Failed,
@@ -195,11 +192,8 @@ fn one_second_left_still_holds() {
         NOW,
         &settings(),
     );
-    assert_eq!(d, Decision::Stay);
-    assert_eq!(
-        note.as_deref(),
-        Some("stay: live probe failed; held after last swap (1s left)")
-    );
+    assert_eq!(d, swap("spare", Reason::FailedProbe));
+    assert_eq!(note, None);
 }
 
 #[test]
@@ -218,6 +212,7 @@ fn no_time_left_swaps() {
 
 #[test]
 fn a_future_swap_time_holds_for_the_whole_hold() {
+    // #1880: a future swap time no longer holds a failed-probe swap.
     let (d, note) = damp(
         threshold_swap(),
         &Reading::Failed,
@@ -226,11 +221,8 @@ fn a_future_swap_time_holds_for_the_whole_hold() {
         NOW,
         &settings(),
     );
-    assert_eq!(d, Decision::Stay);
-    assert_eq!(
-        note.as_deref(),
-        Some("stay: live probe failed; held after last swap (3600s left)")
-    );
+    assert_eq!(d, swap("spare", Reason::FailedProbe));
+    assert_eq!(note, None);
 }
 
 #[test]
@@ -296,10 +288,7 @@ fn failed_probe_log_lines() {
         msg::stay_failed_probe(2, 3),
         "stay: live probe failed (2/3)"
     );
-    assert_eq!(
-        msg::stay_held_failed(1800),
-        "stay: live probe failed; held after last swap (1800s left)"
-    );
+    // #1880: `msg::stay_held_failed` is removed with the hold.
     assert_eq!(
         msg::swap(
             &name("work"),
@@ -375,6 +364,9 @@ fn without_damping_a_persistently_failed_live_probe_swaps_every_cycle() {
 
 #[test]
 fn damping_breaks_the_swap_loop() {
+    // #1880: the hold no longer spaces failed-probe swaps; the count does.
+    // Each swap clears it, so the login swapped in needs three failures of
+    // its own: at most one swap every three cycles, as with `--hold 0`.
     let s = settings();
     let cands = [c("spare", r(0.0, 12.0))];
     let mut sim = Sim::new();
@@ -385,25 +377,21 @@ fn damping_breaks_the_swap_loop() {
     assert_eq!(decisions[0], Decision::Stay, "cycle 1");
     assert_eq!(decisions[1], Decision::Stay, "cycle 2");
     assert_eq!(decisions[2], swap("spare", Reason::FailedProbe), "cycle 3");
-    assert!(sim.swaps.len() <= 2, "swaps at {:?}", sim.swaps);
+    assert_eq!(sim.swaps.len(), 3, "cycles 3, 6 and 9: {:?}", sim.swaps);
     for pair in sim.swaps.windows(2) {
-        assert!(
-            pair[1] - pair[0] >= i64::try_from(s.hold).unwrap(),
-            "two swaps inside one hold window: {:?}",
-            sim.swaps
-        );
+        assert!(pair[1] - pair[0] >= 3 * INTERVAL, "{:?}", sim.swaps);
     }
     assert_eq!(
-        &sim.notes[..5],
+        &sim.notes[..4],
         [
             "stay: live probe failed (1/3)",
             "stay: live probe failed (2/3)",
             "stay: live probe failed (1/3)",
             "stay: live probe failed (2/3)",
-            "stay: live probe failed; held after last swap (1800s left)",
         ],
         "matches the example in docs/howto/claude-profile-rotation.md"
     );
+    assert_eq!(decisions[5], swap("spare", Reason::FailedProbe), "cycle 6");
 }
 
 #[test]

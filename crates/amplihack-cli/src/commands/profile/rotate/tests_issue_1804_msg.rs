@@ -323,6 +323,7 @@ fn decide_on_unmarked(
         refused: &[],
         swapped_at: Some(NOW - 60),
         now: NOW,
+        failed: 0,
     })
 }
 

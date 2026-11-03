@@ -2,10 +2,11 @@
 //! measurements and the decision.
 
 use super::cycle::Ctx;
-use super::damp::{damp, is_failed_probe_swap, keep_for_home_key, next_failed};
+use super::damp::{damp, is_failed_probe_swap, keep_for_home_key};
 use super::decide::{Decision, Measured, Probed, Reading};
 use super::identify::{self, Account, CandidateInput, LiveId, LoginKind, Skip};
 use super::key_check;
+use super::live_limit;
 use super::log::msg;
 use super::measure::{self, Live};
 use super::overflow::{OverflowInput, Tag, decide_overflow};
@@ -309,6 +310,13 @@ pub(super) fn decide_measured(
     let t = now();
     let overflow = snap.decision_overflow();
     let unmeasured_plan = snap.unmeasured_plan();
+    // Issue #1880: classify the live probe first. A spend limit on a plan
+    // login reads as exhausted from here on, the decision and the log
+    // included; one on a live overflow profile is left to its block.
+    let live_over = live_name.is_some_and(|n| overflow.iter().any(|e| &e.name == n));
+    let outcome = live_limit::classify(&probe, live_over);
+    let failed = live_limit::next_count(ctx.failed_live, outcome);
+    let probe = live_limit::for_decision(&probe, outcome);
     let verdict = decide_overflow(&OverflowInput {
         settings: &ctx.settings,
         live_name,
@@ -321,15 +329,8 @@ pub(super) fn decide_measured(
         platform_block: platform_block.as_ref(),
         swapped_at,
         now: t,
+        failed,
     });
-    // A spend limit on a live overflow profile is handled by its block, so
-    // it does not count towards the failed live probes.
-    let live_over = live_name.is_some_and(|n| overflow.iter().any(|e| &e.name == n));
-    let failed = if live_over && probe.spend_limit {
-        ctx.failed_live
-    } else {
-        next_failed(ctx.failed_live, &probe.reading)
-    };
     let (decision, note) = damp(
         verdict.decision,
         &probe.reading,
@@ -338,6 +339,7 @@ pub(super) fn decide_measured(
         t,
         &ctx.settings,
     );
+    let decision = live_limit::relabel(decision, outcome);
     // Only here is the file read: a swap on this ground is rare. The strict
     // reader, not `key_check::home_key`: a key Claude may not read must not
     // keep a dead login live, and the swap it would have stopped is harmless.

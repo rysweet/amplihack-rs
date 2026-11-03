@@ -16,6 +16,9 @@ pub struct Shown {
     pub week: Option<f64>,
     /// The read had not finished when the cycle stopped waiting for it.
     pub still_running: bool,
+    /// Issue #1880: a plan login at its spend limit, which the decision
+    /// reads as exhausted (`live_limit::for_decision`); shown `spend limit`.
+    pub spend_limit: bool,
 }
 
 impl Shown {
@@ -26,6 +29,7 @@ impl Shown {
             session: p.windows.session.map(|w| w.used),
             week: p.windows.week.map(|w| w.used),
             still_running: p.still_running,
+            spend_limit: p.spend_limit && matches!(p.reading, Reading::Exhausted { .. }),
         }
     }
 
@@ -41,6 +45,7 @@ impl Shown {
             session,
             week,
             still_running: false,
+            spend_limit: false,
         }
     }
 }

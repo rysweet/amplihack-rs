@@ -91,6 +91,7 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
             | Reason::Upgrade
             | Reason::PlanRoom
             | Reason::FailedProbe
+            | Reason::SpendLimit
             | Reason::OverflowOut => Some(to),
             Reason::OverflowIn => None,
         },

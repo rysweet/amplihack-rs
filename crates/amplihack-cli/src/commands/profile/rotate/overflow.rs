@@ -63,13 +63,18 @@
 //!   `Failed` is also dropped, after this function, by
 //!   `damp::keep_for_home_key`. A normal live reading follows every rule.
 
-use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};
+use super::decide::{Decision, Measured, Reading, Reason, Windows, best, decide};
 use super::ledger::OverflowBlock;
+use super::live_limit::blocks_room;
 use super::plan_room;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::{Gate, OverflowEntry, PLATFORM_TIER};
 use std::collections::BTreeMap;
+
+#[path = "overflow_input.rs"]
+mod input;
+pub use input::OverflowInput;
 
 /// What a cycle records about overflow in `last_cycle.overflow`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,32 +100,6 @@ impl Tag {
     pub fn on_overflow(tag: Option<Self>) -> bool {
         matches!(tag, Some(Self::In | Self::On))
     }
-}
-
-pub struct OverflowInput<'a> {
-    pub settings: &'a Settings,
-    /// The profile live in `~/.claude`; `None` when no profile owns it.
-    pub live_name: Option<&'a ProfileName>,
-    pub live: &'a Probed,
-    pub candidates: &'a [Measured],
-    /// Plan logins left unmeasured this cycle because they are busy: they
-    /// may have room, so they hold back the API key.
-    pub unmeasured_plan: &'a [ProfileName],
-    /// Profiles skipped as `directory refused` (issue #1698). Their logins
-    /// cannot be checked, so a plan profile among them holds a move onto
-    /// overflow, as an unknown probe does, until its directory is fixed.
-    /// Overflow profiles among them are ignored.
-    pub refused: &'a [ProfileName],
-    /// The overflow entries, in any order: they are tried by tier, then in
-    /// the order given within a tier.
-    pub overflow: &'a [OverflowEntry],
-    /// The ledger's spend blocks, by profile name; expired ones are ignored.
-    pub blocks: &'a BTreeMap<String, OverflowBlock>,
-    /// The API-key block (issue #1700); it covers the entry at
-    /// [`PLATFORM_TIER`] while `now < until`.
-    pub platform_block: Option<&'a OverflowBlock>,
-    pub swapped_at: Option<i64>,
-    pub now: i64,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -309,7 +288,9 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
                 .any(|c| &c.name == to && plan_usable(s, &c.reading)),
             _ => false,
         };
-        if !moving_without_capacity || i.live.reading == Reading::Failed {
+        // A failed live login reaches plan room only at the failed-probe
+        // limit (#1880), and never moves onto credits.
+        if !moving_without_capacity || blocks_room(&i.live.reading, i.failed) {
             return verdict(d, None, None);
         }
         // The plan login with the most room costs nothing.
@@ -318,6 +299,9 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         if let Some(to) = choice {
             let same = matches!(&d, Decision::Swap { to: t, .. } if *t == to);
             let d = if same { d } else { swap(to, Reason::PlanRoom) };
+            return verdict(d, None, None);
+        }
+        if i.live.reading == Reading::Failed {
             return verdict(d, None, None);
         }
         // Per-token profiles only when no measured plan login, live

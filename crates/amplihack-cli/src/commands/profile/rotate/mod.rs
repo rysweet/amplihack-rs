@@ -23,6 +23,8 @@ mod control;
 #[cfg(unix)]
 mod cycle;
 #[cfg(unix)]
+mod cycle_record;
+#[cfg(unix)]
 pub(super) mod daemon;
 #[cfg(unix)]
 mod damp;
@@ -32,6 +34,8 @@ pub(super) mod decide;
 mod dry_run;
 #[cfg(unix)]
 mod exhausted;
+#[cfg(unix)]
+mod failed_store;
 #[cfg(unix)]
 mod fresh;
 #[cfg(unix)]
@@ -60,6 +64,8 @@ mod inflight;
 pub(super) mod key_check;
 #[cfg(unix)]
 pub(super) mod ledger;
+#[cfg(unix)]
+mod live_limit;
 #[cfg(unix)]
 mod log;
 #[cfg(unix)]
@@ -146,6 +152,10 @@ mod tests_issue_1870;
 mod tests_issue_1870_cycle;
 #[cfg(all(test, unix))]
 mod tests_issue_1870_probe;
+#[cfg(all(test, unix))]
+mod tests_issue_1880;
+#[cfg(all(test, unix))]
+mod tests_issue_1880_cycle;
 #[cfg(all(test, unix))]
 mod tests_key_check;
 #[cfg(all(test, unix))]
