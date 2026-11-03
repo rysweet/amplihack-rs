@@ -402,6 +402,12 @@ fn log_cycle_repeats_every_cycle_and_never_swaps() {
         2,
         "{log:?}"
     );
+    // The ALERT goes through `alert_once`: logged once per key, not per cycle.
+    assert_eq!(
+        log.iter().filter(|l| **l == hand_change()).count(),
+        1,
+        "{log:?}"
+    );
     no_action(&log);
 }
 
@@ -415,10 +421,12 @@ fn off_cycle_logs_nothing_from_the_step_and_alerts() {
     f.rs.save_ledger(&l).unwrap();
     let mut c = ctx(&f, never);
     c.settings.recovery = Recovery::Off;
-    assert_eq!(
-        run_cycle(&mut c, Mode::Watch).unwrap(),
-        CycleOutcome::Alerted
-    );
+    for _ in 0..2 {
+        assert_eq!(
+            run_cycle(&mut c, Mode::Watch).unwrap(),
+            CycleOutcome::Alerted
+        );
+    }
     f.assert_nothing_moved();
     assert!(!f.rejected().exists());
     let log = f.logged();
@@ -431,7 +439,12 @@ fn off_cycle_logs_nothing_from_the_step_and_alerts() {
             "a line from the skipped step: {line}\n{log:?}"
         );
     }
-    assert!(log.contains(&hand_change()), "{log:?}");
+    // Two cycles, one logged ALERT: `alert_once` writes it once per key.
+    assert_eq!(
+        log.iter().filter(|l| **l == hand_change()).count(),
+        1,
+        "{log:?}"
+    );
     no_action(&log);
     let l = f.ledger();
     assert_eq!(l.lost_login, vec![L.to_string()], "lost_login untouched");
@@ -449,11 +462,14 @@ fn off_with_a_stuck_home_json_writes_only_the_unreadable_alert() {
     f.rs.save_ledger(&l).unwrap();
     let mut c = ctx(&f, never);
     c.settings.recovery = Recovery::Off;
-    assert_eq!(
-        run_cycle(&mut c, Mode::Watch).unwrap(),
-        CycleOutcome::Alerted
-    );
+    for _ in 0..2 {
+        assert_eq!(
+            run_cycle(&mut c, Mode::Watch).unwrap(),
+            CycleOutcome::Alerted
+        );
+    }
     f.assert_nothing_moved();
+    // Two cycles, one line: the ALERT is logged once per key.
     let log: Vec<String> = f
         .logged()
         .into_iter()

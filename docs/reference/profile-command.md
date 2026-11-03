@@ -5969,6 +5969,10 @@ is never added to `lost_login`.
 `--recovery` (or `AMPLIHACK_ROTATE_RECOVERY`) sets what hand-change recovery
 does. It applies to the one-shot command, `start`, `watch` and `--dry-run`.
 `profile switch` has no such setting, because it never runs this recovery.
+There is no `rotate.recovery` config key, although issue #1890 asked for
+one: no rotate setting is read from a config file, and each is resolved
+from its flag, then its environment variable, then its default. The flag
+and `AMPLIHACK_ROTATE_RECOVERY` together are that setting.
 
 | Value | Effect |
 |-------|--------|
@@ -5977,8 +5981,14 @@ does. It applies to the one-shot command, `start`, `watch` and `--dry-run`.
 | `off` | The recovery step is skipped. The cycle goes on to the [live profile](#rotate-live-profile) table, which raises its ALERT, and ends `alerted`. |
 
 Under `log` and `off` the ledger keeps naming `L`, so the cycle never swaps
-while the account in `~/.claude.json` does not match. Each cycle repeats the
-same lines until the ledger matches again or the setting goes back to `act`.
+while the account in `~/.claude.json` does not match. Until the ledger
+matches again or the setting goes back to `act`, every cycle writes the
+`recovery (log only): ` line (under `log`) and ends `alerted`. The
+`hand-change` or `home-unreadable` ALERT goes through the usual ALERT
+de-duplication: it is written to the log on the first cycle and again only
+when its key changes, and on later `watch` cycles it is not written at all.
+The one-shot command prints it on every run, so a repeated run does not
+look like success.
 
 ##### Log only
 
@@ -6029,7 +6039,8 @@ effects:
 
 - The [stuck `~/.claude.json`](#stuck-claudejson) guidance is never written,
   and `home_unreadable_since` is never set or cleared. The `home-unreadable`
-  ALERT is written every cycle and never turns into the 5-minute guidance.
+  ALERT is logged once per key, as above, and never turns into the 5-minute
+  guidance.
 - The lost-login lines (`ALERT: profile <L> has no login anywhere ...`) are
   not written, and `lost_login` is neither added to nor pruned.
 - The ledger's `guidance` is not cleared. `rotate status` therefore goes on

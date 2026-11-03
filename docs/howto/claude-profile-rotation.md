@@ -2079,8 +2079,11 @@ In the duplicate-login case above, each cycle writes:
 ```
 
 Both logins stay where they are, and the cycle does not swap. Under
-`watch` the two lines repeat on every cycle until the ledger matches again.
-Find every such line with:
+`watch` the `recovery (log only):` line is written on every cycle until the
+ledger matches again. The `hand-change` ALERT is written to the log only on
+the first of those cycles, as any repeated ALERT is; the one-shot
+`amplihack profile rotate` prints it on every run. Find every log-only line
+with:
 
 ```bash
 grep 'recovery (log only): ' /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
@@ -2091,11 +2094,16 @@ once, without changing anything.
 
 `--recovery off` skips the step entirely: no `recovered:` or
 `recovery (log only):` line, no lost-login reminder and no stuck
-`~/.claude.json` guidance. In the duplicate-login case above, each cycle
-writes only the `hand-change` ALERT shown earlier and does not swap. When
-`~/.claude.json` cannot be read, the cycle writes the `home-unreadable`
-ALERT instead, every cycle, and it never turns into the guidance written
-after 5 minutes. Use `off` only when you will fix `~/.claude` by hand. What
+`~/.claude.json` guidance. In the duplicate-login case above, no cycle
+swaps, and the only line is the `hand-change` ALERT shown earlier. It is
+written to the log once, on the first such cycle; later cycles write
+nothing to the log until the ALERT changes, so a quiet log under `off` does
+not mean the rotator has stopped. Check `amplihack profile rotate status`,
+whose `last cycle:` line shows a recent time and `alerted`, or run the one-shot
+`amplihack profile rotate`, which prints the ALERT every time. When
+`~/.claude.json` cannot be read, the `home-unreadable` ALERT takes its
+place, on the same once-per-ALERT rule, and it never turns into the
+guidance written after 5 minutes. Use `off` only when you will fix `~/.claude` by hand. What
 `off` hides is listed in
 [Recovery off](../reference/profile-command.md#recovery-off).
 
