@@ -2903,14 +2903,17 @@ warning ever contains an `env` value.
 - A source `env` that is not an object gives `Skipped` with the reason
   `source env is not an object`.
 - On non-Unix platforms the backfill and the template step of `add` do not
-  run; a debug-level log line records that. Seeding still copies `env`.
+  run; a debug-level log line records that. Seeding does not copy `env`
+  either, so a profile on these platforms has no inherited `env`.
 
 #### Accepted risks
 
-- Every source `env` key, including API keys and switches such as
-  `XPIA_ENABLED=false`, is copied into every profile that lacks it. An
-  `ANTHROPIC_API_KEY` there makes every profile bill per token; use
-  `apiKeyHelper` in a single profile instead.
+- Every usable source `env` key, including switches such as
+  `XPIA_ENABLED=false` and secrets under names other than the three
+  credential variables, is copied into every profile that lacks it.
+  `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN`
+  are dropped with a warning; set them, or `apiKeyHelper`, in the one
+  profile that needs them.
 - A profile's own value always wins, so a profile with an old
   `XPIA_ENABLED` keeps it until you edit that file.
 - Only the last path component of the source is protected against symlinks.
