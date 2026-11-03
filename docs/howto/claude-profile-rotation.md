@@ -464,10 +464,13 @@ start` runs, with the same pid file, log and
 - It does not run [recovery](#recovery) before it starts; its first cycle
   does that under the lock.
 
-If a `AMPLIHACK_ROTATE_*` value in the launch's environment is invalid, the
-rotator is not started. The launch carries on, and the reason is written to
+If a `AMPLIHACK_ROTATE_*` value in the launch's environment is invalid,
+`AMPLIHACK_ROTATE_RECOVERY` included, the rotator is not started. The launch
+carries on, and the reason is written to
 `<root>/.auto-switch.d/rotate/rotate.err`, as is every other failure to
-start. Each start adds a line naming the pid and binary:
+start; see
+[Invalid settings at autostart](../reference/profile-command.md#invalid-settings-at-autostart).
+Each start adds a line naming the pid and binary:
 
 ```
 2026-10-20T08:02:11Z autostart: started pid 48213 exe /home/you/.cargo/bin/amplihack
@@ -755,6 +758,7 @@ the exact rules.
 | `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap for this long after any swap. `0` turns the hold off. |
 | `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | Use an [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted) only when the next plan reset is further away than this. |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Time between cycles, for `start` and `watch` only. |
+| `--recovery act\|log\|off` | `AMPLIHACK_ROTATE_RECOVERY` | `act` | What the rotator does after a manual `/login` in `~/.claude`; see [Watch recovery without letting it act](#watch-recovery-without-letting-it-act). |
 
 A flag beats the variable, and the variable beats the default. For example, to
 rotate earlier and check every five minutes:
@@ -2050,6 +2054,48 @@ amplihack profile login ryan-ryansweet
 If the profile the ledger names is the one that matches (the ledger's
 account was out of date), the same two rules apply and there is no
 `has no login anywhere` line.
+
+#### Watch recovery without letting it act
+
+To see what recovery would do before you trust it to move logins, start the
+rotator with `--recovery log`:
+
+```bash
+amplihack profile rotate stop
+amplihack profile rotate start --recovery log
+```
+
+The rotator then moves nothing and records nothing. In the duplicate-login
+case above, each cycle writes:
+
+```
+2026-10-27T03:17:05Z recovery (log only): would move ryan-mistt-org's login to /home/you/.claude-profiles/.rejected-logins/rotate-ryan-mistt-org-20261027T031705Z/.credentials.json and record ryan-mistt-org as live
+2026-10-27T03:17:05Z ALERT: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); no swap
+```
+
+Both logins stay where they are, and the cycle does not swap. Find every
+such line with:
+
+```bash
+grep 'recovery (log only): ' /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+`amplihack profile rotate --dry-run --recovery log` prints the same line
+once, without changing anything.
+
+`--recovery off` skips the step entirely: no `recovered:` or
+`recovery (log only):` line, no lost-login reminder and no stuck
+`~/.claude.json` guidance. In the duplicate-login case above, each cycle
+writes only the `hand-change` ALERT shown earlier and does not swap. When
+`~/.claude.json` cannot be read, the cycle writes the `home-unreadable`
+ALERT instead, every cycle, and it never turns into the guidance written
+after 5 minutes. Use `off` only when you will fix `~/.claude` by hand.
+
+To let recovery act again, run `stop`, then `start` without the flag, since
+`act` is the default. A rotator started by
+[autostart](#start-the-rotator-automatically) reads `AMPLIHACK_ROTATE_RECOVERY`
+from the launch that starts it. The full rules are in
+[Recovery mode](../reference/profile-command.md#recovery-mode).
 
 #### When the rotator cannot tell
 

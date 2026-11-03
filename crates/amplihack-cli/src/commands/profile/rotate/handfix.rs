@@ -13,10 +13,17 @@
 //! Only `.claude.json` files, `L`'s record and metadata are read; a login
 //! is moved only by `move_login` (rename without replace) and never opened,
 //! copied or deleted.
+//!
+//! `--recovery log` writes what a recovery would do and records nothing;
+//! `--recovery off` skips the step (#1890, `handfix_mode.rs`).
 
-use super::backup::{BackupRefusal, first_free, fresh_backup, rejected_dir, stamp};
+use super::backup::{BackupRefusal, fresh_backup, rejected_dir, stamp};
 use super::cycle::Ctx;
 use super::guide::{self, Fix, Kind, Paths};
+use super::handfix_mode::log_only;
+#[cfg(test)]
+pub use super::handfix_mode::preview;
+pub use super::handfix_mode::preview_mode;
 use super::handfix_msg as msg;
 use super::identify::{self, Holders, LiveId};
 use super::ledger::{HOME_UNREADABLE_GRACE, MAX_GUIDANCE_LINE, RotateLedger, RotateState};
@@ -24,6 +31,7 @@ use super::log::{Sink, cut};
 use super::lost;
 pub use super::precheck::Env;
 use super::precheck::{move_check, record_check};
+use super::settings::Recovery;
 use super::swap::{self, LOGIN_NOT_MOVABLE};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
@@ -50,13 +58,13 @@ pub enum Step {
 
 /// The hand change: the profile the ledger names, whether it has no login
 /// file, and the paths the guidance may name.
-struct Case {
-    l: ProfileName,
+pub(super) struct Case {
+    pub(super) l: ProfileName,
     l_lost: bool,
     paths: Paths,
 }
 
-enum Plan<'a> {
+pub(super) enum Plan<'a> {
     /// Case A: record `m`; nothing moves. `line` is the recovery line.
     Record {
         case: Case,
@@ -83,7 +91,12 @@ impl Case {
 }
 
 /// The guidance for a refused recovery.
-fn refused_lines(case: &Case, m: &ProfileName, own_login: bool, why: (String, Fix)) -> Vec<String> {
+pub(super) fn refused_lines(
+    case: &Case,
+    m: &ProfileName,
+    own_login: bool,
+    why: (String, Fix),
+) -> Vec<String> {
     let kind = Kind::Refused {
         m,
         own_login,
@@ -122,7 +135,7 @@ fn unreadable_since(stored: Option<i64>, t: i64) -> i64 {
 /// readable account under a ledger-named live profile this cycle. `since`
 /// is the ledger's `home_unreadable_since`. Calls `env_for` only after a
 /// hand change.
-fn plan<'a>(
+pub(super) fn plan<'a>(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
@@ -276,7 +289,9 @@ fn record(
 /// One cycle's hand-change step, under the cycle's lock: recovers when it
 /// safely can, else writes guidance; then writes a line for each profile in
 /// `lost_login`. The ledger is written only when it changed, and before any
-/// line is written. `env_for` is called only after a hand change.
+/// line is written. `env_for` is called only after a hand change. The
+/// cycle calls [`step_mode`]; this is the `act` form the tests drive.
+#[cfg(test)]
 pub fn step_with<'a>(
     store: &ProfileStore,
     rs: &RotateState,
@@ -285,17 +300,39 @@ pub fn step_with<'a>(
     env_for: impl FnOnce() -> Env<'a>,
     t: i64,
 ) -> Result<Step, ProfileError> {
+    step_mode(store, rs, home, out, env_for, t, Recovery::Act)
+}
+
+/// The hand-change step under `mode`; `step_with` is this under `act`. Under `log`, a plan that would record or
+/// move is dropped: one `recovery (log only): ` line is written, nothing is
+/// moved or recorded, and the step is `Clear`, so the cycle then alerts.
+pub fn step_mode<'a>(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+    out: &mut Sink,
+    env_for: impl FnOnce() -> Env<'a>,
+    t: i64,
+    mode: Recovery,
+) -> Result<Step, ProfileError> {
     let mut ledger = rs.load_ledger()?.unwrap_or_default();
     let before = ledger.clone();
-    let (plan, unreadable) = plan(store, rs, home, ledger.home_unreadable_since, env_for, t)?;
+    let (mut plan, unreadable) = plan(store, rs, home, ledger.home_unreadable_since, env_for, t)?;
     ledger.home_unreadable_since =
         unreadable.then(|| unreadable_since(ledger.home_unreadable_since, t));
     lost::prune(&mut ledger, store);
+    let mut logged = Vec::new();
+    if mode == Recovery::Log
+        && let Some(line) = plan.as_ref().and_then(|p| log_only(store.root(), p, t))
+    {
+        plan = None;
+        logged.push(line);
+    }
     let mut skip = None;
     let (step, lines) = match plan {
         None => {
             ledger.guidance = None;
-            (Step::Clear, Vec::new())
+            (Step::Clear, logged)
         }
         Some(Plan::Guide(lines, s)) => {
             skip = s;
@@ -330,48 +367,14 @@ pub fn step_with<'a>(
     Ok(step)
 }
 
-/// [`step_with`] on this host: `/proc` and the auto-switch ledger are read
-/// only after a hand change.
+/// [`step_mode`] on this host under the cycle's `--recovery`: `/proc` and
+/// the auto-switch ledger are read only after a hand change. Under `off`
+/// the step is skipped and nothing is read.
 pub fn step(ctx: &Ctx, state: &State, out: &mut Sink, t: i64) -> Result<Step, ProfileError> {
+    let mode = ctx.settings.recovery;
+    if mode == Recovery::Off {
+        return Ok(Step::Clear);
+    }
     let env_for = || Env::system(ctx.store.root(), state, ctx.scan);
-    step_with(&ctx.store, &ctx.rs, &ctx.home, out, env_for, t)
-}
-
-/// The `--dry-run` lines: `would recover: ...`, or `would alert: ...` and
-/// the `fix` lines; empty without a hand change. Takes no lock and writes
-/// nothing. `env_for` is called only after a hand change.
-pub fn preview<'a>(
-    store: &ProfileStore,
-    rs: &RotateState,
-    home: &Path,
-    env_for: impl FnOnce() -> Env<'a>,
-    t: i64,
-) -> Result<Vec<String>, ProfileError> {
-    let would = |line: String| {
-        let text = line.strip_prefix("recovered: ").unwrap_or(&line);
-        vec![format!("would recover: {text}")]
-    };
-    let since = rs.load_ledger()?.and_then(|l| l.home_unreadable_since);
-    let (Some(plan), _) = plan(store, rs, home, since, env_for, t)? else {
-        return Ok(Vec::new());
-    };
-    let lines = match plan {
-        Plan::Guide(lines, _) => lines,
-        Plan::Record { line, .. } => return Ok(would(line)),
-        Plan::Move { case, m, .. } => match first_free(&store.root().join(REJECTED_DIR), &m, t) {
-            Some(dir) => return Ok(would(msg::recovered_moved(&m, &dir.join(CREDS)))),
-            None => {
-                let why = (BackupRefusal::NoFreeName.reason(), Fix::ByHand);
-                refused_lines(&case, &m, true, why)
-            }
-        },
-    };
-    Ok(lines
-        .into_iter()
-        .enumerate()
-        .map(|(i, l)| match (i, l.strip_prefix("ALERT: ")) {
-            (0, Some(text)) => format!("would alert: {text}"),
-            _ => l,
-        })
-        .collect())
+    step_mode(&ctx.store, &ctx.rs, &ctx.home, out, env_for, t, mode)
 }

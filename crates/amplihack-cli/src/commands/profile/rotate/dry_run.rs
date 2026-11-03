@@ -53,7 +53,14 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     let state = State::new(ctx.store.root())?;
     // Issue #1693: what hand-change recovery would do; it stops here.
     let env_for = || handfix::Env::system(ctx.store.root(), &state, ctx.scan);
-    let lines = handfix::preview(&ctx.store, &ctx.rs, &ctx.home, env_for, now())?;
+    let lines = handfix::preview_mode(
+        &ctx.store,
+        &ctx.rs,
+        &ctx.home,
+        ctx.settings.recovery,
+        env_for,
+        now(),
+    )?;
     if !lines.is_empty() {
         for l in &lines {
             out.emit(0, l);

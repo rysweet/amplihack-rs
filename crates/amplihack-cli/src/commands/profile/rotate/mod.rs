@@ -45,6 +45,8 @@ mod hand_fields;
 #[cfg(unix)]
 mod handfix;
 #[cfg(unix)]
+mod handfix_mode;
+#[cfg(unix)]
 mod handfix_msg;
 #[cfg(unix)]
 mod held;
@@ -146,6 +148,8 @@ mod tests_issue_1870;
 mod tests_issue_1870_cycle;
 #[cfg(all(test, unix))]
 mod tests_issue_1870_probe;
+#[cfg(all(test, unix))]
+mod tests_issue_1890;
 #[cfg(all(test, unix))]
 mod tests_key_check;
 #[cfg(all(test, unix))]

@@ -76,6 +76,7 @@ fn settings() -> Settings {
         interval: 600,
         overflow_wait: WAIT,
         overflow_unknown_reset: false,
+        recovery: crate::commands::profile::rotate::settings::Recovery::Act,
     }
 }
 

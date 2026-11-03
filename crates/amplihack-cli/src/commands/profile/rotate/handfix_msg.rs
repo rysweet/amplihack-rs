@@ -20,3 +20,31 @@ pub fn recovered_moved(m: &ProfileName, to: &std::path::Path) -> String {
         to.display()
     )
 }
+
+/// The fixed prefix of each line `--recovery log` writes in place of a
+/// recovery (#1890). Lines name profiles and paths only.
+pub const LOG_ONLY: &str = "recovery (log only): ";
+
+/// `--recovery log`, case A: `m` would be recorded in place of `l`.
+pub fn log_record(m: &ProfileName, l: &ProfileName) -> String {
+    format!("{LOG_ONLY}would record {m} as live (ledger named {l})")
+}
+
+/// `--recovery log`, #1845: `l` would stay live with its own recorded login.
+pub fn log_relogin(l: &ProfileName) -> String {
+    format!("{LOG_ONLY}would record {l} as live again with its own login (ledger account differs)")
+}
+
+/// `--recovery log`, case B: `m`'s copy would be moved to `to`; `None` when
+/// no backup name is free, so recovery would refuse.
+pub fn log_moved(m: &ProfileName, to: Option<&std::path::Path>) -> String {
+    match to {
+        Some(to) => format!(
+            "{LOG_ONLY}would move {m}'s login to {} and record {m} as live",
+            to.display()
+        ),
+        None => format!(
+            "{LOG_ONLY}would move {m}'s login aside and record {m} as live, but no backup name is free"
+        ),
+    }
+}

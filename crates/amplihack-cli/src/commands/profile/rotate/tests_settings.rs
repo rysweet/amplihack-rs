@@ -10,7 +10,7 @@
 //!   interval: u64 }` and `Settings::to_args(with_interval) -> Vec<String>`.
 
 use super::TuneFlags;
-use super::settings::{Settings, resolve};
+use super::settings::{Recovery, Settings, resolve};
 use crate::commands::profile::ProfileError;
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -183,9 +183,11 @@ fn to_args_round_trips_through_resolve() {
     let env = env_of(&[("AMPLIHACK_ROTATE_WEEK_AT", "77")]);
     let f = TuneFlags {
         margin: Some("9".into()),
+        recovery: Some("off".into()),
         ..flags()
     };
     let s = resolve(&f, Some("42"), &env).unwrap();
+    assert_eq!(s.recovery, Recovery::Off);
     let args = s.to_args(true);
     assert!(!args.iter().any(|a| a == "--spawned"), "{args:?}");
 
@@ -202,6 +204,7 @@ fn to_args_round_trips_through_resolve() {
             "--overflow-wait" => back.overflow_wait = v,
             "--overflow-unknown-reset" => back.overflow_unknown_reset = v,
             "--interval" => interval = v,
+            "--recovery" => back.recovery = v,
             other => panic!("unexpected flag {other}"),
         }
     }
@@ -298,4 +301,156 @@ fn overflow_wait_variable_must_be_a_whole_number_of_seconds() {
     }
     let env = env_of(&[("AMPLIHACK_ROTATE_OVERFLOW_WAIT", "0")]);
     assert_eq!(resolve(&flags(), None, &env).unwrap().overflow_wait, 0);
+}
+
+// --- --recovery (issue #1890) -----------------------------------------------
+
+fn recovery_flag(v: &str) -> TuneFlags {
+    TuneFlags {
+        recovery: Some(v.into()),
+        ..flags()
+    }
+}
+
+#[test]
+fn recovery_defaults_to_act() {
+    assert_eq!(Recovery::default(), Recovery::Act);
+    assert_eq!(
+        resolve(&flags(), None, &no_env()).unwrap().recovery,
+        Recovery::Act
+    );
+}
+
+#[test]
+fn recovery_accepts_act_log_and_off_from_the_flag_and_the_variable() {
+    for (word, want) in [
+        ("act", Recovery::Act),
+        ("log", Recovery::Log),
+        ("off", Recovery::Off),
+    ] {
+        let s = resolve(&recovery_flag(word), None, &no_env()).unwrap();
+        assert_eq!(s.recovery, want, "--recovery {word}");
+        let env = env_of(&[("AMPLIHACK_ROTATE_RECOVERY", word)]);
+        assert_eq!(resolve(&flags(), None, &env).unwrap().recovery, want);
+    }
+}
+
+#[test]
+fn recovery_flag_beats_variable_beats_default() {
+    let env = env_of(&[("AMPLIHACK_ROTATE_RECOVERY", "off")]);
+    assert_eq!(
+        resolve(&flags(), None, &env).unwrap().recovery,
+        Recovery::Off
+    );
+    assert_eq!(
+        resolve(&recovery_flag("log"), None, &env).unwrap().recovery,
+        Recovery::Log
+    );
+    // A valid flag wins even over an invalid variable.
+    let bad = env_of(&[("AMPLIHACK_ROTATE_RECOVERY", "bogus")]);
+    assert_eq!(
+        resolve(&recovery_flag("act"), None, &bad).unwrap().recovery,
+        Recovery::Act
+    );
+}
+
+#[test]
+fn an_empty_recovery_variable_counts_as_unset() {
+    let env = env_of(&[("AMPLIHACK_ROTATE_RECOVERY", "")]);
+    assert_eq!(
+        resolve(&flags(), None, &env).unwrap().recovery,
+        Recovery::Act
+    );
+}
+
+#[test]
+fn an_invalid_recovery_flag_is_named_and_never_falls_back_to_act() {
+    for bad in [
+        "LOG", "Log", "ACT", " log", "log ", "", "lo", "logs", "on", "1", "bogus",
+    ] {
+        let e = err(resolve(&recovery_flag(bad), None, &no_env()));
+        assert!(e.contains("--recovery"), "{bad:?}: {e}");
+        assert!(e.contains("expected act, log or off"), "{bad:?}: {e}");
+        assert!(!e.contains("AMPLIHACK_ROTATE_RECOVERY"), "{bad:?}: {e}");
+    }
+}
+
+#[test]
+fn an_invalid_recovery_variable_is_named() {
+    for bad in ["bogus", "LOG", " off", "act\n"] {
+        let env = env_of(&[("AMPLIHACK_ROTATE_RECOVERY", bad)]);
+        let e = err(resolve(&flags(), None, &env));
+        assert!(e.contains("AMPLIHACK_ROTATE_RECOVERY"), "{bad:?}: {e}");
+        assert!(e.contains("expected act, log or off"), "{bad:?}: {e}");
+    }
+}
+
+#[test]
+fn the_documented_recovery_message_shape() {
+    let env = env_of(&[("AMPLIHACK_ROTATE_RECOVERY", "bogus")]);
+    assert_eq!(
+        err(resolve(&flags(), None, &env)),
+        "invalid rotate setting AMPLIHACK_ROTATE_RECOVERY \"bogus\": expected act, log or off"
+    );
+    assert_eq!(
+        err(resolve(&recovery_flag("LOG"), None, &no_env())),
+        "invalid rotate setting --recovery \"LOG\": expected act, log or off"
+    );
+}
+
+#[test]
+fn a_bad_recovery_value_is_escaped_and_cut() {
+    let long = format!("\x1b[31m{}", "x".repeat(80));
+    let e = err(resolve(&recovery_flag(&long), None, &no_env()));
+    assert!(!e.contains('\x1b'), "control characters escaped: {e:?}");
+    assert!(
+        !e.contains(&"x".repeat(40)),
+        "value cut to 32 characters: {e}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_non_utf8_recovery_variable_is_rejected() {
+    use std::os::unix::ffi::OsStringExt;
+    let raw = OsString::from_vec(vec![b'l', 0xff, b'g']);
+    let env = move |k: &str| (k == "AMPLIHACK_ROTATE_RECOVERY").then(|| raw.clone());
+    let e = err(resolve(&flags(), None, &env));
+    assert!(e.contains("AMPLIHACK_ROTATE_RECOVERY"), "{e}");
+}
+
+#[test]
+fn to_args_passes_recovery_only_when_not_act() {
+    let act = resolve(&recovery_flag("act"), None, &no_env()).unwrap();
+    assert!(!act.to_args(true).iter().any(|a| a == "--recovery"));
+    for word in ["log", "off"] {
+        let args = resolve(&recovery_flag(word), None, &no_env())
+            .unwrap()
+            .to_args(false);
+        let i = args
+            .iter()
+            .position(|a| a == "--recovery")
+            .expect("--recovery in to_args");
+        assert_eq!(args[i + 1], word);
+    }
+}
+
+#[test]
+fn the_overflow_gate_ignores_the_recovery_variable() {
+    let env = env_of(&[("AMPLIHACK_ROTATE_RECOVERY", "bogus")]);
+    assert!(super::settings::gate_from_env(&env).is_ok());
+}
+
+#[test]
+fn rotate_help_lists_recovery() {
+    use clap::CommandFactory;
+    let mut cmd = crate::Cli::command();
+    let mut out = Vec::new();
+    let rotate = cmd
+        .find_subcommand_mut("profile")
+        .and_then(|p| p.find_subcommand_mut("rotate"))
+        .expect("profile rotate");
+    rotate.write_long_help(&mut out).unwrap();
+    let help = String::from_utf8(out).unwrap();
+    assert!(help.contains("--recovery"), "{help}");
 }
