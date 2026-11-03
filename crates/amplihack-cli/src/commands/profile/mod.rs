@@ -216,6 +216,8 @@ pub enum ProfileError {
     RotateRefused(String),
     #[error("rotate state is inconsistent: {0}")]
     RotateInconsistent(String),
+    #[error("rotation gate did not settle")]
+    GateUnsettled,
     #[error("profile rotate is not available on this platform")]
     RotateUnsupported,
     #[error("rotate: {0}")]
@@ -306,6 +308,7 @@ impl ProfileError {
                 "see the Recovery section of docs/howto/claude-profile-rotation.md"
             }
             Self::RotateUnsupported => "rotate needs Linux or another Unix",
+            Self::GateUnsettled => "nothing was moved; the next cycle decides again",
             Self::RotateDaemon(_) => "run `amplihack profile rotate status`",
             Self::SubscriptionNoLogin(_) => {
                 "amplihack profile login <name>, or: amplihack profile kind set <name> api-key"
