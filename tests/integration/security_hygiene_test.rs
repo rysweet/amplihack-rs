@@ -900,9 +900,6 @@ fn tc_sec_20_no_hardcoded_high_entropy_secrets_in_fleet_source() {
         "dangerously-skip-permissions",
         // Public git revision pin for the authoritative RustyClawd build.
         "e03613a731ec2243590ccbb2b50db4dcf83ca69b",
-        // Public recipe-runner revision pin (recipe-runner.rev), used as a
-        // test fixture by runner_validation and runner_ancestry.
-        "01cf296f21089045c8fd4d1564360354fa664fb2",
         // The public CACHEDIR.TAG signature (https://bford.info/cachedir/),
         // written into target folders for issue #1808.
         "8a477f597d28d172789f06886806bc55",

@@ -5,12 +5,15 @@
 //! correct pin bump needs no edit here. The CI "Recipe runner pin ancestry"
 //! check is what stops the pin moving backwards.
 //!
-//! The tests check that the file is in the form the install scripts accept,
-//! that the tc_sec_20 allowlist holds the same revision, and that the
-//! documentation never quotes a revision other than the current pin where it
-//! talks about `recipe-runner.rev`. The unit-test fixtures in
+//! The tests check that the file is in the form the install scripts accept
+//! and that the documentation never quotes a revision other than the current
+//! pin where it talks about `recipe-runner.rev`. The unit-test fixtures in
 //! `runner_validation.rs` and `runner_ancestry.rs` read the same file through
 //! `freshness::RECIPE_RUNNER_REV`, so they cannot drift from it.
+//!
+//! No source file holds the pin as a literal, so the tc_sec_20 secret scan
+//! (which reads `crates/amplihack-cli/src/**/*.rs`) never sees it and needs no
+//! allowlist entry for it. A pin bump touches no security test.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -52,30 +55,6 @@ fn pin_file_is_a_full_lowercase_sha_and_one_newline() {
     assert!(
         is_lower_hex(sha),
         "recipe-runner.rev must be lowercase hex, found {sha:?}"
-    );
-}
-
-#[test]
-fn security_allowlist_names_the_pin_once() {
-    let pin = pin();
-    let source = read("tests/integration/security_hygiene_test.rs");
-    let marker = "Public recipe-runner revision pin";
-    let start = source
-        .find(marker)
-        .expect("tc_sec_20 keeps its recipe-runner pin comment");
-    // The entry is the first quoted literal after the comment.
-    let rest = &source[start..];
-    let open = rest.find('"').expect("allowlist entry after the comment") + 1;
-    let close = open + rest[open..].find('"').expect("closing quote");
-    assert_eq!(
-        &rest[open..close],
-        pin,
-        "the tc_sec_20 allowlist entry must be the current pin, as an exact string"
-    );
-    assert_eq!(
-        source.matches(marker).count(),
-        1,
-        "only one recipe-runner pin entry"
     );
 }
 
