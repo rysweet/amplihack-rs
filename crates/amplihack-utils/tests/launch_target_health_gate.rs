@@ -535,6 +535,19 @@ fn the_total_probe_budget_bounds_a_path_full_of_hanging_binaries() {
     );
     let not_probed = count(rejected, &Rejection::NotProbed);
     let timed_out = count(rejected, &Rejection::ProbeTimedOut);
+    let exhausted = rejected
+        .iter()
+        .filter(|(_, r)| matches!(r, Rejection::ResourceExhausted { .. }))
+        .count();
+    // A zero timeout count proves nothing about the budget unless the host
+    // refused the forks. Without this, a regression that reported a hung
+    // probe as some other accepted variant would pass without the bound
+    // ever being exercised.
+    assert!(
+        timed_out > 0 || exhausted > 0,
+        "no probe timed out and none met a host out of resources, so the \
+         total budget was never exercised: {rejected:?}"
+    );
     let most = TOTAL_PROBE_BUDGET
         .as_nanos()
         .div_ceil(PER_CANDIDATE_PROBE_TIMEOUT.as_nanos()) as usize;
