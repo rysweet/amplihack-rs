@@ -1124,6 +1124,36 @@ fn retry_after_longer_than_budget_gives_up_without_sleeping() {
     assert!(run.stderr().contains("gave up after 0s"), "{}", run.diag());
 }
 
+#[test]
+fn backoff_lookup_lists_recent_issues_without_search() {
+    let run = run_opted_in(
+        TITLE,
+        &[
+            ("GH_CREATE_SEQ", "secondary ok"),
+            ("GH_LIST_SEQ", "default"),
+        ],
+    );
+    run.assert_created();
+    let lists = run.lists();
+    assert_eq!(lists.len(), 2, "{}", run.diag());
+    assert!(
+        flag_value(&lists[0], "--search").is_some(),
+        "the first lookup searches by title\n{}",
+        run.diag()
+    );
+    assert!(
+        !lists[1].iter().any(|a| a.starts_with("--search")),
+        "the backoff lookup must not depend on the search index: {:?}\n{}",
+        lists[1],
+        run.diag()
+    );
+    assert!(
+        flag_value(&lists[1], "--state").as_deref() == Some("open"),
+        "{:?}",
+        lists[1]
+    );
+}
+
 // ===========================================================================
 // AC5: a failed lookup during backoff makes no create that round
 // ===========================================================================

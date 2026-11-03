@@ -16,10 +16,12 @@
 #
 #   issue_creation_opted_in VALUE   — 0 when VALUE, trimmed and lower-cased, is
 #                                     true, 1 or yes; 1 otherwise (fails closed)
-#   find_open_issue_by_exact_title TITLE
+#   find_open_issue_by_exact_title TITLE [recent]
 #                                   — 0 + URL: open issue in this repository with
 #                                     exactly TITLE; 1: no match; 2: lookup failed
-#                                     (WARNING on stderr)
+#                                     (WARNING on stderr). With `recent`, lists the
+#                                     newest open issues without --search, so an
+#                                     issue created seconds ago is found
 #   classify_issue_create_error OUTPUT
 #                                   — prints auth|secondary|primary|not_found|
 #                                     label|other (first 64 KiB, fixed patterns)
@@ -51,10 +53,15 @@ issue_creation_opted_in() {
 }
 
 find_open_issue_by_exact_title() {
-  local t="${1:-}" phrase out repo url rc=0
-  phrase="${t//\"/}"
-  phrase="${phrase//\\/ }"
-  out=$(GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 --search="\"${phrase}\" in:title" --json number,title,url </dev/null 2>/dev/null) || rc=$?
+  local t="${1:-}" mode="${2:-}" phrase out repo url rc=0
+  if [ "$mode" = "recent" ]; then
+    # Search indexes new issues after a delay; a plain listing does not.
+    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 --json number,title,url </dev/null 2>/dev/null) || rc=$?
+  else
+    phrase="${t//\"/}"
+    phrase="${phrase//\\/ }"
+    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 --search="\"${phrase}\" in:title" --json number,title,url </dev/null 2>/dev/null) || rc=$?
+  fi
   if [ "$rc" -ne 0 ]; then
     echo "WARNING: exact-title lookup failed; issue list exited ${rc}" >&2
     return 2
@@ -218,7 +225,9 @@ create_github_issue_bounded() {
         return 1 ;;
     esac
     # Rate limited: wait, look up, and only create again after a lookup that
-    # succeeded and found nothing. A failed lookup costs another wait.
+    # succeeded and found nothing. A failed lookup costs another wait. The
+    # lookup lists recent issues without search, because the issue this
+    # create may have made is not yet in the search index.
     for ((attempt = 0; attempt <= max; attempt++)); do
       w=$(_issue_wait_for_class "$class" "$out" "$round" "$base" "$cap")
       [ "$w" -lt 1 ] && w=1
@@ -236,7 +245,7 @@ create_github_issue_bounded() {
       sleep "$w"
       used=$((used + w))
       lrc=0
-      found=$(find_open_issue_by_exact_title "$title") || lrc=$?
+      found=$(find_open_issue_by_exact_title "$title" recent) || lrc=$?
       if [ "$lrc" -eq 0 ]; then
         echo "INFO: reusing open issue with identical title: ${found}" >&2
         printf '%s\n' "$found"

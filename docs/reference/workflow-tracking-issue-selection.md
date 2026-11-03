@@ -304,6 +304,20 @@ A result that fails the URL or repository check is skipped, and the next
 result with the same title is tried. `gh issue list` never returns pull
 requests, and `--state open` excludes closed issues.
 
+The lookups that run during backoff, before each retry of a rate-limited
+create, call `find_open_issue_by_exact_title TITLE recent`. That form drops
+`--search` and lists the 100 newest open issues:
+
+```bash
+GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 \
+  --json number,title,url </dev/null
+```
+
+GitHub search indexes new issues after a delay, so a create that GitHub
+accepted but reported as rate-limited could otherwise be missed and the
+retry would make a duplicate. A plain listing includes the new issue at once.
+The same `jq` filter is applied.
+
 When the lookup fails, `find_open_issue_by_exact_title` prints
 `WARNING: exact-title lookup failed; <reason>` on stderr itself before it
 returns 2. Callers that treat 1 and 2 alike, such as step-03 before the first
@@ -496,7 +510,10 @@ stall the step. All `gh` output that reaches stderr goes through
 Returns 0 when `VALUE`, trimmed and lower-cased, is `true`, `1` or `yes`.
 Returns 1 otherwise. No output.
 
-### `find_open_issue_by_exact_title TITLE`
+### `find_open_issue_by_exact_title TITLE [recent]`
+
+Without a second argument the lookup uses `--search`. With `recent` it lists
+the 100 newest open issues instead; step-03 uses this form during backoff.
 
 | Return code | stdout | Meaning |
 | ----------- | ------ | ------- |
@@ -631,10 +648,11 @@ The selection described above applies only to `github` hosts.
   every candidate because of authentication, scope or rate limits, and
   `create_issue` is true, the run goes on to the exact-title lookup and may
   create an issue that duplicates the one the task mentioned.
-- **Search lag.** GitHub search indexes new issues after a short delay. An
-  issue created seconds earlier by another run may not be found, and a
-  duplicate may be created. Lookups during backoff close the main window,
-  which is the retry after a create GitHub accepted but reported as failed.
+- **Search lag.** GitHub search indexes new issues after a short delay. The
+  first lookup uses search, so an issue created seconds earlier by another
+  run may not be found, and a duplicate may be created. Lookups during
+  backoff list recent issues without search, so a create that GitHub
+  accepted but reported as failed is always found before the retry.
 - **Only the first 100 results are compared.** A title whose search returns
   more than 100 open issues can miss its exact match.
 - **Wall-clock time can exceed the budget.** The budget counts sleeps only.
