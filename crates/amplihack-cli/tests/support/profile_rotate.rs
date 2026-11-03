@@ -182,7 +182,10 @@ impl Fixture {
     /// test's verdict cannot depend on what else runs on the machine. The
     /// table starts empty: `self/environ` holds fixed dummy bytes (never a
     /// copy of the real one) and no process directories exist until
-    /// [`Fixture::fake_session`] adds one.
+    /// [`Fixture::fake_session`] adds one. Its directories are readable only
+    /// by the current user. Only fixtures that call this receive the table;
+    /// tests that start a real session stand-in, such as the `profile switch`
+    /// and daemon tests, keep reading the system process table.
     pub fn private_sessions(mut self) -> Self {
         let root = self.tmp.path().join("proc");
         // A table others can write is ignored, and the host's /proc is read,
@@ -217,7 +220,9 @@ impl Fixture {
             dir.join("status"),
             format!(
                 "Name:\tclaude\nState:\tS (sleeping)\nUid:\t{0}\t{0}\t{0}\t{0}\n",
-                euid()
+                // The scan compares the real uid, so the fixture writes that.
+                // SAFETY: getuid has no preconditions.
+                unsafe { libc::getuid() }
             ),
         )
         .unwrap();

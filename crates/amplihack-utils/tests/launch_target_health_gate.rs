@@ -79,12 +79,32 @@ fn write_unparseable(dir: &Path, name: &str) -> PathBuf {
     path
 }
 
-/// Hangs forever on `--version`.
+/// Hangs on `--version` for far longer than any probe timeout.
+///
+/// `exec` makes the probed process the `sleep` itself, so the probe's kill on
+/// timeout ends it and no orphan is left behind for ten minutes.
 fn write_hanging(dir: &Path, name: &str) -> PathBuf {
     let path = dir.join(name);
-    fs::write(&path, "#!/bin/sh\nsleep 600\n").unwrap();
+    fs::write(&path, "#!/bin/sh\nexec sleep 600\n").unwrap();
     make_executable(&path);
     path
+}
+
+/// Kills the process whose pid is recorded in the file, when dropped.
+///
+/// The probe cannot reach a grandchild its candidate left running, so a test
+/// that starts one must end it itself, including when an assertion fails.
+struct KillOnDrop(PathBuf);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Ok(pid) = fs::read_to_string(&self.0) {
+            let pid = pid.trim();
+            if !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()) {
+                let _ = std::process::Command::new("kill").arg(pid).status();
+            }
+        }
+    }
 }
 
 fn make_executable(path: &Path) {
@@ -300,14 +320,20 @@ fn a_candidate_that_leaves_a_grandchild_holding_its_pipe_still_resolves_promptly
     // precisely the threat SEC-4 names.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("claude");
+    let pid_file = dir.path().join("grandchild.pid");
     // The grandchild sleeps for 600 s, far beyond the bound below, so an
     // unbounded drain fails this test instead of finishing inside the slack.
+    // It records its pid so the guard can end it however the test finishes.
     fs::write(
         &path,
-        "#!/bin/sh\n/bin/sleep 600 &\necho '2.1.238'\nexit 0\n",
+        format!(
+            "#!/bin/sh\n/bin/sleep 600 &\necho $! > '{}'\necho '2.1.238'\nexit 0\n",
+            pid_file.display()
+        ),
     )
     .unwrap();
     make_executable(&path);
+    let _reaper = KillOnDrop(pid_file);
 
     let started = std::time::Instant::now();
     let resolution = resolve_from_candidates("claude", &[(path.clone(), TargetSource::Path)]);
@@ -490,30 +516,36 @@ fn the_total_probe_budget_bounds_a_path_full_of_hanging_binaries() {
 
     assert!(resolution.target.is_none());
     let rejected = &resolution.rejected;
+    // A host short of processes turns a probe into `ResourceExhausted`
+    // instead of a timeout. Such a probe can return at once, so it uses no
+    // budget and is not part of the bound below: only probes that waited out
+    // their timeout are limited by the total budget.
     assert!(
-        rejected
-            .iter()
-            .all(|(_, r)| matches!(r, Rejection::ProbeTimedOut | Rejection::NotProbed)),
-        "a hanging candidate either timed out or was never examined: {rejected:?}"
+        rejected.iter().all(|(_, r)| matches!(
+            r,
+            Rejection::ProbeTimedOut | Rejection::NotProbed | Rejection::ResourceExhausted { .. }
+        )),
+        "a hanging candidate timed out, was never examined, or met a host \
+         out of resources: {rejected:?}"
     );
-    let timed_out = count(rejected, &Rejection::ProbeTimedOut);
+    assert_eq!(
+        rejected.len(),
+        candidates.len(),
+        "every candidate is accounted for: {rejected:?}"
+    );
     let not_probed = count(rejected, &Rejection::NotProbed);
+    let timed_out = count(rejected, &Rejection::ProbeTimedOut);
     let most = TOTAL_PROBE_BUDGET
         .as_nanos()
         .div_ceil(PER_CANDIDATE_PROBE_TIMEOUT.as_nanos()) as usize;
     assert!(
-        timed_out >= 1,
+        not_probed < candidates.len(),
         "the first candidate is always probed: {rejected:?}"
     );
     assert!(
         timed_out <= most,
         "the total budget allows at most {most} probes of {PER_CANDIDATE_PROBE_TIMEOUT:?} \
-         within {TOTAL_PROBE_BUDGET:?}; {timed_out} ran: {rejected:?}"
-    );
-    assert_eq!(
-        timed_out + not_probed,
-        candidates.len(),
-        "every candidate is accounted for: {rejected:?}"
+         to time out within {TOTAL_PROBE_BUDGET:?}; {timed_out} did: {rejected:?}"
     );
     assert!(
         elapsed < TOTAL_PROBE_BUDGET + LOAD_SLACK,

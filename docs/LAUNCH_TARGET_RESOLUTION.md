@@ -503,14 +503,21 @@ A wall-clock bound cannot prove the total budget. Without the budget check,
 fail on a loaded host, and a bound loose enough for a loaded host would not
 catch it.
 
-The count does not have this problem. Each timed-out probe takes at least
-`PER_CANDIDATE_PROBE_TIMEOUT`, so within `TOTAL_PROBE_BUDGET` no more than
-`ceil(TOTAL_PROBE_BUDGET / PER_CANDIDATE_PROBE_TIMEOUT)` probes can time out.
-Load makes each probe slower, which can lower the count but never raise it.
-Removing the budget check raises the count to `MAX_PROBE_CANDIDATES`, and the
-test fails on the count. Candidates the walk did not reach are recorded as
-`NotProbed`, including those beyond `MAX_PROBE_CANDIDATES`, which is why the
-two counts always add up to the number of candidates.
+The count does not have this problem. Each probe's timeout is
+`PER_CANDIDATE_PROBE_TIMEOUT`, cut to whatever budget remains. A probe whose
+timeout was cut leaves no budget, so it is the last; every timed-out probe
+before it took the full `PER_CANDIDATE_PROBE_TIMEOUT`. No more than
+`ceil(TOTAL_PROBE_BUDGET / PER_CANDIDATE_PROBE_TIMEOUT)` probes can therefore
+time out, and the total stays within `TOTAL_PROBE_BUDGET`. Load makes each
+probe slower, which can lower the count but never raise it. Removing the
+budget check raises the count to `MAX_PROBE_CANDIDATES`, and the test fails on
+the count. Candidates the walk did not reach are recorded as `NotProbed`,
+including those beyond `MAX_PROBE_CANDIDATES`, so every candidate has exactly
+one rejection.
+
+A host that is short of processes rejects a probe as `ResourceExhausted`
+instead. That probe can return at once without using the budget, so the test
+accepts it and leaves it out of the count.
 
 The elapsed-time assertion, at `TOTAL_PROBE_BUDGET + LOAD_SLACK`, stays as a
 backstop. It catches a probe that ignores its own timeout or a drain that
@@ -521,13 +528,14 @@ fixture's `sleep`.
 
 Each fixture that hangs runs `sleep 600`, far longer than any bound it is
 tested against. A regression therefore shows as a failure, not as a test that
-happens to finish inside its allowance. The fixture scripts are literal text
-and take no paths from the environment.
+happens to finish inside its allowance.
 
 The probe kills the child, not its process group (see [Probe budget](#probe-budget)),
-so these tests leave `sleep 600` processes behind until they exit. When you run
-the tests repeatedly, remove the strays by process group or by the fixture's
-temporary directory, not with a broad `pkill sleep`.
+so the fixtures end their own sleeps. A hanging script runs `exec sleep 600`,
+which makes the probed process the `sleep` itself, and the probe's kill on
+timeout ends it. The grandchild fixture writes its `sleep`'s pid to a file in
+the test's temporary directory, and the test kills that pid when it finishes,
+whether it passes or fails.
 
 The unit test `version_probe_does_not_expose_litellm_configuration` in
 `crates/amplihack-utils/src/launch_target.rs` probes a healthy binary with
