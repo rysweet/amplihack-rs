@@ -262,7 +262,7 @@ pub(super) fn from_rows(
 ) -> Option<Snapshot> {
     let mut points = BTreeMap::new();
     let mut unknown = Vec::new();
-    let logins = rows.iter().filter(|r| !r.api_key && !r.live_in_home);
+    let logins = rows.iter().filter(|r| !r.api_key);
     let mut any = false;
     for r in logins {
         any = true;

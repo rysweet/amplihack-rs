@@ -663,14 +663,9 @@ fn docs_describe_hand_change_recovery() {
             "{name} is missing the /login sentence"
         );
         for stem in [
-            "recovered: ~/.claude holds",
             "recovered: ~/.claude and",
             "has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login",
             "ALERT: the account in ~/.claude is not the one the ledger names (live=",
-            "fix 1: amplihack profile login",
-            "no profile has that account; no swap",
-            "the next cycle then recovers",
-            "none needed; the next cycle reads ~/.claude.json again",
             "~/.claude.json has had no account that can be read for 5 minutes or more (live=",
             "no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace",
             "fix 1: run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if",
@@ -705,10 +700,6 @@ fn docs_describe_hand_change_recovery() {
         "alert: <line>",
         "warning: <line>",
         "lost_login",
-        "it matches more than one profile (<M1>, <M2>);",
-        "the account of profile <P1>, <P2> cannot be read, so the match is uncertain;",
-        "the account in ~/.claude.json cannot be read;",
-        "~/.claude has no login;",
         "recovery refused: <reason>;",
         "home_unreadable_since",
         "it does not exist",
@@ -774,4 +765,77 @@ fn docs_describe_the_usage_bar_view() {
             "{name} doc still describes the old order"
         );
     }
+}
+
+// --- Issue #1886: hand-change recovery by credential identity ---------------
+//
+// `rotate/tests_issue_1886.rs` asserts that `SWAP_GRACE` is 600 and that the
+// code's note and ALERT texts are exactly the ones quoted here, so a change on
+// either side fails one of the two tests.
+
+/// The issue #1886 lines, as the reference quotes them.
+const ISSUE_1886_LINES: &[&str] = &[
+    "note: ~/.claude answers as profile <M> (ledger names <L>); nothing moved, the next cycle reads again",
+    "note: cannot tell whose login is in ~/.claude (live=<L>): <why>; nothing moved",
+    "ALERT: ~/.claude answers as profile <M> on two readings (ledger names <L>), but <L> has no login of its own, so recording <M> would leave <L> with no login anywhere; nothing moved, no swap",
+    "recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <backup>/.credentials.json; recorded <M> as live",
+];
+
+/// The `<why>` texts of the cannot-tell note.
+const ISSUE_1886_WHY: &[&str] = &[
+    "~/.claude could not be read",
+    "~/.claude reported fewer than two reset times",
+    "it matches more than one profile (<M1>, <M2>)",
+    "profile <P1>, <P2> could not be read",
+    "the readings of ~/.claude and profile <P1>, <P2> report different windows",
+    "the reads ran out of time",
+    "the last swap time is later than now",
+];
+
+#[test]
+fn docs_quote_swap_grace_and_its_value() {
+    assert!(
+        REFERENCE.contains("`SWAP_GRACE` (600 seconds)"),
+        "reference must quote SWAP_GRACE with its value"
+    );
+    assert!(
+        ROTATE_HOWTO.contains("`SWAP_GRACE`, 600 seconds"),
+        "rotate how-to must quote SWAP_GRACE with its value"
+    );
+}
+
+#[test]
+fn reference_quotes_the_issue_1886_lines() {
+    for line in ISSUE_1886_LINES {
+        assert!(REFERENCE.contains(line), "reference is missing `{line}`");
+    }
+    for why in ISSUE_1886_WHY {
+        assert!(
+            REFERENCE.contains(&format!("`{why}`")),
+            "reference why table is missing `{why}`"
+        );
+    }
+    assert!(
+        REFERENCE.contains("would note: <note>"),
+        "the dry-run row names the `would note:` prefix"
+    );
+}
+
+#[test]
+fn docs_describe_credential_identity_and_display_only_claude_json() {
+    for heading in [
+        "#### Two readings",
+        "#### Only-login rule",
+        "#### Hand-change notes",
+        "#### Only-login ALERT",
+    ] {
+        assert!(
+            REFERENCE.contains(heading),
+            "reference is missing {heading}"
+        );
+    }
+    assert!(REFERENCE.contains("`~/.claude.json` is not compared with the ledger"));
+    assert!(ROTATE_HOWTO.contains("### Hand-change notes and alerts"));
+    assert!(ROTATE_HOWTO.contains("#### No profile answers the same"));
+    assert!(ROTATE_HOWTO.contains("```bash\namplihack profile rotate\n```"));
 }
