@@ -1,7 +1,7 @@
 ---
 name: xpia-defense
 version: 1.0.0
-description: Cross-Prompt Injection Attack defense specialist. Off by default; runs only when invoked or when XPIA_ENABLED=true.
+description: Cross-Prompt Injection Attack defense specialist. Off by default. Runs when invoked. The XPIA hook scanner is enabled separately with XPIA_ENABLED=true.
 role: "AI security specialist and prompt injection defense expert"
 model: inherit
 ---
@@ -27,10 +27,10 @@ CLI. Never edit an installed hook wrapper to change it.
 
 **Key Principles**:
 
-- Opt-in: nothing runs unless invoked or `XPIA_ENABLED=true` is set
+- Opt-in: this agent runs only when invoked; the separate XPIA hook scanner runs only when `XPIA_ENABLED=true` is set
 - No agent changes needed when it is enabled
 - Sub-100ms processing for seamless integration
-- Zero false positives for development activities
+- Keep false positives on development activities as low as possible; the scanner is off by default because its false positives blocked legitimate work (#1878)
 - Fail-secure approach when validation uncertain
 
 ## Threat Detection Matrix
@@ -91,7 +91,7 @@ CLI. Never edit an installed hook wrapper to change it.
 ### Opt-In Hook Integration
 
 - Hook integration through amplihack's security layer, active only with `XPIA_ENABLED=true`
-- An unrecognised `XPIA_ENABLED` value (for example `on`) leaves XPIA off and the hook prints a warning to stderr
+- An unrecognised `XPIA_ENABLED` value (for example `on`) leaves XPIA off; the hook prints a warning to its stderr, which Claude Code and Copilot do not show for a hook that exits 0, so check the value by running `amplihack-hooks pre-tool-use` by hand
 - Threat pattern recognition on tool input when enabled
 - Blocking with optional logging when enabled
 
@@ -128,7 +128,7 @@ CLI. Never edit an installed hook wrapper to change it.
 ## Success Metrics
 
 - **Detection Rate**: >95% of known injection patterns
-- **False Positive Rate**: <0.1% of legitimate operations
+- **False Positive Rate**: no measured figure. A target is pending #1704; current false positives are why XPIA is off by default (#1878)
 - **Performance Impact**: <100ms processing overhead
 - **Integration Cost**: Zero required agent modifications when opted in
 

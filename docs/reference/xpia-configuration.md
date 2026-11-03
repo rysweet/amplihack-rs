@@ -96,8 +96,15 @@ change nothing.
 ## Unrecognised values
 
 A value that is neither on nor off leaves XPIA off, the same as unset. The
-hook then prints one warning line to stderr so that a typo such as
-`XPIA_ENABLED=on` does not go unnoticed:
+hook then prints one warning line to its stderr. You will not normally see
+it: the hook exits 0, and neither Claude Code nor Copilot shows the stderr of
+a hook that succeeds. Claude Code reads only stdout from a successful hook,
+and Copilot reads only stdout. The health check also reports the value, but
+no amplihack command calls it (see [Health check](#health-check)). A typo
+such as `XPIA_ENABLED=on` therefore leaves XPIA off without any message in
+the agent session.
+
+To check the value you have set, run the hook by hand and read its stderr:
 
 ```bash
 echo '{"tool_name":"Bash","tool_input":{"command":"pwd"}}' \
@@ -112,7 +119,12 @@ amplihack: warning: XPIA_ENABLED="on" is not recognised; XPIA is off (set XPIA_E
 
 stdout is `{}` and the exit code is 0, exactly as with `XPIA_ENABLED` unset.
 The warning changes nothing else: the agent CLIs read only stdout, and the
-other guards run as usual.
+other guards run as usual. Where an agent CLI does log hook stderr, the
+warning appears once for every tool call, because each call runs the hook
+afresh.
+
+A warning that appears in the agent session, rather than in stderr, is not
+part of this change; it is tracked as a follow-up on #1737.
 
 The value in the message is shown with Rust's `{:?}` escaping, so control
 characters such as ESC, CR, LF and NUL appear as escapes (`\u{1b}`, `\n`) and

@@ -17,13 +17,25 @@ XPIA (Cross-Platform Injection Attack) Defense system management and health moni
 
 XPIA scanning runs only when the agent CLI starts with `XPIA_ENABLED` set to
 `1`, `true` or `yes` (any case). Unset, `false`, `0`, `no` or any other value
-leaves it off. A value that is not recognised, such as `on`, `enabled` or
-`" true "`, also leaves it off, and the hook prints a warning to stderr:
+leaves it off.
 
 ```bash
 export XPIA_ENABLED=true
 amplihack claude
 ```
+
+A value that is not recognised, such as `on`, `enabled` or `" true "`, also
+leaves XPIA off. The hook prints a warning to its stderr, but the hook exits
+0 and neither Claude Code nor Copilot shows the stderr of a successful hook,
+so the warning does not appear in the agent session. To check the value, run
+the hook by hand and read its stderr:
+
+```bash
+echo '{"tool_name":"Bash","tool_input":{"command":"pwd"}}' \
+  | amplihack-hooks pre-tool-use
+```
+
+With `XPIA_ENABLED=on` set, stderr reads:
 
 ```
 amplihack: warning: XPIA_ENABLED="on" is not recognised; XPIA is off (set XPIA_ENABLED=true to opt in)

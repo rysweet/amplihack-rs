@@ -150,6 +150,53 @@ fn xpia_defense_agent_is_opt_in() {
     }
 }
 
+/// The agent is not started by `XPIA_ENABLED`; that variable controls the
+/// hook scanner. The agent also must not claim near-zero false positives,
+/// since false positives are why XPIA is off by default (#1878).
+#[test]
+fn xpia_defense_agent_does_not_overclaim() {
+    for file in AGENT_COPIES {
+        let text = read(file);
+        let description = frontmatter_description(&text);
+        assert!(
+            !description.contains("or when XPIA_ENABLED"),
+            "{file}: XPIA_ENABLED does not start the agent: {description}"
+        );
+        assert!(
+            description.contains("hook scanner"),
+            "{file}: description must separate the agent from the hook scanner: {description}"
+        );
+        let lower = text.to_lowercase();
+        for claim in ["zero false positives", "<0.1%"] {
+            assert!(
+                !lower.contains(claim),
+                "{file}: unmeasured false-positive claim {claim:?} contradicts #1878"
+            );
+        }
+    }
+}
+
+/// The unrecognised-value warning goes to stderr of a hook that exits 0,
+/// which Claude Code and Copilot do not show. The docs must say so rather
+/// than promise that a typo is noticed (#1737).
+#[test]
+fn xpia_docs_do_not_promise_a_visible_warning() {
+    let mut files: Vec<&str> = AGENT_COPIES.to_vec();
+    files.push("docs/reference/xpia-configuration.md");
+    files.push("docs/claude/commands/amplihack/xpia.md");
+    for file in files {
+        let text = read(file);
+        assert!(
+            !text.to_lowercase().contains("does not go unnoticed"),
+            "{file}: the stderr warning is not shown in the agent session"
+        );
+        assert!(
+            text.contains("amplihack-hooks pre-tool-use"),
+            "{file}: must tell the user to run the hook by hand to see the warning"
+        );
+    }
+}
+
 #[test]
 fn xpia_defense_agent_copies_are_identical() {
     assert_eq!(
