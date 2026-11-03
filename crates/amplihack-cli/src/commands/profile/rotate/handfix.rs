@@ -14,7 +14,8 @@
 //! is moved only by `move_login` (rename without replace) and never opened,
 //! copied or deleted.
 //!
-//! `--recovery log` writes what a recovery would do and records nothing;
+//! `--recovery log` writes what a recovery would do, moves no file and
+//! leaves the ledger's live profile alone;
 //! `--recovery off` skips the step (#1890, `handfix_mode.rs`).
 
 use super::backup::{BackupRefusal, fresh_backup, rejected_dir, stamp};
@@ -48,7 +49,8 @@ const CHANGED: &str = "~/.claude changed during recovery";
 /// What one cycle's hand-change step did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// No hand change (or no login in `~/.claude`): the cycle goes on.
+    /// No hand change, no login in `~/.claude`, or recovery is `log` or
+    /// `off`: the cycle goes on, and alerts if the hand change remains.
     Clear,
     /// The holder was recorded as live: the cycle goes on with it.
     Recovered,

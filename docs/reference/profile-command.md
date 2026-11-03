@@ -6032,7 +6032,9 @@ effects:
   ALERT is written every cycle and never turns into the 5-minute guidance.
 - The lost-login lines (`ALERT: profile <L> has no login anywhere ...`) are
   not written, and `lost_login` is neither added to nor pruned.
-- The ledger's `guidance` is not cleared.
+- The ledger's `guidance` is not cleared. `rotate status` therefore goes on
+  showing the last saved guidance as `alert:` lines and the last lost logins
+  as `warning:` lines until a cycle runs under `act` or `log`.
 
 The cycle still raises the `hand-change` or `home-unreadable` ALERT from
 [Rotate live profile](#rotate-live-profile) and ends `alerted`.

@@ -4,8 +4,10 @@
 //! budget. See "Rotate hand-change recovery" in
 //! docs/reference/profile-command.md.
 //!
-//! Under `log` nothing is moved, created or recorded: a backup path is only
-//! looked up with `first_free`, which checks names and creates nothing.
+//! Under `log` no file is moved or created and the ledger's live profile is
+//! left alone: a backup path is only looked up with `first_free`, which
+//! checks names and creates nothing. The ledger's guidance, `lost_login`
+//! and `home_unreadable_since` are still updated.
 
 use super::backup::{BackupRefusal, first_free};
 use super::guide::Fix;
