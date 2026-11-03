@@ -1340,6 +1340,26 @@ fn the_stop_comment_masks_secrets_one_case_per_format() {
             format!("?sv=2024&sig={v}"),
             "sig=[REDACTED]",
         ),
+        (
+            "aws presigned url signature",
+            format!("?X-Amz-Expires=60&X-Amz-Signature={v}&x=1"),
+            "X-Amz-Signature=[REDACTED]&x=1",
+        ),
+        (
+            "aws signature header",
+            format!("x-amz-signature: {v}"),
+            "x-amz-signature: [REDACTED]",
+        ),
+        (
+            "basic header",
+            format!("Authorization: Basic {v}=="),
+            "Authorization: Basic [REDACTED]",
+        ),
+        (
+            "bearer in prose",
+            format!("retried with bearer {v} and failed"),
+            "with bearer [REDACTED] and failed",
+        ),
     ];
     for (name, text, kept) in &contextual {
         let text = text.replace("(at)", "@");
@@ -1347,6 +1367,13 @@ fn the_stop_comment_masks_secrets_one_case_per_format() {
         assert!(!body.contains(&v), "{name}: {body}");
         assert!(body.contains(kept), "{name}: {body}");
     }
+
+    // In an Authorization header the credentials are masked even when they
+    // are letters only, which the prose-safe Bearer/Basic/token rule skips.
+    let letters = "QwErTyUiOpAsDfGhJkLzXcVb";
+    let body = posted(&format!("Authorization: Bearer {letters}\n"));
+    assert!(!body.contains(letters), "{body}");
+    assert!(body.contains("Authorization: Bearer [REDACTED]"), "{body}");
 
     // A private key block, whole and cut off by the 8 KiB findings limit.
     let pem = format!(
@@ -1380,7 +1407,7 @@ fn the_stop_comment_masks_secrets_one_case_per_format() {
 #[test]
 fn the_stop_comment_keeps_ordinary_text() {
     let text = format!(
-        "head {SHA}\n12 tokens used; the token budget is unlimited\ndesign=simple, branch: feat/x\n"
+        "head {SHA}\n12 tokens used; the token budget is unlimited\ndesign=simple, branch: feat/x\nthe basic implementation is fine\nToken authentication and bearer authentication differ\n"
     );
     let body = posted(&text);
     assert!(body.contains(SHA), "{body}");
@@ -1389,6 +1416,11 @@ fn the_stop_comment_keeps_ordinary_text() {
         "{body}"
     );
     assert!(body.contains("design=simple, branch: feat/x"), "{body}");
+    assert!(body.contains("the basic implementation is fine"), "{body}");
+    assert!(
+        body.contains("Token authentication and bearer authentication differ"),
+        "{body}"
+    );
     assert!(!body.contains("[REDACTED]"), "{body}");
 }
 

@@ -47,21 +47,29 @@ export LC_ALL=C
 #   - GitHub tokens gh[pousr]_ and github_pat_, Anthropic and OpenAI sk-,
 #     AWS access key ids AKIA, ASIA and A3T, Slack xox?-, GitLab glpat-,
 #     npm_, Google AIza, JSON web tokens eyJ*.*.*;
-#   - the credential after the word Bearer, Basic or token;
+#   - the credentials of an Authorization header (Authorization: <scheme>
+#     <credentials>), whatever they look like;
+#   - elsewhere, the word of 12 or more characters after Bearer, Basic or
+#     token, but only when that word contains a digit or one of _ - / + =,
+#     so prose such as "the basic implementation" is left alone;
 #   - the value after = or : of any key whose name ends in token, secret,
 #     password, passwd, api_key, access_key, account_key, private_key,
-#     credential(s), sig or sharedaccesskey (any case; _, - or nothing
-#     between the words), quoted or not.
-# A secret with neither a known shape nor a telling key name is not
-# recognised; the 8 KiB findings cut and the 59,000-byte body cut still apply.
+#     credential(s), signature, sig or sharedaccesskey (any case; _, - or
+#     nothing between the words), quoted or not.
+# Not recognised: a secret with neither a known shape nor a telling key name,
+# and a letters-only word after Bearer, Basic or token outside an
+# Authorization header. The 8 KiB findings cut and the 59,000-byte body cut
+# still apply.
 ci() { awk '{ for (i = 1; i <= length($0); i++) { c = substr($0, i, 1); if (c ~ /[a-z]/) printf "[%s%s]", c, toupper(c); else printf "%s", c } }' <<<"$1"; }
-SECRET_KEYS="$(ci 'token|secret|passw(or)?d|api[_-]?key|access[_-]?key|account[_-]?key|private[_-]?key|credentials?|sig|sharedaccesskey')"
+SECRET_KEYS="$(ci 'token|secret|passw(or)?d|api[_-]?key|access[_-]?key|account[_-]?key|private[_-]?key|credentials?|signature|sig|sharedaccesskey')"
 AUTH_WORDS="$(ci 'bearer|basic|token')"
+AUTH_HEADER="$(ci 'authorization')"
 mask_secrets() {
   awk '
     /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/ { print "[REDACTED PRIVATE KEY]"; k = 1 }
     k && /-----END [A-Z0-9 ]*PRIVATE KEY-----/ { k = 0; next }
     !k' \
+  | tr -d '\001\002' \
   | sed -E \
     -e 's#([A-Za-z][A-Za-z0-9+.-]*://)[^/@[:space:]]+@#\1[REDACTED]@#g' \
     -e 's#github_pat_[A-Za-z0-9_]{16,}#[REDACTED]#g' \
@@ -73,7 +81,10 @@ mask_secrets() {
     -e 's#npm_[A-Za-z0-9]{30,}#[REDACTED]#g' \
     -e 's#AIza[A-Za-z0-9_-]{30,}#[REDACTED]#g' \
     -e 's#eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}#[REDACTED]#g' \
-    -e "s#(^|[^A-Za-z0-9])(${AUTH_WORDS})[[:space:]]+[A-Za-z0-9._~+/=-]{12,}#\\1\\2 [REDACTED]#g" \
+    -e "s#((^|[^A-Za-z0-9])${AUTH_HEADER}[\"']?[[:space:]]*:[[:space:]]*[A-Za-z]+[[:space:]]+)[^][[:space:]\"'\`,;&<>|()]+#\\1[REDACTED]#g" \
+    -e "s#(^|[^A-Za-z0-9])(${AUTH_WORDS})([[:space:]]+)([A-Za-z0-9._~+/=-]{12,})#\\1\\2\\3\x01\\4\x02#g" \
+    -e 's#\x01[^\x02]*[0-9_/+=-][^\x02]*\x02#[REDACTED]#g' \
+    -e 's#[\x01\x02]##g' \
     -e "s#((^|[^A-Za-z0-9])[A-Za-z0-9_-]*(${SECRET_KEYS})[\"']?[[:space:]]*[:=][[:space:]]*)\"[^\"]*\"#\\1\"[REDACTED]\"#g" \
     -e "s#((^|[^A-Za-z0-9])[A-Za-z0-9_-]*(${SECRET_KEYS})[\"']?[[:space:]]*[:=][[:space:]]*)'[^']*'#\\1'[REDACTED]'#g" \
     -e "s#((^|[^A-Za-z0-9])[A-Za-z0-9_-]*(${SECRET_KEYS})[\"']?[[:space:]]*[:=][[:space:]]*)[^][[:space:]\"'\`,;&<>|()]+#\\1[REDACTED]#g"
