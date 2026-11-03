@@ -4,8 +4,9 @@
 #
 # Step 03 sources this file after workflow_issue_tracking.sh and calls, in
 # order: issue_creation_opted_in, load_issue_identity,
-# find_open_issue_by_exact_title, then create_github_issue_bounded. The functions use emit_local_metadata and
-# sanitize_cli_output from workflow_issue_tracking.sh.
+# find_open_issue_before_create, then create_github_issue_bounded. The
+# functions use emit_local_metadata and sanitize_cli_output from
+# workflow_issue_tracking.sh.
 #
 # The file sets no shell options and installs no trap; it works under the
 # step's `set -euo pipefail`. Diagnostics go to stderr; stdout carries only an
@@ -16,16 +17,21 @@
 #
 #   issue_creation_opted_in VALUE   — 0 when VALUE, trimmed and lower-cased, is
 #                                     true, 1 or yes; 1 otherwise (fails closed)
-#   load_issue_identity             — sets ISSUE_REPO_NWO (owner/repo) and
-#                                     ISSUE_LOGIN (gh account) once per shell;
-#                                     1 with a WARNING when either fetch fails
+#   load_issue_identity             — sets ISSUE_REPO_NWO (owner/repo) once per
+#                                     shell; 1 with a WARNING when it fails
 #   find_open_issue_by_exact_title TITLE [recent]
-#                                   — 0 + URL: open issue in this repository,
-#                                     opened by ISSUE_LOGIN, with exactly TITLE;
+#                                   — 0 + URL: open issue in this repository
+#                                     with exactly TITLE, whoever opened it;
 #                                     1: no match; 2: lookup failed
 #                                     (WARNING on stderr). With `recent`, lists the
 #                                     newest open issues without --search, so an
 #                                     issue created seconds ago is found
+#   find_open_issue_before_create TITLE
+#                                   — the lookup step 03 makes before its first
+#                                     create: search, then, if search failed,
+#                                     the recent listing (core quota, not the
+#                                     search quota). Same return codes; 2 means
+#                                     both failed and step 03 must not create
 #   classify_issue_create_error OUTPUT
 #                                   — prints auth|secondary|primary|not_found|
 #                                     label|other (first 64 KiB, fixed patterns)
@@ -39,10 +45,16 @@
 #   _issue_retry_after OUTPUT       — N from `retry-after: N` (1-6 digits)
 #   _issue_jitter_delay ROUND BASE MAX_DELAY
 #                                   — equal-jitter delay for a round, at least 1
+#   _issue_secondary_wait ROUND BASE MAX_DELAY FLOOR
+#                                   — FLOOR + the jitter delay: a secondary limit
+#                                     without retry-after waits at least FLOOR
 #   _issue_primary_wait             — seconds until the GraphQL reset + 3, >= 5;
 #                                     5 with a WARNING when the reset is unreadable
-#   _issue_wait_for_class CLASS OUTPUT ROUND BASE MAX_DELAY
-#                                   — the planned wait for one backoff round
+#   _issue_wait_for_class CLASS OUTPUT ROUND BASE MAX_DELAY [FLOOR]
+#                                   — the planned wait for one backoff round:
+#                                     retry-after when printed; for secondary,
+#                                     FLOOR (default 60) + jitter; for primary,
+#                                     the reset
 #   _issue_last_url OUTPUT          — last line of OUTPUT that is an issue URL
 #   _issue_gh_stderr FILE RC        — prints FILE (a gh call's stderr) through
 #                                     sanitize_cli_output when RC is non-zero,
@@ -50,7 +62,6 @@
 
 # Cleared on source so a value from the environment is never trusted.
 ISSUE_REPO_NWO=""
-ISSUE_LOGIN=""
 
 issue_creation_opted_in() {
   local v="${1:-}"
@@ -87,35 +98,23 @@ load_issue_identity() {
     _issue_gh_stderr "$errf" 0
     ISSUE_REPO_NWO="$out"
   fi
-  if [ -z "${ISSUE_LOGIN:-}" ]; then
-    rc=0
-    errf=$(mktemp) || errf=""
-    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh api user --jq .login </dev/null 2>"${errf:-/dev/null}") || rc=$?
-    if [ "$rc" -ne 0 ] || ! [[ "$out" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
-      echo "WARNING: could not determine the gh login (api user exited ${rc})" >&2
-      _issue_gh_stderr "$errf" "$rc"
-      return 1
-    fi
-    _issue_gh_stderr "$errf" 0
-    ISSUE_LOGIN="$out"
-  fi
   return 0
 }
 
 find_open_issue_by_exact_title() {
   local t="${1:-}" mode="${2:-}" phrase out url errf rc=0
   if ! load_issue_identity; then
-    echo "WARNING: exact-title lookup failed; could not determine this repository or the gh login" >&2
+    echo "WARNING: exact-title lookup failed; could not determine this repository" >&2
     return 2
   fi
   errf=$(mktemp) || errf=""
   if [ "$mode" = "recent" ]; then
     # Search indexes new issues after a delay; a plain listing does not.
-    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 --json number,title,url,author </dev/null 2>"${errf:-/dev/null}") || rc=$?
+    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 --json number,title,url </dev/null 2>"${errf:-/dev/null}") || rc=$?
   else
     phrase="${t//\"/}"
     phrase="${phrase//\\/ }"
-    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 --search="\"${phrase}\" in:title" --json number,title,url,author </dev/null 2>"${errf:-/dev/null}") || rc=$?
+    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 --search="\"${phrase}\" in:title" --json number,title,url </dev/null 2>"${errf:-/dev/null}") || rc=$?
   fi
   if [ "$rc" -ne 0 ]; then
     echo "WARNING: exact-title lookup failed; issue list exited ${rc}" >&2
@@ -124,12 +123,10 @@ find_open_issue_by_exact_title() {
   fi
   _issue_gh_stderr "$errf" 0
   rc=0
-  url=$(printf '%s' "$out" | jq -r --arg t "$t" --arg r "$ISSUE_REPO_NWO" --arg u "$ISSUE_LOGIN" '
+  url=$(printf '%s' "$out" | jq -r --arg t "$t" --arg r "$ISSUE_REPO_NWO" '
     if type != "array" then error("issue list output is not an array") else
     [ .[]
       | select(type == "object" and .title == $t and (.url | type) == "string")
-      | select((.author | type) == "object" and (.author.login | type) == "string"
-          and (.author.login | ascii_downcase) == ($u | ascii_downcase))
       | select((.url | split("/")) as $p
           | ($p | length) == 7 and $p[0] == "https:" and $p[1] == ""
             and ($p[2] | test("\\A[A-Za-z0-9.-]+\\z")) and $p[5] == "issues"
@@ -143,6 +140,22 @@ find_open_issue_by_exact_title() {
   [ -n "$url" ] || return 1
   printf '%s\n' "$url"
   return 0
+}
+
+find_open_issue_before_create() {
+  local t="${1:-}" found rc=0
+  found=$(find_open_issue_by_exact_title "$t") || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    # The search API has a much smaller per-minute quota than the core API, so
+    # it is the lookup most likely to fail when many runs start at once. The
+    # recent listing uses the core quota and covers the newest 100 open
+    # issues, where a duplicate from a parallel run would be.
+    echo "INFO: exact-title search failed; checking the newest open issues instead" >&2
+    rc=0
+    found=$(find_open_issue_by_exact_title "$t" recent) || rc=$?
+  fi
+  [ "$rc" -eq 0 ] && printf '%s\n' "$found"
+  return "$rc"
 }
 
 _issue_match() {
@@ -195,6 +208,12 @@ _issue_jitter_delay() {
   printf '%s\n' "$w"
 }
 
+_issue_secondary_wait() {
+  local j
+  j=$(_issue_jitter_delay "$1" "$2" "$3")
+  printf '%s\n' "$(($4 + j))"
+}
+
 _issue_primary_wait() {
   local epoch now w errf rc=0
   errf=$(mktemp) || errf=""
@@ -213,12 +232,14 @@ _issue_primary_wait() {
 }
 
 _issue_wait_for_class() {
-  local class="$1" out="$2" round="$3" base="$4" cap="$5" ra=""
+  local class="$1" out="$2" round="$3" base="$4" cap="$5" floor="${6:-60}" ra=""
   ra=$(_issue_retry_after "$out") || ra=""
   if [ -n "$ra" ]; then
     printf '%s\n' "$ra"
   elif [ "$class" = "secondary" ]; then
-    _issue_jitter_delay "$round" "$base" "$cap"
+    # GitHub: with no retry-after, wait at least one minute before retrying
+    # a secondary limit; earlier retries can extend the restriction.
+    _issue_secondary_wait "$round" "$base" "$cap" "$floor"
   else
     _issue_primary_wait
   fi
@@ -235,10 +256,11 @@ _issue_last_url() {
 
 create_github_issue_bounded() {
   local title="$1" body_file="$2" label="$3"
-  local base cap max used=0 round=0 w rc out class url with_label=1 lrc found pass attempt errf
+  local base cap max floor used=0 round=0 w rc out class url with_label=1 lrc found pass attempt errf
   base=$(_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_BASE_SECS 5)
   cap=$(_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_MAX_DELAY_SECS 60)
   max=$(_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS 300)
+  floor=$(_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_SECONDARY_MIN_SECS 60)
   # Fetched once here so every lookup during backoff reuses them; a failure
   # is retried by the lookup itself.
   load_issue_identity || true
@@ -302,7 +324,7 @@ create_github_issue_bounded() {
     # lookup lists recent issues without search, because the issue this
     # create may have made is not yet in the search index.
     for ((attempt = 0; attempt <= max; attempt++)); do
-      w=$(_issue_wait_for_class "$class" "$out" "$round" "$base" "$cap")
+      w=$(_issue_wait_for_class "$class" "$out" "$round" "$base" "$cap" "$floor")
       [ "$w" -lt 1 ] && w=1
       if [ $((used + w)) -gt "$max" ]; then
         echo "WARNING: GitHub issue creation gave up after ${used}s (AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS=${max}); falling back to local tracking." >&2

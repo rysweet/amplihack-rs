@@ -247,7 +247,9 @@ case "$1:$2" in
     printf '%s\n' "${GH_LIST_JSON:-[]}"
     exit "${GH_LIST_STATUS:-0}"
     ;;
-  repo:view) echo '{"nameWithOwner":"example-org/example-repo"}'; exit 0 ;;
+  repo:view)
+    case " $* " in *" --jq "*) echo 'example-org/example-repo' ;; *) echo '{"nameWithOwner":"example-org/example-repo"}' ;; esac
+    exit 0 ;;
   label:create) exit 0 ;;
   issue:create)
     [ -n "${GH_CREATE_OUTPUT:-}" ] && printf '%s\n' "$GH_CREATE_OUTPUT"

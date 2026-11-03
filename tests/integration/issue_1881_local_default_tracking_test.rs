@@ -29,7 +29,6 @@ const REPO_URL: &str = "https://github.com/example-org/example-repo";
 const CREATED_URL: &str = "https://github.com/example-org/example-repo/issues/901";
 const TITLE: &str = "Add a --json flag to recipe list";
 const BODY_MARKER: &str = "BODY-MARKER-7f3a9c";
-const LOGIN: &str = "example-user";
 
 // ---------------------------------------------------------------------------
 // Paths and recipe access
@@ -133,7 +132,8 @@ fn write_executable(path: &Path, content: &str) {
 ///
 /// - `issue view N`: prints `$FAKE_REPO_URL/issues/N` when N equals
 ///   `GH_VIEW_ISSUE`; otherwise fails.
-/// - `api user`: prints `GH_USER_LOGIN` (default `example-user`).
+/// - `api user`: prints `GH_USER_LOGIN` (default `example-user`); step 03 must
+///   never call it.
 ///   `GH_API_USER_EXIT` makes it fail with a fake token on stderr.
 /// - `api repos/...`: 404.
 /// - `api rate_limit`: reset epoch `GH_RESET_EPOCH`, or now + `GH_RESET_IN`
@@ -456,21 +456,22 @@ fn run_step(issue_number: &str, task: &str, env: &[(&str, &str)]) -> Run {
     Run { output, sandbox }
 }
 
-/// Opted in, with a small backoff budget so give-up paths finish fast.
+/// Opted in, with a small backoff budget and a 3s secondary floor (the
+/// default is 60s) so give-up paths finish fast.
 fn run_opted_in(task: &str, env: &[(&str, &str)]) -> Run {
     let mut all: Vec<(&str, &str)> = vec![
         ("RECIPE_VAR_create_issue", "true"),
         ("AMPLIHACK_ISSUE_BACKOFF_BASE_SECS", "2"),
         ("AMPLIHACK_ISSUE_BACKOFF_MAX_DELAY_SECS", "8"),
         ("AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS", "30"),
+        ("AMPLIHACK_ISSUE_BACKOFF_SECONDARY_MIN_SECS", "3"),
     ];
     all.extend_from_slice(env);
     run_step("", task, &all)
 }
 
 fn exact_list_json(title: &str, url: &str) -> String {
-    serde_json::json!([{ "number": 1700, "title": title, "url": url, "author": { "login": LOGIN } }])
-        .to_string()
+    serde_json::json!([{ "number": 1700, "title": title, "url": url }]).to_string()
 }
 
 /// Source both helpers under `set -euo pipefail`, as step-03 does, and run
@@ -700,8 +701,8 @@ fn lookup_uses_open_state_quoted_phrase_and_in_title() {
     );
     let json = flag_value(call, "--json").unwrap_or_default();
     assert!(
-        json.contains("title") && json.contains("url") && json.contains("author"),
-        "{call:?}"
+        json.contains("title") && json.contains("url") && !json.contains("author"),
+        "reuse does not depend on who opened the issue: {call:?}"
     );
 }
 
@@ -851,10 +852,10 @@ fn title_that_looks_like_a_flag_is_one_argument() {
 fn same_title_in_another_repository_is_skipped_for_a_later_match() {
     let good = format!("{REPO_URL}/issues/1702");
     let json = serde_json::json!([
-        { "number": 1, "title": TITLE, "url": "https://github.com/other-org/other-repo/issues/1", "author": { "login": LOGIN } },
-        { "number": 2, "title": TITLE, "url": format!("{REPO_URL}/pull/2"), "author": { "login": LOGIN } },
-        { "number": 3, "title": TITLE, "url": format!("{REPO_URL}/issues/3\n"), "author": { "login": LOGIN } },
-        { "number": 1702, "title": TITLE, "url": good.replace("example-org", "Example-Org"), "author": { "login": LOGIN } },
+        { "number": 1, "title": TITLE, "url": "https://github.com/other-org/other-repo/issues/1" },
+        { "number": 2, "title": TITLE, "url": format!("{REPO_URL}/pull/2") },
+        { "number": 3, "title": TITLE, "url": format!("{REPO_URL}/issues/3\n") },
+        { "number": 1702, "title": TITLE, "url": good.replace("example-org", "Example-Org") },
     ])
     .to_string();
     let run = run_opted_in(TITLE, &[("GH_LIST_JSON", &json)]);
@@ -871,22 +872,32 @@ fn same_title_in_another_repository_is_skipped_for_a_later_match() {
 #[test]
 fn only_results_from_other_repositories_lead_to_a_create() {
     let json = serde_json::json!([
-        { "number": 1, "title": TITLE, "url": "https://github.com/other-org/other-repo/issues/1", "author": { "login": LOGIN } },
-        { "number": 2, "title": TITLE, "url": "http://github.com/example-org/example-repo/issues/2", "author": { "login": LOGIN } },
+        { "number": 1, "title": TITLE, "url": "https://github.com/other-org/other-repo/issues/1" },
+        { "number": 2, "title": TITLE, "url": "http://github.com/example-org/example-repo/issues/2" },
     ])
     .to_string();
     let run = run_opted_in(TITLE, &[("GH_LIST_JSON", &json)]);
     run.assert_created();
 }
 
+/// A failed search is followed by the recent listing, which uses the core
+/// quota rather than the search quota; when that succeeds with no match the
+/// create goes ahead.
 #[test]
-fn failed_first_lookup_still_creates_and_warns() {
-    let run = run_opted_in(TITLE, &[("GH_LIST_SEQ", "fail")]);
+fn failed_search_falls_back_to_the_recent_listing_then_creates() {
+    let run = run_opted_in(TITLE, &[("GH_LIST_SEQ", "fail default")]);
     run.assert_created();
     assert_eq!(run.creates().len(), 1, "{}", run.diag());
+    let lists = run.lists();
+    assert_eq!(lists.len(), 2, "{}", run.diag());
     assert!(
-        run.stderr().contains("WARNING: exact-title lookup failed"),
+        flag_value(&lists[0], "--search").is_some(),
         "{}",
+        run.diag()
+    );
+    assert!(
+        flag_value(&lists[1], "--search").is_none(),
+        "the fallback lookup must not use the search API\n{}",
         run.diag()
     );
     assert!(
@@ -902,10 +913,48 @@ fn failed_first_lookup_still_creates_and_warns() {
 }
 
 #[test]
+fn failed_search_then_recent_match_reuses_without_create() {
+    let found = format!("{REPO_URL}/issues/1700");
+    let run = run_opted_in(
+        TITLE,
+        &[
+            ("GH_LIST_SEQ", "fail found"),
+            ("GH_LIST_FOUND_JSON", &exact_list_json(TITLE, &found)),
+        ],
+    );
+    run.assert_exit(0);
+    assert_eq!(run.stdout().trim(), found, "{}", run.diag());
+    assert!(run.creates().is_empty(), "{}", run.diag());
+}
+
+/// #1881 review: the duplicates came from separate runs of the same task, so
+/// a run that cannot check for an existing issue must not create one blind.
+#[test]
+fn failed_first_lookup_never_creates_and_uses_local_tracking() {
+    let run = run_opted_in(TITLE, &[("GH_LIST_SEQ", "fail")]);
+    run.assert_local();
+    assert!(run.creates().is_empty(), "{}", run.diag());
+    assert!(run.calls_of("label", "create").is_empty(), "{}", run.diag());
+    assert_eq!(
+        run.lists().len(),
+        2,
+        "search, then the recent listing\n{}",
+        run.diag()
+    );
+    assert!(
+        run.stderr().contains("not creating one blind"),
+        "{}",
+        run.diag()
+    );
+    assert!(run.sleeps().is_empty(), "{}", run.diag());
+}
+
+#[test]
 fn non_array_lookup_output_counts_as_a_failed_lookup() {
     for tok in ["garbage", "object"] {
         let run = run_opted_in(TITLE, &[("GH_LIST_SEQ", tok)]);
-        run.assert_created();
+        run.assert_local();
+        assert!(run.creates().is_empty(), "{tok}\n{}", run.diag());
         assert!(
             run.stderr().contains("WARNING: exact-title lookup failed"),
             "{tok}\n{}",
@@ -924,7 +973,8 @@ fn failed_repo_view_counts_as_a_failed_lookup() {
             ("GH_LIST_JSON", &exact_list_json(TITLE, &found)),
         ],
     );
-    run.assert_created();
+    run.assert_local();
+    assert!(run.creates().is_empty(), "{}", run.diag());
     assert!(
         run.stderr().contains("WARNING: exact-title lookup failed"),
         "a match that cannot be checked against this repository must not be reused\n{}",
@@ -1005,12 +1055,12 @@ fn persistent_secondary_limit_gives_up_within_budget_with_jittered_delays() {
     let total: u64 = sleeps.iter().sum();
     assert!(
         sleeps.len() >= 3,
-        "base 2, cap 8, total 30 gives at least 3 rounds\n{}",
+        "floor 3, base 2, cap 8, total 30 gives at least 3 rounds\n{}",
         run.diag()
     );
     assert!(
-        sleeps.iter().all(|s| (1..=8).contains(s)),
-        "every delay in [1, cap]\n{}",
+        sleeps.iter().all(|s| (4..=11).contains(s)),
+        "every delay is floor + a jitter delay in [1, cap]\n{}",
         run.diag()
     );
     assert!(total <= 30, "total sleep within MAX_TOTAL\n{}", run.diag());
@@ -1019,8 +1069,8 @@ fn persistent_secondary_limit_gives_up_within_budget_with_jittered_delays() {
         "delays must not be at a fixed interval\n{}",
         run.diag()
     );
-    // round 0 waits d/2..d with d=2, round 2 waits 4..8: the early delays grow.
-    assert!(sleeps[0] <= 2 && sleeps[2] >= 4, "{}", run.diag());
+    // floor 3 plus d/2..d: round 0 (d=2) waits 4..5, round 2 (d=8) waits 7..11.
+    assert!(sleeps[0] <= 5 && sleeps[2] >= 7, "{}", run.diag());
     assert_eq!(
         run.creates().len(),
         sleeps.len() + 1,
@@ -1053,8 +1103,11 @@ fn persistent_secondary_limit_gives_up_within_budget_with_jittered_delays() {
     );
 }
 
+/// #1881 review: GitHub asks for at least a minute before retrying a
+/// secondary limit that sent no retry-after, so the default first wait is the
+/// 60s floor plus round 0's jitter (BASE 5: 2..4).
 #[test]
-fn default_backoff_first_delay_is_between_two_and_four_seconds() {
+fn default_secondary_backoff_waits_at_least_one_minute() {
     let run = run_step(
         "",
         TITLE,
@@ -1067,10 +1120,29 @@ fn default_backoff_first_delay_is_between_two_and_four_seconds() {
     let sleeps = run.sleeps();
     assert_eq!(sleeps.len(), 1, "{}", run.diag());
     assert!(
-        (2..=4).contains(&sleeps[0]),
-        "BASE 5: round 0 waits 2..4\n{}",
+        (62..=64).contains(&sleeps[0]),
+        "floor 60 plus round 0's 2..4\n{}",
         run.diag()
     );
+}
+
+/// With the defaults a worker that stays secondary-limited makes at most five
+/// creates in its 300s budget, then tracks locally.
+#[test]
+fn default_persistent_secondary_limit_makes_few_creates() {
+    let run = run_step(
+        "",
+        TITLE,
+        &[
+            ("RECIPE_VAR_create_issue", "true"),
+            ("GH_CREATE_SEQ", "secondary"),
+        ],
+    );
+    run.assert_local();
+    let sleeps = run.sleeps();
+    assert!(sleeps.iter().all(|s| *s >= 60), "{}", run.diag());
+    assert!(sleeps.iter().sum::<u64>() <= 300, "{}", run.diag());
+    assert!((3..=5).contains(&run.creates().len()), "{}", run.diag());
 }
 
 #[test]
@@ -1093,6 +1165,7 @@ fn invalid_or_oversized_budget_settings_fall_back_to_defaults() {
                 ("AMPLIHACK_ISSUE_BACKOFF_BASE_SECS", bad),
                 ("AMPLIHACK_ISSUE_BACKOFF_MAX_DELAY_SECS", bad),
                 ("AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS", bad),
+                ("AMPLIHACK_ISSUE_BACKOFF_SECONDARY_MIN_SECS", bad),
             ],
         );
         run.assert_local();
@@ -1105,8 +1178,8 @@ fn invalid_or_oversized_budget_settings_fall_back_to_defaults() {
         let sleeps = run.sleeps();
         assert!(sleeps.iter().sum::<u64>() <= 300, "{bad:?}\n{}", run.diag());
         assert!(
-            sleeps.iter().all(|s| (1..=60).contains(s)),
-            "{bad:?}\n{}",
+            sleeps.iter().all(|s| (61..=120).contains(s)),
+            "{bad:?}: the 60s floor plus a jitter delay of at most 60\n{}",
             run.diag()
         );
     }
@@ -1180,30 +1253,35 @@ fn backoff_lookup_lists_recent_issues_without_search() {
     );
 }
 
+/// #1881 review: the requirement is the same title in the same repository.
+/// The gh account on a host switches routinely, so who opened the issue does
+/// not matter.
 #[test]
-fn same_title_opened_by_another_account_is_not_reused() {
+fn same_title_opened_by_another_account_is_reused() {
     let theirs = format!("{REPO_URL}/issues/1700");
     let json = serde_json::json!([
         { "number": 1700, "title": TITLE, "url": theirs, "author": { "login": "someone-else" } },
-        { "number": 1701, "title": TITLE, "url": format!("{REPO_URL}/issues/1701") },
     ])
     .to_string();
     let run = run_opted_in(TITLE, &[("GH_LIST_JSON", &json)]);
-    run.assert_created();
-    assert_eq!(run.creates().len(), 1, "{}", run.diag());
+    run.assert_exit(0);
+    assert_eq!(run.stdout().trim(), theirs, "{}", run.diag());
+    assert!(run.creates().is_empty(), "{}", run.diag());
 }
 
 #[test]
-fn repository_and_login_are_fetched_once_per_run_across_retries() {
+fn repository_is_fetched_once_per_run_and_the_login_never() {
     let run = run_opted_in(TITLE, &[("GH_CREATE_SEQ", "secondary secondary ok")]);
     run.assert_created();
     assert_eq!(run.lists().len(), 3, "{}", run.diag());
     assert_eq!(run.calls_of("repo", "view").len(), 1, "{}", run.diag());
-    assert_eq!(run.calls_of("api", "user").len(), 1, "{}", run.diag());
+    assert!(run.calls_of("api", "user").is_empty(), "{}", run.diag());
 }
 
+/// A GitHub App installation token cannot read `/user`; lookups must not
+/// depend on it.
 #[test]
-fn failed_login_fetch_warns_sanitised_and_still_creates() {
+fn token_that_cannot_read_user_still_dedupes() {
     let found = format!("{REPO_URL}/issues/1700");
     let run = run_opted_in(
         TITLE,
@@ -1212,24 +1290,10 @@ fn failed_login_fetch_warns_sanitised_and_still_creates() {
             ("GH_LIST_JSON", &exact_list_json(TITLE, &found)),
         ],
     );
-    run.assert_created();
-    let err = run.stderr();
-    assert!(
-        err.contains("WARNING: could not determine the gh login")
-            && err.contains("WARNING: exact-title lookup failed"),
-        "{}",
-        run.diag()
-    );
-    assert!(
-        err.contains("<redacted-token>") && !err.contains("ghp_USERFAKE"),
-        "{}",
-        run.diag()
-    );
-    assert!(
-        run.lists().is_empty(),
-        "no listing runs without a login to match\n{}",
-        run.diag()
-    );
+    run.assert_exit(0);
+    assert_eq!(run.stdout().trim(), found, "{}", run.diag());
+    assert!(run.creates().is_empty(), "{}", run.diag());
+    assert!(!run.stderr().contains("WARNING"), "{}", run.diag());
 }
 
 #[test]
@@ -1877,15 +1941,6 @@ fn helper_find_open_issue_by_exact_title_return_codes() {
                 ("GH_API_USER_EXIT", "1".into()),
                 ("GH_LIST_JSON", exact_list_json(TITLE, &found)),
             ],
-            "rc=2",
-            "",
-            true,
-        ),
-        (
-            vec![
-                ("GH_USER_LOGIN", "Example-User".into()),
-                ("GH_LIST_JSON", exact_list_json(TITLE, &found)),
-            ],
             "rc=0",
             found.as_str(),
             false,
@@ -1911,6 +1966,66 @@ fn helper_find_open_issue_by_exact_title_return_codes() {
             "{env:?}\n{}",
             run.diag()
         );
+    }
+}
+
+#[test]
+fn helper_find_open_issue_before_create_return_codes() {
+    let found = format!("{REPO_URL}/issues/1700");
+    let call = "rc=0; out=$(find_open_issue_before_create \"$T\") || rc=$?; printf 'rc=%s\\n%s' \"$rc\" \"$out\"";
+    // (GH_LIST_SEQ, expected rc line, expected URL, list calls)
+    for (seq, rc, url, lists) in [
+        ("found", "rc=0", found.as_str(), 1),
+        ("default", "rc=1", "", 1),
+        ("fail found", "rc=0", found.as_str(), 2),
+        ("fail default", "rc=1", "", 2),
+        ("fail fail", "rc=2", "", 2),
+        ("garbage garbage", "rc=2", "", 2),
+    ] {
+        let run = run_helper(
+            call,
+            &[
+                ("T", TITLE),
+                ("GH_LIST_SEQ", seq),
+                ("GH_LIST_FOUND_JSON", &exact_list_json(TITLE, &found)),
+            ],
+        );
+        run.assert_exit(0);
+        let out = run.stdout();
+        let mut l = out.lines();
+        assert_eq!(l.next(), Some(rc), "{seq}\n{}", run.diag());
+        assert_eq!(
+            l.collect::<Vec<_>>().join("\n"),
+            url,
+            "{seq}\n{}",
+            run.diag()
+        );
+        let calls = run.lists();
+        assert_eq!(calls.len(), lists, "{seq}\n{}", run.diag());
+        if lists == 2 {
+            assert!(
+                flag_value(&calls[1], "--search").is_none(),
+                "{seq}\n{}",
+                run.diag()
+            );
+        }
+    }
+}
+
+#[test]
+fn helper_secondary_wait_adds_the_floor() {
+    let run = run_helper(
+        "for r in 0 1 2 3; do _issue_secondary_wait \"$r\" 5 60 60; done; _issue_wait_for_class secondary 'HTTP 403: secondary rate limit' 0 5 60",
+        &[],
+    );
+    run.assert_exit(0);
+    let v: Vec<u64> = run.stdout().lines().map(|l| l.parse().unwrap()).collect();
+    assert_eq!(v.len(), 5, "{}", run.diag());
+    for (got, (lo, hi)) in v
+        .iter()
+        .zip([(62, 65), (65, 70), (70, 80), (80, 100), (62, 65)])
+    {
+        assert!((lo..=hi).contains(got), "{v:?}\n{}", run.diag());
     }
 }
 
@@ -1959,7 +2074,7 @@ fn step_03_calls_the_helpers_in_order_and_reads_only_the_recipe_var() {
         pos("HOST_TYPE"),
         pos("select_github_tracking_issue"),
         pos("issue_creation_opted_in"),
-        pos("find_open_issue_by_exact_title"),
+        pos("find_open_issue_before_create"),
         pos("create_github_issue_bounded"),
     ];
     assert!(
@@ -2060,10 +2175,13 @@ fn helper_wraps_every_gh_call_with_timeout_no_prompt_and_null_stdin() {
         "timeout 30 gh issue list",
         "timeout 30 gh repo view",
         "timeout 30 gh api rate_limit",
-        "timeout 30 gh api user",
     ] {
         assert!(text.contains(literal), "helper must contain `{literal}`");
     }
+    assert!(
+        !text.contains("gh api user"),
+        "lookups must not depend on /user, which app tokens cannot read"
+    );
     let code = code_only(&text);
     let call_re = Regex::new(r"timeout\s+\d+\s+gh\s").unwrap();
     for line in code.lines().filter(|l| call_re.is_match(l)) {
@@ -2081,4 +2199,20 @@ fn helper_wraps_every_gh_call_with_timeout_no_prompt_and_null_stdin() {
         assert!(!bare_re.is_match(line), "gh call without timeout: {line}");
     }
     assert!(!text.contains("retrying once") && !text.contains("GH_RETRY_DELAY_SECONDS"));
+}
+
+/// #1881 review: a decomposed run hands its opt-in to every workstream;
+/// multitask reads AMPLIHACK_CREATE_ISSUE into each workstream's context.
+#[test]
+fn parallel_launch_forwards_create_issue_to_workstreams() {
+    let text = fs::read_to_string(recipe_file("smart-execute-routing")).unwrap();
+    let start = text
+        .find("id: \"launch-parallel-round-1\"")
+        .expect("launch-parallel-round-1 step");
+    let step = &text[start..];
+    let step = &step[..step.find("output: \"round_1_result\"").unwrap()];
+    assert!(
+        step.contains("AMPLIHACK_CREATE_ISSUE=\"${RECIPE_VAR_create_issue:-}\""),
+        "launch-parallel-round-1 must pass create_issue to `orch run`"
+    );
 }

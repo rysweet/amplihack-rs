@@ -23,7 +23,7 @@ entirely in Bash, with an opt-in gate between the guards (#1881). Both guards
 run before any `gh issue create` call. On GitHub, Guard 1 is
 `select_github_tracking_issue` in
 `amplifier-bundle/tools/workflow_issue_tracking.sh`, and Guard 2 and the
-create are `find_open_issue_by_exact_title` and
+create are `find_open_issue_before_create` and
 `create_github_issue_bounded` in `amplifier-bundle/tools/workflow_issue_create.sh`.
 The [Tracking Issue Selection Reference](workflow-tracking-issue-selection.md)
 describes all three in full.
@@ -48,9 +48,10 @@ task_description
 │ gh issue list│─────────▶│ Reuse    │
 │ exact title  │  title   │ (exit 0) │
 └──────────────┘          └──────────┘
+       │ lookup failed (search, then recent listing) ──▶ local tracking
        │ no match
        ▼
-┌──────────────┐  rate limit: jittered backoff, look up again,
+┌──────────────┐  secondary limit: wait 60 s + jitter, look up again,
 │ gh issue     │  give up to local tracking after
 │ create       │  AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS
 └──────────────┘
@@ -95,13 +96,17 @@ characters, trimmed):
 ```bash
 GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 \
   --search='"Add a --json flag to recipe list" in:title' \
-  --json number,title,url,author </dev/null
+  --json number,title,url </dev/null
 ```
 
-A `jq` program then checks the title, the URL shape, the repository and the
-author of every result, and prints the URL of the first one that passes all
-four. A result for another repository, or opened by an account other than the
-gh login the step runs as, is skipped, not reused. The full program is in
+A `jq` program then checks the title, the URL shape and the repository of
+every result, and prints the URL of the first one that passes all three. A
+result for another repository is skipped, not reused. Who opened the issue is
+not checked, so a run under a different gh account reuses the same issue.
+If the search fails, Guard 2 tries a plain listing of the newest open issues
+instead, which uses the core API quota. If that fails too, step-03 uses local
+tracking and creates nothing, because it cannot tell whether another run of
+the task has already made the issue. The full program is in
 [Exact-title reuse](workflow-tracking-issue-selection.md#lookup). Before every
 retry of a rate-limited create, and once after a create that timed out, the
 lookup runs again as a plain listing of the newest open issues without

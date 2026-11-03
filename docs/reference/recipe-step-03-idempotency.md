@@ -51,8 +51,10 @@ The `workflow-prep` recipe already follows steps 3–6 above for GitHub:
 - Without `create_issue=true`, step 03 returns local tracking and makes no
   GitHub write.
 - With it, step 03 reuses an open issue whose title is exactly the task
-  title, and otherwise creates one with bounded, jittered retries on rate
-  limits, falling back to local tracking when the time budget runs out.
+  title, and otherwise creates one with bounded retries on rate limits
+  (at least 60 s plus jitter between creates on a secondary limit), falling
+  back to local tracking when the time budget runs out or when it cannot
+  check for an existing issue.
 
 The [Tracking Issue Selection Reference](workflow-tracking-issue-selection.md)
 has the details, including the `AMPLIHACK_ISSUE_BACKOFF_*` variables.

@@ -24,6 +24,7 @@ context:
   # Inherited from smart-orchestrator; either one rules out quick-change (#1740).
   existing_branch: ""
   pr_number: ""
+  create_issue: "" # inherited from smart-orchestrator; passed to workstreams as AMPLIHACK_CREATE_ISSUE (#1881)
 
 steps:
   # ─────────────────────────────────────────────────────────────────────────
@@ -245,7 +246,7 @@ steps:
       status=0
       AMPLIHACK_TREE_ID="$TREE_ID" AMPLIHACK_SESSION_DEPTH="$SESSION_DEPTH" \
         AMPLIHACK_PARENT_STEP="launch-parallel-round-1" \
-        AMPLIHACK_REPO_PATH="$REPO_PATH" \
+        AMPLIHACK_REPO_PATH="$REPO_PATH" AMPLIHACK_CREATE_ISSUE="${RECIPE_VAR_create_issue:-}" \
         "${AMPLIHACK_BIN:-amplihack}" orch run -- "$WS_FILE" 2>&1 | tee /dev/stderr || status=$?
       exit $status
     output: "round_1_result"

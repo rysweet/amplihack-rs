@@ -43,8 +43,10 @@ What step-03 does next depends on the `create_issue` context value (#1881):
   `gh issue list`, `gh label create` or `gh issue create` call.
 - **`true`, `1` or `yes`:** step-03 reuses an open issue with
   [exactly the same title](#exact-title-reuse) if one exists. Otherwise it
-  [creates one](#bounded-issue-creation), backing off with jitter on a
-  secondary rate limit and giving up after a bounded time.
+  [creates one](#bounded-issue-creation), waiting at least one minute plus
+  jitter on a secondary rate limit and giving up after a bounded time. If
+  step-03 cannot check for an existing issue, it uses local tracking rather
+  than create one blind.
 
 Before this change, step-03 ignored `issue_number` on GitHub and reused the
 first `#N` anywhere in the task text. `gh issue view N` succeeds for pull
@@ -237,6 +239,14 @@ amplihack recipe run default-workflow \
 `default-workflow.yaml` and `smart-orchestrator.yaml`. Sub-recipes receive the
 value through context merging, the same way they receive `issue_number`.
 
+A decomposed run hands the value to its parallel workstreams as well:
+`launch-parallel-round-1` in `smart-execute-routing.yaml` exports it as
+`AMPLIHACK_CREATE_ISSUE`, and multitask copies a non-empty value into each
+workstream's `create_issue` context (`build_resume_context` in
+`crates/amplihack-cli/src/commands/multitask/command_builder.rs`). Each
+workstream then applies the same opt-in, exact-title reuse and backoff. When
+the variable is unset, workstreams use local tracking.
+
 Step-03 reads the value only from `RECIPE_VAR_create_issue`. Text in the task
 description or requirements such as "create_issue=true" or "please open an
 issue" has no effect.
@@ -269,7 +279,7 @@ in a space after the cut match its own earlier issue.
 ```bash
 GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 \
   --search='"Add a --json flag to recipe list" in:title' \
-  --json number,title,url,author </dev/null
+  --json number,title,url </dev/null
 ```
 
 The search phrase is the title with double quotes removed and each backslash
@@ -277,26 +287,24 @@ replaced by a space, wrapped in quotes
 and followed by `in:title`, so search qualifiers in the task text are
 treated as words.
 
-`REPO` and `LOGIN` come from `load_issue_identity`, which step-03 calls once
-before the first lookup. It stores them in `ISSUE_REPO_NWO` and `ISSUE_LOGIN`
-(both cleared when the helper is sourced, so values from the environment are
-never used), and every later lookup in the run reuses them:
+`REPO` comes from `load_issue_identity`, which step-03 calls once before the
+first lookup. It stores it in `ISSUE_REPO_NWO` (cleared when the helper is
+sourced, so a value from the environment is never used), and every later
+lookup in the run reuses it:
 
 ```bash
 GH_PROMPT_DISABLED=1 timeout 30 gh repo view --json nameWithOwner --jq .nameWithOwner </dev/null
-GH_PROMPT_DISABLED=1 timeout 30 gh api user --jq .login </dev/null
 ```
 
-If either call fails or prints a value of the wrong form, the lookup does not
-run `gh issue list` and returns 2. A later lookup tries the failed call again.
+If the call fails or prints a value of the wrong form, the lookup does not
+run `gh issue list` and returns 2. A later lookup tries the call again.
 
-The results are then filtered with
-`jq -r --arg t "$TITLE" --arg r "$REPO" --arg u "$LOGIN"` and this program:
+The results are then filtered with `jq -r --arg t "$TITLE" --arg r "$REPO"`
+and this program:
 
 ```jq
 [ .[]
   | select(.title == $t)
-  | select((.author.login | ascii_downcase) == ($u | ascii_downcase))
   | select((.url | split("/")) as $p
       | ($p | length) == 7 and $p[0] == "https:" and $p[1] == ""
         and ($p[2] | test("\\A[A-Za-z0-9.-]+\\z")) and $p[5] == "issues"
@@ -312,17 +320,17 @@ match must:
 - have a URL of the form `https://<host>/<owner>/<repo>/issues/<N>` with no
   newline or other stray characters;
 - belong to the current repository: `<owner>/<repo>` equals `REPO`, ignoring
-  case;
-- have been opened by the gh account the step runs as: `author.login` equals
-  `LOGIN`, ignoring case.
+  case.
 
-The author check stops an issue that someone else opened with the same title
-from becoming the tracking issue, and later being closed by `Fixes #N` when
-the pull request merges. As a result, if the gh account changes between two
-runs of the same task, the second run does not reuse the first run's issue
-and creates another one.
+Who opened the issue is not checked. The requirement in #1881 is an open
+issue with the same title in the same repository, and the gh account on a
+host can change between two runs of the same task; an author check would
+make the second run create a duplicate. It would also need `gh api user`,
+which a GitHub App installation token cannot call. An unrelated issue is
+reused only if someone opens one whose title is identical, character for
+character, to the title generated from the task description.
 
-A result that fails the URL, repository or author check is skipped, and the next
+A result that fails the URL or repository check is skipped, and the next
 result with the same title is tried. `gh issue list` never returns pull
 requests, and `--state open` excludes closed issues.
 
@@ -332,7 +340,7 @@ create, call `find_open_issue_by_exact_title TITLE recent`. That form drops
 
 ```bash
 GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 \
-  --json number,title,url,author </dev/null
+  --json number,title,url </dev/null
 ```
 
 GitHub search indexes new issues after a delay, so a create that GitHub
@@ -343,14 +351,29 @@ The same `jq` filter is applied.
 When the lookup fails, `find_open_issue_by_exact_title` prints
 `WARNING: exact-title lookup failed; <reason>` on stderr itself before it
 returns 2, followed by the failed `gh` call's stderr passed through
-`sanitize_cli_output`. Callers that treat 1 and 2 alike, such as step-03 before the first
-create, still log the failure.
+`sanitize_cli_output`.
+
+Before the first create, step-03 calls `find_open_issue_before_create`. It
+runs the search lookup and, only if that fails, the recent listing. The
+search API has a much smaller per-minute quota than the core API, so it is
+the call most likely to fail when many runs start at once; the recent
+listing uses the core quota. A duplicate from a parallel run of the same task
+would be among the newest 100 open issues. If both lookups fail, step-03
+prints
+
+```text
+WARNING: could not check for an open issue with this title; not creating one blind (a duplicate is worse than local tracking); using local tracking
+```
+
+and writes the local metadata block. The duplicates in #1881 came from
+separate runs of the same task, so a create that skips the check could
+duplicate another run's issue even though this run has created nothing.
 
 | Lookup result | Before the first create | Before a retry |
 | ------------- | ----------------------- | -------------- |
 | Match | URL printed, exit 0, no create | URL printed, exit 0, no further create |
 | No match | Create | Retry the create |
-| Lookup failed (gh error, timeout, bad JSON, `repo view` or `api user` failed) | Create (nothing has been created yet, so there is nothing to duplicate) | No create this round; wait again (see below), then look up again |
+| Lookup failed (gh error, timeout, bad JSON, `repo view` failed) | Search failed: try the recent listing. Both failed: local tracking, no create | No create this round; wait again (see below), then look up again |
 
 A retry only follows a lookup that succeeded and found nothing. When the
 lookup before a retry fails, that round makes no `gh issue create` call. The
@@ -406,7 +429,8 @@ each attempt is exactly one `gh issue create` call.
 
 | Variable | Default | Meaning |
 | -------- | ------- | ------- |
-| `AMPLIHACK_ISSUE_BACKOFF_BASE_SECS` | `5` | Starting delay |
+| `AMPLIHACK_ISSUE_BACKOFF_SECONDARY_MIN_SECS` | `60` | Floor added to every secondary-limit wait that has no `retry-after` |
+| `AMPLIHACK_ISSUE_BACKOFF_BASE_SECS` | `5` | Starting delay of the jitter added to the floor |
 | `AMPLIHACK_ISSUE_BACKOFF_MAX_DELAY_SECS` | `60` | Cap on one computed delay |
 | `AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS` | `300` | Total wait budget for the run |
 
@@ -417,22 +441,28 @@ value, including `0`, also uses the default and prints
 Only the length is printed, so a token put in one of these variables by
 mistake does not reach the log.
 
-For backoff round *n* (starting at 0), the delay uses "equal jitter":
+GitHub's guidance for a secondary rate limit without a `retry-after` header
+is to wait at least one minute before retrying, then back off exponentially;
+retrying sooner can extend the restriction. For backoff round *n* (starting
+at 0) the wait is the floor plus an "equal jitter" delay:
 
 ```text
 d    = min(MAX_DELAY, BASE * 2^n)        # exponent capped at 30
-wait = d/2 + RANDOM % (d/2 + 1)          # at least 1
+j    = d/2 + RANDOM % (d/2 + 1)          # at least 1
+wait = SECONDARY_MIN + j
 ```
 
-With the defaults, round 0 waits 2–4 s, round 1 5–10 s, round 2 10–20 s,
-round 3 20–40 s and round 4 onward 30–60 s. Waits never fall to 0 and are
-not at a fixed interval.
+With the defaults, round 0 waits 62–64 s, round 1 65–70 s, round 2 70–80 s,
+round 3 80–100 s and round 4 onward 90–120 s. The jitter spreads parallel
+workers apart. Within the 300 s budget a worker that stays limited makes
+at most five creates, usually four, and then
+[gives up](#giving-up) to local tracking.
 
 If the output contains `retry-after: N` (any case, 1–6 digits), the wait is
 `N` seconds instead. It is neither jittered nor capped by `MAX_DELAY`, because
 GitHub requires at least that long. gh's error output usually leaves out
 response headers, so this applies only when `retry-after:` text appears in
-that output; in most runs the jittered delay is what applies. A
+that output; in most runs the floor plus jitter is what applies. A
 `retry-after: 0` is raised to 1. The
 Retry-After wait still counts against `MAX_TOTAL`. It is never shortened to
 fit: if `N` is more than the budget that is left, the helper gives up at once
@@ -441,7 +471,7 @@ without sleeping.
 Each wait is logged:
 
 ```text
-WARNING: gh issue create hit a GitHub secondary rate limit; backing off 7s (round 1, 3/300s used)
+WARNING: gh issue create hit a GitHub secondary rate limit; backing off 68s (round 1, 63/300s used)
 ```
 
 ### Primary rate limit
@@ -470,11 +500,11 @@ step-03 is never more than `MAX_TOTAL`. There is no unbounded loop.
 
 ### Shortening the budget
 
-To fall back to local tracking sooner on a busy account:
+To fall back to local tracking sooner on a busy account, lower the total
+budget. A budget below the 60 s floor gives up on the first secondary limit
+without sleeping:
 
 ```bash
-AMPLIHACK_ISSUE_BACKOFF_BASE_SECS=2 \
-AMPLIHACK_ISSUE_BACKOFF_MAX_DELAY_SECS=8 \
 AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS=30 \
 amplihack recipe run default-workflow \
   -c task_description="Add a --json flag to recipe list" \
@@ -535,7 +565,7 @@ step's `set -euo pipefail`. Diagnostics go to stderr; stdout carries only a
 URL or the metadata block. It uses no `eval` or `sh -c`, and every user value
 reaches `gh` as one argument in `--flag=value` form. Every `gh` call runs as
 `GH_PROMPT_DISABLED=1 timeout N gh … </dev/null` (30 s for list, label,
-`rate_limit`, `repo view` and `api user`; 60 s for create), so a login prompt can never
+`rate_limit` and `repo view`; 60 s for create), so a login prompt can never
 stall the step. All `gh` output that reaches stderr goes through
 `sanitize_cli_output`. The issue body is never logged.
 
@@ -546,16 +576,14 @@ Returns 1 otherwise. No output.
 
 ### `load_issue_identity`
 
-Sets `ISSUE_REPO_NWO` (`owner/repo`, from `gh repo view`) and `ISSUE_LOGIN`
-(the gh account, from `gh api user`) when they are empty, and returns 0. When
-either call fails or prints a value of the wrong form, it prints
-`WARNING: could not determine this repository (repo view exited RC)` or
-`WARNING: could not determine the gh login (api user exited RC)` and gh's
-sanitised stderr, and returns 1. Call it in the step's own shell, not in
-`$(…)`, or the values are lost when the subshell exits. Step-03 calls it once
-before the first lookup and `create_github_issue_bounded` calls it again
-(a no-op when the values are set), so a run makes one `gh repo view` and one
-`gh api user` call however many retries it makes.
+Sets `ISSUE_REPO_NWO` (`owner/repo`, from `gh repo view`) when it is empty,
+and returns 0. When the call fails or prints a value of the wrong form, it
+prints `WARNING: could not determine this repository (repo view exited RC)`
+and gh's sanitised stderr, and returns 1. Call it in the step's own shell,
+not in `$(…)`, or the value is lost when the subshell exits. Step-03 calls it
+once before the first lookup and `create_github_issue_bounded` calls it again
+(a no-op when the value is set), so a run makes one `gh repo view` call
+however many retries it makes. The helper never calls `gh api user`.
 
 ### `find_open_issue_by_exact_title TITLE [recent]`
 
@@ -565,12 +593,21 @@ the 100 newest open issues instead; step-03 uses this form during backoff.
 
 | Return code | stdout | Meaning |
 | ----------- | ------ | ------- |
-| `0` | One issue URL | Open issue in this repository, opened by `ISSUE_LOGIN`, with exactly this title |
+| `0` | One issue URL | Open issue in this repository with exactly this title, whoever opened it |
 | `1` | Empty | No match |
 | `2` | Empty | The lookup failed: gh error or timeout, output not a JSON array, or `load_issue_identity` failed. The function itself prints `WARNING: exact-title lookup failed; <reason>` on stderr |
 
-Return codes 1 and 2 print nothing on stdout, so a caller can treat them
-alike and the failure is still logged.
+Return codes 1 and 2 print nothing on stdout. Callers must not treat them
+alike: 2 means nothing is known about existing issues.
+
+### `find_open_issue_before_create TITLE`
+
+The lookup step-03 makes before its first create. It calls
+`find_open_issue_by_exact_title TITLE` and, when that returns 2, prints
+`INFO: exact-title search failed; checking the newest open issues instead`
+and calls `find_open_issue_by_exact_title TITLE recent`. It returns the last
+lookup's code and URL. Step-03 creates only on 1; on 2 it uses local
+tracking.
 
 ### `classify_issue_create_error OUTPUT`
 
@@ -596,6 +633,8 @@ issue URL is printed.
 | `_issue_backoff_int NAME DEFAULT` | Reads an `AMPLIHACK_ISSUE_BACKOFF_*` value, or the default when it is not `^[1-9][0-9]{0,5}$` (with a WARNING when it was set) |
 | `_issue_retry_after OUTPUT` | Prints `N` from `retry-after: N` (1–6 digits), or nothing |
 | `_issue_jitter_delay ROUND BASE MAX_DELAY` | Prints the equal-jitter delay for a round, at least 1 |
+| `_issue_secondary_wait ROUND BASE MAX_DELAY FLOOR` | Prints `FLOOR` plus the jitter delay: the wait for a secondary limit without `retry-after` |
+| `_issue_wait_for_class CLASS OUTPUT ROUND BASE MAX_DELAY [FLOOR]` | Prints the planned wait for one round: `retry-after` when printed, otherwise the secondary wait or the primary reset wait |
 | `_issue_primary_wait` | Prints the wait until the GraphQL reset plus 3 s, at least 5 |
 | `_issue_gh_stderr FILE RC` | Prints a failed gh call's stderr through `sanitize_cli_output`, then deletes the file |
 
@@ -604,7 +643,9 @@ Step-03 calls the helpers like this:
 ```bash
 issue_creation_opted_in "${RECIPE_VAR_create_issue:-}" || { echo "INFO: …" >&2; emit_local_metadata; exit 0; }
 load_issue_identity || true
-FOUND_URL=$(find_open_issue_by_exact_title "$ISSUE_TITLE") && { printf '%s\n' "$FOUND_URL"; exit 0; }
+rc=0; FOUND_URL=$(find_open_issue_before_create "$ISSUE_TITLE") || rc=$?
+[ "$rc" -eq 0 ] && { printf '%s\n' "$FOUND_URL"; exit 0; }
+[ "$rc" -eq 1 ] || { echo "WARNING: could not check …; using local tracking" >&2; emit_local_metadata; exit 0; }
 create_github_issue_bounded "$ISSUE_TITLE" "$ISSUE_BODY_FILE" "workflow:default"; exit $?
 ```
 
@@ -623,12 +664,13 @@ nothing. The task text is never logged.
 | `INFO: no task-text candidate accepted as an open issue (checked: 1595 1578); falling back to title search` | Every candidate was rejected; step-03 checks `create_issue` next |
 | `INFO: no tracking issue selected and create_issue is not set; using local tracking …` | Default path; no GitHub write |
 | `INFO: reusing open issue with identical title: https://…/issues/N` | Exact-title lookup matched |
-| `WARNING: exact-title lookup failed; …` | Lookup returned 2. Before the first create the step creates; during backoff it waits |
+| `WARNING: exact-title lookup failed; …` | Lookup returned 2. Before the first create a failed search is followed by the recent listing; during backoff the helper waits |
+| `INFO: exact-title search failed; checking the newest open issues instead` | Search lookup failed before the first create |
+| `WARNING: could not check for an open issue with this title; not creating one blind …; using local tracking` | Both lookups before the first create failed; no create |
 | `WARNING: gh issue create hit a GitHub secondary rate limit; backing off Ns (round R, U/Ms used)` | Secondary limit wait |
 | `WARNING: gh issue create hit the GitHub API rate limit; waiting Ns for reset (U/Ms used)` | Primary limit wait |
 | `WARNING: ignoring invalid NAME (N characters); using default D` | An `AMPLIHACK_ISSUE_BACKOFF_*` value was set but invalid; the value itself is not printed |
 | `WARNING: could not determine this repository (repo view exited RC)` | `gh repo view` failed; the lookup returns 2 |
-| `WARNING: could not determine the gh login (api user exited RC)` | `gh api user` failed; the lookup returns 2 |
 | `INFO: gh issue create timed out but the issue exists; reusing https://…/issues/N` | Create timed out; the lookup found the issue |
 | `INFO: gh label create workflow:default exited RC (the label may already exist); continuing` | Label create failed; gh's sanitised stderr follows |
 | `WARNING: could not read GitHub rate-limit reset; waiting 5s` | Primary limit, but the reset time was unreadable |
@@ -710,14 +752,17 @@ The selection described above applies only to `github` hosts.
   run may not be found, and a duplicate may be created. Lookups during
   backoff list recent issues without search, so a create that GitHub
   accepted but reported as failed is always found before the retry.
-- **A changed gh account creates a second issue.** The lookup reuses only
-  issues opened by the current gh login. If a task is run once as one account
-  and again as another, the second run creates a new issue instead of reusing
-  the first.
-- **Tokens that cannot call `gh api user`.** A GitHub App installation token
-  cannot read `/user`, so every lookup fails. The first create still runs, but
-  a rate-limited create is never retried and the step falls back to local
-  tracking when the budget runs out.
+- **An identical title opened by someone else is reused.** Reuse does not
+  check the author, so an issue that another account opened with exactly the
+  generated title becomes the tracking issue and can be closed by the
+  `Closes #N` that step-15 writes. This needs a character-for-character match
+  with the title built from the task description.
+- **A failed lookup ends in local tracking.** When both the search and the
+  recent listing fail before the first create, the opted-in run makes no
+  issue. Search the log for `not creating one blind` to find such runs.
+- **Older duplicates during a search outage.** When search fails, the
+  fallback listing covers the 100 newest open issues only, so a same-title
+  issue older than that is missed and a second one is created.
 - **Only the first 100 results are compared.** A title whose search returns
   more than 100 open issues can miss its exact match.
 - **Wall-clock time can exceed the budget.** The budget counts sleeps only.
@@ -738,17 +783,21 @@ The selection described above applies only to `github` hosts.
   the opt-in values, exact-title reuse (including an other-repository
   result with the same title that is skipped in favour of a later
   current-repository one, and a same-title issue by another account that is
-  not reused), one `gh repo view` and one `gh api user` call per run across
-  retries, a failed login fetch, a timed-out create with and without a
+  reused), one `gh repo view` call and no `gh api user` call per run across
+  retries, a token that cannot read `/user`, a failed search followed by the
+  recent listing, local tracking with no create when both first lookups
+  fail, a timed-out create with and without a
   matching issue, sanitised gh stderr on failed lookups and label creates,
   a backoff warning that prints only the value's length,
   the lookup before each retry, a failed lookup
   during backoff that makes no create that round, the lookup-failure
-  `WARNING` on stderr, the 401 path, the label fallback, jittered delays
-  (each in `[1, cap]`, sum within the budget, not all equal), Retry-After
+  `WARNING` on stderr, the 401 path, the label fallback, secondary-limit
+  delays (each the floor plus a jitter delay in `[1, cap]`, at least 60 s
+  with the defaults, sum within the budget, not all equal), Retry-After
   (including one longer than the budget left, which gives up without
   sleeping), the give-up fallback, and
-  static checks that step-03 has no `while` loop, calls
+  static checks that step-03 has no `while` loop, that
+  `launch-parallel-round-1` forwards `create_issue` to workstreams, calls
   `create_github_issue_bounded`, and stays within 400 lines.
 - `tests/integration/issue_1595_tracking_issue_selection_test.rs` runs the
   shipped step-03 and step-03b bodies against a fake `gh` that logs every

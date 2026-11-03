@@ -274,8 +274,9 @@ steps:
         GH_TRACKING=$(select_github_tracking_issue) && { printf '%s\n' "$GH_TRACKING"; exit 0; }
         # #1881: GitHub issue creation is opt-in; only RECIPE_VAR_create_issue counts, never the task text.
         issue_creation_opted_in "${RECIPE_VAR_create_issue:-}" || { echo "INFO: no tracking issue selected and create_issue is not set; using local tracking (pass -c create_issue=true to create a GitHub issue)" >&2; emit_local_metadata; exit 0; }
-        load_issue_identity || true  # once per run; lookups reuse ISSUE_REPO_NWO and ISSUE_LOGIN
-        FOUND_URL=$(find_open_issue_by_exact_title "$ISSUE_TITLE") && { echo "INFO: reusing open issue with identical title: $FOUND_URL" >&2; printf '%s\n' "$FOUND_URL"; exit 0; }
+        load_issue_identity || true  # once per run; lookups reuse ISSUE_REPO_NWO
+        rc=0; FOUND_URL=$(find_open_issue_before_create "$ISSUE_TITLE") || rc=$?; [ "$rc" -eq 0 ] && { echo "INFO: reusing open issue with identical title: $FOUND_URL" >&2; printf '%s\n' "$FOUND_URL"; exit 0; }
+        [ "$rc" -eq 1 ] || { echo "WARNING: could not check for an open issue with this title; not creating one blind (a duplicate is worse than local tracking); using local tracking" >&2; emit_local_metadata; exit 0; }
         ISSUE_BODY_FILE=$(umask 077; mktemp); trap 'rm -f -- "$ISSUE_BODY_FILE"' EXIT
         printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$SANITIZED_ISSUE_REQS" | write_body_file "$ISSUE_BODY_FILE"
         # Bounded, jittered backoff with a lookup before every retry; gives up to local tracking.
