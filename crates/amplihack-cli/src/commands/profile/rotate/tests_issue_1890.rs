@@ -178,6 +178,45 @@ fn log_case_b_moves_nothing_records_nothing_and_writes_the_log_only_line() {
     assert_eq!(f.logged(), vec![log_moved(&f.root)]);
 }
 
+/// Under `act` this case stops as `Guided`; `log` writes the refusal in its
+/// own line and returns `Clear`, so the cycle alerts.
+#[cfg(target_os = "linux")]
+#[test]
+fn log_with_no_free_backup_name_writes_the_refusal_line_and_alerts() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fx(true, true);
+    let taken: Vec<_> = (1..=99)
+        .map(|k| match k {
+            1 => format!("rotate-{M}-{STAMP}"),
+            _ => format!("rotate-{M}-{STAMP}-{k}"),
+        })
+        .collect();
+    for d in &taken {
+        let p = f.rejected().join(d);
+        std::fs::create_dir_all(&p).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    assert_eq!(step_in(&f, Recovery::Log, T), Step::Clear);
+    f.assert_nothing_moved();
+    assert!(
+        f.ledger().lost_login.is_empty(),
+        "{:?}",
+        f.ledger().lost_login
+    );
+    let mut left: Vec<_> = std::fs::read_dir(f.rejected())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    left.sort();
+    let mut want = taken.clone();
+    want.sort();
+    assert_eq!(left, want, "nothing is added under .rejected-logins/");
+    let line = format!(
+        "{LOG_ONLY}would move {M}'s login aside and record {M} as live, but no backup name is free"
+    );
+    assert_eq!(f.logged(), vec![line]);
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn log_case_a_writes_the_record_line_and_no_lost_login() {

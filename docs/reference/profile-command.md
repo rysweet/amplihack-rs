@@ -5982,20 +5982,23 @@ same lines until the ledger matches again or the setting goes back to `act`.
 
 ##### Log only
 
-Under `log`, the three actions in [Actions](#actions) become these lines:
+Under `log`, the actions in [Actions](#actions) become these lines:
 
 | Action under `act` | Line under `log` |
 |--------------------|------------------|
 | Keep `L` live with its own record | `recovery (log only): would record <L> as live again with its own login (ledger account differs)` |
 | Record `M` (`one`, no own login) | `recovery (log only): would record <M> as live (ledger named <L>)` |
 | Move `M`'s copy, then record `M` (`one`, own login) | `recovery (log only): would move <M>'s login to <root>/.rejected-logins/rotate-<M>-<YYYYMMDDTHHMMSSZ>/.credentials.json and record <M> as live` |
+| Move `M`'s copy, but all 99 backup names for that second are taken | `recovery (log only): would move <M>'s login aside and record <M> as live, but no backup name is free` |
 
 The `recovery (log only): ` prefix is fixed; search for it. The words after
 it name profiles and the backup path only, never an account, e-mail address,
 organisation or token. The backup path is the first free name, worked out
-as in [Actions](#actions), but nothing is created: under `log` no
-`.rejected-logins/` or backup directory is made, no login is renamed, the
-ledger's `live` and `account` are unchanged, and no profile is added to
+as in [Actions](#actions), but nothing is created. When every name is
+taken, the line says so and shows no path; under `act` the same case stops
+the cycle with [guidance](#guidance), but under `log` the cycle still ends
+`alerted`. Under `log` no `.rejected-logins/` or backup directory is made,
+no login is renamed, the ledger's `live` and `account` are unchanged, and no profile is added to
 `lost_login`. Entries already in `lost_login` are still pruned as under
 `act`, because pruning runs before recovery decides what to do.
 
@@ -6007,8 +6010,8 @@ recovery (log only): would record team as live (ledger named ryan-ryansweet)
 ALERT: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); no swap
 ```
 
-When recovery could not act anyway, `log` changes nothing: the
-[guidance](#guidance) ALERT and `fix` lines are written as under `act`. The
+When recovery could not act anyway, `log` changes nothing, except in the
+case above where no backup name is free: the [guidance](#guidance) ALERT and `fix` lines are written as under `act`. The
 [stuck `~/.claude.json`](#stuck-claudejson) guidance, the lost-login lines
 and the ledger's `home_unreadable_since` are also kept as under `act`; these
 are not recovery actions.

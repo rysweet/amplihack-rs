@@ -21,9 +21,14 @@ use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::path::Path;
 
-/// The `recovery (log only): ` line for a plan that would record or move,
-/// with the profile the ledger names; `None` for guidance.
-fn logged<'p>(root: &Path, plan: &'p Plan<'_>, t: i64) -> Option<(String, &'p ProfileName)> {
+/// The line `--recovery log` writes in place of the recovery `plan` would
+/// make, with the profile the ledger names; `None` when the plan is
+/// guidance, which `log` writes as `act` does.
+pub(super) fn logged<'p>(
+    root: &Path,
+    plan: &'p Plan<'_>,
+    t: i64,
+) -> Option<(String, &'p ProfileName)> {
     match plan {
         Plan::Record { case, m, .. } if *m == case.l => Some((hmsg::log_relogin(m), &case.l)),
         Plan::Record { case, m, .. } => Some((hmsg::log_record(m, &case.l), &case.l)),
@@ -33,12 +38,6 @@ fn logged<'p>(root: &Path, plan: &'p Plan<'_>, t: i64) -> Option<(String, &'p Pr
         }
         Plan::Guide(..) => None,
     }
-}
-
-/// The line `--recovery log` writes in place of the recovery `plan` would
-/// make; `None` when the plan is guidance, which `log` writes as `act` does.
-pub(super) fn log_only(root: &Path, plan: &Plan<'_>, t: i64) -> Option<String> {
-    logged(root, plan, t).map(|(line, _)| line)
 }
 
 /// The `--dry-run` lines under `act`: `would recover: ...`, or

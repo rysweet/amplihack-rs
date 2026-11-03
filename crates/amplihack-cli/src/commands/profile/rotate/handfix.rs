@@ -20,7 +20,7 @@
 use super::backup::{BackupRefusal, fresh_backup, rejected_dir, stamp};
 use super::cycle::Ctx;
 use super::guide::{self, Fix, Kind, Paths};
-use super::handfix_mode::log_only;
+use super::handfix_mode::logged;
 #[cfg(test)]
 pub use super::handfix_mode::preview;
 pub use super::handfix_mode::preview_mode;
@@ -303,9 +303,10 @@ pub fn step_with<'a>(
     step_mode(store, rs, home, out, env_for, t, Recovery::Act)
 }
 
-/// The hand-change step under `mode`; `step_with` is this under `act`. Under `log`, a plan that would record or
-/// move is dropped: one `recovery (log only): ` line is written, nothing is
-/// moved or recorded, and the step is `Clear`, so the cycle then alerts.
+/// The hand-change step under `mode`; `step_with` is this under `act`.
+/// Under `log`, a plan that would record or move is dropped: one
+/// `recovery (log only): ` line is written, nothing is moved or recorded,
+/// and the step is `Clear`, so the cycle then alerts.
 pub fn step_mode<'a>(
     store: &ProfileStore,
     rs: &RotateState,
@@ -321,18 +322,18 @@ pub fn step_mode<'a>(
     ledger.home_unreadable_since =
         unreadable.then(|| unreadable_since(ledger.home_unreadable_since, t));
     lost::prune(&mut ledger, store);
-    let mut logged = Vec::new();
+    let mut log_lines = Vec::new();
     if mode == Recovery::Log
-        && let Some(line) = plan.as_ref().and_then(|p| log_only(store.root(), p, t))
+        && let Some((line, _)) = plan.as_ref().and_then(|p| logged(store.root(), p, t))
     {
         plan = None;
-        logged.push(line);
+        log_lines.push(line);
     }
     let mut skip = None;
     let (step, lines) = match plan {
         None => {
             ledger.guidance = None;
-            (Step::Clear, logged)
+            (Step::Clear, log_lines)
         }
         Some(Plan::Guide(lines, s)) => {
             skip = s;
