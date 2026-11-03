@@ -378,7 +378,8 @@ fn part_a_test_processes_and_isolated_children_get_the_suppressors() {
 }
 
 /// A cargo config in the repository applies to everyone who builds it (SR1),
-/// so it holds the three `[env]` entries and nothing else.
+/// so it holds the three `[env]` entries, the `TMPDIR` entry below, and
+/// nothing else.
 #[test]
 fn part_a_cargo_config_holds_only_the_env_table() {
     let config = read(&workspace_root().join(".cargo/config.toml"));
@@ -393,12 +394,33 @@ fn part_a_cargo_config_holds_only_the_env_table() {
                 .iter()
                 .map(|(name, value)| format!("{name} = {{ value = \"{value}\", force = true }}")),
         )
+        // PR #1885: an amplihack session points TMPDIR inside `~/.amplihack`,
+        // where tests that walk the ancestors of a temp fixture find the real
+        // install. Reviewed: it changes only where cargo's children put
+        // scratch files.
+        .chain(std::iter::once(
+            "TMPDIR = { value = \"/tmp\", force = true }".to_string(),
+        ))
         .collect();
     assert_eq!(
         lines, expected,
         ".cargo/config.toml must hold exactly the [env] table for the three git prompt \
-         variables; review any other setting line by line before changing this test"
+         variables and TMPDIR; review any other setting line by line before changing this test"
     );
+}
+
+/// The forced `TMPDIR` reaches the test process, so temp fixtures never sit
+/// under a caller's `~/.amplihack` (PR #1885).
+#[cfg(unix)]
+#[test]
+fn part_a_test_processes_get_tmpdir_outside_any_amplihack_home() {
+    assert_eq!(
+        std::env::var("TMPDIR").ok().as_deref(),
+        Some("/tmp"),
+        "the [env] table in .cargo/config.toml forces TMPDIR=/tmp; find out why it did \
+         not reach this test"
+    );
+    assert_eq!(std::env::temp_dir(), std::path::PathBuf::from("/tmp"));
 }
 
 // ── (b) Git builder ──────────────────────────────────────────────────────────
