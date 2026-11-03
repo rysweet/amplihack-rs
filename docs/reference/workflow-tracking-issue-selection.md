@@ -283,9 +283,11 @@ The selection described above applies only to `github` hosts.
 
 A caller can fix the host type and turn off issue creation through two recipe
 context keys (issue #1887). Both are declared in `workflow-prep.yaml`,
-`default-workflow.yaml` and `smart-orchestrator.yaml`, with an empty default.
-They are read only from recipe context (`-c` or a parent recipe), never from
-the task description or the requirements text.
+`default-workflow.yaml`, `smart-orchestrator.yaml` and
+`smart-execute-routing.yaml`, with an empty default. They are read only from
+recipe context (`-c` or a parent recipe), never from the task description or
+the requirements text. When the run starts at `smart-orchestrator`, they reach
+step-03 on both paths; see [Parallel workstreams](#parallel-workstreams).
 
 ```bash
 amplihack recipe run default-workflow \
@@ -394,6 +396,38 @@ no longer created unless the caller passes `create_issue=true`. On GitHub,
 #1885's `issue_creation_opted_in` check sits at the same point in step-03 as
 this gate.
 
+Whichever of #1885 and #1896 merges second must be rebased so that each host
+arm of step-03 keeps exactly one creation gate. Both PRs are authored by
+`ryan-mistt`, who does that rebase whichever merges second. The test
+`issue_1887_caller_host_type_create_issue::step_03_has_exactly_one_creation_gate_per_host`
+counts calls to `issue_creation_disabled` and `issue_creation_opted_in` in
+the `github)` and `azdo|azure-devops)` arms and fails on two gates, on none,
+or on a gate placed after the arm's first network write, so a wrong rebase
+cannot pass CI.
+
+### Parallel workstreams
+
+Issue #1900. When `smart-orchestrator` splits a task into parallel
+workstreams, `smart-execute-routing`'s `create-workstreams-config` step runs
+`amplihack orch helper build-workstreams-config`. It reads
+`RECIPE_VAR_issue_number`, `RECIPE_VAR_create_issue` and
+`RECIPE_VAR_remote_host_type` and writes them into every workstream entry;
+`amplihack orch run` puts them in each workstream's `context.json`, so the
+workstream's own step-03 sees the same values as a single-workstream run.
+
+| Caller `issue_number` | Caller `create_issue` | Each workstream gets |
+| --------------------- | --------------------- | -------------------- |
+| `N`, `#N` or `…/issues/N` | any | `issue_number=N`, the caller's `create_issue` |
+| empty | empty | no `issue_number`, `create_issue=false`: local tracking |
+| empty | set | no `issue_number`, the caller's `create_issue` |
+| anything else (`TBD`, `abc`) | any | the step fails: `issue_number "…" is not an issue number` |
+
+`remote_host_type` is passed on when set. The workstreams never receive a
+placeholder: the old `"issue": "TBD"` entry, which `amplihack orch run`
+rejected with `Invalid issue number: "TBD"`, is gone. Each entry has its own
+`id`, which keys its work directory and state file, so several workstreams
+can share the caller's issue.
+
 ### Outdated helper copies
 
 step-03 loads the first `workflow_issue_tracking.sh` it finds, starting with
@@ -487,6 +521,16 @@ and step-03 would create an issue even with `create_issue=false`.
   The unit tests `issue_creation_disabled_rejects_other_values` and
   `unrecognised_create_issue_warns_without_echo` cover the `create_issue`
   predicate on its own.
+- `tests/integration/issue_1900_smart_orchestrator_tracking_test.rs` runs the
+  shipped `smart-orchestrator.yaml` and `smart-execute-routing.yaml` through
+  `recipe-runner-rs` with `-c create_issue=false`, `-c issue_number=368` or
+  neither, on the single and the parallel path. Only classification,
+  reflection and validation are stubbed; the stub `default-workflow` holds
+  the shipped step-02d, step-03 and step-03b. On the parallel path the real
+  `amplihack orch run` launches each workstream from a local origin. A fake
+  `gh` logs every call; the tests check each workstream's `context.json`,
+  what its step-03 decided, and that no `gh issue create` was made. A control
+  case without `create_issue=false` shows that a creation is seen.
 - `tests/issue_1423_bash4_constructs.sh` checks the helper for bash 4 constructs.
 - `scripts/check-brick-budget.sh` checks that `workflow-prep.yaml` stays within
   the phase sub-recipe line limit after the step-03 change.
@@ -496,6 +540,7 @@ Run them with:
 ```bash
 cargo test --test integration issue_1595
 cargo test --test integration issue_1887
+cargo test --test integration issue_1900
 cargo test --test integration issue_684
 cargo test --test integration issue_815_804
 cargo test --test integration workflow_prep_requirements_sanitizer

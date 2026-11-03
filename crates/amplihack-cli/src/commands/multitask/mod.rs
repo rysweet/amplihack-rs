@@ -77,7 +77,7 @@ pub fn run_multitask(
         for item in &items {
             println!(
                 "  [{}] {} (recipe: {})",
-                item.issue,
+                item.workstream_id().unwrap_or(0),
                 item.description_or_default(),
                 item.recipe.as_deref().unwrap_or(recipe)
             );

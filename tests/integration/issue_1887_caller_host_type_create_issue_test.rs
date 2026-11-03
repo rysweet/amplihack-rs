@@ -1245,3 +1245,68 @@ fn stale_helper_stops_step_03_with_a_named_cause() {
         run.assert_nothing_created_on_github();
     }
 }
+
+// ---------------------------------------------------------------------------
+// #1885 merge-order guard
+// ---------------------------------------------------------------------------
+
+/// Calls that decide whether step-03 may create an issue: this PR's
+/// `issue_creation_disabled` and #1885's `issue_creation_opted_in`. A rebase
+/// of either PR onto the other must leave exactly one per host arm.
+const CREATION_GATES: &[&str] = &["issue_creation_disabled \"", "issue_creation_opted_in \""];
+
+/// The lines of step-03's second `case "$HOST_TYPE"` arm that starts with
+/// `arm` (`github)` or `azdo|azure-devops)`), up to the arm's `;;`.
+fn step_03_arm(arm: &str) -> Vec<String> {
+    let body = extract_step_body(STEP_03);
+    let lines: Vec<&str> = body.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| l.trim() == arm)
+        .unwrap_or_else(|| panic!("step-03 has no `{arm}` arm on a line of its own"));
+    lines[start + 1..]
+        .iter()
+        .take_while(|l| l.trim() != ";;")
+        .map(|l| (*l).to_owned())
+        .collect()
+}
+
+/// Lines of `arm` that call a creation gate (the version guard's `for f in`
+/// list names the function without calling it and is outside the arm).
+fn gate_lines(arm: &[String]) -> Vec<usize> {
+    arm.iter()
+        .enumerate()
+        .filter(|(_, l)| CREATION_GATES.iter().any(|g| l.contains(g)))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Exactly one creation gate on the GitHub arm and one on the Azure DevOps
+/// arm, each before that arm's first network write. This fails if a merge
+/// of #1885 and #1896 keeps both gates or drops both, whichever merges
+/// second (owner of that rebase: see the PR body and
+/// `docs/reference/workflow-tracking-issue-selection.md`).
+#[test]
+fn step_03_has_exactly_one_creation_gate_per_host() {
+    for (arm, first_write) in [
+        ("github)", "gh issue list"),
+        ("azdo|azure-devops)", "az boards work-item create"),
+    ] {
+        let lines = step_03_arm(arm);
+        let gates = gate_lines(&lines);
+        assert_eq!(
+            gates.len(),
+            1,
+            "step-03 `{arm}` must have exactly one creation gate ({CREATION_GATES:?}); found {}",
+            gates.len()
+        );
+        let write = lines
+            .iter()
+            .position(|l| l.contains(first_write))
+            .unwrap_or_else(|| panic!("`{arm}` arm has no `{first_write}`"));
+        assert!(
+            gates[0] < write,
+            "the `{arm}` gate must come before `{first_write}`"
+        );
+    }
+}

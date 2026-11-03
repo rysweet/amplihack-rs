@@ -92,9 +92,19 @@ pub struct ProcessScope {
 }
 
 /// JSON config entry for a workstream.
+///
+/// Issue #1900: `issue` is the tracking issue the workstream's recipe works
+/// against (`issue_number` in its context). `id` is the workstream's own key
+/// (work dir, state file, governor identity). An entry needs at least one of
+/// them; with no `issue` the workstream uses local tracking. Several entries
+/// may share one `issue` as long as each has its own `id`. There is no
+/// placeholder value: `"TBD"` or any other non-numeric `issue` is rejected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkstreamConfig {
+    #[serde(default)]
     pub issue: serde_json::Value,
+    #[serde(default)]
+    pub id: serde_json::Value,
     pub branch: String,
     #[serde(default)]
     pub description: Option<String>,
@@ -105,27 +115,81 @@ pub struct WorkstreamConfig {
     pub max_runtime: Option<u64>,
     #[serde(default)]
     pub timeout_policy: Option<String>,
+    /// Extra recipe context for the workstream, such as the caller's
+    /// `create_issue` and `remote_host_type` (#1887, #1900). The keys the
+    /// orchestrator sets itself (`task_description`, `issue_number`, ...) win.
+    #[serde(default)]
+    pub context: serde_json::Map<String, serde_json::Value>,
+}
+
+/// A positive integer from a JSON number or a decimal string; `None` otherwise.
+fn positive_id(value: &serde_json::Value) -> Option<i64> {
+    let n = match value {
+        serde_json::Value::Number(n) => n.as_i64()?,
+        serde_json::Value::String(s) => s.trim().parse().ok()?,
+        _ => return None,
+    };
+    (n > 0).then_some(n)
+}
+
+/// `true` when `value` means "no value": absent, `null` or a blank string.
+fn is_unset(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(s) => s.trim().is_empty(),
+        _ => false,
+    }
 }
 
 impl WorkstreamConfig {
-    pub fn issue_id(&self) -> i64 {
-        match &self.issue {
-            serde_json::Value::Number(n) => n.as_i64().unwrap_or(0),
-            serde_json::Value::String(s) => s.parse().unwrap_or(0),
-            _ => 0,
+    /// The tracking issue, `None` for local tracking. A set `issue` that is
+    /// not a positive number (`"TBD"`, `"abc"`, `-1`) is an error, never a
+    /// placeholder (#1900).
+    pub fn tracking_issue(&self) -> Result<Option<i64>, String> {
+        if is_unset(&self.issue) {
+            return Ok(None);
         }
+        positive_id(&self.issue).map(Some).ok_or_else(|| {
+            format!(
+                "Invalid issue number: {} (give a positive issue number, or leave `issue` \
+                 out and set `id` for a workstream with local tracking; \"TBD\" is not supported)",
+                self.issue
+            )
+        })
+    }
+
+    /// The workstream's key: `id` when set, else the tracking issue.
+    pub fn workstream_id(&self) -> Result<i64, String> {
+        let tracking = self.tracking_issue()?;
+        if !is_unset(&self.id) {
+            return positive_id(&self.id).ok_or_else(|| {
+                format!(
+                    "Invalid workstream id: {} (must be a positive number)",
+                    self.id
+                )
+            });
+        }
+        tracking.ok_or_else(|| {
+            "Workstream has neither `issue` nor `id`; set `issue` to a tracking issue \
+             number or `id` to a positive number for local tracking"
+                .to_string()
+        })
     }
 
     pub fn description_or_default(&self) -> String {
         self.description
             .clone()
-            .unwrap_or_else(|| format!("Issue #{}", self.issue_id()))
+            .unwrap_or_else(|| match self.tracking_issue() {
+                Ok(Some(n)) => format!("Issue #{n}"),
+                _ => format!("Workstream {}", self.workstream_id().unwrap_or(0)),
+            })
     }
 }
 
 /// Runtime state for a single workstream.
 #[derive(Debug)]
 pub struct Workstream {
+    /// The workstream's key: the config's `id`, else its `issue` (#1900).
     pub issue: i64,
     pub branch: String,
     pub description: String,
@@ -150,6 +214,11 @@ pub struct Workstream {
     pub resume_checkpoint: String,
     pub workstream_scope: WorkstreamScope,
     pub process_scope: ProcessScope,
+    /// The tracking issue passed as `issue_number`; `None` means local
+    /// tracking. `issue` above is the workstream's key (#1900).
+    pub tracking_issue: Option<i64>,
+    /// Extra recipe context from the config entry (#1887, #1900).
+    pub extra_context: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Workstream {
@@ -188,6 +257,8 @@ impl Workstream {
             resume_checkpoint: String::new(),
             workstream_scope: WorkstreamScope::default(),
             process_scope: ProcessScope::default(),
+            tracking_issue: Some(issue),
+            extra_context: serde_json::Map::new(),
         }
     }
 
@@ -298,7 +369,8 @@ mod tests {
         ]"#;
         let configs: Vec<WorkstreamConfig> = serde_json::from_str(json).unwrap();
         assert_eq!(configs.len(), 1);
-        assert_eq!(configs[0].issue_id(), 42);
+        assert_eq!(configs[0].tracking_issue(), Ok(Some(42)));
+        assert_eq!(configs[0].workstream_id(), Ok(42));
         assert_eq!(configs[0].branch, "feat/test");
         assert_eq!(configs[0].description_or_default(), "Test workstream");
     }
@@ -307,7 +379,7 @@ mod tests {
     fn test_workstream_config_string_issue() {
         let json = r#"[{"issue": "99", "branch": "b", "task": "t"}]"#;
         let configs: Vec<WorkstreamConfig> = serde_json::from_str(json).unwrap();
-        assert_eq!(configs[0].issue_id(), 99);
+        assert_eq!(configs[0].tracking_issue(), Ok(Some(99)));
     }
 
     #[test]
@@ -315,6 +387,53 @@ mod tests {
         let json = r#"[{"issue": 7, "branch": "b", "task": "t"}]"#;
         let configs: Vec<WorkstreamConfig> = serde_json::from_str(json).unwrap();
         assert_eq!(configs[0].description_or_default(), "Issue #7");
+    }
+
+    /// #1900: several workstreams may share the caller's issue; each has its
+    /// own `id`, which keys its work dir.
+    #[test]
+    fn shared_issue_with_distinct_ids() {
+        let json = r#"[
+            {"id": 11, "issue": 368, "branch": "a", "task": "t"},
+            {"id": 12, "issue": "368", "branch": "b", "task": "t"}
+        ]"#;
+        let configs: Vec<WorkstreamConfig> = serde_json::from_str(json).unwrap();
+        assert_eq!(configs[0].tracking_issue(), Ok(Some(368)));
+        assert_eq!(configs[1].tracking_issue(), Ok(Some(368)));
+        assert_eq!(configs[0].workstream_id(), Ok(11));
+        assert_eq!(configs[1].workstream_id(), Ok(12));
+    }
+
+    /// #1900: no `issue` means local tracking, keyed by `id`.
+    #[test]
+    fn id_without_issue_is_local_tracking() {
+        let json = r#"[{"id": 5, "branch": "b", "task": "t",
+                        "context": {"create_issue": "false"}}]"#;
+        let configs: Vec<WorkstreamConfig> = serde_json::from_str(json).unwrap();
+        assert_eq!(configs[0].tracking_issue(), Ok(None));
+        assert_eq!(configs[0].workstream_id(), Ok(5));
+        assert_eq!(configs[0].context["create_issue"], "false");
+        assert_eq!(configs[0].description_or_default(), "Workstream 5");
+    }
+
+    /// #1900: "TBD" is not a placeholder any more; it is refused with a
+    /// message that says what to do instead, even when `id` is set.
+    #[test]
+    fn tbd_issue_is_rejected() {
+        for json in [
+            r#"[{"issue": "TBD", "branch": "b", "task": "t"}]"#,
+            r#"[{"issue": "TBD", "id": 3, "branch": "b", "task": "t"}]"#,
+        ] {
+            let configs: Vec<WorkstreamConfig> = serde_json::from_str(json).unwrap();
+            let err = configs[0].workstream_id().unwrap_err();
+            assert!(
+                err.contains("Invalid issue number") && err.contains("local tracking"),
+                "{err}"
+            );
+        }
+        let none: Vec<WorkstreamConfig> =
+            serde_json::from_str(r#"[{"branch": "b", "task": "t"}]"#).unwrap();
+        assert!(none[0].workstream_id().unwrap_err().contains("neither"));
     }
 
     #[test]

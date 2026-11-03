@@ -22,7 +22,10 @@ pub(super) fn cleanup_merged(
     let mut freed_bytes = 0u64;
 
     for item in &items {
-        let issue = item.issue_id();
+        // #1900: the work dir is keyed by `id` when set, else by `issue`.
+        let Ok(issue) = item.workstream_id() else {
+            continue;
+        };
         let safe_id = sanitize_id(&issue.to_string());
         let work_dir = base_dir.join(format!("ws-{issue}"));
         let state_file = state_dir.join(format!("ws-{safe_id}.json"));

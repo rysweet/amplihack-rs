@@ -125,7 +125,9 @@ An empty array is accepted; the engine logs `No workstreams defined in
 
 | Field             | Type            | Required | Notes                                                                        |
 | ----------------- | --------------- | -------- | ---------------------------------------------------------------------------- |
-| `issue`           | number\|string  | yes      | Issue identifier; numbers and numeric strings are both accepted              |
+| `issue`           | number\|string  | one of `issue`, `id` | Tracking issue, passed to the recipe as `issue_number`; numbers and numeric strings are accepted. Leave it out for local tracking. Non-numeric values such as `"TBD"` are rejected (#1900) |
+| `id`              | number\|string  | one of `issue`, `id` | The workstream's own key (work dir `ws-<id>`, state file). Defaults to `issue`. Lets several workstreams share one `issue` |
+| `context`         | object          | no       | Extra recipe context, such as `create_issue` and `remote_host_type` (#1887). Keys the engine sets itself (`task_description`, `issue_number`, ...) win |
 | `branch`          | string          | yes      | Git branch name for this workstream                                          |
 | `task`            | string          | yes      | Task description handed to the recipe / agent                                |
 | `description`     | string          | no       | Optional human-readable summary                                              |

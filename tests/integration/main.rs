@@ -482,6 +482,12 @@ mod issue_1762_caller_branch_alias;
 #[path = "issue_1887_caller_host_type_create_issue_test.rs"]
 mod issue_1887_caller_host_type_create_issue;
 
+// Issue #1900 (with #1887): issue_number, create_issue and remote_host_type
+// passed to smart-orchestrator reach step-03 on the single and the parallel
+// path. Shipped recipes through recipe-runner-rs; fake gh; local origin.
+#[path = "issue_1900_smart_orchestrator_tracking_test.rs"]
+mod issue_1900_smart_orchestrator_tracking;
+
 // Issue #1697: bundled journalistic-writing-style skill — content, trigger
 // separation from documentation-writing, registration, isolated install.
 #[path = "journalistic_writing_style_skill_test.rs"]
