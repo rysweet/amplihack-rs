@@ -1649,7 +1649,9 @@ mod tests {
             ("ANTHROPIC_API_KEY", "provider-secret"),
         ]);
 
-        let result = probe_version(&binary, Duration::from_secs(1));
+        // Issue #1860: the production timeout, not a tighter literal. The
+        // binary is healthy, so this costs nothing unless the host is loaded.
+        let result = probe_version(&binary, PER_CANDIDATE_PROBE_TIMEOUT);
 
         assert_eq!(result.as_deref(), Ok("2.1.83"));
         assert_eq!(std::fs::read_to_string(observation).unwrap(), "scrubbed");

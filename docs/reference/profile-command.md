@@ -4918,6 +4918,19 @@ same comparison with the rules for a stay: it stops only on a `journal`,
 `live`, `pin` or `overflow` change, logs the same skip line, and never
 reads again or reconsiders.
 
+The liveness scan behind `live`, `session running` and the target's
+eligibility reads the system process table. Tests of the rotator that must
+not see sessions running on the host, such as
+`the_default_pointer_does_not_change_the_rotators_verdict` in
+`crates/amplihack-cli/tests/profile_overflow.rs`, use a synthetic process
+table supplied by the test fixture instead. The fixture creates it, empty and
+readable only by the current user, inside its own temporary directory, and
+only tests that ask for it receive it. Tests that start a real session
+stand-in, such as the `profile switch` and daemon tests, keep reading the
+system process table. In normal use, the scan reads `/proc`. When the
+verdict test fails, its message includes the rotator's standard output,
+which has already been checked to contain no credentials.
+
 These related problems are known and tracked in their own issues:
 
 - The live account and the target's account are read from `.claude.json`.

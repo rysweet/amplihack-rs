@@ -19,7 +19,7 @@
 #![allow(dead_code)]
 
 use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -111,6 +111,10 @@ pub struct Fixture {
     pub live_ino: u64,
     pub spare_ino: u64,
     pub extra_ino: u64,
+    /// Issue #1860: a private synthetic process table, set by
+    /// [`Fixture::private_sessions`]. `None` (the default) leaves every
+    /// command reading the host's `/proc`.
+    pub proc_root: Option<PathBuf>,
 }
 
 impl Fixture {
@@ -140,6 +144,7 @@ impl Fixture {
             live_ino: 0,
             spare_ino: 0,
             extra_ino: 0,
+            proc_root: None,
         };
         for p in PROFILES {
             f.ok(&["profile", "add", p]);
@@ -170,6 +175,57 @@ impl Fixture {
         f.usage("spare", 10, 20);
         f.usage("extra", 50, 50);
         f
+    }
+
+    /// Issue #1860: every later command sees a synthetic process table
+    /// under the fixture's temp dir instead of the host's sessions, so a
+    /// test's verdict cannot depend on what else runs on the machine. The
+    /// table starts empty: `self/environ` holds fixed dummy bytes (never a
+    /// copy of the real one) and no process directories exist until
+    /// [`Fixture::fake_session`] adds one.
+    pub fn private_sessions(mut self) -> Self {
+        let root = self.tmp.path().join("proc");
+        // A table others can write is ignored, and the host's /proc is read,
+        // so the directories are created private rather than chmod-ed later.
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(root.join("self"))
+            .unwrap();
+        fs::write(root.join("self/environ"), b"PATH=/bin\0").unwrap();
+        let root = root.canonicalize().unwrap();
+        let tmp = self.tmp.path().canonicalize().unwrap();
+        assert!(
+            root.starts_with(&tmp) && root != tmp,
+            "the synthetic process table must lie inside the fixture"
+        );
+        self.proc_root = Some(root);
+        self
+    }
+
+    /// A synthetic session of this user, `pid`, whose `CLAUDE_CONFIG_DIR` is
+    /// `config_dir`. Needs [`Fixture::private_sessions`].
+    pub fn fake_session(&self, pid: u32, config_dir: &Path) {
+        use std::os::unix::ffi::OsStrExt;
+        let root = self
+            .proc_root
+            .as_ref()
+            .expect("fake_session needs private_sessions()");
+        let dir = root.join(pid.to_string());
+        fs::create_dir(&dir).unwrap();
+        fs::write(
+            dir.join("status"),
+            format!(
+                "Name:\tclaude\nState:\tS (sleeping)\nUid:\t{0}\t{0}\t{0}\t{0}\n",
+                euid()
+            ),
+        )
+        .unwrap();
+        fs::write(dir.join("cmdline"), b"claude\0").unwrap();
+        let mut environ = b"PATH=/bin\0CLAUDE_CONFIG_DIR=".to_vec();
+        environ.extend_from_slice(config_dir.as_os_str().as_bytes());
+        environ.push(0);
+        fs::write(dir.join("environ"), environ).unwrap();
     }
 
     pub fn home_login(&self) -> PathBuf {
@@ -331,6 +387,9 @@ impl Fixture {
             // Launches never start a real background rotator here (autostart).
             .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
             .env("AMPLIHACK_SKIP_REFLECTION", "1");
+        if let Some(proc_root) = &self.proc_root {
+            c.env("AMPLIHACK_TEST_PROC_ROOT", proc_root);
+        }
         c
     }
 
