@@ -221,7 +221,8 @@ fn fresh_probe(
 
 /// The production re-read: one direct read of `name`, with no passive
 /// reading and no `claude` fallback, bounded by the probe deadline. It
-/// writes nothing and starts no child process.
+/// writes no rotate state and starts no child process; like any direct
+/// read it may refresh a near-expiry OAuth token under Claude's lock.
 pub fn reread_direct(ctx: &Ctx, name: &ProfileName) -> Probed {
     let mut env = SourceEnv::from_env(ProbeMode::Direct, measure::timeout());
     env.passive_max_age = 0;

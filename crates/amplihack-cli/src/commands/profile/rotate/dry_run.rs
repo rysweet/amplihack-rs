@@ -89,7 +89,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         0,
         &msg::cycle(name, &live_shown, &others_shown, snap.shown_platform()),
     );
-    // Issue #1870: the same re-reads as a real cycle; nothing is written.
+    // Issue #1870: the same re-reads as a real cycle; no rotate state is written.
     let m = fresh::gate(ctx, &snap, m, Reread::Allowed)?;
     for line in &m.fresh_lines {
         out.emit(0, line);
