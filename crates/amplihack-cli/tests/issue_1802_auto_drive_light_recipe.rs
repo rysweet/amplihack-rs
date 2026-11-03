@@ -1,8 +1,9 @@
 //! Issue #1802: the structure of `amplifier-bundle/recipes/auto-drive-light.yaml`
 //! and the invariants it shares with `auto-drive-to-merge`.
 //!
-//! These tests parse the live YAML, the two new tools and the manifest; no
-//! recipe runs. They cover acceptance test (f) (no design, consensus or
+//! These tests parse the live YAML, the two new tools and the manifest, and
+//! execute the PR resolution step against local Git and stub GitHub. They
+//! cover acceptance test (f) (no design, consensus or
 //! architect steps and no `default-workflow`), the escalation wiring, the
 //! "merge phase reached" condition of test (a), and the prohibited strings.
 
@@ -386,6 +387,147 @@ fn resolve_pr_refuses_cross_repository_prs_and_existing_branch_without_pr() {
         step(&r(), "light-resolve-pr")["output"].as_str(),
         Some("build_result")
     );
+}
+
+#[test]
+fn resolve_existing_pr_requires_boolean_false_and_preserves_git_guards() {
+    use crate::support::auto_drive_light::{
+        LightRepo, fake_bin, git, jq_available, run_bash, show, stderr, stdout, step_command,
+    };
+    use serde_json::json;
+
+    if !jq_available() {
+        eprintln!("jq is not installed; skipping the PR resolution fixture");
+        return;
+    }
+    let repo = LightRepo::new();
+    git(&repo.wt, &["checkout", "-q", "-b", "quick/demo"]);
+    repo.write("README.md", "# candidate\n");
+    let head = repo.commit("candidate");
+    git(&repo.wt, &["push", "-q", "origin", "HEAD:refs/pull/7/head"]);
+    let fakes = fake_bin(repo.tmp.path());
+    crate::support::exec_stub::write_executable(
+        &fakes.bin.join("gh"),
+        "#!/bin/sh\n[ \"$1 ${2-}\" = 'pr view' ] || exit 1\ncat \"$FAKE_PR_VIEW\"\n",
+        0o755,
+    );
+    let command = step_command(NAME, "light-resolve-pr");
+    let view_file = repo.tmp.path().join("pr.json");
+    let root = repo_root();
+    let cases = [
+        (
+            "same-repository",
+            Some(json!(false)),
+            head.clone(),
+            "main",
+            true,
+        ),
+        ("fork", Some(json!(true)), head.clone(), "main", false),
+        ("missing", None, head.clone(), "main", false),
+        ("null", Some(json!(null)), head.clone(), "main", false),
+        (
+            "string-false",
+            Some(json!("false")),
+            head.clone(),
+            "main",
+            false,
+        ),
+        ("number", Some(json!(0)), head.clone(), "main", false),
+        ("array", Some(json!([])), head.clone(), "main", false),
+        ("object", Some(json!({})), head.clone(), "main", false),
+        (
+            "invalid-head",
+            Some(json!(false)),
+            "bad".into(),
+            "main",
+            false,
+        ),
+        (
+            "unavailable-head",
+            Some(json!(false)),
+            "a".repeat(40),
+            "main",
+            false,
+        ),
+        (
+            "invalid-base",
+            Some(json!(false)),
+            head.clone(),
+            "--bad",
+            false,
+        ),
+    ];
+    for (name, flag, pr_head, base, accepted) in cases {
+        let mut view = json!({
+            "number": 7, "url": "https://github.com/o/r/pull/7", "state": "OPEN",
+            "headRefOid": pr_head, "headRefName": "quick/demo", "baseRefName": base,
+        });
+        if let Some(flag) = flag {
+            view["isCrossRepository"] = flag;
+        }
+        std::fs::write(&view_file, view.to_string()).unwrap();
+        let state = repo.tmp.path().join(name);
+        let output = run_bash(
+            &repo.home,
+            &fakes,
+            Some(&command),
+            &[],
+            &[
+                ("AMPLIHACK_HOME", root.as_os_str()),
+                ("RECIPE_VAR_repo_path", repo.wt.as_os_str()),
+                ("RECIPE_VAR_pr_number", "7".as_ref()),
+                ("RECIPE_VAR_existing_branch", "".as_ref()),
+                ("RECIPE_VAR_autodrive_state_dir", state.as_os_str()),
+                ("FAKE_PR_VIEW", view_file.as_os_str()),
+                ("TMPDIR", repo.tmp.path().as_os_str()),
+                ("XDG_CACHE_HOME", repo.home.as_os_str()),
+                ("npm_config_cache", repo.home.as_os_str()),
+                ("npm_config_prefix", repo.home.as_os_str()),
+            ],
+            "",
+        );
+        assert_eq!(
+            output.status.success(),
+            accepted,
+            "{name}: {}",
+            show(&output)
+        );
+        if accepted {
+            let result: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+            assert_eq!(result["head_sha"], head);
+            assert_eq!(result["base_sha"], repo.base);
+            assert_eq!(result["branch"], "quick/demo");
+            assert_eq!(result["state_dir"], state.to_str().unwrap());
+            let phases = std::fs::read_to_string(state.join("phases.tsv")).unwrap();
+            assert!(phases.starts_with("build\t"));
+        } else {
+            assert!(
+                stdout(&output).trim().is_empty(),
+                "{name}: {}",
+                show(&output)
+            );
+            assert!(
+                !state.exists(),
+                "{name}: rejection must not mark build done"
+            );
+            let reason = match name {
+                "invalid-head" => "could not be read",
+                "unavailable-head" => "not available after the fetch",
+                "invalid-base" => "unusable base branch",
+                _ => "light-cross-repo",
+            };
+            assert!(
+                stderr(&output).contains(reason),
+                "{name}: {}",
+                show(&output)
+            );
+        }
+        assert_eq!(
+            repo.head(),
+            head,
+            "{name}: fetched code must not be checked out"
+        );
+    }
 }
 
 #[test]

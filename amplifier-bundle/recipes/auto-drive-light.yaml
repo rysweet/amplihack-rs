@@ -369,7 +369,7 @@ steps:
       rc=$?; [ "$rc" -ne 79 ] || exit 79
       [ "$rc" -eq 0 ] || die "gh pr view failed for PR #${PR} (exit $rc)"
       g() { printf '%s' "$VIEW" | jq -r "$1 // \"\" | tostring"; }
-      [ "$(g .isCrossRepository)" = "false" ] || die "light-cross-repo: PR #${PR} comes from another repository (isCrossRepository); auto-drive-light drives only same-repository PRs"
+      printf '%s' "$VIEW" | jq -e '.isCrossRepository == false' >/dev/null || die "light-cross-repo: PR #${PR} comes from another repository (isCrossRepository); auto-drive-light drives only same-repository PRs"
       STATE="$(g .state)"; HEAD_SHA="$(g .headRefOid)"; HEAD_REF="$(g .headRefName)"; BASE_REF="$(g .baseRefName)"; URL="$(g .url)"
       [ "$STATE" != "CLOSED" ] || die "PR #${PR} is closed"
       hex "$HEAD_SHA" || die "the head commit of PR #${PR} could not be read"
