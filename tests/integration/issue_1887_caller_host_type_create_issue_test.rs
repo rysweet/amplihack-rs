@@ -125,7 +125,10 @@ const STEP_03: &str = "step-03-create-issue";
 /// - `issue view N`: prints the issue URL when N equals `GH_VIEW_ISSUE`.
 /// - `api repos/.../issues/N`: an open issue when `GH_API_OPEN` equals N.
 /// - `issue list`: prints `GH_LIST_URL` if set.
-/// - `label create`, `issue create`: succeed.
+/// - `label create`: succeeds.
+/// - `issue create`: the first `GH_CREATE_FAILS` calls print `GH_CREATE_ERR`
+///   and exit 1; later calls succeed.
+/// - `api rate_limit`: a GraphQL reset epoch of 0, so the wait takes its floor.
 /// - anything else: exit 7.
 const FAKE_GH: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$GH_LOG"
@@ -143,7 +146,11 @@ case "$1:$2" in
     echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   issue:list) [ -n "${GH_LIST_URL:-}" ] && printf '%s\n' "$GH_LIST_URL"; exit 0 ;;
   label:create) exit 0 ;;
-  issue:create) printf '%s/issues/901\n' "$FAKE_REPO_URL"; exit 0 ;;
+  issue:create)
+    n=$(( $(cat "$GH_LOG.creates" 2>/dev/null || echo 0) + 1 )); echo "$n" > "$GH_LOG.creates"
+    if [ "$n" -le "${GH_CREATE_FAILS:-0}" ]; then echo "$GH_CREATE_ERR" >&2; exit 1; fi
+    printf '%s/issues/901\n' "$FAKE_REPO_URL"; exit 0 ;;
+  api:rate_limit) printf '{"resources":{"graphql":{"reset":0}}}\n'; exit 0 ;;
 esac
 echo "fake gh: unexpected invocation: $*" >&2
 exit 7
@@ -163,6 +170,13 @@ case "$1:$2:$3" in
 esac
 echo "fake az: unexpected invocation: $*" >&2
 exit 7
+"#;
+
+/// Fake `sleep`. Logs the requested seconds to `$SLEEP_LOG` and returns at
+/// once, so step-03's rate-limit wait costs no time.
+const FAKE_SLEEP: &str = r#"#!/bin/sh
+printf '%s\n' "$*" >> "$SLEEP_LOG"
+exit 0
 "#;
 
 /// Fake `git`. Logs every call to `$GIT_LOG`.
@@ -201,6 +215,7 @@ impl Sandbox {
         write_executable(&bin.join("gh"), FAKE_GH);
         write_executable(&bin.join("az"), FAKE_AZ);
         write_executable(&bin.join("git"), FAKE_GIT);
+        write_executable(&bin.join("sleep"), FAKE_SLEEP);
         let sandbox = Sandbox { temp };
         sandbox.assert_fakes_shadow_real_tools();
         sandbox
@@ -233,6 +248,7 @@ impl Sandbox {
         .env("GH_LOG", self.path("gh.log"))
         .env("AZ_LOG", self.path("az.log"))
         .env("GIT_LOG", self.path("git.log"))
+        .env("SLEEP_LOG", self.path("sleep.log"))
         .env("GITHUB_OUTPUT", self.path("github_output"))
         .env("FAKE_REPO_URL", GH_REPO_URL)
         .env("AZ_CREATED_URL", AZ_CREATED_URL)
@@ -724,6 +740,81 @@ fn create_issue_unset_on_github_still_creates() {
         chain.run.diag()
     );
     assert!(chain.run.gh_called("issue create"), "{}", chain.run.diag());
+}
+
+#[test]
+fn github_create_retries_after_rate_limit_with_moved_helpers() {
+    // The rate-limit helpers moved from step-03 into workflow_issue_tracking.sh
+    // (#1887). Both attempts of the first try_gh_create (with and without the
+    // label) hit a rate limit; step-03 must wait once and then create.
+    let chain = run_chain(
+        None,
+        &github_origin(),
+        "",
+        None,
+        &[
+            ("GH_CREATE_FAILS", "2"),
+            (
+                "GH_CREATE_ERR",
+                "GraphQL: API rate limit exceeded for user ID 1.",
+            ),
+        ],
+    );
+    let run = &chain.run;
+    run.assert_success();
+    assert_eq!(run.stdout().trim(), CREATED_URL, "{}", run.diag());
+    assert_eq!(
+        run.gh_log()
+            .lines()
+            .filter(|l| l.starts_with("issue create"))
+            .count(),
+        3,
+        "{}",
+        run.diag()
+    );
+    assert!(run.gh_called("api rate_limit"), "{}", run.diag());
+    assert_eq!(run.sandbox.read("sleep.log").trim(), "5", "{}", run.diag());
+    assert!(
+        run.stderr().contains("reset window 1"),
+        "expected one reset window\n{}",
+        run.diag()
+    );
+    run.assert_no_credential_leak();
+}
+
+#[test]
+fn github_create_auth_failure_is_not_retried() {
+    let chain = run_chain(
+        None,
+        &github_origin(),
+        "",
+        None,
+        &[
+            ("GH_CREATE_FAILS", "99"),
+            (
+                "GH_CREATE_ERR",
+                "HTTP 401: Bad credentials (rate limit headers present)",
+            ),
+        ],
+    );
+    let run = &chain.run;
+    assert_eq!(run.output.status.code(), Some(1), "{}", run.diag());
+    assert!(
+        run.stderr()
+            .contains("ERROR: GitHub issue creation failed."),
+        "{}",
+        run.diag()
+    );
+    assert_eq!(
+        run.gh_log()
+            .lines()
+            .filter(|l| l.starts_with("issue create"))
+            .count(),
+        2,
+        "an auth failure must not be retried\n{}",
+        run.diag()
+    );
+    assert!(run.sandbox.read("sleep.log").is_empty(), "{}", run.diag());
 }
 
 #[test]

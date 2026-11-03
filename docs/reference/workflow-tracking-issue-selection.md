@@ -302,7 +302,7 @@ amplihack recipe run default-workflow \
 
 ### `remote_host_type`
 
-`step-02d-detect-remote-host` trims the value and folds it to lower case
+`step-02d-detect-host-type` trims the value and folds it to lower case
 under `LC_ALL=C`, then checks it before any `git` call.
 
 | Value after trimming and folding | Result |
@@ -326,6 +326,10 @@ Step-03 still checks the host type it receives against `github`, `azdo` and
 ### `create_issue`
 
 `create_issue` is an input. It is unrelated to step-03's `issue_creation` output.
+It governs only the tracking issue that step-03 creates. Other recipes that
+file issues, such as smart-orchestrator's routing-gap report
+(`amplifier-bundle/tools/smart_routing_gap_report.sh`), `code-atlas` and
+`consensus-issue-worktree`, do not read it.
 
 `issue_creation_disabled` in
 `amplifier-bundle/tools/workflow_issue_tracking.sh` decides whether step-03
@@ -439,6 +443,13 @@ and step-03 would create an issue even with `create_issue=false`.
   `create_issue=false` when the target repository is uncertain.
 - **A caller-provided `azdo` on a GitHub origin** cannot parse an organisation
   and project, so step-03 falls back to local tracking.
+- **Parallel workstreams do not receive the overrides.** When
+  smart-orchestrator splits a task into parallel workstreams, each workstream
+  runs `default-workflow` with a context built by the multitask launcher,
+  which sets `issue_number` but not `create_issue` or `remote_host_type`. Each
+  workstream therefore detects the host from `origin` and may create an
+  issue. The overrides apply to single-workstream runs and to
+  `default-workflow` run directly.
 
 ## Tests
 
@@ -470,6 +481,9 @@ and step-03 would create an issue even with `create_issue=false`.
   that no remote URL or token reaches stdout or stderr. To prove precedence
   on AzDO, it chains `step_02d_normalises_azure_devops` into step-03 with
   `issue_number` set, because step-03 matches only `azdo)`.
+  `github_create_retries_after_rate_limit_with_moved_helpers` and
+  `github_create_auth_failure_is_not_retried` cover the rate-limit retry
+  helpers that moved from step-03 into `workflow_issue_tracking.sh`.
   The unit tests `issue_creation_disabled_rejects_other_values` and
   `unrecognised_create_issue_warns_without_echo` cover the `create_issue`
   predicate on its own.
