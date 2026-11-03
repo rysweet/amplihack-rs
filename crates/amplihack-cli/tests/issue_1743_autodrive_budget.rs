@@ -1375,6 +1375,34 @@ fn the_stop_comment_masks_secrets_one_case_per_format() {
     assert!(!body.contains(letters), "{body}");
     assert!(body.contains("Authorization: Bearer [REDACTED]"), "{body}");
 
+    // PR #1862 review (crusty round 6): an Authorization value with no
+    // scheme word, or written with `=`, is masked too.
+    let raw = "s3cr3tvaluewithnoscheme123";
+    let body = posted(&format!("Authorization: {raw}\n"));
+    assert!(!body.contains(raw), "schemeless: {body}");
+    assert!(
+        body.contains("Authorization: [REDACTED]"),
+        "schemeless: {body}"
+    );
+    let body = posted(&format!("Proxy-Authorization: Custom {letters} tail\n"));
+    assert!(!body.contains(letters), "unknown scheme: {body}");
+    assert!(
+        body.contains("Proxy-Authorization: [REDACTED]"),
+        "unknown scheme: {body}"
+    );
+    let body = posted(&format!("authorization=\"Bearer {letters}\"\n"));
+    assert!(!body.contains(letters), "authorization=: {body}");
+    assert!(
+        body.contains("authorization=\"[REDACTED]\""),
+        "authorization=: {body}"
+    );
+    let body = posted(&format!("authorization={raw}&next=1\n"));
+    assert!(!body.contains(raw), "unquoted authorization=: {body}");
+    assert!(
+        body.contains("authorization=[REDACTED]"),
+        "unquoted authorization=: {body}"
+    );
+
     // A private key block, whole and cut off by the 8 KiB findings limit.
     let pem = format!(
         "before\n-----BEGIN {k}-----\n{v}\n{v}\n-----END {k}-----\nafter\n",
@@ -1422,6 +1450,30 @@ fn the_stop_comment_keeps_ordinary_text() {
         "{body}"
     );
     assert!(!body.contains("[REDACTED]"), "{body}");
+}
+
+/// PR #1862 review (crusty round 6): the masking ships to macOS, where sed
+/// is BSD sed. `\xHH` is a GNU extension; BSD sed would read `[\x01\x02]`
+/// as the characters `\`, `x`, `0`, `1`, `2` and delete them from the
+/// comment. The marker bytes must come from printf, and no sed expression
+/// may use a `\x` escape. CI runs on Linux only, so the source is checked.
+#[test]
+fn mask_secrets_uses_no_gnu_only_sed_escapes() {
+    let src = std::fs::read_to_string(tool("autodrive_budget.sh")).unwrap();
+    let code: Vec<&str> = src
+        .lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .collect();
+    for l in &code {
+        assert!(!l.contains("\\x"), "GNU-only \\x escape: {l}");
+    }
+    assert!(code.iter().any(|l| l.contains(r#"M1="$(printf '\001')""#)));
+    assert!(code.iter().any(|l| l.contains(r#"M2="$(printf '\002')""#)));
+
+    // Text full of the characters BSD sed would have stripped survives.
+    let text = "commit 0x1a2b 2021-12-01 xx10\n";
+    let body = posted(text);
+    assert!(body.contains("commit 0x1a2b 2021-12-01 xx10"), "{body}");
 }
 
 // ── Helpers on their own ─────────────────────────────────────────────────────

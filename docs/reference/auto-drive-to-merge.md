@@ -3397,8 +3397,13 @@ reason, or the summary for a budget stop. Before posting:
   in URLs, GitHub tokens (`ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`,
   `github_pat_`), `sk-` keys (Anthropic, OpenAI), AWS access key ids (`AKIA`,
   `ASIA`, `A3T`), Slack `xox?-`, GitLab `glpat-`, `npm_`, Google `AIza` and
-  JSON web tokens; the credentials of an `Authorization:` header, whatever
-  they look like; elsewhere, a word of 12 or more characters after `Bearer`,
+  JSON web tokens; the value of an `Authorization` or `Proxy-Authorization`
+  key after `:` or `=`, quoted or not, with or without a scheme (after
+  `Bearer`, `Basic`, `Token`, `Negotiate` or `NTLM` the next word is masked
+  and the scheme kept; any other unquoted value is masked to the end of the
+  line, so `Authorization: s3cr3t` and "the authorization: rules" both
+  become `...: [REDACTED]`; a quoted value is masked inside its quotes);
+  elsewhere, a word of 12 or more characters after `Bearer`,
   `Basic` or `token` when it contains a digit or one of `_ - / + =`, so prose
   such as "the basic implementation" is kept; and the value after `=` or `:`
   of any key whose name ends in `token`, `secret`, `password`, `passwd`,
@@ -3406,7 +3411,9 @@ reason, or the summary for a budget stop. Before posting:
   `signature` (as in `X-Amz-Signature`), `sig` or `sharedaccesskey`, in any
   case. A failure of this step posts nothing. Not recognised: a secret with
   neither a known shape nor a telling key name, and a letters-only word after
-  `Bearer`, `Basic` or `token` outside an `Authorization:` header;
+  `Bearer`, `Basic` or `token` outside an `Authorization` key. The
+  masking uses POSIX `sed -E` only, with no GNU `\xHH` escapes, so it does
+  not depend on GNU sed;
 - `@` mentions and `#N` cross-links are neutralised, so the comment notifies
   no one and links no issue;
 - absolute paths are reduced to their base names, including a path after

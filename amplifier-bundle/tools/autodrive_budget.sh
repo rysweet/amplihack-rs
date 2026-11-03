@@ -47,8 +47,12 @@ export LC_ALL=C
 #   - GitHub tokens gh[pousr]_ and github_pat_, Anthropic and OpenAI sk-,
 #     AWS access key ids AKIA, ASIA and A3T, Slack xox?-, GitLab glpat-,
 #     npm_, Google AIza, JSON web tokens eyJ*.*.*;
-#   - the credentials of an Authorization header (Authorization: <scheme>
-#     <credentials>), whatever they look like;
+#   - the value of an Authorization or Proxy-Authorization key, after : or
+#     =, quoted or not, with or without a scheme: after a known scheme word
+#     (Bearer, Basic, Token, Negotiate, NTLM) the next word is masked and the
+#     scheme kept; any other unquoted value is masked to the end of the line
+#     (so "Authorization: s3cr3t" and "the authorization: rules" both become
+#     "...: [REDACTED]"), and a quoted value is masked inside its quotes;
 #   - elsewhere, the word of 12 or more characters after Bearer, Basic or
 #     token, but only when that word contains a digit or one of _ - / + =,
 #     so prose such as "the basic implementation" is left alone;
@@ -60,10 +64,18 @@ export LC_ALL=C
 # and a letters-only word after Bearer, Basic or token outside an
 # Authorization header. The 8 KiB findings cut and the 59,000-byte body cut
 # still apply.
+# Portability: the rules use only POSIX ERE. The marker bytes \001 (value
+# already handled) and \002 (mask here), removed from the input first, are
+# built with printf into M1 and M2 and put into the expressions as raw
+# bytes. They are never written as \xHH, which only GNU sed reads as a byte:
+# BSD/macOS sed would read [\x01\x02] as the characters \, x, 0, 1 and 2.
 ci() { awk '{ for (i = 1; i <= length($0); i++) { c = substr($0, i, 1); if (c ~ /[a-z]/) printf "[%s%s]", c, toupper(c); else printf "%s", c } }' <<<"$1"; }
 SECRET_KEYS="$(ci 'token|secret|passw(or)?d|api[_-]?key|access[_-]?key|account[_-]?key|private[_-]?key|credentials?|signature|sig|sharedaccesskey')"
 AUTH_WORDS="$(ci 'bearer|basic|token')"
 AUTH_HEADER="$(ci 'authorization')"
+AUTH_SCHEMES="$(ci 'bearer|basic|token|negotiate|ntlm')"
+M1="$(printf '\001')"
+M2="$(printf '\002')"
 mask_secrets() {
   awk '
     /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/ { print "[REDACTED PRIVATE KEY]"; k = 1 }
@@ -81,10 +93,15 @@ mask_secrets() {
     -e 's#npm_[A-Za-z0-9]{30,}#[REDACTED]#g' \
     -e 's#AIza[A-Za-z0-9_-]{30,}#[REDACTED]#g' \
     -e 's#eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}#[REDACTED]#g' \
-    -e "s#((^|[^A-Za-z0-9])${AUTH_HEADER}[\"']?[[:space:]]*:[[:space:]]*[A-Za-z]+[[:space:]]+)[^][[:space:]\"'\`,;&<>|()]+#\\1[REDACTED]#g" \
-    -e "s#(^|[^A-Za-z0-9])(${AUTH_WORDS})([[:space:]]+)([A-Za-z0-9._~+/=-]{12,})#\\1\\2\\3\x01\\4\x02#g" \
-    -e 's#\x01[^\x02]*[0-9_/+=-][^\x02]*\x02#[REDACTED]#g' \
-    -e 's#[\x01\x02]##g' \
+    -e "s#((^|[^A-Za-z0-9])${AUTH_HEADER}[\"']?[[:space:]]*[:=][[:space:]]*)\"[^\"]*\"#\\1\"${M1}${M2}\"#g" \
+    -e "s#((^|[^A-Za-z0-9])${AUTH_HEADER}[\"']?[[:space:]]*[:=][[:space:]]*)'[^']*'#\\1'${M1}${M2}'#g" \
+    -e "s#((^|[^A-Za-z0-9])${AUTH_HEADER}[\"']?[[:space:]]*[:=][[:space:]]*)(${AUTH_SCHEMES})([[:space:]]+)[^][[:space:]\"'\`,;&<>|()${M1}${M2}]+#\\1${M1}\\3\\4${M2}#g" \
+    -e "s#((^|[^A-Za-z0-9])${AUTH_HEADER}[\"']?[[:space:]]*[:=][[:space:]]*)([^${M1}[:space:]\"']|[\"'][^${M1}]).*#\\1${M2}#" \
+    -e "s#${M1}##g" \
+    -e "s#${M2}#[REDACTED]#g" \
+    -e "s#(^|[^A-Za-z0-9])(${AUTH_WORDS})([[:space:]]+)([A-Za-z0-9._~+/=-]{12,})#\\1\\2\\3${M1}\\4${M2}#g" \
+    -e "s#${M1}[^${M2}]*[0-9_/+=-][^${M2}]*${M2}#[REDACTED]#g" \
+    -e "s#[${M1}${M2}]##g" \
     -e "s#((^|[^A-Za-z0-9])[A-Za-z0-9_-]*(${SECRET_KEYS})[\"']?[[:space:]]*[:=][[:space:]]*)\"[^\"]*\"#\\1\"[REDACTED]\"#g" \
     -e "s#((^|[^A-Za-z0-9])[A-Za-z0-9_-]*(${SECRET_KEYS})[\"']?[[:space:]]*[:=][[:space:]]*)'[^']*'#\\1'[REDACTED]'#g" \
     -e "s#((^|[^A-Za-z0-9])[A-Za-z0-9_-]*(${SECRET_KEYS})[\"']?[[:space:]]*[:=][[:space:]]*)[^][[:space:]\"'\`,;&<>|()]+#\\1[REDACTED]#g"
