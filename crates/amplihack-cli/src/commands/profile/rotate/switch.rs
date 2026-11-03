@@ -94,9 +94,8 @@ pub fn switch_live(
 ) -> Result<Result<Switched, AfterSwapFailure>, ProfileError> {
     // Defaults only: a switch decides nothing, so no tuning applies.
     let s = settings::resolve(&TuneFlags::default(), None, &|_| None)?;
-    let mut ctx = Ctx::new(store.clone(), home.to_path_buf(), s);
-    ctx.reread = Some(super::fresh::reread_direct);
-    switch_in(ctx, name)
+    // No re-read hook: the freshness gate (#1870) applies only to decisions.
+    switch_in(Ctx::new(store.clone(), home.to_path_buf(), s), name)
 }
 
 /// [`switch_live`] on a context the caller built; tests set `ctx.scan`.

@@ -34,6 +34,13 @@ pub const MAX_REREADS_PER_CYCLE: usize = 3;
 pub type RereadFn = fn(&Ctx, &ProfileName) -> Probed;
 
 /// Whether the gate may read a stale target again.
+///
+/// The mode and [`Ctx`]'s `reread` hook are both needed: the hook says
+/// whether this context can read at all (`None` in `Ctx::new`, so tests
+/// never reach a live read), and the mode says whether this call may
+/// (revalidation runs under the lock on the same context). `Never` takes
+/// precedence: no read is made even with a hook. `Allowed` with no hook
+/// makes a stale target unknown, with no read and no log line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reread {
     /// Unlocked: read it again.
@@ -94,7 +101,8 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
 /// decision that still names a stale target at the cap is an error
 /// ([`ProfileError::GateUnsettled`]), so no swap is made. The failed live
 /// probe count is unchanged. A ledger that cannot be read is an error, never
-/// an empty damping map.
+/// an empty damping map. A stop request seen before a re-read ends the loop
+/// with no read and [`Decision::Stay`], so nothing is swapped.
 pub fn gate(
     ctx: &Ctx,
     snap: &Snap,
@@ -159,6 +167,12 @@ pub(super) fn settle(
             lines.push(fresh_msg::limit(&to));
             Probed::failed()
         } else if let Some(reread) = ctx.reread {
+            if ctx.stopping() {
+                // `rotate stop`: make no read, which may take a probe
+                // timeout, and no swap. The cycle sees the stop next.
+                m.decision = Decision::Stay;
+                break;
+            }
             reads += 1;
             let p = reread(ctx, &to);
             fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines)

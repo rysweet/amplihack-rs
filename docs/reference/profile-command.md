@@ -5109,6 +5109,9 @@ rule never chooses an unknown target, so the gate settles well within that
 bound. If a decision still names a stale target once the bound is reached,
 the cycle stops with the error `rotation gate did not settle` and makes no
 swap. `rotate watch` logs the error and decides again on the next cycle.
+When `rotate stop` arrives before a re-read, the gate makes no further read,
+which could take up to a probe timeout, logs `stop: signal received; cycle abandoned`
+and makes no swap.
 
 A re-read that times out or fails makes the target *unknown* for this
 cycle, as a [failed probe](#rotate-decision-rule) does, with
@@ -5124,12 +5127,15 @@ re-read or by the limit counts as failed, in `F`, in the
 [no-capacity ALERT](#rotate-log). A failed live probe is counted once per
 cycle however many times the decision runs.
 
-`--dry-run` makes the same re-reads, since they write nothing, and prints
-their `reread:` lines and any
+`--dry-run` makes the same re-reads, since they write no rotate state, and
+prints their `reread:` lines and any
 `damp: <name> swapped away exhausted; no later reading shows room` line. It
 never prints `damp: <name> later reading shows room; swap-back allowed`,
 because that line is written when the ledger is updated, and it never
-changes `swapped_away` or any other part of the ledger.
+changes `swapped_away` or any other part of the ledger. Like every direct
+read, a re-read may refresh a login's OAuth token when it is close to
+expiry, and Claude saves that token under its own `.oauth_refresh.lock`; a
+dry run did this before re-reads existed, and it writes nothing else.
 [Revalidation](#rotate-revalidation) under the lock never reads: a stale
 target there counts as unknown.
 

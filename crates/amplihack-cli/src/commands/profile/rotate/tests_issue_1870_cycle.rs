@@ -632,3 +632,39 @@ fn sr9_a_dry_run_reads_again_and_leaves_the_ledger_bytes_unchanged() {
     );
     assert_eq!(ino_at(&e.live()), Some(e.l), "work's login stays live");
 }
+
+// --- A stop request before a re-read: no read, no swap -----------------------
+
+static CALLS_STOP: Calls = Mutex::new(Vec::new());
+
+/// A slow login: the read would take a probe timeout.
+fn reread_stop(_: &Ctx, name: &ProfileName) -> Probed {
+    record(&CALLS_STOP, name);
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    rd(0.0, 50.0, None)
+}
+
+/// As (b), and `rotate stop` arrives while the cycle measures.
+fn measure_stop(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    if let Some(stop) = &ctx.stop {
+        stop.store(true, Ordering::SeqCst);
+    }
+    measure_b(ctx, snap)
+}
+
+#[test]
+fn a_stop_request_before_a_reread_makes_no_read_and_no_swap() {
+    let e = env();
+    add_stored(&e, "third");
+    let mut c = ctx(&e, measure_stop, Some(reread_stop));
+    c.stop = Some(std::sync::Arc::new(AtomicBool::new(false)));
+    let got = run_cycle(&mut c, Mode::Watch).unwrap();
+    let log = log_of(&e);
+    assert_eq!(got, CycleOutcome::Stopped, "{log}");
+    assert!(
+        calls(&CALLS_STOP).is_empty(),
+        "no re-read runs after a stop"
+    );
+    assert_eq!(swaps(&log), 0, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.l), "work's login stays live");
+}

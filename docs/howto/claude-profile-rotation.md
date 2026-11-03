@@ -94,7 +94,9 @@ would swap work->spare live s=88% w=41% target s=0% w=12% reason=threshold
 ```
 
 A dry run probes every profile and prints what it would do. It takes no lock,
-writes nothing, moves nothing and logs nothing. It also does not finish an
+writes no rotate state, moves nothing and logs nothing. A direct read may
+still refresh a login's OAuth token that is close to expiry, which Claude
+saves under its own lock. It also does not finish an
 interrupted swap: if one is pending it prints
 `would recover an interrupted swap (phase <phase>)` and leaves it for the next
 real run. Run a dry run first, and again whenever you change a threshold.

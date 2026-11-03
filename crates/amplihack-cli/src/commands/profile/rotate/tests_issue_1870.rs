@@ -421,8 +421,9 @@ fn only_production_call_sites_wire_the_direct_reread() {
         "SR-10: Ctx::new reads nothing, so no test reaches a live read"
     );
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile/rotate");
-    // One-shot and --dry-run (mod.rs), watch (daemon.rs) and switch.
-    for file in ["mod.rs", "daemon.rs", "switch.rs"] {
+    // One-shot and --dry-run (mod.rs) and watch (daemon.rs). A switch
+    // decides nothing, so it has no re-read.
+    for file in ["mod.rs", "daemon.rs"] {
         let text = fs::read_to_string(dir.join(file)).unwrap();
         let wired = text.lines().any(|l| {
             let code = l.split("//").next().unwrap_or_default();
@@ -430,6 +431,11 @@ fn only_production_call_sites_wire_the_direct_reread() {
         });
         assert!(wired, "rotate/{file} no longer wires fresh::reread_direct");
     }
+    let switch = fs::read_to_string(dir.join("switch.rs")).unwrap();
+    assert!(
+        !switch.contains("reread_direct"),
+        "a switch makes no decision, so it wires no re-read"
+    );
 }
 
 static STUCK_READS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -643,4 +649,35 @@ fn a_gate_that_reads_again_leaves_the_ledger_bytes_unchanged() {
 
 fn spare_full_quiet(_: &Ctx, _: &ProfileName) -> Probed {
     exh(43.0, 100.0)
+}
+
+/// The gate passes a measurement with no probes unchanged; only test stubs
+/// build one. Outside tests the one `Measurement` literal is in
+/// `decide_measured`, and it keeps the probes.
+#[test]
+fn every_production_measurement_keeps_its_probes() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile/rotate");
+    let mut built = Vec::new();
+    for entry in fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        if file.starts_with("tests") || path.extension().is_none_or(|x| x != "rs") {
+            continue;
+        }
+        let text = fs::read_to_string(&path).unwrap();
+        for (i, l) in text.lines().enumerate() {
+            let code = l.split("//").next().unwrap_or_default();
+            // A destructuring `let Measurement {` and the definition build nothing.
+            if code.contains("Measurement {")
+                && !code.contains("let Measurement {")
+                && !code.contains("struct Measurement")
+            {
+                let rest: String = text.lines().skip(i).take(4).collect();
+                built.push((file.clone(), rest));
+            }
+        }
+    }
+    assert_eq!(built.len(), 1, "one production literal: {built:?}");
+    assert_eq!(built[0].0, "observe.rs");
+    assert!(built[0].1.contains("probed: Some("), "{built:?}");
 }
