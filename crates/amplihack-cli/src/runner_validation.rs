@@ -248,7 +248,7 @@ mod installed_revision_tests {
     use std::path::Path;
 
     const URL: &str = "https://github.com/rysweet/amplihack-recipe-runner";
-    const SHA: &str = "4d5187eaf95836a549e6e68725f8f853d0dc7034";
+    const SHA: &str = "01cf296f21089045c8fd4d1564360354fa664fb2";
     const OTHER: &str = "b4a82e7000000000000000000000000000000000";
 
     fn write(home: &Path, body: &str) {
