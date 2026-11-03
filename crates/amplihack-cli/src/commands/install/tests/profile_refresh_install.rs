@@ -222,3 +222,69 @@ fn unit_tests_never_touch_profiles_without_opting_in() {
     refresh_profile_hooks(Path::new("/opt/amplihack/amplihack-hooks"));
     assert_eq!(fs::read_to_string(&settings).unwrap(), before);
 }
+
+/// Issue #1878 item 1 (D2, approach (a)): the hook writer that both install
+/// and the profile refresh call, with the XPIA asset directory present
+/// (`with_xpia = true`) and a legacy XPIA shell-hook entry already in place.
+/// It must leave no XPIA shell hook, set no `XPIA_ENABLED`, and register each
+/// shared subcommand once. Runs `register_hooks` directly, so the profile
+/// refresh opt-in variable is never set and no profile root is read.
+#[test]
+fn xpia_register_hooks_with_xpia_assets_writes_no_xpia_enablement() {
+    use super::super::settings::register_hooks;
+    let d = tempfile::tempdir().unwrap();
+    let hooks = hooks_file(&d.path().join("bin/amplihack-hooks"));
+    let legacy = d.path().join(".amplihack/.claude/tools/xpia/hooks");
+    let mut settings: Value = serde_json::json!({
+        "language": "en",
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "*",
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("python3 {}/pre_tool_use.py", legacy.display())
+                }]
+            }],
+            "SessionStart": [{
+                "hooks": [{
+                    "type": "command",
+                    "command": format!("python3 {}/session_start.py", legacy.display())
+                }]
+            }]
+        }
+    });
+
+    for _ in 0..2 {
+        register_hooks(&mut settings, &hooks, true, true);
+    }
+
+    let text = settings.to_string();
+    assert!(!text.contains("XPIA_ENABLED"), "{text}");
+    assert!(
+        !text.contains("tools/xpia/"),
+        "legacy XPIA hook kept: {text}"
+    );
+    assert!(settings.get("env").is_none(), "no env block: {text}");
+    assert_eq!(settings["language"], "en");
+    for (event, subcommand) in [
+        ("SessionStart", "session-start"),
+        ("PreToolUse", "pre-tool-use"),
+        ("PostToolUse", "post-tool-use"),
+    ] {
+        let count = settings["hooks"][event]
+            .as_array()
+            .unwrap_or_else(|| panic!("{event} missing: {text}"))
+            .iter()
+            .flat_map(|w| w["hooks"].as_array().cloned().unwrap_or_default())
+            .filter(|h| {
+                h["command"]
+                    .as_str()
+                    .is_some_and(|c| c.contains("amplihack-hooks") && c.ends_with(subcommand))
+            })
+            .count();
+        assert_eq!(
+            count, 1,
+            "{event} {subcommand} registered {count} times: {text}"
+        );
+    }
+}

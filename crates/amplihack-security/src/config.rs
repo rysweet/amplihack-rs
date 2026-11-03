@@ -27,6 +27,10 @@ const DEFAULT_SAFE_DOMAINS: &[&str] = &[
 #[derive(Debug, Clone)]
 pub struct XpiaConfig {
     pub enabled: bool,
+    /// The raw `XPIA_ENABLED` value this configuration was built from, or
+    /// `None` when it was unset or the configuration was built in code.
+    /// Health uses it to name a value that is not recognised (#1737).
+    pub enabled_raw: Option<String>,
     pub security_level: SecurityLevel,
     pub verbose_feedback: bool,
 
@@ -61,7 +65,12 @@ impl Default for XpiaConfig {
 impl XpiaConfig {
     /// Load configuration from environment variables.
     pub fn from_env() -> Self {
-        Self::from_lookup(|key| env::var(key).ok())
+        Self::from_lookup(|key| match key {
+            // A non-UTF-8 `XPIA_ENABLED` is recorded as a placeholder rather
+            // than treated as unset, so health and the hook agree on it.
+            "XPIA_ENABLED" => enabled_raw_from_os(env::var_os(key).as_deref()),
+            _ => env::var(key).ok(),
+        })
     }
 
     /// Built-in defaults, ignoring every `XPIA_*` environment variable.
@@ -71,19 +80,6 @@ impl XpiaConfig {
     /// cannot change their outcome.
     pub fn defaults() -> Self {
         Self::from_lookup(|_| None)
-    }
-
-    /// Whether `XPIA_ENABLED` in the process environment turns XPIA on.
-    ///
-    /// Reads only that variable, so a caller can skip building the full
-    /// configuration (and opening the domain-list files) when XPIA is off.
-    pub fn enabled_in_env() -> bool {
-        Self::enabled_from_lookup(|key| env::var(key).ok())
-    }
-
-    /// Whether `XPIA_ENABLED` turns XPIA on. Unset means off (#1734).
-    pub fn enabled_from_lookup(lookup: impl Fn(&str) -> Option<String>) -> bool {
-        lookup("XPIA_ENABLED").is_some_and(|v| parse_bool(&v))
     }
 
     /// Build a configuration from a variable lookup (`None` means unset).
@@ -102,8 +98,16 @@ impl XpiaConfig {
             _ => SecurityLevel::Medium,
         };
 
+        // Only a recognised on value turns XPIA on; unset is off (#1734).
+        let enabled_raw = lookup("XPIA_ENABLED");
+        let enabled = matches!(
+            classify_enabled(enabled_raw.as_deref()),
+            EnabledValue::Recognised(true)
+        );
+
         let mut config = Self {
-            enabled: Self::enabled_from_lookup(&lookup),
+            enabled,
+            enabled_raw,
             security_level,
             verbose_feedback: env_bool("XPIA_VERBOSE_FEEDBACK", false),
             block_on_high_risk: env_bool("XPIA_BLOCK_HIGH_RISK", true),
@@ -178,6 +182,63 @@ impl XpiaConfig {
 /// `1`, `true` or `yes` in any case is true; any other value is false.
 fn parse_bool(value: &str) -> bool {
     matches!(value.to_lowercase().as_str(), "1" | "true" | "yes")
+}
+
+/// How an `XPIA_ENABLED` value is read (#1737 item 1).
+///
+/// Only `Recognised(true)` turns XPIA on, and exactly when [`parse_bool`]
+/// would. Everything that is neither a recognised on nor a recognised off
+/// value is `Unrecognised`, which leaves XPIA off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnabledValue {
+    /// `1`, `true` or `yes` (on), or unset, empty, `0`, `false` or `no`
+    /// (off), in any case and without trimming.
+    Recognised(bool),
+    /// Any other value, kept as given (for example `on` or `" true "`).
+    Unrecognised(String),
+}
+
+/// Shown in place of an `XPIA_ENABLED` value that is not valid UTF-8.
+pub const NON_UTF8_PLACEHOLDER: &str = "<non-UTF-8>";
+
+/// Convert a raw `XPIA_ENABLED` value into the string used for classification
+/// and messages. A non-UTF-8 value becomes [`NON_UTF8_PLACEHOLDER`], never
+/// `None`, so it is reported as unrecognised rather than read as unset.
+pub fn enabled_raw_from_os(value: Option<&std::ffi::OsStr>) -> Option<String> {
+    value.map(|v| {
+        v.to_str()
+            .map_or_else(|| NON_UTF8_PLACEHOLDER.to_string(), str::to_string)
+    })
+}
+
+/// Classify a raw `XPIA_ENABLED` value. `None` means unset, which is off.
+pub fn classify_enabled(value: Option<&str>) -> EnabledValue {
+    let Some(raw) = value else {
+        return EnabledValue::Recognised(false);
+    };
+    match raw.to_lowercase().as_str() {
+        "1" | "true" | "yes" => EnabledValue::Recognised(true),
+        "" | "0" | "false" | "no" => EnabledValue::Recognised(false),
+        _ => EnabledValue::Unrecognised(raw.to_string()),
+    }
+}
+
+/// Longest part of an unrecognised value echoed back, in characters.
+const MAX_ECHOED_CHARS: usize = 64;
+
+/// The message for an unrecognised `XPIA_ENABLED` value.
+///
+/// The value is cut to 64 characters (on a character boundary, marked with
+/// `…`) and then escaped with `{:?}`, so no control character reaches a
+/// terminal or log.
+pub fn unrecognised_enabled_message(raw: &str) -> String {
+    let shown = match raw.char_indices().nth(MAX_ECHOED_CHARS) {
+        Some((cut, _)) => format!("{}…", &raw[..cut]),
+        None => raw.to_string(),
+    };
+    format!(
+        "XPIA_ENABLED={shown:?} is not recognised; XPIA is off (set XPIA_ENABLED=true to opt in)"
+    )
 }
 
 fn load_domains_from_file(path: &str, set: &mut HashSet<String>) {
@@ -427,32 +488,6 @@ mod lookup_tests {
     }
 
     #[test]
-    fn enabled_from_lookup_agrees_with_from_lookup() {
-        for value in [
-            None,
-            Some(""),
-            Some("on"),
-            Some("false"),
-            Some("0"),
-            Some(" true "),
-            Some("true"),
-            Some("YES"),
-            Some("1"),
-        ] {
-            let lookup = |k: &str| {
-                (k == "XPIA_ENABLED")
-                    .then(|| value.map(str::to_string))
-                    .flatten()
-            };
-            assert_eq!(
-                XpiaConfig::enabled_from_lookup(lookup),
-                XpiaConfig::from_lookup(lookup).enabled,
-                "XPIA_ENABLED={value:?}"
-            );
-        }
-    }
-
-    #[test]
     fn explicit_opt_in_keeps_full_protection() {
         let cfg = XpiaConfig::from_lookup(|k| (k == "XPIA_ENABLED").then(|| "true".into()));
         assert!(cfg.enabled);
@@ -482,5 +517,157 @@ mod lookup_tests {
             !cfg.enabled,
             "only XPIA_ENABLED may turn XPIA on; sub-settings must not"
         );
+    }
+}
+
+/// Issue #1737 item 1 (D5, D6): `classify_enabled` tells a recognised value
+/// from an unrecognised one, so health and the hook can name what the user
+/// typed. These tests define the contract; `parse_bool` stays as it is.
+#[cfg(test)]
+mod classify_tests {
+    use super::*;
+
+    #[test]
+    fn classify_enabled_recognised_on() {
+        for value in ["1", "true", "TRUE", "True", "yes", "Yes", "YES"] {
+            assert_eq!(
+                classify_enabled(Some(value)),
+                EnabledValue::Recognised(true),
+                "XPIA_ENABLED={value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_enabled_recognised_off() {
+        for value in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("false"),
+            Some("FALSE"),
+            Some("no"),
+            Some("No"),
+        ] {
+            assert_eq!(
+                classify_enabled(value),
+                EnabledValue::Recognised(false),
+                "XPIA_ENABLED={value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_enabled_unrecognised_values_are_not_trimmed() {
+        for value in ["on", "enabled", " true ", " 1", "maybe", "off", "true\n"] {
+            assert_eq!(
+                classify_enabled(Some(value)),
+                EnabledValue::Unrecognised(value.to_string()),
+                "XPIA_ENABLED={value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn enabled_raw_from_os_maps_unset_and_utf8_values() {
+        assert_eq!(enabled_raw_from_os(None), None);
+        assert_eq!(
+            enabled_raw_from_os(Some(std::ffi::OsStr::new("true"))),
+            Some("true".to_string())
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn enabled_raw_from_os_records_non_utf8_as_placeholder() {
+        use std::os::unix::ffi::OsStrExt;
+        let raw = enabled_raw_from_os(Some(std::ffi::OsStr::from_bytes(b"tr\xffue")));
+        assert_eq!(raw.as_deref(), Some(NON_UTF8_PLACEHOLDER));
+        assert_eq!(
+            classify_enabled(raw.as_deref()),
+            EnabledValue::Unrecognised(NON_UTF8_PLACEHOLDER.to_string())
+        );
+    }
+
+    #[test]
+    fn classify_enabled_agrees_with_parse_bool() {
+        // Only Recognised(true) may turn XPIA on, and exactly when parse_bool
+        // says so.
+        for value in [
+            "", "0", "1", "true", "TRUE", "yes", "no", "false", "on", "enabled", " true ", " 1",
+        ] {
+            let on = matches!(
+                classify_enabled(Some(value)),
+                EnabledValue::Recognised(true)
+            );
+            assert_eq!(on, parse_bool(value), "XPIA_ENABLED={value:?}");
+        }
+    }
+
+    #[test]
+    fn from_lookup_records_the_raw_value() {
+        let cfg = XpiaConfig::from_lookup(|k| (k == "XPIA_ENABLED").then(|| "on".into()));
+        assert_eq!(cfg.enabled_raw.as_deref(), Some("on"));
+        assert!(!cfg.enabled, "an unrecognised value leaves XPIA off");
+
+        let unset = XpiaConfig::from_lookup(|_| None);
+        assert_eq!(unset.enabled_raw, None);
+        assert_eq!(XpiaConfig::defaults().enabled_raw, None);
+    }
+
+    #[test]
+    fn unrecognised_message_has_the_exact_wording() {
+        assert_eq!(
+            unrecognised_enabled_message("on"),
+            "XPIA_ENABLED=\"on\" is not recognised; XPIA is off (set XPIA_ENABLED=true to opt in)"
+        );
+        assert_eq!(
+            unrecognised_enabled_message(" true "),
+            "XPIA_ENABLED=\" true \" is not recognised; XPIA is off (set XPIA_ENABLED=true to opt in)"
+        );
+    }
+
+    #[test]
+    fn unrecognised_message_escapes_control_characters() {
+        let msg = unrecognised_enabled_message("\u{1b}[31mtrue\n\0");
+        assert!(!msg.contains('\u{1b}'), "raw ESC leaked: {msg:?}");
+        assert!(!msg.contains('\n'), "raw LF leaked: {msg:?}");
+        assert!(!msg.contains('\0'), "raw NUL leaked: {msg:?}");
+        assert!(!msg.contains('\r'));
+        assert!(msg.contains("\\u{1b}"), "{msg:?}");
+        assert!(msg.contains("\\n"), "{msg:?}");
+    }
+
+    #[test]
+    fn unrecognised_message_caps_long_values() {
+        let long = "x".repeat(10_000);
+        let msg = unrecognised_enabled_message(&long);
+        let expected = format!("{:?}", format!("{}…", "x".repeat(64)));
+        assert!(
+            msg.contains(&format!("XPIA_ENABLED={expected} ")),
+            "value must be cut to 64 chars plus an ellipsis: {msg}"
+        );
+        assert!(
+            msg.len() < 300,
+            "message must stay short: {} bytes",
+            msg.len()
+        );
+    }
+
+    #[test]
+    fn unrecognised_message_cuts_on_a_char_boundary() {
+        // 100 four-byte chars: a byte-index cut at 64 would split one and panic.
+        let wide = "🦀".repeat(100);
+        let msg = unrecognised_enabled_message(&wide);
+        let kept = format!("{}…", "🦀".repeat(64));
+        assert!(msg.contains(&kept), "{msg}");
+        assert!(!msg.contains(&"🦀".repeat(65)), "{msg}");
+    }
+
+    #[test]
+    fn short_value_is_not_marked_as_cut() {
+        let exactly = "y".repeat(64);
+        let msg = unrecognised_enabled_message(&exactly);
+        assert!(!msg.contains('…'), "{msg}");
     }
 }

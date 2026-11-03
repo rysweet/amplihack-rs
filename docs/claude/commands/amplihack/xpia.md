@@ -17,12 +17,20 @@ XPIA (Cross-Platform Injection Attack) Defense system management and health moni
 
 XPIA scanning runs only when the agent CLI starts with `XPIA_ENABLED` set to
 `1`, `true` or `yes` (any case). Unset, `false`, `0`, `no` or any other value
-leaves it off:
+leaves it off. A value that is not recognised, such as `on`, `enabled` or
+`" true "`, also leaves it off, and the hook prints a warning to stderr:
 
 ```bash
 export XPIA_ENABLED=true
 amplihack claude
 ```
+
+```
+amplihack: warning: XPIA_ENABLED="on" is not recognised; XPIA is off (set XPIA_ENABLED=true to opt in)
+```
+
+This command and the `xpia-defense` agent do not start on their own. They run
+when you invoke them.
 
 With XPIA off, the pre-tool-use hook still checks for deletion or renaming of
 the working directory, `git commit` on `main` or `master`, and `--no-verify`.
@@ -48,7 +56,9 @@ There is no health-check command behind this subcommand. The script it used
 to run was removed with the Python tree (#637), and nothing in amplihack
 calls `amplihack_security::check_health`, so it prints nothing. To see
 whether XPIA is on, check `XPIA_ENABLED` in the environment that started the
-agent CLI.
+agent CLI. When a program does call `check_health`, its `xpia_enabled` entry
+passes when XPIA is on or off as asked, and fails for an unrecognised value;
+see [Health check](../../../reference/xpia-configuration.md#health-check).
 
 ### status
 
@@ -95,8 +105,9 @@ When you use any of these commands, execute the following:
 ```bash
 # For health check
 # The legacy `xpia_health.py` script was removed with the Python tree (#637).
-# XPIA defense now lives in the Rust crate `crates/amplihack-security/` and runs
-# automatically via the hook pipeline; there is no standalone health-check CLI.
+# XPIA defense now lives in the Rust crate `crates/amplihack-security/`. It runs
+# in the pre-tool-use hook only when XPIA_ENABLED=true (off by default); there
+# is no standalone health-check CLI.
 
 # For status check
 python3 ~/.claude/tools/xpia/xpia_status.py
@@ -196,4 +207,4 @@ XPIA security logs are stored in:
 
 ## Integration with UVX
 
-XPIA hooks are automatically configured during UVX installation when using the enhanced install script. The system is designed to work seamlessly with both local and UVX deployments.
+Installing amplihack, by UVX or locally, registers the shared `amplihack-hooks` subcommands (`session-start`, `pre-tool-use` and `post-tool-use`) but does not turn XPIA on. Nothing the installer writes sets `XPIA_ENABLED`. XPIA stays off (opt-in) until you start the agent CLI with `XPIA_ENABLED=true`.

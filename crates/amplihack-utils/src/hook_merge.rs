@@ -174,24 +174,6 @@ impl HookMergeUtility {
     }
 }
 
-/// Get the required XPIA hooks for amplihack.
-pub fn get_required_xpia_hooks() -> Vec<HookConfig> {
-    vec![
-        HookConfig {
-            hook_type: "PostToolUse".to_string(),
-            event: "PostToolUse".to_string(),
-            command: "amplihack-xpia-hook".to_string(),
-            description: "XPIA detection hook".to_string(),
-        },
-        HookConfig {
-            hook_type: "PreToolUse".to_string(),
-            event: "PreToolUse".to_string(),
-            command: "amplihack-pre-tool-hook".to_string(),
-            description: "Pre-tool validation hook".to_string(),
-        },
-    ]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,14 +233,6 @@ mod tests {
         let r2 = util2.merge_hooks(&hooks).unwrap();
         assert_eq!(r2.hooks_unchanged, 1);
         assert_eq!(r2.hooks_added, 0);
-    }
-
-    #[test]
-    fn required_xpia_hooks() {
-        let hooks = get_required_xpia_hooks();
-        assert_eq!(hooks.len(), 2);
-        assert!(hooks.iter().any(|h| h.event == "PostToolUse"));
-        assert!(hooks.iter().any(|h| h.event == "PreToolUse"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 ---
 title: "Understanding the Copilot Parity Control Plane"
 description: "Why amplihack uses a generated Copilot wrapper, strict Rust-runner execution, and a fail-closed XPIA bridge to reach Python-Rust parity."
-last_updated: 2026-03-24
+last_updated: 2026-11-02
 review_schedule: as-needed
 owner: amplihack
 doc_type: explanation
@@ -17,7 +17,9 @@ It does three things:
 
 - stages amplihack behavior into Copilot's `.github/` discovery model
 - preserves strict Rust-runner execution for recipes instead of silently falling back
-- keeps Bash security fail-closed through the canonical XPIA hook backed by `xpia-defend`
+- keeps Bash security fail-closed through the canonical XPIA hook backed by `xpia-defend`, when XPIA is enabled
+
+> **XPIA is off by default.** The XPIA Bash policy described on this page applies only when XPIA is enabled (`XPIA_ENABLED=true`). With XPIA off, the wrapper still runs, but no XPIA decision is made. See the [XPIA Configuration Reference](../reference/xpia-configuration.md).
 
 ## Why It Exists
 
