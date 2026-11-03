@@ -1,0 +1,15 @@
+[package]
+name = "amplihack-lbug-cache"
+version = "0.1.0"
+edition = "2024"
+publish = false
+autotests = false
+
+[workspace]
+
+[lib]
+path = "cache.rs"
+
+[[bin]]
+name = "amplihack-lbug-cache"
+path = "main.rs"

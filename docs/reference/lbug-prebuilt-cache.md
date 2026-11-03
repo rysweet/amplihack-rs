@@ -1,237 +1,127 @@
 ---
-title: Prebuilt lbug Cache Reference
-description: Build entry points, configuration, identity, and fallback contracts for reusable static lbug builds.
+title: Local lbug Cache Reference
+description: Verified local static lbug reuse for development builds, hooks, and CI.
 doc_type: reference
 last_updated: 2026-11-03
 review_schedule: as-needed
 ---
 
-# Prebuilt lbug Cache Reference
+# Local lbug Cache Reference
 
-> **[PLANNED - Implementation Pending]** This reference defines the intended
-> cache integration; the wrapper and build-support helper are not implemented.
-
-Repository builds reuse verified static LadybugDB (`lbug`) libraries through
-`scripts/cargo-with-lbug.sh`. The integration sets `LBUG_LIBRARY_DIR` and
-`LBUG_INCLUDE_DIR` for the requesting build. A hit skips bundled lbug CMake and
-core C++ compilation. Each Cargo target still compiles its small `cxx` FFI shim.
-
-The cache is optional. Source builds remain available when an artifact, network,
-trusted cache, or publication authority is unavailable. Plain Cargo retains its
-source-build behavior; use the wrapper for managed reuse.
-
-Contract provenance: [issue #1917](https://github.com/rysweet/amplihack-rs/issues/1917),
-assignment `CC-AMPLIHACK-LBUG-PREBUILT-1917`, PM328 comment6613591861.
-
-## Contents
-
-- [Cargo wrapper](#cargo-wrapper)
-- [Supported entry points](#supported-entry-points)
-- [Artifact identity](#artifact-identity)
-- [Configuration](#configuration)
-- [Compatibility](#compatibility)
-- [Selection and fallback](#selection-and-fallback)
-- [Cache ownership and concurrency](#cache-ownership-and-concurrency)
-- [Static linking and runtime paths](#static-linking-and-runtime-paths)
-- [Diagnostics](#diagnostics)
+The spec owner approved **local-only v1** in
+[PM328 comment6616249815](https://github.com/mistt-repo/Product-Management/issues/328#issuecomment-6616249815),
+superseding the larger publication proposal. The exact decision and its hash are
+retained in `build-support/lbug-cache/approved-v1.md` and `approval-v1.json`.
+Assignment: `CC-AMPLIHACK-LBUG-PREBUILT-1917`; original assignment: PM328 comment6613591861.
 
 ## Cargo wrapper
 
-From the repository root, replace `cargo` with `scripts/cargo-with-lbug.sh`:
+Run development commands through the checkout's wrapper:
 
-```bash
+```sh
 scripts/cargo-with-lbug.sh build --workspace --locked
+scripts/cargo-with-lbug.sh test --workspace --locked
 scripts/cargo-with-lbug.sh clippy --locked --all-targets -- -D warnings
 ```
 
-Expected result: Cargo completes normally; cache selection is reported on stderr.
-Cargo arguments, their order, `--` boundaries, stdout, and exit status are
-preserved. Cancellation reaches child processes and releases invocation locks.
-Formatting, metadata queries, and unrelated tool installation do not produce
-lbug artifacts.
-
-The wrapper bootstraps only the build-support helper into an owned target.
-That helper has no lbug, application-runtime, or third-party Cargo dependencies. Effective offline
-settings are resolved before bootstrap. Failed preparation disables managed
-caching and passes the original command to Cargo.
-
-## Supported entry points
-
-| Entry point | Cache integration |
-| --- | --- |
-| Documented application build, check, test, clippy, and nextest commands | `scripts/cargo-with-lbug.sh` with the original Cargo arguments |
-| Local source installation | Wrapper `install --path` from the selected checkout for both binaries |
-| `scripts/dev-space.sh cargo` | Delegates after selecting its Cargo target and applying its existing ownership and cleanup rules |
-| Pre-commit artifact guard and clippy | `scripts/git-hook-cargo.sh` scrubs Git repository variables, selects its per-checkout target, then delegates Cargo execution |
-| Pre-push workspace tests | Same hook integration; existing test arguments and enforcement remain in place |
-| `ci.yml` application clippy, nextest, doctests, source-install smoke, and native matrix builds | Wrapper runs after target, compiler, and toolchain setup |
-| `release.yml` application builds | Wrapper runs with the release target, feature flags, and release-version environment |
-| `publish-snapshot.yml` application builds | Wrapper runs with the snapshot target and version environment |
-| Containerized application cross-builds | Integration runs inside the container, identifying its compiler; unsupported contexts use source |
-| `scripts/probe-no-python.sh` standalone builds | Wrapper builds before the probe restricts PATH; a supplied probe binary is reused |
-| npm/npx source fallback | Packaged wrapper builds `amplihack` and `amplihack-hooks` from the distributed workspace |
-| uvx source bootstrap | Resolves one source revision, obtains its complete checkout, and invokes that checkout's wrapper for both binaries |
-
-Application release archives are selected independently of lbug prereleases.
-Source packages include the wrapper, helper, policies, provenance, required
-lockfiles, and complete compatibility source. npm and uvx retain their binary
-provisioning checks. Touched shell paths support macOS Bash 3.2.
-
-Formatting, Kani setup/execution, installation of unrelated Cargo tools, and
-arbitrary external `cargo install --git` commands are outside managed reuse.
-They keep their existing behavior. Existing CI checks and supported release
-targets remain enforced even when managed caching selects source.
-
-## Artifact identity
-
-The tag and asset stem use this grammar:
-
-```text
-lbug-<locked-version>-<target-triple>-<compiler-family><major>
-```
-
-The version comes from the resolved lbug entry in `Cargo.lock`, rather than a
-manifest's version range. The target is Cargo's effective target triple, including
-`--target`, `CARGO_BUILD_TARGET`, and supported Cargo configuration overrides.
-The compiler is resolved inside lbug's Cargo build-script context using the
-pinned `cc` behavior. CMake must use that same compiler.
-
-| Component | Example | Identity rule |
-| --- | --- | --- |
-| Locked version | `0.15.4` | A version change selects a different key |
-| Target | `aarch64-apple-darwin` | Host architecture does not override the selected target |
-| Compiler family | `gcc`, `clang`, `appleclang` | Apple clang and upstream clang are distinct families |
-| Compiler major | `15` | Compiler patch versions do not create another key |
-
-For example, GCC 15 targeting GNU/Linux x86-64 selects
-`lbug-0.15.4-x86_64-unknown-linux-gnu-gcc15`. Apple Silicon uses
-`aarch64-apple-darwin` and the detected **Apple clang** major. No Apple clang major
-is assumed from an Xcode label or a previous machine's report.
-
-Target-specific `CXX` settings, Cargo configuration, compiler launchers, and
-cross-compilation overrides participate in resolution. Unreliable identification,
-compiler/CMake disagreement, multiple native contexts, multiple targets, and
-unsupported configuration interpretation select source. A key alone never
-establishes ABI compatibility.
+The wrapper compiles a small dependency-free Rust helper into a private temporary
+directory using the already installed compiler. The helper removes that temporary
+executable on startup. This requires no application build, Cargo registry access,
+or persistent executable cache. Arguments, machine-readable stdout, Cargo status,
+target directory and job controls are preserved. SIGINT and SIGTERM reach the
+Cargo process group. Diagnostics use stderr and fixed reason text.
 
 ## Configuration
 
-Managed reuse defaults to `auto`; no manual lbug path exports are needed.
+| Input | Behavior |
+| --- | --- |
+| `AMPLIHACK_LBUG_CACHE` | `auto` by default; `source` or an unknown value selects bundled source |
+| `AMPLIHACK_LBUG_CACHE_DIR` | Absolute private cache root; unsafe/unusable explicit paths select source |
+| `XDG_CACHE_HOME` | Default cache base when defined; otherwise `$HOME/.cache` |
+| `LBUG_LIBRARY_DIR`, `LBUG_INCLUDE_DIR`, `LBUG_SHARED` | Every explicit setting, including an empty value, preserves upstream behavior and opts out |
+| `--target`, `CARGO_BUILD_TARGET`, simple Cargo `build.target` | Effective target; v1 admits native macOS and GNU/Linux x86-64/aarch64 only |
+| `CXX` and target-qualified compiler variables | Resolve the actual C++ compiler and its family/major; unsupported resolution selects source |
+| Cargo jobs and target directory | Preserve caller settings |
 
-| Input | Default | Contract |
-| --- | --- | --- |
-| `AMPLIHACK_LBUG_CACHE` | `auto` | `auto` selects verified reuse; `source` disables managed acquisition and production. Unknown values warn and select source. |
-| `AMPLIHACK_LBUG_CACHE_DIR` | Unset | Absolute path to a dedicated user-owned cache. An explicitly selected unsafe or unusable path selects source. |
-| `XDG_CACHE_HOME` | Unset | When absolute, supplies the base for `amplihack/lbug` if no explicit cache directory is set. |
-| `HOME` | Inherited | Without either cache override, the cache is `$HOME/.cache/amplihack/lbug`. An unavailable safe home cache selects source. |
-| `AMPLIHACK_LBUG_PRODUCER` | Unset | `1` requests production on a confirmed miss. Trusted producer authority is also required; this flag never grants credentials or authority. |
-| `LBUG_LIBRARY_DIR`, `LBUG_INCLUDE_DIR` | Unset | Any explicit setting opts out of managed selection. Both, partial, and empty settings retain upstream behavior and upstream errors. |
-| `LBUG_SHARED` | Unset | Any defined value, including an empty string, selects upstream shared behavior and opts out of managed static caching. |
-| Cargo offline configuration | Inherited | `--offline`, `--frozen`, `CARGO_NET_OFFLINE`, and supported Cargo `net.offline` configuration prohibit helper networking, including bootstrap networking. |
-| `CARGO_TARGET_DIR`, `--target-dir` | Cargo defaults | Preserve the caller's application target. Artifact storage is independent of this target. |
-| `CARGO_BUILD_JOBS`, `--jobs` | Cargo defaults | Preserve Cargo's resource controls; these are not an aggregate memory limit. |
-
-Explicit cache-directory selection has precedence over XDG and HOME defaults.
-An invalid selected location does not redirect writes into a different cache.
-Only a trusted, already cached artifact can be used offline. Missing retained
-release trust evidence selects source even when an archive is present. Cargo
-itself still needs locally available dependencies for an offline source build.
-
-To force a source build:
-
-```bash
-AMPLIHACK_LBUG_CACHE=source scripts/cargo-with-lbug.sh build --release --locked
-```
-
-Expected result: source selection is reported; a clean lbug target runs CMake.
-This setting leaves explicit upstream overrides intact. To request static mode,
-**unset** `LBUG_SHARED`; assigning an empty value does not request static mode.
-
-## Compatibility
-
-`build-support/lbug-cache/policies/compatibility-v1.json` is the versioned
-allowlist. Selection and production require affirmative agreement on CPU baseline,
-target/SDK, C++ deployment baseline, runtime, ABI, features, macros, optimization,
-runtime checks, and effective native compiler/linker flags. Custom settings such
-as `-march=native`, sanitizers, LTO, or a different C++ runtime select source unless
-explicitly covered by policy. Debug and release reuse requires policy coverage
-of the native configuration and the per-target shim's macros.
-
-On macOS the C++ deployment baseline is established from the existing release
-configuration and native object metadata. Rust's default deployment target does
-not establish that baseline. GNU/Linux artifacts retain the supported C++
-runtime and release deployment baseline. An absent policy entry selects source.
+The wrapper never downloads anything or publishes releases. It sets
+`RUSTUP_AUTO_INSTALL=0`, including before bootstrap: Cargo offline mode alone does
+not prevent rustup from installing a toolchain. Cargo still needs provisioned
+sources and a toolchain for offline builds.
 
 ## Selection and fallback
 
-| Condition | Requesting build behavior |
-| --- | --- |
-| Verified compatible local hit | Reverify archive, manifest, payload, and trust; supply external static library/include paths; compile only the FFI shim |
-| Verified remote artifact | Download archive and mandatory checksum, verify immutable release provenance, validate and atomically install, then consume |
-| Confirmed missing key with trusted producer authority | Lock the key, recheck, compile the core once through the requesting build, package those outputs, validate, and publish |
-| Missing key without authority | Compile from source; publication credentials are unnecessary |
-| Network unavailable, read-only cache, rate limit, authentication failure, or ambiguous service response | Report unavailable service and use source |
-| Bad checksum, missing checksum, altered payload, unsafe archive, incompatible provenance, or rejected selection state | Warn, reject the payload, and require source for this entire invocation |
-| Packaging or publication fails after a successful source compilation | Reuse that source output; report the separate artifact failure without compiling the core again |
-| Source compilation fails | Return the actual build failure |
+A key is `lbug-0.15.4-<target>-<gcc|clang|appleclang><major>`. The version and
+registry checksum come from `Cargo.lock`. A private entry contains `lib/`,
+`include/`, and `manifest.sha256`. Its manifest starts with a versioned context
+fingerprint and lists every payload file's SHA-256, size and relative path.
+It covers exactly the eighteen archives linked by upstream static mode and the
+reproducible header closure. The per-target FFI shim is excluded.
 
-A rejection is an invocation-wide veto: the same invocation cannot repair or
-redownload an artifact and then link it. A tracked build-script input invalidates
-previous managed output even in warm Cargo targets. Deleted or unreadable
-selection records also invalidate managed reuse. Ordinary valid warm Cargo
-output may still be reused after verification.
+Compatibility also checks the full compiler identity, OS/SDK identity, workspace
+configuration, and native settings. Machine-specific CPU flags, unsupported Cargo configuration and cross-compilation select
+source. A checksum or compatibility rejection warns and selects source for the
+whole invocation; rejected entries are not repaired or overwritten. To discard a
+bad entry, remove only the exact entry in a cache you own while no builds use it.
+Do not clean shared caches as part of tests.
 
-Successful misses use the requesting build's core output for both linking and
-packaging, with at most one source callback in that producing invocation. FFI
-shims are per target and are excluded from the artifact. Cooperating producers
-sharing one cache serialize attempts and recheck for a successfully published,
-verified winner before compiling. A failed or interrupted attempt may require
-another compilation in a later invocation. Unpublished local bundles do not
-qualify as managed hits. Disconnected producers and consumers using separate
-caches do not have global deduplication guarantees.
+On a miss, the requesting Cargo build compiles upstream bundled lbug normally.
+After success, the helper copies those exact native outputs, merges the upstream
+include roots, generates `lbug.hpp` from the binding's includes, and compiles the
+header without producer include paths. It validates the complete manifest before
+atomic installation. A packaging failure retains the successful source result;
+there is no second build. Ambiguous native output directories select source
+without publishing a guessed payload.
+
+A verified hit sets both external paths and builds the small FFI shim as needed.
+Upstream does not track changes to its two path variables. The wrapper therefore
+adds a harmless semantic macro to the compiler flags upstream already tracks.
+The macro changes when managed selection becomes invalid and stays stable for
+valid warm output. Corruption/removal cannot keep linking a previously managed
+Cargo result. Plain Cargo also detects the flags disappearing after a wrapped build.
 
 ## Cache ownership and concurrency
 
-The cache separates archives, installed payloads, protected release trust,
-selection records, helper builds, staging, and stable per-key OS locks. Managed
-directories have restrictive permissions, safe ancestor chains, and current-user
-ownership. Rejected paths are never repaired by following symlinks.
+Cache roots must be private, owned by the current user, and have safe ancestors.
+Symlinked roots, payload links, special files, non-ASCII paths, case collisions,
+thin archives, extra libraries, missing members and manifest alterations reject
+reuse. Staging directories are exclusively created. Installation uses the OS's
+atomic no-replacement rename operation; an existing winner is never overwritten.
 
-Installation uses exclusive staging and an atomic operation that cannot replace
-an existing winner. Waiters acquire the same key lock and reverify the winner.
-Interrupted staging is never selectable. Active lock files are not unlinked, and
-installed payloads are never modified in place. Protection continues through
-compilation and linking.
+One wrapper process owns a stable per-key OS lock from preflight until its Cargo
+child finishes, including linking and miss packaging. Upstream's build script
+never reacquires this lock. Waiters reverify the winner; interrupted staging is
+not selectable. Lock files are never unlinked. These are corruption and
+cooperating-process controls, not isolation from another process with the same
+OS user's write authority. This local manifest is not signed provenance.
 
-Hook Cargo targets remain checkout-specific. Their TTL cleanup does not reclaim
-the lbug artifact cache. Test fixtures use owned cache roots and do not corrupt,
-remove, or clean shared caches. Same-user filesystem permissions do not isolate
-mutually untrusted processes; privileged producers use a separate trust domain.
+## Supported entry points
 
-## Static linking and runtime paths
+Development commands, `scripts/dev-space.sh cargo`, actual hook Cargo execution,
+CI clippy/nextest/doctests, and the debug standalone probe use the wrapper.
+Git-environment scrubbing, checkout-specific targets, TTL ownership, existing
+hook checks and CI enforcement remain in place. CI restores a separate local
+native cache and saves it only from main. An owned temporary Cargo dispatcher
+also routes nested development builds in CI scripts through the verifier; fake
+Cargo tools in isolated tests retain precedence. Every use verifies its manifest.
 
-With `LBUG_SHARED` unset, lbug and its third-party archives link statically.
-System C++ runtime dependencies retain the platform's existing behavior.
-The tracked compatibility patch omits upstream external static-mode rpath
-emission, including an rpath to a developer's cache. It preserves explicit
-library overrides and shared-mode behavior. `crates/amplihack-cli/build.rs`
-remains the reserved no-op.
+Release/default install/bench profiles and custom profiles use source. Release
+and snapshot workflows, npm, uvx, application build scripts, Cargo source patches,
+and cxx pins are unchanged. The CI native matrix inspects loader metadata with
+`scripts/check-lbug-release-rpath.sh`; release binaries must not reference a local
+cache. Development executables can retain upstream's external-mode rpath.
 
-Released binaries run after relocation with the build cache unavailable and
-loader overrides removed. Verification includes `otool` on macOS or `readelf`
-on GNU/Linux and a real lbug-backed operation; static link flags alone do not
-establish runtime independence.
+## Verification and deferred work
 
-## Diagnostics
+Run the isolated Rust helper and contract harness, both wrapper/entrypoint Python
+suites plus the real Cargo fixture, and npm tests as registered in CI. The small
+Cargo fixture proves selection/fingerprint behavior using a substitute native
+producer. It does not establish lbug ABI, CMake-free native hits, database runtime
+behavior, resource measurements, or passing final-head CI/hooks.
 
-Cache diagnostics go to stderr and include severity, a stable reason code,
-selection stage, a sanitized key when known, and the selected action. Corruption
-always produces a visible warning explaining that the build uses source.
-Diagnostics distinguish core compilation, FFI shim compilation, acquisition,
-packaging, publication, and source-build failure. They never include tokens,
-authorization headers, signed URLs, environment dumps, or arbitrary arguments.
-
-For the payload and internal build-support contracts, see
-[lbug artifact format](lbug-artifact-format.md). For hands-on usage, follow
-[reuse lbug across two Cargo targets](../tutorials/lbug-cache-reuse.md). Trusted
-producers use [publish a lbug artifact](../operations/lbug-artifact-publication.md).
+Follow the [two-target tutorial](../tutorials/lbug-cache-reuse.md) for native
+acceptance. Signed cross-host release assets, vendor patches, shared publication,
+and npm/uvx cache integration are deferred to v2. The
+[artifact-format proposal](lbug-artifact-format.md) and
+[publication notes](../operations/lbug-artifact-publication.md) describe that
+follow-up and are not v1 procedures. Preserve `no_merge=true`; the coordinator
+still owns the macOS canonical-preflight handoff and final merge gate.

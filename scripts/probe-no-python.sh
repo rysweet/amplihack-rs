@@ -51,10 +51,10 @@ fi
 if [[ -z "${BINARY}" ]]; then
     echo "==> Building amplihack-rs..."
     if [[ $RELEASE -eq 1 ]]; then
-        cargo build --release --manifest-path "${REPO_ROOT}/Cargo.toml" 2>&1
+        "${REPO_ROOT}/scripts/cargo-with-lbug.sh" build --release --manifest-path "${REPO_ROOT}/Cargo.toml" 2>&1
         BINARY="${REPO_ROOT}/target/release/amplihack"
     else
-        cargo build --manifest-path "${REPO_ROOT}/Cargo.toml" 2>&1
+        "${REPO_ROOT}/scripts/cargo-with-lbug.sh" build --manifest-path "${REPO_ROOT}/Cargo.toml" 2>&1
         BINARY="${REPO_ROOT}/target/debug/amplihack"
     fi
 

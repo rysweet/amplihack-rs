@@ -8,10 +8,10 @@ systematic software engineering.
 **📚 [View Full Documentation](https://rysweet.github.io/amplihack-rs/)**
 
 **Requires**: Rust 1.88+ (edition 2024), Node.js 18+, git, and a C/C++ toolchain.
-Keep cmake available for LadybugDB source builds. The proposed
-[lbug cache integration](docs/reference/lbug-prebuilt-cache.md) will enable
-verified static artifact reuse by default. It awaits deputy approval and
-implementation; current builds still compile lbug from source.
+Keep cmake available for LadybugDB source builds. The
+[local lbug cache](docs/reference/lbug-prebuilt-cache.md) reuses verified static
+outputs across development targets and hooks. Release and installation builds
+continue to compile bundled lbug source.
 
 ```sh
 # Quick start
@@ -79,8 +79,7 @@ high-quality code.
 - **Runtime**: Rust 1.88+ / cargo, Node.js 18+, git. `amplihack install`
   installs a user-local Rust toolchain via rustup (and `build-essential` via
   apt, as root or with passwordless sudo) if cargo or a C linker is missing.
-- **Build tools**: A C/C++ toolchain for LadybugDB's FFI shim; cmake for source
-  fallback. A verified lbug cache hit skips bundled CMake and core compilation.
+- **Build tools**: cmake and a C/C++ toolchain for LadybugDB source builds.
 - **Optional**: GitHub CLI (`gh`), Azure CLI (`az`).
 
 Detailed setup:
@@ -96,9 +95,6 @@ Install the prerequisites above first, then choose an option below.
 cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked
 amplihack install
 ```
-
-Plain Cargo uses the source-build path. For managed lbug reuse, use npm/uvx or
-build through the checkout's [shared wrapper](docs/howto/local-install.md#2-build-the-native-binaries).
 
 **Option 2: npm/npx bootstrap**
 
@@ -689,12 +685,10 @@ scripts/cargo-with-lbug.sh build --workspace --locked
 amplihack install
 ```
 
-The wrapper shares verified static lbug libraries across Cargo targets while
-each target compiles its FFI shim. Hooks, CI, releases, and npm/uvx source builds
-use the same integration. Missing or rejected artifacts fall back to source;
-no manual `LBUG_LIBRARY_DIR` or `LBUG_INCLUDE_DIR` exports are needed. See the
-[cache reference](docs/reference/lbug-prebuilt-cache.md) and
-[two-target tutorial](docs/tutorials/lbug-cache-reuse.md).
+The [local lbug cache](docs/reference/lbug-prebuilt-cache.md) shares verified
+native outputs across development targets, hooks, and CI. It uses source on a
+miss or rejection. See the [two-target tutorial](docs/tutorials/lbug-cache-reuse.md).
+Publication and distributed installer integration are deferred to v2.
 
 ### Testing
 

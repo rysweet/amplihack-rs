@@ -51,7 +51,7 @@ class WrapperContracts(unittest.TestCase):
         self.write_tool("cargo", r'''
 import json, os, signal, sys, time
 record = {"tool": "cargo", "argv": sys.argv[1:], "cwd": os.getcwd(),
-          "env": {k: v for k, v in os.environ.items() if k.startswith(("LBUG_", "AMPLIHACK_LBUG_", "CARGO_", "GIT_"))}}
+          "env": {k: v for k, v in os.environ.items() if k.startswith(("LBUG_", "AMPLIHACK_LBUG_", "CARGO_", "GIT_", "RUSTUP_"))}}
 with open(os.environ["TEST_LOG"], "a") as f:
     f.write(json.dumps(record) + "\n")
 if os.environ.get("TEST_WAIT") == "1":
@@ -68,7 +68,7 @@ sys.stderr.write("cargo fixture stderr\n")
 sys.exit(int(os.environ.get("TEST_STATUS", "0")))
 ''')
         self.write_tool("git", 'import os\nprint(os.environ["TEST_ROOT"])\n')
-        for tool in ("curl", "wget", "gh", "cmake", "c++", "g++", "clang++", "rustc"):
+        for tool in ("curl", "wget", "gh", "cmake", "c++", "g++", "clang++", "rustc", "rustup"):
             self.write_tool(tool, f'import sys\nsys.stderr.write("forbidden tool: {tool}\\n")\nsys.exit(91)\n')
 
     def write_tool(self, name, body):
@@ -137,6 +137,26 @@ sys.exit(int(os.environ.get("TEST_STATUS", "0")))
                 self.assertEqual(self.calls()[before:][0]["argv"], args)
                 self.assertEqual(len(self.calls()) - before, 1)
 
+    def test_ci_dispatcher_uses_real_cargo_without_bypassing_fixture_tools(self):
+        dispatcher = self.bin / "dispatcher"
+        dispatcher.mkdir()
+        shim = dispatcher / "cargo"
+        shim.write_text('#!/bin/bash\nexec "$TEST_ROOT/scripts/cargo-with-lbug.sh" "$@"\n')
+        shim.chmod(0o700)
+        args = ["build", "--locked"]
+        result = self.run_wrapper(args, {"PATH": f"{dispatcher}:{self.bin}:/usr/bin:/bin",
+                                        "AMPLIHACK_LBUG_CARGO_SHIM": str(shim),
+                                        "AMPLIHACK_LBUG_REAL_CARGO": str(self.bin / "cargo")})
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertEqual(len(self.calls()), 1)
+        self.assertEqual(self.calls()[0]["argv"], args)
+
+        # Tests may shadow Cargo intentionally. The dispatcher must honor that
+        # tool boundary even though CI's original-Cargo variable is inherited.
+        result = self.run_wrapper(args, {"AMPLIHACK_LBUG_CARGO_SHIM": str(shim),
+                                        "AMPLIHACK_LBUG_REAL_CARGO": "/not/a/tool"})
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+
     def test_offline_sources_never_trigger_networked_bootstrap(self):
         for args, overrides in [
             (["build", "--offline"], {}), (["build", "--frozen"], {}),
@@ -153,6 +173,7 @@ sys.exit(int(os.environ.get("TEST_STATUS", "0")))
                     self.assertTrue("--offline" in call["argv"] or "--frozen" in call["argv"]
                                     or call["env"].get("CARGO_NET_OFFLINE") == "true",
                                     "helper bootstrap must inherit effective offline mode")
+                self.assertEqual(calls[-1]["env"].get("RUSTUP_AUTO_INSTALL"), "0")
                 self.assertNotIn(b"forbidden tool:", result.stderr)
 
     def test_preparation_failure_keeps_original_cargo_status_and_target(self):

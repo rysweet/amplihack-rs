@@ -1,6 +1,6 @@
 ---
 title: Pre-commit Build Cache Reference
-description: Per-checkout Cargo targets, cleanup, and shared verified lbug artifacts used by Git hooks.
+description: Per-checkout Cargo targets, cleanup, and local shared lbug outputs for Git hooks.
 doc_type: reference
 last_updated: 2026-11-03
 review_schedule: as-needed
@@ -10,17 +10,13 @@ review_schedule: as-needed
 
 > [Home](../index.md) > Reference > Pre-commit Build Cache
 
-> **[PLANNED - lbug Integration Pending]** The existing hook target cache works
-> today. Delegation to `scripts/cargo-with-lbug.sh` and shared native artifacts
-> below await deputy specification approval and implementation in issue #1917.
-
 The Cargo hooks in `.pre-commit-config.yaml` run through
 `scripts/git-hook-cargo.sh`. The wrapper picks a build cache for the current
 checkout, removes stale caches left by other checkouts, marks the current cache
-with `CACHEDIR.TAG`, and routes Cargo execution through
-`scripts/cargo-with-lbug.sh`. It reports free disk space if the command fails.
-This page describes the hook's Cargo target rules. Verified native lbug
-libraries use a separate [artifact cache](lbug-prebuilt-cache.md).
+with `CACHEDIR.TAG`, and runs the requested command. It reports free disk space
+if the command fails. This page describes the hook's Cargo target rules. The
+[local lbug cache](lbug-prebuilt-cache.md) is separate from these
+existing Cargo targets.
 
 Related issues: #1278 (git environment), #1381 (per-checkout cache), #1440
 (cache location and age-based reclaim), #1771 (symlinked caches and cache
@@ -59,10 +55,11 @@ entry: scripts/git-hook-cargo.sh cargo run --locked --bin amplihack -- hygiene a
 
 ## Shared lbug artifacts
 
-Pre-commit artifact-guard/clippy builds and pre-push workspace tests use the
-shared lbug integration after Git repository variables are scrubbed and the
-hook's Cargo target is selected. Their check arguments and enforcement remain
-intact. Formatting does not acquire or produce lbug artifacts.
+Pre-commit artifact-guard/clippy builds and pre-push workspace
+tests use the shared lbug integration after Git repository variables are
+scrubbed and the hook's Cargo target is selected. Their check arguments and
+enforcement remain intact.
+Formatting does not acquire or produce lbug artifacts.
 
 Cargo targets remain checkout-specific; only verified compatible native lbug
 archives and headers are reused across targets. A hit skips bundled lbug CMake
@@ -157,7 +154,7 @@ in order:
    link so Cargo can create a real directory there.
 2. Reclaim stale caches under the cache root, never touching the current cache.
 3. Write `CACHEDIR.TAG` into the current cache if it exists and has no tag.
-4. For Cargo execution, prepare the shared lbug integration and run the command.
+4. Run the requested command.
 5. If the command failed, report free space on the cache's filesystem.
 
 ## Reclaim rules

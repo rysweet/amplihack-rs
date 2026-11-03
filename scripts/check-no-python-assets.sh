@@ -7,7 +7,7 @@ violations="$(
     while IFS= read -r file; do
         [[ -e "${file}" ]] || continue
         printf '%s\n' "${file}"
-    done < <(git ls-files | grep -Ei '(^|/)([^/]+\.py|pyproject\.toml|requirements[^/]*\.txt|setup\.py|setup\.cfg|Pipfile|poetry\.lock|uv\.lock)$' | grep -Ev '^pyproject\.toml$' || true)
+    done < <(git ls-files | grep -Ei '(^|/)([^/]+\.py|pyproject\.toml|requirements[^/]*\.txt|setup\.py|setup\.cfg|Pipfile|poetry\.lock|uv\.lock)$' | grep -Ev '^(pyproject\.toml|tests/test_issue_1917_lbug_[a-z_]+\.py)$' || true)
 )"
 
 if [[ -n "${violations}" ]]; then
@@ -15,7 +15,9 @@ if [[ -n "${violations}" ]]; then
 FAIL: tracked Python implementation/package assets found.
 
 amplihack-rs must not ship Python source or Python package metadata beyond the
-root pyproject.toml used only for the uvx shell bootstrap. Keep language
+root pyproject.toml used only for the uvx shell bootstrap and the isolated
+issue-1917 test harnesses explicitly required for local build-cache validation.
+Those tests are not packaged runtime/build assets. Keep language
 references, fixtures, and Python-project detection in Rust code/docs, but do
 not add executable Python assets back to this repository.
 

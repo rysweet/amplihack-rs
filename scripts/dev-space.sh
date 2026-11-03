@@ -103,7 +103,7 @@ run_cargo() {
     prune_stale_temp_targets
     write_cachedir_tag "${CURRENT_TARGET_DIR}"
     echo "Using CARGO_TARGET_DIR=${CURRENT_TARGET_DIR}"
-    CARGO_TARGET_DIR="${CURRENT_TARGET_DIR}" cargo "$@"
+    CARGO_TARGET_DIR="${CURRENT_TARGET_DIR}" "${REPO_ROOT}/scripts/cargo-with-lbug.sh" "$@"
 }
 
 prune_targets() {

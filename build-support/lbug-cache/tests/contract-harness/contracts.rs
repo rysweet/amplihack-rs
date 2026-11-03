@@ -1,62 +1,23 @@
-//! CC-AMPLIHACK-LBUG-PREBUILT-1917; PM328 comment6613591861.
-//! These are internal Rust contract signatures proposed by the RED tests.
-//! They do not introduce a stable application API or a privileged test command.
+//! Public v1 contracts. Production filesystem behavior is exercised by the
+//! process-level Python suite; no proposed v2 API is required here.
+use lbug_cache::{ARCHIVES, digest, selection_env};
+use std::collections::BTreeMap;
 
-#[path = "../artifact_adversarial.rs"]
-mod artifact_adversarial;
-#[path = "../cache_concurrency.rs"]
-mod cache_concurrency;
-#[path = "../diagnostics.rs"]
-mod diagnostics;
-#[path = "../filesystem_safety.rs"]
-mod filesystem_safety;
-#[path = "../identity_compatibility.rs"]
-mod identity_compatibility;
-#[path = "../manifest_integrity.rs"]
-mod manifest_integrity;
-#[path = "../publication_protocol.rs"]
-mod publication_protocol;
-#[path = "../source_selection.rs"]
-mod source_selection;
-#[path = "../vendor_provenance.rs"]
-mod vendor_provenance;
+#[test]
+fn static_inventory_is_complete_and_excludes_the_shim() {
+    assert_eq!(ARCHIVES.len(), 18);
+    assert!(ARCHIVES.contains(&"lbug"));
+    assert!(!ARCHIVES.contains(&"lbug_rs"));
+}
 
-mod support {
-    use flate2::{Compression, write::GzEncoder};
-    use sha2::{Digest, Sha256};
-    use tar::{Builder, EntryType, Header};
-
-    pub fn digest(bytes: &[u8]) -> String {
-        format!("{:x}", Sha256::digest(bytes))
-    }
-
-    pub const KEY: &str = "lbug-0.15.4-aarch64-apple-darwin-appleclang17";
-
-    pub fn sidecar(bytes: &[u8]) -> String {
-        format!("{}  {KEY}.tar.gz\n", digest(bytes))
-    }
-
-    /// Build untrusted transport bytes independently of the implementation.
-    /// Raw name assignment deliberately permits traversal that tar::set_path
-    /// would reject before the system under test could inspect it.
-    pub fn archive(entries: &[(&str, EntryType, &[u8])]) -> Vec<u8> {
-        let mut builder = Builder::new(GzEncoder::new(Vec::new(), Compression::fast()));
-        for (path, kind, bytes) in entries {
-            assert!(path.len() < 100, "use a PAX fixture for longer names");
-            let mut header = Header::new_ustar();
-            header.as_mut_bytes()[..path.len()].copy_from_slice(path.as_bytes());
-            header.set_entry_type(*kind);
-            header.set_mode(0o644);
-            header.set_uid(0);
-            header.set_gid(0);
-            header.set_mtime(0);
-            if kind.is_symlink() || kind.is_hard_link() {
-                header.set_link_name("../../escaped").unwrap();
-            }
-            header.set_size(bytes.len() as u64);
-            header.set_cksum();
-            builder.append(&header, *bytes).unwrap();
-        }
-        builder.into_inner().unwrap().finish().unwrap()
-    }
+#[test]
+fn warm_selection_stays_stable_but_rejection_invalidates_it() {
+    let env = BTreeMap::from([("CXXFLAGS".into(), "-O2".into())]);
+    let verified = selection_env(&env, "verified:payload");
+    assert_eq!(verified, selection_env(&env, "verified:payload"));
+    assert_ne!(verified, selection_env(&env, "source"));
+    assert_eq!(
+        digest(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
 }

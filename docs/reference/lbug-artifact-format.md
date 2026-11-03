@@ -8,8 +8,10 @@ review_schedule: as-needed
 
 # lbug Artifact Format and Build-Support Contracts
 
-> **[PLANNED - Implementation Pending]** This reference defines the intended
-> artifact and build-support contracts.
+> **[DEFERRED v2 PROPOSAL]** These cross-host artifact and build-support
+> contracts were not approved for v1. The spec owner approved the
+> [local-only cache](lbug-prebuilt-cache.md) in PM328 comment6616249815.
+> Paths and commands below are proposed follow-up work, not installed interfaces.
 
 This reference defines the reusable static payload consumed by the
 [lbug cache integration](lbug-prebuilt-cache.md). The build-support library and

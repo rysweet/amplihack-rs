@@ -1,0 +1,25 @@
+[package]
+name = "issue-1917-lbug-cache-contracts"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# A tests-only workspace: running RED contracts must never build the application
+# or its bundled C++. The implementation package intentionally does not exist yet.
+# Its production manifest must use autotests = false: component files above this
+# directory are modules of this single test binary, not independent crate roots.
+[workspace]
+
+[dependencies]
+lbug-cache = { package = "amplihack-lbug-cache", path = "../.." }
+
+[dev-dependencies]
+flate2 = "1"
+serde_json = "1"
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3"
+
+[[test]]
+name = "contracts"
+path = "contracts.rs"

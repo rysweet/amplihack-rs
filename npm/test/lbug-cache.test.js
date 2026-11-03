@@ -9,7 +9,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-test('npm source fallback invokes the checkout wrapper and provisions both binaries', (t) => {
+test('v1 npm source fallback retains release Cargo and provisions both binaries', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-1917-npm-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const source = path.join(root, 'source');
@@ -28,6 +28,7 @@ printf '%s\\n' "$@" > "$TEST_TRACE"
 exec cargo "$@"
 `, { mode: 0o700 });
   fs.writeFileSync(path.join(tools, 'cargo'), `#!/bin/sh
+printf '%s\\n' "$@" > "$TEST_TRACE"
 mkdir -p "$CARGO_TARGET_DIR/release"
 for name in amplihack amplihack-hooks; do
   printf '#!/bin/sh\\nexit 0\\n' > "$CARGO_TARGET_DIR/release/$name"
@@ -56,7 +57,7 @@ done
     encoding: 'utf8', timeout: 10000,
   });
   assert.equal(child.status, 0, child.stderr);
-  assert.ok(fs.existsSync(trace), 'RED: source fallback bypasses scripts/cargo-with-lbug.sh');
+  assert.ok(fs.existsSync(trace), 'source fallback must invoke Cargo');
   const args = fs.readFileSync(trace, 'utf8').trim().split('\n');
   assert.deepEqual(args, ['build', '--release', '--locked', '--bin', 'amplihack', '--bin', 'amplihack-hooks']);
   const result = JSON.parse(child.stdout);
@@ -64,7 +65,7 @@ done
   assert.ok(fs.statSync(result.hooksBinary).isFile());
 });
 
-test('actual npm archive ships helper policy provenance and complete compatibility source', (t) => {
+test('v1 npm archive retains its Cargo workspace without deferred vendor inputs', (t) => {
   const root = path.resolve(__dirname, '../..');
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'issue-1917-pack-'));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
@@ -89,21 +90,10 @@ test('actual npm archive ships helper policy provenance and complete compatibili
   assert.equal(listing.status, 0, listing.stderr);
   const members = new Set(listing.stdout.trim().split('\n'));
   for (const file of [
-    'scripts/cargo-with-lbug.sh', 'Cargo.lock',
-    'build-support/lbug-cache/Cargo.toml', 'build-support/lbug-cache/src/lib.rs',
-    'build-support/lbug-cache/src/main.rs',
-    'build-support/lbug-cache/policies/compatibility-v1.json',
-    'build-support/lbug-cache/provenance/lbug-0.15.4.json',
-    'build-support/lbug-cache/provenance/upstream-files.json',
-    'vendor/lbug/Cargo.toml', 'vendor/lbug/build.rs',
+    'Cargo.toml', 'Cargo.lock', 'bins/amplihack/Cargo.toml',
+    'bins/amplihack-hooks/Cargo.toml', 'npm/lib/bootstrap.js',
   ]) {
-    assert.ok(members.has(`package/${file}`), `RED: distributed source omits ${file}`);
+    assert.ok(members.has(`package/${file}`), `distributed source omits ${file}`);
   }
-  const vendor = path.join(root, 'vendor/lbug');
-  for (const file of fs.readdirSync(vendor, { recursive: true, withFileTypes: true })) {
-    if (file.isFile()) {
-      const relative = path.relative(root, path.join(file.parentPath, file.name)).split(path.sep).join('/');
-      assert.ok(members.has(`package/${relative}`), `incomplete pinned source: ${relative}`);
-    }
-  }
+  assert.ok(!members.has('package/vendor/lbug/Cargo.toml'));
 });

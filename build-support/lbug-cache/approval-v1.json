@@ -1,0 +1,16 @@
+{
+  "id": 6616249815,
+  "html_url": "https://github.com/mistt-repo/Product-Management/issues/328#issuecomment-6616249815",
+  "created_at": "2026-11-03T21:48:37Z",
+  "updated_at": "2026-11-03T21:48:37Z",
+  "author": "ryan-mistt",
+  "body_sha256": "17db426dc2cfe8a91efb7dc728701bdae234f49696bfa5ac9a5417810473bac8",
+  "supersedes_proposal": 6615844000,
+  "assignment": "CC-AMPLIHACK-LBUG-PREBUILT-1917",
+  "no_merge": true,
+  "proposal_hashes": {
+    "docs/reference/lbug-prebuilt-cache.md": "1a575e16d0a170c37aa1a38a86ac423e6a330aa323810a601715c25e8fe1084f",
+    "docs/reference/lbug-artifact-format.md": "362fb30e27683728976d161979ef5d240cbe7098d8b0e7117a4a26c074df71e7",
+    "docs/operations/lbug-artifact-publication.md": "d600d93549fbf6f22ea869a7ae6e6403a7894219966b8d064b19bbc6eb964bb5"
+  }
+}
