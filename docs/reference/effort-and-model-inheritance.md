@@ -137,7 +137,12 @@ When a step's launch builds its argv, the model is chosen in this order,
 highest first:
 
 1. The step's own `--model` in its arguments. This includes the runner's
-   `--model auto` retry.
+   `--model auto` retry, for that attempt only. `auto` is the runner's
+   final-attempt sentinel, not a model choice: it is never put in
+   `ANTHROPIC_MODEL`, and the step's children are passed the inherited model
+   (or nothing, when none is inherited) as `AMPLIHACK_PARENT_MODEL`. A
+   `recipe run` nested under a retried step therefore keeps the run's model
+   and is not pinned to `auto`.
 2. *Reserved for the role model from #1872. Not used yet.*
 3. The LiteLLM gateway model (`AMPLIHACK_LITELLM_MODEL`), chosen as described
    under
@@ -213,8 +218,9 @@ All lines go to stderr. Values in angle brackets are filled in.
 receive at least one of effort and model from any source in the
 [source tables](#where-the-runs-values-come-from), including `-c effort=` or
 `-c model=` alone. It names only values the run's agent binary can take: a
-value refused by a "cannot be passed" line shows as `unset`, and when every
-value is refused the summary is not printed:
+value refused by a "cannot be passed" line, or replaced by the LiteLLM gateway
+model, shows as `unset`, and when every value is refused the summary is not
+printed:
 
 ```text
 amplihack: steps inherit effort=<level|unset> model=<id|unset> (from <source>)
@@ -252,6 +258,15 @@ Example, two or more `copilot` steps under one run print this once in total:
 
 ```text
 amplihack: effort 'high' cannot be passed to copilot; steps use copilot's default
+```
+
+**Model replaced by the LiteLLM gateway, once per run.** While a LiteLLM
+gateway variable is set, Claude-compatible steps run the gateway model, so an
+inherited model reaches no step. It is dropped with this line, is not exported
+to the steps, and the summary shows `model=unset`:
+
+```text
+amplihack: model '<id>' is not passed to <binary>; steps use the LiteLLM gateway model
 ```
 
 `amplihack recipe run` prints these lines next to the agent-binary notice. Each
@@ -326,9 +341,6 @@ inherited", and the operator's own flags still apply.
   `-c model=`.
 - **No per-step effort field** in the recipe schema. A step sets its own effort
   by passing `--effort` in its agent arguments.
-- **LiteLLM gateway.** When `AMPLIHACK_LITELLM_MODEL` is set, Claude-compatible
-  steps use the gateway model. The run's `steps inherit … model=` line still
-  shows the inherited model, which the gateway overrides.
 - **Nested runs under codex or copilot steps.** A codex or copilot step
   receives the inherited model as its own option, but does not export it as
   `AMPLIHACK_PARENT_MODEL`. A `recipe run` started from inside such a step

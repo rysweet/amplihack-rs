@@ -1500,17 +1500,47 @@ fn test_step_own_model_beats_the_inherited_model() {
     }
 }
 
-/// The runner's `--model auto` retry is a step's own model too.
+/// The runner's `--model auto` retry wins on argv for that attempt, but it is
+/// a sentinel, not a model choice: it is never put in ANTHROPIC_MODEL and
+/// never exported, so a nested run keeps the model the step would have used
+/// without the retry (#1892 review).
 #[test]
-fn test_runner_model_auto_retry_beats_the_inherited_model() {
+fn test_runner_model_auto_retry_is_not_passed_on() {
+    for extra in [
+        &["--model", "auto"][..],
+        &["--model=auto"],
+        &["--model", "AUTO"],
+    ] {
+        for tool in CLAUDE_COMPATIBLE_TOOLS {
+            let got = model_args_inherited(
+                &[("AMPLIHACK_RECIPE_RUN_ID", "run-1883")],
+                tool,
+                extra,
+                &inherit_model("claude-opus-5-5"),
+            );
+            assert!(got.argv.is_empty(), "{tool} {extra:?}: {:?}", got.argv);
+            assert!(got.env.is_empty(), "{tool} {extra:?}: {:?}", got.env);
+            assert_eq!(
+                got.exported.as_deref(),
+                Some("claude-opus-5-5"),
+                "{tool} {extra:?}"
+            );
+        }
+    }
+}
+
+/// With nothing inherited, the `auto` retry exports nothing at all.
+#[test]
+fn test_runner_model_auto_retry_without_inheritance_exports_nothing() {
     let got = model_args_inherited(
         &[("AMPLIHACK_RECIPE_RUN_ID", "run-1883")],
         "claude",
         &["--model", "auto"],
-        &inherit_model("claude-opus-5-5"),
+        &Inherited::default(),
     );
     assert!(got.argv.is_empty(), "{:?}", got.argv);
-    assert_eq!(got.env, model_env("auto"));
+    assert!(got.env.is_empty(), "{:?}", got.env);
+    assert_eq!(got.exported, None);
 }
 
 /// C4: the step's own model with nothing inherited adds no ANTHROPIC_MODEL.

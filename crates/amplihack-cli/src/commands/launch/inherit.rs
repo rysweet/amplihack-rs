@@ -170,7 +170,14 @@ pub(crate) fn vet_for_binary(
 ) -> (Inherited, Vec<String>) {
     let mut lines = Vec::new();
     if is_claude_compatible(binary) {
-        return (resolved.inherited.clone(), lines);
+        // `model_args` gives Claude-compatible steps the gateway model under
+        // the LiteLLM gateway, so the inherited model reaches no step and is
+        // neither passed on nor named in the run's summary line.
+        let mut passed = resolved.inherited.clone();
+        if through_gateway && let Some(model) = passed.model.take() {
+            lines.push(gateway_model_line(&model, binary));
+        }
+        return (passed, lines);
     }
     let effort = resolved.inherited.effort.as_deref().and_then(|e| {
         if binary == "codex" && codex_effort(e).is_some() {
@@ -324,6 +331,14 @@ pub(crate) fn in_recipe_run() -> bool {
 pub(crate) fn cannot_pass_line(setting: &str, value: &str, binary: &str) -> String {
     format!(
         "amplihack: {setting} '{value}' cannot be passed to {binary}; steps use {binary}'s default"
+    )
+}
+
+/// The line for an inherited model that a Claude-compatible `binary` does not
+/// receive because the LiteLLM gateway model takes its place.
+pub(crate) fn gateway_model_line(model: &str, binary: &str) -> String {
+    format!(
+        "amplihack: model '{model}' is not passed to {binary}; steps use the LiteLLM gateway model"
     )
 }
 

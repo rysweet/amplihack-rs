@@ -18,8 +18,8 @@
 use super::inherit::{
     EffortArgs, InheritSource, Inherited, PARENT_EFFORT_ENV, PARENT_MODEL_ENV, ParentInputs,
     Resolved, cannot_pass_line, codex_effort, codex_effort_from_argv, effort_args, export_to_child,
-    flag_value, ignoring_line, inherit_summary_line, inherited_from_env, resolve_parent,
-    vet_for_binary,
+    flag_value, gateway_model_line, ignoring_line, inherit_summary_line, inherited_from_env,
+    resolve_parent, vet_for_binary,
 };
 use crate::test_support::with_env;
 use std::ffi::OsStr;
@@ -360,6 +360,35 @@ fn claude_compatible_binaries_take_both_values_with_no_lines() {
             "{binary}"
         );
         assert!(lines.is_empty(), "{binary}: {lines:?}");
+    }
+}
+
+/// Under the LiteLLM gateway, Claude-compatible steps run the gateway model,
+/// so the inherited model is dropped with one line and the summary does not
+/// name it; the effort still passes (#1892 review).
+#[test]
+fn claude_compatible_binaries_drop_the_model_under_the_gateway() {
+    let r = resolved(
+        Some(("max", InheritSource::ParentLaunch)),
+        Some(("claude-opus-5-5", InheritSource::ParentClaude)),
+    );
+    for binary in CLAUDE_LIKE {
+        let (vetted, lines) = vet_for_binary(binary, &r, true);
+        assert_eq!(vetted, inherited(Some("max"), None), "{binary}");
+        assert_eq!(
+            lines,
+            vec![gateway_model_line("claude-opus-5-5", binary)],
+            "{binary}"
+        );
+        let passed = Resolved {
+            effort_source: r.effort_source,
+            model_source: None,
+            inherited: vetted,
+            warnings: Vec::new(),
+        };
+        let summary = inherit_summary_line(&passed).unwrap_or_default();
+        assert!(summary.contains("model=unset"), "{binary}: {summary}");
+        assert!(!summary.contains("claude-opus-5-5"), "{binary}: {summary}");
     }
 }
 

@@ -408,7 +408,17 @@ pub(super) fn model_args(
         // Issue #1883 (D5): the child holds only the step's own model. A
         // gateway route name, or a codex or copilot model, is not a Claude
         // model id, so it is neither put in ANTHROPIC_MODEL nor exported.
+        //
+        // `auto` is the recipe runner's final-attempt retry sentinel, not a
+        // model choice. It applies to that one attempt only: it is never put
+        // in ANTHROPIC_MODEL, and the step's children are passed the model
+        // the step would have run without the retry, so a nested run is not
+        // pinned to `auto`.
         if is_claude_compatible && !through_gateway {
+            if own.as_deref().is_some_and(is_runner_auto_model) {
+                out.exported = inherited.model.clone();
+                return out;
+            }
             if let (Some(own), Some(_)) = (&own, &inherited.model) {
                 out.env.push(("ANTHROPIC_MODEL", own.clone()));
             }
@@ -464,6 +474,12 @@ pub(super) fn model_args(
         out.argv = vec!["--model".to_string(), selection.model];
     }
     out
+}
+
+/// Issue #1883: whether `model` is the recipe runner's `--model auto`
+/// final-attempt retry, which is not passed on to the step's children.
+pub(super) fn is_runner_auto_model(model: &str) -> bool {
+    model.eq_ignore_ascii_case("auto")
 }
 
 /// The model amplihack requests when the operator has not chosen one.
