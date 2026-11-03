@@ -6,6 +6,7 @@ use super::manifest::{manifest_path, read_manifest};
 use super::paths::{global_settings_path, staging_amplifier_bundle_dir, staging_claude_dir};
 use super::settings::read_settings_json;
 use crate::claude_plugin::CommandRemoval;
+use crate::commands::profile::is_amplihack_statusline;
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::fs;
@@ -154,6 +155,19 @@ pub fn run_uninstall() -> Result<()> {
         }
     }
 
+    // Not tied to the hook registrations: an install can write this entry
+    // with no hooks to record, and the binary it names has just gone.
+    if global_settings.exists() {
+        match remove_status_line(&global_settings) {
+            Ok(true) => {
+                removed_any = true;
+                println!("  ✅ statusLine entry removed from settings.json");
+            }
+            Ok(false) => {}
+            Err(e) => println!("  ⚠️  Could not clean the statusLine entry: {e}"),
+        }
+    }
+
     let _ = fs::remove_file(&manifest_path);
 
     if removed_any {
@@ -169,6 +183,29 @@ pub fn run_uninstall() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Removes `statusLine` from `settings_path` when it is amplihack's (issue
+/// #1745), and says whether it did. Any other entry is the user's: the file
+/// is left as it was.
+pub(crate) fn remove_status_line(settings_path: &Path) -> Result<bool> {
+    let mut settings = read_settings_json(settings_path)?;
+    let root = ensure_object(&mut settings);
+    let ours = root
+        .get("statusLine")
+        .and_then(|sl| sl.get("command"))
+        .and_then(Value::as_str)
+        .is_some_and(is_amplihack_statusline);
+    if !ours {
+        return Ok(false);
+    }
+    root.remove("statusLine");
+    fs::write(
+        settings_path,
+        serde_json::to_string_pretty(&settings)? + "\n",
+    )
+    .with_context(|| format!("failed to write {}", settings_path.display()))?;
+    Ok(true)
 }
 
 pub(crate) fn remove_hook_registrations(settings_path: &Path) -> Result<()> {

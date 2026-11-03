@@ -124,7 +124,9 @@ pub(crate) use auto_switch::claude_config_dirs;
 #[cfg(unix)]
 use auto_switch::fsx;
 pub(crate) use auto_switch::{
-    launch_warning as capacity_launch_warning, recipe_warning as capacity_recipe_warning,
+    home_statusline_command, launch_warning as capacity_launch_warning,
+    recipe_warning as capacity_recipe_warning, statusline_binary, statusline_binary_at,
+    statusline_entry::is_amplihack_statusline,
 };
 use clap::Subcommand;
 use name::ProfileName;
@@ -467,9 +469,9 @@ pub enum ProfileCommands {
     #[command(hide = true)]
     Statusline {
         #[arg(long)]
-        root: String,
+        root: Option<String>,
         #[arg(long)]
-        owner: String,
+        owner: Option<String>,
     },
 }
 
@@ -484,7 +486,7 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
     // The wrapper's output belongs to Claude's status line: no error lines on
     // stdout, and its exit code is the original status line's.
     if let ProfileCommands::Statusline { root, owner } = &cmd {
-        std::process::exit(auto_switch::statusline(root, owner));
+        std::process::exit(auto_switch::statusline(root.as_deref(), owner.as_deref()));
     }
     // Before the root is resolved, so it can repair a damaged saved root.
     if let ProfileCommands::Root { dir } = cmd {

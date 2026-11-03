@@ -13,6 +13,8 @@ mod issue_1449_partial_registration;
 mod issue_1526_implicit_downgrade;
 mod issue_1526_implicit_mode;
 mod issue_1526_launch_bootstrap;
+#[cfg(unix)]
+mod issue_1745_launch_repair_statusline;
 // Issue #1699: the real-profile-root guard also runs in this binary, where
 // the in-process install tests run.
 #[cfg(unix)]

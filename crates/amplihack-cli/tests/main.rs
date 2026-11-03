@@ -170,6 +170,8 @@ mod issue_1740_select_workflow;
 mod issue_1740_state_gates;
 #[path = "issue_1743_autodrive_budget.rs"]
 mod issue_1743_autodrive_budget;
+#[path = "issue_1745_home_statusline.rs"]
+mod issue_1745_home_statusline;
 #[path = "issue_1746_daily_archive_rotator.rs"]
 mod issue_1746_daily_archive_rotator;
 #[path = "issue_1746_sessions_archive.rs"]
