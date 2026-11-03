@@ -2065,15 +2065,17 @@ amplihack profile rotate stop
 amplihack profile rotate start --recovery log
 ```
 
-The rotator then moves nothing and records nothing. In the duplicate-login
-case above, each cycle writes:
+The rotator then moves no login and does not change which profile the
+ledger names as live. In the duplicate-login case above, each cycle writes:
 
 ```
 2026-10-27T03:17:05Z recovery (log only): would move ryan-mistt-org's login to /home/you/.claude-profiles/.rejected-logins/rotate-ryan-mistt-org-20261027T031705Z/.credentials.json and record ryan-mistt-org as live
 2026-10-27T03:17:05Z ALERT: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); no swap
 ```
 
-Both logins stay where they are, and the cycle does not swap. Find every
+Both logins stay where they are, and the cycle does not swap. Under
+`watch` the two lines repeat on every cycle until the ledger matches again.
+Find every
 such line with:
 
 ```bash

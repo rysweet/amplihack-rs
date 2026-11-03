@@ -5997,9 +5997,9 @@ organisation or token. The backup path is the first free name, worked out
 as in [Actions](#actions), but nothing is created. When every name is
 taken, the line says so and shows no path; under `act` the same case stops
 the cycle with [guidance](#guidance), but under `log` the cycle still ends
-`alerted`. Under `log` no `.rejected-logins/` or backup directory is made,
-no login is renamed, the ledger's `live` and `account` are unchanged, and no profile is added to
-`lost_login`. Entries already in `lost_login` are still pruned as under
+`alerted`. Under `log` no `.rejected-logins/` or backup directory is
+made, no login is renamed, the ledger's `live` and `account` are
+unchanged, and no profile is added to `lost_login`. Entries already in `lost_login` are still pruned as under
 `act`, because pruning runs before recovery decides what to do.
 
 The line is followed in the same cycle by the `hand-change` ALERT from
@@ -6010,8 +6010,13 @@ recovery (log only): would record team as live (ledger named ryan-ryansweet)
 ALERT: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); no swap
 ```
 
-When recovery could not act anyway, `log` changes nothing, except in the
-case above where no backup name is free: the [guidance](#guidance) ALERT and `fix` lines are written as under `act`. The
+When the log-only line is written, any guidance saved in the ledger by an
+earlier `act` cycle is cleared, as it is when recovery acts.
+
+When recovery could not act anyway, `log` changes nothing: the
+[guidance](#guidance) ALERT and `fix` lines are written as under `act`.
+This does not include the case above where no backup name is free, which
+writes only the log-only line and the `hand-change` ALERT. The
 [stuck `~/.claude.json`](#stuck-claudejson) guidance, the lost-login lines
 and the ledger's `home_unreadable_since` are also kept as under `act`; these
 are not recovery actions.
