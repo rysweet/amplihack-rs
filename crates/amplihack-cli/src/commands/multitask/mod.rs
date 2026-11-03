@@ -19,6 +19,8 @@ mod launcher;
 mod launcher_tests;
 mod log_output;
 mod models;
+#[cfg(test)]
+mod models_tests;
 mod orchestrator;
 mod persistence;
 mod process_scope;
