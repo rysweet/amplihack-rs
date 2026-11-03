@@ -135,6 +135,7 @@ fn probed(session: f64) -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
     }
 }
 
