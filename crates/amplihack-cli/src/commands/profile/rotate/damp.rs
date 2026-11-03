@@ -1,9 +1,11 @@
 //! Failed-probe damping: a pure rule applied after `decide`. A failed live
 //! probe counts as headroom 0, so `decide` alone would swap every cycle
 //! while the live probe keeps failing. A swap made only because the live
-//! probe failed needs `FAILED_PROBE_LIMIT` failures in a row and is subject
-//! to the hold. See "Rotate failed live probes" in
-//! docs/reference/profile-command.md.
+//! probe failed needs `FAILED_PROBE_LIMIT` failures in a row; the post-swap
+//! hold does not apply to it (#1880): a login that cannot be read gains
+//! nothing by being kept. The count is stored in the ledger
+//! (`failed_store`), so it survives a restart. See "Rotate failed live
+//! probes" in docs/reference/profile-command.md.
 //!
 //! A key in the `$HOME` files that fails the live probe fails it whichever
 //! login is live (`key_check` gives the settings that do). Candidates read
@@ -14,37 +16,35 @@
 //! [`reachable`](super::key_check::reachable) accepts: a stay on a dead login
 //! costs more than a useless hourly swap, so a doubtful key does not stop one.
 
-use super::decide::{Decision, Reading, Reason, held};
+use super::decide::{Decision, Reading, Reason};
 use super::log::msg;
-use super::settings::Settings;
 
 /// Consecutive failed live probes before a swap on that ground alone.
 pub const FAILED_PROBE_LIMIT: u32 = 3;
 
-/// The consecutive failed live probe count after a cycle that read `live`.
+/// The count after a cycle that read `live`, for the rule's own tests: the
+/// cycle classifies the whole probe with `live_limit`.
+#[cfg(test)]
 pub fn next_failed(prev: u32, live: &Reading) -> u32 {
-    match live {
-        Reading::Failed => prev.saturating_add(1),
-        _ => 0,
-    }
+    use super::live_limit::{LiveOutcome, next_count};
+    let o = match live {
+        Reading::Failed => LiveOutcome::Unknown,
+        _ => LiveOutcome::Fresh,
+    };
+    next_count(prev, o)
 }
 
 /// `d` after the failed-probe rules, with the log note for a damped stay.
-/// Only a threshold swap on a failed live probe is changed.
-pub fn damp(
-    d: Decision,
-    live: &Reading,
-    consecutive_failed: u32,
-    swapped_at: Option<i64>,
-    now: i64,
-    s: &Settings,
-) -> (Decision, Option<String>) {
+/// Only a threshold or plan-room swap on a failed live probe is changed: it
+/// stays below `FAILED_PROBE_LIMIT` and swaps as `failed-probe` at it,
+/// whatever the post-swap hold says (#1880).
+pub fn damp(d: Decision, live: &Reading, consecutive_failed: u32) -> (Decision, Option<String>) {
     let to = match (live, d) {
         (
             Reading::Failed,
             Decision::Swap {
                 to,
-                reason: Reason::Threshold,
+                reason: Reason::Threshold | Reason::PlanRoom,
             },
         ) => to,
         (_, d) => return (d, None),
@@ -52,14 +52,6 @@ pub fn damp(
     if consecutive_failed < FAILED_PROBE_LIMIT {
         let note = msg::stay_failed_probe(consecutive_failed, FAILED_PROBE_LIMIT);
         return (Decision::Stay, Some(note));
-    }
-    if let Some(t) = swapped_at
-        && held(s.hold, swapped_at, now)
-    {
-        // A future swap time holds for the whole hold.
-        let elapsed = u64::try_from(now.saturating_sub(t)).unwrap_or(0);
-        let left = s.hold.saturating_sub(elapsed);
-        return (Decision::Stay, Some(msg::stay_held_failed(left)));
     }
     (
         Decision::Swap {

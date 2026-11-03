@@ -466,6 +466,16 @@ fn take_key_from_home(e: &Env) {
     private(&path, &home.to_string());
 }
 
+/// Writes `failed_live` for `work` into the ledger file (issue #1880).
+fn seed_failed_live(e: &Env, count: u32) {
+    let mut v = match fs::read(&e.rs.ledger) {
+        Ok(raw) => serde_json::from_slice(&raw).unwrap(),
+        Err(_) => serde_json::to_value(super::ledger::RotateLedger::default()).unwrap(),
+    };
+    v["failed_live"] = serde_json::json!({"profile": "work", "count": count});
+    e.rs.write("ledger.json", v.to_string().as_bytes()).unwrap();
+}
+
 fn live_failed(flag: &AtomicBool, ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 10.0)), ("spare2", ok(0.0, 43.0))]);
@@ -487,6 +497,8 @@ fn a_skipped_retry_counts_the_failed_live_probe_once() {
     let mut ctx = ctx_with(&e, |c, s| live_failed(&SPARE_SESSION_F1, c, s));
     ctx.scan = |_| sessions(&SPARE_SESSION_F1, &["spare"]);
     ctx.failed_live = FAILED_PROBE_LIMIT - 1;
+    // Issue #1880: a cycle loads the count from the ledger.
+    seed_failed_live(&e, FAILED_PROBE_LIMIT - 1);
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     assert_eq!(outcome, CycleOutcome::Skipped, "{}", log_of(&e));
     assert_eq!(
@@ -504,6 +516,8 @@ fn a_retry_after_failed_live_probes_still_swaps() {
     let mut ctx = ctx_with(&e, |c, s| live_failed(&SPARE_SESSION_F2, c, s));
     ctx.scan = |_| sessions(&SPARE_SESSION_F2, &["spare"]);
     ctx.failed_live = FAILED_PROBE_LIMIT - 1;
+    // Issue #1880: a cycle loads the count from the ledger.
+    seed_failed_live(&e, FAILED_PROBE_LIMIT - 1);
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);
     assert_eq!(

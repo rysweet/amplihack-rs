@@ -23,7 +23,10 @@ use super::ledger::{RotateLedger, RotateState};
 ///   measured. Without it auto-switch counts the rotator's live login as
 ///   unread and holds the API key back, which fails safe. Unlike
 ///   `platform_block` and `live_kind`, nothing is gained by keeping it for a
-///   rotator that would refuse the whole ledger.
+///   rotator that would refuse the whole ledger;
+/// - `failed_live` (issue #1880), the stored failed-probe count. Without it
+///   this binary counts again from 0 when it runs next, which only delays a
+///   failed-probe swap by at most two cycles.
 pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
     let mut out = l.clone();
     if older {
@@ -38,6 +41,7 @@ pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
         out.no_room = None;
         // Issue #1870: only this binary's freshness gate reads it.
         out.swapped_away.clear();
+        out.failed_live = None;
     }
     out
 }

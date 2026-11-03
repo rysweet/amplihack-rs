@@ -221,7 +221,10 @@ swap, by the usual [rules](#when-a-swap-happens). Run
   cycle that finds capacity, or when its limit resets. To resume it yourself,
   type `continue` in the session.
 - **The hold beats every rule that picks a target.** The cycle checks the
-  hold before it measures or chooses a profile. The hold is its own file, so
+  hold before it measures or chooses a profile. This is the `switch` hold,
+  not `--hold`: `--hold` only delays upgrade swaps between logins that have
+  room, and never keeps an exhausted, spend-limited or repeatedly failing
+  live login in place. The hold is its own file, so
   `.default` can stay unset for features that ask for that; `switch --none`
   clears both.
 - **The hold beats usage credits too.** A `switch` onto an
@@ -792,22 +795,22 @@ has the most headroom (ties go to the name that sorts first):
 
 The hold stops flapping. Just after a swap, the account that was swapped out
 often has its session window reset and looks fresh; without the hold the next
-cycle would swap straight back. Threshold swaps on a measured reading are
-never held back.
+cycle would swap straight back. The hold delays upgrades only. It never
+keeps a login that has reached a threshold, is exhausted, is at its spend
+limit or has failed its probe three cycles in a row.
 
 ## When the live login cannot be measured
 
 If the probe of the live login fails, the rotator cannot tell whether the
 account is near its limit. A failure that follows whichever login is live
 would otherwise make it swap on every cycle. So a failed live probe leads to
-a swap only when:
+a swap only on the **third failure in a row** for the same live login.
+`--hold` does not delay this swap: the hold only stops upgrades straight
+after a swap.
 
-- it is the **third failure in a row**, and
-- at least `--hold` seconds have passed since the last swap.
-
-Until then the rotator stays and logs why. In this example the new live
-login fails too. The count starts again after the swap, and the third failure
-comes inside the hold:
+Until then the rotator stays and logs why. In this example `work` fails three
+times and the rotator swaps to `spare`. The count starts again for `spare`,
+so a later failure of `spare` needs three cycles of its own:
 
 ```
 2026-10-20T09:00:05Z cycle live=work work:failed personal:s=20%,w=35% spare:s=0%,w=12%
@@ -816,18 +819,35 @@ comes inside the hold:
 2026-10-20T09:20:05Z swap work->spare live failed target s=0% w=12% reason=failed-probe
 2026-10-20T09:30:05Z stay: live probe failed (1/3)
 2026-10-20T09:40:05Z stay: live probe failed (2/3)
-2026-10-20T09:50:05Z stay: live probe failed; held after last swap (1800s left)
+2026-10-20T09:50:05Z swap spare->personal live failed target s=20% w=35% reason=failed-probe
 ```
 
-The count is kept by the running `watch` process. It goes back to zero when
-the live login is measured, after any swap, and when the rotator restarts.
-The one-shot `amplihack profile rotate` counts every failure as the first, so
-it never swaps because of a failed probe alone. Even with `--hold 0`, the
-rotator swaps for this reason at most once every three cycles.
+The count is stored in the rotator's ledger, so it survives a restart of
+the rotator and counts across separate runs of the one-shot
+`amplihack profile rotate`: the third run in a row that finds the live probe
+failing swaps. It goes back to zero when the live login is measured and
+after any swap. A reading collected from a read that started in an earlier
+cycle neither adds to it nor clears it. `--dry-run` shows the count the next
+cycle would reach, for example `would stay (live probe failed (2/3))`, and
+changes nothing. See
+[Stored failed-probe count](../reference/profile-command.md#stored-failed-probe-count).
+
+A login at its session or weekly limit is not a failed probe. It shows the
+figures it read and is swapped out on the first cycle. A plan login at its
+**spend limit** is treated the same way: the cycle line shows
+`<name>:spend limit`, and the rotator swaps away on the first cycle that
+reads it, with `reason=spend-limit`, during the hold too:
+
+```
+2026-11-03T10:00:05Z cycle live=oole oole:spend limit ffarmer:s=90%,w=26%
+2026-11-03T10:00:06Z swap oole->ffarmer live spend limit target s=90% w=26% reason=spend-limit
+```
 
 A failed probe of a *candidate* only stops that candidate being chosen, as
 before. When every account is at or above a threshold, the rotator writes
-one `ALERT` and stays, as before.
+one `ALERT` and stays, as before. A failed live login is never swapped onto
+[usage credits](#use-usage-credits-when-every-plan-login-is-exhausted) or an
+API key, however many cycles in a row it fails.
 
 A probe that timed out or could not run shows as `<name>:failed` in the
 cycle line, never as a percentage, and writes
@@ -1129,6 +1149,22 @@ Verified on Claude Code 2.1.307: a weekly-limit stop runs `StopFailure` with
 
 The hook trusts the rotator's verdict. It never applies the thresholds itself
 and never reads a login.
+
+### When the login hits a spend limit
+
+A session can also stop on a plan login's spend limit, with Claude's menu
+offering usage credits or "Ask your admin". The rotator reads that login
+as exhausted and swaps away on the first cycle that reads it, with
+`reason=spend-limit`, even inside `--hold`. The hook sees that cycle and
+resumes the session on the new login as above. It never answers the menu:
+it does not choose usage credits or "Ask your admin", so a resume never
+starts spending.
+
+A live login whose probe fails for another reason, such as a timeout, is
+swapped only after three failed cycles in a row; see
+[When the live login cannot be measured](#when-the-live-login-cannot-be-measured).
+The rotator does not read Claude's rate-limit text from `/usage` output, so a
+limit that `/usage` reports only in that text counts as a failed probe.
 
 ### See what it did
 
@@ -1633,9 +1669,8 @@ spend-limit message but no block appears in `overflow list`, the rotator
 cannot tell, and you have two ways out:
 
 - `amplihack profile overflow remove <name>` makes it a plan profile. A
-  spend-limit reading then counts as a failed probe, so the rotator swaps it
-  out only after three failed cycles in a row (30 minutes at the default
-  interval), and only to a plan profile.
+  spend-limit reading on a plan profile is read as exhausted, so the first
+  cycle that reads it swaps it out with `reason=spend-limit`.
 - `amplihack profile rotate stop` stops all swapping and leaves that login
   in `~/.claude` until you start the rotator again.
 

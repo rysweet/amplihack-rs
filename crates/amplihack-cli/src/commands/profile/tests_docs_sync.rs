@@ -330,7 +330,14 @@ fn rotate_autostart_and_failed_probe_damping_are_documented() {
         "reason=failed-probe",
         "live probe failed",
         "stay: live probe failed (<k>/3)",
-        "stay: live probe failed; held after last swap (<N>s left)",
+        // Issue #1880.
+        "reason=spend-limit",
+        "failed_live",
+        "<name>:spend limit",
+        "live spend limit",
+        "#### Rotate failed live probes",
+        "##### Stored failed-probe count",
+        "##### Spend limit on a plan login",
     ] {
         assert!(REFERENCE.contains(s), "reference is missing `{s}`");
     }
@@ -340,9 +347,18 @@ fn rotate_autostart_and_failed_probe_damping_are_documented() {
         "autostart: on (default)",
         "stay: live probe failed (1/3)",
         "reason=failed-probe",
-        "stay: live probe failed; held after last swap (",
+        // Issue #1880.
+        "reason=spend-limit",
+        "spend limit",
     ] {
         assert!(ROTATE_HOWTO.contains(s), "rotate how-to is missing `{s}`");
+    }
+    // Issue #1880: the hold no longer stops a failed-probe swap.
+    for doc in [REFERENCE, ROTATE_HOWTO] {
+        assert!(
+            !doc.contains("held after last swap"),
+            "the removed held line is still documented"
+        );
     }
     assert!(
         !ROTATE_HOWTO.contains("does not start again after a reboot"),

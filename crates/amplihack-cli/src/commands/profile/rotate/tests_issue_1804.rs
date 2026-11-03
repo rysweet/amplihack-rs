@@ -200,6 +200,7 @@ impl Case {
             refused: &self.refused,
             swapped_at: Some(NOW - 60),
             now: NOW,
+            failed: 0,
         })
     }
 }

@@ -3,8 +3,10 @@
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
 use super::alert::{alert, alert_key, alert_once, clear_alert, refusal_kind};
+use super::cycle_record::{Done, finish};
 use super::decide::Decision;
 use super::dry_run::dry_run;
+use super::failed_store;
 use super::fresh::{self, Reread, RereadFn};
 use super::held::held_cycle;
 use super::history;
@@ -16,9 +18,8 @@ use super::observe::{Measurement, Snap, live_name, measure_and_decide, platform_
 use super::overflow::Tag;
 use super::overflow_record::{
     self, alert_line, block_spend_limited, note_home_key, note_live, note_move, note_per_token,
-    refresh_capacity, refuse_key, stay_note, target_check,
+    refuse_key, stay_note, target_check,
 };
-use super::plan_room::no_room;
 // Under an alias: `profile::overflow::Gate` (whether credits may be spent)
 // is a different thing from the pin's gate (whether a `profile switch`
 // holds the cycle).
@@ -28,7 +29,6 @@ use super::prelude::{Prelude, locked_prelude};
 use super::revalidate::{self, Verdict};
 use super::settings::Settings;
 use super::swap::{self, Source};
-use super::swap_back;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now, scan_system};
 use crate::commands::profile::name::ProfileName;
@@ -60,6 +60,7 @@ pub struct Ctx {
     pub(super) last_skips: Option<Vec<(ProfileName, Skip)>>,
     pub(super) last_proto: Option<&'static str>,
     last_gate: Option<String>,
+    /// Consecutive failed live probes, read from the ledger each cycle (#1880).
     pub(super) failed_live: u32,
     /// Finds the running sessions; `scan_system` outside tests. A test sets
     /// it to return `Liveness::Unsupported`, which is what every non-Linux
@@ -200,6 +201,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         return Ok(CycleOutcome::Held);
     }
     drop(lock);
+    // Issue #1880: the count is the ledger's, so a restart keeps it.
+    ctx.failed_live = failed_store::load(ctx, &first.live);
 
     // Steps 4 and 5: measure without the lock, then decide. `claude` is
     // looked for only when a read falls back to it (issue #1844).
@@ -275,6 +278,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         key_held,
         measured_at,
         probed,
+        failed,
         ..
     } = m;
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
@@ -362,28 +366,18 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             CycleOutcome::Alerted
         }
     };
-    refresh_capacity(
-        ctx,
-        live_name(&first.live),
-        &live,
-        &others,
-        t,
+    let done = Done {
+        first: &first,
+        live: &live,
+        others: &others,
+        probed: probed.as_ref(),
+        swapped: swapped.as_ref(),
+        failed,
         tag,
-        first.shown_platform(),
-    );
-    no_room::record(
-        &mut l,
-        ctx,
-        &first,
-        (&live, &others),
-        probed.as_ref(),
         measured_at,
-    );
-    let left = swapped.as_ref().map(|[_, from]| (from, &live));
-    let (s, live_n) = (&ctx.settings, live_name(&first.live));
-    for line in swap_back::update(&mut l, s, live_n, probed.as_ref(), left, measured_at, t) {
-        out.emit(now(), &line);
-    }
+        t,
+    };
+    finish(ctx, &mut out, &mut l, done);
     save(ctx, &mut l, outcome, now(), Some(measured_at), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.

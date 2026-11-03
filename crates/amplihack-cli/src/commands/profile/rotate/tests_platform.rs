@@ -200,6 +200,7 @@ impl Case {
             unmeasured_plan: &[],
             swapped_at: self.swapped_at,
             now: NOW,
+            failed: 0,
         })
     }
 }

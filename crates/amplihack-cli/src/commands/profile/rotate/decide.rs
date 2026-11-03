@@ -223,6 +223,9 @@ pub enum Reason {
     /// A move to the plan login with the most room when no threshold swap
     /// meets `--margin` (issue #1804); see `plan_room`.
     PlanRoom,
+    /// A move off a plan login at its organisation's spend limit (#1880); see
+    /// `live_limit`. Neither damped nor held: the limit is the account's.
+    SpendLimit,
 }
 
 impl Reason {
@@ -234,6 +237,7 @@ impl Reason {
             Self::OverflowIn => "overflow-in",
             Self::OverflowOut => "overflow-out",
             Self::PlanRoom => "plan-room",
+            Self::SpendLimit => "spend-limit",
         }
     }
 }
