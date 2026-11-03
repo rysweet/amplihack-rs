@@ -100,10 +100,13 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c autodrive_dry_run=
 | `existing_branch` / `pr_number` | `""` | Point the workflow at work that already exists. Whether the PR came from `pr_number` or from phase 1, every evidence step runs in the worktree that has the PR branch checked out, and the run refuses if no worktree, or more than one, has it checked out, or that worktree is not at the PR head (see [PR head and worktree resolution](../../../docs/reference/auto-drive-to-merge.md#pr-head-and-worktree-resolution)). |
 | `autodrive_state_dir` | derived | Durable state root for resumability. |
 | `autodrive_dry_run` | `"false"` | Verify everything, merge nothing. |
+| `autodrive_budget_loop_rounds` | `12` | Rounds either loop may run in total, across every run on the same state directory. `0` or empty means unlimited. |
+| `autodrive_budget_total_rounds` | `20` | Rounds both loops together may run. `0` or empty means unlimited. |
+| `autodrive_budget_wall_seconds` | `14400` | Seconds that rounds, before-round steps and evaluator runs may take in total. `0` or empty means unlimited. |
 
 ## Why there is no iteration cap
 
-Neither loop has a `max_rounds`, a backstop integer, or a wall-clock budget.
+Neither loop has a `max_rounds` or a backstop integer.
 An integer cap fails in both directions: it cuts off the round that was about
 to converge, and it lets a genuinely stuck loop burn the whole budget before
 the counter fires. The signal worth acting on is **absence of progress**, not
@@ -114,6 +117,27 @@ So each round ends with the `loop-health-evaluator` contract (issue #1337),
 which stops and looks at the measured data — what the round actually produced,
 which findings are new / recurring / resolved, whether test and CI signals
 moved — and answers `CONTINUE`, `DONE`, or `STUCK`.
+
+Two stops are decided in code before the evaluator runs, and only for a round
+that is not clean:
+
+- **No progress.** When the PR head SHA, the sorted set of open items and the
+  CI signal are all the same as in the loop's previous round, and CI is not
+  still pending, the loop stops as `STUCK`
+  without asking the evaluator. Open items are crusty's findings for the crusty
+  loop and the merge round's blockers for the merge-ready loop. A light round
+  whose record has a `.light.json` side file, or that follows one, is left to
+  the evaluator, because its findings file is emptied.
+- **Usage budget.** Each run has a cost ceiling set by the operator, in rounds
+  per loop, total rounds and wall seconds. When a limit is reached the loop
+  stops as `BUDGET_EXHAUSTED`, which is never success. The budget is checked
+  again before every round, so an exhausted run starts no agent. Relaunching
+  with a higher limit, for example `-c autodrive_budget_loop_rounds=20`,
+  resumes from the recorded round.
+
+The budget is not the convergence terminator: a loop still ends `DONE` only
+through the evaluator, and there is still no iteration cap on convergence. See
+[No-progress stop and usage budget](../../../docs/reference/auto-drive-to-merge.md#no-progress-stop-and-usage-budget).
 
 Host safety was never this workflow's job and still is not. It is enforced
 structurally one layer down by **#1327** (sealed recursion ceiling) and

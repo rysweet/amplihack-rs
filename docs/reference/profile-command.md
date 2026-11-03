@@ -7902,6 +7902,13 @@ addresses, organisation IDs, config directory paths, config content or text
 copied from Claude's output. Only fixed words, event and reason tokens,
 times and integers are written.
 
+When `AMPLIHACK_USAGE_WAIT_LEDGER` names an absolute path, each wait that
+ends also appends its real length in whole seconds, as one line, to that
+file. The file is created with mode `0600` and is never opened through a
+symlink. A failed write prints a `WARNING` and does not change the step's
+result. Auto-drive sets the variable so that its wall budget leaves waits
+out ([Budget keys and defaults](auto-drive-to-merge.md#budget-keys-and-defaults)).
+
 ### Usage-limit wait settings
 
 | Setting | `config.toml` key | Environment variable | Default |
