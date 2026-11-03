@@ -13,7 +13,6 @@
 use super::name::ProfileName;
 use super::settings_refresh::Refresh;
 use super::store::ProfileStore;
-use serde_json::{Map, Value};
 use std::path::Path;
 
 /// One profile's backfill result and the warnings to print for it.
@@ -32,50 +31,11 @@ impl Outcome {
     }
 }
 
-/// Adds each `source` entry the profile's `env` lacks. Profile keys win;
-/// keys outside `env` and a non-object profile `env` are left alone. An empty
-/// `source` changes nothing, so no empty `env` is created. Returns whether
-/// any key was added.
-#[cfg_attr(not(unix), allow(dead_code))]
-pub(super) fn merge_env(settings: &mut Value, source: &Map<String, Value>) -> bool {
-    if source.is_empty() {
-        return false;
-    }
-    let Some(settings) = settings.as_object_mut() else {
-        return false;
-    };
-    let env = settings
-        .entry("env")
-        .or_insert_with(|| Value::Object(Map::new()));
-    let Value::Object(env) = env else {
-        return false;
-    };
-    let mut added = false;
-    for (key, value) in source {
-        if !env.contains_key(key) {
-            env.insert(key.clone(), value.clone());
-            added = true;
-        }
-    }
-    added
-}
-
 /// The warning when nothing was inherited. `reason` is an I/O error, a JSON
 /// position or a fixed string, never an env value.
 pub(super) fn warning(name: &str, path: &Path, reason: &str) -> String {
     format!(
         "profile {name}: env not inherited from {}: {reason}",
-        path.display()
-    )
-}
-
-/// The warning for one dropped source key. The key is escaped and cut to
-/// 64 characters, because a key that failed the name rule may hold anything.
-#[cfg_attr(not(unix), allow(dead_code))]
-pub(super) fn key_warning(name: &str, key: &str, path: &Path, reason: &str) -> String {
-    let shown: String = key.escape_debug().take(64).collect();
-    format!(
-        "profile {name}: env key {shown} not inherited from {}: {reason}",
         path.display()
     )
 }
@@ -109,32 +69,28 @@ pub(super) fn ensure_for(store: &ProfileStore, name: &ProfileName, home: Option<
     }
 }
 
-/// [`ensure_for`] for every profile in the root, by name. `store.list()`
-/// already omits names that do not parse. An unreadable root gives one
-/// `Skipped` outcome with an empty name, so the failure is still reported.
-pub(super) fn ensure_all(store: &ProfileStore, home: Option<&Path>) -> Vec<(String, Outcome)> {
-    let names = match store.list() {
-        Ok(names) => names,
-        Err(error) => {
-            let reason = error.to_string();
-            tracing::debug!(%reason, "env backfill: profile root unreadable");
-            let line = warning("(all)", store.root(), &reason);
-            return vec![(
-                String::new(),
-                Outcome {
-                    result: Refresh::Skipped(reason),
-                    warnings: vec![line],
-                },
-            )];
+/// [`ensure_for`] for every profile in the root. `store.list()` already
+/// omits names that do not parse. `Err` is the one `Skipped` outcome for a
+/// root that cannot be listed, kept apart from the per-profile results.
+pub(super) fn ensure_all(
+    store: &ProfileStore,
+    home: Option<&Path>,
+) -> Result<Vec<(ProfileName, Outcome)>, Outcome> {
+    let names = store.list().map_err(|error| {
+        let reason = error.to_string();
+        Outcome {
+            warnings: vec![warning("(all)", store.root(), &reason)],
+            result: Refresh::Skipped(reason),
         }
-    };
-    names
+    })?;
+    Ok(names
         .into_iter()
-        .filter_map(|name| {
-            let parsed = ProfileName::parse(&name).ok()?;
-            Some((name, ensure_for(store, &parsed, home)))
+        .filter_map(|name| ProfileName::parse(&name).ok())
+        .map(|name| {
+            let outcome = ensure_for(store, &name, home);
+            (name, outcome)
         })
-        .collect()
+        .collect())
 }
 
 /// Prints `outcome`'s warnings to stderr, for the commands that run a
@@ -145,10 +101,15 @@ pub(super) fn report(outcome: &Outcome) {
     }
 }
 
+// For the unit tests, which are Unix-only.
+#[cfg(all(test, unix))]
+pub(super) use imp::{key_warning, merge_env};
+
 #[cfg(unix)]
 mod imp {
-    use super::{Outcome, key_warning, merge_env, warning};
+    use super::{Outcome, warning};
     use crate::commands::profile::settings_refresh::Refresh;
+    use crate::commands::profile::store::MAX_SETTINGS_BYTES;
     use crate::user_config;
     use amplihack_utils::secure_files::{read_bounded_nofollow, write_private_atomic};
     use serde_json::{Map, Value};
@@ -156,10 +117,62 @@ mod imp {
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
     use std::path::{Path, PathBuf};
 
-    const MAX_BYTES: u64 = 1024 * 1024;
     const MAX_KEY_BYTES: usize = 256;
     const CREDENTIAL_FILES: &[&str] = &[".credentials.json", ".claude.json"];
+    /// Credential variables are never inherited: a shared one would
+    /// override every profile's own login, which defeats rotation, and
+    /// would put another copy of the secret in each profile.
+    const CREDENTIAL_KEYS: &[&str] = &[
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ];
     const SETTINGS: &str = "settings.json";
+
+    /// Adds each `source` entry the profile's `env` lacks. Profile keys win;
+    /// keys outside `env` and a non-object profile `env` are left alone. An empty
+    /// `source` changes nothing, so no empty `env` is created. Returns whether
+    /// any key was added.
+    pub(in crate::commands::profile) fn merge_env(
+        settings: &mut Value,
+        source: &Map<String, Value>,
+    ) -> bool {
+        if source.is_empty() {
+            return false;
+        }
+        let Some(settings) = settings.as_object_mut() else {
+            return false;
+        };
+        let env = settings
+            .entry("env")
+            .or_insert_with(|| Value::Object(Map::new()));
+        let Value::Object(env) = env else {
+            return false;
+        };
+        let mut added = false;
+        for (key, value) in source {
+            if !env.contains_key(key) {
+                env.insert(key.clone(), value.clone());
+                added = true;
+            }
+        }
+        added
+    }
+
+    /// The warning for one dropped source key. The key is escaped and cut to
+    /// 64 characters, because a key that failed the name rule may hold anything.
+    pub(in crate::commands::profile) fn key_warning(
+        name: &str,
+        key: &str,
+        path: &Path,
+        reason: &str,
+    ) -> String {
+        let shown: String = key.escape_debug().take(64).collect();
+        format!(
+            "profile {name}: env key {shown} not inherited from {}: {reason}",
+            path.display()
+        )
+    }
 
     pub(super) fn skipped(name: &str, path: &Path, reason: &str) -> Outcome {
         Outcome {
@@ -187,7 +200,7 @@ mod imp {
         owner_ok: &dyn Fn(u32) -> bool,
         check_mode: bool,
     ) -> Result<Option<Value>, String> {
-        let (raw, meta) = match read_bounded_nofollow(path, MAX_BYTES) {
+        let (raw, meta) = match read_bounded_nofollow(path, MAX_SETTINGS_BYTES) {
             Ok(Some(found)) => found,
             Ok(None) => return Ok(None),
             Err(error) if error.kind() == io::ErrorKind::InvalidData => {
@@ -257,6 +270,9 @@ mod imp {
         for (key, value) in env {
             if !valid_key(&key) {
                 out.dropped.push((key, "invalid variable name"));
+            } else if CREDENTIAL_KEYS.contains(&key.as_str()) {
+                out.dropped
+                    .push((key, "credential variable; set it in the profile itself"));
             } else if !value.is_string() {
                 out.dropped.push((key, "value is not a string"));
             } else {
@@ -301,7 +317,9 @@ mod imp {
 
     /// Creates a missing `settings.json` holding only `env`. `AlreadyExists`
     /// is returned as is, so the caller can retry as an update. A partial
-    /// write removes the file this call created.
+    /// write removes the file this call created. This uses create-new rather
+    /// than `write_private_atomic`, because an atomic rename would overwrite
+    /// a file another process created at the same moment.
     fn create_with_env(dir: &Path, env: &Map<String, Value>) -> io::Result<()> {
         let mut root = Map::new();
         root.insert("env".into(), Value::Object(env.clone()));

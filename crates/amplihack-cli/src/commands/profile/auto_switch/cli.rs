@@ -136,11 +136,16 @@ fn repair(store: &ProfileStore) -> Result<()> {
     };
     statusline::install(store, true)?;
     let home = usage_cmd::home_dir();
-    for (name, outcome) in settings_env::ensure_all(store, home.as_deref()) {
-        if outcome.result == Refresh::Updated {
-            println!("env: {name} updated");
+    match settings_env::ensure_all(store, home.as_deref()) {
+        Ok(results) => {
+            for (name, outcome) in results {
+                if outcome.result == Refresh::Updated {
+                    println!("env: {name} updated");
+                }
+                settings_env::report(&outcome);
+            }
         }
-        settings_env::report(&outcome);
+        Err(outcome) => settings_env::report(&outcome),
     }
     if done.is_empty() {
         println!("recovery: nothing to do");

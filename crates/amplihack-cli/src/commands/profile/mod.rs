@@ -551,12 +551,13 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             // `launch` and `claude` redirect that profile to `~/.claude`.
             #[cfg(unix)]
             kind_guard(&store, &name, usage_cmd::home_dir().as_deref(), true)?;
+            rotate::switch_live(&store, &name)?;
+            // After the switch, so a refused switch leaves the target unchanged.
             settings_env::report(&settings_env::ensure_for(
                 &store,
                 &name,
                 usage_cmd::home_dir().as_deref(),
             ));
-            rotate::switch_live(&store, &name)?;
         }
         ProfileCommands::Remove { name, yes } => {
             let name = ProfileName::parse(&name)?;

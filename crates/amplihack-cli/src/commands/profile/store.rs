@@ -13,7 +13,8 @@ const SHARED_ASSET_DIRS: &[&str] = &["agents", "commands", "output-styles", "rul
 const MAX_COPY_DEPTH: usize = 16;
 const MAX_COPY_ENTRIES: usize = 5_000;
 const MAX_COPY_FILE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
+/// The size limit for every `settings.json` the profile code reads.
+pub(super) const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
 const SHARED_ASSET_FILES: &[&str] = &["CLAUDE.md"];
 
 fn copy_limited<R: Read, W: Write>(input: R, output: &mut W) -> Result<(), ProfileError> {

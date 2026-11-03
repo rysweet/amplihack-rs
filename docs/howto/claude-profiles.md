@@ -146,11 +146,15 @@ file, or remove the setting with
 
 Every key in the source `env` reaches every profile. Two cases need care:
 
-- **API keys.** An `ANTHROPIC_API_KEY` under `env` makes every profile bill
-  per token instead of using its plan login. Use `apiKeyHelper` in the one
-  profile that needs a key; it is never copied.
+- **API keys.** `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and
+  `CLAUDE_CODE_OAUTH_TOKEN` are never copied: in every profile they would
+  override the profile's own login, which defeats rotation. Each one gets a
+  warning that names the key only. Use `apiKeyHelper`, or set the variable in
+  the one profile that needs it.
 - **Security switches.** `XPIA_ENABLED=false` in the source turns XPIA off in
-  every profile that has not set its own value.
+  every profile that has not set its own value. To keep XPIA on in one
+  profile, add `"XPIA_ENABLED": "true"` to that profile's `env`; amplihack
+  then leaves the profile's `env` alone.
 
 amplihack never prints `env` values. A problem with the source is a warning
 that names the path and the reason, and the command carries on:
@@ -174,6 +178,13 @@ profile work: env key BASH_DEFAULT_TIMEOUT_MS not inherited from /home/you/.clau
 
 `.credentials.json` and `.claude.json` are never read for this, and a
 template path that names either file is refused.
+
+#### Shared settings refused
+
+If every login or switch prints `file is writable by group or others`, the
+source was created under a umask of `0002` (the Ubuntu default), which makes
+new files group-writable. Run the `chmod 600` from the warning once; the
+next `login`, `switch` or `auto-switch repair` copies the `env`.
 
 #### Keep `~/.claude/settings.json` a regular, private file
 

@@ -19,13 +19,10 @@
 //! temporary directory.
 
 use super::name::ProfileName;
-use super::store::ProfileStore;
+use super::store::{MAX_SETTINGS_BYTES, ProfileStore};
 use amplihack_utils::secure_files::{passwd_home, temp_bases};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-
-/// Larger profile settings files are skipped, as when seeding.
-const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
 
 /// One profile's result.
 #[derive(Debug, Clone, PartialEq, Eq)]

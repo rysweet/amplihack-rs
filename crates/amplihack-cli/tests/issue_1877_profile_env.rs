@@ -330,3 +330,77 @@ fn login_creates_a_missing_settings_file_with_only_env() {
         .mode();
     assert_eq!(mode & 0o777, 0o600);
 }
+
+/// `profile switch` runs the backfill only after the switch succeeds. These
+/// use the rotator fixture (#1691): `work` is live in `~/.claude`, `spare`
+/// and `extra` hold their own logins, all under a temporary HOME. Linux-only,
+/// as the swap needs `renameat2(RENAME_EXCHANGE)`.
+#[cfg(target_os = "linux")]
+mod switch {
+    use super::{chmod, text};
+    use crate::support::profile_rotate::Fixture;
+    use serde_json::{Value, json};
+    use std::fs;
+    use std::path::PathBuf;
+
+    const PROFILES: [&str; 3] = ["work", "spare", "extra"];
+
+    fn settings_path(f: &Fixture, p: &str) -> PathBuf {
+        f.root.join(p).join("settings.json")
+    }
+
+    /// The shared `env` source, and `spare` with one key of its own.
+    fn setup() -> Fixture {
+        let f = Fixture::new();
+        let shared = f.home.join(".claude").join("settings.json");
+        fs::write(
+            &shared,
+            json!({"env": {"XPIA_ENABLED": "false", "FOO": "1", "BAR": "2"}}).to_string(),
+        )
+        .unwrap();
+        chmod(&shared, 0o600);
+        let spare = settings_path(&f, "spare");
+        fs::write(&spare, r#"{"env":{"FOO":"mine"},"language":"de"}"#).unwrap();
+        chmod(&spare, 0o600);
+        f
+    }
+
+    fn snapshot(f: &Fixture) -> Vec<Option<Vec<u8>>> {
+        PROFILES
+            .iter()
+            .map(|p| fs::read(settings_path(f, p)).ok())
+            .collect()
+    }
+
+    #[test]
+    fn switch_backfills_the_target_and_keeps_its_own_keys() {
+        let f = setup();
+        f.ok(&["profile", "switch", "spare"]);
+        let s: Value =
+            serde_json::from_str(&fs::read_to_string(settings_path(&f, "spare")).unwrap()).unwrap();
+        assert_eq!(
+            s["env"],
+            json!({"FOO": "mine", "XPIA_ENABLED": "false", "BAR": "2"})
+        );
+        assert_eq!(s["language"], json!("de"));
+    }
+
+    #[test]
+    fn a_refused_switch_leaves_the_target_settings_unchanged() {
+        let f = setup();
+        // Claude holds its refresh lock in ~/.claude: the swap refuses.
+        fs::create_dir(f.home.join(".claude").join(".oauth_refresh.lock")).unwrap();
+        let before = snapshot(&f);
+        let out = f.run(&["profile", "switch", "spare"]);
+        assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+        assert_eq!(snapshot(&f), before, "a refused switch wrote settings.json");
+    }
+
+    #[test]
+    fn switch_none_writes_no_profile_settings() {
+        let f = setup();
+        let before = snapshot(&f);
+        f.ok(&["profile", "switch", "--none"]);
+        assert_eq!(snapshot(&f), before, "--none wrote settings.json");
+    }
+}

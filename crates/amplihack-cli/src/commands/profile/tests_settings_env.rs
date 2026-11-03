@@ -516,6 +516,31 @@ fn non_string_and_badly_named_entries_are_dropped_with_one_warning_each() {
 }
 
 #[test]
+fn credential_variables_are_never_inherited() {
+    let fx = Fx::new();
+    fx.profile("work", Some(r#"{"language":"en"}"#));
+    fx.source_settings(&format!(
+        r#"{{"env":{{"XPIA_ENABLED":"false","ANTHROPIC_API_KEY":"{SECRET}","ANTHROPIC_AUTH_TOKEN":"{SECRET}","CLAUDE_CODE_OAUTH_TOKEN":"{SECRET}"}}}}"#
+    ));
+    let o = fx.ensure("work");
+    assert_eq!(o.result, Refresh::Updated);
+    assert_eq!(fx.read("work")["env"], json!({"XPIA_ENABLED": "false"}));
+    assert!(!String::from_utf8(fx.raw("work")).unwrap().contains(SECRET));
+    let src = fx.source_file();
+    let reason = "credential variable; set it in the profile itself";
+    let mut warnings = o.warnings.clone();
+    warnings.sort();
+    let mut expected = vec![
+        key_warning("work", "ANTHROPIC_API_KEY", &src, reason),
+        key_warning("work", "ANTHROPIC_AUTH_TOKEN", &src, reason),
+        key_warning("work", "CLAUDE_CODE_OAUTH_TOKEN", &src, reason),
+    ];
+    expected.sort();
+    assert_eq!(warnings, expected);
+    assert_no_value_in(&o);
+}
+
+#[test]
 fn overlong_key_is_dropped() {
     let fx = Fx::new();
     fx.profile("work", Some(r#"{"language":"en"}"#));
@@ -733,8 +758,9 @@ fn ensure_all_visits_every_profile() {
     fx.profile("c", None);
     fx.source_settings(r#"{"env":{"XPIA_ENABLED":"false"}}"#);
     let mut results: Vec<(String, Refresh)> = ensure_all(&fx.store, fx.home())
+        .unwrap()
         .into_iter()
-        .map(|(name, o)| (name, o.result))
+        .map(|(name, o)| (name.as_str().to_string(), o.result))
         .collect();
     results.sort_by(|x, y| x.0.cmp(&y.0));
     assert_eq!(
@@ -756,11 +782,8 @@ fn ensure_all_reports_an_unreadable_root() {
     let not_a_dir = fx.d.path().join("root-file");
     fs::write(&not_a_dir, "").unwrap();
     let store = ProfileStore::new(not_a_dir).with_shared_assets(fx.source.clone());
-    let out = ensure_all(&store, fx.home());
-    assert_eq!(out.len(), 1, "{out:?}");
-    let (name, o) = &out[0];
-    assert!(name.is_empty());
-    skipped_reason(o);
+    let o = ensure_all(&store, fx.home()).expect_err("root is not a directory");
+    skipped_reason(&o);
     assert_eq!(o.warnings.len(), 1);
 }
 
