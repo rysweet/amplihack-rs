@@ -1111,3 +1111,46 @@ fn docs_describe_caller_overrides() {
         assert!(doc.contains(needle), "docs page must mention {needle}");
     }
 }
+
+#[test]
+fn stale_helper_stops_step_03_with_a_named_cause() {
+    // A helper copy that predates #1887 must stop step-03 with a message
+    // naming the cause, not a bare exit 127, and must create nothing.
+    for missing in [
+        "_create_issue_value",
+        "issue_creation_disabled",
+        "warn_unrecognised_create_issue",
+        "_issue_is_rate_limit",
+        "_issue_is_auth",
+        "_issue_wait_for_reset",
+    ] {
+        let sandbox = Sandbox::new();
+        let tools = sandbox.path("stale/amplifier-bundle/tools");
+        fs::create_dir_all(&tools).expect("mkdir stale tools");
+        let current = fs::read_to_string(helper_file()).expect("read helper");
+        fs::write(
+            tools.join("workflow_issue_tracking.sh"),
+            format!("{current}\nunset -f {missing}\n"),
+        )
+        .expect("write stale helper");
+        fs::copy(
+            helper_file().with_file_name("workflow_body_file.sh"),
+            tools.join("workflow_body_file.sh"),
+        )
+        .expect("copy body helper");
+        let stale_home = sandbox.path("stale");
+        let mut env = step_03_env("github", "", Some("false"), TASK);
+        env.push(("GIT_REMOTE_URL", GH_REPO_URL));
+        let stale = stale_home.to_str().expect("utf-8 path").to_owned();
+        env.push(("AMPLIHACK_HOME", &stale));
+        let run = run_step(sandbox, STEP_03, &env);
+        assert_eq!(run.output.status.code(), Some(2), "{}", run.diag());
+        assert!(
+            run.stderr().contains("predates #1887")
+                && run.stderr().contains(&format!("missing {missing}")),
+            "expected the named-cause error\n{}",
+            run.diag()
+        );
+        run.assert_nothing_created_on_github();
+    }
+}

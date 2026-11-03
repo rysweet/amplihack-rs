@@ -390,6 +390,15 @@ no longer created unless the caller passes `create_issue=true`. On GitHub,
 #1885's `issue_creation_opted_in` check sits at the same point in step-03 as
 this gate.
 
+### Outdated helper copies
+
+step-03 loads the first `workflow_issue_tracking.sh` it finds, starting with
+`$AMPLIHACK_HOME`. If that copy predates #1887, step-03 stops with exit 2 and
+the message `ERROR: <path> predates #1887 (missing <function>); update the
+amplihack bundle at that path`. It does not look up or create any issue.
+Without this check, a missing `issue_creation_disabled` would fail quietly
+and step-03 would create an issue even with `create_issue=false`.
+
 ### Caller override examples
 
 | `remote_host_type` | `create_issue` | `issue_number` | Origin | Outcome |

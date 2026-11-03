@@ -258,7 +258,7 @@ steps:
       # room for the #1361 claim check below was bought.
       T=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_tracking.sh" ] && { T="$c/amplifier-bundle/tools/workflow_issue_tracking.sh"; break; }; done
       [ -n "$T" ] || { echo "ERROR: issue tracking helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): amplifier-bundle/tools/workflow_issue_tracking.sh" >&2; exit 2; }
-      . "$T"; . "$(dirname "$T")/workflow_body_file.sh"; warn_unrecognised_create_issue "${RECIPE_VAR_create_issue:-}"  # write_body_file (#1570); create_issue gate helpers (#1887)
+      . "$T"; . "$(dirname "$T")/workflow_body_file.sh"; for f in _create_issue_value issue_creation_disabled warn_unrecognised_create_issue _issue_is_rate_limit _issue_is_auth _issue_wait_for_reset; do declare -F "$f" >/dev/null || { echo "ERROR: $T predates #1887 (missing $f); update the amplihack bundle at that path" >&2; exit 2; }; done; warn_unrecognised_create_issue "${RECIPE_VAR_create_issue:-}"  # write_body_file (#1570); create_issue gate helpers (#1887)
       REF_ISSUE_NUM=""  # AzDO only; GitHub: select_github_tracking_issue (#1595)
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
