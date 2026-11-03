@@ -33,7 +33,7 @@ Everything you need to install and configure amplihack.
 - Rust 1.88+ / cargo
 - Node.js 18+ / npm
 - git
-- cmake and a C/C++ toolchain for LadybugDB
+- A C/C++ toolchain for the LadybugDB FFI shim; cmake for source fallback
 
 ### Choose Your Tool
 
@@ -775,6 +775,12 @@ Advanced configuration, deployment patterns, and environment management.
 ### Build System
 
 - [Install Manifest](reference/install-manifest.md) - Installed-file manifest and uninstall state
+- [Local Source Installation](howto/local-install.md) - Build and install both binaries through the shared Cargo integration
+- [Prebuilt lbug Cache](reference/lbug-prebuilt-cache.md) - Supported entry points, artifact keys, configuration, and source fallback
+- [lbug Artifact Format](reference/lbug-artifact-format.md) - Static archive inventory, integrity, provenance, and build-support contracts
+- [Reuse lbug Across Two Clean Targets](tutorials/lbug-cache-reuse.md) - Build twice with a verified artifact and a CMake tripwire
+- [Publish a lbug Artifact](operations/lbug-artifact-publication.md) - Trusted native production, immutable publication, and acceptance evidence
+- [Pre-commit Build Cache](reference/pre-commit-build-cache.md) - Per-checkout Cargo targets and shared native artifact reuse
 
 ### Remote Sessions
 

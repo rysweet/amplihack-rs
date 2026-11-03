@@ -24,6 +24,9 @@ use lbug::{
 };
 use tempfile::TempDir;
 
+#[path = "issue_1917_lbug_prebuilt.rs"]
+mod issue_1917_lbug_prebuilt;
+
 // ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
@@ -33,9 +36,16 @@ use tempfile::TempDir;
 /// Returns the TempDir (kept alive for the test scope) and the Database.
 fn temp_lbug_db() -> Result<(TempDir, LbugDb)> {
     let dir = TempDir::new().map_err(|e| anyhow::anyhow!("tempdir: {e}"))?;
-    let db = LbugDb::new(dir.path().join("test.lbug"), LbugSysCfg::default())
+    let db = LbugDb::new(dir.path().join("test.lbug"), bounded_lbug_config())
         .map_err(|e| anyhow::anyhow!("lbug open: {e}"))?;
     Ok((dir, db))
+}
+
+fn bounded_lbug_config() -> LbugSysCfg {
+    LbugSysCfg::default()
+        .buffer_pool_size(64 * 1024 * 1024)
+        .max_num_threads(1)
+        .max_db_size(256 * 1024 * 1024)
 }
 
 // ---------------------------------------------------------------------------

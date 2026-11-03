@@ -7,8 +7,11 @@ systematic software engineering.
 
 **📚 [View Full Documentation](https://rysweet.github.io/amplihack-rs/)**
 
-**Requires**: Rust 1.88+ (edition 2024), Node.js 18+, git, and cmake for the
-LadybugDB graph database engine.
+**Requires**: Rust 1.88+ (edition 2024), Node.js 18+, git, and a C/C++ toolchain.
+Keep cmake available for LadybugDB source builds. The proposed
+[lbug cache integration](docs/reference/lbug-prebuilt-cache.md) will enable
+verified static artifact reuse by default. It awaits deputy approval and
+implementation; current builds still compile lbug from source.
 
 ```sh
 # Quick start
@@ -76,7 +79,8 @@ high-quality code.
 - **Runtime**: Rust 1.88+ / cargo, Node.js 18+, git. `amplihack install`
   installs a user-local Rust toolchain via rustup (and `build-essential` via
   apt, as root or with passwordless sudo) if cargo or a C linker is missing.
-- **Build tools**: cmake and a C/C++ toolchain for LadybugDB.
+- **Build tools**: A C/C++ toolchain for LadybugDB's FFI shim; cmake for source
+  fallback. A verified lbug cache hit skips bundled CMake and core compilation.
 - **Optional**: GitHub CLI (`gh`), Azure CLI (`az`).
 
 Detailed setup:
@@ -92,6 +96,9 @@ Install the prerequisites above first, then choose an option below.
 cargo install --git https://github.com/rysweet/amplihack-rs amplihack --locked
 amplihack install
 ```
+
+Plain Cargo uses the source-build path. For managed lbug reuse, use npm/uvx or
+build through the checkout's [shared wrapper](docs/howto/local-install.md#2-build-the-native-binaries).
 
 **Option 2: npm/npx bootstrap**
 
@@ -678,15 +685,22 @@ Contributing guide: [CONTRIBUTING.md](CONTRIBUTING.md).
 ```bash
 git clone https://github.com/rysweet/amplihack-rs.git
 cd amplihack-rs
-cargo build --workspace --locked
+scripts/cargo-with-lbug.sh build --workspace --locked
 amplihack install
 ```
+
+The wrapper shares verified static lbug libraries across Cargo targets while
+each target compiles its FFI shim. Hooks, CI, releases, and npm/uvx source builds
+use the same integration. Missing or rejected artifacts fall back to source;
+no manual `LBUG_LIBRARY_DIR` or `LBUG_INCLUDE_DIR` exports are needed. See the
+[cache reference](docs/reference/lbug-prebuilt-cache.md) and
+[two-target tutorial](docs/tutorials/lbug-cache-reuse.md).
 
 ### Testing
 
 ```bash
-cargo test --workspace --locked
-cargo clippy -- -D warnings
+scripts/cargo-with-lbug.sh test --workspace --locked
+scripts/cargo-with-lbug.sh clippy --locked --all-targets -- -D warnings
 cargo fmt --check
 scripts/check-no-python-assets.sh
 scripts/check-recipes-no-python.sh
