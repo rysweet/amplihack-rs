@@ -3,8 +3,10 @@
 # escalate writes the stop to stderr and its JSON record to stdout, and
 # usage_limit_stop tells a child that failed on a Claude usage limit from any
 # other failure, so the loop stops as USAGE_LIMIT and never as STUCK (#1801).
+# progress_stop and budget_stop are the two stops decided in code (#1743).
 # docs/reference/auto-drive-to-merge.md. Defines functions only; the caller
-# sets LOOP_NAME, ROUND_LABEL and RECORD.
+# sets LOOP_NAME, ROUND_LABEL and RECORD, and for #1743 STATE_DIR, LOOP_HOME,
+# AD_PR and BUDGET_CTX.
 
 # log_body <log_file>: the log without input echoes, as terminal_refusal reads
 # it. workflow_hook_repair.sh keeps a copy, which a test holds equal to this.
@@ -32,13 +34,91 @@ usage_limit_failure() {
 # usage_limit_stop <rc> <log> <reason>: escalate USAGE_LIMIT and exit 1 on one.
 usage_limit_stop() { usage_limit_failure "$1" "$2" || return 0; escalate "USAGE_LIMIT" "$3" usage_limit; exit 1; }
 
-escalate() { # escalate <verdict> <why> [usage_limit]
+escalate() { # escalate <verdict> <why> [usage_limit|budget]
   echo "AUTO_DRIVE_LOOP: ${1} — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}'." >&2
   echo "  Reason: ${2}" >&2
   echo "  Round record: ${RECORD:-<none>}" >&2
-  if [ "${3:-}" = "usage_limit" ]; then echo "  This is a usage limit, not a judgement about progress. Run again when a login has capacity." >&2
-  else echo "  This is a judgement about absence of progress, not an attempt count." >&2; fi
+  case "${3:-}" in
+    usage_limit) echo "  This is a usage limit, not a judgement about progress. Run again when a login has capacity." >&2 ;;
+    budget) echo "  This is a usage budget set by the operator, not a judgement about progress. Relaunch with a higher budget to resume from the recorded round." >&2 ;;
+    *) echo "  This is a judgement about absence of progress, not an attempt count." >&2 ;;
+  esac
   local f=() v # JSON-escaped; control characters become spaces (#1801)
   for v in "$LOOP_NAME" "$1" "${ROUND_LABEL:-?}" "$2"; do f+=("$(printf '%s' "$v" | tr '\001-\037' ' ' | sed 's/\\/\\\\/g; s/"/\\"/g')"); done
-  printf '{"loop":"%s","loop_result":"%s","round_label":"%s","reason":"%s"}\n' "${f[@]}"
+  record_result "$(printf '{"loop":"%s","loop_result":"%s","round_label":"%s","reason":"%s"}' "${f[@]}")"
+}
+
+# record_result <json>: prints the loop's result line and writes the same line
+# to <state>/<loop>-result.json (mktemp + mv -f, never through a symlink).
+record_result() {
+  local t=""
+  printf '%s\n' "$1"
+  [ -n "${STATE_DIR:-}" ] && [ -d "${STATE_DIR}" ] || return 0
+  t="$(umask 077; mktemp "${STATE_DIR}/.result.XXXXXX")" && printf '%s\n' "$1" > "$t" \
+    && mv -f -- "$t" "${STATE_DIR}/${LOOP_NAME}-result.json" && return 0
+  rm -f -- "$t"; echo "WARNING: could not write ${LOOP_NAME}-result.json in the state dir." >&2
+}
+
+# wait_ledger <phase>: the path, cleared, a child's usage-limit waits are written
+# to, through AMPLIHACK_USAGE_WAIT_LEDGER (profile-command.md#usage-limit-wait).
+wait_ledger() {
+  local lf="${STATE_DIR}/.wait-${LOOP_NAME}-${ROUND_LABEL}-${1}"
+  rm -f -- "$lf"; printf "%s" "$lf"
+}
+
+# usage_add <phase> <start SECONDS> [mark]: one usage row for a timed child,
+# less the time it waited for a usage limit to lift (a row of its own, #1743).
+usage_add() {
+  local lf="${STATE_DIR}/.wait-${LOOP_NAME}-${ROUND_LABEL}-${1}"
+  bash "${LOOP_HOME}/autodrive_budget.sh" add "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "$((SECONDS - $2))" ${3:+--since "$3"} --waited "$lf" \
+    || echo "WARNING: the ${1} usage row for ${ROUND_LABEL} was not recorded (see above)." >&2
+  rm -f -- "$lf"
+}
+
+# post_stop <file>: the PR comment for a stop decided in code; never fatal.
+post_stop() { bash "${LOOP_HOME}/autodrive_budget.sh" post "$STATE_DIR" "${AD_PR:-}" "$1" || echo "WARNING: the stop comment was not posted (see above); the loop result is unchanged." >&2; }
+
+# stops_preflight: runs before autodrive_private_dir sets untrusted state
+# entries aside. An untrusted usage file stops the run (return 1, the caller
+# exits 2: fails closed); an untrusted progress file turns the no-progress
+# rule off for this run (PROGRESS_OFF, fails open to the evaluator).
+stops_preflight() {
+  [ -d "$STATE_DIR" ] && [ ! -L "$STATE_DIR" ] || return 0
+  bash "${LOOP_HOME}/autodrive_budget.sh" mark "$STATE_DIR" >/dev/null || return 1
+  bash "${LOOP_HOME}/autodrive_progress.sh" last "$STATE_DIR" "$LOOP_NAME" >/dev/null
+  [ $? -ne 3 ] || PROGRESS_OFF=1
+}
+
+# progress_stop <head sha> [<ci signal>]: the no-progress rule for a round that is not clean.
+progress_stop() {
+  local why rc
+  [ -z "${PROGRESS_OFF:-}" ] || return 0
+  why="$(bash "${LOOP_HOME}/autodrive_progress.sh" check "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" "${RECORD}.findings" "${2:-}")"
+  rc=$?
+  [ "$rc" -eq 10 ] || { [ "$rc" -eq 0 ] || echo "WARNING: the no-progress check exited ${rc}; the evaluator decides." >&2; return 0; }
+  # Record the stopped round too, so a resumed run's summary names it.
+  bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$1" 0 "${RECORD}.findings" "${2:-}"
+  post_stop "${STATE_DIR}/${LOOP_NAME}-stuck-reason.txt"
+  escalate "STUCK" "$why"
+  exit 1
+}
+
+# budget_stop pre|post|before [--force]: BUDGET_EXHAUSTED when a limit is
+# reached (--force: the nested crusty loop reached one). A malformed limit or
+# an untrusted usage file exits 2 with no result line.
+budget_stop() {
+  local hit rc label="$ROUND_LABEL"
+  [ "$1" = pre ] && label="$(bash "${LOOP_HOME}/autodrive_progress.sh" last "$STATE_DIR" "$LOOP_NAME")"
+  hit="$(bash "${LOOP_HOME}/autodrive_budget.sh" check "$STATE_DIR" "$LOOP_NAME" "$1" "${label:-?}" "${AD_PR:-}" ${2:+"$2"} ${BUDGET_CTX[@]+"${BUDGET_CTX[@]}"})"
+  rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    10) ;;
+    *) echo "ERROR: loop '${LOOP_NAME}': the budget check exited ${rc} (see above); no agent starts." >&2; exit 2 ;;
+  esac
+  if [ "$1" = pre ]; then ROUND_LABEL="${label:-?}"; RECORD="${label:+${STATE_DIR}/${LOOP_NAME}-${label}.json}"; fi
+  # --force: the nested crusty loop has already posted its own stop comment.
+  [ "${2:-}" = --force ] || post_stop "${STATE_DIR}/autodrive-budget-summary.md"
+  escalate "BUDGET_EXHAUSTED" "usage budget reached (${hit}); see autodrive-budget-summary.md in the state directory" budget
+  exit 1
 }

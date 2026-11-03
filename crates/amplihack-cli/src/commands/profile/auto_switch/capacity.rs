@@ -81,7 +81,8 @@ fn latest(resets: &[Option<i64>]) -> Option<i64> {
         .max()
 }
 
-fn future(w: Option<&Window>, now: i64) -> Option<&Window> {
+/// `w`, when its reset is still ahead.
+pub(crate) fn future(w: Option<&Window>, now: i64) -> Option<&Window> {
     w.filter(|w| w.resets_at > now)
 }
 
@@ -270,6 +271,18 @@ fn profiles(root: &Path) -> Option<Vec<ProfileName>> {
             None
         }
     }
+}
+
+/// Whether a status-line reading can change the capacity file: it is at or
+/// over `threshold`, or the file reports low or no capacity and may now be
+/// wrong. A reading under the threshold with no such file cannot make every
+/// plan profile over it, and an `ok` result never creates the file, so
+/// [`refresh`] would write nothing. Checking first keeps that ordinary tick
+/// from resolving profile kinds, which opens every login file.
+pub fn refresh_due(root: &Path, reading: &Reading, threshold: u8, now: i64) -> bool {
+    is_exhausted(Some(reading), threshold, now)
+        || cap::read_at(root, DateTime::from_timestamp(now, 0).unwrap_or_default())
+            .is_some_and(|f| f.state != Cap::Ok)
 }
 
 /// Recomputes and writes the capacity file from `usage` (status line and

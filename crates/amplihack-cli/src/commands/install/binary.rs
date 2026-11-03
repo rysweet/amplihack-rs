@@ -564,6 +564,37 @@ pub(super) fn choose_durable_hooks_path(deployed: Option<PathBuf>, discovered: P
     }
 }
 
+/// The amplihack binary the `statusLine` entry records (issue #1745): the
+/// deployed copy under the user's bin dir when there is one, as for the
+/// hooks (issue #911), else the running binary. Either is refused if other
+/// users can replace it. A result in a build directory is recorded, with a
+/// warning, because the entry stops working once that directory is cleaned.
+pub(super) fn stable_self_binary() -> Result<PathBuf> {
+    let deployed = super::paths::preferred_user_bin_dir()
+        .ok()
+        .map(|dir| dir.join(SELF_BIN))
+        .filter(|candidate| is_executable(candidate));
+    let exe = match deployed {
+        Some(deployed) => crate::commands::profile::statusline_binary_at(&deployed)?,
+        None => crate::commands::profile::statusline_binary()?,
+    };
+    if let Some(warning) = build_output_warning(&exe) {
+        println!("  ⚠️  {warning}");
+    }
+    Ok(exe)
+}
+
+/// The warning for a `statusLine` entry that names `exe`, if it needs one.
+pub(super) fn build_output_warning(exe: &Path) -> Option<String> {
+    looks_like_build_artifact(exe).then(|| {
+        format!(
+            "statusLine names {}, a build output; the status line stops working when that \
+             directory is cleaned",
+            exe.display()
+        )
+    })
+}
+
 /// Does this path live inside a cargo build directory?
 ///
 /// Matched on whole path components, not a substring: a user whose home is

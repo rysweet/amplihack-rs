@@ -1,5 +1,7 @@
+use super::uninstall::remove_status_line;
 use super::*;
 use std::fs;
+use std::path::PathBuf;
 
 // ─── TDD: Group 15 — run_uninstall removes binaries (Phase 3) ────────────
 
@@ -522,4 +524,78 @@ fn uninstall_preserves_plugin_wrapper_replaced_by_root_symlink_and_removes_rest(
     );
     assert!(!temp.path().join(".claude/skills/removed").exists());
     assert!(!temp.path().join(".amplihack/amplifier-bundle").exists());
+}
+
+// ─── Issue #1745 / PR #1857: uninstall takes back the statusLine entry ───
+
+const OUR_STATUS_LINE: &str = "'/home/u/.local/bin/amplihack' profile statusline";
+
+fn settings_with_status_line(dir: &std::path::Path, status_line: serde_json::Value) -> PathBuf {
+    let path = dir.join("settings.json");
+    let settings = serde_json::json!({"theme": "dark", "statusLine": status_line});
+    fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();
+    path
+}
+
+#[test]
+fn remove_status_line_removes_amplihacks_entry_and_keeps_other_keys() {
+    for command in [
+        OUR_STATUS_LINE,
+        "amplihack profile statusline",
+        "~/.amplihack/.claude/tools/statusline.sh",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let entry = serde_json::json!({"type": "command", "command": command, "padding": 1});
+        let path = settings_with_status_line(temp.path(), entry);
+        assert!(remove_status_line(&path).unwrap(), "{command}");
+        let after: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(after, serde_json::json!({"theme": "dark"}), "{command}");
+    }
+}
+
+#[test]
+fn remove_status_line_leaves_a_users_entry_byte_for_byte() {
+    for entry in [
+        serde_json::json!({"type": "command", "command": "my-profile statusline-helper.sh"}),
+        serde_json::json!({"type": "command", "command": "amplihack profile statusline | my-filter"}),
+        serde_json::json!({"type": "command", "command": "'/x/amplihack' profile statusline --owner 'w'"}),
+        serde_json::json!("not an object"),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = settings_with_status_line(temp.path(), entry.clone());
+        let before = fs::read(&path).unwrap();
+        assert!(!remove_status_line(&path).unwrap(), "{entry}");
+        assert_eq!(fs::read(&path).unwrap(), before, "{entry}");
+    }
+}
+
+#[test]
+fn run_uninstall_removes_the_status_line_with_no_hook_registrations() {
+    let _guard = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let temp = tempfile::tempdir().unwrap();
+    let previous = crate::test_support::set_home(temp.path());
+
+    fs::create_dir_all(temp.path().join(".claude")).unwrap();
+    let path = settings_with_status_line(
+        &temp.path().join(".claude"),
+        serde_json::json!({"type": "command", "command": OUR_STATUS_LINE}),
+    );
+    fs::create_dir_all(temp.path().join(".amplihack/.claude/install")).unwrap();
+    fs::write(
+        temp.path()
+            .join(".amplihack/.claude/install/amplihack-manifest.json"),
+        serde_json::json!({"files": [], "dirs": [], "binaries": [], "hook_registrations": []})
+            .to_string(),
+    )
+    .unwrap();
+
+    run_uninstall().unwrap();
+    crate::test_support::restore_home(previous);
+
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(after, serde_json::json!({"theme": "dark"}));
 }
