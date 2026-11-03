@@ -117,7 +117,7 @@ pub struct WrapRequest<'a> {
 #[cfg(unix)]
 mod claude_names;
 #[cfg(unix)]
-mod cmdline;
+pub(crate) mod cmdline;
 #[cfg(unix)]
 mod dirty;
 #[cfg(unix)]
@@ -132,6 +132,8 @@ mod launch;
 mod live_conversations;
 #[cfg(unix)]
 mod markers;
+/// Issue #1883: value rules shared with the launch path on every platform.
+pub(crate) mod option_check;
 #[cfg(unix)]
 mod pass;
 #[cfg(unix)]

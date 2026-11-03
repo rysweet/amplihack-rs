@@ -12,6 +12,7 @@ use super::command::{
     explicit_model_warnings, is_claude_compatible_tool, model_args, model_selection_notice,
     normalize_dotted_claude_model_id,
 };
+use super::inherit::Inherited;
 use super::tests_command::{PROXY_ENV_VARS, model_arg_through_proxy, with_default_model_env};
 use super::*;
 use crate::binary_finder::BinaryInfo;
@@ -706,7 +707,7 @@ fn model_args_with(env: &[(&str, &str)], binary_name: &str, extra: &[&str]) -> M
         unsafe { std::env::set_var(name, value) };
     }
     let extra: Vec<String> = extra.iter().map(|arg| arg.to_string()).collect();
-    let got = model_args(binary_name, &extra);
+    let got = model_args(binary_name, &extra, &Inherited::default());
     drop(restore);
     got
 }
@@ -771,6 +772,10 @@ fn test_model_args_warns_on_a_dotted_explicit_model() {
                     ModelArgs {
                         argv: Vec::new(),
                         stderr: vec![explicit_warning_for(tool)],
+                        // #1883: nothing inherited, so no ANTHROPIC_MODEL is
+                        // added (C4), but the launch's own model is exported.
+                        env: Vec::new(),
+                        exported: Some("claude-opus-5.5".to_string()),
                     },
                     "`amplihack {tool}` with {extra:?} and {env:?}"
                 );
@@ -889,6 +894,8 @@ fn test_model_args_ignores_anthropic_base_url() {
         ModelArgs {
             argv: vec!["--model".to_string(), "claude-opus-5-5[1m]".to_string()],
             stderr: vec![DOCUMENTED_REWRITE_NOTICE.to_string()],
+            env: Vec::new(),
+            exported: None,
         }
     );
     // The escape hatch for a proxy that serves the dotted spelling: amplihack
@@ -902,6 +909,8 @@ fn test_model_args_ignores_anthropic_base_url() {
         ModelArgs {
             argv: Vec::new(),
             stderr: vec![DOCUMENTED_EXPLICIT_WARNING.to_string()],
+            env: Vec::new(),
+            exported: Some("claude-opus-5.5".to_string()),
         }
     );
 }
@@ -925,6 +934,8 @@ fn test_only_the_three_gateway_variables_select_the_gateway() {
             ModelArgs {
                 argv: vec!["--model".to_string(), "claude-sonnet-4-5".to_string()],
                 stderr: vec![pinned_notice.clone()],
+                env: Vec::new(),
+                exported: None,
             },
             "{var} must not select the gateway: AMPLIHACK_DEFAULT_MODEL must still be read"
         );
@@ -949,6 +960,8 @@ fn test_only_the_three_gateway_variables_select_the_gateway() {
                     &selection(gateway_model, ModelSource::LiteLlmGateway, None),
                     "claude",
                 )],
+                env: Vec::new(),
+                exported: None,
             },
             "{var} alone must select the gateway, so AMPLIHACK_DEFAULT_MODEL is not read"
         );
@@ -1292,4 +1305,285 @@ fn test_dotted_default_model_env_renders_the_documented_notice() {
         model_selection_notice(&got, "claude"),
         DOCUMENTED_REWRITE_NOTICE
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1883: an inherited model (D4, D5, D8, D10).
+//
+// A step's launch is told the run's model through `AMPLIHACK_PARENT_MODEL`,
+// read once by `build_command_for_dir` into an `Inherited`. `model_args` takes
+// it as its third argument. Precedence, highest first: the step's own
+// `--model`, (#1872's role model, reserved), the LiteLLM gateway model, the
+// inherited model, AMPLIHACK_DEFAULT_MODEL, DEFAULT_MODEL.
+// ---------------------------------------------------------------------------
+
+/// The notice an inherited model gives outside a recipe run
+/// (docs/reference/effort-and-model-inheritance.md, "Model notice inside a
+/// step").
+const DOCUMENTED_INHERITED_NOTICE: &str = "amplihack: passing `--model claude-opus-5-5` to \
+     `claude` (from the parent session). Pass `--model` to override it.";
+
+/// [`model_args`] with `inherited`, on a host where exactly the variables in
+/// `env` are set among the ones it may read, including
+/// `AMPLIHACK_RECIPE_RUN_ID`.
+fn model_args_inherited(
+    env: &[(&str, &str)],
+    binary_name: &str,
+    extra: &[&str],
+    inherited: &Inherited,
+) -> ModelArgs {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let names = PROXY_ENV_VARS
+        .into_iter()
+        .chain(NON_GATEWAY_LITELLM_VARS)
+        .chain([
+            "AMPLIHACK_DEFAULT_MODEL",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_MODEL",
+            "CLAUDE_CODE_EFFORT_LEVEL",
+            "AMPLIHACK_RECIPE_RUN_ID",
+            "AMPLIHACK_PARENT_EFFORT",
+            "AMPLIHACK_PARENT_MODEL",
+        ]);
+    let restore = RestoreEnv(names.map(|name| (name, std::env::var_os(name))).collect());
+    for (name, _) in &restore.0 {
+        unsafe { std::env::remove_var(name) };
+    }
+    for (name, value) in env {
+        unsafe { std::env::set_var(name, value) };
+    }
+    let extra: Vec<String> = extra.iter().map(|arg| arg.to_string()).collect();
+    let got = model_args(binary_name, &extra, inherited);
+    drop(restore);
+    got
+}
+
+fn inherit_model(model: &str) -> Inherited {
+    Inherited {
+        effort: None,
+        model: Some(model.to_string()),
+    }
+}
+
+fn model_env(model: &str) -> Vec<(&'static str, String)> {
+    vec![("ANTHROPIC_MODEL", model.to_string())]
+}
+
+#[test]
+fn test_model_source_inherited_is_labelled_the_parent_session() {
+    let notice = model_selection_notice(
+        &selection("claude-opus-5-5", ModelSource::Inherited, None),
+        "claude",
+    );
+    assert_eq!(notice, DOCUMENTED_INHERITED_NOTICE);
+}
+
+/// F3: with nothing inherited every existing expectation holds, and the new
+/// fields stay empty for amplihack's own default.
+#[test]
+fn test_nothing_inherited_keeps_the_default_and_exports_nothing() {
+    let got = model_args_inherited(&[], "claude", &[], &Inherited::default());
+    assert_eq!(
+        got.argv,
+        vec!["--model".to_string(), DEFAULT_MODEL.to_string()]
+    );
+    assert_eq!(
+        got.stderr,
+        vec![model_selection_notice(
+            &selection(DEFAULT_MODEL, ModelSource::BuiltInDefault, None),
+            "claude"
+        )]
+    );
+    assert!(got.env.is_empty(), "{:?}", got.env);
+    assert_eq!(got.exported, None);
+}
+
+#[test]
+fn test_inherited_model_beats_the_configured_defaults() {
+    for env in [
+        &[][..],
+        &[("AMPLIHACK_DEFAULT_MODEL", "claude-sonnet-4-5")],
+        &[("AMPLIHACK_DEFAULT_MODEL", "")],
+    ] {
+        for tool in CLAUDE_COMPATIBLE_TOOLS {
+            let got = model_args_inherited(env, tool, &[], &inherit_model("claude-opus-5-5"));
+            assert_eq!(
+                got.argv,
+                vec!["--model".to_string(), "claude-opus-5-5".to_string()],
+                "{tool} {env:?}"
+            );
+            assert_eq!(got.env, model_env("claude-opus-5-5"), "{tool} {env:?}");
+            assert_eq!(
+                got.exported.as_deref(),
+                Some("claude-opus-5-5"),
+                "{tool} {env:?}"
+            );
+        }
+    }
+}
+
+/// Outside a recipe run the inherited model gets its own notice; inside one
+/// the run's summary line covers it and the step prints nothing (D8).
+#[test]
+fn test_inherited_model_notice_only_outside_a_recipe_run() {
+    let got = model_args_inherited(&[], "claude", &[], &inherit_model("claude-opus-5-5"));
+    assert_eq!(got.stderr, vec![DOCUMENTED_INHERITED_NOTICE.to_string()]);
+
+    let got = model_args_inherited(
+        &[("AMPLIHACK_RECIPE_RUN_ID", "run-1883")],
+        "claude",
+        &[],
+        &inherit_model("claude-opus-5-5"),
+    );
+    assert!(got.stderr.is_empty(), "{:?}", got.stderr);
+    assert_eq!(
+        got.argv,
+        vec!["--model".to_string(), "claude-opus-5-5".to_string()]
+    );
+}
+
+/// The #1421 notice is unchanged under a recipe run when nothing is inherited.
+#[test]
+fn test_default_notice_unchanged_in_a_recipe_run_without_inheritance() {
+    let got = model_args_inherited(
+        &[("AMPLIHACK_RECIPE_RUN_ID", "run-1883")],
+        "claude",
+        &[],
+        &Inherited::default(),
+    );
+    assert_eq!(
+        got.stderr,
+        vec![model_selection_notice(
+            &selection(DEFAULT_MODEL, ModelSource::BuiltInDefault, None),
+            "claude"
+        )]
+    );
+}
+
+/// The gateway routes on the model name, so it outranks the inherited model,
+/// and the gateway's own `ANTHROPIC_MODEL` is not overridden here (S11).
+#[test]
+fn test_gateway_model_beats_the_inherited_model() {
+    let got = model_args_inherited(
+        &[(amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model")],
+        "claude",
+        &[],
+        &inherit_model("claude-opus-5-5"),
+    );
+    assert_eq!(
+        got.argv,
+        vec!["--model".to_string(), "gateway-model".to_string()]
+    );
+    assert!(got.env.is_empty(), "{:?}", got.env);
+    assert_eq!(got.exported, None);
+}
+
+/// The step's own `--model` wins, in both spellings; the child holds only the
+/// step's model, never the parent's (D5).
+#[test]
+fn test_step_own_model_beats_the_inherited_model() {
+    for extra in [
+        &["--model", "claude-haiku-4-5"][..],
+        &["-p", "x", "--model=claude-haiku-4-5"],
+    ] {
+        let got = model_args_inherited(&[], "claude", extra, &inherit_model("claude-opus-5-5"));
+        assert!(got.argv.is_empty(), "{extra:?}: {:?}", got.argv);
+        assert_eq!(got.env, model_env("claude-haiku-4-5"), "{extra:?}");
+        assert_eq!(got.exported.as_deref(), Some("claude-haiku-4-5"));
+        assert!(
+            got.stderr.iter().all(|l| !l.contains("claude-opus-5-5")),
+            "{:?}",
+            got.stderr
+        );
+    }
+}
+
+/// The runner's `--model auto` retry is a step's own model too.
+#[test]
+fn test_runner_model_auto_retry_beats_the_inherited_model() {
+    let got = model_args_inherited(
+        &[("AMPLIHACK_RECIPE_RUN_ID", "run-1883")],
+        "claude",
+        &["--model", "auto"],
+        &inherit_model("claude-opus-5-5"),
+    );
+    assert!(got.argv.is_empty(), "{:?}", got.argv);
+    assert_eq!(got.env, model_env("auto"));
+}
+
+/// C4: the step's own model with nothing inherited adds no ANTHROPIC_MODEL.
+#[test]
+fn test_step_own_model_without_inheritance_adds_no_variable() {
+    let got = model_args_inherited(
+        &[],
+        "claude",
+        &["--model", "claude-haiku-4-5"],
+        &Inherited::default(),
+    );
+    assert!(got.argv.is_empty());
+    assert!(got.env.is_empty(), "{:?}", got.env);
+    assert_eq!(got.exported.as_deref(), Some("claude-haiku-4-5"));
+}
+
+/// D10: a top-level launch with only ANTHROPIC_MODEL set behaves as before;
+/// ANTHROPIC_MODEL is a fallback only while `recipe run` works out the run's
+/// values.
+#[test]
+fn test_anthropic_model_alone_does_not_change_a_launch() {
+    let got = model_args_inherited(
+        &[("ANTHROPIC_MODEL", "claude-sonnet-4-5")],
+        "claude",
+        &[],
+        &Inherited::default(),
+    );
+    assert_eq!(
+        got.argv,
+        vec!["--model".to_string(), DEFAULT_MODEL.to_string()]
+    );
+    assert!(got.env.is_empty(), "{:?}", got.env);
+}
+
+/// Codex and copilot take a model only inside a recipe run, where
+/// `recipe run` has already refused an inherited Claude id and passed on only
+/// a recipe-context model. Outside a run they get nothing, and never an
+/// ANTHROPIC_MODEL.
+#[test]
+fn test_codex_and_copilot_take_an_inherited_model_only_in_a_recipe_run() {
+    for tool in ["codex", "copilot"] {
+        let outside = model_args_inherited(&[], tool, &[], &inherit_model("gpt-5.1"));
+        assert!(outside.argv.is_empty(), "{tool}: {:?}", outside.argv);
+        assert!(outside.env.is_empty(), "{tool}");
+
+        let inside = model_args_inherited(
+            &[("AMPLIHACK_RECIPE_RUN_ID", "run-1883")],
+            tool,
+            &[],
+            &inherit_model("gpt-5.1"),
+        );
+        assert_eq!(
+            inside.argv,
+            vec!["--model".to_string(), "gpt-5.1".to_string()],
+            "{tool}"
+        );
+        assert!(inside.env.is_empty(), "{tool}: {:?}", inside.env);
+        assert!(inside.stderr.is_empty(), "{tool}: {:?}", inside.stderr);
+    }
+}
+
+/// S11: copilot routed through the gateway never takes an inherited model.
+#[test]
+fn test_copilot_under_the_gateway_takes_no_inherited_model() {
+    let got = model_args_inherited(
+        &[
+            ("AMPLIHACK_RECIPE_RUN_ID", "run-1883"),
+            (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model"),
+        ],
+        "copilot",
+        &[],
+        &inherit_model("gpt-5.1"),
+    );
+    assert!(got.argv.is_empty(), "{:?}", got.argv);
+    assert!(got.env.is_empty(), "{:?}", got.env);
 }

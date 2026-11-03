@@ -48,6 +48,7 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_WORKSTREAM](#amplihack_workstream)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
+  - [AMPLIHACK_PARENT_EFFORT and AMPLIHACK_PARENT_MODEL](#amplihack_parent_effort-and-amplihack_parent_model)
   - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
   - [AMPLIHACK_BLARIFY_MODE](#amplihack_blarify_mode)
   - [AMPLIHACK_NO_UPDATE_CHECK](#amplihack_no_update_check)
@@ -1099,6 +1100,10 @@ ignore it.
 | a model id | `--model` with that id, trimmed of surrounding whitespace; a dotted Claude id is [rewritten to hyphens](#dotted-claude-model-ids) |
 | empty or whitespace-only | nothing; the tool picks its own default |
 
+Inside `amplihack recipe run`, a model inherited from the parent session wins
+over this variable. See
+[Effort and Model Inheritance for Recipe Steps](./effort-and-model-inheritance.md).
+
 Because amplihack passes `--model` unless this variable is empty, the `"model"`
 in `~/.claude/settings.json` only takes effect when you set
 `AMPLIHACK_DEFAULT_MODEL=` (empty).
@@ -1246,6 +1251,30 @@ amplihack claude --model 'claude-opus-5-5[1m]'
 For the other flags amplihack adds to the launch command, such as
 `--dangerously-skip-permissions`, and the order of the assembled command line,
 see [Launch Flag Injection](./launch-flag-injection.md).
+
+---
+
+### AMPLIHACK_PARENT_EFFORT and AMPLIHACK_PARENT_MODEL
+
+**Type:** string
+**Default:** unset. Never set to an empty string.
+**Set by:** each `amplihack <binary>` launch and `amplihack recipe run`, for
+the recipe runner. A launch takes the effort from the agent's final argv. It
+sets the model only when the model was given on the command line or
+inherited, not when amplihack chose it itself.
+**Used by:** `commands/launch/inherit.rs` and `commands/recipe/run/inherit_inputs.rs`
+
+The effort and model that agent steps inherit from the session that started a
+recipe run (issue #1883). Do not set these by hand; pass `-c effort=` and
+`-c model=` to `amplihack recipe run` instead. They cannot be set through `-c`
+or a context file. The resolution order, the support for each binary and the
+log lines are in
+[Effort and Model Inheritance for Recipe Steps](./effort-and-model-inheritance.md).
+
+```sh
+amplihack claude -- --effort high
+# the agent's environment holds AMPLIHACK_PARENT_EFFORT=high
+```
 
 ---
 

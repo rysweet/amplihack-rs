@@ -7,6 +7,8 @@ mod blarify;
 mod checkout;
 mod command;
 mod context;
+/// Issue #1883: agent steps inherit the parent session's effort and model.
+pub(crate) mod inherit;
 mod power_steering;
 /// Issue #1265 Option 3 — `--append-system-prompt` delivery of amplihack's
 /// routing contract.
@@ -18,6 +20,9 @@ mod tests_blarify;
 mod tests_command;
 #[cfg(test)]
 mod tests_env;
+/// Issue #1883: effort and model inheritance for recipe step agents.
+#[cfg(test)]
+mod tests_inherit;
 #[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
@@ -41,8 +46,10 @@ pub(crate) use power_steering::maybe_prompt_re_enable_power_steering;
 
 // Internal imports from submodules used by run_launch.
 use blarify::maybe_run_blarify_indexing_prompt;
+#[cfg(test)]
+use command::build_command_for_dir;
 use command::{
-    augment_claude_launch_env, build_command_for_dir, build_docker_launcher_args,
+    augment_claude_launch_env, build_docker_launcher_args, build_launch_command,
     isolate_routed_copilot_home,
 };
 use context::persist_launcher_context;
@@ -472,7 +479,7 @@ fn run_launch_core(
         // This final check catches ordinary package and symlink replacement
         // after preflight and narrows same-user races without claiming the
         // stronger guarantees of descriptor-based execution.
-        let mut cmd = build_command_for_dir(
+        let (mut cmd, exported_model) = build_launch_command(
             &binary,
             resume,
             continue_session,
@@ -496,6 +503,9 @@ fn run_launch_core(
         )?;
         // Issue #1569: only the supervising amplihack sees this marker.
         cmd.env_remove(crate::commands::profile::AUTO_SWITCH_SUPERVISED_ENV);
+        // Issue #1883 (C1): tell the agent's children which effort and model
+        // this launch runs with, after the launch environment is applied.
+        inherit::export_to_child(&mut cmd, exported_model.as_deref());
 
         // Spawn child in its own process group.
         //

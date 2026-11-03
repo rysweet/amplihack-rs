@@ -16,7 +16,6 @@ const PROFILE_RULE: &str =
     "names match [A-Za-z0-9][A-Za-z0-9._-]{0,63}, without '..' or a trailing '.'";
 const ENV_RULE: &str = "value must be at most 4096 bytes, with no control characters";
 const MAX_SOCKET_BYTES: usize = 107;
-const MAX_OPTION_BYTES: usize = 256;
 const MAX_ENV_BYTES: usize = 4096;
 
 /// `^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`.
@@ -36,14 +35,7 @@ pub fn conversation_id(s: &str) -> Result<(), String> {
         .ok_or_else(|| ID_RULE.to_string())
 }
 
-/// A control character, or a Unicode format character that can make shown
-/// text differ from what it holds: the bidirectional embeddings, overrides
-/// and isolates (U+202A to U+202E, U+2066 to U+2069), the zero-width and
-/// direction marks (U+200B to U+200F) and the byte-order mark (U+FEFF).
-pub fn unsafe_char(c: char) -> bool {
-    c.is_control()
-        || matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}')
-}
+pub use super::option_check::{option_value, unsafe_char};
 
 fn leading_alnum(s: &str, max: usize, rest: impl Fn(char) -> bool) -> bool {
     let mut chars = s.chars();
@@ -76,23 +68,6 @@ pub fn profile_name(s: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(PROFILE_RULE.to_string())
-    }
-}
-
-/// Model, effort and permission mode: 1 to 256 bytes, no control
-/// character, and no leading `-`, so the value can never become a flag.
-pub fn option_value(v: &str) -> Result<(), String> {
-    let ok = !v.is_empty()
-        && v.len() <= MAX_OPTION_BYTES
-        && !v.starts_with('-')
-        && !v.chars().any(unsafe_char);
-    if ok {
-        Ok(())
-    } else {
-        Err(
-            "must be 1 to 256 bytes, without control characters, and must not start with '-'"
-                .into(),
-        )
     }
 }
 

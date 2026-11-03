@@ -1,6 +1,7 @@
 //! Command building for tool binaries: argument injection, UVX plugin
 //! handling, Docker launcher args, and Claude-specific env augmentation.
 
+use super::inherit::{self, Inherited};
 use super::system_prompt_append;
 use crate::binary_finder::BinaryInfo;
 use crate::commands::uvx_help::is_uvx_deployment;
@@ -99,6 +100,8 @@ pub(super) fn build_command(
     )
 }
 
+/// [`build_launch_command`] without the model to export.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_command_for_dir(
     binary: &BinaryInfo,
@@ -110,6 +113,32 @@ pub(super) fn build_command_for_dir(
     subprocess_safe: bool,
     claude_config_dir: Option<&Path>,
 ) -> Command {
+    build_launch_command(
+        binary,
+        resume,
+        continue_session,
+        skip_permissions,
+        extra_args,
+        add_dir_override,
+        subprocess_safe,
+        claude_config_dir,
+    )
+    .0
+}
+
+/// The agent's command, and the model to export to its children as
+/// `AMPLIHACK_PARENT_MODEL` (issue #1883, [`ModelArgs::exported`]).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_launch_command(
+    binary: &BinaryInfo,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    extra_args: &[String],
+    add_dir_override: Option<&Path>,
+    subprocess_safe: bool,
+    claude_config_dir: Option<&Path>,
+) -> (Command, Option<String>) {
     let mut cmd = Command::new(&binary.path);
 
     // SEC-2: Only inject --dangerously-skip-permissions when the caller has
@@ -133,11 +162,26 @@ pub(super) fn build_command_for_dir(
     // line about it, is made in `model_args`, which the tests call directly
     // with the environment set. Nothing here may add a condition of its own:
     // print what it returns, add what it returns, and nothing else.
-    let model = model_args(&binary.name, extra_args);
+    //
+    // Issue #1883: the inherited effort and model are read once, from
+    // AMPLIHACK_PARENT_* only, and go before `resume` and the step's own
+    // arguments: model first, then effort.
+    let inherited = inherit::inherited_from_env();
+    let model = model_args(&binary.name, extra_args, &inherited);
     for line in &model.stderr {
         eprintln!("{line}");
     }
     cmd.args(&model.argv);
+    cmd.envs(model.env.iter().map(|(k, v)| (*k, v)));
+    let effort = inherit::effort_args(&binary.name, extra_args, &inherited);
+    cmd.args(&effort.argv);
+    cmd.envs(effort.env.iter().map(|(k, v)| (*k, v)));
+    // Inside a recipe run, `recipe run` has already printed this line once.
+    if let Some(line) = &effort.unsupported
+        && !inherit::in_recipe_run()
+    {
+        inherit::print_once(line);
+    }
 
     if binary.name == "codex" {
         if resume || continue_session {
@@ -232,7 +276,7 @@ pub(super) fn build_command_for_dir(
         cmd.arg("--no-auto-update");
         cmd.arg("--secret-env-vars=COPILOT_PROVIDER_API_KEY");
     }
-    cmd
+    (cmd, model.exported)
 }
 
 /// Issue #1567: pins the applied login profile for every descendant launch.
@@ -281,6 +325,14 @@ pub(super) struct ModelArgs {
     /// Lines for stderr, in order: the dotted explicit `--model` warning
     /// (#1527) and the line naming a model amplihack chose (#1421).
     pub(super) stderr: Vec<String>,
+    /// Issue #1883: variables for the child. `ANTHROPIC_MODEL`, set only for
+    /// a Claude-compatible tool when a model is inherited, to the step's own
+    /// model when it has one and otherwise to the inherited one (D5, C4).
+    pub(super) env: Vec<(&'static str, String)>,
+    /// Issue #1883: the model to export as `AMPLIHACK_PARENT_MODEL`: the
+    /// launch's own `--model` or the inherited one. `None` when amplihack
+    /// chose the model itself, so its default is never passed on as a choice.
+    pub(super) exported: Option<String>,
 }
 
 /// Every decision amplihack makes about `--model` for one launch of
@@ -313,28 +365,65 @@ pub(super) struct ModelArgs {
 ///    `AMPLIHACK_LITELLM_MODEL` is set. No other `AMPLIHACK_LITELLM_*` variable
 ///    selects this path. The gateway routes on the model name and has no
 ///    default of its own.
-/// 3. `AMPLIHACK_DEFAULT_MODEL`, which pins every launch; an empty value means
+/// 3. Issue #1883: the model inherited from the parent session
+///    (`AMPLIHACK_PARENT_MODEL`, passed in as `inherited`). Its notice is
+///    printed only outside a recipe run; inside one, `recipe run` prints one
+///    summary line instead. Codex and copilot take it only inside a recipe
+///    run, where `recipe run` has already refused a Claude model id, and
+///    never through the gateway.
+/// 4. `AMPLIHACK_DEFAULT_MODEL`, which pins every launch; an empty value means
 ///    "pass nothing and let the CLI decide". A dotted Claude id (Copilot's
 ///    spelling) is rewritten to the hyphenated id (#1527).
-/// 4. [`DEFAULT_MODEL`].
+/// 5. [`DEFAULT_MODEL`].
 ///
 /// This still outranks a `"model"` set in `~/.claude/settings.json`, which is
 /// why that lever appeared to do nothing in the #1421 report. That is a
 /// deliberate, documented precedence, and the stderr line names both the value
 /// and where it came from, so the id in any later error traces straight back
 /// to this decision instead of looking like a secret inside the binary.
-pub(super) fn model_args(binary_name: &str, extra_args: &[String]) -> ModelArgs {
+pub(super) fn model_args(
+    binary_name: &str,
+    extra_args: &[String],
+    inherited: &Inherited,
+) -> ModelArgs {
     let is_claude_compatible = is_claude_compatible_tool(binary_name);
-    let through_gateway = is_claude_compatible && amplihack_utils::litellm_proxy::proxy_requested();
+    let proxy = amplihack_utils::litellm_proxy::proxy_requested();
+    let through_gateway = is_claude_compatible && proxy;
     let mut out = ModelArgs {
         argv: Vec::new(),
         stderr: explicit_model_warnings(binary_name, extra_args, through_gateway),
+        env: Vec::new(),
+        exported: None,
     };
 
     let user_has_model = extra_args
         .iter()
         .any(|arg| arg == "--model" || arg.starts_with("--model="));
-    if user_has_model || !is_claude_compatible {
+    if user_has_model {
+        // Issue #1883 (D5): the child holds only the step's own model. A
+        // gateway route name, or a codex or copilot model, is not a Claude
+        // model id, so it is neither put in ANTHROPIC_MODEL nor exported.
+        if is_claude_compatible && !through_gateway {
+            let own = inherit::flag_value(extra_args, "--model");
+            if let (Some(own), Some(_)) = (&own, &inherited.model) {
+                out.env.push(("ANTHROPIC_MODEL", own.clone()));
+            }
+            out.exported = own;
+        }
+        return out;
+    }
+    // #1872: role model goes here, between the step's own model and the
+    // gateway model.
+    if !is_claude_compatible {
+        // Issue #1883: codex and copilot get a model only from `recipe run`,
+        // which passes on only a model given for the run, and never through
+        // the gateway. No notice: the run's summary line covers it.
+        if let Some(model) = &inherited.model
+            && inherit::in_recipe_run()
+            && !proxy
+        {
+            out.argv = vec!["--model".to_string(), model.clone()];
+        }
         return out;
     }
     let selection = if through_gateway {
@@ -347,12 +436,24 @@ pub(super) fn model_args(binary_name: &str, extra_args: &[String]) -> ModelArgs 
             source: ModelSource::LiteLlmGateway,
             normalised_from: None,
         })
+    } else if let Some(model) = &inherited.model {
+        out.env.push(("ANTHROPIC_MODEL", model.clone()));
+        out.exported = Some(model.clone());
+        Some(ModelSelection {
+            model: model.clone(),
+            source: ModelSource::Inherited,
+            normalised_from: None,
+        })
     } else {
         configured_default_model()
     };
     if let Some(selection) = selection {
-        out.stderr
-            .push(model_selection_notice(&selection, binary_name));
+        // D8: inside a recipe run the run's summary line names an inherited
+        // model once, so each step stays quiet about it.
+        if !(selection.source == ModelSource::Inherited && inherit::in_recipe_run()) {
+            out.stderr
+                .push(model_selection_notice(&selection, binary_name));
+        }
         out.argv = vec!["--model".to_string(), selection.model];
     }
     out
@@ -403,6 +504,8 @@ pub(crate) enum ModelSource {
     /// [`DEFAULT_MODEL`], because `AMPLIHACK_DEFAULT_MODEL` is unset or is not
     /// valid UTF-8.
     BuiltInDefault,
+    /// Issue #1883: `AMPLIHACK_PARENT_MODEL`, the parent session's model.
+    Inherited,
 }
 
 impl ModelSource {
@@ -412,6 +515,7 @@ impl ModelSource {
             Self::LiteLlmGateway => amplihack_utils::litellm_proxy::MODEL_ENV,
             Self::DefaultModelEnv => "AMPLIHACK_DEFAULT_MODEL",
             Self::BuiltInDefault => "amplihack's built-in default",
+            Self::Inherited => "the parent session",
         }
     }
 }
@@ -535,6 +639,7 @@ pub(super) fn model_selection_notice(selection: &ModelSelection, binary_name: &s
              gateway variable is set.",
             amplihack_utils::litellm_proxy::MODEL_ENV
         ),
+        ModelSource::Inherited => "Pass `--model` to override it.".to_string(),
         ModelSource::DefaultModelEnv | ModelSource::BuiltInDefault => format!(
             "Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to \
              let {binary_name} choose its own default model."
