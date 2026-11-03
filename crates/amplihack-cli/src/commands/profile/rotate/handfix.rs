@@ -332,6 +332,8 @@ pub fn step_mode<'a>(
     let mut skip = None;
     let (step, lines) = match plan {
         None => {
+            // Also reached under `log` once its line replaces the plan, so
+            // guidance saved by an earlier `act` cycle is cleared here too.
             ledger.guidance = None;
             (Step::Clear, log_lines)
         }

@@ -5999,8 +5999,9 @@ taken, the line says so and shows no path; under `act` the same case stops
 the cycle with [guidance](#guidance), but under `log` the cycle still ends
 `alerted`. Under `log` no `.rejected-logins/` or backup directory is
 made, no login is renamed, the ledger's `live` and `account` are
-unchanged, and no profile is added to `lost_login`. Entries already in `lost_login` are still pruned as under
-`act`, because pruning runs before recovery decides what to do.
+unchanged, and no profile is added to `lost_login`. Entries already in
+`lost_login` are still pruned as under `act`, because pruning runs before
+recovery decides what to do.
 
 The line is followed in the same cycle by the `hand-change` ALERT from
 [Rotate live profile](#rotate-live-profile):

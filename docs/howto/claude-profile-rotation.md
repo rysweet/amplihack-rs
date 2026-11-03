@@ -2065,8 +2065,13 @@ amplihack profile rotate stop
 amplihack profile rotate start --recovery log
 ```
 
-The rotator then moves no login and does not change which profile the
-ledger names as live. In the duplicate-login case above, each cycle writes:
+The rotator then creates, renames and moves no files, and does not change
+which profile the ledger names as live. The ledger is still updated in other
+ways: guidance saved by an earlier `act` cycle is cleared, profiles that have
+their login back or are gone are pruned from `lost_login`, and
+`home_unreadable_since` is kept up to date; see
+[Recovery mode](../reference/profile-command.md#recovery-mode).
+In the duplicate-login case above, each cycle writes:
 
 ```
 2026-10-27T03:17:05Z recovery (log only): would move ryan-mistt-org's login to /home/you/.claude-profiles/.rejected-logins/rotate-ryan-mistt-org-20261027T031705Z/.credentials.json and record ryan-mistt-org as live
@@ -2075,8 +2080,7 @@ ledger names as live. In the duplicate-login case above, each cycle writes:
 
 Both logins stay where they are, and the cycle does not swap. Under
 `watch` the two lines repeat on every cycle until the ledger matches again.
-Find every
-such line with:
+Find every such line with:
 
 ```bash
 grep 'recovery (log only): ' /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
@@ -2091,7 +2095,9 @@ once, without changing anything.
 writes only the `hand-change` ALERT shown earlier and does not swap. When
 `~/.claude.json` cannot be read, the cycle writes the `home-unreadable`
 ALERT instead, every cycle, and it never turns into the guidance written
-after 5 minutes. Use `off` only when you will fix `~/.claude` by hand.
+after 5 minutes. Use `off` only when you will fix `~/.claude` by hand. What
+`off` hides is listed in
+[Recovery off](../reference/profile-command.md#recovery-off).
 
 To let recovery act again, run `stop`, then `start` without the flag, since
 `act` is the default. A rotator started by
