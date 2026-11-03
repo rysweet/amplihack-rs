@@ -26,7 +26,7 @@ pub const HOME_UNREADABLE_GRACE: i64 = 300;
 /// five cycles.
 pub const SWAP_GRACE: i64 = 600;
 
-/// Issue #1886: the first credential reading that `~/.claude` answers as
+/// Issue #1886: the first credential reading that `~/.claude` holds the account of
 /// `profile`'s own login, at `first_seen` (epoch seconds). A later cycle, at
 /// least one interval on, must read the same before anything moves. Holds no
 /// reading and no account.

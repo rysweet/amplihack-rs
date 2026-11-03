@@ -544,34 +544,62 @@ fn identity_and_recovery_never_touch_a_token_or_start_a_process() {
     }
 }
 
-/// SEC-2: identity reads never refresh a token.
+/// SEC-2 and the owner decision of 3 November: identity reads ask the
+/// OAuth profile endpoint (`usage_direct::account`, which never refreshes),
+/// never the usage read, whose reset times do not tell accounts apart.
 #[test]
-fn identity_reads_never_allow_a_refresh() {
+fn identity_reads_ask_the_profile_endpoint_and_never_refresh() {
     let text = source("cred_identity.rs");
     let code = code_lines(&text).join("\n");
     assert!(
-        code.contains("allow_refresh: false"),
-        "allow_refresh: false"
+        code.contains("usage_direct::account("),
+        "usage_direct::account"
     );
-    assert!(!code.contains("allow_refresh: true"));
-    assert!(code.contains("usage_direct::read") || code.contains("direct::read("));
-    for f in ["usage_passive", "passive", "probe_one", "claude -p"] {
+    assert!(!code.contains("allow_refresh"));
+    assert!(!code.contains("usage_direct::read") && !code.contains("direct::read("));
+    for f in [
+        "resets_at",
+        "UsageReport",
+        "usage_passive",
+        "passive",
+        "probe_one",
+        "claude -p",
+        "auth status",
+    ] {
         assert!(!code.contains(f), "cred_identity.rs uses `{f}`");
     }
+    let direct =
+        fs::read_to_string(rotate_dir().parent().unwrap().join("usage_direct.rs")).unwrap();
+    let account = body_of(&direct, "account");
+    assert!(
+        account.contains("profile_url()"),
+        "account reads /api/oauth/profile"
+    );
+    assert!(!account.contains("refresh("), "account never refreshes");
 }
 
-/// SEC-16: a fingerprint is never written or shown.
+/// SEC-16: an account read for identity is never written or shown by the
+/// rotator.
 #[test]
-fn fingerprints_are_never_serialized_or_displayed() {
-    let code = code_lines(&source("cred_identity.rs")).join("\n");
-    assert!(
-        !code.contains("Serialize"),
-        "Fingerprint must not serialize"
-    );
-    assert!(
-        !code.contains("impl std::fmt::Display") && !code.contains("impl Display"),
-        "Fingerprint has no Display"
-    );
+fn identities_are_never_serialized_or_displayed() {
+    for name in ["cred_identity.rs", "account.rs"] {
+        let code = code_lines(&source(name)).join("\n");
+        assert!(!code.contains("Serialize"), "{name}: must not serialize");
+        assert!(
+            !code.contains("impl std::fmt::Display") && !code.contains("impl Display"),
+            "{name}: no Display"
+        );
+    }
+    for name in [
+        "cred_identity.rs",
+        "handfix.rs",
+        "handfix_plan.rs",
+        "handfix_msg.rs",
+        "guide.rs",
+    ] {
+        let code = code_lines(&source(name)).join("\n");
+        assert!(!code.contains(".shown()"), "{name} prints an account");
+    }
 }
 
 /// SEC-9: the inode re-check is the last thing before the move.
@@ -579,7 +607,7 @@ fn fingerprints_are_never_serialized_or_displayed() {
 fn move_aside_rechecks_inodes_last() {
     let body = body_of(&source("handfix.rs"), "move_aside");
     assert!(!body.contains("home_still_matches"));
-    assert_before(&body, "compare(", "verify_profile_dir", "move_aside");
+    assert_before(&body, ".same(", "verify_profile_dir", "move_aside");
     // The checks that can refuse come before the backup directory is made.
     assert_before(&body, "verify_profile_dir", "fresh_backup", "move_aside");
     assert_before(&body, "fresh_backup", "ino_ctime", "move_aside");

@@ -25,17 +25,17 @@
 
 use super::backup::{BackupRefusal, fresh_backup, rejected_dir};
 use super::control::status_alerts;
-use super::cred_identity::Fingerprint;
 use super::decide::{Decision, Measured, Reading, decide};
 use super::hand_fields::HandSuspect;
 use super::handfix::{Env as Seam, Step, preview, step_with};
 use super::handfix_msg as msg;
+use super::identify::Account;
 use super::identify::{CandidateInput, LiveId, candidates, live};
 use super::ledger::{Phase, RotateJournal, RotateLedger, RotateState};
 use super::log::{Sink, open_or_warn};
 use super::settings::Settings;
 use super::swap::{Source, swap};
-use super::tests_issue_1886::fp;
+use super::tests_issue_1886::server;
 use super::tests_swap::{ino_at, login, n, private};
 use crate::commands::profile::auto_switch::euid;
 use crate::commands::profile::auto_switch::kit::{Ledger, Liveness};
@@ -57,7 +57,7 @@ pub(super) const CREDS: &str = ".credentials.json";
 /// The rotation interval the step is given (the default `--interval`).
 pub(super) const GAP: i64 = 600;
 
-type Answer = Result<Fingerprint, &'static str>;
+type Answer = Result<Account, &'static str>;
 
 pub(super) fn acct(uuid: &str, email: &str) -> String {
     serde_json::json!({"oauthAccount": {"accountUuid": uuid, "emailAddress": email}}).to_string()
@@ -97,15 +97,15 @@ fn settings() -> Settings {
 
 // --- Fake credential readings -------------------------------------------------
 
-/// The fingerprint each login answers with: one per account.
-pub(super) fn a_l() -> Fingerprint {
-    fp(&[("session", T + 1_000), ("all models", T + 200_000)])
+/// The account the server reports for each login: one per account.
+pub(super) fn a_l() -> Account {
+    server("u-lima")
 }
-pub(super) fn a_m() -> Fingerprint {
-    fp(&[("session", T + 3_000), ("all models", T + 400_000)])
+pub(super) fn a_m() -> Account {
+    server("u-mike")
 }
-pub(super) fn a_c() -> Fingerprint {
-    fp(&[("session", T + 4_000), ("all models", T + 500_000)])
+pub(super) fn a_c() -> Account {
+    server("u-charlie")
 }
 
 thread_local! {
@@ -560,7 +560,7 @@ fn a_confirmed_suspicion_that_would_strand_l_gives_the_only_login_alert() {
             f.root.display()
         ),
         format!(
-            "fix 2: if ~/.claude still holds {L}'s login, nothing is wrong: two accounts reset at the same times, and the alert clears once their readings differ"
+            "fix 2: if {L} and {M} are profiles of one account, run amplihack profile verify to see the account each folder holds, then remove one of the two profiles"
         ),
     ];
     assert_eq!(f.logged(), want);
@@ -1108,7 +1108,9 @@ fn preview_of_guidance_prints_the_alert_and_fix_lines() {
         format!("would alert: {}", alert.strip_prefix("ALERT: ").unwrap())
     );
     assert!(lines[1].starts_with("fix 1: if a /login in ~/.claude replaced "));
-    assert!(lines[2].starts_with("fix 2: if ~/.claude still holds "));
+    assert!(lines[2].starts_with(&format!(
+        "fix 2: if {L} and {M} are profiles of one account"
+    )));
 }
 
 #[cfg(target_os = "linux")]

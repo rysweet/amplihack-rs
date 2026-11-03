@@ -17,7 +17,7 @@ mod alert;
 #[cfg(unix)]
 mod autostart;
 #[cfg(unix)]
-mod backup;
+pub(super) mod backup;
 #[cfg(unix)]
 mod candidates;
 #[cfg(unix)]
@@ -25,7 +25,7 @@ pub(in crate::commands::profile) mod change_log;
 #[cfg(unix)]
 mod control;
 #[cfg(unix)]
-mod cred_identity;
+pub(super) mod cred_identity;
 #[cfg(unix)]
 mod cycle;
 #[cfg(unix)]

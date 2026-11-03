@@ -1,7 +1,9 @@
-//! An `oauthAccount` as `.claude.json` files name it (moved from `identify`,
-//! which re-exports it). Issue #1886: hand-change recovery never uses it to
-//! decide whose login `~/.claude` holds; the swap, duplicate and login
-//! checks, the adopt rules and display still do.
+//! An account: as `.claude.json` files name it (moved from `identify`, which
+//! re-exports it), or as the OAuth profile endpoint reports it for a token
+//! ([`Account::from_profile`]). Issue #1886: hand-change recovery and
+//! `profile verify` decide whose login a folder holds only from the server's
+//! answer, never from `.claude.json`; the swap, duplicate and login checks,
+//! the adopt rules and display still read `.claude.json`.
 
 use super::ledger::safe_account;
 use crate::commands::profile::auto_switch::kit::read_claude_json;
@@ -52,6 +54,33 @@ impl Account {
             email: field("emailAddress").map(|e| e.to_lowercase()),
         };
         (a.uuid.is_some() || a.email.is_some()).then_some(a)
+    }
+
+    /// From an answer of the OAuth profile endpoint (issue #1886):
+    /// `account.uuid`, `account.email` and `organization.uuid`, with the
+    /// same limits as [`Self::from_block`]. The server reports these for the
+    /// token it was sent, so unlike `.claude.json` they say whose login a
+    /// credential file holds.
+    pub fn from_profile(v: &serde_json::Value) -> Option<Self> {
+        let field = |block: &str, k: &str| {
+            v.get(block)
+                .and_then(|b| b.get(k))
+                .and_then(serde_json::Value::as_str)
+                .filter(|s| safe_account(s))
+                .map(str::to_string)
+        };
+        let a = Self {
+            uuid: field("account", "uuid"),
+            org: field("organization", "uuid"),
+            email: field("account", "email").map(|e| e.to_lowercase()),
+        };
+        (a.uuid.is_some() || a.email.is_some()).then_some(a)
+    }
+
+    /// What `profile verify` prints for this account: the e-mail, else the
+    /// uuid. Never logged by the rotator.
+    pub fn shown(&self) -> &str {
+        self.email.as_deref().or(self.uuid.as_deref()).unwrap_or("")
     }
 
     /// The account in `dir/.claude.json`.

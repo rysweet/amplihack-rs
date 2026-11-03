@@ -1,6 +1,8 @@
 //! The direct usage read (issue #1844): one `GET /api/oauth/usage` with the
 //! login's own OAuth token, refreshing the token at most once under Claude's
-//! `.oauth_refresh.lock`.
+//! `.oauth_refresh.lock`. Beside it, the server identity read (issue #1886,
+//! [`account`]): one `GET /api/oauth/profile` with the same token handling
+//! and no refresh.
 //!
 //! The token is held in memory only, in [`Token`], which has no `Display`
 //! and a redacting `Debug`. It is sent only in the `Authorization` header
@@ -14,6 +16,7 @@ use super::auto_switch::kit::{
     CREDS, euid, read_bounded_nofollow, release_refresh_lock_at, take_refresh_lock_at,
     writable_by_others,
 };
+use super::rotate::identify::Account;
 use super::usage_parse::UsageReport;
 use super::usage_request::{ExtraUsageShape, Limits, parse_limits};
 use amplihack_utils::secure_files::PrivateTemp;
@@ -38,6 +41,9 @@ pub(super) const DEFAULT_API_BASE: &str = "https://api.anthropic.com";
 /// The token endpoint Claude Code 2.1.316 uses.
 pub(super) const DEFAULT_TOKEN_URL: &str = "https://platform.claude.com/v1/oauth/token";
 pub(super) const USAGE_PATH: &str = "/api/oauth/usage";
+/// Issue #1886: the OAuth profile endpoint Claude Code's `/status` reads.
+/// It reports the account and organization of the token it is sent.
+pub(super) const PROFILE_PATH: &str = "/api/oauth/profile";
 /// The beta header Claude Code sends with OAuth requests.
 pub(super) const BETA: &str = "oauth-2025-04-20";
 pub(super) const USER_AGENT: &str = "amplihack-profile-usage";
@@ -156,6 +162,12 @@ impl Endpoints {
     pub(super) fn usage_url(&self) -> String {
         let mut url = self.api.clone();
         url.push_str(USAGE_PATH);
+        url
+    }
+
+    pub(super) fn profile_url(&self) -> String {
+        let mut url = self.api.clone();
+        url.push_str(PROFILE_PATH);
         url
     }
 
@@ -576,6 +588,48 @@ pub(super) fn read(ep: &Endpoints, req: &Request<'_>) -> Result<Direct, &'static
         }
         other => other,
     }
+}
+
+/// Issue #1886: the account the server reports for the login in
+/// `creds_dir`, by one `GET /api/oauth/profile` with its OAuth token, within
+/// `timeout`. Never refreshes and so never writes the login: a token at or
+/// past its expiry is `token expired` and nothing is sent. The answer's body
+/// never leaves this function; only the account it names does.
+pub(super) fn account(
+    ep: &Endpoints,
+    creds_dir: &Path,
+    timeout: Duration,
+    now_ms: i64,
+) -> Result<Account, &'static str> {
+    let deadline = Deadline::after(timeout);
+    if !ep.usable() {
+        return Err(reason::TRANSPORT);
+    }
+    let creds = load(creds_dir)?;
+    if creds.expires_at_ms.is_some_and(|at| at <= now_ms) {
+        return Err(reason::EXPIRED);
+    }
+    let agent = agent(ep, timeout, deadline);
+    let url = ep.profile_url();
+    let req = agent
+        .get(&url)
+        .timeout(deadline.left()?)
+        .set("Authorization", &creds.access.header())
+        .set("anthropic-beta", BETA)
+        .set("Accept", "application/json");
+    if !parsed_agrees(&req, &url) {
+        return Err(reason::TRANSPORT);
+    }
+    let resp = match req.call() {
+        Ok(resp) => resp,
+        Err(e) => return Err(map_err(&e)),
+    };
+    if resp.status() != 200 {
+        return Err(status_reason(resp.status()));
+    }
+    let raw = body(resp)?;
+    let value: Value = serde_json::from_slice(&raw).map_err(|_| reason::UNPARSEABLE)?;
+    Account::from_profile(&value).ok_or(reason::UNPARSEABLE)
 }
 
 /// The agent for the `GET`s. Its DNS lookups end at the read's deadline.

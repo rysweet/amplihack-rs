@@ -18,10 +18,11 @@ pub fn recovered_moved(m: &ProfileName, to: &std::path::Path) -> String {
 }
 
 /// Issue #1886: the first reading, or one before the interval has passed,
-/// that `~/.claude` answers as `m`'s own login while the ledger names `l`.
+/// that `~/.claude` holds the same account as `m`'s own login while the
+/// ledger names `l`.
 pub fn note_suspect(m: &ProfileName, l: &ProfileName) -> String {
     format!(
-        "note: ~/.claude answers as profile {m} (ledger names {l}); nothing moved, the next cycle reads again"
+        "note: ~/.claude holds the same account as profile {m} (ledger names {l}); nothing moved, the next cycle reads again"
     )
 }
 
@@ -36,13 +37,17 @@ fn join(v: &[ProfileName]) -> String {
 pub fn note_unsure(l: &ProfileName, why: &Why) -> String {
     let why = match why {
         Why::HomeFailed => "~/.claude could not be read".to_string(),
-        Why::HomeTooFew => "~/.claude reported fewer than two reset times".to_string(),
-        Why::Many(v) => format!("it matches more than one profile ({})", join(v)),
+        Why::Many(v) => format!(
+            "it holds the same account as more than one profile ({})",
+            join(v)
+        ),
         Why::Unread(v) if v.is_empty() => "the profile list could not be read".to_string(),
         Why::Unread(v) => format!("profile {} could not be read", join(v)),
-        Why::Windows(v) => format!(
-            "the readings of ~/.claude and profile {} report different windows",
-            join(v)
+        Why::NotRecorded(m) => format!(
+            "it holds the same account as profile {m}, which is not the account recorded for {m}; run amplihack profile verify"
+        ),
+        Why::NotLive => format!(
+            "it holds an account other than the one recorded for {l}; run amplihack profile verify"
         ),
         Why::OutOfTime => "the reads ran out of time".to_string(),
         Why::ClockBack => "the last swap time is later than now".to_string(),
@@ -54,6 +59,6 @@ pub fn note_unsure(l: &ProfileName, why: &Why) -> String {
 /// anywhere (the only-login rule).
 pub fn only_login(m: &ProfileName, l: &ProfileName) -> String {
     format!(
-        "ALERT: ~/.claude answers as profile {m} on two readings (ledger names {l}), but {l} has no login of its own, so recording {m} would leave {l} with no login anywhere; nothing moved, no swap"
+        "ALERT: ~/.claude holds the same account as profile {m} on two readings (ledger names {l}), but {l} has no login of its own, so recording {m} would leave {l} with no login anywhere; nothing moved, no swap"
     )
 }

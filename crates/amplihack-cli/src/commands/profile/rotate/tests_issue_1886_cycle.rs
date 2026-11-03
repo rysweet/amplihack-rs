@@ -5,7 +5,7 @@
 //!
 //! Contract (in addition to `tests_issue_1886.rs`):
 //! - `handfix::step_with(&ProfileStore, &RotateState, home, &mut Sink,
-//!   env_for, read: &dyn Fn(&Path) -> Result<Fingerprint, &'static str>,
+//!   env_for, read: &dyn Fn(&Path) -> Result<Account, &'static str>,
 //!   min_gap: i64, t: i64) -> Result<Step, ProfileError>`. `min_gap` is the
 //!   rotation interval, clamped to at least 1 by the caller.
 //! - `handfix::preview(&ProfileStore, &RotateState, home, env_for, read,
@@ -19,13 +19,14 @@
 //! through `read_with` and the loopback `FakeHttp`. Nothing here sets a
 //! process variable or touches the real home.
 
-use super::cred_identity::{Fingerprint, read_with};
+use super::cred_identity::read_with;
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::{Decision, Reading};
 use super::hand_fields::{HandSuspect, SWAP_GRACE};
 use super::handfix::{Env as Seam, Step, preview, step_with};
 use super::handfix_msg as msg;
 use super::handfix_plan::{Input, Plan, plan};
+use super::identify::Account;
 use super::identify::LiveId;
 use super::ledger::{RotateLedger, RotateState};
 use super::log::{Sink, msg as log_msg, open_or_warn};
@@ -33,7 +34,7 @@ use super::observe::{Measurement, Snap};
 use super::settings;
 use super::tests_handfix::seam;
 use super::tests_issue_1886::{
-    K, L, M, creds_doc, endpoints, fake_by_token, fake_token, fp, usage_body,
+    K, L, M, creds_doc, endpoints, fake_by_token, fake_token, profile_body, server,
 };
 use super::tests_swap::{ino_at, n, private};
 use crate::commands::profile::ProfileError;
@@ -53,7 +54,7 @@ const CREDS: &str = ".credentials.json";
 const T: i64 = 1_793_696_400;
 const GAP: i64 = 120;
 
-type Answer = Result<Fingerprint, &'static str>;
+type Answer = Result<Account, &'static str>;
 
 // --- Fixture -----------------------------------------------------------------
 
@@ -129,17 +130,17 @@ fn fx(own: &[&str], live: &str, swapped_at: Option<i64>, home_json: &str) -> Fx 
     }
 }
 
-fn a_l() -> Fingerprint {
-    fp(&[("session", T + 1_000), ("all models", T + 200_000)])
+fn a_l() -> Account {
+    server("u-lima")
 }
-fn a_h() -> Fingerprint {
-    fp(&[("session", T + 2_000), ("all models", T + 300_000)])
+fn a_h() -> Account {
+    server("u-hotel")
 }
-fn a_m() -> Fingerprint {
-    fp(&[("session", T + 3_000), ("all models", T + 400_000)])
+fn a_m() -> Account {
+    server("u-mike")
 }
-fn a_k() -> Fingerprint {
-    fp(&[("session", T + 4_000), ("all models", T + 500_000)])
+fn a_k() -> Account {
+    server("u-kilo")
 }
 
 impl Fx {
@@ -532,20 +533,11 @@ fn the_moved_copy_and_its_directory_are_private() {
 /// clears an open suspicion.
 #[test]
 fn unsure_readings_give_a_note_and_clear_the_suspicion() {
-    let three = fp(&[
-        ("session", T + 3_000),
-        ("all models", T + 400_000),
-        ("Opus", T + 9),
-    ]);
     let cases: Vec<(&str, Vec<(&str, Answer)>)> = vec![
         ("failed read", vec![("~/.claude", Err(reason::HTTP_429))]),
         (
-            "single window",
-            vec![("~/.claude", Ok(fp(&[("all models", T + 400_000)])))],
-        ),
-        (
-            "window presence mismatch",
-            vec![("~/.claude", Ok(three)), (M, Ok(a_m()))],
+            "unread profile",
+            vec![("~/.claude", Ok(a_h())), (M, Err(reason::HTTP_401))],
         ),
         (
             "multiple matches",
@@ -875,13 +867,12 @@ fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
 #[test]
 fn fake_tokens_never_leave_the_login_files() {
     let f = fx(&[L, M, K], L, Some(T - 3600), M);
-    let now = chrono::Utc::now().timestamp();
-    let body = |i: i64| Reply::json(200, &usage_body(now + 3600 + i, now + 86_400 + i));
+    let body = |uuid: &str| Reply::json(200, &profile_body(uuid));
     let fake = fake_by_token(HashMap::from([
-        (f.tokens["~/.claude"].clone(), body(3)),
-        (f.tokens[L].clone(), body(1)),
-        (f.tokens[M].clone(), body(3)),
-        (f.tokens[K].clone(), body(4)),
+        (f.tokens["~/.claude"].clone(), body("u-mike")),
+        (f.tokens[L].clone(), body("u-lima")),
+        (f.tokens[M].clone(), body("u-mike")),
+        (f.tokens[K].clone(), body("u-kilo")),
     ]));
     let ep = endpoints(&fake);
     let read = |p: &Path| read_with(&ep, p);

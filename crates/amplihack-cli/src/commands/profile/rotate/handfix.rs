@@ -1,11 +1,12 @@
 //! Hand-change recovery (issues #1693 and #1886). A manual `/login` in
 //! `~/.claude` replaces whatever login was there, and the rotate ledger then
 //! names a profile `L` whose login is no longer the one in `~/.claude`.
-//! Whose login it is, is told by what the credentials return
-//! (`cred_identity`), never by `.claude.json`: running sessions rewrite that
-//! file from memory, so for minutes after a swap it names the previous
-//! account. When `~/.claude` answers as exactly one other profile `M`'s own
-//! login on two cycles at least an interval apart, and outside
+//! Whose login it is, is told by the account the OAuth profile endpoint
+//! reports for each credential (`cred_identity`), never by `.claude.json`:
+//! running sessions rewrite that file from memory, so for minutes after a
+//! swap it names the previous account. When `~/.claude` holds the same
+//! account as exactly one other profile `M`'s own login on two cycles at
+//! least an interval apart, and outside
 //! `SWAP_GRACE`, `M`'s copy is renamed into a fresh
 //! `<root>/.rejected-logins/rotate-<M>-<time>/` and `M` is recorded as live,
 //! unless that would leave `L` with no login anywhere. Anything else writes
@@ -16,7 +17,6 @@
 //! opened, copied or deleted here; the readings are `usage_direct`'s.
 
 use super::backup::{BackupRefusal, discard_empty, first_free, fresh_backup, rejected_dir};
-use super::cred_identity::{Verdict, compare};
 use super::cycle::Ctx;
 use super::guide::{self, Fix, Kind};
 use super::handfix_msg as msg;
@@ -73,7 +73,7 @@ fn move_aside(c: &Confirmed<'_>, mv: &Mover<'_>) -> Result<PathBuf, (String, Fix
     // holds its lock for at most IDENTITY_BUDGET + 3 reads, 45 seconds.
     let here = (mv.read)(&mv.home.join(".claude")).map_err(|_| changed())?;
     let there = (mv.read)(&mv.store.root().join(c.m.as_str())).map_err(|_| changed())?;
-    if compare(&here, &there) != Verdict::Same {
+    if !here.same(&there) {
         return Err(changed());
     }
     if mv.store.verify_profile_dir(&c.m).is_err() {

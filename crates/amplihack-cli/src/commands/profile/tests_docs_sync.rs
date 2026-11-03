@@ -775,22 +775,51 @@ fn docs_describe_the_usage_bar_view() {
 
 /// The issue #1886 lines, as the reference quotes them.
 const ISSUE_1886_LINES: &[&str] = &[
-    "note: ~/.claude answers as profile <M> (ledger names <L>); nothing moved, the next cycle reads again",
+    "note: ~/.claude holds the same account as profile <M> (ledger names <L>); nothing moved, the next cycle reads again",
     "note: cannot tell whose login is in ~/.claude (live=<L>): <why>; nothing moved",
-    "ALERT: ~/.claude answers as profile <M> on two readings (ledger names <L>), but <L> has no login of its own, so recording <M> would leave <L> with no login anywhere; nothing moved, no swap",
+    "ALERT: ~/.claude holds the same account as profile <M> on two readings (ledger names <L>), but <L> has no login of its own, so recording <M> would leave <L> with no login anywhere; nothing moved, no swap",
     "recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <backup>/.credentials.json; recorded <M> as live",
 ];
 
 /// The `<why>` texts of the cannot-tell note.
 const ISSUE_1886_WHY: &[&str] = &[
     "~/.claude could not be read",
-    "~/.claude reported fewer than two reset times",
-    "it matches more than one profile (<M1>, <M2>)",
+    "it holds the same account as more than one profile (<M1>, <M2>)",
     "profile <P1>, <P2> could not be read",
-    "the readings of ~/.claude and profile <P1>, <P2> report different windows",
     "the reads ran out of time",
     "the last swap time is later than now",
+    "it holds the same account as profile <M>, which is not the account recorded for <M>; run amplihack profile verify",
+    "it holds an account other than the one recorded for <L>; run amplihack profile verify",
 ];
+
+/// The owner decision of 3 November (#1886): identity is the OAuth profile
+/// endpoint's account, never reset times, and `profile verify` exists.
+#[test]
+fn docs_describe_server_identity_and_profile_verify() {
+    for want in [
+        "`GET /api/oauth/profile`",
+        "#### profile verify",
+        "amplihack profile verify [--fix]",
+        "| `verify [--fix]` |",
+        "usage reset times",
+    ] {
+        assert!(REFERENCE.contains(want), "reference is missing `{want}`");
+    }
+    for gone in [
+        "~/.claude answers as profile",
+        "fewer than two reset times",
+        "report different windows",
+        "This set of reset times is the login's *fingerprint*",
+        "two accounts reset at the same times, and the alert clears",
+    ] {
+        assert!(!REFERENCE.contains(gone), "reference still says `{gone}`");
+        assert!(
+            !ROTATE_HOWTO.contains(gone),
+            "rotate how-to still says `{gone}`"
+        );
+    }
+    assert!(ROTATE_HOWTO.contains("#### Check which account each folder holds"));
+}
 
 #[test]
 fn docs_quote_swap_grace_and_its_value() {

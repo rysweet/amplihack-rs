@@ -1,32 +1,30 @@
 //! Issue #1886: hand-change recovery identifies the login in `~/.claude` by
-//! what its credential returns (the reset times of a direct usage read),
-//! never by `.claude.json`. Unit tests for `rotate::cred_identity`, the new
-//! ledger field and the new log lines. Every credential is a fake
+//! the account Anthropic's OAuth profile endpoint reports for its token,
+//! compared with each profile's #1845 record; never by `.claude.json` and
+//! never by usage reset times. Unit tests for `rotate::cred_identity`, the
+//! new ledger field and the new log lines. Every credential is a fake
 //! `fake-at-1886-<uuid>` token, every request goes to the loopback
 //! `FakeHttp`, and no process environment is set.
 //!
 //! Contract (`rotate::cred_identity`):
-//! - `Fingerprint`: `Clone`; built by `Fingerprint::from_report(&UsageReport,
-//!   now)` from the `resets_at` of `session`, `week_all` and each
-//!   `week_models` window, keyed by window. A window with no reset time, one
-//!   at or before 0, or one outside `now - 1 day ..= now + 400 days`
-//!   (seconds) is left out; labels over 64 bytes are left out; at most 32
-//!   windows are kept. `len()` counts the windows kept. `Debug` prints no
-//!   reset time and no label; there is no `Display` and no `Serialize`.
-//! - `Verdict { Same, Different, Unsure }` and `compare(&Fingerprint,
-//!   &Fingerprint) -> Verdict` (D3).
+//! - `ReadFn = fn(&Path) -> Result<Account, &'static str>`. Two readings are
+//!   one account by `Account::same`: equal account uuid in the same
+//!   organization (e-mail only when neither has a uuid).
 //! - `IDENTITY_READ_TIMEOUT` = 5 s, `IDENTITY_BUDGET` = 30 s.
-//! - `read_with(&Endpoints, creds_dir: &Path) -> Result<Fingerprint,
-//!   &'static str>`: one direct read with `allow_refresh = false`; the
-//!   error is one of `usage_direct::reason`. `read_direct(&Path)` is the
-//!   same with `Endpoints::from_env()`; `ReadFn` is its type.
+//! - `read_with(&Endpoints, creds_dir: &Path) -> Result<Account, &'static
+//!   str>`: one `GET /api/oauth/profile` with the folder's token, never a
+//!   refresh and never the usage endpoint; the error is one of
+//!   `usage_direct::reason`. `read_direct(&Path)` is the same with
+//!   `Endpoints::from_env()`.
 //! - `Finding { Clear, Suspect(ProfileName), Unsure(Why) }` and
 //!   `assess(&ProfileStore, home: &Path, live: &ProfileName, read: &dyn
-//!   Fn(&Path) -> Result<Fingerprint, &'static str>, budget: Duration) ->
+//!   Fn(&Path) -> Result<Account, &'static str>, budget: Duration) ->
 //!   Finding` (D4). `read` is given `<home>/.claude` and `<root>/<name>`.
-//! - `Why { HomeFailed, HomeTooFew, Many(Vec<ProfileName>),
-//!   Unread(Vec<ProfileName>), Windows(Vec<ProfileName>), OutOfTime,
-//!   ClockBack }`, each list sorted by name.
+//!   When `live`'s record names the account in `~/.claude`, no profile is
+//!   read and the finding is Clear.
+//! - `Why { HomeFailed, Many(Vec<ProfileName>), Unread(Vec<ProfileName>),
+//!   OutOfTime, ClockBack, NotRecorded(ProfileName), NotLive }`, each list
+//!   sorted by name.
 //!
 //! Contract (ledger and lines):
 //! - `hand_fields::SWAP_GRACE` = 600; `hand_fields::HandSuspect { profile:
@@ -39,18 +37,19 @@
 //!   notes" and "Only-login ALERT" in docs/reference/profile-command.md.
 
 use super::cred_identity::{
-    Finding, Fingerprint, IDENTITY_BUDGET, IDENTITY_READ_TIMEOUT, Verdict, Why, assess, compare,
-    read_with,
+    Finding, IDENTITY_BUDGET, IDENTITY_READ_TIMEOUT, Why, assess, read_with,
 };
 use super::hand_fields::{HandSuspect, SWAP_GRACE};
 use super::handfix_msg as msg;
+use super::identify::Account;
 use super::ledger::{RotateLedger, RotateState};
 use super::tests_swap::{n, private};
+use crate::commands::profile::auto_switch::kit::State;
+use crate::commands::profile::expected::record;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::tests_fake_http::{FakeHttp, Reply};
 use crate::commands::profile::usage_direct::{Endpoints, reason};
-use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow};
 use serde_json::json;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -63,170 +62,86 @@ use std::time::{Duration, Instant};
 const CREDS: &str = ".credentials.json";
 const TOKEN_PATH: &str = "/v1/oauth/token";
 const USAGE_PATH: &str = "/api/oauth/usage";
+const PROFILE_PATH: &str = "/api/oauth/profile";
 
-// --- Fingerprints -----------------------------------------------------------
+// --- Server accounts ---------------------------------------------------------
 
-fn window(label: &str, at: Option<i64>) -> UsageWindow {
-    UsageWindow {
-        label: label.to_string(),
-        used_percentage: 10.0,
-        resets_text: None,
-        resets_at: at,
-    }
+/// An OAuth profile answer for `uuid` in organization `org`.
+pub(super) fn profile_body_in(uuid: &str, org: &str) -> serde_json::Value {
+    json!({
+        "account": {"uuid": uuid, "email": format!("{uuid}@example.com"), "full_name": "Test"},
+        "organization": {"uuid": org, "name": "Test org"}
+    })
 }
 
-/// A report with the given windows: `session` and `all models` go to their
-/// own fields, any other label to `week_models`.
-fn report(windows: &[(&str, Option<i64>)]) -> UsageReport {
-    let mut r = UsageReport::empty(UsageState::Ok);
-    for (label, at) in windows {
-        match *label {
-            "session" => r.session = Some(window(label, *at)),
-            "all models" => r.week_all = Some(window(label, *at)),
-            _ => r.week_models.push(window(label, *at)),
-        }
-    }
-    r
+/// An OAuth profile answer for `uuid` in the one test organization.
+pub(super) fn profile_body(uuid: &str) -> serde_json::Value {
+    profile_body_in(uuid, "org-1886")
 }
 
-/// A fingerprint read at the earliest of its reset times, so every window
-/// given is within the plausible range.
-pub(super) fn fp(windows: &[(&str, i64)]) -> Fingerprint {
-    let w: Vec<(&str, Option<i64>)> = windows.iter().map(|(l, a)| (*l, Some(*a))).collect();
-    let now = windows.iter().map(|(_, a)| *a).min().unwrap_or(0);
-    Fingerprint::from_report(&report(&w), now)
-}
-
-/// The time the fixed fingerprints below are read at.
-const NOW: i64 = 1_793_070_000;
-const S1: i64 = 1_793_080_000;
-const W1: i64 = 1_793_300_000;
-const S2: i64 = 1_793_090_000;
-const W2: i64 = 1_793_400_000;
-
-#[test]
-fn equal_reset_times_on_two_windows_are_the_same() {
-    let a = fp(&[("session", S1), ("all models", W1)]);
-    let b = fp(&[("session", S1), ("all models", W1)]);
-    assert_eq!(compare(&a, &b), Verdict::Same);
-    assert_eq!(compare(&b, &a), Verdict::Same);
+/// The account the server would report for `uuid`.
+pub(super) fn server(uuid: &str) -> Account {
+    Account::from_profile(&profile_body(uuid)).unwrap()
 }
 
 #[test]
-fn a_shared_window_with_another_reset_time_is_different() {
-    let a = fp(&[("session", S1), ("all models", W1)]);
-    for b in [
-        fp(&[("session", S2), ("all models", W1)]),
-        fp(&[("session", S1), ("all models", W2)]),
-        fp(&[("session", S2), ("all models", W2)]),
+fn a_profile_answer_names_the_account_and_its_organization() {
+    let a = server("u-mike");
+    assert_eq!(a.key(), "u-mike");
+    assert_eq!(a.org(), Some("org-1886"));
+    assert_eq!(a.shown(), "u-mike@example.com");
+    assert!(a.same(&server("u-mike")));
+    assert!(!a.same(&server("u-lima")));
+    let other_org = Account::from_profile(&profile_body_in("u-mike", "org-2")).unwrap();
+    assert!(
+        !a.same(&other_org),
+        "one user in two organizations is two accounts"
+    );
+}
+
+/// The 3 November collision: nnorth and mmorrison reset at the same times.
+/// Identity no longer looks at reset times, so they stay two accounts.
+#[test]
+fn accounts_with_equal_reset_times_are_still_two_accounts() {
+    let nnorth = Account::from_profile(&json!({
+        "account": {"uuid": "u-nnorth", "email": "nnorth@mistt.com"},
+        "organization": {"uuid": "org-mistt"},
+        "five_hour": {"resets_at": "2026-11-03T14:40:00Z"},
+        "seven_day": {"resets_at": "2026-11-06T05:00:00Z"}
+    }))
+    .unwrap();
+    let mmorrison = Account::from_profile(&json!({
+        "account": {"uuid": "u-mmorrison", "email": "mmorrison@mistt.com"},
+        "organization": {"uuid": "org-mistt"},
+        "five_hour": {"resets_at": "2026-11-03T14:40:00Z"},
+        "seven_day": {"resets_at": "2026-11-06T05:00:00Z"}
+    }))
+    .unwrap();
+    assert!(!nnorth.same(&mmorrison));
+}
+
+#[test]
+fn an_answer_without_a_uuid_or_email_is_no_account() {
+    for v in [
+        json!({}),
+        json!({"account": {}}),
+        json!({"account": {"uuid": ""}}),
+        json!({"account": {"uuid": "a\u{7}b"}}),
+        json!({"account": {"uuid": "x".repeat(400)}}),
+        json!({"organization": {"uuid": "org"}}),
+        json!([1, 2]),
     ] {
-        assert_eq!(compare(&a, &b), Verdict::Different);
-        assert_eq!(compare(&b, &a), Verdict::Different);
+        assert!(Account::from_profile(&v).is_none(), "{v}");
     }
+    let email_only =
+        Account::from_profile(&json!({"account": {"email": "Ann@Example.com"}})).unwrap();
+    assert_eq!(email_only.shown(), "ann@example.com");
 }
 
 #[test]
-fn reset_times_are_compared_to_the_second() {
-    let a = fp(&[("session", S1), ("all models", W1)]);
-    let b = fp(&[("session", S1 + 1), ("all models", W1)]);
-    assert_eq!(compare(&a, &b), Verdict::Different);
-}
-
-#[test]
-fn a_different_window_wins_over_a_missing_one() {
-    // `session` is missing from b (Unsure on its own), but `all models`
-    // differs: a window both report disagrees, so they are Different.
-    let a = fp(&[("session", S1), ("all models", W1), ("Opus", W1 + 10)]);
-    let b = fp(&[("all models", W2), ("Opus", W1 + 10)]);
-    assert_eq!(compare(&a, &b), Verdict::Different);
-}
-
-#[test]
-fn one_comparable_window_is_unsure() {
-    // #1818: a weekly-only login has a single window.
-    let a = fp(&[("all models", W1)]);
-    let b = fp(&[("all models", W1)]);
-    assert_eq!(compare(&a, &b), Verdict::Unsure);
-}
-
-#[test]
-fn a_window_in_only_one_reading_is_unsure() {
-    // A session may have started between the two reads.
-    let a = fp(&[("session", S1), ("all models", W1), ("Opus", W2)]);
-    let b = fp(&[("all models", W1), ("Opus", W2)]);
-    assert_eq!(compare(&a, &b), Verdict::Unsure);
-    assert_eq!(compare(&b, &a), Verdict::Unsure);
-}
-
-#[test]
-fn empty_fingerprints_are_unsure() {
-    let empty = Fingerprint::from_report(&UsageReport::empty(UsageState::Ok), NOW);
-    assert_eq!(empty.len(), 0);
-    let a = fp(&[("session", S1), ("all models", W1)]);
-    assert_eq!(compare(&empty, &empty), Verdict::Unsure);
-    assert_eq!(compare(&empty, &a), Verdict::Unsure);
-    assert_eq!(compare(&a, &empty), Verdict::Unsure);
-}
-
-#[test]
-fn windows_without_a_plausible_reset_time_are_left_out() {
-    let f = Fingerprint::from_report(
-        &report(&[
-            ("session", None),
-            ("all models", Some(0)),
-            ("Opus", Some(-5)),
-            ("Sonnet", Some(i64::MIN)),
-            ("Haiku", Some(W1)),
-            ("Two days ago", Some(NOW - 2 * 86_400)),
-            ("In 500 days", Some(NOW + 500 * 86_400)),
-            ("Far ahead", Some(i64::MAX)),
-        ]),
-        NOW,
-    );
-    assert_eq!(f.len(), 1, "only Haiku is kept");
-    // The bounds themselves are kept.
-    let f = Fingerprint::from_report(
-        &report(&[
-            ("session", Some(NOW - 86_400)),
-            ("all models", Some(NOW + 400 * 86_400)),
-        ]),
-        NOW,
-    );
-    assert_eq!(f.len(), 2);
-    // An extreme `now` neither panics nor keeps anything implausible.
-    for now in [i64::MIN, i64::MAX] {
-        let f = Fingerprint::from_report(&report(&[("session", Some(S1))]), now);
-        assert_eq!(f.len(), 0);
-    }
-}
-
-/// SEC-14: a hostile reply cannot make the fingerprint grow without bound.
-#[test]
-fn fingerprint_labels_and_size_are_bounded() {
-    let long = "x".repeat(65);
-    let f = Fingerprint::from_report(
-        &report(&[("session", Some(S1)), (long.as_str(), Some(W1))]),
-        NOW,
-    );
-    assert_eq!(f.len(), 1, "a 65-byte label is left out");
-    let labels: Vec<String> = (0..100).map(|i| format!("model-{i}")).collect();
-    let w: Vec<(&str, Option<i64>)> = labels
-        .iter()
-        .enumerate()
-        .map(|(i, l)| (l.as_str(), Some(W1 + i as i64)))
-        .collect();
-    let f = Fingerprint::from_report(&report(&w), NOW);
-    assert!(f.len() <= 32, "{} windows kept", f.len());
-    assert!(f.len() >= 2);
-}
-
-#[test]
-fn fingerprint_debug_shows_no_reset_time_or_label() {
-    let f = fp(&[("session", S1), ("Opus Secret Label", W1)]);
-    let shown = format!("{f:?}");
-    assert!(!shown.contains(&S1.to_string()), "{shown}");
-    assert!(!shown.contains(&W1.to_string()), "{shown}");
-    assert!(!shown.contains("Opus Secret Label"), "{shown}");
+fn a_server_account_debug_shows_nothing() {
+    let s = format!("{:?}", server("u-mike"));
+    assert!(!s.contains("u-mike") && !s.contains("example.com"), "{s}");
 }
 
 #[test]
@@ -310,21 +225,30 @@ fn file_state(p: &Path) -> (u64, u64, i64, i64) {
 }
 
 #[test]
-fn read_with_turns_a_direct_read_into_a_fingerprint() {
-    let now = chrono::Utc::now().timestamp();
-    let (s, w) = (now + 3600, now + 3 * 86_400);
-    let (ta, tb) = (fake_token(), fake_token());
+fn read_with_asks_the_profile_endpoint_for_the_account() {
+    let (ta, tb, tc) = (fake_token(), fake_token(), fake_token());
     let fake = fake_by_token(HashMap::from([
-        (ta.clone(), Reply::json(200, &usage_body(s, w))),
-        (tb.clone(), Reply::json(200, &usage_body(s, w))),
+        (ta.clone(), Reply::json(200, &profile_body("u-mike"))),
+        (tb.clone(), Reply::json(200, &profile_body("u-mike"))),
+        (tc.clone(), Reply::json(200, &profile_body("u-lima"))),
     ]));
-    let (a, b) = (creds_dir(&ta, 3_600_000), creds_dir(&tb, 3_600_000));
+    let (a, b, c) = (
+        creds_dir(&ta, 3_600_000),
+        creds_dir(&tb, 3_600_000),
+        creds_dir(&tc, 3_600_000),
+    );
     let ep = endpoints(&fake);
     let fa = read_with(&ep, &a.dir).unwrap();
     let fb = read_with(&ep, &b.dir).unwrap();
-    assert_eq!(fa.len(), 2);
-    assert_eq!(compare(&fa, &fb), Verdict::Same);
-    assert_eq!(fake.count("GET", USAGE_PATH), 2);
+    let fc = read_with(&ep, &c.dir).unwrap();
+    assert!(fa.same(&fb));
+    assert!(!fa.same(&fc));
+    assert_eq!(fake.count("GET", PROFILE_PATH), 3);
+    assert_eq!(
+        fake.count("GET", USAGE_PATH),
+        0,
+        "reset times are never read"
+    );
     let seen = fake.seen();
     assert_eq!(
         seen[0].header("authorization"),
@@ -357,11 +281,14 @@ fn a_401_never_refreshes_or_writes_the_login() {
 #[test]
 fn an_expired_token_is_not_refreshed() {
     let t = fake_token();
-    let fake = FakeHttp::start(|_, _| Reply::json(200, &usage_body(1, 2)));
+    let fake = FakeHttp::start(|_, _| Reply::json(200, &profile_body("u-x")));
     let d = creds_dir(&t, -60_000);
     let before = file_state(&d.dir.join(CREDS));
-    assert!(read_with(&endpoints(&fake), &d.dir).is_err());
-    assert_eq!(fake.count("POST", TOKEN_PATH), 0);
+    assert_eq!(
+        read_with(&endpoints(&fake), &d.dir).err(),
+        Some(reason::EXPIRED)
+    );
+    assert_eq!(fake.seen().len(), 0, "an expired token is not sent");
     assert_eq!(file_state(&d.dir.join(CREDS)), before);
 }
 
@@ -378,8 +305,9 @@ fn unusable_endpoints_send_nothing() {
 
 #[test]
 fn a_stalled_endpoint_ends_within_the_read_timeout() {
-    let fake =
-        FakeHttp::start(|_, _| Reply::json(200, &usage_body(1, 2)).after(Duration::from_secs(20)));
+    let fake = FakeHttp::start(|_, _| {
+        Reply::json(200, &profile_body("u-x")).after(Duration::from_secs(20))
+    });
     let d = creds_dir(&fake_token(), 3_600_000);
     let start = Instant::now();
     assert!(read_with(&endpoints(&fake), &d.dir).is_err());
@@ -396,6 +324,8 @@ fn a_429_and_an_unparseable_body_are_errors() {
         Reply::json(429, &json!({})),
         Reply::raw(200, "not json"),
         Reply::json(500, &json!({})),
+        Reply::json(200, &json!({"account": {}})),
+        Reply::json(200, &usage_body(1, 2)),
     ] {
         let fake = FakeHttp::start(move |_, _| reply.clone());
         let d = creds_dir(&fake_token(), 3_600_000);
@@ -449,14 +379,14 @@ fn tree(profiles: &[&str], own: &[&str]) -> Tree {
     }
 }
 
-type Answers = HashMap<PathBuf, Result<Fingerprint, &'static str>>;
+type Answers = HashMap<PathBuf, Result<Account, &'static str>>;
 
 impl Tree {
-    fn answers(&self, home: Result<Fingerprint, &'static str>) -> Answers {
+    fn answers(&self, home: Result<Account, &'static str>) -> Answers {
         HashMap::from([(self.home.join(".claude"), home)])
     }
 
-    fn with(&self, mut a: Answers, p: &str, r: Result<Fingerprint, &'static str>) -> Answers {
+    fn with(&self, mut a: Answers, p: &str, r: Result<Account, &'static str>) -> Answers {
         a.insert(self.root.join(p), r);
         a
     }
@@ -473,18 +403,24 @@ impl Tree {
         let f = assess(&self.store, &self.home, &n(L), &read, IDENTITY_BUDGET);
         (f, calls.into_inner())
     }
+
+    /// Records `uuid` (in the test organization) for profile `p` (#1845).
+    fn record(&self, p: &str, uuid: &str) {
+        let state = State::new(&self.root).unwrap();
+        record(&state, &n(p), &server(uuid)).unwrap();
+    }
 }
 
-fn acct_m() -> Fingerprint {
-    fp(&[("session", S1), ("all models", W1)])
+fn acct_m() -> Account {
+    server("u-mike")
 }
 
-fn acct_l() -> Fingerprint {
-    fp(&[("session", S2), ("all models", W2)])
+fn acct_l() -> Account {
+    server("u-lima")
 }
 
-fn acct_k() -> Fingerprint {
-    fp(&[("session", S1 + 77), ("all models", W1 + 77)])
+fn acct_k() -> Account {
+    server("u-kilo")
 }
 
 /// The #1886 case: `~/.claude` answers as H, who has no copy of its own;
@@ -530,13 +466,46 @@ fn a_failed_home_read_is_unsure_and_reads_no_profile() {
     assert_eq!(calls, vec![t.home.join(".claude")], "one request only");
 }
 
+/// #1845: `~/.claude` holding the account recorded for the live profile is
+/// Clear without reading any profile, even when another profile's own
+/// login is the same account.
 #[test]
-fn a_home_reading_with_one_window_is_unsure_and_reads_no_profile() {
+fn the_live_profiles_recorded_account_is_clear_without_more_reads() {
     let t = tree(&[L, M], &[M]);
-    let a = t.with(t.answers(Ok(fp(&[("all models", W1)]))), M, Ok(acct_m()));
+    t.record(L, "u-mike");
+    let a = t.with(t.answers(Ok(acct_m())), M, Ok(acct_m()));
     let (f, calls) = t.assess(&a);
-    assert_eq!(f, Finding::Unsure(Why::HomeTooFew));
-    assert_eq!(calls.len(), 1);
+    assert_eq!(f, Finding::Clear);
+    assert_eq!(calls, vec![t.home.join(".claude")]);
+}
+
+/// A suspect's own folder must hold its own recorded account: when `M`'s
+/// login is the account in `~/.claude` but `M`'s record names another,
+/// `M`'s folder is itself crossed, and recovery only notes it.
+#[test]
+fn a_suspect_whose_record_names_another_account_is_unsure() {
+    let t = tree(&[L, M], &[M]);
+    t.record(M, "u-kilo");
+    let a = t.with(t.answers(Ok(acct_m())), M, Ok(acct_m()));
+    assert_eq!(t.assess(&a).0, Finding::Unsure(Why::NotRecorded(n(M))));
+}
+
+#[test]
+fn a_suspect_whose_record_names_the_account_is_a_suspect() {
+    let t = tree(&[L, M], &[M]);
+    t.record(M, "u-mike");
+    let a = t.with(t.answers(Ok(acct_m())), M, Ok(acct_m()));
+    assert_eq!(t.assess(&a).0, Finding::Suspect(n(M)));
+}
+
+/// `~/.claude` holds neither the live profile's recorded account nor any
+/// profile's own login: a note pointing at `profile verify`, no move.
+#[test]
+fn an_account_other_than_the_live_record_and_no_match_is_unsure() {
+    let t = tree(&[L, M], &[M]);
+    t.record(L, "u-lima");
+    let a = t.with(t.answers(Ok(acct_k())), M, Ok(acct_m()));
+    assert_eq!(t.assess(&a).0, Finding::Unsure(Why::NotLive));
 }
 
 #[test]
@@ -547,12 +516,13 @@ fn an_unreadable_profile_and_no_match_is_unsure() {
     assert_eq!(t.assess(&a).0, Finding::Unsure(Why::Unread(vec![n(M)])));
 }
 
+/// Same account uuid in another organization is another account.
 #[test]
-fn a_window_presence_mismatch_and_no_match_is_unsure() {
+fn the_same_user_in_another_organization_is_no_match() {
     let t = tree(&[L, M], &[M]);
-    let three = fp(&[("session", S1), ("all models", W1), ("Opus", W2)]);
-    let a = t.with(t.answers(Ok(three)), M, Ok(acct_m()));
-    assert_eq!(t.assess(&a).0, Finding::Unsure(Why::Windows(vec![n(M)])));
+    let elsewhere = Account::from_profile(&profile_body_in("u-mike", "org-2")).unwrap();
+    let a = t.with(t.answers(Ok(acct_m())), M, Ok(elsewhere));
+    assert_eq!(t.assess(&a).0, Finding::Clear);
 }
 
 /// The findings table is read top down: "Same as exactly one other profile"
@@ -640,12 +610,12 @@ fn assess_stops_when_the_budget_runs_out() {
 fn every_why() -> Vec<Why> {
     vec![
         Why::HomeFailed,
-        Why::HomeTooFew,
         Why::Many(vec![n(K), n(M)]),
         Why::Unread(vec![n(K), n(M)]),
-        Why::Windows(vec![n(M)]),
         Why::OutOfTime,
         Why::ClockBack,
+        Why::NotRecorded(n(M)),
+        Why::NotLive,
     ]
 }
 
@@ -672,36 +642,36 @@ fn note_texts_are_the_documented_ones() {
     let (l, m) = (n(L), n(M));
     assert_eq!(
         msg::note_suspect(&m, &l),
-        "note: ~/.claude answers as profile mike (ledger names lima); nothing moved, the next cycle reads again"
+        "note: ~/.claude holds the same account as profile mike (ledger names lima); nothing moved, the next cycle reads again"
     );
     let why = |w: Why| msg::note_unsure(&l, &w);
     let head = "note: cannot tell whose login is in ~/.claude (live=lima): ";
     for (w, text) in [
         (Why::HomeFailed, "~/.claude could not be read"),
         (
-            Why::HomeTooFew,
-            "~/.claude reported fewer than two reset times",
-        ),
-        (
             Why::Many(vec![n(K), n(M)]),
-            "it matches more than one profile (kilo, mike)",
+            "it holds the same account as more than one profile (kilo, mike)",
         ),
         (
             Why::Unread(vec![n(K), n(M)]),
             "profile kilo, mike could not be read",
         ),
-        (
-            Why::Windows(vec![n(M)]),
-            "the readings of ~/.claude and profile mike report different windows",
-        ),
         (Why::OutOfTime, "the reads ran out of time"),
         (Why::ClockBack, "the last swap time is later than now"),
+        (
+            Why::NotRecorded(n(M)),
+            "it holds the same account as profile mike, which is not the account recorded for mike; run amplihack profile verify",
+        ),
+        (
+            Why::NotLive,
+            "it holds an account other than the one recorded for lima; run amplihack profile verify",
+        ),
     ] {
         assert_eq!(why(w), format!("{head}{text}; nothing moved"));
     }
     assert_eq!(
         msg::only_login(&m, &l),
-        "ALERT: ~/.claude answers as profile mike on two readings (ledger names lima), but lima has no login of its own, so recording mike would leave lima with no login anywhere; nothing moved, no swap"
+        "ALERT: ~/.claude holds the same account as profile mike on two readings (ledger names lima), but lima has no login of its own, so recording mike would leave lima with no login anywhere; nothing moved, no swap"
     );
 }
 

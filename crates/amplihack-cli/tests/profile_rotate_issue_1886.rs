@@ -3,21 +3,26 @@
 //! Every run starts the binary through `isolated(..)` with a temporary HOME
 //! (#1699). The profile root is the saved root in
 //! `<HOME>/.amplihack/profile-root`; `AMPLIHACK_CLAUDE_PROFILE_ROOT` is never
-//! set. The usage endpoint and token URL are a loopback fake in this process
-//! that answers by bearer token; every login holds a fake
-//! `fake-at-1886-<uuid>` token. `claude` is a recording stub: it writes its
+//! set. The usage endpoint, the OAuth profile endpoint and the token URL are
+//! a loopback fake in this process that answers by bearer token; every login
+//! holds a fake `fake-at-1886-<uuid>` token. Every account reports the same
+//! usage reset times (the 3 November collision); only the profile endpoint
+//! tells them apart. `claude` is a recording stub: it writes its
 //! argv and environment to the records directory before anything else.
 //!
 //! Checked:
-//! - #1886: after a swap `lima -> hotel`, `~/.claude` answers as `hotel` while
+//! - #1886: after a swap `lima -> hotel`, `~/.claude` holds `hotel` while
 //!   `~/.claude.json` still names `lima`. The cycle writes no `recovered:`
 //!   line, puts nothing in `.rejected-logins`, keeps the ledger's `live` and
 //!   `account`, and moves no login.
-//! - (a): `~/.claude` answers as `mike`, which has its own login, and `lima`
+//! - (a): `~/.claude` holds `mike`, which has its own login, and `lima`
 //!   keeps a login of its own. The first run only notes the suspicion; a run
 //!   at least one interval later recovers with the `recovered:` line.
 //! - (e): no fake token appears in stdout, stderr, any file other than a
 //!   login file, or the argv and environment of any `claude` started.
+//! - `profile verify` prints each folder's server account against its
+//!   record and exits non-zero on a mismatch; `--fix` moves the crossed
+//!   login into its empty recorded folder.
 
 #![cfg(unix)]
 
@@ -99,15 +104,17 @@ fn account(p: &str) -> String {
     .to_string()
 }
 
-/// A loopback usage endpoint. Each token answers with the reset times of
-/// one account (session at 10%, week at 20%); an unknown token gets 401.
+/// A loopback usage and profile endpoint. Each token answers the profile
+/// endpoint with its account (`uuid-<name>`) and the usage endpoint with the
+/// reset times given (session at 10%, week at 20%); an unknown token gets
+/// 401.
 struct Endpoint {
     port: u16,
     seen: Arc<Mutex<Vec<String>>>,
 }
 
 impl Endpoint {
-    fn start(accounts: HashMap<String, (i64, i64)>) -> Self {
+    fn start(accounts: HashMap<String, (&'static str, (i64, i64))>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let seen: Arc<Mutex<Vec<String>>> = Arc::default();
@@ -139,7 +146,15 @@ impl Endpoint {
                     log.lock().unwrap().push(first.trim().to_string());
                     let token = auth.strip_prefix("Bearer ").unwrap_or_default();
                     let (code, reply) = match accounts.get(token) {
-                        Some((s, w)) if first.starts_with("GET ") => (
+                        Some((name, _)) if first.starts_with("GET /api/oauth/profile ") => (
+                            200,
+                            serde_json::json!({
+                                "account": {"uuid": format!("uuid-{name}"), "email": format!("{name}@example.com")},
+                                "organization": {"uuid": "org-1886"}
+                            })
+                            .to_string(),
+                        ),
+                        Some((_, (s, w))) if first.starts_with("GET ") => (
                             200,
                             serde_json::json!({
                                 "five_hour": {"utilization": 10.0, "resets_at": iso(*s)},
@@ -365,14 +380,12 @@ fn files_under(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The reset times of three accounts, whole seconds in the future.
-fn resets() -> HashMap<&'static str, (i64, i64)> {
+/// Each account and its reset times, whole seconds in the future: the same
+/// for all three, as for accounts created together.
+fn resets() -> HashMap<&'static str, (&'static str, (i64, i64))> {
     let now = unix_now();
-    HashMap::from([
-        (L, (now + 3_600, now + 3 * 86_400)),
-        (H, (now + 7_200, now + 4 * 86_400)),
-        (M, (now + 10_800, now + 5 * 86_400)),
-    ])
+    let same = (now + 3_600, now + 3 * 86_400);
+    HashMap::from([(L, (L, same)), (H, (H, same)), (M, (M, same))])
 }
 
 #[test]
@@ -437,7 +450,7 @@ fn a_hand_login_matching_another_profile_recovers_on_the_second_reading() {
     f.rotate_cycle(&interval);
     let log = f.log();
     assert!(
-        log.contains("note: ~/.claude answers as profile mike (ledger names lima)"),
+        log.contains("note: ~/.claude holds the same account as profile mike (ledger names lima)"),
         "{log}"
     );
     assert!(!log.contains("recovered:"), "{log}");
@@ -460,5 +473,78 @@ fn a_hand_login_matching_another_profile_recovers_on_the_second_reading() {
     let l = f.ledger();
     assert_eq!(l["live"], M, "{l}");
     assert!(l.get("hand_suspect").is_none(), "{l}");
+    assert_eq!(f.endpoint.as_ref().unwrap().token_posts(), 0, "no refresh");
+}
+
+impl Fx {
+    /// Records `uuid-<account>` (organization `org-1886`) for profile `p`,
+    /// as an accepted `profile login` would.
+    fn record(&self, p: &str, account: &str) {
+        let dir = self.root.join(".auto-switch.d").join("expected");
+        dir700(&self.root.join(".auto-switch.d"));
+        dir700(&dir);
+        private_file(
+            &dir.join(format!("{p}.json")),
+            &serde_json::json!({"account": format!("uuid-{account}"), "org": "org-1886"})
+                .to_string(),
+        );
+    }
+}
+
+/// The 3 November aftermath: `lima`'s folder holds `mike`'s login, `mike`'s
+/// folder is empty, and `hotel` is live. All three reset at the same times.
+#[test]
+fn profile_verify_reports_and_fixes_a_crossed_folder() {
+    let mut f = Fx::new();
+    let r = resets();
+    let t_home = f.login(&f.home_login());
+    let t_l = f.login(&f.slot(L));
+    f.endpoint = Some(Endpoint::start(HashMap::from([
+        (t_home, r[H]),
+        (t_l, r[M]),
+    ])));
+    for p in [L, H, M] {
+        f.record(p, p);
+    }
+    let swapped = unix_now() - 3600;
+    f.write_ledger(serde_json::json!({
+        "version": 1, "live": H, "since": swapped, "swapped_at": swapped
+    }));
+    let crossed = ino(&f.slot(L));
+
+    let out = f.run(&["profile", "verify"], &[]);
+    f.assert_no_token_leaks(&out);
+    let stdout = text(&out.stdout);
+    assert!(
+        !out.status.success(),
+        "a mismatch exits non-zero:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.lines().collect::<Vec<_>>(),
+        vec![
+            "~/.claude (live hotel) -> hotel@example.com: ok",
+            "hotel -> no login",
+            "lima -> mike@example.com: MISMATCH, recorded for mike",
+            "mike -> no login",
+        ]
+    );
+    assert_eq!(ino(&f.slot(L)), crossed, "verify alone moves nothing");
+
+    let out = f.run(&["profile", "verify", "--fix"], &[]);
+    f.assert_no_token_leaks(&out);
+    let stdout = text(&out.stdout);
+    assert!(out.status.success(), "{stdout}\n{}", text(&out.stderr));
+    assert!(stdout.contains("moved lima's login to mike"), "{stdout}");
+    assert_eq!(ino(&f.slot(M)), crossed, "moved, not copied");
+    assert_eq!(ino(&f.slot(L)), None);
+
+    let out = f.run(&["profile", "verify"], &[]);
+    assert!(out.status.success(), "{}", text(&out.stdout));
+    assert!(text(&out.stdout).contains("mike -> mike@example.com: ok"));
+    let seen = f.endpoint.as_ref().unwrap().seen.lock().unwrap().clone();
+    assert!(
+        seen.iter().all(|l| !l.contains("/api/oauth/usage")),
+        "{seen:?}"
+    );
     assert_eq!(f.endpoint.as_ref().unwrap().token_posts(), 0, "no refresh");
 }

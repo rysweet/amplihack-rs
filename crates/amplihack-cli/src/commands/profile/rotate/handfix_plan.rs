@@ -10,11 +10,11 @@
 
 use super::account::home_readable;
 use super::backup::stamp;
-use super::cred_identity::{Finding, Fingerprint, IDENTITY_BUDGET, Why, assess};
+use super::cred_identity::{Finding, IDENTITY_BUDGET, Why, assess};
 use super::guide::{self, Kind, Paths};
 use super::hand_fields::{HOME_UNREADABLE_GRACE, HandSuspect, SWAP_GRACE};
 use super::handfix_msg as msg;
-use super::identify::{self, LoginKind, login_kind};
+use super::identify::{self, Account, LoginKind, login_kind};
 use super::ledger::{RotateLedger, RotateState};
 use super::precheck::{Env, move_check, record_check};
 use crate::commands::profile::auto_switch::kit::{CREDS, exists};
@@ -24,9 +24,9 @@ use crate::commands::profile::store::ProfileStore;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-/// The reader the step uses: `<home>/.claude` or `<root>/<name>` in, a
-/// fingerprint or a `usage_direct::reason` out.
-pub type Read<'r> = &'r dyn Fn(&Path) -> Result<Fingerprint, &'static str>;
+/// The reader the step uses: `<home>/.claude` or `<root>/<name>` in, the
+/// account the server reports or a `usage_direct::reason` out.
+pub type Read<'r> = &'r dyn Fn(&Path) -> Result<Account, &'static str>;
 
 /// What the plan reads: the loaded ledger, the reader, the rotation
 /// interval (`min_gap`, at least 1) and the cycle's time.

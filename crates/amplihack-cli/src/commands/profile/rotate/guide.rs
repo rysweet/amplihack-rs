@@ -48,8 +48,8 @@ pub enum Kind<'a> {
     /// `HOME_UNREADABLE_GRACE` seconds; `problem` says why, from
     /// `identify::home_problem` (#1702 review).
     HomeStuck { problem: &'a str },
-    /// Issue #1886: `~/.claude` answers as `m`'s own login on two
-    /// readings, but `m` cannot be recorded without leaving the ledger's
+    /// Issue #1886: `~/.claude` holds the same account as `m`'s own login
+    /// on two readings, but `m` cannot be recorded without leaving the ledger's
     /// profile with no login anywhere (the only-login rule).
     OnlyLogin { m: &'a ProfileName },
     /// A confirmed recovery that a check refused.
@@ -158,9 +158,10 @@ fn kind_fixes(l: &ProfileName, kind: &Kind<'_>, p: &Paths) -> Vec<FixLine> {
                 ),
             ]
         }
-        // The two cases the reading cannot tell apart (issue #1886): a
-        // `/login` that replaced L's only login, or two accounts whose
-        // windows reset together.
+        // The server says `~/.claude` holds M's account (issue #1886). Either
+        // a `/login` replaced L's only login, or L and M are two profiles of
+        // one account and L has no record saying so (a record that names
+        // the account would have made the finding Clear).
         Kind::OnlyLogin { m } => {
             let creds = p.root.join(m.as_str()).join(CREDS);
             vec![
@@ -175,7 +176,7 @@ fn kind_fixes(l: &ProfileName, kind: &Kind<'_>, p: &Paths) -> Vec<FixLine> {
                     },
                 ),
                 plain(format!(
-                    "if ~/.claude still holds {l}'s login, nothing is wrong: two accounts reset at the same times, and the alert clears once their readings differ"
+                    "if {l} and {m} are profiles of one account, run amplihack profile verify to see the account each folder holds, then remove one of the two profiles"
                 )),
             ]
         }
