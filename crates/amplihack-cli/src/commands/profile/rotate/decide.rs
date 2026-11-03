@@ -131,7 +131,7 @@ pub struct Probed {
     /// for it. Read only by the log (`log::Shown`); always with `unknown`.
     pub still_running: bool,
     /// Issue #1797: when a passive reading was taken, if before the read
-    /// (`UsageReport::observed_at`), or when the #1870 direct re-read
+    /// (`UsageReport::observed_at`), or when the #1870 re-read
     /// finished (`fresh::fresh_probe`); `None` for every other probe.
     pub observed_at: Option<i64>,
     /// Issue #1870: the result of a read started in an earlier cycle, so it

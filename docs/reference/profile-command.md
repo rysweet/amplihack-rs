@@ -184,7 +184,8 @@ readings rather than asking again. A candidate can be ranked on a reading
 up to `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS` seconds old (300 by
 default), but the rotator never swaps to it on that reading alone: a target
 whose reading is more than 300 seconds old, or older than the live login's,
-is read again directly first; see
+is read again first, by the [probe method](#probe-method) with passive
+readings off; see
 [Rotate reading freshness](#rotate-reading-freshness-and-swap-back-damping).
 Lower the value in the rotator's environment for it to react
 sooner; see
@@ -820,6 +821,10 @@ unrecognisable only makes every fallback go on to `/usage`.
 | `auto` | The fallback probe only, as before the direct read existed: the usage request, then `/usage`. No passive or direct reads. |
 | `text` | `claude -p /usage` only, so every probe pays the transcript scan. No passive or direct reads. |
 
+The rotator's [freshness re-reads](#re-reads) follow the same setting, with
+passive readings off: under `auto` or `text` a re-read is a `claude` probe
+in that mode, never a direct read.
+
 To go back to the behaviour before direct reads, set
 `AMPLIHACK_PROFILE_USAGE_PROBE=auto`. Values are matched exactly: case,
 leading and trailing spaces count. An empty variable counts as unset. Any
@@ -969,6 +974,9 @@ variables. It has no flags for them.
 
 - **The `claude` binary.** It is looked up only when a cycle first needs a
   fallback. A `claude` that cannot be found makes only those rows fail.
+- **Freshness re-reads.** A [re-read](#re-reads) of a stale swap target uses
+  the same method, with passive readings off. Under `auto` or `text` it is a
+  `claude` probe, never a direct read.
 
 ##### Reads that outlast a cycle
 
@@ -4754,7 +4762,7 @@ Every non-dry-run cycle runs these steps in order:
 5. **Decide.** See [Decision rule](#rotate-decision-rule). A swap target
    chosen by its reading then passes the
    [freshness gate](#rotate-reading-freshness-and-swap-back-damping), which
-   may read it again directly and decide again. No lock is held.
+   may read it again and decide again. No lock is held.
 6. **Revalidate and swap.** `watch` first checks for a pending signal and,
    if there is one, ends the cycle and exits without taking the lock (see
    [Signals](#rotate-signals)). Take the lock again, identify the live
@@ -5005,8 +5013,8 @@ The table ranks every candidate on the reading it has, which may be minutes
 old. Before a swap stands, its target passes the
 [freshness gate](#rotate-reading-freshness-and-swap-back-damping): a target
 read more than 300 seconds ago, earlier than the live login, or not since the
-rotator last swapped away from it while it was full, is read again directly
-and the decision is made again on the new figures.
+rotator last swapped away from it while it was full, is read again (by the
+[probe method](#probe-method), passive readings off) and the decision is made again on the new figures.
 
 #### Rotate failed live probes
 
@@ -5040,8 +5048,8 @@ a read that [outlasted an earlier cycle](#reads-that-outlast-a-cycle). Near a
 limit, such a reading can show room the login no longer has, and the rotator
 would swap to a login that is already full and then swap away again on the
 next cycle. Before a swap stands, the rotator therefore checks that the
-target's reading is fresh, and reads the target again directly when it is
-not.
+target's reading is fresh, and reads the target again when it is not, the
+way [`AMPLIHACK_PROFILE_USAGE_PROBE`](#probe-method) says.
 
 The gate applies to swaps with `reason=threshold`, `upgrade`,
 `failed-probe`, `plan-room` and `overflow-out`, in the one-shot `rotate`,
@@ -5083,14 +5091,34 @@ chosen on one is still read again.
 
 When this cycle read the live login directly and a candidate passively, the
 candidate's reading is older than the live one, so it is read again if it is
-chosen. This costs at most one read per swap.
+chosen. A cycle that swaps on the first re-read makes one read. When that
+read shows the target full, the decision chooses the next candidate, which
+may also need a re-read, so a near-limit cycle can make up to 3 (see
+[Re-reads](#re-reads) for the limits on their number and their total time).
 
 ##### Re-reads
 
-A stale target is read again with a [direct read](#direct-read) only:
-passive readings are not used, there is no [`claude` fallback](#fallback-probe),
-and the read is bounded by the [probe deadline](#probe-deadline). It starts
-no child process and holds no lock. Its figures replace the stale ones for
+A stale target is read again the way
+[`AMPLIHACK_PROFILE_USAGE_PROBE`](#probe-method) says, as the cycle's own
+measurement reads it, except that [passive readings](#passive-readings) are
+not used: the stored reading is what made the target stale.
+
+| `AMPLIHACK_PROFILE_USAGE_PROBE` | Re-read |
+|---------------------------------|---------|
+| unset | A [direct read](#direct-read); when it fails, the [`claude` fallback](#fallback-probe), with `/usage` text when the direct read failed with `usage credits on`. |
+| `direct` | A direct read only. A failed one makes the target unknown. |
+| `auto`, `text` | The `claude` fallback only, as named. No direct read is made, as the mode promises. |
+
+A profile marked as [overflow](#overflow-tiers) is read with `/usage` in
+every mode but `direct`, as in the measurement. So setting `text` because
+direct reads fail or are unwanted keeps them off for re-reads too, and a
+login whose direct read fails because usage credits are on is still read by
+`/usage` under the default order rather than made unknown.
+
+The read is bounded by what is left of the gate's time limit (below), and
+at most one `claude` runs for it. It holds no rotate lock; the only lock it
+may take is Claude's own `.oauth_refresh.lock`, when a direct read refreshes
+a token (see the `--dry-run` paragraph below). Its figures replace the stale ones for
 the rest of the cycle, and the `reread:` line gives both. The decision then
 runs again from the start on the new figures, and the target it chooses
 passes the same gate. A re-read showing the target still has the most room
@@ -5102,6 +5130,16 @@ fresh for the rest of the cycle and is never read a second time. A target
 that is stale once 3 re-reads have been made is treated as unknown, with
 `reread: <name> limit reached; treated as unknown`, and the decision runs
 once more.
+
+All re-reads of one cycle share one time limit: a single
+[probe deadline](#probe-deadline), 120 seconds by default. The re-reads run
+one after another, and each gets only the time the earlier ones left, not a
+deadline of its own. A target chosen once the limit is spent is not read: it
+is treated as unknown, with
+`reread: <name> time limit reached; treated as unknown`, and the decision
+runs once more. So a slow usage endpoint delays a swap by at most one probe
+deadline after the measurement, however many re-reads the cycle needs; with
+`--interval 120` and the default deadline, that is about one interval.
 
 Each candidate is read again at most once and made unknown at most once, so
 for `n` candidates the decision runs at most `2n` more times. The decision
@@ -5122,7 +5160,7 @@ the [capacity file](#capacity-file) or the
 cycle off [overflow](#rotate-decision-order). The decision falls to the next
 candidate, which is gated in turn, or to a stay or an ALERT under the
 [decision rule](#rotate-decision-rule). A target made unknown by a failed
-re-read or by the limit counts as failed, in `F`, in the
+re-read, by the limit or by the time limit counts as failed, in `F`, in the
 `(candidates: <F> failed, <E> exhausted)` suffix of the
 [no-capacity ALERT](#rotate-log). A failed live probe is counted once per
 cycle however many times the decision runs.
@@ -6528,9 +6566,10 @@ run and prints their `reread:` lines; see
 | `ALERT: overflow profile <name> hit its spend limit; not blocked (too many blocks\|no end time)` | A spend-limit reading that could not be stored as a block: the ledger already holds 256 active blocks, or the cycle's time is outside the range for which the next month can be computed. The profile is still not used in that cycle; the ledger is left as it was, so it still loads. |
 | `stay: live probe failed (<k>/3)` | The live probe failed for the `k`th cycle in a row; no swap yet. |
 | `stay: live probe failed; held after last swap (<N>s left)` | The live probe has failed three or more times in a row, but the last swap was less than `--hold` seconds ago. |
-| `reread: <name> reading stale s=<n>% w=<n>%; fresh s=<n>% w=<n>%` | The chosen swap target's reading failed the [freshness gate](#rotate-reading-freshness-and-swap-back-damping) and was read again directly. The first figures are those the decision used, the second those of the new read, formatted as in the `swap` line (`w=?` when no weekly window was read). The decision was then made again on the new figures. |
+| `reread: <name> reading stale s=<n>% w=<n>%; fresh s=<n>% w=<n>%` | The chosen swap target's reading failed the [freshness gate](#rotate-reading-freshness-and-swap-back-damping) and was read again by the [probe method](#probe-method), with passive readings off. The first figures are those the decision used, the second those of the new read, formatted as in the `swap` line (`w=?` when no weekly window was read). The decision was then made again on the new figures. |
 | `reread: <name> failed; treated as unknown` | The re-read timed out or failed. `<name>` is unknown for this cycle: not chosen, not recorded as exhausted, and counted in `F` of the no-capacity ALERT's suffix. |
 | `reread: <name> limit reached; treated as unknown` | The chosen target was stale, but this cycle had already made 3 re-reads. `<name>` is unknown for this cycle. |
+| `reread: <name> time limit reached; treated as unknown` | The chosen target was stale, but this cycle's re-reads had already used their shared time limit of one [probe deadline](#probe-deadline). `<name>` is not read and is unknown for this cycle. |
 | `damp: <name> swapped away exhausted; no later reading shows room` | `<name>` is in the ledger's `swapped_away`, and its re-read shows it still at or above `--session-at` or `--week-at`, or exhausted. It stays damped. See [Swap-back damping](#swap-back-damping). |
 | `damp: <name> later reading shows room; swap-back allowed` | A reading of `<name>` taken after the rotator swapped away from it shows room, so its `swapped_away` entry was removed. Written in the [record step](#rotate-cycle), after the cycle's `swap`, stay or ALERT line, and never by `--dry-run`. |
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` / `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)` | A threshold is reached and no candidate meets the margin. The suffix is added only when `F + E > 0`: `F` candidates had a failed probe and `E` were exhausted, whatever figures each exhausted candidate read. When every candidate failed, the probes are at fault rather than the accounts. The suffix holds no profile names, and the ALERT key stays `no-capacity`, so a change in the counts does not repeat the ALERT. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`, without the `ALERT: ` prefix, and with the same rule for the suffix. |

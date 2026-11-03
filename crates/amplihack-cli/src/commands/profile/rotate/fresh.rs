@@ -2,8 +2,9 @@
 //! accepted only when that reading is fresh: taken no more than
 //! [`MAX_READING_AGE_SECS`] ago, not earlier than the live login's reading,
 //! and, for a login in the ledger's `swapped_away`, strictly after the swap
-//! away from it. A stale target is read again directly and the decision is
-//! made again on the new figures. See "Rotate reading freshness and
+//! away from it. A stale target is read again, by the user's probe method
+//! (`AMPLIHACK_PROFILE_USAGE_PROBE`) with passive readings off, and the
+//! decision is made again on the new figures. See "Rotate reading freshness and
 //! swap-back damping" in docs/reference/profile-command.md.
 //!
 //! The gate writes nothing. Its log lines go to
@@ -21,6 +22,7 @@ use crate::commands::profile::auto_switch::kit::now;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::probe_limits::ProbeMode;
 use crate::commands::profile::usage_source::SourceEnv;
+use std::time::{Duration, Instant};
 
 /// The oldest a target's reading may be. It equals the default passive
 /// age (`DEFAULT_PASSIVE_MAX_AGE_SECS`) and the usage history's limit, so a
@@ -30,8 +32,11 @@ pub const MAX_READING_AGE_SECS: i64 = 300;
 /// The most re-reads one cycle makes.
 pub const MAX_REREADS_PER_CYCLE: usize = 3;
 
-/// Reads one candidate again, directly; [`reread_direct`] outside tests.
-pub type RereadFn = fn(&Ctx, &ProfileName) -> Probed;
+/// Reads one candidate again, within the given deadline;
+/// [`reread_as_configured`] outside tests. The deadline is what is left of the
+/// gate's one time limit (see [`gate`]), never a fresh probe deadline per
+/// read.
+pub type RereadFn = fn(&Ctx, &ProfileName, Duration) -> Probed;
 
 /// Whether the gate may read a stale target again.
 ///
@@ -103,13 +108,19 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
 /// probe count is unchanged. A ledger that cannot be read is an error, never
 /// an empty damping map. A stop request seen before a re-read ends the loop
 /// with no read and [`Decision::Stay`], so nothing is swapped.
+///
+/// All re-reads of one gate share one time limit: a single probe deadline
+/// ([`measure::timeout`], 120 s by default). Each read gets only what is
+/// left of it, and once it is spent the target is unknown with no read, so
+/// a slow usage endpoint delays a swap by at most one probe deadline in
+/// total, however many re-reads the cycle makes.
 pub fn gate(
     ctx: &Ctx,
     snap: &Snap,
     m: Measurement,
     mode: Reread,
 ) -> Result<Measurement, ProfileError> {
-    settle(ctx, m, mode, |live, probes, at| {
+    settle(ctx, m, mode, measure::timeout(), |live, probes, at| {
         decide_measured(ctx, snap, live, probes, at)
     })
 }
@@ -117,12 +128,14 @@ pub fn gate(
 /// The other logins' probes, by name.
 type Probes = Vec<(ProfileName, Probed)>;
 
-/// [`gate`] with the decision passed in ([`decide_measured`] outside
-/// tests), so a test can check the cap.
+/// [`gate`] with the re-reads' total time limit and the decision passed in
+/// ([`measure::timeout`] and [`decide_measured`] outside tests), so a test
+/// can check the cap and the time limit.
 pub(super) fn settle(
     ctx: &Ctx,
     mut m: Measurement,
     mode: Reread,
+    budget: Duration,
     mut decide: impl FnMut(Probed, Probes, i64) -> Result<Measurement, ProfileError>,
 ) -> Result<Measurement, ProfileError> {
     if gated_target(&m.decision).is_none() {
@@ -142,6 +155,7 @@ pub(super) fn settle(
     let mut lines = std::mem::take(&mut m.fresh_lines);
     let mut done: Vec<ProfileName> = Vec::new();
     let mut reads = 0;
+    let started = Instant::now();
     // Each name is handled at most twice: read (or made unknown), then made
     // unknown. One more pass finds the settled decision.
     let max_handled = 2 * probes.len();
@@ -173,9 +187,15 @@ pub(super) fn settle(
                 m.decision = Decision::Stay;
                 break;
             }
-            reads += 1;
-            let p = reread(ctx, &to);
-            fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines)
+            let left = budget.saturating_sub(started.elapsed());
+            if left.is_zero() {
+                lines.push(fresh_msg::time_limit(&to));
+                Probed::failed()
+            } else {
+                reads += 1;
+                let p = reread(ctx, &to, left);
+                fresh_probe(ctx, &to, &probes[i].1, p, damped_at.is_some(), &mut lines)
+            }
         } else {
             // No hook: nothing may be read, so the target is unknown.
             Probed::failed()
@@ -219,13 +239,33 @@ fn fresh_probe(
     p
 }
 
-/// The production re-read: one direct read of `name`, with no passive
-/// reading and no `claude` fallback, bounded by the probe deadline. It
-/// writes no rotate state and starts no child process; like any direct
-/// read it may refresh a near-expiry OAuth token under Claude's lock.
-pub fn reread_direct(ctx: &Ctx, name: &ProfileName) -> Probed {
-    let mut env = SourceEnv::from_env(ProbeMode::Direct, measure::timeout());
+/// The settings of a re-read: the user's probe method `mode`
+/// (`AMPLIHACK_PROFILE_USAGE_PROBE`), with passive readings off and the
+/// deadline `left`. So the re-read reads the target the way the cycle's own
+/// measurement does, minus the stored reading that made it stale:
+///
+/// | `mode` | Re-read |
+/// |---|---|
+/// | unset | direct, then the `claude` fallback (`/usage` text when credits are on) |
+/// | `direct` | direct only |
+/// | `auto`, `text` | the `claude` fallback only, as named; never a direct read |
+///
+/// A login marked as overflow is read by `/usage` in every mode but
+/// `direct`, as in the measurement.
+pub(super) fn reread_env(mode: ProbeMode, left: Duration) -> SourceEnv {
+    let mut env = SourceEnv::from_env(mode, left);
     env.passive_max_age = 0;
+    env
+}
+
+/// The production re-read: one read of `name` by the user's probe method
+/// with passive readings off ([`reread_env`]), bounded by `left`: what
+/// remains of the gate's one time limit. At most one `claude` runs for it,
+/// under the same deadline. It writes no rotate state and takes no rotate
+/// lock; like any direct read it may refresh a near-expiry OAuth token
+/// under Claude's `.oauth_refresh.lock`.
+pub fn reread_as_configured(ctx: &Ctx, name: &ProfileName, left: Duration) -> Probed {
+    let env = reread_env(measure::mode(), left);
     let reader = measure::reader(ctx, env, 1, now());
     measure::reading(name.as_str(), &reader.profile(name, false))
 }

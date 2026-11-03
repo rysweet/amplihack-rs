@@ -958,7 +958,8 @@ reading while it is younger than `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`
 afresh only about every third cycle. A stored reading can rank a login, but
 the rotator does not swap to it on that reading alone: a target read more
 than 300 seconds ago, earlier than the live login, or not since the rotator
-left it full, is read again directly first, and a login it left full is not
+left it full, is read again first (the way `AMPLIHACK_PROFILE_USAGE_PROBE`
+says, so never directly under `auto` or `text`), and a login it left full is not
 chosen again until a later reading shows room. The `reread:` and `damp:` log
 lines show this; see
 [Rotate reading freshness and swap-back damping](../reference/profile-command.md#rotate-reading-freshness-and-swap-back-damping).

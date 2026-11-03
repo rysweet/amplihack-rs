@@ -29,6 +29,7 @@ use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::time::Duration;
 
 type Calls = Mutex<Vec<String>>;
 
@@ -61,7 +62,7 @@ fn damped(e: &Env) -> Vec<String> {
 
 static CALLS_A: Calls = Mutex::new(Vec::new());
 
-fn reread_a(_: &Ctx, name: &ProfileName) -> Probed {
+fn reread_a(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     record(&CALLS_A, name);
     exh(43.0, 100.0)
 }
@@ -112,7 +113,7 @@ fn a_regression_an_old_reading_is_read_again_and_the_full_login_is_not_chosen() 
 
 static CALLS_B: Calls = Mutex::new(Vec::new());
 
-fn reread_b(_: &Ctx, name: &ProfileName) -> Probed {
+fn reread_b(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     record(&CALLS_B, name);
     rd(0.0, 50.0, None)
 }
@@ -162,7 +163,7 @@ fn b_a_stale_target_is_read_again_and_the_decision_uses_the_fresh_figures() {
 
 static CALLS_C: Calls = Mutex::new(Vec::new());
 
-fn reread_c(_: &Ctx, name: &ProfileName) -> Probed {
+fn reread_c(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     record(&CALLS_C, name);
     exh(100.0, 100.0)
 }
@@ -187,7 +188,7 @@ fn c_a_fresh_target_is_chosen_without_a_reread() {
 
 static CALLS_C2: Calls = Mutex::new(Vec::new());
 
-fn reread_c2(_: &Ctx, name: &ProfileName) -> Probed {
+fn reread_c2(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     record(&CALLS_C2, name);
     exh(100.0, 100.0)
 }
@@ -211,7 +212,7 @@ fn c_a_passive_reading_as_new_as_the_live_one_is_fresh() {
 
 // --- (d) A failed re-read: not chosen, not recorded as exhausted ---------------
 
-fn reread_d(_: &Ctx, _: &ProfileName) -> Probed {
+fn reread_d(_: &Ctx, _: &ProfileName, _: Duration) -> Probed {
     Probed::failed()
 }
 
@@ -250,7 +251,7 @@ fn d_a_failed_reread_is_unknown_and_never_recorded_as_without_room() {
 
 static CALLS_E: Calls = Mutex::new(Vec::new());
 
-fn reread_e(_: &Ctx, name: &ProfileName) -> Probed {
+fn reread_e(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     record(&CALLS_E, name);
     exh(43.0, 100.0)
 }
@@ -293,7 +294,7 @@ fn e_a_plan_room_target_is_read_again_before_the_move() {
 static CYCLE1_F: AtomicI64 = AtomicI64::new(0);
 static CALLS_F: Calls = Mutex::new(Vec::new());
 
-fn reread_f(_: &Ctx, name: &ProfileName) -> Probed {
+fn reread_f(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     record(&CALLS_F, name);
     exh(100.0, 22.0)
 }
@@ -403,7 +404,7 @@ fn g_a_reading_after_the_swap_that_shows_room_lifts_the_damping() {
 
 static CALLS_G2: Calls = Mutex::new(Vec::new());
 
-fn reread_g2(_: &Ctx, name: &ProfileName) -> Probed {
+fn reread_g2(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     record(&CALLS_G2, name);
     rd(10.0, 20.0, None)
 }
@@ -442,7 +443,7 @@ fn g_a_reread_that_shows_room_lifts_the_damping() {
 static CYCLE1_H: AtomicI64 = AtomicI64::new(0);
 static CALLS_H: Calls = Mutex::new(Vec::new());
 
-fn reread_h(_: &Ctx, name: &ProfileName) -> Probed {
+fn reread_h(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     record(&CALLS_H, name);
     exh(100.0, 22.0)
 }
@@ -504,7 +505,7 @@ fn h_damping_survives_between_one_shot_runs_and_holds_only_names_and_integers() 
 
 static CALLS_I: Calls = Mutex::new(Vec::new());
 
-fn reread_i(_: &Ctx, name: &ProfileName) -> Probed {
+fn reread_i(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     record(&CALLS_I, name);
     exh(100.0, 100.0)
 }
@@ -556,7 +557,7 @@ fn scan_busy(_: &Path) -> Liveness {
     Liveness::Known(live)
 }
 
-fn never(_: &Ctx, name: &ProfileName) -> Probed {
+fn never(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     panic!("SR-3: {name} was read while the lock was held")
 }
 
@@ -595,7 +596,7 @@ fn sr3_revalidation_treats_a_stale_retry_target_as_unknown_without_reading() {
 
 static CALLS_DRY: Calls = Mutex::new(Vec::new());
 
-fn reread_dry(_: &Ctx, name: &ProfileName) -> Probed {
+fn reread_dry(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     record(&CALLS_DRY, name);
     rd(11.0, 20.0, None)
 }
@@ -638,7 +639,7 @@ fn sr9_a_dry_run_reads_again_and_leaves_the_ledger_bytes_unchanged() {
 static CALLS_STOP: Calls = Mutex::new(Vec::new());
 
 /// A slow login: the read would take a probe timeout.
-fn reread_stop(_: &Ctx, name: &ProfileName) -> Probed {
+fn reread_stop(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     record(&CALLS_STOP, name);
     std::thread::sleep(std::time::Duration::from_secs(1));
     rd(0.0, 50.0, None)

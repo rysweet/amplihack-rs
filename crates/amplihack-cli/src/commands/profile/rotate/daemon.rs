@@ -300,7 +300,7 @@ pub fn watch(
     }
     let archive_home = home.clone();
     let mut ctx = Ctx::new(store.clone(), home, s);
-    ctx.reread = Some(super::fresh::reread_direct);
+    ctx.reread = Some(super::fresh::reread_as_configured);
     ctx.stop = Some(stop.clone());
     // Issue #1844: reads that outlast a cycle are used by the next one.
     let (probe_secs, _) = crate::commands::profile::probe_limits::timeout_from_env(None);

@@ -25,6 +25,12 @@ pub fn limit(name: &ProfileName) -> String {
     format!("reread: {name} limit reached; treated as unknown")
 }
 
+/// `reread: <name> time limit reached; treated as unknown`: the gate's one
+/// time limit for all its re-reads is spent.
+pub fn time_limit(name: &ProfileName) -> String {
+    format!("reread: {name} time limit reached; treated as unknown")
+}
+
 /// `damp: <name> swapped away exhausted; no later reading shows room`.
 pub fn still_damped(name: &ProfileName) -> String {
     format!("damp: {name} swapped away exhausted; no later reading shows room")

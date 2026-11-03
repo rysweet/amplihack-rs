@@ -3,7 +3,7 @@
 //! Contract (`rotate::fresh`, `rotate::swap_back`, `rotate::fresh_msg`):
 //! - `fresh::MAX_READING_AGE_SECS: i64 = 300` and
 //!   `fresh::MAX_REREADS_PER_CYCLE: usize = 3`.
-//! - `fresh::RereadFn = fn(&Ctx, &ProfileName) -> Probed`, and
+//! - `fresh::RereadFn = fn(&Ctx, &ProfileName, Duration) -> Probed`, and
 //!   `fresh::Reread::{Allowed, Never}`.
 //! - `fresh::read_at(&Probed, measured_at) -> Option<i64>`: `None` for a
 //!   carried, still-running, unknown or failed probe; else `observed_at`, or
@@ -25,7 +25,7 @@
 //! - `RotateLedger::swapped_away: BTreeMap<String, i64>`, omitted when
 //!   empty, filtered by `swap_back::valid` on load and cleared by
 //!   `for_older_readers(.., true)`.
-//! - `fresh_msg::{stale, failed, limit, still_damped, lifted}`: the five
+//! - `fresh_msg::{stale, failed, limit, time_limit, still_damped, lifted}`: the six
 //!   fixed log lines of D11.
 //!
 //! No test here runs `claude`, reads a login, or touches the network, a
@@ -49,6 +49,7 @@ use crate::commands::profile::name::ProfileName;
 use std::collections::BTreeMap;
 use std::fs;
 use std::sync::Mutex;
+use std::time::Duration;
 
 const T: i64 = 1_793_634_010;
 
@@ -255,6 +256,10 @@ fn the_reread_lines_hold_only_the_name_and_whole_percentages() {
         fresh_msg::limit(&g),
         "reread: ggrant limit reached; treated as unknown"
     );
+    assert_eq!(
+        fresh_msg::time_limit(&g),
+        "reread: ggrant time limit reached; treated as unknown"
+    );
 }
 
 #[test]
@@ -400,13 +405,13 @@ fn snap(c: &Ctx) -> Snap {
     snapshot(c, &State::new(c.store.root()).unwrap()).unwrap()
 }
 
-fn panics(_: &Ctx, name: &ProfileName) -> Probed {
+fn panics(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     panic!("no read may happen here, but {name} was read")
 }
 
 static GATE_CALLS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-fn spare_full(_: &Ctx, name: &ProfileName) -> Probed {
+fn spare_full(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     GATE_CALLS.lock().unwrap().push(name.to_string());
     exh(43.0, 100.0)
 }
@@ -427,20 +432,23 @@ fn only_production_call_sites_wire_the_direct_reread() {
         let text = fs::read_to_string(dir.join(file)).unwrap();
         let wired = text.lines().any(|l| {
             let code = l.split("//").next().unwrap_or_default();
-            code.contains(".reread = Some(") && code.contains("fresh::reread_direct)")
+            code.contains(".reread = Some(") && code.contains("fresh::reread_as_configured)")
         });
-        assert!(wired, "rotate/{file} no longer wires fresh::reread_direct");
+        assert!(
+            wired,
+            "rotate/{file} no longer wires fresh::reread_as_configured"
+        );
     }
     let switch = fs::read_to_string(dir.join("switch.rs")).unwrap();
     assert!(
-        !switch.contains("reread_direct"),
+        !switch.contains("reread_as_configured"),
         "a switch makes no decision, so it wires no re-read"
     );
 }
 
 static STUCK_READS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
-fn stuck_read(_: &Ctx, name: &ProfileName) -> Probed {
+fn stuck_read(_: &Ctx, name: &ProfileName, _: Duration) -> Probed {
     STUCK_READS.lock().unwrap().push(name.to_string());
     Probed::failed()
 }
@@ -466,12 +474,18 @@ fn a_decision_that_keeps_naming_an_unknown_target_is_an_error_within_the_cap() {
     assert_eq!(m.decision, stuck, "the stale reading wins first");
     let mut decisions = 0;
     // A decision rule that, unlike decide, picks a failed target.
-    let got = fresh::settle(&c, m, Reread::Allowed, |live, probes, at| {
-        decisions += 1;
-        let mut again = decide_measured(&c, &s, live, probes, at)?;
-        again.decision = stuck.clone();
-        Ok(again)
-    });
+    let got = fresh::settle(
+        &c,
+        m,
+        Reread::Allowed,
+        Duration::from_secs(120),
+        |live, probes, at| {
+            decisions += 1;
+            let mut again = decide_measured(&c, &s, live, probes, at)?;
+            again.decision = stuck.clone();
+            Ok(again)
+        },
+    );
     assert!(
         matches!(got, Err(ProfileError::GateUnsettled)),
         "no swap onto an unknown target: {:?}",
@@ -479,6 +493,104 @@ fn a_decision_that_keeps_naming_an_unknown_target_is_an_error_within_the_cap() {
     );
     assert_eq!(decisions, 2, "one name: read once, made unknown once");
     assert_eq!(*STUCK_READS.lock().unwrap(), ["spare"], "read once");
+}
+
+static SLOW_LEFT: Mutex<Vec<(String, Duration)>> = Mutex::new(Vec::new());
+
+/// A slow endpoint: each read takes 200 ms and finds the login full.
+fn slow_full(_: &Ctx, name: &ProfileName, left: Duration) -> Probed {
+    SLOW_LEFT.lock().unwrap().push((name.to_string(), left));
+    std::thread::sleep(Duration::from_millis(200));
+    exh(43.0, 100.0)
+}
+
+#[test]
+fn all_rereads_of_one_gate_share_one_time_limit() {
+    let e = env();
+    let c = gate_ctx(&e, Some(slow_full));
+    let s = snap(&c);
+    let at = now();
+    let stale = |sess, week| rd(sess, week, Some(at - 60));
+    let m = decide_measured(
+        &c,
+        &s,
+        spent(),
+        vec![
+            (n("first"), stale(5.0, 5.0)),
+            (n("second"), stale(10.0, 10.0)),
+            (n("third"), stale(15.0, 15.0)),
+        ],
+        at,
+    )
+    .unwrap();
+    assert!(
+        matches!(&m.decision, Decision::Swap { .. }),
+        "without the gate a stale reading wins: {:?}",
+        m.decision
+    );
+    let budget = Duration::from_millis(300);
+    let got = fresh::settle(&c, m, Reread::Allowed, budget, |live, probes, at| {
+        decide_measured(&c, &s, live, probes, at)
+    })
+    .unwrap();
+    let left = SLOW_LEFT.lock().unwrap().clone();
+    assert_eq!(
+        left.len(),
+        2,
+        "the third read is never started; the limit is spent: {left:?}"
+    );
+    assert!(left[0].1 <= budget, "the first read gets at most the limit");
+    assert!(
+        left[1].1 < Duration::from_millis(150),
+        "the second read gets only what the first left, not a new deadline: {left:?}"
+    );
+    let third = got
+        .fresh_lines
+        .iter()
+        .find(|l| l.contains("time limit reached"))
+        .unwrap_or_else(|| panic!("no time-limit line: {:?}", got.fresh_lines));
+    assert!(
+        !left.iter().any(|(name, _)| third.contains(name.as_str())),
+        "the time-limit line names the login that was not read: {third}"
+    );
+    assert!(
+        !matches!(got.decision, Decision::Swap { .. }),
+        "no swap onto a login that was not read again: {:?}",
+        got.decision
+    );
+}
+
+#[test]
+fn a_spent_time_limit_makes_the_target_unknown_with_no_read() {
+    let e = env();
+    let c = gate_ctx(&e, Some(panics));
+    let s = snap(&c);
+    let at = now();
+    let m = decide_measured(
+        &c,
+        &s,
+        spent(),
+        vec![(n("spare"), rd(11.0, 20.0, Some(at - 60)))],
+        at,
+    )
+    .unwrap();
+    let got = fresh::settle(
+        &c,
+        m,
+        Reread::Allowed,
+        Duration::ZERO,
+        |live, probes, at| decide_measured(&c, &s, live, probes, at),
+    )
+    .unwrap();
+    assert_eq!(
+        got.fresh_lines,
+        ["reread: spare time limit reached; treated as unknown"]
+    );
+    assert!(
+        !matches!(got.decision, Decision::Swap { .. }),
+        "{:?}",
+        got.decision
+    );
 }
 
 #[test]
@@ -647,7 +759,7 @@ fn a_gate_that_reads_again_leaves_the_ledger_bytes_unchanged() {
     assert_eq!(fs::read(&e.rs.ledger).unwrap(), before, "SR-9: read-only");
 }
 
-fn spare_full_quiet(_: &Ctx, _: &ProfileName) -> Probed {
+fn spare_full_quiet(_: &Ctx, _: &ProfileName, _: Duration) -> Probed {
     exh(43.0, 100.0)
 }
 

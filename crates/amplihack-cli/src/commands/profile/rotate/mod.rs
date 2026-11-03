@@ -145,6 +145,8 @@ mod tests_issue_1870;
 #[cfg(all(test, unix))]
 mod tests_issue_1870_cycle;
 #[cfg(all(test, unix))]
+mod tests_issue_1870_probe;
+#[cfg(all(test, unix))]
 mod tests_key_check;
 #[cfg(all(test, unix))]
 mod tests_log;
@@ -254,7 +256,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                     warn_foreign_rotator(Some(store.root()));
                 }
                 let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
-                ctx.reread = Some(fresh::reread_direct);
+                ctx.reread = Some(fresh::reread_as_configured);
                 cycle::run_cycle(&mut ctx, mode)?;
             }
             Some(RotateAction::Start(w)) => {

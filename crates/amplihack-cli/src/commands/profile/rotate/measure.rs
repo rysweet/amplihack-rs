@@ -65,7 +65,7 @@ pub(super) fn reading(who: &str, p: &Probe) -> Probed {
 
 /// The probe method, as `profile usage` resolves it. A bad variable falls
 /// back to the default order and warns on stderr, once per cycle.
-fn mode() -> ProbeMode {
+pub(super) fn mode() -> ProbeMode {
     let (mode, warning) = probe_limits::probe_mode_from_env();
     if let Some(w) = warning {
         eprintln!("{w}");
@@ -335,7 +335,7 @@ pub fn measure_ordered(
 
 /// The row reader of one cycle, with `env` and at most `claude_bound`
 /// `claude` reads at once. Shared by [`measure_ordered`] and the freshness
-/// gate's direct re-read (`fresh::reread_direct`).
+/// gate's re-read (`fresh::reread_as_configured`).
 pub(super) fn reader(ctx: &Ctx, env: SourceEnv, claude_bound: usize, now: i64) -> RowReader {
     RowReader {
         store: ctx.store.clone(),

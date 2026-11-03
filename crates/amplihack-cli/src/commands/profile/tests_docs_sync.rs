@@ -258,6 +258,7 @@ fn rotate_log_grammar_is_documented() {
         "reread: <name> reading stale s=<n>% w=<n>%; fresh s=<n>% w=<n>%",
         "reread: <name> failed; treated as unknown",
         "reread: <name> limit reached; treated as unknown",
+        "reread: <name> time limit reached; treated as unknown",
         "damp: <name> swapped away exhausted; no later reading shows room",
         "damp: <name> later reading shows room; swap-back allowed",
         "#### Rotate reading freshness and swap-back damping",

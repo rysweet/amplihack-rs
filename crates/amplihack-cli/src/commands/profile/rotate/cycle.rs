@@ -68,7 +68,8 @@ pub struct Ctx {
     /// Replaces steps 4 and 5 (find `claude`, measure, decide) when set. Only
     /// tests set it, to act while the cycle is measuring without the lock.
     pub(super) measure: Option<MeasureFn>,
-    /// Issue #1870: the freshness gate's direct re-read; `None` reads nothing.
+    /// Issue #1870: the freshness gate's re-read, by the user's probe
+    /// method; `None` reads nothing.
     pub(super) reread: Option<RereadFn>,
     /// Replaces a held cycle's spend-limit probe when set; only tests do.
     pub(super) probe_held: Option<super::held::HeldProbeFn>,
