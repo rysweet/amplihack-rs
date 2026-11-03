@@ -347,9 +347,6 @@ fn a_hand_change_to_a_logged_in_profile_recovers_and_swaps_in_the_same_run() {
     let f = Fixture::new();
     f.ok(&["profile", "rotate"]);
     assert_eq!(f.where_is(f.spare_ino).as_deref(), Some("~/.claude"));
-    // The swap left `work` full; only a reading after that second may
-    // choose it again (#1870), and the fixture cannot read it directly.
-    next_second();
     // Someone ran /login in ~/.claude as `extra`'s account.
     let home_json = serde_json::json!({"oauthAccount": account_json("extra")});
     private_file(&f.home.join(".claude.json"), &home_json.to_string());

@@ -337,6 +337,16 @@ impl Fixture {
     pub fn run(&self, args: &[&str]) -> Output {
         let out = self.cmd(args).output().unwrap();
         assert_no_secrets(&out);
+        // A rotate swap off a full login damps it at that whole second, and
+        // only a reading strictly later may choose it again (#1870). The
+        // fixture cannot read a login directly, so a run in the same second
+        // would find the login stale and unknown. Waiting here keeps that
+        // timing out of every test that swaps back.
+        if args.starts_with(&["profile", "rotate"])
+            && text(&out.stdout).lines().any(|l| l.starts_with("swap "))
+        {
+            next_second();
+        }
         out
     }
 
@@ -426,9 +436,8 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
 
 /// Waits until the wall clock enters the next whole second. A rotator swap
 /// records the login it left full at a whole second, and a later reading
-/// must be strictly later than that to count (#1870). A test that swaps
-/// away from a login and then expects a swap back onto it calls this
-/// between the two runs.
+/// must be strictly later than that to count (#1870). [`Fixture::run`]
+/// calls this after a rotate run that swapped.
 pub fn next_second() {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
     let secs = || {
