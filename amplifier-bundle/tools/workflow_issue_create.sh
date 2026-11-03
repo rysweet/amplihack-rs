@@ -3,8 +3,8 @@
 # `step-03-create-issue` in amplifier-bundle/recipes/workflow-prep.yaml (#1881).
 #
 # Step 03 sources this file after workflow_issue_tracking.sh and calls, in
-# order: issue_creation_opted_in, find_open_issue_by_exact_title, then
-# create_github_issue_bounded. The functions use emit_local_metadata and
+# order: issue_creation_opted_in, load_issue_identity,
+# find_open_issue_by_exact_title, then create_github_issue_bounded. The functions use emit_local_metadata and
 # sanitize_cli_output from workflow_issue_tracking.sh.
 #
 # The file sets no shell options and installs no trap; it works under the
@@ -16,9 +16,13 @@
 #
 #   issue_creation_opted_in VALUE   — 0 when VALUE, trimmed and lower-cased, is
 #                                     true, 1 or yes; 1 otherwise (fails closed)
+#   load_issue_identity             — sets ISSUE_REPO_NWO (owner/repo) and
+#                                     ISSUE_LOGIN (gh account) once per shell;
+#                                     1 with a WARNING when either fetch fails
 #   find_open_issue_by_exact_title TITLE [recent]
-#                                   — 0 + URL: open issue in this repository with
-#                                     exactly TITLE; 1: no match; 2: lookup failed
+#                                   — 0 + URL: open issue in this repository,
+#                                     opened by ISSUE_LOGIN, with exactly TITLE;
+#                                     1: no match; 2: lookup failed
 #                                     (WARNING on stderr). With `recent`, lists the
 #                                     newest open issues without --search, so an
 #                                     issue created seconds ago is found
@@ -40,6 +44,13 @@
 #   _issue_wait_for_class CLASS OUTPUT ROUND BASE MAX_DELAY
 #                                   — the planned wait for one backoff round
 #   _issue_last_url OUTPUT          — last line of OUTPUT that is an issue URL
+#   _issue_gh_stderr FILE RC        — prints FILE (a gh call's stderr) through
+#                                     sanitize_cli_output when RC is non-zero,
+#                                     then deletes FILE
+
+# Cleared on source so a value from the environment is never trusted.
+ISSUE_REPO_NWO=""
+ISSUE_LOGIN=""
 
 issue_creation_opted_in() {
   local v="${1:-}"
@@ -52,31 +63,73 @@ issue_creation_opted_in() {
   return 1
 }
 
+_issue_gh_stderr() {
+  local f="$1" rc="$2" text=""
+  [ -n "$f" ] || return 0
+  if [ "$rc" -ne 0 ] && [ -s "$f" ]; then
+    text=$(head -c 65536 -- "$f")
+    sanitize_cli_output "$text" >&2
+  fi
+  rm -f -- "$f"
+  return 0
+}
+
+load_issue_identity() {
+  local errf out rc=0
+  if [ -z "${ISSUE_REPO_NWO:-}" ]; then
+    errf=$(mktemp) || errf=""
+    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh repo view --json nameWithOwner --jq .nameWithOwner </dev/null 2>"${errf:-/dev/null}") || rc=$?
+    if [ "$rc" -ne 0 ] || ! [[ "$out" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
+      echo "WARNING: could not determine this repository (repo view exited ${rc})" >&2
+      _issue_gh_stderr "$errf" "$rc"
+      return 1
+    fi
+    _issue_gh_stderr "$errf" 0
+    ISSUE_REPO_NWO="$out"
+  fi
+  if [ -z "${ISSUE_LOGIN:-}" ]; then
+    rc=0
+    errf=$(mktemp) || errf=""
+    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh api user --jq .login </dev/null 2>"${errf:-/dev/null}") || rc=$?
+    if [ "$rc" -ne 0 ] || ! [[ "$out" =~ ^[A-Za-z0-9][A-Za-z0-9-]{0,38}$ ]]; then
+      echo "WARNING: could not determine the gh login (api user exited ${rc})" >&2
+      _issue_gh_stderr "$errf" "$rc"
+      return 1
+    fi
+    _issue_gh_stderr "$errf" 0
+    ISSUE_LOGIN="$out"
+  fi
+  return 0
+}
+
 find_open_issue_by_exact_title() {
-  local t="${1:-}" mode="${2:-}" phrase out repo url rc=0
+  local t="${1:-}" mode="${2:-}" phrase out url errf rc=0
+  if ! load_issue_identity; then
+    echo "WARNING: exact-title lookup failed; could not determine this repository or the gh login" >&2
+    return 2
+  fi
+  errf=$(mktemp) || errf=""
   if [ "$mode" = "recent" ]; then
     # Search indexes new issues after a delay; a plain listing does not.
-    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 --json number,title,url </dev/null 2>/dev/null) || rc=$?
+    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 --json number,title,url,author </dev/null 2>"${errf:-/dev/null}") || rc=$?
   else
     phrase="${t//\"/}"
     phrase="${phrase//\\/ }"
-    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 --search="\"${phrase}\" in:title" --json number,title,url </dev/null 2>/dev/null) || rc=$?
+    out=$(GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 --search="\"${phrase}\" in:title" --json number,title,url,author </dev/null 2>"${errf:-/dev/null}") || rc=$?
   fi
   if [ "$rc" -ne 0 ]; then
     echo "WARNING: exact-title lookup failed; issue list exited ${rc}" >&2
+    _issue_gh_stderr "$errf" "$rc"
     return 2
   fi
+  _issue_gh_stderr "$errf" 0
   rc=0
-  repo=$(GH_PROMPT_DISABLED=1 timeout 30 gh repo view --json nameWithOwner --jq .nameWithOwner </dev/null 2>/dev/null) || rc=$?
-  if [ "$rc" -ne 0 ] || ! [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]]; then
-    echo "WARNING: exact-title lookup failed; could not determine this repository (repo view exited ${rc})" >&2
-    return 2
-  fi
-  rc=0
-  url=$(printf '%s' "$out" | jq -r --arg t "$t" --arg r "$repo" '
+  url=$(printf '%s' "$out" | jq -r --arg t "$t" --arg r "$ISSUE_REPO_NWO" --arg u "$ISSUE_LOGIN" '
     if type != "array" then error("issue list output is not an array") else
     [ .[]
       | select(type == "object" and .title == $t and (.url | type) == "string")
+      | select((.author | type) == "object" and (.author.login | type) == "string"
+          and (.author.login | ascii_downcase) == ($u | ascii_downcase))
       | select((.url | split("/")) as $p
           | ($p | length) == 7 and $p[0] == "https:" and $p[1] == ""
             and ($p[2] | test("\\A[A-Za-z0-9.-]+\\z")) and $p[5] == "issues"
@@ -115,12 +168,11 @@ classify_issue_create_error() {
 }
 
 _issue_backoff_int() {
-  local v="${!1:-}" shown
+  local v="${!1:-}"
   if [[ "$v" =~ ^[1-9][0-9]{0,5}$ ]]; then printf '%s\n' "$v"; return 0; fi
   if [ -n "$v" ]; then
-    shown="${v:0:32}"
-    shown="${shown//[^A-Za-z0-9._+-]/?}"
-    printf 'WARNING: ignoring invalid %s=%s; using default %s\n' "$1" "$shown" "$2" >&2
+    # Only the length is printed, in case a secret was put here by mistake.
+    printf 'WARNING: ignoring invalid %s (%s characters); using default %s\n' "$1" "${#v}" "$2" >&2
   fi
   printf '%s\n' "$2"
 }
@@ -144,13 +196,16 @@ _issue_jitter_delay() {
 }
 
 _issue_primary_wait() {
-  local epoch now w rc=0
-  epoch=$(GH_PROMPT_DISABLED=1 timeout 30 gh api rate_limit --jq .resources.graphql.reset </dev/null 2>/dev/null) || rc=$?
+  local epoch now w errf rc=0
+  errf=$(mktemp) || errf=""
+  epoch=$(GH_PROMPT_DISABLED=1 timeout 30 gh api rate_limit --jq .resources.graphql.reset </dev/null 2>"${errf:-/dev/null}") || rc=$?
   if [ "$rc" -ne 0 ] || ! [[ "$epoch" =~ ^[0-9]{1,12}$ ]]; then
     echo "WARNING: could not read GitHub rate-limit reset; waiting 5s" >&2
+    _issue_gh_stderr "$errf" "$rc"
     printf '5\n'
     return 0
   fi
+  _issue_gh_stderr "$errf" 0
   now=$(date +%s)
   w=$((10#$epoch - now + 3))
   [ "$w" -lt 5 ] && w=5
@@ -180,13 +235,18 @@ _issue_last_url() {
 
 create_github_issue_bounded() {
   local title="$1" body_file="$2" label="$3"
-  local base cap max used=0 round=0 w rc out class url with_label=1 lrc found pass attempt
+  local base cap max used=0 round=0 w rc out class url with_label=1 lrc found pass attempt errf
   base=$(_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_BASE_SECS 5)
   cap=$(_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_MAX_DELAY_SECS 60)
   max=$(_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS 300)
+  # Fetched once here so every lookup during backoff reuses them; a failure
+  # is retried by the lookup itself.
+  load_issue_identity || true
   rc=0
-  GH_PROMPT_DISABLED=1 timeout 30 gh label create "$label" --color=0366d6 --description="Created by default-workflow recipe" </dev/null >/dev/null 2>&1 || rc=$?
+  errf=$(mktemp) || errf=""
+  GH_PROMPT_DISABLED=1 timeout 30 gh label create "$label" --color=0366d6 --description="Created by default-workflow recipe" </dev/null >/dev/null 2>"${errf:-/dev/null}" || rc=$?
   [ "$rc" -eq 0 ] || echo "INFO: gh label create ${label} exited ${rc} (the label may already exist); continuing" >&2
+  _issue_gh_stderr "$errf" "$rc"
   # Each pass of this bounded loop is one create; it ends by return on every
   # class, and a rate-limited pass only continues while used + wait <= max,
   # with every wait >= 1 — so at most max + 2 passes run.
@@ -200,6 +260,19 @@ create_github_issue_bounded() {
     if [ "$rc" -eq 0 ]; then
       url=$(_issue_last_url "$out") && { printf '%s\n' "$url"; return 0; }
       echo "ERROR: GitHub issue creation failed. gh issue create succeeded but printed no issue URL:" >&2
+      sanitize_cli_output "$out" >&2
+      return 1
+    fi
+    if [ "$rc" -eq 124 ]; then
+      # timeout killed the create; GitHub may still have made the issue.
+      lrc=0
+      found=$(find_open_issue_by_exact_title "$title" recent) || lrc=$?
+      if [ "$lrc" -eq 0 ]; then
+        echo "INFO: gh issue create timed out but the issue exists; reusing ${found}" >&2
+        printf '%s\n' "$found"
+        return 0
+      fi
+      echo "ERROR: GitHub issue creation failed. gh issue create timed out after 60s and no open issue with this title was found." >&2
       sanitize_cli_output "$out" >&2
       return 1
     fi

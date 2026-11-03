@@ -95,16 +95,18 @@ characters, trimmed):
 ```bash
 GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 \
   --search='"Add a --json flag to recipe list" in:title' \
-  --json number,title,url </dev/null
+  --json number,title,url,author </dev/null
 ```
 
-A `jq` program then checks the title, the URL shape and the repository of every
-result, and prints the URL of the first one that passes all three. A result
-for another repository is skipped, not reused. The full program is in
-[Exact-title reuse](workflow-tracking-issue-selection.md#lookup). The
-same lookup runs again before every retry of a rate-limited create, so a
-create that GitHub accepted but reported as failed is reused instead of
-duplicated. See
+A `jq` program then checks the title, the URL shape, the repository and the
+author of every result, and prints the URL of the first one that passes all
+four. A result for another repository, or opened by an account other than the
+gh login the step runs as, is skipped, not reused. The full program is in
+[Exact-title reuse](workflow-tracking-issue-selection.md#lookup). Before every
+retry of a rate-limited create, and once after a create that timed out, the
+lookup runs again as a plain listing of the newest open issues without
+`--search`, so a create that GitHub accepted but reported as failed is reused
+instead of duplicated. See
 [Exact-title reuse](workflow-tracking-issue-selection.md#exact-title-reuse).
 
 This replaces the earlier fuzzy match, which reused the first search hit for

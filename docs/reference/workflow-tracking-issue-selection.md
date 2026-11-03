@@ -269,20 +269,34 @@ in a space after the cut match its own earlier issue.
 ```bash
 GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 \
   --search='"Add a --json flag to recipe list" in:title' \
-  --json number,title,url </dev/null
+  --json number,title,url,author </dev/null
 ```
 
 The search phrase is the title with double quotes removed and each backslash
 replaced by a space, wrapped in quotes
 and followed by `in:title`, so search qualifiers in the task text are
-treated as words. `REPO` is `nameWithOwner` from
-`GH_PROMPT_DISABLED=1 timeout 30 gh repo view --json nameWithOwner </dev/null`.
-The results are then filtered with `jq -r --arg t "$TITLE" --arg r "$REPO"`
-and this program:
+treated as words.
+
+`REPO` and `LOGIN` come from `load_issue_identity`, which step-03 calls once
+before the first lookup. It stores them in `ISSUE_REPO_NWO` and `ISSUE_LOGIN`
+(both cleared when the helper is sourced, so values from the environment are
+never used), and every later lookup in the run reuses them:
+
+```bash
+GH_PROMPT_DISABLED=1 timeout 30 gh repo view --json nameWithOwner --jq .nameWithOwner </dev/null
+GH_PROMPT_DISABLED=1 timeout 30 gh api user --jq .login </dev/null
+```
+
+If either call fails or prints a value of the wrong form, the lookup does not
+run `gh issue list` and returns 2. A later lookup tries the failed call again.
+
+The results are then filtered with
+`jq -r --arg t "$TITLE" --arg r "$REPO" --arg u "$LOGIN"` and this program:
 
 ```jq
 [ .[]
   | select(.title == $t)
+  | select((.author.login | ascii_downcase) == ($u | ascii_downcase))
   | select((.url | split("/")) as $p
       | ($p | length) == 7 and $p[0] == "https:" and $p[1] == ""
         and ($p[2] | test("\\A[A-Za-z0-9.-]+\\z")) and $p[5] == "issues"
@@ -298,9 +312,17 @@ match must:
 - have a URL of the form `https://<host>/<owner>/<repo>/issues/<N>` with no
   newline or other stray characters;
 - belong to the current repository: `<owner>/<repo>` equals `REPO`, ignoring
-  case.
+  case;
+- have been opened by the gh account the step runs as: `author.login` equals
+  `LOGIN`, ignoring case.
 
-A result that fails the URL or repository check is skipped, and the next
+The author check stops an issue that someone else opened with the same title
+from becoming the tracking issue, and later being closed by `Fixes #N` when
+the pull request merges. As a result, if the gh account changes between two
+runs of the same task, the second run does not reuse the first run's issue
+and creates another one.
+
+A result that fails the URL, repository or author check is skipped, and the next
 result with the same title is tried. `gh issue list` never returns pull
 requests, and `--state open` excludes closed issues.
 
@@ -310,7 +332,7 @@ create, call `find_open_issue_by_exact_title TITLE recent`. That form drops
 
 ```bash
 GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 \
-  --json number,title,url </dev/null
+  --json number,title,url,author </dev/null
 ```
 
 GitHub search indexes new issues after a delay, so a create that GitHub
@@ -320,14 +342,15 @@ The same `jq` filter is applied.
 
 When the lookup fails, `find_open_issue_by_exact_title` prints
 `WARNING: exact-title lookup failed; <reason>` on stderr itself before it
-returns 2. Callers that treat 1 and 2 alike, such as step-03 before the first
+returns 2, followed by the failed `gh` call's stderr passed through
+`sanitize_cli_output`. Callers that treat 1 and 2 alike, such as step-03 before the first
 create, still log the failure.
 
 | Lookup result | Before the first create | Before a retry |
 | ------------- | ----------------------- | -------------- |
 | Match | URL printed, exit 0, no create | URL printed, exit 0, no further create |
 | No match | Create | Retry the create |
-| Lookup failed (gh error, timeout, bad JSON, repo view failed) | Create (nothing has been created yet, so there is nothing to duplicate) | No create this round; wait again (see below), then look up again |
+| Lookup failed (gh error, timeout, bad JSON, `repo view` or `api user` failed) | Create (nothing has been created yet, so there is nothing to duplicate) | No create this round; wait again (see below), then look up again |
 
 A retry only follows a lookup that succeeded and found nothing. When the
 lookup before a retry fails, that round makes no `gh issue create` call. The
@@ -366,6 +389,15 @@ wins.
 | `label` | `could not add label`, or `label` followed on the same line by `not found` or `does not exist`. Other output that mentions a label, such as `HTTP 422: Validation Failed (Label)`, is `other` | One more create without `--label` |
 | `other` | Anything else, including a bare `403` or a permission `403` | `ERROR`, exit 1 |
 
+### Create timed out
+
+If `timeout 60` stops `gh issue create` (exit code 124), GitHub may still have
+created the issue. The helper runs one `find_open_issue_by_exact_title TITLE
+recent` lookup. If it finds the issue, the helper prints its URL and returns
+0. Otherwise it prints
+`ERROR: GitHub issue creation failed. gh issue create timed out after 60s and no open issue with this title was found.`
+and returns 1. It does not retry the create.
+
 The create without `--label` runs at most once per run and only for the
 `label` class. A rate-limited or auth-failed create never triggers it, so
 each attempt is exactly one `gh issue create` call.
@@ -381,8 +413,9 @@ each attempt is exactly one `gh issue create` call.
 Each must be a positive integer of at most six digits
 (`^[1-9][0-9]{0,5}$`). An unset or empty value uses the default. Any other
 value, including `0`, also uses the default and prints
-`WARNING: ignoring invalid NAME=VALUE; using default D` to stderr, with the
-value cut to 32 characters.
+`WARNING: ignoring invalid NAME (N characters); using default D` to stderr.
+Only the length is printed, so a token put in one of these variables by
+mistake does not reach the log.
 
 For backoff round *n* (starting at 0), the delay uses "equal jitter":
 
@@ -416,7 +449,8 @@ WARNING: gh issue create hit a GitHub secondary rate limit; backing off 7s (roun
 The wait is the GraphQL reset time from `gh api rate_limit` plus 3 s, at
 least 5 s. If `gh api rate_limit` fails or returns a reset epoch that is not
 1–12 digits, the wait is 5 s and
-`WARNING: could not read GitHub rate-limit reset; waiting 5s` goes to stderr. The wait counts against the same
+`WARNING: could not read GitHub rate-limit reset; waiting 5s` goes to stderr,
+followed by gh's sanitised stderr when the call failed. The wait counts against the same
 `AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS` budget. If the reset is further away
 than the budget that is left, the step gives up at once without sleeping.
 
@@ -501,7 +535,7 @@ step's `set -euo pipefail`. Diagnostics go to stderr; stdout carries only a
 URL or the metadata block. It uses no `eval` or `sh -c`, and every user value
 reaches `gh` as one argument in `--flag=value` form. Every `gh` call runs as
 `GH_PROMPT_DISABLED=1 timeout N gh … </dev/null` (30 s for list, label,
-`rate_limit` and `repo view`; 60 s for create), so a login prompt can never
+`rate_limit`, `repo view` and `api user`; 60 s for create), so a login prompt can never
 stall the step. All `gh` output that reaches stderr goes through
 `sanitize_cli_output`. The issue body is never logged.
 
@@ -510,16 +544,30 @@ stall the step. All `gh` output that reaches stderr goes through
 Returns 0 when `VALUE`, trimmed and lower-cased, is `true`, `1` or `yes`.
 Returns 1 otherwise. No output.
 
+### `load_issue_identity`
+
+Sets `ISSUE_REPO_NWO` (`owner/repo`, from `gh repo view`) and `ISSUE_LOGIN`
+(the gh account, from `gh api user`) when they are empty, and returns 0. When
+either call fails or prints a value of the wrong form, it prints
+`WARNING: could not determine this repository (repo view exited RC)` or
+`WARNING: could not determine the gh login (api user exited RC)` and gh's
+sanitised stderr, and returns 1. Call it in the step's own shell, not in
+`$(…)`, or the values are lost when the subshell exits. Step-03 calls it once
+before the first lookup and `create_github_issue_bounded` calls it again
+(a no-op when the values are set), so a run makes one `gh repo view` and one
+`gh api user` call however many retries it makes.
+
 ### `find_open_issue_by_exact_title TITLE [recent]`
 
+Calls `load_issue_identity` first, so it also works on its own.
 Without a second argument the lookup uses `--search`. With `recent` it lists
 the 100 newest open issues instead; step-03 uses this form during backoff.
 
 | Return code | stdout | Meaning |
 | ----------- | ------ | ------- |
-| `0` | One issue URL | Open issue in this repository with exactly this title |
+| `0` | One issue URL | Open issue in this repository, opened by `ISSUE_LOGIN`, with exactly this title |
 | `1` | Empty | No match |
-| `2` | Empty | The lookup failed: gh error or timeout, output not a JSON array, or `gh repo view` failed. The function itself prints `WARNING: exact-title lookup failed; <reason>` on stderr |
+| `2` | Empty | The lookup failed: gh error or timeout, output not a JSON array, or `load_issue_identity` failed. The function itself prints `WARNING: exact-title lookup failed; <reason>` on stderr |
 
 Return codes 1 and 2 print nothing on stdout, so a caller can treat them
 alike and the failure is still logged.
@@ -534,9 +582,9 @@ Prints one of `auth`, `secondary`, `primary`, `not_found`, `label`, `other`
 
 | Return code | stdout | Meaning |
 | ----------- | ------ | ------- |
-| `0` | One issue URL | Created, or found by a lookup before a retry |
+| `0` | One issue URL | Created, or found by a lookup before a retry or after a timed-out create |
 | `0` | Local metadata block | `not_found`, or gave up after the budget |
-| `1` | Empty | `auth` or `other`; `ERROR` and the sanitised gh output on stderr |
+| `1` | Empty | `auth` or `other`, or a timed-out create whose issue was not found; `ERROR` and the sanitised gh output on stderr |
 
 After a successful create, only the last line of gh's output that is a valid
 issue URL is printed.
@@ -549,11 +597,13 @@ issue URL is printed.
 | `_issue_retry_after OUTPUT` | Prints `N` from `retry-after: N` (1–6 digits), or nothing |
 | `_issue_jitter_delay ROUND BASE MAX_DELAY` | Prints the equal-jitter delay for a round, at least 1 |
 | `_issue_primary_wait` | Prints the wait until the GraphQL reset plus 3 s, at least 5 |
+| `_issue_gh_stderr FILE RC` | Prints a failed gh call's stderr through `sanitize_cli_output`, then deletes the file |
 
 Step-03 calls the helpers like this:
 
 ```bash
 issue_creation_opted_in "${RECIPE_VAR_create_issue:-}" || { echo "INFO: …" >&2; emit_local_metadata; exit 0; }
+load_issue_identity || true
 FOUND_URL=$(find_open_issue_by_exact_title "$ISSUE_TITLE") && { printf '%s\n' "$FOUND_URL"; exit 0; }
 create_github_issue_bounded "$ISSUE_TITLE" "$ISSUE_BODY_FILE" "workflow:default"; exit $?
 ```
@@ -561,7 +611,9 @@ create_github_issue_bounded "$ISSUE_TITLE" "$ISSUE_BODY_FILE" "workflow:default"
 ## Diagnostics
 
 All diagnostics go to stderr. stdout carries only the URL or the metadata
-block. `gh` stderr is discarded. The task text is never logged.
+block. When a `gh` call made by the creation helper fails, its stderr follows
+the warning, passed through `sanitize_cli_output`; successful calls print
+nothing. The task text is never logged.
 
 | Message | When |
 | ------- | ---- |
@@ -574,10 +626,15 @@ block. `gh` stderr is discarded. The task text is never logged.
 | `WARNING: exact-title lookup failed; …` | Lookup returned 2. Before the first create the step creates; during backoff it waits |
 | `WARNING: gh issue create hit a GitHub secondary rate limit; backing off Ns (round R, U/Ms used)` | Secondary limit wait |
 | `WARNING: gh issue create hit the GitHub API rate limit; waiting Ns for reset (U/Ms used)` | Primary limit wait |
-| `WARNING: ignoring invalid NAME=VALUE; using default D` | An `AMPLIHACK_ISSUE_BACKOFF_*` value was set but invalid |
+| `WARNING: ignoring invalid NAME (N characters); using default D` | An `AMPLIHACK_ISSUE_BACKOFF_*` value was set but invalid; the value itself is not printed |
+| `WARNING: could not determine this repository (repo view exited RC)` | `gh repo view` failed; the lookup returns 2 |
+| `WARNING: could not determine the gh login (api user exited RC)` | `gh api user` failed; the lookup returns 2 |
+| `INFO: gh issue create timed out but the issue exists; reusing https://…/issues/N` | Create timed out; the lookup found the issue |
+| `INFO: gh label create workflow:default exited RC (the label may already exist); continuing` | Label create failed; gh's sanitised stderr follows |
 | `WARNING: could not read GitHub rate-limit reset; waiting 5s` | Primary limit, but the reset time was unreadable |
 | `WARNING: GitHub issue creation gave up after Us (AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS=M); falling back to local tracking.` | Budget used up |
 | `ERROR: GitHub issue creation failed.` | `auth` or `other` class; sanitised gh output follows |
+| `ERROR: GitHub issue creation failed. gh issue create timed out after 60s and no open issue with this title was found.` | Create timed out and the lookup did not find the issue |
 | `WARN: could not verify issue #1592 (gh exit 124); falling back to local tracking` | `gh issue view` failed; the exit code tells a timeout (124) from an auth, rate-limit or network failure. gh's own stderr is not shown |
 | `WARN: explicit issue_number #1592 could not be resolved as an issue in this repository ...` | `gh issue view` succeeded but did not return this repository's issue URL |
 | `WARN: ...` with fixed text, no value | `issue_number` was not numeric |
@@ -653,6 +710,14 @@ The selection described above applies only to `github` hosts.
   run may not be found, and a duplicate may be created. Lookups during
   backoff list recent issues without search, so a create that GitHub
   accepted but reported as failed is always found before the retry.
+- **A changed gh account creates a second issue.** The lookup reuses only
+  issues opened by the current gh login. If a task is run once as one account
+  and again as another, the second run creates a new issue instead of reusing
+  the first.
+- **Tokens that cannot call `gh api user`.** A GitHub App installation token
+  cannot read `/user`, so every lookup fails. The first create still runs, but
+  a rate-limited create is never retried and the step falls back to local
+  tracking when the budget runs out.
 - **Only the first 100 results are compared.** A title whose search returns
   more than 100 open issues can miss its exact match.
 - **Wall-clock time can exceed the budget.** The budget counts sleeps only.
@@ -672,7 +737,12 @@ The selection described above applies only to `github` hosts.
   `sleep` logs its argument and returns at once. It covers the local default,
   the opt-in values, exact-title reuse (including an other-repository
   result with the same title that is skipped in favour of a later
-  current-repository one), the lookup before each retry, a failed lookup
+  current-repository one, and a same-title issue by another account that is
+  not reused), one `gh repo view` and one `gh api user` call per run across
+  retries, a failed login fetch, a timed-out create with and without a
+  matching issue, sanitised gh stderr on failed lookups and label creates,
+  a backoff warning that prints only the value's length,
+  the lookup before each retry, a failed lookup
   during backoff that makes no create that round, the lookup-failure
   `WARNING` on stderr, the 401 path, the label fallback, jittered delays
   (each in `[1, cap]`, sum within the budget, not all equal), Retry-After

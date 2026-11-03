@@ -29,6 +29,7 @@ const REPO_URL: &str = "https://github.com/example-org/example-repo";
 const CREATED_URL: &str = "https://github.com/example-org/example-repo/issues/901";
 const TITLE: &str = "Add a --json flag to recipe list";
 const BODY_MARKER: &str = "BODY-MARKER-7f3a9c";
+const LOGIN: &str = "example-user";
 
 // ---------------------------------------------------------------------------
 // Paths and recipe access
@@ -125,13 +126,15 @@ fn write_executable(path: &Path, content: &str) {
 /// Logs: `$GH_LOG` gets `"$*"` per call; `$GH_ARGV_LOG` gets each argument
 /// on its own line followed by `---`; `$GH_PROMPT_LOG` gets every write or
 /// lookup call (`issue list`, `issue create`, `label create`, `repo view`,
-/// `api rate_limit`) made without `GH_PROMPT_DISABLED=1`.
+/// `api rate_limit`, `api user`) made without `GH_PROMPT_DISABLED=1`.
 ///
 /// Scripted behaviour (a `*_SEQ` variable is a space-separated list of
 /// tokens, one per call; after the end the last token repeats):
 ///
 /// - `issue view N`: prints `$FAKE_REPO_URL/issues/N` when N equals
 ///   `GH_VIEW_ISSUE`; otherwise fails.
+/// - `api user`: prints `GH_USER_LOGIN` (default `example-user`).
+///   `GH_API_USER_EXIT` makes it fail with a fake token on stderr.
 /// - `api repos/...`: 404.
 /// - `api rate_limit`: reset epoch `GH_RESET_EPOCH`, or now + `GH_RESET_IN`
 ///   (default 10). Honours `--jq` by printing the bare epoch.
@@ -139,15 +142,17 @@ fn write_executable(path: &Path, content: &str) {
 ///   JSON or, with `--jq`, bare. `GH_REPO_VIEW_EXIT` makes it fail.
 /// - `issue list`: `GH_LIST_SEQ` tokens `default` (`GH_LIST_JSON`, default
 ///   `[]`), `found` (`GH_LIST_FOUND_JSON`), `fail`, `garbage`, `object`.
-/// - `label create`: exits `GH_LABEL_EXIT` (default 0).
+/// - `label create`: exits `GH_LABEL_EXIT` (default 0), with a fake token on
+///   stderr when it fails.
 /// - `issue create`: `GH_CREATE_SEQ` tokens `ok`, `noisy`, `secondary`,
 ///   `secondary429`, `abuse`, `graphql_secondary`, `too_quickly`, `retry:N`,
-///   `primary`, `auth`, `forbidden`, `label`, `notfound`, `other`. Records the body file's mode and path.
+///   `primary`, `auth`, `forbidden`, `label`, `notfound`, `other`, and
+///   `timeout` (exits 124, as `timeout` does when it kills gh). Records the body file's mode and path.
 const FAKE_GH: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$GH_LOG"
 { for a in "$@"; do printf '%s\n' "$a"; done; printf '%s\n' '---'; } >> "$GH_ARGV_LOG"
 case "$1:$2" in
-  issue:list|issue:create|label:create|repo:view|api:rate_limit)
+  issue:list|issue:create|label:create|repo:view|api:rate_limit|api:user)
     [ "${GH_PROMPT_DISABLED:-}" = "1" ] || printf '%s\n' "$*" >> "$GH_PROMPT_LOG" ;;
 esac
 next_token() {
@@ -165,6 +170,10 @@ case "$1:$2" in
     if [ -n "${GH_RESET_EPOCH:-}" ]; then e="$GH_RESET_EPOCH"; else e=$(( $(date +%s) + ${GH_RESET_IN:-10} )); fi
     if has_jq "$@"; then printf '%s\n' "$e"; else printf '{"resources":{"graphql":{"limit":5000,"remaining":0,"reset":%s}}}\n' "$e"; fi
     exit 0 ;;
+  api:user)
+    if [ -n "${GH_API_USER_EXIT:-}" ]; then echo "HTTP 401: Bad credentials token ghp_USERFAKEUSERFAKE" >&2; exit "$GH_API_USER_EXIT"; fi
+    printf '%s\n' "${GH_USER_LOGIN:-example-user}"
+    exit 0 ;;
   api:*) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
   repo:view)
     if [ -n "${GH_REPO_VIEW_EXIT:-}" ]; then echo "gh: could not determine repository" >&2; exit "$GH_REPO_VIEW_EXIT"; fi
@@ -181,7 +190,9 @@ case "$1:$2" in
       *) printf '%s\n' "${GH_LIST_JSON:-[]}" ;;
     esac
     exit 0 ;;
-  label:create) exit "${GH_LABEL_EXIT:-0}" ;;
+  label:create)
+    [ "${GH_LABEL_EXIT:-0}" = "0" ] || echo "HTTP 403: label create refused token ghp_LABELFAKELABELFAKE" >&2
+    exit "${GH_LABEL_EXIT:-0}" ;;
   issue:create)
     bf=""; prev=""
     for a in "$@"; do
@@ -206,6 +217,7 @@ case "$1:$2" in
       forbidden) echo "HTTP 403: Resource not accessible by integration (https://api.github.com/graphql)" >&2; exit 1 ;;
       label) echo "could not add label: 'workflow:default' not found" >&2; exit 1 ;;
       notfound) echo "GraphQL: Could not resolve to a Repository with the name 'example-org/example-repo'. (repository)" >&2; exit 1 ;;
+      timeout) exit 124 ;;
       other) echo "GraphQL: unexpected create failure for https://token:ghp_secret123@github.com/example-org/example-repo" >&2; exit 1 ;;
     esac
     echo "fake gh: unknown create token $tok" >&2; exit 7 ;;
@@ -457,7 +469,8 @@ fn run_opted_in(task: &str, env: &[(&str, &str)]) -> Run {
 }
 
 fn exact_list_json(title: &str, url: &str) -> String {
-    serde_json::json!([{ "number": 1700, "title": title, "url": url }]).to_string()
+    serde_json::json!([{ "number": 1700, "title": title, "url": url, "author": { "login": LOGIN } }])
+        .to_string()
 }
 
 /// Source both helpers under `set -euo pipefail`, as step-03 does, and run
@@ -686,7 +699,10 @@ fn lookup_uses_open_state_quoted_phrase_and_in_title() {
         "the search phrase must be passed as --search=VALUE (S7): {call:?}"
     );
     let json = flag_value(call, "--json").unwrap_or_default();
-    assert!(json.contains("title") && json.contains("url"), "{call:?}");
+    assert!(
+        json.contains("title") && json.contains("url") && json.contains("author"),
+        "{call:?}"
+    );
 }
 
 #[test]
@@ -735,9 +751,14 @@ fn invalid_backoff_setting_warns_and_the_run_still_completes() {
     run.assert_created();
     assert!(
         run.stderr().contains(
-            "WARNING: ignoring invalid AMPLIHACK_ISSUE_BACKOFF_BASE_SECS=abc; using default 5"
+            "WARNING: ignoring invalid AMPLIHACK_ISSUE_BACKOFF_BASE_SECS (3 characters); using default 5"
         ),
         "{}",
+        run.diag()
+    );
+    assert!(
+        !run.stderr().contains("=abc") && !run.stderr().contains(" abc"),
+        "no part of the invalid value is printed\n{}",
         run.diag()
     );
     assert!(
@@ -830,10 +851,10 @@ fn title_that_looks_like_a_flag_is_one_argument() {
 fn same_title_in_another_repository_is_skipped_for_a_later_match() {
     let good = format!("{REPO_URL}/issues/1702");
     let json = serde_json::json!([
-        { "number": 1, "title": TITLE, "url": "https://github.com/other-org/other-repo/issues/1" },
-        { "number": 2, "title": TITLE, "url": format!("{REPO_URL}/pull/2") },
-        { "number": 3, "title": TITLE, "url": format!("{REPO_URL}/issues/3\n") },
-        { "number": 1702, "title": TITLE, "url": good.replace("example-org", "Example-Org") },
+        { "number": 1, "title": TITLE, "url": "https://github.com/other-org/other-repo/issues/1", "author": { "login": LOGIN } },
+        { "number": 2, "title": TITLE, "url": format!("{REPO_URL}/pull/2"), "author": { "login": LOGIN } },
+        { "number": 3, "title": TITLE, "url": format!("{REPO_URL}/issues/3\n"), "author": { "login": LOGIN } },
+        { "number": 1702, "title": TITLE, "url": good.replace("example-org", "Example-Org"), "author": { "login": LOGIN } },
     ])
     .to_string();
     let run = run_opted_in(TITLE, &[("GH_LIST_JSON", &json)]);
@@ -850,8 +871,8 @@ fn same_title_in_another_repository_is_skipped_for_a_later_match() {
 #[test]
 fn only_results_from_other_repositories_lead_to_a_create() {
     let json = serde_json::json!([
-        { "number": 1, "title": TITLE, "url": "https://github.com/other-org/other-repo/issues/1" },
-        { "number": 2, "title": TITLE, "url": "http://github.com/example-org/example-repo/issues/2" },
+        { "number": 1, "title": TITLE, "url": "https://github.com/other-org/other-repo/issues/1", "author": { "login": LOGIN } },
+        { "number": 2, "title": TITLE, "url": "http://github.com/example-org/example-repo/issues/2", "author": { "login": LOGIN } },
     ])
     .to_string();
     let run = run_opted_in(TITLE, &[("GH_LIST_JSON", &json)]);
@@ -871,6 +892,11 @@ fn failed_first_lookup_still_creates_and_warns() {
     assert!(
         !run.stderr().contains("ghp_FAKEFAKEFAKEFAKE"),
         "{}",
+        run.diag()
+    );
+    assert!(
+        run.stderr().contains("HTTP 502: Bad Gateway") && run.stderr().contains("<redacted-token>"),
+        "the failed lookup's gh stderr is shown, sanitised\n{}",
         run.diag()
     );
 }
@@ -1154,6 +1180,101 @@ fn backoff_lookup_lists_recent_issues_without_search() {
     );
 }
 
+#[test]
+fn same_title_opened_by_another_account_is_not_reused() {
+    let theirs = format!("{REPO_URL}/issues/1700");
+    let json = serde_json::json!([
+        { "number": 1700, "title": TITLE, "url": theirs, "author": { "login": "someone-else" } },
+        { "number": 1701, "title": TITLE, "url": format!("{REPO_URL}/issues/1701") },
+    ])
+    .to_string();
+    let run = run_opted_in(TITLE, &[("GH_LIST_JSON", &json)]);
+    run.assert_created();
+    assert_eq!(run.creates().len(), 1, "{}", run.diag());
+}
+
+#[test]
+fn repository_and_login_are_fetched_once_per_run_across_retries() {
+    let run = run_opted_in(TITLE, &[("GH_CREATE_SEQ", "secondary secondary ok")]);
+    run.assert_created();
+    assert_eq!(run.lists().len(), 3, "{}", run.diag());
+    assert_eq!(run.calls_of("repo", "view").len(), 1, "{}", run.diag());
+    assert_eq!(run.calls_of("api", "user").len(), 1, "{}", run.diag());
+}
+
+#[test]
+fn failed_login_fetch_warns_sanitised_and_still_creates() {
+    let found = format!("{REPO_URL}/issues/1700");
+    let run = run_opted_in(
+        TITLE,
+        &[
+            ("GH_API_USER_EXIT", "1"),
+            ("GH_LIST_JSON", &exact_list_json(TITLE, &found)),
+        ],
+    );
+    run.assert_created();
+    let err = run.stderr();
+    assert!(
+        err.contains("WARNING: could not determine the gh login")
+            && err.contains("WARNING: exact-title lookup failed"),
+        "{}",
+        run.diag()
+    );
+    assert!(
+        err.contains("<redacted-token>") && !err.contains("ghp_USERFAKE"),
+        "{}",
+        run.diag()
+    );
+    assert!(
+        run.lists().is_empty(),
+        "no listing runs without a login to match\n{}",
+        run.diag()
+    );
+}
+
+#[test]
+fn timed_out_create_reuses_an_issue_the_lookup_finds() {
+    let found = format!("{REPO_URL}/issues/1777");
+    let run = run_opted_in(
+        TITLE,
+        &[
+            ("GH_CREATE_SEQ", "timeout ok"),
+            ("GH_LIST_SEQ", "default found"),
+            ("GH_LIST_FOUND_JSON", &exact_list_json(TITLE, &found)),
+        ],
+    );
+    run.assert_exit(0);
+    assert_eq!(run.stdout().trim(), found, "{}", run.diag());
+    assert_eq!(run.creates().len(), 1, "{}", run.diag());
+    let lists = run.lists();
+    assert_eq!(lists.len(), 2, "{}", run.diag());
+    assert!(
+        !lists[1].iter().any(|a| a.starts_with("--search")),
+        "the lookup after a timeout lists recent issues: {:?}",
+        lists[1]
+    );
+    assert!(run.sleeps().is_empty(), "{}", run.diag());
+}
+
+#[test]
+fn timed_out_create_without_a_match_fails_without_retrying() {
+    let run = run_opted_in(TITLE, &[("GH_CREATE_SEQ", "timeout ok")]);
+    run.assert_exit(1);
+    assert!(run.stdout().is_empty(), "{}", run.diag());
+    assert_eq!(
+        run.creates().len(),
+        1,
+        "no retry after a timeout\n{}",
+        run.diag()
+    );
+    assert_eq!(run.lists().len(), 2, "{}", run.diag());
+    assert!(
+        run.stderr().contains("timed out after 60s"),
+        "{}",
+        run.diag()
+    );
+}
+
 // ===========================================================================
 // AC5: a failed lookup during backoff makes no create that round
 // ===========================================================================
@@ -1371,6 +1492,13 @@ fn label_creation_failure_does_not_stop_the_create() {
     let run = run_opted_in(TITLE, &[("GH_LABEL_EXIT", "1")]);
     run.assert_created();
     assert_eq!(run.calls_of("label", "create").len(), 1, "{}", run.diag());
+    assert!(
+        run.stderr().contains("label create refused")
+            && run.stderr().contains("<redacted-token>")
+            && !run.stderr().contains("ghp_LABELFAKE"),
+        "the label failure reason is shown, sanitised\n{}",
+        run.diag()
+    );
 }
 
 // ===========================================================================
@@ -1597,6 +1725,20 @@ fn helper_backoff_int_validates_values() {
         run.assert_exit(0);
         assert_eq!(run.stdout().trim(), expect, "{value:?}\n{}", run.diag());
     }
+    let secret = "ghp_notarealtokenbutlookslikeone";
+    let run = run_helper(
+        "_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_BASE_SECS 42",
+        &[("AMPLIHACK_ISSUE_BACKOFF_BASE_SECS", secret)],
+    );
+    assert_eq!(run.stdout().trim(), "42", "{}", run.diag());
+    assert!(
+        run.stderr()
+            .contains(&format!("({} characters)", secret.len()))
+            && !run.stderr().contains("ghp_")
+            && !run.stderr().contains("notarealtoken"),
+        "only the length of an invalid value is printed\n{}",
+        run.diag()
+    );
     let run = run_helper(
         "_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_BASE_SECS 42",
         &[],
@@ -1730,6 +1872,24 @@ fn helper_find_open_issue_by_exact_title_return_codes() {
             "",
             true,
         ),
+        (
+            vec![
+                ("GH_API_USER_EXIT", "1".into()),
+                ("GH_LIST_JSON", exact_list_json(TITLE, &found)),
+            ],
+            "rc=2",
+            "",
+            true,
+        ),
+        (
+            vec![
+                ("GH_USER_LOGIN", "Example-User".into()),
+                ("GH_LIST_JSON", exact_list_json(TITLE, &found)),
+            ],
+            "rc=0",
+            found.as_str(),
+            false,
+        ),
     ];
     for (env, rc, url, warns) in cases {
         let mut e: Vec<(&str, &str)> = env.iter().map(|(k, v)| (*k, v.as_str())).collect();
@@ -1855,6 +2015,7 @@ fn helper_header_lists_every_function() {
         .collect();
     for required in [
         "issue_creation_opted_in",
+        "load_issue_identity",
         "find_open_issue_by_exact_title",
         "classify_issue_create_error",
         "create_github_issue_bounded",
@@ -1899,6 +2060,7 @@ fn helper_wraps_every_gh_call_with_timeout_no_prompt_and_null_stdin() {
         "timeout 30 gh issue list",
         "timeout 30 gh repo view",
         "timeout 30 gh api rate_limit",
+        "timeout 30 gh api user",
     ] {
         assert!(text.contains(literal), "helper must contain `{literal}`");
     }

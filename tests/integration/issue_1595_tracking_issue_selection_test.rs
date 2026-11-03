@@ -113,6 +113,8 @@ fn write_executable(path: &Path, content: &str) {
 /// - `issue list`: prints `GH_LIST_JSON` (default `[]`), the JSON array the
 ///   #1881 exact-title lookup reads.
 /// - `repo view`: prints this repository's `nameWithOwner`.
+/// - `api user`: prints the login `example-user`, the author the #1881
+///   lookup requires.
 /// - `label create`: succeeds.
 /// - `issue create`: prints the issue #901 URL.
 /// - anything else: exit 7.
@@ -123,6 +125,7 @@ lookup_state() {
   eval "state=\${GH_API_$1:-}"
 }
 case "$1:$2" in
+  api:user) echo "example-user"; exit 0 ;;
   api:repos/*)
     n="${2##*/}"
     case "$2" in */issues/"$n") ;; *) echo "fake gh: unexpected api path $2" >&2; exit 7 ;; esac
@@ -969,7 +972,9 @@ fn rejected_candidates_fall_through_to_the_title_search() {
             ("GH_API_1585", "pr"),
             (
                 "GH_LIST_JSON",
-                &format!(r#"[{{"number":777,"title":"Follows #1585.","url":"{found}"}}]"#),
+                &format!(
+                    r#"[{{"number":777,"title":"Follows #1585.","url":"{found}","author":{{"login":"example-user"}}}}]"#
+                ),
             ),
         ],
     );
