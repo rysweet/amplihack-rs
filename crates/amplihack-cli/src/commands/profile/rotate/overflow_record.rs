@@ -326,7 +326,7 @@ pub fn alert_line(
         id => {
             let name = live_name(id).map_or("-", ProfileName::as_str);
             (
-                "no-capacity",
+                super::alert::NO_CAPACITY,
                 msg::alert_no_capacity_for(name, live, others),
             )
         }

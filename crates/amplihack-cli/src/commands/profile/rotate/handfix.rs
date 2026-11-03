@@ -264,7 +264,7 @@ fn record(
     l.live = Some(m.to_string());
     l.account = Some(key.to_string());
     l.since = Some(t);
-    l.alert = None;
+    super::alert::clear_alert(l);
     l.guidance = None;
     let mut lines = vec![done];
     if case.l != *m && case.l_lost {

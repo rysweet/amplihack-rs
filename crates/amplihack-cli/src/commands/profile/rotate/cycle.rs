@@ -2,7 +2,8 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::alert::{alert, alert_key, alert_once, clear_alert, refusal_kind};
+use super::alert::{alert, alert_key, refusal_kind};
+use super::capacity::Room;
 use super::decide::Decision;
 use super::dry_run::dry_run;
 use super::fresh::{self, Reread, RereadFn};
@@ -278,6 +279,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         ..
     } = m;
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+    let room = Room::live(probed.as_ref(), &live, first.platform_live(), tag);
     let stay_line = stay_note(&l, tag, live_name(&first.live), next_plan_reset);
     // Saved before any swap, which reloads the ledger from disk.
     if block_spend_limited(&mut out, &mut l, &new_blocks, t) {
@@ -349,17 +351,15 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 out.emit(t, line);
             }
             note_live(&mut l, &first, t);
-            // A damped stay is a stay: no alert applies, so it clears one.
-            clear_alert(&mut l);
-            CycleOutcome::Stayed
+            // Issue #1907: capacity only on a fresh reading below 100%.
+            room.stay(&mut l)
         }
         Decision::Alert => {
             note_live(&mut l, &first, t);
-            let name = live_name(&first.live);
             let reason = || platform_block_reason(ctx);
             let (kind, line) = alert_line(&first, tag, &live, &others, &key_held, reason);
-            alert_once(&mut out, &mut l, &alert_key(kind, name), t, &line);
-            CycleOutcome::Alerted
+            let key = alert_key(kind, live_name(&first.live));
+            room.alert(&mut out, &mut l, kind, &key, t, &line)
         }
     };
     refresh_capacity(

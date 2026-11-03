@@ -5,8 +5,8 @@
 
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    check_root_private, ensure_private_dir, euid, fsync_dir, now, read_bounded_nofollow,
-    writable_by_others, write_private_atomic,
+    check_root_private, ensure_private_dir, euid, fsync_dir, now, parse_position as position,
+    read_bounded_nofollow, writable_by_others, write_private_atomic,
 };
 use crate::commands::profile::name::ProfileName;
 use serde::{Deserialize, Serialize};
@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+use super::alert::valid_alerts;
 pub use super::hand_fields::{
     HOME_UNREADABLE_GRACE, MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES, MAX_LOST_LOGIN, unprintable,
 };
@@ -121,6 +122,10 @@ pub struct RotateLedger {
     /// The ALERT de-duplication key, `<kind>:<live or ->`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alert: Option<String>,
+    /// Issue #1907: a no-capacity ALERT's key while the live login still
+    /// read below 100%, so it does not block a resume; never with `alert`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory_alert: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_cycle: Option<LastCycle>,
     /// Overflow profiles blocked by a spend limit, by profile name.
@@ -168,6 +173,7 @@ impl Default for RotateLedger {
             swapped_at: None,
             previous: None,
             alert: None,
+            advisory_alert: None,
             last_cycle: None,
             overflow_blocked: BTreeMap::new(),
             guidance: None,
@@ -322,9 +328,7 @@ impl RotateState {
         if !valid_name(l.live.as_deref()) || !valid_name(l.previous.as_deref()) {
             return Err(inconsistent(format!("{WHAT}: invalid profile name")));
         }
-        if l.account.as_deref().is_some_and(|a| !safe_account(a))
-            || l.alert.as_deref().is_some_and(|a| !safe_account(a))
-        {
+        if l.account.as_deref().is_some_and(|a| !safe_account(a)) || !valid_alerts(&l) {
             return Err(inconsistent(format!("{WHAT}: invalid account or alert")));
         }
         if !valid_overflow(&l) {
@@ -391,9 +395,4 @@ impl RotateState {
             Err(e) => Err(e.into()),
         }
     }
-}
-
-/// Line and column only: a serde message can quote input.
-fn position(e: &serde_json::Error) -> String {
-    format!("invalid JSON at line {} column {}", e.line(), e.column())
 }

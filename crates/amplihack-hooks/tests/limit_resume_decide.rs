@@ -1349,3 +1349,97 @@ fn fresh_capacity_on_credits_still_needs_a_fresh_cycle_and_no_alert() {
         START
     ));
 }
+
+// ── Issue #1907: the ledger shapes a #1907 rotator writes ───────────────────
+
+/// Ledger bytes as a #1907 rotator writes them: the last cycle measured and
+/// recorded `after` seconds into the wait, with `extra` top-level fields.
+fn ledger_1907(outcome: &str, after: i64, extra: &str) -> Vec<u8> {
+    format!(
+        r#"{{"version":1,"live":"work"{extra},
+            "last_cycle":{{"at":{t},"measured_at":{t},"outcome":"{outcome}"}}}}"#,
+        t = START + after
+    )
+    .into_bytes()
+}
+
+/// The hook reads `raw` once it is `after` seconds into the wait, and an
+/// older stayed cycle before that.
+fn from_bytes(raw: Vec<u8>, after: i64) -> CycleFn {
+    Box::new(move |elapsed| {
+        if elapsed >= after {
+            parse_cycle(&raw, START + elapsed)
+        } else {
+            Some(cycle("stayed", -600, false))
+        }
+    })
+}
+
+#[test]
+fn issue_1907_a_a_stay_on_a_failed_live_probe_never_resumes() {
+    let raw = ledger_1907("stayed-unread", 75, r#","alert":null"#);
+    let mut d = Fake::new(true, from_bytes(raw, 75));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_timeout(&d, out);
+}
+
+#[test]
+fn issue_1907_a_stayed_unread_cycle_keeps_an_older_alert_and_never_resumes() {
+    let raw = ledger_1907("stayed-unread", 75, r#","alert":"no-capacity:work""#);
+    let mut d = Fake::new(true, from_bytes(raw, 75));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_timeout(&d, out);
+}
+
+#[test]
+fn issue_1907_b_a_fresh_stay_resumes() {
+    let raw = ledger_1907("stayed", 75, r#","alert":null"#);
+    let mut d = Fake::new(true, from_bytes(raw, 75));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Resumed);
+    assert_eq!(d.guard.events.len(), 1);
+}
+
+#[test]
+fn issue_1907_c_a_fresh_cycle_after_a_failed_probe_resumes() {
+    let unread = ledger_1907("stayed-unread", 30, r#","alert":"no-capacity:work""#);
+    let fresh = ledger_1907("stayed", 300, r#","alert":null"#);
+    let cycle: CycleFn = Box::new(move |elapsed| match elapsed {
+        e if e >= 300 => parse_cycle(&fresh, START + e),
+        e if e >= 30 => parse_cycle(&unread, START + e),
+        _ => Some(cycle("stayed", -600, false)),
+    });
+    let mut d = Fake::new(true, cycle);
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Resumed);
+    assert!(
+        d.clock - START >= 300,
+        "the stayed-unread cycle at 30 s must not resume"
+    );
+}
+
+#[test]
+fn issue_1907_d_an_advisory_alert_with_a_fresh_stay_resumes() {
+    let raw = ledger_1907(
+        "stayed",
+        75,
+        r#","alert":null,"advisory_alert":"no-capacity:work""#,
+    );
+    let mut d = Fake::new(true, from_bytes(raw, 75));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Resumed);
+    assert_eq!(d.guard.sessions.values().map(Vec::len).sum::<usize>(), 1);
+}
+
+#[test]
+fn issue_1907_e_a_hard_alert_never_resumes() {
+    let raw = ledger_1907("alerted", 75, r#","alert":"no-capacity:work""#);
+    let mut d = Fake::new(true, from_bytes(raw, 75));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_timeout(&d, out);
+    // A stay that still carries a hard alert never resumes either.
+    let raw = ledger_1907("stayed", 75, r#","alert":"no-capacity:work""#);
+    let mut d = Fake::new(true, from_bytes(raw, 75));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_timeout(&d, out);
+}

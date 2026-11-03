@@ -1130,6 +1130,20 @@ Verified on Claude Code 2.1.307: a weekly-limit stop runs `StopFailure` with
 The hook trusts the rotator's verdict. It never applies the thresholds itself
 and never reads a login.
 
+The rotator records a stay as `stayed` only when it read the live login in
+that cycle and the reading was below 100% on both the session and the week
+window. A stay after a failed, carried or unknown live probe, for example
+the line `stay: live probe failed (1/3)`, is recorded as `stayed-unread`,
+and the hook keeps waiting. When every other login has passed a threshold
+but the live login still reads below 100%, the rotator writes the
+`ALERT: no profile has capacity` line once and records `stayed`, so the
+session resumes on the login it already has. When the live login is at 100%,
+at a spend limit, or was not read in this cycle (a failed, carried or
+unknown probe), the ALERT blocks and the hook waits. A stay on an overflow
+profile that was read in that cycle runs on credits, so it records `stayed`
+whatever its plan figures. The full rule is in
+[Stays and capacity](../reference/profile-command.md#rotate-stays-and-capacity).
+
 ### See what it did
 
 Each decision is one line in `<root>/.auto-switch.d/resume/resume.log`:
@@ -1160,7 +1174,8 @@ rotator was not running when the limit hit; start it with
 - **A fresh cycle every time.** Each resume needs a rotator cycle recorded
   after the limit hit, so one session resumes at most once per `--interval`.
 - **No resume without capacity.** When every login is at its limit the
-  rotator records an ALERT, and the hook does nothing.
+  rotator records an ALERT, and the hook does nothing. A stay whose live
+  probe failed is not capacity either.
 - **At most 3 resumes per session in 24 hours.** After that it logs `cap`.
 
 If anything it needs cannot be read or written safely, it does not resume.
@@ -1251,6 +1266,14 @@ When the `ALERT: no profile has capacity` line is written, the rotator has
 nowhere to move the login, so it stays put. With an
 [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted)
 marked, it moves there instead when the next plan reset is far enough away.
+
+If the live login still reads below 100% on both windows, the ALERT is
+advisory: the ledger keeps it in `advisory_alert`, `alert` stays `null`,
+and the cycle records `stayed`, so sessions stopped by a limit resume on
+that login. Once the live login reaches 100% or a spend limit, or its probe
+fails, is carried or is unknown in that cycle, the ALERT moves to `alert`
+and the cycle records `alerted`. See
+[Advisory alert](../reference/profile-command.md#rotate-advisory-alert).
 
 When some candidates could not be measured, the ALERT ends with a count,
 for example:

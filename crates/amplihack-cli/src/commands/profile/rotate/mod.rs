@@ -17,6 +17,8 @@ mod backup;
 #[cfg(unix)]
 mod candidates;
 #[cfg(unix)]
+mod capacity;
+#[cfg(unix)]
 pub(in crate::commands::profile) mod change_log;
 #[cfg(unix)]
 mod control;
@@ -121,6 +123,8 @@ mod tests;
 #[cfg(all(test, unix))]
 mod tests_autostart;
 #[cfg(all(test, unix))]
+mod tests_capacity;
+#[cfg(all(test, unix))]
 mod tests_daemon;
 #[cfg(all(test, unix))]
 mod tests_handfix;
@@ -146,6 +150,8 @@ mod tests_issue_1870;
 mod tests_issue_1870_cycle;
 #[cfg(all(test, unix))]
 mod tests_issue_1870_probe;
+#[cfg(all(test, unix))]
+mod tests_issue_1907_cycle;
 #[cfg(all(test, unix))]
 mod tests_key_check;
 #[cfg(all(test, unix))]
