@@ -5,13 +5,12 @@
 //! - `damp::next_failed(prev: u32, live: &Reading) -> u32`: `prev + 1`
 //!   (saturating) for `Reading::Failed`, else 0. `observe` stores it in
 //!   `Ctx.failed_live`; a completed swap resets it to 0.
-//! - `damp::damp(d: Decision, live: &Reading, consecutive_failed: u32,
-//!   swapped_at: Option<i64>, now: i64, s: &Settings) -> (Decision,
-//!   Option<String>)`. Acts only on `(Reading::Failed, Swap { reason:
-//!   Threshold, .. })`:
+//! - `damp::damp(d: Decision, live: &Reading, consecutive_failed: u32)
+//!   -> (Decision, Option<String>)`. Acts only on `(Reading::Failed,
+//!   Swap { reason: Threshold | PlanRoom, .. })`:
 //!   1. `k < 3`: `Stay`, note `stay: live probe failed (k/3)`;
 //!   2. otherwise `Swap { to, reason: Reason::FailedProbe }`, no note.
-//!      Issue #1880: the hold no longer applies; `swapped_at` is ignored.
+//!      Issue #1880: the hold no longer applies; `damp` has no swap time.
 //!
 //!   Every other input comes back unchanged with no note.
 //! - `decide::held(hold: u64, swapped_at: Option<i64>, now: i64) -> bool` is
@@ -119,14 +118,7 @@ fn held_is_the_upgrade_hold() {
 #[test]
 fn fewer_than_three_failures_stay_with_a_count() {
     for k in [1, 2] {
-        let (d, note) = damp(
-            threshold_swap(),
-            &Reading::Failed,
-            k,
-            None,
-            NOW,
-            &settings(),
-        );
+        let (d, note) = damp(threshold_swap(), &Reading::Failed, k);
         assert_eq!(d, Decision::Stay, "k={k}");
         assert_eq!(
             note.as_deref(),
@@ -138,123 +130,25 @@ fn fewer_than_three_failures_stay_with_a_count() {
 #[test]
 fn a_zero_count_still_stays() {
     // One-shot runs pass 1; 0 must not be read as "no failures, swap".
-    let (d, note) = damp(
-        threshold_swap(),
-        &Reading::Failed,
-        0,
-        None,
-        NOW,
-        &settings(),
-    );
+    let (d, note) = damp(threshold_swap(), &Reading::Failed, 0);
     assert_eq!(d, Decision::Stay);
     assert_eq!(note.as_deref(), Some("stay: live probe failed (0/3)"));
 }
 
+/// `damp` has no swap time (#1880, #1894): the post-swap hold cannot stop
+/// a failed-probe swap. The cycle tests in `tests_issue_1880_cycle` run it
+/// inside a live hold.
 #[test]
 fn the_third_failure_swaps_with_the_failed_probe_reason() {
     for k in [3, 4, 50] {
-        let (d, note) = damp(
-            threshold_swap(),
-            &Reading::Failed,
-            k,
-            None,
-            NOW,
-            &settings(),
-        );
+        let (d, note) = damp(threshold_swap(), &Reading::Failed, k);
         assert_eq!(d, swap("spare", Reason::FailedProbe), "k={k}");
         assert_eq!(note, None);
     }
 }
 
 #[test]
-fn a_recent_swap_holds_a_failed_probe_swap() {
-    // #1880: the hold no longer applies to a failed live login at the limit.
-    let (d, note) = damp(
-        threshold_swap(),
-        &Reading::Failed,
-        3,
-        Some(NOW - 1800),
-        NOW,
-        &settings(),
-    );
-    assert_eq!(d, swap("spare", Reason::FailedProbe));
-    assert_eq!(note, None);
-}
-
-#[test]
-fn one_second_left_still_holds() {
-    // #1880: one second of hold left no longer stops the swap.
-    let (d, note) = damp(
-        threshold_swap(),
-        &Reading::Failed,
-        3,
-        Some(NOW - 3599),
-        NOW,
-        &settings(),
-    );
-    assert_eq!(d, swap("spare", Reason::FailedProbe));
-    assert_eq!(note, None);
-}
-
-#[test]
-fn no_time_left_swaps() {
-    let (d, note) = damp(
-        threshold_swap(),
-        &Reading::Failed,
-        3,
-        Some(NOW - 3600),
-        NOW,
-        &settings(),
-    );
-    assert_eq!(d, swap("spare", Reason::FailedProbe));
-    assert_eq!(note, None);
-}
-
-#[test]
-fn a_future_swap_time_holds_for_the_whole_hold() {
-    // #1880: a future swap time no longer holds a failed-probe swap.
-    let (d, note) = damp(
-        threshold_swap(),
-        &Reading::Failed,
-        3,
-        Some(NOW + 10_000),
-        NOW,
-        &settings(),
-    );
-    assert_eq!(d, swap("spare", Reason::FailedProbe));
-    assert_eq!(note, None);
-}
-
-#[test]
-fn the_count_rule_comes_before_the_hold() {
-    let (d, note) = damp(
-        threshold_swap(),
-        &Reading::Failed,
-        1,
-        Some(NOW - 10),
-        NOW,
-        &settings(),
-    );
-    assert_eq!(d, Decision::Stay);
-    assert_eq!(note.as_deref(), Some("stay: live probe failed (1/3)"));
-}
-
-#[test]
-fn hold_zero_disables_only_the_hold() {
-    let s = Settings {
-        hold: 0,
-        ..settings()
-    };
-    let (d, _) = damp(threshold_swap(), &Reading::Failed, 3, Some(NOW), NOW, &s);
-    assert_eq!(d, swap("spare", Reason::FailedProbe));
-    let (d, note) = damp(threshold_swap(), &Reading::Failed, 2, Some(NOW), NOW, &s);
-    assert_eq!(d, Decision::Stay);
-    assert_eq!(note.as_deref(), Some("stay: live probe failed (2/3)"));
-}
-
-#[test]
 fn other_decisions_and_readings_pass_through_unchanged() {
-    let s = settings();
     let cases = [
         // A measured breach and an exhausted live login swap at once.
         (threshold_swap(), r(90.0, 10.0)),
@@ -270,7 +164,7 @@ fn other_decisions_and_readings_pass_through_unchanged() {
     ];
     for (d, live) in cases {
         for k in [0, 1, 3] {
-            let got = damp(d.clone(), &live, k, Some(NOW - 10), NOW, &s);
+            let got = damp(d.clone(), &live, k);
             assert_eq!(got, (d.clone(), None), "{d:?} {live:?} k={k}");
         }
     }
@@ -325,7 +219,7 @@ impl Sim {
     fn cycle(&mut self, s: &Settings, live: &Reading, cands: &[Measured], now: i64) -> Decision {
         let raw = decide(s, live, cands, self.swapped_at, now);
         self.failed = next_failed(self.failed, live);
-        let (d, note) = damp(raw, live, self.failed, self.swapped_at, now, s);
+        let (d, note) = damp(raw, live, self.failed);
         if let Some(n) = note {
             self.notes.push(n);
         }
@@ -489,14 +383,7 @@ fn overflow_moves_pass_through_damping_on_a_failed_live_probe() {
     for reason in [Reason::OverflowIn, Reason::OverflowOut] {
         for k in [0, 1, FAILED_PROBE_LIMIT] {
             let d = swap("spare", reason);
-            let (out, note) = damp(
-                d.clone(),
-                &Reading::Failed,
-                k,
-                Some(NOW - 10),
-                NOW,
-                &settings(),
-            );
+            let (out, note) = damp(d.clone(), &Reading::Failed, k);
             assert_eq!(out, d, "{reason:?} k={k}");
             assert_eq!(note, None);
         }
@@ -507,7 +394,7 @@ fn overflow_moves_pass_through_damping_on_a_failed_live_probe() {
 fn overflow_moves_pass_through_damping_on_a_measured_live_probe() {
     for reason in [Reason::OverflowIn, Reason::OverflowOut] {
         let d = swap("spare", reason);
-        let (out, note) = damp(d.clone(), &r(90.0, 40.0), 0, Some(NOW), NOW, &settings());
+        let (out, note) = damp(d.clone(), &r(90.0, 40.0), 0);
         assert_eq!(out, d);
         assert_eq!(note, None);
     }

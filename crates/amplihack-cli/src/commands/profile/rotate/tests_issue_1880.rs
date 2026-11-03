@@ -15,7 +15,8 @@
 //! - `relabel`: `Threshold` or `PlanRoom` with a plan spend limit becomes
 //!   `spend-limit`; nothing else changes.
 //! - `blocks_room(reading, k)`: `Failed` and `k < FAILED_PROBE_LIMIT`.
-//! - `failed_store::prior` matches `LiveId::Known` exactly; `record` is the
+//! - `failed_store::prior` matches the key of a `LiveId::Known` profile, or
+//!   `failed_store::ADOPTED` for `LiveId::Adopt`, exactly; `record` is the
 //!   only writer; a malformed stored value loads as absent and never fails
 //!   the ledger or reaches a log.
 //!
@@ -25,31 +26,18 @@
 
 use super::damp::{FAILED_PROBE_LIMIT, damp};
 use super::decide::{Decision, Probed, Reading, Reason, Windows};
-use super::failed_store::{self, MAX_STORED};
+use super::failed_store::{self, ADOPTED, MAX_STORED};
 use super::identify::LiveId;
 use super::ledger::{RotateLedger, RotateState, for_older_readers};
 use super::live_limit::{LiveOutcome, blocks_room, classify, for_decision, next_count, relabel};
-use super::settings::Settings;
 use super::tests_revalidate_cause::ctx_with;
 use super::tests_swap::{env, n};
+use crate::commands::profile::name::ProfileName;
 use serde_json::{Value, json};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
 const NOW: i64 = 1_760_000_000;
-
-fn settings() -> Settings {
-    Settings {
-        session_at: 85,
-        week_at: 90,
-        margin: 5,
-        upgrade_margin: 30,
-        hold: 3600,
-        interval: 600,
-        overflow_wait: 1800,
-        overflow_unknown_reset: false,
-    }
-}
 
 fn probe(reading: Reading) -> Probed {
     Probed {
@@ -341,34 +329,19 @@ fn only_a_failed_reading_blocks_room() {
 
 #[test]
 fn the_third_failure_swaps_inside_the_hold() {
-    for swapped_at in [Some(NOW - 60), Some(NOW - 3599), Some(NOW + 10_000)] {
-        let (d, note) = damp(
-            swap("spare", Reason::Threshold),
-            &Reading::Failed,
-            FAILED_PROBE_LIMIT,
-            swapped_at,
-            NOW,
-            &settings(),
-        );
-        assert_eq!(
-            d,
-            swap("spare", Reason::FailedProbe),
-            "swapped_at={swapped_at:?}"
-        );
-        assert_eq!(note, None);
-    }
+    // `damp` takes no swap time, so no hold can reach it (#1894).
+    let (d, note) = damp(
+        swap("spare", Reason::Threshold),
+        &Reading::Failed,
+        FAILED_PROBE_LIMIT,
+    );
+    assert_eq!(d, swap("spare", Reason::FailedProbe));
+    assert_eq!(note, None);
 }
 
 #[test]
 fn below_the_limit_a_failed_probe_still_stays_inside_the_hold() {
-    let (d, note) = damp(
-        swap("spare", Reason::Threshold),
-        &Reading::Failed,
-        2,
-        Some(NOW - 60),
-        NOW,
-        &settings(),
-    );
+    let (d, note) = damp(swap("spare", Reason::Threshold), &Reading::Failed, 2);
     assert_eq!(d, Decision::Stay);
     assert_eq!(note.as_deref(), Some("stay: live probe failed (2/3)"));
 }
@@ -381,9 +354,6 @@ fn a_plan_room_swap_on_the_third_failure_is_a_failed_probe_swap() {
         swap("spare", Reason::PlanRoom),
         &Reading::Failed,
         FAILED_PROBE_LIMIT,
-        Some(NOW - 60),
-        NOW,
-        &settings(),
     );
     assert_eq!(d, swap("spare", Reason::FailedProbe));
     assert_eq!(note, None);
@@ -394,14 +364,7 @@ fn an_exhausted_live_reading_passes_damp_inside_the_hold() {
     // A plan spend limit reaches `damp` as `Exhausted` (for_decision).
     for r in [Reason::Threshold, Reason::PlanRoom] {
         let d = swap("ffarmer", r);
-        let got = damp(
-            d.clone(),
-            &Reading::EXHAUSTED,
-            0,
-            Some(NOW - 586),
-            NOW,
-            &settings(),
-        );
+        let got = damp(d.clone(), &Reading::EXHAUSTED, 0);
         assert_eq!(got, (d, None), "{r:?}");
     }
 }
@@ -427,15 +390,40 @@ fn prior_is_zero_for_another_profile_or_case() {
 }
 
 #[test]
-fn prior_is_zero_unless_the_live_identity_is_known() {
+fn prior_is_zero_for_an_identity_without_a_swap_decision() {
     let l = ledger_with(json!({"profile": "work", "count": 2}));
     for live in [
         LiveId::Adopt,
         LiveId::HandChanged(n("work")),
         LiveId::HomeUnreadable(n("work")),
+        LiveId::Ambiguous,
+        LiveId::NoLogin,
     ] {
         assert_eq!(failed_store::prior(Some(&l), &live), 0, "{live:?}");
     }
+}
+
+#[test]
+fn an_adopted_login_has_a_count_of_its_own() {
+    // An adopted login has no profile name, so it is keyed by `ADOPTED`; a
+    // profile's count never applies to it, nor its count to a profile.
+    let l = ledger_with(json!({"profile": ADOPTED, "count": 2}));
+    assert_eq!(failed_store::prior(Some(&l), &LiveId::Adopt), 2);
+    assert_eq!(failed_store::prior(Some(&l), &known("work")), 0);
+    let mut l = RotateLedger::default();
+    failed_store::record(&mut l, &LiveId::Adopt, 2, false);
+    assert_eq!(failed_live_of(&l), json!({"profile": ADOPTED, "count": 2}));
+    failed_store::record(&mut l, &LiveId::Adopt, 3, true);
+    assert_eq!(failed_live_of(&l), Value::Null, "a completed swap");
+}
+
+#[test]
+fn the_adopted_key_round_trips_and_is_no_profile_name() {
+    assert!(ProfileName::parse(ADOPTED).is_err());
+    let e = env();
+    write_raw(&e.rs, json!({"profile": ADOPTED, "count": 2}));
+    let l = e.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(failed_live_of(&l), json!({"profile": ADOPTED, "count": 2}));
 }
 
 #[test]
@@ -484,8 +472,13 @@ fn record_clears_on_zero_and_on_a_swap() {
 }
 
 #[test]
-fn record_leaves_the_field_alone_without_a_known_live_profile() {
-    for live in [LiveId::Adopt, LiveId::HandChanged(n("work"))] {
+fn record_leaves_the_field_alone_for_an_identity_without_a_swap_decision() {
+    for live in [
+        LiveId::HandChanged(n("work")),
+        LiveId::HomeUnreadable(n("work")),
+        LiveId::Ambiguous,
+        LiveId::NoLogin,
+    ] {
         let mut l = ledger_with(json!({"profile": "work", "count": 2}));
         failed_store::record(&mut l, &live, 1, false);
         assert_eq!(

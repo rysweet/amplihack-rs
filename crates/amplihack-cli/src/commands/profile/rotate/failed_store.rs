@@ -1,8 +1,10 @@
 //! Issue #1880: the stored count of consecutive failed live probes, the
 //! ledger's `failed_live` field. It holds a profile name and a count only,
 //! never an account, a key or probe text, and it is keyed by the profile
-//! name alone (#1886). See "Stored failed-probe count" in
-//! docs/reference/profile-command.md.
+//! name alone (#1886). A live login with no profile yet (`LiveId::Adopt`)
+//! is stored under [`ADOPTED`], which no profile name can equal, so its
+//! failed probes also reach the failed-probe swap. See "Stored failed-probe
+//! count" in docs/reference/profile-command.md.
 //!
 //! The field is read leniently: a value that is not a valid record loads as
 //! absent and never fails the rest of the ledger, which the limit-resume
@@ -17,6 +19,22 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// The highest count a ledger may hold; a larger one loads as this.
 pub const MAX_STORED: u32 = 1000;
+
+/// The key for an adopted live login, which has no profile name yet. `-` is
+/// not a valid profile name, so it never matches a `Known` profile.
+pub const ADOPTED: &str = "-";
+
+/// The key the count is stored under for `live`: the profile name for
+/// `Known`, [`ADOPTED`] for `Adopt`, none for any other identity. Only those
+/// two reach a swap decision; every other identity ends in an ALERT or a
+/// recovery.
+fn key(live: &LiveId) -> Option<&str> {
+    match live {
+        LiveId::Known(name) => Some(name.as_str()),
+        LiveId::Adopt => Some(ADOPTED),
+        _ => None,
+    }
+}
 
 /// The stored record: which live profile failed, and how many cycles in a
 /// row. Unknown fields make the record invalid, so it loads as absent.
@@ -49,9 +67,12 @@ pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<FailedLive>
         .and_then(sanitise))
 }
 
-/// A valid profile name and a count of at least 1, capped at [`MAX_STORED`].
+/// A valid profile name or [`ADOPTED`], and a count of at least 1, capped at
+/// [`MAX_STORED`].
 fn sanitise(s: Stored) -> Option<FailedLive> {
-    ProfileName::parse(&s.profile).ok()?;
+    if s.profile != ADOPTED {
+        ProfileName::parse(&s.profile).ok()?;
+    }
     if s.count == 0 {
         return None;
     }
@@ -62,14 +83,15 @@ fn sanitise(s: Stored) -> Option<FailedLive> {
     })
 }
 
-/// The count stored for `live`: exact, case-sensitive match on
-/// `LiveId::Known` only; 0 for any other identity, profile or no ledger.
+/// The count stored for `live`: exact, case-sensitive match on its [`key`];
+/// 0 for any other identity, another key or no ledger. A change from a
+/// profile to an adopted login, or back, changes the key and so starts at 0.
 pub fn prior(l: Option<&RotateLedger>, live: &LiveId) -> u32 {
-    let LiveId::Known(name) = live else {
+    let Some(key) = key(live) else {
         return 0;
     };
     l.and_then(|l| l.failed_live.as_ref())
-        .filter(|f| f.profile == name.as_str())
+        .filter(|f| f.profile == key)
         .map_or(0, |f| f.count)
 }
 
@@ -83,19 +105,19 @@ pub fn load(ctx: &Ctx, live: &LiveId) -> u32 {
     }
 }
 
-/// The only writer: sets `failed_live` to `{live, count}`, clears it for a
-/// count of 0 or a completed swap (`swapped`), and leaves it unchanged when
-/// the live identity is not `Known`.
+/// The only writer: sets `failed_live` to `{key(live), count}`, clears it
+/// for a count of 0 or a completed swap (`swapped`), and leaves it unchanged
+/// when the live identity has no [`key`].
 pub fn record(l: &mut RotateLedger, live: &LiveId, count: u32, swapped: bool) {
     if swapped {
         l.failed_live = None;
         return;
     }
-    let LiveId::Known(name) = live else {
+    let Some(key) = key(live) else {
         return;
     };
     l.failed_live = (count > 0).then(|| FailedLive {
-        profile: name.as_str().to_string(),
+        profile: key.to_string(),
         count: count.min(MAX_STORED),
     });
 }

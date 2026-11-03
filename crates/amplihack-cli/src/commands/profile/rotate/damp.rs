@@ -18,7 +18,6 @@
 
 use super::decide::{Decision, Reading, Reason};
 use super::log::msg;
-use super::settings::Settings;
 
 /// Consecutive failed live probes before a swap on that ground alone.
 pub const FAILED_PROBE_LIMIT: u32 = 3;
@@ -37,18 +36,9 @@ pub fn next_failed(prev: u32, live: &Reading) -> u32 {
 
 /// `d` after the failed-probe rules, with the log note for a damped stay.
 /// Only a threshold or plan-room swap on a failed live probe is changed: it
-/// stays below `FAILED_PROBE_LIMIT` and swaps as `failed-probe` at it.
-/// `_swapped_at`, `_now` and `_s` are unused since #1880 removed the hold
-/// from this rule. They remain only so existing call sites compile; see
-/// #1894 to remove them.
-pub fn damp(
-    d: Decision,
-    live: &Reading,
-    consecutive_failed: u32,
-    _swapped_at: Option<i64>,
-    _now: i64,
-    _s: &Settings,
-) -> (Decision, Option<String>) {
+/// stays below `FAILED_PROBE_LIMIT` and swaps as `failed-probe` at it,
+/// whatever the post-swap hold says (#1880).
+pub fn damp(d: Decision, live: &Reading, consecutive_failed: u32) -> (Decision, Option<String>) {
     let to = match (live, d) {
         (
             Reading::Failed,

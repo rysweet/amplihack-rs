@@ -5130,14 +5130,23 @@ value changes. A cycle that ends in `skip:` writes nothing.
 | Exhausted, or spend limit on a plan login | Removed; the swap follows |
 | Carried `ok` live reading | Unchanged |
 | Spend limit on a live overflow profile | Unchanged |
-| The login in `~/.claude` is not the one the ledger names ([hand change](#rotate-hand-change-recovery) or adoption) | Unchanged; `k` is `1`, so no failed-probe swap |
+| Unknown live probe on an adopted login (one in `~/.claude` that no profile matches) | As for a profile, keyed `-` in place of a profile name: `{ "-", 1 }`, then plus one |
+| A [hand change](#rotate-hand-change-recovery), an unreadable `~/.claude.json`, an ambiguous match or no login | Unchanged; the cycle raises its ALERT or recovers, and makes no swap decision for that login |
 | A completed swap | Removed |
 
 The count is keyed by profile name only, matched exactly and with case
 significant. A count stored for any other profile is read as `0`.
 
+An adopted login has no profile name until a swap adopts it, so its count is
+stored under the key `-`, which no profile name can equal. Its failed
+probes therefore lead to a failed-probe swap on the third cycle, as a
+profile's do; the swap adopts the login as `default-original[-N]` first.
+The key holds no account, so a second hand `/login` to another unmatched
+account carries on the same count. A change between a profile and an
+adopted login changes the key, and the count starts again at `1`.
+
 A `failed_live` value that is not an object with a valid
-profile name (see [Name rules](#name-rules)) and a whole-number `count` is ignored: it
+profile name (see [Name rules](#name-rules)) or `-`, and a whole-number `count` is ignored: it
 reads as absent, the rest of the ledger loads as usual, and nothing about
 the value is logged. A `count` of `0` reads as absent, and a count above
 1000 reads as 1000. Raising the count by hand can only bring a failed-probe
@@ -5703,7 +5712,7 @@ login, the live one included, has room does it consider overflow:
 | No overflow candidate is eligible | As without overflow: `ALERT no-capacity`. |
 | The live plan login is at its [spend limit](#spend-limit-on-a-plan-login) | A plan login at its spend limit counts as having no room. When no other plan login has room and every plan reset is beyond the overflow wait, the rotator moves to an overflow profile with `reason=overflow-in`. A reset inside the wait keeps it where it is, even though a reset does not lift a spend limit. |
 
-The spend-limit relabel applies to any live login, including one changed by hand or adopted; only the failed-probe count is limited to a known profile.
+The spend-limit relabel applies to any live login that reaches a decision, a known profile or an adopted login, as does the failed-probe count.
 
 For example, with the live login at `s=95%,w=60%` and a plan candidate at
 `s=87%,w=50%`, both have room, so the rotator makes the free swap onto the

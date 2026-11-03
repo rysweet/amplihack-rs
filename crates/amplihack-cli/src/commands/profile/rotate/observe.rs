@@ -331,14 +331,7 @@ pub(super) fn decide_measured(
         now: t,
         failed,
     });
-    let (decision, note) = damp(
-        verdict.decision,
-        &probe.reading,
-        failed,
-        swapped_at,
-        t,
-        &ctx.settings,
-    );
+    let (decision, note) = damp(verdict.decision, &probe.reading, failed);
     let decision = live_limit::relabel(decision, outcome);
     // Only here is the file read: a swap on this ground is rare. The strict
     // reader, not `key_check::home_key`: a key Claude may not read must not

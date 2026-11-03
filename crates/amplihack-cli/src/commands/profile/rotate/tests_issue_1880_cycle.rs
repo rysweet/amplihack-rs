@@ -17,6 +17,17 @@
 //! alternative at 0%/14%), case B (a plan login at its spend limit with
 //! 3,014 s of hold left, ffarmer at 90/26 and a third login at 91/26), and
 //! one test per probe outcome.
+//!
+//! Root cause, from the host's `rotate.log` on 2026-11-03. The count was
+//! not stuck below 3. For `mmorrison`, one live cycle failed (04:23:41Z,
+//! `(1/3)`) before the hand switch at 04:26:18Z; the 04:25:26Z `would stay
+//! (live probe failed (1/3))` line was a `--dry-run`, which on `main` built
+//! a new context with a count of 0 and could print nothing but `(1/3)`. The
+//! login was at its limit, yet the probe read `Failed`, so it needed three
+//! cycles: case A. For `rssourcelabs`, the count reached 3 at 04:59:55Z,
+//! and the post-swap hold from the 04:50:10Z swap turned the swap into
+//! `held after last swap (3014s left)`: case B. On `main` the count was also
+//! held in memory only, so a restart or a one-shot run started again at 0.
 
 use super::cycle::{Ctx, CycleOutcome, MeasureFn, Mode, run_cycle};
 use super::decide::{Probed, Reading, Win, Windows};
@@ -343,6 +354,64 @@ fn case_a_a_read_still_running_counts_and_swaps_on_the_third_cycle() {
 #[test]
 fn case_a_an_unknown_error_swaps_on_the_third_cycle_inside_the_hold() {
     three_failed_cycles_swap_inside_the_hold(case_a_error, "failed");
+}
+
+/// `~/.claude` holds a login no profile matches (a hand `/login`): the live
+/// identity is `LiveId::Adopt`, and the home file has no key.
+fn adopted_live_login(e: &Env) {
+    private(
+        &e.home.join(".claude.json"),
+        &json!({"oauthAccount": {
+            "accountUuid": "u-new",
+            "emailAddress": "new@example.com"
+        }})
+        .to_string(),
+    );
+}
+
+#[test]
+fn an_adopted_live_login_whose_probe_keeps_failing_swaps_on_the_third_cycle() {
+    // Crusty round 1 on #1880: the count of an adopted login is stored under
+    // `failed_store::ADOPTED`, so it reaches the failed-probe swap as a
+    // profile's count does, and as the in-memory count on `main` did.
+    let e = env();
+    adopted_live_login(&e);
+    for k in 1..=2 {
+        let got = cycle(&e, case_a_timeout, Mode::Watch);
+        let log = log_of(&e);
+        assert_eq!(got, CycleOutcome::Stayed, "k={k}\n{log}");
+        assert!(
+            log.contains(&format!("stay: live probe failed ({k}/3)")),
+            "a restart must not lose the count:\n{log}"
+        );
+        assert_eq!(stored(&e), Some(("-".into(), k)), "{log}");
+    }
+    let got = cycle(&e, case_a_timeout, Mode::Watch);
+    let log = log_of(&e);
+    assert_eq!(got, CycleOutcome::Swapped, "{log}");
+    assert_eq!(ino_at(&e.live()), Some(e.t), "spare's login is live");
+    let swapped = swaps(&log);
+    assert_eq!(swapped.len(), 1, "{log}");
+    assert!(
+        swapped[0].contains("->spare") && swapped[0].contains("reason=failed-probe"),
+        "{log}"
+    );
+    assert_eq!(stored(&e), None, "a swap clears the count");
+}
+
+#[test]
+fn a_profile_count_does_not_carry_over_to_an_adopted_login() {
+    let e = env();
+    adopted_live_login(&e);
+    seed_count(&e, "work", 2);
+    assert_eq!(
+        cycle(&e, case_a_timeout, Mode::Watch),
+        CycleOutcome::Stayed,
+        "{}",
+        log_of(&e)
+    );
+    assert!(log_of(&e).contains("stay: live probe failed (1/3)"));
+    assert_eq!(stored(&e), Some(("-".into(), 1)));
 }
 
 #[test]
