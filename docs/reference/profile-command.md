@@ -4948,7 +4948,9 @@ same comparison with the rules for a stay: it stops only on a `journal`,
 reads again or reconsiders.
 
 The liveness scan behind `live`, `session running` and the target's
-eligibility reads the system process table, `/proc`.
+eligibility reads the system process table, `/proc`. In the test suite, a
+fixture can supply a synthetic process table instead, so that sessions
+running elsewhere on the host do not change a test's result.
 
 These related problems are known and tracked in their own issues:
 
