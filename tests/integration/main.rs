@@ -476,6 +476,12 @@ mod issue_1642_github_origin_parsing;
 #[path = "issue_1762_caller_branch_alias_test.rs"]
 mod issue_1762_caller_branch_alias;
 
+// Issue #1887: step-02d keeps a caller-provided remote_host_type, and
+// create_issue=false stops step-03 creating an issue on every host. Fake gh,
+// az and git through `isolated(..)`; no network.
+#[path = "issue_1887_caller_host_type_create_issue_test.rs"]
+mod issue_1887_caller_host_type_create_issue;
+
 // Issue #1697: bundled journalistic-writing-style skill — content, trigger
 // separation from documentation-writing, registration, isolated install.
 #[path = "journalistic_writing_style_skill_test.rs"]

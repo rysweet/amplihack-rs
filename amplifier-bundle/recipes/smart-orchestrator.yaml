@@ -48,6 +48,10 @@ context:
   reflection_final: ""
   summary: ""
   session_complete_status: ""
+  # #1887: caller overrides passed to workflow-prep. remote_host_type: github|azdo|other
+  # (empty = detect from origin); create_issue: false|0|no|off disables issue creation.
+  remote_host_type: ""
+  create_issue: ""
   force_single_workstream: "false" # set to "true" to prevent parallel decomposition
   adaptive_recipe: "" # set by detect-execution-gap when routing fails
   infra_error_details: "" # diagnostic info for infrastructure failures

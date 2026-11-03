@@ -27,6 +27,11 @@
 #   _tracking_issue_candidates — up to 5 `N kind` candidates, no network
 #   _github_open_issue_url    — read-only check of one candidate via `gh api`
 #   _is_github_issue_url      — the one URL check: https://…/issues/N, one line
+#   issue_creation_disabled   — create_issue=false|0|no|off predicate (#1887)
+#   warn_unrecognised_create_issue — fixed WARN for an unknown create_issue value
+#   _issue_is_rate_limit, _issue_is_auth, _issue_wait_for_reset — step-03's
+#                               gh issue create retry classification and wait
+#                               (moved out of the full workflow-prep brick, #1887)
 
 derive_local_tracking_id() {
   if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then
@@ -147,3 +152,37 @@ select_github_tracking_issue() {
   [ -z "$checked" ] || echo "INFO: no task-text candidate accepted as an open issue (checked:${checked}); falling back to title search" >&2
   return 1
 }
+
+# create_issue caller override (#1887). The value is trimmed and case-folded
+# under LC_ALL=C with tr (not bash 4's lowercase expansion, #1423); interior
+# whitespace and newlines are kept, so "o ff" or "false<newline>x" never match.
+_create_issue_value() {
+  local v="${1-}"
+  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+  printf '%s' "$v" | LC_ALL=C tr '[:upper:]' '[:lower:]'
+}
+
+# Pure predicate: status 0 when VALUE is false, 0, no or off; 1 for anything
+# else, including empty. Never prints, exits or sets globals.
+issue_creation_disabled() {
+  case "$(_create_issue_value "${1-}")" in
+    false|0|no|off) return 0 ;;
+  esac
+  return 1
+}
+
+# WARN, without echoing the value (it may be anything a caller passed), when
+# VALUE is non-empty and outside the recognised set. Always returns 0.
+warn_unrecognised_create_issue() {
+  case "$(_create_issue_value "${1-}")" in
+    ''|true|1|yes|false|0|no|off) return 0 ;;
+  esac
+  echo "WARN: unrecognised create_issue value ignored; issue creation stays enabled (accepted: true|1|yes|false|0|no|off)" >&2
+  return 0
+}
+
+# Rate-limit-aware issue creation: a temporarily-exhausted GraphQL quota must not abort the run. On a
+# rate limit (not auth error) wait for the AUTHORITATIVE `gh api rate_limit` reset (adaptive, no fixed cap), then retry; 401s never retried.
+_issue_is_rate_limit() { printf '%s' "$1" | grep -Eiq 'api rate limit|rate limit already exceeded|secondary rate limit|abuse detection|(^|[^0-9])429([^0-9]|$)|retry-after|x-ratelimit-reset|rate limit'; }
+_issue_is_auth() { printf '%s' "$1" | grep -Eiq 'bad credentials|HTTP 401|(^|[^0-9])401([^0-9]|$)|requires authentication|not logged in'; }
+_issue_wait_for_reset() { local now epoch waitfor floor=5 buffer=3; now=$(date +%s); epoch=$(timeout 30 gh api rate_limit 2>/dev/null | jq -r '.resources.graphql.reset // empty' 2>/dev/null || true); case "$epoch" in ''|*[!0-9]*) epoch="" ;; esac; if [ -z "$epoch" ]; then waitfor=$floor; else waitfor=$((epoch - now + buffer)); [ "$waitfor" -lt "$floor" ] && waitfor=$floor; fi; echo "WARNING: GitHub GraphQL rate limit hit during issue creation; waiting ${waitfor}s for authoritative reset (adaptive, bounded by reset window)." >&2; sleep "$waitfor"; }
