@@ -655,7 +655,7 @@ fn the_default_pointer_does_not_change_the_rotators_verdict() {
     ];
     for (what, setup) in setups {
         let verdict = |default: Option<&str>| {
-            let f = Fixture::new().private_sessions();
+            let f = Fixture::new();
             setup(&f);
             if let Some(d) = default {
                 // The pointer alone, as an older `profile switch` or a hand
@@ -703,7 +703,7 @@ fn the_default_pointer_does_not_change_the_rotators_verdict() {
 /// on whatever else ran on the machine.
 #[test]
 fn the_rotator_sees_sessions_only_through_the_fixtures_process_table() {
-    let free = Fixture::new().private_sessions();
+    let free = Fixture::new();
     let s = stdout(&free.ok(&["profile", "rotate"]));
     let l = free.ledger().unwrap();
     assert_eq!(
@@ -712,7 +712,7 @@ fn the_rotator_sees_sessions_only_through_the_fixtures_process_table() {
         l["live"], l["last_cycle"]["outcome"]
     );
 
-    let held = Fixture::new().private_sessions();
+    let held = Fixture::new();
     held.fake_session(4_000_000_000, &held.root.join("spare"));
     let s = stdout(&held.ok(&["profile", "rotate"]));
     let l = held.ledger().unwrap();

@@ -4951,7 +4951,14 @@ The liveness scan behind `live`, `session running` and the target's
 eligibility reads the system process table, `/proc`. In the test suite, a
 fixture can supply a synthetic process table instead, so that sessions
 running elsewhere on the host do not change a test's result. The table is
-the one named by `AMPLIHACK_TEST_PROC_ROOT`. The rotation-owner tests
+the one named by `AMPLIHACK_TEST_PROC_ROOT`. The shared rotate fixture
+(`tests/support/profile_rotate.rs`) gives every fixture an empty synthetic
+table by default, so every suite built on it is covered. A test that starts
+a real process as a session stand-in opts out with `host_sessions()` and
+reads the host's table; at present that is one test in
+`issue_1691_switch_live.rs`. The table covers the session liveness scan
+only: the checks for a running rotator and the rotation owner read `/proc`
+directly. The rotation-owner tests
 (#1803) already set it to a synthetic cgroup table, so a liveness scan in
 those tests reads that table too. It has no `self/environ`, which makes the
 scan unsupported and counts every profile as live; those tests run with

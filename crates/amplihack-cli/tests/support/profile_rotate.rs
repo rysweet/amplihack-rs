@@ -111,15 +111,16 @@ pub struct Fixture {
     pub live_ino: u64,
     pub spare_ino: u64,
     pub extra_ino: u64,
-    /// Issue #1860: a private synthetic process table, set by
-    /// [`Fixture::private_sessions`]. `None` (the default) leaves every
-    /// command reading the host's `/proc`.
+    /// Issue #1860: the private synthetic process table every command reads
+    /// for session liveness. `None` only after [`Fixture::host_sessions`].
     pub proc_root: Option<PathBuf>,
 }
 
 impl Fixture {
     /// `work` is live in `~/.claude` (90/40: over the session threshold);
     /// `spare` 10/20 and `extra` 50/50 are logged in. No rotate ledger.
+    /// Every command reads the fixture's own, empty process table (issue
+    /// #1860; see [`Fixture::host_sessions`] for the one exception).
     pub fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
         fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -174,19 +175,25 @@ impl Fixture {
         f.usage("work", 90, 40);
         f.usage("spare", 10, 20);
         f.usage("extra", 50, 50);
-        f
+        f.private_sessions()
     }
 
-    /// Issue #1860: every later command sees a synthetic process table
-    /// under the fixture's temp dir instead of the host's sessions, so a
-    /// test's verdict cannot depend on what else runs on the machine. The
-    /// table starts empty: `self/environ` holds fixed dummy bytes (never a
-    /// copy of the real one) and no process directories exist until
-    /// [`Fixture::fake_session`] adds one. Its directories are readable only
-    /// by the current user. Only fixtures that call this receive the table;
-    /// tests that start a real session stand-in, such as the `profile switch`
-    /// and daemon tests, keep reading the system process table.
-    pub fn private_sessions(mut self) -> Self {
+    /// Issue #1860: every command sees a synthetic process table under the
+    /// fixture's temp dir instead of the host's sessions, so a test's verdict
+    /// cannot depend on what else runs on the machine. Without it, a session
+    /// starting or stopping on a busy host between the rotator's measurement
+    /// and its locked re-check changes liveness, and the cycle is skipped at
+    /// revalidation. The table starts empty: `self/environ` holds fixed dummy
+    /// bytes (never a copy of the real one) and no process directories exist
+    /// until [`Fixture::fake_session`] adds one. Its directories are readable
+    /// only by the current user. [`Fixture::new`] calls this for every
+    /// fixture.
+    ///
+    /// The table covers session liveness only. The rotator's own pid checks
+    /// (`rotate.pid`, a foreign rotator, the rotation owner) read `/proc`
+    /// directly and are unaffected, so tests that start a real rotator
+    /// stand-in work as before.
+    fn private_sessions(mut self) -> Self {
         let root = self.tmp.path().join("proc");
         // A table others can write is ignored, and the host's /proc is read,
         // so the directories are created private rather than chmod-ed later.
@@ -206,14 +213,25 @@ impl Fixture {
         self
     }
 
+    /// Issue #1860: the one opt-out from [`Fixture::private_sessions`]. Every
+    /// later command reads the host's `/proc` for session liveness. Only a
+    /// test that starts a real process as a session stand-in (a process with
+    /// `CLAUDE_CONFIG_DIR` set to a profile) needs this; such a test is
+    /// exposed to other sessions on the host, so prefer
+    /// [`Fixture::fake_session`] where a synthetic session will do.
+    pub fn host_sessions(mut self) -> Self {
+        self.proc_root = None;
+        self
+    }
+
     /// A synthetic session of this user, `pid`, whose `CLAUDE_CONFIG_DIR` is
-    /// `config_dir`. Needs [`Fixture::private_sessions`].
+    /// `config_dir`. Not available after [`Fixture::host_sessions`].
     pub fn fake_session(&self, pid: u32, config_dir: &Path) {
         use std::os::unix::ffi::OsStrExt;
         let root = self
             .proc_root
             .as_ref()
-            .expect("fake_session needs private_sessions()");
+            .expect("fake_session needs the synthetic table; host_sessions() was called");
         let dir = root.join(pid.to_string());
         fs::create_dir(&dir).unwrap();
         fs::write(
