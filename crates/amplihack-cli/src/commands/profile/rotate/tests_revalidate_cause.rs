@@ -70,6 +70,7 @@ pub(super) fn ok(session: f64, week: f64) -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
     }
 }
 
@@ -81,6 +82,7 @@ pub(super) fn spent() -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
     }
 }
 

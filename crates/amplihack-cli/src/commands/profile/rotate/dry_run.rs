@@ -3,6 +3,7 @@
 
 use super::cycle::{Ctx, CycleOutcome};
 use super::decide::Decision;
+use super::fresh::{self, Reread};
 use super::handfix;
 use super::ledger::{Phase, spend_reset};
 use super::log::{Sink, msg, timestamp};
@@ -77,7 +78,22 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             return Ok(CycleOutcome::Held);
         }
     }
-    let m = measure_and_decide(ctx, &snap)?;
+    // Tests stub the measurement as for a real cycle.
+    let m = match ctx.measure {
+        Some(stub) => stub(ctx, &snap)?,
+        None => measure_and_decide(ctx, &snap)?,
+    };
+    let (live_shown, others_shown) = super::log::shown(&m);
+    let name = live_name(&snap.live);
+    out.emit(
+        0,
+        &msg::cycle(name, &live_shown, &others_shown, snap.shown_platform()),
+    );
+    // Issue #1870: the same re-reads as a real cycle; no rotate state is written.
+    let m = fresh::gate(ctx, &snap, m, Reread::Allowed)?;
+    for line in &m.fresh_lines {
+        out.emit(0, line);
+    }
     let (live_shown, others_shown) = super::log::shown(&m);
     let Measurement {
         live,
@@ -89,11 +105,6 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         key_held,
         ..
     } = m;
-    let name = live_name(&snap.live);
-    out.emit(
-        0,
-        &msg::cycle(name, &live_shown, &others_shown, snap.shown_platform()),
-    );
     let t = now();
     for n in &new_blocks {
         out.emit(

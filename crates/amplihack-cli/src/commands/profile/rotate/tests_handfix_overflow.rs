@@ -45,6 +45,7 @@ fn roomy() -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
     }
 }
 
@@ -60,6 +61,7 @@ fn plan_ok() -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
     }
 }
 
