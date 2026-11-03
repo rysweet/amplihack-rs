@@ -123,3 +123,24 @@ fn ac5_a_login_moved_into_place_during_the_wait_ends_it() {
         "the wait should end at the login change, not the reset"
     );
 }
+
+/// Issue #1743: a finished wait appends its real length to the ledger that
+/// auto-drive names, so its wall budget can leave the wait out.
+#[test]
+fn a_finished_wait_is_written_to_the_ledger_auto_drive_names() {
+    let f = Fixture::new();
+    let dir = tempfile::tempdir().unwrap();
+    let ledger = dir.path().join("ledger");
+    let mut c = f.step();
+    c.env("AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS", "0")
+        .env("AMPLIHACK_USAGE_WAIT_LEDGER", &ledger);
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(events(&out)[1], "end reason=max reached");
+    let text = std::fs::read_to_string(&ledger).expect("ledger written");
+    assert_eq!(text.lines().count(), 1, "{text:?}");
+    assert!(text.trim_end().parse::<u64>().is_ok(), "{text:?}");
+    use std::os::unix::fs::PermissionsExt;
+    let mode = std::fs::metadata(&ledger).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600);
+}

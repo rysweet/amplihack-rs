@@ -14,6 +14,8 @@ description: >
   every crusty-records.tsv row still resolving, that a description-only
   commit is not re-reviewed, and, with the real amplihack recursion guard and
   a sealed ceiling of 3, that depth 4 is refused while depth 2 is admitted.
+  Every gh call goes to a logging stub first on PATH, so a stop comment
+  (#1743) can never post on a real PR.
 version: "1.0"
 config:
   timeout: 120000
@@ -81,3 +83,8 @@ assertions:
     params:
       target: stdout
       expected: "PASS: loop_depth_admitted_by_real_guard"
+  - name: only-the-stub-gh-runs
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: only_the_stub_gh_runs"

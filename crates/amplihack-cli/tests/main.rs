@@ -168,6 +168,8 @@ mod issue_1740_routing_recipes;
 mod issue_1740_select_workflow;
 #[path = "issue_1740_state_gates.rs"]
 mod issue_1740_state_gates;
+#[path = "issue_1743_autodrive_budget.rs"]
+mod issue_1743_autodrive_budget;
 #[path = "issue_1745_home_statusline.rs"]
 mod issue_1745_home_statusline;
 #[path = "issue_1746_daily_archive_rotator.rs"]

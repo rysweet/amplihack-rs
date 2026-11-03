@@ -15,6 +15,7 @@ pub(crate) mod claude_args;
 mod clock;
 mod events;
 pub(crate) mod fingerprint;
+mod ledger;
 pub(crate) mod plan;
 pub(crate) mod scratch;
 pub(crate) mod settings;
@@ -274,7 +275,11 @@ impl Waiter {
             parent: self.parent,
             probe,
         };
+        let waited_from = std::time::Instant::now();
         let end = wait::wait(&p, &mut deps);
+        // Real time, not the test clock: auto-drive compares it with its own
+        // wall time (issue #1743).
+        ledger::record(waited_from.elapsed());
         log(&Event::End(end));
         match end {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),
