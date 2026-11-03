@@ -288,8 +288,10 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
                 .any(|c| &c.name == to && plan_usable(s, &c.reading)),
             _ => false,
         };
-        // A failed live login reaches plan room only at the failed-probe
-        // limit (#1880), and never moves onto credits.
+        // A failed live login (#1880) is handled by two checks. Here,
+        // `blocks_room` keeps it off plan room until its failed-probe count
+        // reaches the limit. Below, once plan room has been tried, the
+        // `Reading::Failed` check stops it before any move onto credits.
         if !moving_without_capacity || blocks_room(&i.live.reading, i.failed) {
             return verdict(d, None, None);
         }
@@ -301,6 +303,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
             let d = if same { d } else { swap(to, Reason::PlanRoom) };
             return verdict(d, None, None);
         }
+        // Never onto credits from a failed live login (see above).
         if i.live.reading == Reading::Failed {
             return verdict(d, None, None);
         }

@@ -5097,6 +5097,11 @@ before the next failed-probe swap, and
 apply to the target. With the default `--interval` of 600 seconds, the
 rotator makes at most one failed-probe swap every 30 minutes.
 
+A live read that is still running when the cycle stops waiting for it
+(`unknown, still running`) counts as unknown. On a host where the live
+login's reads are slow on every cycle, that login is therefore swapped on
+the third consecutive cycle, as for any other failed probe.
+
 A damped stay counts as a stay without an alert, so it clears the stored
 ALERT key. Swaps on a measured threshold, on an exhausted live login and
 upgrade swaps behave as in the table above.
