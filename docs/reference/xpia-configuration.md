@@ -319,8 +319,8 @@ for. It does not mean "XPIA is scanning":
 
 | `XPIA_ENABLED`                                  | `passed`    | `message`                                                                            |
 | ----------------------------------------------- | ----------- | ------------------------------------------------------------------------------------ |
-| `1`, `true`, `yes` (any case)                   | `true`      | `enabled`                                                                            |
-| unset, empty, `0`, `false`, `no`                | `true`      | `disabled (default; set XPIA_ENABLED=true to opt in)`                                |
+| `1`, `true`, `yes` (any case)                   | `true`      | `XPIA defense is enabled`                                                            |
+| unset, empty, `0`, `false`, `no`                | `true`      | `XPIA defense is disabled (default; set XPIA_ENABLED=true to opt in)`                |
 | anything else, e.g. `on`, `enabled`, `" true "` | **`false`** | `XPIA_ENABLED="on" is not recognised; XPIA is off (set XPIA_ENABLED=true to opt in)` |
 
 A failing `xpia_enabled` entry therefore means the user asked for something
@@ -333,7 +333,10 @@ so `from_env`) fills in. `from_env` reads `XPIA_ENABLED` through
 `enabled_raw_from_os`, so a value that is not valid UTF-8 is recorded as
 `<non-UTF-8>` and fails the check, rather than being read as unset. A config built in code, such as
 `XpiaConfig::defaults()`, has `enabled_raw: None`, and the check then reports
-`enabled` or `disabled` from `config.enabled` and passes.
+`enabled` or `disabled` from `config.enabled` and passes. If a caller sets
+`enabled` by hand so that it disagrees with a recognised raw value, the check
+fails with `XPIA_ENABLED asks for XPIA off but XPIA is on` (or the reverse),
+so health never reports a state XPIA is not in.
 
 `config_summary.enabled` is still the field to read for whether XPIA is on.
 

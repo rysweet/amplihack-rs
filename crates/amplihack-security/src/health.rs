@@ -54,19 +54,30 @@ pub fn check_health_with(config: &XpiaConfig) -> HealthReport {
     // Check 1: XPIA enabled (#1737 item 2). Passes when the state is what a
     // recognised `XPIA_ENABLED` value asks for, on or off; fails, naming the
     // value, when the value is not recognised. A configuration built in code
-    // (no raw value) follows `enabled`. `config_summary.enabled` is the
-    // machine-readable answer to whether XPIA is scanning.
-    let state = match &config.enabled_raw {
+    // (no raw value) follows `enabled`. The reported state is always
+    // `config.enabled`, so a hand-set `enabled` that disagrees with the raw
+    // value fails rather than hiding a running (or missing) scanner.
+    // `config_summary.enabled` is the machine-readable answer to whether XPIA
+    // is scanning.
+    let asked = match &config.enabled_raw {
         Some(raw) => classify_enabled(Some(raw)),
         None => EnabledValue::Recognised(config.enabled),
     };
-    let (passed, message) = match state {
+    let state = if config.enabled { "on" } else { "off" };
+    let (passed, message) = match asked {
+        EnabledValue::Unrecognised(raw) => (false, unrecognised_enabled_message(&raw)),
+        EnabledValue::Recognised(asked) if asked != config.enabled => (
+            false,
+            format!(
+                "XPIA_ENABLED asks for XPIA {} but XPIA is {state}",
+                if asked { "on" } else { "off" }
+            ),
+        ),
         EnabledValue::Recognised(true) => (true, "XPIA defense is enabled".to_string()),
         EnabledValue::Recognised(false) => (
             true,
             "XPIA defense is disabled (default; set XPIA_ENABLED=true to opt in)".to_string(),
         ),
-        EnabledValue::Unrecognised(raw) => (false, unrecognised_enabled_message(&raw)),
     };
     checks.push(CheckResult {
         name: "xpia_enabled".into(),
@@ -364,6 +375,29 @@ mod enabled_check_tests {
         assert!(!check.passed);
         assert!(check.message.contains("<non-UTF-8>"), "{}", check.message);
         assert_eq!(report.config_summary["enabled"], false);
+    }
+
+    #[test]
+    fn enabled_field_that_disagrees_with_raw_value_fails() {
+        // A caller that sets `enabled` by hand after `from_lookup` must not
+        // make health report a state XPIA is not in.
+        let mut config = config_for("false");
+        config.enabled = true;
+        let check = enabled_check(&check_health_with(&config)).clone();
+        assert!(!check.passed);
+        assert_eq!(
+            check.message,
+            "XPIA_ENABLED asks for XPIA off but XPIA is on"
+        );
+
+        let mut config = config_for("true");
+        config.enabled = false;
+        let check = enabled_check(&check_health_with(&config)).clone();
+        assert!(!check.passed);
+        assert_eq!(
+            check.message,
+            "XPIA_ENABLED asks for XPIA on but XPIA is off"
+        );
     }
 
     #[test]

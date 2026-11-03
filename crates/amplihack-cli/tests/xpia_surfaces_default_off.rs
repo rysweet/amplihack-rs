@@ -3,9 +3,8 @@
 //! `XPIA_ENABLED=true`".
 //!
 //! Covers the Claude Code plugin manifest and hooks (R6), the xpia-defense
-//! agent and the `/xpia` command (R7, D8, D9), the docs grep (R8, D10), the
-//! `install_with_xpia.sh` scripts (D12) and the dead
-//! `get_required_xpia_hooks` helper (R11, D3). Reads repository files only.
+//! agent and the `/xpia` command (R7, D8, D9), the docs grep (R8, D10) and
+//! the `install_with_xpia.sh` scripts (D12). Reads repository files only.
 
 use serde_json::Value;
 use std::fs;
@@ -294,6 +293,7 @@ fn journey_hooks_diagram_labels_xpia_opt_in() {
 /// allowed.
 #[test]
 fn install_with_xpia_scripts_do_not_enable_xpia() {
+    let mut checked = 0;
     for file in [
         "amplifier-bundle/tools/amplihack/install_with_xpia.sh",
         "docs/claude/tools/amplihack/install_with_xpia.sh",
@@ -302,6 +302,7 @@ fn install_with_xpia_scripts_do_not_enable_xpia() {
         if !path.exists() {
             continue;
         }
+        checked += 1;
         for (n, line) in fs::read_to_string(&path).unwrap().lines().enumerate() {
             let code = line.trim_start();
             if code.starts_with('#') || code.starts_with("echo ") || code.starts_with("printf ") {
@@ -320,4 +321,6 @@ fn install_with_xpia_scripts_do_not_enable_xpia() {
             );
         }
     }
+    // A rename must not turn this into a test that checks nothing.
+    assert!(checked > 0, "no install_with_xpia.sh copy found to check");
 }
