@@ -25,7 +25,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amplihack"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-cli",
  "amplihack-git",
@@ -51,7 +51,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-core"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-memory",
  "amplihack-utils",
@@ -70,7 +70,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-eval"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "chrono",
  "serde",
@@ -82,7 +82,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-generator"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-git",
  "chrono",
@@ -97,7 +97,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-asset-resolver-bin"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-cli",
  "tracing",
@@ -106,7 +106,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-blarify"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "anyhow",
  "chrono",
@@ -121,7 +121,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-builders"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "anyhow",
  "chrono",
@@ -134,7 +134,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-cli"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-builders",
  "amplihack-git",
@@ -192,7 +192,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-context"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "anyhow",
  "chrono",
@@ -204,7 +204,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-delegation"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "chrono",
  "globset",
@@ -219,7 +219,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-domain-agents"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-agent-core",
  "amplihack-memory",
@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-fleet"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "anyhow",
  "serde",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-git"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "tempfile",
  "tokio",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hive"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-agent-core",
  "amplihack-memory",
@@ -271,7 +271,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-git",
  "amplihack-memory",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks-bin"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-hooks",
  "amplihack-state",
@@ -311,7 +311,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-launcher"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-git",
  "amplihack-types",
@@ -332,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-memory"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "anyhow",
  "chrono",
@@ -358,7 +358,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-multilspy"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -372,7 +372,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-orchestration"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-state",
  "amplihack-utils",
@@ -389,7 +389,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-recovery"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-git",
  "anyhow",
@@ -403,7 +403,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-reflection"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "anyhow",
  "chrono",
@@ -418,7 +418,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-remote"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-git",
  "amplihack-utils",
@@ -437,7 +437,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-safety"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-git",
  "serde",
@@ -448,7 +448,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-security"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "once_cell",
  "regex",
@@ -461,7 +461,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-session"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "chrono",
  "filetime",
@@ -478,7 +478,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-signal"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-turn",
  "amplihack-types",
@@ -496,7 +496,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-state"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-types",
  "libc",
@@ -509,7 +509,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-supply-chain-audit"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "chrono",
  "clap",
@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-turn"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "async-trait",
  "thiserror 2.0.18",
@@ -536,7 +536,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-types"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "serde",
  "serde_json",
@@ -546,7 +546,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-utils"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-git",
  "amplihack-types",
@@ -568,7 +568,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-workflows"
-version = "1.2.0"
+version = "1.2.93"
 dependencies = [
  "amplihack-utils",
  "chrono",
@@ -2179,7 +2179,7 @@ dependencies = [
 
 [[package]]
 name = "scan-invisible-chars-bin"
-version = "1.2.0"
+version = "1.2.93"
 
 [[package]]
 name = "scratch"
