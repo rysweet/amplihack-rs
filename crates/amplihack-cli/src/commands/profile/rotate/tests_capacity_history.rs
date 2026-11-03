@@ -58,6 +58,7 @@ fn probed(s: f64, w: f64) -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
     }
 }
 
@@ -234,6 +235,7 @@ fn stay(probed: Option<super::super::observe::Probes>) -> Measurement {
         probed,
         unknown_plan: Vec::new(),
         key_held: Vec::new(),
+        fresh_lines: Vec::new(),
     }
 }
 

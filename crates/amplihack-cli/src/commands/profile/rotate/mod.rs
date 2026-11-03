@@ -33,6 +33,10 @@ mod dry_run;
 #[cfg(unix)]
 mod exhausted;
 #[cfg(unix)]
+mod fresh;
+#[cfg(unix)]
+mod fresh_msg;
+#[cfg(unix)]
 mod gate_record;
 #[cfg(unix)]
 mod guide;
@@ -97,6 +101,8 @@ mod spend_blocks;
 #[cfg(unix)]
 mod swap;
 #[cfg(unix)]
+mod swap_back;
+#[cfg(unix)]
 mod swap_check;
 #[cfg(unix)]
 mod swap_expect;
@@ -134,6 +140,12 @@ mod tests_issue_1804_cycle;
 mod tests_issue_1845_cycle;
 #[cfg(all(test, unix))]
 mod tests_issue_1845_swap;
+#[cfg(all(test, unix))]
+mod tests_issue_1870;
+#[cfg(all(test, unix))]
+mod tests_issue_1870_cycle;
+#[cfg(all(test, unix))]
+mod tests_issue_1870_probe;
 #[cfg(all(test, unix))]
 mod tests_key_check;
 #[cfg(all(test, unix))]
@@ -244,6 +256,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                     warn_foreign_rotator(Some(store.root()));
                 }
                 let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
+                ctx.reread = Some(fresh::reread_as_configured);
                 cycle::run_cycle(&mut ctx, mode)?;
             }
             Some(RotateAction::Start(w)) => {

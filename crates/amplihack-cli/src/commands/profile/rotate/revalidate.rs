@@ -9,6 +9,7 @@
 
 use super::cycle::Ctx;
 use super::decide::Decision;
+use super::fresh::{self, Reread};
 use super::identify::{Account, Skip};
 use super::observe::{Measurement, Snap, decide_measured, snapshot};
 use crate::commands::profile::ProfileError;
@@ -260,6 +261,8 @@ fn reconsider(
     // already stored; `cycle.rs` relies on this (see the `Reconsidered` arm).
     let counted = std::mem::replace(&mut ctx.failed_live, failed_before);
     let retry = decide_measured(ctx, &fresh, probe.clone(), probes, m.measured_at);
+    // Issue #1870: no read under the lock; a stale retry target is unknown.
+    let retry = retry.and_then(|r| fresh::gate(ctx, &fresh, r, Reread::Never));
     ctx.failed_live = counted;
     let retry = retry?;
     debug_assert_eq!(

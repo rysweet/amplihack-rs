@@ -61,6 +61,7 @@ pub(super) fn m_spent(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErro
         key_held: Vec::new(),
         measured_at: now(),
         probed: None,
+        fresh_lines: Vec::new(),
     })
 }
 
@@ -85,6 +86,7 @@ fn stay(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
         key_held: Vec::new(),
         measured_at: now(),
         probed: None,
+        fresh_lines: Vec::new(),
     })
 }
 

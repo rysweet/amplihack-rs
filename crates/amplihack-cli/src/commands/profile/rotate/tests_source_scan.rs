@@ -63,6 +63,10 @@ fn rotate_has_the_planned_files() {
         "pin.rs",
         "prelude.rs",
         "switch.rs",
+        // Issue #1870: the freshness gate and swap-back damping.
+        "fresh.rs",
+        "fresh_msg.rs",
+        "swap_back.rs",
     ] {
         assert!(names.iter().any(|n| n == want), "missing rotate/{want}");
     }

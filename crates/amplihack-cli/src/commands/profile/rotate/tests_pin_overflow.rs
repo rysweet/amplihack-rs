@@ -129,6 +129,7 @@ fn off_overflow(_: &Ctx, _: &super::observe::Snap) -> Result<Measurement, Profil
         key_held: Vec::new(),
         measured_at: at,
         probed: None,
+        fresh_lines: Vec::new(),
     })
 }
 
@@ -214,6 +215,7 @@ fn onto_overflow(_: &Ctx, _: &super::observe::Snap) -> Result<Measurement, Profi
         key_held: Vec::new(),
         measured_at: now(),
         probed: None,
+        fresh_lines: Vec::new(),
     })
 }
 

@@ -254,6 +254,8 @@ pub struct Measurement {
     /// left the candidates (#1721); `None` from a stub, which disables that.
     /// `Probed` must never hold a token or an account identifier.
     pub probed: Option<Probes>,
+    /// Issue #1870: the freshness gate's `reread:` and `damp:` lines.
+    pub fresh_lines: Vec<String>,
 }
 
 pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
@@ -362,6 +364,7 @@ pub(super) fn decide_measured(
         unknown_plan: verdict.unknown_plan,
         key_held: verdict.key_held,
         measured_at,
+        fresh_lines: Vec::new(),
     })
 }
 
