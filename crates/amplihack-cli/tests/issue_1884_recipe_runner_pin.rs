@@ -54,7 +54,7 @@ fn unit_test_fixtures_name_the_pinned_revision() {
 }
 
 #[test]
-fn security_allowlist_names_the_pin_and_no_other_recipe_runner_revision() {
+fn security_allowlist_names_the_pin_once() {
     let pin = pin();
     let source = read("tests/integration/security_hygiene_test.rs");
     let marker = "Public recipe-runner revision pin";
@@ -73,7 +73,7 @@ fn security_allowlist_names_the_pin_and_no_other_recipe_runner_revision() {
     assert_eq!(
         source.matches(marker).count(),
         1,
-        "only one recipe-runner pin entry; the retired pin is not kept alongside"
+        "only one recipe-runner pin entry"
     );
 }
 
