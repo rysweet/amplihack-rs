@@ -366,6 +366,32 @@ fn codex_drops_an_inherited_claude_model() {
     );
 }
 
+/// When one value is refused and the other kept, the summary shows the
+/// refused one as `unset` and its source is not named.
+#[test]
+fn a_refused_model_shows_as_unset_in_the_summary() {
+    let p = fake_proc(&[]);
+    let (got, lines) = run(
+        &p,
+        &[],
+        &[
+            ("AMPLIHACK_PARENT_EFFORT", "medium"),
+            ("AMPLIHACK_PARENT_MODEL", "claude-opus-5-5"),
+        ],
+        "codex",
+    );
+    assert_eq!(got, inherited(Some("medium"), None));
+    assert_eq!(
+        lines,
+        vec![
+            "amplihack: model 'claude-opus-5-5' cannot be passed to codex; steps use codex's default"
+                .to_string(),
+            "amplihack: steps inherit effort=medium model=unset (from the parent amplihack launch)"
+                .to_string(),
+        ]
+    );
+}
+
 /// No failure in this path stops a run: an unreadable process table is
 /// skipped silently.
 #[test]

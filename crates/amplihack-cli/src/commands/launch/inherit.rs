@@ -12,7 +12,8 @@
 //! Everything here is pure apart from [`inherited_from_env`],
 //! [`in_recipe_run`], [`print_once`] and [`export_to_child`]. Nothing in this
 //! path returns an error or stops a launch: a value that fails a check is
-//! treated as unset. See docs/reference/effort-and-model-inheritance.md.
+//! treated as unset. See docs/reference/effort-and-model-inheritance.md;
+//! its "Design labels" section defines the D, S, C, I and F labels below.
 
 use super::command::is_claude_compatible_tool as is_claude_compatible;
 use crate::commands::agent::option_check::option_value;

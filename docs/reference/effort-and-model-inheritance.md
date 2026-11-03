@@ -25,6 +25,7 @@ the session that started the run, unless the step sets its own. This applies to
 - [Changes in behaviour](#changes-in-behaviour)
 - [Limitations](#limitations)
 - [Relation to per-step roles (#1872)](#relation-to-per-step-roles-1872)
+- [Design labels](#design-labels)
 
 ## Quick start
 
@@ -332,6 +333,11 @@ inherited", and the operator's own flags still apply.
   receives the inherited model as its own option, but does not export it as
   `AMPLIHACK_PARENT_MODEL`. A `recipe run` started from inside such a step
   therefore does not inherit the model. Pass `-c model=<id>` to that run.
+- **Values from a recipe's own context.** A recipe can set `effort` or
+  `model` in its context, and its steps and nested runs then use them. This
+  mainly affects cost. A recipe could already do the same by putting
+  `--model` or `--effort` on its own step commands, and the summary line names
+  `the recipe context` as the source.
 
 ## Relation to per-step roles (#1872)
 
@@ -339,6 +345,37 @@ inherited", and the operator's own flags still apply.
 will take slot 2 in [Precedence inside each step](#precedence-inside-each-step):
 below the step's own `--model`, above the gateway model and the inherited
 model. Until then, slot 2 is empty and has no effect.
+
+## Design labels
+
+Code comments and tests for #1883 cite these labels.
+
+| Label | Meaning |
+|---|---|
+| D1 | A step's launch reads only `AMPLIHACK_PARENT_EFFORT`, `AMPLIHACK_PARENT_MODEL` and its own arguments; never `/proc` or the fallback variables. |
+| D2 | The `claude` ancestor lookup is a fallback only, follows same-user processes, and is skipped when the values are already known. |
+| D3 | The source order for each setting, and the source labels in log lines. |
+| D4 | What a launch adds for an inherited effort. |
+| D5 | The step's own `--effort` or `--model` wins; the child holds only that value. |
+| D6 | What each agent binary can receive ([Support for each agent binary](#support-for-each-agent-binary)). |
+| D7 | The "cannot be passed" line: once per run, or once per process outside a run. |
+| D8 | The once-per-run summary line; no per-step model notice under a run. |
+| D9 | An invalid or empty value is treated as unset, with one "ignoring" line. |
+| D10 | A top-level launch with only `ANTHROPIC_MODEL` set behaves as before. |
+| S3 | Control, zero-width and bidirectional characters are refused. |
+| S4 | A value is 1 to 256 bytes and does not start with `-`. |
+| S5 | The codex `-c` value is built from a fixed word, never from the input. |
+| S6 | `AMPLIHACK_PARENT_*` cannot be set from recipe context. |
+| S7 | Nothing after `--` is read as a flag. |
+| S8 | An ancestor's command line is never logged. |
+| S9 | A rejected value is never printed. |
+| C1 | Each launch exports the effort and model its agent runs with, for its children. |
+| C2 | An ancestor's `--model` is not trusted under an older amplihack session. |
+| C3 | The recipe runner removes and sets `AMPLIHACK_PARENT_*` for every step. |
+| C4 | With nothing inherited, a launch adds no `CLAUDE_CODE_EFFORT_LEVEL` or `ANTHROPIC_MODEL`. |
+| I1 | None of the variables is ever set to an empty or invalid value. |
+| I2 | Both parent variables are removed before being set, so a stale value is never passed on. |
+| F3 | With nothing inherited, argv, environment and stderr match a run without this feature. |
 
 ## See also
 
