@@ -29,10 +29,12 @@
 #                                     or 1 with ERROR
 #   _issue_match REGEX TEXT         — case-insensitive ERE test of TEXT (no pipe)
 #   _issue_backoff_int NAME DEFAULT — AMPLIHACK_ISSUE_BACKOFF_* value or DEFAULT
+#                                     (WARNING on stderr when set but invalid)
 #   _issue_retry_after OUTPUT       — N from `retry-after: N` (1-6 digits)
 #   _issue_jitter_delay ROUND BASE MAX_DELAY
 #                                   — equal-jitter delay for a round, at least 1
-#   _issue_primary_wait             — seconds until the GraphQL reset + 3, >= 5
+#   _issue_primary_wait             — seconds until the GraphQL reset + 3, >= 5;
+#                                     5 with a WARNING when the reset is unreadable
 #   _issue_wait_for_class CLASS OUTPUT ROUND BASE MAX_DELAY
 #                                   — the planned wait for one backoff round
 #   _issue_last_url OUTPUT          — last line of OUTPUT that is an issue URL
@@ -51,6 +53,7 @@ issue_creation_opted_in() {
 find_open_issue_by_exact_title() {
   local t="${1:-}" phrase out repo url rc=0
   phrase="${t//\"/}"
+  phrase="${phrase//\\/ }"
   out=$(GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 --search="\"${phrase}\" in:title" --json number,title,url </dev/null 2>/dev/null) || rc=$?
   if [ "$rc" -ne 0 ]; then
     echo "WARNING: exact-title lookup failed; issue list exited ${rc}" >&2
@@ -91,13 +94,13 @@ classify_issue_create_error() {
   s="${1:0:65536}"
   if _issue_match 'HTTP 401|(^|[^0-9])401([^0-9]|$)|bad credentials|requires authentication|not logged in' "$s"; then
     echo auth
-  elif _issue_match '(^|[^0-9])(403|429)([^0-9]|$)' "$s" && _issue_match 'secondary rate limit|abuse detection' "$s"; then
+  elif _issue_match 'secondary rate limit|abuse detection|submitted too quickly' "$s"; then
     echo secondary
   elif _issue_match 'api rate limit|rate limit already exceeded|rate limit exceeded|(^|[^0-9])429([^0-9]|$)' "$s"; then
     echo primary
   elif _issue_match 'could not resolve to a repository|repository not found|repository.*inaccessible|HTTP 404' "$s"; then
     echo not_found
-  elif _issue_match 'label' "$s"; then
+  elif _issue_match 'could not add label|label.*(not found|does not exist)' "$s"; then
     echo label
   else
     echo other
@@ -105,8 +108,14 @@ classify_issue_create_error() {
 }
 
 _issue_backoff_int() {
-  local v="${!1:-}"
-  if [[ "$v" =~ ^[1-9][0-9]{0,5}$ ]]; then printf '%s\n' "$v"; else printf '%s\n' "$2"; fi
+  local v="${!1:-}" shown
+  if [[ "$v" =~ ^[1-9][0-9]{0,5}$ ]]; then printf '%s\n' "$v"; return 0; fi
+  if [ -n "$v" ]; then
+    shown="${v:0:32}"
+    shown="${shown//[^A-Za-z0-9._+-]/?}"
+    printf 'WARNING: ignoring invalid %s=%s; using default %s\n' "$1" "$shown" "$2" >&2
+  fi
+  printf '%s\n' "$2"
 }
 
 _issue_retry_after() {
@@ -130,7 +139,11 @@ _issue_jitter_delay() {
 _issue_primary_wait() {
   local epoch now w rc=0
   epoch=$(GH_PROMPT_DISABLED=1 timeout 30 gh api rate_limit --jq .resources.graphql.reset </dev/null 2>/dev/null) || rc=$?
-  [ "$rc" -eq 0 ] && [[ "$epoch" =~ ^[0-9]{1,12}$ ]] || { printf '5\n'; return 0; }
+  if [ "$rc" -ne 0 ] || ! [[ "$epoch" =~ ^[0-9]{1,12}$ ]]; then
+    echo "WARNING: could not read GitHub rate-limit reset; waiting 5s" >&2
+    printf '5\n'
+    return 0
+  fi
   now=$(date +%s)
   w=$((10#$epoch - now + 3))
   [ "$w" -lt 5 ] && w=5
@@ -141,7 +154,6 @@ _issue_wait_for_class() {
   local class="$1" out="$2" round="$3" base="$4" cap="$5" ra=""
   ra=$(_issue_retry_after "$out") || ra=""
   if [ -n "$ra" ]; then
-    [ "$ra" -lt 1 ] && ra=1
     printf '%s\n' "$ra"
   elif [ "$class" = "secondary" ]; then
     _issue_jitter_delay "$round" "$base" "$cap"
@@ -161,7 +173,7 @@ _issue_last_url() {
 
 create_github_issue_bounded() {
   local title="$1" body_file="$2" label="$3"
-  local base cap max used=0 round=0 w rc out class url use_label=1 label_retry_used=0 lrc found
+  local base cap max used=0 round=0 w rc out class url with_label=1 lrc found pass attempt
   base=$(_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_BASE_SECS 5)
   cap=$(_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_MAX_DELAY_SECS 60)
   max=$(_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS 300)
@@ -171,10 +183,9 @@ create_github_issue_bounded() {
   # Each pass of this bounded loop is one create; it ends by return on every
   # class, and a rate-limited pass only continues while used + wait <= max,
   # with every wait >= 1 — so at most max + 2 passes run.
-  local pass
   for ((pass = 0; pass <= max + 2; pass++)); do
     rc=0
-    if [ "$use_label" -eq 1 ]; then
+    if [ "$with_label" -eq 1 ]; then
       out=$(GH_PROMPT_DISABLED=1 timeout 60 gh issue create --title="$title" --body-file="$body_file" --label="$label" </dev/null 2>&1) || rc=$?
     else
       out=$(GH_PROMPT_DISABLED=1 timeout 60 gh issue create --title="$title" --body-file="$body_file" </dev/null 2>&1) || rc=$?
@@ -188,8 +199,8 @@ create_github_issue_bounded() {
     class=$(classify_issue_create_error "$out")
     case "$class" in
       label)
-        if [ "$label_retry_used" -eq 0 ]; then
-          label_retry_used=1; use_label=0
+        if [ "$with_label" -eq 1 ]; then
+          with_label=0
           echo "WARNING: gh issue create failed on label ${label}; creating it again without --label (one fallback per run)" >&2
           continue
         fi
@@ -208,7 +219,6 @@ create_github_issue_bounded() {
     esac
     # Rate limited: wait, look up, and only create again after a lookup that
     # succeeded and found nothing. A failed lookup costs another wait.
-    local attempt
     for ((attempt = 0; attempt <= max; attempt++)); do
       w=$(_issue_wait_for_class "$class" "$out" "$round" "$base" "$cap")
       [ "$w" -lt 1 ] && w=1

@@ -272,7 +272,8 @@ GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 \
   --json number,title,url </dev/null
 ```
 
-The search phrase is the title with double quotes removed, wrapped in quotes
+The search phrase is the title with double quotes removed and each backslash
+replaced by a space, wrapped in quotes
 and followed by `in:title`, so search qualifiers in the task text are
 treated as words. `REPO` is `nameWithOwner` from
 `GH_PROMPT_DISABLED=1 timeout 30 gh repo view --json nameWithOwner </dev/null`.
@@ -345,10 +346,10 @@ wins.
 | Class | Output contains | Action |
 | ----- | --------------- | ------ |
 | `auth` | `HTTP 401`, a standalone `401`, `bad credentials`, `requires authentication`, `not logged in` | `ERROR`, exit 1. No retry, no sleep, no lookup |
-| `secondary` | `403` or `429`, together with `secondary rate limit` or `abuse detection` (any case) | [Jittered backoff](#secondary-rate-limit-backoff) |
+| `secondary` | `secondary rate limit`, `abuse detection` or `submitted too quickly` (any case), with or without an HTTP status. This covers gh's GraphQL messages such as `GraphQL: was submitted too quickly (createIssue)` | [Jittered backoff](#secondary-rate-limit-backoff) |
 | `primary` | `api rate limit`, `rate limit already exceeded`, `rate limit exceeded`, or a `429` without secondary-limit text | [Wait for the reset](#primary-rate-limit), same time budget |
 | `not_found` | `Could not resolve to a Repository`, `repository not found`, `repository … inaccessible`, `HTTP 404` | `WARNING`, local metadata, exit 0 |
-| `label` | `label`, and none of the above | One more create without `--label` |
+| `label` | `could not add label`, or `label` followed on the same line by `not found` or `does not exist`. Other output that mentions a label, such as `HTTP 422: Validation Failed (Label)`, is `other` | One more create without `--label` |
 | `other` | Anything else, including a bare `403` or a permission `403` | `ERROR`, exit 1 |
 
 The create without `--label` runs at most once per run and only for the
@@ -364,8 +365,10 @@ each attempt is exactly one `gh issue create` call.
 | `AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS` | `300` | Total wait budget for the run |
 
 Each must be a positive integer of at most six digits
-(`^[1-9][0-9]{0,5}$`). Any other value, including `0`, silently falls back to
-its default.
+(`^[1-9][0-9]{0,5}$`). An unset or empty value uses the default. Any other
+value, including `0`, also uses the default and prints
+`WARNING: ignoring invalid NAME=VALUE; using default D` to stderr, with the
+value cut to 32 characters.
 
 For backoff round *n* (starting at 0), the delay uses "equal jitter":
 
@@ -380,7 +383,10 @@ not at a fixed interval.
 
 If the output contains `retry-after: N` (any case, 1–6 digits), the wait is
 `N` seconds instead. It is neither jittered nor capped by `MAX_DELAY`, because
-GitHub requires at least that long. A `retry-after: 0` is raised to 1. The
+GitHub requires at least that long. gh's error output usually leaves out
+response headers, so this applies only when `retry-after:` text appears in
+that output; in most runs the jittered delay is what applies. A
+`retry-after: 0` is raised to 1. The
 Retry-After wait still counts against `MAX_TOTAL`. It is never shortened to
 fit: if `N` is more than the budget that is left, the helper gives up at once
 without sleeping.
@@ -394,8 +400,9 @@ WARNING: gh issue create hit a GitHub secondary rate limit; backing off 7s (roun
 ### Primary rate limit
 
 The wait is the GraphQL reset time from `gh api rate_limit` plus 3 s, at
-least 5 s. A reset epoch that is not 1–12 digits is treated as missing and
-gives the 5 s minimum. The wait counts against the same
+least 5 s. If `gh api rate_limit` fails or returns a reset epoch that is not
+1–12 digits, the wait is 5 s and
+`WARNING: could not read GitHub rate-limit reset; waiting 5s` goes to stderr. The wait counts against the same
 `AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS` budget. If the reset is further away
 than the budget that is left, the step gives up at once without sleeping.
 
@@ -521,7 +528,7 @@ issue URL is printed.
 
 | Function | Purpose |
 | -------- | ------- |
-| `_issue_backoff_int NAME DEFAULT` | Reads an `AMPLIHACK_ISSUE_BACKOFF_*` value, or the default when it is not `^[1-9][0-9]{0,5}$` |
+| `_issue_backoff_int NAME DEFAULT` | Reads an `AMPLIHACK_ISSUE_BACKOFF_*` value, or the default when it is not `^[1-9][0-9]{0,5}$` (with a WARNING when it was set) |
 | `_issue_retry_after OUTPUT` | Prints `N` from `retry-after: N` (1–6 digits), or nothing |
 | `_issue_jitter_delay ROUND BASE MAX_DELAY` | Prints the equal-jitter delay for a round, at least 1 |
 | `_issue_primary_wait` | Prints the wait until the GraphQL reset plus 3 s, at least 5 |
@@ -550,6 +557,8 @@ block. `gh` stderr is discarded. The task text is never logged.
 | `WARNING: exact-title lookup failed; …` | Lookup returned 2. Before the first create the step creates; during backoff it waits |
 | `WARNING: gh issue create hit a GitHub secondary rate limit; backing off Ns (round R, U/Ms used)` | Secondary limit wait |
 | `WARNING: gh issue create hit the GitHub API rate limit; waiting Ns for reset (U/Ms used)` | Primary limit wait |
+| `WARNING: ignoring invalid NAME=VALUE; using default D` | An `AMPLIHACK_ISSUE_BACKOFF_*` value was set but invalid |
+| `WARNING: could not read GitHub rate-limit reset; waiting 5s` | Primary limit, but the reset time was unreadable |
 | `WARNING: GitHub issue creation gave up after Us (AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS=M); falling back to local tracking.` | Budget used up |
 | `ERROR: GitHub issue creation failed.` | `auth` or `other` class; sanitised gh output follows |
 | `WARN: could not verify issue #1592 (gh exit 124); falling back to local tracking` | `gh issue view` failed; the exit code tells a timeout (124) from an auth, rate-limit or network failure. gh's own stderr is not shown |

@@ -141,8 +141,8 @@ fn write_executable(path: &Path, content: &str) {
 ///   `[]`), `found` (`GH_LIST_FOUND_JSON`), `fail`, `garbage`, `object`.
 /// - `label create`: exits `GH_LABEL_EXIT` (default 0).
 /// - `issue create`: `GH_CREATE_SEQ` tokens `ok`, `noisy`, `secondary`,
-///   `secondary429`, `abuse`, `retry:N`, `primary`, `auth`, `forbidden`,
-///   `label`, `notfound`, `other`. Records the body file's mode and path.
+///   `secondary429`, `abuse`, `graphql_secondary`, `too_quickly`, `retry:N`,
+///   `primary`, `auth`, `forbidden`, `label`, `notfound`, `other`. Records the body file's mode and path.
 const FAKE_GH: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$GH_LOG"
 { for a in "$@"; do printf '%s\n' "$a"; done; printf '%s\n' '---'; } >> "$GH_ARGV_LOG"
@@ -198,6 +198,8 @@ case "$1:$2" in
       secondary) echo "HTTP 403: You have exceeded a secondary rate limit. Please wait a few minutes before you try again. (https://api.github.com/graphql)" >&2; exit 1 ;;
       secondary429) echo "HTTP 429: secondary rate limit triggered (https://api.github.com/graphql)" >&2; exit 1 ;;
       abuse) echo "HTTP 403: You have triggered an abuse detection mechanism. (https://api.github.com/graphql)" >&2; exit 1 ;;
+      graphql_secondary) echo "GraphQL: You have exceeded a secondary rate limit. Please wait a few minutes before you try again." >&2; exit 1 ;;
+      too_quickly) echo "GraphQL: was submitted too quickly (createIssue)" >&2; exit 1 ;;
       retry:*) echo "HTTP 403: You have exceeded a secondary rate limit. (https://api.github.com/graphql)" >&2; echo "Retry-After: ${tok#retry:}" >&2; exit 1 ;;
       primary) echo "GraphQL: API rate limit exceeded for user ID 12345." >&2; exit 1 ;;
       auth) echo "HTTP 401: Bad credentials (https://api.github.com/graphql)" >&2; exit 1 ;;
@@ -702,6 +704,50 @@ fn search_qualifiers_and_quotes_in_the_title_are_neutralised() {
 }
 
 #[test]
+fn title_ending_in_backslash_is_searched_without_an_escaped_quote() {
+    let task = r"Fix path C:\dir\";
+    let run = run_opted_in(task, &[]);
+    run.assert_created();
+    assert_eq!(run.creates().len(), 1, "{}", run.diag());
+    let search = flag_value(&run.lists()[0], "--search").unwrap_or_default();
+    assert!(
+        !search.contains('\\'),
+        "backslashes are removed from the search phrase (no \\\" escape): {search:?}\n{}",
+        run.diag()
+    );
+    assert!(
+        search.ends_with("\" in:title"),
+        "{search:?}\n{}",
+        run.diag()
+    );
+}
+
+#[test]
+fn invalid_backoff_setting_warns_and_the_run_still_completes() {
+    let run = run_step(
+        "",
+        TITLE,
+        &[
+            ("RECIPE_VAR_create_issue", "true"),
+            ("AMPLIHACK_ISSUE_BACKOFF_BASE_SECS", "abc"),
+        ],
+    );
+    run.assert_created();
+    assert!(
+        run.stderr().contains(
+            "WARNING: ignoring invalid AMPLIHACK_ISSUE_BACKOFF_BASE_SECS=abc; using default 5"
+        ),
+        "{}",
+        run.diag()
+    );
+    assert!(
+        !run.stdout().contains("WARNING"),
+        "the warning goes to stderr only\n{}",
+        run.diag()
+    );
+}
+
+#[test]
 fn title_with_quotes_matches_exactly_through_jq_arg() {
     let task = r#"Fix "x" and \(.url) | .title"#;
     let found = format!("{REPO_URL}/issues/1700");
@@ -893,11 +939,17 @@ fn secondary_limit_then_success_retries_once_after_a_lookup() {
 
 #[test]
 fn abuse_detection_and_429_secondary_are_also_backed_off() {
-    for tok in ["abuse", "secondary429"] {
+    for tok in ["abuse", "secondary429", "graphql_secondary", "too_quickly"] {
         let run = run_opted_in(TITLE, &[("GH_CREATE_SEQ", &format!("{tok} ok"))]);
         run.assert_created();
         assert_eq!(run.creates().len(), 2, "{tok}\n{}", run.diag());
         assert_eq!(run.sleeps().len(), 1, "{tok}\n{}", run.diag());
+        assert_eq!(
+            run.lists().len(),
+            2,
+            "{tok}: a lookup must run before the retry\n{}",
+            run.diag()
+        );
     }
 }
 
@@ -1446,6 +1498,14 @@ fn helper_classify_issue_create_error_table() {
             "HTTP 403: You have triggered an abuse detection mechanism.",
             "secondary",
         ),
+        (
+            "GraphQL: You have exceeded a secondary rate limit",
+            "secondary",
+        ),
+        (
+            "GraphQL: was submitted too quickly (createIssue)",
+            "secondary",
+        ),
         ("GraphQL: API rate limit exceeded for user ID 1.", "primary"),
         ("API rate limit already exceeded for user ID 1.", "primary"),
         ("HTTP 429: Too Many Requests", "primary"),
@@ -1457,6 +1517,7 @@ fn helper_classify_issue_create_error_table() {
         ("could not add label: 'workflow:default' not found", "label"),
         ("HTTP 403: Resource not accessible by integration", "other"),
         ("HTTP 403", "other"),
+        ("HTTP 422: Validation Failed (Label)", "other"),
         ("issue 4011 failed to save", "other"),
         ("something else entirely", "other"),
         ("", "other"),
@@ -1509,6 +1570,11 @@ fn helper_backoff_int_validates_values() {
     let run = run_helper(
         "_issue_backoff_int AMPLIHACK_ISSUE_BACKOFF_BASE_SECS 42",
         &[],
+    );
+    assert!(
+        run.stderr().is_empty(),
+        "an unset value is not a warning\n{}",
+        run.diag()
     );
     assert_eq!(
         run.stdout().trim(),
@@ -1598,6 +1664,13 @@ fn helper_primary_wait_uses_reset_with_buffer_and_minimum() {
         let run = run_helper("_issue_primary_wait", &[("GH_RESET_EPOCH", epoch)]);
         run.assert_exit(0);
         assert_eq!(run.stdout().trim(), "5", "{epoch:?}\n{}", run.diag());
+        assert_eq!(
+            run.stderr()
+                .contains("WARNING: could not read GitHub rate-limit reset; waiting 5s"),
+            epoch != "1",
+            "{epoch:?}: an unreadable reset warns; a past reset is just the minimum\n{}",
+            run.diag()
+        );
     }
 }
 
