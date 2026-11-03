@@ -18,11 +18,20 @@
 #![cfg(unix)]
 
 use amplihack_utils::launch_target::{
-    InstallDecision, Rejection, TargetSource, decide_install, resolve_from_candidates,
+    InstallDecision, PER_CANDIDATE_PROBE_TIMEOUT, Rejection, TOTAL_PROBE_BUDGET, TargetSource,
+    decide_install, resolve_from_candidates,
 };
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
+
+/// Head-room added to a configured limit before a wall-clock assertion
+/// fails (issue #1860). Load only slows a probe, so a bound is always
+/// `<configured limit> + LOAD_SLACK`, never a bare literal. Every fixture
+/// that hangs sleeps for 600 s, so each bound stays at least 15 times
+/// smaller than the hang it guards against.
+const LOAD_SLACK: Duration = Duration::from_secs(30);
 
 /// The placeholder `@anthropic-ai/claude-code` leaves at `bin/claude.exe` when
 /// its postinstall is suppressed: 500 bytes, ASCII, no shebang. Verified byte
@@ -70,12 +79,32 @@ fn write_unparseable(dir: &Path, name: &str) -> PathBuf {
     path
 }
 
-/// Hangs forever on `--version`.
+/// Hangs on `--version` for far longer than any probe timeout.
+///
+/// `exec` makes the probed process the `sleep` itself, so the probe's kill on
+/// timeout ends it and no orphan is left behind for ten minutes.
 fn write_hanging(dir: &Path, name: &str) -> PathBuf {
     let path = dir.join(name);
-    fs::write(&path, "#!/bin/sh\nsleep 600\n").unwrap();
+    fs::write(&path, "#!/bin/sh\nexec sleep 600\n").unwrap();
     make_executable(&path);
     path
+}
+
+/// Kills the process whose pid is recorded in the file, when dropped.
+///
+/// The probe cannot reach a grandchild its candidate left running, so a test
+/// that starts one must end it itself, including when an assertion fails.
+struct KillOnDrop(PathBuf);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        if let Ok(pid) = fs::read_to_string(&self.0) {
+            let pid = pid.trim();
+            if !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit()) {
+                let _ = std::process::Command::new("kill").arg(pid).status();
+            }
+        }
+    }
 }
 
 fn make_executable(path: &Path) {
@@ -86,6 +115,11 @@ fn make_executable(path: &Path) {
 
 fn rejection_for<'a>(rejected: &'a [(PathBuf, Rejection)], path: &Path) -> Option<&'a Rejection> {
     rejected.iter().find(|(p, _)| p == path).map(|(_, r)| r)
+}
+
+/// How many candidates were rejected for `reason`.
+fn count(rejected: &[(PathBuf, Rejection)], reason: &Rejection) -> usize {
+    rejected.iter().filter(|(_, r)| r == reason).count()
 }
 
 // ---------------------------------------------------------------------------
@@ -286,12 +320,20 @@ fn a_candidate_that_leaves_a_grandchild_holding_its_pipe_still_resolves_promptly
     // precisely the threat SEC-4 names.
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("claude");
+    let pid_file = dir.path().join("grandchild.pid");
+    // The grandchild sleeps for 600 s, far beyond the bound below, so an
+    // unbounded drain fails this test instead of finishing inside the slack.
+    // It records its pid so the guard can end it however the test finishes.
     fs::write(
         &path,
-        "#!/bin/sh\n/bin/sleep 30 &\necho '2.1.238'\nexit 0\n",
+        format!(
+            "#!/bin/sh\n/bin/sleep 600 &\necho $! > '{}'\necho '2.1.238'\nexit 0\n",
+            pid_file.display()
+        ),
     )
     .unwrap();
     make_executable(&path);
+    let _reaper = KillOnDrop(pid_file);
 
     let started = std::time::Instant::now();
     let resolution = resolve_from_candidates("claude", &[(path.clone(), TargetSource::Path)]);
@@ -303,8 +345,9 @@ fn a_candidate_that_leaves_a_grandchild_holding_its_pipe_still_resolves_promptly
         "the child exited cleanly and printed a version; that is a healthy binary"
     );
     assert!(
-        elapsed < amplihack_utils::launch_target::TOTAL_PROBE_BUDGET,
-        "resolution must stay within TOTAL_PROBE_BUDGET, took {elapsed:?}"
+        elapsed < TOTAL_PROBE_BUDGET + LOAD_SLACK,
+        "the drain must be bounded: the grandchild holds the pipe for 600 s, \
+         and resolution took {elapsed:?}"
     );
 }
 
@@ -440,15 +483,23 @@ fn a_hanging_candidate_times_out_and_the_next_one_is_still_reached() {
         Some(&Rejection::ProbeTimedOut)
     );
     assert!(
-        elapsed < std::time::Duration::from_secs(8),
+        elapsed < TOTAL_PROBE_BUDGET + LOAD_SLACK,
         "one hung candidate must not stall the launch; took {elapsed:?}"
     );
 }
 
 #[test]
 fn the_total_probe_budget_bounds_a_path_full_of_hanging_binaries() {
-    // SEC-4: eight candidates at the per-candidate timeout would be 24s of
-    // foreground hang. The total budget is what makes that impossible.
+    // SEC-4: the candidate cap alone would allow eight probes at the
+    // per-candidate timeout, 24 s of foreground hang. The total budget is
+    // what makes that impossible.
+    //
+    // Issue #1860: the proof is a count, not a stopwatch. Load only slows
+    // each probe, so it can lower the number of probes that start before the
+    // budget runs out but never raise it. Without the budget check the count
+    // rises to the cap (8). A wall-clock bound tight enough to tell 10 s from
+    // 24 s cannot survive a loaded host, so time is only a loose backstop
+    // here, against a missing per-probe timeout or an unbounded drain.
     let dir = tempfile::tempdir().unwrap();
     let candidates: Vec<_> = (0..12)
         .map(|i| {
@@ -464,9 +515,54 @@ fn the_total_probe_budget_bounds_a_path_full_of_hanging_binaries() {
     let elapsed = started.elapsed();
 
     assert!(resolution.target.is_none());
+    let rejected = &resolution.rejected;
+    // A host short of processes turns a probe into `ResourceExhausted`
+    // instead of a timeout. Such a probe can return at once, so it uses no
+    // budget and is not part of the bound below: only probes that waited out
+    // their timeout are limited by the total budget.
     assert!(
-        elapsed < std::time::Duration::from_secs(15),
-        "total probe budget must bound the whole pass; took {elapsed:?}"
+        rejected.iter().all(|(_, r)| matches!(
+            r,
+            Rejection::ProbeTimedOut | Rejection::NotProbed | Rejection::ResourceExhausted { .. }
+        )),
+        "a hanging candidate timed out, was never examined, or met a host \
+         out of resources: {rejected:?}"
+    );
+    assert_eq!(
+        rejected.len(),
+        candidates.len(),
+        "every candidate is accounted for: {rejected:?}"
+    );
+    let not_probed = count(rejected, &Rejection::NotProbed);
+    let timed_out = count(rejected, &Rejection::ProbeTimedOut);
+    let exhausted = rejected
+        .iter()
+        .filter(|(_, r)| matches!(r, Rejection::ResourceExhausted { .. }))
+        .count();
+    // A zero timeout count proves nothing about the budget unless the host
+    // refused the forks. Without this, a regression that reported a hung
+    // probe as some other accepted variant would pass without the bound
+    // ever being exercised.
+    assert!(
+        timed_out > 0 || exhausted > 0,
+        "no probe timed out and none met a host out of resources, so the \
+         total budget was never exercised: {rejected:?}"
+    );
+    let most = TOTAL_PROBE_BUDGET
+        .as_nanos()
+        .div_ceil(PER_CANDIDATE_PROBE_TIMEOUT.as_nanos()) as usize;
+    assert!(
+        not_probed < candidates.len(),
+        "the first candidate is always probed: {rejected:?}"
+    );
+    assert!(
+        timed_out <= most,
+        "the total budget allows at most {most} probes of {PER_CANDIDATE_PROBE_TIMEOUT:?} \
+         to time out within {TOTAL_PROBE_BUDGET:?}; {timed_out} did: {rejected:?}"
+    );
+    assert!(
+        elapsed < TOTAL_PROBE_BUDGET + LOAD_SLACK,
+        "the pass must end soon after the total budget; took {elapsed:?}"
     );
 }
 

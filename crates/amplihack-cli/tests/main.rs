@@ -256,6 +256,8 @@ mod issue_1811_switch;
 mod issue_1818_no_session_limit;
 #[path = "issue_1846_exhausted_reading.rs"]
 mod issue_1846_exhausted_reading;
+#[path = "issue_1860_liveness_proc_root.rs"]
+mod issue_1860_liveness_proc_root;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

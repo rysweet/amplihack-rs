@@ -410,12 +410,13 @@ per-candidate timeout would otherwise be 24 seconds of foreground hang.
 the child and then joining the reader threads unconditionally is not a timeout:
 if the child exits promptly but a *grandchild* inherits its stdout pipe, the
 drain thread never sees EOF and the join has no ceiling at all. Against a
-shim that runs `sleep 60 &` and then exits, the drain overruns to **60.0 s
-against a 10 s budget** (a design estimate — no test in the workspace builds
-that shim, so the figure is the `sleep`'s own duration, reasoned rather than
-timed; the unboundedness it illustrates is structural, not numeric),
-and against a daemon it never returns. `run_capped_output_with_timeout`
-therefore bounds the joins by whatever is left of the timeout and, when that
+shim that runs `sleep 600 &` and then exits, the drain would take as long as
+the `sleep`, 600 s against a 10 s budget, and against a daemon it never
+returns. The test
+`a_candidate_that_leaves_a_grandchild_holding_its_pipe_still_resolves_promptly`
+builds that shim (see [Testing under load](#testing-under-load)).
+`run_capped_output_with_timeout` therefore bounds the joins by whatever is left
+of the timeout and, when that
 runs out, abandons the reader threads rather than waiting on them — the child's
 exit status is already known and authoritative, and a version probe needs one
 semver line, not a complete transcript. The detached threads exit when the pipe
@@ -476,6 +477,70 @@ the child's pipes hit EOF, so the wait now sleeps on that instead — with the
 same backoff retained as the fallback, because a child can close its stdio and
 keep running, and a grandchild can hold the pipes open past its parent's exit.
 `try_wait` remains the authority; EOF is only a hint about when to ask.
+
+### Testing under load
+
+The tests in `crates/amplihack-utils/tests/launch_target_health_gate.rs` that
+check the probe bounds must pass on a host whose CPUs are fully loaded. Load
+slows each probe; it does not change which bounds the code enforces. The tests
+are therefore written so that load cannot make them fail and a removed bound
+still does.
+
+Every bound is computed from the public constants plus one named allowance,
+`LOAD_SLACK`. No test compares elapsed time with a hand-written figure.
+
+| Test | Purpose |
+| --- | --- |
+| `the_total_probe_budget_bounds_a_path_full_of_hanging_binaries` | Proves the total budget by counting timed-out probes. |
+| `a_hanging_candidate_times_out_and_the_next_one_is_still_reached` | Proves a hanging candidate does not stop the walk. |
+| `a_candidate_that_leaves_a_grandchild_holding_its_pipe_still_resolves_promptly` | Proves the output drain is bounded. |
+
+#### The total budget is proved by a count
+
+A wall-clock bound cannot prove the total budget. Without the budget check,
+`MAX_PROBE_CANDIDATES` still ends the walk after that many probes of
+`PER_CANDIDATE_PROBE_TIMEOUT` each. A bound tight enough to catch that would
+fail on a loaded host, and a bound loose enough for a loaded host would not
+catch it.
+
+The count does not have this problem. Each probe's timeout is
+`PER_CANDIDATE_PROBE_TIMEOUT`, cut to whatever budget remains. A probe whose
+timeout was cut leaves no budget, so it is the last; every timed-out probe
+before it took the full `PER_CANDIDATE_PROBE_TIMEOUT`. No more than
+`ceil(TOTAL_PROBE_BUDGET / PER_CANDIDATE_PROBE_TIMEOUT)` probes can therefore
+time out, and the total stays within `TOTAL_PROBE_BUDGET`. Load makes each
+probe slower, which can lower the count but never raise it. Removing the
+budget check raises the count to `MAX_PROBE_CANDIDATES`, and the test fails on
+the count. Candidates the walk did not reach are recorded as `NotProbed`,
+including those beyond `MAX_PROBE_CANDIDATES`, so every candidate has exactly
+one rejection.
+
+A host that is short of processes rejects a probe as `ResourceExhausted`
+instead. That probe can return at once without using the budget, so the test
+accepts it and leaves it out of the count.
+
+The elapsed-time assertion, at `TOTAL_PROBE_BUDGET + LOAD_SLACK`, stays as a
+backstop. It catches a probe that ignores its own timeout or a drain that
+waits without a limit, both of which would run for the full length of the
+fixture's `sleep`.
+
+#### Hanging fixtures sleep for 600 s
+
+Each fixture that hangs runs `sleep 600`, far longer than any bound it is
+tested against. A regression therefore shows as a failure, not as a test that
+happens to finish inside its allowance.
+
+The probe kills the child, not its process group (see [Probe budget](#probe-budget)),
+so the fixtures end their own sleeps. A hanging script runs `exec sleep 600`,
+which makes the probed process the `sleep` itself, and the probe's kill on
+timeout ends it. The grandchild fixture writes its `sleep`'s pid to a file in
+the test's temporary directory, and the test kills that pid when it finishes,
+whether it passes or fails.
+
+The unit test `version_probe_does_not_expose_litellm_configuration` in
+`crates/amplihack-utils/src/launch_target.rs` probes a healthy binary with
+`PER_CANDIDATE_PROBE_TIMEOUT` rather than a shorter timeout of its own, so a
+slow host cannot turn it into a false timeout.
 
 ## The install decision
 

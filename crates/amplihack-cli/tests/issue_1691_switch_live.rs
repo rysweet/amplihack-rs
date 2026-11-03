@@ -421,7 +421,9 @@ fn a_profile_open_in_a_session_still_becomes_the_default() {
     // The usual way a profile is used: a session runs with CLAUDE_CONFIG_DIR
     // set to it. Its login cannot be moved, but new launches can default to
     // it, as before #1691. An earlier hold on work stays and is named.
-    let f = Fixture::new();
+    // Issue #1860: the stand-in is a real process, so this test reads the
+    // host's process table.
+    let f = Fixture::new().host_sessions();
     f.ok(&["profile", "switch", "work"]);
     let mut session = std::process::Command::new("sleep")
         .arg("600")
