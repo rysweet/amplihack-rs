@@ -293,10 +293,11 @@ while :; do
         || echo "WARNING: could not append the manifest row for ${ROUND_LABEL} to ${LOOP_NAME}-records.tsv." >&2
     fi
   fi
-  # #1743, decided in code before the evaluator: no progress, then the budget.
+  # #1743, decided in code before the evaluator: no progress, then the budget. RF: 1 clean, 2 failed (rc!=0 or no verdict; the evaluator judges faults), 0 otherwise.
   HEAD_NOW="$(git -C "$REPO" rev-parse HEAD || printf '')"; CI_SIGNAL="$(field "$RAW" ci_signal "")"
-  [ "$ROUND_CLEAN" = "true" ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL"
-  bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$HEAD_NOW" "$([ "$ROUND_CLEAN" = "true" ] && echo 1 || echo 0)" "${RECORD}.findings" "$CI_SIGNAL"
+  RF=0; [ "$ROUND_CLEAN" = "true" ] && RF=1 || { [ "$ROUND_RC" -eq 0 ] && [ "$ROUND_VERDICT" != "MISSING" ]; } || RF=2
+  [ "$RF" != 0 ] || progress_stop "$HEAD_NOW" "$CI_SIGNAL"
+  bash "${LOOP_HOME}/autodrive_progress.sh" record "$STATE_DIR" "$LOOP_NAME" "$ROUND_LABEL" "$HEAD_NOW" "$RF" "${RECORD}.findings" "$CI_SIGNAL"
   [ "$ROUND_CLEAN" = "true" ] || budget_stop post
   TEST_SIGNAL="$(field "$RAW" test_signal "")"
   HISTORY="${HISTORY}

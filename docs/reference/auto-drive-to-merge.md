@@ -3074,6 +3074,14 @@ Exemptions:
   the evaluator, which can return `DONE`.
 - **A first round.** A loop with no earlier row in its progress file has
   nothing to compare with.
+- **A failed round.** When the round exited non-zero or left no readable
+  verdict (`MISSING`), its findings file is empty or absent and does not
+  describe its open concerns. The no-progress check does not run, and the
+  round goes to the evaluator, which judges infrastructure faults such as
+  `transient_transport`. Its row is appended with `2` in the clean column,
+  and a row with `2` never matches the next round either. The post-round
+  budget check still runs, so a loop of crashing rounds is bounded by the
+  budget.
 - **A light round that is not clean.** In an
   [auto-drive-light](auto-drive-light.md) run, `autodrive_light_round.sh`
   empties `<record>.findings` and writes `<record>.light.json` when it applies
@@ -3254,7 +3262,7 @@ without it (still one `O_APPEND` write). A file counts as trusted only when
 
 | File | Written | Content |
 | --- | --- | --- |
-| `<loop>-progress.tsv` | appended after every round | `round_label`, `head_sha`, `clean` (`0` or `1`), open items joined by `,` (cut for display), `ci_signal` (empty for the crusty loop), `sha256` of the full open-item set |
+| `<loop>-progress.tsv` | appended after every round | `round_label`, `head_sha`, `clean` (`1` clean, `0` not clean, `2` failed), open items joined by `,` (cut for display), `ci_signal` (empty for the crusty loop), `sha256` of the full open-item set |
 | `autodrive-usage.tsv` | appended after every child | `loop`, `round_label`, `phase` (`before`, `round`, `evaluator`, or `wait` for the usage-limit waits of the child in the row before it, with `0` sessions), `sessions`, `seconds`, `tokens` |
 | `autodrive-usage.json` | rewritten after every row | totals by loop and overall |
 | `<loop>-stuck-reason.txt` | on a no-progress stop | the reason line |
@@ -3352,7 +3360,7 @@ unresolved-review-thread
 
 ## Resume
 
-amplihack recipe run auto-drive-to-merge -c pr_number=1743 -c autodrive_budget_loop_rounds=24
+amplihack recipe run auto-drive-to-merge -c pr_number=1743 -c task_description="<the original task>" -c autodrive_budget_loop_rounds=24
 ````
 
 The check point is `pre-round check`, `post-round check` or `before-round
@@ -3360,15 +3368,26 @@ step`. The resume command names each key whose limit was reached, with a
 suggested value of twice the current limit. Only numbers derived from
 validated limits are printed.
 
+The command also holds `-c task_description="<the original task>"`. Replace
+the placeholder with the task the run was started with. Both loop steps refuse
+an empty task (`--task-file ... is missing or empty; refusing to run without a
+task`), and the copy of the task in the state directory is removed when a loop
+exits, so nothing else supplies it. The summary prints a placeholder, not the
+task, because the summary is posted to the pull request.
+
 ### Resuming after BUDGET_EXHAUSTED
 
-Run auto-drive again with the same `pr_number` and a higher value for the key
-named in the summary:
+Run auto-drive again with the same `pr_number`, the original
+`task_description` and a higher value for the key named in the summary:
 
 ```bash
 amplihack recipe run auto-drive-to-merge -c pr_number=1743 \
+  -c task_description="<the original task>" \
   -c autodrive_budget_loop_rounds=24
 ```
+
+Without `task_description` the resume fails at the loop step: the loop refuses
+an empty task.
 
 Finished phases are skipped as usual ([Resumability](#resumability)). The
 stopped loop labels its next round after the last recorded one, and the
@@ -3376,8 +3395,9 @@ previous row of its progress file is the last round of the earlier run, so the
 no-progress rule compares across the relaunch. A relaunch with the same or a
 lower limit stops at the pre-round check without starting an agent.
 
-A loop that stopped as `STUCK` by the no-progress rule resumes the same way
-once something has changed: a commit on the PR head or a change in the open
+A loop that stopped as `STUCK` by the no-progress rule resumes the same way,
+with `pr_number` and the original `task_description` and without a budget
+key, once something has changed: a commit on the PR head or a change in the open
 items. `<loop>-progress.tsv` is kept across relaunches, so the first round of
 a relaunch is compared with the last round of the earlier run. A relaunch with
 nothing changed runs one round and then stops as `STUCK` in code, before the

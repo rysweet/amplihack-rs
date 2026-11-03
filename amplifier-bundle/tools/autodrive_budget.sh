@@ -325,7 +325,9 @@ for l in crusty merge-ready; do
   fi
 done
 PR_ARG="<pr>"; [[ "$PR" =~ ^[0-9]{1,10}$ ]] && PR_ARG="$PR"
-RESUME="amplihack recipe run auto-drive-to-merge -c pr_number=${PR_ARG}"
+# The loops refuse an empty task_description (autodrive_use_task_file), so the
+# command names it. A placeholder, never the task: this summary is posted to the PR.
+RESUME="amplihack recipe run auto-drive-to-merge -c pr_number=${PR_ARG} -c task_description=\"<the original task>\""
 for k in ${HIT[@]+"${HIT[@]}"}; do
   case "$k" in
     autodrive_budget_loop_rounds) RESUME="${RESUME} -c ${k}=$((L_LOOP * 2))" ;;

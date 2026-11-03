@@ -2,14 +2,15 @@
 # autodrive_progress.sh: the no-progress rule of auto-drive (#1743), decided in
 # code. docs/reference/auto-drive-to-merge.md#the-no-progress-rule.
 #
-#   record <state> <loop> <label> <sha> <clean 0|1> <findings> [<ci_signal>]
+#   record <state> <loop> <label> <sha> <clean 0|1|2> <findings> [<ci_signal>]
 #       appends one row to <state>/<loop>-progress.tsv:
-#       round_label, head_sha, clean, open items joined by ',' (cut for
+#       round_label, head_sha, clean (1 clean, 0 not clean, 2 failed: the
+#       round exited non-zero or left no readable verdict), open items joined by ',' (cut for
 #       display), ci_signal, sha256 of the full sorted open-item set
 #   check <state> <loop> <label> <sha> <findings> [<ci_signal>]
 #       compares the current round (not clean) with the last row. Exits 10,
 #       prints the reason and writes <state>/<loop>-stuck-reason.txt only when
-#       the last row is not clean, both SHAs are non-empty and equal, the open
+#       the last row is 0 (not clean and not failed), both SHAs are non-empty and equal, the open
 #       items are equal (by the sha256 of the full set; by the cut text for a
 #       row with no hash), the CI signals are equal and neither says pending
 #       (CI still running is not a stop), and neither round has a
@@ -99,7 +100,7 @@ case "$CMD" in
     exit 0 ;;
   record)
     LABEL="$(safe_label "$3")"; SHA="$(safe_sha "$4")"
-    case "$5" in 0|1) ;; *) usage "clean must be 0 or 1, not '$5'" ;; esac
+    case "$5" in 0|1|2) ;; *) usage "clean must be 0, 1 or 2, not '$5'" ;; esac
     no_sha_warning
     ALL="$(full_items "$6")"
     ROW="$(printf '%s\t%s\t%s\t%s\t%s\t%s' "$LABEL" "$SHA" "$5" "$(items "$ALL")" "$(safe_ci "${7:-}")" "$(items_hash "$ALL")")"
@@ -120,6 +121,8 @@ P_CLEAN="$(printf '%s' "$ROW" | cut -f3)"; P_ITEMS="$(printf '%s' "$ROW" | cut -
 P_CI="$(printf '%s' "$ROW" | cut -s -f5)"; CI="$(safe_ci "${6:-}")"
 P_HASH="$(safe_sha "$(printf '%s' "$ROW" | cut -s -f6)")"
 [ -n "$P_LABEL" ] && [ "$P_LABEL" = "$(safe_label "$P_LABEL")" ] || { echo "WARNING: the last progress row has no valid round label; the no-progress rule is off this round." >&2; exit 0; }
+# A clean (1) or failed (2) previous round never matches: a failed round's
+# empty findings file does not describe its open concerns.
 [ "$P_CLEAN" = "0" ] || exit 0
 [ -n "$SHA" ] && [ "$SHA" = "$(safe_sha "$P_SHA")" ] || exit 0
 # A light round's findings file does not describe its open concerns (#1802).

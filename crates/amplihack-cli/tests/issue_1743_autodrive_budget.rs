@@ -98,7 +98,7 @@ done
 printf '%s\n' "$label" >> "$S/round-calls"
 r="${label#round-}"
 line="$(sed -n "${r}p" "$S/plan")"; [ -n "$line" ] || line="$(tail -n 1 "$S/plan")"
-IFS='|' read -r verdict commit sleep_s light items wait_s <<<"$line"
+IFS='|' read -r verdict commit sleep_s light items wait_s rc_s <<<"$line"
 [ "${sleep_s:-0}" -gt 0 ] && sleep "$sleep_s"
 # A usage-limit wait, as the real wait reports it: log lines, then its
 # length on the ledger the loop names (profile-command.md#usage-limit-wait).
@@ -123,7 +123,7 @@ if [ "$verdict" != "-" ]; then
   [ "$light" = "1" ] && printf '{"verdict_source":"light-minor-rule"}\n' > "$record.light.json"
 fi
 echo "round ran"
-exit 0
+exit "${rc_s:-0}"
 "#;
 
 const GH_STUB: &str = r#"#!/usr/bin/env bash
@@ -578,6 +578,63 @@ fn the_round_after_a_light_round_is_exempt_too() {
 }
 
 #[test]
+fn failed_rounds_on_one_head_do_not_stop_and_the_evaluator_decides() {
+    // Plan fields: verdict|commit|sleep|light|items|wait|exit code.
+    // Two rounds that exit non-zero with no findings, then two rounds that
+    // leave no record at all (verdict MISSING), all on one head.
+    for plan in ["CONCERNS|0|0|0||0|1", "-|0|0|0||0|0"] {
+        let Some(fx) = Fixture::new() else { return };
+        fx.plan(&[plan]);
+        fx.set("eval_stuck_after", "3");
+        let o = fx.run("crusty", &[]);
+        let r = result(&o);
+        assert!(
+            !r["reason"].as_str().unwrap().contains(DECIDED),
+            "{plan}: {}",
+            show(&o)
+        );
+        assert_eq!(
+            fx.evaluator_calls().len(),
+            4,
+            "{plan}: every round reached the evaluator"
+        );
+        let rows = fx.state_file("crusty-progress.tsv").expect("progress file");
+        assert_eq!(rows.lines().count(), 4, "{plan}:\n{rows}");
+        for row in rows.lines() {
+            assert_eq!(
+                row.split('\t').nth(2),
+                Some("2"),
+                "{plan}: a failed round is flagged 2: {row}"
+            );
+        }
+    }
+}
+
+#[test]
+fn the_round_after_a_failed_round_is_exempt_too() {
+    let Some(fx) = Fixture::new() else { return };
+    // Round 1 crashes; round 2 is a normal non-clean round with no findings on
+    // the same head; round 3 repeats round 2 and is stopped.
+    fx.plan(&["CONCERNS|0|0|0||0|1", "CONCERNS|0|0|0|"]);
+    let o = fx.run("crusty", &[]);
+    let r = result(&o);
+    assert_eq!(r["round_label"], "round-3", "{}", show(&o));
+    assert!(r["reason"].as_str().unwrap().contains(DECIDED));
+    assert_eq!(fx.evaluator_calls(), ["round-1", "round-2"]);
+}
+
+#[test]
+fn failed_rounds_are_still_bounded_by_the_budget() {
+    let Some(fx) = Fixture::new() else { return };
+    fx.plan(&["CONCERNS|0|0|0||0|1"]);
+    let o = run_with(&fx, "crusty", &[(BUDGET_KEYS[0], "2")]);
+    let r = result(&o);
+    assert_eq!(r["loop_result"], "BUDGET_EXHAUSTED", "{}", show(&o));
+    assert_eq!(r["round_label"], "round-2");
+    assert_eq!(fx.evaluator_calls(), ["round-1"]);
+}
+
+#[test]
 fn a_relaunch_compares_its_first_round_with_the_earlier_run() {
     let Some(fx) = Fixture::new() else { return };
     fx.plan(&["CONCERNS|0|0|0|a"]);
@@ -678,6 +735,76 @@ fn loop_rounds_stops_after_the_round_that_reached_it_and_resumes_higher() {
     let more = run_with(&fx, "merge-ready", &[(BUDGET_KEYS[0], "3")]);
     assert_eq!(result(&more)["round_label"], "round-3", "{}", show(&more));
     assert_eq!(fx.round_calls(), ["round-1", "round-2", "round-3"]);
+    fx.assert_no_real_home();
+}
+
+/// The keys each loop step reads with `write_context_value` must all be set by
+/// the printed resume command, or the resumed loop refuses to start (#1862).
+#[test]
+fn the_resume_command_sets_every_key_the_loop_steps_read() {
+    let Some(fx) = Fixture::new() else { return };
+    fx.plan(&["CONCERNS|1|0|0|a"]);
+    let o = run_with(&fx, "merge-ready", &[(BUDGET_KEYS[0], "1")]);
+    assert_eq!(
+        result(&o)["loop_result"],
+        "BUDGET_EXHAUSTED",
+        "{}",
+        show(&o)
+    );
+    let summary = fx
+        .state_file("autodrive-budget-summary.md")
+        .expect("summary");
+    let resume = summary
+        .split("## Resume")
+        .nth(1)
+        .and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty()))
+        .unwrap_or_else(|| panic!("no resume command:\n{summary}"))
+        .to_string();
+    assert!(
+        resume.starts_with("amplihack recipe run auto-drive-to-merge "),
+        "{resume}"
+    );
+    let doc = read("docs/reference/auto-drive-to-merge.md");
+    let mut needed = Vec::new();
+    for name in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
+        let text = read(&format!("amplifier-bundle/recipes/{name}.yaml"));
+        for line in text.lines() {
+            let Some(rest) = line.trim_start().strip_prefix("write_context_value ") else {
+                continue;
+            };
+            let key = rest.split_whitespace().next().unwrap().to_string();
+            if !needed.contains(&key) {
+                needed.push(key);
+            }
+        }
+    }
+    assert!(needed.iter().any(|k| k == "task_description"), "{needed:?}");
+    for key in &needed {
+        let flag = format!("-c {key}=");
+        assert!(
+            resume.contains(&flag),
+            "the printed resume command lacks {flag}: {resume}"
+        );
+        let after = &resume[resume.find(&flag).unwrap() + flag.len()..];
+        assert!(
+            !after.starts_with(' ') && !after.starts_with("\"\""),
+            "{key} is empty in {resume}"
+        );
+        // The documented resume commands name it too.
+        let section = doc
+            .split("### Resuming after BUDGET_EXHAUSTED")
+            .nth(1)
+            .expect("resume section");
+        let section = &section[..section.find("\n### ").unwrap_or(section.len())];
+        assert!(
+            section.contains(&flag),
+            "the documented resume lacks {flag}"
+        );
+    }
+    assert!(
+        resume.contains("-c task_description=\"<the original task>\""),
+        "a placeholder, never the task text: {resume}"
+    );
     fx.assert_no_real_home();
 }
 
