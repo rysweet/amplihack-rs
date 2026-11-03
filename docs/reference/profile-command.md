@@ -2625,15 +2625,15 @@ constants:
 |----------|----------|
 | `SHARED_ASSET_FILES` | `CLAUDE.md` |
 | `SHARED_ASSET_DIRS` | `agents`, `commands`, `output-styles`, `rules`, `skills` |
-| `SHARED_SETTINGS_KEYS` | top-level `settings.json` keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `env`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` (13 keys) |
+| `SHARED_SETTINGS_KEYS` | top-level `settings.json` keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` (12 keys) |
 
 Rules:
 
 - `settings.json` is parsed and only `SHARED_SETTINGS_KEYS` are written to the
   profile's `settings.json`. If nothing survives the filter, no file is
-  written. `apiKeyHelper` and all unknown keys are dropped. `env` is copied;
-  when `profile.settings_template` is set, `add` then replaces it with the
-  template's `env` (see [Environment inheritance](#environment-inheritance)).
+  written. `env`, `apiKeyHelper` and all unknown keys are dropped. `env` is
+  not copied by seeding: `add` gets it afterwards from the backfill, which
+  checks the source (see [Environment inheritance](#environment-inheritance)).
 - `amplihack install` (user scope) refreshes the hooks in every profile's
   existing `settings.json` (issue #1661): it applies the same hook update as
   for `~/.claude/settings.json`, so amplihack's entries are replaced and all
@@ -2690,7 +2690,7 @@ Rules:
 - On Unix, directories are created `0700` and files `0600`; Windows uses
   inherited ACLs. Files use `create_new` (`O_EXCL` on Unix), so nothing is
   overwritten and no destination symlink is followed.
-- The 13-key list is kept in sync with the code by `tests_docs_sync.rs`, which
+- The 12-key list is kept in sync with the code by `tests_docs_sync.rs`, which
   checks both directions (every constant key is documented here and in the
   how-to guide, and no extra key is documented).
 - A symlinked source root fails with `SymlinkRefused`. Nested symlinks and
@@ -2775,20 +2775,29 @@ runs, the merge is per key inside `env`:
 
 | Command | What happens |
 |---------|--------------|
-| `add <name>` | Seeding copies `env` with the other allowlisted keys. When a template is set, the seeded `env` is removed and the template's `env` is merged in, so the new profile's `env` is the template's. A broken template leaves the profile with no `env`. |
+| `add <name>` | After seeding, which copies no `env`. The new profile's `env` is the source's: the template's when one is set, else that of `~/.claude/settings.json`. A source that fails a check leaves the profile with no `env` and one warning; `add` still succeeds. |
 | `login <name>` | After the [shared session links](#shared-session-directories) are checked, before `claude` starts. |
 | `switch <name>` | Before the login is moved into `~/.claude`. `switch --none` does not run it. |
-| `auto-switch repair` | For every profile in the root, after the status-line install. Prints `env: <name> updated` for each profile it changed and a warning for each one it skipped. |
+| `auto-switch repair` | For every profile in the root, after the status-line install. Prints `env: <name> updated` for each profile it changed and a warning for each one it skipped. If the profile root cannot be listed, prints one warning, `profile (all): env not inherited from <root>: <reason>`. |
+| rotator adoption | When the rotator [adopts](#rotate-swap) a login into a new profile, after the profile is created. A failure only warns; the rotation goes on. |
 
 Read-only commands (`list`, `show`, `usage`, `auto-switch status`, …) and
 `run`/launch never run it.
 
-**XPIA gate.** On login, switch and repair the backfill runs only when the
-profile's `settings.json` is missing or has no `env.XPIA_ENABLED`. It then
-adds every source key the profile lacks. When `env.XPIA_ENABLED` is present
-the result is `Unchanged`: neither the source nor the template is opened,
-nothing is written, and the file stays byte-identical. `add` has no gate,
-because the seeded `env` is removed before a template's `env` is merged in.
+**XPIA gate.** The backfill runs only when the profile's `settings.json` is
+missing or has no `env.XPIA_ENABLED`. It then adds every source key the
+profile lacks. When `env.XPIA_ENABLED` is present the result is `Unchanged`:
+neither the source nor the template is opened, nothing is written, and the
+file stays byte-identical. A profile just made by `add` has no `env`, so the
+gate never stops the backfill there.
+
+**One path for `env`.** `add`, `login`, `switch`, `repair` and rotator
+adoption all copy `env` through this backfill, with the same ownership,
+mode, key and value checks. No other code writes a profile's `env`.
+
+**Unix only.** On Windows and other non-Unix platforms no command copies
+`env` into a profile and `profile.settings_template` is ignored. Nothing is
+printed about it.
 
 #### Results
 

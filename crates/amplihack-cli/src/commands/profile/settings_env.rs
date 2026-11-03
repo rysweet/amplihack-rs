@@ -6,8 +6,9 @@
 //! Only `env` is read from the source and only `env` is written to the
 //! profile. Nothing here fails a command: every problem becomes
 //! [`Refresh::Skipped`] with one warning, and no warning ever shows an env
-//! value. Unix only; elsewhere the backfill is a logged no-op and seeding
-//! alone copies `env`.
+//! value. This module is the only writer of a profile's `env`: `env` is not
+//! on the seeding allowlist, so `profile add` gets it from [`ensure_for`]
+//! with the same checks as login. Unix only; elsewhere no `env` is copied.
 
 use super::name::ProfileName;
 use super::settings_refresh::Refresh;
@@ -33,31 +34,34 @@ impl Outcome {
 
 /// Adds each `source` entry the profile's `env` lacks. Profile keys win;
 /// keys outside `env` and a non-object profile `env` are left alone. An empty
-/// `source` changes nothing, so no empty `env` is created.
+/// `source` changes nothing, so no empty `env` is created. Returns whether
+/// any key was added.
 #[cfg_attr(not(unix), allow(dead_code))]
-pub(super) fn merge_env(settings: &mut Value, source: &Map<String, Value>) {
+pub(super) fn merge_env(settings: &mut Value, source: &Map<String, Value>) -> bool {
     if source.is_empty() {
-        return;
+        return false;
     }
     let Some(settings) = settings.as_object_mut() else {
-        return;
+        return false;
     };
     let env = settings
         .entry("env")
         .or_insert_with(|| Value::Object(Map::new()));
     let Value::Object(env) = env else {
-        return;
+        return false;
     };
+    let mut added = false;
     for (key, value) in source {
         if !env.contains_key(key) {
             env.insert(key.clone(), value.clone());
+            added = true;
         }
     }
+    added
 }
 
 /// The warning when nothing was inherited. `reason` is an I/O error, a JSON
 /// position or a fixed string, never an env value.
-#[cfg_attr(not(unix), allow(dead_code))]
 pub(super) fn warning(name: &str, path: &Path, reason: &str) -> String {
     format!(
         "profile {name}: env not inherited from {}: {reason}",
@@ -76,8 +80,10 @@ pub(super) fn key_warning(name: &str, key: &str, path: &Path, reason: &str) -> S
     )
 }
 
-/// Login, switch and repair: adds the missing source `env` keys to `name`'s
-/// `settings.json`, creating it when missing. Runs only when the profile has
+/// Add, login, switch, repair and rotator adoption: adds the missing source
+/// `env` keys to `name`'s `settings.json`, creating it when missing. The
+/// source is `profile.settings_template` when set, else the shared
+/// `settings.json`. Runs only when the profile has
 /// no `env.XPIA_ENABLED`; otherwise `Unchanged` without opening the source.
 /// `Unchanged` with no I/O when `home` is unknown.
 pub(super) fn ensure_for(store: &ProfileStore, name: &ProfileName, home: Option<&Path>) -> Outcome {
@@ -93,7 +99,7 @@ pub(super) fn ensure_for(store: &ProfileStore, name: &ProfileName, home: Option<
                 return imp::skipped(name.as_str(), &path, &error.to_string());
             }
         };
-        imp::backfill(&dir, name.as_str(), store.shared_assets(), home)
+        imp::backfill(&dir, name.as_str(), store.shared_assets(), home, true)
     }
     #[cfg(not(unix))]
     {
@@ -103,14 +109,23 @@ pub(super) fn ensure_for(store: &ProfileStore, name: &ProfileName, home: Option<
     }
 }
 
-/// [`ensure_for`] for every profile in the root, by name. Names that do not
-/// parse are left out.
+/// [`ensure_for`] for every profile in the root, by name. `store.list()`
+/// already omits names that do not parse. An unreadable root gives one
+/// `Skipped` outcome with an empty name, so the failure is still reported.
 pub(super) fn ensure_all(store: &ProfileStore, home: Option<&Path>) -> Vec<(String, Outcome)> {
     let names = match store.list() {
         Ok(names) => names,
         Err(error) => {
-            tracing::debug!(%error, "env backfill: profile root unreadable");
-            return Vec::new();
+            let reason = error.to_string();
+            tracing::debug!(%reason, "env backfill: profile root unreadable");
+            let line = warning("(all)", store.root(), &reason);
+            return vec![(
+                String::new(),
+                Outcome {
+                    result: Refresh::Skipped(reason),
+                    warnings: vec![line],
+                },
+            )];
         }
     };
     names
@@ -120,26 +135,6 @@ pub(super) fn ensure_all(store: &ProfileStore, home: Option<&Path>) -> Vec<(Stri
             Some((name, ensure_for(store, &parsed, home)))
         })
         .collect()
-}
-
-/// `profile add`: when `profile.settings_template` is set, replaces the
-/// seeded `env` of the profile at `dir` with the template's. Without a
-/// template the seeded file is left alone. A template that cannot be used
-/// leaves the profile with no `env` and one warning.
-pub(super) fn after_add(dir: &Path, home: Option<&Path>) -> Outcome {
-    #[cfg(unix)]
-    {
-        match home {
-            Some(home) => imp::apply_template(dir, home),
-            None => Outcome::unchanged(),
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = home;
-        tracing::debug!(dir = %dir.display(), "env template is Unix-only; skipped");
-        Outcome::unchanged()
-    }
 }
 
 /// Prints `outcome`'s warnings to stderr, for the commands that run a
@@ -295,7 +290,7 @@ mod imp {
     }
 
     /// Replaces the profile's `settings.json` atomically with mode 0600.
-    fn write_profile(dir: &Path, settings: &Map<String, Value>) -> Result<(), String> {
+    fn write_profile(dir: &Path, settings: &Value) -> Result<(), String> {
         let mut bytes = serde_json::to_vec_pretty(settings).map_err(|e| e.to_string())?;
         bytes.push(b'\n');
         write_private_atomic(dir, SETTINGS, &bytes).map_err(|e| e.to_string())
@@ -352,11 +347,9 @@ mod imp {
             .collect()
     }
 
-    pub(super) fn backfill(dir: &Path, name: &str, shared: Option<&Path>, home: &Path) -> Outcome {
-        backfill_once(dir, name, shared, home, true)
-    }
-
-    fn backfill_once(
+    /// One profile's backfill. `may_retry` allows one retry as an update
+    /// when another process creates `settings.json` first.
+    pub(super) fn backfill(
         dir: &Path,
         name: &str,
         shared: Option<&Path>,
@@ -400,76 +393,18 @@ mod imp {
             return match create_with_env(dir, &src.env) {
                 Ok(()) => done(Refresh::Updated),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists && may_retry => {
-                    backfill_once(dir, name, shared, home, false)
+                    backfill(dir, name, shared, home, false)
                 }
                 Err(error) => skipped(name, &profile_path, &error.to_string()),
             };
         };
-        let mut value = Value::Object(settings.clone());
-        merge_env(&mut value, &src.env);
-        let Value::Object(merged) = value else {
-            return done(Refresh::Unchanged);
-        };
-        if merged == settings {
+        let mut merged = Value::Object(settings);
+        if !merge_env(&mut merged, &src.env) {
             return done(Refresh::Unchanged);
         }
         match write_profile(dir, &merged) {
             Ok(()) => done(Refresh::Updated),
             Err(reason) => skipped(name, &profile_path, &reason),
         }
-    }
-
-    /// `after_add`: with a template, the seeded `env` is removed and the
-    /// template's merged in. A broken template still removes the seeded
-    /// `env`, so a misconfiguration never passes as inherited.
-    pub(super) fn apply_template(dir: &Path, home: &Path) -> Outcome {
-        let name = dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        let (path, src) = match user_config::profile_settings_template(home) {
-            Ok(None) => return Outcome::unchanged(),
-            Ok(Some(template)) => {
-                let src = source_env(&template, true);
-                (template, src)
-            }
-            Err(reason) => (config_file(home), Err(reason)),
-        };
-        let profile_path = dir.join(SETTINGS);
-        let profile = match read_profile(&profile_path) {
-            Ok(profile) => profile,
-            Err(reason) => return skipped(&name, &profile_path, &reason),
-        };
-        let (env, warnings, failure) = match src {
-            Ok(Some(src)) => (src.env.clone(), key_warnings(&name, &path, &src), None),
-            Ok(None) => (Map::new(), Vec::new(), None),
-            Err(reason) => (Map::new(), Vec::new(), Some(reason)),
-        };
-        let written = match profile {
-            None if env.is_empty() => Ok(Refresh::Unchanged),
-            None => create_with_env(dir, &env)
-                .map(|()| Refresh::Updated)
-                .map_err(|e| e.to_string()),
-            Some(before) => {
-                let mut settings = before.clone();
-                settings.remove("env");
-                if !env.is_empty() {
-                    settings.insert("env".into(), Value::Object(env));
-                }
-                if settings == before {
-                    Ok(Refresh::Unchanged)
-                } else {
-                    write_profile(dir, &settings).map(|()| Refresh::Updated)
-                }
-            }
-        };
-        let result = match written {
-            Ok(result) => result,
-            Err(reason) => return skipped(&name, &profile_path, &reason),
-        };
-        if let Some(reason) = failure {
-            return skipped(&name, &path, &reason);
-        }
-        Outcome { result, warnings }
     }
 }

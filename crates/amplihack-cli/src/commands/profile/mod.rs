@@ -498,9 +498,11 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
     let (store, source) = root_config::store_from_env()?;
     match cmd {
         ProfileCommands::Add { name } => {
-            let dir = store.add(&ProfileName::parse(&name)?)?;
-            settings_env::report(&settings_env::after_add(
-                &dir,
+            let parsed = ProfileName::parse(&name)?;
+            let dir = store.add(&parsed)?;
+            settings_env::report(&settings_env::ensure_for(
+                &store,
+                &parsed,
                 usage_cmd::home_dir().as_deref(),
             ));
             println!("created profile {name} at {}", dir.display());

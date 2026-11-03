@@ -501,6 +501,9 @@ warns and copies no `env`. It does not fall back to `~/.claude/settings.json`,
 so a mistake in the template is not hidden. `amplihack config unset
 profile.settings_template` goes back to `~/.claude/settings.json`.
 
+The key has effect on Unix only. On Windows it is ignored, and no `env` is
+copied into a profile.
+
 ## The config command
 
 ```

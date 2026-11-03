@@ -167,12 +167,8 @@ fn add_copies_allowlisted_shared_assets_and_filters_settings() {
         copied_settings["hooks"]["Stop"][0]["command"],
         "echo shared-hook"
     );
-    // Issue #1877: `env` is on the allowlist and is seeded.
-    assert_eq!(
-        copied_settings["env"],
-        serde_json::json!({"API_KEY": "secret"})
-    );
     for excluded in [
+        "env",
         "apiKeyHelper",
         "mcpServers",
         "enabledPlugins",

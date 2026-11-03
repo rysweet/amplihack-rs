@@ -107,31 +107,9 @@ fn non_directory_shared_source_is_rejected_and_profile_is_rolled_back() {
 #[test]
 fn settings_with_only_non_allowlisted_keys_writes_no_file() {
     let (_d, source, store) = fixture();
-    fs::write(
-        source.join("settings.json"),
-        r#"{"apiKeyHelper":"/bin/k","primaryApiKey":"x"}"#,
-    )
-    .unwrap();
+    fs::write(source.join("settings.json"), r#"{"env":{"K":"v"}}"#).unwrap();
     let profile = store.add(&n("work")).unwrap();
     assert!(!profile.join("settings.json").exists());
-}
-
-/// Issue #1877: `env` is on the allowlist, so a new profile inherits it.
-#[test]
-fn settings_env_block_is_seeded_into_a_new_profile() {
-    let (_d, source, store) = fixture();
-    fs::write(
-        source.join("settings.json"),
-        r#"{"env":{"XPIA_ENABLED":"false","K":"v"},"apiKeyHelper":"/bin/k"}"#,
-    )
-    .unwrap();
-    let profile = store.add(&n("work")).unwrap();
-    let s: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(profile.join("settings.json")).unwrap()).unwrap();
-    assert_eq!(
-        s,
-        serde_json::json!({"env":{"XPIA_ENABLED":"false","K":"v"}})
-    );
 }
 
 #[test]

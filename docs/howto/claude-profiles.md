@@ -50,7 +50,7 @@ the official [environment variable reference](https://code.claude.com/docs/en/en
 |--------|---------|
 | `CLAUDE.md` | Your global instructions |
 | `agents/`, `commands/`, `output-styles/`, `rules/`, `skills/` | Copied recursively |
-| `settings.json` (filtered) | Only allowlisted top-level keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `env`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` |
+| `settings.json` (filtered) | Only allowlisted top-level keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` |
 
 The copy is made once, when the profile is added. After that, `amplihack install`
 keeps the amplihack hooks in each profile's `settings.json` current: it replaces
@@ -60,7 +60,7 @@ left without one.
 
 Never copied: `.credentials.json`, `.claude.json`, `history*`,
 `sessions/`, `todos/`, `statsig/`, `shell-snapshots/`, `ide/`, and anything else not
-on the allowlist (so plugins and MCP server settings are not carried over), and the `apiKeyHelper` settings key (and any other
+on the allowlist (so plugins and MCP server settings are not carried over), and the `env` and `apiKeyHelper` settings keys (and any other
 key not on the allowlist). `projects/`, `file-history/` and `session-env/` are
 not copied either: they are linked, see
 [Share sessions across profiles](#share-sessions-across-profiles). If
@@ -80,6 +80,14 @@ Code's defaults instead of yours. amplihack copies the block for you:
 - `profile login <name>`, `profile switch <name>` and
   `profile auto-switch repair` add it to a profile that lacks
   `env.XPIA_ENABLED`, including profiles created before this was copied.
+- A profile the rotator creates when it adopts a new login gets it too.
+
+`env` is not on the seeding allowlist above. All of these commands copy it
+the same way, with the same checks on the source file and on each key and
+value, described below.
+
+This works on Unix only. On Windows no command copies `env` into a profile,
+and `profile.settings_template` is ignored.
 
 Values already in the profile always win. Only keys the profile lacks are
 added, and nothing outside `env` changes:
@@ -189,7 +197,7 @@ Caveats:
 - **Copy by value.** The allowlisted assets are copies, not links. Later
   edits to `~/.claude` do not propagate to existing profiles; re-add the
   profile to pick them up. The only links are the three session directories.
-  The exception is `env`: login, switch and repair add missing keys while
+  The exception is `env`: add, login, switch and repair add missing keys while
   the profile lacks `env.XPIA_ENABLED` (see
   [Environment settings follow you into every profile](#environment-settings-follow-you-into-every-profile)).
 - **Allowlisted setting values are copied verbatim.** Review hooks and

@@ -9,14 +9,13 @@
 //!   non-object profile `env` are left alone.
 //! - `warning(name, path, reason)` and `key_warning(name, key, path, reason)`:
 //!   the two fixed warning forms; never an env value.
-//! - `ensure_for(store, name, home)`, `ensure_all(store, home)` and
-//!   `after_add(dir, home)` return [`Outcome`]: a [`Refresh`] plus the
-//!   warnings. `Skipped` has exactly one warning, `Unchanged` none.
+//! - `ensure_for(store, name, home)` (add, login, switch, adoption) and
+//!   `ensure_all(store, home)` (repair) return [`Outcome`]: a [`Refresh`]
+//!   plus the warnings. `Skipped` has exactly one warning, `Unchanged` none.
+//!   `env` is not seeded by `store.add`, so a new profile gets it only here.
 
 use super::name::ProfileName;
-use super::settings_env::{
-    Outcome, after_add, ensure_all, ensure_for, key_warning, merge_env, warning,
-};
+use super::settings_env::{Outcome, ensure_all, ensure_for, key_warning, merge_env, warning};
 use super::settings_refresh::Refresh;
 use super::store::ProfileStore;
 use serde_json::{Map, Value, json};
@@ -624,22 +623,68 @@ fn invalid_template_config_value_is_skipped_with_no_fallback() {
     assert!(fx.read("work").get("env").is_none());
 }
 
-// ---- after_add ------------------------------------------------------------
+// ---- profile add: store.add then ensure_for --------------------------------
 
-#[test]
-fn after_add_without_template_leaves_the_seeded_file_alone() {
-    let fx = Fx::new();
-    fx.source_settings(r#"{"env":{"XPIA_ENABLED":"false"},"language":"en"}"#);
-    let dir = fx.store.add(&n("work")).unwrap();
-    let before = fx.raw("work");
-    let o = after_add(&dir, fx.home());
-    assert_eq!(o.result, Refresh::Unchanged);
-    assert_eq!(fx.raw("work"), before);
-    assert_eq!(fx.read("work")["env"], json!({"XPIA_ENABLED": "false"}));
+/// What `profile add` does: create the profile, then run the backfill.
+fn add(fx: &Fx, name: &str) -> Outcome {
+    fx.store.add(&n(name)).unwrap();
+    fx.ensure(name)
 }
 
 #[test]
-fn after_add_with_template_replaces_the_seeded_env() {
+fn add_does_not_seed_env_through_the_allowlist() {
+    let fx = Fx::new();
+    fx.source_settings(r#"{"env":{"XPIA_ENABLED":"false"},"language":"en"}"#);
+    fx.store.add(&n("work")).unwrap();
+    let s = fx.read("work");
+    assert!(s.get("env").is_none(), "store.add copied env: {s}");
+    assert_eq!(s["language"], json!("en"));
+}
+
+#[test]
+fn add_without_template_backfills_from_source() {
+    let fx = Fx::new();
+    fx.source_settings(r#"{"env":{"XPIA_ENABLED":"false"},"language":"en"}"#);
+    let o = add(&fx, "work");
+    assert_eq!(o.result, Refresh::Updated);
+    assert!(o.warnings.is_empty());
+    let s = fx.read("work");
+    assert_eq!(s["env"], json!({"XPIA_ENABLED": "false"}));
+    assert_eq!(s["language"], json!("en"));
+}
+
+#[cfg(unix)]
+#[test]
+fn add_refuses_group_writable_source() {
+    let fx = Fx::new();
+    fx.source_settings(&format!(
+        r#"{{"env":{{"XPIA_ENABLED":"false","KEY":"{SECRET}"}},"language":"en"}}"#
+    ));
+    chmod(&fx.source_file(), 0o664);
+    let o = add(&fx, "work");
+    assert_eq!(skipped_reason(&o), "file is writable by group or others");
+    assert_eq!(o.warnings.len(), 1);
+    assert_no_value_in(&o);
+    assert!(fx.read("work").get("env").is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn add_drops_invalid_keys_and_non_string_values() {
+    let fx = Fx::new();
+    fx.source_settings(&format!(
+        r#"{{"env":{{"XPIA_ENABLED":"false","BAD-KEY":"{SECRET}","NUM":1}}}}"#
+    ));
+    let o = add(&fx, "work");
+    assert_eq!(o.result, Refresh::Updated);
+    assert_eq!(o.warnings.len(), 2, "{:?}", o.warnings);
+    assert_no_value_in(&o);
+    assert_eq!(fx.read("work")["env"], json!({"XPIA_ENABLED": "false"}));
+}
+
+#[cfg(unix)]
+#[test]
+fn add_with_template_uses_only_the_template() {
     let fx = Fx::new();
     fx.source_settings(r#"{"env":{"XPIA_ENABLED":"true","HOME_ONLY":"1"},"language":"en"}"#);
     let t = fx.template_file(
@@ -647,28 +692,27 @@ fn after_add_with_template_replaces_the_seeded_env() {
         r#"{"env":{"XPIA_ENABLED":"false","TEAM":"x"}}"#,
     );
     fx.template(&t);
-    let dir = fx.store.add(&n("work")).unwrap();
-    let o = after_add(&dir, fx.home());
+    let o = add(&fx, "work");
     assert_eq!(o.result, Refresh::Updated);
     let s = fx.read("work");
     assert_eq!(s["env"], json!({"XPIA_ENABLED": "false", "TEAM": "x"}));
     assert_eq!(s["language"], json!("en"), "other seeded keys kept");
 }
 
+#[cfg(unix)]
 #[test]
-fn after_add_with_broken_template_leaves_no_env() {
+fn add_with_broken_template_leaves_no_env() {
     let fx = Fx::new();
     fx.source_settings(r#"{"env":{"XPIA_ENABLED":"true"},"language":"en"}"#);
     let t = fx.template_file("team.json", "{broken");
     fx.template(&t);
-    let dir = fx.store.add(&n("work")).unwrap();
-    let o = after_add(&dir, fx.home());
+    let o = add(&fx, "work");
     skipped_reason(&o);
     assert_eq!(o.warnings.len(), 1);
     let s = fx.read("work");
     assert!(
         s.get("env").is_none(),
-        "seeded env kept despite template: {s}"
+        "env inherited despite template: {s}"
     );
     assert_eq!(s["language"], json!("en"));
 }
@@ -697,6 +741,21 @@ fn ensure_all_visits_every_profile() {
     );
     assert_eq!(fx.read("b")["env"], json!({"XPIA_ENABLED": "true"}));
     assert_eq!(fx.read("c"), json!({"env": {"XPIA_ENABLED": "false"}}));
+}
+
+#[test]
+fn ensure_all_reports_an_unreadable_root() {
+    let fx = Fx::new();
+    // A regular file where the root should be: read_dir fails.
+    let not_a_dir = fx.d.path().join("root-file");
+    fs::write(&not_a_dir, "").unwrap();
+    let store = ProfileStore::new(not_a_dir).with_shared_assets(fx.source.clone());
+    let out = ensure_all(&store, fx.home());
+    assert_eq!(out.len(), 1, "{out:?}");
+    let (name, o) = &out[0];
+    assert!(name.is_empty());
+    skipped_reason(o);
+    assert_eq!(o.warnings.len(), 1);
 }
 
 #[test]

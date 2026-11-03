@@ -196,7 +196,7 @@ fn expected_env() -> Value {
 }
 
 #[test]
-fn add_seeds_the_env_block_and_nothing_else_new() {
+fn add_copies_the_env_block_and_nothing_else_new() {
     let f = Fixture::new();
     f.ok(&["profile", "add", "work"]);
     let s = f.settings("work");
@@ -210,6 +210,22 @@ fn add_seeds_the_env_block_and_nothing_else_new() {
     assert_eq!(mode & 0o777, 0o600);
     assert!(!f.root.join("work").join(".credentials.json").exists());
     assert!(!f.root.join("work").join(".claude.json").exists());
+}
+
+#[test]
+fn add_with_a_group_writable_source_warns_and_copies_no_env() {
+    let f = Fixture::new();
+    chmod(&f.canon.join("settings.json"), 0o664);
+    let out = f.ok(&["profile", "add", "work"]);
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("profile work: env not inherited from")
+            && stderr.contains("file is writable by group or others"),
+        "{stderr}"
+    );
+    let s = f.settings("work");
+    assert!(s.get("env").is_none(), "env copied: {s}");
+    assert_eq!(s["language"], json!("en"));
 }
 
 #[test]
