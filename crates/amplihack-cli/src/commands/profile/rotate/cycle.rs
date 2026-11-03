@@ -5,6 +5,7 @@
 use super::alert::{alert, alert_key, alert_once, clear_alert, refusal_kind};
 use super::decide::Decision;
 use super::dry_run::dry_run;
+use super::fresh::{self, Reread, RereadFn};
 use super::held::held_cycle;
 use super::history;
 use super::identify::{LiveId, Skip};
@@ -27,6 +28,7 @@ use super::prelude::{Prelude, locked_prelude};
 use super::revalidate::{self, Verdict};
 use super::settings::Settings;
 use super::swap::{self, Source};
+use super::swap_back;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now, scan_system};
 use crate::commands::profile::name::ProfileName;
@@ -66,6 +68,9 @@ pub struct Ctx {
     /// Replaces steps 4 and 5 (find `claude`, measure, decide) when set. Only
     /// tests set it, to act while the cycle is measuring without the lock.
     pub(super) measure: Option<MeasureFn>,
+    /// Issue #1870: the freshness gate's re-read, by the user's probe
+    /// method; `None` reads nothing.
+    pub(super) reread: Option<RereadFn>,
     /// Replaces a held cycle's spend-limit probe when set; only tests do.
     pub(super) probe_held: Option<super::held::HeldProbeFn>,
     /// Waits before step 6 reads the state again; tests act in it instead.
@@ -102,6 +107,7 @@ impl Ctx {
             failed_live: 0,
             scan: scan_system,
             measure: None,
+            reread: None,
             probe_held: None,
             pause: |_| std::thread::sleep(revalidate::REREAD_PAUSE),
             key_check: key_check::reachable,
@@ -201,17 +207,16 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         Some(stub) => stub(ctx, &first)?,
         None => measure_and_decide(ctx, &first)?,
     };
-    let failed_before = std::mem::replace(&mut ctx.failed_live, m.failed);
     let (live_shown, others_shown) = shown(&m);
+    let (name, platform) = (live_name(&first.live), first.shown_platform());
     out.emit(
         now(),
-        &msg::cycle(
-            live_name(&first.live),
-            &live_shown,
-            &others_shown,
-            first.shown_platform(),
-        ),
+        &msg::cycle(name, &live_shown, &others_shown, platform),
     );
+    // Issue #1870: before `failed_live` moves on, so it is counted once.
+    let m = fresh::gate(ctx, &first, m, Reread::Allowed)?;
+    m.fresh_lines.iter().for_each(|line| out.emit(now(), line));
+    let failed_before = std::mem::replace(&mut ctx.failed_live, m.failed);
     note_home_key(ctx, &mut out, &first);
     if ctx.stopping() {
         out.emit(now(), msg::STOPPED);
@@ -374,6 +379,11 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         probed.as_ref(),
         measured_at,
     );
+    let left = swapped.as_ref().map(|[_, from]| (from, &live));
+    let (s, live_n) = (&ctx.settings, live_name(&first.live));
+    for line in swap_back::update(&mut l, s, live_n, probed.as_ref(), left, measured_at, t) {
+        out.emit(now(), &line);
+    }
     save(ctx, &mut l, outcome, now(), Some(measured_at), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.

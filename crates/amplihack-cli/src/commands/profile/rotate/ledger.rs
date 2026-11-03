@@ -1,13 +1,11 @@
 //! `<root>/.auto-switch.d/rotate/`: the rotate ledger and journal, the pid
-//! file and the log (D7). Ledger and journal are versioned, capped at 64 KiB
-//! and written privately and atomically. The journal rejects unknown fields;
-//! the ledger ignores them (#1659), so a field added by a newer amplihack
-//! never stops an older rotator. A file that fails to parse is reported and
-//! never overwritten here.
+//! file and the log (D7), versioned, capped at 64 KiB and written privately
+//! and atomically. The journal rejects unknown fields; the ledger ignores
+//! them (#1659). A file that fails to parse is reported, never overwritten.
 
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    check_root_private, ensure_private_dir, euid, fsync_dir, read_bounded_nofollow,
+    check_root_private, ensure_private_dir, euid, fsync_dir, now, read_bounded_nofollow,
     writable_by_others, write_private_atomic,
 };
 use crate::commands::profile::name::ProfileName;
@@ -155,6 +153,9 @@ pub struct RotateLedger {
     /// #1804), for auto-switch, which cannot read the login in `~/.claude`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub no_room: Option<NoRoom>,
+    /// Logins left while full, by name, at the swap's epoch seconds (#1870).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub swapped_away: BTreeMap<String, i64>,
 }
 
 impl Default for RotateLedger {
@@ -175,6 +176,7 @@ impl Default for RotateLedger {
             live_kind: None,
             platform_block: None,
             no_room: None,
+            swapped_away: BTreeMap::new(),
         }
     }
 }
@@ -312,7 +314,7 @@ impl RotateState {
         let Some(raw) = self.read(&self.ledger, WHAT)? else {
             return Ok(None);
         };
-        let l: RotateLedger = serde_json::from_slice(&raw)
+        let mut l: RotateLedger = serde_json::from_slice(&raw)
             .map_err(|e| inconsistent(format!("{WHAT}: {}", position(&e))))?;
         if l.version != VERSION {
             return Err(inconsistent(format!("{WHAT}: unknown version")));
@@ -336,6 +338,7 @@ impl RotateState {
                 "{WHAT}: invalid guidance or lost_login"
             )));
         }
+        l.swapped_away = super::swap_back::valid(std::mem::take(&mut l.swapped_away), now());
         Ok(Some(l))
     }
 

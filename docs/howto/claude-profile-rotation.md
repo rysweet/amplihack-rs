@@ -94,7 +94,9 @@ would swap work->spare live s=88% w=41% target s=0% w=12% reason=threshold
 ```
 
 A dry run probes every profile and prints what it would do. It takes no lock,
-writes nothing, moves nothing and logs nothing. It also does not finish an
+writes no rotate state, moves nothing and logs nothing. A direct read may
+still refresh a login's OAuth token that is close to expiry, which Claude
+saves under its own lock. It also does not finish an
 interrupted swap: if one is pending it prints
 `would recover an interrupted swap (phase <phase>)` and leaves it for the next
 real run. Run a dry run first, and again whenever you change a threshold.
@@ -953,9 +955,15 @@ previous one ends.
 Each cycle stores the readings it took, and later cycles use a stored
 reading while it is younger than `AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS`
 (300 seconds by default). With `--interval 120`, a login is therefore asked
-afresh only about every third cycle, and a swap can rest on a reading up to
-five minutes old. For the rotator to react sooner, lower the age in the
-shell that starts it:
+afresh only about every third cycle. A stored reading can rank a login, but
+the rotator does not swap to it on that reading alone: a target read more
+than 300 seconds ago, earlier than the live login, or not since the rotator
+left it full, is read again first (the way `AMPLIHACK_PROFILE_USAGE_PROBE`
+says, so never directly under `auto` or `text`), and a login it left full is not
+chosen again until a later reading shows room. The `reread:` and `damp:` log
+lines show this; see
+[Rotate reading freshness and swap-back damping](../reference/profile-command.md#rotate-reading-freshness-and-swap-back-damping).
+For the rotator to react sooner, lower the age in the shell that starts it:
 
 ```bash
 export AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS=100

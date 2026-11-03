@@ -337,7 +337,36 @@ impl Fixture {
     pub fn run(&self, args: &[&str]) -> Output {
         let out = self.cmd(args).output().unwrap();
         assert_no_secrets(&out);
+        // A rotate swap off a full login damps it at that whole second, and
+        // only a reading strictly later may choose it again (#1870). The
+        // fixture cannot read a login directly, so a run in the same second
+        // would find the login stale and unknown. Waiting until the clock is
+        // past the newest damping time keeps that timing out of every test
+        // that swaps back. A one-shot rotate prints nothing to stdout, so
+        // the ledger is the record of the swap.
+        if args.starts_with(&["profile", "rotate"]) {
+            self.wait_past_damping();
+        }
         out
+    }
+
+    /// Waits until the wall clock is past every `swapped_away` time in the
+    /// rotate ledger. A missing or damaged ledger (some tests damage it on
+    /// purpose) has nothing to wait for.
+    pub fn wait_past_damping(&self) {
+        let newest = fs::read_to_string(self.rotate_dir().join("ledger.json"))
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|l| {
+                l["swapped_away"]
+                    .as_object()
+                    .and_then(|m| m.values().filter_map(|v| v.as_i64()).max())
+            });
+        if let Some(at) = newest {
+            while unix_now() <= at {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
     }
 
     pub fn ok(&self, args: &[&str]) -> Output {
@@ -422,4 +451,12 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");
     assert_text_has_no_secrets(line);
+}
+
+fn unix_now() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("clock after 1970");
+    i64::try_from(d.as_secs()).expect("seconds fit in i64")
 }

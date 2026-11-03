@@ -274,6 +274,7 @@ fn measured(session: f64, week: f64) -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
     }
 }
 
@@ -295,6 +296,7 @@ fn exhausted() -> Probed {
         unknown: false,
         still_running: false,
         observed_at: None,
+        carried: false,
     }
 }
 
