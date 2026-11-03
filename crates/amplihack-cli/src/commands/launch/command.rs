@@ -126,8 +126,9 @@ pub(super) fn build_command_for_dir(
     .0
 }
 
-/// The agent's command, and the model to export to its children as
-/// `AMPLIHACK_PARENT_MODEL` (issue #1883, [`ModelArgs::exported`]).
+/// The agent's command, and the effort and model it runs with, to export to
+/// its children as `AMPLIHACK_PARENT_*` (issue #1883,
+/// [`inherit::EffortArgs::exported`], [`ModelArgs::exported`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn build_launch_command(
     binary: &BinaryInfo,
@@ -138,7 +139,7 @@ pub(super) fn build_launch_command(
     add_dir_override: Option<&Path>,
     subprocess_safe: bool,
     claude_config_dir: Option<&Path>,
-) -> (Command, Option<String>) {
+) -> (Command, Inherited) {
     let mut cmd = Command::new(&binary.path);
 
     // SEC-2: Only inject --dangerously-skip-permissions when the caller has
@@ -276,7 +277,13 @@ pub(super) fn build_launch_command(
         cmd.arg("--no-auto-update");
         cmd.arg("--secret-env-vars=COPILOT_PROVIDER_API_KEY");
     }
-    (cmd, model.exported)
+    (
+        cmd,
+        Inherited {
+            effort: effort.exported,
+            model: model.exported,
+        },
+    )
 }
 
 /// Issue #1567: pins the applied login profile for every descendant launch.
@@ -396,15 +403,12 @@ pub(super) fn model_args(
         exported: None,
     };
 
-    let user_has_model = extra_args
-        .iter()
-        .any(|arg| arg == "--model" || arg.starts_with("--model="));
-    if user_has_model {
+    let own = inherit::flag_value(extra_args, "--model");
+    if own.is_some() {
         // Issue #1883 (D5): the child holds only the step's own model. A
         // gateway route name, or a codex or copilot model, is not a Claude
         // model id, so it is neither put in ANTHROPIC_MODEL nor exported.
         if is_claude_compatible && !through_gateway {
-            let own = inherit::flag_value(extra_args, "--model");
             if let (Some(own), Some(_)) = (&own, &inherited.model) {
                 out.env.push(("ANTHROPIC_MODEL", own.clone()));
             }
@@ -417,12 +421,15 @@ pub(super) fn model_args(
     if !is_claude_compatible {
         // Issue #1883: codex and copilot get a model only from `recipe run`,
         // which passes on only a model given for the run, and never through
-        // the gateway. No notice: the run's summary line covers it.
-        if let Some(model) = &inherited.model
-            && inherit::in_recipe_run()
-            && !proxy
-        {
-            out.argv = vec!["--model".to_string(), model.clone()];
+        // the gateway. Inside a run, the run's lines cover it; outside one,
+        // the dropped model gets one line (D7).
+        if let Some(model) = &inherited.model {
+            if !inherit::in_recipe_run() {
+                out.stderr
+                    .push(inherit::cannot_pass_line("model", model, binary_name));
+            } else if !proxy {
+                out.argv = vec!["--model".to_string(), model.clone()];
+            }
         }
         return out;
     }

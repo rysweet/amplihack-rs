@@ -95,6 +95,10 @@ pub(crate) struct EffortArgs {
     pub(crate) env: Vec<(&'static str, String)>,
     /// The "cannot be passed" line, when this binary cannot take the effort.
     pub(crate) unsupported: Option<String>,
+    /// The effort the agent runs with, to export to its children: the step's
+    /// own effort, or else the inherited one when this binary takes it. Set
+    /// even when nothing is inherited, so a step's own effort is passed on.
+    pub(crate) exported: Option<String>,
 }
 
 /// `raw` trimmed, when it passes `option_value` (D9, S3, S4).
@@ -199,21 +203,33 @@ pub(crate) fn effort_args(
     inherited: &Inherited,
 ) -> EffortArgs {
     let mut out = EffortArgs::default();
+    let own = if is_claude_compatible(binary) {
+        flag_value(extra_args, "--effort")
+    } else if binary == "codex" {
+        codex_effort_from_argv(extra_args)
+    } else {
+        None
+    };
+    out.exported = own.clone();
     let Some(level) = inherited.effort.as_deref() else {
         return out;
     };
     if is_claude_compatible(binary) {
-        let own = flag_value(extra_args, "--effort");
         // Only `claude` is known to accept `--effort`; the others read the
         // variable, and an unknown flag would fail every step.
         if own.is_none() && binary == "claude" {
             out.argv = vec!["--effort".to_string(), level.to_string()];
         }
-        out.env = vec![(EFFORT_LEVEL_ENV, own.unwrap_or_else(|| level.to_string()))];
+        let applied = own.unwrap_or_else(|| level.to_string());
+        out.env = vec![(EFFORT_LEVEL_ENV, applied.clone())];
+        out.exported = Some(applied);
     } else if binary == "codex" {
-        if codex_effort_from_argv(extra_args).is_none() {
+        if own.is_none() {
             match codex_effort(level) {
-                Some(config) => out.argv = vec!["-c".to_string(), config],
+                Some(config) => {
+                    out.argv = vec!["-c".to_string(), config];
+                    out.exported = Some(level.to_string());
+                }
                 None => out.unsupported = Some(cannot_pass_line("effort", level, binary)),
             }
         }
@@ -318,8 +334,9 @@ pub(crate) fn ignoring_line(setting: &str, source: InheritSource) -> String {
     )
 }
 
-/// The once-per-run summary (D8), or `None` when neither value is set. It
-/// reports the resolved values, before [`vet_for_binary`].
+/// The once-per-run summary (D8), or `None` when neither value is set.
+/// `recipe run` passes the values left after [`vet_for_binary`], so a value
+/// the binary cannot take is not reported as inherited.
 pub(crate) fn inherit_summary_line(resolved: &Resolved) -> Option<String> {
     let Inherited { effort, model } = &resolved.inherited;
     if effort.is_none() && model.is_none() {
@@ -346,27 +363,20 @@ pub(crate) fn print_once(line: &str) {
 
 /// C1: export the launched agent's effort and model for its children.
 ///
-/// The effort is read from the agent's final argv (`--effort`, or codex's
-/// `-c model_reasoning_effort=`); the model is `model`, which
-/// `command::model_args` sets only for a model the launch was given or
-/// inherited, never for amplihack's own default. Both variables are removed
-/// first, so a stale value is never passed on, and a variable is set only
-/// with a valid value (I1, I2, S4). Called after the launch environment is
-/// applied; these variables are not managed by `EnvBuilder`.
-pub(crate) fn export_to_child(cmd: &mut Command, model: Option<&str>) {
-    let argv: Vec<String> = cmd
-        .get_args()
-        .map(|a| a.to_string_lossy().into_owned())
-        .collect();
-    let effort = flag_value(&argv, "--effort")
-        .or_else(|| codex_effort_from_argv(&argv))
-        .as_deref()
-        .and_then(checked);
+/// `applied` is what `command::build_launch_command` returns: the effort from
+/// [`EffortArgs::exported`], which covers binaries that take the effort only
+/// through `CLAUDE_CODE_EFFORT_LEVEL`, and the model from
+/// `ModelArgs::exported`, which is never amplihack's own default. Both
+/// variables are removed first, so a stale value is never passed on, and a
+/// variable is set only with a valid value (I1, I2, S4). Called after the
+/// launch environment is applied; these variables are not managed by
+/// `EnvBuilder`.
+pub(crate) fn export_to_child(cmd: &mut Command, applied: &Inherited) {
     set_parent_env(
         cmd,
         &Inherited {
-            effort,
-            model: model.and_then(checked),
+            effort: applied.effort.as_deref().and_then(checked),
+            model: applied.model.as_deref().and_then(checked),
         },
     );
 }

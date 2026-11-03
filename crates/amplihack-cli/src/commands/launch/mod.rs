@@ -479,7 +479,7 @@ fn run_launch_core(
         // This final check catches ordinary package and symlink replacement
         // after preflight and narrows same-user races without claiming the
         // stronger guarantees of descriptor-based execution.
-        let (mut cmd, exported_model) = build_launch_command(
+        let (mut cmd, applied) = build_launch_command(
             &binary,
             resume,
             continue_session,
@@ -505,7 +505,7 @@ fn run_launch_core(
         cmd.env_remove(crate::commands::profile::AUTO_SWITCH_SUPERVISED_ENV);
         // Issue #1883 (C1): tell the agent's children which effort and model
         // this launch runs with, after the launch environment is applied.
-        inherit::export_to_child(&mut cmd, exported_model.as_deref());
+        inherit::export_to_child(&mut cmd, &applied);
 
         // Spawn child in its own process group.
         //

@@ -311,7 +311,8 @@ fn the_fallback_variables_are_used_last() {
 }
 
 /// D7: lines come in a fixed order: warnings, then "cannot be passed"
-/// notices, then the summary.
+/// notices, then the summary. The summary names only values the steps
+/// receive, so it is absent when every value was refused.
 #[test]
 fn copilot_drops_effort_with_one_line_after_the_warnings() {
     let p = fake_proc(&[]);
@@ -328,8 +329,6 @@ fn copilot_drops_effort_with_one_line_after_the_warnings() {
             "amplihack: ignoring effort from the recipe context: not a valid option value"
                 .to_string(),
             "amplihack: effort 'high' cannot be passed to copilot; steps use copilot's default"
-                .to_string(),
-            "amplihack: steps inherit effort=high model=unset (from the parent amplihack launch)"
                 .to_string(),
         ]
     );

@@ -80,8 +80,10 @@ amplihack: steps inherit effort=medium model=claude-sonnet-4-5 (from the recipe 
    `amplihack <binary> -- …` launch reads only these two variables and the
    step's own arguments. Steps do not read `/proc` or the fallback variables.
 5. Each launch exports `AMPLIHACK_PARENT_EFFORT` and `AMPLIHACK_PARENT_MODEL`
-   again for the agent it starts. The effort is taken from the agent's final
-   argv. The model is the one the launch was given or inherited, and is left
+   again for the agent it starts. The effort is the one the agent runs with:
+   the step's own effort if given, otherwise the inherited effort when the
+   binary takes it. This includes `rusty`, `rustyclawd` and `amplifier`, which
+   receive it only through `CLAUDE_CODE_EFFORT_LEVEL`. The model is the one the launch was given or inherited, and is left
    unset when amplihack chose the model itself; see the paragraph below the
    [variables table](#variables). A nested `amplihack recipe run` inside a step
    therefore inherits from that step, not from the top-level session.
@@ -184,7 +186,7 @@ Notes:
 
 | Variable | Set by | Read by |
 |---|---|---|
-| `AMPLIHACK_PARENT_EFFORT` | Each `amplihack <binary>` launch (from the agent's final argv) and `amplihack recipe run` (for the runner) | `amplihack recipe run`, and each step's launch |
+| `AMPLIHACK_PARENT_EFFORT` | Each `amplihack <binary>` launch (the effort its agent runs with) and `amplihack recipe run` (for the runner) | `amplihack recipe run`, and each step's launch |
 | `AMPLIHACK_PARENT_MODEL` | Each `amplihack <binary>` launch (see below) and `amplihack recipe run` (for the runner) | `amplihack recipe run`, and each step's launch |
 | `CLAUDE_CODE_EFFORT_LEVEL` | Each Claude-compatible step, only when an effort is inherited. It holds the step's own `--effort` if given, otherwise the inherited effort. | The agent; and `amplihack recipe run` as the last effort fallback |
 | `ANTHROPIC_MODEL` | Each Claude-compatible step, only when a model is inherited. It holds the step's own `--model` if given, otherwise the inherited model. | The agent; and `amplihack recipe run` as the last model fallback |
@@ -206,10 +208,12 @@ gateway.
 
 All lines go to stderr. Values in angle brackets are filled in.
 
-**Summary, once per run**, printed by `amplihack recipe run` when at least one
-of effort and model has a value from any source in the
+**Summary, once per run**, printed by `amplihack recipe run` when the steps
+receive at least one of effort and model from any source in the
 [source tables](#where-the-runs-values-come-from), including `-c effort=` or
-`-c model=` alone:
+`-c model=` alone. It names only values the run's agent binary can take: a
+value refused by a "cannot be passed" line shows as `unset`, and when every
+value is refused the summary is not printed:
 
 ```text
 amplihack: steps inherit effort=<level|unset> model=<id|unset> (from <source>)
@@ -251,7 +255,9 @@ amplihack: effort 'high' cannot be passed to copilot; steps use copilot's defaul
 
 `amplihack recipe run` prints these lines next to the agent-binary notice. Each
 step's launch prints nothing for them while `AMPLIHACK_RECIPE_RUN_ID` is set.
-Outside a recipe run, a launch prints the line once per process.
+Outside a recipe run, a launch prints the line once per process, for an
+inherited effort and for an inherited model that `codex` or `copilot` cannot
+take.
 
 **Rejected value, once per source:**
 

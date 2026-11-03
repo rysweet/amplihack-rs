@@ -1548,13 +1548,20 @@ fn test_anthropic_model_alone_does_not_change_a_launch() {
 /// Codex and copilot take a model only inside a recipe run, where
 /// `recipe run` has already refused an inherited Claude id and passed on only
 /// a recipe-context model. Outside a run they get nothing, and never an
-/// ANTHROPIC_MODEL.
+/// ANTHROPIC_MODEL, and the dropped model gets one line (D7).
 #[test]
 fn test_codex_and_copilot_take_an_inherited_model_only_in_a_recipe_run() {
     for tool in ["codex", "copilot"] {
         let outside = model_args_inherited(&[], tool, &[], &inherit_model("gpt-5.1"));
         assert!(outside.argv.is_empty(), "{tool}: {:?}", outside.argv);
         assert!(outside.env.is_empty(), "{tool}");
+        assert_eq!(
+            outside.stderr,
+            vec![format!(
+                "amplihack: model 'gpt-5.1' cannot be passed to {tool}; steps use {tool}'s default"
+            )],
+            "{tool}"
+        );
 
         let inside = model_args_inherited(
             &[("AMPLIHACK_RECIPE_RUN_ID", "run-1883")],

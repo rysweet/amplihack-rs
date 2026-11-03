@@ -6,7 +6,8 @@
 //!   value checks (S3, S4), the C2 trust rule for an ancestor's model, and the
 //!   "ignoring" warning, which never echoes the rejected value (S9).
 //! - `vet_for_binary`: what each agent binary may receive (D6, docs table).
-//! - `effort_args`: what a launch adds for effort (D4, D5, C4).
+//! - `effort_args`: what a launch adds for effort (D4, D5, C4), and the
+//!   effort it exports; `export_to_child`: the exported variables (C1).
 //! - `flag_value`, `codex_effort`, `codex_effort_from_argv`: argv parsing.
 //! - The log lines, compared word for word with
 //!   docs/reference/effort-and-model-inheritance.md.
@@ -16,11 +17,13 @@
 
 use super::inherit::{
     EffortArgs, InheritSource, Inherited, PARENT_EFFORT_ENV, PARENT_MODEL_ENV, ParentInputs,
-    Resolved, cannot_pass_line, codex_effort, codex_effort_from_argv, effort_args, flag_value,
-    ignoring_line, inherit_summary_line, inherited_from_env, resolve_parent, vet_for_binary,
+    Resolved, cannot_pass_line, codex_effort, codex_effort_from_argv, effort_args, export_to_child,
+    flag_value, ignoring_line, inherit_summary_line, inherited_from_env, resolve_parent,
+    vet_for_binary,
 };
 use crate::test_support::with_env;
 use std::ffi::OsStr;
+use std::process::Command;
 
 fn s(v: &[&str]) -> Vec<String> {
     v.iter().map(|a| a.to_string()).collect()
@@ -478,6 +481,97 @@ fn no_inherited_effort_adds_nothing() {
             assert_eq!(got.unsupported, None, "{binary} {extra:?}");
         }
     }
+}
+
+/// C1: what a launch exports is the effort its agent runs with. rusty,
+/// rustyclawd and amplifier take it only through the variable, so it is not on
+/// their argv, and they must still pass it on.
+#[test]
+fn exported_effort_is_the_effort_the_agent_runs_with() {
+    for binary in ["claude", "rusty", "rustyclawd", "amplifier"] {
+        let got = effort_args(binary, &[], &inherited(Some("high"), None));
+        assert_eq!(got.exported.as_deref(), Some("high"), "{binary}");
+        let got = effort_args(
+            binary,
+            &s(&["--effort=low"]),
+            &inherited(Some("high"), None),
+        );
+        assert_eq!(got.exported.as_deref(), Some("low"), "{binary}");
+        let got = effort_args(binary, &s(&["--effort", "low"]), &Inherited::default());
+        assert_eq!(got.exported.as_deref(), Some("low"), "{binary}");
+        let got = effort_args(binary, &[], &Inherited::default());
+        assert_eq!(got.exported, None, "{binary}");
+    }
+    let got = effort_args("codex", &[], &inherited(Some("medium"), None));
+    assert_eq!(got.exported.as_deref(), Some("medium"));
+    let got = effort_args(
+        "codex",
+        &s(&["-c", "model_reasoning_effort=low"]),
+        &inherited(Some("high"), None),
+    );
+    assert_eq!(got.exported.as_deref(), Some("low"));
+    let got = effort_args("codex", &[], &inherited(Some("max"), None));
+    assert_eq!(got.exported, None);
+    let got = effort_args("copilot", &[], &inherited(Some("high"), None));
+    assert_eq!(got.exported, None);
+}
+
+fn parent_env_of(cmd: &Command) -> Vec<(String, Option<String>)> {
+    let mut out: Vec<_> = cmd
+        .get_envs()
+        .filter(|(k, _)| *k == PARENT_EFFORT_ENV || *k == PARENT_MODEL_ENV)
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.map(|v| v.to_string_lossy().into_owned()),
+            )
+        })
+        .collect();
+    out.sort();
+    out
+}
+
+/// C1: a rusty step exports the effort it was given through
+/// CLAUDE_CODE_EFFORT_LEVEL, although its argv has no `--effort`.
+#[test]
+fn export_to_child_passes_on_a_rusty_step_effort() {
+    let effort = effort_args("rusty", &[], &inherited(Some("high"), None));
+    assert!(effort.argv.is_empty());
+    let mut cmd = Command::new("rusty");
+    export_to_child(
+        &mut cmd,
+        &Inherited {
+            effort: effort.exported,
+            model: Some("claude-opus-5-5".to_string()),
+        },
+    );
+    assert_eq!(
+        parent_env_of(&cmd),
+        vec![
+            (PARENT_EFFORT_ENV.to_string(), Some("high".to_string())),
+            (
+                PARENT_MODEL_ENV.to_string(),
+                Some("claude-opus-5-5".to_string())
+            ),
+        ]
+    );
+}
+
+/// I1, I2: an unset or invalid value removes the variable, so a stale parent
+/// value is never passed on.
+#[test]
+fn export_to_child_removes_unset_and_invalid_values() {
+    let mut cmd = Command::new("rusty");
+    cmd.env(PARENT_EFFORT_ENV, "stale");
+    cmd.env(PARENT_MODEL_ENV, "stale");
+    export_to_child(&mut cmd, &inherited(Some("-bad"), None));
+    assert_eq!(
+        parent_env_of(&cmd),
+        vec![
+            (PARENT_EFFORT_ENV.to_string(), None),
+            (PARENT_MODEL_ENV.to_string(), None),
+        ]
+    );
 }
 
 #[test]

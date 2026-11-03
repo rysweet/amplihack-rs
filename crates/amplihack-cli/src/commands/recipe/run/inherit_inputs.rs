@@ -5,14 +5,14 @@
 //! nearest `claude` ancestor's argv and the fallback variables.
 
 use crate::commands::launch::inherit::{
-    Inherited, PARENT_EFFORT_ENV, PARENT_MODEL_ENV, ParentInputs, checked, inherit_summary_line,
-    resolve_parent, vet_for_binary,
+    Inherited, PARENT_EFFORT_ENV, PARENT_MODEL_ENV, ParentInputs, Resolved, checked,
+    inherit_summary_line, resolve_parent, vet_for_binary,
 };
 use std::collections::BTreeMap;
 
 /// The values the steps of a run with agent `binary` inherit, and the stderr
 /// lines to print once for the run, in order: "ignoring" warnings, "cannot be
-/// passed" notices, then the summary. Never fails: a source that cannot be
+/// passed" notices, then the summary of the values actually passed on. Never fails: a source that cannot be
 /// read counts as unset.
 pub(crate) fn inherit_for_run(
     context: &BTreeMap<String, String>,
@@ -58,7 +58,15 @@ pub(crate) fn inherit_for_run(
     let (vetted, notices) = vet_for_binary(binary, &resolved, through_gateway);
     let mut lines = resolved.warnings.clone();
     lines.extend(notices);
-    lines.extend(inherit_summary_line(&resolved));
+    // The summary names only what the steps receive, so it never repeats a
+    // value a "cannot be passed" line has just refused.
+    let passed = Resolved {
+        effort_source: resolved.effort_source.filter(|_| vetted.effort.is_some()),
+        model_source: resolved.model_source.filter(|_| vetted.model.is_some()),
+        inherited: vetted.clone(),
+        warnings: Vec::new(),
+    };
+    lines.extend(inherit_summary_line(&passed));
     (vetted, lines)
 }
 
