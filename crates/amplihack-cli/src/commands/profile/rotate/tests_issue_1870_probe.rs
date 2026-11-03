@@ -14,7 +14,8 @@
 //!
 //!   and never uses a stored (passive) reading, however fresh.
 //! - `fresh::reread_as_configured` builds its env with `reread_env` and the
-//!   mode `measure::mode()` resolves from the environment.
+//!   mode `measure::mode_quiet()` resolves from the environment (no second
+//!   warning: the cycle's measurement has already warned once).
 //!
 //! Direct reads go to a loopback fake; the fallback is a closure that
 //! records its calls. No `claude` is started and no variable is set.
@@ -279,7 +280,7 @@ fn the_production_reread_resolves_the_mode_from_the_environment() {
         .expect("fresh::reread_as_configured exists");
     let body = &body[..body.find("\n}\n").unwrap()];
     assert!(
-        body.contains("reread_env(measure::mode(), left)"),
+        body.contains("reread_env(measure::mode_quiet(), left)"),
         "the re-read uses AMPLIHACK_PROFILE_USAGE_PROBE: {body}"
     );
     assert!(

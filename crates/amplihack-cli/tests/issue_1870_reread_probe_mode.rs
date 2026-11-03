@@ -109,3 +109,36 @@ fn under_auto_the_reread_runs_claude() {
 fn unset_a_failed_direct_reread_falls_back_to_claude() {
     assert_reread_through_claude(None);
 }
+
+/// Review round 4: a cycle that re-reads warns about a bad probe variable
+/// once, not once more for the gate and again for each re-read.
+#[test]
+fn a_bad_probe_variable_warns_once_per_cycle_even_with_a_reread() {
+    let f = damped_spare();
+    let probes_before = f.usage_probes("spare");
+    let out = f
+        .cmd(&["profile", "rotate"])
+        .env("AMPLIHACK_PROFILE_USAGE_PROBE", "bogus")
+        .env("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "bogus")
+        .output()
+        .unwrap();
+    assert_no_secrets(&out);
+    let stderr = text(&out.stderr);
+    assert!(out.status.success(), "rotate failed: {stderr}");
+    assert_eq!(
+        f.usage_probes("spare") - probes_before,
+        2,
+        "the gate re-read spare, so the warnings had a chance to repeat:\n{}",
+        f.log()
+    );
+    for var in [
+        "AMPLIHACK_PROFILE_USAGE_PROBE",
+        "AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS",
+    ] {
+        assert_eq!(
+            stderr.matches(&format!("warning: ignored {var} ")).count(),
+            1,
+            "{var} is warned about once per cycle:\n{stderr}"
+        );
+    }
+}

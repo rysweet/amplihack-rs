@@ -110,26 +110,34 @@ pub fn gated_target(d: &Decision) -> Option<&ProfileName> {
 /// with no read and [`Decision::Stay`], so nothing is swapped.
 ///
 /// All re-reads of one gate share one time limit: a single probe deadline
-/// ([`measure::timeout`], 120 s by default). Each read gets only what is
+/// ([`measure::timeout_quiet`], 120 s by default). Each read gets only what is
 /// left of it, and once it is spent the target is unknown with no read, so
 /// a slow usage endpoint delays a swap by at most one probe deadline in
 /// total, however many re-reads the cycle makes.
+///
+/// The gate resolves the probe variables with the quiet readers: every gate
+/// follows the cycle's own measurement, which has already warned once about
+/// a bad `AMPLIHACK_PROFILE_USAGE_PROBE` or `..._TIMEOUT_SECS`.
 pub fn gate(
     ctx: &Ctx,
     snap: &Snap,
     m: Measurement,
     mode: Reread,
 ) -> Result<Measurement, ProfileError> {
-    settle(ctx, m, mode, measure::timeout(), |live, probes, at| {
-        decide_measured(ctx, snap, live, probes, at)
-    })
+    settle(
+        ctx,
+        m,
+        mode,
+        measure::timeout_quiet(),
+        |live, probes, at| decide_measured(ctx, snap, live, probes, at),
+    )
 }
 
 /// The other logins' probes, by name.
 type Probes = Vec<(ProfileName, Probed)>;
 
 /// [`gate`] with the re-reads' total time limit and the decision passed in
-/// ([`measure::timeout`] and [`decide_measured`] outside tests), so a test
+/// ([`measure::timeout_quiet`] and [`decide_measured`] outside tests), so a test
 /// can check the cap and the time limit.
 pub(super) fn settle(
     ctx: &Ctx,
@@ -259,13 +267,14 @@ pub(super) fn reread_env(mode: ProbeMode, left: Duration) -> SourceEnv {
 }
 
 /// The production re-read: one read of `name` by the user's probe method
-/// with passive readings off ([`reread_env`]), bounded by `left`: what
+/// with passive readings off ([`reread_env`]), resolved without a warning
+/// because the cycle's measurement has already given it, bounded by `left`: what
 /// remains of the gate's one time limit. At most one `claude` runs for it,
 /// under the same deadline. It writes no rotate state and takes no rotate
 /// lock; like any direct read it may refresh a near-expiry OAuth token
 /// under Claude's `.oauth_refresh.lock`.
 pub fn reread_as_configured(ctx: &Ctx, name: &ProfileName, left: Duration) -> Probed {
-    let env = reread_env(measure::mode(), left);
+    let env = reread_env(measure::mode_quiet(), left);
     let reader = measure::reader(ctx, env, 1, now());
     measure::reading(name.as_str(), &reader.profile(name, false))
 }
