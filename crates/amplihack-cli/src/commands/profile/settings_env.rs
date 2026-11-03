@@ -199,7 +199,10 @@ mod imp {
             return Err("file is not owned by the current user".into());
         }
         if check_mode && meta.mode() & 0o022 != 0 {
-            return Err("file is writable by group or others".into());
+            return Err(format!(
+                "file is writable by group or others; fix it with `chmod 600 {}`",
+                path.display()
+            ));
         }
         serde_json::from_slice(&raw).map(Some).map_err(|error| {
             format!(

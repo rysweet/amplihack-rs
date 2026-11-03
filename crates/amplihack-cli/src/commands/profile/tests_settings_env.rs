@@ -442,7 +442,10 @@ fn group_writable_source_is_skipped() {
     fx.source_settings(r#"{"env":{"XPIA_ENABLED":"false"}}"#);
     chmod(&fx.source_file(), 0o620);
     let o = fx.ensure("work");
-    assert_eq!(skipped_reason(&o), "file is writable by group or others");
+    assert!(
+        skipped_reason(&o)
+            .starts_with("file is writable by group or others; fix it with `chmod 600 ")
+    );
     assert!(fx.read("work").get("env").is_none());
 }
 
@@ -453,9 +456,9 @@ fn other_writable_source_is_skipped() {
     fx.profile("work", Some(r#"{"language":"en"}"#));
     fx.source_settings(r#"{"env":{"XPIA_ENABLED":"false"}}"#);
     chmod(&fx.source_file(), 0o602);
-    assert_eq!(
-        skipped_reason(&fx.ensure("work")),
-        "file is writable by group or others"
+    assert!(
+        skipped_reason(&fx.ensure("work"))
+            .starts_with("file is writable by group or others; fix it with `chmod 600 ")
     );
 }
 
@@ -662,7 +665,10 @@ fn add_refuses_group_writable_source() {
     ));
     chmod(&fx.source_file(), 0o664);
     let o = add(&fx, "work");
-    assert_eq!(skipped_reason(&o), "file is writable by group or others");
+    assert!(
+        skipped_reason(&o)
+            .starts_with("file is writable by group or others; fix it with `chmod 600 ")
+    );
     assert_eq!(o.warnings.len(), 1);
     assert_no_value_in(&o);
     assert!(fx.read("work").get("env").is_none());

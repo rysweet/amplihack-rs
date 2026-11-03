@@ -2842,7 +2842,7 @@ profile's own `settings.json` for a problem with that file, or
 | `file is not a regular file` | The file is a directory, FIFO or device. |
 | `file does not exist` | The configured template is missing. A missing default source is `Unchanged`, not `Skipped`. |
 | `file is not owned by the current user` | The source is owned by someone other than you or root, or the profile's file by someone other than you. |
-| `file is writable by group or others` | The source has a group or other write bit. |
+| ``file is writable by group or others; fix it with `chmod 600 <path>` `` | The source has a group or other write bit. |
 | `file is larger than 1 MiB` | The source is over the read cap. |
 | `refusing credential file` | The template's file name is `.credentials.json` or `.claude.json`. |
 | `source settings.json is not a JSON object` | The source parses but is not an object. |

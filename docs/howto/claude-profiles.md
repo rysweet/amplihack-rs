@@ -156,8 +156,12 @@ amplihack never prints `env` values. A problem with the source is a warning
 that names the path and the reason, and the command carries on:
 
 ```text
-profile work: env not inherited from /home/you/.amplihack/profile-settings.json: file is writable by group or others
+profile work: env not inherited from /home/you/.amplihack/profile-settings.json: file is writable by group or others; fix it with `chmod 600 /home/you/.amplihack/profile-settings.json`
 ```
+
+With a umask of `0002`, a newly created source file is group-writable and is
+refused on every `login`, `switch` and `repair` until you run the `chmod`
+shown in the warning.
 
 Entries in the source whose name is not a valid variable name
 (`[A-Za-z_][A-Za-z0-9_]*`, at most 256 bytes) or whose value is not a string
