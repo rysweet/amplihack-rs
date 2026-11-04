@@ -5146,7 +5146,8 @@ limit, or a failed probe), `platform-blocked`, `key-held`, the swap-refused
 ALERTs and every ALERT written before measuring, such as `no-login` and
 `hand-change`.
 
-`alert` and `advisory_alert` are never both set. The two share one
+`alert` and `advisory_alert` are never both set; a hand-edited ledger that
+sets both is refused as `RotateInconsistent`. The two share one
 de-duplication key: when the same key moves from advisory to hard, or back,
 no second ALERT line is written, but `last_cycle.outcome` changes. Every
 step that clears the ALERT key (a completed swap, a qualifying stay, a held
