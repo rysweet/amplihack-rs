@@ -15,6 +15,8 @@ mod tests_damp;
 mod tests_decide;
 #[path = "tests_gate_record.rs"]
 mod tests_gate_record;
+#[path = "tests_issue_1886_collide.rs"]
+mod tests_issue_1886_collide;
 #[path = "tests_ledger.rs"]
 mod tests_ledger;
 #[path = "tests_live_readers.rs"]

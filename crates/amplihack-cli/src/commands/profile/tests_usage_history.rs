@@ -64,7 +64,6 @@ fn row(name: &str, rep: UsageReport) -> Row {
         live_in: false,
         overflow: false,
         overflow_blocked_until: None,
-        live_in_home: false,
         api_key: false,
         api_key_blocked: None,
         report: rep,
@@ -196,8 +195,6 @@ fn percentages_are_clamped_to_0_to_100() {
 fn from_rows_keeps_valid_subscription_rows_and_lists_the_unknown_ones() {
     let mut key = row("key", report(UsageState::Ok, Some(0.0), Some(0.0)));
     key.api_key = true;
-    let mut home = row("~/.claude", report(UsageState::Ok, Some(1.0), Some(1.0)));
-    home.live_in_home = true;
     let mut over = row("over", report(UsageState::Ok, Some(5.0), Some(50.0)));
     over.overflow = true;
     let rows = vec![
@@ -205,7 +202,6 @@ fn from_rows_keeps_valid_subscription_rows_and_lists_the_unknown_ones() {
         row("slow", UsageReport::empty(UsageState::Timeout)),
         row("blind", report(UsageState::Ok, Some(20.0), None)),
         key,
-        home,
         over,
     ];
     let s: Snapshot = from_rows(T, T, &rows, None).unwrap();
@@ -213,7 +209,7 @@ fn from_rows_keeps_valid_subscription_rows_and_lists_the_unknown_ones() {
     assert_eq!(
         s.points.keys().map(String::as_str).collect::<Vec<_>>(),
         ["over", "work"],
-        "overflow subscription rows count; API-key and ~/.claude rows do not"
+        "overflow subscription rows count; API-key rows do not"
     );
     assert_eq!(s.unknown, ["blind", "slow"], "sorted by name");
 }
@@ -249,9 +245,7 @@ fn a_snapshot_entry_holds_only_its_points() {
 fn from_rows_without_a_subscription_login_is_none() {
     let mut key = row("key", report(UsageState::Ok, Some(0.0), Some(0.0)));
     key.api_key = true;
-    let mut home = row("~/.claude", report(UsageState::Ok, Some(1.0), Some(1.0)));
-    home.live_in_home = true;
-    assert!(from_rows(T, T, &[key, home], None).is_none());
+    assert!(from_rows(T, T, &[key], None).is_none());
     assert!(from_rows(T, T, &[], None).is_none());
     let slow = row("slow", UsageReport::empty(UsageState::Timeout));
     assert_eq!(

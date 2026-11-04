@@ -178,6 +178,9 @@ pub(super) fn measure_with(
 // Issue #1844: reading in order, with reads that may outlast the cycle
 // ---------------------------------------------------------------------------
 
+/// The reads a watching rotator keeps across cycles (issue #1844).
+pub type Reads = super::inflight::InFlight<Key, crate::commands::profile::usage_cmd::Probe>;
+
 /// Which login a read is for. The live login is its own key, so a read
 /// started while a profile was live is never used once it is not.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
