@@ -41,6 +41,7 @@ fn private(path: &Path, body: &str) {
 /// An OAuth login (issue #1700: its top-level keys are read for the kind).
 fn login(path: &Path) {
     private(path, &super::tests::tests_fixture_identity::body(path));
+    fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
 }
 
 fn acct(uuid: &str, email: &str) -> String {

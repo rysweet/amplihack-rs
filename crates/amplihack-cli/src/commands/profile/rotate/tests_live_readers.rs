@@ -56,6 +56,7 @@ fn env() -> (tempfile::TempDir, PathBuf, ProfileStore, RotateState) {
     }
     let path = home.join(".claude/.credentials.json");
     private(&path, &super::tests_fixture_identity::body(&path));
+    fs::set_permissions(path.parent().unwrap(), fs::Permissions::from_mode(0o700)).unwrap();
     (tmp, home, store, rs)
 }
 
