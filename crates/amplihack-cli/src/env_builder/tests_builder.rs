@@ -313,6 +313,22 @@ fn with_amplihack_home_sets_from_bundle_root_before_home() {
     );
 }
 
+/// A start directory from which the bundle-root walk finds nothing.
+///
+/// The walk climbs every ancestor of its start directory. A temp directory is
+/// not a safe start: a recipe step's `TMPDIR` lies under `~/.amplihack`, which
+/// carries `amplifier-bundle/`, so the walk would find the real install
+/// (PR #1885). The filesystem root has no ancestors to climb.
+fn start_dir_without_bundle_ancestor() -> &'static std::path::Path {
+    let root = std::path::Path::new("/");
+    assert!(
+        !root.join("amplifier-bundle").exists(),
+        "/amplifier-bundle exists on this host; these tests need a start directory \
+         with no bundle above it"
+    );
+    root
+}
+
 /// WS3-1b: with_amplihack_home should derive AMPLIHACK_HOME from HOME when
 /// AMPLIHACK_HOME is not set and no bundle root is available.
 #[test]
@@ -322,14 +338,12 @@ fn with_amplihack_home_sets_from_home_when_no_bundle_root() {
         .unwrap_or_else(|p| p.into_inner());
 
     let temp = tempfile::tempdir().unwrap();
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = start_dir_without_bundle_ancestor();
     let _home_guard = crate::test_support::HomeGuard::set(temp.path());
     let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
     unsafe { std::env::remove_var("AMPLIHACK_HOME") };
 
-    let env = EnvBuilder::new()
-        .with_amplihack_home_from(cwd.path())
-        .build();
+    let env = EnvBuilder::new().with_amplihack_home_from(cwd).build();
 
     match prev_amplihack_home {
         Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
@@ -378,14 +392,12 @@ fn with_amplihack_home_rejects_traversal_path() {
         .lock()
         .unwrap_or_else(|p| p.into_inner());
 
-    let cwd = tempfile::tempdir().unwrap();
+    let cwd = start_dir_without_bundle_ancestor();
     let prev_home = crate::test_support::set_home(std::path::Path::new("/tmp/../../etc"));
     let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
     unsafe { std::env::remove_var("AMPLIHACK_HOME") };
 
-    let env = EnvBuilder::new()
-        .with_amplihack_home_from(cwd.path())
-        .build();
+    let env = EnvBuilder::new().with_amplihack_home_from(cwd).build();
 
     crate::test_support::restore_home(prev_home);
     match prev_amplihack_home {

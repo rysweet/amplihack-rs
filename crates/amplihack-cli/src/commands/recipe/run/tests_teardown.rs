@@ -37,7 +37,7 @@ mod execute {
 use std::collections::BTreeMap;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Environment-variable name the deterministic-teardown feature must honour to
 /// configure the SIGTERM -> SIGKILL grace window (in whole seconds).
@@ -80,6 +80,17 @@ impl Drop for EnvVarGuard {
             Some(value) => unsafe { std::env::set_var(self.key, value) },
             None => unsafe { std::env::remove_var(self.key) },
         }
+    }
+}
+
+/// Kills and reaps a child when dropped, so a test that panics before its
+/// own cleanup does not leave the child running (PR #1885).
+struct KillOnDrop(std::process::Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
@@ -304,13 +315,16 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
 
     // Sibling process in the TEST's process group (NOT the runner's session).
-    // It outlives any plausible run, so its exit can only mean a signal; the
-    // test kills it at the end. A short sleep made the check a time budget that
-    // a loaded host missed (PR #1885).
-    let mut sibling = std::process::Command::new("/bin/sleep")
-        .arg("600")
-        .spawn()
-        .expect("failed to spawn sibling process");
+    // It outlives any plausible run, so its exit can only mean a signal. A
+    // short sleep made the check a time budget that a loaded host missed
+    // (PR #1885). The guard kills and reaps it when the test ends, including
+    // when an assertion panics first.
+    let mut sibling = KillOnDrop(
+        std::process::Command::new("/bin/sleep")
+            .arg("600")
+            .spawn()
+            .expect("failed to spawn sibling process"),
+    );
 
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("orphan-marker");
@@ -328,7 +342,6 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let _tree_env = EnvVarGuard::set(SESSION_TREE_DIR_ENV, temp.path().join("trees"));
     let _timeout_env = EnvVarGuard::unset(RUNNER_TIMEOUT_ENV);
 
-    let started = Instant::now();
     let result = execute::execute_recipe_via_rust(
         &recipe,
         &BTreeMap::new(),
@@ -352,18 +365,10 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     // `try_wait` rather than `kill(pid, 0)`: an unreaped child that was
     // killed is a zombie, and `kill(pid, 0)` still succeeds on a zombie.
     assert!(
-        started.elapsed() < Duration::from_secs(600),
-        "test setup ran too long to validate sibling survival"
-    );
-    assert!(
-        matches!(sibling.try_wait(), Ok(None)),
+        matches!(sibling.0.try_wait(), Ok(None)),
         "teardown must be scoped to the runner's process group and must NOT \
          signal unrelated processes (issue #964)"
     );
-
-    // Clean up the sibling deterministically.
-    let _ = sibling.kill();
-    let _ = sibling.wait();
 }
 
 // =========================================================================

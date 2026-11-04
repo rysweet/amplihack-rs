@@ -429,7 +429,16 @@ fn load_user_preferences_uses_amplihack_root_override() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let project = tempfile::tempdir().unwrap();
+    // Framework roots found by walking up from the project rank above
+    // AMPLIHACK_ROOT. A temp project is not a safe start: a recipe step's
+    // `TMPDIR` lies under `~/.amplihack`, which carries `.claude/`, so the
+    // walk would find the real install first (PR #1885). The filesystem root
+    // has no ancestors to climb.
+    let project = std::path::Path::new("/");
+    assert!(
+        !project.join(".claude").exists() && !project.join("src/amplihack/.claude").exists(),
+        "/.claude exists on this host; this test needs a project with no framework above it"
+    );
     let framework = tempfile::tempdir().unwrap();
     fs::create_dir_all(framework.path().join(".claude/context")).unwrap();
     fs::write(
@@ -441,7 +450,7 @@ fn load_user_preferences_uses_amplihack_root_override() {
     unsafe { std::env::set_var("AMPLIHACK_ROOT", framework.path()) };
 
     let (context, has_learned_patterns) =
-        preferences::load_user_preferences_with_patterns(&ProjectDirs::new(project.path()));
+        preferences::load_user_preferences_with_patterns(&ProjectDirs::new(project));
 
     match previous {
         Some(value) => unsafe { std::env::set_var("AMPLIHACK_ROOT", value) },

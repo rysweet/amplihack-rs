@@ -854,8 +854,15 @@ mod tests {
     fn a_directory_that_merely_carries_a_bundle_is_not_an_install_source() {
         // The shape check alone cannot tell an amplihack checkout from any
         // project that happens to vendor a directory of the same shape.
+        //
+        // The walk also reports the nearest bundle-carrying ancestor beyond
+        // the repository. A bundle directory above the repository, inside the
+        // fixture, makes that ancestor the fixture's own, so the result does
+        // not depend on what sits above the temp directory (a recipe step's
+        // `TMPDIR` lies under `~/.amplihack`, PR #1885).
         let temp = tempfile::tempdir().unwrap();
-        let repo = temp.path().join("some-project");
+        let outer = bundle_only(&temp.path().join("outer"));
+        let repo = outer.join("some-project");
         bundle_only(&repo);
         git_dir(&repo);
 
@@ -864,7 +871,13 @@ mod tests {
         assert_eq!(resolution.resolved, None);
         assert_eq!(
             resolution.notes,
-            vec![ResolutionNote::NotAmplihackSource { path: repo.clone() }]
+            vec![
+                ResolutionNote::NotAmplihackSource { path: repo.clone() },
+                ResolutionNote::OutsideStartingRepository {
+                    path: outer,
+                    start: repo.clone(),
+                },
+            ]
         );
 
         // The cargo workspace root is the other recognised shape.
