@@ -110,24 +110,8 @@ fn wrapper_target_dir(entry: &str) -> Result<String, String> {
 
     // A private HOME: the wrapper creates its cache root, and a contract test
     // has no business writing into the developer's real one.
-    let home = std::env::temp_dir().join(format!(
-        "amplihack-hook-contract-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    fs::create_dir_all(&home).map_err(|e| format!("create {}: {e}", home.display()))?;
-
-    let output = Command::new("bash")
-        .arg(&path)
-        .args(["printenv", "CARGO_TARGET_DIR"])
-        .current_dir(workspace_root())
-        // The caller's own cache must not stand in for the default under test.
-        .env_remove("CARGO_TARGET_DIR")
-        .env("HOME", &home)
-        .env("XDG_CACHE_HOME", home.join(".cache"))
-        .env("AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS", "0")
-        .output();
-    let _ = fs::remove_dir_all(&home);
+    let fixture = tempfile::tempdir().map_err(|e| format!("owned hook fixture: {e}"))?;
+    let output = hook_target_probe(fixture.path()).output();
 
     let output = output.map_err(|e| format!("run {} for `{entry}`: {e}", path.display()))?;
     if !output.status.success() {
@@ -517,10 +501,93 @@ fn pre_commit_build_hooks_use_isolated_target_dir() {
         // and the wrapper is checked for the export, not merely named.
         let inline = entry.contains("CARGO_TARGET_DIR") && entry.contains("/tmp");
         let via_wrapper = entry.starts_with(HOOK_WRAPPER)
-            && wrapper_target_dir(entry).is_ok_and(|dir| dir.contains("/tmp"));
+            && wrapper_target_dir(entry)
+                .is_ok_and(|dir| assert_isolated_target_dir(&dir, entry).is_ok());
         assert!(
             inline || via_wrapper,
             "{id} must isolate Cargo build output outside the parent worktree; entry was `{entry}`"
         );
     }
+}
+
+/// Only this child is scrubbed: no test mutates the process-wide environment.
+/// Keep the default-resolution contract distinct from an explicit owned target.
+fn hook_target_probe(home: &Path) -> Command {
+    let mut command = Command::new("bash");
+    command
+        .arg(workspace_root().join(HOOK_WRAPPER))
+        .args(["printenv", "CARGO_TARGET_DIR"])
+        .current_dir(workspace_root())
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").expect("tool PATH"))
+        .env("HOME", home)
+        .env("XDG_CACHE_HOME", home.join(".cache"))
+        .env("AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS", "0");
+    command
+}
+
+fn probe_target(command: &mut Command) -> String {
+    let output = command.output().expect("run hook target probe");
+    assert!(
+        output.status.success(),
+        "target probe failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("UTF-8 target")
+        .trim()
+        .to_owned()
+}
+
+#[test]
+fn hook_default_target_treats_unset_and_empty_overrides_equally() {
+    let fixture = tempfile::tempdir().expect("owned hook fixture");
+    let home = fixture.path().join("home");
+    fs::create_dir(&home).expect("fake HOME");
+    let unset = probe_target(&mut hook_target_probe(&home));
+    let empty = probe_target(hook_target_probe(&home).env("CARGO_TARGET_DIR", ""));
+    assert_eq!(
+        unset, empty,
+        "empty CARGO_TARGET_DIR must select the default"
+    );
+    assert!(
+        Path::new(&unset).starts_with(home.join(".cache/amplihack")),
+        "default must use this fixture's cache: {unset}"
+    );
+    assert_isolated_target_dir(&unset, HOOK_WRAPPER).expect("isolated default target");
+}
+
+#[test]
+fn hook_explicit_owned_target_and_recipe_ownership_artifacts_survive() {
+    let fixture = tempfile::tempdir().expect("owned hook fixture");
+    let home = fixture.path().join("home");
+    let target = fixture.path().join("explicit-target");
+    let work = fixture.path().join("recipe-work");
+    let run = work.join("runs/abc");
+    for dir in [&home, &target, &run] {
+        fs::create_dir_all(dir).expect("owned fixture directory");
+    }
+    fs::write(target.join("keep"), b"explicit artifact").expect("target sentinel");
+    fs::write(run.join("owned-paths"), b"caller ownership\n").expect("ownership sentinel");
+    let resolved = probe_target(
+        hook_target_probe(&home)
+            .env("CARGO_TARGET_DIR", &target)
+            .env("AMPLIHACK_WORK_ROOT", &work)
+            .env("AMPLIHACK_RUN_ID", "abc")
+            .env("AMPLIHACK_RUN_DIR", &run),
+    );
+    assert_eq!(Path::new(&resolved), target);
+    assert_isolated_target_dir(&resolved, HOOK_WRAPPER).expect("isolated explicit target");
+    assert_eq!(
+        fs::read(target.join("keep")).expect("explicit artifact survives"),
+        b"explicit artifact"
+    );
+    assert_eq!(
+        fs::read(run.join("owned-paths")).expect("ownership sentinel survives"),
+        b"caller ownership\n"
+    );
+    assert!(
+        !work.join("targets").exists(),
+        "explicit target must bypass defaults"
+    );
 }

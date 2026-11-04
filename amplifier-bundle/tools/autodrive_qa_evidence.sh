@@ -3,17 +3,7 @@
 # the auto-drive-to-merge merge loop. step-02-qa-team-scenarios of
 # autodrive-merge-evidence.yaml runs this file (moved out of the step, PR #1520).
 #
-# Criterion 1 follows qa-team's repo-type table: one or two measurements,
-# both always run so the evidence lists every cause at once. (1) The suite
-# command from the first source present (#1763): env, .amplihack/qa.toml, one
-# clean CI step, or `cargo test`, `npm test` or `pytest` detected in the
-# project the changed paths pick (QA_UNRESOLVED when they pick none, and
-# nothing runs). (2) Only where autodrive_gadugi_required says true (a Node
-# project, or AUTODRIVE_QA_SCENARIO_DIR set): the qa-team scenarios, validated
-# with `gadugi-test validate` and run one `gadugi-test run --scenario` per
-# file. Elsewhere gadugi_status is NOT_REQUIRED and gadugi-test is never
-# called: qa-team's Rust CLI rule substitutes `cargo test`.
-#
+# QA uses the selected suite plus gadugi where required (Node or an explicit scenario directory).
 # Input comes from the environment only:
 #   REPO_PATH              the repository to measure (default: the working directory)
 #   AUTODRIVE_QA_EVIDENCE  file the evidence is written to, private (optional)
@@ -28,12 +18,8 @@
 # evidence exists. Executed, never sourced; the helpers are sourced from
 # beside this file and from nowhere else.
 # NO-TIMEOUT POLICY (issue #439): a test suite is never cut off mid-run.
-set -uo pipefail
-# This file's own directory, found before the cd below because BASH_SOURCE may
-# be relative. Without the helpers there the tool cannot tell which
-# measurements apply, so it produces no evidence. An exported CDPATH would
-# make a relative `cd` resolve outside the repository and run the suite there,
-# silently (#1516 security review).
+set +aCevx; set -uo pipefail
+# Resolve helpers before cd; CDPATH must not redirect relative directories (#1516).
 unset CDPATH
 H="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 { [ -n "$H" ] && [ -f "$H/autodrive_state.sh" ] && [ -f "$H/autodrive_trust.sh" ]; } \
@@ -74,10 +60,7 @@ case "${KIND}:${GREQ}" in
      exit 1 ;;
 esac
 [ -z "$NOSCOPE" ] || PATHS="(unknown)"
-# Where a detected command runs: `<type><TAB><dir>` or `unresolved<TAB><candidates>`,
-# checked again here: an odd token, an unsafe directory, or a type that
-# disagrees with KIND leaves no detected command, so the evidence is BLOCKED
-# rather than run at the root.
+# Validate the scope target again; unsafe or disagreeing targets cannot select a command.
 TKIND="${TARGET%%$'\t'*}"; TDIR="${TARGET#*$'\t'}"; UNRES=""; TBAD=""
 case "$TARGET" in *$'\t'*) ;; *) TBAD="1" ;; esac
 case "$TKIND" in
@@ -90,11 +73,7 @@ if [ -n "$TBAD" ]; then
   echo "ERROR: autodrive_qa_target disagreed with autodrive_repo_type or gave an unsafe directory." >&2
   KIND="unknown"; TDIR="."; UNRES=""
 fi
-# Free text is sanitised before it reaches the JSON: no quotes, backslashes or
-# control bytes, so a hostile log line or directory name can neither break the
-# evidence nor carry terminal escapes. ANSI CSI sequences (ECMA-48) go whole;
-# tabs, CRs and newlines become spaces and backslashes '/', so a coloured or
-# tabular runner log keeps its words (#1531).
+# Strip JSON/control bytes and ANSI CSI; normalise whitespace and backslashes (#1531).
 san() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr '\t\r\n\\' '   /' \
   | LC_ALL=C tr -d '\000-\037\177"'; }
 # Text cut to a byte length is made ASCII first: a cut through a multibyte
@@ -112,10 +91,7 @@ else
 fi
 res() { printf '%s\t%s\n' "${1##*/}" "$2" >> "$RES"; } # res <file> <PASS|FAIL|INVALID>
 # --- suite commands --------------------------------------------------
-# The first source present wins, even when it gives no usable command: env,
-# repo-file (an invalid qa.toml is BLOCKED, qa-config-invalid), ci (when it
-# gives none, its reason is qa_ci_skip), then detected. The operator variables
-# come from the environment only (a recipe context default would hide them).
+# First present source wins: env (even empty), committed repo-file, CI, detected.
 # Set but empty means "no command", never "detect one":
 #   AUTODRIVE_QA_COMMAND   one command, word-split with globbing off, run in
 #                          AUTODRIVE_QA_DIR (the issue #1516 semantics)
@@ -162,7 +138,49 @@ else
     fi
   fi
 fi
-LOG="$(mktemp -t autodrive-qa-XXXXXX)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
+# Read selection/evidence controls above; isolate only the execution children.
+# Scratch ownership comes from this allocation, never a caller variable.
+QA_TMP=""; NEW_DIRS=""
+qa_clean_path() {
+  local d m
+  d="$(cd -- "$1" 2>/dev/null && pwd -P)" && [ -n "$d" ] || return 1
+  case "$d/" in "$ROOT/"*) return 1 ;; esac
+  while :; do
+    for m in .claude src/amplihack/.claude amplifier-bundle; do
+      { [ -e "$d/$m" ] || [ -L "$d/$m" ]; } && return 1
+    done
+    [ "$d" != / ] || break; d="${d%/*}"; [ -n "$d" ] || d=/
+  done
+}
+qa_cleanup() {
+  local d rc=0
+  for d in $NEW_DIRS; do
+    if [ -d "$d" ] && [ ! -L "$d" ]; then rm -rf -- "./$d" || rc=1; fi
+  done
+  if [ -n "$QA_TMP" ] && [ -d "$QA_TMP" ] && [ ! -L "$QA_TMP" ]; then
+    rm -rf -- "$QA_TMP" || rc=1
+  fi
+  return "$rc"
+}
+trap 'qa_cleanup || exit 1' EXIT
+trap 'exit 1' INT TERM
+QA_BASE=""
+for d in /tmp /var/tmp; do qa_clean_path "$d" && { QA_BASE="$(cd -- "$d" && pwd -P)"; break; }; done
+[ -n "$QA_BASE" ] || { echo "ERROR: no QA scratch base without framework ancestry" >&2; exit 1; }
+QA_TMP="$(mktemp -d "$QA_BASE/autodrive-qa.XXXXXX")" || { echo "ERROR: cannot create a temporary log" >&2; echo "ERROR: cannot allocate QA scratch" >&2; exit 1; }
+qa_clean_path "$QA_TMP" || { echo "ERROR: QA scratch has unsafe ancestry" >&2; exit 1; }
+qa_child() (
+  local v
+  # Preserve tool/build configuration and explicit artifacts, remove recipe selectors.
+  while IFS= read -r v; do
+    case "$v" in AMPLIHACK_*|AUTODRIVE_*|RECIPE_*|REPO_PATH|BASH_ENV|ENV|ZDOTDIR|CDPATH|GLOBIGNORE) unset "$v" || exit 1 ;; esac
+  done < <(compgen -e)
+  while IFS= read -r v; do unset -f "$v" || exit 1; done < <(compgen -A function)
+  export -n SHELLOPTS BASHOPTS QA_TMP STAGE_ROOT
+  export TMPDIR="$QA_TMP" TMP="$QA_TMP" TEMP="$QA_TMP" CARGO_TARGET_DIR="$QA_TMP/target"
+  "$@"
+)
+LOG="$(mktemp "$QA_TMP/autodrive-qa-XXXXXX")" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
 CMDTEXT=""; RAN=0; FIRST_NZ=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
 if [ "${#TEXTS[@]}" -eq 0 ] && [ -z "${QUNRES}${CFGBAD}" ]; then
   S_MISSING="true"; [ -n "$NOSCOPE" ] || cause "no repository test command for repository type ${TYPE}"
@@ -174,7 +192,7 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
   if [ "$kind" = "entry" ]; then
     # Its own process from the repository root: a `cd` in one entry
     # never reaches the next, and entries are never joined or sourced.
-    ( cd -- "$ROOT" && bash -c "$text" ) >>"$LOG" 2>&1 </dev/null
+    ( cd -- "$ROOT" && qa_child bash -c "$text" ) >>"$LOG" 2>&1 </dev/null
     rc=$?
   else
     dir="$QA_DIR"
@@ -184,21 +202,16 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
       S_MISSING="true"; cause "AUTODRIVE_QA_DIR $(printf '%s' "$dir" | san | ascii | cut -c1-120) not found"
       continue
     fi
-    # One run path for every word and detected command. Installed means
-    # `command -v` finds it on PATH from qa_dir (a word may also be
-    # ./<first> there). Where it resolves is not checked, and this is not a
-    # sandbox: `npm test` runs scripts.test, pytest imports conftest.py and
-    # cargo runs build.rs, so a suite always runs branch code; a project
-    # `.venv/bin/pytest` on PATH is used as it is. `./` keeps a relative `-`
-    # from meaning $OLDPWD. No timeout: a suite is never cut off mid-run.
+    # Probe from qa_dir in the same clean environment used for execution.
+    # Branch scripts/build.rs remain trusted; no timeout or executable-location restriction.
     case "$dir" in /*) ;; *) dir="./$dir" ;; esac
-    if ! ( cd -- "$dir" 2>/dev/null && { command -v -- "$first" >/dev/null 2>&1 \
+    if ! ( cd -- "$dir" 2>/dev/null && { qa_child command -v -- "$first" >/dev/null 2>&1 \
            || { [ "$kind" = "word" ] && [ -x "./${first}" ]; }; } ); then
       S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed"
       continue
     fi
     # shellcheck disable=SC2086
-    ( set -f; cd -- "$dir" && $text ) >>"$LOG" 2>&1 </dev/null
+    ( set -f; cd -- "$dir" && qa_child $text ) >>"$LOG" 2>&1 </dev/null
     rc=$?
   fi
   RAN=$((RAN + 1))
@@ -211,10 +224,7 @@ TAIL="$(tail -n 5 "$LOG" | san | ascii | cut -c1-300)"
 tail -n 60 "$LOG" >&2 || true
 rm -f "$LOG"
 # --- the scenario directory ------------------------------------------
-# Searched only where gadugi is required. AUTODRIVE_QA_SCENARIO_DIR comes
-# from the environment only. Without it the directory is the first of
-# tests/agentic, tests/gadugi/scenarios and scenarios that exists, else
-# tests/agentic. An override naming a missing directory means no scenarios.
+# Resolve scenarios only when required; Rust parity fixtures are informational.
 COUNT=0; SCEN=""; FILES=(); SYMLINKED=""; NONREG=""; SYMCOUNT=0; ODD=(); SDIR=""; SREL=""
 if [ "$GREQ" = "true" ]; then
   SDIR_IN="${AUTODRIVE_QA_SCENARIO_DIR:-}"
@@ -251,48 +261,37 @@ if [ -n "$SDIR" ] && [ -d "$SDIR" ]; then
 fi
 
 # --- gadugi-test -----------------------------------------------------
-RES="$(mktemp "${TMPDIR:-/tmp}/autodrive-results.XXXXXX" 2>/dev/null)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
-# Where gadugi is not required, gadugi-test is never called, installed or
-# not, and gadugi_status is NOT_REQUIRED. Elsewhere a missing gadugi-test
-# stops every gadugi check, and a failed validate stops every run; once
-# validate passes, every scenario runs. Its own per-command default limit
-# applies; nothing here adds one.
+RES="$(mktemp "$QA_TMP/autodrive-results.XXXXXX" 2>/dev/null)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
+# Missing gadugi stops its checks; failed validate stops runs. No extra time limit.
 G_STATUS=""; G_VRC=""; G_RRC=""; RUN_NZ=""; VALIDATED=0; RUNS=0; PASSED=0; FAILED=0
 UNNAMED=""; RUNFAIL=""; STAGEFAIL=""; SYMFAIL=""
 if [ "$GREQ" = "false" ]; then
   G_STATUS="NOT_REQUIRED"
   echo "INFO: gadugi-test is not part of criterion 1 in a ${KIND} repository (qa-team's repo-type table); AUTODRIVE_QA_SCENARIO_DIR asks for it" >&2
-elif ! command -v gadugi-test >/dev/null 2>&1; then
+elif ! qa_child command -v gadugi-test >/dev/null 2>&1; then
   G_STATUS="NOT_INSTALLED"; cause "gadugi-test not installed"
 elif [ "$COUNT" = "0" ]; then
   # gadugi-test run exits 0 on an empty directory, so zero is checked here.
   G_STATUS="NO_SCENARIOS"; cause "no scenarios in $(printf '%s' "$SREL" | san)"
 else
-  GLOG="$(mktemp -t autodrive-gadugi-XXXXXX)" || { echo "ERROR: cannot create a temporary log" >&2; rm -f -- "$RES"; exit 1; }
+  GLOG="$(mktemp "$QA_TMP/autodrive-gadugi-XXXXXX")" || { echo "ERROR: cannot create a temporary log" >&2; rm -f -- "$RES"; exit 1; }
   # gadugi-test writes logs/ and outputs/ into its working directory. Only
   # the ones this step creates are removed afterwards, so the artifact
   # guard does not block the next commit on this run's leftovers.
   NEW_DIRS=""
   for d in logs outputs; do [ -e "$d" ] || [ -L "$d" ] || NEW_DIRS="${NEW_DIRS} ${d}"; done
-  gadugi-test validate -d "$SDIR" >"$GLOG" 2>&1 </dev/null
+  qa_child gadugi-test validate -d "$SDIR" >"$GLOG" 2>&1 </dev/null
   G_VRC=$?
   if [ "$G_VRC" -ne 0 ]; then
     G_STATUS="VALIDATE_FAILED"; cause "gadugi-test validation failure"
     for f in ${FILES[@]+"${FILES[@]}"}; do res "$f" INVALID; done
   else
     VALIDATED="$COUNT"
-    # One gadugi-test process per scenario file: concurrent scenarios in
-    # one directory share one CLI runner, and the first to finish kills
-    # the others' processes (gadugi-agentic-test #207). --scenario
-    # matches a substring of the scenario's name:, not a path, so each
-    # file is copied ALONE into its own temporary directory outside the
-    # repository and run from there, and the match cannot pick up a
-    # second scenario. There is no fallback to running $SDIR itself.
-    # An explicit template: macOS `mktemp -d` alone ignores TMPDIR.
-    STAGE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/autodrive-gadugi.XXXXXX" 2>/dev/null)" || STAGE_ROOT=""
+    # Each scenario runs alone: shared CLI runners kill concurrent siblings (#207).
+    # Stage only outside the checkout, beneath this invocation's scratch.
+    STAGE_ROOT="$(mktemp -d "$QA_TMP/autodrive-gadugi.XXXXXX" 2>/dev/null)" || STAGE_ROOT=""
     STAGE_OK="false"
     if [ -n "$STAGE_ROOT" ] && [ -d "$STAGE_ROOT" ]; then
-      trap '[ -n "${STAGE_ROOT:-}" ] && [ -d "$STAGE_ROOT" ] && rm -rf -- "$STAGE_ROOT"' EXIT
       case "$(cd -- "$STAGE_ROOT" && pwd -P)/" in
         "${ROOT}/"*) echo "WARNING: the temporary directory is inside the repository; no scenario is staged there." >&2 ;;
         *) STAGE_OK="true" ;;
@@ -301,7 +300,7 @@ else
     for f in ${FILES[@]+"${FILES[@]}"}; do
       rel="${SREL}/${f##*/}"
       # The scenario's name, from autodrive_scenario_name.sh beside this file.
-      name="$(bash "$H/autodrive_scenario_name.sh" "$f" 2>/dev/null)" || name=""
+      name="$(qa_child bash "$H/autodrive_scenario_name.sh" "$f" 2>/dev/null)" || name=""
       # A name gadugi-test could read as an option, or one carrying a
       # control byte, or one over 200 bytes, is no name: the file fails.
       ok="true"
@@ -317,7 +316,7 @@ else
       if [ -z "$stage" ]; then
         STAGEFAIL="${STAGEFAIL}${STAGEFAIL:+ }${rel}"; FAILED=$((FAILED + 1)); res "$f" FAIL; continue
       fi
-      (cd -- "$ROOT" && gadugi-test run -d "$stage" --scenario "$name") >>"$GLOG" 2>&1 </dev/null
+      (cd -- "$ROOT" && qa_child gadugi-test run -d "$stage" --scenario "$name") >>"$GLOG" 2>&1 </dev/null
       rrc=$?
       RUNS=$((RUNS + 1))
       if [ "$rrc" -eq 0 ]; then PASSED=$((PASSED + 1)); res "$f" PASS
@@ -334,7 +333,6 @@ else
   echo "INFO: gadugi-test on ${SREL} (${COUNT} scenario(s), ${RUNS} run, ${PASSED} passed): ${G_STATUS}" >&2
   tail -n 60 "$GLOG" >&2 || true
   rm -f "$GLOG"
-  for d in $NEW_DIRS; do [ -d "$d" ] && [ ! -L "$d" ] && rm -rf -- "./${d}"; done
 fi
 [ -n "$SYMLINKED" ] && cause "symlinked scenario not run: ${SYMLINKED}"
 [ -n "$NONREG" ] && cause "non-regular scenario entry not run: ${NONREG}"
@@ -395,6 +393,8 @@ OUT="$(printf "$F" \
   "$VALIDATED" "$RUNS" "$PASSED" "$FAILED" \
   "$(printf '%s' "${UNNAMED} ${STAGEFAIL} ${RUNFAIL} ${SYMFAIL}" | san | tr -s ' ' | sed 's/^ //; s/ $//')" \
   "$(printf '%s' "$RESULTS" | san)")"
+# Cleanup must succeed before publishing fresh evidence, even for failing commands.
+qa_cleanup || { echo "ERROR: cannot clean QA scratch" >&2; exit 1; }
 # Private to this user (#1517 D5), and never written through a planted symlink.
 [ -z "$EVIDENCE" ] || ( umask 077; rm -f -- "$EVIDENCE"; printf '%s' "$OUT" > "$EVIDENCE" )
 printf '%s\n' "$OUT"
