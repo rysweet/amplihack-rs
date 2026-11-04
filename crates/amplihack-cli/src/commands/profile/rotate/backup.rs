@@ -80,6 +80,15 @@ pub fn fresh_backup(rejected: &Path, m: &ProfileName, t: i64) -> Result<PathBuf,
     Err(BackupRefusal::NoFreeName)
 }
 
+/// Removes a backup directory that [`fresh_backup`] made and a refused move
+/// left unused. `remove_dir` removes only an empty directory, so this never
+/// removes a login; one that is not empty is kept, with a warning.
+pub fn discard_empty(dir: &Path) {
+    if let Err(e) = std::fs::remove_dir(dir) {
+        eprintln!("warning: {} was not removed: {e}", dir.display());
+    }
+}
+
 /// `.rejected-logins`, created `0700` when missing; one that exists must be
 /// a real directory owned by this user with no access for anyone else, as
 /// `profile login` requires.

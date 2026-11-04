@@ -21,12 +21,12 @@
 //! exist on `main`, and fail there. (b), (c), (d2) and (e1) to (e3) are guards
 //! and pass on `main`.
 
-use super::cycle::{Ctx, CycleOutcome, MeasureFn, Mode, run_cycle};
-use super::decide::Probed;
-use super::observe::{Measurement, Snap, decide_measured};
-use super::tests_issue_1870::{exh, rd};
-use super::tests_revalidate_cause::{ctx_with, log_of, probes_for};
-use super::tests_swap::{Env, env, ino_at};
+use super::super::cycle::{Ctx, CycleOutcome, MeasureFn, Mode, run_cycle};
+use super::super::decide::Probed;
+use super::super::observe::{Measurement, Snap, decide_measured};
+use super::super::tests_issue_1870::{exh, rd};
+use super::super::tests_revalidate_cause::{ctx_with, log_of, probes_for};
+use super::super::tests_swap::{Env, env, ino_at};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::now;
 use amplihack_utils::rotator_status::{CycleStatus, parse_cycle};

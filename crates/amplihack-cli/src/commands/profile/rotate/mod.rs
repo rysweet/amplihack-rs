@@ -9,11 +9,15 @@
 //! with `lstat` and moved with rename and exchange calls only.
 
 #[cfg(unix)]
+mod account;
+#[cfg(unix)]
+mod adopt;
+#[cfg(unix)]
 mod alert;
 #[cfg(unix)]
 mod autostart;
 #[cfg(unix)]
-mod backup;
+pub(super) mod backup;
 #[cfg(unix)]
 mod candidates;
 #[cfg(unix)]
@@ -22,6 +26,8 @@ mod capacity;
 pub(in crate::commands::profile) mod change_log;
 #[cfg(unix)]
 mod control;
+#[cfg(unix)]
+pub(super) mod cred_identity;
 #[cfg(unix)]
 mod cycle;
 #[cfg(unix)]
@@ -49,11 +55,11 @@ mod handfix;
 #[cfg(unix)]
 mod handfix_msg;
 #[cfg(unix)]
+mod handfix_plan;
+#[cfg(unix)]
 mod held;
 #[cfg(unix)]
 mod history;
-#[cfg(unix)]
-mod holders;
 #[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
@@ -123,8 +129,6 @@ mod tests;
 #[cfg(all(test, unix))]
 mod tests_autostart;
 #[cfg(all(test, unix))]
-mod tests_capacity;
-#[cfg(all(test, unix))]
 mod tests_daemon;
 #[cfg(all(test, unix))]
 mod tests_handfix;
@@ -151,7 +155,9 @@ mod tests_issue_1870_cycle;
 #[cfg(all(test, unix))]
 mod tests_issue_1870_probe;
 #[cfg(all(test, unix))]
-mod tests_issue_1907_cycle;
+mod tests_issue_1886;
+#[cfg(all(test, unix))]
+mod tests_issue_1886_cycle;
 #[cfg(all(test, unix))]
 mod tests_key_check;
 #[cfg(all(test, unix))]

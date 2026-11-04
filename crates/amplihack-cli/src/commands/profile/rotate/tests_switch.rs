@@ -30,9 +30,7 @@ use super::pin::{self, Gate, PinState};
 use super::settings;
 use super::swap::{DOCUMENTED, Source, swap};
 use super::switch::{Switched, release, switch_live};
-use super::tests_swap::{
-    CREDS, Env, LOCK, NOW, env, hold_state_lock, ino_at, json, login, n, private,
-};
+use super::tests_swap::{CREDS, Env, LOCK, NOW, env, hold_state_lock, ino_at, json, login, n};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::State;
 use crate::commands::profile::name::ProfileName;
@@ -363,20 +361,19 @@ fn an_inconsistent_journal_is_refused() {
 
 #[test]
 fn a_hand_changed_login_is_refused_without_an_alert() {
+    // Issue #1886: an open suspicion from the credential readings, not a
+    // `.claude.json` that names another account, makes the login hand-changed.
     let e = env();
     e.rs.save_ledger(&RotateLedger {
         live: Some("work".into()),
         account: Some("u-work".into()),
+        hand_suspect: Some(super::hand_fields::HandSuspect {
+            profile: "spare".into(),
+            first_seen: 1,
+        }),
         ..RotateLedger::default()
     })
     .unwrap();
-    private(
-        &e.home.join(".claude.json"),
-        &serde_json::json!({
-            "oauthAccount": {"accountUuid": "u-other", "emailAddress": "other@example.com"}
-        })
-        .to_string(),
-    );
     assert_refused(&e, "spare", "is not the one the ledger names (live=work)");
 }
 

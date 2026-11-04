@@ -4,6 +4,7 @@
 
 use super::alert::{alert, alert_key, refusal_kind};
 use super::capacity::Room;
+use super::cred_identity::{DEFAULT_READ, ReadFn};
 use super::decide::Decision;
 use super::dry_run::dry_run;
 use super::fresh::{self, Reread, RereadFn};
@@ -83,14 +84,10 @@ pub struct Ctx {
     pub(super) home_key: Option<&'static str>,
     /// Issue #1844: reads a watching rotator keeps across cycles. `None`
     /// makes each cycle wait for every read.
-    pub(super) in_flight: Option<
-        std::sync::Mutex<
-            super::inflight::InFlight<
-                super::measure::Key,
-                crate::commands::profile::usage_cmd::Probe,
-            >,
-        >,
-    >,
+    pub(super) in_flight: Option<std::sync::Mutex<super::measure::Reads>>,
+    /// Issue #1886: reads a login's credential identity for hand-change
+    /// recovery; `cred_identity::DEFAULT_READ` until a test sets its own.
+    pub(super) identity: ReadFn,
 }
 
 impl Ctx {
@@ -114,6 +111,7 @@ impl Ctx {
             key_check: key_check::reachable,
             home_key: None,
             in_flight: None,
+            identity: DEFAULT_READ,
         }
     }
 

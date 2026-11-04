@@ -15,10 +15,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use super::alert::valid_alerts;
-pub use super::hand_fields::{
-    HOME_UNREADABLE_GRACE, MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES, MAX_LOST_LOGIN, unprintable,
-};
-use super::hand_fields::{valid_guidance, valid_lost_login};
+pub use super::hand_fields::{HandSuspect, MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES, unprintable};
+use super::hand_fields::{valid_guidance, valid_hand_suspect, valid_lost_login, valid_name};
 pub use super::older_readers::for_older_readers;
 use super::plan_room::no_room::{self, NoRoom};
 #[cfg(test)]
@@ -131,15 +129,15 @@ pub struct RotateLedger {
     /// Overflow profiles blocked by a spend limit, by profile name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overflow_blocked: BTreeMap<String, OverflowBlock>,
-    /// The current hand-change ALERT and `fix` lines (issue #1693), written
-    /// every cycle while `~/.claude` holds another account than `account`.
+    /// The current hand-change note, or ALERT and `fix` lines (#1693, #1886).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guidance: Option<Vec<String>>,
-    /// When a cycle first found `~/.claude.json` with no account that can be
-    /// read, while a login is in `~/.claude` and the ledger names a live
-    /// profile; cleared by the first cycle that reads an account there (or
-    /// finds no login). Once it is [`HOME_UNREADABLE_GRACE`] old the
-    /// `home-unreadable` ALERT gets real `fix` lines (#1702 review).
+    /// The open hand-change suspicion (issue #1886); no reading, no account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hand_suspect: Option<HandSuspect>,
+    /// When `~/.claude.json` was first found with no readable account under a
+    /// ledger-named live profile; after [`HOME_UNREADABLE_GRACE`] the
+    /// `home-unreadable` ALERT gets `fix` lines (#1702 review).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_unreadable_since: Option<i64>,
     /// Profiles recorded as live that lost their login to a manual `/login`.
@@ -177,6 +175,7 @@ impl Default for RotateLedger {
             last_cycle: None,
             overflow_blocked: BTreeMap::new(),
             guidance: None,
+            hand_suspect: None,
             home_unreadable_since: None,
             lost_login: Vec::new(),
             live_kind: None,
@@ -267,10 +266,6 @@ pub fn safe_account(v: &str) -> bool {
     !v.is_empty() && v.len() <= MAX_ACCOUNT && !v.chars().any(char::is_control)
 }
 
-fn valid_name(v: Option<&str>) -> bool {
-    v.is_none_or(|n| ProfileName::parse(n).is_ok())
-}
-
 impl RotateState {
     /// `root` is canonicalised when it exists.
     pub fn new(root: &Path) -> Self {
@@ -337,10 +332,11 @@ impl RotateState {
         if !no_room::valid(l.no_room.as_ref()) {
             return Err(inconsistent(format!("{WHAT}: invalid no_room")));
         }
-        if !valid_guidance(l.guidance.as_deref()) || !valid_lost_login(&l.lost_login) {
-            return Err(inconsistent(format!(
-                "{WHAT}: invalid guidance or lost_login"
-            )));
+        if !valid_guidance(l.guidance.as_deref())
+            || !valid_lost_login(&l.lost_login)
+            || !valid_hand_suspect(l.hand_suspect.as_ref())
+        {
+            return Err(inconsistent(format!("{WHAT}: invalid hand-change field")));
         }
         l.swapped_away = super::swap_back::valid(std::mem::take(&mut l.swapped_away), now());
         Ok(Some(l))

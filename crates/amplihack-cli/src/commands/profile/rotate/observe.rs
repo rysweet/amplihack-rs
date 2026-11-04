@@ -351,10 +351,11 @@ pub(super) fn decide_measured(
         (_, tag) => tag,
     };
     let others = probes.iter().map(|(n, p)| (n.clone(), p.reading)).collect();
+    // `probed` is always `Some` here: `Room::of` treats `None` (test stubs
+    // only) as clean.
     Ok(Measurement {
         live: probe.reading,
         others,
-        // Always `Some` here: `Room::of` treats `None` (test stubs only) as clean.
         probed: Some((probe, probes)),
         decision,
         note,

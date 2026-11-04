@@ -116,3 +116,10 @@ fn below_100(r: &Reading) -> bool {
         Reading::Exhausted { .. } | Reading::Failed => false,
     }
 }
+
+#[cfg(test)]
+#[path = "tests_capacity.rs"]
+mod tests_capacity;
+#[cfg(test)]
+#[path = "tests_issue_1907_cycle.rs"]
+mod tests_issue_1907_cycle;

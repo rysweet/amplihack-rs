@@ -152,23 +152,24 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     println!("log: {}", rs.log.display());
 }
 
-/// The `alert:` lines of the ledger's hand-change guidance, then a
-/// `warning:` line for each profile in `lost_login` (issue #1693). Shows
+/// The ledger's hand-change guidance as `note:` or `alert:` lines, then a
+/// `warning:` line for each profile in `lost_login` (#1693, #1886). Shows
 /// what the last cycle decided; compares no accounts.
 pub fn status_alerts(l: &RotateLedger) -> Vec<String> {
-    let alerts = l.guidance.iter().flatten().map(|g| {
-        let text = g.strip_prefix("ALERT: ").unwrap_or(g);
-        format!("alert: {}", sanitize_display(text, false))
-    });
-    let warnings = l
+    let line = |kind: &str, text: &str| format!("{kind}: {}", sanitize_display(text, false));
+    let alerts = l
+        .guidance
+        .iter()
+        .flatten()
+        .map(|g| match g.strip_prefix("note: ") {
+            Some(note) => line("note", note),
+            None => line("alert", g.strip_prefix("ALERT: ").unwrap_or(g)),
+        });
+    let lost = l
         .lost_login
         .iter()
-        .filter_map(|n| ProfileName::parse(n).ok())
-        .map(|n| {
-            let line = msg::lost_login(&n);
-            let text = line.strip_prefix("ALERT: ").unwrap_or(&line);
-            format!("warning: {}", sanitize_display(text, false))
-        });
+        .filter_map(|n| ProfileName::parse(n).ok());
+    let warnings = lost.map(|n| line("warning", msg::lost_login(&n).trim_start_matches("ALERT: ")));
     alerts.chain(warnings).collect()
 }
 

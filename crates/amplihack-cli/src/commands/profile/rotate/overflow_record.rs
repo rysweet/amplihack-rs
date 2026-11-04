@@ -256,8 +256,9 @@ pub fn record(
     rs.save_ledger(l)
 }
 
-/// Records a known live profile and its account, so `profile usage` and the
-/// next cycle read it from the ledger. An API-key profile (issue #1700) is
+/// Records a known live profile and, when it changes or none is recorded,
+/// its account, so `profile usage` and the next cycle read it from the
+/// ledger. An API-key profile (issue #1700) is
 /// recorded with `live_kind` and no account: `$HOME/.claude.json` may still
 /// hold the previous login's account, which is not this login's.
 pub fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
@@ -271,11 +272,18 @@ pub fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
     } else {
         return;
     };
-    if l.live.as_deref() != Some(n.as_str()) {
+    let same = l.live.as_deref() == Some(n.as_str());
+    if !same {
         l.live = Some(n.to_string());
         l.since = Some(t);
     }
-    l.account = account;
+    // Issue #1886: for the same live profile the account the swap recorded
+    // stays. Running sessions can write the previous account into
+    // `~/.claude.json` for minutes after a swap, and the account is shown,
+    // never used to decide whose login `~/.claude` holds.
+    if !same || l.account.is_none() || account.is_none() {
+        l.account = account;
+    }
     l.live_kind = snap.platform_live().then(|| LIVE_KIND_PLATFORM.to_string());
 }
 
