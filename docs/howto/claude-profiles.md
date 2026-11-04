@@ -105,8 +105,8 @@ cat ~/.amplihack/claude-profiles/work/settings.json
 # {"env": {"BASH_DEFAULT_TIMEOUT_MS": "120000", "XPIA_ENABLED": "false"}, "model": "opus"}
 ```
 
-A profile that already has `env.XPIA_ENABLED` is not touched; its file stays
-byte-identical. To give a profile a different value, set it in that
+The backfill does not touch the `env` block of a profile that already has
+`env.XPIA_ENABLED`. To give a profile a different value, set it in that
 profile's `settings.json`. amplihack never replaces it.
 
 To fill in every existing profile at once:
@@ -116,6 +116,10 @@ amplihack profile auto-switch repair
 # env: work updated
 # env: personal updated
 ```
+
+`repair` also installs the status line, so it may add or update `statusLine`
+in a profile's `settings.json`, including one whose `env` it leaves alone.
+That file is then not byte-identical to before, but its `env` block is.
 
 #### Use a template instead of `~/.claude/settings.json`
 
@@ -133,8 +137,8 @@ amplihack config set profile.settings_template "$HOME/.amplihack/profile-setting
 
 The path must be absolute. The file must belong to you (or root) and must not
 be writable by group or others. When a template is set, it replaces
-`~/.claude/settings.json` as the source for `profile add`, login, switch and
-repair: a new profile gets the template's `env` and none of the `env` in
+`~/.claude/settings.json` as the source for `profile add`, login, switch,
+repair and profile launches: a new profile gets the template's `env` and none of the `env` in
 `~/.claude`. If the template is missing, unreadable, not valid JSON or not
 safe, amplihack warns and copies no `env` at all; it does not fall back to
 `~/.claude`. Fix the
@@ -180,7 +184,7 @@ template path that names either file is refused.
 If every login or switch prints `file is writable by group or others`, the
 source was created under a umask of `0002` (the Ubuntu default), which makes
 new files group-writable. Run the `chmod 600` from the warning once; the
-next `login`, `switch` or `auto-switch repair` copies the `env`.
+next launch, `login`, `switch` or `auto-switch repair` copies the `env`.
 
 #### Keep `~/.claude/settings.json` a regular, private file
 
@@ -208,7 +212,8 @@ Caveats:
 - **Copy by value.** The allowlisted assets are copies, not links. Later
   edits to `~/.claude` do not propagate to existing profiles; re-add the
   profile to pick them up. The only links are the three session directories.
-  The exception is `env`: add, login, switch and repair add missing keys while
+  The exception is `env`: add, login, switch, repair and every profile launch
+  add missing keys while
   the profile lacks `env.XPIA_ENABLED` (see
   [Environment settings follow you into every profile](#environment-settings-follow-you-into-every-profile)).
 - **Allowlisted setting values are copied verbatim.** Review hooks and

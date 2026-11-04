@@ -40,7 +40,7 @@ pub(super) fn warning(name: &str, path: &Path, reason: &str) -> String {
     )
 }
 
-/// Add, login, switch, repair and rotator adoption: adds the missing source
+/// Add, login, switch, profile launches and rotator adoption: adds the missing source
 /// `env` keys to `name`'s `settings.json`, creating it when missing. The
 /// source is `profile.settings_template` when set, else the shared
 /// `settings.json`. Runs only when the profile has

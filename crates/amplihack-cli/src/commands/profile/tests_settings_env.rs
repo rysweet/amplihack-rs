@@ -9,7 +9,7 @@
 //!   non-object profile `env` are left alone.
 //! - `warning(name, path, reason)` and `key_warning(name, key, path, reason)`:
 //!   the two fixed warning forms; never an env value.
-//! - `ensure_for(store, name, home)` (add, login, switch, adoption) and
+//! - `ensure_for(store, name, home)` (add, login, switch, launch, adoption) and
 //!   `ensure_all(store, home)` (repair) return [`Outcome`]: a [`Refresh`]
 //!   plus the warnings. `Skipped` has exactly one warning, `Unchanged` none.
 //!   `env` is not seeded by `store.add`, so a new profile gets it only here.

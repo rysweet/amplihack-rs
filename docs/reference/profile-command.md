@@ -47,7 +47,7 @@ amplihack launch|claude --profile <name> [...]
 | `root [<dir>]` | Print the profile root in use and where it came from, or save `<dir>` as the root. See [Profile root](#profile-root). |
 | `list` | First line `root: <path> (source: env\|config\|default)`; see [Profile root](#profile-root). Then one profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
-| `switch <name>` | Moves the profile's login into `~/.claude` with the rotator's [swap](#rotate-swap), under the rotator's lock, then pins rotation to it, writes the default pointer and records the switch in the rotate ledger, so sessions stopped on a usage limit before it are resumed. The profile must exist. Then checks the [shared session links](#shared-session-directories) of both profiles in the swap; messages go to stderr. When the live login cannot be moved (any system but Linux, a profile open in a session, no login in `~/.claude`, ...), it still writes the default pointer, holds nothing and exits 1. After a successful move it adds missing `env` keys to the profile's `settings.json`; a refused switch leaves that file unchanged. See [Environment inheritance](#environment-inheritance) and [Rotate switch](#rotate-switch). |
+| `switch <name>` | Moves the profile's login into `~/.claude` with the rotator's [swap](#rotate-swap), under the rotator's lock, then pins rotation to it, writes the default pointer and records the switch in the rotate ledger, so sessions stopped on a usage limit before it are resumed. The profile must exist. Then checks the [shared session links](#shared-session-directories) of both profiles in the swap; messages go to stderr. When the live login cannot be moved (any system but Linux, a profile open in a session, no login in `~/.claude`, ...), it still writes the default pointer, holds nothing and exits 1. Before the move, whether or not the move then succeeds, it adds missing `env` keys to the profile's `settings.json`. See [Environment inheritance](#environment-inheritance) and [Rotate switch](#rotate-switch). |
 | `switch --none` | Removes the default pointer and the [rotation pin](#rotate-pin). Prints `Default profile cleared.`, or `No default profile was set.` when there was none, plus `Rotation released; the rotator picks the best login on its next cycle.` when a pin was removed; exits 0 either way. Moves no login. Conflicts with a name; `switch` with neither is a usage error. See [Clearing the default](#clearing-the-default). |
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
 | `login <name>` | Checks the profile's [shared session links](#shared-session-directories) and adds missing `env` keys to its `settings.json` (see [Environment inheritance](#environment-inheritance)), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
@@ -2793,27 +2793,31 @@ runs, the merge is per key inside `env`:
 |---------|--------------|
 | `add <name>` | After seeding, which copies no `env`. The new profile's `env` is the source's: the template's when one is set, else that of `~/.claude/settings.json`. A source that fails a check leaves the profile with no `env` and one warning; `add` still succeeds. |
 | `login <name>` | After the [shared session links](#shared-session-directories) are checked, before `claude` starts. |
-| `switch <name>` | After the login is moved into `~/.claude`. A refused switch, including one that only writes the default pointer, does not run it, so the target's `settings.json` is unchanged. `switch --none` does not run it. |
+| `switch <name>` | After the name and kind checks, before the login is moved into `~/.claude`, so it runs whether or not the move succeeds. A switch that only writes the default pointer makes the profile folder itself the one new launches use, so its `env` must be in place then too. `switch --none` does not run it. |
 | `auto-switch repair` | For every profile in the root, after the status-line install. Prints `env: <name> updated` for each profile it changed and a warning for each one it skipped. If the profile root cannot be listed, prints one warning, `profile (all): env not inherited from <root>: <reason>`. |
+| Launch with a profile | In the [pre-spawn check](#pre-spawn-check), after the shared session links, while the launch hold is held. Covers `--profile`, an inherited `AMPLIHACK_CLAUDE_PROFILE`, the default pointer, `profile run` and usage-limit reruns. A launch redirected to `~/.claude` (the live profile) does not run it. A failure only warns; the launch goes on. |
 | rotator adoption | When the rotator [adopts](#rotate-swap) a login into a new profile, after the profile is created. A failure only warns; the rotation goes on. |
 
-Read-only commands (`list`, `show`, `usage`, `auto-switch status`, …) and
-`run`/launch never run it.
+Read-only commands (`list`, `show`, `usage`, `auto-switch status`, …) never
+run it.
 
 **XPIA gate.** The backfill runs only when the profile's `settings.json` is
 missing or has no `env.XPIA_ENABLED`. It then adds every source key the
 profile lacks. When `env.XPIA_ENABLED` is present the result is `Unchanged`:
-neither the source nor the template is opened, nothing is written, and the
-file stays byte-identical. A profile just made by `add` has no `env`, so the
-gate never stops the backfill there.
+neither the source nor the template is opened and the backfill writes
+nothing, so the backfill alone leaves the file byte-identical. `auto-switch
+repair` also runs the status-line install, which may add or update
+`statusLine` in the same file; after `repair` only the `env` block is
+guaranteed unchanged. A profile just made by `add` has no `env`, so the gate
+never stops the backfill there.
 
 A profile without its own `env.XPIA_ENABLED` therefore takes the source's
 value, including `false`, which turns XPIA off in that profile. To keep XPIA
 on in one profile, set `"XPIA_ENABLED": "true"` in its `env`; the gate then
 leaves it alone.
 
-**One path for `env`.** `add`, `login`, `switch`, `repair` and rotator
-adoption all copy `env` through this backfill, with the same ownership,
+**One path for `env`.** `add`, `login`, `switch`, `repair`, profile launches
+and rotator adoption all copy `env` through this backfill, with the same ownership,
 mode, key and value checks. No other code writes a profile's `env`.
 
 **Unix only.** On Windows and other non-Unix platforms no command copies
@@ -3534,7 +3538,9 @@ not inspected. Only the profile directory is checked, not its parents.
 If the check fails, run `chmod go-rwx <profile-directory>` on Unix.
 Any failure aborts the launch. Once the check passes, the profile's
 [shared session links](#shared-session-directories) are checked and fixed
-while the launch hold is held; that step never aborts the launch.
+and missing `env` keys are added (see
+[Environment inheritance](#environment-inheritance)) while the launch hold
+is held; neither step aborts the launch.
 This check applies only to profile launches;
 Claude and Copilot launches without a profile are unchanged.
 Ownership and group/other mode-bit checks are available on Unix. On other

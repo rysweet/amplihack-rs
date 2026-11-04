@@ -275,7 +275,7 @@ fn repair_backfills_a_profile_missing_env_and_keeps_its_own_keys() {
 }
 
 #[test]
-fn repair_leaves_a_profile_with_xpia_byte_identical() {
+fn repair_leaves_the_env_of_a_profile_with_xpia_alone() {
     let f = Fixture::new();
     f.ok(&["profile", "add", "work"]);
     let body = "{\"env\":{\"XPIA_ENABLED\":\"true\"},\"language\":\"de\"}";
@@ -284,9 +284,17 @@ fn repair_leaves_a_profile_with_xpia_byte_identical() {
 
     let out = f.ok(&["profile", "auto-switch", "repair"]);
     assert!(!text(&out.stdout).contains("env: work updated"));
-    // statusline::install may touch statusLine; the env block must not move.
-    let after = f.settings("work");
+    // The env backfill leaves this file alone, but `repair` also runs
+    // statusline::install, which may add `statusLine` and rewrite the file.
+    // So the file is not byte-identical after `repair`; only `env` and the
+    // keys other than `statusLine` are guaranteed to be unchanged.
+    let mut after = f.settings("work");
     assert_eq!(after["env"], json!({"XPIA_ENABLED": "true"}));
+    after.as_object_mut().unwrap().remove("statusLine");
+    assert_eq!(
+        after,
+        json!({"env": {"XPIA_ENABLED": "true"}, "language": "de"})
+    );
 }
 
 #[test]
@@ -331,7 +339,41 @@ fn login_creates_a_missing_settings_file_with_only_env() {
     assert_eq!(mode & 0o777, 0o600);
 }
 
-/// `profile switch` runs the backfill only after the switch succeeds. These
+/// A launch with a profile backfills `env` in the pre-spawn check, so a
+/// profile nobody ran login, switch or repair on still gets `XPIA_ENABLED`.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_profile_launch_backfills_env_before_claude_starts() {
+    let f = Fixture::new();
+    f.ok(&["profile", "add", "work"]);
+    f.strip_env("work");
+    let mut s = f.settings("work");
+    s["language"] = json!("de");
+    fs::write(f.settings_path("work"), s.to_string()).unwrap();
+    // The launch guard (issue #1700) refuses a profile without a login file.
+    let creds = f.root.join("work").join(".credentials.json");
+    fs::write(&creds, r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#).unwrap();
+    chmod(&creds, 0o600);
+
+    f.ok(&[
+        "claude",
+        "--profile",
+        "work",
+        "--subprocess-safe",
+        "--",
+        "-p",
+        "x",
+    ]);
+    let after = f.settings("work");
+    assert_eq!(after["env"], expected_env());
+    assert_eq!(
+        after["language"],
+        json!("de"),
+        "the profile's own key was lost"
+    );
+}
+
+/// `profile switch` runs the backfill before the move, whatever its outcome. These
 /// use the rotator fixture (#1691): `work` is live in `~/.claude`, `spare`
 /// and `extra` hold their own logins, all under a temporary HOME. Linux-only,
 /// as the swap needs `renameat2(RENAME_EXCHANGE)`.
@@ -385,15 +427,37 @@ mod switch {
         assert_eq!(s["language"], json!("de"));
     }
 
+    /// A swap refused as `DefaultOnly` still makes the target the default for
+    /// new launches, which then run in the target's own folder, so the target
+    /// must gain `XPIA_ENABLED` even though the switch exits 1.
     #[test]
-    fn a_refused_switch_leaves_the_target_settings_unchanged() {
+    fn a_refused_switch_still_backfills_the_new_default() {
         let f = setup();
         // Claude holds its refresh lock in ~/.claude: the swap refuses.
         fs::create_dir(f.home.join(".claude").join(".oauth_refresh.lock")).unwrap();
         let before = snapshot(&f);
         let out = f.run(&["profile", "switch", "spare"]);
         assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
-        assert_eq!(snapshot(&f), before, "a refused switch wrote settings.json");
+        assert!(
+            text(&out.stdout).contains("Default for new launches: spare"),
+            "stdout: {}\nstderr: {}",
+            text(&out.stdout),
+            text(&out.stderr)
+        );
+        let s: Value =
+            serde_json::from_str(&fs::read_to_string(settings_path(&f, "spare")).unwrap()).unwrap();
+        assert_eq!(
+            s["env"],
+            json!({"FOO": "mine", "XPIA_ENABLED": "false", "BAR": "2"})
+        );
+        assert_eq!(s["language"], json!("de"));
+        // Only the target's file changed.
+        let after = snapshot(&f);
+        for (i, p) in PROFILES.iter().enumerate() {
+            if *p != "spare" {
+                assert_eq!(after[i], before[i], "{p}'s settings.json changed");
+            }
+        }
     }
 
     #[test]
