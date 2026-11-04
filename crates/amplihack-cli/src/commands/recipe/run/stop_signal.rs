@@ -48,6 +48,12 @@ pub(crate) fn pending() -> Option<i32> {
     pending_in(received())
 }
 
+/// The authenticated Darwin control endpoint requests normal cancellation.
+#[cfg(target_os = "macos")]
+pub(crate) fn request() {
+    received().store(libc::SIGTERM as usize, Ordering::SeqCst);
+}
+
 fn pending_in(flag: &AtomicUsize) -> Option<i32> {
     match flag.load(Ordering::SeqCst) {
         0 => None,

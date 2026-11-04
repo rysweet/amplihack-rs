@@ -603,7 +603,7 @@ pub enum RecipeCommands {
         governor: crate::commands::governor::GovernorArgs,
     },
     /// Stop a recipe run and its whole process tree: a tmux session started
-    /// by `recipe run --detach`, or a run id from its log pointer
+    /// by `recipe run --detach`, or a run id from its log pointer (Linux/macOS)
     Stop {
         /// tmux session name or run id
         target: String,
