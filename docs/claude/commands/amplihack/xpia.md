@@ -163,9 +163,8 @@ above, to see the warning.
 
 `amplihack install` installs the `amplihack-hooks` binary and registers its
 `pre-tool-use` subcommand in `~/.claude/settings.json`. Run it again if the
-binary or the hook entry is missing. Do not use `install_with_xpia.sh`: it
-is a legacy script that calls `amplihack hooks merge` and
-`amplihack xpia health-check`, and neither subcommand exists.
+binary or the hook entry is missing. The old `install_with_xpia.sh` script
+was removed (#1920) because it could not complete an install.
 
 ## Configuration
 
