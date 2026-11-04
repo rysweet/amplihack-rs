@@ -581,7 +581,7 @@ pub(super) fn execute_recipe_via_rust(
             env_builder.var("AMPLIHACK_HOME"),
             effective_path.as_deref(),
         ) {
-            Some(dir) => env_builder.prepend_path(dir),
+            Some(dir) => env_builder.prepend_path_first(dir),
             None => env_builder,
         };
 

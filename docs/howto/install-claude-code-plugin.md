@@ -1,9 +1,27 @@
+---
+title: Install amplihack as a Claude Code plugin
+description: Install the Claude Code plugin and run workflows when GitHub GraphQL is refused.
+type: howto
+updated: 2026-11-04
+---
+
 # Install amplihack as a Claude Code plugin
 
 The amplihack-rs repository is a Claude Code plugin and a one-plugin
 marketplace. You can install it from git into Claude Code in the terminal, the
 desktop app, or on the web (cloud sessions) without running `amplihack
 install` first.
+
+## Contents
+
+- [Install](#install)
+- [What you get](#what-you-get)
+- [The native runtime](#the-native-runtime)
+- [Relationship to `amplihack install`](#relationship-to-amplihack-install)
+- [Cloud workflow setup](#cloud-workflow-setup)
+- [Known limitations](#known-limitations)
+- [Update and uninstall](#update-and-uninstall)
+- [Validate changes](#validate-changes)
 
 ## Install
 
@@ -213,6 +231,205 @@ unprefixed (`dev-orchestrator`), and the plugin's copies appear as
 `amplihack:dev-orchestrator`. If you use the plugin, you do not need
 `amplihack install`.
 
+## Cloud workflow setup
+
+Install and authenticate the GitHub CLI (`gh`) for the target repository using
+the session's normal authentication mechanism. Make `jq` and GNU `timeout`
+available on the workflow's `PATH`. The compatibility layer uses `jq` for
+REST conversions. It does not read or print `GH_TOKEN`; the real `gh api`
+handles authentication and transport.
+
+The workflow requires a command named `timeout`: workflow preparation and
+the issue-tracking helper invoke it directly to bound issue lookup, creation
+and other provider calls. Perl is a fallback for the compatibility layer's
+GraphQL probe only. It does not replace these workflow calls, even when a
+cached probe answer or `AMPLIHACK_GH_REST_ONLY=1` avoids a new probe.
+
+macOS does not ship GNU `timeout`. With Homebrew, install `coreutils` using
+`brew install coreutils`, then expose its unprefixed commands in the shell or
+setup script that launches the workflow:
+
+```bash
+export PATH="$(brew --prefix coreutils)/libexec/gnubin:$PATH"
+timeout 5 sh -c 'printf "timeout is ready\n"'
+# Output: timeout is ready
+```
+
+Having only `gtimeout` on `PATH`, or defining an interactive shell alias, does
+not supply the executable named `timeout` that workflow subprocesses need.
+
+Run `default-workflow` from the repository after installing the runtime:
+
+```bash
+amplihack recipe run default-workflow \
+  -c repo_path=. \
+  -c task_description="Fix #1484: run default-workflow when GitHub GraphQL is refused"
+```
+
+The tracking step uses the selected issue, or finds or creates a tracker.
+On github.com, supported tracking and pull-request publishing operations use
+REST when the session refuses GraphQL. No separate workflow is required.
+The [recipe CLI reference](../reference/recipe-cli-reference.md) describes
+context flags and the runner's output.
+
+### Tracking selection
+
+Use `-c issue_number=1484` to select an existing issue explicitly. Selection
+precedes automatic title lookup and creation. Task references are checked
+against the same repository and must identify an open issue, not a pull
+request. An explicit issue that cannot be verified produces a warning and
+local tracking, preserving the explicit selection.
+
+With no selected issue, the workflow lists up to the newest 1,000 open issues
+and uses the first full-title match. It compares the complete sequence of
+Unicode letter and digit words, ignoring case. For example, `É` matches `é`;
+multi-character folds such as `ß` to `SS` are not guaranteed. Controls become
+spaces before both lookup and creation. A title with no words matches nothing.
+A warning reports when the list reaches the cap, since an older matching
+tracker may be omitted.
+
+A failed automatic lookup stops creation. Only recognised unavailable-host,
+missing-`gh` or unresolvable-repository failures permit the warned local-tracking
+fallback. Authentication errors, malformed output, missing `jq`, failed JSON
+conversion and unavailable probe bounds remain errors. A successful lookup
+with no match permits creation.
+
+To skip remote issue tracking while retaining GitHub pull-request publishing:
+
+```bash
+amplihack recipe run default-workflow \
+  -c repo_path=. \
+  -c task_description="Fix #1484: run default-workflow when GitHub GraphQL is refused" \
+  -c remote_host_type=github \
+  -c issue_tracking=local
+```
+
+The tracking step emits `tracking_system=local` and a local tracking reference.
+Publishing still requires an authenticated `gh` and access to the repository.
+Local tracking supplies no replacement publishing client when `gh` is absent.
+
+`remote_host_type=github|azdo|other` overrides provider detection from `origin`.
+Use `other` for local issue tracking on an unrecognised provider. This setting
+selects workflow provider behaviour; it does not change the hostname used by
+`gh` or enable GitHub publishing on another provider.
+
+### Compatibility scope and host selection
+
+Each Unix recipe run installs a private compatibility launcher when a real
+`gh` and the bundled adapter are available. Steps, helpers and child agents
+inherit it. A `gh` command outside that run keeps its normal behaviour.
+Help, `label create` and commands outside the adapted groups use the real
+CLI directly without a GraphQL probe.
+Merge authorisation checks run before any compatibility probe or translation.
+Compatibility settings, cached probe answers and `AMPLIHACK_REAL_GH` do not
+grant permission to merge.
+
+For calls that need GraphQL, the layer selects the host in this order: the
+final `-R/--repo` value when host-qualified, the final `--hostname` value, a
+host-qualified `GH_REPO`, a recognised positional repository/issue/PR URL,
+`GH_HOST`, then `origin`. An unqualified `OWNER/REPO` supplies no hostname.
+An explicit github.com at a higher tier takes precedence over lower tiers.
+URLs in titles, bodies, searches and jq expressions remain data.
+
+The viewer probe runs for at most ten seconds by default, with a two-second
+termination grace period. Ctrl-C interrupts it and prevents the requested
+operation from starting. If a fresh probe is required and neither GNU
+`timeout` nor Perl is available, the call fails before the probe or requested
+operation. A valid cached answer or explicit REST-only setting can avoid a
+new probe.
+
+| Probe result | Behaviour |
+| --- | --- |
+| GraphQL works | The real `gh` runs directly with its original input, output, signals and exit status. The operation is never replayed. |
+| GraphQL is refused | Supported calls use REST on github.com. A blocked enterprise host is refused before REST transport. |
+| The result is inconclusive | The real `gh` runs with stderr held and signals forwarded. If it then reports the GraphQL refusal, an eligible read can replay over REST. A write fails with a rerun hint and is never replayed automatically. |
+
+Before rerunning a failed write, check whether it already changed the remote
+object. A multi-part operation can succeed in part. Failed follow-up changes
+are reported; creation is not repeated to repair metadata. JSON conversion
+errors retain their failing exit status through cleanup and cannot become a
+successful empty result or trigger duplicate tracker creation.
+
+### Compatibility settings
+
+Set environment variables before starting the recipe. Probe answers are
+cached separately for each host in private state.
+
+| Variable | Default and use |
+| --- | --- |
+| `AMPLIHACK_GH_COMPAT` | Compatibility is enabled. Set `0` to disable it for the run; merge checks remain active. |
+| `AMPLIHACK_GH_REST_ONLY` | Unset. Set `1` to force the github.com REST path without probing. Host restrictions and merge checks still apply. |
+| `AMPLIHACK_GH_COMPAT_STATE_TTL_MIN` | `60` minutes for a blocked answer. Accepts a non-negative integer. |
+| `AMPLIHACK_GH_COMPAT_RECHECK_MIN` | `5` minutes for working or inconclusive answers. Accepts a non-negative integer. |
+| `AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT` | `10` seconds, plus two seconds of termination grace. Accepts a positive integer. |
+| `AMPLIHACK_GH_COMPAT_STATE` | Uses private state by default. Overrides its base path; `.ok` and `.unknown` identify other answers, with `@HOST` for hosts other than github.com. Use an owned private location. |
+| `AMPLIHACK_GH_COMPAT_LOG` | Defaults to `gh-compat.log` in `AMPLIHACK_WORKFLOW_ARTIFACT_DIR`, or `TMPDIR` when unset. Selects the transport-log destination. Use an owned private location. |
+| `AMPLIHACK_GH_COMPAT_VERBOSE` | Unset. Set `1` to echo the same restricted transport records to stderr. |
+| `AMPLIHACK_REAL_GH` | Selects the downstream executable. It must resolve to a terminal `gh`, not a compatibility or guard wrapper. |
+
+Invalid numeric values use their defaults. Compatibility logs contain only
+the method, endpoint path and HTTP or fixed exit status. They exclude query
+strings, bodies, titles, credentials and raw stderr, including on failures.
+Paths with sensitive data use route templates. Errors still reach the caller
+on stderr; a local error without a request creates no transport record.
+
+To use the real GitHub CLI without compatibility for a run:
+
+```bash
+AMPLIHACK_GH_COMPAT=0 amplihack recipe run default-workflow \
+  -c repo_path=. \
+  -c task_description="Fix #1484: run default-workflow when GitHub GraphQL is refused"
+```
+
+GraphQL-backed operations then depend on the session's own `gh` connectivity.
+
+### REST support and troubleshooting
+
+| Command group | Operations covered when GraphQL is refused |
+| --- | --- |
+| `gh pr` | `view`, `list`, `create`, `edit`, `comment`, `ready`, `merge`, `close`, `diff`, `checks`. |
+| `gh issue` | `view`, `list`, `create`, `comment`, `close`, `reopen`, `edit`. |
+| `gh label` | `list`; `create` uses the real CLI's REST implementation directly. |
+| `gh api graphql` | The exact viewer-login and viewer/repository-permission query shapes used by workflow preflight. Arbitrary queries and mutations fail. |
+| `gh auth status` | The real CLI's result, with a REST account check for the recognised GraphQL refusal on github.com when no hostname override is supplied. |
+
+Supported commands retain `gh` JSON field names, `--jq` output and create URLs.
+Unknown JSON fields and fields that REST cannot supply fail visibly. List
+commands page up to `--limit` (default 30), with bounded extra reads when
+filters discard entries. Per-PR sub-lists, including comments, reviews, files,
+commits and checks, read every page. `pr checks` exits `1` for a failed or
+cancelled check, `8` for pending checks and `0` for passed or skipped checks;
+transport or conversion failures take precedence.
+
+When a call fails, use the diagnostic to choose the remedy:
+
+- For `timeout: command not found`, make GNU `timeout` available under that
+  name on the workflow's `PATH`; see [cloud workflow setup](#cloud-workflow-setup).
+  Installing Perl alone does not satisfy this workflow prerequisite.
+- For an unsupported flag or field, remove it or use an environment with
+  GraphQL access. Projects, pinned-issue fields, `--template`, `--web`,
+  `pr create --dry-run` and `issue list --milestone` have no supported mapping.
+  `pr close --delete-branch`, `issue edit --add-assignee`, `pr merge --admin`
+  and custom GraphQL headers are also rejected before side effects.
+- For a refused issue/PR `--search`, use GitHub search in an environment that
+  permits `/search/issues`. Results stop at 1,000. The layer never imitates
+  GitHub search syntax locally. Author, label and assignee filters without
+  `--search` still work over REST.
+- For refused draft or auto-merge operations, use an environment that supports
+  them. `pr ready` and auto-merge use Claude cloud proxy extensions; those
+  routes are not part of GitHub's public REST API.
+- For a branch-deletion failure after merging, inspect the merge and branch
+  separately. `pr merge --delete-branch` deletes only a non-empty, encoded
+  same-repository head ref. Fork branches are left alone, and a warning reports
+  that local branch cleanup is not reproduced.
+- For missing closing references, check the PR body. REST can identify open
+  or merged PRs whose bodies close an issue through timeline cross-references.
+  A link made only in the Development sidebar has no REST trace. The design
+  step refuses to proceed when the required closing-reference list is empty.
+
+The retry helper treats the recognised GraphQL refusal as permanent. It does
+not wait for a quota reset to resolve that refusal.
+
 ## Known limitations
 
 - **Nested skills.** Plugin skill discovery only reads top-level skill
@@ -223,14 +440,9 @@ unprefixed (`dev-orchestrator`), and the plugin's copies appear as
   install`, so in a plugin-only install those references do not resolve.
   Philosophy and pattern files live in the plugin at
   `amplifier-bundle/context/`.
-- **GitHub in cloud sessions.** Cloud sessions block the GraphQL API that
-  `gh issue`, `gh pr` and `gh label` use. A recipe run puts a compatibility
-  `gh` first on `PATH` that replays those calls over the REST API when it sees
-  the block ([#1484](https://github.com/rysweet/amplihack-rs/issues/1484)).
-  What only GraphQL can answer (Projects, pinned issues, filters such as
-  `--milestone`, arbitrary `gh api graphql` queries), and `--search` where the
-  host also refuses GitHub search, fails with a message that names it. `gh` run outside a recipe is not wrapped; set
-  `AMPLIHACK_GH_COMPAT=0` to turn the layer off.
+- **GitHub in cloud sessions.** REST compatibility covers supported workflow
+  calls when GraphQL is refused. Search, proxy extensions and closing-reference
+  visibility have limits; see [cloud workflow setup](#cloud-workflow-setup).
 - **Skill-to-agent redirect.** The `pre-tool-use` hook's redirect from a skill
   name to the matching agent compares bare names. Plugin skills are namespaced
   (`amplihack:…`), so under the plugin that redirect does not trigger.

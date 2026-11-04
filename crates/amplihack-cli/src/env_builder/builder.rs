@@ -52,6 +52,13 @@ impl EnvBuilder {
         self
     }
 
+    /// Put a directory ahead of all earlier PATH prepends.
+    /// Guard and compatibility launchers use this to retain their order.
+    pub fn prepend_path_first(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.path_prepend.insert(0, dir.into());
+        self
+    }
+
     /// Add AMPLIHACK_SESSION_ID (generate a new one if not already set).
     pub fn with_amplihack_session_id(self) -> Self {
         let session_id = env::var("AMPLIHACK_SESSION_ID").unwrap_or_else(|_| generate_session_id());
@@ -495,6 +502,32 @@ mod tests {
         let path = env.get("PATH").unwrap();
         assert!(path.starts_with("/launcher"), "{path}");
         assert!(path.ends_with("/rewritten/bin"), "{path}");
+    }
+
+    #[test]
+    fn continuation_guard_and_compat_paths_preserve_builder_order_and_removals() {
+        use std::ffi::OsStr;
+
+        let mut command = Command::new("fixture-never-executed");
+        EnvBuilder::new()
+            .set("PATH", "/transport:/compat:/tools")
+            .set("GHC_REPO", "must-be-removed")
+            .unset("GHC_REPO")
+            .prepend_path("/guard")
+            .prepend_path("/compat")
+            .apply_to_command(&mut command);
+
+        let entries: HashMap<_, _> = command.get_envs().collect();
+        assert_eq!(
+            entries.get(OsStr::new("PATH")),
+            Some(&Some(OsStr::new("/guard:/compat:/transport:/tools"))),
+            "guard, adapter and terminal paths must retain their order and be deduplicated"
+        );
+        assert_eq!(
+            entries.get(OsStr::new("GHC_REPO")),
+            Some(&None),
+            "PATH composition must preserve explicit variable removal"
+        );
     }
 
     #[test]

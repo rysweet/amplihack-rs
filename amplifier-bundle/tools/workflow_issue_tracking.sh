@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# workflow_local_tracking.sh — local (provider-free) issue tracking metadata.
+# workflow_issue_tracking.sh — tracking-issue selection and local (provider-free)
+# issue tracking metadata.
 #
-# Extracted verbatim from `step-03-create-issue` in
-# amplifier-bundle/recipes/workflow-prep.yaml. That brick is at its 400-line
-# budget (scripts/check-brick-budget.sh), and the rule's remedy for a full brick
-# is extraction, never compression — so the room for the issue claim check
-# (#1361) was bought by moving this self-contained block out, the same way the
-# 23-step plan banner moved to workflow_plan_banner.sh.
+# The local-tracking functions were extracted from `step-03-create-issue` in
+# amplifier-bundle/recipes/workflow-prep.yaml; the GitHub selection functions
+# (#1595) were written here. That brick is at its 400-line budget
+# (scripts/check-brick-budget.sh), and the remedy for a full brick is extraction,
+# never compression; the room for the issue claim check (#1361) was bought the
+# same way the 23-step plan banner moved to workflow_plan_banner.sh.
 #
 # These functions are meant to be SOURCED by the step, and they read the step's
 # own variables (`EXISTING_ISSUE_NUMBER`, `TASK_DESC`) from the caller's scope.
@@ -16,15 +17,23 @@
 #                               no reachable issue provider
 #   emit_local_metadata       — the tracking_* key/value block step-03b parses
 #   sanitize_cli_output       — redact provider CLI output before it is logged
-#   issue_create_host_unsupported — true when a failed `gh issue create` means
-#                               this host cannot reach GitHub issues at all
+#   select_github_tracking_issue — GitHub tracking-issue choice (#1595): an
+#                               explicit issue_number wins; otherwise the first
+#                               task-text reference that is an open issue (not a
+#                               PR) in this repository, marked ones first
+#   _tracking_issue_masked_text — lower-cased task text with PR, owner/repo#N,
+#                               AB#N and hex-colour references removed
+#   _tracking_issue_refs      — `N kind` lines for one kind (marked or bare)
+#   _tracking_issue_candidates — up to 5 `N kind` candidates, no network
+#   _github_open_issue_url    — read-only check of one candidate via `gh api`
+#   _is_github_issue_url      — the one URL check: https://…/issues/N, one line
 
 derive_local_tracking_id() {
   if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then
     printf 'local-issue-%s' "${BASH_REMATCH[1]}"
   elif [[ "$EXISTING_ISSUE_NUMBER" =~ AB#([0-9]+)|_workitems/edit/([0-9]+) ]]; then
     printf 'local-ab-%s' "${BASH_REMATCH[1]:-${BASH_REMATCH[2]}}"
-  elif [[ "$EXISTING_ISSUE_NUMBER" =~ local-(issue|ab)-([0-9]+)$ ]]; then
+  elif [[ "$EXISTING_ISSUE_NUMBER" =~ ^local-(issue|ab)-([0-9]+)$ ]]; then
     printf '%s' "$EXISTING_ISSUE_NUMBER"
   elif [[ "$TASK_DESC" =~ ([Ii]ssue[[:space:]#]*|#)([0-9]+) ]]; then
     printf 'local-issue-%s' "${BASH_REMATCH[2]}"
@@ -84,15 +93,46 @@ issue_find_tracker() {
     fi
     echo "ERROR: looking up an existing tracking issue failed (rc $rc); not creating one, which could duplicate it. gh reported:" >&2
     sanitize_cli_output "$err" >&2
-    return 1
+    return "$rc"
   fi
   # The output must start with the count line (gh prints "0" then an empty
   # line for an empty list; nothing at all is not a shape any gh produces).
   case "$out" in *$'\n'*) cnt="${out%%$'\n'*}"; url="${out#*$'\n'}" ;; *) cnt="$out"; url="" ;; esac
   case "$cnt" in ''|*[!0-9]*) echo "ERROR: tracking-issue lookup returned unexpected output:" >&2; sanitize_cli_output "$out" >&2; return 1 ;; esac
+  [ "${#cnt}" -le 4 ] && [ "$cnt" -le 1000 ] || { echo "ERROR: tracking-issue lookup returned an invalid count" >&2; return 1; }
   [ "$cnt" -ge 1000 ] && echo "WARNING: the tracker scan read only the newest 1000 open issues; an older tracker with this title would be missed and a duplicate filed." >&2
   case "$url" in
-    https://*|http://*|'') printf '%s\n' "$url" ;;
+    '') [ "$cnt" != 0 ] || { printf '\n'; return 0; }; printf '\n' ;;
+    https://*/issues/*)
+      local expected actual n origin authority host repo
+      n="${url##*/}"
+      [[ "$n" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: tracking-issue lookup returned an invalid issue URL" >&2; return 1; }
+      [ "$cnt" -gt 0 ] && [ "$cnt" -le 1000 ] || { echo "ERROR: tracking-issue lookup returned an invalid count" >&2; return 1; }
+      expected="${GH_REPO:-$(git remote get-url origin 2>/dev/null)}"
+      case "$expected" in
+        *://*) expected="${expected#*://}"; expected="${expected##*@}" ;;
+        *@*:*) expected="${expected#*@}"; expected="${expected%%:*}/${expected#*:}" ;;
+        */*/*) ;;
+        */*)
+          repo="$expected"; host="${GH_HOST:-}"
+          if [ -z "$host" ]; then
+            origin="$(git remote get-url origin 2>/dev/null)" || return 1
+            case "$origin" in
+              *://*) origin="${origin#*://}"; authority="${origin%%/*}"; host="${authority##*@}"; host="${host%%:*}" ;;
+              *@*:*) host="${origin#*@}"; host="${host%%:*}" ;;
+              *) host=github.com ;;
+            esac
+          fi
+          expected="$host/$repo" ;;
+      esac
+      authority="${expected%%/*}"; repo="${expected#*/}"; host="${authority%%:*}"
+      [ "$host" != ssh.github.com ] || host=github.com
+      repo="${repo%/}"; repo="${repo%.git}"
+      expected="$(printf '%s/%s' "$host" "$repo" | tr 'A-Z' 'a-z')"
+      actual="${url#https://}"; actual="${actual%/issues/*}"
+      actual="$(printf '%s' "$actual" | tr 'A-Z' 'a-z')"
+      [ "$actual" = "$expected" ] || { echo "ERROR: tracking-issue lookup returned an issue from another repository" >&2; return 1; }
+      printf '%s\n' "$url" ;;
     *) echo "ERROR: tracking-issue lookup returned unexpected output:" >&2; sanitize_cli_output "$out" >&2; return 1 ;;
   esac
 }
@@ -138,4 +178,89 @@ _pct_decode() {
     d+="$ch"; i=$((i+1))
   done
   printf '%s' "$d"
+}
+
+# Masked, lower-cased task text: PR references, owner/repo#N, AB#N and #N
+# followed by a word character (hex colours) are removed so they are never
+# looked up. Only the first 64 KiB is read (bash substring: no SIGPIPE).
+_tracking_issue_masked_text() {
+  printf '%s\n' "${TASK_DESC:0:65536}" | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/(^|[^a-z0-9_])(pr|pull request|pull)[[:space:]]*#[0-9]+/\1 /g; s/[a-z0-9_.-]+\/[a-z0-9_.-]+#[0-9]+/ /g; s/ab#[0-9]+/ /g; s/#[0-9]+[a-z_][a-z0-9_]*/ /g'
+}
+
+# `N kind` lines for references of one kind (`marked` or `bare`), in order of
+# appearance. Only grep's no-match exit (1) is accepted; a grep error (2) or a
+# sed failure is the function's non-zero status.
+_tracking_issue_refs() {
+  local masked
+  masked="$(_tracking_issue_masked_text)"
+  if [ "$1" = "marked" ]; then
+    printf '%s\n' "$masked" | { grep -oE '(^|[^a-z0-9_])(issue|fix(es|ed)?|close[sd]?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+' || [ $? -eq 1 ]; } | sed -E 's/.*#([0-9]+)$/\1 marked/'
+  else
+    printf '%s\n' "$masked" | { grep -oE '(^|[^a-z0-9_#])#[0-9]+' || [ $? -eq 1 ]; } | sed -E 's/.*#([0-9]+)$/\1 bare/'
+  fi
+}
+
+# Up to 5 `N kind` candidates, marked references first, each number once (its
+# first kind wins). awk reads all of its input (no early exit), so pipefail
+# never sees a SIGPIPE.
+_tracking_issue_candidates() {
+  { _tracking_issue_refs marked; _tracking_issue_refs bare; } \
+    | awk '$1 ~ /^[1-9][0-9]{0,8}$/ && !seen[$1]++ && c < 5 { print; c++ }'
+}
+
+# Return 0 only if $1 is a single-line https:// URL ending in /issues/$2.
+_is_github_issue_url() { [[ "$1" =~ ^https://[^[:space:]]+/issues/${2}$ ]]; }
+
+# Print the URL of issue N and return 0 only if it is an open issue, not a
+# pull request, in this repository. Read-only; every other outcome returns 1.
+_github_open_issue_url() {
+  local n row rc state is_pr url
+  n="${1:-}"
+  [[ "$n" =~ ^[0-9]+$ ]] || return 1
+  # gh's stderr stays discarded (it can hold tokens); its exit code is logged.
+  row="$(timeout 30 gh api "repos/{owner}/{repo}/issues/$n" --jq '[.state, (.pull_request != null), .html_url] | @tsv' </dev/null 2>/dev/null)" \
+    || { rc=$?; echo "WARN: could not verify candidate #${n} (gh exit ${rc})" >&2; return 1; }
+  IFS=$'\t' read -r state is_pr url <<< "$row" || return 1
+  [ "$state" = "open" ] && [ "$is_pr" = "false" ] && _is_github_issue_url "$url" "$n" || return 1
+  printf '%s\n' "$url"
+}
+
+# GitHub tracking issue for step-03. Returns 0 with a URL (or, for an explicit
+# number gh cannot resolve as an issue, local metadata) on stdout; returns 1
+# with empty stdout when nothing is selected. Diagnostics go to stderr only.
+select_github_tracking_issue() {
+  local explicit n kind url rc=0 checked=""
+  explicit="${EXISTING_ISSUE_NUMBER:-}"; explicit="${explicit#\#}"
+  if [[ "$explicit" =~ ^[0-9]{1,9}$ ]]; then
+    url="$(timeout 60 gh issue view "$explicit" --json url --jq '.url // ""' </dev/null 2>/dev/null)" || rc=$?
+    if [ "$rc" -eq 0 ] && _is_github_issue_url "$url" "$explicit"; then
+      echo "INFO: tracking issue #${explicit} selected (explicit)" >&2
+      printf '%s\n' "$url"; return 0
+    fi
+    # gh's stderr stays discarded (it can hold tokens); the exit code is enough
+    # to tell a timeout (124) or auth/network failure from a bad number.
+    if [ "$rc" -ne 0 ]; then
+      echo "WARN: could not verify issue #${explicit} (gh exit ${rc}); falling back to local tracking" >&2
+    else
+      echo "WARN: explicit issue_number #${explicit} could not be resolved as an issue in this repository — using local tracking" >&2
+    fi
+    emit_local_metadata; return 0
+  elif [ -n "$explicit" ]; then
+    echo "WARN: issue_number is not a valid issue number — ignoring it for tracking-issue selection" >&2
+  fi
+  while read -r n kind; do
+    checked+=" $n"
+    url="$(_github_open_issue_url "$n")" || continue
+    echo "INFO: tracking issue #${n} selected (${kind})" >&2
+    printf '%s\n' "$url"; return 0
+  done < <(_tracking_issue_candidates)
+  [ -z "$checked" ] || echo "INFO: no task-text candidate accepted as an open issue (checked:${checked}); falling back to title search" >&2
+  return 1
+}
+
+# Retrying without a label is safe only after gh's label-resolution failure,
+# which occurs before creation. Other failures can follow a successful write.
+issue_create_label_missing() {
+  printf '%s' "$1" | grep -Eiq '(could not add label|label).*not found'
 }

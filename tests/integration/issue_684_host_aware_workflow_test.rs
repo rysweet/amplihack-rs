@@ -254,11 +254,17 @@ case "$1:$2" in
     # count, then the URL; an empty list is "0" and an empty line, as gh
     # itself prints them.
     if [ -n "${GH_LIST_OUTPUT:-}" ]; then printf '%s\n' "$GH_LIST_OUTPUT" >&2; exit "${GH_LIST_STATUS:-1}"; fi
-    if [ -n "${GH_LIST_URL:-}" ]; then printf '1\n%s\n' "$GH_LIST_URL"; else printf '0\n\n'; fi
+    if [ "${GH_LIST_RAW+x}" = x ]; then printf '%s' "$GH_LIST_RAW";
+    elif [ -n "${GH_LIST_URL:-}" ]; then printf '1\n%s\n' "$GH_LIST_URL"; else printf '0\n\n'; fi
     exit "${GH_LIST_STATUS:-0}"
     ;;
   label:create) exit 0 ;;
   issue:create)
+    if [ "${GH_CREATE_LABEL_FAIL:-0}" = 1 ]; then
+      for arg in "$@"; do
+        [ "$arg" != --label ] || { echo "could not add label: workflow:default not found" >&2; exit 1; }
+      done
+    fi
     [ -n "${GH_CREATE_OUTPUT:-}" ] && printf '%s\n' "$GH_CREATE_OUTPUT"
     exit "${GH_CREATE_STATUS:-7}"
     ;;
@@ -299,10 +305,21 @@ exit 7
         // step-00a. The resolution cascade itself is exercised by
         // tests/issue_1361_duplicate_pr_claim_check.sh.
         .env("AMPLIHACK_HOME", workspace_root())
+        .env("HOME", temp.path())
+        .env("TMPDIR", temp.path())
         .env("REMOTE_HOST_TYPE", host_type)
+        .env("GH_REPO", "example-org/example-repo")
         .env("TASK_DESCRIPTION", task_description)
         .env("FINAL_REQUIREMENTS", "Issue #718 regression requirements")
         .env("ISSUE_NUMBER", issue_number)
+        // Main transports context through RECIPE_VAR_*; retain the old names
+        // above while this branch awaits its ordinary merge from main.
+        .env("RECIPE_VAR_remote_host_type", host_type)
+        .env("RECIPE_VAR_issue_number", issue_number)
+        .env(
+            "RECIPE_VAR_final_requirements",
+            "Issue #718 regression requirements",
+        )
         .env("GIT_LOG", &git_log)
         .env("GH_LOG", &gh_log)
         .env("AZ_LOG", &az_log);
@@ -1027,6 +1044,147 @@ fn step_03_preserves_github_existing_issue_reuse_path() {
         "github host must not call Azure CLI; az log:\n{}",
         run.az_log
     );
+}
+
+#[test]
+fn continuation_recipe_context_precedes_conflicting_legacy_environment() {
+    let expected = "https://github.com/example-org/example-repo/issues/719";
+    let run = run_step_03_with_env(
+        "github",
+        "719",
+        "Use the issue selected in recipe context",
+        &[
+            ("REMOTE_HOST_TYPE", "other"),
+            ("ISSUE_NUMBER", "718"),
+            ("GH_VIEW_ISSUE", "719"),
+            ("GH_VIEW_URL", expected),
+        ],
+    );
+
+    assert!(run.output.status.success(), "{:?}", run.output);
+    assert_eq!(
+        String::from_utf8_lossy(&run.output.stdout).trim(),
+        expected,
+        "RECIPE_VAR_* values must retain main's context transport contract"
+    );
+    assert!(
+        run.gh_log.contains("issue view 719 ") && !run.gh_log.contains("issue create"),
+        "{}",
+        run.gh_log
+    );
+}
+
+#[test]
+fn continuation_explicit_issue_precedes_task_reference_and_title_lookup() {
+    let expected = "https://github.com/example-org/example-repo/issues/719";
+    let run = run_step_03_with_env(
+        "github",
+        "719",
+        "Follow up issue #718 with an explicit tracker",
+        &[
+            ("GH_VIEW_ISSUE", "719"),
+            ("GH_VIEW_URL", expected),
+            (
+                "GH_LIST_URL",
+                "https://github.com/example-org/example-repo/issues/999",
+            ),
+        ],
+    );
+    assert!(run.output.status.success(), "{:?}", run.output);
+    assert_eq!(String::from_utf8_lossy(&run.output.stdout).trim(), expected);
+    assert!(run.gh_log.contains("issue view 719 "), "{}", run.gh_log);
+    assert!(
+        !run.gh_log.contains("issue list") && !run.gh_log.contains("issue create"),
+        "explicit selection must finish before automatic lookup: {}",
+        run.gh_log
+    );
+}
+
+#[test]
+fn continuation_unresolvable_explicit_issue_keeps_local_identity_without_lookup() {
+    let run = run_step_03_with_env(
+        "github",
+        "719",
+        "Follow up issue #718 with an explicit tracker",
+        &[("GH_VIEW_ISSUE", "none"), ("GH_VIEW_STATUS", "1")],
+    );
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(run.output.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stdout.contains("tracking_system=local")
+            && stdout.contains("tracking_reference=local-issue-719"),
+        "the explicit issue must retain its identity: {stdout}"
+    );
+    assert!(
+        stderr.contains("WARN"),
+        "explicit fallback must be visible: {stderr}"
+    );
+    assert!(
+        !run.gh_log.contains("issue list") && !run.gh_log.contains("issue create"),
+        "explicit fallback must not create a replacement tracker: {}",
+        run.gh_log
+    );
+}
+
+#[test]
+fn continuation_automatic_lookup_errors_stop_before_label_or_issue_creation() {
+    for (message, status) in [
+        ("gh-compat: could not process GitHub's REST response", "73"),
+        ("gh: Server Error (HTTP 500)", "1"),
+        (
+            "gh-compat: the REST fallback needs jq, which is not installed",
+            "1",
+        ),
+    ] {
+        let run = run_step_03_with_env(
+            "github",
+            "",
+            "Find the full tracking title before creating an issue",
+            &[("GH_LIST_OUTPUT", message), ("GH_LIST_STATUS", status)],
+        );
+        assert!(
+            !run.output.status.success(),
+            "lookup error was ignored: {message}"
+        );
+        let stderr = String::from_utf8_lossy(&run.output.stderr);
+        assert!(
+            stderr.contains("ERROR"),
+            "lookup error was not reported: {stderr}"
+        );
+        assert!(
+            !run.gh_log.contains("label create") && !run.gh_log.contains("issue create"),
+            "a failed lookup must stop before mutations: {}",
+            run.gh_log
+        );
+    }
+}
+
+#[test]
+fn continuation_malformed_lookup_output_cannot_select_or_create_a_tracker() {
+    for raw in [
+        "",
+        "not-a-count\nhttps://github.com/example-org/example-repo/issues/7\n",
+        "1\nhttps://github.com/example-org/example-repo/pull/7\n",
+        "1\nhttps://example.invalid/foreign/repo/issues/7\n",
+    ] {
+        let run = run_step_03_with_env(
+            "github",
+            "",
+            "Find the full tracking title before creating an issue",
+            &[("GH_LIST_RAW", raw)],
+        );
+        assert!(
+            !run.output.status.success(),
+            "malformed lookup output was accepted: {raw:?}\n{:?}",
+            run.output
+        );
+        assert!(
+            !run.gh_log.contains("label create") && !run.gh_log.contains("issue create"),
+            "malformed lookup output reached mutation: {}",
+            run.gh_log
+        );
+    }
 }
 
 #[test]

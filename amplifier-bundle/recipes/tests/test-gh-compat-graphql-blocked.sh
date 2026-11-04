@@ -35,6 +35,7 @@
 # Exit codes: 0 = pass, 1 = fail, 2 = harness error.
 
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
@@ -47,7 +48,7 @@ done
 command -v jq >/dev/null 2>&1 || { echo "HARNESS-ERROR: jq required" >&2; exit 2; }
 command -v git >/dev/null 2>&1 || { echo "HARNESS-ERROR: git required" >&2; exit 2; }
 
-WORK="$(mktemp -d -t gh-compat-XXXXXX)"
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/gh-compat.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 
 # --- the "real" gh: GraphQL blocked unless STUB_GRAPHQL_OK=1 -----------------
@@ -57,6 +58,7 @@ cat > "${WORK}/real/gh" <<'STUB'
 #!/usr/bin/env bash
 # `gh GROUP VERB --json` alone lists the fields, offline (a newer gh's lists).
 if [ $# = 3 ] && [ "$3" = --json ]; then
+  [ "${STUB_NO_FIELDS:-0}" != 1 ] || { echo 'gh: fields unavailable' >&2; exit 1; }
   echo 'Specify one or more comma-separated fields for `--json`:' >&2
   case "$1 $2" in
     "pr view"|"pr list") f="additions assignees author autoMergeRequest baseRefName baseRefOid body changedFiles closed closedAt closingIssuesReferences comments commits createdAt deletions files fullDatabaseId headRefName headRefOid headRepository headRepositoryOwner id isCrossRepository isDraft labels latestReviews maintainerCanModify mergeCommit mergeStateStatus mergeable mergedAt mergedBy milestone number potentialMergeCommit projectCards projectItems reactionGroups reviewDecision reviewRequests reviews state statusCheckRollup title updatedAt url" ;;
@@ -71,7 +73,7 @@ if [ $# = 3 ] && [ "$3" = --json ]; then
 fi
 printf '%s\n' "$*" >> "$STUB_LOG"
 if [ "$1" = "api" ]; then
-  method=GET; path=""; input=""; paginate=0; host=github.com
+  method=GET; path=""; input=""; paginate=0; host="${GH_HOST:-github.com}"
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -84,8 +86,12 @@ if [ "$1" = "api" ]; then
       *) path="$1"; shift ;;
     esac
   done
+  [ -z "${STUB_HOST_LOG:-}" ] || printf '%s\n' "$host" >>"$STUB_HOST_LOG"
   [ -n "$input" ] && printf 'BODY %s\n' "$(jq -c . "$input")" >> "$STUB_LOG"
   if [ "$path" = graphql ]; then
+    if [ -n "${STUB_PROBE_ERROR:-}" ]; then
+      printf '%s\n' "$STUB_PROBE_ERROR" >&2; exit 1
+    fi
     # Probe edge cases: a one-off 502, a rate limit, a slow endpoint, a GHE host.
     if [ -n "${STUB_PROBE_502_ONCE:-}" ] && [ ! -e "$STUB_PROBE_502_ONCE" ]; then
       : > "$STUB_PROBE_502_ONCE"; echo "HTTP 502: Bad Gateway (https://api.github.com/graphql)" >&2; exit 1
@@ -98,6 +104,9 @@ if [ "$1" = "api" ]; then
     [ "$host" != github.com ] && [ "${STUB_GHE_OK:-0}" = 1 ] && { echo '{"data":{"viewer":{"login":"ghe"}}}'; exit 0; }
     if [ "${STUB_GRAPHQL_OK:-0}" = 1 ]; then echo '{"data":{"viewer":{"login":"bot"}}}'; exit 0; fi
     echo "HTTP 403: GitHub GraphQL is not available from Claude Code sessions; use the REST API (gh api repos/{owner}/{repo}/...). (https://api.github.com/graphql)" >&2; exit 1
+  fi
+  if [ -n "${STUB_API_ERROR_PATH:-}" ] && [ "$path" = "$STUB_API_ERROR_PATH" ]; then
+    printf '%s\n' "${STUB_API_ERROR:-gh: synthetic failure (HTTP 422)}" >&2; exit "${STUB_API_ERROR_CODE:-1}"
   fi
   pr='{"number":42,"node_id":"PR_1","title":"feat: widget","body":"Fixes #7","state":"open","draft":true,"merged_at":null,"html_url":"https://github.com/o/r/pull/42","created_at":"2026-01-01T00:00:00Z","user":{"login":"bot"},"labels":[],"mergeable":true,"mergeable_state":"clean","head":{"ref":"feat","sha":"abc123","repo":{"name":"r","full_name":"o/r","owner":{"login":"o"}}},"base":{"ref":"main","sha":"def456","repo":{"full_name":"o/r"}}}'
   # Fork PR (head in fork/r) and odd head branch names, for --delete-branch.
@@ -143,6 +152,7 @@ if [ "$1" = "api" ]; then
       printf '%s\n' "$pr" | jq -c '.number = 43 | .html_url = "https://github.com/o/r/pull/43"' ;;
     "GET repos/o/r") printf '{"full_name":"o/r","default_branch":"main","permissions":{"admin":false,"maintain":false,"push":true,"triage":true,"pull":true}}\n' ;;
     "POST repos/o/r/issues") printf '{"number":8,"html_url":"https://github.com/o/r/issues/8"}\n' ;;
+    "PATCH repos/o/r/issues/7"|"PATCH repos/o/r/pulls/42") printf '{}\n' ;;
     "GET repos/o/r/issues/7") printf '{"number":7,"title":"Widget","body":"","state":"open","html_url":"https://github.com/o/r/issues/7","user":{"login":"bot"},"labels":[]}\n' ;;
     "GET search/"*) printf '{"message":"This GitHub API path is not available"}'; echo "gh: This GitHub API path is not available: sessions are bound to their configured repositories. (HTTP 403)" >&2; exit 1 ;;
     "GET repos/o/r/issues?"*)
@@ -238,9 +248,9 @@ exit 1
 STUB
 chmod +x "${WORK}/real/gh"
 
-# --- the launcher, as crates/.../recipe/run/gh_compat.rs writes it -----------
+# --- the adapter entrypoint (Rust tests cover pinned launcher transport) ----
 : > "${WORK}/launcher/.amplihack-gh-compat"
-printf '#!/bin/sh\nexec bash %s "$@"\n' "'${COMPAT}'" > "${WORK}/launcher/gh"
+printf '#!/bin/sh\nexec /bin/bash %s "$@"\n' "'${COMPAT}'" > "${WORK}/launcher/gh"
 chmod +x "${WORK}/launcher/gh"
 
 # --- a checkout on branch feat with a github.com origin ----------------------
@@ -271,6 +281,304 @@ probe_gone() {
   case "$args" in "sleep "*|*"real/gh"*) return 1 ;; esac
   return 0
 }
+
+# Continuation contracts run separately with AMPLIHACK_GH_COMPAT_TEST_GROUP=
+# continuation, or after the historical checks in the default CI invocation.
+# Each case has its own subshell so a failing contract cannot hide the others.
+continuation_case() {
+  local name="$1"; shift
+  reset_log
+  if ( "$@" ); then ok "$name"; else CONTINUATION_FAILURES=$((CONTINUATION_FAILURES + 1)); fi
+}
+
+continuation_host_precedence() (
+  export GHC_LIB_ONLY=1
+  # shellcheck source=/dev/null
+  . "$COMPAT"
+  local got
+  export GH_HOST=ghe.example.com
+  got="$(ghc_target_host pr view -R https://github.com/o/r 42)"
+  [ "$got" = github.com ] || fail host-priority "explicit github.com lost to GH_HOST: $got"
+  export GH_HOST=github.com GH_REPO=ghe.example.com/o/r
+  got="$(ghc_target_host pr view --repo=https://github.com/o/r 42)"
+  [ "$got" = github.com ] || fail host-priority "--repo lost to GH_REPO: $got"
+  unset GH_REPO
+  got="$(ghc_target_host pr view -R ghe.example.com/o/r --repo https://github.com/o/r 42)"
+  [ "$got" = github.com ] || fail host-priority "the final --repo did not win: $got"
+  got="$(ghc_target_host pr view -R https://github.com/o/r --repo ghe.example.com/o/r 42)"
+  [ "$got" = ghe.example.com ] || fail host-priority "the final enterprise --repo did not win: $got"
+  export GH_HOST=ghe.example.com
+  got="$(ghc_target_host api graphql --hostname github.com -f 'query={viewer{login}}')"
+  [ "$got" = github.com ] || fail host-priority "--hostname lost to GH_HOST: $got"
+  got="$(ghc_target_host api graphql --hostname ghe.example.com --hostname github.com -f 'query={viewer{login}}')"
+  [ "$got" = github.com ] || fail host-priority "the final --hostname did not win: $got"
+  got="$(GH_REPO=https://github.com/o/r ghc_target_host pr view 42)"
+  [ "$got" = github.com ] || fail host-priority "GH_REPO lost to GH_HOST: $got"
+  got="$(ghc_target_host pr view https://github.com/o/r/pull/42)"
+  [ "$got" = github.com ] || fail host-priority "a positional github.com URL lost to GH_HOST: $got"
+  got="$(GH_HOST=github.com ghc_target_host pr comment 42 --body https://ghe.example.com/o/r/pull/9)"
+  [ "$got" = github.com ] || fail host-priority "a body selected its host: $got"
+)
+
+# Inject a distinctive jq exit at a conversion boundary. The hit file proves
+# that a renamed conversion cannot turn the regression into a false pass.
+continuation_jq_failure() (
+  local stage="$1" rc=0 out
+  export GHC_TEST_JQ_MATCH="$2" GHC_TEST_JQ_HIT="${WORK}/jq-hit"
+  shift 2
+  rm -f "$GHC_TEST_JQ_HIT"
+  reset_log
+  out="$(AMPLIHACK_GH_REST_ONLY=1 PATH="${WORK}/fault-jq:$PATH" gh "$@" 2>"${WORK}/jq.err")" || rc=$?
+  [ -s "$GHC_TEST_JQ_HIT" ] || fail "$stage" "the intended jq boundary was not exercised"
+  [ "$rc" = 73 ] || fail "$stage" "jq exit 73 became $rc: $(cat "${WORK}/jq.err")"
+  [ -z "$out" ] || fail "$stage" "failed conversion published partial stdout: $out"
+  case "$stage" in
+    path-encoding) ! logged_prefix 'api -X DELETE' || fail "$stage" "a deletion followed failed encoding" ;;
+    request-body) ! logged_prefix 'api -X POST' || fail "$stage" "a request followed failed body construction" ;;
+    created-url)
+      [ "$(grep -c '^api -X POST repos/o/r/issues ' "$STUB_LOG")" = 1 ] \
+        || fail "$stage" "creation was repeated or skipped"
+      ! logged_prefix 'api -X PATCH' || fail "$stage" "a mutation followed failed response conversion" ;;
+  esac
+)
+
+continuation_missing_bound() (
+  local b found rc=0 out bin="${WORK}/no-bound"
+  mkdir -p "$bin"
+  # An explicit tool list excludes timeout and perl without enumerating a
+  # system directory. A fresh decision must stop before invoking fake gh.
+  for b in bash cat date dirname find grep head id mkdir mktemp mv rm sed sleep stat tr true jq git; do
+    found="$(command -v "$b")" || fail no-bound "fixture tool missing: $b"
+    ln -s "$found" "$bin/$b"
+  done
+  reset_log
+  out="$(PATH="${WORK}/launcher:${WORK}/real:$bin" STUB_GRAPHQL_OK=1 \
+    AMPLIHACK_GH_COMPAT_STATE="${WORK}/no-bound-state" gh pr view 42 --json number 2>"${WORK}/no-bound.err")" || rc=$?
+  [ "$rc" -ne 0 ] && [ -z "$out" ] || fail no-bound "an unbounded call ran (rc $rc): $out"
+  [ ! -s "$STUB_LOG" ] || fail no-bound "probe or requested operation reached gh"
+  grep -Eiq 'bound|timeout|perl' "${WORK}/no-bound.err" || fail no-bound "no local bound diagnostic"
+  [ ! -e "${WORK}/no-bound-state.ok" ] && [ ! -e "${WORK}/no-bound-state.unknown" ] \
+    || fail no-bound "a local defect was cached as a capability answer"
+)
+
+continuation_reject_option() (
+  local flag="$1" rc=0 out; shift
+  reset_log
+  out="$(AMPLIHACK_GH_REST_ONLY=1 gh "$@" 2>"${WORK}/option.err")" || rc=$?
+  [ "$rc" -ne 0 ] && [ -z "$out" ] || fail reject-option "$flag was accepted: $out"
+  grep -Fq -- "$flag" "${WORK}/option.err" || fail reject-option "diagnostic does not identify $flag"
+  ! grep -Eq '^api -X (POST|PUT|PATCH|DELETE) ' "$STUB_LOG" || fail reject-option "$flag caused a mutation"
+  case "$1 $2" in
+    'api graphql') ! logged_prefix 'api -X' || fail reject-option "unsupported GraphQL options reached REST" ;;
+  esac
+)
+
+continuation_transport_log() (
+  local log="${WORK}/restricted.log" out rc=0
+  export AMPLIHACK_GH_COMPAT_LOG="$log"
+  : > "$log"
+  # Markers are synthetic data, never credentials from the environment.
+  out="$(AMPLIHACK_GH_REST_ONLY=1 STUB_API_ERROR_PATH=repos/o/r/issues \
+    STUB_API_ERROR='gh: BODY_PRIVATE_MARKER Bearer FAKE_CREDENTIAL_MARKER (HTTP 422)' \
+    gh issue create --title TITLE_PRIVATE_MARKER --body BODY_PRIVATE_MARKER 2>"${WORK}/restricted.err")" || rc=$?
+  [ "$rc" -ne 0 ] && [ -z "$out" ] || fail restricted-log "the failed write returned success or stdout: $out"
+  grep -Fq BODY_PRIVATE_MARKER "${WORK}/restricted.err" || fail restricted-log "provider stderr was lost"
+  AMPLIHACK_GH_REST_ONLY=1 gh issue list --search QUERY_PRIVATE_MARKER --json number >/dev/null 2>&1 || true
+  AMPLIHACK_GH_REST_ONLY=1 gh issue edit 5 --remove-label PATH_PRIVATE_MARKER >/dev/null 2>&1 || true
+  AMPLIHACK_GH_REST_ONLY=1 gh pr view 42 --json FIELD_PRIVATE_MARKER >/dev/null 2>&1 || true
+  STUB_PROBE_ERROR='gh: PROBE_PRIVATE_MARKER (HTTP 502)' \
+    AMPLIHACK_GH_COMPAT_STATE="${WORK}/restricted-state" gh pr view 42 --json number >/dev/null 2>&1 || true
+  [ -s "$log" ] || fail restricted-log "transport records were not written"
+  if grep -Eq 'PRIVATE_MARKER|FAKE_CREDENTIAL_MARKER|graphql-blocked|restricted-state|\?' "$log"; then
+    cat "$log" >&2
+    fail restricted-log "data, query text or cache paths entered the compatibility log"
+  fi
+  # Fixed timestamp/PID framing and the historical REST/arrow separators may
+  # remain. No free-form diagnostic field is allowed.
+  sed -E 's/^[^ ]+ gh-compat\[[0-9]+\]: //; s/^REST //; s/ -> / /' "$log" \
+    | grep -Ev '^(GET|POST|PUT|PATCH|DELETE) [A-Za-z0-9_{}:/%.@+-]+ ([0-9]{3}|rc=[0-9]+)$' \
+    > "${WORK}/bad-log-lines" || true
+  [ ! -s "${WORK}/bad-log-lines" ] || fail restricted-log "log contains fields beyond method, path and status"
+)
+
+continuation_wrapper_and_state_safety() (
+  local rc=0 out copied="${WORK}/copied-wrapper"
+  mkdir -p "$copied"
+  cp "${WORK}/launcher/gh" "$copied/gh"
+  out="$(AMPLIHACK_GH_REST_ONLY=1 PATH="$copied:$PATH" gh issue view 7 --json number --jq .number)"
+  [ "$out" = 7 ] || fail wrapper-safety "a copied wrapper was used as transport: $out"
+  reset_log
+  out="$(AMPLIHACK_REAL_GH="$copied/gh" gh issue view 7 2>"${WORK}/wrapper.err")" || rc=$?
+  [ "$rc" -ne 0 ] && [ -z "$out" ] && [ ! -s "$STUB_LOG" ] || fail wrapper-safety "a wrapper override reached transport"
+  printf '%s\n' 'neighbour sentinel' >"${WORK}/state-sentinel"
+  ln -s "${WORK}/state-sentinel" "${WORK}/unsafe-state"
+  rc=0
+  out="$(AMPLIHACK_GH_COMPAT_STATE="${WORK}/unsafe-state" gh issue view 7 2>"${WORK}/state.err")" || rc=$?
+  [ "$rc" -ne 0 ] && [ -z "$out" ] && [ ! -s "$STUB_LOG" ] || fail state-safety "a symlinked state marker reached transport"
+  [ "$(cat "${WORK}/state-sentinel")" = 'neighbour sentinel' ] || fail state-safety "a neighbouring file was modified"
+)
+
+continuation_check_output() (
+  local rc=0 out
+  out="$(AMPLIHACK_GH_REST_ONLY=1 STUB_CHECKS=fail gh pr checks 42 --json name --jq 'length')" || rc=$?
+  [ "$rc" = 1 ] && [ "$out" = 1 ] || fail checks-output "failed checks lost their data or exit (rc $rc, $out)"
+  rc=0
+  out="$(AMPLIHACK_GH_REST_ONLY=1 STUB_CHECKS=pending gh pr checks 42 --json name --jq 'length')" || rc=$?
+  [ "$rc" = 8 ] && [ "$out" = 2 ] || fail checks-output "pending checks lost their data or exit (rc $rc, $out)"
+)
+
+continuation_missing_fields() (
+  local rc=0 out
+  out="$(AMPLIHACK_GH_REST_ONLY=1 STUB_NO_FIELDS=1 gh issue view 7 --json number 2>"${WORK}/fields.err")" || rc=$?
+  [ "$rc" -ne 0 ] && [ -z "$out" ] || fail fields "missing terminal field metadata returned a successful projection"
+  ! logged_prefix 'api -X' || fail fields "an operation preceded field validation"
+)
+
+integration_create_failure() (
+  local diagnostic="$1" rc=0 out
+  # shellcheck source=/dev/null
+  . "${REPO_ROOT}/amplifier-bundle/tools/workflow_issue_tracking.sh"
+  out="$(AMPLIHACK_GH_REST_ONLY=1 STUB_API_ERROR_PATH=repos/o/r/issues \
+    STUB_API_ERROR="$diagnostic" STUB_API_ERROR_CODE=79 \
+    gh issue create --title Widget --body Details --label workflow 2>"${WORK}/create.err")" || rc=$?
+  [ "$rc" = 79 ] && [ -z "$out" ] || fail create-failure "provider exit 79 became $rc, stdout: $out"
+  grep -Fq -- "$diagnostic" "${WORK}/create.err" || fail create-failure "the provider diagnostic changed"
+  case "$diagnostic" in
+    *'label: '*'not found'*) issue_create_label_missing "$(cat "${WORK}/create.err")" \
+      || fail create-failure "an explicit missing label was not recognised" ;;
+    *) ! issue_create_label_missing "$(cat "${WORK}/create.err")" \
+      || fail create-failure "an unrelated 422 permits another create" ;;
+  esac
+  [ "$(grep -c '^api -X POST repos/o/r/issues ' "$STUB_LOG")" = 1 ] || fail create-failure "creation was replayed"
+)
+
+integration_missing_body() (
+  local rc=0 out
+  out="$(AMPLIHACK_GH_REST_ONLY=1 gh pr create --title Widget --head feat --base main \
+    --body-file "${WORK}/absent-body" 2>"${WORK}/body.err")" || rc=$?
+  [ "$rc" -ne 0 ] && [ -z "$out" ] || fail missing-body "an unreadable body returned success: $out"
+  ! logged_prefix 'api -X POST' || fail missing-body "an unreadable body reached creation"
+)
+
+integration_unknown_probe() (
+  local out
+  out="$(STUB_PROBE_ERROR='gh: synthetic failure (HTTP 502)' STUB_GRAPHQL_OK=1 \
+    AMPLIHACK_GH_COMPAT_STATE="${WORK}/unknown-probe" \
+    gh pr view 42 --json number 2>"${WORK}/unknown.err")"
+  [ "$out" = 'real-gh-output: pr view 42 --json number' ] || fail unknown-probe "the original read changed: $out"
+  [ ! -s "${WORK}/unknown.err" ] || fail unknown-probe "an inconclusive probe emitted: $(cat "${WORK}/unknown.err")"
+  [ -f "${WORK}/unknown-probe.unknown" ] || fail unknown-probe "the inconclusive result was not cached"
+)
+
+integration_empty_body() (
+  local kind="$1" n=7
+  [ "$kind" != pr ] || n=42
+  AMPLIHACK_GH_REST_ONLY=1 gh "$kind" edit "$n" --body= >/dev/null || fail empty-body "the $kind edit failed"
+  logged_prefix 'BODY {"body":""}' || fail empty-body "an explicit empty $kind body was discarded"
+)
+
+integration_transport_host() (
+  local out
+  export STUB_HOST_LOG="${WORK}/host.log"
+  : >"$STUB_HOST_LOG"
+  out="$(GH_HOST=ghe.example.com AMPLIHACK_GH_COMPAT_STATE="${WORK}/host-state" \
+    gh issue view 7 -R https://github.com/o/r --json number --jq .number)" || fail transport-host "public-host read failed"
+  [ "$out" = 7 ] || fail transport-host "unexpected issue result: $out"
+  [ "$(cat "$STUB_HOST_LOG")" = $'github.com\ngithub.com' ] \
+    || fail transport-host "probe or REST transport ignored the selected host: $(cat "$STUB_HOST_LOG")"
+)
+
+integration_assignee_failure() (
+  local rc=0 out
+  out="$(AMPLIHACK_GH_REST_ONLY=1 STUB_API_ERROR_PATH=user \
+    STUB_API_ERROR_CODE=79 STUB_API_ERROR='gh: user lookup failed (HTTP 503)' \
+    gh issue create --title Widget --body Details --assignee @me 2>"${WORK}/assignee.err")" || rc=$?
+  [ "$rc" = 79 ] && [ -z "$out" ] || fail assignee-failure "failed assignee lookup became exit $rc, stdout: $out"
+  ! logged_prefix 'api -X POST' || fail assignee-failure "creation followed failed assignee resolution"
+)
+
+integration_tests() {
+  CONTINUATION_FAILURES=0
+  continuation_case 'unrelated HTTP 422 preserves exit and cannot enable an unlabelled retry' \
+    integration_create_failure 'gh: title validation failed (HTTP 422)'
+  continuation_case 'explicit missing-label errors preserve their diagnostic and exit' \
+    integration_create_failure "gh: could not add label: 'workflow' not found (HTTP 422)"
+  continuation_case 'unreadable PR body files stop before creation' integration_missing_body
+  continuation_case 'inconclusive probes preserve pass-through stderr' integration_unknown_probe
+  continuation_case 'issue edits preserve an explicit empty body' integration_empty_body issue
+  continuation_case 'PR edits preserve an explicit empty body' integration_empty_body pr
+  continuation_case 'probe and REST transport use the selected public host despite GH_HOST' integration_transport_host
+  continuation_case 'failed assignee resolution stops issue creation and preserves its exit' integration_assignee_failure
+  [ "$CONTINUATION_FAILURES" = 0 ] || { echo "FAIL: $CONTINUATION_FAILURES integration cases" >&2; return 1; }
+}
+
+continuation_tests() {
+  local stage match
+  CONTINUATION_FAILURES=0
+  mkdir -p "${WORK}/fault-jq"
+  export GHC_TEST_REAL_JQ
+  GHC_TEST_REAL_JQ="$(command -v jq)"
+  cat > "${WORK}/fault-jq/jq" <<'JQ_FAULT'
+#!/usr/bin/env bash
+for arg in "$@"; do
+  case "$arg" in *"$GHC_TEST_JQ_MATCH"*)
+    printf '%s\n' hit > "$GHC_TEST_JQ_HIT"
+    printf '%s\n' PARTIAL_CONVERSION_MARKER
+    exit 73 ;;
+  esac
+done
+exec "$GHC_TEST_REAL_JQ" "$@"
+JQ_FAULT
+  chmod +x "${WORK}/fault-jq/jq"
+  continuation_case 'host precedence, explicit github.com and final option occurrences' continuation_host_precedence
+  # Public commands exercise status propagation through both ghc_paged and its
+  # callers; cleanup must not replace the distinctive conversion exit.
+  for stage in page-items page-length page-filter accumulator-length final-page; do
+    case "$stage" in
+      page-items) match='.' ;;
+      page-length) match='length' ;;
+      page-filter) match='map(select(.pull_request == null))' ;;
+      accumulator-length) match='add | length' ;;
+      final-page) match='add // [] | .[:$n]' ;;
+    esac
+    continuation_case "jq failure: $stage" continuation_jq_failure "$stage" "$match" issue list --limit 2 --json number
+  done
+  continuation_case 'jq failure: request body stops creation' continuation_jq_failure request-body '{title: $t, body: $b}' \
+    issue create --title Widget --body Details
+  continuation_case 'jq failure: created URL never repeats creation' continuation_jq_failure created-url '.html_url' \
+    issue create --title Widget --body Details
+  continuation_case 'jq failure: final projection publishes no partial output' continuation_jq_failure final-output ' .number' \
+    issue view 7 --json number --jq .number
+  continuation_case 'a missing probe bound starts neither probe nor operation' continuation_missing_bound
+  continuation_case 'pr close rejects --delete-branch before comment or close' continuation_reject_option --delete-branch \
+    pr close 42 --comment Details --delete-branch
+  continuation_case 'issue edit rejects --add-assignee before title edit' continuation_reject_option --add-assignee \
+    issue edit 5 --title Changed --add-assignee bot
+  continuation_case 'pr merge rejects --admin before merging' continuation_reject_option --admin pr merge 42 --squash --admin
+  continuation_case 'GraphQL rejects custom headers before REST' continuation_reject_option --header \
+    api graphql -f 'query={viewer{login}}' --header 'X-Contract: value'
+  continuation_case 'GraphQL rejects extra fields before REST' continuation_reject_option unexpected \
+    api graphql -f 'query={viewer{login}}' -f unexpected=value
+  continuation_case 'compatibility logs contain only transport metadata on every path' continuation_transport_log
+  continuation_case 'copied wrappers and symlinked state cannot reach transport' continuation_wrapper_and_state_safety
+  continuation_case 'failed and pending checks retain stdout with their exit status' continuation_check_output
+  continuation_case 'jq failure: auth status retains conversion failure' continuation_jq_failure auth-status '.login // empty' auth status
+  continuation_case 'unreadable gh field metadata fails closed' continuation_missing_fields
+  continuation_case 'jq failure: path encoding stops deletion' continuation_jq_failure path-encoding '$v|@uri' \
+    issue edit 5 --remove-label private-label
+  [ "$CONTINUATION_FAILURES" = 0 ] || { echo "FAIL: $CONTINUATION_FAILURES continuation cases" >&2; return 1; }
+}
+
+if [ "${AMPLIHACK_GH_COMPAT_TEST_GROUP:-all}" = continuation ]; then
+  continuation_tests
+  echo "PASS: ${PASS} continuation checks"
+  exit 0
+fi
+if [ "${AMPLIHACK_GH_COMPAT_TEST_GROUP:-all}" = integration ]; then
+  integration_tests
+  echo "PASS: ${PASS} integration checks"
+  exit 0
+fi
 
 echo "issue #1484: gh compatibility layer when GraphQL is blocked"
 
@@ -544,8 +852,14 @@ ok "search fallback resolves --author @me and reads full pages"
 # 28. A stderr reader that exits early: the result is exactly the real gh's
 #     (the shim adds no stage of its own that could die of SIGPIPE first).
 rm -f "$AMPLIHACK_GH_COMPAT_STATE" "${AMPLIHACK_GH_COMPAT_STATE}.ok"
-drc=0; dout="$(STUB_GRAPHQL_OK=1 STUB_NOISY=5000 "${WORK}/real/gh" pr view 42 2> >(head -1 >/dev/null))" || drc=$?
-rc=0; out="$(STUB_GRAPHQL_OK=1 STUB_NOISY=5000 gh pr view 42 2> >(head -1 >/dev/null))" || rc=$?
+mkfifo "${WORK}/stderr-direct" "${WORK}/stderr-shim"
+head -1 <"${WORK}/stderr-direct" >/dev/null & reader=$!
+drc=0; dout="$(STUB_GRAPHQL_OK=1 STUB_NOISY=5000 "${WORK}/real/gh" pr view 42 2>"${WORK}/stderr-direct")" || drc=$?
+wait "$reader"
+head -1 <"${WORK}/stderr-shim" >/dev/null & reader=$!
+rc=0; out="$(STUB_GRAPHQL_OK=1 STUB_NOISY=5000 gh pr view 42 2>"${WORK}/stderr-shim")" || rc=$?
+wait "$reader"
+rm -f "${WORK}/stderr-direct" "${WORK}/stderr-shim"
 [ "$rc" = "$drc" ] || fail stderr-closed "exit $rc when the stderr reader went away; the real gh alone exits $drc"
 [ "$out" = "$dout" ] || fail stderr-closed "stdout '$out', the real gh alone gives '$dout'"
 ok "stderr reader exiting early: same exit code and stdout as the real gh"
@@ -963,7 +1277,7 @@ TRACK="${REPO_ROOT}/amplifier-bundle/tools/workflow_issue_tracking.sh"
 # step-03's lookup, exactly as workflow-prep.yaml runs it.
 # shellcheck source=/dev/null
 step03_lookup() ( . "$TRACK"; issue_find_tracker "$1" )
-grep -Fq 'FOUND_URL="$(issue_find_tracker "$ISSUE_TITLE")" || exit 1;' "${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml" \
+grep -Fq 'FOUND_URL="$(issue_find_tracker "$ISSUE_TITLE")" || exit $?;' "${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml" \
   || fail lookup "workflow-prep step-03 does not look its tracker up with issue_find_tracker (and stop on failure)"
 grep -q -- '--search' <(sed -n '/^issue_find_tracker() {/,/^}/p' "$TRACK") && fail lookup "the tracker lookup still searches"
 fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
@@ -1017,9 +1331,9 @@ ok "a failed lookup stops the step; only an unsupported host falls through"
 sed -n '/^issue_find_tracker() {/,/^}/p' "$TRACK" | grep -Ev '^\s*#|--jq' | grep -Eq '(^|[^-])\bjq\b' \
   && fail no-jq "issue_find_tracker runs a system jq"
 nojq="${WORK}/nojq"; mkdir -p "$nojq"
-for b in /usr/bin/* /bin/*; do
-  case "${b##*/}" in jq) continue ;; esac
-  [ -e "$nojq/${b##*/}" ] || ln -s "$b" "$nojq/${b##*/}" 2>/dev/null || true
+for b in bash cat date dirname find grep head id mkdir mktemp mv rm sed sleep stat tr true git perl timeout; do
+  tool="$(command -v "$b")" || fail no-jq "fixture tool missing: $b"
+  ln -s "$tool" "$nojq/$b"
 done
 fresh; : > "$AMPLIHACK_GH_COMPAT_STATE"
 rc=0; err="$(PATH="${WORK}/launcher:${WORK}/real:$nojq" gh issue view 7 --json url 2>&1)" || rc=$?
@@ -1030,9 +1344,9 @@ ok "the lookup needs no system jq; the shim without jq fails loudly"
 # 79. perl-alarm-does-not-bound-go-gh: on the perl path (no GNU timeout) a probe
 #     that ignores SIGALRM, as Go does, is still ended at the deadline.
 notimeout="${WORK}/notimeout"; mkdir -p "$notimeout"
-for b in /usr/bin/* /bin/*; do
-  case "${b##*/}" in timeout|gtimeout) continue ;; esac
-  [ -e "$notimeout/${b##*/}" ] || ln -s "$b" "$notimeout/${b##*/}" 2>/dev/null || true
+for b in bash cat date dirname find grep head id mkdir mktemp mv rm sed sleep stat tr true jq git perl; do
+  tool="$(command -v "$b")" || fail perl-bound "fixture tool missing: $b"
+  ln -s "$tool" "$notimeout/$b"
 done
 fresh; rm -f "$ppf"; start=$SECONDS
 PATH="${WORK}/launcher:${WORK}/real:$notimeout" STUB_GRAPHQL_OK=1 STUB_PROBE_HANG=20 STUB_PROBE_PIDFILE="$ppf" AMPLIHACK_GH_COMPAT_PROBE_TIMEOUT=1 gh pr view 42 >/dev/null 2>&1 || true
@@ -1174,4 +1488,6 @@ case "$hdr" in *"survives an early"*|*"When the real gh fails with"*) fail heade
 case "$hdr" in *"probe"*) ;; *) fail header "contract header does not describe the GraphQL probe" ;; esac
 ok "the contract header matches the probe design"
 
+continuation_tests
+integration_tests
 echo "PASS: ${PASS} checks"
