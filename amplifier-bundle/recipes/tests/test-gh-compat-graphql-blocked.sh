@@ -111,7 +111,12 @@ if [ "$1" = "api" ]; then
   pr='{"number":42,"node_id":"PR_1","title":"feat: widget","body":"Fixes #7","state":"open","draft":true,"merged_at":null,"html_url":"https://github.com/o/r/pull/42","created_at":"2026-01-01T00:00:00Z","user":{"login":"bot"},"labels":[],"mergeable":true,"mergeable_state":"clean","head":{"ref":"feat","sha":"abc123","repo":{"name":"r","full_name":"o/r","owner":{"login":"o"}}},"base":{"ref":"main","sha":"def456","repo":{"full_name":"o/r"}}}'
   # Fork PR (head in fork/r) and odd head branch names, for --delete-branch.
   [ "${STUB_FORK_PR:-0}" = 1 ] && pr="$(printf '%s' "$pr" | jq -c '.head.repo = {name: "r", full_name: "fork/r", owner: {login: "fork"}} | .head.ref = "release-1"')"
-  [ -n "${STUB_HEAD:-}" ] && pr="$(printf '%s' "$pr" | jq -c --arg h "$STUB_HEAD" '.head.ref = $h')"
+  [ "${STUB_HEAD+x}" != "" ] && pr="$(printf '%s' "$pr" | jq -c --arg h "$STUB_HEAD" '.head.ref = $h')"
+  [ "${STUB_HEAD_REPO+x}" = "" ] || pr="$(printf '%s' "$pr" | jq -c --arg r "$STUB_HEAD_REPO" '.head.repo.full_name = $r')"
+  [ "${STUB_BASE_REPO+x}" = "" ] || pr="$(printf '%s' "$pr" | jq -c --arg r "$STUB_BASE_REPO" '.base.repo.full_name = $r')"
+  if [ "$method" = GET ] && [ "${STUB_PULLS_REPLY+x}" != "" ]; then
+    case "$path" in repos/o/r/pulls\?*) printf '%s\n' "$STUB_PULLS_REPLY"; exit 0 ;; esac
+  fi
   # Results past Linux's 128 KiB per-argument limit (MAX_ARG_STRLEN).
   big() { jq -nc --argjson n "$1" '[range(0; $n) | {id: ., node_id: "C\(.)", user: {login: "a"}, body: ("x" * 60000)}]'; }
   case "$method $path" in
@@ -149,6 +154,7 @@ if [ "$1" = "api" ]; then
         printf '{"message":"Validation Failed","errors":[{"message":"A pull request already exists for o:feat."}]}'
         echo "gh: Validation Failed (HTTP 422)" >&2; exit 1
       fi
+      if [ "${STUB_CREATE_REPLY+x}" != "" ]; then printf '%s\n' "$STUB_CREATE_REPLY"; exit 0; fi
       printf '%s\n' "$pr" | jq -c '.number = 43 | .html_url = "https://github.com/o/r/pull/43"' ;;
     "GET repos/o/r") printf '{"full_name":"o/r","default_branch":"main","permissions":{"admin":false,"maintain":false,"push":true,"triage":true,"pull":true}}\n' ;;
     "POST repos/o/r/issues") printf '{"number":8,"html_url":"https://github.com/o/r/issues/8"}\n' ;;
@@ -179,7 +185,8 @@ if [ "$1" = "api" ]; then
     "GET repos/o/r/pulls?"*"head=o%3Afix%2Ba%26b"*) printf '[]\n' ;;
     "POST repos/o/r/labels") printf '{"message":"Validation Failed"}'; echo "gh: Validation Failed (HTTP 422)" >&2; exit 1 ;;
     "GET user") printf '{"login":"bot"}\n' ;;
-    "PUT repos/o/r/pulls/42/merge") printf '{"merged":true}\n' ;;
+    "PUT repos/o/r/pulls/42/merge") if [ "${STUB_MERGE_REPLY+x}" != "" ]; then printf '%s\n' "$STUB_MERGE_REPLY"; else printf '{"merged":true}\n'; fi ;;
+    "DELETE repos/o/r/git/refs/heads/"*) printf '{}\n' ;;
     # Open PRs for the client-side search fallback: #51 first, then draft #50.
     "GET repos/o/r/pulls?state=open&per_page="*)
       printf '[%s,%s,%s]\n' \
@@ -347,9 +354,9 @@ continuation_missing_bound() (
   mkdir -p "$bin"
   # An explicit tool list excludes timeout and perl without enumerating a
   # system directory. A fresh decision must stop before invoking fake gh.
-  for b in bash cat date dirname find grep head id mkdir mktemp mv rm sed sleep stat tr true jq git; do
+  for b in bash cat date dirname find grep head id mkdir mktemp mv rm sed sleep stat tr jq git; do
     found="$(command -v "$b")" || fail no-bound "fixture tool missing: $b"
-    ln -s "$found" "$bin/$b"
+    [ -e "$bin/$b" ] || ln -s "$found" "$bin/$b"
   done
   reset_log
   out="$(PATH="${WORK}/launcher:${WORK}/real:$bin" STUB_GRAPHQL_OK=1 \
@@ -497,6 +504,75 @@ integration_assignee_failure() (
   ! logged_prefix 'api -X POST' || fail assignee-failure "creation followed failed assignee resolution"
 )
 
+integration_rate_reset_failure() (
+  local mode fixture="${WORK}/rate-reset" rc out body expected
+  mkdir -p "${fixture}/bin" "${fixture}/tmp"
+  # Run the recipe's actual step, including its EXIT cleanup and retry loop.
+  awk '
+    /  - id: "step-03-create-issue"/ { step=1; next }
+    step && /    command: \|/ { command=1; next }
+    command && /^    output:/ { step=0; command=0 }
+    command { sub(/^      /, ""); print }
+  ' "${REPO_ROOT}/amplifier-bundle/recipes/workflow-prep.yaml" >"${fixture}/step.sh"
+  cat >"${fixture}/tool" <<'RATE_RESET_FIXTURE'
+#!/bin/bash
+case "${0##*/}" in
+  git)
+    case "$1" in
+      rev-parse) echo true ;;
+      remote) echo https://github.com/o/r ;;
+      *) exit 1 ;;
+    esac ;;
+  gh)
+    printf '%s\n' "$*" >>"$PREP_LOG"
+    case "$1 $2" in
+      'issue list') printf '0\n\n' ;;
+      'label create') ;;
+      'api rate_limit')
+        [ "$PREP_MODE" != transport-failure ] || exit 79
+        printf '{"resources":{"graphql":{"reset":0}}}\n' ;;
+      'issue create')
+        while [ $# -gt 0 ]; do
+          if [ "$1" = --body-file ]; then printf '%s\n' "$2" >>"$PREP_BODIES"; break; fi
+          shift
+        done
+        if [ "$(wc -l <"$PREP_BODIES")" -eq 1 ]; then
+          echo 'gh: API rate limit exceeded (HTTP 429)' >&2; exit 79
+        fi
+        echo https://github.com/o/r/issues/99 ;;
+      *) exit 1 ;;
+    esac ;;
+  jq) echo jq >>"$PREP_LOG"; exit 73 ;;
+  sleep) printf 'sleep %s\n' "$1" >>"$PREP_LOG" ;;
+esac
+RATE_RESET_FIXTURE
+  chmod +x "${fixture}/tool"
+  for body in git gh jq sleep; do cp "${fixture}/tool" "${fixture}/bin/$body"; done
+  for mode in jq-failure transport-failure; do
+    : >"${fixture}/calls"; : >"${fixture}/bodies"; rc=0
+    out="$(env -i PATH="${fixture}/bin:$PATH" HOME="$fixture" TMPDIR="${fixture}/tmp" \
+      REPO_PATH="$fixture" AMPLIHACK_HOME="$REPO_ROOT" TASK_DESCRIPTION='Implement the widget' \
+      RECIPE_VAR_remote_host_type=github RECIPE_VAR_final_requirements=Details \
+      PREP_MODE="$mode" PREP_LOG="${fixture}/calls" PREP_BODIES="${fixture}/bodies" \
+      /bin/bash "${fixture}/step.sh" 2>"${fixture}/err")" || rc=$?
+    if [ "$mode" = jq-failure ]; then
+      expected=1
+      [ "$rc" = 73 ] && [ -z "$out" ] || fail rate-reset "jq exit 73 became $rc, stdout: $out"
+      grep -qx jq "${fixture}/calls" || fail rate-reset "the reset conversion was not exercised"
+      ! grep -q '^sleep ' "${fixture}/calls" || fail rate-reset "a jq failure entered the wait/retry path"
+    else
+      expected=2
+      [ "$rc" = 0 ] && [ "$out" = https://github.com/o/r/issues/99 ] || fail rate-reset "transport fallback changed: exit $rc, stdout: $out"
+      grep -qx 'sleep 5' "${fixture}/calls" || fail rate-reset "failed transport lost the minimum wait"
+      ! grep -qx jq "${fixture}/calls" || fail rate-reset "failed transport reached JSON conversion"
+    fi
+    [ "$(wc -l <"${fixture}/bodies")" -eq "$expected" ] || fail rate-reset "unexpected number of create attempts for $mode"
+    while IFS= read -r body; do
+      [ ! -e "$body" ] || fail rate-reset "the issue body remained after exit $rc"
+    done <"${fixture}/bodies"
+  done
+)
+
 integration_tests() {
   CONTINUATION_FAILURES=0
   continuation_case 'unrelated HTTP 422 preserves exit and cannot enable an unlabelled retry' \
@@ -509,6 +585,7 @@ integration_tests() {
   continuation_case 'PR edits preserve an explicit empty body' integration_empty_body pr
   continuation_case 'probe and REST transport use the selected public host despite GH_HOST' integration_transport_host
   continuation_case 'failed assignee resolution stops issue creation and preserves its exit' integration_assignee_failure
+  continuation_case 'step-03 stops on reset jq failure, preserves transport fallback and cleans its body' integration_rate_reset_failure
   [ "$CONTINUATION_FAILURES" = 0 ] || { echo "FAIL: $CONTINUATION_FAILURES integration cases" >&2; return 1; }
 }
 
@@ -569,8 +646,238 @@ JQ_FAULT
   [ "$CONTINUATION_FAILURES" = 0 ] || { echo "FAIL: $CONTINUATION_FAILURES continuation cases" >&2; return 1; }
 }
 
+# Step 11b review contracts: exact statuses and complete request sequences,
+# with a private scratch root so each failure also proves cleanup.
+review_expect() {
+  local expected="$1" writes="$2" requests="$3" rc=0 actual
+  shift 3
+  mkdir -p "${WORK}/review-tmp"
+  reset_log
+  env TMPDIR="${WORK}/review-tmp" AMPLIHACK_GH_REST_ONLY=1 "$@" >"${WORK}/review.out" 2>"${WORK}/review.err" || rc=$?
+  [ "$rc" = "$expected" ] || fail review "expected exit $expected, got $rc: $(cat "${WORK}/review.err")"
+  actual="$(grep -Ec '^api -X (POST|PUT|PATCH|DELETE) ' "$STUB_LOG" || :)"
+  [ "$actual" = "$writes" ] || fail review "expected $writes writes, got $actual: $(cat "$STUB_LOG")"
+  actual="$(grep -c '^api ' "$STUB_LOG" || :)"
+  [ "$actual" = "$requests" ] || fail review "expected $requests total requests, got $actual: $(cat "$STUB_LOG")"
+  [ -z "$(find "${WORK}/review-tmp" -mindepth 1 -print)" ] || fail review "private scratch files survived exit $rc"
+}
+
+review_merge() (
+  local response parse_rc=0
+  printf '%s' '{"merged":' | "$GHC_TEST_REAL_JQ" -r 'if type == "object" then .merged == true else false end' >/dev/null 2>&1 || parse_rc=$?
+  [ "$parse_rc" -ne 0 ] || fail review "malformed JSON fixture unexpectedly parsed"
+  review_expect 0 2 3 gh pr merge 42 --squash --delete-branch
+  grep -q 'Merged pull request' "${WORK}/review.err" || fail review "confirmed merge was not reported"
+  for response in '{"merged":false}' '{}' '{"merged":"true"}' 'null' 'true' ''; do
+    review_expect 1 1 2 STUB_MERGE_REPLY="$response" gh pr merge 42 --squash --delete-branch
+    ! logged_prefix 'api -X DELETE' || fail review "unconfirmed merge deleted the head"
+    ! grep -q '✓ Merged' "${WORK}/review.err" || fail review "unconfirmed merge reported success"
+  done
+  review_expect "$parse_rc" 1 2 STUB_MERGE_REPLY='{"merged":' gh pr merge 42 --squash --delete-branch
+  grep -q 'mutation was sent' "${WORK}/review.err" || fail review "malformed confirmation lost mutation warning"
+  export GHC_TEST_JQ_MATCH='.merged == true' GHC_TEST_JQ_HIT="${WORK}/merge-jq-hit"
+  rm -f "$GHC_TEST_JQ_HIT"
+  review_expect 73 1 2 PATH="${WORK}/fault-jq:$PATH" gh pr merge 42 --squash --delete-branch
+  [ -s "$GHC_TEST_JQ_HIT" ] || fail review "merge confirmation injection was not reached"
+  grep -q 'mutation was sent' "${WORK}/review.err" || fail review "conversion lost mutation warning"
+  review_expect 1 2 3 STUB_API_ERROR_PATH='repos/o/r/git/refs/heads/feat' gh pr merge 42 --squash --delete-branch
+  grep -q 'pull request merged, but failed to delete' "${WORK}/review.err" || fail review "partial merge/deletion result was lost"
+)
+
+review_merge_options() (
+  local option
+  for option in --match-head-commit --subject --body; do
+    review_expect 1 0 0 gh pr merge 42 --squash --auto "$option" value
+    review_expect 1 0 0 gh pr merge 42 --squash --auto "$option="
+    review_expect 1 0 0 gh pr merge 42 --squash --auto "$option" ""
+    review_expect 1 0 0 gh pr merge 42 --disable-auto "$option" ""
+  done
+  review_expect 1 0 0 gh pr merge 42 --squash --auto --delete-branch
+  review_expect 1 0 0 gh pr merge 42 --merge --squash
+  review_expect 1 0 0 gh pr merge 42 --merge --rebase
+  review_expect 1 0 0 gh pr merge 42 --squash --rebase
+  review_expect 1 0 0 gh pr merge 42 --disable-auto --auto
+  review_expect 1 0 0 gh pr merge 42 --disable-auto --delete-branch
+  review_expect 1 0 0 gh pr merge 42 --disable-auto --squash
+  review_expect 0 1 1 gh pr merge 42 --squash --subject= --body= --match-head-commit=abc123
+  logged 'BODY {"merge_method":"squash","commit_title":"","commit_message":"","sha":"abc123"}' || fail review "supplied empty merge fields disappeared"
+)
+
+review_deletion() (
+  local value
+  for value in '' 'bad..ref' '/bad' 'bad ref' $'feat\n' $'feat\t'; do
+    review_expect 1 0 1 STUB_HEAD="$value" gh pr merge 42 --squash --delete-branch
+  done
+  for value in '' 'o/../r' 'o/r/other' $'o/r\n'; do
+    review_expect 1 0 1 STUB_HEAD_REPO="$value" gh pr merge 42 --squash --delete-branch
+    review_expect 1 0 1 STUB_BASE_REPO="$value" gh pr merge 42 --squash --delete-branch
+  done
+  review_expect 1 0 1 STUB_BASE_REPO='other/r' gh pr merge 42 --squash --delete-branch
+  review_expect 0 1 2 STUB_FORK_PR=1 gh pr merge 42 --squash --delete-branch
+  ! logged_prefix 'api -X DELETE' || fail review "fork branch was deleted"
+  review_expect 0 2 3 STUB_HEAD='feat/a#b+c&d' gh pr merge 42 --squash --delete-branch
+  logged_prefix 'api -X DELETE repos/o/r/git/refs/heads/feat%2Fa%23b%2Bc%26d' || fail review "special ref was not encoded"
+  export GHC_TEST_JQ_MATCH='$v|@uri' GHC_TEST_JQ_HIT="${WORK}/delete-jq-hit"
+  rm -f "$GHC_TEST_JQ_HIT"
+  review_expect 73 0 1 PATH="${WORK}/fault-jq:$PATH" gh pr merge 42 --squash --delete-branch
+  [ -s "$GHC_TEST_JQ_HIT" ] || fail review "deletion encoding injection was not reached"
+)
+
+review_numbers() (
+  local value
+  for value in '"42/merge"' '"42"' 'null' '0' '-1' '1.5' '[]' '{}' 'true'; do
+    review_expect 1 0 1 STUB_PULLS_REPLY="[{\"number\":$value,\"state\":\"open\"}]" gh pr merge feature --squash
+  done
+  review_expect 1 0 1 STUB_PULLS_REPLY='[{}]' gh pr merge feature --squash
+  for value in 42 42.0 4.2e1; do
+    review_expect 0 1 2 STUB_PULLS_REPLY="[{\"number\":$value,\"state\":\"open\"}]" gh pr merge feature --squash
+    logged_prefix 'api -X PUT repos/o/r/pulls/42/merge' || fail review "provider integer was not decimalised"
+  done
+  for value in '"43/labels"' '"43"' 'null' '0' '-1' '1.5' '[]' '{}' 'true'; do
+    review_expect 1 1 1 STUB_CREATE_REPLY="{\"number\":$value,\"html_url\":\"https://github.com/o/r/pull/43\"}" gh pr create --title t --body b --head feature --base main --label x --reviewer bot
+  done
+  for value in 0 000 '#0' https://github.com/o/r/pull/0; do
+    review_expect 1 0 0 gh pr merge "$value" --squash
+  done
+  for value in 0 000 '#0' https://github.com/o/r/issues/0; do
+    review_expect 1 0 0 gh issue edit "$value" --body value
+  done
+  review_expect 0 1 1 gh pr merge 00042 --squash
+  logged_prefix 'api -X PUT repos/o/r/pulls/42/merge' || fail review "explicit number was not decimalised"
+)
+
+review_parser() (
+  local spec group verb flag
+  for spec in 'issue edit --body' 'issue edit --title' 'issue edit --body-file' 'pr edit --body' 'pr merge --subject' 'pr merge --match-head-commit' 'pr create --body' 'issue create --title' 'issue comment -b'; do
+    read -r group verb flag <<SPEC
+$spec
+SPEC
+    review_expect 1 0 0 gh "$group" "$verb" "$flag"
+  done
+  review_expect 1 0 0 gh issue edit 7 --title changed --body
+  review_expect 1 0 0 gh api graphql --field
+  review_expect 1 0 0 gh issue view 7 --repo
+  review_expect 0 1 1 gh issue edit 7 --body=
+  logged 'BODY {"body":""}' || fail review "attached empty body did not clear content"
+  review_expect 0 1 1 gh issue edit 7 --body ""
+  logged 'BODY {"body":""}' || fail review "separate empty body did not clear content"
+  review_expect 0 1 1 gh issue edit 7 -bvalue
+  logged 'BODY {"body":"value"}' || fail review "short attached body disappeared"
+  for spec in 'issue edit' 'issue close' 'issue reopen' 'issue comment' 'pr comment' 'pr edit' 'pr merge' 'pr ready' 'pr close' 'pr diff' 'pr checks' 'pr view' 'issue view'; do
+    read -r group verb <<SPEC
+$spec
+SPEC
+    review_expect 1 0 0 gh "$group" "$verb" 7 8
+  done
+)
+
+review_auth() (
+  local bin="${WORK}/no-bound" mode rc
+  export TMPDIR="${WORK}/review-tmp"
+  continuation_missing_bound
+  for mode in fresh blocked ok unknown direct hostname; do
+    rm -f "${WORK}/auth-state"*
+    case "$mode" in
+      blocked) : >"${WORK}/auth-state" ;;
+      ok|unknown) : >"${WORK}/auth-state.$mode" ;;
+    esac
+    reset_log; rc=0
+    case "$mode" in
+      direct) PATH="${WORK}/launcher:${WORK}/real:$bin" AMPLIHACK_GH_REST_ONLY=1 AMPLIHACK_GH_COMPAT_STATE="${WORK}/auth-state" gh auth status >"${WORK}/auth-test.out" 2>&1 || rc=$? ;;
+      hostname) PATH="${WORK}/launcher:${WORK}/real:$bin" AMPLIHACK_GH_COMPAT_STATE="${WORK}/auth-state" gh auth status --hostname github.com >"${WORK}/auth-test.out" 2>&1 || rc=$? ;;
+      *) PATH="${WORK}/launcher:${WORK}/real:$bin" AMPLIHACK_GH_COMPAT_STATE="${WORK}/auth-state" gh auth status >"${WORK}/auth-test.out" 2>&1 || rc=$? ;;
+    esac
+    case "$mode" in
+      fresh) [ "$rc" = 1 ] && [ ! -s "$STUB_LOG" ] || fail review "unbounded auth ran: $rc, $(cat "$STUB_LOG")" ;;
+      blocked|direct) [ "$rc" = 0 ] && logged 'auth status' && logged_prefix 'api -X GET user' || fail review "cached/direct auth changed" ;;
+      *) [ "$rc" = 1 ] && logged_prefix 'auth status' || fail review "direct auth exit changed" ;;
+    esac
+    ! logged_prefix 'api graphql' || fail review "no-bound auth probed"
+    [ -z "$(find "${WORK}/review-tmp" -mindepth 1 -print)" ] || fail review "auth scratch leaked"
+  done
+)
+
+review_retry() (
+  local fixture="${WORK}/retry-review" mode rc expected mutations requests
+  mkdir -p "$fixture/bin" "$fixture/tmp"
+  cat >"$fixture/tool" <<'RETRY_REVIEW'
+#!/usr/bin/env bash
+case "${0##*/}" in
+  gh)
+    printf '%s\n' "$*" >>"$REVIEW_RETRY_LOG"
+    case "$1 ${2:-}" in
+      'api rate_limit')
+        [ "$REVIEW_RETRY_MODE" != unavailable ] || exit 79
+        [ "$REVIEW_RETRY_MODE" != missing ] || { echo '{"resources":{}}'; exit 0; }
+        printf '{"resources":{"graphql":{"reset":0},"core":{"remaining":10}}}\n' ;;
+      'api repos/'*) printf '[]\n' ;;
+      *)
+        n="$(grep -c '^issue edit' "$REVIEW_RETRY_LOG")"
+        [ "$n" -eq 1 ] || { echo done; exit 0; }
+        echo 'API rate limit exceeded (HTTP 429)' >&2; exit 79 ;;
+    esac ;;
+  jq)
+    case "$REVIEW_RETRY_MODE:$*" in
+      remaining:*remaining*|driver-remaining:*remaining*|reset:*reset*|wait:*reset*|driver:*reset*|rest-list:*|rest-view:*|driver-rest:*'map({'*)
+        echo jq-fault >>"$REVIEW_RETRY_LOG"; echo PARTIAL; exit 73 ;;
+    esac
+    exec "$GHC_TEST_REAL_JQ" "$@" ;;
+  timeout) shift; exec "$@" ;;
+  sleep) printf 'sleep %s\n' "$1" >>"$REVIEW_RETRY_LOG" ;;
+esac
+RETRY_REVIEW
+  chmod +x "$fixture/tool"
+  for mode in gh jq timeout sleep; do ln -s "$fixture/tool" "$fixture/bin/$mode"; done
+  for mode in reset remaining wait driver rest-list rest-view driver-rest driver-remaining unavailable missing; do
+    : >"$fixture/calls"; rc=0
+    PATH="$fixture/bin:$PATH" REVIEW_RETRY_MODE="$mode" REVIEW_RETRY_LOG="$fixture/calls" GH_RETRY_TMPDIR="$fixture/tmp" \
+      /bin/bash -c '
+        . "$1"
+        case "$REVIEW_RETRY_MODE" in
+          reset) gh_rate_limit_reset_epoch graphql ;;
+          remaining) gh_rate_limit_remaining core ;;
+          wait) gh_wait_for_rate_limit graphql ;;
+          rest-list) gh_pr_exists_rest o/r feature ;;
+          rest-view) gh_pr_view_rest o/r 42 ;;
+          *)
+            if [ "$REVIEW_RETRY_MODE" = driver-rest ] || [ "$REVIEW_RETRY_MODE" = driver-remaining ]; then
+              fallback() { gh_pr_exists_rest o/r feature; }
+              GH_RETRY_REST_FALLBACK=fallback
+            fi
+            _gh_retry_core review issue edit 7 --body content ;;
+        esac' review "$RETRY" >"$fixture/out" 2>"$fixture/err" || rc=$?
+    expected=73; mutations=0; requests=1
+    case "$mode" in driver|driver-remaining) mutations=1; requests=2 ;; driver-rest) mutations=1; requests=3 ;; unavailable|missing) expected=0; mutations=2; requests=3 ;; esac
+    [ "$rc" = "$expected" ] || fail review "$mode conversion exit became $rc: $(cat "$fixture/err")"
+    [ "$(grep -c '^issue edit' "$fixture/calls" || :)" = "$mutations" ] || fail review "$mode repeated a mutation"
+    [ "$(grep -Ec '^(api |issue edit)' "$fixture/calls" || :)" = "$requests" ] || fail review "$mode sent a subsequent request"
+    if [ "$mode" = unavailable ] || [ "$mode" = missing ]; then
+      grep -qx 'sleep 5' "$fixture/calls" || fail review "unavailable metadata lost fallback wait"
+      ! grep -qx jq-fault "$fixture/calls" || fail review "unavailable metadata reached conversion"
+    else
+      grep -qx jq-fault "$fixture/calls" || fail review "$mode jq injection missed"
+      ! grep -q '^sleep ' "$fixture/calls" || fail review "$mode conversion failure slept"
+      [ ! -s "$fixture/out" ] || fail review "$mode published partial conversion"
+    fi
+    [ -z "$(find "$fixture/tmp" -mindepth 1 -print)" ] || fail review "$mode retry scratch leaked"
+  done
+)
+
+review_tests() {
+  CONTINUATION_FAILURES=0
+  continuation_case 'merge confirmation gates success and deletion' review_merge
+  continuation_case 'merge options preserve intent or reject before mutation' review_merge_options
+  continuation_case 'deletion is fully prepared before merging' review_deletion
+  continuation_case 'provider and explicit target numbers are validated' review_numbers
+  continuation_case 'missing values and excess targets cause zero writes' review_parser
+  continuation_case 'auth preflights bounds before terminal execution' review_auth
+  continuation_case 'retry conversion failures survive every layer without replay' review_retry
+  [ "$CONTINUATION_FAILURES" = 0 ] || { echo "FAIL: $CONTINUATION_FAILURES review cases" >&2; return 1; }
+}
+
 if [ "${AMPLIHACK_GH_COMPAT_TEST_GROUP:-all}" = continuation ]; then
   continuation_tests
+  review_tests
   echo "PASS: ${PASS} continuation checks"
   exit 0
 fi
@@ -1046,9 +1353,11 @@ ok "results over 128 KiB come back whole; a jq failure fails the call"
 
 # 43. delete-branch-wrong-ref: never the base repo's branch for a fork PR,
 #     and the ref is percent-encoded.
-reset_log; STUB_FORK_PR=1 gh pr merge 42 --squash --delete-branch >/dev/null 2>&1 || true
+reset_log; rc=0; STUB_FORK_PR=1 gh pr merge 42 --squash --delete-branch >/dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] || fail delete-branch "fork merge exited $rc"
 logged_prefix "api -X DELETE" && fail delete-branch "deleted a base-repo branch for a fork PR: $(grep DELETE "$STUB_LOG")"
-reset_log; STUB_HEAD='feat/a#b' gh pr merge 42 --squash --delete-branch >/dev/null 2>&1 || true
+reset_log; rc=0; STUB_HEAD='feat/a#b' gh pr merge 42 --squash --delete-branch >/dev/null 2>&1 || rc=$?
+[ "$rc" = 0 ] || fail delete-branch "encoded head merge exited $rc"
 logged "api -X DELETE repos/o/r/git/refs/heads/feat%2Fa%23b" || fail delete-branch "ref not encoded: $(grep DELETE "$STUB_LOG")"
 ok "--delete-branch: skipped for fork PRs, ref percent-encoded"
 
@@ -1490,4 +1799,5 @@ ok "the contract header matches the probe design"
 
 continuation_tests
 integration_tests
+review_tests
 echo "PASS: ${PASS} checks"

@@ -417,11 +417,27 @@ When a call fails, use the diagnostic to choose the remedy:
   `--search` still work over REST.
 - For refused draft or auto-merge operations, use an environment that supports
   them. `pr ready` and auto-merge use Claude cloud proxy extensions; those
-  routes are not part of GitHub's public REST API.
+  routes are not part of GitHub's public REST API. Auto-merge rejects
+  `--match-head-commit`, `--subject`, `--body` and `--delete-branch`, including
+  explicitly empty subject or body values, because those options cannot be
+  preserved by the proxy route. Conflicting merge modes and combinations with
+  `--disable-auto` fail before mutation.
 - For a branch-deletion failure after merging, inspect the merge and branch
   separately. `pr merge --delete-branch` deletes only a non-empty, encoded
-  same-repository head ref. Fork branches are left alone, and a warning reports
+  same-repository head ref. It validates the deletion plan before sending the
+  merge and requires a response containing boolean `merged:true` before
+  reporting success or deleting. A failed deletion returns nonzero and reports
+  that the merge succeeded. Fork branches are left alone, and a warning reports
   that local branch cleanup is not reproduced.
+- For a missing option value or excess positional targets, correct the
+  arguments and rerun. Each edit accepts one issue or PR. `--body=` and
+  `--body ""` intentionally clear content; a trailing `--body` fails before
+  mutation. Provider-supplied PR numbers must be positive JSON integers before
+  the adapter uses them in endpoints.
+- For JSON conversion failures, inspect any mutation reported as already sent
+  before retrying. The shared retry helper preserves the conversion exit and
+  sends no further request. Unavailable reset metadata still permits the
+  normal header or minimum-wait fallback; a failed REST fallback ends the call.
 - For missing closing references, check the PR body. REST can identify open
   or merged PRs whose bodies close an issue through timeline cross-references.
   A link made only in the Development sidebar has no REST trace. The design

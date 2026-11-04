@@ -358,7 +358,10 @@ ghc_parse() {
     case "$vspec" in
       *" $a:"*)
         name="${vspec#* "$a":}"; name="${name%% *}"
-        if [ "$has" = 0 ]; then val="${2-}"; shift; fi
+        if [ "$has" = 0 ]; then
+          [ $# -ge 2 ] || ghc_die "gh-compat: flag $a needs a value"
+          val="$2"; shift
+        fi
         vn="GHC_O_${name}"; cur="${!vn:-}"
         case "$GHC_REPEAT" in
           *" $name "*) [ -n "$cur" ] && val="$cur,$val" ;;
@@ -379,6 +382,11 @@ ghc_parse() {
       *) GHC_POS+=("$a"); shift ;;
     esac
   done
+  case "$GHC_GROUP $GHC_VERB" in
+    "pr create"|"issue create"|"pr list"|"issue list"|"label list")
+      [ "${#GHC_POS[@]}" -eq 0 ] || ghc_die "gh-compat: this command takes no positional targets" ;;
+    *) [ "${#GHC_POS[@]}" -le 1 ] || ghc_die "gh-compat: this command accepts only one target" ;;
+  esac
   ghc_check_json
 }
 
@@ -399,12 +407,9 @@ ghc_gh_fields() {
   "$GHC_REAL" "$1" "$2" --json 2>&1 | sed -n 's/^  *\([A-Za-z][A-Za-z]*\)$/\1/p' | tr '\n' ' '
 }
 
-# ghc_graphql_blocked — ask GitHub GraphQL the smallest question; true when the
-# answer is the block refusal. GHC_PROBE_RC keeps the probe's exit status.
-ghc_graphql_blocked() {
-  local pf="${GHC_RUN_DIR}/graphql.probe" args=(api graphql) bound=()
-  [ "$GHC_HOST" = github.com ] || args+=(--hostname "$GHC_HOST")
-  GHC_PROBE_RC=0
+# Select a reusable probe bound without contacting the provider.
+ghc_probe_preflight() {
+  [ "${#GHC_PROBE_BOUND[@]}" -eq 0 ] || return 0
   # Bounded, so a hung GraphQL endpoint cannot hang the call behind it, and
   # interruptible: the probe stays in the caller's process group, so a Ctrl-C
   # (SIGINT to the group) or a group TERM ends it and the shim together, and
@@ -417,9 +422,9 @@ ghc_graphql_blocked() {
   #     and HUP are passed to gh and the parent then dies by the same signal.
   #   * else fail before either the probe or requested command can run.
   if timeout --foreground 5 true 2>/dev/null; then
-    bound=(timeout --foreground -k 2 "$GHC_PROBE_TIMEOUT")
+    GHC_PROBE_BOUND=(timeout --foreground -k 2 "$GHC_PROBE_TIMEOUT")
   elif command -v perl >/dev/null 2>&1; then
-    bound=(perl -e 'my ($t, $g) = (shift, 2);
+    GHC_PROBE_BOUND=(perl -e 'my ($t, $g) = (shift, 2);
       my $pid = fork; defined $pid or exit 127;
       unless ($pid) { exec @ARGV; exit 127 }
       my ($timed, $sig) = (0, "");
@@ -434,7 +439,15 @@ ghc_graphql_blocked() {
   else
     ghc_die "gh-compat: a bounded probe needs GNU timeout or Perl; no command was sent"
   fi
-  GH_HOST="$GHC_HOST" "${bound[@]}" "$GHC_REAL" "${args[@]}" -f query='{viewer{login}}' </dev/null >/dev/null 2>"$pf" || GHC_PROBE_RC=$?
+}
+GHC_PROBE_BOUND=()
+# Ask the smallest GraphQL question; GHC_PROBE_RC retains the transport exit.
+ghc_graphql_blocked() {
+  local pf="${GHC_RUN_DIR}/graphql.probe" args=(api graphql)
+  [ "$GHC_HOST" = github.com ] || args+=(--hostname "$GHC_HOST")
+  ghc_probe_preflight
+  GHC_PROBE_RC=0
+  GH_HOST="$GHC_HOST" "${GHC_PROBE_BOUND[@]}" "$GHC_REAL" "${args[@]}" -f query='{viewer{login}}' </dev/null >/dev/null 2>"$pf" || GHC_PROBE_RC=$?
   ghc_log POST graphql "rc=$GHC_PROBE_RC" || ghc_warn "could not write the compatibility transport log"
   grep -Eiq "$GHC_BLOCK_RE" "$pf"
 }
@@ -606,6 +619,24 @@ ghc_resolve_repo() {
 
 ghc_current_branch() { git branch --show-current 2>/dev/null; }
 
+# Only positive decimal endpoint components leave target resolution. Trim
+# leading zeroes without shell arithmetic (which may overflow or read octal).
+ghc_target_number() {
+  local n="$1"
+  case "$n" in ''|*[!0-9]*) ghc_die "gh-compat: invalid positive target number" ;; esac
+  while [ "${n#0}" != "$n" ]; do n="${n#0}"; done
+  [ -n "$n" ] || ghc_die "gh-compat: invalid positive target number"
+  printf '%s\n' "$n"
+}
+
+# Provider identifiers must be JSON numbers, never strings or compound values.
+ghc_provider_number() {
+  local n
+  n="$(ghc_jq -r 'if type == "number" then
+    if . > 0 and floor == . then floor | tostring else "" end else "" end')" || return $?
+  ghc_target_number "$n"
+}
+
 # ghc_uri TEXT — percent-encode one query/path component (branch names may hold
 # '&', '#', '+' ...).
 ghc_uri() { ghc_jq -rn --arg v "$1" '$v|@uri'; }
@@ -619,18 +650,17 @@ ghc_pr_target() {
   case "$t" in
     '') t="$(ghc_current_branch)"; [ -n "$t" ] || ghc_die "gh: could not determine the current branch" ;;
     *[!0-9]*) ;;
-    *) GHC_N="$t"; return 0 ;;
+    *) GHC_N="$(ghc_target_number "$t")" || exit $?; return 0 ;;
   esac
   if [[ "$t" =~ /pull/([0-9]+) ]]; then
-    GHC_N="${BASH_REMATCH[1]}"
+    GHC_N="$(ghc_target_number "${BASH_REMATCH[1]}")" || exit $?
     GHC_REPO="$(ghc_repo_from_url "${t%%/pull/*}")" || ghc_die "gh-compat: cannot use pull request URL $t without GraphQL: the REST fallback serves github.com only"
     return 0
   fi
   owner="${GHC_REPO%%/*}"
   case "$t" in *:*) ;; *) t="${owner}:${t}" ;; esac   # OWNER:BRANCH names a fork's branch
   pulls="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls?head=$(ghc_uri "$t")&state=all&per_page=30")" || exit $?
-  GHC_N="$(printf '%s' "$pulls" | ghc_jq -r 'sort_by(if .state == "open" then 0 else 1 end) | .[0].number // empty')" || ghc_jq_fail
-  [ -n "$GHC_N" ] || ghc_die "no pull requests found for branch \"${t#"${owner}":}\""
+  GHC_N="$(printf '%s' "$pulls" | ghc_jq 'sort_by(if .state == "open" then 0 else 1 end) | .[0].number' | ghc_provider_number)" || exit $?
 }
 
 # ---------------------------------------------------------------------------
@@ -964,7 +994,7 @@ ghc_pr_list() {
 }
 
 ghc_pr_create() {
-  local head base body payload resp url n q ms bf
+  local head base body payload resp url n q ms bf rc
   ghc_parse "$(ghc_vspec pr create)" "-d:draft --draft:draft -f:fill --fill:fill --fill-first:fill_first" "$@"
   ghc_resolve_repo
   head="${GHC_O_head:-$(ghc_current_branch)}"
@@ -989,7 +1019,11 @@ $url"
     fi
     ghc_die "pull request create failed: ${GHC_ERR}"
   fi
-  url="$(printf '%s' "$resp" | ghc_jq -r .html_url)" && n="$(printf '%s' "$resp" | ghc_jq -r .number)" || ghc_jq_fail
+  url="$(printf '%s' "$resp" | ghc_jq -r .html_url)" || ghc_jq_fail
+  n="$(printf '%s' "$resp" | ghc_jq '.number' | ghc_provider_number)" || {
+    rc=$?; ghc_warn "a pull request creation was sent but its number could not be validated; inspect the repository before retrying"
+    exit "$rc"
+  }
   ghc_add_labels "$n" "${GHC_O_label:-}" || ghc_warn "could not add labels ${GHC_O_label} to #${n}: ${GHC_ERR#gh: }"
   if [ -n "${GHC_O_assignee:-}" ]; then
     # The PR exists either way, so its URL still prints; the miss is not silent.
@@ -1130,59 +1164,82 @@ ghc_pr_ready() {
 }
 
 ghc_pr_merge() {
-  local n method=merge obj pr=""
+  local n method=merge obj pr="" response confirmed modes
   ghc_parse "$(ghc_vspec pr merge)" "-m:merge --merge:merge -s:squash --squash:squash -r:rebase --rebase:rebase --auto:auto -d:delete --delete-branch:delete --disable-auto:disable_auto" "$@"
+  modes="${GHC_B_merge:-}${GHC_B_squash:-}${GHC_B_rebase:-}"
+  [ "${#modes}" -le 1 ] || ghc_die "gh-compat: conflicting merge modes"
+  if [ "${GHC_B_disable_auto:-}" = 1 ]; then
+    [ -z "${modes}${GHC_B_auto:-}${GHC_B_delete:-}${GHC_O_sha+x}${GHC_O_subject+x}${GHC_O_body+x}" ] \
+      || ghc_die "gh-compat: --disable-auto cannot be combined with merge options"
+  else
+    [ -n "$modes" ] || ghc_die "--merge, --rebase, or --squash required when not running interactively"
+  fi
+  if [ "${GHC_B_auto:-}" = 1 ]; then
+    [ -z "${GHC_O_sha+x}${GHC_O_subject+x}${GHC_O_body+x}${GHC_B_delete:-}" ] \
+      || ghc_die "gh-compat: --auto cannot preserve --match-head-commit, --subject, --body or --delete-branch; use an immediate merge or terminal gh with GraphQL access"
+  fi
   ghc_resolve_repo
   ghc_pr_target "${GHC_POS[0]:-}"; n="$GHC_N"
   [ "${GHC_B_squash:-}" = 1 ] && method=squash
   [ "${GHC_B_rebase:-}" = 1 ] && method=rebase
-  # gh never picks a merge method for a non-interactive caller.
-  if [ "${GHC_B_disable_auto:-}" != 1 ] && [ -z "${GHC_B_merge:-}${GHC_B_squash:-}${GHC_B_rebase:-}" ]; then
-    ghc_die "--merge, --rebase, or --squash required when not running interactively"
-  fi
   if [ "${GHC_B_disable_auto:-}" = 1 ]; then
     ghc_api_or_die DELETE "repos/${GHC_REPO}/pulls/${n}/ccr/auto_merge" >/dev/null || exit $?; return 0
   fi
+  obj="$(ghc_jq -n --arg m "$method" '{merge_method: $m}')" || ghc_jq_fail
   if [ "${GHC_B_auto:-}" = 1 ]; then
-    ghc_api_or_die PUT "repos/${GHC_REPO}/pulls/${n}/ccr/auto_merge" "$(ghc_jq -n --arg m "$method" '{merge_method: $m}')" >/dev/null || exit $?
+    ghc_api_or_die PUT "repos/${GHC_REPO}/pulls/${n}/ccr/auto_merge" "$obj" >/dev/null || exit $?
     printf '✓ Pull request %s#%s will be automatically merged via %s when all requirements are met\n' "$GHC_REPO" "$n" "$method" >&2
     return 0
   fi
-  # The head branch is read before merging, as gh does, so a failed read never
-  # turns into a DELETE of heads/null afterwards.
-  if [ "${GHC_B_delete:-}" = 1 ]; then pr="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls/${n}")" || exit $?; fi
-  obj="$(ghc_jq -n --arg m "$method" --arg t "${GHC_O_subject:-}" --arg b "${GHC_O_body:-}" --arg s "${GHC_O_sha:-}" \
-    '{merge_method: $m} + (if $t != "" then {commit_title: $t} else {} end) + (if $b != "" then {commit_message: $b} else {} end) + (if $s != "" then {sha: $s} else {} end)')" || ghc_jq_fail
-  ghc_api_or_die PUT "repos/${GHC_REPO}/pulls/${n}/merge" "$obj" >/dev/null || exit $?
+  # Prepare every deletion prerequisite before sending the merge. Fork heads
+  # remain excluded; a conversion or validation error must cause zero writes.
+  if [ "${GHC_B_delete:-}" = 1 ]; then
+    pr="$(ghc_api_or_die GET "repos/${GHC_REPO}/pulls/${n}")" || exit $?
+    ghc_prepare_head_deletion "$pr"
+  fi
+  obj="$(printf '%s' "$obj" | ghc_jq --arg t "${GHC_O_subject:-}" --arg b "${GHC_O_body:-}" --arg s "${GHC_O_sha:-}" \
+    --arg ht "${GHC_O_subject+x}" --arg hb "${GHC_O_body+x}" --arg hs "${GHC_O_sha+x}" \
+    '. + (if $ht != "" then {commit_title: $t} else {} end) + (if $hb != "" then {commit_message: $b} else {} end) + (if $hs != "" then {sha: $s} else {} end)')" || ghc_jq_fail
+  response="$(ghc_api_or_die PUT "repos/${GHC_REPO}/pulls/${n}/merge" "$obj")" || exit $?
+  confirmed="$(printf '%s' "$response" | ghc_jq -r 'if type == "object" then .merged == true else false end')" || ghc_jq_fail
+  [ "$confirmed" = true ] || ghc_die "gh-compat: GitHub did not confirm merged:true; a merge mutation was sent, inspect the pull request before retrying"
   printf '✓ Merged pull request %s#%s\n' "$GHC_REPO" "$n" >&2
-  if [ "${GHC_B_delete:-}" = 1 ]; then ghc_delete_head_branch "$pr"; fi
+  if [ "${GHC_B_delete:-}" = 1 ]; then ghc_delete_head_branch; fi
 }
 
-# ghc_delete_head_branch PR_JSON — --delete-branch after a merge, as gh does it
-# remotely: only a head branch in the base repository is deleted (a fork's
-# branch is never touched, and never mistaken for a same-named base branch),
-# and the ref is percent-encoded so "a#b" cannot turn into "a". gh's local
-# half (switching to the base branch, deleting the local branch) is not
-# reproduced; a local branch of that name is reported, not removed.
-ghc_delete_head_branch() {
-  local branch head_repo base_repo
-  branch="$(printf '%s' "$1" | ghc_jq -r '.head.ref // empty')" \
-    && head_repo="$(printf '%s' "$1" | ghc_jq -r '.head.repo.full_name // empty')" \
-    && base_repo="$(printf '%s' "$1" | ghc_jq -r '.base.repo.full_name // empty')" || ghc_jq_fail
-  [ -n "$branch" ] && [ -n "$base_repo" ] || ghc_die "failed to delete remote branch: the pull request's head branch is unknown"
-  ghc_valid_repo "$base_repo" || ghc_die "gh-compat: invalid branch repository identity"
+# Prepare a same-repository deletion endpoint; never mutate here. Missing or
+# non-string identities and refs fail before the merge, even for fork PRs.
+ghc_prepare_head_deletion() {
+  local head_repo base_repo plain
+  # Reject controls in JSON before command substitution can strip trailing
+  # newlines or NULs and turn an invalid identity/ref into a different value.
+  plain='if type == "string" then
+    if (explode | any(. <= 32 or . == 127)) then "" else . end else "" end'
+  GHC_DELETE_ENDPOINT=""
+  GHC_DELETE_BRANCH="$(printf '%s' "$1" | ghc_jq -r ".head.ref | $plain")" \
+    && head_repo="$(printf '%s' "$1" | ghc_jq -r ".head.repo.full_name | $plain")" \
+    && base_repo="$(printf '%s' "$1" | ghc_jq -r ".base.repo.full_name | $plain")" || ghc_jq_fail
+  ghc_valid_repo "$base_repo" && ghc_valid_repo "$head_repo" || ghc_die "gh-compat: invalid branch repository identity"
   [ "$base_repo" = "$GHC_REPO" ] || ghc_die "gh-compat: branch repository differs from the requested repository"
-  git check-ref-format "refs/heads/$branch" >/dev/null 2>&1 || ghc_die "gh-compat: invalid head branch ref"
-  if [ "$head_repo" != "$base_repo" ]; then
-    :
-  else
-    ghc_api DELETE "repos/${base_repo}/git/refs/heads/$(ghc_uri "$branch")" >/dev/null \
-      || ghc_die "failed to delete remote branch ${branch}: ${GHC_ERR#gh: }"
-    printf '✓ Deleted remote branch %s\n' "$branch" >&2
+  git check-ref-format "refs/heads/$GHC_DELETE_BRANCH" >/dev/null 2>&1 || ghc_die "gh-compat: invalid head branch ref"
+  if [ "$head_repo" = "$base_repo" ]; then
+    GHC_DELETE_ENDPOINT="$(ghc_uri "$GHC_DELETE_BRANCH")" || ghc_jq_fail
+    GHC_DELETE_ENDPOINT="repos/${base_repo}/git/refs/heads/${GHC_DELETE_ENDPOINT}"
   fi
-  if git show-ref --verify --quiet "refs/heads/${branch}" 2>/dev/null; then
-    ghc_warn "local branch ${branch} was left in place (without GraphQL gh-compat deletes the remote branch only)"
+}
+
+# Execute only the prepared plan, after checked merged:true. A failed DELETE
+# is an explicit partial result; local branch cleanup remains the caller's job.
+ghc_delete_head_branch() {
+  if [ -n "$GHC_DELETE_ENDPOINT" ]; then
+    ghc_api DELETE "$GHC_DELETE_ENDPOINT" >/dev/null \
+      || ghc_die "gh-compat: pull request merged, but failed to delete remote branch ${GHC_DELETE_BRANCH}: ${GHC_ERR#gh: }"
+    printf '✓ Deleted remote branch %s\n' "$GHC_DELETE_BRANCH" >&2
   fi
+  if git show-ref --verify --quiet "refs/heads/${GHC_DELETE_BRANCH}" 2>/dev/null; then
+    ghc_warn "local branch ${GHC_DELETE_BRANCH} was left in place (without GraphQL gh-compat deletes the remote branch only)"
+  fi
+  return 0
 }
 
 ghc_pr_close() {
@@ -1276,12 +1333,12 @@ ghc_pr_checks() {
 ghc_issue_target() {
   local t="${1#\#}"
   if [[ "$t" =~ ^https?://.*/(issues|pull)/([0-9]+)/?$ ]]; then
-    GHC_N="${BASH_REMATCH[2]}"
+    GHC_N="$(ghc_target_number "${BASH_REMATCH[2]}")" || exit $?
     GHC_REPO="$(ghc_repo_from_url "${t%/*/*}")" || ghc_die "gh-compat: cannot use issue URL $1 without GraphQL: the REST fallback serves github.com only"
     return 0
   fi
   case "$t" in ''|*[!0-9]*) ghc_die "gh: invalid issue number: $1" ;; esac
-  GHC_N="$t"
+  GHC_N="$(ghc_target_number "$t")" || exit $?
 }
 
 # ghc_issue_enrich ISSUE_JSON — add the fields that cost another request, when
@@ -1481,10 +1538,13 @@ ghc_api_graphql() {
 ghc_auth_status() {
   local outf errf rc=0 login a
   for a in "$@"; do case "$a" in -h|--hostname|--hostname=*|-h?*) GHC_AUTH_HOSTNAME=1 ;; esac; done
+  if [ -z "${GHC_AUTH_HOSTNAME:-}" ] && ! ghc_rest_mode && ! ghc_graphql_ok && ! ghc_graphql_unknown; then
+    ghc_probe_preflight
+  fi
   outf="${GHC_RUN_DIR}/auth.out"; errf="${GHC_RUN_DIR}/auth.err"
   "$GHC_REAL" auth status "$@" >"$outf" 2>"$errf" || rc=$?
   if [ "$rc" -ne 0 ] && [ -z "${GHC_AUTH_HOSTNAME:-}" ]; then
-    if ! ghc_rest_mode && ghc_graphql_blocked; then ghc_mark_blocked; fi
+    if ! ghc_rest_mode && ! ghc_graphql_ok && ! ghc_graphql_unknown && ghc_graphql_blocked; then ghc_mark_blocked; fi
     if ghc_rest_mode && login="$(ghc_api GET user 2>/dev/null | ghc_jq -r '.login // empty')" && [ -n "$login" ]; then
       :
       printf 'github.com\n  ✓ Logged in to github.com account %s (GraphQL is blocked on this host; token verified over REST by amplihack gh-compat)\n' "$login"
@@ -1582,7 +1642,8 @@ ghc_target_host() {
       --hostname=*) hostname="${a#*=}" ;;
       -*)
         case "$vspec" in *" $a:"*)
-          v="${1:-}"; [ $# -eq 0 ] || shift
+          [ $# -gt 0 ] || ghc_die "gh-compat: flag $a needs a value"
+          v="$1"; shift
           case "$a" in -R|--repo) repo="$v" ;; --hostname) hostname="$v" ;; -h) [ "$group $verb" != 'auth status' ] || hostname="$v" ;; esac ;;
         esac ;;
       *) if [ -z "$positional" ]; then positional="$(ghc_positional_host "$a")" || positional=''; fi ;;

@@ -80,38 +80,32 @@ classify_gh_error() {
 }
 
 # --- authoritative reset lookup -------------------------------------------
-# gh_rate_limit_reset_epoch <resource> -> echoes epoch seconds, or returns 1.
+# gh_rate_limit_reset_epoch <resource> -> epoch or empty success if unavailable.
+# Local JSON conversion failures retain their original exit status.
 #
 # Uses the `gh api rate_limit` endpoint, which does NOT itself consume the
 # core/graphql budget.
 gh_rate_limit_reset_epoch() {
   local resource="${1:-graphql}" json reset
-  command -v gh >/dev/null 2>&1 || return 1
-  command -v jq >/dev/null 2>&1 || return 1
-  json="$(gh api rate_limit 2>/dev/null)" || return 1
-  [ -n "$json" ] || return 1
-  reset="$(printf '%s' "$json" | jq -r --arg r "$resource" '.resources[$r].reset // empty' 2>/dev/null)" || return 1
-  case "$reset" in ''|*[!0-9]*) return 1 ;; esac
+  command -v gh >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 127
+  json="$(gh api rate_limit 2>/dev/null)" || return 0
+  [ -n "$json" ] || return 0
+  reset="$(printf '%s' "$json" | jq -r --arg r "$resource" '.resources[$r].reset // empty' 2>/dev/null)" || return $?
+  case "$reset" in ''|*[!0-9]*) return 0 ;; esac
   printf '%s\n' "$reset"
 }
 
-# gh_rate_limit_remaining <resource> -> echoes remaining count, or returns 1.
+# Same unavailable/failed-conversion distinction as the reset reader.
 gh_rate_limit_remaining() {
   local resource="${1:-core}" json remaining
-  command -v gh >/dev/null 2>&1 || return 1
-  command -v jq >/dev/null 2>&1 || return 1
-  json="$(gh api rate_limit 2>/dev/null)" || return 1
-  [ -n "$json" ] || return 1
-  remaining="$(printf '%s' "$json" | jq -r --arg r "$resource" '.resources[$r].remaining // empty' 2>/dev/null)" || return 1
-  case "$remaining" in ''|*[!0-9]*) return 1 ;; esac
+  command -v gh >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 127
+  json="$(gh api rate_limit 2>/dev/null)" || return 0
+  [ -n "$json" ] || return 0
+  remaining="$(printf '%s' "$json" | jq -r --arg r "$resource" '.resources[$r].remaining // empty' 2>/dev/null)" || return $?
+  case "$remaining" in ''|*[!0-9]*) return 0 ;; esac
   printf '%s\n' "$remaining"
-}
-
-# _gh_core_has_budget -> returns 0 when the REST/core budget still has requests.
-_gh_core_has_budget() {
-  local remaining
-  remaining="$(gh_rate_limit_remaining core 2>/dev/null)" || return 1
-  [ "$remaining" -gt 0 ]
 }
 
 # --- reset epoch from response headers (fallback) --------------------------
@@ -144,7 +138,7 @@ gh_wait_for_rate_limit() {
   local resource="${1:-graphql}" stderr_file="${2:-}"
   local now epoch wait floor=5 buffer=3
   now="$(date +%s)"
-  epoch="$(gh_rate_limit_reset_epoch "$resource" 2>/dev/null || true)"
+  epoch="$(gh_rate_limit_reset_epoch "$resource")" || return $?
   if [ -z "$epoch" ] && [ -n "$stderr_file" ]; then
     epoch="$(gh_reset_epoch_from_stderr "$stderr_file" 2>/dev/null || true)"
   fi
@@ -166,14 +160,14 @@ gh_wait_for_rate_limit() {
 # Uses the REST /pulls endpoint (core budget) so a GraphQL-only outage does not
 # block PR-existence checks. Returns 1 when the REST call itself fails.
 gh_pr_exists_rest() {
-  local repo="${1:-}" branch="${2:-}" owner rest
+  local repo="${1:-}" branch="${2:-}" owner rest converted
   [ -n "$repo" ] && [ -n "$branch" ] || return 1
   command -v gh >/dev/null 2>&1 || return 1
   command -v jq >/dev/null 2>&1 || return 1
   owner="${repo%%/*}"
   rest="$(gh api "repos/${repo}/pulls?head=${owner}:${branch}&state=all&per_page=100" 2>/dev/null)" || return 1
   [ -n "$rest" ] || return 1
-  printf '%s' "$rest" | jq -c '
+  converted="$(printf '%s' "$rest" | jq -c '
     (if type == "array" then . else [] end)
     | map({
         number: .number,
@@ -191,20 +185,21 @@ gh_pr_exists_rest() {
         headRepositoryOwner: { login: (.head.repo.owner.login // "") },
         headRepository: { name: (.head.repo.name // "") },
         isCrossRepository: (((.head.repo.full_name // "") != (.base.repo.full_name // "")))
-      })' 2>/dev/null || return 1
+      })' 2>/dev/null)" || return $?
+  printf '%s\n' "$converted"
 }
 
 # gh_pr_view_rest <OWNER/REPO> <pr_number> -> echoes a single JSON object shaped
 # like `gh pr view --json ...` output (core budget). Returns 1 on failure.
 gh_pr_view_rest() {
-  local repo="${1:-}" number="${2:-}" rest
+  local repo="${1:-}" number="${2:-}" rest converted
   [ -n "$repo" ] || return 1
   case "$number" in ''|*[!0-9]*) return 1 ;; esac
   command -v gh >/dev/null 2>&1 || return 1
   command -v jq >/dev/null 2>&1 || return 1
   rest="$(gh api "repos/${repo}/pulls/${number}" 2>/dev/null)" || return 1
   [ -n "$rest" ] || return 1
-  printf '%s' "$rest" | jq -c '{
+  converted="$(printf '%s' "$rest" | jq -c '{
       number: .number,
       title: (.title // ""),
       body: (.body // ""),
@@ -220,7 +215,8 @@ gh_pr_view_rest() {
       headRepositoryOwner: { login: (.head.repo.owner.login // "") },
       headRepository: { name: (.head.repo.name // "") },
       isCrossRepository: (((.head.repo.full_name // "") != (.base.repo.full_name // "")))
-    }' 2>/dev/null || return 1
+    }' 2>/dev/null)" || return $?
+  printf '%s\n' "$converted"
 }
 
 # gh_pr_number_from_url <url> -> echoes the trailing pull-request number, or 1.
@@ -262,7 +258,7 @@ _gh_retry_core() {
   local max_windows="${GH_RETRY_MAX_RL_WINDOWS:-}"
   local rest_fallback="${GH_RETRY_REST_FALLBACK:-}"
   local attempt=0 rl_windows=0 delay=1
-  local stderr_file output status class fb_out
+  local stderr_file output status class fb_out remaining
   GH_RETRY_LAST_CLASS=""
 
   while :; do
@@ -289,15 +285,23 @@ _gh_retry_core() {
       rate_limit)
         # READ path: prefer an immediate REST fallback when the core budget is
         # still available, rather than blocking for the GraphQL reset.
-        if [ -n "$rest_fallback" ] && _gh_core_has_budget; then
-          if fb_out="$("$rest_fallback")"; then
-            echo "WARNING: gh ${label}: GraphQL rate-limited; served via REST /pulls fallback on the core budget (explicit fallback)." >&2
-            rm -f "$stderr_file"
-            printf '%s\n' "$fb_out"
-            GH_RETRY_LAST_CLASS="rate_limit_rest"
-            return 0
+        if [ -n "$rest_fallback" ]; then
+          if remaining="$(gh_rate_limit_remaining core)"; then :; else
+            status=$?; rm -f "$stderr_file"; return "$status"
           fi
-          echo "WARNING: gh ${label}: REST fallback attempt failed; will wait for the authoritative reset instead." >&2
+          if [ -n "$remaining" ] && [ "$remaining" -gt 0 ]; then
+            if fb_out="$("$rest_fallback")"; then
+              echo "WARNING: gh ${label}: GraphQL rate-limited; served via REST /pulls fallback on the core budget (explicit fallback)." >&2
+              rm -f "$stderr_file"
+              printf '%s\n' "$fb_out"
+              GH_RETRY_LAST_CLASS="rate_limit_rest"
+              return 0
+            else
+              status=$?
+              echo "ERROR: gh ${label}: REST fallback failed; no further request was sent." >&2
+              rm -f "$stderr_file"; return "$status"
+            fi
+          fi
         fi
         # Write path, or core also exhausted: wait for the authoritative reset
         # (bounded by the observed reset window) and retry.
@@ -308,19 +312,13 @@ _gh_retry_core() {
           else
             echo "WARNING: gh ${label} hit a GitHub rate limit (exit ${status}); waiting for reset (window ${rl_windows}, no arbitrary cap): $(gh_sanitize_stderr "$stderr_file")" >&2
           fi
-          gh_wait_for_rate_limit "$resource" "$stderr_file"
+          if gh_wait_for_rate_limit "$resource" "$stderr_file"; then :; else
+            status=$?
+            echo "ERROR: gh ${label}: reset wait failed after the initial command; inspect any mutation before retrying." >&2
+            rm -f "$stderr_file"; return "$status"
+          fi
           rm -f "$stderr_file"
           continue
-        fi
-        # Windows exhausted: last-ditch REST for reads before failing closed.
-        if [ -n "$rest_fallback" ] && _gh_core_has_budget; then
-          if fb_out="$("$rest_fallback")"; then
-            echo "WARNING: gh ${label}: GraphQL still exhausted after ${rl_windows} reset window(s); served via REST fallback." >&2
-            rm -f "$stderr_file"
-            printf '%s\n' "$fb_out"
-            GH_RETRY_LAST_CLASS="rate_limit_rest"
-            return 0
-          fi
         fi
         rm -f "$stderr_file"
         return "$status"

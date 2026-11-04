@@ -102,7 +102,7 @@ issue_find_tracker() {
   [ "${#cnt}" -le 4 ] && [ "$cnt" -le 1000 ] || { echo "ERROR: tracking-issue lookup returned an invalid count" >&2; return 1; }
   [ "$cnt" -ge 1000 ] && echo "WARNING: the tracker scan read only the newest 1000 open issues; an older tracker with this title would be missed and a duplicate filed." >&2
   case "$url" in
-    '') [ "$cnt" != 0 ] || { printf '\n'; return 0; }; printf '\n' ;;
+    '') printf '\n' ;;
     https://*/issues/*)
       local expected actual n origin authority host repo
       n="${url##*/}"
@@ -143,6 +143,29 @@ issue_find_tracker() {
 # degrades to local tracking with a WARNING rather than aborting.
 issue_repo_unresolvable() {
   printf '%s' "${1:-}" | grep -Eiq 'Could not resolve to a Repository|Repository not found|Repository.*inaccessible|HTTP 404'
+}
+
+# Keep a failed rate-limit read on the existing minimum wait. A failed JSON
+# conversion is a local defect and must stop the caller before another create.
+issue_wait_for_reset() {
+  local now response epoch="" waitfor floor=5 buffer=3 rc
+  now=$(date +%s)
+  if response=$(timeout 30 gh api rate_limit 2>/dev/null); then
+    epoch=$(printf '%s' "$response" | jq -r '.resources.graphql.reset // empty') || {
+      rc=$?
+      echo "ERROR: could not parse the GitHub rate-limit reset; not retrying issue creation" >&2
+      return "$rc"
+    }
+  fi
+  case "$epoch" in ''|*[!0-9]*) epoch="" ;; esac
+  if [ -z "$epoch" ]; then
+    waitfor=$floor
+  else
+    waitfor=$((epoch - now + buffer))
+    [ "$waitfor" -lt "$floor" ] && waitfor=$floor
+  fi
+  echo "WARNING: GitHub GraphQL rate limit hit during issue creation; waiting ${waitfor}s for authoritative reset (adaptive, bounded by reset window)." >&2
+  sleep "$waitfor"
 }
 
 # issue_create_host_unsupported RC OUTPUT — true only for the failures issue
