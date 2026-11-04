@@ -1,4 +1,10 @@
 #!/bin/bash
+# LEGACY: not a supported install path. This script calls
+# `amplihack hooks merge` and `amplihack xpia health-check`, or Python
+# utilities removed in #637; none of them exists, so it fails at the merge
+# step. Use `amplihack install`, which does not turn XPIA on. Removal is
+# tracked in #1920. See
+# docs/reference/xpia-configuration.md.
 # Enhanced install script with XPIA security hook integration
 # Fixes Issue #137: XPIA hooks not configured during installation
 

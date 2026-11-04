@@ -371,3 +371,84 @@ fn install_with_xpia_scripts_do_not_enable_xpia() {
     // A rename must not turn this into a test that checks nothing.
     assert!(checked > 0, "no install_with_xpia.sh copy found to check");
 }
+
+/// The `/amplihack:xpia` command tells the agent what to run. It must not
+/// send it to the Python tools removed in #637, or to `install_with_xpia.sh`,
+/// which calls `amplihack hooks merge` and `amplihack xpia health-check`,
+/// neither of which exists (#1889 review).
+#[test]
+fn xpia_command_doc_runs_only_tools_that_exist() {
+    let file = "docs/claude/commands/amplihack/xpia.md";
+    let text = read(file);
+    for (n, line) in text.lines().enumerate() {
+        for dead in [
+            "python3 ~/.claude/tools/xpia/",
+            "python3 ~/.claude/tests/run_xpia_tests.py",
+            "~/.claude/tools/amplihack/install_with_xpia.sh",
+            "tools/xpia/hooks/",
+            "xpia_security.yaml",
+            "Specs/xpia_defense_interface.py",
+            "logs/xpia/security_",
+        ] {
+            assert!(
+                !line.contains(dead),
+                "{file}:{}: points at a removed tool or file {dead:?}: {line}",
+                n + 1
+            );
+        }
+    }
+    assert!(
+        text.contains("amplihack-hooks pre-tool-use"),
+        "{file}: must give the hook command that works"
+    );
+}
+
+/// `install_with_xpia.sh` cannot run, so neither copy nor the surfaces table
+/// may present it as a supported install path.
+#[test]
+fn install_with_xpia_scripts_are_marked_legacy() {
+    for file in [
+        "amplifier-bundle/tools/amplihack/install_with_xpia.sh",
+        "docs/claude/tools/amplihack/install_with_xpia.sh",
+    ] {
+        let path = repo().join(file);
+        if path.exists() {
+            let head: String = read(file).lines().take(3).collect::<Vec<_>>().join("\n");
+            assert!(
+                head.contains("# LEGACY: not a supported install path"),
+                "{file}: must open with the legacy notice"
+            );
+        }
+    }
+    // The notice says the script fails because these subcommands do not
+    // exist. If one is added, the notice and #1920 need revisiting.
+    let cli = read("crates/amplihack-cli/src/cli_commands.rs");
+    let commands = cli
+        .split("pub enum Commands")
+        .nth(1)
+        .expect("cli_commands.rs defines pub enum Commands");
+    for variant in ["Hooks", "Xpia"] {
+        assert!(
+            !commands
+                .lines()
+                .map(str::trim)
+                .any(|l| l.starts_with(variant)
+                    && l[variant.len()..].starts_with([' ', ',', '{', '('])),
+            "`amplihack {}` now exists; revisit the install_with_xpia.sh legacy notice",
+            variant.to_lowercase()
+        );
+    }
+    let reference = read("docs/reference/xpia-configuration.md");
+    let row = reference
+        .lines()
+        .find(|l| l.starts_with("| `install_with_xpia.sh`"))
+        .expect("surfaces table lists install_with_xpia.sh");
+    assert!(
+        row.contains("legacy"),
+        "surfaces table must mark it legacy: {row}"
+    );
+    assert!(
+        reference.contains("is not a supported install"),
+        "reference must say the script is not a supported install path"
+    );
+}
