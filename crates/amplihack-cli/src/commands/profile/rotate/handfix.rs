@@ -118,7 +118,7 @@ fn record(l: &mut RotateLedger, m: &ProfileName, account: &super::identify::Acco
     l.account = Some(account.key().to_string());
     l.login_identity = Some(super::login_identity::Identity::new(account));
     l.since = Some(t);
-    l.alert = None;
+    super::alert::clear_alert(l);
     l.guidance = None;
     l.hand_suspect = None;
 }

@@ -16,6 +16,8 @@ pub(super) mod backup;
 #[cfg(unix)]
 mod candidates;
 #[cfg(unix)]
+mod capacity;
+#[cfg(unix)]
 pub(in crate::commands::profile) mod change_log;
 #[cfg(unix)]
 mod control;
@@ -193,7 +195,6 @@ mod tests_switch_candidates;
 mod tests_switch_hold;
 #[cfg(all(test, unix))]
 mod tests_switch_race;
-
 use super::{name::ProfileName, root_config::RootSource, store::ProfileStore};
 
 // Issue #1797: `Probes` is what the usage history records from a cycle.

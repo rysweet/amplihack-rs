@@ -16,9 +16,11 @@ use super::swap;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, exists, now};
 
-/// The outcome a live cycle would record for `decision`. `--dry-run` returns
-/// it so the preview reports what it printed; nothing is recorded and the
-/// exit code does not depend on it.
+/// The outcome `--dry-run` reports for `decision`, matching the line it
+/// printed. It is not always what a live cycle would record: a live stay
+/// without a fresh reading records `stayed-unread`, and a live advisory ALERT
+/// records `stayed`, while this returns `Stayed` and `Alerted`. Nothing is
+/// recorded and the exit code does not depend on it.
 pub(super) fn would(decision: &Decision) -> CycleOutcome {
     match decision {
         Decision::Stay => CycleOutcome::Stayed,

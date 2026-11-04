@@ -2,7 +2,8 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::alert::{alert, alert_key, alert_once, clear_alert, refusal_kind};
+use super::alert::{alert, alert_key, refusal_kind};
+use super::capacity::{self, Room};
 use super::cred_identity::{DEFAULT_READ, ReadFn};
 use super::decide::Decision;
 use super::dry_run::dry_run;
@@ -19,9 +20,8 @@ use super::overflow_record::{
     self, alert_line, block_spend_limited, note_home_key, note_live, note_move, note_per_token,
     refresh_capacity, refuse_key, stay_note, target_check,
 };
+use super::pin::{self, Gate as PinGate}; // the switch-hold gate
 use super::plan_room::no_room;
-// The switch-hold gate.
-use super::pin::{self, Gate as PinGate};
 pub use super::prelude::prototype_guard;
 use super::prelude::{Prelude, locked_prelude};
 use super::revalidate::{self, Verdict};
@@ -269,6 +269,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         ..
     } = m;
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+    let blocked = capacity::spend_blocked(&l, live_name(&first.live), &new_blocks, t);
+    let room = Room::live(probed.as_ref(), &live, first.platform_live(), tag, blocked);
     let stay_line = stay_note(&l, tag, live_name(&first.live), next_plan_reset);
     // Saved before any swap, which reloads the ledger from disk.
     if block_spend_limited(&mut out, &mut l, &new_blocks, t) {
@@ -349,17 +351,15 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 out.emit(t, line);
             }
             note_live(&mut l, &first, t);
-            // A damped stay is a stay: no alert applies, so it clears one.
-            clear_alert(&mut l);
-            CycleOutcome::Stayed
+            // Issue #1907: capacity only on a fresh reading below 100%.
+            room.stay(&mut l)
         }
         Decision::Alert => {
             note_live(&mut l, &first, t);
-            let name = live_name(&first.live);
             let reason = || platform_block_reason(ctx);
             let (kind, line) = alert_line(&first, tag, &live, &others, &key_held, reason);
-            alert_once(&mut out, &mut l, &alert_key(kind, name), t, &line);
-            CycleOutcome::Alerted
+            let key = alert_key(kind, live_name(&first.live));
+            room.alert(&mut out, &mut l, kind, &key, t, &line)
         }
     };
     refresh_capacity(
@@ -384,7 +384,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     for line in swap_back::update(&mut l, s, live_n, probed.as_ref(), left, measured_at, t) {
         out.emit(now(), &line);
     }
-    save(ctx, &mut l, outcome, now(), Some(measured_at), tag)?;
+    let at = capacity::recorded_at(outcome, probed.as_ref(), measured_at);
+    save(ctx, &mut l, outcome, now(), Some(at), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.
     drop(lock);
