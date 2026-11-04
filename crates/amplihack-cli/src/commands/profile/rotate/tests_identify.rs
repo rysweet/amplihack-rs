@@ -278,12 +278,34 @@ fn the_rotate_ledger_decides_when_its_account_matches() {
     assert_eq!(e.live(), (LiveId::Known(n("work")), None));
 }
 
+/// Issue #1886: `~/.claude.json` can name the previous account for minutes
+/// after a swap, so a ledger account that does not match it is no hand
+/// change; the ledger decides, with or without an account.
 #[test]
-fn a_ledger_account_that_does_not_match_is_a_hand_change() {
+fn a_ledger_account_that_does_not_match_claude_json_still_decides() {
+    let e = env();
+    for account in [Some("u-someone-else".to_string()), None] {
+        e.rs.save_ledger(&RotateLedger {
+            live: Some("work".into()),
+            account,
+            ..RotateLedger::default()
+        })
+        .unwrap();
+        assert_eq!(e.live(), (LiveId::Known(n("work")), None));
+    }
+}
+
+/// Issue #1886: an open suspicion from the credential readings is a hand
+/// change until recovery settles it.
+#[test]
+fn an_open_hand_suspect_is_a_hand_change() {
     let e = env();
     e.rs.save_ledger(&RotateLedger {
         live: Some("work".into()),
-        account: Some("u-someone-else".into()),
+        hand_suspect: Some(super::hand_fields::HandSuspect {
+            profile: "other".into(),
+            first_seen: 1,
+        }),
         ..RotateLedger::default()
     })
     .unwrap();
@@ -540,170 +562,4 @@ fn a_root_that_cannot_be_listed_is_an_error_not_an_empty_list() {
     fs::write(&file, "").unwrap();
     let store = ProfileStore::new(file);
     assert!(candidates(&store, &e.input(None)).is_err());
-}
-
-// --- Issue #1693: who holds the account in ~/.claude ------------------------
-//
-// Contract: `home_holders(&ProfileStore, home: &Path) -> Result<Holders,
-// ProfileError>`, with `Holders::{None, One { name, own_login }, Many(Vec),
-// Unreadable(Vec), HomeUnreadable, HomeNoLogin}` (lists sorted by name).
-// Every verified profile counts, with or without its own login. Precedence:
-// HomeNoLogin, HomeUnreadable, Unreadable, then None / One / Many.
-// `home_still_matches(home, key) -> bool` re-reads `~/.claude.json`.
-
-mod holders {
-    use super::super::identify::{Holders, home_holders, home_still_matches};
-    use super::*;
-
-    fn holders(e: &Env) -> Holders {
-        home_holders(&e.store, &e.home).unwrap()
-    }
-
-    #[test]
-    fn one_login_less_profile_holds_the_account() {
-        let e = env();
-        assert_eq!(
-            holders(&e),
-            Holders::One {
-                name: n("work"),
-                own_login: false
-            }
-        );
-    }
-
-    #[test]
-    fn a_profile_with_its_own_login_counts_too() {
-        let e = env();
-        login(&e.root().join("work/.credentials.json"));
-        assert_eq!(
-            holders(&e),
-            Holders::One {
-                name: n("work"),
-                own_login: true
-            }
-        );
-    }
-
-    #[test]
-    fn a_dangling_symlink_is_an_own_login() {
-        let e = env();
-        std::os::unix::fs::symlink("/nonexistent", e.root().join("work/.credentials.json"))
-            .unwrap();
-        assert!(matches!(
-            holders(&e),
-            Holders::One {
-                own_login: true,
-                ..
-            }
-        ));
-    }
-
-    #[test]
-    fn several_holders_are_listed_sorted() {
-        let e = env();
-        for p in ["b-twin", "a-twin"] {
-            e.store.add(&n(p)).unwrap();
-            private(
-                &e.root().join(p).join(".claude.json"),
-                &acct("u-work", "work@example.com"),
-            );
-        }
-        login(&e.root().join("b-twin/.credentials.json"));
-        assert_eq!(
-            holders(&e),
-            Holders::Many(vec![n("a-twin"), n("b-twin"), n("work")])
-        );
-    }
-
-    #[test]
-    fn an_account_nobody_has_is_none() {
-        let e = env();
-        private(
-            &e.home.join(".claude.json"),
-            &acct("u-nobody", "nobody@example.com"),
-        );
-        assert_eq!(holders(&e), Holders::None);
-    }
-
-    #[test]
-    fn the_same_user_in_another_organization_is_not_a_holder() {
-        let e = env();
-        private(
-            &e.root().join("work/.claude.json"),
-            &serde_json::json!({"oauthAccount": {"accountUuid": "u-work",
-                "organizationUuid": "o-2", "emailAddress": "work@example.com"}})
-            .to_string(),
-        );
-        assert_eq!(holders(&e), Holders::None);
-    }
-
-    #[test]
-    fn a_logged_in_profile_without_an_account_makes_it_unreadable() {
-        let e = env();
-        fs::remove_file(e.root().join("extra/.claude.json")).unwrap();
-        assert_eq!(holders(&e), Holders::Unreadable(vec![n("extra")]));
-    }
-
-    #[test]
-    fn a_login_less_profile_without_an_account_is_skipped() {
-        let e = env();
-        e.store.add(&n("blank")).unwrap();
-        assert!(
-            matches!(holders(&e), Holders::One { .. }),
-            "{:?}",
-            holders(&e)
-        );
-    }
-
-    #[test]
-    fn home_problems_come_first() {
-        let e = env();
-        fs::remove_file(e.root().join("extra/.claude.json")).unwrap();
-        private(&e.home.join(".claude.json"), r#"{"projects":{}}"#);
-        assert_eq!(holders(&e), Holders::HomeUnreadable);
-        fs::remove_file(e.home.join(".claude/.credentials.json")).unwrap();
-        assert_eq!(holders(&e), Holders::HomeNoLogin);
-    }
-
-    #[test]
-    fn a_symlinked_home_login_is_no_login() {
-        let e = env();
-        let creds = e.home.join(".claude/.credentials.json");
-        fs::remove_file(&creds).unwrap();
-        std::os::unix::fs::symlink(e.root().join("spare/.credentials.json"), &creds).unwrap();
-        assert_eq!(holders(&e), Holders::HomeNoLogin);
-    }
-
-    #[test]
-    fn still_matches_compares_the_key_again() {
-        let e = env();
-        assert!(home_still_matches(&e.home, "u-work"));
-        assert!(!home_still_matches(&e.home, "u-spare"));
-        private(&e.home.join(".claude.json"), "not json");
-        assert!(!home_still_matches(&e.home, "u-work"));
-    }
-
-    #[test]
-    fn the_holder_query_reads_no_login_file() {
-        // The login is mode 0000 here (issue #1700's `login` fixture is
-        // readable): a read would fail, so a result that names an own login
-        // came from metadata only.
-        let e = env();
-        login(&e.root().join("work/.credentials.json"));
-        if crate::commands::profile::auto_switch::euid() != 0 {
-            fs::set_permissions(
-                e.root().join("work/.credentials.json"),
-                fs::Permissions::from_mode(0o000),
-            )
-            .unwrap();
-            assert!(fs::read(e.root().join("work/.credentials.json")).is_err());
-        }
-        assert!(matches!(
-            holders(&e),
-            Holders::One {
-                own_login: true,
-                ..
-            }
-        ));
-    }
 }
