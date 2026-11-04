@@ -292,6 +292,8 @@ mod profile_issue_1804;
 mod profile_overflow;
 #[path = "profile_platform.rs"]
 mod profile_platform;
+#[path = "profile_rotate_issue_1886.rs"]
+mod profile_rotate_issue_1886;
 #[path = "profile_usage_direct.rs"]
 mod profile_usage_direct;
 #[path = "remote_cli_contract.rs"]

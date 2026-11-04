@@ -51,7 +51,6 @@ fn row(name: &str, rep: UsageReport) -> Row {
         live_in: false,
         overflow: false,
         overflow_blocked_until: None,
-        live_in_home: false,
         api_key: false,
         api_key_blocked: None,
         report: rep,
@@ -1154,21 +1153,6 @@ fn spend_swap_note_names_the_profile_and_says_the_spend_is_unknown() {
 }
 
 #[test]
-fn home_spend_swap_note_is_fixed_text_listed_in_the_docs() {
-    // Crusty round 6: a swap before or during the `~/.claude` row's
-    // `--spend` probe drops that probe's result; the note says so.
-    let got = super::usage_cmd::home_spend_swap_note();
-    assert_eq!(
-        got,
-        "note: the login in ~/.claude changed while the ~/.claude row was probed \
-         for its spend; its spend is unknown this run"
-    );
-    assert!(!got.contains('\n'), "{got}");
-    let doc = include_str!("../../../../../docs/reference/profile-command.md");
-    assert!(doc.contains(&got), "profile-command.md lists the note");
-}
-
-#[test]
 fn swap_warning_is_one_line_that_is_not_a_warning() {
     let name = super::name::ProfileName::parse("work").unwrap();
     let got = swap_warning(&name);
@@ -1286,10 +1270,9 @@ fn json_rows_carry_the_overflow_fields() {
     assert!(arr[1]["overflow_blocked_until"].is_null());
 }
 
-// ---------------------------------------------------------------------------
-// Issue #1693: the `~/.claude` row for an account no profile has
-// ---------------------------------------------------------------------------
-
+/// A row labelled `~/.claude`, live there. `profile usage` no longer builds
+/// one (issue #1886 removed the `.claude.json` hand-change detection that
+/// did); the golden file keeps it to pin the JSON of an unusual label.
 fn home_row() -> Row {
     let mut r = ok(
         "~/.claude",
@@ -1297,34 +1280,7 @@ fn home_row() -> Row {
         Some((95.0, Some(NOW + DAY))),
     );
     r.live_in = true;
-    r.live_in_home = true;
     r
-}
-
-#[test]
-fn the_home_row_is_shown_with_the_literal_label() {
-    let v = json(&[home_row()]);
-    assert_eq!(v[0]["profile"], "~/.claude");
-    assert_eq!(v[0]["account"], "~/.claude");
-    assert_eq!(v[0]["live_in"], "~/.claude");
-    assert_eq!(v[0]["default"], false);
-    assert!(v[0]["leased_to"].is_null());
-}
-
-#[test]
-fn the_home_row_is_never_recorded() {
-    let rows = vec![
-        home_row(),
-        ok("work", Some((20.0, None)), Some((30.0, None))),
-    ];
-    let obs = observations(&rows);
-    let got: Vec<&str> = obs.iter().map(|o| o.profile.as_str()).collect();
-    assert_eq!(got, ["work"]);
-}
-
-#[test]
-fn no_profile_can_be_named_like_the_home_row() {
-    assert!(super::name::ProfileName::parse("~/.claude").is_err());
 }
 
 // ---------------------------------------------------------------------------
@@ -2211,8 +2167,14 @@ mod summary_1797 {
     #[test]
     fn the_golden_rows_summarise_only_subscription_logins() {
         // work 30.5 -> 31 (rounded), spare 68, extra 100, odd 2; the
-        // ~/.claude row and the API-key row are not logins; slow is unknown.
-        let s = summary(&golden_rows()).expect("there are subscription rows");
+        // API-key row is not a login; slow is unknown. The `~/.claude` row
+        // only pins the JSON of an unusual label (issue #1886: `profile
+        // usage` builds no such row), so it is left out here.
+        let rows: Vec<super::Row> = golden_rows()
+            .into_iter()
+            .filter(|r| r.profile != "~/.claude")
+            .collect();
+        let s = summary(&rows).expect("there are subscription rows");
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["valid_readings"], 4);
         assert_eq!(v["unknown"], serde_json::json!(["slow"]));

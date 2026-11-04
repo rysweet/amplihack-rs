@@ -337,17 +337,18 @@ fn no_login_in_home_is_an_alert_and_nothing_moves_in() {
     assert_eq!(ino(&f.slot("spare")), Some(f.spare_ino));
 }
 
-/// Issue #1693: a manual `/login` in `~/.claude` as `extra`'s account left
-/// `spare` (the ledger's live profile) with no login and two copies of
-/// `extra`'s account. One `profile rotate` moves `extra`'s own copy aside,
-/// records `extra` as live, warns that `spare` has no login, and then, in the
-/// same run, swaps to `work`, which has capacity again.
+/// Issue #1886: `~/.claude.json` naming another profile's account is no
+/// hand change. Running sessions rewrite that file from memory, so after a
+/// swap it can still name the previous account. One `profile rotate` moves
+/// no login aside, records nobody in the ledger's place and writes no
+/// recovery or lost-login line; with no usable credential reading (the test
+/// guard sends no request) it can only note that it cannot tell, and the
+/// run goes on to measure and swap as usual.
 #[test]
-fn a_hand_change_to_a_logged_in_profile_recovers_and_swaps_in_the_same_run() {
+fn claude_json_naming_another_profile_moves_nothing_aside() {
     let f = Fixture::new();
     f.ok(&["profile", "rotate"]);
     assert_eq!(f.where_is(f.spare_ino).as_deref(), Some("~/.claude"));
-    // Someone ran /login in ~/.claude as `extra`'s account.
     let home_json = serde_json::json!({"oauthAccount": account_json("extra")});
     private_file(&f.home.join(".claude.json"), &home_json.to_string());
     f.usage("extra", 95, 95);
@@ -356,40 +357,17 @@ fn a_hand_change_to_a_logged_in_profile_recovers_and_swaps_in_the_same_run() {
     before.sort();
     let out = f.ok(&["profile", "rotate"]);
     let stdout = text(&out.stdout);
-    let at = |want: &str| {
-        stdout
-            .find(want)
-            .unwrap_or_else(|| panic!("missing {want:?} in {stdout}"))
-    };
-    let recovered = at(
-        "recovered: ~/.claude and extra held the same account; kept ~/.claude, moved extra's copy to ",
+    assert!(!stdout.contains("recovered:"), "{stdout}");
+    assert!(!stdout.contains("has no login anywhere"), "{stdout}");
+    assert!(
+        !f.root.join(".rejected-logins").exists(),
+        "nothing was set aside: {stdout}"
     );
-    at(
-        "ALERT: profile spare has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login spare",
-    );
-    let swapped = at("swap extra->work ");
-    assert!(recovered < swapped, "recovery comes first: {stdout}");
-    assert!(!stdout.contains("(live=spare); no swap"), "{stdout}");
-    assert!(!stdout.contains("no-capacity"), "{stdout}");
-
-    // `work` is live; the manual login went to `extra`'s slot.
-    assert_eq!(f.where_is(f.live_ino).as_deref(), Some("~/.claude"));
-    assert_eq!(f.where_is(f.spare_ino).as_deref(), Some("extra"));
-    assert_eq!(f.home_account(), "uuid-work");
+    assert_eq!(f.where_is(f.extra_ino).as_deref(), Some("extra"));
     let ledger = f.ledger().unwrap();
-    assert_eq!(ledger["live"], "work", "{ledger}");
-    assert_eq!(ledger["last_cycle"]["outcome"], "swapped", "{ledger}");
-    // Every login still exists exactly once: in a profile, in ~/.claude or
-    // in the backup under .rejected-logins, where `extra`'s copy now is.
-    let mut backups = Vec::new();
-    for e in fs::read_dir(f.root.join(".rejected-logins")).unwrap() {
-        if let Ok(m) = fs::symlink_metadata(e.unwrap().path().join(CREDS)) {
-            backups.push(m.ino());
-        }
-    }
-    assert_eq!(backups, vec![f.extra_ino]);
+    assert_ne!(ledger["live"], "extra", "{ledger}");
+    assert!(ledger.get("hand_suspect").is_none(), "{ledger}");
     let mut after: Vec<u64> = f.logins().iter().map(|(_, i)| *i).collect();
-    after.extend(backups);
     after.sort();
     assert_eq!(after, before, "no login lost or copied");
 }
