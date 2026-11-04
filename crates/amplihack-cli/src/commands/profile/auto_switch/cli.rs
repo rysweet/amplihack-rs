@@ -10,6 +10,8 @@ use super::swap;
 use super::usage::{Reading, Window};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::settings_env;
+use crate::commands::profile::settings_refresh::Refresh;
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::{default_live, duplicates, usage_cmd};
 use anyhow::Result;
@@ -121,8 +123,9 @@ pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> Result<()> {
 }
 
 /// Recovery under the global lock, then `install` with stale wrappers
-/// rewritten. The install lines print first, then one `recovery:` line per
-/// thing recovery did.
+/// rewritten, then the `env` backfill of every profile (issue #1877). The
+/// install lines print first, then one `env: <name> updated` line per profile
+/// changed, then one `recovery:` line per thing recovery did.
 fn repair(store: &ProfileStore) -> Result<()> {
     let state = State::new(store.root())?;
     let done = if state.exists() {
@@ -132,6 +135,18 @@ fn repair(store: &ProfileStore) -> Result<()> {
         Vec::new()
     };
     statusline::install(store, true)?;
+    let home = usage_cmd::home_dir();
+    match settings_env::ensure_all(store, home.as_deref()) {
+        Ok(results) => {
+            for (name, outcome) in results {
+                if outcome.result == Refresh::Updated {
+                    println!("env: {name} updated");
+                }
+                settings_env::report(&outcome);
+            }
+        }
+        Err(outcome) => settings_env::report(&outcome),
+    }
     if done.is_empty() {
         println!("recovery: nothing to do");
     }

@@ -315,6 +315,17 @@ pub(crate) static KEYS: &[KeyDef] = &[
         default: None,
         lower_only: false,
     },
+    KeyDef {
+        name: "profile.settings_template",
+        // Issue #1877: the file whose `env` block profiles inherit instead
+        // of `~/.claude/settings.json`. A path, so user-only and absolute,
+        // with no variable and no default.
+        scope: Scope::UserOnly,
+        kind: ValueKind::AbsPath,
+        env: None,
+        default: None,
+        lower_only: false,
+    },
 ];
 
 /// The schema entry for `name`.

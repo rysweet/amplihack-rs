@@ -34,6 +34,7 @@ mod root_config;
 mod rotate;
 mod rotate_args;
 mod run;
+mod settings_env;
 mod settings_refresh;
 mod shared_dirs;
 mod store;
@@ -89,6 +90,8 @@ mod tests_root_save;
 mod tests_run;
 #[cfg(test)]
 mod tests_seed;
+#[cfg(all(test, unix))]
+mod tests_settings_env;
 #[cfg(all(test, unix))]
 mod tests_settings_refresh;
 #[cfg(all(test, unix))]
@@ -516,7 +519,13 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
     let (store, source) = root_config::store_from_env()?;
     match cmd {
         ProfileCommands::Add { name } => {
-            let dir = store.add(&ProfileName::parse(&name)?)?;
+            let parsed = ProfileName::parse(&name)?;
+            let dir = store.add(&parsed)?;
+            settings_env::report(&settings_env::ensure_for(
+                &store,
+                &parsed,
+                usage_cmd::home_dir().as_deref(),
+            ));
             println!("created profile {name} at {}", dir.display());
             println!("next: amplihack profile login {name}");
             root_cmd::record_after_add(&store);
@@ -560,6 +569,15 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             // `launch` and `claude` redirect that profile to `~/.claude`.
             #[cfg(unix)]
             kind_guard(&store, &name, usage_cmd::home_dir().as_deref(), true)?;
+            // Issue #1877: before the switch, not after it. A swap refused as
+            // `DefaultOnly` still makes `name` the default for new launches
+            // and then returns `Err`, and those launches run in the profile
+            // folder itself, so the backfill must not depend on the outcome.
+            settings_env::report(&settings_env::ensure_for(
+                &store,
+                &name,
+                usage_cmd::home_dir().as_deref(),
+            ));
             rotate::switch_live(&store, &name)?;
         }
         ProfileCommands::Remove { name, yes } => {
@@ -582,6 +600,11 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             }
             // Login spawns claude itself, not through the pre-spawn check.
             shared_dirs::ensure_for(&store, &name);
+            settings_env::report(&settings_env::ensure_for(
+                &store,
+                &name,
+                usage_cmd::home_dir().as_deref(),
+            ));
             #[cfg(unix)]
             login_check::login_checked(&store, &name, usage_cmd::home_dir().as_deref(), || {
                 run::login(&store, &name)
@@ -800,6 +823,14 @@ pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<auto_sw
     let hold = auto_switch::guard_launch(&store, &name, join).map_err(with_hint)?;
     // Issue #1634: the shared session links, under the hold. Never fails.
     shared_dirs::ensure_for(&store, &name);
+    // Issue #1877: every session start backfills `env`, so a profile nobody
+    // ran login, switch or repair on still starts with `XPIA_ENABLED` set.
+    // Reads only when the profile lacks `XPIA_ENABLED`; never fails.
+    settings_env::report(&settings_env::ensure_for(
+        &store,
+        &name,
+        usage_cmd::home_dir().as_deref(),
+    ));
     Ok(hold)
 }
 

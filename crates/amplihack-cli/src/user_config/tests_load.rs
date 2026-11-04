@@ -282,3 +282,49 @@ fn the_legacy_consent_is_a_layer_until_migrated() {
     );
     assert!(e.legacy.is_none());
 }
+
+/// Issue #1877: `profile.settings_template` read from the user file of a
+/// given HOME only. Unset is `Ok(None)`; an invalid value is `Err`, so the
+/// env backfill skips rather than falling back to `~/.claude`.
+mod profile_settings_template {
+    use super::Fx;
+    use crate::user_config::profile_settings_template;
+    use std::path::PathBuf;
+
+    #[test]
+    fn unset_is_none() {
+        let fx = Fx::new();
+        assert_eq!(profile_settings_template(&fx.home), Ok(None));
+    }
+
+    #[test]
+    fn set_returns_the_absolute_path() {
+        let fx = Fx::new();
+        fx.user("[profile]\nsettings_template = \"/srv/team/settings.json\"\n");
+        assert_eq!(
+            profile_settings_template(&fx.home),
+            Ok(Some(PathBuf::from("/srv/team/settings.json")))
+        );
+    }
+
+    #[test]
+    fn a_relative_value_is_an_error_not_a_fallback() {
+        let fx = Fx::new();
+        fx.user("[profile]\nsettings_template = \"team/settings.json\"\n");
+        assert!(profile_settings_template(&fx.home).is_err());
+    }
+
+    #[test]
+    fn a_non_string_value_is_an_error() {
+        let fx = Fx::new();
+        fx.user("[profile]\nsettings_template = 7\n");
+        assert!(profile_settings_template(&fx.home).is_err());
+    }
+
+    #[test]
+    fn a_project_file_cannot_set_it() {
+        let fx = Fx::new();
+        fx.project("[profile]\nsettings_template = \"/tmp/evil.json\"\n");
+        assert_eq!(profile_settings_template(&fx.home), Ok(None));
+    }
+}

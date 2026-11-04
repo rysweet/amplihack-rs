@@ -14,6 +14,7 @@ use crate::commands::profile::auto_switch::kit::{
 };
 use crate::commands::profile::kind::{self, Kind};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::settings_env;
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -286,7 +287,8 @@ fn step(rs: &RotateState, j: &mut RotateJournal, phase: Phase) -> Result<(), Pro
 }
 
 /// Creates the adoption profile and writes the `oauthAccount` block of
-/// `~/.claude.json` into it, and nothing else. `add` copies no login.
+/// `~/.claude.json` into it. `add` copies no login. The `env` backfill then
+/// runs as for `profile add`; its failures only warn.
 fn adopt(store: &ProfileStore, home: &Path) -> Result<ProfileName, ProfileError> {
     let name = adoption_name(store)?;
     let dir = store.add(&name)?;
@@ -298,6 +300,7 @@ fn adopt(store: &ProfileStore, home: &Path) -> Result<ProfileName, ProfileError>
         let bytes = serde_json::to_vec_pretty(&body).map_err(|e| refused(e.to_string()))?;
         write_private_atomic(&dir, CLAUDE_JSON, &bytes)?;
     }
+    settings_env::report(&settings_env::ensure_for(store, &name, Some(home)));
     Ok(name)
 }
 

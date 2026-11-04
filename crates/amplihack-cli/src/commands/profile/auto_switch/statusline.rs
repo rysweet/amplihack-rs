@@ -32,7 +32,7 @@ use super::swap;
 use super::usage::{self, Attribution};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
-use crate::commands::profile::store::ProfileStore;
+use crate::commands::profile::store::{MAX_SETTINGS_BYTES, ProfileStore};
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -42,7 +42,6 @@ use std::time::Duration;
 /// Claude passes a small JSON object; anything this large is passed through
 /// to the original command but not parsed.
 const MAX_PASSTHROUGH: u64 = 16 * 1024 * 1024;
-const MAX_SETTINGS: u64 = 1024 * 1024;
 /// How long a reading waits for the state lock before giving up.
 pub(super) const LOCK_WAIT: Duration = Duration::from_millis(50);
 const SETTINGS: &str = "settings.json";
@@ -442,7 +441,7 @@ fn read_settings(
     name: &ProfileName,
 ) -> Result<serde_json::Map<String, serde_json::Value>, ProfileError> {
     let shown = format!("{name}/{SETTINGS}");
-    match fsx::read_bounded_nofollow(&dir.join(SETTINGS), MAX_SETTINGS) {
+    match fsx::read_bounded_nofollow(&dir.join(SETTINGS), MAX_SETTINGS_BYTES) {
         Ok(None) => Ok(serde_json::Map::new()),
         Ok(Some((raw, meta))) => {
             if meta.uid() != fsx::euid() {

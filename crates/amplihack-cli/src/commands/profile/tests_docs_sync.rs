@@ -10,6 +10,10 @@ fn backticked(line: &str) -> Vec<&str> {
 #[test]
 fn constant_has_the_twelve_documented_keys() {
     assert_eq!(SHARED_SETTINGS_KEYS.len(), 12);
+    // Issue #1877: `settings_env` copies `env` with its own ownership, mode,
+    // key and value checks, so the generic allowlist must not copy it too.
+    assert!(!SHARED_SETTINGS_KEYS.contains(&"env"));
+    assert!(!SHARED_SETTINGS_KEYS.contains(&"apiKeyHelper"));
 }
 
 #[test]
