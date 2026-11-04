@@ -51,13 +51,17 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         }
     }
     let state = State::new(ctx.store.root())?;
-    // Issue #1693: what hand-change recovery would do; it stops here.
+    // Issues #1693, #1886: what hand-change recovery would do, from the same
+    // identity reads; it stops here unless it could only not tell.
     let env_for = || handfix::Env::system(ctx.store.root(), &state, ctx.scan);
-    let lines = handfix::preview(&ctx.store, &ctx.rs, &ctx.home, env_for, now())?;
-    if !lines.is_empty() {
-        for l in &lines {
-            out.emit(0, l);
-        }
+    let read = |p: &std::path::Path| (ctx.identity)(p);
+    let (store, rs, home) = (&ctx.store, &ctx.rs, &ctx.home);
+    let gap = handfix::min_gap(ctx);
+    let lines = handfix::preview(store, rs, home, env_for, &read, gap, now())?;
+    for l in &lines {
+        out.emit(0, l);
+    }
+    if handfix::dry_run_stops(&lines) {
         return Ok(CycleOutcome::Alerted);
     }
     let snap = snapshot(ctx, &state)?;
