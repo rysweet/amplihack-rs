@@ -121,7 +121,8 @@ pub fn login(path: &Path) -> u64 {
     private_file(
         path,
         &serde_json::json!({"claudeAiOauth": {
-            "accessToken": format!("fake-rotation1753-{fake}"), "refreshToken": "SENTINEL-TOKEN"
+            "accessToken": format!("fake-rotation1753-{fake}"), "refreshToken": "SENTINEL-TOKEN",
+            "expiresAt": 4_102_444_800_000_i64
         }})
         .to_string(),
     );
@@ -552,6 +553,7 @@ impl IdentityEndpoint {
                 let mut line = String::new();
                 reader.read_line(&mut line).unwrap();
                 let profile = line.starts_with("GET /api/oauth/profile ");
+                let usage = line.starts_with("GET /api/oauth/usage ");
                 let mut block = None;
                 loop {
                     line.clear();
@@ -572,14 +574,21 @@ impl IdentityEndpoint {
                             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
                     }
                 }
-                let (status, body) = match block.filter(|_| profile) {
-                    Some(b) => (
+                let (status, body) = match block {
+                    Some(b) if profile => (
                         "200 OK",
                         serde_json::json!({"account": {
                         "uuid": b["accountUuid"], "email": b["emailAddress"]
                     }, "organization": {"uuid": b["organizationUuid"]}}),
                     ),
-                    None => ("401 Unauthorized", serde_json::json!({"error":"fake-only"})),
+                    // Valid fake credentials use the existing canned Claude
+                    // fallback. A 401 would request a refresh and alter the
+                    // profile directory even during a dry-run measurement.
+                    Some(_) if usage => (
+                        "503 Service Unavailable",
+                        serde_json::json!({"error":"owned fake usage uses canned fallback"}),
+                    ),
+                    _ => ("401 Unauthorized", serde_json::json!({"error":"fake-only"})),
                 };
                 let body = body.to_string();
                 let response = format!(
