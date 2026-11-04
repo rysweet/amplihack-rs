@@ -232,8 +232,7 @@ steps:
         # `created=false`: the branch pre-existed (its worktree may still be new).
         CREATED=false
 
-        # Push/upstream best-effort (idempotent on existing PR branches); never for an alias.
-        [ -n "$LOCAL_BRANCH" ] || git -C "$WORKTREE_PATH" push origin "$BRANCH_NAME" > /dev/null 2>&1 || true
+        # Upstream only, never a push (#1930): a push here would run the hooks on the local head. Never for an alias.
         [ -n "$LOCAL_BRANCH" ] || git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/${BRANCH_NAME}" "$BRANCH_NAME" > /dev/null 2>&1 || true
 
         echo "" >&2

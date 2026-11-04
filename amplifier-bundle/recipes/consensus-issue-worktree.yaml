@@ -94,7 +94,7 @@ steps:
       # MIRROR (#342): Existing-branch / PR targeting path.
       # When EXISTING_BRANCH or PR_NUMBER is set, reuse the named branch instead
       # of deriving a slug. EXISTING_BRANCH wins on tie (WARNING to stderr).
-      # Keep in sync with default-workflow.yaml step-04-setup-worktree.
+      # Keep in sync with workflow-worktree.yaml step-04-setup-worktree (no push on this path; #1930).
       # ========================================================================
       # --- Bundle tools: TOOLS_DIR serves every helper below (#829/#840, #1808) ---
       # Lookup: step-04's 5-tier ladder, checking for the deconflict helper
