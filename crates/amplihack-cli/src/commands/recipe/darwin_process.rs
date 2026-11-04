@@ -43,6 +43,26 @@ struct BsdInfo {
     start_usec: u64,
 }
 
+// sys/proc_info.h: proc_bsdshortinfo (PROC_PIDT_SHORTBSDINFO = 13).
+// XNU permits this ancestry-only query across UIDs. It carries no start
+// identity and must never authorize a signal or admit a cleanup target.
+#[repr(C)]
+struct ShortBsdInfo {
+    pid: u32,
+    ppid: u32,
+    pgid: u32,
+    status: u32,
+    comm: [u8; 16],
+    flags: u32,
+    uid: u32,
+    gid: u32,
+    ruid: u32,
+    rgid: u32,
+    svuid: u32,
+    svgid: u32,
+    reserved: u32,
+}
+
 #[link(name = "proc")]
 unsafe extern "C" {
     fn proc_pidinfo(pid: i32, flavor: i32, arg: u64, buffer: *mut libc::c_void, size: i32) -> i32;
@@ -72,7 +92,7 @@ pub(super) fn identity(pid: i32) -> Result<Option<Proc>> {
             size_of::<BsdInfo>() as i32,
         )
     };
-    if !complete_read(pid, read, std::io::Error::last_os_error())? {
+    if !complete_read::<BsdInfo>(pid, read, std::io::Error::last_os_error())? {
         return Ok(None);
     }
     // SAFETY: libproc filled the entire structure.
@@ -95,8 +115,8 @@ pub(super) fn identity(pid: i32) -> Result<Option<Proc>> {
     }))
 }
 
-fn complete_read(pid: i32, read: i32, error: std::io::Error) -> Result<bool> {
-    if read == size_of::<BsdInfo>() as i32 {
+fn complete_read<T>(pid: i32, read: i32, error: std::io::Error) -> Result<bool> {
+    if read == size_of::<T>() as i32 {
         return Ok(true);
     }
     if read <= 0 && error.raw_os_error() == Some(libc::ESRCH) {
@@ -113,12 +133,34 @@ pub(super) fn matches(pid: i32, start: u64) -> Result<bool> {
     Ok(inspect(pid)?.is_some_and(|p| p.start == start && p.uid == unsafe { libc::geteuid() }))
 }
 
+fn ancestry(pid: i32) -> Result<Option<ShortBsdInfo>> {
+    let mut info = MaybeUninit::<ShortBsdInfo>::zeroed();
+    errno::set_errno(errno::Errno(0));
+    // SAFETY: the SDK function receives a correctly sized writable structure.
+    let read = unsafe {
+        proc_pidinfo(
+            pid,
+            13,
+            0,
+            info.as_mut_ptr().cast(),
+            size_of::<ShortBsdInfo>() as i32,
+        )
+    };
+    if !complete_read::<ShortBsdInfo>(pid, read, std::io::Error::last_os_error())? {
+        return Ok(None);
+    }
+    // SAFETY: libproc filled the entire structure.
+    let info = unsafe { info.assume_init() };
+    ensure!(info.pid == pid as u32, "invalid Darwin ancestry for {pid}");
+    Ok(Some(info))
+}
+
 pub(super) fn protected() -> Result<BTreeSet<i32>> {
     let mut found = BTreeSet::new();
     let mut pid = std::process::id() as i32;
     while pid > 1 && found.insert(pid) {
-        let Some(p) = inspect(pid)? else { break };
-        pid = p.ppid;
+        let Some(p) = ancestry(pid)? else { break };
+        pid = p.ppid as i32;
     }
     Ok(found)
 }
@@ -163,11 +205,9 @@ fn list(kind: u32, pid: i32) -> Result<Vec<i32>> {
     Ok(pids)
 }
 
-/// Capture the launcher's private session before consuming ANY wait. The
-/// caller holds the actual Child and is its sole reaper. Group provenance is
-/// valid only while waitid(WNOWAIT) and the original leader identity both
-/// prove the session ID is pinned; nothing is signalled by group number.
-pub(super) fn waitable(child: &std::process::Child) -> Result<()> {
+/// Prove the Child is still owned without reaping it. Returns true when an
+/// exit is pending, so the owner can capture its last children before reaping.
+pub(super) fn waitable(child: &std::process::Child) -> Result<bool> {
     loop {
         let mut info = MaybeUninit::<libc::siginfo_t>::zeroed();
         let result = unsafe {
@@ -179,7 +219,14 @@ pub(super) fn waitable(child: &std::process::Child) -> Result<()> {
             )
         };
         if result == 0 {
-            return Ok(());
+            // SAFETY: waitid succeeded; the zeroed si_pid remains zero when
+            // WNOHANG found no exit, otherwise XNU filled the exit record.
+            let info = unsafe { info.assume_init() };
+            ensure!(
+                info.si_pid == 0 || info.si_pid == child.id() as i32,
+                "unexpected waitid runner identity"
+            );
+            return Ok(info.si_pid != 0);
         }
         let error = std::io::Error::last_os_error();
         if error.raw_os_error() == Some(libc::EINTR) {
@@ -189,6 +236,10 @@ pub(super) fn waitable(child: &std::process::Child) -> Result<()> {
     }
 }
 
+/// Capture the launcher's private session before consuming ANY wait. The
+/// caller holds the actual Child and is its sole reaper. Group provenance is
+/// valid only while waitid(WNOWAIT) and the original leader identity both
+/// prove the session ID is pinned; nothing is signalled by group number.
 pub(super) fn unreaped_group(child: &std::process::Child, start: u64) -> Result<super::stop::Tree> {
     fn leader(child: &std::process::Child, start: u64) -> Result<()> {
         let pid = child.id() as i32;
@@ -291,6 +342,7 @@ mod tests {
     #[test]
     fn native_identity_is_start_bound_and_protects_caller() {
         assert_eq!(size_of::<BsdInfo>(), 136);
+        assert_eq!(size_of::<ShortBsdInfo>(), 64);
         let pid = std::process::id() as i32;
         let me = inspect(pid).unwrap().unwrap();
         assert!(matches(pid, me.start).unwrap());
@@ -304,6 +356,75 @@ mod tests {
     }
 
     #[test]
+    fn short_ancestry_query_can_read_root_launchd() {
+        let launchd = ancestry(1).unwrap().unwrap();
+        assert_eq!(launchd.pid, 1);
+        assert_eq!(launchd.uid, 0);
+        // The full identity query remains strict even though ancestry can
+        // cross this boundary. PID 1 is normally the first foreign UID a
+        // developer without privileges can reliably exercise.
+        if unsafe { libc::geteuid() } != 0 {
+            let mut info = MaybeUninit::<BsdInfo>::zeroed();
+            errno::set_errno(errno::Errno(0));
+            let read = unsafe {
+                proc_pidinfo(
+                    1,
+                    3,
+                    0,
+                    info.as_mut_ptr().cast(),
+                    size_of::<BsdInfo>() as i32,
+                )
+            };
+            assert_eq!(read, 0);
+            assert_eq!(errno::errno().0, libc::EPERM);
+        }
+    }
+
+    /// Run the native unit-test binary as root with
+    /// `--ignored cross_uid_ancestor_does_not_block_private_group_capture`.
+    #[test]
+    #[ignore = "requires root to create a nonroot launcher beneath a root-owned supervisor"]
+    fn cross_uid_ancestor_does_not_block_private_group_capture() {
+        use std::os::unix::process::CommandExt;
+        const SUPERVISOR: &str = "AMPLIHACK_TEST_ROOT_SUPERVISOR";
+        if let Ok(supervisor) = std::env::var(SUPERVISOR) {
+            let supervisor: i32 = supervisor.parse().unwrap();
+            assert_ne!(unsafe { libc::geteuid() }, 0);
+            assert_eq!(unsafe { libc::getppid() }, supervisor);
+            assert_eq!(ancestry(supervisor).unwrap().unwrap().uid, 0);
+            let error = inspect(supervisor).unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+                    .raw_os_error(),
+                Some(libc::EPERM)
+            );
+            assert!(protected().unwrap().contains(&supervisor));
+            // Exercise the startup capture, including tree_bound's ancestor
+            // protection, from beneath the foreign-UID parent.
+            private_group_capture_requires_original_waitable_leader();
+            return;
+        }
+        assert_eq!(unsafe { libc::geteuid() }, 0, "run this fixture as root");
+        let test_name = std::thread::current().name().unwrap().to_owned();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &test_name, "--ignored", "--nocapture"])
+            .env(SUPERVISOR, std::process::id().to_string())
+            .gid(65534)
+            .uid(65534)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "nonroot fixture failed: {}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+    }
+
+    #[test]
     fn unreadable_is_never_mistaken_for_terminal() {
         for (read, error) in [
             (0, libc::EPERM),
@@ -311,10 +432,23 @@ mod tests {
             (8, libc::ESRCH),
             (0, 0),
         ] {
-            assert!(complete_read(42, read, std::io::Error::from_raw_os_error(error)).is_err());
+            assert!(
+                complete_read::<BsdInfo>(42, read, std::io::Error::from_raw_os_error(error))
+                    .is_err()
+            );
+            assert!(
+                complete_read::<ShortBsdInfo>(42, read, std::io::Error::from_raw_os_error(error))
+                    .is_err()
+            );
         }
-        assert!(!complete_read(42, 0, std::io::Error::from_raw_os_error(libc::ESRCH)).unwrap());
-        assert!(complete_read(42, 136, std::io::Error::from_raw_os_error(0)).unwrap());
+        assert!(
+            !complete_read::<BsdInfo>(42, 0, std::io::Error::from_raw_os_error(libc::ESRCH))
+                .unwrap()
+        );
+        assert!(complete_read::<BsdInfo>(42, 136, std::io::Error::from_raw_os_error(0)).unwrap());
+        assert!(
+            complete_read::<ShortBsdInfo>(42, 64, std::io::Error::from_raw_os_error(0)).unwrap()
+        );
     }
 
     #[test]
@@ -339,11 +473,23 @@ mod tests {
         }
         let mut child = OwnedChild(command.spawn().unwrap());
         let root = identity(child.0.id() as i32).unwrap().unwrap();
+        assert!(!waitable(&child.0).unwrap());
         assert!(unreaped_group(&child.0, root.start + 1).is_err());
         assert!(child.0.try_wait().unwrap().is_none());
         let found = unreaped_group(&child.0, root.start).unwrap();
         assert_eq!(found.get(&root.pid), Some(&root.start));
         child.0.kill().unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !waitable(&child.0).unwrap() {
+            assert!(std::time::Instant::now() < deadline, "runner did not exit");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            waitable(&child.0).unwrap(),
+            "exit observation must not reap"
+        );
+        assert!(identity(root.pid).unwrap().unwrap().zombie);
+        unreaped_group(&child.0, root.start).unwrap();
         child.0.wait().unwrap();
         assert!(
             unreaped_group(&child.0, root.start).is_err(),

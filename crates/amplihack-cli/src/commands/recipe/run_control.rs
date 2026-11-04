@@ -222,7 +222,8 @@ impl LaunchControl {
         Ok(())
     }
 
-    /// Owner-thread only, before child.try_wait can reap the private leader.
+    /// Owner-thread only, including after WNOWAIT observes the leader's exit
+    /// and before Child::wait reaps it. This pins private-group authority.
     /// The control-server thread never expands a process group.
     pub(super) fn refresh_unreaped(&self, child: &std::process::Child) -> Result<()> {
         if let Some(runner) = self.runner {

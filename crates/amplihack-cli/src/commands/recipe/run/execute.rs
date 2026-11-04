@@ -1562,6 +1562,17 @@ fn wait_for_recipe_runner(
     let started = Instant::now();
     loop {
         observe(child)?;
+        #[cfg(target_os = "macos")]
+        if crate::commands::recipe::darwin_process::waitable(child)
+            .map_err(std::io::Error::other)?
+        {
+            // The runner can fork and exit after the preceding snapshot.
+            // WNOWAIT pins the exited leader while this final capture admits
+            // those last children; only then may wait consume its identity.
+            observe(child)?;
+            return child.wait().map(RunnerWait::Exited);
+        }
+        #[cfg(not(target_os = "macos"))]
         if let Some(status) = child.try_wait()? {
             return Ok(RunnerWait::Exited(status));
         }
@@ -1655,7 +1666,7 @@ fn finish_native_cleanup(child: &mut Child, attribution: Result<()>) -> Result<(
     // A stale Child after an unexpected external reaper is not authority to
     // signal a newly reused PID. WNOWAIT proves our child remains pinned.
     let direct = crate::commands::recipe::darwin_process::waitable(child)
-        .and_then(|()| kill_and_wait_runner(child));
+        .and_then(|_| kill_and_wait_runner(child));
     match attribution {
         Ok(()) => direct,
         Err(error) => Err(cleanup_context(error, Ok(()), direct)),
@@ -2070,6 +2081,93 @@ mod darwin_cleanup_tests {
 
     fn child() -> OwnedChild {
         OwnedChild(Command::new("/bin/sleep").arg("300").spawn().unwrap())
+    }
+
+    #[test]
+    fn child_born_after_last_live_snapshot_is_captured_before_reaping() {
+        use crate::commands::recipe::{darwin_process, stop};
+        use std::os::unix::process::CommandExt;
+
+        struct OwnedTree(stop::Tree);
+        impl Drop for OwnedTree {
+            fn drop(&mut self) {
+                stop::terminate(&self.0);
+                stop::sweep(&self.0, Duration::from_millis(100));
+            }
+        }
+
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "read go; /bin/sleep 300 </dev/null >/dev/null 2>&1 & echo $!; exit 23",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut runner = OwnedChild(command.spawn().unwrap());
+        let root = darwin_process::identity(runner.0.id() as i32)
+            .unwrap()
+            .unwrap();
+        let mut input = runner.0.stdin.take().unwrap();
+        let mut output = BufReader::new(runner.0.stdout.take().unwrap());
+        let mut known = OwnedTree(stop::Tree::new());
+        let mut late_child = None;
+        let mut observations = 0;
+        let result = wait_for_recipe_runner(&mut runner.0, Duration::from_secs(10), |child| {
+            known.0.extend(
+                darwin_process::unreaped_group(child, root.start).map_err(std::io::Error::other)?,
+            );
+            observations += 1;
+            if observations == 1 {
+                assert_eq!(known.0.len(), 1, "runner must still be waiting to fork");
+                // Release the fork only AFTER the last live snapshot. Wait
+                // for a pending exit so the original try_wait path would
+                // deterministically reap before seeing this child.
+                writeln!(input, "go")?;
+                let mut pid = String::new();
+                output.read_line(&mut pid)?;
+                let pid = pid.trim().parse::<i32>().unwrap();
+                let p = darwin_process::inspect(pid).unwrap().unwrap();
+                late_child = Some(OwnedTree(stop::Tree::from([(pid, p.start)])));
+                assert!(!known.0.contains_key(&pid));
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !darwin_process::waitable(child).map_err(std::io::Error::other)? {
+                    assert!(Instant::now() < deadline, "runner did not exit");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                assert!(darwin_process::identity(root.pid).unwrap().unwrap().zombie);
+            }
+            Ok(())
+        })
+        .unwrap();
+        let RunnerWait::Exited(status) = result else {
+            panic!("runner must exit normally");
+        };
+        assert_eq!(status.code(), Some(23));
+        assert_eq!(observations, 2, "exit needs a final unreaped capture");
+        assert!(darwin_process::waitable(&runner.0).is_err());
+        let late_child = late_child.unwrap();
+        for (pid, start) in &late_child.0 {
+            assert_eq!(
+                known.0.get(pid),
+                Some(start),
+                "late child escaped inventory"
+            );
+        }
+        stop::terminate(&known.0);
+        stop::sweep(&known.0, Duration::from_millis(100));
+        stop::verify_terminal(&known.0, Duration::from_secs(5)).unwrap();
+        for (pid, start) in &late_child.0 {
+            assert!(!darwin_process::matches(*pid, *start).unwrap());
+        }
     }
 
     #[test]
