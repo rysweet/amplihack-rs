@@ -378,12 +378,4 @@ pub mod msg {
             "ALERT: profile {name} has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login {name}"
         )
     }
-
-    /// Written once, when `name` is not added to the full `lost_login`
-    /// list and so gets no [`lost_login`] line.
-    pub fn lost_login_cap(name: &ProfileName) -> String {
-        format!(
-            "ALERT: profile {name} has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login {name}"
-        )
-    }
 }

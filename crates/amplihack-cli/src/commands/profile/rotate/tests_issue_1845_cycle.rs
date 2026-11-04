@@ -343,12 +343,9 @@ fn a_relogin_to_the_recorded_account_lets_the_next_cycle_swap() {
         f.logged()
     );
     let log = f.logged();
-    assert!(
-        log.iter()
-            .any(|l| l
-                == "recovered: ~/.claude holds the account recorded for work; kept work as live"),
-        "{log:?}"
-    );
+    // Issue #1886: the relogin is no hand change; `work` stays live with no
+    // recovery line, and the swap away from `work` files the login there.
+    assert!(!log.iter().any(|l| l.starts_with("recovered:")), "{log:?}");
     assert!(!log.iter().any(|l| l.contains("no profile has")), "{log:?}");
     assert_no_account(&log);
     assert_eq!(
