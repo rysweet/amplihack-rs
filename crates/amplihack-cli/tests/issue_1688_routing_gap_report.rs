@@ -70,12 +70,15 @@ fn tool_bin(dir: &Path) -> PathBuf {
             .map(|d| Path::new(d).join(tool))
             .find(|p| p.is_file());
         if let Some(real) = found {
-            let name = if tool == "mktemp" {
-                "mktemp-real"
+            let destination = if tool == "mktemp" {
+                // Some coreutils dispatchers require the utility's basename.
+                let real_bin = bin.join("real-tools");
+                fs::create_dir_all(&real_bin).expect("create real tool bin");
+                real_bin.join(tool)
             } else {
-                tool
+                bin.join(tool)
             };
-            std::os::unix::fs::symlink(real, bin.join(name)).expect("link tool");
+            std::os::unix::fs::symlink(real, destination).expect("link tool");
         }
     }
     assert!(
@@ -83,7 +86,7 @@ fn tool_bin(dir: &Path) -> PathBuf {
         "bash must be available on the host"
     );
     assert!(
-        bin.join("mktemp-real").exists(),
+        bin.join("real-tools/mktemp").exists(),
         "mktemp must be available on the host"
     );
     // The real helper currently supplies a literal /tmp template. Keep its
@@ -96,7 +99,7 @@ set -euo pipefail
 umask 077
 root="${ROUTING_DIAG_TMPDIR:?owned diagnostic fixture required}"
 self="${BASH_SOURCE[0]:?}"
-scratch="$("${self%/*}/mktemp-real" -d "${root:?}/diagnostic.XXXXXX")"
+scratch="$("${self%/*}/real-tools/mktemp" -d "${root:?}/diagnostic.XXXXXX")"
 : "${scratch:?}"
 if [[ "${1:-}" == -d ]]; then
     printf '%s\n' "${scratch:?}"
@@ -281,7 +284,8 @@ fn without_gh_writes_diag_file_with_this_runs_values() {
     let path = PathBuf::from(file);
     assert!(
         path.starts_with(tmp.path().join("tmp")),
-        "diagnostic file must stay in this test's owned scratch: {file}"
+        "diagnostic file must stay in this test's owned scratch: {file}\nstderr: {}",
+        run.stderr
     );
     assert!(path.is_file(), "diag file {file} must exist");
     let body = fs::read_to_string(&path).expect("read diag file");
