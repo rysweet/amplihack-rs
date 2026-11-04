@@ -4,7 +4,7 @@
 
 use super::identify::{Account, LoginKind, login_kind};
 use super::login_identity::{Bound, Reader, UNAVAILABLE};
-use crate::commands::profile::auto_switch::kit::{CREDS, State, exists};
+use crate::commands::profile::auto_switch::kit::{CREDS, State};
 use crate::commands::profile::expected::{self, Record};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
@@ -34,6 +34,17 @@ pub fn record(state: &State, name: &ProfileName) -> Result<Option<Record>, &'sta
     )
 }
 
+/// Only a definite NotFound establishes absence; all other errors are uncertain.
+type MetadataProbe<'a> = &'a dyn Fn(&std::path::Path) -> std::io::Result<std::fs::Metadata>;
+
+fn absent(path: &std::path::Path, probe: MetadataProbe<'_>) -> Result<bool, &'static str> {
+    match probe(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(_) => Err(UNAVAILABLE),
+    }
+}
+
 /// Scan every other profile's record and trusted login identity.
 pub fn scan(
     store: &ProfileStore,
@@ -53,6 +64,20 @@ pub fn scan_except(
     account: &Account,
     reader: Reader<'_>,
     ignored_login: Option<&std::path::Path>,
+) -> Result<Claims, &'static str> {
+    scan_with(store, state, except, account, reader, ignored_login, &|p| {
+        std::fs::symlink_metadata(p)
+    })
+}
+
+fn scan_with(
+    store: &ProfileStore,
+    state: &State,
+    except: Option<&ProfileName>,
+    account: &Account,
+    reader: Reader<'_>,
+    ignored_login: Option<&std::path::Path>,
+    probe: MetadataProbe<'_>,
 ) -> Result<Claims, &'static str> {
     let mut names = store.list().map_err(|_| UNAVAILABLE)?;
     names.sort();
@@ -77,7 +102,7 @@ pub fn scan_except(
         if ignored_login == Some(dir.as_path()) {
             continue;
         }
-        if !exists(&dir.join(CREDS)) {
+        if absent(&dir.join(CREDS), probe)? {
             claims.absent.push(dir.join(CREDS));
             continue;
         }
@@ -100,6 +125,16 @@ impl Claims {
         state: &State,
         introduced: Option<&ProfileName>,
     ) -> bool {
+        self.current_with(store, state, introduced, &|p| std::fs::symlink_metadata(p))
+    }
+
+    fn current_with(
+        &self,
+        store: &ProfileStore,
+        state: &State,
+        introduced: Option<&ProfileName>,
+        probe: MetadataProbe<'_>,
+    ) -> bool {
         let Ok(mut names) = store.list() else {
             return false;
         };
@@ -109,10 +144,14 @@ impl Claims {
         names.sort();
         names == self.names
             && self.bindings.iter().all(Bound::current)
-            && self.absent.iter().all(|p| !exists(p))
+            && self.absent.iter().all(|p| absent(p, probe) == Ok(true))
             && self
                 .records
                 .iter()
                 .all(|(n, r)| record(state, n).as_ref() == Ok(r))
     }
 }
+
+#[cfg(test)]
+#[path = "tests_identity_claims.rs"]
+mod tests;

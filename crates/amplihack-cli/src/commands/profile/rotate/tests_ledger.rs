@@ -843,13 +843,22 @@ fn a_ledger_without_the_new_fields_loads_and_writes_none() {
 
 #[test]
 fn older_readers_get_a_ledger_without_the_new_fields() {
-    let older = for_older_readers(&with_handfix(), true);
+    let mut current = with_handfix();
+    current.login_identity = Some(super::login_identity::Identity::new(
+        &super::identify::Account::from_block(
+            &serde_json::json!({"accountUuid":"fake-u", "organizationUuid":"fake-org"}),
+        )
+        .unwrap(),
+    ));
+    assert!(serde_json::from_slice::<OldLedger>(&serde_json::to_vec(&current).unwrap()).is_err());
+    let older = for_older_readers(&current, true);
     assert_eq!(older.guidance, None);
     assert_eq!(older.home_unreadable_since, None);
     assert!(older.lost_login.is_empty());
+    assert!(older.login_identity.is_none());
     serde_json::from_slice::<OldLedger>(&serde_json::to_vec(&older).unwrap())
         .expect("the old reader accepts it");
-    assert_eq!(for_older_readers(&with_handfix(), false), with_handfix());
+    assert_eq!(for_older_readers(&current, false), current);
 }
 
 #[test]

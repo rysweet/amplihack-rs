@@ -5761,6 +5761,8 @@ completion or confirmed credential-based recovery. Missing-record
 backfill requires that full provenance, or the full outgoing authorization
 in a pending journal. A UUID-only legacy ledger cannot establish an
 organization. A normal observation does not upgrade it into ownership proof.
+Only a definite filesystem `NotFound` proves that another login is absent;
+permission and other metadata errors make scans and revalidation uncertain.
 
 The reader reuses the existing OAuth profile endpoint, endpoint validation,
 response limits, redirect prohibition and five-second timeout. Reads share
@@ -8746,7 +8748,8 @@ The rotate ledger retains its existing fields and adds optional
 `login_identity`, populated from authorized trusted evidence. Its
 `account` remains a display key; the key alone is insufficient for a
 full-account ownership or recovery decision. Older ledger readers ignore
-the new field. Older binaries reject new journal fields/phases, so finish
+the new field after #1659; the existing compatibility projection omits it
+when a strict older rotator is detected. Older binaries reject new journal fields/phases, so finish
 a pending transaction with the binary that understands its journal.
 
 ### Recorded account
