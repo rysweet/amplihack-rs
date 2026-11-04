@@ -663,3 +663,60 @@ fn review_refreshed_candidate_with_conflicting_identity_moves_no_login() {
     assert_eq!(f.ledger().unwrap()["account"], "uuid-work");
     assert!(!f.root.join(".rejected-logins").exists());
 }
+
+#[test]
+fn shared_default_fixture_trusts_the_moving_login_despite_stale_session_json() {
+    let (f, _old_endpoint) = fixture();
+    let identities =
+        crate::support::profile_default::give_logins(&f.home, &f.root, "work", &["spare", "extra"]);
+    let incoming = ino(&f.slot("extra"));
+    let outgoing = ino(&f.home_login());
+    private_file(
+        &f.home.join(".claude.json"),
+        &serde_json::json!({"oauthAccount": account_json("spare")}).to_string(),
+    );
+    let mut command = f.cmd(&["profile", "switch", "extra"]);
+    identities.configure(&mut command);
+    let out = command.output().unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(ino(&f.home_login()), incoming);
+    assert_eq!(ino(&f.slot("work")), outgoing);
+    assert_eq!(f.ledger().unwrap()["account"], "uuid-extra");
+    assert!(!f.root.join(".rejected-logins").exists());
+    assert!(!text(&out.stderr).contains("fake-default1753"));
+}
+
+#[test]
+fn shared_default_fixture_conflicting_credential_moves_nothing() {
+    shared_default_refusal("fake-default1753-spare");
+}
+
+#[test]
+fn shared_default_fixture_unknown_credential_moves_nothing() {
+    shared_default_refusal("fake-default1753-unknown");
+}
+
+fn shared_default_refusal(fake_token: &str) {
+    let (f, _old_endpoint) = fixture();
+    let identities =
+        crate::support::profile_default::give_logins(&f.home, &f.root, "work", &["spare", "extra"]);
+    private_file(
+        &f.slot("extra"),
+        &serde_json::json!({"claudeAiOauth": {
+            "accessToken": fake_token, "expiresAt": 4_102_444_800_000_i64
+        }})
+        .to_string(),
+    );
+    let before = f.logins();
+    let ledger = f.ledger();
+    let mut command = f.cmd(&["profile", "switch", "extra"]);
+    identities.configure(&mut command);
+    let out = command.output().unwrap();
+    assert!(!out.status.success());
+    assert_eq!(f.logins(), before);
+    assert_eq!(f.ledger(), ledger);
+    assert!(!f.root.join(".rejected-logins").exists());
+    for output in [text(&out.stdout), text(&out.stderr), f.log()] {
+        assert!(!output.contains(fake_token), "fake credential leaked");
+    }
+}
