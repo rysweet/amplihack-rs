@@ -53,18 +53,26 @@ fn from_prototype(
 }
 
 /// The one login-less profile whose account is `account`: `Known`, or
-/// `Ambiguous` for several, or `Adopt` for none.
+/// `Ambiguous` for several, or `Adopt` for none. A login-less profile whose
+/// identity record cannot be read refuses the swap: it may be the one that
+/// holds `account`, and adopting a second profile for it is not safe.
 fn match_login_less(store: &ProfileStore, account: &Account) -> Result<LiveId, ProfileError> {
     let state = crate::commands::profile::auto_switch::kit::State::new(store.root())?;
-    let mut matched = store.list()?.into_iter().filter_map(|n| {
-        let name = ProfileName::parse(&n).ok()?;
-        login_less(store, &name)?;
-        super::identity_claims::record(&state, &name)
-            .ok()
-            .flatten()
-            .is_some_and(|r| r.names(account))
-            .then_some(name)
-    });
+    let mut matched = Vec::new();
+    for n in store.list()? {
+        let Ok(name) = ProfileName::parse(&n) else {
+            continue;
+        };
+        if login_less(store, &name).is_none() {
+            continue;
+        }
+        let record = super::identity_claims::record(&state, &name)
+            .map_err(super::swap_authorize::refused)?;
+        if record.is_some_and(|r| r.names(account)) {
+            matched.push(name);
+        }
+    }
+    let mut matched = matched.into_iter();
     Ok(match (matched.next(), matched.next()) {
         (Some(name), None) => LiveId::Known(name),
         (Some(_), Some(_)) => LiveId::Ambiguous,

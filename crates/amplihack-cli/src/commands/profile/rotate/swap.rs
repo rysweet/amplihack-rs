@@ -292,7 +292,7 @@ pub(super) fn swap_with(
         .map_err(|_| ProfileError::RotateInconsistent(UNAVAILABLE.into()))?;
     super::swap_authorize::check_record(store, to, incoming.account())
         .map_err(|_| ProfileError::RotateInconsistent(UNAVAILABLE.into()))?;
-    finish(store, rs, home, &j, &incoming)?;
+    finish(rs, home, &j, &incoming)?;
     drop_locks(store, rs, home, &mut j)?;
     rs.delete_journal()?;
     settle(store, &from, pending);

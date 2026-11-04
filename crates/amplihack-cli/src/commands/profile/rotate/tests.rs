@@ -7,6 +7,8 @@
 #[allow(unused_imports)]
 use super::*;
 
+#[path = "tests_adopt_unreadable.rs"]
+mod tests_adopt_unreadable;
 #[path = "tests_autostart_owner.rs"]
 mod tests_autostart_owner;
 #[path = "tests_damp.rs"]

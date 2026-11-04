@@ -198,7 +198,7 @@ pub(super) fn recover_with(
         return freeze(store, rs, home, j, &why);
     }
     // Moving the outgoing login does not change the incoming binding.
-    finish(store, rs, home, &j, &auth.incoming)?;
+    finish(rs, home, &j, &auth.incoming)?;
     drop_locks(store, rs, home, &mut j)?;
     rs.delete_journal()?;
     super::swap_expect::settle(store, &from, auth.pending);

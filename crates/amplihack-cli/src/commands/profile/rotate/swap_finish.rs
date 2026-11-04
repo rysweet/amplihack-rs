@@ -13,14 +13,12 @@ use std::path::Path;
 
 /// Write `s3` and `s4`; the caller releases its locks before deleting the journal.
 pub(super) fn finish(
-    store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
     j: &RotateJournal,
     incoming: &super::login_identity::Bound,
 ) -> Result<(), ProfileError> {
     let mut j = j.clone();
-    let _ = store;
     if !incoming.current() {
         return Err(ProfileError::RotateInconsistent(
             super::login_identity::UNAVAILABLE.into(),
