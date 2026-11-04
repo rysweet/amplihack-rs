@@ -4829,7 +4829,7 @@ different target, a stay or an ALERT.
 | Change since step 3 | Label | Applies to |
 |---------------------|-------|------------|
 | The rotate journal exists | `journal` | Every decision |
-| The live profile, full trusted live account, material ownership evidence, prototype ledger state, or positively identified login kind differs | `live` | Every decision |
+| The live profile, full trusted live account, material ownership evidence, prototype ledger state, display-file safety of `~/.claude.json`, or login kind in `~/.claude/.credentials.json` differs | `live` | Every decision |
 | The [rotation pin](#rotate-pin) differs | `pin` | Every decision |
 | The [overflow](#rotate-overflow) list or its ignored entries differ | `overflow` | Every decision |
 | The swap target is no longer a candidate | `target eligibility: <reason>` | Swap only |
@@ -6403,6 +6403,12 @@ fix 2: or give <L> its login back and start over: close every claude session tha
 
 Older guidance can include `it has no oauthAccount block`. That display
 condition cannot establish which account the moving credential belongs to.
+
+The retained file-problem labels are `it does not exist`,
+`it cannot be read (a symlink, not a regular file, over 32 MiB or not readable)`,
+`it is not valid JSON (empty or cut short)`, `it is not a JSON object`, and
+`its oauthAccount block has no usable accountUuid or emailAddress`.
+These labels describe display metadata and never replace trusted identity.
 
 Separately, every cycle writes, for each profile in the ledger's
 `lost_login`:
