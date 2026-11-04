@@ -480,6 +480,8 @@ impl Fixture {
 }
 
 /// Neither a token, a secret key, an account uuid nor an e-mail is printed.
+/// Issue #1753: the fake access tokens the identity endpoints accept count
+/// as tokens.
 pub fn assert_no_secrets(out: &Output) {
     for s in [text(&out.stdout), text(&out.stderr)] {
         assert_text_has_no_secrets(&s);
@@ -487,7 +489,15 @@ pub fn assert_no_secrets(out: &Output) {
 }
 
 pub fn assert_text_has_no_secrets(s: &str) {
-    for secret in ["SENTINEL", "SECRET-KEY", "uuid-", "@example.com"] {
+    for secret in [
+        "SENTINEL",
+        "SECRET-KEY",
+        "uuid-",
+        "@example.com",
+        "fake-rotation1753-",
+        "fake-default1753-",
+        "fake-task1753-",
+    ] {
         assert!(!s.contains(secret), "secret {secret:?} printed: {s}");
     }
 }
