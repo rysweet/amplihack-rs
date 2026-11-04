@@ -60,8 +60,11 @@ pub struct AfterSwapFailure {
 }
 
 /// A log or ALERT line as a refusal reason, without its prefix.
+/// `RotateRefused` adds `swap refused: ` itself, so an ALERT that already
+/// carries it loses it here.
 fn reason_of(line: &str) -> String {
     let text = line.strip_prefix("ALERT: ").unwrap_or(line);
+    let text = text.strip_prefix("swap refused: ").unwrap_or(text);
     text.strip_prefix("skip: ").unwrap_or(text).to_string()
 }
 

@@ -437,6 +437,12 @@ fn credential_conflict_moves_nothing_even_when_session_matches_record() {
         "trusted account conflicts with the record"
     );
     assert!(!text(&out.stderr).is_empty(), "conflict must be visible");
+    assert_eq!(
+        text(&out.stderr).matches("swap refused:").count(),
+        1,
+        "the refusal is named once: {}",
+        text(&out.stderr)
+    );
     assert_eq!(f.logins(), before);
     assert_eq!(f.ledger().unwrap(), ledger);
     assert!(!f.root.join(".rejected-logins").exists());
