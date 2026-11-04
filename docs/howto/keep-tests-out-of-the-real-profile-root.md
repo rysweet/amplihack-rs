@@ -236,5 +236,6 @@ nothing and passes.
 
 - [`amplihack profile` reference](../reference/profile-command.md#seeding) - The #1661 refresh and the #1699 refusal
 - [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md) - The other stops `isolated(..)` sets
+- [Give Test Logins a Fake Account Identity](./give-test-logins-a-fake-account-identity.md) - Fake logins and a loopback identity endpoint for profile tests (#1753)
 - [AMPLIHACK_* environment variables](../reference/amplihack-env-vars.md) - `AMPLIHACK_CLAUDE_PROFILE_ROOT`
 - [Developing amplihack](./develop-amplihack.md) - Build and test setup
