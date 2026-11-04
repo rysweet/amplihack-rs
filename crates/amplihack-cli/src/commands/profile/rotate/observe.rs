@@ -354,6 +354,7 @@ pub(super) fn decide_measured(
     Ok(Measurement {
         live: probe.reading,
         others,
+        // Always `Some` here: `Room::of` treats `None` (test stubs only) as clean.
         probed: Some((probe, probes)),
         decision,
         note,

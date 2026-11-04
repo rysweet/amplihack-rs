@@ -231,6 +231,12 @@ fn d2_an_advisory_alert_becomes_hard_when_the_live_login_fills() {
             .is_none_or(|a| a.is_null()),
         "a hard ALERT clears the advisory key"
     );
+    let log = log_of(&e);
+    assert_eq!(
+        count(&log, NO_CAPACITY_LINE),
+        1,
+        "the same key moving from advisory to hard is not logged again:\n{log}"
+    );
 }
 
 // --- (e) No capacity anywhere: the ALERT blocks ----------------------------

@@ -34,9 +34,7 @@ impl Room {
         if platform_live {
             return Self::Platform;
         }
-        let clean = probe.is_none_or(|p| {
-            !(p.carried || p.unknown || p.still_running || p.spend_limit) && below_100(&p.reading)
-        });
+        let clean = probe.is_none_or(|p| trusted(p) && below_100(&p.reading));
         if clean && below_100(reading) {
             Self::Fresh
         } else {
@@ -101,10 +99,14 @@ impl Room {
     }
 }
 
+/// Neither carried, unknown, still running nor spend-limited.
+fn trusted(p: &Probed) -> bool {
+    !(p.carried || p.unknown || p.still_running || p.spend_limit)
+}
+
 /// A probe that read the login in this cycle, whatever it found.
 fn read(p: &Probed) -> bool {
-    !(p.carried || p.unknown || p.still_running || p.spend_limit)
-        && !matches!(p.reading, Reading::Failed)
+    trusted(p) && !matches!(p.reading, Reading::Failed)
 }
 
 /// A measured reading strictly below 100 on both windows; NaN is not.
