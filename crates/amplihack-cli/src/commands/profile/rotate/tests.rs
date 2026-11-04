@@ -13,6 +13,8 @@ mod tests_autostart_owner;
 mod tests_damp;
 #[path = "tests_decide.rs"]
 mod tests_decide;
+#[path = "tests_fixture_identity.rs"]
+pub(super) mod tests_fixture_identity;
 #[path = "tests_gate_record.rs"]
 mod tests_gate_record;
 #[path = "tests_issue_1886_collide.rs"]
@@ -21,6 +23,8 @@ mod tests_issue_1886_collide;
 mod tests_ledger;
 #[path = "tests_live_readers.rs"]
 mod tests_live_readers;
+#[path = "tests_login_identity.rs"]
+mod tests_login_identity;
 #[path = "tests_overflow.rs"]
 mod tests_overflow;
 #[path = "tests_owner.rs"]

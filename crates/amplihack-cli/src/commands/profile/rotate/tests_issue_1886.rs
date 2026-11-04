@@ -788,6 +788,8 @@ mod note_live_account {
             live: LiveId::Known(n(live)),
             proto: None,
             account: account.map(String::from),
+            trusted_live: None,
+            identity_refusal: None,
             candidates: Vec::new(),
             skips: Vec::new(),
             sees_sessions: true,

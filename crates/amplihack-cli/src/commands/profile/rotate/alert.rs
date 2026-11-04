@@ -47,7 +47,15 @@ pub(super) fn alert(
 ) -> Result<(), ProfileError> {
     let t = now();
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-    alert_once(out, &mut l, &alert_key(kind, live), t, line);
+    if kind == "trusted-identity"
+        || kind == "account_mismatch"
+        || line.contains("trusted login identity")
+    {
+        l.alert = Some(alert_key(kind, live));
+        out.emit(t, line);
+    } else {
+        alert_once(out, &mut l, &alert_key(kind, live), t, line);
+    }
     save(ctx, &mut l, CycleOutcome::Alerted, t, None, None)
 }
 

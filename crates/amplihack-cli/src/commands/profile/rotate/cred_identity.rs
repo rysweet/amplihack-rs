@@ -39,12 +39,12 @@ pub fn read_with(ep: &Endpoints, creds_dir: &Path) -> Result<Account, &'static s
 }
 
 /// The reader a new `Ctx` starts with: [`read_direct`], except in unit
-/// tests, where a cycle that a test did not give its own reader must never
-/// send a fixture's token anywhere; there it reads nothing and fails.
+/// tests, where only explicitly tagged task-owned fake identities are
+/// accepted by a local fixture reader and no token is sent anywhere.
 #[cfg(not(test))]
 pub const DEFAULT_READ: ReadFn = read_direct;
 #[cfg(test)]
-pub const DEFAULT_READ: ReadFn = |_| Err(usage_direct::reason::TRANSPORT);
+pub const DEFAULT_READ: ReadFn = super::tests::tests_fixture_identity::read;
 
 /// [`read_with`] against the endpoints the environment sets. Their
 /// warnings are dropped here: the cycle's measurement resolves the same

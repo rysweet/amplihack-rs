@@ -80,9 +80,34 @@ pub fn euid() -> u32 {
 /// Its values are sentinels that must never be printed; its inode
 /// identifies it.
 pub fn login(path: &Path) -> u64 {
+    assert!(path.starts_with(std::env::temp_dir()));
+    let dir = path.parent().unwrap();
+    let session = if dir.ends_with(".claude") {
+        dir.parent().unwrap()
+    } else {
+        dir
+    };
+    let name = if dir.ends_with(".claude") {
+        "work"
+    } else {
+        dir.file_name().unwrap().to_str().unwrap()
+    };
+    let block = fs::read(session.join(".claude.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| v.get("oauthAccount").cloned())
+        .unwrap_or_else(|| account_json(name));
+    let fake = serde_json::to_vec(&block)
+        .unwrap()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
     private_file(
         path,
-        r#"{"claudeAiOauth":{"accessToken":"SENTINEL-TOKEN","refreshToken":"SENTINEL-TOKEN"}}"#,
+        &serde_json::json!({"claudeAiOauth": {
+            "accessToken": format!("fake-rotation1753-{fake}"), "refreshToken": "SENTINEL-TOKEN"
+        }})
+        .to_string(),
     );
     ino(path).unwrap()
 }
@@ -100,6 +125,7 @@ pub fn account_json(p: &str) -> serde_json::Value {
 }
 
 pub struct Fixture {
+    identity: IdentityEndpoint,
     pub tmp: tempfile::TempDir,
     pub home: PathBuf,
     pub root: PathBuf,
@@ -130,6 +156,7 @@ impl Fixture {
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
         write_executable(&tools.join("claude"), FAKE_CLAUDE, 0o755);
         let mut f = Self {
+            identity: IdentityEndpoint::new(),
             root: home.join("profiles"),
             tmp,
             home,
@@ -166,6 +193,17 @@ impl Fixture {
             })
             .to_string(),
         );
+        let expected = f.root.join(".auto-switch.d/expected");
+        fs::create_dir_all(&expected).unwrap();
+        for dir in [f.root.join(".auto-switch.d"), expected.clone()] {
+            fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        for name in PROFILES {
+            private_file(
+                &expected.join(format!("{name}.json")),
+                &serde_json::json!({"account": format!("uuid-{name}"), "org": null}).to_string(),
+            );
+        }
         f.usage("work", 90, 40);
         f.usage("spare", 10, 20);
         f.usage("extra", 50, 50);
@@ -318,6 +356,11 @@ impl Fixture {
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
             )
             .env("HOME", &self.home)
+            .env("AMPLIHACK_PROFILE_USAGE_API_BASE", &self.identity.base)
+            .env(
+                "AMPLIHACK_PROFILE_USAGE_TOKEN_URL",
+                format!("{}/v1/oauth/token", self.identity.base),
+            )
             // Issue #1844: these tests read through `claude`; a reading an
             // earlier command recorded must not stand in as a passive one.
             .env("AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS", "0")
@@ -459,4 +502,95 @@ fn unix_now() -> i64 {
         .duration_since(UNIX_EPOCH)
         .expect("clock after 1970");
     i64::try_from(d.as_secs()).expect("seconds fit in i64")
+}
+
+/// Loopback-only profile answers for the explicit fake moving identities.
+struct IdentityEndpoint {
+    base: String,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+impl IdentityEndpoint {
+    fn new() -> Self {
+        use std::io::{BufRead, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let stop = std::sync::Arc::new(AtomicBool::new(false));
+        let stopping = stop.clone();
+        let worker = std::thread::spawn(move || {
+            while !stopping.load(Ordering::Relaxed) {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(v) => v,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(e) => panic!("fake identity listener: {e}"),
+                };
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let profile = line.starts_with("GET /api/oauth/profile ");
+                let mut block = None;
+                loop {
+                    line.clear();
+                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                    if let Some((k, v)) = line.split_once(':')
+                        && k.eq_ignore_ascii_case("authorization")
+                        && let Some(hex) = v.trim().strip_prefix("Bearer fake-rotation1753-")
+                    {
+                        let bytes: Result<Vec<u8>, _> = hex
+                            .as_bytes()
+                            .chunks_exact(2)
+                            .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16))
+                            .collect();
+                        block = bytes
+                            .ok()
+                            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+                    }
+                }
+                let (status, body) = match block.filter(|_| profile) {
+                    Some(b) => (
+                        "200 OK",
+                        serde_json::json!({"account": {
+                        "uuid": b["accountUuid"], "email": b["emailAddress"]
+                    }, "organization": {"uuid": b["organizationUuid"]}}),
+                    ),
+                    None => ("401 Unauthorized", serde_json::json!({"error":"fake-only"})),
+                };
+                let body = body.to_string();
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                if let Err(e) = stream.write_all(response.as_bytes()) {
+                    assert!(
+                        matches!(
+                            e.kind(),
+                            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                        ),
+                        "{e}"
+                    );
+                }
+            }
+        });
+        Self {
+            base,
+            stop,
+            worker: Some(worker),
+        }
+    }
+}
+impl Drop for IdentityEndpoint {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.worker.take().unwrap().join().unwrap();
+    }
 }

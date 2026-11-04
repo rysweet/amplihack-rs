@@ -26,6 +26,9 @@
 mod isolated_amplihack;
 mod support;
 
+#[path = "issue_1753_login_identity.rs"]
+mod issue_1753_login_identity;
+
 #[path = "active_agent_binary_default_test.rs"]
 mod active_agent_binary_default;
 #[path = "agentic_workflow_first_present.rs"]

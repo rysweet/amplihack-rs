@@ -240,6 +240,16 @@ impl Fx {
         } else {
             self.root.join(place)
         };
+        let path = p.join(CREDS);
+        if path.exists() {
+            let mut v: serde_json::Value =
+                serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            v["task1753FakeIdentity"] = a
+                .as_ref()
+                .map(|a| a.block())
+                .unwrap_or(serde_json::Value::Null);
+            private(&path, &v.to_string());
+        }
         READINGS.with(|r| r.borrow_mut().insert(p, a));
     }
 
@@ -360,7 +370,11 @@ impl Fx {
     fn recorded_m(&self) {
         let l = self.ledger();
         assert_eq!(l.live.as_deref(), Some(M));
-        assert_eq!(l.account, None, "never written from .claude.json");
+        assert_eq!(
+            l.account.as_deref(),
+            Some("u-mike"),
+            "from trusted credential evidence"
+        );
         assert_eq!(l.since, Some(T));
         assert_eq!(l.alert, None);
         assert_eq!(l.guidance, None);

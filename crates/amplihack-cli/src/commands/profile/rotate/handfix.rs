@@ -66,7 +66,10 @@ struct Mover<'r> {
 /// refusal; nothing else moved. A refusal leaves no new directory: the
 /// checks that can refuse run before it is made, and the one after it
 /// removes it again (only while it is empty).
-fn move_aside(c: &Confirmed<'_>, mv: &Mover<'_>) -> Result<PathBuf, (String, Fix)> {
+fn move_aside(
+    c: &Confirmed<'_>,
+    mv: &Mover<'_>,
+) -> Result<(PathBuf, super::identify::Account), (String, Fix)> {
     let changed = || (CHANGED.to_string(), Fix::Retry);
     // SEC-9: each read ends within IDENTITY_READ_TIMEOUT, so the two
     // re-reads together take at most 10 seconds; with `assess` the cycle
@@ -105,14 +108,14 @@ fn move_aside(c: &Confirmed<'_>, mv: &Mover<'_>) -> Result<PathBuf, (String, Fix
         return Err((reason, Fix::ByHand));
     }
     abort_point("rotate-handfix-moved");
-    Ok(to)
+    Ok((to, here))
 }
 
 /// Records `m` as live: `since` is the cycle's time; the display-only
 /// `account`, the alert key, the guidance and the suspicion are cleared.
-fn record(l: &mut RotateLedger, m: &ProfileName, t: i64) {
+fn record(l: &mut RotateLedger, m: &ProfileName, account: &super::identify::Account, t: i64) {
     l.live = Some(m.to_string());
-    l.account = None;
+    l.account = Some(account.key().to_string());
     l.since = Some(t);
     l.alert = None;
     l.guidance = None;
@@ -189,8 +192,8 @@ pub fn step_with<'a>(
                 t,
             };
             match move_aside(&c, &mv) {
-                Ok(to) => {
-                    record(&mut ledger, &c.m, t);
+                Ok((to, account)) => {
+                    record(&mut ledger, &c.m, &account, t);
                     (Step::Recovered, vec![msg::recovered_moved(&c.m, &to)])
                 }
                 Err(why) => {
@@ -224,7 +227,7 @@ pub fn min_gap(ctx: &Ctx) -> i64 {
 /// only for a confirmed suspicion; the readings are `ctx.identity`'s.
 pub fn step(ctx: &Ctx, state: &State, out: &mut Sink, t: i64) -> Result<Step, ProfileError> {
     let env_for = || Env::system(ctx.store.root(), state, ctx.scan);
-    let read = |p: &Path| (ctx.identity)(p);
+    let read = |p: &Path| ctx.identity_reader().oauth(p);
     let (store, rs, home) = (&ctx.store, &ctx.rs, &ctx.home);
     step_with(store, rs, home, out, env_for, &read, min_gap(ctx), t)
 }

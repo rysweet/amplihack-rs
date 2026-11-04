@@ -238,7 +238,7 @@ fn a_mismatched_record_alerts_once_over_two_watch_cycles() {
     }
     let log = f.logged();
     let alerts: Vec<&String> = log.iter().filter(|l| l.starts_with("ALERT:")).collect();
-    assert_eq!(alerts, vec![ALERT], "{log:?}");
+    assert_eq!(alerts, vec![ALERT, ALERT], "{log:?}");
     assert!(!log.iter().any(|l| l.starts_with("swap ")), "{log:?}");
     assert_no_account(&log);
     let l = f.rs.load_ledger().unwrap().unwrap();

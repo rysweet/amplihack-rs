@@ -48,6 +48,14 @@ fn env() -> (tempfile::TempDir, PathBuf, ProfileStore, RotateState) {
     private(&home.join(".claude.json"), &acct("u1"));
     let rs = RotateState::new(&root);
     rs.ensure().unwrap();
+    let state = crate::commands::profile::auto_switch::kit::State::new(&root).unwrap();
+    for name in ["a", "b", "c"] {
+        let a = super::super::identify::Account::of_dir(&root.join(name)).unwrap();
+        crate::commands::profile::expected::record(&state, &ProfileName::parse(name).unwrap(), &a)
+            .unwrap();
+    }
+    let path = home.join(".claude/.credentials.json");
+    private(&path, &super::tests_fixture_identity::body(&path));
     (tmp, home, store, rs)
 }
 

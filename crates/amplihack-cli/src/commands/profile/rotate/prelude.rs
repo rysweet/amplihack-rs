@@ -13,7 +13,7 @@ use super::identify::Skip;
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{Snap, live_alert, live_name, snapshot};
 use super::overflow_record::log_ignored;
-use super::swap::{self, RecoverOutcome};
+use super::swap::RecoverOutcome;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Lock, State, now, recover_auto_switch};
 use crate::commands::profile::name::ProfileName;
@@ -51,6 +51,7 @@ pub fn locked_prelude(
     stdout: bool,
     hand_change: bool,
 ) -> Result<(Sink, Prelude), ProfileError> {
+    ctx.identity_budget.reset();
     prototype_guard(ctx.store.root())?;
     ctx.rs.ensure()?;
     let log = open_or_warn(&ctx.rs.log, &ctx.rs.log1);
@@ -66,7 +67,7 @@ pub fn locked_prelude(
         }
         return Ok((out, Prelude::AutoSwitchInconsistent));
     }
-    match swap::recover(&ctx.store, &ctx.rs, &ctx.home) {
+    match super::recover::recover_with(&ctx.store, &ctx.rs, &ctx.home, ctx.identity_reader()) {
         Ok(RecoverOutcome::None) => {}
         Ok(RecoverOutcome::RolledBack { from, to }) => {
             out.emit(now(), &msg::recovered(false, &from, &to));
@@ -87,6 +88,11 @@ pub fn locked_prelude(
     }
     let first = snapshot(ctx, &state)?;
     log_skips(ctx, &mut out, &first);
+    for (name, why) in &first.skips {
+        if *why == Skip::NoAccount {
+            out.emit(now(), &format!("ALERT: trusted login identity unavailable for profile {name}; verify it before retrying"));
+        }
+    }
     if let Some((kind, line)) = live_alert(&first) {
         let live = live_name(&first.live).cloned();
         return Ok((out, Prelude::LiveUnusable { kind, live, line }));
