@@ -5066,7 +5066,9 @@ The live reading *qualifies* when all of these hold:
   not `unknown, still running`, not a result
   [collected from a read started in an earlier cycle](#reads-that-outlast-a-cycle),
   and not unknown;
-- it is not a [spend limit](#spend-status);
+- it is not a [spend limit](#spend-status), and the live login has no
+  active [spend block](#overflow-spend-limit-block): no unexpired entry
+  for it in the ledger's `overflow_blocked`, and none added in this cycle;
 - `session_used` is below `100` and `week_used` is below `100`, as numbers
   (a value of exactly `100.0`, or one that is not a number, does not
   qualify).
@@ -5074,7 +5076,18 @@ The live reading *qualifies* when all of these hold:
 The [reading freshness](#rotate-reading-freshness-and-swap-back-damping)
 gate does not apply here, as it does not apply to any stay or ALERT. A
 passive reading of the live login that is measured and below `100` on both
-windows qualifies.
+windows qualifies, but its age still matters. A `stayed` cycle records, as
+`last_cycle.measured_at`, the time the live reading was taken: its
+`observed_at` for a passive reading, otherwise the time the cycle started
+measuring, whichever is earlier. The limit-resume hook resumes only on a
+`measured_at` strictly later than the limit hit, so a passive reading taken
+before the limit never wakes a session that the limit stopped; the next
+reading taken after the limit does.
+
+A live login with an active spend block cannot spend, whatever its plan
+windows read. A stay on it records `stayed-unread`, and its
+`no-capacity` ALERT is never [advisory](#rotate-advisory-alert): the key is
+stored in `alert` and the hook does not resume.
 
 A live login on the [platform tier](#overflow-tiers) has no usage windows.
 Its reading counts as qualifying for a stay, so a platform stay records
@@ -5086,13 +5099,16 @@ credits, so its plan windows may read `100`. When its probe read the login
 in this cycle, the stay records `stayed`, whatever the figures, and the
 hook resumes as before. Like a platform stay, it never makes an ALERT
 advisory. A failed, carried, unknown or spend-limited probe of the overflow
-profile records `stayed-unread`.
+profile, or a stay on one with an active
+[spend block](#overflow-spend-limit-block), records `stayed-unread`.
 
 | Live reading | Stay outcome | Capacity | ALERT key |
 |--------------|--------------|----------|-----------|
 | Qualifies | `stayed` | yes | `alert` and `advisory_alert` cleared |
-| Read in this cycle on an overflow profile (`overflow=on`), at any figures | `stayed` | yes | `alert` and `advisory_alert` cleared |
+| Read in this cycle on an overflow profile (`overflow=on`) with no active spend block, at any figures | `stayed` | yes | `alert` and `advisory_alert` cleared |
+| Qualifies, but a passive reading taken before the limit hit | `stayed`, recorded at the reading's time | not for that limit | `alert` and `advisory_alert` cleared |
 | Failed, carried, unknown, still running, spend-limited, or at 100% on either window (and not a read overflow stay) | `stayed-unread` | no | unchanged |
+| Live login with an active spend block, at any figures | `stayed-unread` | no | unchanged |
 
 Every stay that does not read the live login records `stayed-unread`: a
 damped stay after a failed live probe, a stay because the
@@ -5109,8 +5125,8 @@ is capacity; only the live reading does.
 When every candidate has passed a threshold, or none meets the margin, the
 [decision rule](#rotate-decision-rule) gives the `no-capacity` ALERT. If the
 live login's reading [qualifies](#rotate-stays-and-capacity) at the same
-time (below 100% on both windows), the login in `~/.claude` can still be
-used, so the ALERT is *advisory*:
+time (below 100% on both windows, with no active spend block), the login
+in `~/.claude` can still be used, so the ALERT is *advisory*:
 
 - the `ALERT: no profile has capacity ...` line is written to the
   [log](#rotate-log) once per key, exactly as for any ALERT;
@@ -7971,7 +7987,7 @@ The rotator writes these outcomes so that capacity means one of:
 
 - a fresh, successful reading of the live login below 100% on both windows
   (`stayed`); a stay on an [overflow](#rotate-overflow) profile read in this
-  cycle, at any figures, and a stay on a platform-tier login also record
+  cycle with no active spend block, at any figures, and a stay on a platform-tier login also record
   `stayed` (see [Stays and capacity](#rotate-stays-and-capacity));
 - a swap to a login with room (`swapped`);
 - a [`profile switch`](#rotate-switch) to a login (`switched`).
@@ -8016,14 +8032,16 @@ with `rotate stop` run by either binary, recover it.
 
 A cycle that moved onto an [overflow](#rotate-overflow) profile records
 `swapped`, and one that stayed on an overflow profile whose probe read the
-login in this cycle records `stayed` at any figures, even with its plan
-windows at 100% (see [Stays and capacity](#rotate-stays-and-capacity)). Both
+login in this cycle, with no active spend block on it, records `stayed` at
+any figures, even with its plan windows at 100% (see [Stays and capacity](#rotate-stays-and-capacity)). Both
 have no `alert`, so they count as capacity and the hook resumes the session,
 which then runs on credits. A stay on an overflow profile whose live probe
-failed, was carried, was unknown or hit a spend limit records
-`stayed-unread` and is not capacity.
-`last_cycle.overflow` does not change the verdict; the hook ignores
-`overflow_blocked`. A spend block with nowhere to move ends the cycle on the
+failed, was carried, was unknown or hit a spend limit, or whose login has
+an unexpired entry in `overflow_blocked`, records `stayed-unread` and is
+not capacity.
+`last_cycle.overflow` does not change the verdict; the hook does not read
+`overflow_blocked` itself, because the rotator has already applied it to the
+outcome it records. A spend block with nowhere to move ends the cycle on the
 no-capacity ALERT, which is not capacity.
 
 Any outcome other than `swapped`, `stayed` or `switched` (`alerted`,
@@ -8323,7 +8341,8 @@ uses (`CycleStatus::fresh_capacity` in `amplihack_utils::rotator_status`), so
 the two never disagree. It is checked with the fingerprint every 30 s. A
 cycle that moved onto a [credit-backed overflow profile](#rotate-overflow)
 (`swapped`, `overflow=in`) or stayed on one whose probe read it in this
-cycle, at any figures (`stayed`, `overflow=on`), counts as capacity, so the step runs again on
+cycle with no active spend block, at any figures (`stayed`, `overflow=on`),
+counts as capacity, so the step runs again on
 credits.
 
 The **login fingerprint** watches the directory the retry will use:

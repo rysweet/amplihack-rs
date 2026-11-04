@@ -1,16 +1,19 @@
 //! Issue #1907: what a stay or an ALERT records as capacity for the
 //! limit-resume hook. Capacity is a fresh, successful reading of the live
-//! login below 100% on both windows (or a swap or switch onto a login). A
-//! pure rule: no file, process or clock. See "Rotate stays and capacity" in
-//! docs/reference/profile-command.md.
+//! login below 100% on both windows (or a swap or switch onto a login),
+//! recorded at the time that reading was taken, on a login with no active
+//! spend block. A pure rule: no file, process or clock. See "Rotate stays
+//! and capacity" in docs/reference/profile-command.md.
 
 use super::alert::{NO_CAPACITY, alert_once, clear_alert, should_alert_advisory};
 use super::cycle::CycleOutcome;
 use super::decide::{Probed, Reading};
+use super::fresh;
 use super::ledger::RotateLedger;
 use super::log::Sink;
 use super::observe::Probes;
 use super::overflow::Tag;
+use crate::commands::profile::name::ProfileName;
 
 /// How much this cycle knows about the live login's room.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,12 +50,22 @@ impl Room {
     /// runs on credits, so its plan windows at 100% do not make it unread.
     /// A failed, carried, unknown or spend-limited overflow probe is still
     /// [`Room::Unread`].
+    ///
+    /// `spend_blocked`: the live login has an unexpired entry in the
+    /// ledger's `overflow_blocked`, or this cycle blocks it. It cannot
+    /// spend, whatever its plan windows read, so its room is
+    /// [`Room::Unread`]: a stay on it is `stayed-unread`, and its ALERT is
+    /// never advisory.
     pub fn live(
         probed: Option<&Probes>,
         reading: &Reading,
         platform: bool,
         tag: Option<Tag>,
+        spend_blocked: bool,
     ) -> Self {
+        if spend_blocked {
+            return Self::Unread;
+        }
         let probe = probed.map(|(p, _)| p);
         match Self::of(probe, reading, platform) {
             Self::Unread if tag == Some(Tag::On) && probe.is_some_and(read) => Self::Platform,
@@ -96,6 +109,48 @@ impl Room {
         }
         alert_once(out, l, key, t, line);
         CycleOutcome::Alerted
+    }
+}
+
+/// When the capacity a [`CycleOutcome::Stayed`] cycle records was seen:
+/// the time the live reading was taken ([`fresh::read_at`]), never later
+/// than `measured_at`. A passive reading taken before a limit hit is no
+/// evidence of room after it, so the cycle records the reading's own time
+/// as `last_cycle.measured_at`, and the limit-resume hook, which wants a
+/// time strictly after the limit, does not resume on it. `measured_at` when
+/// there is no probe or no reading time (a stub, or the API key's
+/// synthetic reading).
+pub fn seen_at(probed: Option<&Probes>, measured_at: i64) -> i64 {
+    probed
+        .and_then(|(p, _)| fresh::read_at(p, measured_at))
+        .map_or(measured_at, |at| at.min(measured_at))
+}
+
+/// Whether the live login `live` has an active spend block: an unexpired
+/// entry in the ledger's `overflow_blocked`, or one this cycle adds
+/// (`new_blocks`). Expiry matches `prune_blocks`: active while `now < until`.
+pub fn spend_blocked(
+    l: &RotateLedger,
+    live: Option<&ProfileName>,
+    new_blocks: &[ProfileName],
+    now: i64,
+) -> bool {
+    live.is_some_and(|n| {
+        new_blocks.contains(n)
+            || l.overflow_blocked
+                .get(n.as_str())
+                .is_some_and(|b| now < b.until)
+    })
+}
+
+/// The `last_cycle.measured_at` a cycle with `outcome` records: [`seen_at`]
+/// for a [`CycleOutcome::Stayed`] cycle, so a passive reading taken before
+/// a limit hit never resumes the session that limit stopped; `measured_at`
+/// for every other outcome.
+pub fn recorded_at(outcome: CycleOutcome, probed: Option<&Probes>, measured_at: i64) -> i64 {
+    match outcome {
+        CycleOutcome::Stayed => seen_at(probed, measured_at),
+        _ => measured_at,
     }
 }
 

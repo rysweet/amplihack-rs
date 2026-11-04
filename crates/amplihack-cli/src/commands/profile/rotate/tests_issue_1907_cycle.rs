@@ -296,3 +296,108 @@ fn e3_a_live_reading_at_exactly_100_keeps_the_alert_hard() {
     assert!(v.alert, "{v:?}");
     assert!(!v.has_capacity());
 }
+
+// --- (f) A passive reading taken before the limit is not fresh capacity ---
+
+/// Seconds between the passive reading and the cycle in (f): the reading is
+/// taken first, the limit is hit next, and the cycle runs after both.
+const READING_AGE: i64 = 30;
+
+/// `work`'s passive reading below 100% was taken `READING_AGE` seconds
+/// before the cycle measured; `spare` reads the same, so the cycle stays.
+fn measure_old_passive_stay(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let at = now();
+    let read = Some(at - READING_AGE);
+    let probes = probes_for(snap, &[("spare", rd(40.0, 30.0, read))]);
+    decide_measured(ctx, snap, rd(40.0, 30.0, read), probes, at)
+}
+
+/// `observed_at < limit start < measured_at`: the reading shows room, but it
+/// was taken before the limit, so it says nothing about the login after it.
+/// The cycle records the time of the reading, not the time of the cycle, and
+/// the hook does not resume a session stopped after the reading.
+#[test]
+fn f_a_passive_reading_taken_before_the_limit_is_not_fresh_capacity() {
+    let e = env();
+    let before = now();
+    let got = run(&e, measure_old_passive_stay);
+    assert_eq!(got, CycleOutcome::Stayed, "{}", log_of(&e));
+    let read = before - READING_AGE;
+    let limit_start = read + READING_AGE / 2;
+    let v = hook_view(&e);
+    assert!(v.measured_at.is_some_and(|m| m <= read + 1), "{v:?}");
+    assert!(
+        !v.fresh_capacity(limit_start),
+        "a reading older than the limit is no capacity after it: {v:?}"
+    );
+    assert!(
+        v.fresh_capacity(read - READING_AGE),
+        "a limit hit before the reading is answered by it: {v:?}"
+    );
+}
+
+/// The same stay on a reading taken after the limit is capacity.
+#[test]
+fn f2_a_passive_reading_taken_after_the_limit_is_fresh_capacity() {
+    let e = env();
+    let limit_start = now() - READING_AGE - 5;
+    run(&e, measure_old_passive_stay);
+    let v = hook_view(&e);
+    assert_eq!(v.outcome.as_deref(), Some("stayed"), "{v:?}");
+    assert!(v.fresh_capacity(limit_start), "{v:?}");
+}
+
+// --- (g) A live credit login with an active spend block --------------------
+
+/// `work` is a credit (overflow) profile with an unexpired spend block in
+/// the ledger; its reading is below 100% and shows no spend limit this
+/// cycle. `spare` is full, so there is nowhere to go.
+fn measure_blocked_credit_live(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+    let at = now();
+    let probes = probes_for(snap, &[("spare", exh(100.0, 100.0))]);
+    decide_measured(ctx, snap, rd(40.0, 30.0, None), probes, at)
+}
+
+fn block_live_credit_profile(e: &Env) {
+    use crate::commands::profile::auto_switch::config::{self, ReadMode};
+    use crate::commands::profile::overflow::OverflowEntry;
+    config::update(&e.root, ReadMode::Editable, |c| {
+        c.overflow
+            .push(OverflowEntry::new(super::super::tests_swap::n("work"), 1));
+        Ok(())
+    })
+    .unwrap();
+    let mut l = e.rs.load_ledger().unwrap().unwrap_or_default();
+    let at = now();
+    l.overflow_blocked.insert(
+        "work".into(),
+        super::super::ledger::OverflowBlock {
+            at,
+            until: at + 86_400,
+            reason: "spend_limit".into(),
+        },
+    );
+    e.rs.save_ledger(&l).unwrap();
+}
+
+/// A spend block means the live login cannot spend, whatever its plan
+/// windows read: the ALERT is hard, never an advisory stay with capacity.
+#[test]
+fn g_an_active_spend_block_on_the_live_credit_login_keeps_the_alert_hard() {
+    let e = env();
+    block_live_credit_profile(&e);
+    let start = limit_hit();
+    let got = run(&e, measure_blocked_credit_live);
+    assert_eq!(got, CycleOutcome::Alerted, "{}", log_of(&e));
+    let v = hook_view(&e);
+    assert!(v.alert, "{v:?}");
+    assert_eq!(v.outcome.as_deref(), Some("alerted"), "{v:?}");
+    assert!(!v.has_capacity(), "{v:?}");
+    assert!(!v.fresh_capacity(start), "{v:?}");
+    let j = ledger_json(&e);
+    assert!(j["alert"].is_string(), "{j}");
+    assert!(
+        j.get("advisory_alert").is_none_or(|a| a.is_null()),
+        "a blocked login's ALERT is never advisory: {j}"
+    );
+}

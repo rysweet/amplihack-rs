@@ -216,6 +216,12 @@ pub fn stay_note(
 /// (issue #1700) is left out: it is never plan capacity. The API key counts
 /// as somewhere to go only when the rotator's login check passes, and a live
 /// API-key profile that fails it is no reason to say `ok` (issue #1804).
+///
+/// `t` is the time the file is written and the time spend blocks are judged
+/// expired by; it is not a capacity timestamp. The limit-resume hook never
+/// reads this file: it resumes only on the ledger's `last_cycle.measured_at`,
+/// which a `stayed` cycle records at the time the live reading was taken
+/// ([`super::capacity::recorded_at`], issue #1907).
 pub fn refresh_capacity(
     ctx: &Ctx,
     live: Option<&ProfileName>,

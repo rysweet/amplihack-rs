@@ -3,7 +3,7 @@
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
 use super::alert::{alert, alert_key, refusal_kind};
-use super::capacity::Room;
+use super::capacity::{self, Room};
 use super::cred_identity::{DEFAULT_READ, ReadFn};
 use super::decide::Decision;
 use super::dry_run::dry_run;
@@ -277,7 +277,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         ..
     } = m;
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-    let room = Room::live(probed.as_ref(), &live, first.platform_live(), tag);
+    let blocked = capacity::spend_blocked(&l, live_name(&first.live), &new_blocks, t);
+    let room = Room::live(probed.as_ref(), &live, first.platform_live(), tag, blocked);
     let stay_line = stay_note(&l, tag, live_name(&first.live), next_plan_reset);
     // Saved before any swap, which reloads the ledger from disk.
     if block_spend_limited(&mut out, &mut l, &new_blocks, t) {
@@ -382,7 +383,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     for line in swap_back::update(&mut l, s, live_n, probed.as_ref(), left, measured_at, t) {
         out.emit(now(), &line);
     }
-    save(ctx, &mut l, outcome, now(), Some(measured_at), tag)?;
+    let at = capacity::recorded_at(outcome, probed.as_ref(), measured_at);
+    save(ctx, &mut l, outcome, now(), Some(at), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.
     drop(lock);

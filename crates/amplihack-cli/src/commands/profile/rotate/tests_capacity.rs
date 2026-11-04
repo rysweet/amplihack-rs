@@ -10,6 +10,10 @@
 //!     not carried, unknown, still running or spend-limited. NaN and exactly
 //!     100.0 are not below 100. Everything else is `Unread`.
 //!   - With no probe (`None`), `reading` alone decides, by the same rule.
+//! - `Room::live(probed, reading, platform, tag, spend_blocked)`: an active
+//!   spend block on the live login is `Unread`, whatever else holds.
+//! - `seen_at(probed, measured_at)`: the live reading's own time, never
+//!   later than `measured_at`; what a `stayed` cycle records.
 //! - `Room::stay(self, l: &mut RotateLedger) -> CycleOutcome`: `Fresh` and
 //!   `Platform` clear `alert` and `advisory_alert` and give `Stayed`;
 //!   `Unread` leaves both fields and gives `StayedUnread`.
@@ -34,7 +38,7 @@ use super::super::ledger::{RotateLedger, RotateState, for_older_readers};
 use super::super::log::Sink;
 use super::super::overflow::Tag;
 use super::super::tests_issue_1870::{exh, rd};
-use super::Room;
+use super::{Room, seen_at};
 use crate::commands::profile::ProfileError;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -58,9 +62,62 @@ fn a_measured_reading_below_100_on_both_windows_is_fresh() {
     }
 }
 
+/// `Room::of` judges what the reading says, not when it was taken: a
+/// passive reading below 100% is room. Its time is the cycle's concern:
+/// the stay is recorded at `seen_at`, the reading's own time, so a reading
+/// taken before a limit hit is never capacity after it (see (f) in
+/// `tests_issue_1907_cycle.rs`).
 #[test]
-fn a_passive_reading_below_100_is_fresh() {
-    assert_eq!(room(&rd(40.0, 30.0, Some(1_760_000_000))), Room::Fresh);
+fn a_passive_reading_below_100_is_fresh_and_recorded_at_its_own_time() {
+    let read = 1_760_000_000;
+    let p = rd(40.0, 30.0, Some(read));
+    assert_eq!(room(&p), Room::Fresh);
+    let probes = Some((p, Vec::new()));
+    assert_eq!(
+        seen_at(probes.as_ref(), read + 60),
+        read,
+        "not the cycle's time"
+    );
+    assert_eq!(
+        seen_at(probes.as_ref(), read - 60),
+        read - 60,
+        "never later than the cycle"
+    );
+    let now_read = Some((rd(40.0, 30.0, None), Vec::new()));
+    assert_eq!(
+        seen_at(now_read.as_ref(), read),
+        read,
+        "a read made in this cycle"
+    );
+    assert_eq!(seen_at(None, read), read);
+}
+
+#[test]
+fn an_active_spend_block_makes_any_reading_unread() {
+    let probes = |p: Probed| Some((p, Vec::new()));
+    let fresh = rd(40.0, 30.0, None);
+    for tag in [None, Some(Tag::On), Some(Tag::In), Some(Tag::Out)] {
+        let got = Room::live(
+            probes(fresh.clone()).as_ref(),
+            &fresh.reading,
+            false,
+            tag,
+            true,
+        );
+        assert_eq!(got, Room::Unread, "{tag:?}");
+    }
+    let got = Room::live(
+        probes(fresh.clone()).as_ref(),
+        &fresh.reading,
+        true,
+        None,
+        true,
+    );
+    assert_eq!(got, Room::Unread, "an API-key login with a block");
+    assert_eq!(
+        Room::live(None, &fresh.reading, false, None, true),
+        Room::Unread
+    );
 }
 
 #[test]
@@ -130,14 +187,26 @@ fn a_stay_on_credits_read_this_cycle_counts_but_never_advises() {
     let probes = |p: Probed| Some((p, Vec::new()));
     let on = Some(Tag::On);
     let full = exh(100.0, 100.0);
-    let got = Room::live(probes(full.clone()).as_ref(), &full.reading, false, on);
+    let got = Room::live(
+        probes(full.clone()).as_ref(),
+        &full.reading,
+        false,
+        on,
+        false,
+    );
     assert_eq!(
         got,
         Room::Platform,
         "an overflow login read at 100% runs on credits"
     );
     let fresh = rd(40.0, 30.0, None);
-    let got = Room::live(probes(fresh.clone()).as_ref(), &fresh.reading, false, on);
+    let got = Room::live(
+        probes(fresh.clone()).as_ref(),
+        &fresh.reading,
+        false,
+        on,
+        false,
+    );
     assert_eq!(got, Room::Fresh);
     let mut unread = vec![Probed::failed()];
     for flag in [0, 1, 2] {
@@ -150,14 +219,23 @@ fn a_stay_on_credits_read_this_cycle_counts_but_never_advises() {
         unread.push(p);
     }
     for p in unread {
-        let got = Room::live(probes(p.clone()).as_ref(), &p.reading, false, on);
+        let got = Room::live(probes(p.clone()).as_ref(), &p.reading, false, on, false);
         assert_eq!(got, Room::Unread, "{p:?}");
     }
     for tag in [None, Some(Tag::In), Some(Tag::Out)] {
-        let got = Room::live(probes(full.clone()).as_ref(), &full.reading, false, tag);
+        let got = Room::live(
+            probes(full.clone()).as_ref(),
+            &full.reading,
+            false,
+            tag,
+            false,
+        );
         assert_eq!(got, Room::Unread, "{tag:?}");
     }
-    assert_eq!(Room::live(None, &full.reading, false, on), Room::Unread);
+    assert_eq!(
+        Room::live(None, &full.reading, false, on, false),
+        Room::Unread
+    );
 }
 
 // --- Room::stay ------------------------------------------------------------
