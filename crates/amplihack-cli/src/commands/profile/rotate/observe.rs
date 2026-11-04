@@ -232,7 +232,16 @@ pub fn measure_and_decide(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profile
         .filter(|c| Some(*c) != platform)
         .cloned()
         .collect();
-    let (probe, mut probes) = measure::measure_ordered(ctx, live, &to_probe, measured_at);
+    // Keep the existing usage reader's refresh opportunity for otherwise
+    // eligible OAuth logins. Their readings cannot enter this decision:
+    // a later cycle must first bind identity to the refreshed credentials.
+    let unbound: Vec<ProfileName> = snap
+        .skips
+        .iter()
+        .filter(|(_, reason)| matches!(reason, Skip::NoAccount))
+        .map(|(name, _)| name.clone())
+        .collect();
+    let (probe, mut probes) = measure::measure_ordered(ctx, live, &to_probe, &unbound, measured_at);
     if let Some(p) = platform.filter(|p| snap.candidates.contains(p)) {
         probes.push((p.clone(), Probed::platform()));
     }

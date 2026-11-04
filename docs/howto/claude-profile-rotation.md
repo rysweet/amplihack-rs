@@ -2195,6 +2195,11 @@ moves no login or ledger identity. Follow the reported reason: wait for
 network or refresh failures to clear, and resolve genuine ownership
 conflicts before retrying. Editing session JSON does not resolve them.
 
+An otherwise eligible stored OAuth login still receives the usual usage
+read, which can refresh expired credentials. A reading started without
+trusted identity cannot select that login. A later cycle must validate
+the refreshed credentials and take a new usage reading before a swap.
+
 Recovery still requires two consistent readings on separate cycles.
 An uncertain intervening reading cannot count as confirmation: a later
 match starts the confirmation sequence again. The 600-second grace and

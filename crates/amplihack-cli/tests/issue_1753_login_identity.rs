@@ -6,9 +6,9 @@
 
 use crate::support::profile_rotate::{Fixture, account_json, ino, private_file, text};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -17,6 +17,8 @@ struct Endpoint {
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     identities: Arc<Mutex<HashMap<String, serde_json::Value>>>,
+    refresh_allowed: Arc<AtomicBool>,
+    refreshes: Arc<AtomicUsize>,
 }
 
 impl Endpoint {
@@ -28,6 +30,10 @@ impl Endpoint {
         let stopping = Arc::clone(&stop);
         let identities = Arc::new(Mutex::new(HashMap::<String, serde_json::Value>::new()));
         let answers = Arc::clone(&identities);
+        let refresh_allowed = Arc::new(AtomicBool::new(false));
+        let refreshing = Arc::clone(&refresh_allowed);
+        let refreshes = Arc::new(AtomicUsize::new(0));
+        let refreshed = Arc::clone(&refreshes);
         let thread = std::thread::spawn(move || {
             while !stopping.load(Ordering::Relaxed) {
                 let (mut stream, _) = match listener.accept() {
@@ -45,10 +51,16 @@ impl Endpoint {
                 let mut first = String::new();
                 reader.read_line(&mut first).unwrap();
                 let mut token = String::new();
+                let mut content_length = 0usize;
                 loop {
                     let mut line = String::new();
                     if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
                         break;
+                    }
+                    if let Some((key, value)) = line.split_once(':')
+                        && key.eq_ignore_ascii_case("content-length")
+                    {
+                        content_length = value.trim().parse().unwrap();
                     }
                     if let Some((key, value)) = line.split_once(':')
                         && key.eq_ignore_ascii_case("authorization")
@@ -59,29 +71,53 @@ impl Endpoint {
                 let who = ["work", "spare", "extra"]
                     .into_iter()
                     .find(|p| token == format!("Bearer fake-task1753-{p}"));
-                let (status, body) = match who {
-                    Some(p) if first.starts_with("GET /api/oauth/profile ") => (
-                        "200 OK",
-                        answers.lock().unwrap().get(p).cloned().unwrap_or_else(|| {
-                            serde_json::json!({"account": {
-                                "uuid": format!("uuid-{p}"),
-                                "email": format!("{p}@example.com")
-                            }})
-                        }),
-                    ),
-                    Some(_) if first.starts_with("GET /api/oauth/usage ") => (
-                        "200 OK",
-                        serde_json::json!({
-                            "five_hour": {"utilization": if token.ends_with("-work") { 90 } else { 10 }, "resets_at":
-                                (chrono::Utc::now() + chrono::Duration::hours(3)).to_rfc3339()},
-                            "seven_day": {"utilization": 20, "resets_at":
-                                (chrono::Utc::now() + chrono::Duration::days(3)).to_rfc3339()}
-                        }),
-                    ),
-                    _ => (
-                        "401 Unauthorized",
-                        serde_json::json!({"error": "fake-only"}),
-                    ),
+                let (status, body) = if first.starts_with("POST /v1/oauth/token ") {
+                    assert!(content_length <= 65536);
+                    let mut raw = vec![0; content_length];
+                    reader.read_exact(&mut raw).unwrap();
+                    let request: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+                    refreshed.fetch_add(1, Ordering::Relaxed);
+                    if refreshing.load(Ordering::Relaxed)
+                        && request["refresh_token"] == "fake-task1753-unused-refresh"
+                    {
+                        (
+                            "200 OK",
+                            serde_json::json!({
+                                "access_token": "fake-task1753-extra",
+                                "refresh_token": "fake-task1753-unused-refresh", "expires_in": 3600
+                            }),
+                        )
+                    } else {
+                        (
+                            "401 Unauthorized",
+                            serde_json::json!({"error": "fake-only"}),
+                        )
+                    }
+                } else {
+                    match who {
+                        Some(p) if first.starts_with("GET /api/oauth/profile ") => (
+                            "200 OK",
+                            answers.lock().unwrap().get(p).cloned().unwrap_or_else(|| {
+                                serde_json::json!({"account": {
+                                    "uuid": format!("uuid-{p}"),
+                                    "email": format!("{p}@example.com")
+                                }})
+                            }),
+                        ),
+                        Some(_) if first.starts_with("GET /api/oauth/usage ") => (
+                            "200 OK",
+                            serde_json::json!({
+                                "five_hour": {"utilization": if token.ends_with("-work") { 90 } else { 10 }, "resets_at":
+                                    (chrono::Utc::now() + chrono::Duration::hours(3)).to_rfc3339()},
+                                "seven_day": {"utilization": 20, "resets_at":
+                                    (chrono::Utc::now() + chrono::Duration::days(3)).to_rfc3339()}
+                            }),
+                        ),
+                        _ => (
+                            "401 Unauthorized",
+                            serde_json::json!({"error": "fake-only"}),
+                        ),
+                    }
                 };
                 let body = body.to_string();
                 write!(
@@ -97,6 +133,8 @@ impl Endpoint {
             stop,
             thread: Some(thread),
             identities,
+            refresh_allowed,
+            refreshes,
         }
     }
 
@@ -536,5 +574,92 @@ fn stale_session_does_not_block_automatic_rotation() {
     assert_eq!(ino(&f.home_login()), Some(f.extra_ino));
     assert_eq!(ino(&f.slot("work")), Some(f.live_ino));
     f.assert_each_login_once();
+    assert!(!f.root.join(".rejected-logins").exists());
+}
+
+fn expired_candidate() -> (Fixture, Endpoint) {
+    let (f, ep) = fixture();
+    // This scenario has exactly one stored candidate; every file is fake.
+    std::fs::remove_file(f.slot("spare")).unwrap();
+    let path = f.slot("extra");
+    assert!(path.starts_with(f.tmp.path()));
+    let mut value: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    value["claudeAiOauth"]["expiresAt"] = (chrono::Utc::now().timestamp_millis() - 60_000).into();
+    private_file(&path, &value.to_string());
+    (f, ep)
+}
+
+fn direct_cycle(f: &Fixture, ep: &Endpoint) -> std::process::Output {
+    let out = f
+        .cmd(&["profile", "rotate"])
+        .env("AMPLIHACK_PROFILE_USAGE_API_BASE", &ep.base)
+        .env(
+            "AMPLIHACK_PROFILE_USAGE_TOKEN_URL",
+            format!("{}/v1/oauth/token", ep.base),
+        )
+        .env("AMPLIHACK_PROFILE_USAGE_PROBE", "direct")
+        .output()
+        .unwrap();
+    for value in [text(&out.stdout), text(&out.stderr), f.log()] {
+        assert!(!value.contains("fake-task1753"), "fake token leaked");
+    }
+    out
+}
+
+#[test]
+fn review_expired_candidate_is_refreshed_then_fresh_identity_permits_rotation() {
+    let (f, ep) = expired_candidate();
+    ep.refresh_allowed.store(true, Ordering::Relaxed);
+    let _first = direct_cycle(&f, &ep);
+    assert!(
+        ep.refreshes.load(Ordering::Relaxed) > 0,
+        "identity prefilter must not suppress existing usage refresh"
+    );
+    assert_eq!(
+        ino(&f.home_login()),
+        Some(f.live_ino),
+        "unbound pre-refresh measurement cannot authorize movement"
+    );
+    let refreshed = ino(&f.slot("extra")).unwrap();
+    let out = direct_cycle(&f, &ep);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(ino(&f.home_login()), Some(refreshed));
+    assert_eq!(ino(&f.slot("work")), Some(f.live_ino));
+    assert_eq!(ino(&f.slot("extra")), None);
+    assert_eq!(f.ledger().unwrap()["account"], "uuid-extra");
+    assert!(!f.root.join(".rejected-logins").exists());
+}
+
+#[test]
+fn review_failed_candidate_refresh_moves_no_login() {
+    let (f, ep) = expired_candidate();
+    let before = f.logins();
+    for _ in 0..2 {
+        let _ = direct_cycle(&f, &ep);
+    }
+    assert!(ep.refreshes.load(Ordering::Relaxed) > 0);
+    assert_eq!(f.logins(), before);
+    assert_eq!(f.ledger().unwrap()["live"], "work");
+    assert_eq!(f.ledger().unwrap()["account"], "uuid-work");
+}
+
+#[test]
+fn review_refreshed_candidate_with_conflicting_identity_moves_no_login() {
+    let (f, ep) = expired_candidate();
+    ep.refresh_allowed.store(true, Ordering::Relaxed);
+    ep.identity(
+        "extra",
+        serde_json::json!({"account": {"uuid":"uuid-extra"},
+        "organization":{"uuid":"conflicting-organization"}}),
+    );
+    for _ in 0..2 {
+        let _ = direct_cycle(&f, &ep);
+    }
+    assert!(ep.refreshes.load(Ordering::Relaxed) > 0);
+    assert_eq!(ino(&f.home_login()), Some(f.live_ino));
+    assert_eq!(ino(&f.slot("work")), None);
+    assert!(ino(&f.slot("extra")).is_some());
+    assert_eq!(f.ledger().unwrap()["account"], "uuid-work");
     assert!(!f.root.join(".rejected-logins").exists());
 }
