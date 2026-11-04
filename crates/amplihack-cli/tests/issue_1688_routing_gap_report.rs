@@ -70,7 +70,12 @@ fn tool_bin(dir: &Path) -> PathBuf {
             .map(|d| Path::new(d).join(tool))
             .find(|p| p.is_file());
         if let Some(real) = found {
-            std::os::unix::fs::symlink(real, bin.join(tool)).expect("link tool");
+            let name = if tool == "mktemp" {
+                "mktemp-real"
+            } else {
+                tool
+            };
+            std::os::unix::fs::symlink(real, bin.join(name)).expect("link tool");
         }
     }
     assert!(
@@ -78,8 +83,30 @@ fn tool_bin(dir: &Path) -> PathBuf {
         "bash must be available on the host"
     );
     assert!(
-        bin.join("mktemp").exists(),
+        bin.join("mktemp-real").exists(),
         "mktemp must be available on the host"
+    );
+    // The real helper currently supplies a literal /tmp template. Keep its
+    // context/lookup tests inside this test's fixture even for that request.
+    // Product allocation policy is a separate contract from these tests.
+    write_executable(
+        &bin.join("mktemp"),
+        r#"#!/bin/bash
+set -euo pipefail
+umask 077
+root="${ROUTING_DIAG_TMPDIR:?owned diagnostic fixture required}"
+self="${BASH_SOURCE[0]:?}"
+scratch="$("${self%/*}/mktemp-real" -d "${root:?}/diagnostic.XXXXXX")"
+: "${scratch:?}"
+if [[ "${1:-}" == -d ]]; then
+    printf '%s\n' "${scratch:?}"
+else
+    file="${scratch:?}/diagnostic.md"
+    : > "${file:?}"
+    printf '%s\n' "${file:?}"
+fi
+"#,
+        0o755,
     );
     bin
 }
@@ -115,6 +142,8 @@ struct Run {
 fn run_step(tmp: &Path, bin: &Path, home: &Path, amplihack_home: Option<&Path>) -> Run {
     let cwd = tmp.join("target-repo");
     fs::create_dir_all(&cwd).expect("create cwd");
+    let scratch = tmp.join("tmp");
+    fs::create_dir_all(&scratch).expect("create owned scratch directory");
     let mut cmd = Command::new(bin.join("bash"));
     cmd.arg("-c")
         .arg(file_routing_bug_command())
@@ -122,6 +151,8 @@ fn run_step(tmp: &Path, bin: &Path, home: &Path, amplihack_home: Option<&Path>) 
         .env_clear()
         .env("PATH", bin)
         .env("HOME", home)
+        .env("TMPDIR", &scratch)
+        .env("ROUTING_DIAG_TMPDIR", &scratch)
         // This run's own step outputs.
         .env("RECIPE_VAR_task_type", "Development")
         .env("RECIPE_VAR_workstream_count", "3")
@@ -248,9 +279,12 @@ fn without_gh_writes_diag_file_with_this_runs_values() {
         )
     });
     let path = PathBuf::from(file);
+    assert!(
+        path.starts_with(tmp.path().join("tmp")),
+        "diagnostic file must stay in this test's owned scratch: {file}"
+    );
     assert!(path.is_file(), "diag file {file} must exist");
     let body = fs::read_to_string(&path).expect("read diag file");
-    let _ = fs::remove_file(&path);
     assert_this_runs_values(&body, "diag file");
 }
 
