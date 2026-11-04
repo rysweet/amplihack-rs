@@ -9,17 +9,23 @@
 //! with `lstat` and moved with rename and exchange calls only.
 
 #[cfg(unix)]
+mod account;
+#[cfg(unix)]
+mod adopt;
+#[cfg(unix)]
 mod alert;
 #[cfg(unix)]
 mod autostart;
 #[cfg(unix)]
-mod backup;
+pub(super) mod backup;
 #[cfg(unix)]
 mod candidates;
 #[cfg(unix)]
 pub(in crate::commands::profile) mod change_log;
 #[cfg(unix)]
 mod control;
+#[cfg(unix)]
+pub(super) mod cred_identity;
 #[cfg(unix)]
 mod cycle;
 #[cfg(unix)]
@@ -45,15 +51,13 @@ mod hand_fields;
 #[cfg(unix)]
 mod handfix;
 #[cfg(unix)]
-mod handfix_mode;
-#[cfg(unix)]
 mod handfix_msg;
+#[cfg(unix)]
+mod handfix_plan;
 #[cfg(unix)]
 mod held;
 #[cfg(unix)]
 mod history;
-#[cfg(unix)]
-mod holders;
 #[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
@@ -148,6 +152,10 @@ mod tests_issue_1870;
 mod tests_issue_1870_cycle;
 #[cfg(all(test, unix))]
 mod tests_issue_1870_probe;
+#[cfg(all(test, unix))]
+mod tests_issue_1886;
+#[cfg(all(test, unix))]
+mod tests_issue_1886_cycle;
 #[cfg(all(test, unix))]
 mod tests_issue_1890;
 #[cfg(all(test, unix))]

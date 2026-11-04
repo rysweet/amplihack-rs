@@ -105,32 +105,29 @@ fn run_refuses_group_writable_profile_before_spawn() {
     assert!(build_profile_command(&bin, &s, &name, &[]).is_err());
 }
 
-struct DockerEnvGuard(Option<std::ffi::OsString>);
-impl DockerEnvGuard {
-    fn set(v: &str) -> Self {
-        let prev = std::env::var_os("AMPLIHACK_USE_DOCKER");
-        unsafe { std::env::set_var("AMPLIHACK_USE_DOCKER", v) };
-        Self(prev)
-    }
-}
-impl Drop for DockerEnvGuard {
-    fn drop(&mut self) {
-        unsafe {
-            match &self.0 {
-                Some(v) => std::env::set_var("AMPLIHACK_USE_DOCKER", v),
-                None => std::env::remove_var("AMPLIHACK_USE_DOCKER"),
-            }
-        }
-    }
+/// Runs `f` with `AMPLIHACK_USE_DOCKER=1` and a stub `docker` alone on
+/// `PATH` whose `docker info` succeeds at once. The env path also needs a
+/// running daemon, and a real `docker info` that outlives its 5s probe on a
+/// loaded runner reads as "not running", so these tests must not depend on
+/// the host daemon.
+fn with_docker_env<T>(f: impl FnOnce() -> T) -> T {
+    let bin = tempfile::tempdir().unwrap();
+    let docker = bin.path().join("docker");
+    fs::write(&docker, "#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(&docker, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::test_support::with_env(
+        &[
+            ("AMPLIHACK_USE_DOCKER", Some(OsStr::new("1"))),
+            ("AMPLIHACK_IN_DOCKER", None),
+            ("PATH", Some(bin.path().as_os_str())),
+        ],
+        f,
+    )
 }
 
 #[test]
 fn reject_docker_env_errors_when_env_active() {
-    let _l = crate::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let _g = DockerEnvGuard::set("1");
-    let err = super::reject_docker_env()
+    let err = with_docker_env(super::reject_docker_env)
         .unwrap_err()
         .to_string()
         .to_lowercase();
@@ -139,15 +136,11 @@ fn reject_docker_env_errors_when_env_active() {
 
 #[test]
 fn profile_run_fails_closed_under_docker_env_before_touching_disk() {
-    let _l = crate::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    let _g = DockerEnvGuard::set("1");
     let d = tempfile::tempdir().unwrap();
     let root = d.path().join("root");
     let s = ProfileStore::new(root.clone());
     let missing = ProfileName::parse("ghost").unwrap();
-    let err = super::run::run(&s, &missing, vec![])
+    let err = with_docker_env(|| super::run::run(&s, &missing, vec![]))
         .unwrap_err()
         .to_string()
         .to_lowercase();

@@ -48,6 +48,8 @@ mod usage_passive;
 mod usage_request;
 mod usage_source;
 mod usage_view;
+#[cfg(unix)]
+mod verify_cmd;
 
 #[cfg(test)]
 mod tests_capacity_summary;
@@ -115,6 +117,8 @@ mod tests_usage_source;
 mod tests_usage_view;
 #[cfg(test)]
 mod tests_verify;
+#[cfg(all(test, unix))]
+mod tests_verify_cmd;
 
 use anyhow::Result;
 /// For `amplihack sessions` (issue #1746): the live check and profile root.
@@ -211,6 +215,8 @@ pub enum ProfileError {
     RotatePrototypeRunning,
     #[error("swap refused: {0}")]
     RotateRefused(String),
+    #[error("profile verify: {0}")]
+    Verify(String),
     #[error("rotate state is inconsistent: {0}")]
     RotateInconsistent(String),
     #[error("rotation gate did not settle")]
@@ -300,6 +306,9 @@ impl ProfileError {
             }
             Self::RotateRefused(_) => {
                 "nothing was moved; see \"Swap refused\" in docs/howto/claude-profile-rotation.md"
+            }
+            Self::Verify(_) => {
+                "nothing was moved; see \"profile verify\" in docs/reference/profile-command.md"
             }
             Self::RotateInconsistent(_) => {
                 "see the Recovery section of docs/howto/claude-profile-rotation.md"
@@ -462,6 +471,15 @@ pub enum ProfileCommands {
         #[command(subcommand)]
         command: overflow::OverflowCommand,
     },
+    /// Print the account the server reports for ~/.claude and each profile's
+    /// login, against the account recorded for it; --fix moves crossed logins
+    #[cfg(unix)]
+    Verify {
+        /// Move each profile login that is another profile's recorded account
+        /// into that profile's empty folder (moves only; lists the moves first)
+        #[arg(long)]
+        fix: bool,
+    },
     /// Show or override each profile's kind: subscription or api-key (billed per token)
     #[cfg(unix)]
     Kind {
@@ -619,6 +637,16 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
         ProfileCommands::Overflow { command } => overflow::run(&store, command)?,
+        #[cfg(unix)]
+        ProfileCommands::Verify { fix } => {
+            let s = verify_cmd::run(&store, fix)?;
+            if s.mismatches > s.moved {
+                anyhow::bail!(
+                    "{} folder(s) do not hold the account recorded for them",
+                    s.mismatches - s.moved
+                );
+            }
+        }
         #[cfg(unix)]
         ProfileCommands::Kind { command } => {
             kind::run(&store, command, usage_cmd::home_dir().as_deref())?
