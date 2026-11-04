@@ -4,20 +4,42 @@
 //! runs; `Ctx::scan` sees no sessions. Each stub checks the snapshot it is
 //! handed, so these tests show what the cycle itself read after recovery.
 
-use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
+use super::cycle::Ctx;
+#[cfg(target_os = "linux")]
+use super::cycle::{CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
 use super::decide::{Decision, Measured, Reading, decide};
-use super::identify::{LiveId, live};
+#[cfg(target_os = "linux")]
+use super::identify::LiveId;
+#[cfg(target_os = "linux")]
+use super::identify::live;
+#[cfg(target_os = "linux")]
 use super::log::msg;
+#[cfg(target_os = "linux")]
 use super::observe::{Measurement, Snap};
+#[cfg(target_os = "linux")]
 use super::pin::{self, PinState};
+#[cfg(target_os = "linux")]
 use super::settings;
+#[cfg(target_os = "linux")]
 use super::switch::{Switched, release, switch_live};
-use super::tests_handfix::{C, CREDS, Fx, L, M, fx, lost_l, moved_line};
-use super::tests_swap::{ino_at, n, private};
+#[cfg(target_os = "linux")]
+use super::tests_handfix::{C, CREDS, Fx, M};
+#[cfg(target_os = "linux")]
+use super::tests_handfix::{L, fx, lost_l, moved_line};
+#[cfg(target_os = "linux")]
+use super::tests_swap::n;
+#[cfg(target_os = "linux")]
+use super::tests_swap::{ino_at, private};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::ProfileError;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
 
+#[cfg(target_os = "linux")]
 pub(super) fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(f.store.clone(), f.home.clone(), s);
@@ -29,6 +51,7 @@ pub(super) fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
 /// M is spent and every candidate has capacity; decided by the real
 /// `decide`. The snapshot must already name M, read from the ledger that
 /// recovery wrote earlier in this same cycle.
+#[cfg(target_os = "linux")]
 pub(super) fn m_spent(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     assert_eq!(snap.live, LiveId::Known(n(M)), "snapshot after recovery");
     assert_eq!(snap.candidates, vec![n(C)], "L has no login, M is live");
@@ -65,10 +88,12 @@ pub(super) fn m_spent(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErro
     })
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn never(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
     panic!("this cycle must end before measuring")
 }
 
+#[cfg(target_os = "linux")]
 fn stay(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
     Ok(Measurement {
         live: Reading::Measured {
@@ -92,6 +117,7 @@ fn stay(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
 
 /// The one backup directory recovery created (its name has the cycle's
 /// real time, so it is found rather than built).
+#[cfg(target_os = "linux")]
 fn only_backup(f: &Fx) -> std::path::PathBuf {
     let dirs: Vec<_> = std::fs::read_dir(f.rejected())
         .unwrap()
@@ -101,6 +127,7 @@ fn only_backup(f: &Fx) -> std::path::PathBuf {
     dirs[0].join(CREDS)
 }
 
+#[cfg(target_os = "linux")]
 fn no_recovery_or_guidance(lines: &[String]) {
     for l in lines {
         assert!(

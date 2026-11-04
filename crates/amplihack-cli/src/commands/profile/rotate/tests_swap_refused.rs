@@ -6,6 +6,7 @@ use super::ledger::Phase;
 use super::swap::{Source, swap};
 use super::tests_swap::{LOCK, NOW, env, ino, ino_at, login, n};
 use crate::commands::profile::ProfileError;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::euid;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

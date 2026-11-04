@@ -1,3 +1,10 @@
+---
+title: Manage Multiple Claude Code Logins with Profiles
+document_type: howto
+last_updated: 2026-11-04
+review_schedule: quarterly
+---
+
 # How to Manage Multiple Claude Code Logins with Profiles
 
 A *Claude login profile* is a named Claude Code configuration directory. For
@@ -35,6 +42,25 @@ For what a recipe step does when every account is out of quota, see
 For a profile that uses a Claude Platform API key, billed per token, see
 [API-key profiles and usage limits](#api-key-profiles-and-usage-limits).
 
+## Contents
+
+- [What a new profile inherits](#what-a-new-profile-inherits)
+  - [Environment settings follow you into every profile](#environment-settings-follow-you-into-every-profile)
+- [Share sessions across profiles](#share-sessions-across-profiles)
+- [Create and log in](#create-and-log-in)
+- [Choose a profile](#choose-a-profile)
+- [Clearing the default profile](#clearing-the-default-profile)
+- [Launching the rotator's live profile](#launching-the-rotators-live-profile)
+- [Choose where profiles live](#choose-where-profiles-live)
+- [List and remove](#list-and-remove)
+- [Check usage across profiles](#check-usage-across-profiles)
+- [Accounts, organizations and duplicate logins](#accounts-organizations-and-duplicate-logins)
+- [Switch accounts automatically](#switch-accounts-automatically)
+- [API-key profiles and usage limits](#api-key-profiles-and-usage-limits)
+- [Waiting for a usage-limit reset](#waiting-for-a-usage-limit-reset)
+- [Limits](#limits)
+- [Testing without touching real state](#testing-without-touching-real-state)
+
 ## What a new profile inherits
 
 `amplihack profile add` seeds the new profile with an **allowlist** of shared,
@@ -60,8 +86,10 @@ left without one.
 
 Never copied: `.credentials.json`, `.claude.json`, `history*`,
 `sessions/`, `todos/`, `statsig/`, `shell-snapshots/`, `ide/`, and anything else not
-on the allowlist (so plugins and MCP server settings are not carried over), and the `env` and `apiKeyHelper` settings keys (and any other
-key not on the allowlist). `projects/`, `file-history/` and `session-env/` are
+on the allowlist (so plugins and MCP server settings are not carried over), and the `apiKeyHelper` settings key (and any other
+key not on the allowlist). Seeding also excludes `env`; the separate
+[environment backfill](#environment-settings-follow-you-into-every-profile)
+adds its validated entries after seeding. `projects/`, `file-history/` and `session-env/` are
 not copied either: they are linked, see
 [Share sessions across profiles](#share-sessions-across-profiles). If
 `~/.claude` does not exist, the profile is simply created empty and gets no
@@ -71,65 +99,74 @@ new profile directory rather than silently creating an unseeded profile.
 
 ### Environment settings follow you into every profile
 
-The `env` block of `~/.claude/settings.json` holds environment variables that
-Claude Code sets for every session, such as `XPIA_ENABLED`. Each profile reads
-its own `settings.json`, so a profile without that block runs with Claude
-Code's defaults instead of yours. amplihack copies the block for you:
+On Unix, amplihack adds missing valid `env` keys from
+`~/.claude/settings.json` to each profile's `settings.json`. A profile keeps
+all entries it already has, including its `XPIA_ENABLED` override. Settings
+outside `env` keep their values.
 
-- `profile add` writes it into the new profile's `settings.json`.
-- `profile login <name>`, `profile switch <name>` and
-  `profile auto-switch repair` add it to a profile that lacks
-  `env.XPIA_ENABLED`, including profiles created before this was copied.
-- A profile the rotator creates when it adopts a new login gets it too.
+The same backfill runs after `profile add` seeds a profile, before
+`profile login` starts Claude, before `profile switch` attempts its login
+swap, during `profile auto-switch repair`, when the rotator adopts a login
+into a new profile, and at every session start using a profile directory.
+The session check covers an explicit `--profile`, an inherited profile, the
+saved default and `profile run`.
 
-`env` is not on the seeding allowlist above. All of these commands copy it
-the same way, with the same checks on the source file and on each key and
-value, described below.
+For example, with this shared `settings.json`:
 
-This works on Unix only. On Windows no command copies `env` into a profile,
-and `profile.settings_template` is ignored.
-
-Values already in the profile always win. Only keys the profile lacks are
-added, and nothing outside `env` changes:
-
-```bash
-cat ~/.claude/settings.json
-# {"env": {"XPIA_ENABLED": "false", "BASH_DEFAULT_TIMEOUT_MS": "600000"}}
-
-cat ~/.amplihack/claude-profiles/work/settings.json
-# {"env": {"BASH_DEFAULT_TIMEOUT_MS": "120000"}, "model": "opus"}
-
-amplihack profile login work
-# ... after login:
-cat ~/.amplihack/claude-profiles/work/settings.json
-# {"env": {"BASH_DEFAULT_TIMEOUT_MS": "120000", "XPIA_ENABLED": "false"}, "model": "opus"}
+```json
+{"env": {"XPIA_ENABLED": "false", "BASH_DEFAULT_TIMEOUT_MS": "600000"}}
 ```
 
-The backfill does not touch the `env` block of a profile that already has
-`env.XPIA_ENABLED`. To give a profile a different value, set it in that
-profile's `settings.json`. amplihack never replaces it.
+A `work` profile that already keeps XPIA enabled might contain:
 
-To fill in every existing profile at once:
+```json
+{"env": {"XPIA_ENABLED": "true"}, "model": "opus"}
+```
+
+To fill missing keys across existing profiles, run:
 
 ```bash
 amplihack profile auto-switch repair
+# Among the output, if work gained a key:
 # env: work updated
-# env: personal updated
 ```
 
-`repair` also installs the status line, so it may add or update `statusLine`
-in a profile's `settings.json`, including one whose `env` it leaves alone.
-That file is then not byte-identical to before, but its `env` block is.
+The resulting `work/settings.json` has these values:
+
+```json
+{"env": {"XPIA_ENABLED": "true", "BASH_DEFAULT_TIMEOUT_MS": "600000"}, "model": "opus"}
+```
+
+Each existing entry wins on its own, even if its value is not a string.
+Keeping `XPIA_ENABLED` does not prevent other missing keys from being added.
+To change an inherited value later, edit that profile's `settings.json`.
+Changes in the source only supply keys still missing from the profile.
+
+If nothing is missing, the backfill does not rewrite the file or change its
+permissions. A second run with the same settings leaves the file alone.
+`repair` also installs the status line, so it can independently add or
+update `statusLine` even when the backfill writes nothing. Malformed
+profile JSON, a non-object settings document or a non-object `env` produces
+a warning and is left untouched by the backfill.
+
+`switch` fills the target before attempting the swap. A refused swap that
+still changes the default therefore fills that profile for future
+launches. `switch --none` clears the default without inheriting settings.
+
+On Windows, environment backfill is inactive and
+`profile.settings_template` has no effect. The twelve seeding keys above
+exclude `env` on every platform.
 
 #### Use a template instead of `~/.claude/settings.json`
 
 If the profiles should get a different `env` from the one in
 `~/.claude/settings.json`, point amplihack at a template file. Only its `env`
-block is read:
+block is used for inheritance:
 
 ```bash
-cat > ~/.amplihack/profile-settings.json <<'JSON'
-{"env": {"XPIA_ENABLED": "false"}}
+mkdir -p "$HOME/.amplihack"
+cat > "$HOME/.amplihack/profile-settings.json" <<'JSON'
+{"env": {"XPIA_ENABLED": "false", "BASH_DEFAULT_TIMEOUT_MS": "600000"}}
 JSON
 chmod 600 ~/.amplihack/profile-settings.json
 amplihack config set profile.settings_template "$HOME/.amplihack/profile-settings.json"
@@ -138,9 +175,10 @@ amplihack config set profile.settings_template "$HOME/.amplihack/profile-setting
 The path must be absolute. The file must belong to you (or root) and must not
 be writable by group or others. When a template is set, it replaces
 `~/.claude/settings.json` as the source for `profile add`, login, switch,
-repair and profile launches: a new profile gets the template's `env` and none of the `env` in
-`~/.claude`. If the template is missing, unreadable, not valid JSON or not
-safe, amplihack warns and copies no `env` at all; it does not fall back to
+repair, rotator adoption and profile launches. A new profile gets only
+valid entries from the template's `env`; seeding of the other twelve settings
+keys still uses `~/.claude`. If the template is missing, unreadable, not valid
+JSON or unsafe, amplihack warns and copies no `env` at all; it does not fall back to
 `~/.claude`. Fix the
 file, or remove the setting with
 `amplihack config unset profile.settings_template`. See
@@ -148,7 +186,8 @@ file, or remove the setting with
 
 #### What to keep out of `env`
 
-Every key in the source `env` reaches every profile. Two cases need care:
+Every valid, non-credential source entry can reach a profile that lacks it.
+Two cases need care:
 
 - **API keys.** `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and
   `CLAUDE_CODE_OAUTH_TOKEN` are never copied: in every profile they would
@@ -158,7 +197,7 @@ Every key in the source `env` reaches every profile. Two cases need care:
 - **Security switches.** `XPIA_ENABLED=false` in the source turns XPIA off in
   every profile that has not set its own value. To keep XPIA on in one
   profile, add `"XPIA_ENABLED": "true"` to that profile's `env`; amplihack
-  then leaves the profile's `env` alone.
+  keeps that value and continues to add other missing keys.
 
 amplihack never prints `env` values. A problem with the source is a warning
 that names the path and the reason, and the command carries on:
@@ -182,16 +221,20 @@ template path that names either file is refused.
 #### Shared settings refused
 
 If every login or switch prints `file is writable by group or others`, the
-source was created under a umask of `0002` (the Ubuntu default), which makes
-new files group-writable. Run the `chmod 600` from the warning once; the
-next launch, `login`, `switch` or `auto-switch repair` copies the `env`.
+source may have been created under a umask of `0002`, which permits
+group-writable files. Run the `chmod 600` from the warning once; the
+next launch, `login`, `switch` or `auto-switch repair` adds missing valid
+`env` entries. An actual write creates or replaces the profile settings with
+mode `0600`, even under a restrictive umask. A no-op does not change modes.
 
 #### Keep `~/.claude/settings.json` a regular, private file
 
 The same checks apply to `~/.claude/settings.json` when no template is set:
-it must be a regular file (not a symlink), owned by you or root, not writable
-by group or others, and at most 1 MiB. If you manage it with a dotfile tool
-that links it into place, or it is group-writable, no profile inherits its
+it must be a regular file, owned by the effective user running amplihack or
+root, not writable by group or others, and at most 1 MiB. Symlinks and
+FIFOs (named pipes) are refused; a FIFO cannot make the read wait for a
+writer. These checks also apply to templates. If a dotfile tool links the
+source into place, or it is group-writable, no profile inherits its
 `env` and each command warns:
 
 ```text
@@ -212,9 +255,9 @@ Caveats:
 - **Copy by value.** The allowlisted assets are copies, not links. Later
   edits to `~/.claude` do not propagate to existing profiles; re-add the
   profile to pick them up. The only links are the three session directories.
-  The exception is `env`: add, login, switch, repair and every profile launch
-  add missing keys while
-  the profile lacks `env.XPIA_ENABLED` (see
+  The exception is `env`: add, login, switch, repair, rotator adoption and
+  every profile launch inherit every missing valid key. Existing entries
+  retain precedence, including `XPIA_ENABLED` overrides (see
   [Environment settings follow you into every profile](#environment-settings-follow-you-into-every-profile)).
 - **Allowlisted setting values are copied verbatim.** Review hooks and
   status-line commands for embedded secrets or machine-specific paths before

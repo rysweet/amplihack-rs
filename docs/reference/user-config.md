@@ -1,4 +1,11 @@
-# User Configuration — Reference
+---
+title: User Configuration
+document_type: reference
+last_updated: 2026-11-04
+review_schedule: quarterly
+---
+
+# User Configuration Reference
 
 `amplihack` reads persistent defaults from two TOML files: one for you, one for
 a project. `amplihack config` reads and edits them. Every environment variable
@@ -473,15 +480,17 @@ because the key is then not read.
 
 ### profile.settings_template
 
-The file whose `env` block Claude login profiles inherit, in place of
-`~/.claude/settings.json`. `amplihack profile add`, `profile login`,
-`profile switch` and `profile auto-switch repair` read it; see
+The file supplying missing `env` keys to Claude login profiles, in place
+of `~/.claude/settings.json`. It is used by `profile add`, `profile login`,
+`profile switch`, `profile auto-switch repair`, rotator adoption and every
+session start using a profile directory. Only its `env` is inherited. Each
+existing profile entry wins individually, including non-string values and
+`XPIA_ENABLED`; other missing valid keys are still added. See
 [Environment inheritance](./profile-command.md#environment-inheritance).
-Only its `env` key is used, and keys a profile already has are never
-replaced.
 
 ```sh
-printf '{"env":{"XPIA_ENABLED":"false"}}\n' > ~/.amplihack/profile-settings.json
+mkdir -p "$HOME/.amplihack"
+printf '{"env":{"XPIA_ENABLED":"false","BASH_DEFAULT_TIMEOUT_MS":"600000"}}\n' > "$HOME/.amplihack/profile-settings.json"
 chmod 600 ~/.amplihack/profile-settings.json
 amplihack config set profile.settings_template "$HOME/.amplihack/profile-settings.json"
 ```
@@ -489,17 +498,32 @@ amplihack config set profile.settings_template "$HOME/.amplihack/profile-setting
 The value must be an absolute path; `~` is not expanded, so a relative path
 or `~/...` is a usage error (exit 2). The file is checked each time it is
 read, not when the key is set. It must be a regular file, not a symlink, of
-at most 1 MiB, owned by you or root and not writable by group or others, and
+at most 1 MiB, owned by the effective user or root and not writable by group
+or others. FIFOs are refused without waiting for a writer. The file
 must not be named `.credentials.json` or `.claude.json`. The same checks apply
 to `~/.claude/settings.json` when the key is unset. See
-[Source checks](./profile-command.md#source-checks).
+[Source checks](./profile-command.md#source-checks). Unsafe-mode warnings
+suggest `chmod 600` with the source path. Entries must have names matching
+`^[A-Za-z_][A-Za-z0-9_]*$`, at most 256 bytes, and string values.
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` are
+excluded individually. Invalid entries warn without preventing valid
+neighbours from being inherited. Warnings identify paths and keys without
+showing values.
 
 The key has no environment variable and no default, and it is user-only; a
 project file's value is reported and ignored. If the key cannot be read, or
 the file it names is missing, unsafe or not valid JSON, the profile command
-warns and copies no `env`. It does not fall back to `~/.claude/settings.json`,
-so a mistake in the template is not hidden. `amplihack config unset
+warns and copies no `env`. It does not fall back to `~/.claude/settings.json`.
+An invalid top-level JSON value or a non-object `env` also stops
+inheritance without fallback. A valid template with no `env` or no usable
+entries adds nothing. `amplihack config unset
 profile.settings_template` goes back to `~/.claude/settings.json`.
+
+Changing the source supplies only missing keys on the next backfill; it
+does not replace earlier inherited values. A backfill with nothing to add
+does not rewrite or chmod the profile file. Actual writes use mode `0600`.
+The template affects only `env`; the twelve seeding keys still come from
+shared settings.
 
 The key has effect on Unix only. On Windows it is ignored, and no `env` is
 copied into a profile.

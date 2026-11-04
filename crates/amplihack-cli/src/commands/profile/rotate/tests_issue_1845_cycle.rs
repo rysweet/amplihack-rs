@@ -20,40 +20,66 @@
 //!   cannot be written, the swap is refused before anything moves.
 //! - No line names an account, an e-mail or a token.
 
-use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
+use super::cycle::Ctx;
+#[cfg(target_os = "linux")]
+use super::cycle::{CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
 use super::decide::{Probed, Reading, Win, Windows};
+#[cfg(target_os = "linux")]
 use super::ledger::{RotateLedger, RotateState};
+#[cfg(target_os = "linux")]
 use super::observe::{Measurement, Snap, decide_measured};
+#[cfg(target_os = "linux")]
 use super::settings;
+#[cfg(target_os = "linux")]
 use super::tests_swap::{ino_at, login, private};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::ProfileError;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::kit::{Liveness, State, now};
-use crate::commands::profile::expected::{record, recorded};
+#[cfg(target_os = "linux")]
+use crate::commands::profile::expected::record;
+#[cfg(target_os = "linux")]
+use crate::commands::profile::expected::recorded;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::name::ProfileName;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::rotate::identify::Account;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::store::ProfileStore;
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
+#[cfg(target_os = "linux")]
 const CREDS: &str = ".credentials.json";
+#[cfg(target_os = "linux")]
 const ALERT: &str =
     "ALERT: swap refused: the login in ~/.claude is not the account recorded for profile work";
 
+#[cfg(target_os = "linux")]
 fn n(s: &str) -> ProfileName {
     ProfileName::parse(s).unwrap()
 }
 
+#[cfg(target_os = "linux")]
 fn acct(uuid: &str, email: &str) -> String {
     serde_json::json!({"oauthAccount": {"accountUuid": uuid, "emailAddress": email}}).to_string()
 }
 
+#[cfg(target_os = "linux")]
 fn dir700(p: &std::path::Path) {
     fs::create_dir_all(p).unwrap();
     fs::set_permissions(p, fs::Permissions::from_mode(0o700)).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 struct Fx {
     _tmp: tempfile::TempDir,
     home: PathBuf,
@@ -66,6 +92,7 @@ struct Fx {
     spare: u64,
 }
 
+#[cfg(target_os = "linux")]
 fn fx() -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -117,6 +144,7 @@ fn fx() -> Fx {
 }
 
 /// `work` exhausted; `spare` well below every threshold.
+#[cfg(target_os = "linux")]
 fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let reset = Some(now() + 4 * 3600);
     let work = Probed {
@@ -156,6 +184,7 @@ fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
     decide_measured(ctx, snap, work, vec![(n("spare"), spare)], now())
 }
 
+#[cfg(target_os = "linux")]
 impl Fx {
     fn ctx(&self) -> Ctx {
         let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
@@ -187,6 +216,7 @@ impl Fx {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn assert_no_account(lines: &[String]) {
     for l in lines {
         for secret in [
@@ -304,6 +334,7 @@ fn deleting_an_out_of_date_record_lets_the_next_cycle_swap() {
 /// recorded for `work` replaces the login there and its `oauthAccount`.
 /// `work/.claude.json` still names the account before. Returns the new
 /// login's inode.
+#[cfg(target_os = "linux")]
 fn relogin_to_recorded(f: &Fx) -> u64 {
     private(
         &f.home.join(".claude.json"),

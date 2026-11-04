@@ -11,7 +11,8 @@
 //!   the two fixed warning forms; never an env value.
 //! - `ensure_for(store, name, home)` (add, login, switch, launch, adoption) and
 //!   `ensure_all(store, home)` (repair) return [`Outcome`]: a [`Refresh`]
-//!   plus the warnings. `Skipped` has exactly one warning, `Unchanged` none.
+//!   plus the warnings. `Skipped` has one warning; filtered source entries
+//!   each warn even when no valid entry is missing and no write occurs.
 //!   `env` is not seeded by `store.add`, so a new profile gets it only here.
 
 use super::name::ProfileName;
@@ -97,7 +98,11 @@ impl Fx {
     fn profile(&self, name: &str, body: Option<&str>) -> PathBuf {
         let dir = self.store.add(&n(name)).unwrap();
         let path = dir.join("settings.json");
-        let _ = fs::remove_file(&path);
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("could not remove {}: {error}", path.display()),
+        }
         if let Some(body) = body {
             fs::write(&path, body).unwrap();
             chmod(&path, 0o600);
@@ -240,7 +245,7 @@ fn key_warning_escapes_and_truncates_a_hostile_key() {
     assert!(key_part.chars().count() <= 64, "{key_part:?}");
 }
 
-// ---- ensure_for: the XPIA gate --------------------------------------------
+// ---- ensure_for: per-key precedence --------------------------------------
 
 #[test]
 fn backfill_adds_missing_keys_and_profile_keys_win() {
@@ -276,30 +281,202 @@ fn backfill_keeps_hooks_permissions_and_does_not_add_api_key_helper() {
 }
 
 #[test]
-fn profile_with_xpia_is_unchanged_byte_identical_and_source_not_read() {
-    let fx = Fx::new();
-    let body = "{ \"env\": {\"XPIA_ENABLED\": \"true\"},\n  \"language\":\"en\" }";
-    fx.profile("work", Some(body));
-    // A source that would be Skipped if it were opened proves it is not.
-    fx.source_settings("{not json");
-    chmod(&fx.source_file(), 0o666);
-    let before = fx.raw("work");
-    let o = fx.ensure("work");
-    assert_eq!(o.result, Refresh::Unchanged);
-    assert!(o.warnings.is_empty(), "{:?}", o.warnings);
-    assert_eq!(fx.raw("work"), before);
+fn xpia_override_preserves_existing_entries_and_inherits_missing_keys() {
+    for xpia in [
+        json!("true"),
+        json!("false"),
+        Value::Null,
+        json!(7),
+        json!({"local": true}),
+    ] {
+        let fx = Fx::new();
+        let body = json!({"env": {"XPIA_ENABLED": xpia, "FOO": false}, "language": "en"});
+        fx.profile("work", Some(&body.to_string()));
+        fx.source_settings(r#"{"env":{"XPIA_ENABLED":"false","FOO":"shared","BAR":"missing"}}"#);
+        let o = fx.ensure("work");
+        assert_eq!(o.result, Refresh::Updated);
+        assert!(o.warnings.is_empty(), "{:?}", o.warnings);
+        assert_eq!(
+            fx.read("work"),
+            json!({
+                "env": {"XPIA_ENABLED": xpia, "FOO": false, "BAR": "missing"}, "language": "en"
+            })
+        );
+        let path = fx.store.root().join("work/settings.json");
+        let before = fs::metadata(&path).unwrap();
+        let bytes = fx.raw("work");
+        assert_eq!(fx.ensure("work").result, Refresh::Unchanged);
+        assert_eq!(fx.raw("work"), bytes);
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(fs::metadata(path).unwrap().ino(), before.ino());
+    }
 }
 
 #[test]
 fn every_key_present_is_unchanged_and_not_rewritten() {
     let fx = Fx::new();
-    // No XPIA in the profile, so the gate opens, but nothing is missing.
-    fx.profile("work", Some(r#"{"env":{"FOO":"1"}}"#));
-    fx.source_settings(r#"{"env":{"FOO":"2"}}"#);
+    use std::os::unix::fs::MetadataExt;
+    let dir = fx.profile(
+        "work",
+        Some("{ \"env\": {\"XPIA_ENABLED\":null, \"FOO\":7} }\n"),
+    );
+    fx.source_settings(r#"{"env":{"XPIA_ENABLED":"false","FOO":"2"}}"#);
+    let path = dir.join("settings.json");
+    chmod(&path, 0o640);
+    let metadata = fs::metadata(&path).unwrap();
     let before = fx.raw("work");
     let o = fx.ensure("work");
     assert_eq!(o.result, Refresh::Unchanged);
+    assert!(o.warnings.is_empty());
     assert_eq!(fx.raw("work"), before);
+    let after = fs::metadata(path).unwrap();
+    assert_eq!(
+        (
+            after.dev(),
+            after.ino(),
+            after.mode(),
+            after.mtime(),
+            after.mtime_nsec()
+        ),
+        (
+            metadata.dev(),
+            metadata.ino(),
+            metadata.mode(),
+            metadata.mtime(),
+            metadata.mtime_nsec()
+        )
+    );
+}
+
+#[test]
+fn xpia_override_does_not_bypass_a_broken_template_or_fall_back() {
+    let fx = Fx::new();
+    fx.profile(
+        "work",
+        Some(r#"{"env":{"XPIA_ENABLED":"true"},"language":"de"}"#),
+    );
+    fx.source_settings(r#"{"env":{"FALLBACK":"must-not-copy"}}"#);
+    let template = fx.template_file(
+        "broken.json",
+        &format!(r#"{{"env":{{"KEY":"{SECRET}"}} broken"#),
+    );
+    fx.template(&template);
+    let before = fx.raw("work");
+    let o = fx.ensure("work");
+    assert!(skipped_reason(&o).starts_with("invalid JSON at line "));
+    assert_eq!(o.warnings.len(), 1);
+    assert!(o.warnings[0].contains(&template.display().to_string()));
+    assert_no_value_in(&o);
+    assert_eq!(fx.raw("work"), before);
+}
+
+#[test]
+fn replacement_settings_are_exactly_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new();
+    let dir = fx.profile("work", Some(r#"{"env":{"XPIA_ENABLED":"true"}}"#));
+    let path = dir.join("settings.json");
+    chmod(&path, 0o644);
+    fx.source_settings(r#"{"env":{"NEW":"value"}}"#);
+    assert_eq!(fx.ensure("work").result, Refresh::Updated);
+    assert_eq!(
+        fs::metadata(path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[test]
+fn missing_settings_creation_has_exact_0600_under_restrictive_umask() {
+    const CHILD: &str = "AMPLIHACK_1877_UMASK_CHILD";
+    if std::env::var_os(CHILD).is_some() {
+        use std::os::unix::fs::PermissionsExt;
+        let fx = Fx::new();
+        let dir = fx.profile("work", None);
+        fx.source_settings(r#"{"env":{"NEW":"value"}}"#);
+        // SAFETY: this branch runs in a dedicated single-test child process.
+        unsafe {
+            libc::umask(0o777);
+        }
+        assert_eq!(fx.ensure("work").result, Refresh::Updated);
+        assert_eq!(
+            fs::metadata(dir.join("settings.json"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+        return;
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "missing_settings_creation_has_exact_0600_under_restrictive_umask",
+            "--test-threads=1",
+        ])
+        .env(CHILD, "1")
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("umask child exceeded ten seconds");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn source_read_limit_accepts_exactly_one_mib_and_refuses_one_more_byte() {
+    let fx = Fx::new();
+    fx.profile("work", Some("{}"));
+    let mut body = r#"{"env":{"GOOD":"value"}}"#.to_owned();
+    body.extend(std::iter::repeat_n(
+        ' ',
+        super::store::MAX_SETTINGS_BYTES as usize - body.len(),
+    ));
+    fx.source_settings(&body);
+    assert_eq!(fx.ensure("work").result, Refresh::Updated);
+    let before = fx.raw("work");
+    body.push(' ');
+    fx.source_settings(&body);
+    assert_eq!(
+        skipped_reason(&fx.ensure("work")),
+        "file is larger than 1 MiB"
+    );
+    assert_eq!(fx.raw("work"), before);
+}
+
+#[test]
+fn variable_name_boundaries_filter_entries_individually() {
+    let fx = Fx::new();
+    fx.profile("work", Some("{}"));
+    let longest = "K".repeat(256);
+    let too_long = "K".repeat(257);
+    let mut entries = obj(json!({"_": "ok", "a_0Z": "ok"}));
+    entries.insert(longest.clone(), json!("ok"));
+    let invalid = ["", "1BAD", "BAD-KEY", "BAD.KEY", "É", "BAD\nKEY", &too_long];
+    for key in invalid {
+        entries.insert(key.into(), json!(SECRET));
+    }
+    fx.source_settings(&json!({"env": entries}).to_string());
+    let o = fx.ensure("work");
+    assert_eq!(o.result, Refresh::Updated);
+    let mut expected = obj(json!({"_": "ok", "a_0Z": "ok"}));
+    expected.insert(longest, json!("ok"));
+    assert_eq!(fx.read("work")["env"], Value::Object(expected));
+    assert_eq!(o.warnings.len(), invalid.len());
+    assert_no_value_in(&o);
 }
 
 #[test]

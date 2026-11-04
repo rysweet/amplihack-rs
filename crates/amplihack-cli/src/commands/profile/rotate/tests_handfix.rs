@@ -25,22 +25,47 @@
 
 use super::backup::{BackupRefusal, fresh_backup, rejected_dir};
 use super::control::status_alerts;
+#[cfg(target_os = "linux")]
 use super::decide::{Decision, Measured, Reading, decide};
 use super::guide::{Kind, Paths, lines as guide_lines};
-use super::handfix::{Env as Seam, Step, preview, step_with};
-use super::identify::{CandidateInput, LiveId, Skip, candidates, live};
-use super::ledger::{MAX_LOST_LOGIN, Phase, RotateJournal, RotateLedger, RotateState};
-use super::log::{Sink, open_or_warn, sh_quote};
+#[cfg(target_os = "linux")]
+use super::handfix::preview;
+#[cfg(target_os = "linux")]
+use super::handfix::{Env as Seam, Step, step_with};
+#[cfg(target_os = "linux")]
+use super::identify::{CandidateInput, Skip, candidates};
+#[cfg(target_os = "linux")]
+use super::identify::{LiveId, live};
+#[cfg(target_os = "linux")]
+use super::ledger::MAX_LOST_LOGIN;
+use super::ledger::RotateLedger;
+#[cfg(target_os = "linux")]
+use super::ledger::{Phase, RotateJournal, RotateState};
+#[cfg(target_os = "linux")]
+use super::log::sh_quote;
+#[cfg(target_os = "linux")]
+use super::log::{Sink, open_or_warn};
+#[cfg(target_os = "linux")]
 use super::observe::live_alert_for;
+#[cfg(target_os = "linux")]
 use super::settings::Settings;
+#[cfg(target_os = "linux")]
 use super::swap::{Source, swap};
-use super::tests_swap::{ino_at, login, n, private};
+use super::tests_swap::n;
+#[cfg(target_os = "linux")]
+use super::tests_swap::{ino_at, login, private};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::euid;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::kit::{Ledger, Liveness};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::store::ProfileStore;
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
 use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+#[cfg(target_os = "linux")]
+use std::os::unix::fs::MetadataExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 /// 2026-10-27T03:17:05Z, the first hand-change ALERT in the #1693 log.
@@ -48,23 +73,30 @@ pub(super) const T: i64 = 1_793_071_025;
 const STAMP: &str = "20261027T031705Z";
 pub(super) const L: &str = "ryan-ryansweet";
 pub(super) const M: &str = "ryan-mistt-org";
+#[cfg(target_os = "linux")]
 pub(super) const C: &str = "rssourcelabs";
+#[cfg(target_os = "linux")]
 pub(super) const CREDS: &str = ".credentials.json";
 
+#[cfg(target_os = "linux")]
 pub(super) fn acct(uuid: &str, email: &str) -> String {
     serde_json::json!({"oauthAccount": {"accountUuid": uuid, "emailAddress": email}}).to_string()
 }
 
+#[cfg(target_os = "linux")]
 fn email_only(email: &str) -> String {
     serde_json::json!({"oauthAccount": {"emailAddress": email}}).to_string()
 }
 
+#[cfg(target_os = "linux")]
 fn real_dev(p: &Path) -> Option<u64> {
     fs::symlink_metadata(p).ok().map(|m| m.dev())
 }
 
+#[cfg(target_os = "linux")]
 fn noop() {}
 
+#[cfg(target_os = "linux")]
 pub(super) fn seam() -> Seam<'static> {
     Seam {
         liveness: Liveness::Known(BTreeSet::new()),
@@ -74,6 +106,7 @@ pub(super) fn seam() -> Seam<'static> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn settings() -> Settings {
     Settings {
         session_at: 85,
@@ -87,6 +120,7 @@ fn settings() -> Settings {
     }
 }
 
+#[cfg(target_os = "linux")]
 pub(super) struct Fx {
     _tmp: tempfile::TempDir,
     pub(super) base: PathBuf,
@@ -109,10 +143,12 @@ fn dir700(p: &Path) {
 
 /// The #1693 state. `m_own`: M has its own login (case B), else case A.
 /// `capacity`: C exists with a login.
+#[cfg(target_os = "linux")]
 pub(super) fn fx(m_own: bool, capacity: bool) -> Fx {
     fx_at("home", m_own, capacity)
 }
 
+#[cfg(target_os = "linux")]
 fn fx_at(home_rel: &str, m_own: bool, capacity: bool) -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
@@ -173,6 +209,7 @@ fn fx_at(home_rel: &str, m_own: bool, capacity: bool) -> Fx {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Fx {
     pub(super) fn step(&self, s: &Seam<'_>, t: i64) -> Step {
         let mut out = Sink::new(open_or_warn(&self.rs.log, &self.rs.log1), false, true);
@@ -286,20 +323,24 @@ fn alert(middle: &str) -> String {
     )
 }
 
+#[cfg(target_os = "linux")]
 fn login_l() -> String {
     format!("fix 1: amplihack profile login {L}")
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn lost_l() -> String {
     format!(
         "ALERT: profile {L} has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login {L}"
     )
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn recorded_line() -> String {
     format!("recovered: ~/.claude holds {M}'s login (ledger named {L}); recorded {M} as live")
 }
 
+#[cfg(target_os = "linux")]
 pub(super) fn moved_line(to: &Path) -> String {
     format!(
         "recovered: ~/.claude and {M} held the same account; kept ~/.claude, moved {M}'s copy to {}; recorded {M} as live",
@@ -308,6 +349,7 @@ pub(super) fn moved_line(to: &Path) -> String {
 }
 
 /// `rotate status` repeats the guidance as `alert:` lines.
+#[cfg(target_os = "linux")]
 fn as_status(lines: &[String]) -> Vec<String> {
     lines
         .iter()
@@ -315,6 +357,7 @@ fn as_status(lines: &[String]) -> Vec<String> {
         .collect()
 }
 
+#[cfg(target_os = "linux")]
 fn count(lines: &[String], want: &str) -> usize {
     lines.iter().filter(|l| *l == want).count()
 }
@@ -496,6 +539,7 @@ fn a_stale_ledger_account_for_the_named_profile_is_recorded_without_a_lost_login
 
 // --- Guidance: nothing can move ---------------------------------------------
 
+#[cfg(target_os = "linux")]
 fn guided(f: &Fx, s: &Seam<'_>, want: &[String]) {
     assert_eq!(f.step(s, T), Step::Guided);
     assert_eq!(f.logged(), want);
@@ -685,6 +729,7 @@ fn a_matching_ledger_is_clear_and_writes_nothing() {
 
 // --- Refusals: one profile matches, a check fails ----------------------------
 
+#[cfg(target_os = "linux")]
 fn refused(f: &Fx, s: &Seam<'_>, reason: &str, fix: &str) {
     let own = if f.m.is_some() {
         " and has its own login"
@@ -704,6 +749,7 @@ fn refused(f: &Fx, s: &Seam<'_>, reason: &str, fix: &str) {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn by_hand(f: &Fx) -> String {
     let dir = f.manual();
     format!(
@@ -846,6 +892,7 @@ fn a_hard_linked_profile_login_refuses() {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn pending_journal(f: &Fx) {
     f.rs.save_journal(&RotateJournal {
         version: 1,
@@ -1060,6 +1107,7 @@ fn status_cleans_control_characters_again() {
 // --- Dry run -----------------------------------------------------------------
 
 /// Every path under `dir` with its inode, size, mode and mtime.
+#[cfg(target_os = "linux")]
 fn tree(dir: &Path, out: &mut Vec<(PathBuf, u64, u64, u32, i64)>) {
     for e in fs::read_dir(dir).unwrap() {
         let p = e.unwrap().path();
@@ -1077,6 +1125,7 @@ fn tree(dir: &Path, out: &mut Vec<(PathBuf, u64, u64, u32, i64)>) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn snapshot(f: &Fx) -> Vec<(PathBuf, u64, u64, u32, i64)> {
     let mut v = Vec::new();
     tree(&f.base, &mut v);

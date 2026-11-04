@@ -28,13 +28,17 @@ use super::tests_switch::assert_refused;
 use crate::commands::profile::auto_switch::kit::Liveness;
 use crate::commands::profile::pointer;
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
 /// A child process whose environment names `dir` as its Claude config
 /// directory; killed when dropped.
+#[cfg(target_os = "linux")]
 struct Session(std::process::Child);
 
+#[cfg(target_os = "linux")]
 impl Session {
     fn in_dir(dir: &Path) -> Self {
         Self(
@@ -47,6 +51,7 @@ impl Session {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl Drop for Session {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -55,6 +60,7 @@ impl Drop for Session {
 }
 
 /// Writes the auto-switch ledger: directory → the account live in it.
+#[cfg(target_os = "linux")]
 fn hosts(e: &Env, entries: &[(&str, &str)]) {
     let hosts: serde_json::Map<String, serde_json::Value> = entries
         .iter()
@@ -74,6 +80,7 @@ fn hosts(e: &Env, entries: &[(&str, &str)]) {
     );
 }
 
+#[cfg(target_os = "linux")]
 fn ledger_bytes(e: &Env) -> Vec<u8> {
     fs::read(e.root.join(".auto-switch.d/ledger.json")).unwrap()
 }

@@ -6,22 +6,41 @@
 //! stay until the file has an account again. Fixture: `tests_handfix.rs`
 //! (the ledger names L; L has no login file, its login is in `~/.claude`).
 
+#[cfg(target_os = "linux")]
 use super::cycle::{CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
 use super::guide::home_stuck_head;
+#[cfg(target_os = "linux")]
 use super::handfix::{Step, preview};
+#[cfg(target_os = "linux")]
 use super::identify::{LiveId, home_problem, live};
+#[cfg(target_os = "linux")]
 use super::ledger::HOME_UNREADABLE_GRACE;
-use super::log::{msg, sh_quote};
-use super::tests_handfix::{C, Fx, L, T, acct, fx, seam};
+#[cfg(target_os = "linux")]
+use super::log::msg;
+#[cfg(target_os = "linux")]
+use super::log::sh_quote;
+#[cfg(target_os = "linux")]
+use super::tests_handfix::{C, T, acct, fx, seam};
+#[cfg(target_os = "linux")]
+use super::tests_handfix::{Fx, L};
+#[cfg(target_os = "linux")]
 use super::tests_handfix_cycle::{ctx, m_spent, never};
-use super::tests_swap::{ino_at, n, private};
+#[cfg(target_os = "linux")]
+use super::tests_swap::ino_at;
+#[cfg(target_os = "linux")]
+use super::tests_swap::{n, private};
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
 const G: i64 = HOME_UNREADABLE_GRACE;
 
 /// Each way `~/.claude.json` can hold no account, and what the ALERT says.
 /// `None`: the file is removed.
+#[cfg(target_os = "linux")]
 const CASES: &[(Option<&str>, &str)] = &[
     (None, "it does not exist"),
     (Some("{"), "it is not valid JSON (empty or cut short)"),
@@ -34,6 +53,7 @@ const CASES: &[(Option<&str>, &str)] = &[
     ),
 ];
 
+#[cfg(target_os = "linux")]
 fn spoil(f: &Fx, body: Option<&str>) {
     let p = f.home.join(".claude.json");
     match body {
@@ -42,11 +62,13 @@ fn spoil(f: &Fx, body: Option<&str>) {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn q(p: &Path) -> String {
     sh_quote(p).unwrap()
 }
 
 /// The escalated lines, built from the documented wording.
+#[cfg(target_os = "linux")]
 fn stuck_lines(f: &Fx, problem: &str) -> Vec<String> {
     vec![
         home_stuck_head(&n(L), problem),
@@ -68,6 +90,7 @@ fn stuck_lines(f: &Fx, problem: &str) -> Vec<String> {
 /// Run `cmd` under `/bin/sh` with a fixed PATH. Other tests in this binary
 /// briefly point the process-wide PATH at a temporary directory (under
 /// `home_env_lock`), and a bare `sh` lookup during that window fails.
+#[cfg(target_os = "linux")]
 fn run_sh(cmd: &str) -> std::process::ExitStatus {
     std::process::Command::new("/bin/sh")
         .arg("-c")
@@ -77,6 +100,7 @@ fn run_sh(cmd: &str) -> std::process::ExitStatus {
         .unwrap()
 }
 
+#[cfg(target_os = "linux")]
 fn fix2_command(line: &str) -> String {
     let start = line.find("then run: ").unwrap() + "then run: ".len();
     let end = line.rfind("; then run claude").unwrap();

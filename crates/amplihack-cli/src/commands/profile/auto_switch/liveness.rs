@@ -35,21 +35,17 @@ impl Liveness {
     }
 }
 
-/// The live set for this process on this machine.
+/// The live set for this process on this machine. Keep the portable scanner
+/// compiled on every Unix so fake `/proc` fixtures can exercise it there.
 pub fn scan_system(root: &Path) -> Liveness {
-    #[cfg(target_os = "linux")]
-    {
-        // SAFETY: getuid has no preconditions.
-        let uid = unsafe { libc::getuid() };
-        match root.canonicalize() {
-            Ok(root) => scan(Path::new("/proc"), &root, std::process::id(), uid),
-            Err(_) => Liveness::Unsupported,
-        }
+    if !cfg!(target_os = "linux") {
+        return Liveness::Unsupported;
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = root;
-        Liveness::Unsupported
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    match root.canonicalize() {
+        Ok(root) => scan(Path::new("/proc"), &root, std::process::id(), uid),
+        Err(_) => Liveness::Unsupported,
     }
 }
 
@@ -109,6 +105,7 @@ pub fn scan(proc_root: &Path, root: &Path, self_pid: u32, uid: u32) -> Liveness 
 /// `proc_root`, or a Claude-like process whose environment or working
 /// directory cannot be read, is an error. Other unreadable processes (such
 /// as a non-dumpable `ssh-agent`) and processes that exited are skipped.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) fn claude_config_dirs(
     proc_root: &Path,
     self_pid: u32,

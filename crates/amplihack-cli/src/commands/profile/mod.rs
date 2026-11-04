@@ -121,7 +121,7 @@ mod tests_verify;
 
 use anyhow::Result;
 /// For `amplihack sessions` (issue #1746): the live check and profile root.
-#[cfg(unix)]
+#[cfg(all(unix, any(target_os = "linux", test)))]
 pub(crate) use auto_switch::claude_config_dirs;
 /// File helpers shared with the usage-limit wait (#1618).
 #[cfg(unix)]
@@ -796,8 +796,8 @@ pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<auto_sw
     // Issue #1634: the shared session links, under the hold. Never fails.
     shared_dirs::ensure_for(&store, &name);
     // Issue #1877: every session start backfills `env`, so a profile nobody
-    // ran login, switch or repair on still starts with `XPIA_ENABLED` set.
-    // Reads only when the profile lacks `XPIA_ENABLED`; never fails.
+    // ran login, switch or repair on still inherits missing shared env keys.
+    // Existing entries win, including XPIA overrides; failures only warn.
     settings_env::report(&settings_env::ensure_for(
         &store,
         &name,

@@ -40,11 +40,11 @@ pub(super) fn warning(name: &str, path: &Path, reason: &str) -> String {
     )
 }
 
-/// Add, login, switch, profile launches and rotator adoption: adds the missing source
-/// `env` keys to `name`'s `settings.json`, creating it when missing. The
-/// source is `profile.settings_template` when set, else the shared
-/// `settings.json`. Runs only when the profile has
-/// no `env.XPIA_ENABLED`; otherwise `Unchanged` without opening the source.
+/// Add, login, switch, repair, profile launches and rotator adoption: adds
+/// missing source `env` keys to `name`'s `settings.json`, creating it when
+/// missing. Existing entries of every type win, including `XPIA_ENABLED`.
+/// The source is `profile.settings_template` when set, else the shared
+/// `settings.json`. Returns `Unchanged` without rewriting when no keys are missing.
 /// `Unchanged` with no I/O when `home` is unknown.
 pub(super) fn ensure_for(store: &ProfileStore, name: &ProfileName, home: Option<&Path>) -> Outcome {
     #[cfg(unix)]
@@ -105,6 +105,32 @@ pub(super) fn report(outcome: &Outcome) {
 #[cfg(all(test, unix))]
 pub(super) use imp::{key_warning, merge_env};
 
+#[cfg(all(test, not(unix)))]
+mod platform_tests {
+    use super::*;
+
+    #[test]
+    fn backfill_ignores_the_template_and_performs_no_io_off_unix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let config = home.join(".amplihack");
+        std::fs::create_dir_all(&config).unwrap();
+        std::fs::write(
+            config.join("config.toml"),
+            "[profile]\nsettings_template = \"not-an-absolute-path\"\n",
+        )
+        .unwrap();
+        let root = tmp.path().join("profiles-must-remain-absent");
+        let store = ProfileStore::new(root.clone())
+            .with_shared_assets(tmp.path().join("shared-must-remain-absent"));
+        let name = ProfileName::parse("work").unwrap();
+        let outcome = ensure_for(&store, &name, Some(&home));
+        assert_eq!(outcome.result, Refresh::Unchanged);
+        assert!(outcome.warnings.is_empty());
+        assert!(!root.exists());
+    }
+}
+
 #[cfg(unix)]
 mod imp {
     use super::{Outcome, warning};
@@ -114,7 +140,7 @@ mod imp {
     use amplihack_utils::secure_files::{read_bounded_nofollow, write_private_atomic};
     use serde_json::{Map, Value};
     use std::io::{self, Write};
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::path::{Path, PathBuf};
 
     const MAX_KEY_BYTES: usize = 256;
@@ -192,6 +218,11 @@ mod imp {
         unsafe { libc::geteuid() }
     }
 
+    /// Shared settings may be owned by the effective user or root.
+    fn source_owner_allowed(owner: u32, effective: u32) -> bool {
+        owner == effective || owner == 0
+    }
+
     /// Reads `path` without following a final symlink, at most 1 MiB, and
     /// parses it into a JSON value. `Ok(None)` when it does not exist.
     /// `owner_ok` judges the owner's uid.
@@ -247,7 +278,7 @@ mod imp {
         {
             return Err("refusing credential file".into());
         }
-        let owner_ok = |uid: u32| uid == euid() || uid == 0;
+        let owner_ok = |uid: u32| source_owner_allowed(uid, euid());
         let Some(settings) = read_json(path, &owner_ok, true)? else {
             return if template {
                 Err("file does not exist".into())
@@ -332,7 +363,12 @@ mod imp {
             .mode(0o600)
             .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
             .open(&path)?;
-        let written = file.write_all(&bytes).and_then(|()| file.sync_all());
+        // Creation mode is filtered by umask. Set exact permissions on the
+        // opened descriptor before writing; failures use partial-file cleanup.
+        let written = file
+            .set_permissions(std::fs::Permissions::from_mode(0o600))
+            .and_then(|()| file.write_all(&bytes))
+            .and_then(|()| file.sync_all());
         if let Err(error) = written {
             drop(file);
             if let Err(cleanup) = std::fs::remove_file(&path) {
@@ -382,16 +418,6 @@ mod imp {
             Ok(profile) => profile,
             Err(reason) => return skipped(name, &profile_path, &reason),
         };
-        // The XPIA gate: a profile that already sets it is left alone, and
-        // the source is not opened.
-        if profile
-            .as_ref()
-            .and_then(|s| s.get("env"))
-            .and_then(Value::as_object)
-            .is_some_and(|env| env.contains_key("XPIA_ENABLED"))
-        {
-            return Outcome::unchanged();
-        }
         let (path, template) = match source_path(shared, home) {
             Ok(Some(found)) => found,
             Ok(None) => return Outcome::unchanged(),
@@ -426,6 +452,28 @@ mod imp {
         match write_profile(dir, &merged) {
             Ok(()) => done(Refresh::Updated),
             Err(reason) => skipped(name, &profile_path, &reason),
+        }
+    }
+
+    #[cfg(test)]
+    mod ownership_tests {
+        #[test]
+        fn source_owner_policy_accepts_only_effective_user_or_root() {
+            // Synthetic UIDs exercise the production predicate without chown.
+            for (owner, effective, allowed) in [
+                (501, 501, true),
+                (0, 501, true),
+                (502, 501, false),
+                (u32::MAX, 501, false),
+                (0, 0, true),
+                (501, 0, false),
+            ] {
+                assert_eq!(
+                    super::source_owner_allowed(owner, effective),
+                    allowed,
+                    "owner={owner}, effective={effective}"
+                );
+            }
         }
     }
 }

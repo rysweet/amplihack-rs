@@ -14,7 +14,9 @@
 use crate::support::amplihack_bin::amplihack_bin;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+#[cfg(target_os = "linux")]
+use std::process::Command;
+use std::process::Output;
 
 const GUARD_REL: &str = "amplifier-bundle/tools/gh-merge-guard";
 const MARKER_ENV: &str = "AMPLIHACK_MERGE_GUARD";

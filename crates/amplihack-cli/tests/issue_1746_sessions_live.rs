@@ -12,6 +12,7 @@
 
 use crate::support::sessions_archive::*;
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::process::{Child, Command, Stdio};
 
 fn applied(n: u32, live: u32) -> String {
@@ -25,7 +26,9 @@ fn alive_pid() -> u32 {
 }
 
 /// A `sleep` child that is killed on drop.
+#[cfg(target_os = "linux")]
 struct Sleeper(Child);
+#[cfg(target_os = "linux")]
 impl Drop for Sleeper {
     fn drop(&mut self) {
         let _ = self.0.kill();

@@ -22,6 +22,10 @@ const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
   --version) echo '2.1.301 (Claude Code)'; exit 0 ;;
 esac
+if [ -n "$AMPLIHACK_1877_ENV_MARKER" ]; then
+  grep -q '"FOO"' "$CLAUDE_CONFIG_DIR/settings.json" || exit 87
+  : > "$AMPLIHACK_1877_ENV_MARKER"
+fi
 echo "fake claude"
 exit 0
 "#;
@@ -195,6 +199,103 @@ fn expected_env() -> Value {
     json!({"XPIA_ENABLED": "false", "FOO": "1", "API_TOKEN": SECRET})
 }
 
+/// File-backed capture avoids pipe deadlocks while the parent enforces a deadline.
+fn bounded_output(mut command: Command, dir: &Path) -> Output {
+    let stdout = tempfile::tempfile_in(dir).unwrap();
+    let stderr = tempfile::tempfile_in(dir).unwrap();
+    command
+        .stdout(stdout.try_clone().unwrap())
+        .stderr(stderr.try_clone().unwrap());
+    let mut child = command.spawn().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("profile command blocked on a FIFO with no writer");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    use std::io::{Read, Seek, SeekFrom};
+    fn captured(mut file: fs::File) -> Vec<u8> {
+        file.seek(SeekFrom::Start(0)).unwrap();
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes).unwrap();
+        bytes
+    }
+    Output {
+        status,
+        stdout: captured(stdout),
+        stderr: captured(stderr),
+    }
+}
+
+#[test]
+fn repair_refuses_a_source_fifo_without_a_writer_or_destination_changes() {
+    for use_template in [false, true] {
+        let f = Fixture::new();
+        f.ok(&["profile", "add", "work"]);
+        // Install statusLine first so its independent repair is a no-op.
+        f.ok(&["profile", "auto-switch", "repair"]);
+        let mut settings = f.settings("work");
+        settings["env"] = json!({"XPIA_ENABLED": "true"});
+        fs::write(f.settings_path("work"), settings.to_string()).unwrap();
+        let source = if use_template {
+            let template = f.tmp.path().canonicalize().unwrap().join("template.json");
+            f.set_template(&template);
+            template
+        } else {
+            let shared = f.canon.join("settings.json");
+            fs::remove_file(&shared).unwrap();
+            shared
+        };
+        let c_path = std::ffi::CString::new(source.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: c_path is a live, NUL-terminated fixture pathname.
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let before = fs::read(f.settings_path("work")).unwrap();
+        let out = bounded_output(f.cmd(&["profile", "auto-switch", "repair"]), f.tmp.path());
+        assert_no_secret(&out);
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        let stderr = text(&out.stderr);
+        assert!(stderr.contains("file is not a regular file"), "{stderr}");
+        assert!(stderr.contains(&source.display().to_string()), "{stderr}");
+        assert_eq!(fs::read(f.settings_path("work")).unwrap(), before);
+        use std::os::unix::fs::FileTypeExt;
+        assert!(fs::symlink_metadata(source).unwrap().file_type().is_fifo());
+    }
+}
+
+#[test]
+fn add_filters_source_entries_without_printing_their_values() {
+    let f = Fixture::new();
+    let source = f.canon.join("settings.json");
+    fs::write(&source, json!({"env": {
+        "VALID": "inherited", "1BAD": SECRET, "NUMBER": 123,
+        "ANTHROPIC_API_KEY": SECRET, "ANTHROPIC_AUTH_TOKEN": SECRET, "CLAUDE_CODE_OAUTH_TOKEN": SECRET
+    }}).to_string()).unwrap();
+    let out = f.ok(&["profile", "add", "work"]);
+    assert_eq!(f.settings("work")["env"], json!({"VALID": "inherited"}));
+    let stderr = text(&out.stderr);
+    for key in [
+        "1BAD",
+        "NUMBER",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+    ] {
+        assert!(
+            stderr.contains(&format!(
+                "env key {key} not inherited from {}",
+                source.display()
+            )),
+            "{stderr}"
+        );
+    }
+}
+
 #[test]
 fn add_copies_the_env_block_and_nothing_else_new() {
     let f = Fixture::new();
@@ -223,6 +324,10 @@ fn add_with_a_group_writable_source_warns_and_copies_no_env() {
             && stderr.contains("file is writable by group or others"),
         "{stderr}"
     );
+    assert!(stderr.contains(&format!(
+        "chmod 600 {}",
+        f.canon.join("settings.json").display()
+    )));
     let s = f.settings("work");
     assert!(s.get("env").is_none(), "env copied: {s}");
     assert_eq!(s["language"], json!("en"));
@@ -275,7 +380,7 @@ fn repair_backfills_a_profile_missing_env_and_keeps_its_own_keys() {
 }
 
 #[test]
-fn repair_leaves_the_env_of_a_profile_with_xpia_alone() {
+fn repair_preserves_xpia_and_inherits_other_missing_keys() {
     let f = Fixture::new();
     f.ok(&["profile", "add", "work"]);
     let body = "{\"env\":{\"XPIA_ENABLED\":\"true\"},\"language\":\"de\"}";
@@ -283,17 +388,13 @@ fn repair_leaves_the_env_of_a_profile_with_xpia_alone() {
     chmod(&f.settings_path("work"), 0o600);
 
     let out = f.ok(&["profile", "auto-switch", "repair"]);
-    assert!(!text(&out.stdout).contains("env: work updated"));
-    // The env backfill leaves this file alone, but `repair` also runs
-    // statusline::install, which may add `statusLine` and rewrite the file.
-    // So the file is not byte-identical after `repair`; only `env` and the
-    // keys other than `statusLine` are guaranteed to be unchanged.
+    assert!(text(&out.stdout).contains("env: work updated"));
+    // Repair independently installs statusLine.
     let mut after = f.settings("work");
-    assert_eq!(after["env"], json!({"XPIA_ENABLED": "true"}));
     after.as_object_mut().unwrap().remove("statusLine");
     assert_eq!(
         after,
-        json!({"env": {"XPIA_ENABLED": "true"}, "language": "de"})
+        json!({"env": {"XPIA_ENABLED": "true", "FOO": "1", "API_TOKEN": SECRET}, "language": "de"})
     );
 }
 
@@ -319,9 +420,22 @@ fn repair_with_a_group_writable_source_warns_and_writes_nothing() {
 fn login_backfills_env_before_claude_starts() {
     let f = Fixture::new();
     f.ok(&["profile", "add", "work"]);
-    f.strip_env("work");
-    f.ok(&["profile", "login", "work"]);
-    assert_eq!(f.settings("work")["env"], expected_env());
+    let mut settings = f.settings("work");
+    settings["env"] = json!({"XPIA_ENABLED": "true"});
+    fs::write(f.settings_path("work"), settings.to_string()).unwrap();
+    let marker = f.tmp.path().join("login-saw-env");
+    let out = f
+        .cmd(&["profile", "login", "work"])
+        .env("AMPLIHACK_1877_ENV_MARKER", &marker)
+        .output()
+        .unwrap();
+    assert_no_secret(&out);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(marker.exists(), "Claude did not observe env before login");
+    assert_eq!(
+        f.settings("work")["env"],
+        json!({"XPIA_ENABLED": "true", "FOO": "1", "API_TOKEN": SECRET})
+    );
 }
 
 #[cfg(target_os = "linux")]
@@ -340,7 +454,8 @@ fn login_creates_a_missing_settings_file_with_only_env() {
 }
 
 /// A launch with a profile backfills `env` in the pre-spawn check, so a
-/// profile nobody ran login, switch or repair on still gets `XPIA_ENABLED`.
+/// profile nobody ran login, switch or repair on still gets missing keys
+/// while keeping its existing `XPIA_ENABLED` override.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_profile_launch_backfills_env_before_claude_starts() {
@@ -348,6 +463,7 @@ fn a_profile_launch_backfills_env_before_claude_starts() {
     f.ok(&["profile", "add", "work"]);
     f.strip_env("work");
     let mut s = f.settings("work");
+    s["env"] = json!({"XPIA_ENABLED": "true"});
     s["language"] = json!("de");
     fs::write(f.settings_path("work"), s.to_string()).unwrap();
     // The launch guard (issue #1700) refuses a profile without a login file.
@@ -355,17 +471,31 @@ fn a_profile_launch_backfills_env_before_claude_starts() {
     fs::write(&creds, r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#).unwrap();
     chmod(&creds, 0o600);
 
-    f.ok(&[
-        "claude",
-        "--profile",
-        "work",
-        "--subprocess-safe",
-        "--",
-        "-p",
-        "x",
-    ]);
+    let marker = f.tmp.path().join("launch-saw-env");
+    let out = f
+        .cmd(&[
+            "claude",
+            "--profile",
+            "work",
+            "--subprocess-safe",
+            "--",
+            "-p",
+            "x",
+        ])
+        .env("AMPLIHACK_1877_ENV_MARKER", &marker)
+        .output()
+        .unwrap();
+    assert_no_secret(&out);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        marker.exists(),
+        "Claude did not observe env before session start"
+    );
     let after = f.settings("work");
-    assert_eq!(after["env"], expected_env());
+    assert_eq!(
+        after["env"],
+        json!({"XPIA_ENABLED": "true", "FOO": "1", "API_TOKEN": SECRET})
+    );
     assert_eq!(
         after["language"],
         json!("de"),
@@ -402,7 +532,11 @@ mod switch {
         .unwrap();
         chmod(&shared, 0o600);
         let spare = settings_path(&f, "spare");
-        fs::write(&spare, r#"{"env":{"FOO":"mine"},"language":"de"}"#).unwrap();
+        fs::write(
+            &spare,
+            r#"{"env":{"XPIA_ENABLED":"true","FOO":"mine"},"language":"de"}"#,
+        )
+        .unwrap();
         chmod(&spare, 0o600);
         f
     }
@@ -410,7 +544,14 @@ mod switch {
     fn snapshot(f: &Fixture) -> Vec<Option<Vec<u8>>> {
         PROFILES
             .iter()
-            .map(|p| fs::read(settings_path(f, p)).ok())
+            .map(|p| {
+                let path = settings_path(f, p);
+                match fs::read(&path) {
+                    Ok(bytes) => Some(bytes),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => panic!("could not read {}: {error}", path.display()),
+                }
+            })
             .collect()
     }
 
@@ -422,14 +563,14 @@ mod switch {
             serde_json::from_str(&fs::read_to_string(settings_path(&f, "spare")).unwrap()).unwrap();
         assert_eq!(
             s["env"],
-            json!({"FOO": "mine", "XPIA_ENABLED": "false", "BAR": "2"})
+            json!({"FOO": "mine", "XPIA_ENABLED": "true", "BAR": "2"})
         );
         assert_eq!(s["language"], json!("de"));
     }
 
     /// A swap refused as `DefaultOnly` still makes the target the default for
     /// new launches, which then run in the target's own folder, so the target
-    /// must gain `XPIA_ENABLED` even though the switch exits 1.
+    /// must gain its missing `BAR` even though the switch exits 1.
     #[test]
     fn a_refused_switch_still_backfills_the_new_default() {
         let f = setup();
@@ -448,7 +589,7 @@ mod switch {
             serde_json::from_str(&fs::read_to_string(settings_path(&f, "spare")).unwrap()).unwrap();
         assert_eq!(
             s["env"],
-            json!({"FOO": "mine", "XPIA_ENABLED": "false", "BAR": "2"})
+            json!({"FOO": "mine", "XPIA_ENABLED": "true", "BAR": "2"})
         );
         assert_eq!(s["language"], json!("de"));
         // Only the target's file changed.

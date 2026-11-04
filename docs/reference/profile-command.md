@@ -1,3 +1,10 @@
+---
+title: amplihack profile
+document_type: reference
+last_updated: 2026-11-04
+review_schedule: quarterly
+---
+
 # Reference: `amplihack profile`
 
 Manage Claude Code login profiles. See the
@@ -5,6 +12,25 @@ Manage Claude Code login profiles. See the
 
 See also the [capacity governor](./capacity-governor.md), which reads the
 usage readings described here to decide when new work may start.
+
+## Contents
+
+- [Synopsis](#synopsis)
+- [Subcommands](#subcommands)
+- [Configuration](#configuration)
+  - [Environment inheritance](#environment-inheritance)
+- [Shared session directories](#shared-session-directories)
+- [Name rules](#name-rules)
+- [Profile root](#profile-root)
+- [Resolution and environment](#resolution-and-environment)
+- [Literal argument forwarding](#literal-argument-forwarding)
+- [Auto-switch](#auto-switch)
+- [Rotate](#rotate)
+- [Usage-limit wait](#usage-limit-wait)
+- [Errors](#errors)
+- [Security notes](#security-notes)
+- [Identity and duplicate logins](#identity-and-duplicate-logins)
+- [API-key profiles](#api-key-profiles)
 
 ## Synopsis
 
@@ -2755,9 +2781,10 @@ Rules:
 
 ### Environment inheritance
 
-Each profile's `settings.json` holds the `env` block that Claude Code
-applies to its sessions (issue #1877). Without it a profile runs with
-defaults, for example XPIA on when `~/.claude/settings.json` turns it off.
+Each profile's `settings.json` holds the `env` block Claude Code applies to
+its sessions. On Unix, `settings_env::ensure_for` adds missing valid source
+entries while preserving every existing profile entry. All lifecycle paths
+below use this function or its all-profiles wrapper.
 
 #### Source
 
@@ -2766,73 +2793,73 @@ defaults, for example XPIA on when `~/.claude/settings.json` turns it off.
 | unset | `<shared_assets>/settings.json`, normally `$HOME/.claude/settings.json` |
 | an absolute path | that file; `~/.claude/settings.json` is not used for `env` |
 
-Only the source's `env` key is read; every other key in it is ignored. See
+The source file is parsed, but only its `env` key is used for inheritance.
+The configured template is the sole source when set. A missing, unreadable,
+unsafe or malformed template produces a warning and no inheritance; the
+shared file is never used as a fallback. An unreadable template
+configuration also stops inheritance. With no template, a missing shared
+`settings.json` leaves the profile unchanged without a warning. See
 [`profile.settings_template`](./user-config.md#profilesettings_template).
 
 #### Merge rule
 
-The [XPIA gate](#when-it-runs) decides whether the merge runs at all. When it
-runs, the merge is per key inside `env`:
+The merge is per key inside `env`:
 
-- A key the profile already has keeps its value.
-- A source key the profile lacks is added.
-- Keys outside `env` are never read for the merge or changed.
-- A profile `env` that is not a JSON object is left as it is, and nothing is
-  written.
+- Every entry already in the profile keeps its value, including non-string
+  values and `XPIA_ENABLED` overrides.
+- Each valid, non-credential source entry the profile lacks is added.
+- Settings outside `env` keep their values.
+- Invalid profile JSON, a non-object settings document or a non-object
+  profile `env` is reported `Skipped`. The original bytes are preserved.
 
 | Profile `env` | Source `env` | Result |
 |---------------|--------------|--------|
-| `{"FOO":"1","BAR":"9"}` | `{"XPIA_ENABLED":"false","BAR":"2"}` | `{"FOO":"1","BAR":"9","XPIA_ENABLED":"false"}`, reported `Updated` |
+| `{"BASH_DEFAULT_TIMEOUT_MS":"120000"}` | `{"XPIA_ENABLED":"false","BASH_DEFAULT_TIMEOUT_MS":"600000"}` | `{"BASH_DEFAULT_TIMEOUT_MS":"120000","XPIA_ENABLED":"false"}`, reported `Updated` |
 | absent | `{"XPIA_ENABLED":"false"}` | `{"XPIA_ENABLED":"false"}`, reported `Updated` |
-| `{"XPIA_ENABLED":"true"}` | `{"XPIA_ENABLED":"false","BAR":"2"}` | unchanged: the gate stops the merge before the source is read, reported `Unchanged` |
-| `"oops"` (not an object) | `{"XPIA_ENABLED":"false"}` | unchanged, reported `Skipped` |
+| `{"XPIA_ENABLED":"true"}` | `{"XPIA_ENABLED":"false","BASH_DEFAULT_TIMEOUT_MS":"600000"}` | `{"XPIA_ENABLED":"true","BASH_DEFAULT_TIMEOUT_MS":"600000"}`, reported `Updated` |
+| `{"BASH_DEFAULT_TIMEOUT_MS":120000}` | `{"BASH_DEFAULT_TIMEOUT_MS":"600000","XPIA_ENABLED":"false"}` | `{"BASH_DEFAULT_TIMEOUT_MS":120000,"XPIA_ENABLED":"false"}`, reported `Updated` |
+| `{"XPIA_ENABLED":"true"}` | `{"XPIA_ENABLED":"false"}` | unchanged, reported `Unchanged` |
+| `"invalid"` (not an object) | `{"XPIA_ENABLED":"false"}` | unchanged, reported `Skipped` |
 
 #### When it runs
 
 | Command | What happens |
 |---------|--------------|
-| `add <name>` | After seeding, which copies no `env`. The new profile's `env` is the source's: the template's when one is set, else that of `~/.claude/settings.json`. A source that fails a check leaves the profile with no `env` and one warning; `add` still succeeds. |
+| `add <name>` | After seeding, which copies no `env`. The new profile's `env` is the source's: the template's when one is set, else that of `~/.claude/settings.json`. Inheritance failures only warn. The existing validation and seeding errors can still fail `add`. |
 | `login <name>` | After the [shared session links](#shared-session-directories) are checked, before `claude` starts. |
 | `switch <name>` | After the name and kind checks, before the login is moved into `~/.claude`, so it runs whether or not the move succeeds. A switch that only writes the default pointer makes the profile folder itself the one new launches use, so its `env` must be in place then too. `switch --none` does not run it. |
 | `auto-switch repair` | For every profile in the root, after the status-line install. Prints `env: <name> updated` for each profile it changed and a warning for each one it skipped. If the profile root cannot be listed, prints one warning, `profile (all): env not inherited from <root>: <reason>`. |
-| Launch with a profile | In the [pre-spawn check](#pre-spawn-check), after the shared session links, while the launch hold is held. Covers `--profile`, an inherited `AMPLIHACK_CLAUDE_PROFILE`, the default pointer, `profile run` and usage-limit reruns. A launch redirected to `~/.claude` (the live profile) does not run it. A failure only warns; the launch goes on. |
-| rotator adoption | When the rotator [adopts](#rotate-swap) a login into a new profile, after the profile is created. A failure only warns; the rotation goes on. |
+| Launch with a profile | On every session start, through `verify_launch_profile_dir` in the [pre-spawn check](#pre-spawn-check), after the shared session links, while the launch hold is held. Covers `--profile`, an inherited `AMPLIHACK_CLAUDE_PROFILE`, the default pointer, `profile run` and usage-limit reruns. A launch redirected to `~/.claude` (the live profile) does not run it. A failure only warns; the launch goes on. |
+| rotator adoption | When the rotator [adopts](#rotate-swap) a login into a new profile, after the profile is created and before login files are moved into it. Inheritance reads only settings; adoption's authentication handling remains separate. A failure only warns; the rotation goes on. |
 
 Read-only commands (`list`, `show`, `usage`, `auto-switch status`, …) never
 run it.
 
-**XPIA gate.** The backfill runs only when the profile's `settings.json` is
-missing or has no `env.XPIA_ENABLED`. It then adds every source key the
-profile lacks. When `env.XPIA_ENABLED` is present the result is `Unchanged`:
-neither the source nor the template is opened and the backfill writes
-nothing, so the backfill alone leaves the file byte-identical. `auto-switch
-repair` also runs the status-line install, which may add or update
-`statusLine` in the same file; after `repair` only the `env` block is
-guaranteed unchanged. A profile just made by `add` has no `env`, so the gate
-never stops the backfill there.
+The selected source is checked even when the profile already contains
+`XPIA_ENABLED`. A broken template or unsafe shared file can therefore
+produce a warning on a profile with an XPIA override. Its existing values
+remain unchanged.
 
-A profile without its own `env.XPIA_ENABLED` therefore takes the source's
-value, including `false`, which turns XPIA off in that profile. To keep XPIA
-on in one profile, set `"XPIA_ENABLED": "true"` in its `env`; the gate then
-leaves it alone.
+To keep XPIA enabled in one profile, set `"XPIA_ENABLED": "true"` in that
+profile's `env`. Other missing source keys are still inherited. With no
+profile value, a valid source `XPIA_ENABLED` is inherited like any other
+key, including `"false"`.
 
-**One path for `env`.** `add`, `login`, `switch`, `repair`, profile launches
-and rotator adoption all copy `env` through this backfill, with the same ownership,
-mode, key and value checks. No other code writes a profile's `env`.
-
-**Unix only.** On Windows and other non-Unix platforms no command copies
-`env` into a profile and `profile.settings_template` is ignored. Nothing is
-printed about it.
+On Windows and other non-Unix platforms, backfill is inactive and
+`profile.settings_template` has no effect. There is no user-facing message.
+Seeding still excludes `env`.
 
 #### Results
 
 | Result | Meaning | Warnings |
 |--------|---------|----------|
 | `Updated` | `settings.json` was rewritten (or created) with the merged `env`. | One per source key that was dropped, if any. |
-| `Unchanged` | Nothing to do: the profile has `env.XPIA_ENABLED`, the default source is missing, the source has no `env` key or an empty `env` object, every source key is already in the profile, or `$HOME` or the shared-assets path is unknown. Nothing is written to the profile. | None, except one per dropped source key when every usable key was already present. |
+| `Unchanged` | The default source is missing, the source has no `env`, no usable source key is missing from the profile, `$HOME` is unknown, or no source path can be resolved. The profile is neither rewritten nor given different permissions; its bytes and file identity stay unchanged. Repeating a completed backfill is a no-op. | None, except one per dropped source key when the source was read. |
 | `Skipped` | Something stopped it, including a source `env` that is not an object. Nothing is written. | Exactly one. |
 
-The backfill never fails a command. Warnings go to stderr and have two
+The backfill only warns; other command checks can still fail. `auto-switch
+repair` may independently update `statusLine`, even when backfill is
+`Unchanged` or `Skipped`. Warnings go to stderr and have two
 fixed forms. When nothing was inherited:
 
 ```text
@@ -2852,15 +2879,15 @@ profile's own `settings.json` for a problem with that file, or
 | `file does not exist` | The configured template is missing. A missing default source is `Unchanged`, not `Skipped`. |
 | `file is not owned by the current user` | The source is owned by someone other than you or root, or the profile's file by someone other than you. |
 | ``file is writable by group or others; fix it with `chmod 600 <path>` `` | The source has a group or other write bit. |
-| `file is larger than 1 MiB` | The source is over the read cap. |
+| `file is larger than 1 MiB` | The source or profile settings exceed the shared read cap. |
 | `refusing credential file` | The template's file name is `.credentials.json` or `.claude.json`. |
 | `source settings.json is not a JSON object` | The source parses but is not an object. |
 | `source env is not an object` | The source's `env` is present but not a JSON object. |
 | `profile env is not an object` | The profile's `env` is present but not a JSON object. |
 | `profile settings.json is not a JSON object` | The profile file parses but is not an object. |
 
-When the rest of the `env` was inherited but one source entry was not, one
-line per dropped key:
+For a dropped source entry, one line names the key even when no write is
+needed:
 
 ```text
 profile <name>: env key <KEY> not inherited from <path>: <reason>
@@ -2880,23 +2907,32 @@ warning ever contains an `env` value.
   atomic write as the hook refresh: a regular file owned by the current user,
   never a symlink, read up to 1 MiB, rewritten atomically with mode `0600`. A file that is not valid
   JSON or not a JSON object is reported `Skipped` and never overwritten.
-- A missing `settings.json` is created as `{"env":{…}}` only when the source
-  `env` is a non-empty object. It is opened with `create_new`, mode `0600`,
-  `O_NOFOLLOW|O_CLOEXEC`, and synced before close. If another process creates
-  it first, the backfill retries once as an update. A partial write removes
-  only a file this call created.
+- A missing `settings.json` is created with only `env` when at least one
+  usable source entry remains. Exclusive creation (`create_new`) prevents
+  overwriting a file another process created. The open uses `O_NOFOLLOW`
+  and `O_CLOEXEC`. The descriptor's permissions
+  are set to exactly `0600` before any bytes are written, regardless of
+  umask; the file is synced before close. Failure to set permissions, write
+  or sync triggers cleanup of only the file this call created. If another
+  process creates the file first, backfill retries once as an update.
+- Every actual creation or replacement produces exact mode `0600`. A no-op
+  neither rewrites an existing file nor changes its permissions. Atomic replacement preserves
+  existing lock use; it does not make the full read-modify-write sequence a
+  transaction against every concurrent settings writer.
 - The backfill never writes `hooks`, so the hooks-path check of the install
   refresh (issue #1699) does not apply to it.
 
 #### Source checks
 
-- The source is read with a no-follow, bounded read (1 MiB cap) and parsed
-  only into a JSON value.
+- The source must be a regular file. Reads use `O_NOFOLLOW`, `O_NONBLOCK`
+  and `O_CLOEXEC` with the shared `store::MAX_SETTINGS_BYTES` cap of 1 MiB
+  (1,048,576 bytes). Symlinks and FIFOs are refused without waiting for a
+  writer. Profile settings reads use the same cap.
 - These checks apply to every source: the template and the default
   `~/.claude/settings.json` alike. A `~/.claude/settings.json` that is a
   symlink (as many dotfile managers make it) or group-writable gives
   `Skipped` and a warning, and no profile inherits from it.
-- On Unix the file must be owned by the current user or root and must have no
+- On Unix the source must be owned by the effective user or root and have no
   group or other write bit. Otherwise the result is `Skipped`, with no
   fallback to `~/.claude`.
 - A template whose file name is `.credentials.json` or `.claude.json` is
@@ -2921,6 +2957,13 @@ warning ever contains an `env` value.
 - A profile's own value always wins, so a profile with an old
   `XPIA_ENABLED` keeps it until you edit that file.
 - Only the last path component of the source is protected against symlinks.
+  Backfill adds no permission policy for parent directories.
+- Credential-file refusal uses the basename. A renamed copy can supply
+  valid string `env` entries, subject to the same filters.
+- The 1 MiB cap applies separately to each input. Merging and JSON
+  formatting can produce output larger than 1 MiB; serialized output has no
+  separate cap. A later read then skips the oversized profile with a
+  warning. Keep combined settings within the read limit.
 - Seeding also refuses a symlinked `~/.claude/settings.json`: `add` copies no
   `settings.json` keys from it at all, as before this change. Replace the
   link with a regular file (or point `profile.settings_template` at a regular

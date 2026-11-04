@@ -12,19 +12,38 @@
 //! a plan login. Here M is marked overflow. The stubs replace only probing;
 //! the decision is the real one ([`decide_measured`]).
 
-use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
+use super::cycle::Ctx;
+#[cfg(target_os = "linux")]
+use super::cycle::{CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
 use super::decide::{Probed, Reading, Windows};
+#[cfg(target_os = "linux")]
 use super::identify::LiveId;
+#[cfg(target_os = "linux")]
 use super::observe::{Measurement, Snap, decide_measured};
-use super::tests_handfix::{C, L, M, fx, lost_l};
+#[cfg(target_os = "linux")]
+use super::tests_handfix::{C, M};
+#[cfg(target_os = "linux")]
+use super::tests_handfix::{L, fx, lost_l};
+#[cfg(target_os = "linux")]
 use super::tests_handfix_cycle::ctx;
-use super::tests_swap::{ino_at, n};
+#[cfg(target_os = "linux")]
+use super::tests_swap::ino_at;
+#[cfg(target_os = "linux")]
+use super::tests_swap::n;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::ProfileError;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::config::{self, ReadMode};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::kit::now;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::overflow::OverflowEntry;
+#[cfg(target_os = "linux")]
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
 fn mark_overflow(root: &Path, name: &str) {
     config::update(root, ReadMode::Editable, |c| {
         c.overflow.push(OverflowEntry::new(n(name), 1));
@@ -34,6 +53,7 @@ fn mark_overflow(root: &Path, name: &str) {
 }
 
 /// A probe with plenty of headroom: plain `decide` would stay on it.
+#[cfg(target_os = "linux")]
 fn roomy() -> Probed {
     Probed {
         reading: Reading::Measured {
@@ -50,6 +70,7 @@ fn roomy() -> Probed {
 }
 
 /// A plan login with capacity.
+#[cfg(target_os = "linux")]
 fn plan_ok() -> Probed {
     Probed {
         reading: Reading::Measured {
@@ -67,6 +88,7 @@ fn plan_ok() -> Probed {
 
 /// Cycle 1: recovery has just recorded overflow profile M as live. M has
 /// headroom and C, a plan login, has capacity.
+#[cfg(target_os = "linux")]
 fn m_live_on_overflow(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     assert_eq!(snap.live, LiveId::Known(n(M)), "snapshot after recovery");
     assert_eq!(snap.candidates, vec![n(C)], "L has no login, M is live");
@@ -79,6 +101,7 @@ fn m_live_on_overflow(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErro
 
 /// Cycle 2: C is live with capacity; M, the overflow profile, is a
 /// candidate with headroom.
+#[cfg(target_os = "linux")]
 fn c_live_with_capacity(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     assert_eq!(snap.live, LiveId::Known(n(C)));
     assert_eq!(snap.candidates, vec![n(M)], "M keeps the manual login");

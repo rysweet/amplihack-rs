@@ -6,9 +6,12 @@
 
 #![cfg(unix)]
 
+#[cfg(target_os = "linux")]
 use crate::issue_1811_fixture::{Fixture, describe, text};
+#[cfg(target_os = "linux")]
 use std::fs;
 
+#[cfg(target_os = "linux")]
 const DENIED: i32 = 80;
 
 /// Crusty round 3 on #1831: an interactive session admitted above the

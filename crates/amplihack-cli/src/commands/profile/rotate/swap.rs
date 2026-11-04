@@ -20,6 +20,10 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
+#[cfg(test)]
+#[path = "tests_settings_env.rs"]
+mod tests_settings_env;
+
 pub use super::recover::{RecoverOutcome, recover};
 pub(super) use super::swap_check::check_home;
 use super::swap_check::{account_block, may_go_live, no_oauth};

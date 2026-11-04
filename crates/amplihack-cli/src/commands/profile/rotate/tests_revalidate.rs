@@ -26,28 +26,59 @@
 //! that turns on a session has its own static flag, so parallel tests do not
 //! share one. Logins are only renamed or replaced inside the temp dir.
 
-use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
+use super::cycle::Ctx;
+#[cfg(target_os = "linux")]
+use super::cycle::{CycleOutcome, Mode, run_cycle};
+#[cfg(target_os = "linux")]
 use super::damp::FAILED_PROBE_LIMIT;
+#[cfg(target_os = "linux")]
 use super::decide::{Decision, Probed};
+#[cfg(target_os = "linux")]
 use super::identify::{self, LiveId};
-use super::ledger::{Phase, RotateJournal, RotateLedger, SWITCHED};
+#[cfg(target_os = "linux")]
+use super::ledger::{Phase, RotateJournal};
+#[cfg(target_os = "linux")]
+use super::ledger::{RotateLedger, SWITCHED};
+#[cfg(target_os = "linux")]
 use super::log::msg;
+#[cfg(target_os = "linux")]
 use super::observe::{Measurement, Snap, decide_measured};
-use super::pin::{self, PinState};
+#[cfg(target_os = "linux")]
+use super::pin::PinState;
+#[cfg(target_os = "linux")]
+use super::pin::{self};
+#[cfg(target_os = "linux")]
 use super::revalidate::REREAD;
+#[cfg(target_os = "linux")]
 use super::switch::{Switched, switch_live};
-use super::tests_revalidate_cause::{ctx_with, env3, log_of, ok, park, probes_for, spent};
-use super::tests_swap::{CREDS, Env, env, ino_at, json, n, private};
+#[cfg(target_os = "linux")]
+use super::tests_revalidate_cause::{ctx_with, env3, log_of};
+#[cfg(target_os = "linux")]
+use super::tests_revalidate_cause::{ok, park, probes_for, spent};
+#[cfg(target_os = "linux")]
+use super::tests_swap::env;
+#[cfg(target_os = "linux")]
+use super::tests_swap::{CREDS, Env, ino_at, json, n, private};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::ProfileError;
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::config::{self, ReadMode};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
+#[cfg(target_os = "linux")]
 use crate::commands::profile::overflow::OverflowEntry;
+#[cfg(target_os = "linux")]
 use std::collections::BTreeSet;
+#[cfg(target_os = "linux")]
 use std::fs;
+#[cfg(target_os = "linux")]
 use std::path::Path;
+#[cfg(target_os = "linux")]
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// The labels of the last `skip: state changed during measurement` line.
+#[cfg(target_os = "linux")]
 fn changed_labels(log: &str) -> Vec<String> {
     let line = log
         .lines()
@@ -62,10 +93,12 @@ fn changed_labels(log: &str) -> Vec<String> {
     inner.split(", ").map(str::to_string).collect()
 }
 
+#[cfg(target_os = "linux")]
 fn assert_no_retry(log: &str) {
     assert!(!log.contains("revalidate:"), "no reconsideration:\n{log}");
 }
 
+#[cfg(target_os = "linux")]
 fn sessions(flag: &AtomicBool, names: &[&str]) -> Liveness {
     let mut live = BTreeSet::new();
     if flag.load(Ordering::SeqCst) {
@@ -74,6 +107,7 @@ fn sessions(flag: &AtomicBool, names: &[&str]) -> Liveness {
     Liveness::Known(live)
 }
 
+#[cfg(target_os = "linux")]
 fn last_outcome(e: &super::tests_swap::Env) -> serde_json::Value {
     json(&e.rs.ledger)["last_cycle"]["outcome"].clone()
 }
@@ -84,6 +118,7 @@ fn last_outcome(e: &super::tests_swap::Env) -> serde_json::Value {
 /// `spare2` is used rather than `spare` because `spare`'s `.claude.json`
 /// holds an API-key setting: without its login file it becomes an API-key
 /// profile, which is an `overflow` change as well.
+#[cfg(target_os = "linux")]
 fn spare2_loses_login(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare2", ok(0.0, 43.0))]);
@@ -110,8 +145,10 @@ fn a_target_that_loses_its_login_skips_and_names_the_reason() {
 
 // --- Test 3: the target gets a session; a second candidate qualifies --------
 
+#[cfg(target_os = "linux")]
 static SPARE_SESSION_3: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "linux")]
 fn spare_busy_while_measuring_3(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(
@@ -153,8 +190,10 @@ fn a_busy_target_is_reconsidered_once_and_the_next_candidate_gets_the_swap() {
 
 // --- Test 4: the target gets a session; no other candidate ------------------
 
+#[cfg(target_os = "linux")]
 static SPARE_SESSION_4: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "linux")]
 fn spare_busy_while_measuring_4(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 43.0))]);
@@ -181,6 +220,7 @@ fn a_busy_target_with_no_other_candidate_skips() {
 
 // --- Test 5: the live login changes (a `profile switch`) --------------------
 
+#[cfg(target_os = "linux")]
 fn switch_to_third(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 10.0)), ("spare2", ok(0.0, 43.0))]);
@@ -216,6 +256,7 @@ fn a_switch_during_measurement_skips_without_a_retry_and_keeps_its_record() {
 
 // --- Test 6: a rotate journal appears ---------------------------------------
 
+#[cfg(target_os = "linux")]
 fn journal_appears(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 43.0))]);
@@ -256,6 +297,7 @@ fn a_journal_written_during_measurement_skips() {
 
 // --- Test 7: pin, overflow and an excluded target ---------------------------
 
+#[cfg(target_os = "linux")]
 fn pin_changes(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 43.0))]);
@@ -263,6 +305,7 @@ fn pin_changes(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     decide_measured(ctx, snap, spent(), probes, at)
 }
 
+#[cfg(target_os = "linux")]
 fn overflow_changes(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 43.0)), ("third", spent())]);
@@ -274,6 +317,7 @@ fn overflow_changes(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError>
     decide_measured(ctx, snap, spent(), probes, at)
 }
 
+#[cfg(target_os = "linux")]
 fn target_excluded(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 43.0))]);
@@ -331,11 +375,13 @@ fn a_target_excluded_during_measurement_skips_and_says_excluded() {
 
 // --- Test 8: one reconsideration at most -----------------------------------
 
+#[cfg(target_os = "linux")]
 static BOTH_BUSY_8: AtomicBool = AtomicBool::new(false);
 
 /// `spare` and `spare2` are probed and both get sessions; `third` stays a
 /// candidate but was never probed, so the re-decision has no reading for it
 /// and must not move the login there.
+#[cfg(target_os = "linux")]
 fn both_targets_busy(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 10.0)), ("spare2", ok(0.0, 43.0))]);
@@ -371,6 +417,7 @@ fn a_reconsideration_that_finds_no_fresh_target_skips_once() {
 
 // --- Test 9: a stay or an ALERT with unrelated churn ------------------------
 
+#[cfg(target_os = "linux")]
 fn stay_while_third_parks(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 43.0)), ("third", spent())]);
@@ -380,6 +427,7 @@ fn stay_while_third_parks(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profile
     Ok(m)
 }
 
+#[cfg(target_os = "linux")]
 fn alert_while_third_parks(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(
@@ -426,10 +474,12 @@ fn an_alert_is_not_cancelled_by_an_unrelated_profile() {
 
 // --- Security: the retry never moves a login the gates now refuse ------------
 
+#[cfg(target_os = "linux")]
 static SPARE_SESSION_R1: AtomicBool = AtomicBool::new(false);
 
 /// `spare` gets a session and `spare2`'s login loses OAuth (#1700), so the
 /// only other probed profile is now `NotOAuth`.
+#[cfg(target_os = "linux")]
 fn spare_busy_spare2_not_oauth(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 10.0)), ("spare2", ok(0.0, 43.0))]);
@@ -454,11 +504,14 @@ fn the_retry_never_swaps_to_a_profile_that_lost_oauth() {
     assert!(!log.contains("swap "), "{log}");
 }
 
+#[cfg(target_os = "linux")]
 static SPARE_SESSION_F1: AtomicBool = AtomicBool::new(false);
+#[cfg(target_os = "linux")]
 static SPARE_SESSION_F2: AtomicBool = AtomicBool::new(false);
 
 /// The shared fixture keeps a key in `~/.claude.json`, and a home key stops
 /// the failed-probe swap these tests need (`damp::keep_for_home_key`).
+#[cfg(target_os = "linux")]
 fn take_key_from_home(e: &Env) {
     let path = e.home.join(".claude.json");
     let mut home = json(&path);
@@ -466,6 +519,7 @@ fn take_key_from_home(e: &Env) {
     private(&path, &home.to_string());
 }
 
+#[cfg(target_os = "linux")]
 fn live_failed(flag: &AtomicBool, ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 10.0)), ("spare2", ok(0.0, 43.0))]);
@@ -518,10 +572,12 @@ fn a_retry_after_failed_live_probes_still_swaps() {
 
 // --- D8: a held cycle's spend-limit check ignores unrelated churn -----------
 
+#[cfg(target_os = "linux")]
 fn never(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
     panic!("a held cycle must not measure")
 }
 
+#[cfg(target_os = "linux")]
 fn spent_while_third_parks(
     ctx: &Ctx,
     _: &crate::commands::profile::name::ProfileName,
@@ -562,6 +618,7 @@ fn a_pinned_spend_limit_is_blocked_despite_an_unrelated_profile_parking() {
 
 /// Gives `name`'s `.claude.json` the account `uuid`, keeping its other keys,
 /// as `profile login` or a replaced profile directory would.
+#[cfg(target_os = "linux")]
 fn relog(root: &Path, name: &str, uuid: &str) {
     let path = root.join(name).join(".claude.json");
     let mut v = json(&path);
@@ -570,6 +627,7 @@ fn relog(root: &Path, name: &str, uuid: &str) {
     private(&path, &v.to_string());
 }
 
+#[cfg(target_os = "linux")]
 fn spare_relogged(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 43.0))]);
@@ -594,6 +652,7 @@ fn a_target_logged_in_to_another_account_during_measurement_is_not_swapped_in() 
 
 /// A probe may rewrite the target's `.claude.json` with the same account
 /// (a counter, a refreshed token elsewhere): a new file, not a new account.
+#[cfg(target_os = "linux")]
 fn spare_rewritten_same_account(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 43.0))]);
@@ -617,6 +676,7 @@ fn a_target_whose_claude_json_is_rewritten_with_the_same_account_still_swaps() {
     assert!(!log.contains(msg::CHANGED), "{log}");
 }
 
+#[cfg(target_os = "linux")]
 fn spare_relogged_spare2_kept(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(
@@ -648,6 +708,7 @@ fn a_relogged_target_is_reconsidered_to_a_candidate_whose_account_is_unchanged()
 
 /// `spare` and `spare2` are both logged in to other accounts; `third` is a
 /// candidate but was never probed.
+#[cfg(target_os = "linux")]
 fn both_relogged(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 10.0)), ("spare2", ok(0.0, 43.0))]);
@@ -676,15 +737,18 @@ fn the_retry_never_swaps_to_a_candidate_whose_account_changed_too() {
 
 /// Moves `~/.claude.json` aside and leaves a cut-short copy in its place,
 /// which is what a read during a non-atomic rewrite finds.
+#[cfg(target_os = "linux")]
 fn cut_home_short(home: &Path) {
     fs::rename(home.join(".claude.json"), home.join("claude.json.aside")).unwrap();
     private(&home.join(".claude.json"), "{");
 }
 
+#[cfg(target_os = "linux")]
 fn put_home_back(home: &Path) {
     fs::rename(home.join("claude.json.aside"), home.join(".claude.json")).unwrap();
 }
 
+#[cfg(target_os = "linux")]
 fn home_cut_short(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 43.0))]);
@@ -692,15 +756,18 @@ fn home_cut_short(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     decide_measured(ctx, snap, spent(), probes, at)
 }
 
+#[cfg(target_os = "linux")]
 fn never_paused(_: &Ctx) {
     panic!("this change must not be read again")
 }
 
 /// The live profile `identify::live` reports right now.
+#[cfg(target_os = "linux")]
 fn live_now(ctx: &Ctx) -> LiveId {
     identify::live(&ctx.store, &ctx.rs, &ctx.home).unwrap().0
 }
 
+#[cfg(target_os = "linux")]
 fn assert_read_again_then_swapped(e: &super::tests_swap::Env, log: &str) {
     assert_eq!(log.matches(REREAD).count(), 1, "one reread:\n{log}");
     assert!(log.contains("swap work->spare "), "{log}");
@@ -751,6 +818,7 @@ fn a_home_cut_short_before_any_ledger_is_read_again_too() {
     assert_read_again_then_swapped(&e, &log);
 }
 
+#[cfg(target_os = "linux")]
 static PAUSES_STAYS_CUT: AtomicUsize = AtomicUsize::new(0);
 
 #[cfg(target_os = "linux")]
@@ -772,6 +840,7 @@ fn a_home_that_stays_cut_short_is_read_once_more_then_skips() {
     assert_eq!(last_outcome(&e), "skipped");
 }
 
+#[cfg(target_os = "linux")]
 fn home_to_another_account(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 43.0))]);
@@ -796,6 +865,7 @@ fn a_home_with_another_account_is_not_read_again() {
     assert_eq!(ino_at(&e.live()), Some(e.l), "nothing was moved");
 }
 
+#[cfg(target_os = "linux")]
 fn home_cut_short_and_journal(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let m = journal_appears(ctx, snap)?;
     cut_home_short(&ctx.home);
@@ -815,8 +885,10 @@ fn a_journal_is_never_read_again_even_with_a_home_cut_short() {
     assert!(!log.contains(REREAD), "{log}");
 }
 
+#[cfg(target_os = "linux")]
 static SPARE_SESSION_RR: AtomicBool = AtomicBool::new(false);
 
+#[cfg(target_os = "linux")]
 fn home_cut_short_and_spare_busy(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
     let probes = probes_for(snap, &[("spare", ok(0.0, 10.0)), ("spare2", ok(0.0, 43.0))]);
