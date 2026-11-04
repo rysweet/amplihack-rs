@@ -546,6 +546,7 @@ fn an_unknown_ledger_field_does_not_block_overflow() {
     f.assert_each_login_once();
     let ledger = f.ledger().unwrap();
     assert_eq!(ledger["live"], "extra");
+    assert_eq!(ledger["last_cycle"]["outcome"], "swapped");
     assert_eq!(ledger["last_cycle"]["overflow"], "in");
 }
 
