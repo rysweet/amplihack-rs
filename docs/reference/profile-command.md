@@ -4868,9 +4868,11 @@ One of these means a person or another process has acted, for example with
 [`profile switch`](#rotate-switch) or `auto-switch` settings, and the
 rotator does not act against it. The next cycle measures again.
 
-A session rewrite, including a missing `oauthAccount` or a block naming
-the previous account, does not require an identity retry or invalidate
-a trusted reading. A changed login does require fresh bound evidence.
+A readable session block naming the previous account does not require an
+identity retry or invalidate a trusted reading. The existing readability
+gate remains: a missing/unusable `oauthAccount` pauses movement and uses
+the documented readability retry, even when trusted identity is available.
+A changed login does require fresh bound evidence.
 If that evidence is unavailable or conflicting, the operation refuses
 before movement and remains visible on subsequent affected attempts.
 
@@ -5713,7 +5715,7 @@ revalidation, swap completion and interrupted-swap recovery.
 | OAuth account returned by the existing bounded credential identity reader | Identifies the login used for that reading, including its organization. |
 | Positively identified platform login | Uses the existing API-key rules; an unreadable OAuth login does not become a platform login. |
 | Expected-account record | States which account a profile is meant to own. See [Recorded account](#recorded-account). |
-| Rotate ledger and swap journal | Track placement and transaction state; neither a stored account key nor an inode alone proves current account identity. |
+| Rotate ledger and swap journal | Track placement and transaction state, with sanitized full-account provenance from authorized trusted readings. A legacy account key or an inode alone cannot prove ownership. |
 | `.claude.json` and its `oauthAccount` | Display state. Cannot establish ownership, authorize movement, backfill a record or choose the ledger account. |
 
 Trusted readings are bound to validated non-secret metadata for the login
@@ -5744,6 +5746,21 @@ missing, insufficient, stale or contradictory evidence causes an
 actionable refusal on each manual attempt and an ALERT on each affected
 rotation cycle, with no login movement or ledger relabeling. Reasons are redacted and name validated
 profiles only. Unrelated alert deduplication is unchanged.
+
+Refresh-lock ownership is journalled in the `checking` preflight phase
+before final identity requests. Recovery of that phase releases only the
+recorded locks and moves no login. Before exchange, the journal retains
+the authorized incoming and outgoing full identities. Recovery compares
+fresh credential evidence with them, including after S4 replaced the
+ledger. A different unrecorded incoming account cannot replace the
+authorized one. Legacy journals without sufficient expected-account
+evidence refuse conservatively.
+
+The ledger's optional `login_identity` is written only by authorized swap
+completion or confirmed credential-based recovery. Missing-record
+backfill requires that full provenance, or the full outgoing authorization
+in a pending journal. A UUID-only legacy ledger cannot establish an
+organization. A normal observation does not upgrade it into ownership proof.
 
 The reader reuses the existing OAuth profile endpoint, endpoint validation,
 response limits, redirect prohibition and five-second timeout. Reads share
@@ -5995,7 +6012,9 @@ Identity reads differ from the reads `profile usage` makes:
   `claude -p /usage` [fallback](#fallback-probe) are never used, and no
   child process is started.
 
-Raw identity responses and file bindings remain in memory. Swap completion
+Raw identity responses and file bindings remain in memory. Only sanitized
+account fields are retained in the existing ledger/journal; no token or
+raw response is stored. Swap completion
 uses the validated incoming account for the existing ledger key and
 sanitized display fields; authorized adoption/backfill uses the trusted
 outgoing identity for the outgoing profile's ownership record. Routine
@@ -6705,7 +6724,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | Path | Contents |
 |------|----------|
 | `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when it started measuring usage, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect` and `swapped_away` are left out so that rotator can read the file. |
-| `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at` and `pid`. |
+| `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`checking`, `j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at`, `pid`, and optional `identity` containing sanitized full incoming/outgoing accounts authorized before exchange. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `gate.json` | Written by `rotate watch` when it starts: `version`, `pid`, and the [overflow](#rotate-overflow) gate it resolved from its flags (`overflow_wait`, `overflow_unknown_reset`, `session_at`, `week_at`). [Auto-switch](#auto-switch-and-overflow-profiles) uses it only while the rotator with that pid runs. If it cannot be written, the log says `overflow: gate not recorded, auto-switch will not use overflow (<error>)` and auto-switch uses no overflow profile. |
 | `rotate.log` | The log. |
@@ -8723,9 +8742,12 @@ JSON. Organization changes remain identity changes. Expected records
 retain the legacy compatibility rules below. Standalone `login`, display
 warnings and other auto-switch callers retain their separate behavior.
 
-The rotate ledger format is unchanged. Its `account` is a key written from
-the trusted incoming identity after a swap; the key alone is insufficient
-for a full-account revalidation or recovery decision.
+The rotate ledger retains its existing fields and adds optional
+`login_identity`, populated from authorized trusted evidence. Its
+`account` remains a display key; the key alone is insufficient for a
+full-account ownership or recovery decision. Older ledger readers ignore
+the new field. Older binaries reject new journal fields/phases, so finish
+a pending transaction with the binary that understands its journal.
 
 ### Recorded account
 

@@ -2175,6 +2175,16 @@ or backfill rules can establish ownership, using trusted login evidence.
 Session JSON cannot supply the missing proof. See
 [Recorded account](../reference/profile-command.md#recorded-account).
 
+A legacy ledger containing only the user UUID cannot prove which
+organization owns an unrecorded outgoing login. The existing ledger now
+retains sanitized full identity after an authorized swap or confirmed
+credential recovery; ordinary observations do not upgrade legacy keys.
+An interrupted swap retains both authorized identities in its journal,
+so recovery cannot substitute a different unrecorded incoming account or
+lose outgoing ownership after the ledger has advanced. Missing legacy
+evidence refuses conservatively. New journals also retain preflight lock
+ownership before final requests; recovery of `checking` moves no login.
+
 #### When the rotator cannot tell
 
 An unavailable identity endpoint, expired token, incomplete response,

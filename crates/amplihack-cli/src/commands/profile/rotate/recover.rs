@@ -86,6 +86,17 @@ pub(super) fn recover_with(
     }
     // Names were checked when the journal was loaded.
     let (from, to) = (ProfileName::parse(&j.from)?, ProfileName::parse(&j.to)?);
+    if j.phase == Phase::Checking {
+        // Preflight never authorizes login movement or creates adoption profiles.
+        if super::swap::check_home(home).is_err() || store.verify_profile_dir(&to).is_err() {
+            return Ok(RecoverOutcome::Inconsistent(
+                "preflight lock paths changed".into(),
+            ));
+        }
+        drop_locks(store, rs, home, &mut j)?;
+        rs.delete_journal()?;
+        return Ok(RecoverOutcome::RolledBack { from, to });
+    }
     let (Ok(from_dir), Ok(to_dir)) = (
         store.verify_profile_dir(&from),
         store.verify_profile_dir(&to),
@@ -164,6 +175,7 @@ pub(super) fn recover_with(
         platform_in,
         platform_out,
         reader,
+        super::swap_authorize::Proof::Recovery(j.identity.as_ref()),
     ) {
         Ok(auth) if auth.current(store) => auth,
         result => {

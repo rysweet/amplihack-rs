@@ -808,6 +808,7 @@ fn a_pending_journal_means_no_read_and_no_move() {
         to_lock_ino: None,
         started_at: T - 60,
         pid: 1,
+        identity: None,
     })
     .unwrap();
     assert_eq!(f.step(&seam(), T), Step::Clear);

@@ -4,7 +4,7 @@
 use super::identify::Account;
 use super::identity_claims::{self, Claim, Claims};
 use super::ledger::RotateState;
-use super::login_identity::{Bound, Reader, UNAVAILABLE};
+use super::login_identity::{Bound, Reader, SwapIdentity, UNAVAILABLE};
 use super::swap::Source;
 use super::swap_expect::{ACCOUNT_MISMATCH, Pending};
 use crate::commands::profile::ProfileError;
@@ -17,6 +17,26 @@ use std::path::Path;
 /// Report a refusal before any login movement.
 pub fn refused(why: impl Into<String>) -> ProfileError {
     ProfileError::RotateRefused(why.into())
+}
+
+/// Whether full trusted ledger provenance establishes this profile's ownership.
+pub fn ledger_owns(l: &super::ledger::RotateLedger, name: &ProfileName, account: &Account) -> bool {
+    l.live.as_deref() == Some(name.as_str())
+        && l.account
+            .as_deref()
+            .is_some_and(|key| account.matches_key(key))
+        && l.login_identity
+            .as_ref()
+            .is_some_and(|prior| prior.names(account))
+}
+
+/// Evidence required in addition to current expected records.
+#[derive(Clone, Copy)]
+pub enum Proof<'a> {
+    /// A new operation must prove ownership from current state.
+    Live,
+    /// Recovery retains the complete original authorization, when available.
+    Recovery(Option<&'a SwapIdentity>),
 }
 
 /// Keep the final authorization tied to the accounts the accepted snapshot
@@ -39,7 +59,7 @@ pub fn check_snapshot(
         .candidate_accounts
         .iter()
         .find(|(name, _)| name == to);
-    if !snapshot.candidates.contains(to)
+    if (!snapshot.candidates.contains(to) && authorized.incoming.account().is_some())
         || !same(
             authorized.outgoing.account(),
             snapshot.trusted_live.as_ref(),
@@ -110,6 +130,7 @@ pub fn authorize(
     platform_in: bool,
     platform_out: bool,
     reader: Reader<'_>,
+    proof: Proof<'_>,
 ) -> Result<Authorized, ProfileError> {
     if let Source::Profile(name) = from {
         let dir = store
@@ -126,9 +147,24 @@ pub fn authorize(
     let state = State::new(store.root()).map_err(|_| refused(UNAVAILABLE))?;
     let outgoing = reader.bound(outgoing_dir, platform_out).map_err(refused)?;
     let incoming = reader.bound(incoming_dir, platform_in).map_err(refused)?;
+    if let Proof::Recovery(Some(prior)) = proof
+        && !prior.names(outgoing.account(), incoming.account())
+    {
+        return Err(refused(
+            "trusted login identity conflicts with the swap journal; no recovery movement",
+        ));
+    }
     let mut records = Vec::new();
     let mut claims = Vec::new();
     let incoming_record = identity_claims::record(&state, to).map_err(refused)?;
+    if matches!(proof, Proof::Recovery(None))
+        && incoming.account().is_some()
+        && incoming_record.is_none()
+    {
+        return Err(refused(
+            "trusted login identity: legacy journal lacks incoming ownership evidence",
+        ));
+    }
     if let Some(a) = incoming.account() {
         match &incoming_record {
             Some(r) if !r.names(a) => {
@@ -159,10 +195,12 @@ pub fn authorize(
                 }
                 Some(_) => super::swap_expect::relabel_for(store, name, a),
                 None => {
-                    let came_from = rs.load_ledger()?.is_some_and(|l| {
-                        l.live.as_deref() == Some(name.as_str())
-                            && l.account.as_deref().is_some_and(|k| a.matches_key(k))
-                    });
+                    let came_from = match proof {
+                        Proof::Recovery(Some(prior)) => {
+                            prior.outgoing.as_ref().is_some_and(|p| p.names(a))
+                        }
+                        _ => rs.load_ledger()?.is_some_and(|l| ledger_owns(&l, name, a)),
+                    };
                     if !came_from {
                         return Err(refused(
                             "trusted login identity: outgoing ownership is not established; verify the live profile",

@@ -137,6 +137,9 @@ pub(super) fn env() -> Env {
     rs.save_ledger(&super::ledger::RotateLedger {
         live: Some("work".into()),
         account: Some("u-work".into()),
+        login_identity: Some(super::login_identity::Identity::new(
+            &(super::cred_identity::DEFAULT_READ)(&home.join(".claude")).unwrap(),
+        )),
         ..Default::default()
     })
     .unwrap();
@@ -189,6 +192,16 @@ impl Env {
             to_lock_ino: None,
             started_at: NOW,
             pid: std::process::id(),
+            identity: Some(super::login_identity::SwapIdentity::new(
+                Some(
+                    &super::identify::Account::from_block(&acct("u-work", "work@example.com"))
+                        .unwrap(),
+                ),
+                Some(
+                    &super::identify::Account::from_block(&acct("u-spare", "spare@example.com"))
+                        .unwrap(),
+                ),
+            )),
         }
     }
 

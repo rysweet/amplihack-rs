@@ -199,6 +199,9 @@ fn a_profile_switch_is_never_taken_for_a_hand_change() {
     let mut l = f.ledger();
     l.live = Some(M.into());
     l.account = Some("u-mike".into());
+    l.login_identity = Some(super::login_identity::Identity::new(
+        &super::tests_handfix::a_m(),
+    ));
     f.rs.save_ledger(&l).unwrap();
 
     assert_eq!(

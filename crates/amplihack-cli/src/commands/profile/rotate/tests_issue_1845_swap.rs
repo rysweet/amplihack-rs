@@ -86,6 +86,13 @@ fn ledger_says(rs: &super::ledger::RotateState, live: &str, account: &str) {
         version: 1,
         live: Some(live.into()),
         account: Some(account.into()),
+        login_identity: Some(super::login_identity::Identity::new(
+            &if account.contains('@') {
+                email(account)
+            } else {
+                uuid(account)
+            },
+        )),
         since: Some(NOW - 7200),
         swapped_at: Some(NOW - 7200),
         ..RotateLedger::default()

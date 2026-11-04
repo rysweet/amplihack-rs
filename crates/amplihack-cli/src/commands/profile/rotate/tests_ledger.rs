@@ -72,6 +72,7 @@ fn journal() -> RotateJournal {
         to_lock_ino: None,
         started_at: 1,
         pid: 2,
+        identity: None,
     }
 }
 
@@ -126,6 +127,7 @@ fn journal_round_trips_with_lower_case_phases() {
     let r = root();
     assert_eq!(r.rs.load_journal().unwrap(), None);
     for (phase, text) in [
+        (Phase::Checking, "checking"),
         (Phase::J0, "j0"),
         (Phase::S1, "s1"),
         (Phase::S2, "s2"),

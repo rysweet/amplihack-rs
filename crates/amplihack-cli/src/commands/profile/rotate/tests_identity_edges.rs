@@ -121,3 +121,57 @@ fn final_guard_cannot_move_a_different_unrecorded_account_than_was_measured() {
     assert!(!e.slot("work").exists());
     assert!(!e.root.join(".rejected-logins").exists());
 }
+
+#[test]
+fn legacy_journal_still_recovers_with_matching_expected_records() {
+    let e = fixture();
+    let mut journal = e.journal(Phase::S1);
+    journal.identity = None;
+    e.exchanged();
+    e.rs.save_journal(&journal).unwrap();
+    let budget = Budget::new();
+    let outcome = crate::commands::profile::rotate::recover::recover_with(
+        &e.store,
+        &e.rs,
+        &e.home,
+        Reader {
+            read: &read_fake,
+            budget: &budget,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        outcome,
+        crate::commands::profile::rotate::recover::RecoverOutcome::RolledForward { .. }
+    ));
+    assert!(!e.rs.journal.exists());
+    assert_eq!(ino_at(&e.live()), Some(e.t));
+}
+
+#[test]
+fn legacy_journal_without_incoming_ownership_evidence_moves_nothing() {
+    let e = fixture();
+    expected::forget(&e.root, &n("spare"));
+    let mut journal = e.journal(Phase::S1);
+    journal.identity = None;
+    e.exchanged();
+    e.rs.save_journal(&journal).unwrap();
+    let before = e.all_logins();
+    let budget = Budget::new();
+    let outcome = crate::commands::profile::rotate::recover::recover_with(
+        &e.store,
+        &e.rs,
+        &e.home,
+        Reader {
+            read: &read_fake,
+            budget: &budget,
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        outcome,
+        crate::commands::profile::rotate::recover::RecoverOutcome::Inconsistent(_)
+    ));
+    assert_eq!(e.all_logins(), before);
+    assert!(e.rs.journal.exists());
+}

@@ -235,6 +235,7 @@ fn journal_appears(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> 
             to_lock_ino: None,
             started_at: at,
             pid: std::process::id(),
+            identity: None,
         })
         .unwrap();
     decide_measured(ctx, snap, spent(), probes, at)
@@ -725,6 +726,7 @@ fn a_home_cut_short_during_measurement_is_read_again_and_the_swap_goes_ahead() {
     let ledger = RotateLedger {
         live: Some("work".into()),
         account: Some("u-work".into()),
+        login_identity: e.rs.load_ledger().unwrap().unwrap().login_identity,
         ..RotateLedger::default()
     };
     e.rs.save_ledger(&ledger).unwrap();

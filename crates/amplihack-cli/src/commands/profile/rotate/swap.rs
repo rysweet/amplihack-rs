@@ -9,7 +9,9 @@ use super::ledger::{Phase, RotateJournal, RotateState};
 use super::login_identity::Budget;
 use super::login_identity::{Reader, UNAVAILABLE};
 pub use super::recover::{RecoverOutcome, recover};
-use super::swap_authorize::authorize;
+use super::swap_authorize::{Proof, authorize};
+#[path = "swap_prepare.rs"]
+mod prepare;
 pub(super) use super::swap_check::check_home;
 pub use super::swap_check::{adoption_name, is_no_oauth};
 pub(super) use super::swap_check::{ino_at, show};
@@ -171,18 +173,11 @@ pub(super) fn swap_with(
         platform,
         platform_out,
         reader,
+        Proof::Live,
     )?;
     super::swap_authorize::check_snapshot(&first, basis, to)?;
-    // Take both refresh locks before the final fresh authorization and any
-    // display, adoption, journal, or login-placement write.
-    let home_lock = take_lock(&dot)?;
-    let to_lock = match take_lock(&to_dir) {
-        Ok(ino) => ino,
-        Err(e) => {
-            release_refresh_lock_at(&dot, home_lock);
-            return Err(e);
-        }
-    };
+    // Persist owned locks before final identity requests can block or terminate.
+    let mut j = prepare::begin(store, rs, home, &from, to, now, &l, &t)?;
     let checked = authorize(
         store,
         rs,
@@ -193,13 +188,13 @@ pub(super) fn swap_with(
         platform,
         platform_out,
         reader,
+        Proof::Live,
     );
     let mut auth = match checked {
         Ok(auth) if first.same(&auth) && auth.current(store) => auth,
         other => {
-            release_refresh_lock_at(&dot, home_lock);
-            release_refresh_lock_at(&to_dir, to_lock);
-            return Err(other.err().unwrap_or_else(|| refused(UNAVAILABLE)));
+            let error = other.err().unwrap_or_else(|| refused(UNAVAILABLE));
+            return Err(abandon(store, rs, home, &mut j, error));
         }
     };
     let pending = std::mem::replace(&mut auth.pending, super::swap_expect::Pending::Nothing);
@@ -217,7 +212,6 @@ pub(super) fn swap_with(
             Source::Adopt => (adopt(store, auth.outgoing.account())?, true),
         };
         let j = RotateJournal {
-            version: 1,
             from: from.to_string(),
             to: to.to_string(),
             adopt,
@@ -225,19 +219,18 @@ pub(super) fn swap_with(
             home: home_str.to_string(),
             live_ino,
             target_ino,
-            home_lock_ino: Some(home_lock),
-            to_lock_ino: Some(to_lock),
-            started_at: now,
-            pid: std::process::id(),
+            identity: Some(super::login_identity::SwapIdentity::new(
+                auth.outgoing.account(),
+                auth.incoming.account(),
+            )),
+            ..j.clone()
         };
         Ok((from, j))
     })();
     let (from, mut j) = match prepared {
         Ok(v) => v,
         Err(e) => {
-            release_refresh_lock_at(&dot, home_lock);
-            release_refresh_lock_at(&to_dir, to_lock);
-            return Err(e);
+            return Err(abandon(store, rs, home, &mut j, e));
         }
     };
     if let Err(e) = rs.save_journal(&j) {

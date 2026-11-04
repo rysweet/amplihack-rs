@@ -4,11 +4,60 @@
 use super::cred_identity::{IDENTITY_BUDGET, ReadFn};
 use super::identify::{Account, LoginKind, login_kind};
 use crate::commands::profile::auto_switch::kit::{CREDS, euid};
+use serde::{Deserialize, Serialize};
 use std::cell::Cell;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
+
+/// Sanitized full account provenance, stored only in the existing state files.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Identity(serde_json::Value);
+impl std::fmt::Debug for Identity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Identity(<redacted>)")
+    }
+}
+impl Identity {
+    /// Capture an account returned by the trusted reader.
+    pub fn new(account: &Account) -> Self {
+        Self(account.block())
+    }
+    /// Compare all available account and organization fields; invalid state refuses.
+    pub fn names(&self, account: &Account) -> bool {
+        Account::from_block(&self.0).is_some_and(|prior| prior.same(account))
+    }
+}
+
+/// The full identities authorized before an exchange; no token is stored.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SwapIdentity {
+    /// The authorized outgoing OAuth account, or an explicit platform login.
+    pub outgoing: Option<Identity>,
+    /// The authorized incoming OAuth account, or an explicit platform login.
+    pub incoming: Option<Identity>,
+}
+impl SwapIdentity {
+    /// Retain validated evidence for interrupted recovery.
+    pub fn new(outgoing: Option<&Account>, incoming: Option<&Account>) -> Self {
+        Self {
+            outgoing: outgoing.map(Identity::new),
+            incoming: incoming.map(Identity::new),
+        }
+    }
+    /// Fresh evidence must identify exactly the accounts authorized before movement.
+    pub fn names(&self, outgoing: Option<&Account>, incoming: Option<&Account>) -> bool {
+        let same = |prior: Option<&Identity>, now: Option<&Account>| match (prior, now) {
+            (Some(prior), Some(now)) => prior.names(now),
+            (None, None) => true,
+            _ => false,
+        };
+        same(self.outgoing.as_ref(), outgoing) && same(self.incoming.as_ref(), incoming)
+    }
+}
 
 /// Fixed, redacted refusal; no file content or server response is included.
 pub const UNAVAILABLE: &str =

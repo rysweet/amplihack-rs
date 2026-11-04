@@ -283,6 +283,7 @@ pub fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
     // never used to decide whose login `~/.claude` holds.
     if !same || l.account.is_none() || account.is_none() {
         l.account = account;
+        l.login_identity = None;
     }
     l.live_kind = snap.platform_live().then(|| LIVE_KIND_PLATFORM.to_string());
 }

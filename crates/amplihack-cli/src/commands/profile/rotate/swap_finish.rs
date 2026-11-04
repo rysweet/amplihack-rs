@@ -33,6 +33,7 @@ pub(super) fn finish(
     l.live = Some(j.to.clone());
     l.previous = Some(j.from.clone());
     l.account = incoming.account().map(|a| a.key().to_string());
+    l.login_identity = incoming.account().map(super::login_identity::Identity::new);
     // Issue #1700: the incoming login is now in `~/.claude`; one without
     // OAuth is only ever an API-key profile's (`swap` checks that).
     l.live_kind = (login_kind(&home.join(".claude").join(CREDS)) != LoginKind::OAuth)

@@ -92,10 +92,26 @@ pub fn login(path: &Path) -> u64 {
     } else {
         dir.file_name().unwrap().to_str().unwrap()
     };
-    let block = fs::read(session.join(".claude.json"))
-        .ok()
-        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-        .and_then(|v| v.get("oauthAccount").cloned())
+    // A recovery refresh retains the fake incoming account frozen in the
+    // task-owned journal, even while the session still displays the old one.
+    let recovering = dir
+        .ends_with(".claude")
+        .then(|| {
+            let path = session.join("profiles/.auto-switch.d/rotate/journal.json");
+            fs::read(path)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .filter(|j| matches!(j["phase"].as_str(), Some("s1" | "s2" | "s3" | "s4")))
+                .and_then(|j| j.get("identity")?.get("incoming").cloned())
+        })
+        .flatten();
+    let block = recovering
+        .or_else(|| {
+            fs::read(session.join(".claude.json"))
+                .ok()
+                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+                .and_then(|v| v.get("oauthAccount").cloned())
+        })
         .unwrap_or_else(|| account_json(name));
     let fake = serde_json::to_vec(&block)
         .unwrap()

@@ -111,11 +111,12 @@ fn move_aside(
     Ok((to, here))
 }
 
-/// Records `m` as live: `since` is the cycle's time; the display-only
-/// `account`, the alert key, the guidance and the suspicion are cleared.
+/// Records `m` and its confirmed full identity; clears prior guidance and
+/// suspicion. The grace and independent-reading requirements are unchanged.
 fn record(l: &mut RotateLedger, m: &ProfileName, account: &super::identify::Account, t: i64) {
     l.live = Some(m.to_string());
     l.account = Some(account.key().to_string());
+    l.login_identity = Some(super::login_identity::Identity::new(account));
     l.since = Some(t);
     l.alert = None;
     l.guidance = None;

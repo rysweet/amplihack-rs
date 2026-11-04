@@ -177,12 +177,9 @@ impl Fx {
         ctx.scan = |_| Liveness::Known(BTreeSet::new());
         ctx.measure = Some(work_out_spare_free);
         let mut l = self.rs.load_ledger().unwrap().unwrap();
-        l.account = Some(
-            via_fake(&self.home.join(".claude"))
-                .unwrap()
-                .key()
-                .to_string(),
-        );
+        let identity = via_fake(&self.home.join(".claude")).unwrap();
+        l.account = Some(identity.key().to_string());
+        l.login_identity = Some(super::super::login_identity::Identity::new(&identity));
         self.rs.save_ledger(&l).unwrap();
         ctx.identity = via_fake;
         ctx

@@ -170,6 +170,136 @@ fn run(f: &Fixture, ep: &Endpoint, args: &[&str]) -> std::process::Output {
     out
 }
 
+fn interrupted(f: &Fixture, ep: &Endpoint, phase: &str) {
+    f.assert_isolated();
+    let out = f
+        .cmd(&["profile", "switch", "extra"])
+        .env("AMPLIHACK_PROFILE_USAGE_API_BASE", &ep.base)
+        .env(
+            "AMPLIHACK_PROFILE_USAGE_TOKEN_URL",
+            format!("{}/v1/oauth/token", ep.base),
+        )
+        .env(
+            crate::support::profile_rotate::ABORT_ENV,
+            format!("rotate-{phase}"),
+        )
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(86),
+        "{phase}: {}",
+        text(&out.stderr)
+    );
+    assert!(f.rotate_dir().join("journal.json").exists());
+}
+
+#[test]
+fn review_preflight_identity_requests_have_recoverable_owned_locks() {
+    let (f, ep) = fixture();
+    let before = f.logins();
+    interrupted(&f, &ep, "CHECKING");
+    assert_eq!(f.logins(), before);
+    let journal: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(f.rotate_dir().join("journal.json")).unwrap())
+            .unwrap();
+    assert!(journal["home_lock_ino"].is_u64());
+    assert!(journal["to_lock_ino"].is_u64());
+    let out = run(&f, &ep, &["profile", "switch", "work"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(f.logins(), before);
+    assert!(!f.rotate_dir().join("journal.json").exists());
+    assert!(!f.home.join(".claude/.oauth_refresh.lock").exists());
+    assert!(!f.root.join("extra/.oauth_refresh.lock").exists());
+}
+
+#[test]
+fn review_s4_recovery_retains_unrecorded_outgoing_ownership() {
+    let (f, ep) = fixture();
+    std::fs::remove_file(f.root.join(".auto-switch.d/expected/work.json")).unwrap();
+    // Explicit full provenance from this fixture's known fake login.
+    let mut ledger = f.ledger().unwrap();
+    ledger["login_identity"] = account_json("work");
+    private_file(&f.rotate_dir().join("ledger.json"), &ledger.to_string());
+    interrupted(&f, &ep, "S4");
+    assert_eq!(f.ledger().unwrap()["live"], "extra");
+    assert!(!f.root.join(".auto-switch.d/expected/work.json").exists());
+    let out = run(&f, &ep, &["profile", "switch", "extra"]);
+    assert!(
+        out.status.success(),
+        "S4 must recover: {}",
+        text(&out.stderr)
+    );
+    assert!(!f.rotate_dir().join("journal.json").exists());
+    let record: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(f.root.join(".auto-switch.d/expected/work.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["account"], "uuid-work");
+    assert_eq!(record["org"], serde_json::Value::Null);
+    f.assert_each_login_once();
+}
+
+#[test]
+fn review_interrupted_unrecorded_target_cannot_be_replaced_with_another_account() {
+    let (f, ep) = fixture();
+    std::fs::remove_file(f.root.join(".auto-switch.d/expected/extra.json")).unwrap();
+    interrupted(&f, &ep, "S1");
+    fake_login(&f.home_login(), "extra");
+    ep.identity(
+        "extra",
+        serde_json::json!({"account": {
+        "uuid": "uuid-unmeasured-d", "email": "d@example.com"
+    }, "organization": {"uuid": "org-d"}}),
+    );
+    let before = f.logins();
+    let ledger = f.ledger().unwrap();
+    let out = run(&f, &ep, &["profile", "switch", "extra"]);
+    assert!(!out.status.success(), "recovery must reject unmeasured D");
+    assert_eq!(f.logins(), before);
+    assert_eq!(f.ledger().unwrap(), ledger);
+    assert!(f.rotate_dir().join("journal.json").exists());
+    // The original account with refreshed metadata is still recoverable.
+    ep.identity(
+        "extra",
+        serde_json::json!({"account": {
+            "uuid": "uuid-extra", "email": "extra@example.com"
+        }}),
+    );
+    let out = run(&f, &ep, &["profile", "switch", "extra"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(f.ledger().unwrap()["account"], "uuid-extra");
+    f.assert_each_login_once();
+}
+
+#[test]
+fn review_missing_record_needs_full_ledger_ownership_across_organizations() {
+    for full_identity in [false, true] {
+        let (f, ep) = fixture();
+        std::fs::remove_file(f.root.join(".auto-switch.d/expected/work.json")).unwrap();
+        let mut ledger = f.ledger().unwrap();
+        if full_identity {
+            ledger["login_identity"] = account_json("work");
+            private_file(&f.rotate_dir().join("ledger.json"), &ledger.to_string());
+        }
+        ep.identity(
+            "work",
+            serde_json::json!({"account": {
+            "uuid": "uuid-work", "email": "work@example.com"
+        }, "organization": {"uuid": "another-org"}}),
+        );
+        let before = f.logins();
+        let out = run(&f, &ep, &["profile", "switch", "extra"]);
+        assert!(
+            !out.status.success(),
+            "a UUID alone cannot prove organization ownership"
+        );
+        assert_eq!(f.logins(), before);
+        assert_eq!(f.ledger().unwrap(), ledger);
+        assert!(!f.root.join(".auto-switch.d/expected/work.json").exists());
+    }
+}
+
 #[test]
 fn stale_session_b_does_not_refuse_swapping_credential_a_to_c() {
     let (f, ep) = fixture();

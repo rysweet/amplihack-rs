@@ -85,10 +85,9 @@ pub(super) fn decide(
                 "{ACCOUNT_MISMATCH} {name}"
             ))),
             None => {
-                let came_from = rs.load_ledger()?.is_some_and(|l| {
-                    l.live.as_deref() == Some(name.as_str())
-                        && l.account.as_deref().is_some_and(|k| live.matches_key(k))
-                });
+                let came_from = rs
+                    .load_ledger()?
+                    .is_some_and(|l| super::swap_authorize::ledger_owns(&l, name, &live));
                 let scan = super::identity_claims::scan(store, &state, Some(name), &live, reader)
                     .map_err(super::swap_authorize::refused)?;
                 if came_from && matches!(scan.claim, super::identity_claims::Claim::Unclaimed) {
