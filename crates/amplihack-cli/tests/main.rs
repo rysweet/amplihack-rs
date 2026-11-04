@@ -26,6 +26,8 @@
 mod isolated_amplihack;
 mod support;
 
+#[path = "issue_1753_expired_live.rs"]
+mod issue_1753_expired_live;
 #[path = "issue_1753_login_identity.rs"]
 mod issue_1753_login_identity;
 #[path = "issue_1753_refusal_named_once.rs"]

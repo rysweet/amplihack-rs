@@ -12,13 +12,16 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
+/// The fake refresh token of an expired live login (issue #1753, R1).
+pub(super) const LIVE_REFRESH: &str = "fake-task1753-live-refresh";
+
 pub(super) struct Endpoint {
     base: String,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
     identities: Arc<Mutex<HashMap<String, serde_json::Value>>>,
-    refresh_allowed: Arc<AtomicBool>,
-    refreshes: Arc<AtomicUsize>,
+    pub(super) refresh_allowed: Arc<AtomicBool>,
+    pub(super) refreshes: Arc<AtomicUsize>,
 }
 
 impl Endpoint {
@@ -77,14 +80,20 @@ impl Endpoint {
                     reader.read_exact(&mut raw).unwrap();
                     let request: serde_json::Value = serde_json::from_slice(&raw).unwrap();
                     refreshed.fetch_add(1, Ordering::Relaxed);
+                    // Each fake refresh token renews one fake login only.
+                    let renews = match request["refresh_token"].as_str() {
+                        Some("fake-task1753-unused-refresh") => Some("extra"),
+                        Some(LIVE_REFRESH) => Some("work"),
+                        _ => None,
+                    };
                     if refreshing.load(Ordering::Relaxed)
-                        && request["refresh_token"] == "fake-task1753-unused-refresh"
+                        && let Some(p) = renews
                     {
                         (
                             "200 OK",
                             serde_json::json!({
-                                "access_token": "fake-task1753-extra",
-                                "refresh_token": "fake-task1753-unused-refresh", "expires_in": 3600
+                                "access_token": format!("fake-task1753-{p}"),
+                                "refresh_token": request["refresh_token"], "expires_in": 3600
                             }),
                         )
                     } else {
@@ -138,7 +147,7 @@ impl Endpoint {
         }
     }
 
-    fn identity(&self, who: &str, answer: serde_json::Value) {
+    pub(super) fn identity(&self, who: &str, answer: serde_json::Value) {
         self.identities.lock().unwrap().insert(who.into(), answer);
     }
 }
@@ -590,7 +599,7 @@ fn expired_candidate() -> (Fixture, Endpoint) {
     (f, ep)
 }
 
-fn direct_cycle(f: &Fixture, ep: &Endpoint) -> std::process::Output {
+pub(super) fn direct_cycle(f: &Fixture, ep: &Endpoint) -> std::process::Output {
     let out = f
         .cmd(&["profile", "rotate"])
         .env("AMPLIHACK_PROFILE_USAGE_API_BASE", &ep.base)

@@ -270,6 +270,11 @@ pub mod msg {
     pub const AUTO_SWITCH_INCONSISTENT: &str =
         "ALERT: auto-switch recovery is inconsistent; no swap";
     pub const LOCK_BUSY: &str = "skip: state lock busy";
+    /// Issue #1753 (R1): the expired live login was refreshed before its
+    /// identity was read.
+    pub const LIVE_REFRESHED: &str =
+        "refresh: expired login in ~/.claude refreshed; identity read again";
+    pub const LIVE_REFRESH_FAILED: &str = "refresh: expired login in ~/.claude not refreshed";
     pub const CHANGED: &str = "skip: state changed during measurement";
     pub const NO_LIVENESS: &str = "skip: cannot see running sessions; no candidates";
     pub const STOPPED: &str = "stop: signal received; cycle abandoned";

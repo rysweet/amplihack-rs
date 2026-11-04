@@ -497,7 +497,11 @@ for:
   directory [hosts](#leases) another profile's login.
 
 In those cases a session may be using the login, and `claude` refreshes it
-itself, so the row falls back with `token expired` or `http 401`.
+itself, so the row falls back with `token expired` or `http 401`. The one
+exception is outside the usage read: a rotate cycle refreshes the login in
+`~/.claude` once, by these steps, when its token has already expired, so
+that its identity can be read (see
+[An expired live login](#credential-identity)).
 
 The refresh runs as follows:
 
@@ -6144,6 +6148,25 @@ Identity reads differ from the reads `profile usage` makes:
 - [passive readings](#passive-readings), the usage endpoint and the
   `claude -p /usage` [fallback](#fallback-probe) are never used, and no
   child process is started.
+
+**An expired live login.** Because an identity read never refreshes, a
+login in `~/.claude` whose token is at or past its `expiresAt` could not be
+identified, and with no running Claude session to refresh it every cycle
+would raise the trusted-identity ALERT and move nothing. So each rotate cycle
+and `profile switch NAME`, after swap recovery and before hand-change
+recovery or any identity read, refreshes that login once when its token has
+expired, as the [direct read](#token-refresh) refreshes a profile's login: under
+`~/.claude/.oauth_refresh.lock`, never while a swap journal exists, never in a
+directory others can write, and never when the lease view cannot be read or
+names the live profile as one whose token may not be refreshed. A token that
+has not yet expired is left alone; Claude refreshes it. The log says
+`refresh: expired login in ~/.claude refreshed; identity read again`, or
+`refresh: expired login in ~/.claude not refreshed (<reason>)` with one of the
+direct read's reasons. The refresh is not identity evidence: the cycle then
+reads the identity of the refreshed credential afresh, and only that reading
+can let a login move. A refresh that fails, or a refreshed login whose
+identity cannot be read or conflicts with its record, still gives the ALERT
+and moves nothing. `--dry-run` never refreshes.
 
 Raw identity responses and file bindings remain in memory. Only sanitized
 account fields are retained in the existing ledger/journal; no token or

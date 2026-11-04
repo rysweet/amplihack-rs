@@ -20,6 +20,9 @@ use crate::commands::profile::name::ProfileName;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
+#[path = "live_refresh.rs"]
+mod live_refresh;
+
 pub enum Prelude {
     /// Recovered and identified, the lock still held. The snapshot is boxed
     /// to keep the variants close in size.
@@ -81,6 +84,9 @@ pub fn locked_prelude(
         }
         Err(e) => return Err(e),
     }
+    // Issue #1753 (R1): after swap recovery, so no journal is pending, and
+    // before anything reads the live login's identity, which never refreshes.
+    live_refresh::refresh_expired_live(ctx, &mut out);
     // Issue #1693: after swap recovery, so the ledger it reads is settled,
     // and before the snapshot, so the snapshot reads the recovered ledger.
     if hand_change && handfix::step(ctx, &state, &mut out, now())? == handfix::Step::Guided {
