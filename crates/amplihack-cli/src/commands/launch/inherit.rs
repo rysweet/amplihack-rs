@@ -28,6 +28,7 @@ pub(crate) const PARENT_MODEL_ENV: &str = "AMPLIHACK_PARENT_MODEL";
 const EFFORT_LEVEL_ENV: &str = "CLAUDE_CODE_EFFORT_LEVEL";
 const RECIPE_RUN_ID_ENV: &str = "AMPLIHACK_RECIPE_RUN_ID";
 const CODEX_EFFORT_KEY: &str = "model_reasoning_effort=";
+const COPILOT_EFFORT_FLAG: &str = "--reasoning-effort";
 
 /// The effort and model a launch inherits. `None` means "not inherited".
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -161,8 +162,9 @@ pub(crate) fn resolve_parent(inputs: &ParentInputs<'_>) -> Resolved {
 }
 
 /// What `binary` may receive of `resolved` (D6), and one "cannot be passed"
-/// line per dropped setting, effort first. An unknown binary is handled as
-/// copilot. `through_gateway` is whether a LiteLLM gateway variable is set.
+/// line per dropped setting, effort first. A binary amplihack does not know
+/// takes no effort and only a model from the recipe context, as codex and
+/// copilot do. `through_gateway` is whether a LiteLLM gateway variable is set.
 pub(crate) fn vet_for_binary(
     binary: &str,
     resolved: &Resolved,
@@ -180,7 +182,7 @@ pub(crate) fn vet_for_binary(
         return (passed, lines);
     }
     let effort = resolved.inherited.effort.as_deref().and_then(|e| {
-        if binary == "codex" && codex_effort(e).is_some() {
+        if takes_effort(binary, e) {
             Some(e.to_string())
         } else {
             lines.push(cannot_pass_line("effort", e, binary));
@@ -215,6 +217,8 @@ pub(crate) fn effort_args(
         flag_value(extra_args, "--effort")
     } else if binary == "codex" {
         codex_effort_from_argv(extra_args)
+    } else if binary == "copilot" {
+        flag_value(extra_args, COPILOT_EFFORT_FLAG)
     } else {
         None
     };
@@ -241,10 +245,45 @@ pub(crate) fn effort_args(
                 None => out.unsupported = Some(cannot_pass_line("effort", level, binary)),
             }
         }
+    } else if binary == "copilot" {
+        if own.is_none() {
+            match copilot_effort(level) {
+                Some(literal) => {
+                    out.argv = vec![COPILOT_EFFORT_FLAG.to_string(), literal.to_string()];
+                    out.exported = Some(level.to_string());
+                }
+                None => out.unsupported = Some(cannot_pass_line("effort", level, binary)),
+            }
+        }
     } else {
         out.unsupported = Some(cannot_pass_line("effort", level, binary));
     }
     out
+}
+
+/// Whether a binary that is not Claude-compatible can take `level`.
+fn takes_effort(binary: &str, level: &str) -> bool {
+    match binary {
+        "codex" => codex_effort(level).is_some(),
+        "copilot" => copilot_effort(level).is_some(),
+        _ => false,
+    }
+}
+
+/// The copilot `--reasoning-effort` level for `level`, as a matched literal,
+/// so only a value copilot lists in `copilot --help` reaches it (S5). Copilot
+/// refuses any other value at startup, which would fail every step.
+pub(crate) fn copilot_effort(level: &str) -> Option<&'static str> {
+    Some(match level {
+        "none" => "none",
+        "minimal" => "minimal",
+        "low" => "low",
+        "medium" => "medium",
+        "high" => "high",
+        "xhigh" => "xhigh",
+        "max" => "max",
+        _ => return None,
+    })
 }
 
 /// The codex `-c` value for `level`, built from a matched literal so nothing
@@ -325,6 +364,60 @@ pub(crate) fn inherited_from_env() -> Inherited {
 /// Whether this process runs under `amplihack recipe run`.
 pub(crate) fn in_recipe_run() -> bool {
     std::env::var_os(RECIPE_RUN_ID_ENV).is_some_and(|v| !v.is_empty())
+}
+
+/// Whether the inherited model was checked for a launch of `binary` (D6).
+///
+/// `recipe run` checks the model for the run's agent binary, which it exports
+/// as `AMPLIHACK_AGENT_BINARY`, and every process under the run sees both
+/// variables, including a bash step that starts a different binary (for
+/// example `amplihack copilot -p …` in quality-loop.yaml under a Claude run).
+/// So:
+///
+/// - codex and copilot take the model only inside a recipe run whose agent
+///   binary is the same binary, the one case where `recipe run` passed it on
+///   as a model given for that binary;
+/// - a Claude-compatible binary takes it unless the run's agent binary is
+///   one that is not Claude-compatible, whose model is not a Claude model id.
+pub(crate) fn model_checked_for(binary: &str) -> bool {
+    model_checked_for_run(binary, run_binary().as_deref(), in_recipe_run())
+}
+
+/// The run's agent binary, as `recipe run` exports it in
+/// `AMPLIHACK_AGENT_BINARY`. The run exports the canonical lowercase name; a
+/// value that is not an allowed binary names no run binary.
+fn run_binary() -> Option<String> {
+    use amplihack_utils::agent_binary::{BINARY_ENV, validate_binary_name};
+    std::env::var(BINARY_ENV)
+        .ok()
+        .and_then(|v| validate_binary_name(&v))
+}
+
+/// Whether `recipe run` has already printed this launch's "cannot be passed"
+/// effort line (D7): only when this process is under a run and `binary` is
+/// the run's own agent binary, the one binary the run's lines name. A launch
+/// of another binary from a bash step (for example `amplihack codex` under a
+/// Claude run) prints its own line, because the run never named it.
+pub(crate) fn run_printed_lines_for(binary: &str) -> bool {
+    run_printed_lines_for_run(binary, run_binary().as_deref(), in_recipe_run())
+}
+
+/// [`run_printed_lines_for`] with its environment passed in.
+pub(crate) fn run_printed_lines_for_run(
+    binary: &str,
+    run_binary: Option<&str>,
+    in_run: bool,
+) -> bool {
+    in_run && run_binary == Some(binary)
+}
+
+/// [`model_checked_for`] with its environment passed in.
+pub(crate) fn model_checked_for_run(binary: &str, run_binary: Option<&str>, in_run: bool) -> bool {
+    if is_claude_compatible(binary) {
+        run_binary.is_none_or(is_claude_compatible)
+    } else {
+        in_run && run_binary == Some(binary)
+    }
 }
 
 /// The line for a setting `binary` cannot take (D7).

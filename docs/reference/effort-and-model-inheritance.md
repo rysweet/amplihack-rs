@@ -172,8 +172,8 @@ the parent's.
 |---|---|---|
 | `claude` | `--effort L`, and `CLAUDE_CODE_EFFORT_LEVEL=L` when an effort is inherited | `--model M`, and `ANTHROPIC_MODEL=M` when a model is inherited |
 | `rusty`, `rustyclawd`, `amplifier` | `CLAUDE_CODE_EFFORT_LEVEL=L` when an effort is inherited; no `--effort` on argv | `--model M`, and `ANTHROPIC_MODEL=M` when a model is inherited |
-| `codex` | `-c model_reasoning_effort=L` when L is `low`, `medium` or `high`; any other value is dropped with a log line | Only a model from the recipe context (`-c model=` or a context file), and never while a LiteLLM gateway variable is set. An inherited Claude model id is dropped with a log line. |
-| `copilot` | Not supported; dropped with a log line | Only a model from the recipe context, and never while a LiteLLM gateway variable is set. An inherited Claude model id is dropped with a log line. |
+| `codex` | `-c model_reasoning_effort=L` when L is `low`, `medium` or `high`; any other value is dropped with a log line | Only a model from the recipe context (`-c model=` or a context file) of a run whose agent binary is `codex`, and never while a LiteLLM gateway variable is set. Any other inherited model is dropped with a log line. |
+| `copilot` | `--reasoning-effort L` when L is one of the values `copilot --help` lists: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max`; any other value is dropped with a log line | Only a model from the recipe context of a run whose agent binary is `copilot`, and never while a LiteLLM gateway variable is set. Any other inherited model is dropped with a log line. |
 
 Notes:
 
@@ -182,7 +182,23 @@ Notes:
   `CLAUDE_CODE_EFFORT_LEVEL`, so no log line is printed for them.
 - For `codex`, the `-c` value is built from the matched literal `low`, `medium`
   or `high`, so a value such as `high,foo=bar` is rejected rather than passed.
-- An unknown binary is handled as `copilot`.
+- For `copilot`, the `--reasoning-effort` value is built from a matched
+  literal in the same way. Copilot refuses to start with a value it does not
+  list, so such a value is dropped rather than passed.
+- A step's own effort wins: `--effort` for Claude-compatible binaries,
+  `-c model_reasoning_effort=L` for `codex` and `--reasoning-effort` for
+  `copilot`.
+- A binary amplihack does not know receives no effort, and a model only on the
+  same terms as `codex` and `copilot`.
+- The model is checked against the binary each launch starts, not only the
+  run's binary. A run's `AMPLIHACK_PARENT_MODEL` reaches every process under
+  the run, including a bash step that starts another binary, such as the
+  `amplihack copilot -p …` steps in `quality-loop.yaml`. Such a launch drops
+  the model with one "cannot be passed" line when the run's
+  `AMPLIHACK_AGENT_BINARY` is a different binary (`codex` and `copilot`
+  need the same binary; Claude-compatible binaries need a Claude-compatible
+  run binary, or none). The effort is still passed, through the checks
+  above.
 - `codex` and `copilot` receive no added `CLAUDE_CODE_EFFORT_LEVEL` or
   `ANTHROPIC_MODEL`. They still see `AMPLIHACK_PARENT_EFFORT` and
   `AMPLIHACK_PARENT_MODEL`, because the runner passes its environment to every
@@ -254,10 +270,11 @@ amplihack: steps inherit effort=high model=claude-sonnet-4-5 (from the parent am
 amplihack: <effort|model> '<value>' cannot be passed to <binary>; steps use <binary>'s default
 ```
 
-Example, two or more `copilot` steps under one run print this once in total:
+Example, two or more `codex` steps under one run with effort `xhigh` print
+this once in total:
 
 ```text
-amplihack: effort 'high' cannot be passed to copilot; steps use copilot's default
+amplihack: effort 'xhigh' cannot be passed to codex; steps use codex's default
 ```
 
 **Model replaced by the LiteLLM gateway, once per run.** While a LiteLLM
@@ -273,7 +290,17 @@ amplihack: model '<id>' is not passed to <binary>; steps use the LiteLLM gateway
 step's launch prints nothing for them while `AMPLIHACK_RECIPE_RUN_ID` is set.
 Outside a recipe run, a launch prints the line once per process, for an
 inherited effort and for an inherited model that `codex` or `copilot` cannot
-take.
+take. Inside a recipe run, a launch of a binary other than the run's prints
+the effort and model lines itself, because the run's lines named only the
+run's binary. Under a Claude run with effort `max`, an `amplihack codex`
+launch from a bash step prints
+`amplihack: effort 'max' cannot be passed to codex; steps use codex's default`.
+For example, under a Claude run with model `claude-opus-4-7`, each
+`amplihack copilot` launch from a bash step prints:
+
+```text
+amplihack: model 'claude-opus-4-7' cannot be passed to copilot; steps use copilot's default
+```
 
 **Rejected value, once per source:**
 
@@ -325,10 +352,13 @@ inherited", and the operator's own flags still apply.
 
 ## Limitations
 
-- **One agent binary per run.** The checks in
-  [Support for each agent binary](#support-for-each-agent-binary) use the run's
-  `AMPLIHACK_AGENT_BINARY`. A step that starts a different binary receives
-  values checked for the run's binary.
+- **One agent binary per run.** `amplihack recipe run` checks its values for
+  the run's `AMPLIHACK_AGENT_BINARY`, and its log lines name that binary only.
+  A step that starts a different binary checks the values again for itself:
+  its effort through the checks in
+  [Support for each agent binary](#support-for-each-agent-binary), and its
+  model by refusing one the run checked for another binary. That launch
+  prints its own "cannot be passed" lines for the effort and the model.
 - **Sessions started by an older amplihack.** Such a session does not export
   `AMPLIHACK_PARENT_*`. Its effort is still found through the ancestor lookup.
   Its model is not: when `AMPLIHACK_SESSION_ID` is set, the ancestor's
@@ -369,7 +399,7 @@ Code comments and tests for #1883 cite these labels.
 | D3 | The source order for each setting, and the source labels in log lines. |
 | D4 | What a launch adds for an inherited effort. |
 | D5 | The step's own `--effort` or `--model` wins; the child holds only that value. |
-| D6 | What each agent binary can receive ([Support for each agent binary](#support-for-each-agent-binary)). |
+| D6 | What each agent binary can receive ([Support for each agent binary](#support-for-each-agent-binary)), checked again by a launch whose binary is not the run's. |
 | D7 | The "cannot be passed" line: once per run, or once per process outside a run. |
 | D8 | The once-per-run summary line; no per-step model notice under a run. |
 | D9 | An invalid or empty value is treated as unset, with one "ignoring" line. |

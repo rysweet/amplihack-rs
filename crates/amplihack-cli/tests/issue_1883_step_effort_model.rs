@@ -24,12 +24,18 @@
 //!   `ANTHROPIC_MODEL=Y`.
 //! - (c) nothing inherited: no `--effort`, no added variables, the default
 //!   model argv and the #1421 notice unchanged.
-//! - (d) copilot: the "effort ... cannot be passed" line appears exactly once
-//!   across the run and two steps.
+//! - (d) copilot: every step receives the inherited effort as
+//!   `--reasoning-effort`; an effort copilot does not list gives the
+//!   "cannot be passed" line exactly once across the run and two steps.
 //! - (e) children have no `AMPLIHACK_CLAUDE_PROFILE_ROOT` and HOME lies under
 //!   the temp root.
 //! - (f) Linux: a plain `claude` ancestor's argv is read through `/proc`; under
 //!   an older amplihack session its model is not trusted (C2).
+//! - (g) a Claude run with an inherited model whose second step starts
+//!   `amplihack copilot`: that step receives the effort but no `--model`.
+//! - (h) a Claude run with effort `max` whose second step starts
+//!   `amplihack codex`: codex cannot take `max`, so that step prints the
+//!   "cannot be passed" line for effort and for the model, once each.
 
 #![cfg(unix)]
 
@@ -71,7 +77,9 @@ exit 0
 "#;
 
 /// The stub runner: two agent steps with the run's agent binary. Step 2 adds
-/// `$STEP2_ARGS` (word-split on purpose: test values have no spaces).
+/// `$STEP2_ARGS` (word-split on purpose: test values have no spaces), and
+/// starts `$STEP2_BIN` instead when it is set, as a bash step running
+/// `amplihack copilot -p …` does in quality-loop.yaml.
 const STUB_RUNNER: &str = r#"#!/bin/sh
 case "$1" in
   --version) echo 'recipe-runner-rs 0.0.0 (stub)'; exit 0 ;;
@@ -80,7 +88,7 @@ export AMPLIHACK_NONINTERACTIVE=1
 bin="${AMPLIHACK_AGENT_BINARY:-claude}"
 STEP=1 "$AMPLIHACK_UNDER_TEST" "$bin" --subprocess-safe -- -p "step 1" \
   </dev/null >"$RECORD_DIR/step.1.out" 2>"$RECORD_DIR/step.1.err" || exit 1
-STEP=2 "$AMPLIHACK_UNDER_TEST" "$bin" --subprocess-safe -- -p "step 2" $STEP2_ARGS \
+STEP=2 "$AMPLIHACK_UNDER_TEST" "${STEP2_BIN:-$bin}" --subprocess-safe -- -p "step 2" $STEP2_ARGS \
   </dev/null >"$RECORD_DIR/step.2.out" 2>"$RECORD_DIR/step.2.err" || exit 1
 printf '%s\n' '{"recipe_name":"inherit-1883","success":true,"step_results":[],"context":{}}'
 "#;
@@ -164,7 +172,7 @@ impl Fixture {
             fs::create_dir_all(d).unwrap();
         }
         fs::create_dir_all(home.join(".claude")).unwrap();
-        for name in ["claude", "copilot"] {
+        for name in ["claude", "copilot", "codex"] {
             executable(&tools.join(name), FAKE_AGENT);
         }
         executable(&tools.join("recipe-runner-rs"), STUB_RUNNER);
@@ -215,6 +223,7 @@ impl Fixture {
             .env("AMPLIHACK_AGENT_BINARY", agent)
             .env("AMPLIHACK_CLAUDE_BINARY_PATH", self.tools.join("claude"))
             .env("AMPLIHACK_COPILOT_BINARY_PATH", self.tools.join("copilot"))
+            .env("AMPLIHACK_CODEX_BINARY_PATH", self.tools.join("codex"))
             .env("AMPLIHACK_UNDER_TEST", amplihack_bin())
             .env("AMPLIHACK_HOME", self.home.join(".amplihack"))
             .env("AMPLIHACK_TEST_PROC_ROOT", &self.proc_root)
@@ -418,14 +427,47 @@ fn c_nothing_inherited_changes_nothing() {
     );
 }
 
-/// (d) D7: a setting the binary cannot take is reported once per run, by
-/// `recipe run`, and never by the steps.
+/// (d) Copilot takes the inherited effort as `--reasoning-effort L` on every
+/// step, with no Claude variables, and no "cannot be passed" line.
 #[test]
-fn d_copilot_effort_line_appears_exactly_once() {
+fn d_copilot_steps_receive_reasoning_effort() {
     let f = Fixture::new(&[]);
     let out = f.run("copilot", &[("AMPLIHACK_PARENT_EFFORT", "high")]);
     assert!(out.status.success(), "{}", describe(&out));
-    let line = "amplihack: effort 'high' cannot be passed to copilot; steps use copilot's default";
+    let all = format!(
+        "{}\n{}\n{}",
+        text(&out.stderr),
+        f.step_stderr(1),
+        f.step_stderr(2)
+    );
+    assert!(!all.contains("cannot be passed"), "{all}");
+    for step in [1, 2] {
+        let call = f.call(step);
+        let args = argv(&call);
+        assert_eq!(
+            count(&args, "--reasoning-effort"),
+            1,
+            "step {step}: {args:?}"
+        );
+        assert_eq!(
+            flag(&args, "--reasoning-effort").as_deref(),
+            Some("high"),
+            "step {step}: {args:?}"
+        );
+        assert_eq!(count(&args, "--effort"), 0, "step {step}: {args:?}");
+        assert_eq!(call["CLAUDE_CODE_EFFORT_LEVEL"], "<unset>", "step {step}");
+        assert_eq!(call["AMPLIHACK_PARENT_EFFORT"], "high", "step {step}");
+    }
+}
+
+/// (d) D7: an effort copilot does not list is reported once per run, by
+/// `recipe run`, and never by the steps.
+#[test]
+fn d_copilot_unlisted_effort_line_appears_exactly_once() {
+    let f = Fixture::new(&[]);
+    let out = f.run("copilot", &[("AMPLIHACK_PARENT_EFFORT", "ultra")]);
+    assert!(out.status.success(), "{}", describe(&out));
+    let line = "amplihack: effort 'ultra' cannot be passed to copilot; steps use copilot's default";
     let all = format!(
         "{}\n{}\n{}",
         text(&out.stderr),
@@ -436,6 +478,11 @@ fn d_copilot_effort_line_appears_exactly_once() {
     for step in [1, 2] {
         let call = f.call(step);
         let args = argv(&call);
+        assert_eq!(
+            count(&args, "--reasoning-effort"),
+            0,
+            "step {step}: {args:?}"
+        );
         assert_eq!(count(&args, "--effort"), 0, "step {step}: {args:?}");
         assert_eq!(call["CLAUDE_CODE_EFFORT_LEVEL"], "<unset>", "step {step}");
     }
@@ -565,4 +612,94 @@ fn f_an_ancestor_model_is_not_trusted_inside_an_older_session() {
         assert_eq!(call["ANTHROPIC_MODEL"], "<unset>", "step {step}");
         assert_eq!(call["AMPLIHACK_PARENT_MODEL"], "<unset>", "step {step}");
     }
+}
+
+/// (g) Crusty review of #1892, round 2: a Claude run passes its model to the
+/// runner, which every process under the run sees. A step that starts
+/// `amplihack copilot` (quality-loop.yaml) must not receive that Claude
+/// model id, because the run checked it for claude only. It still receives
+/// the effort, which copilot lists.
+#[test]
+fn g_claude_run_model_does_not_reach_an_amplihack_copilot_step() {
+    let f = Fixture::new(&[]);
+    let out = f.run(
+        "claude",
+        &[
+            ("AMPLIHACK_PARENT_EFFORT", "high"),
+            ("AMPLIHACK_PARENT_MODEL", X),
+            ("STEP2_BIN", "copilot"),
+        ],
+    );
+    assert!(out.status.success(), "{}", describe(&out));
+    let claude = argv(&f.call(1));
+    assert_eq!(flag(&claude, "--model").as_deref(), Some(X), "{claude:?}");
+    let call = f.call(2);
+    let copilot = argv(&call);
+    assert_eq!(count(&copilot, "--model"), 0, "{copilot:?}");
+    assert!(!copilot.iter().any(|a| a.contains(X)), "{copilot:?}");
+    assert_eq!(
+        flag(&copilot, "--reasoning-effort").as_deref(),
+        Some("high"),
+        "{copilot:?}"
+    );
+    assert_eq!(call["ANTHROPIC_MODEL"], "<unset>");
+    assert_eq!(call["AMPLIHACK_PARENT_MODEL"], "<unset>");
+    let line =
+        format!("amplihack: model '{X}' cannot be passed to copilot; steps use copilot's default");
+    assert_eq!(
+        f.step_stderr(2).lines().filter(|l| *l == line).count(),
+        1,
+        "{}",
+        f.step_stderr(2)
+    );
+}
+
+/// (h) Crusty review of #1892, round 3: under a Claude run with effort `max`,
+/// a bash step that starts `amplihack codex` cannot pass `max` to codex. The
+/// run's own lines named only claude, so the codex launch prints the
+/// "cannot be passed" line itself, once, and passes neither the effort nor
+/// the Claude model id.
+#[test]
+fn h_claude_run_effort_codex_cannot_take_is_logged_by_the_codex_step() {
+    let f = Fixture::new(&[]);
+    let out = f.run(
+        "claude",
+        &[
+            ("AMPLIHACK_PARENT_EFFORT", "max"),
+            ("AMPLIHACK_PARENT_MODEL", X),
+            ("STEP2_BIN", "codex"),
+        ],
+    );
+    assert!(out.status.success(), "{}", describe(&out));
+    let claude = argv(&f.call(1));
+    assert_eq!(
+        flag(&claude, "--effort").as_deref(),
+        Some("max"),
+        "{claude:?}"
+    );
+    let codex = argv(&f.call(2));
+    assert_eq!(count(&codex, "--model"), 0, "{codex:?}");
+    assert!(
+        !codex
+            .iter()
+            .any(|a| a.contains("model_reasoning_effort") || a.contains(X)),
+        "{codex:?}"
+    );
+    let stderr = f.step_stderr(2);
+    for line in [
+        "amplihack: effort 'max' cannot be passed to codex; steps use codex's default".to_string(),
+        format!("amplihack: model '{X}' cannot be passed to codex; steps use codex's default"),
+    ] {
+        assert_eq!(
+            stderr.lines().filter(|l| *l == line).count(),
+            1,
+            "{line}\n---\n{stderr}"
+        );
+    }
+    // The run's own lines are about claude, which takes both values.
+    assert!(
+        !text(&out.stderr).contains("cannot be passed"),
+        "{}",
+        describe(&out)
+    );
 }

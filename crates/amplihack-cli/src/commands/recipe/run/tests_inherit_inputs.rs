@@ -314,13 +314,13 @@ fn the_fallback_variables_are_used_last() {
 /// notices, then the summary. The summary names only values the steps
 /// receive, so it is absent when every value was refused.
 #[test]
-fn copilot_drops_effort_with_one_line_after_the_warnings() {
+fn codex_drops_effort_with_one_line_after_the_warnings() {
     let p = fake_proc(&[]);
     let (got, lines) = run(
         &p,
         &[("effort", "-bad")],
-        &[("AMPLIHACK_PARENT_EFFORT", "high")],
-        "copilot",
+        &[("AMPLIHACK_PARENT_EFFORT", "xhigh")],
+        "codex",
     );
     assert_eq!(got, Inherited::default());
     assert_eq!(
@@ -328,8 +328,24 @@ fn copilot_drops_effort_with_one_line_after_the_warnings() {
         vec![
             "amplihack: ignoring effort from the recipe context: not a valid option value"
                 .to_string(),
-            "amplihack: effort 'high' cannot be passed to copilot; steps use copilot's default"
+            "amplihack: effort 'xhigh' cannot be passed to codex; steps use codex's default"
                 .to_string(),
+        ]
+    );
+}
+
+/// Copilot steps receive the run's effort (as `--reasoning-effort`), and the
+/// summary names it (crusty review of #1892, round 2).
+#[test]
+fn copilot_steps_inherit_the_effort() {
+    let p = fake_proc(&[]);
+    let (got, lines) = run(&p, &[], &[("AMPLIHACK_PARENT_EFFORT", "high")], "copilot");
+    assert_eq!(got, inherited(Some("high"), None));
+    assert_eq!(
+        lines,
+        vec![
+            "amplihack: steps inherit effort=high model=unset (from the parent amplihack launch)"
+                .to_string()
         ]
     );
 }

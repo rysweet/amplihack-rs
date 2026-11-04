@@ -1346,6 +1346,7 @@ fn model_args_inherited(
             "AMPLIHACK_RECIPE_RUN_ID",
             "AMPLIHACK_PARENT_EFFORT",
             "AMPLIHACK_PARENT_MODEL",
+            "AMPLIHACK_AGENT_BINARY",
         ]);
     let restore = RestoreEnv(names.map(|name| (name, std::env::var_os(name))).collect());
     for (name, _) in &restore.0 {
@@ -1594,7 +1595,10 @@ fn test_codex_and_copilot_take_an_inherited_model_only_in_a_recipe_run() {
         );
 
         let inside = model_args_inherited(
-            &[("AMPLIHACK_RECIPE_RUN_ID", "run-1883")],
+            &[
+                ("AMPLIHACK_RECIPE_RUN_ID", "run-1883"),
+                ("AMPLIHACK_AGENT_BINARY", tool),
+            ],
             tool,
             &[],
             &inherit_model("gpt-5.1"),
@@ -1606,6 +1610,83 @@ fn test_codex_and_copilot_take_an_inherited_model_only_in_a_recipe_run() {
         );
         assert!(inside.env.is_empty(), "{tool}: {:?}", inside.env);
         assert!(inside.stderr.is_empty(), "{tool}: {:?}", inside.stderr);
+    }
+}
+
+/// Crusty review of #1892, round 2: inside a recipe run whose agent binary
+/// is another one, codex and copilot do not take the inherited model, which
+/// the run checked for its own binary only, and say so once.
+#[test]
+fn test_codex_and_copilot_refuse_a_model_checked_for_another_binary() {
+    for tool in ["codex", "copilot"] {
+        for run_binary in [None, Some("claude"), Some("amplifier")]
+            .into_iter()
+            .chain([Some(if tool == "codex" { "copilot" } else { "codex" })])
+        {
+            let mut env = vec![("AMPLIHACK_RECIPE_RUN_ID", "run-1883")];
+            env.extend(run_binary.map(|b| ("AMPLIHACK_AGENT_BINARY", b)));
+            let got = model_args_inherited(&env, tool, &[], &inherit_model("claude-opus-4-7"));
+            assert!(got.argv.is_empty(), "{tool} {run_binary:?}: {:?}", got.argv);
+            assert!(got.env.is_empty(), "{tool} {run_binary:?}");
+            assert_eq!(got.exported, None, "{tool} {run_binary:?}");
+            assert_eq!(
+                got.stderr,
+                vec![format!(
+                    "amplihack: model 'claude-opus-4-7' cannot be passed to {tool}; \
+                     steps use {tool}'s default"
+                )],
+                "{tool} {run_binary:?}"
+            );
+        }
+    }
+}
+
+/// A step's own `--model` needs no line about a model it would not use.
+#[test]
+fn test_own_model_hides_the_refused_inherited_model() {
+    let got = model_args_inherited(
+        &[
+            ("AMPLIHACK_RECIPE_RUN_ID", "run-1883"),
+            ("AMPLIHACK_AGENT_BINARY", "claude"),
+        ],
+        "copilot",
+        &["--model", "gpt-5.1"],
+        &inherit_model("claude-opus-4-7"),
+    );
+    assert!(got.stderr.is_empty(), "{:?}", got.stderr);
+    assert!(got.argv.is_empty(), "{:?}", got.argv);
+}
+
+/// The reverse: a model a codex or copilot run passed on is not a Claude
+/// model id, so a Claude-compatible launch under that run uses amplihack's
+/// own default and puts nothing in ANTHROPIC_MODEL.
+#[test]
+fn test_claude_refuses_a_model_checked_for_codex_or_copilot() {
+    for run_binary in ["codex", "copilot"] {
+        let got = model_args_inherited(
+            &[
+                ("AMPLIHACK_RECIPE_RUN_ID", "run-1883"),
+                ("AMPLIHACK_AGENT_BINARY", run_binary),
+            ],
+            "claude",
+            &[],
+            &inherit_model("gpt-5.1"),
+        );
+        assert_eq!(
+            model_after_flag(&got.argv),
+            Some(DEFAULT_MODEL),
+            "{run_binary}: {:?}",
+            got.argv
+        );
+        assert!(got.env.is_empty(), "{run_binary}: {:?}", got.env);
+        assert_eq!(got.exported, None, "{run_binary}");
+        assert_eq!(
+            got.stderr.first().map(String::as_str),
+            Some(
+                "amplihack: model 'gpt-5.1' cannot be passed to claude; steps use claude's default"
+            ),
+            "{run_binary}"
+        );
     }
 }
 

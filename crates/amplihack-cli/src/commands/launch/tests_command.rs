@@ -1131,8 +1131,9 @@ fn codex_resume_uses_subcommand_and_continue_selects_last_without_model_pin() {
 
 /// Every variable the inheritance path reads or writes, plus the ones the
 /// argv assertions below depend on.
-const INHERIT_TEST_VARS: [&str; 13] = [
+const INHERIT_TEST_VARS: [&str; 14] = [
     "AMPLIHACK_PARENT_EFFORT",
+    "AMPLIHACK_AGENT_BINARY",
     "AMPLIHACK_PARENT_MODEL",
     "AMPLIHACK_RECIPE_RUN_ID",
     "AMPLIHACK_DEFAULT_MODEL",
@@ -1150,6 +1151,8 @@ const INHERIT_TEST_VARS: [&str; 13] = [
 struct Built {
     args: Vec<String>,
     envs: std::collections::BTreeMap<String, Option<String>>,
+    /// What the launch exports to its children as `AMPLIHACK_PARENT_*`.
+    applied: super::inherit::Inherited,
 }
 
 /// `build_command` for a binary named `name` with exactly `env` set among
@@ -1176,8 +1179,11 @@ fn build_inherit(name: &str, resume: bool, env: &[(&str, &str)], extra: &[&str])
         version: Some("1.0.0".to_string()),
     };
     let extra: Vec<String> = extra.iter().map(|a| a.to_string()).collect();
-    let cmd = build_command(&binary, resume, false, false, &extra);
+    let (cmd, applied) = super::command::build_launch_command(
+        &binary, resume, false, false, &extra, None, false, None,
+    );
     Built {
+        applied,
         args: cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -1351,23 +1357,106 @@ fn test_1883_codex_effort_goes_before_resume() {
     assert_eq!(env_val(&b, "ANTHROPIC_MODEL"), None);
 }
 
+/// Copilot takes the inherited effort as `--reasoning-effort L` and no
+/// Claude variables (crusty review of #1892, round 2).
 #[test]
-fn test_1883_copilot_gets_no_effort() {
+fn test_1883_copilot_gets_reasoning_effort() {
     let b = build_inherit(
         "copilot",
         false,
         &[
-            ("AMPLIHACK_PARENT_EFFORT", "high"),
+            ("AMPLIHACK_PARENT_EFFORT", "xhigh"),
             ("AMPLIHACK_RECIPE_RUN_ID", "run-1883"),
         ],
         &["-p", "do it"],
     );
+    let r = pos(&b.args, "--reasoning-effort");
+    assert_eq!(b.args[r + 1], "xhigh");
+    assert!(r < pos(&b.args, "-p"), "{:?}", b.args);
+    assert!(!b.args.iter().any(|a| a == "--effort"), "{:?}", b.args);
+    assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), None);
+    assert_eq!(b.applied.effort.as_deref(), Some("xhigh"));
+}
+
+/// A copilot step's own `--reasoning-effort` wins, and is what its children
+/// inherit (D5).
+#[test]
+fn test_1883_copilot_own_reasoning_effort_wins() {
+    let b = build_inherit(
+        "copilot",
+        false,
+        &[("AMPLIHACK_PARENT_EFFORT", "high")],
+        &["--reasoning-effort", "low", "-p", "do it"],
+    );
+    let all: Vec<_> = b
+        .args
+        .iter()
+        .filter(|a| *a == "--reasoning-effort")
+        .collect();
+    assert_eq!(all.len(), 1, "{:?}", b.args);
+    assert!(!b.args.iter().any(|a| a == "high"), "{:?}", b.args);
+    assert_eq!(b.applied.effort.as_deref(), Some("low"));
+}
+
+/// A Claude run passes its model to the runner, and a bash step in it runs
+/// `amplihack copilot -p …` (quality-loop.yaml). That launch gets no
+/// `--model`, because the model was checked for claude, not copilot (crusty
+/// review of #1892, round 2).
+#[test]
+fn test_1883_claude_run_model_does_not_reach_a_copilot_launch() {
+    let b = build_inherit(
+        "copilot",
+        false,
+        &[
+            ("AMPLIHACK_PARENT_MODEL", "claude-opus-4-7"),
+            ("AMPLIHACK_RECIPE_RUN_ID", "run-1883"),
+            ("AMPLIHACK_AGENT_BINARY", "claude"),
+        ],
+        &["-p", "critique"],
+    );
+    assert!(!b.args.iter().any(|a| a == "--model"), "{:?}", b.args);
     assert!(
-        !b.args.iter().any(|a| a == "--effort" || a == "high"),
+        !b.args.iter().any(|a| a.contains("claude-opus")),
         "{:?}",
         b.args
     );
-    assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), None);
+    assert_eq!(b.applied.model, None);
+}
+
+/// A copilot run with `-c model=` passes that model to its own copilot steps.
+#[test]
+fn test_1883_copilot_run_model_reaches_its_copilot_steps() {
+    let b = build_inherit(
+        "copilot",
+        false,
+        &[
+            ("AMPLIHACK_PARENT_MODEL", "gpt-5.1"),
+            ("AMPLIHACK_RECIPE_RUN_ID", "run-1883"),
+            ("AMPLIHACK_AGENT_BINARY", "copilot"),
+        ],
+        &["-p", "do it"],
+    );
+    let m = pos(&b.args, "--model");
+    assert_eq!(b.args[m + 1], "gpt-5.1");
+}
+
+/// The reverse: a copilot run's model is not a Claude model id, so a bash
+/// step's `amplihack claude` gets amplihack's own default instead.
+#[test]
+fn test_1883_copilot_run_model_does_not_reach_a_claude_launch() {
+    let b = build_inherit(
+        "claude",
+        false,
+        &[
+            ("AMPLIHACK_PARENT_MODEL", "gpt-5.1"),
+            ("AMPLIHACK_RECIPE_RUN_ID", "run-1883"),
+            ("AMPLIHACK_AGENT_BINARY", "copilot"),
+        ],
+        &["-p", "do it"],
+    );
+    assert!(!b.args.iter().any(|a| a == "gpt-5.1"), "{:?}", b.args);
+    assert_eq!(env_val(&b, "ANTHROPIC_MODEL"), None);
+    assert_eq!(b.applied.model, None);
 }
 
 /// S11: under the gateway the gateway model is on argv and the inherited

@@ -17,9 +17,10 @@
 
 use super::inherit::{
     EffortArgs, InheritSource, Inherited, PARENT_EFFORT_ENV, PARENT_MODEL_ENV, ParentInputs,
-    Resolved, cannot_pass_line, codex_effort, codex_effort_from_argv, effort_args, export_to_child,
-    flag_value, gateway_model_line, ignoring_line, inherit_summary_line, inherited_from_env,
-    resolve_parent, vet_for_binary,
+    Resolved, cannot_pass_line, codex_effort, codex_effort_from_argv, copilot_effort, effort_args,
+    export_to_child, flag_value, gateway_model_line, ignoring_line, inherit_summary_line,
+    inherited_from_env, model_checked_for_run, resolve_parent, run_printed_lines_for_run,
+    vet_for_binary,
 };
 use crate::test_support::with_env;
 use std::ffi::OsStr;
@@ -464,17 +465,32 @@ fn copilot_refuses_any_model_under_the_gateway() {
     assert_eq!(lines, vec![cannot_pass_line("model", "gpt-5.1", "copilot")]);
 }
 
+/// Copilot takes every level `copilot --help` lists for
+/// `--reasoning-effort` (crusty review of #1892, round 2).
 #[test]
-fn copilot_drops_every_effort_with_one_line() {
-    let r = resolved(Some(("high", InheritSource::RecipeContext)), None);
-    let (vetted, lines) = vet_for_binary("copilot", &r, false);
-    assert_eq!(vetted.effort, None);
-    assert_eq!(lines, vec![cannot_pass_line("effort", "high", "copilot")]);
+fn copilot_takes_every_listed_reasoning_effort() {
+    for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+        let r = resolved(Some((level, InheritSource::ParentClaude)), None);
+        let (vetted, lines) = vet_for_binary("copilot", &r, false);
+        assert_eq!(vetted.effort.as_deref(), Some(level));
+        assert!(lines.is_empty(), "{level}: {lines:?}");
+    }
 }
 
-/// An unknown binary is handled as copilot.
 #[test]
-fn an_unknown_binary_is_handled_as_copilot() {
+fn copilot_drops_any_other_effort_with_one_line() {
+    for level in ["HIGH", "ultra", "high,foo"] {
+        let r = resolved(Some((level, InheritSource::RecipeContext)), None);
+        let (vetted, lines) = vet_for_binary("copilot", &r, false);
+        assert_eq!(vetted.effort, None, "{level}");
+        assert_eq!(lines, vec![cannot_pass_line("effort", level, "copilot")]);
+    }
+}
+
+/// A binary amplihack does not know takes no effort, and its model only from
+/// the recipe context.
+#[test]
+fn an_unknown_binary_takes_no_effort_and_no_inherited_model() {
     let r = resolved(
         Some(("high", InheritSource::ParentLaunch)),
         Some(("claude-opus-5-5", InheritSource::ParentLaunch)),
@@ -542,6 +558,14 @@ fn exported_effort_is_the_effort_the_agent_runs_with() {
     let got = effort_args("codex", &[], &inherited(Some("max"), None));
     assert_eq!(got.exported, None);
     let got = effort_args("copilot", &[], &inherited(Some("high"), None));
+    assert_eq!(got.exported.as_deref(), Some("high"));
+    let got = effort_args(
+        "copilot",
+        &s(&["--reasoning-effort=low"]),
+        &inherited(Some("high"), None),
+    );
+    assert_eq!(got.exported.as_deref(), Some("low"));
+    let got = effort_args("copilot", &[], &inherited(Some("ultra"), None));
     assert_eq!(got.exported, None);
 }
 
@@ -690,17 +714,90 @@ fn codex_step_own_reasoning_effort_wins() {
     }
 }
 
+/// Copilot takes the inherited effort as `--reasoning-effort L`, built from
+/// a matched literal, and no Claude variable.
 #[test]
-fn copilot_and_unknown_binaries_report_effort_as_unsupported() {
-    for binary in ["copilot", "mystery"] {
-        let got = effort_args(binary, &[], &inherited(Some("high"), None));
-        assert!(got.argv.is_empty(), "{binary}");
-        assert!(got.env.is_empty(), "{binary}");
-        assert_eq!(
-            got.unsupported,
-            Some(cannot_pass_line("effort", "high", binary))
+fn copilot_takes_the_effort_as_reasoning_effort() {
+    let got = effort_args("copilot", &s(&["-p", "x"]), &inherited(Some("xhigh"), None));
+    assert_eq!(got.argv, s(&["--reasoning-effort", "xhigh"]));
+    assert!(got.env.is_empty(), "{:?}", got.env);
+    assert_eq!(got.unsupported, None);
+}
+
+/// The step's own `--reasoning-effort` wins and nothing is added (D5).
+#[test]
+fn copilot_own_reasoning_effort_wins() {
+    for extra in [
+        s(&["--reasoning-effort", "low"]),
+        s(&["--reasoning-effort=low"]),
+    ] {
+        let got = effort_args("copilot", &extra, &inherited(Some("high"), None));
+        assert!(got.argv.is_empty(), "{extra:?}: {:?}", got.argv);
+        assert_eq!(got.unsupported, None);
+    }
+}
+
+/// S5: a level copilot does not list is not passed, so copilot never refuses
+/// to start over an inherited value.
+#[test]
+fn copilot_effort_maps_only_the_listed_literals() {
+    for level in ["none", "minimal", "low", "medium", "high", "xhigh", "max"] {
+        assert_eq!(copilot_effort(level), Some(level));
+    }
+    for level in ["", "HIGH", "ultra", "high,foo", " high"] {
+        assert_eq!(copilot_effort(level), None, "{level:?}");
+    }
+    let got = effort_args("copilot", &[], &inherited(Some("ultra"), None));
+    assert!(got.argv.is_empty(), "{:?}", got.argv);
+    assert_eq!(
+        got.unsupported,
+        Some(cannot_pass_line("effort", "ultra", "copilot"))
+    );
+}
+
+/// The run checks its model for its own agent binary. A launch of a
+/// different binary under the run does not take it (crusty review of #1892,
+/// round 2: quality-loop.yaml runs `amplihack copilot` under a Claude run).
+#[test]
+fn model_checked_only_for_the_runs_binary() {
+    // codex and copilot: only inside a run of the same binary.
+    assert!(model_checked_for_run("copilot", Some("copilot"), true));
+    assert!(model_checked_for_run("codex", Some("codex"), true));
+    assert!(!model_checked_for_run("copilot", Some("claude"), true));
+    assert!(!model_checked_for_run("copilot", Some("codex"), true));
+    assert!(!model_checked_for_run("copilot", None, true));
+    assert!(!model_checked_for_run("copilot", Some("copilot"), false));
+    // Claude-compatible: unless the run's binary is not Claude-compatible.
+    for binary in ["claude", "rusty", "rustyclawd", "amplifier"] {
+        assert!(model_checked_for_run(binary, None, false), "{binary}");
+        assert!(
+            model_checked_for_run(binary, Some("claude"), true),
+            "{binary}"
+        );
+        assert!(
+            model_checked_for_run(binary, Some("amplifier"), true),
+            "{binary}"
+        );
+        assert!(
+            !model_checked_for_run(binary, Some("copilot"), true),
+            "{binary}"
+        );
+        assert!(
+            !model_checked_for_run(binary, Some("codex"), false),
+            "{binary}"
         );
     }
+}
+
+#[test]
+fn unknown_binaries_report_effort_as_unsupported() {
+    let got = effort_args("mystery", &[], &inherited(Some("high"), None));
+    assert!(got.argv.is_empty());
+    assert!(got.env.is_empty());
+    assert_eq!(
+        got.unsupported,
+        Some(cannot_pass_line("effort", "high", "mystery"))
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -938,4 +1035,17 @@ fn summary_line_with_mixed_sources_names_both() {
              (from the parent amplihack launch and the recipe context)"
         )
     );
+}
+
+/// D7, crusty review of #1892 round 3: the run printed the "cannot be passed"
+/// effort line only for its own binary. A launch of another binary under the
+/// run, or any launch outside a run, prints its own.
+#[test]
+fn run_printed_lines_only_for_the_runs_own_binary() {
+    assert!(run_printed_lines_for_run("codex", Some("codex"), true));
+    assert!(run_printed_lines_for_run("copilot", Some("copilot"), true));
+    assert!(!run_printed_lines_for_run("codex", Some("claude"), true));
+    assert!(!run_printed_lines_for_run("copilot", Some("claude"), true));
+    assert!(!run_printed_lines_for_run("codex", None, true));
+    assert!(!run_printed_lines_for_run("codex", Some("codex"), false));
 }
