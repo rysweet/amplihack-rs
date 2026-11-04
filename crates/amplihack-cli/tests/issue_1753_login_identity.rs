@@ -449,6 +449,12 @@ fn unusable_expected_record_is_not_permission_to_adopt_the_login() {
 fn unread_duplicate_evidence_cannot_authorize_backfill_or_movement() {
     let (f, ep) = fixture();
     std::fs::remove_file(f.root.join(".auto-switch.d/expected/work.json")).unwrap();
+    // Establish outgoing ownership so refusal must reach the duplicate scan.
+    let mut provenance = f.ledger().unwrap();
+    provenance["login_identity"] = account_json("work");
+    // Keep separate hand-change assessment inside its existing grace period.
+    provenance["swapped_at"] = chrono::Utc::now().timestamp().into();
+    private_file(&f.rotate_dir().join("ledger.json"), &provenance.to_string());
     fake_login(&f.slot("spare"), "unknown");
     let before = f.logins();
     let ledger = f.ledger().unwrap();
@@ -460,6 +466,12 @@ fn unread_duplicate_evidence_cannot_authorize_backfill_or_movement() {
     assert_eq!(f.logins(), before);
     assert_eq!(f.ledger().unwrap(), ledger);
     assert!(!f.root.join(".auto-switch.d/expected/work.json").exists());
+    f.assert_each_login_once();
+    // Changing only the uncertain duplicate evidence permits the same swap.
+    fake_login(&f.slot("spare"), "spare");
+    let restored = run(&f, &ep, &["profile", "switch", "extra"]);
+    assert!(restored.status.success(), "{}", text(&restored.stderr));
+    assert_eq!(f.ledger().unwrap()["account"], "uuid-extra");
     f.assert_each_login_once();
 }
 
