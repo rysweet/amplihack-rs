@@ -22,6 +22,10 @@ keeps it for inspection:
 scripts/verify-lbug-native.sh
 ```
 
+The script enables `--features test-support`, required by the `lbug_ffi` Cargo
+target. Include this feature when running either build command manually so
+Cargo can build and execute the native tests.
+
 The first clean target must report a local miss followed by a stored entry.
 It compiles actual bundled lbug source and packages that output. The second
 clean target must report a verified hit and succeed with a fail-on-use CMake

@@ -735,14 +735,23 @@ fn collect(request: &Request, staging: &Path) -> Result<()> {
         }
         fs::write(staging.join("lib").join(filename), read_regular(found[0])?)?;
     }
-    for root in [
-        source.join("src/include"),
-        output.join("build/src"),
-        output.join("build/src/include"),
-        source.join("third_party/nlohmann_json"),
-        source.join("third_party/fastpfor"),
-        source.join("third_party/alp/include"),
+    for (root, optional) in [
+        (source.join("src/include"), false),
+        (output.join("build/src"), false),
+        (output.join("build/src/include"), false),
+        (source.join("third_party/nlohmann_json"), true),
+        (source.join("third_party/fastpfor"), true),
+        (source.join("third_party/alp/include"), true),
     ] {
+        // Upstream adds optional include paths even when the registry crate
+        // omits those directories. Only absence is optional; preserve errors
+        // for unreadable, linked or non-directory inputs.
+        match fs::symlink_metadata(&root) {
+            Ok(metadata) if metadata.is_dir() => {}
+            Err(error) if optional && error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+            Ok(_) => return Err("unsafe header root".into()),
+        }
         for path in inputs(&root, &["h", "hpp", "hh", "hxx", "inc", "inl"])? {
             let destination = staging.join("include").join(path.strip_prefix(&root)?);
             let bytes = read_regular(&path)?;

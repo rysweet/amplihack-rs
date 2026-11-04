@@ -46,6 +46,12 @@ includes are generated from upstream's bundled include list. A compiler syntax
 check uses only the staged include root before installation. FFI shim archives,
 shared libraries and CMake outputs are excluded.
 
+The registry crate may omit optional third-party include directories listed by
+upstream. Missing optional roots are skipped; required roots, unreadable roots
+and linked/non-directory roots still reject packaging. The staged-header syntax
+check remains mandatory, so an omitted directory cannot hide missing headers
+needed by the FFI shim.
+
 A requesting source build runs at most once. Its successful output supplies both
 linking and the cache. Packaging errors are separate diagnostics and keep Cargo
 success. The helper never reruns a successful Cargo child to repair an artifact.

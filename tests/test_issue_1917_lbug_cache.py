@@ -147,6 +147,15 @@ fn main() {
         shutil.rmtree(Path(self.env["TEST_SOURCE"]) / "third_party/nlohmann_json")
         self.populate()
 
+    def test_optional_include_root_must_be_a_real_directory(self):
+        root = Path(self.env["TEST_SOURCE"]) / "third_party/nlohmann_json"
+        root.rmdir()
+        root.symlink_to(self.root / "missing-header-root", target_is_directory=True)
+        result = self.run_build()
+        self.assertIn(b"successful source output retained", result.stderr)
+        self.assertEqual(self.events(), ["source"])
+        self.assertEqual(self.entries(), [])
+
     def test_corruption_invalidates_warm_managed_output_without_repair(self):
         entry = self.populate()
         self.run_build()

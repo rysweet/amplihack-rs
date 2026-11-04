@@ -53,11 +53,24 @@ optional directories. Compare substitute-producer fixtures with that layout;
 creating an optional directory can hide a native collection failure. Keep a
 lockfile comparison when using a minimal Cargo consumer, and record dependency
 differences before describing its results as workspace qualification.
+Pin the consumer's `cc` dependency as well as `lbug`, `cxx` and `cxx-build`;
+compare their versions/checksums and `cmake` with the workspace lock. Matching
+these native build inputs does not establish whole-workspace qualification.
 
 For task-owned HOME fixtures, supply the already provisioned toolchain through
 its exact `RUSTUP_HOME` and executable PATH, with `RUSTUP_AUTO_INSTALL=0`. Retain
 toolchain setup failures and corrected-run receipts. Fixture HOME paths provide
 test hygiene; audit the executed commands for access to real profiles.
+Include the provisioned `rustup` launcher on PATH too: the Python contracts use
+`rustup which rustc` before selecting the pinned compiler directly.
+
+If the execution host protects the assigned worktree's Git index, publish from
+an owned clone on the same authorized branch. Copy the exact source diff and
+retain the normal commit hook, artifact guards and identity helper. Record the
+publication checkout and compare tested helper hashes with the pushed commit;
+the protected original worktree may still show that diff as uncommitted.
+Use a fresh owned Cargo target there. Copying a compiled target does not relocate
+CMake's absolute build paths and can fail before the cache can be populated.
 
 Required final-head CI, hooks and independent CLEAN reviews remain completion
 gates. Record effective review-launch settings rather than inferring them from

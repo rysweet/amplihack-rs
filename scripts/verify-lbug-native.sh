@@ -35,12 +35,12 @@ target="$(rustc -vV | sed -n 's/^host: //p')"
 unset "CXX_$target" "CXX_${target//-/_}" HOST_CXX TARGET_CXX
 cd "$repo"
 CARGO_TARGET_DIR="$work/target-a" LBUG_NATIVE_TRACE="$work/trace-a" \
-    scripts/cargo-with-lbug.sh test --locked -p amplihack-cli --test lbug_ffi --no-run -vv \
+    scripts/cargo-with-lbug.sh test --locked -p amplihack-cli --features test-support --test lbug_ffi --no-run -vv \
     > "$work/build-a.stdout" 2> "$work/build-a.stderr"
 grep -q 'stored local entry' "$work/build-a.stderr"
 CARGO_TARGET_DIR="$work/target-b" LBUG_NATIVE_TRACE="$work/trace-b" \
     CMAKE="$work/tripwire/cmake" PATH="$work/tripwire:$PATH" \
-    scripts/cargo-with-lbug.sh test --locked -p amplihack-cli --test lbug_ffi --no-run -vv \
+    scripts/cargo-with-lbug.sh test --locked -p amplihack-cli --features test-support --test lbug_ffi --no-run -vv \
     > "$work/build-b.stdout" 2> "$work/build-b.stderr"
 grep -q 'verified local hit' "$work/build-b.stderr"
 ffi=0
