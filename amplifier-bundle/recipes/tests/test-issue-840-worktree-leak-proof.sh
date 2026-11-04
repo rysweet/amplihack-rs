@@ -13,7 +13,7 @@
 #      or unmerged-meaningful worktrees are PRESERVED (archived first, never
 #      destroyed).
 #   2. Cleanup-on-failure — a failed/aborted run prunes its own worktree+branch,
-#      but only AFTER archiving/pushing any unique commits (never destroy
+#      but only AFTER archiving unique commits to local refs (never destroy
 #      unmerged meaningful work).
 #
 # Design (from the approved spec): the destructive lifecycle logic lives in a
@@ -147,7 +147,8 @@ STEP04="$(extract_step "${WORKTREE_YAML}" "step-04-setup-worktree")"
 if [[ -z "${STEP04}" ]]; then
     fail "A8-step" "could not extract step-04-setup-worktree from workflow-worktree.yaml"
 else
-    if printf '%s\n' "${STEP04}" | grep -qE 'workflow_worktree_sweep\.sh'; then
+    # A here-string avoids printf SIGPIPE when grep -q finds an early match.
+    if grep -qE 'workflow_worktree_sweep\.sh' <<<"${STEP04}"; then
         pass "A8-invoke" "step-04 invokes workflow_worktree_sweep.sh"
     else
         fail "A8-invoke" "step-04 does not invoke workflow_worktree_sweep.sh"
@@ -322,6 +323,13 @@ else
     else
         fail "B7-converges" "re-add after sweep failed — leaked worktree/branch blocked convergence"
     fi
+fi
+
+# Keep #1930 in the existing registered entry; propagate a focused child failure.
+if bash "${SCRIPT_DIR}/test-issue-1930-setup-does-not-push.sh"; then
+    pass "C1-no-setup-push" "setup and sweep preserve recovery without pushing"
+else
+    fail "C1-no-setup-push" "issue #1930 focused regression failed"
 fi
 
 # ===========================================================================

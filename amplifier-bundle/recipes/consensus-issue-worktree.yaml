@@ -82,7 +82,7 @@ steps:
       Create worktree setup:
       1. Branch name format: `feat/issue-{number}-{brief-description}` or `feat/{brief-description}`
       2. Create the worktree with the commands below; they place it under the worktree directory
-      3. Push branch to remote with tracking
+      3. Configure matching upstreams locally; setup must never push (issue #1930)
 
       Commands to execute:
       ```bash
@@ -184,6 +184,10 @@ steps:
           echo "ERROR: branch '$BRANCH_NAME' not found locally or on origin." >&2
           exit 1
         fi
+        # MIRROR #1930: setup never pushes; link only a matching remote ref locally.
+        if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+          git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/$BRANCH_NAME" "$BRANCH_NAME" >&2
+        fi
         printf '{"branch_name": "%s", "worktree_path": "%s", "commands_executed": ["existing-branch path #342"], "setup_complete": true}\n' \
           "$BRANCH_NAME" "$WORKTREE_PATH"
         exit 0
@@ -240,7 +244,6 @@ steps:
         exit 1
       fi
       BASE_BRANCH="${BASE_REF#origin/}"
-      BOOTSTRAP=false
 
       # FIX (#469/#311): Use env var — safe against injection and word-splitting.
       TASK_DESC="$TASK_DESCRIPTION"
@@ -300,7 +303,7 @@ steps:
       # 'unknown'). show-ref --verify: exact ref match, no glob.
       WORKTREE_PATH="$WORKTREE_DIR/$BRANCH_NAME"
       # The JSON printed at the end feeds later steps; refuse a path that could forge
-      # it, before anything is created or pushed.
+      # it, before anything is created.
       case "$WORKTREE_PATH" in
         *[\"\\]*|*[[:cntrl:]]*)
           echo "ERROR: worktree path contains a quote, backslash or control character — refusing to emit setup JSON." >&2
@@ -352,17 +355,13 @@ steps:
         bash "$TOOLS_DIR/amplihack_run_owned.sh" setup-worktree "$SETUP_STATE" "$WORKTREE_PATH" "$BRANCH_NAME" || true
       fi
 
-      # Push with tracking (bootstrap-aware). Never forced: a deconflicted run pushes
-      # only its own fresh branch, so a kept branch's unpushed commits stay local.
+      # MIRROR #1930: setup never pushes; link only a matching remote ref locally.
       if ! cd "$WORKTREE_PATH"; then
         echo "ERROR: worktree path '$WORKTREE_PATH' is not accessible." >&2
         exit 1
       fi
-      if [ "$BOOTSTRAP" = "true" ]; then
-        echo "BOOTSTRAP: Skipping push — no remote main branch available." >&2
-      else
-        git push -u origin "$BRANCH_NAME" > /dev/null 2>&1 || \
-          echo "WARNING: Initial push of '$BRANCH_NAME' failed — will retry at PR creation." >&2
+      if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+        git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/$BRANCH_NAME" "$BRANCH_NAME" >&2
       fi
 
       printf '{"branch_name": "%s", "worktree_path": "%s", "commands_executed": ["%s"], "setup_complete": true}\n' \
