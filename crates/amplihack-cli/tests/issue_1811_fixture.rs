@@ -232,9 +232,7 @@ impl Fixture {
             .env("AMPLIHACK_USAGE_LIMIT_WAIT", "0")
             .env("AMPLIHACK_GOVERNOR_WAIT", "0")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
-        if let Some(identity) = &self.identity {
-            identity.configure(&mut c);
-        }
+        self.identity.iter().for_each(|i| i.configure(&mut c));
         c
     }
 

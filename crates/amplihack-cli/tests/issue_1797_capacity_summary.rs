@@ -280,6 +280,8 @@ fn raw_prints_no_summary() {
 #[test]
 fn history_is_written_only_for_a_whole_unfiltered_run_with_recording_on() {
     let f = Fixture::new();
+    // Issue #1753: the fixture records each profile's account in this directory.
+    fs::remove_dir_all(state_dir(&f)).unwrap();
     usage_ok(&f, &[], &[]);
     assert!(
         !state_dir(&f).exists(),
