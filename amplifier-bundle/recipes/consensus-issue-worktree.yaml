@@ -352,14 +352,16 @@ steps:
         bash "$TOOLS_DIR/amplihack_run_owned.sh" setup-worktree "$SETUP_STATE" "$WORKTREE_PATH" "$BRANCH_NAME" || true
       fi
 
-      # Push with tracking (bootstrap-aware). Never forced: a deconflicted run pushes
-      # only its own fresh branch, so a kept branch's unpushed commits stay local.
+      # Push with tracking (bootstrap-aware), only when origin/<B> is absent; else set
+      # the upstream only (#1930). Never forced, so unpushed commits stay local.
       if ! cd "$WORKTREE_PATH"; then
         echo "ERROR: worktree path '$WORKTREE_PATH' is not accessible." >&2
         exit 1
       fi
       if [ "$BOOTSTRAP" = "true" ]; then
         echo "BOOTSTRAP: Skipping push — no remote main branch available." >&2
+      elif git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+        git branch --set-upstream-to="origin/$BRANCH_NAME" "$BRANCH_NAME" >/dev/null 2>&1 || true
       else
         git push -u origin "$BRANCH_NAME" > /dev/null 2>&1 || \
           echo "WARNING: Initial push of '$BRANCH_NAME' failed — will retry at PR creation." >&2

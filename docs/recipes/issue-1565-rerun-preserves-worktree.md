@@ -115,6 +115,9 @@ not seen.
 
 The kept branch is never pushed by the new run. The push at the end of step-04
 runs after `BRANCH_NAME` has been reassigned, so it pushes only the new branch.
+Since [issue #1930](issue-1930-setup-no-push-ahead.md), that push runs only
+when `refs/remotes/origin/<branch>` is absent; otherwise setup only sets the
+upstream.
 
 ---
 

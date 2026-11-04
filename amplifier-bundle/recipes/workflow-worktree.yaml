@@ -232,8 +232,8 @@ steps:
         # `created=false`: the branch pre-existed (its worktree may still be new).
         CREATED=false
 
-        # Push/upstream best-effort (idempotent on existing PR branches); never for an alias.
-        [ -n "$LOCAL_BRANCH" ] || git -C "$WORKTREE_PATH" push origin "$BRANCH_NAME" > /dev/null 2>&1 || true
+        # Upstream only, never a push (#1930: the local head may be ahead and fail pre-push); never for an alias.
+        [ -n "$LOCAL_BRANCH" ] || git -C "$WORKTREE_PATH" show-ref --verify --quiet "refs/remotes/origin/${BRANCH_NAME}" || echo "WARNING: branch '${BRANCH_NAME}' has no origin/${BRANCH_NAME}; setup does not push it (#1930), so publish will skip it until it is pushed." >&2
         [ -n "$LOCAL_BRANCH" ] || git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/${BRANCH_NAME}" "$BRANCH_NAME" > /dev/null 2>&1 || true
 
         echo "" >&2
@@ -361,9 +361,9 @@ steps:
         CREATED=true
       fi
 
-      # Push branch to remote with tracking (idempotent). Push failures are
-      # suppressed here and surface at step-16 PR creation, so re-runs converge.
-      git -C "${WORKTREE_PATH}" push origin "${BRANCH_NAME}" > /dev/null 2>&1 || true
+      # Push only when origin/<B> is absent (head is the base commit); else set the
+      # upstream only (#1930). Push failures surface at step-16 PR creation.
+      git -C "${WORKTREE_PATH}" show-ref --verify --quiet "refs/remotes/origin/${BRANCH_NAME}" || git -C "${WORKTREE_PATH}" push origin "${BRANCH_NAME}" > /dev/null 2>&1 || true
       git -C "${WORKTREE_PATH}" branch --set-upstream-to="origin/${BRANCH_NAME}" "${BRANCH_NAME}" > /dev/null 2>&1 || true
 
       # Per-branch runtime root and its folders: tools/workflow_runtime_root.sh, else made here (#1808).

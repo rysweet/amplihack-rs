@@ -300,6 +300,11 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: bash amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh
+      - name: "Recipes: worktree setup never pushes a branch that has origin/<B> (issue #1930)"
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-1930-setup-no-push-ahead.sh
       - name: Recipes — a rejected git hook is repaired, never bypassed (issue #1671)
         shell: bash
         env:
