@@ -21,6 +21,8 @@ pub(super) mod backup;
 #[cfg(unix)]
 mod candidates;
 #[cfg(unix)]
+mod capacity;
+#[cfg(unix)]
 pub(in crate::commands::profile) mod change_log;
 #[cfg(unix)]
 mod control;

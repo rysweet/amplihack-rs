@@ -114,7 +114,7 @@ fn record(l: &mut RotateLedger, m: &ProfileName, t: i64) {
     l.live = Some(m.to_string());
     l.account = None;
     l.since = Some(t);
-    l.alert = None;
+    super::alert::clear_alert(l);
     l.guidance = None;
     l.hand_suspect = None;
 }
