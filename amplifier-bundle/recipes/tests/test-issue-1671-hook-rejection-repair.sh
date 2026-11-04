@@ -173,8 +173,29 @@ case "$NAME" in
     echo "$ACTION" >> "$S/actions.done"
     case "$ACTION" in
       fix)
-        ( cd "$WT" && git ls-files -co --exclude-standard -z | xargs -0 -r grep -lZ -e FORMAT_ME -e PUSH_BAD -- 2>/dev/null \
-            | xargs -0 -r sed -i -e 's/FORMAT_ME/formatted/g' -e "s/PUSH_BAD/${STUB_FIX_REPLACEMENT:-push_ok}/g" ) ;;
+        python3 -I - "$WT" "${STUB_FIX_REPLACEMENT:-push_ok}" <<'PY'
+import os
+import subprocess
+import sys
+
+os.chdir(sys.argv[1])
+replacement = os.fsencode(sys.argv[2])
+paths = subprocess.check_output(["git", "ls-files", "-co", "--exclude-standard", "-z"])
+for path in paths.split(b"\0"):
+    if not path:
+        continue
+    try:
+        with open(path, "rb") as source:
+            before = source.read()
+    except (FileNotFoundError, IsADirectoryError):
+        # Deleted tracked files and submodule directories were skipped by grep.
+        continue
+    after = before.replace(b"FORMAT_ME", b"formatted").replace(b"PUSH_BAD", replacement)
+    if after != before:
+        with open(path, "wb") as target:
+            target.write(after)
+PY
+        ;;
       noop) ;;
       edit-pre-commit-config) printf '# agent edit\n' >> "$WT/.pre-commit-config.yaml" ;;
       move-head) git -C "$WT" update-ref HEAD "$(git -C "$WT" commit-tree 'HEAD^{tree}' -p HEAD -m 'agent moved head')" ;;
@@ -1143,7 +1164,7 @@ section_e() {
         "dot-rustfmt|.rustfmt.toml|printf 'x = 1\n' > .rustfmt.toml"
         "cargo-config|.cargo/config.toml|mkdir -p .cargo && printf '[build]\nrustflags = [\"-Awarnings\"]\n' > .cargo/config.toml"
         "cargo-config-legacy|.cargo/config|mkdir -p .cargo && printf '[build]\n' > .cargo/config"
-        "cargo-lints|Cargo.toml[lints]|sed -i 's/all = \"deny\"/all = \"allow\"/' Cargo.toml"
+        "cargo-lints|Cargo.toml[lints]|python3 -I -c 'from pathlib import Path; p = Path(\"Cargo.toml\"); p.write_bytes(p.read_bytes().replace(b\"all = \\\"deny\\\"\", b\"all = \\\"allow\\\"\"))'"
         "cargo-workspace-lints|crates/y/Cargo.toml[lints]|printf '[workspace.lints.rust]\nwarnings = \"allow\"\n' >> crates/y/Cargo.toml"
     )
     for spec in "${lint_specs[@]}"; do
@@ -1169,7 +1190,7 @@ section_e() {
     git -C "${dir}/repo" add Cargo.toml
     git -C "${dir}/repo" commit -qm "cargo manifest"
     git -C "${dir}/repo" add src.txt
-    STUB_AGENT_ACTION=fix STUB_AGENT_BODY="sed -i 's/^\[dependencies\]\$/[dependencies]\nserde = \"1\"/' Cargo.toml" \
+    STUB_AGENT_ACTION=fix STUB_AGENT_BODY="python3 -I -c 'from pathlib import Path; p = Path(\"Cargo.toml\"); p.write_bytes(p.read_bytes().replace(b\"[dependencies]\\n\", b\"[dependencies]\\nserde = \\\"1\\\"\\n\"))'" \
         run_driver "${dir}" "${COMMIT_ARGS[@]}"
     expect_eq "E9 dependency: not refused" "$(var_of "${dir}" STATUS)" "ok"
     expect_eq "E9 dependency: the edit was committed" "$(git -C "${dir}/repo" show HEAD:Cargo.toml | grep -c '^serde = "1"$' || true)" "1"
@@ -1967,6 +1988,66 @@ section_j() {
         expect_eq "J2 ${v}: stays stuck" "$(var_of "${dir}" STATUS)" "stuck"
     done
 }
+
+# Check the actual fixing stub before any evaluator can repeat CONTINUE.
+# A broken edit must be a harness error, not an unbounded driver test.
+mutation_canary() {
+    local dir="${WORK}/mutation-canary"
+    mkdir -p "${dir}/repo"
+    git init -q "${dir}/repo"
+    python3 -I - "${dir}/repo" <<'PY'
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+(repo / ".gitignore").write_bytes(b"ignored.txt\n")
+(repo / "tracked.txt").write_bytes(b"FORMAT_ME PUSH_BAD FORMAT_ME PUSH_BAD\r\n")
+(repo / "deleted.txt").write_bytes(b"FORMAT_ME\n")
+PY
+    git -C "${dir}/repo" add .
+    rm "${dir}/repo/deleted.txt"
+    python3 -I - "${dir}/repo" <<'PY'
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+(repo / "untracked space\nname.txt").write_bytes(b"\0FORMAT_ME PUSH_BAD\xff")
+(repo / "ignored.txt").write_bytes(b"FORMAT_ME PUSH_BAD\n")
+(repo / "unchanged.txt").write_bytes(b"unchanged\r\n\xff")
+PY
+    STUB_STATE="${dir}/stub" STUB_AGENT_ACTION=fix "${STUB_BIN}/amplihack" \
+        recipe run hook-rejection-repair -c "hook_repair_worktree=${dir}/repo" > "${dir}/out"
+    python3 -I - "${dir}/repo" <<'PY'
+from pathlib import Path
+import sys
+
+repo = Path(sys.argv[1])
+assert (repo / "tracked.txt").read_bytes() == b"formatted push_ok formatted push_ok\r\n"
+assert (repo / "untracked space\nname.txt").read_bytes() == b"\0formatted push_ok\xff"
+assert (repo / "ignored.txt").read_bytes() == b"FORMAT_ME PUSH_BAD\n"
+assert (repo / "unchanged.txt").read_bytes() == b"unchanged\r\n\xff"
+assert not (repo / "deleted.txt").exists()
+(repo / "tracked.txt").write_bytes(b"FORMAT_ME PUSH_BAD\n")
+PY
+    STUB_STATE="${dir}/stub" STUB_AGENT_ACTION=fix STUB_FIX_REPLACEMENT=FORMAT_ME \
+        "${STUB_BIN}/amplihack" recipe run hook-rejection-repair \
+        -c "hook_repair_worktree=${dir}/repo" >> "${dir}/out"
+    python3 -I - "${dir}/repo/tracked.txt" <<'PY'
+from pathlib import Path
+import sys
+
+# Preserve the substitution order used by the nested commit repair cases.
+assert Path(sys.argv[1]).read_bytes() == b"formatted FORMAT_ME\n"
+PY
+}
+
+# Keep errexit active inside the canary: an intermediate assertion failure
+# must stop before later commands can mask it.
+(
+    set -eE
+    trap 'echo "HARNESS-ERROR: fixing stub mutation canary failed" >&2; exit 2' ERR
+    mutation_canary
+)
 
 section_a
 section_b
