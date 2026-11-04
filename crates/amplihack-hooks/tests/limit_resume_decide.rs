@@ -1443,3 +1443,45 @@ fn issue_1907_e_a_hard_alert_never_resumes() {
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
     assert_timeout(&d, out);
 }
+
+/// Issue #1907, comment of 3 Nov 18:08Z: a session stops on login `a`; the
+/// rotator alerts, then fails to read `a`, then swaps to `b`. The session is
+/// resumed once, after `b`'s reading, and the same stop delivered again is
+/// not resumed a second time.
+#[test]
+fn issue_1907_a_stop_on_a_then_a_swap_to_b_resumes_once_after_b() {
+    let ledger = |live: &str, outcome: &str, at: i64, alert: &str| {
+        format!(
+            r#"{{"version":1,"live":"{live}","alert":{alert},
+                "last_cycle":{{"at":{t},"measured_at":{t},"outcome":"{outcome}"}}}}"#,
+            t = START + at
+        )
+        .into_bytes()
+    };
+    let alerted = ledger("a", "alerted", -60, r#""no-capacity:a""#);
+    let unread = ledger("a", "stayed-unread", 30, r#""no-capacity:a""#);
+    let swapped = ledger("b", "swapped", 120, "null");
+    let mut d = Fake::new(
+        true,
+        Box::new(move |elapsed| match elapsed {
+            e if e >= 120 => parse_cycle(&swapped, START + e),
+            e if e >= 30 => parse_cycle(&unread, START + e),
+            e => parse_cycle(&alerted, START + e),
+        }),
+    );
+    let msg = "You've hit your session limit";
+
+    let out = run_with(&limit_input("s", msg), &mut d);
+    assert_eq!(out, Outcome::Resumed);
+    assert!(d.clock - START >= 120, "no wake before b's reading");
+    assert_eq!(d.guard.sessions[&session_key("s")].len(), 1);
+    let entry = d.logs.last().expect("a log line");
+    assert_eq!(entry.live.as_deref(), Some("b"));
+    assert_eq!(entry.cycle.as_deref(), Some("swapped"));
+
+    // The same stop on `a`, reported again by a hook that started with it.
+    d.clock = START;
+    let again = run_with(&limit_input("s", msg), &mut d);
+    assert_eq!(again, Outcome::Duplicate);
+    assert_eq!(d.guard.sessions[&session_key("s")].len(), 1);
+}

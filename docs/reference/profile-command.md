@@ -5150,7 +5150,7 @@ ALERTs and every ALERT written before measuring, such as `no-login` and
 sets both is refused as `RotateInconsistent`. The two share one
 de-duplication key: when the same key moves from advisory to hard, or back,
 no second ALERT line is written, but `last_cycle.outcome` changes. Every
-step that clears the ALERT key (a completed swap, a qualifying stay, a held
+step that clears the ALERT key (a completed swap, a stay recorded as `stayed`, a held
 cycle, [hand-change recovery](#rotate-hand-change-recovery)) clears both
 fields.
 
@@ -7250,7 +7250,7 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `owner` | The [rotation owner](#rotate-owner): `none`; `<unit> pid <n> (running); autostart defers to it`; `<unit> pid <n> (not running); autostart defers to it; run 'amplihack profile rotate owner clear' to release`; `unreadable; autostart defers to it; run 'amplihack profile rotate owner clear' to release`; or `not read (root is not private)`. Unix only. |
 | `pid` | The pid, or `-`. |
 | `live` | The ledger's `live` profile, or `-`. |
-| `last cycle` | The time and outcome (`swapped`, `stayed`, `stayed-unread`, `switched`, `alerted`, `skipped`, `idle` or `held`) of the last cycle, or `-`. `stayed-unread` is a stay whose live probe did not give a [qualifying reading](#rotate-stays-and-capacity). `skipped` is recorded when the state changed during measurement; `switched` by [`profile switch`](#rotate-switch), and kept by the held cycles after it; `held` when the [pin](#rotate-pin) held rotation with no switch record; a cycle that could not take the lock records nothing. An [overflow](#rotate-overflow) cycle adds ` overflow=in`, ` overflow=out` or ` overflow=on`. |
+| `last cycle` | The time and outcome (`swapped`, `stayed`, `stayed-unread`, `switched`, `alerted`, `skipped`, `idle` or `held`) of the last cycle, or `-`. `stayed-unread` is a stay that is not capacity: the live probe did not give a [qualifying reading](#rotate-stays-and-capacity), and it was not an overflow stay read in that cycle. `skipped` is recorded when the state changed during measurement; `switched` by [`profile switch`](#rotate-switch), and kept by the held cycles after it; `held` when the [pin](#rotate-pin) held rotation with no switch record; a cycle that could not take the lock records nothing. An [overflow](#rotate-overflow) cycle adds ` overflow=in`, ` overflow=out` or ` overflow=on`. |
 | `capacity` | The [capacity summary](#capacity-summary) of the newest [usage history](#usage-history) entry. See [Capacity line](#capacity-line). |
 | `hold` | Only while something is at the [pin](#rotate-pin) path: `hold: <name>`, `hold: <name> (profile missing; ignored)` or `hold: unreadable`. |
 | `overflow` | The marked overflow profiles in list order, separated by `, `, each followed by ` (blocked until <time>)` when it has an active [spend block](#overflow-spend-limit-block); `-` when none is marked or `.auto-switch` is corrupt. When the ledger cannot be read, the list ends with ` (blocks unknown)`. |
@@ -7970,7 +7970,9 @@ The hook reads `<root>/.auto-switch.d/rotate/ledger.json` (see
 The rotator writes these outcomes so that capacity means one of:
 
 - a fresh, successful reading of the live login below 100% on both windows
-  (`stayed`; see [Stays and capacity](#rotate-stays-and-capacity));
+  (`stayed`); a stay on an [overflow](#rotate-overflow) profile read in this
+  cycle, at any figures, and a stay on a platform-tier login also record
+  `stayed` (see [Stays and capacity](#rotate-stays-and-capacity));
 - a swap to a login with room (`swapped`);
 - a [`profile switch`](#rotate-switch) to a login (`switched`).
 
@@ -8013,11 +8015,13 @@ older rotator is already running and logging failures, the same three steps,
 with `rotate stop` run by either binary, recover it.
 
 A cycle that moved onto an [overflow](#rotate-overflow) profile records
-`swapped`, and one that stayed on an overflow profile whose live reading
-[qualifies](#rotate-stays-and-capacity) records `stayed`, both with no
-`alert`, so they count as capacity and the hook resumes the session, which
-then runs on credits. A stay on an overflow profile whose live probe failed
-records `stayed-unread` and is not capacity.
+`swapped`, and one that stayed on an overflow profile whose probe read the
+login in this cycle records `stayed` at any figures, even with its plan
+windows at 100% (see [Stays and capacity](#rotate-stays-and-capacity)). Both
+have no `alert`, so they count as capacity and the hook resumes the session,
+which then runs on credits. A stay on an overflow profile whose live probe
+failed, was carried, was unknown or hit a spend limit records
+`stayed-unread` and is not capacity.
 `last_cycle.overflow` does not change the verdict; the hook ignores
 `overflow_blocked`. A spend block with nowhere to move ends the cycle on the
 no-capacity ALERT, which is not capacity.
@@ -8318,8 +8322,8 @@ listed.
 uses (`CycleStatus::fresh_capacity` in `amplihack_utils::rotator_status`), so
 the two never disagree. It is checked with the fingerprint every 30 s. A
 cycle that moved onto a [credit-backed overflow profile](#rotate-overflow)
-(`swapped`, `overflow=in`) or stayed on one with a qualifying live reading
-(`stayed`, `overflow=on`) counts as capacity, so the step runs again on
+(`swapped`, `overflow=in`) or stayed on one whose probe read it in this
+cycle, at any figures (`stayed`, `overflow=on`), counts as capacity, so the step runs again on
 credits.
 
 The **login fingerprint** watches the directory the retry will use:

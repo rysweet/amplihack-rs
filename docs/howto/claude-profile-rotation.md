@@ -1223,6 +1223,44 @@ rotator was not running when the limit hit; start it with
 
 If anything it needs cannot be read or written safely, it does not resume.
 
+### Limits during a wait, after a resume, and in Claude Code's timed wait
+
+The hook acts only when Claude Code runs it, on a `StopFailure` event with
+`error: "rate_limit"`. Every run it gets writes one line to `resume.log`,
+including `duplicate`. A limit stop with no line in `resume.log` is one for
+which Claude Code did not run the hook.
+
+- **A limit while a hook for the same session is waiting.** Claude Code
+  starts a second hook. Its event differs in the error text or the live
+  login, so it waits as well. The first to see capacity wakes the session;
+  the other logs `duplicate`.
+- **A limit just after a resume.** The same text on the same live login is
+  the same event: the hook logs `duplicate` and does not wake the session
+  again. A limit after the rotator swapped to another login is a new event,
+  and the hook waits for a fresh cycle.
+- **A stop on one login, then a swap to another.** Cycles on the first login
+  that are not capacity (`alerted`, `stayed-unread`) do not wake the
+  session. The swap to the second login does, once, and the log line reads
+  `live=<second login> cycle=swapped`.
+
+Some Claude Code versions show their own timed wait at a limit:
+`Usage limit reached · Continuing automatically at <time>`. It has not been
+established whether Claude Code runs `StopFailure` when it enters that wait,
+or whether the hook's wake ends it. On 3 November 2026 sessions in that wait
+were not woken after a swap to a fresh login
+([#1907](https://github.com/rysweet/amplihack-rs/issues/1907)). The hook
+sends no keystrokes and never chooses a menu option, so it cannot leave that
+wait by itself. To continue such a session before the time shown:
+
+1. Press Esc.
+2. Check that the input box is empty. Text drawn dimmed is Claude Code's
+   predicted next prompt, not yours; clear it with Ctrl+U.
+3. Type `continue` and press Enter.
+
+If Esc does not end the wait, the session continues by itself at the time
+shown. Establishing what the timed wait accepts, and resuming from it, is
+tracked in [#1932](https://github.com/rysweet/amplihack-rs/issues/1932).
+
 ### Stop using the tmux nudger
 
 The hook replaces the tmux stopgap that watched panes and typed "please
