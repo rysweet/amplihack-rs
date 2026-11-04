@@ -28,6 +28,8 @@ mod support;
 
 #[path = "issue_1753_login_identity.rs"]
 mod issue_1753_login_identity;
+#[path = "issue_1753_refusal_named_once.rs"]
+mod issue_1753_refusal_named_once;
 
 #[path = "active_agent_binary_default_test.rs"]
 mod active_agent_binary_default;

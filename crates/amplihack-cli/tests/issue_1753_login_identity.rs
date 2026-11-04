@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
-struct Endpoint {
+pub(super) struct Endpoint {
     base: String,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
@@ -163,7 +163,7 @@ fn fake_login(path: &std::path::Path, account: &str) {
     );
 }
 
-fn fixture() -> (Fixture, Endpoint) {
+pub(super) fn fixture() -> (Fixture, Endpoint) {
     let f = Fixture::new();
     f.assert_isolated();
     assert!(f.tmp.path().starts_with(std::env::temp_dir()));
@@ -192,7 +192,7 @@ fn fixture() -> (Fixture, Endpoint) {
     (f, Endpoint::new())
 }
 
-fn run(f: &Fixture, ep: &Endpoint, args: &[&str]) -> std::process::Output {
+pub(super) fn run(f: &Fixture, ep: &Endpoint, args: &[&str]) -> std::process::Output {
     let out = f
         .cmd(args)
         .env("AMPLIHACK_PROFILE_USAGE_API_BASE", &ep.base)
@@ -437,12 +437,6 @@ fn credential_conflict_moves_nothing_even_when_session_matches_record() {
         "trusted account conflicts with the record"
     );
     assert!(!text(&out.stderr).is_empty(), "conflict must be visible");
-    assert_eq!(
-        text(&out.stderr).matches("swap refused:").count(),
-        1,
-        "the refusal is named once: {}",
-        text(&out.stderr)
-    );
     assert_eq!(f.logins(), before);
     assert_eq!(f.ledger().unwrap(), ledger);
     assert!(!f.root.join(".rejected-logins").exists());
