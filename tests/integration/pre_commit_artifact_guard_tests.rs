@@ -83,69 +83,163 @@ fn strip_hook_wrapper(tokens: &[String]) -> (bool, &[String]) {
     }
 }
 
-/// Confirm the wrapper really does isolate CARGO_TARGET_DIR.
-///
-/// Asked of the script rather than assumed, so moving the isolation into the
-/// wrapper cannot quietly become no isolation at all.
-///
-/// This used to read the text of the `export CARGO_TARGET_DIR=` line and match
-/// it against a path shape. That only worked while the line was a literal, and
-/// a literal is what pinned every pre-commit cache to /tmp until it filled
-/// (issue #1440). So the wrapper is now *run*, in a private HOME with its
-/// reclaim sweep disabled, and asked what it actually exports. Proving the
-/// property beats pattern-matching the source of it.
+/// Disposable state for executing the real wrapper without inherited run state.
+struct WrapperFixture {
+    root: tempfile::TempDir,
+    home: PathBuf,
+    cache: PathBuf,
+    tmp: PathBuf,
+    npm: PathBuf,
+    work: PathBuf,
+}
+
+impl WrapperFixture {
+    fn new() -> Result<Self, String> {
+        // The command harness selects the base through TMPDIR. In regression
+        // runs its written and physical paths must both exclude `/tmp`.
+        let root = tempfile::Builder::new()
+            .prefix("amplihack-hook-contract-")
+            .tempdir()
+            .map_err(|e| format!("create wrapper fixture: {e}"))?;
+        let physical = root
+            .path()
+            .canonicalize()
+            .map_err(|e| format!("resolve fixture {}: {e}", root.path().display()))?;
+        let checkout = workspace_root()
+            .canonicalize()
+            .map_err(|e| format!("resolve checkout {}: {e}", workspace_root().display()))?;
+        if physical.starts_with(&checkout) {
+            return Err(format!(
+                "wrapper fixture must be outside {}: {}",
+                checkout.display(),
+                physical.display()
+            ));
+        }
+        let fixture = Self {
+            home: physical.join("home"),
+            cache: physical.join("cache"),
+            tmp: physical.join("tmp"),
+            npm: physical.join("npm"),
+            work: physical.join("work"),
+            root,
+        };
+        for path in [
+            &fixture.home,
+            &fixture.cache,
+            &fixture.tmp,
+            &fixture.npm,
+            &fixture.work,
+        ] {
+            fs::create_dir(path).map_err(|e| format!("create {}: {e}", path.display()))?;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{MetadataExt, PermissionsExt};
+            fs::set_permissions(&fixture.work, fs::Permissions::from_mode(0o700))
+                .map_err(|e| format!("make work root private {}: {e}", fixture.work.display()))?;
+            let metadata = fs::symlink_metadata(&fixture.work)
+                .map_err(|e| format!("inspect work root {}: {e}", fixture.work.display()))?;
+            // SAFETY: geteuid has no arguments and does not access a profile.
+            let uid = unsafe { libc::geteuid() };
+            if !metadata.file_type().is_dir()
+                || metadata.uid() != uid
+                || metadata.permissions().mode() & 0o777 != 0o700
+            {
+                return Err(format!(
+                    "work root must be a private, owned, non-symlink directory: {}",
+                    fixture.work.display()
+                ));
+            }
+        }
+        let work = fixture
+            .work
+            .canonicalize()
+            .map_err(|e| format!("resolve work root {}: {e}", fixture.work.display()))?;
+        let home = fixture
+            .home
+            .canonicalize()
+            .map_err(|e| format!("resolve fixture HOME {}: {e}", fixture.home.display()))?;
+        if work.starts_with(&home) || home.starts_with(&work) {
+            return Err(format!(
+                "fixture work root and HOME must be separate: {} and {}",
+                work.display(),
+                home.display()
+            ));
+        }
+        Ok(fixture)
+    }
+
+    fn target_dir(&self, entry: &str) -> Result<String, String> {
+        let path = workspace_root().join(HOOK_WRAPPER);
+        let script = fs::read_to_string(&path)
+            .map_err(|e| format!("read {} for `{entry}`: {e}", path.display()))?;
+        if !script
+            .lines()
+            .map(str::trim)
+            .any(|line| line.starts_with("export CARGO_TARGET_DIR"))
+        {
+            return Err(format!(
+                "{HOOK_WRAPPER} must export CARGO_TARGET_DIR; entry was `{entry}`"
+            ));
+        }
+        let output = Command::new("bash")
+            .arg(&path)
+            .args(["printenv", "CARGO_TARGET_DIR"])
+            .current_dir(workspace_root())
+            .stdin(std::process::Stdio::null())
+            // Exclude ambient target, run metadata, shell startup files,
+            // profile selectors and credential-related configuration.
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+            .env("LC_ALL", "C")
+            .env("HOME", &self.home)
+            .env("XDG_CACHE_HOME", &self.cache)
+            .env("TMPDIR", &self.tmp)
+            .env("npm_config_prefix", &self.npm)
+            .env("AMPLIHACK_WORK_ROOT", &self.work)
+            .env("AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS", "0")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .output()
+            .map_err(|e| format!("run {} for `{entry}`: {e}", path.display()))?;
+        if !output.status.success() {
+            return Err(format!(
+                "{HOOK_WRAPPER} exited {} instead of reporting CARGO_TARGET_DIR; entry was `{entry}`; stderr: {}",
+                output.status,
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        let resolved = String::from_utf8(output.stdout)
+            .map_err(|e| format!("{HOOK_WRAPPER} returned non-UTF-8 output for `{entry}`: {e}"))?
+            .trim()
+            .to_string();
+        if resolved.is_empty() {
+            return Err(format!(
+                "{HOOK_WRAPPER} exported an empty CARGO_TARGET_DIR; entry was `{entry}`"
+            ));
+        }
+        Ok(resolved)
+    }
+
+    fn close(self) -> Result<(), String> {
+        let path = self.root.path().to_path_buf();
+        self.root
+            .close()
+            .map_err(|e| format!("remove wrapper fixture {}: {e}", path.display()))
+    }
+}
+
+/// Keep the wrapper export check and execute the checked-in script.
 fn wrapper_target_dir(entry: &str) -> Result<String, String> {
-    let path = workspace_root().join(HOOK_WRAPPER);
-    let script = fs::read_to_string(&path)
-        .map_err(|e| format!("read {} for `{entry}`: {e}", path.display()))?;
-    if !script
-        .lines()
-        .map(str::trim)
-        .any(|line| line.starts_with("export CARGO_TARGET_DIR"))
-    {
-        return Err(format!(
-            "{HOOK_WRAPPER} must export CARGO_TARGET_DIR; entry was `{entry}`"
-        ));
+    let fixture = WrapperFixture::new()?;
+    let result = fixture.target_dir(entry);
+    let cleanup = fixture.close();
+    match (result, cleanup) {
+        (Ok(target), Ok(())) => Ok(target),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(cleanup)) => Err(format!("{error}; {cleanup}")),
     }
-
-    // A private HOME: the wrapper creates its cache root, and a contract test
-    // has no business writing into the developer's real one.
-    let home = std::env::temp_dir().join(format!(
-        "amplihack-hook-contract-{}-{:?}",
-        std::process::id(),
-        std::thread::current().id()
-    ));
-    fs::create_dir_all(&home).map_err(|e| format!("create {}: {e}", home.display()))?;
-
-    let output = Command::new("bash")
-        .arg(&path)
-        .args(["printenv", "CARGO_TARGET_DIR"])
-        .current_dir(workspace_root())
-        // The caller's own cache must not stand in for the default under test.
-        .env_remove("CARGO_TARGET_DIR")
-        // Nor may a recipe run's work root (issue #1808), which moves the
-        // cache to `<work root>/targets` whenever the caller runs inside one.
-        .env_remove("AMPLIHACK_WORK_ROOT")
-        .env("HOME", &home)
-        .env("XDG_CACHE_HOME", home.join(".cache"))
-        .env("AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS", "0")
-        .output();
-    let _ = fs::remove_dir_all(&home);
-
-    let output = output.map_err(|e| format!("run {} for `{entry}`: {e}", path.display()))?;
-    if !output.status.success() {
-        return Err(format!(
-            "{HOOK_WRAPPER} exited {} instead of reporting CARGO_TARGET_DIR; entry was `{entry}`",
-            output.status
-        ));
-    }
-    let resolved = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if resolved.is_empty() {
-        return Err(format!(
-            "{HOOK_WRAPPER} exported an empty CARGO_TARGET_DIR; entry was `{entry}`"
-        ));
-    }
-    Ok(resolved)
 }
 
 /// A build cache is isolated when it lands OUTSIDE the worktree. Not when it
@@ -516,14 +610,93 @@ fn pre_commit_build_hooks_use_isolated_target_dir() {
             .get("entry")
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("{id} must declare an entry"));
-        // Either the entry sets it inline, or it runs through the wrapper --
-        // and the wrapper is checked for the export, not merely named.
-        let inline = entry.contains("CARGO_TARGET_DIR") && entry.contains("/tmp");
-        let via_wrapper = entry.starts_with(HOOK_WRAPPER)
-            && wrapper_target_dir(entry).is_ok_and(|dir| dir.contains("/tmp"));
+        let isolation = (|| -> Result<(), String> {
+            let tokens = hook_command_tokens(entry)?;
+            let (wrapped, tokens) = strip_hook_wrapper(&tokens);
+            let (inline_target_dir, _) = split_env_assignments(tokens);
+            // Execute every named wrapper, including entries with an inline
+            // override, so a broken wrapper cannot pass the contract.
+            let from_wrapper = if wrapped {
+                Some(wrapper_target_dir(entry)?)
+            } else {
+                None
+            };
+            let target_dir = inline_target_dir
+                .or(from_wrapper.as_deref())
+                .ok_or_else(|| {
+                    "hook must set CARGO_TARGET_DIR inline or through the wrapper".to_string()
+                })?;
+            assert_isolated_target_dir(target_dir, entry)
+        })();
+        isolation.unwrap_or_else(|error| {
+            panic!(
+                "{id} must isolate Cargo build output outside the parent worktree; entry was `{entry}`: {error}"
+            )
+        });
+    }
+}
+
+#[test]
+fn pre_commit_wrapper_uses_owned_custom_work_root() {
+    let fixture = WrapperFixture::new().expect("create private wrapper fixture");
+    let entry = "scripts/git-hook-cargo.sh printenv CARGO_TARGET_DIR";
+    let target = fixture
+        .target_dir(entry)
+        .expect("actual wrapper must report a non-empty target successfully");
+    let target_path = Path::new(&target);
+    assert!(
+        target_path.is_absolute(),
+        "wrapper target must be absolute: {target}"
+    );
+    assert_isolated_target_dir(&target, entry)
+        .expect("custom-root target must satisfy the existing isolation contract");
+
+    // printenv does not create the final Cargo target. Resolve its existing
+    // parent physically and append only the missing final component.
+    let physical_target = match target_path.canonicalize() {
+        Ok(path) => path,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            assert_eq!(
+                target_path.components().next_back(),
+                target_path.file_name().map(std::path::Component::Normal),
+                "target must end in a normal path component: {target}"
+            );
+            let parent = target_path.parent().expect("absolute target has a parent");
+            parent
+                .canonicalize()
+                .unwrap_or_else(|e| panic!("resolve target parent {}: {e}", parent.display()))
+                .join(
+                    target_path
+                        .file_name()
+                        .expect("target has a final component"),
+                )
+        }
+        Err(error) => panic!("resolve wrapper target {target}: {error}"),
+    };
+    let targets = fixture
+        .work
+        .join("targets")
+        .canonicalize()
+        .expect("wrapper must create custom work-root targets directory");
+    assert!(
+        physical_target.starts_with(&targets) && physical_target != targets,
+        "wrapper must select a target strictly beneath the owned custom root {}; got {}",
+        targets.display(),
+        physical_target.display()
+    );
+    fixture.close().expect("remove private wrapper fixture");
+}
+
+#[test]
+fn target_dir_contract_rejects_absolute_in_checkout_paths() {
+    for target in [workspace_root().clone(), workspace_root().join("target")] {
+        assert!(target.is_absolute(), "checkout fixture must be absolute");
+        let target = target.to_str().expect("checkout path must be UTF-8");
+        let error = assert_isolated_target_dir(target, "absolute checkout regression")
+            .expect_err("contract must reject an absolute target inside the checkout");
         assert!(
-            inline || via_wrapper,
-            "{id} must isolate Cargo build output outside the parent worktree; entry was `{entry}`"
+            error.contains(target),
+            "isolation error must name rejected target: {error}"
         );
     }
 }
