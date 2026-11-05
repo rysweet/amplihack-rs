@@ -24,6 +24,16 @@
 
 set -uo pipefail
 
+# Fixture repository selection must not inherit an enclosing Git hook (#1937).
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR \
+    GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION \
+    GIT_NAMESPACE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH GIT_WORK_TREE \
+    GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+while IFS= read -r git_variable; do
+    case "${git_variable}" in GIT_CONFIG_KEY_*|GIT_CONFIG_VALUE_*) unset "${git_variable}" ;; esac
+done < <(compgen -e)
+unset git_variable
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 ROOT_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_worktree_root.sh"
@@ -40,9 +50,19 @@ if [[ ! -f "$ROOT_HELPER" ]]; then
     exit 2
 fi
 
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/issue-1808.XXXXXX")"
-WORK="$(cd "$WORK" && pwd -P)"
-trap 'rm -rf "$WORK"' EXIT
+SCRATCH_PARENT="${TMPDIR:-/tmp}"
+[[ "${SCRATCH_PARENT}" == /* && -d "${SCRATCH_PARENT}" ]] || { echo "HARNESS-ERROR: invalid scratch parent" >&2; exit 2; }
+SCRATCH_PARENT="$(cd -- "${SCRATCH_PARENT:?}" && pwd -P)" || exit 2
+[[ "${SCRATCH_PARENT}" == /* && "${SCRATCH_PARENT}" != / && -d "${SCRATCH_PARENT}" ]] || { echo "HARNESS-ERROR: invalid canonical scratch parent" >&2; exit 2; }
+WORK="$(mktemp -d "${SCRATCH_PARENT:?}/issue-1808.XXXXXX")" || exit 2
+: "${WORK:?mktemp returned an empty scratch path}"
+case "${WORK}" in "${SCRATCH_PARENT:?}/issue-1808."*) ;; *) echo "HARNESS-ERROR: invalid scratch allocation" >&2; exit 2 ;; esac
+[[ -d "${WORK}" && ! -L "${WORK}" && -O "${WORK}" ]] || { echo "HARNESS-ERROR: scratch is not an owned directory" >&2; exit 2; }
+WORK_PHYSICAL="$(cd -- "${WORK:?}" && pwd -P)" || exit 2
+[[ -n "${WORK_PHYSICAL}" && "${WORK_PHYSICAL}" == "${WORK}" && "${WORK%/*}" == "${SCRATCH_PARENT}" ]] || { echo "HARNESS-ERROR: scratch escaped its parent" >&2; exit 2; }
+trap 'rm -rf -- "${WORK:?}"' EXIT
+export HOME="${WORK:?}/home" XDG_CONFIG_HOME="${WORK:?}/home/.config"
+mkdir -p "${HOME:?}"
 
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid
 export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
@@ -50,6 +70,7 @@ export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
 unset AMPLIHACK_WORK_ROOT AMPLIHACK_WORK_ROOT_EXPLICIT AMPLIHACK_RUN_DIR AMPLIHACK_RUN_ID
 
 new_repo() {
+    : "${1:?repository fixture path must be nonempty}"
     git init -q -b main "$1"
     echo base > "$1/file.txt"
     git -C "$1" add file.txt
@@ -243,12 +264,34 @@ check T1 "the five runtime folders exist" rt_dirs_exist "$WORK/xdg/amplihack-run
 out="$(AMPLIHACK_RUNTIME_ROOT="$WORK/given" XDG_RUNTIME_DIR="$WORK/xdg" bash "$RT_ROOT" feat/x 2>/dev/null)"; rc=$?
 check T2 "a set AMPLIHACK_RUNTIME_ROOT is kept" bash -c '[[ "$1" = 0 && "$2" = "$3/given" ]]' _ "$rc" "$out" "$WORK"
 check T2 "the five runtime folders exist under it" rt_dirs_exist "$WORK/given"
-# T3 uses the real /tmp, so its branch name is unique and its folder is removed.
+# T3 keeps the real helper's fallback selection and checks all five mkdir
+# destinations, but maps its filesystem writes into an owned fixture.
 RT_TMP_BRANCH="issue-1808-test-$$-${RANDOM}"
-out="$(env -u AMPLIHACK_RUNTIME_ROOT -u XDG_RUNTIME_DIR bash "$RT_ROOT" "$RT_TMP_BRANCH" 2>/dev/null)"; rc=$?
+RT_TMP_FIXTURE="$(mktemp -d "${WORK:?}/runtime-fallback.XXXXXX")" || exit 2
+: "${RT_TMP_FIXTURE:?}"
+rt_private_fallback() (
+    export RT_FALLBACK_BRANCH="${RT_TMP_BRANCH:?}" RT_FALLBACK_FIXTURE="${RT_TMP_FIXTURE:?}"
+    mkdir() {
+        [[ "${1:-}" == -p ]] || return 2
+        shift
+        local path suffix
+        for path in "$@"; do
+            case "${path}" in
+                "/tmp/amplihack-runtime/${RT_FALLBACK_BRANCH:?}/"*) ;;
+                *) echo "unexpected runtime fallback mkdir destination: ${path}" >&2; return 2 ;;
+            esac
+            suffix="${path#"/tmp/amplihack-runtime/${RT_FALLBACK_BRANCH:?}/"}"
+            case "${suffix}" in locks|reflection|logs|metrics|provenance) ;; *) return 2 ;; esac
+            command mkdir -p "${RT_FALLBACK_FIXTURE:?}/runtime/${suffix:?}" || return $?
+        done
+    }
+    export -f mkdir
+    env -u AMPLIHACK_RUNTIME_ROOT -u XDG_RUNTIME_DIR bash "${RT_ROOT:?}" "${RT_TMP_BRANCH:?}"
+)
+out="$(rt_private_fallback 2>/dev/null)"; rc=$?
 check T3 "without XDG_RUNTIME_DIR the root is /tmp/amplihack-runtime/<branch>" \
     bash -c '[[ "$1" = 0 && "$2" = "/tmp/amplihack-runtime/$3" ]]' _ "$rc" "$out" "$RT_TMP_BRANCH"
-rm -rf "/tmp/amplihack-runtime/${RT_TMP_BRANCH}"
+check T3 "the five fallback folders exist inside the owned fixture" rt_dirs_exist "${RT_TMP_FIXTURE:?}/runtime"
 out="$(bash "$RT_ROOT" 2>&1)"; rc=$?
 check T4 "no branch name is an error" bash -c '[[ "$1" = 1 && "$2" = *usage* ]]' _ "$rc" "$out"
 : > "$WORK/blocker"
@@ -282,6 +325,7 @@ printf '#!/usr/bin/env bash\n[ "${1:-}" != base ] || { echo "ERROR: unknown oper
     "${REPO_ROOT}/amplifier-bundle/tools/workflow_worktree_root.sh" > "$STALE/amplifier-bundle/tools/workflow_worktree_root.sh"
 # new_origin_repo <dir>: a repository with an origin holding main and feat/from-pr.
 new_origin_repo() {
+    : "${1:?repository fixture path must be nonempty}"
     git init -q --bare -b main "$1.git"
     git clone -q "$1.git" "$1" 2>/dev/null
     echo base > "$1/file.txt"; git -C "$1" add file.txt; git -C "$1" commit -q -m base

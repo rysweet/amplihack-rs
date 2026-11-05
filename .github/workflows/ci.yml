@@ -263,6 +263,9 @@ jobs:
       - name: Recipes — checkpoint formatting stays within task edits
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-checkpoint-scoped-format.sh
+      - name: Recipes — fixture writers keep their repositories out of /tmp (issue #1937)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-1937-no-stray-git.sh
       - name: Recipes — existing open PR makes step-16 idempotent (issue #1060)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1060-existing-pr-is-idempotent.sh
