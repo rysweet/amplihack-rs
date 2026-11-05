@@ -63,3 +63,30 @@ fn a_session_rewrite_during_a_read_does_not_invalidate_the_login() {
     assert!(bound.current());
     assert!(!format!("{bound:?}").contains("u-work"));
 }
+
+/// Issue #1962 (D1): group write is accepted only for the directory's group, so
+/// changing the group after a reading invalidates that reading.
+#[test]
+fn a_changed_directory_group_invalidates_the_reading() {
+    let e = env();
+    let dir = e.home.join(".claude");
+    let budget = Budget::new();
+    let read = tests_fixture_identity::read;
+    let reader = Reader {
+        read: &read,
+        budget: &budget,
+    };
+    let bound = reader.bound(&dir, false).expect("a private fake login");
+    assert!(bound.current());
+    // SAFETY: getgroups fills at most the buffer's length.
+    let mut groups = [0 as libc::gid_t; 64];
+    let count = unsafe { libc::getgroups(64, groups.as_mut_ptr()) };
+    let own = std::os::unix::fs::MetadataExt::gid(&fs::metadata(&dir).unwrap());
+    let other = groups[..count.max(0) as usize].iter().find(|g| **g != own);
+    let Some(other) = other else {
+        eprintln!("SKIP: this user is in only one group");
+        return;
+    };
+    std::os::unix::fs::chown(&dir, None, Some(*other)).unwrap();
+    assert!(!bound.current(), "a new group is a new set of writers");
+}

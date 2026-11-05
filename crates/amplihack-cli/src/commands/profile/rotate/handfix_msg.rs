@@ -3,6 +3,8 @@
 //! budget. Every line is built from profile names and fixed text only.
 
 use super::cred_identity::Why;
+use super::ledger::MAX_GUIDANCE_LINE;
+use super::log::cut;
 use crate::commands::profile::name::ProfileName;
 
 /// The start of every cannot-tell note, after `note: `; `--dry-run` goes on
@@ -33,16 +35,18 @@ fn join(v: &[ProfileName]) -> String {
         .join(", ")
 }
 
-/// Issue #1886: recovery cannot tell whose login is in `~/.claude`.
+/// Issue #1886: recovery cannot tell whose login is in `~/.claude`. Issue
+/// #1962: cut to the ledger's line limit, because the note is saved in its
+/// `guidance`, and a longer line would make the ledger unreadable.
 pub fn note_unsure(l: &ProfileName, why: &Why) -> String {
     let why = match why {
-        Why::HomeFailed => "~/.claude could not be read".to_string(),
+        Why::Home(cause) => format!("~/.claude identity read failed: {cause}"),
         Why::Many(v) => format!(
             "it holds the same account as more than one profile ({})",
             join(v)
         ),
-        Why::Unread(v) if v.is_empty() => "the profile list could not be read".to_string(),
-        Why::Unread(v) => format!("profile {} could not be read", join(v)),
+        Why::Unread(v) if v.is_empty() => "the profile root could not be listed".to_string(),
+        Why::Unread(v) => format!("profile {}", unread(v)),
         Why::NotRecorded(m) => format!(
             "it holds the same account as profile {m}, which is not the account recorded for {m}; run amplihack profile verify"
         ),
@@ -52,8 +56,29 @@ pub fn note_unsure(l: &ProfileName, why: &Why) -> String {
         Why::OutOfTime => "the reads ran out of time".to_string(),
         Why::ClockBack => "the last swap time is later than now".to_string(),
     };
-    format!("note: {UNSURE_HEAD} (live={l}): {why}; nothing moved")
+    cut(
+        &format!("note: {UNSURE_HEAD} (live={l}): {why}; nothing moved"),
+        MAX_GUIDANCE_LINE,
+    )
 }
+
+/// `kilo not read (http 429), mike not read (timeout)`.
+fn unread(v: &[(ProfileName, &'static str)]) -> String {
+    v.iter()
+        .map(|(name, cause)| format!("{name} not read ({cause})"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Issue #1962: the rotate ledger cannot be read, so nothing may move and no
+/// record may be written. `cause` is the fresh identity reading's result, or
+/// [`IDENTITY_OK`].
+pub fn ledger_unreadable(cause: &str) -> String {
+    format!("rotate ledger unreadable; live identity: {cause}; nothing moved, no record written")
+}
+
+/// The `live identity` of [`ledger_unreadable`] when the read succeeded.
+pub const IDENTITY_OK: &str = "ok";
 
 /// Issue #1886: a confirmed suspicion that would leave `l` with no login
 /// anywhere (the only-login rule).

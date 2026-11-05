@@ -32,6 +32,22 @@ mod issue_1753_expired_live;
 mod issue_1753_login_identity;
 #[path = "issue_1753_refusal_named_once.rs"]
 mod issue_1753_refusal_named_once;
+#[path = "issue_1962_causes.rs"]
+mod issue_1962_causes;
+#[path = "issue_1962_dir_rule.rs"]
+mod issue_1962_dir_rule;
+#[path = "issue_1962_dry_run.rs"]
+mod issue_1962_dry_run;
+#[path = "issue_1962_refresh_ledger.rs"]
+mod issue_1962_refresh_ledger;
+#[path = "issue_1962_seed.rs"]
+mod issue_1962_seed;
+#[path = "issue_1962_seed_cmd.rs"]
+mod issue_1962_seed_cmd;
+#[path = "issue_1962_seed_output.rs"]
+mod issue_1962_seed_output;
+#[path = "issue_1962_seed_scan.rs"]
+mod issue_1962_seed_scan;
 
 #[path = "active_agent_binary_default_test.rs"]
 mod active_agent_binary_default;

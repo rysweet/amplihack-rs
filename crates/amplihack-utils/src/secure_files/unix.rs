@@ -208,6 +208,30 @@ impl PrivateTemp {
         self.finish(bytes, 0o600, true)
     }
 
+    /// Writes `bytes`, syncs the file and hard-links it to the target, which
+    /// is never replaced, then removes the temporary name and syncs the
+    /// directory (issue #1962). `Ok(false)`: the target already exists and is
+    /// unchanged. A filesystem that refuses hard links is an error; there is
+    /// no fallback to a rename, which could replace a file written meanwhile.
+    pub fn link_new(mut self, bytes: &[u8]) -> io::Result<bool> {
+        let Some(mut f) = self.file.take() else {
+            return Err(invalid("was already committed"));
+        };
+        f.set_permissions(fs::Permissions::from_mode(0o600))?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        match fs::hard_link(&self.tmp, &self.target) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
+            Err(e) => return Err(e),
+        }
+        fs::remove_file(&self.tmp)?;
+        self.tmp = PathBuf::new();
+        fsync_dir(&self.dir)?;
+        Ok(true)
+    }
+
     fn finish(mut self, bytes: &[u8], mode: u32, sync: bool) -> io::Result<()> {
         let Some(mut f) = self.file.take() else {
             return Err(invalid("was already committed"));
@@ -267,10 +291,72 @@ pub fn check_private_dir(path: &Path) -> io::Result<()> {
 /// listed members), the usual layout with a umask of 002.
 pub fn writable_by_others(meta: &fs::Metadata) -> bool {
     let mode = meta.mode();
-    if mode & 0o002 != 0 {
+    mode_lets_others_write(mode, mode & 0o020 != 0 && is_user_private_group(meta.gid()))
+}
+
+/// The rule of [`writable_by_others`] on a mode: world write always counts,
+/// and group write counts unless the group is the user's own private group.
+pub fn mode_lets_others_write(mode: u32, group_is_private: bool) -> bool {
+    mode & 0o002 != 0 || (mode & 0o020 != 0 && !group_is_private)
+}
+
+/// [`mode_lets_others_write`] for a login directory (issue #1962), which also
+/// refuses an access ACL on a group-writable directory: there the group bits
+/// are the ACL's mask, so named users or groups may hold write. `acl` reads
+/// `system.posix_acl_access`, and only when the group write bit is set.
+/// `ENODATA` and `ENOTSUP` mean no ACL. `Ok(())` means one is present, and any
+/// other error means it could not be checked, which also counts as writable.
+pub fn dir_rule(mode: u32, group_is_private: bool, acl: impl FnOnce() -> io::Result<()>) -> bool {
+    if mode_lets_others_write(mode, group_is_private) {
         return true;
     }
-    mode & 0o020 != 0 && !is_user_private_group(meta.gid())
+    if mode & 0o020 == 0 {
+        return false;
+    }
+    match acl() {
+        Ok(()) => true,
+        Err(e) => !matches!(e.raw_os_error(), Some(libc::ENODATA | libc::ENOTSUP)),
+    }
+}
+
+/// Whether others can write the directory at `path`, whose `lstat` is `meta`,
+/// by [`dir_rule`]. A failed group lookup counts as a shared group.
+pub fn dir_writable_by_others(path: &Path, meta: &fs::Metadata) -> bool {
+    let mode = meta.mode();
+    dir_rule(
+        mode,
+        mode & 0o020 != 0 && is_user_private_group(meta.gid()),
+        || access_acl(path),
+    )
+}
+
+/// `Ok(())` when `path` has an access ACL, read without following a symlink.
+#[cfg(target_os = "linux")]
+fn access_acl(path: &Path) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| invalid("has a NUL in its path"))?;
+    // SAFETY: both strings are NUL-terminated and outlive the call; a null
+    // buffer of size 0 only asks for the attribute's size.
+    let size = unsafe {
+        libc::lgetxattr(
+            path.as_ptr(),
+            c"system.posix_acl_access".as_ptr(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if size < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// No ACL reader here: the answer is "could not be checked", so a
+/// group-writable directory stays refused, as it was before issue #1962.
+#[cfg(not(target_os = "linux"))]
+fn access_acl(_path: &Path) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
 }
 
 fn is_user_private_group(gid: u32) -> bool {
@@ -349,3 +435,7 @@ fn group_info(gid: u32) -> Option<(String, usize)> {
         Some((name, count))
     }
 }
+
+#[cfg(test)]
+#[path = "tests_dir_rule.rs"]
+mod tests_dir_rule;

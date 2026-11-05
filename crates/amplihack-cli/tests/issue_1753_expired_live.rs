@@ -90,7 +90,10 @@ fn failed_live_refresh_alerts_and_moves_no_login() {
         log.contains("expired login in ~/.claude not refreshed"),
         "{log}"
     );
-    assert!(log.contains("trusted login identity unavailable"), "{log}");
+    assert!(
+        log.contains("trusted login identity unavailable: token expired"),
+        "{log}"
+    );
     assert_eq!(f.logins(), before);
     assert_eq!(f.ledger().unwrap()["live"], "work");
     assert_eq!(f.ledger().unwrap()["account"], "uuid-work");
@@ -131,14 +134,14 @@ fn assert_no_live_refresh(f: &Fixture, ep: &Endpoint) {
     );
 }
 
-/// SR-3(d): while an auto-switch session holds another login in the live
-/// profile's directory, the lease view bars the live profile's token from
-/// being refreshed, so the expired live login is left alone even though the
-/// endpoint would renew it. The cycle then finds no trusted identity and
-/// moves nothing.
+/// Issue #1962 (D6): a lease view that bars the live profile no longer stops the
+/// refresh of the login in `~/.claude`. Otherwise no identity can be read and
+/// rotation stalls. The refresh is not identity evidence, and the lease itself is
+/// kept. A barred profile folder is still never refreshed; see
+/// `issue_1962_refresh_ledger`.
 #[cfg(target_os = "linux")]
 #[test]
-fn lease_barred_live_profile_is_not_refreshed() {
+fn lease_barred_live_login_is_still_refreshed_and_the_cycle_goes_on() {
     let (f, ep) = expired_live();
     ep.refresh_allowed.store(true, Ordering::Relaxed);
     let state = f.root.join(".auto-switch.d");
@@ -156,11 +159,16 @@ fn lease_barred_live_profile_is_not_refreshed() {
         .env("CLAUDE_CONFIG_DIR", f.root.join("work"))
         .spawn()
         .expect("spawn sleep");
-    let before = f.logins();
     let out = direct_cycle(&f, &ep);
     let _ = session.kill();
     let _ = session.wait();
-    assert_no_live_refresh(&f, &ep);
+    assert!(ep.refreshes.load(Ordering::Relaxed) > 0, "refresh sent");
+    let log = f.log();
+    assert!(
+        log.contains("expired login in ~/.claude refreshed"),
+        "{log}"
+    );
+    assert!(!log.contains("trusted login identity unavailable"), "{log}");
     let hosts: serde_json::Value =
         serde_json::from_slice(&std::fs::read(state.join("ledger.json")).unwrap()).unwrap();
     assert_eq!(
@@ -169,11 +177,9 @@ fn lease_barred_live_profile_is_not_refreshed() {
     );
     assert!(
         oauth(&f.home_login())["expiresAt"].as_i64().unwrap()
-            < chrono::Utc::now().timestamp_millis(),
-        "the live token is still the expired one"
+            > chrono::Utc::now().timestamp_millis(),
+        "the live token is the refreshed one"
     );
-    assert_eq!(f.logins(), before);
-    assert_eq!(f.ledger().unwrap()["live"], "work");
 }
 
 /// A live token that has not expired is never sent to the token endpoint,
@@ -198,15 +204,26 @@ fn unexpired_live_login_sends_no_refresh() {
     assert!(!log.contains("expired login in ~/.claude"), "{log}");
 }
 
-/// A damaged rotate ledger leaves the live profile unknown, so the lease
-/// view cannot clear it: the expired live login is not refreshed.
+/// Issue #1962 (D6): a damaged rotate ledger no longer stops the refresh. The cycle
+/// refreshes, reads the identity, then stops with a named cause and moves nothing.
 #[test]
-fn unreadable_rotate_ledger_blocks_live_refresh() {
+fn unreadable_rotate_ledger_still_refreshes_then_stops() {
     let (f, ep) = expired_live();
     ep.refresh_allowed.store(true, Ordering::Relaxed);
     private_file(&f.rotate_dir().join("ledger.json"), "{not json");
-    let before = f.logins();
     let _ = direct_cycle(&f, &ep);
-    assert_no_live_refresh(&f, &ep);
-    assert_eq!(f.logins(), before);
+    assert!(ep.refreshes.load(Ordering::Relaxed) > 0, "refresh sent");
+    let log = f.log();
+    assert!(
+        log.contains("ALERT: rotate ledger unreadable; live identity: ok"),
+        "{log}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(f.rotate_dir().join("ledger.json")).unwrap(),
+        "{not json",
+        "the damaged ledger stays as it is"
+    );
+    assert_eq!(ino(&f.slot("spare")), Some(f.spare_ino));
+    assert_eq!(ino(&f.slot("extra")), Some(f.extra_ino));
+    assert_eq!(ino(&f.slot("work")), None);
 }

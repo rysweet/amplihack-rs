@@ -291,7 +291,7 @@ pub fn measure_ordered(
     now: i64,
 ) -> (Probed, Vec<(ProfileName, Probed)>) {
     let start = Instant::now();
-    let mode = mode();
+    let mode = ctx.read_only_mode().unwrap_or_else(mode);
     let timeout = timeout();
     let n = candidates.len() + unbound.len() + usize::from(live.probed());
     let (claude_bound, warning) = probe_limits::parallel_from_host(n);
@@ -383,15 +383,15 @@ pub(super) fn join_pending(fl: &Reads, keys: &mut [Key]) {
 
 /// The row reader of one cycle, with `env` and at most `claude_bound`
 /// `claude` reads at once. Shared by [`measure_ordered`] and the freshness
-/// gate's re-read (`fresh::reread_as_configured`).
+/// gate's re-read (`fresh::reread_as_configured`); [`Ctx`] makes it read-only.
 pub(super) fn reader(ctx: &Ctx, env: SourceEnv, claude_bound: usize, now: i64) -> RowReader {
     RowReader {
         store: ctx.store.clone(),
-        env,
+        env: ctx.read_env(env),
         binary: LazyBinary::claude(),
         gate: ClaudeGate::new(claude_bound),
         home: Some(ctx.home.clone()),
-        no_refresh: usage_cmd::no_refresh_dirs(&ctx.store),
+        no_refresh: ctx.no_refresh_dirs(),
         overflow: crate::commands::profile::overflow::overflow_names(ctx.store.root()),
         now,
         keep_raw: false,

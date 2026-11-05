@@ -65,12 +65,13 @@ pub fn record_of(store: &ProfileStore, name: &ProfileName) -> Option<Record> {
 /// Why recovery cannot tell; profile lists are sorted by name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Why {
-    /// `~/.claude` could not be read.
-    HomeFailed,
+    /// The read of `~/.claude` failed, for this cause.
+    Home(&'static str),
     /// `~/.claude` holds the same account as several profiles' own logins.
     Many(Vec<ProfileName>),
-    /// These profiles could not be read (empty: the profile list itself).
-    Unread(Vec<ProfileName>),
+    /// These profiles' reads failed, each for its cause (empty: the profile
+    /// list itself).
+    Unread(Vec<(ProfileName, &'static str)>),
     /// The cycle's read budget ran out.
     OutOfTime,
     /// The ledger's `swapped_at` is more than `SWAP_GRACE` in the future.
@@ -136,8 +137,9 @@ pub fn assess(
     budget: Duration,
 ) -> Finding {
     let start = Instant::now();
-    let Ok(here) = read(&home.join(".claude")) else {
-        return Finding::Unsure(Why::HomeFailed);
+    let here = match read(&home.join(".claude")) {
+        Ok(here) => here,
+        Err(cause) => return Finding::Unsure(Why::Home(cause)),
     };
     let live_record = record_of(store, live);
     if live_record.as_ref().is_some_and(|r| r.names(&here)) {
@@ -156,7 +158,7 @@ pub fn assess(
         match read(&dir) {
             Ok(a) if a.same(&here) => same.push(name),
             Ok(_) => {}
-            Err(_) => unread.push(name),
+            Err(cause) => unread.push((name, cause)),
         }
     }
     match same.as_slice() {

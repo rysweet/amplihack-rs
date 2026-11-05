@@ -173,7 +173,7 @@ impl Fixture {
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
         write_executable(&tools.join("claude"), FAKE_CLAUDE, 0o755);
         let mut f = Self {
-            identity: IdentityEndpoint::new(),
+            identity: IdentityEndpoint::new(canned.clone()),
             root: home.join("profiles"),
             tmp,
             home,
@@ -260,6 +260,21 @@ impl Fixture {
                  Current week (all models): {week}% used\n"
             ),
         );
+    }
+
+    /// Issue #1962: what the fake usage endpoint answers for `p`, with both
+    /// windows resetting in 3 hours. A dry run reads only this, never `claude`.
+    pub fn usage_direct(&self, p: &str, session: u32, week: u32) {
+        let at = (chrono::Utc::now() + chrono::Duration::hours(3)).to_rfc3339();
+        let body = serde_json::json!({
+            "five_hour": {"utilization": session, "resets_at": at},
+            "seven_day": {"utilization": week, "resets_at": at}
+        });
+        fs::write(
+            self.canned.join(direct_usage_file(&email(p))),
+            body.to_string(),
+        )
+        .unwrap();
     }
 
     /// Issue #1818: a plan with no session limit. Claude prints only the
@@ -530,13 +545,17 @@ fn unix_now() -> i64 {
 }
 
 /// Loopback-only profile answers for the explicit fake moving identities.
+fn direct_usage_file(email: &str) -> String {
+    format!("{email}.direct.json")
+}
+
 struct IdentityEndpoint {
     base: String,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl IdentityEndpoint {
-    fn new() -> Self {
+    fn new(canned: PathBuf) -> Self {
         use std::io::{BufRead, Write};
         use std::sync::atomic::{AtomicBool, Ordering};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -589,6 +608,18 @@ impl IdentityEndpoint {
                         "uuid": b["accountUuid"], "email": b["emailAddress"]
                     }, "organization": {"uuid": b["organizationUuid"]}}),
                     ),
+                    // Issue #1962: a dry run has no `claude` fallback, so a test
+                    // of its decision sets the direct answer ([`Fixture::usage_direct`]).
+                    Some(b)
+                        if usage
+                            && canned
+                                .join(direct_usage_file(b["emailAddress"].as_str().unwrap_or("")))
+                                .exists() =>
+                    {
+                        let name = direct_usage_file(b["emailAddress"].as_str().unwrap_or(""));
+                        let raw = fs::read(canned.join(name)).unwrap();
+                        ("200 OK", serde_json::from_slice(&raw).unwrap())
+                    }
                     // Valid fake credentials use the existing canned Claude
                     // fallback. A 401 would request a refresh and alter the
                     // profile directory even during a dry-run measurement.

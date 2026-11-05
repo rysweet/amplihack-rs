@@ -28,6 +28,10 @@ pub struct Snap {
     pub trusted_live: Option<Account>,
     /// A fixed, redacted authorization refusal, naming only the profile.
     pub identity_refusal: Option<String>,
+    /// Why `trusted_live` is empty: one of "Identity read causes".
+    pub identity_cause: Option<&'static str>,
+    /// Why each candidate skipped as `no account` had no trusted reading.
+    pub candidate_refusals: Vec<(ProfileName, &'static str)>,
     pub candidates: Vec<ProfileName>,
     pub skips: Vec<(ProfileName, Skip)>,
     pub sees_sessions: bool,
@@ -160,10 +164,11 @@ pub fn live_alert(snap: &Snap) -> Option<(&'static str, String)> {
         return Some((kind, format!("ALERT: swap refused: {reason}")));
     }
     if !snap.home_no_oauth && snap.trusted_live.is_none() && !matches!(snap.live, LiveId::NoLogin) {
-        return Some((
-            "trusted-identity",
-            format!("ALERT: {}", super::login_identity::UNAVAILABLE),
-        ));
+        let text = snap.identity_cause.map_or_else(
+            || super::login_identity::UNAVAILABLE.to_string(),
+            super::login_identity::unavailable_line,
+        );
+        return Some(("trusted-identity", format!("ALERT: {text}")));
     }
     live_alert_for(&snap.live, snap.home_no_oauth)
 }
