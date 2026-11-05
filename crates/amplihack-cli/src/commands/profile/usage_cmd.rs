@@ -883,7 +883,8 @@ impl RowReader {
             creds_dir: creds_dir
                 .unwrap_or_else(|| self.store.root().join(name.as_str()).join(".no-home")),
             passive: Some(name.clone()),
-            // SR-3(d): never the live login's token.
+            // SR-3(d): never the live login's token in a usage read. Only the
+            // rotate prelude refreshes it, once, when it has expired (#1753).
             allow_refresh: refresh_ok && !live,
             overflow: self.overflow.contains(name),
         })

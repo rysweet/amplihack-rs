@@ -632,6 +632,31 @@ pub(super) fn account(
     Account::from_profile(&value).ok_or(reason::UNPARSEABLE)
 }
 
+/// Issue #1753 (R1): refreshes the login in `req.creds_dir` once, under
+/// Claude's `.oauth_refresh.lock`, only when its token is at or past its
+/// `expiresAt`. `Ok(false)`: the token has not expired and nothing was sent
+/// or written. `Ok(true)`: the file now holds a fresh token, written by this
+/// call or by Claude meanwhile. Every refusal of [`read`]'s refresh applies:
+/// a pending swap journal, a directory others can write, or less than the
+/// refresh budget left. No usage or identity request is made here; the
+/// caller reads the refreshed login's identity afresh.
+pub(super) fn refresh_expired(ep: &Endpoints, req: &Request<'_>) -> Result<bool, &'static str> {
+    let deadline = Deadline::after(req.timeout);
+    let creds = load(req.creds_dir)?;
+    // Expiry first: a token that has not expired needs no endpoint, so
+    // unusable endpoints must not be reported as a failed refresh.
+    if !creds.expires_at_ms.is_some_and(|at| at <= req.now_ms) {
+        return Ok(false);
+    }
+    if !ep.usable() {
+        return Err(reason::TRANSPORT);
+    }
+    if !req.allow_refresh {
+        return Err(reason::EXPIRED);
+    }
+    refresh(ep, req, &creds.access, deadline).map(|_| true)
+}
+
 /// The agent for the `GET`s. Its DNS lookups end at the read's deadline.
 fn agent(ep: &Endpoints, timeout: Duration, deadline: Deadline) -> ureq::Agent {
     let step = MAX_STEP

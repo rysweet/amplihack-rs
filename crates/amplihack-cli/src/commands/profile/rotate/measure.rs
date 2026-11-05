@@ -191,13 +191,16 @@ pub enum Key {
     Unowned,
     /// A candidate in its own directory.
     Candidate(ProfileName),
+    /// A structurally eligible login whose identity is not yet readable.
+    /// Its usage read may refresh expired credentials, but cannot select it.
+    UnboundCandidate(ProfileName),
 }
 
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Live(_) | Self::Unowned => f.write_str("~/.claude"),
-            Self::Candidate(n) => f.write_str(n.as_str()),
+            Self::Candidate(n) | Self::UnboundCandidate(n) => f.write_str(n.as_str()),
         }
     }
 }
@@ -284,12 +287,13 @@ pub fn measure_ordered(
     ctx: &Ctx,
     live: Live<'_>,
     candidates: &[ProfileName],
+    unbound: &[ProfileName],
     now: i64,
 ) -> (Probed, Vec<(ProfileName, Probed)>) {
     let start = Instant::now();
     let mode = mode();
     let timeout = timeout();
-    let n = candidates.len() + usize::from(live.probed());
+    let n = candidates.len() + unbound.len() + usize::from(live.probed());
     let (claude_bound, warning) = probe_limits::parallel_from_host(n);
     if let Some(w) = warning {
         eprintln!("{w}");
@@ -318,18 +322,21 @@ pub fn measure_ordered(
         Live::Platform => {}
     }
     keys.extend(candidates.iter().cloned().map(Key::Candidate));
+    keys.extend(unbound.iter().cloned().map(Key::UnboundCandidate));
     let make = |k: &Key| -> Job<Probe> {
         let reader = Arc::clone(&reader);
         let k = k.clone();
         Box::new(move || match &k {
             Key::Live(name) => reader.profile(name, true),
             Key::Unowned => reader.home(),
-            Key::Candidate(name) => reader.profile(name, false),
+            Key::Candidate(name) | Key::UnboundCandidate(name) => reader.profile(name, false),
         })
     };
     let mut read = match &ctx.in_flight {
         Some(fl) => {
             let mut fl = fl.lock().unwrap_or_else(PoisonError::into_inner);
+            // Join outstanding refresh reads without trusting their results.
+            join_pending(&fl, &mut keys);
             fl.set_bound(bound);
             let until = cycle_deadline(start, Duration::from_secs(ctx.settings.interval));
             gather(&mut fl, &keys, make, Wait::Until(until))
@@ -348,9 +355,30 @@ pub fn measure_ordered(
     let others = candidates
         .iter()
         .cloned()
-        .zip(read.into_iter().map(|(_, p)| p))
+        .zip(read.into_iter().map(|(key, p)| {
+            if matches!(key, Key::Candidate(_)) {
+                p
+            } else {
+                Probed::failed()
+            }
+        }))
         .collect();
     (live, others)
+}
+
+/// A trust change does not permit two reads of one stored login at once.
+/// Results retain the key (and trust class) they had when started.
+pub(super) fn join_pending(fl: &Reads, keys: &mut [Key]) {
+    for key in keys {
+        let other = match key {
+            Key::Candidate(name) => Key::UnboundCandidate(name.clone()),
+            Key::UnboundCandidate(name) => Key::Candidate(name.clone()),
+            _ => continue,
+        };
+        if fl.busy(&other) {
+            *key = other;
+        }
+    }
 }
 
 /// The row reader of one cycle, with `env` and at most `claude_bound`

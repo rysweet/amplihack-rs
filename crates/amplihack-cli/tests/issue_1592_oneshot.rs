@@ -273,6 +273,8 @@ fn an_unknown_login_is_adopted_as_default_original() {
         "primaryApiKey": "SECRET-KEY-HOME"
     });
     private_file(&f.home.join(".claude.json"), &home_json.to_string());
+    // Issue #1753: identity comes from the login, so it names the stranger too.
+    assert_eq!(login(&f.home_login()), f.live_ino);
     f.usage("stranger", 95, 10);
     let out = f.ok(&["profile", "rotate"]);
     assert!(

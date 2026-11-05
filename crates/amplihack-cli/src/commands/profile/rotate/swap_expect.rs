@@ -8,17 +8,19 @@
 //! there, so the next swap back into that profile names the right account.
 
 use super::identify::Account;
+#[cfg(test)]
 use super::ledger::RotateState;
 use super::swap::Source;
-use super::swap_check::account_block;
 use crate::commands::profile::ProfileError;
+#[cfg(test)]
+use crate::commands::profile::auto_switch::kit::State;
 use crate::commands::profile::auto_switch::kit::{
-    CLAUDE_JSON, State, exists, read_claude_json, write_atomic_keep_mode,
+    CLAUDE_JSON, exists, read_claude_json, write_atomic_keep_mode,
 };
-use crate::commands::profile::duplicates::{self, Holder};
 use crate::commands::profile::expected;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+#[cfg(test)]
 use std::path::Path;
 
 /// The refusal reason, followed by the outgoing profile's name.
@@ -39,10 +41,11 @@ pub(super) enum Pending {
     /// The adopted login, for the new `default-original[-N]`; it replaces
     /// a record left behind by a removed profile of that name.
     Adopted(Account),
+    /// Existing adoption compatibility when another known holder claims it.
+    AdoptedUnrecorded,
     /// An adopted login that another profile holds or has recorded: the new
     /// profile gets no record, and a record left behind by a removed
     /// profile of that name is removed.
-    AdoptedUnrecorded,
     /// The outgoing profile's own login, for a profile with no record yet.
     Backfill(Account),
 }
@@ -53,38 +56,8 @@ pub fn is_account_mismatch(e: &ProfileError) -> bool {
     matches!(e, ProfileError::RotateRefused(m) if m.starts_with(ACCOUNT_MISMATCH))
 }
 
-/// The warning printed when `name`'s record exists but cannot be read, or
-/// the state holding it cannot be opened. Names the profile, never an
-/// account.
-pub(super) fn unchecked(name: &ProfileName) -> String {
-    format!(
-        "warning: the recorded account for profile '{name}' could not be read; \
-         the swap was not checked against it"
-    )
-}
-
-/// Refuses a swap from a profile whose record names another account than
-/// the one in `$HOME/.claude.json`. Otherwise says what [`settle`] records:
-/// the adopted account when no profile holds it or has it recorded, or, for
-/// a profile without a record, the outgoing account when the ledger shows
-/// it is the one that came out of `from` and no other profile holds it or
-/// has it recorded.
-/// A record that cannot be read counts as none, with one warning.
-pub(super) fn guard(
-    store: &ProfileStore,
-    rs: &RotateState,
-    home: &Path,
-    from: &Source,
-) -> Result<Pending, ProfileError> {
-    let mut note = None;
-    let decided = decide(store, rs, home, from, &mut note);
-    if let Some(note) = note {
-        eprintln!("{note}");
-    }
-    decided
-}
-
 /// [`guard`] without the printing: `note` gets the warning, if any.
+#[cfg(test)]
 pub(super) fn decide(
     store: &ProfileStore,
     rs: &RotateState,
@@ -92,67 +65,61 @@ pub(super) fn decide(
     from: &Source,
     note: &mut Option<String>,
 ) -> Result<Pending, ProfileError> {
-    let Some(live) = Account::of_dir(home) else {
-        return Ok(Pending::Nothing);
+    let budget = super::login_identity::Budget::new();
+    let read = super::login_identity::default_read();
+    let reader = super::login_identity::Reader {
+        read: &read,
+        budget: &budget,
     };
-    let name = match from {
-        // Adoption is never refused. It is recorded under the same rule as
-        // a backfill: an existing profile holding the same login may be its
-        // owner (#1845), and a record here would make the duplicate warning
-        // blame that profile. `default-original[-N]` does not exist yet, so
-        // no profile is excluded.
-        Source::Adopt => {
-            let claimed = State::new(store.root()).map_or(true, |state| {
-                claimed_elsewhere(store, &state, home, None, &live)
-            });
-            return Ok(if claimed {
-                Pending::AdoptedUnrecorded
-            } else {
-                Pending::Adopted(live)
-            });
-        }
-        Source::Profile(name) => name,
-    };
-    // A state that cannot be opened reads as no record.
-    let Ok(state) = State::new(store.root()) else {
-        *note = Some(unchecked(name));
-        return Ok(Pending::Nothing);
-    };
-    let key = expected::lookup(&state, name).unwrap_or_else(|()| {
-        *note = Some(unchecked(name));
-        None
-    });
-    match key {
-        Some(rec) if rec.names(&live) => Ok(relabel_for(store, home, name, &live)),
-        Some(_) => Err(ProfileError::RotateRefused(format!(
-            "{ACCOUNT_MISMATCH} {name}"
-        ))),
-        None => {
-            // A ledger that cannot be read only rules out the backfill.
-            let came_from = rs.load_ledger().ok().flatten().is_some_and(|l| {
-                l.live.as_deref() == Some(name.as_str())
-                    && l.account.as_deref().is_some_and(|k| live.matches_key(k))
-            });
-            Ok(
-                if came_from && !claimed_elsewhere(store, &state, home, Some(name), &live) {
-                    Pending::Backfill(live)
+    let live = reader
+        .oauth(&home.join(".claude"))
+        .map_err(super::swap_authorize::refused)?;
+    *note = None;
+    let state = State::new(store.root())?;
+    match from {
+        Source::Profile(name) => match super::identity_claims::record(&state, name)
+            .map_err(super::swap_authorize::refused)?
+        {
+            Some(rec) if rec.names(&live) => Ok(relabel_for(store, name, &live)),
+            Some(_) => Err(ProfileError::RotateRefused(format!(
+                "{ACCOUNT_MISMATCH} {name}"
+            ))),
+            None => {
+                let came_from = rs
+                    .load_ledger()?
+                    .is_some_and(|l| super::swap_authorize::ledger_owns(&l, name, &live));
+                let scan = super::identity_claims::scan(store, &state, Some(name), &live, reader)
+                    .map_err(super::swap_authorize::refused)?;
+                if came_from && matches!(scan.claim, super::identity_claims::Claim::Unclaimed) {
+                    Ok(Pending::Backfill(live))
                 } else {
-                    Pending::Nothing
-                },
-            )
+                    Err(super::swap_authorize::refused(
+                        super::login_identity::UNAVAILABLE,
+                    ))
+                }
+            }
+        },
+        Source::Adopt => {
+            let scan = super::identity_claims::scan(store, &state, None, &live, reader)
+                .map_err(super::swap_authorize::refused)?;
+            if matches!(scan.claim, super::identity_claims::Claim::Unclaimed) {
+                Ok(Pending::Adopted(live))
+            } else {
+                Err(super::swap_authorize::refused(
+                    super::login_identity::UNAVAILABLE,
+                ))
+            }
         }
     }
 }
 
-/// [`Pending::Relabel`] with the block in `~/.claude.json` when `name`'s
-/// `.claude.json` does not name `live`, the account its record names; after
-/// a `/login` in `~/.claude` to that account it still names the one before.
-fn relabel_for(store: &ProfileStore, home: &Path, name: &ProfileName, live: &Account) -> Pending {
+/// Repairs display state from trusted evidence, never from a session block.
+pub(super) fn relabel_for(store: &ProfileStore, name: &ProfileName, live: &Account) -> Pending {
     let dir = store.root().join(name.as_str());
     if Account::of_dir(&dir).is_some_and(|a| a.same(live)) {
         return Pending::Nothing;
     }
-    account_block(home).map_or(Pending::Nothing, Pending::Relabel)
+    Pending::Relabel(live.block())
 }
 
 /// Writes the block of [`Pending::Relabel`] into the outgoing profile's
@@ -177,36 +144,6 @@ pub(super) fn relabel(
     v["oauthAccount"] = block.clone();
     let bytes = serde_json::to_vec_pretty(&v).map_err(|e| fail(e.to_string()))?;
     write_atomic_keep_mode(&dir, CLAUDE_JSON, &bytes).map_err(|e| fail(e.to_string()))
-}
-
-/// Whether `live` may belong to a profile other than `name` (any profile,
-/// when `name` is `None`): another profile holds the same account, or has
-/// it recorded. A folder can already hold another account's login (#1845:
-/// one was written by a session, not a swap), and a backfill would make
-/// that wrong account the one the guard protects; an adoption would make
-/// the duplicate warning blame the profile that may own it. When the other
-/// profiles cannot be read, this answers `true`, so nothing is recorded.
-fn claimed_elsewhere(
-    store: &ProfileStore,
-    state: &State,
-    home: &Path,
-    name: Option<&ProfileName>,
-    live: &Account,
-) -> bool {
-    let Ok(list) = duplicates::try_accounts(store, Some(home)) else {
-        return true;
-    };
-    let held = list
-        .iter()
-        .any(|(h, a)| matches!(h, Holder::Profile(n) if Some(n) != name) && a.same(live));
-    let Ok(names) = store.list() else {
-        return true;
-    };
-    held || names
-        .iter()
-        .filter_map(|n| ProfileName::parse(n).ok())
-        .filter(|n| Some(n) != name)
-        .any(|n| matches!(expected::lookup(state, &n), Ok(Some(rec)) if rec.names(live)))
 }
 
 /// Writes what [`guard`] decided for `from`, after the swap finished. A

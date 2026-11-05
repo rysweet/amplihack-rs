@@ -20,11 +20,8 @@ use super::overflow_record::{
     self, alert_line, block_spend_limited, note_home_key, note_live, note_move, note_per_token,
     refresh_capacity, refuse_key, stay_note, target_check,
 };
+use super::pin::{self, Gate as PinGate}; // the switch-hold gate
 use super::plan_room::no_room;
-// Under an alias: `profile::overflow::Gate` (whether credits may be spent)
-// is a different thing from the pin's gate (whether a `profile switch`
-// holds the cycle).
-use super::pin::{self, Gate as PinGate};
 pub use super::prelude::prototype_guard;
 use super::prelude::{Prelude, locked_prelude};
 use super::revalidate::{self, Verdict};
@@ -42,17 +39,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 pub(super) const LOCK_WAIT: Duration = Duration::from_secs(2);
-
 #[path = "cycle_outcome.rs"]
 mod outcome;
 pub use outcome::{CycleOutcome, Mode};
-
 /// Steps 4 and 5 of a cycle: measure, then decide.
 pub(super) type MeasureFn = fn(&Ctx, &Snap) -> Result<Measurement, ProfileError>;
 
-/// What a cycle needs, and what `watch` remembers between cycles: the last
-/// skips and pin line, so a `skip:` line is written only when it changes,
-/// and the count of consecutive failed live probes for failed-probe damping.
+/// Cycle state and the watch process's retained readings.
 pub struct Ctx {
     pub store: ProfileStore,
     pub rs: RotateState,
@@ -63,31 +56,25 @@ pub struct Ctx {
     pub(super) last_proto: Option<&'static str>,
     last_gate: Option<String>,
     pub(super) failed_live: u32,
-    /// Finds the running sessions; `scan_system` outside tests. A test sets
-    /// it to return `Liveness::Unsupported`, which is what every non-Linux
-    /// system gets.
+    /// Finds running sessions; tests inject synthetic liveness.
     pub(super) scan: fn(&Path) -> Liveness,
-    /// Replaces steps 4 and 5 (find `claude`, measure, decide) when set. Only
-    /// tests set it, to act while the cycle is measuring without the lock.
+    /// Tests inject measurement while the lock is released.
     pub(super) measure: Option<MeasureFn>,
-    /// Issue #1870: the freshness gate's re-read, by the user's probe
-    /// method; `None` reads nothing.
+    /// Freshness re-read by the configured method; None reads nothing.
     pub(super) reread: Option<RereadFn>,
     /// Replaces a held cycle's spend-limit probe when set; only tests do.
     pub(super) probe_held: Option<super::held::HeldProbeFn>,
     /// Waits before step 6 reads the state again; tests act in it instead.
     pub(super) pause: fn(&Ctx),
-    /// The login check before a swap onto the API-key profile (issue
-    /// #1804); `key_check::reachable` outside tests.
+    /// Login check before a move onto the API-key profile.
     pub(super) key_check: KeyCheckFn,
     /// The `$HOME` key setting `note_home_key` last logged.
     pub(super) home_key: Option<&'static str>,
-    /// Issue #1844: reads a watching rotator keeps across cycles. `None`
-    /// makes each cycle wait for every read.
+    /// Usage reads carried across watch cycles.
     pub(super) in_flight: Option<std::sync::Mutex<super::measure::Reads>>,
-    /// Issue #1886: reads a login's credential identity for hand-change
-    /// recovery; `cred_identity::DEFAULT_READ` until a test sets its own.
+    /// Bounded login identity reader, injected by tests.
     pub(super) identity: ReadFn,
+    pub(super) identity_budget: super::login_identity::Budget,
 }
 
 impl Ctx {
@@ -112,6 +99,7 @@ impl Ctx {
             home_key: None,
             in_flight: None,
             identity: DEFAULT_READ,
+            identity_budget: super::login_identity::Budget::new(),
         }
     }
 
@@ -167,6 +155,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         }
         Prelude::LiveUnusable { kind, live, line } => {
             alert(ctx, &mut out, kind, live.as_ref(), &line)?;
+            if kind == "account_mismatch" && mode != Mode::Watch {
+                let reason = line.strip_prefix("ALERT: swap refused: ").unwrap_or(&line);
+                return Err(ProfileError::RotateRefused(reason.into()));
+            }
             return Ok(CycleOutcome::Alerted);
         }
         // Issue #1693: the prelude already wrote the guidance.
@@ -199,9 +191,9 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         return Ok(CycleOutcome::Held);
     }
     drop(lock);
-
     // Steps 4 and 5: measure without the lock, then decide. `claude` is
     // looked for only when a read falls back to it (issue #1844).
+    let measuring = std::time::Instant::now();
     let m = match ctx.measure {
         Some(stub) => stub(ctx, &first)?,
         None => measure_and_decide(ctx, &first)?,
@@ -214,6 +206,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     );
     // Issue #1870: before `failed_live` moves on, so it is counted once.
     let m = fresh::gate(ctx, &first, m, Reread::Allowed)?;
+    ctx.identity_budget.exclude_measurement(measuring.elapsed());
     m.fresh_lines.iter().for_each(|line| out.emit(now(), line));
     let failed_before = std::mem::replace(&mut ctx.failed_live, m.failed);
     note_home_key(ctx, &mut out, &first);
@@ -221,7 +214,6 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         out.emit(now(), msg::STOPPED);
         return Ok(CycleOutcome::Stopped);
     }
-
     // Step 6: revalidate and swap under the lock, held until the swap.
     let Some(lock) = state.try_lock(LOCK_WAIT)? else {
         out.emit(now(), msg::LOCK_BUSY);
@@ -301,7 +293,16 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 LiveId::Known(n) => Source::Profile(n.clone()),
                 _ => Source::Adopt,
             };
-            let from = match swap::swap(&ctx.store, &ctx.rs, &ctx.home, source, &to, t) {
+            let from = match swap::swap_with(
+                &ctx.store,
+                &ctx.rs,
+                &ctx.home,
+                source,
+                &to,
+                t,
+                ctx.identity_reader(),
+                Some(&first),
+            ) {
                 Ok(from) => from,
                 // A refusal repeats each cycle: one ALERT per reason.
                 Err(e @ ProfileError::RotateRefused(_)) => {
@@ -310,7 +311,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                     let (kind, live) = if swap::is_no_oauth(&e) {
                         ("no_oauth".to_string(), Some(&to))
                     } else if swap::is_account_mismatch(&e) {
-                        // Issue #1845: once per profile, until its login is fixed.
+                        // Keep the outgoing profile's label on repeated refusals.
                         ("account_mismatch".to_string(), live_name(&first.live))
                     } else {
                         (refusal_kind(&e), live_name(&first.live))

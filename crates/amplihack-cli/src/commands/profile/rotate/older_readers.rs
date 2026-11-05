@@ -38,6 +38,8 @@ pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
         out.home_unreadable_since = None;
         out.lost_login.clear();
         out.no_room = None;
+        // Full identity provenance is optional; legacy strict readers reject it.
+        out.login_identity = None;
         // Issue #1870: only this binary's freshness gate reads it.
         out.swapped_away.clear();
         out.advisory_alert = None;

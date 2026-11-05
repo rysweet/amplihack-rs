@@ -109,6 +109,9 @@ pub struct RotateLedger {
     /// That login's account (`accountUuid`, else `emailAddress`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// Full credential-bound identity; a legacy key alone cannot prove ownership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_identity: Option<super::login_identity::Identity>,
     /// When `live` last changed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<i64>,
@@ -167,6 +170,7 @@ impl Default for RotateLedger {
             version: VERSION,
             live: None,
             account: None,
+            login_identity: None,
             since: None,
             swapped_at: None,
             previous: None,
@@ -186,52 +190,9 @@ impl Default for RotateLedger {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Phase {
-    J0,
-    S1,
-    S2,
-    S3,
-    S4,
-    Inconsistent,
-}
-
-impl Phase {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::J0 => "j0",
-            Self::S1 => "s1",
-            Self::S2 => "s2",
-            Self::S3 => "s3",
-            Self::S4 => "s4",
-            Self::Inconsistent => "inconsistent",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RotateJournal {
-    pub version: u32,
-    pub from: String,
-    pub to: String,
-    /// `from` was created by adopting the login in `~/.claude`.
-    pub adopt: bool,
-    pub phase: Phase,
-    /// `$HOME` when the swap started. Only ever compared, never a path.
-    pub home: String,
-    /// Inode of the outgoing login (`~/.claude/.credentials.json`).
-    pub live_ino: u64,
-    /// Inode of the incoming login (`<root>/<to>/.credentials.json`).
-    pub target_ino: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub home_lock_ino: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub to_lock_ino: Option<u64>,
-    pub started_at: i64,
-    pub pid: u32,
-}
+#[path = "swap_journal.rs"]
+mod journal;
+pub use journal::{Phase, RotateJournal};
 
 /// Paths of the rotate state.
 #[derive(Debug, Clone)]

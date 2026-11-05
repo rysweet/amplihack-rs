@@ -53,12 +53,13 @@ pub(super) fn private(path: &Path, body: &str) {
 }
 
 pub(super) fn login(path: &Path) -> u64 {
+    let body = super::tests::tests_fixture_identity::body(path);
     if path.exists() {
         fs::remove_file(path).unwrap();
     }
     // Issue #1700: an OAuth login (its top-level keys are read for the
     // kind); the value is a sentinel that must never be printed.
-    private(path, r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#);
+    private(path, &body);
     ino(path)
 }
 
@@ -133,6 +134,15 @@ pub(super) fn env() -> Env {
     let t = login(&root.join("spare").join(CREDS));
     let rs = RotateState::new(&root);
     rs.ensure().unwrap();
+    rs.save_ledger(&super::ledger::RotateLedger {
+        live: Some("work".into()),
+        account: Some("u-work".into()),
+        login_identity: Some(super::login_identity::Identity::new(
+            &(super::cred_identity::DEFAULT_READ)(&home.join(".claude")).unwrap(),
+        )),
+        ..Default::default()
+    })
+    .unwrap();
     Env {
         _tmp: tmp,
         home,
@@ -182,6 +192,16 @@ impl Env {
             to_lock_ino: None,
             started_at: NOW,
             pid: std::process::id(),
+            identity: Some(super::login_identity::SwapIdentity::new(
+                Some(
+                    &super::identify::Account::from_block(&acct("u-work", "work@example.com"))
+                        .unwrap(),
+                ),
+                Some(
+                    &super::identify::Account::from_block(&acct("u-spare", "spare@example.com"))
+                        .unwrap(),
+                ),
+            )),
         }
     }
 
