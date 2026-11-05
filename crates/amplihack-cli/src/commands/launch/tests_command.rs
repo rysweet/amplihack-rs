@@ -1119,3 +1119,276 @@ fn codex_resume_uses_subcommand_and_continue_selects_last_without_model_pin() {
     assert_eq!(resume, ["resume"]);
     assert_eq!(continuation, ["resume", "--last"]);
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1883: `build_command_for_dir` applies the inherited effort and model.
+//
+// A step's launch reads only AMPLIHACK_PARENT_EFFORT and AMPLIHACK_PARENT_MODEL
+// (D1). The inherited flags go before any `resume` subcommand and before the
+// step's own arguments; the child's ANTHROPIC_MODEL and
+// CLAUDE_CODE_EFFORT_LEVEL are set only when something is inherited (C4).
+// ---------------------------------------------------------------------------
+
+/// Every variable the inheritance path reads or writes, plus the ones the
+/// argv assertions below depend on.
+const INHERIT_TEST_VARS: [&str; 13] = [
+    "AMPLIHACK_PARENT_EFFORT",
+    "AMPLIHACK_PARENT_MODEL",
+    "AMPLIHACK_RECIPE_RUN_ID",
+    "AMPLIHACK_DEFAULT_MODEL",
+    "ANTHROPIC_MODEL",
+    "CLAUDE_CODE_EFFORT_LEVEL",
+    "UV_PYTHON",
+    "AMPLIHACK_ROOT",
+    "AMPLIHACK_NO_SYSTEM_PROMPT_APPEND",
+    "AMPLIHACK_COPILOT_NO_ALLOW_ALL",
+    amplihack_utils::litellm_proxy::ENDPOINT_ENV,
+    amplihack_utils::litellm_proxy::API_KEY_ENV,
+    amplihack_utils::litellm_proxy::MODEL_ENV,
+];
+
+struct Built {
+    args: Vec<String>,
+    envs: std::collections::BTreeMap<String, Option<String>>,
+}
+
+/// `build_command` for a binary named `name` with exactly `env` set among
+/// [`INHERIT_TEST_VARS`] (the system-prompt append is always suppressed, as
+/// in [`with_uvx_detection_disabled`]).
+fn build_inherit(name: &str, resume: bool, env: &[(&str, &str)], extra: &[&str]) -> Built {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _restore = EnvGuard::capture(&INHERIT_TEST_VARS);
+    let cwd = tempfile::tempdir().unwrap();
+    fs::create_dir_all(cwd.path().join(".claude")).unwrap();
+    let _cwd = crate::test_support::CwdGuard::set(cwd.path()).unwrap();
+    for var in INHERIT_TEST_VARS {
+        unsafe { std::env::remove_var(var) };
+    }
+    unsafe { std::env::set_var("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND", "1") };
+    for (k, v) in env {
+        unsafe { std::env::set_var(k, v) };
+    }
+    let binary = BinaryInfo {
+        name: name.to_string(),
+        path: PathBuf::from(format!("/usr/bin/{name}")),
+        version: Some("1.0.0".to_string()),
+    };
+    let extra: Vec<String> = extra.iter().map(|a| a.to_string()).collect();
+    let cmd = build_command(&binary, resume, false, false, &extra);
+    Built {
+        args: cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect(),
+        envs: cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect(),
+    }
+}
+
+fn pos(args: &[String], needle: &str) -> usize {
+    args.iter()
+        .position(|a| a == needle)
+        .unwrap_or_else(|| panic!("{needle:?} not in {args:?}"))
+}
+
+fn env_val<'a>(b: &'a Built, k: &str) -> Option<&'a str> {
+    b.envs.get(k).and_then(|v| v.as_deref())
+}
+
+const PARENT_HIGH_OPUS: [(&str, &str); 2] = [
+    ("AMPLIHACK_PARENT_EFFORT", "high"),
+    ("AMPLIHACK_PARENT_MODEL", "claude-opus-5-5"),
+];
+
+#[test]
+fn test_1883_claude_step_gets_inherited_model_then_effort_before_its_own_args() {
+    let b = build_inherit("claude", false, &PARENT_HIGH_OPUS, &["-p", "do it"]);
+    let model = pos(&b.args, "--model");
+    assert_eq!(b.args[model + 1], "claude-opus-5-5");
+    let effort = pos(&b.args, "--effort");
+    assert_eq!(b.args[effort + 1], "high");
+    let prompt = pos(&b.args, "-p");
+    assert!(model < effort && effort < prompt, "{:?}", b.args);
+    assert_eq!(b.args.iter().filter(|a| *a == "--model").count(), 1);
+    assert_eq!(b.args.iter().filter(|a| *a == "--effort").count(), 1);
+    assert_eq!(env_val(&b, "ANTHROPIC_MODEL"), Some("claude-opus-5-5"));
+    assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), Some("high"));
+}
+
+/// Integration case (b) at unit level: the step's own model wins, the
+/// inherited effort still applies, and the child holds only the step's model.
+#[test]
+fn test_1883_step_own_model_wins_and_effort_is_still_inherited() {
+    let b = build_inherit(
+        "claude",
+        false,
+        &PARENT_HIGH_OPUS,
+        &["-p", "do it", "--model", "claude-haiku-4-5"],
+    );
+    assert_eq!(
+        b.args.iter().filter(|a| *a == "--model").count(),
+        1,
+        "{:?}",
+        b.args
+    );
+    assert!(
+        !b.args.iter().any(|a| a == "claude-opus-5-5"),
+        "{:?}",
+        b.args
+    );
+    let effort = pos(&b.args, "--effort");
+    assert_eq!(b.args[effort + 1], "high");
+    assert_eq!(env_val(&b, "ANTHROPIC_MODEL"), Some("claude-haiku-4-5"));
+    assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), Some("high"));
+}
+
+#[test]
+fn test_1883_step_own_effort_wins() {
+    let b = build_inherit(
+        "claude",
+        false,
+        &PARENT_HIGH_OPUS,
+        &["--effort", "low", "-p", "do it"],
+    );
+    assert_eq!(
+        b.args.iter().filter(|a| *a == "--effort").count(),
+        1,
+        "{:?}",
+        b.args
+    );
+    assert_eq!(b.args[pos(&b.args, "--effort") + 1], "low");
+    assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), Some("low"));
+}
+
+/// F3: with nothing inherited the argv is the pre-#1883 argv, and no effort or
+/// model variable is added. Invalid parent values are dropped silently and
+/// give the same result (I1, S4).
+#[test]
+fn test_1883_nothing_inherited_changes_nothing() {
+    let baseline = build_inherit("claude", false, &[], &["-p", "do it"]);
+    assert_eq!(
+        baseline.args,
+        vec![
+            "--model".to_string(),
+            super::command::DEFAULT_MODEL.to_string(),
+            "-p".to_string(),
+            "do it".to_string(),
+        ]
+    );
+    for k in [
+        "ANTHROPIC_MODEL",
+        "CLAUDE_CODE_EFFORT_LEVEL",
+        "AMPLIHACK_PARENT_EFFORT",
+        "AMPLIHACK_PARENT_MODEL",
+    ] {
+        assert!(
+            !baseline.envs.contains_key(k),
+            "{k} added: {:?}",
+            baseline.envs
+        );
+    }
+    for bad in ["", "-x", "a\nb", "a\u{202E}b"] {
+        let b = build_inherit(
+            "claude",
+            false,
+            &[
+                ("AMPLIHACK_PARENT_EFFORT", bad),
+                ("AMPLIHACK_PARENT_MODEL", bad),
+            ],
+            &["-p", "do it"],
+        );
+        assert_eq!(b.args, baseline.args, "{bad:?}");
+        assert_eq!(env_val(&b, "ANTHROPIC_MODEL"), None, "{bad:?}");
+        assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), None, "{bad:?}");
+    }
+}
+
+/// The fallbacks are read only by `recipe run`, never by a step's launch.
+#[test]
+fn test_1883_launch_ignores_the_fallback_variables() {
+    let b = build_inherit(
+        "claude",
+        false,
+        &[
+            ("CLAUDE_CODE_EFFORT_LEVEL", "high"),
+            ("ANTHROPIC_MODEL", "claude-sonnet-4-5"),
+        ],
+        &["-p", "do it"],
+    );
+    assert!(!b.args.iter().any(|a| a == "--effort"), "{:?}", b.args);
+    assert_eq!(
+        b.args[pos(&b.args, "--model") + 1],
+        super::command::DEFAULT_MODEL
+    );
+}
+
+#[test]
+fn test_1883_rusty_gets_effort_only_through_the_environment() {
+    let b = build_inherit("rusty", false, &PARENT_HIGH_OPUS, &["-p", "do it"]);
+    assert!(!b.args.iter().any(|a| a == "--effort"), "{:?}", b.args);
+    assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), Some("high"));
+    assert_eq!(b.args[pos(&b.args, "--model") + 1], "claude-opus-5-5");
+}
+
+/// Codex takes `-c model_reasoning_effort=L`, placed before `resume` so codex
+/// reads it as a global option, and no Claude variables.
+#[test]
+fn test_1883_codex_effort_goes_before_resume() {
+    let b = build_inherit("codex", true, &[("AMPLIHACK_PARENT_EFFORT", "high")], &[]);
+    let c = pos(&b.args, "-c");
+    assert_eq!(b.args[c + 1], "model_reasoning_effort=high");
+    assert!(c < pos(&b.args, "resume"), "{:?}", b.args);
+    assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), None);
+    assert_eq!(env_val(&b, "ANTHROPIC_MODEL"), None);
+}
+
+#[test]
+fn test_1883_copilot_gets_no_effort() {
+    let b = build_inherit(
+        "copilot",
+        false,
+        &[
+            ("AMPLIHACK_PARENT_EFFORT", "high"),
+            ("AMPLIHACK_RECIPE_RUN_ID", "run-1883"),
+        ],
+        &["-p", "do it"],
+    );
+    assert!(
+        !b.args.iter().any(|a| a == "--effort" || a == "high"),
+        "{:?}",
+        b.args
+    );
+    assert_eq!(env_val(&b, "CLAUDE_CODE_EFFORT_LEVEL"), None);
+}
+
+/// S11: under the gateway the gateway model is on argv and the inherited
+/// model is not put in the child's ANTHROPIC_MODEL, so the gateway's own
+/// value, applied later by `apply_launch_environment`, is not contradicted.
+#[test]
+fn test_1883_gateway_model_wins_over_the_inherited_model() {
+    let b = build_inherit(
+        "claude",
+        false,
+        &[
+            ("AMPLIHACK_PARENT_MODEL", "claude-opus-5-5"),
+            (amplihack_utils::litellm_proxy::MODEL_ENV, "gateway-model"),
+        ],
+        &["-p", "do it"],
+    );
+    assert_eq!(b.args[pos(&b.args, "--model") + 1], "gateway-model");
+    assert!(
+        !b.args.iter().any(|a| a == "claude-opus-5-5"),
+        "{:?}",
+        b.args
+    );
+    assert_ne!(env_val(&b, "ANTHROPIC_MODEL"), Some("claude-opus-5-5"));
+}

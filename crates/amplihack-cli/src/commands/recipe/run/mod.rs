@@ -9,6 +9,8 @@ pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
 mod failure_class;
 mod format;
+/// Issue #1883: the effort and model a run's steps inherit.
+mod inherit_inputs;
 /// Issue #1618: the usage-limit patterns of every agent harness, in one place.
 pub(crate) mod limit_patterns;
 mod limit_reset;
@@ -427,6 +429,9 @@ mod tests_execute;
 mod tests_failure_class;
 #[cfg(test)]
 mod tests_format;
+/// Issue #1883: effort and model inheritance worked out once per run.
+#[cfg(test)]
+mod tests_inherit_inputs;
 #[cfg(test)]
 mod tests_limit_patterns;
 #[cfg(test)]

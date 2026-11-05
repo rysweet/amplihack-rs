@@ -287,8 +287,9 @@ fn env_entry_bytes(name: &str, value: &str) -> usize {
 
 /// The `AMPLIHACK_` namespace belongs to amplihack. A context key in it is
 /// never mirrored into the env and never forwarded to the runner, so a recipe
-/// cannot choose, for example, the pinned Claude profile (issue #1567).
-fn is_reserved_context_key(key: &str) -> bool {
+/// cannot choose, for example, the pinned Claude profile (issue #1567), or
+/// the effort and model its steps inherit (`AMPLIHACK_PARENT_*`, #1883 S6).
+pub(super) fn is_reserved_context_key(key: &str) -> bool {
     key.to_ascii_uppercase().starts_with("AMPLIHACK_")
 }
 
@@ -575,6 +576,14 @@ pub(super) fn execute_recipe_via_rust(
         &agent_binary,
     );
 
+    // Issue #1883: the effort and model every step inherits, worked out once
+    // for the run, with its log lines printed once here and never by a step.
+    let (inherited, inherit_lines) =
+        super::inherit_inputs::inherit_for_run(context, agent_binary.binary.as_str());
+    for line in &inherit_lines {
+        eprintln!("{line}");
+    }
+
     // Issue #1606: record what this run resolved in every log pointer. The
     // home is resolved the same way `build_command` resolves it below.
     let run_settings = RunSettings {
@@ -711,6 +720,10 @@ pub(super) fn execute_recipe_via_rust(
         };
 
         env_builder.apply_to_command(&mut command);
+        // Issue #1883 (C3): the runner passes these to every step. Removed
+        // first, so a stale value from this process never reaches a step, and
+        // set only with the run's checked value.
+        crate::commands::launch::inherit::set_parent_env(&mut command, &inherited);
         // Issue #1326: pin the session-tree directory for every descendant. Without
         // this each level re-derives it, and the previous derivation was based on
         // TMPDIR -- which we replace below with a fresh per-run tempdir, giving every
