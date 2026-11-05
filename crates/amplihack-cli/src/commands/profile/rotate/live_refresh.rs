@@ -54,15 +54,21 @@ pub fn refresh_direct(root: &Path, creds_dir: &Path) -> Result<bool, &'static st
 }
 
 /// Refreshes the OAuth login in `~/.claude` once when its token has
-/// expired. Not when the lease view cannot be read or names the live
-/// profile as one whose token may not be refreshed (SR-3(d)). A refresh
+/// expired. Not when the lease view cannot be read, not when the rotate
+/// ledger cannot be read (the live profile is then unknown, so the lease
+/// view cannot clear it), and not when the lease view names the live
+/// profile as one whose token may not be refreshed (SR-3(d)). With no
+/// ledger at all there is no live profile for a lease to name. A refresh
 /// that fails is logged; the snapshot then finds no trusted identity, and
 /// the cycle alerts and moves nothing.
 pub fn refresh_expired_live(ctx: &Ctx, out: &mut Sink) {
     let Some(no_refresh) = no_refresh_dirs(&ctx.store) else {
         return;
     };
-    let live = ctx.rs.load_ledger().ok().flatten().and_then(|l| l.live);
+    let Ok(ledger) = ctx.rs.load_ledger() else {
+        return;
+    };
+    let live = ledger.and_then(|l| l.live);
     if live.is_some_and(|n| no_refresh.contains(&n)) {
         return;
     }

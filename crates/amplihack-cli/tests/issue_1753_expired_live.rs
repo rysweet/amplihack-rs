@@ -120,3 +120,93 @@ fn refreshed_live_login_with_conflicting_identity_moves_no_login() {
     assert_eq!(f.ledger().unwrap()["account"], "uuid-work");
     assert!(!f.root.join(".rejected-logins").exists());
 }
+
+/// Neither refresh log line: nothing was attempted for `~/.claude`.
+fn assert_no_live_refresh(f: &Fixture, ep: &Endpoint) {
+    assert_eq!(ep.refreshes.load(Ordering::Relaxed), 0, "no refresh sent");
+    let log = f.log();
+    assert!(
+        !log.contains("expired login in ~/.claude"),
+        "no live refresh logged: {log}"
+    );
+}
+
+/// SR-3(d): while an auto-switch session holds another login in the live
+/// profile's directory, the lease view bars the live profile's token from
+/// being refreshed, so the expired live login is left alone even though the
+/// endpoint would renew it. The cycle then finds no trusted identity and
+/// moves nothing.
+#[cfg(target_os = "linux")]
+#[test]
+fn lease_barred_live_profile_is_not_refreshed() {
+    let (f, ep) = expired_live();
+    ep.refresh_allowed.store(true, Ordering::Relaxed);
+    let state = f.root.join(".auto-switch.d");
+    let now = chrono::Utc::now().timestamp();
+    private_file(
+        &state.join("ledger.json"),
+        &serde_json::json!({"version": 1, "hosts": {"work": {"live": "spare",
+            "swapped_at": now - 60, "pre_swap_fingerprint": null}}})
+        .to_string(),
+    );
+    // A running session in `work` keeps auto-switch recovery from handing
+    // the hosted login back, so the lease is still in force at the refresh.
+    let mut session = std::process::Command::new("sleep")
+        .arg("600")
+        .env("CLAUDE_CONFIG_DIR", f.root.join("work"))
+        .spawn()
+        .expect("spawn sleep");
+    let before = f.logins();
+    let out = direct_cycle(&f, &ep);
+    let _ = session.kill();
+    let _ = session.wait();
+    assert_no_live_refresh(&f, &ep);
+    let hosts: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(state.join("ledger.json")).unwrap()).unwrap();
+    assert_eq!(
+        hosts["hosts"]["work"]["live"], "spare",
+        "lease kept: {out:?}"
+    );
+    assert!(
+        oauth(&f.home_login())["expiresAt"].as_i64().unwrap()
+            < chrono::Utc::now().timestamp_millis(),
+        "the live token is still the expired one"
+    );
+    assert_eq!(f.logins(), before);
+    assert_eq!(f.ledger().unwrap()["live"], "work");
+}
+
+/// A live token that has not expired is never sent to the token endpoint,
+/// and no refresh line is logged, whether or not the endpoint is usable.
+#[test]
+fn unexpired_live_login_sends_no_refresh() {
+    let (f, ep) = fixture();
+    ep.refresh_allowed.store(true, Ordering::Relaxed);
+    let out = direct_cycle(&f, &ep);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_no_live_refresh(&f, &ep);
+    // With no usable endpoints the cycle must not claim a failed refresh of
+    // a token that has not expired.
+    let (g, _unused) = fixture();
+    let _ = g
+        .cmd(&["profile", "rotate"])
+        .env_remove("AMPLIHACK_PROFILE_USAGE_API_BASE")
+        .env_remove("AMPLIHACK_PROFILE_USAGE_TOKEN_URL")
+        .output()
+        .unwrap();
+    let log = g.log();
+    assert!(!log.contains("expired login in ~/.claude"), "{log}");
+}
+
+/// A damaged rotate ledger leaves the live profile unknown, so the lease
+/// view cannot clear it: the expired live login is not refreshed.
+#[test]
+fn unreadable_rotate_ledger_blocks_live_refresh() {
+    let (f, ep) = expired_live();
+    ep.refresh_allowed.store(true, Ordering::Relaxed);
+    private_file(&f.rotate_dir().join("ledger.json"), "{not json");
+    let before = f.logins();
+    let _ = direct_cycle(&f, &ep);
+    assert_no_live_refresh(&f, &ep);
+    assert_eq!(f.logins(), before);
+}

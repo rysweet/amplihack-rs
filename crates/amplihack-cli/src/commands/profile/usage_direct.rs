@@ -642,12 +642,14 @@ pub(super) fn account(
 /// caller reads the refreshed login's identity afresh.
 pub(super) fn refresh_expired(ep: &Endpoints, req: &Request<'_>) -> Result<bool, &'static str> {
     let deadline = Deadline::after(req.timeout);
-    if !ep.usable() {
-        return Err(reason::TRANSPORT);
-    }
     let creds = load(req.creds_dir)?;
+    // Expiry first: a token that has not expired needs no endpoint, so
+    // unusable endpoints must not be reported as a failed refresh.
     if !creds.expires_at_ms.is_some_and(|at| at <= req.now_ms) {
         return Ok(false);
+    }
+    if !ep.usable() {
+        return Err(reason::TRANSPORT);
     }
     if !req.allow_refresh {
         return Err(reason::EXPIRED);

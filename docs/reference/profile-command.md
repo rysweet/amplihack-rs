@@ -4740,7 +4740,8 @@ Every non-dry-run cycle runs these steps in order:
 3. **Lock and recover.** Take `<root>/.auto-switch.d/lock`, waiting up to
    2 seconds. If it is busy, log `skip: state lock busy` and end the cycle.
    Under the lock, run auto-switch [recovery](#session-end-and-recovery), then
-   [rotate recovery](#rotate-recovery), then
+   [rotate recovery](#rotate-recovery), then the one refresh of an
+   [expired live login](#credential-identity), then
    [hand-change recovery](#rotate-hand-change-recovery), then
    [identify](#rotate-live-profile) the live profile and the
    [candidates](#rotate-candidates). Hand-change recovery makes its
@@ -6157,9 +6158,12 @@ and `profile switch NAME`, after swap recovery and before hand-change
 recovery or any identity read, refreshes that login once when its token has
 expired, as the [direct read](#token-refresh) refreshes a profile's login: under
 `~/.claude/.oauth_refresh.lock`, never while a swap journal exists, never in a
-directory others can write, and never when the lease view cannot be read or
-names the live profile as one whose token may not be refreshed. A token that
-has not yet expired is left alone; Claude refreshes it. The log says
+directory others can write, never when the lease view cannot be read, never
+when the rotate ledger cannot be read (the live profile is then unknown), and
+never when the lease view names the live profile as one whose token may not
+be refreshed. A token that
+has not yet expired is left alone, and nothing is logged for it; Claude
+refreshes it. The log says
 `refresh: expired login in ~/.claude refreshed; identity read again`, or
 `refresh: expired login in ~/.claude not refreshed (<reason>)` with one of the
 direct read's reasons. The refresh is not identity evidence: the cycle then
