@@ -354,7 +354,7 @@ pub(super) fn finish(
         .then(|| LIVE_KIND_PLATFORM.to_string());
     l.since = Some(j.started_at);
     l.swapped_at = Some(j.started_at);
-    l.alert = None;
+    super::alert::clear_alert(&mut l);
     rs.save_ledger(&l)?;
     step(rs, &mut j, Phase::S4)?;
     rs.delete_journal()

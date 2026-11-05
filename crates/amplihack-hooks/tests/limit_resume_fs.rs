@@ -926,3 +926,104 @@ fn old_prompt_markers_are_pruned_on_prepare_and_commit() {
         assert!(odd.exists(), "non-hash names are left alone");
     }
 }
+
+// ── Issue #1907: ledgers on disk, read as the hook reads them ──────────────
+
+/// Reads the real ledger file under a temporary profile root, through
+/// `rotator_status::read_cycle`. The root is passed in, so neither HOME nor
+/// `AMPLIHACK_CLAUDE_PROFILE_ROOT` is consulted.
+struct LedgerDeps {
+    root: PathBuf,
+    guard: FsGuard,
+    clock: i64,
+}
+
+impl Deps for LedgerDeps {
+    fn auto_switch_on(&mut self) -> bool {
+        true
+    }
+    fn now(&mut self) -> i64 {
+        self.clock
+    }
+    fn sleep(&mut self, d: Duration) {
+        self.clock += d.as_secs() as i64;
+    }
+    fn read_cycle(&mut self, now: i64) -> Option<CycleStatus> {
+        amplihack_utils::rotator_status::read_cycle(&self.root, now)
+    }
+    fn guard(&mut self) -> &mut dyn GuardStore {
+        &mut self.guard
+    }
+    fn log(&mut self, now: i64, entry: &LogEntry) {
+        append(&resume_dir(&self.root), &format_line(now, entry));
+    }
+    fn session_alive(&mut self) -> bool {
+        true
+    }
+    fn rotator_down(&mut self, _now: i64) -> bool {
+        false
+    }
+}
+
+/// A private ledger under `root` whose last cycle was measured 31 s after
+/// the limit hit at `NOW`.
+fn write_ledger_1907(root: &Path, outcome: &str, extra: &str) {
+    let dir = root.join(".auto-switch.d").join("rotate");
+    private_dir(&dir);
+    let body = format!(
+        r#"{{"version":1,"live":"work"{extra},
+            "last_cycle":{{"at":{a},"measured_at":{m},"outcome":"{outcome}"}}}}"#,
+        a = NOW + 61,
+        m = NOW + 31
+    );
+    let p = dir.join("ledger.json");
+    fs::write(&p, body).unwrap();
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+fn limit_event() -> HookInput {
+    serde_json::from_value(json!({
+        "hook_event_name": "StopFailure",
+        "session_id": "s1907",
+        "error": "rate_limit",
+        "last_assistant_message": "You've hit your session limit"
+    }))
+    .unwrap()
+}
+
+fn run_on_disk(r: &tempfile::TempDir) -> Outcome {
+    let mut d = LedgerDeps {
+        root: r.path().to_path_buf(),
+        guard: FsGuard::new(r.path()),
+        clock: NOW,
+    };
+    run_with(&limit_event(), &mut d)
+}
+
+#[test]
+fn issue_1907_a_a_stayed_unread_ledger_on_disk_never_resumes() {
+    let r = root();
+    write_ledger_1907(r.path(), "stayed-unread", r#","alert":null"#);
+    assert_eq!(run_on_disk(&r), Outcome::NoCapacityTimeout);
+    let events = resume_dir(r.path()).join("events");
+    assert!(
+        !events.exists() || fs::read_dir(&events).unwrap().count() == 0,
+        "no resume marker"
+    );
+}
+
+#[test]
+fn issue_1907_d_an_advisory_alert_ledger_on_disk_resumes() {
+    let r = root();
+    write_ledger_1907(
+        r.path(),
+        "stayed",
+        r#","alert":null,"advisory_alert":"no-capacity:work""#,
+    );
+    assert_eq!(run_on_disk(&r), Outcome::Resumed);
+    let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
+    assert!(
+        log.contains("outcome=resumed live=work cycle=stayed"),
+        "{log}"
+    );
+}
