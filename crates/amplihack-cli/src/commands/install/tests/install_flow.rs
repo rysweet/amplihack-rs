@@ -619,6 +619,7 @@ fn acquire_from_download(
             local: None,
             force_refresh: true,
             mode: InstallMode::Explicit,
+            fetch_backoff: None,
         },
         &clone::FrameworkRootQuery::default(),
         &framework_source::BinaryIdentity {

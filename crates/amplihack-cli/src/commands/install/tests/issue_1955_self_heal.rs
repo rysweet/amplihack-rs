@@ -66,7 +66,7 @@ fn a_failed_fetch_with_a_compatible_bundle_warns_and_runs_the_command() {
         notice,
         format!(
             "amplihack: warning: could not fetch the framework bundle for v{} (network request \
-             timed out); keeping the installed bundle. The next launch will retry.\n",
+             timed out); keeping the installed bundle. A later launch will retry.\n",
             crate::VERSION
         )
     );

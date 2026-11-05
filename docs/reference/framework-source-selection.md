@@ -21,6 +21,7 @@ version. A source with a different version is used only with an explicit
 - [Source rules](#source-rules)
 - [Release tag fetch](#release-tag-fetch)
 - [Staging order](#staging-order)
+- [Fetch backoff](#fetch-backoff)
 - [Manifest check](#manifest-check)
 - [File modes](#file-modes)
 - [What happens on each failure](#what-happens-on-each-failure)
@@ -170,6 +171,32 @@ source's `amplifier-bundle` root is an error.
 Self-heal stages under `~/.amplihack/.install.lock`, including its fetch.
 Explicit `install` doesn't take that lock.
 
+## Fetch backoff
+
+A tag fetch that fails, from any install, writes `~/.amplihack/.tag-fetch-failed`:
+
+```text
+1.2.99
+1762300800
+```
+
+The first line is the binary version that failed to fetch; the second is the
+time of the failure in Unix seconds. For 10 minutes after that time, a
+self-heal or launch-bootstrap install for the same version skips the fetch and
+fails with `SourceFetchFailed::Failed`, so self-heal keeps a compatible bundle
+with its usual warning. The holder of the install lock writes the marker before
+releasing the lock, so the launches queued behind it read the marker and don't
+retry.
+
+| Case | Fetch runs? |
+|---|---|
+| No marker, or the marker is for another version | Yes |
+| Marker for this version, under 10 minutes old | Self-heal: no. Explicit `install` and `update`: yes. |
+| Marker older than 10 minutes, dated in the future, malformed or over 256 bytes | Yes |
+
+A successful fetch removes the marker. A build that may not fetch never writes
+one.
+
 ## Manifest check
 
 After the copy, install records the relative path and SHA-256 of every regular
@@ -191,8 +218,11 @@ It uses the same walk as the copy, so these aren't part of either list:
 The error lists up to 20 paths per category and the total for each category.
 Control characters in paths are escaped.
 
-This check shows that staging matches its source. It doesn't show that the
-source is authentic. See [Known limits](#known-limits).
+This check shows that staging matches its source. It is not a check against a
+manifest published with the release: there is no such manifest yet, so a
+same-version source with local edits passes. Issue #1955 item 4 asked for a
+check against the release's manifest; what ships is the narrower
+copy-against-source check, and the release manifest is a follow-up. See [Known limits](#known-limits).
 
 ## File modes
 
@@ -233,8 +263,9 @@ first and always needs network access.
 binary is already in place by then, so run `amplihack install` once the cause is
 fixed, or let self-heal retry at the next launch.
 
-When self-heal keeps a bundle, the unchanged stamp makes the next launch try
-again. On a build that may not fetch, that attempt looks only at local sources,
+When self-heal keeps a bundle, the unchanged stamp makes a later launch try
+again. After a failed fetch, launches for the same version skip the fetch for 10
+minutes ([fetch backoff](#fetch-backoff)). On a build that may not fetch, that attempt looks only at local sources,
 so the warning repeats until a same-version source appears or you run
 `amplihack install --local`. See
 [Self-heal failure modes](../features/self-heal-asset-restage.md#failure-mode).
@@ -300,7 +331,7 @@ Run `amplihack install --local <PATH>` to install from a checkout.
 **Self-heal keeping a compatible bundle after a failed fetch (one line):**
 
 ```text
-amplihack: warning: could not fetch the framework bundle for v1.2.99 (network request timed out); keeping the installed bundle. The next launch will retry.
+amplihack: warning: could not fetch the framework bundle for v1.2.99 (network request timed out); keeping the installed bundle. A later launch will retry.
 ```
 
 **Self-heal keeping a compatible bundle on a build that may not fetch (one line):**
@@ -332,7 +363,9 @@ Install never prints `Bundled framework source not found`.
   however old, because build metadata is ignored. The gate fully protects only
   release binaries.
 - **Same-version checkouts:** a checkout with uncommitted or post-tag changes
-  passes. The manifest compares staging with its source, not with the tag. The
+  passes. The manifest compares staging with its source, not with the tag or a
+  manifest published with the release, so it proves a faithful copy and nothing
+  about the content. A release-published manifest is a follow-up to #1955. The
   output names the source so you can see this.
 - **Self-declared versions:** the gate checks what a source says about itself.
   It doesn't prove where the source came from.
@@ -349,9 +382,10 @@ Install never prints `Bundled framework source not found`.
   Its version is checked, and its copy is checked against itself.
 - **Git route limits:** the git route is limited by time only. The size and
   entry limits apply to the tarball route.
-- **Hung networks:** a hung network can add up to 60 seconds to a launch.
-  Parallel launches wait one after another under the install lock, and no marker
-  stops each one from retrying.
+- **Hung networks:** a hung network can add up to 60 seconds to a launch. The
+  [fetch backoff](#fetch-backoff) limits this to one launch per 10 minutes: the
+  launches queued behind a failed fetch skip it. A launch that starts after the
+  window ends waits again.
 - **Blocked networks:** someone who can block the network can keep a host on an
   older compatible bundle. A warning prints on each launch.
 
@@ -401,6 +435,7 @@ All paths are under `crates/amplihack-cli/src/`.
 | `acquire_framework_source`, `AcquiredSource` | `commands/install/framework_source.rs` | Decides the source. All inputs are parameters. |
 | `TagFetcher` | `commands/install/tag_fetch.rs` | Fetches one exact release tag. Injected in tests, with no production env var. |
 | `SourceFetchFailed` | `commands/install/tag_fetch.rs` | The only error self-heal may continue past, and only with a compatible bundle. |
+| `recent_failure`, `record_failure`, `clear` | `commands/install/fetch_backoff.rs` | The [fetch backoff](#fetch-backoff) marker. |
 | `of_source`, `of_staged`, `compare` | `commands/install/bundle_manifest.rs` | Builds and compares manifests. `compare` is pure. |
 | `walk_tree`, `WalkScope`, `WalkEntry` | `commands/install/filesystem.rs` | The one walker used by the copy and the manifest. |
 | `normalize_bundle_modes` | `commands/install/directories.rs` | Applies [the mode rule](#file-modes). Returns an error on a symlink. |

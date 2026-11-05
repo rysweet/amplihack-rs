@@ -12,6 +12,7 @@ use super::clone::{
     self, CandidateVerdict, FrameworkRootOrigin, FrameworkRootQuery, FrameworkRootResolution,
     ResolutionNote,
 };
+use super::fetch_backoff;
 use super::paths::sanitize_path;
 use super::tag_fetch::{
     EXPLICIT_FETCH_BUDGET, FetchedWrongVersion, IMPLICIT_FETCH_BUDGET, SourceFetchFailed,
@@ -22,7 +23,7 @@ use anyhow::{Context, Result};
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// Largest `Cargo.toml` or stamp a version is read from (SEC-11).
 const VERSION_FILE_LIMIT: u64 = 64 * 1024;
@@ -36,6 +37,9 @@ pub(super) struct SourcePolicy {
     pub(super) local: Option<PathBuf>,
     pub(super) force_refresh: bool,
     pub(super) mode: InstallMode,
+    /// Where a failed tag fetch is remembered ([`fetch_backoff`]). `None`
+    /// disables the backoff; production passes `~/.amplihack/.tag-fetch-failed`.
+    pub(super) fetch_backoff: Option<PathBuf>,
 }
 
 /// `Known` is built only from a successful semver parse (SEC-5).
@@ -406,11 +410,37 @@ fn fetch_release_tag(
         InstallMode::Explicit => EXPLICIT_FETCH_BUDGET,
         InstallMode::Implicit => IMPLICIT_FETCH_BUDGET,
     };
+    // Only a launch backs off; a user who asked for an install gets a fetch.
+    if policy.mode == InstallMode::Implicit
+        && let Some(marker) = &policy.fetch_backoff
+        && let Some(age) = fetch_backoff::recent_failure(marker, &binary.version, SystemTime::now())
+    {
+        return Err(SourceFetchFailed::Failed {
+            version: binary.version.clone(),
+            reason: fetch_backoff::skipped_reason(age),
+        }
+        .into());
+    }
     let fetched_dir = tempfile::tempdir().context("failed to create a temp dir for the fetch")?;
     // Stderr, because a launch on an offline host repeats this and its stdout
     // may be going somewhere that parses it.
     eprintln!("{}", fetch_reason(&version, policy.force_refresh));
-    let root = fetcher.fetch(&version, fetched_dir.path(), budget)?;
+    let fetched = fetcher.fetch(&version, fetched_dir.path(), budget);
+    if let Some(marker) = &policy.fetch_backoff {
+        match &fetched {
+            Ok(_) => fetch_backoff::clear(marker),
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<SourceFetchFailed>(),
+                    Some(SourceFetchFailed::Failed { .. })
+                ) =>
+            {
+                fetch_backoff::record_failure(marker, &binary.version, SystemTime::now());
+            }
+            Err(_) => {}
+        }
+    }
+    let root = fetched?;
 
     let found = read_fetched_tree_version(&root);
     if !found.matches(&binary.version) {

@@ -32,7 +32,8 @@
 //! The one exception is issue #1955 D1: when only the release tag fetch failed
 //! and the installed bundle passes the compatibility check, the command runs
 //! with a warning, because otherwise every command on an offline upgraded host
-//! would exit 1. The stamp stays as it was, so the next launch retries.
+//! would exit 1. The stamp stays as it was, so a later launch retries; the
+//! fetch itself backs off for 10 minutes after a failure (`fetch_backoff`).
 
 use std::ffi::OsString;
 use std::fs::OpenOptions;
@@ -463,7 +464,7 @@ fn format_kept_bundle_warning(failed: &SourceFetchFailed, running: &str) -> Stri
     match failed {
         SourceFetchFailed::Failed { reason, .. } => format!(
             "amplihack: warning: could not fetch the framework bundle for v{running} ({}); \
-             keeping the installed bundle. The next launch will retry.\n",
+             keeping the installed bundle. A later launch will retry.\n",
             sanitize_text(reason)
         ),
         SourceFetchFailed::NotAllowed { .. } => format!(

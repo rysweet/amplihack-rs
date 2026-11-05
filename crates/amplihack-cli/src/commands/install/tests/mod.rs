@@ -20,6 +20,7 @@ mod issue_1745_launch_repair_statusline;
 #[cfg(unix)]
 #[path = "../../../../tests/issue_1699_real_root_guard.rs"]
 mod issue_1699_real_root_guard;
+mod issue_1955_fetch_backoff;
 mod issue_1955_force_refresh;
 mod issue_1955_manifest;
 #[cfg(unix)]

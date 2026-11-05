@@ -31,6 +31,7 @@ fn policy(mode: InstallMode) -> SourcePolicy {
         local: None,
         force_refresh: false,
         mode,
+        fetch_backoff: None,
     }
 }
 

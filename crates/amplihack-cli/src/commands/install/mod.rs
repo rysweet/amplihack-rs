@@ -11,6 +11,7 @@ mod codex_plugin;
 mod command_staging;
 mod copilot_plugin;
 mod directories;
+mod fetch_backoff;
 pub(crate) mod filesystem;
 pub(crate) mod framework_source;
 mod hooks;
@@ -176,6 +177,9 @@ fn run_install_with_fetcher(
         local,
         force_refresh,
         mode,
+        fetch_backoff: version_stamp::installed_version_path()
+            .ok()
+            .and_then(|stamp| stamp.parent().map(fetch_backoff::marker_path)),
     };
     // Lives until the install returns, because a fetched tree is deleted with it.
     let source = framework_source::acquire_framework_source(

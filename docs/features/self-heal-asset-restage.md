@@ -251,7 +251,7 @@ Per the project's Zero-BS philosophy, install failures during self-heal
 
 - The error is printed to stderr.
 - The process exits with status `1`.
-- The stamp file is **not** updated, so the next launch will retry.
+- The stamp file is **not** updated, so a later launch will retry.
 - The advisory lock is released (RAII drop) so the retry is not blocked.
 
 There is no `|| true`, no silent skip, and no "continue with whatever assets
@@ -276,7 +276,7 @@ Self-heal then prints one line to stderr, leaves the stamp unchanged and runs
 your command:
 
 ```
-amplihack: warning: could not fetch the framework bundle for v1.2.99 (network request timed out); keeping the installed bundle. The next launch will retry.
+amplihack: warning: could not fetch the framework bundle for v1.2.99 (network request timed out); keeping the installed bundle. A later launch will retry.
 ```
 
 A build that may not fetch makes no network request. It prints this line instead,
@@ -286,9 +286,18 @@ because a later launch won't fetch either:
 amplihack: warning: this build (1.2.0+snapshot.7deb23da4) cannot fetch a release tag, and no local source matches it; keeping the installed bundle. Run `amplihack install --local <PATH>` to replace it.
 ```
 
-The unchanged stamp is what makes the next launch try again. Each attempt that
-fetches waits up to 60 seconds. Parallel launches wait one after another under
-the install lock, because there is no backoff marker.
+The unchanged stamp is what makes a later launch try again. Each attempt that
+fetches waits up to 60 seconds.
+
+A failed fetch writes `~/.amplihack/.tag-fetch-failed`, holding the version and
+the time of the failure. For the next 10 minutes, a launch for the same version
+skips the fetch and prints the same warning at once, with a reason such as
+`a fetch for this version failed 42 s ago, so it is not retried for another 10 min`.
+The lock holder writes the marker before it releases the install lock, so
+launches that were waiting behind it don't retry either. On a host with a hung
+network, N parallel launches therefore cost one 60-second wait, not N of them.
+Explicit `amplihack install` and `amplihack update` ignore the marker, and any
+successful fetch removes it.
 
 An explicit `amplihack install` or `amplihack update` never continues past a
 failed fetch. Both exit non-zero.
