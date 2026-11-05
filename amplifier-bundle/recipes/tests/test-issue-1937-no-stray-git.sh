@@ -85,14 +85,19 @@ check_isolation_order() {
   fi
 }
 
-declare -A WRITERS=(
-  [checkpoint-scoped-format]="${SCRIPT_DIR}/test-checkpoint-scoped-format.sh"
-  [issue-1808-worktree-base]="${SCRIPT_DIR}/test-issue-1808-worktree-base.sh"
-  [issue-1671-hook-rejection-repair]="${SCRIPT_DIR}/test-issue-1671-hook-rejection-repair.sh"
-)
+# A case lookup rather than an associative array: macOS /bin/bash 3.2 has none
+# (#1423).
+writer_script() {
+  case "$1" in
+    checkpoint-scoped-format) echo "${SCRIPT_DIR}/test-checkpoint-scoped-format.sh" ;;
+    issue-1808-worktree-base) echo "${SCRIPT_DIR}/test-issue-1808-worktree-base.sh" ;;
+    issue-1671-hook-rejection-repair) echo "${SCRIPT_DIR}/test-issue-1671-hook-rejection-repair.sh" ;;
+    *) return 1 ;;
+  esac
+}
 
 for name in checkpoint-scoped-format issue-1808-worktree-base issue-1671-hook-rejection-repair; do
-  script="${WRITERS[${name}]}"
+  script="$(writer_script "${name}")" || { echo "HARNESS-ERROR: unknown writer ${name}" >&2; exit 2; }
   [[ -f "${script}" ]] || { echo "HARNESS-ERROR: ${script} not found" >&2; exit 2; }
   check_isolation_order "${name}" "${script}"
   if [[ "${name}" != issue-1671-hook-rejection-repair || "${AMPLIHACK_1937_FULL:-0}" == 1 ]]; then
