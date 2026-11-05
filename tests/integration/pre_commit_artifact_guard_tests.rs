@@ -123,6 +123,9 @@ fn wrapper_target_dir(entry: &str) -> Result<String, String> {
         .current_dir(workspace_root())
         // The caller's own cache must not stand in for the default under test.
         .env_remove("CARGO_TARGET_DIR")
+        // Nor may a recipe run's work root (issue #1808), which moves the
+        // cache to `<work root>/targets` whenever the caller runs inside one.
+        .env_remove("AMPLIHACK_WORK_ROOT")
         .env("HOME", &home)
         .env("XDG_CACHE_HOME", home.join(".cache"))
         .env("AMPLIHACK_PRECOMMIT_CACHE_TTL_DAYS", "0")

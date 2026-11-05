@@ -813,3 +813,57 @@ fn a_rotator_running_another_binary_is_foreign() {
     let none = tempfile::tempdir().unwrap();
     assert_eq!(foreign_rotator(&pid_file, none.path(), Some(&new)), None);
 }
+
+// ── Issue #1907: what counts as capacity ────────────────────────────────────
+
+/// A ledger whose last cycle ended `outcome`, measured after a limit hit at
+/// `NOW - 100`, with `extra` fields at the top level.
+fn ledger_1907(outcome: &str, extra: &str) -> Vec<u8> {
+    ledger(&format!(
+        r#"{{"version":1,"live":"work"{extra},
+            "last_cycle":{{"at":{t},"measured_at":{m},"outcome":"{outcome}"}}}}"#,
+        m = NOW - 40,
+        t = NOW - 10
+    ))
+}
+
+#[test]
+fn issue_1907_a_stayed_unread_cycle_is_not_capacity() {
+    let s = parse_cycle(&ledger_1907("stayed-unread", ""), NOW).unwrap();
+    assert_eq!(s.outcome.as_deref(), Some("stayed-unread"));
+    assert!(!s.alert);
+    assert!(!s.has_capacity());
+    assert!(!s.fresh_capacity(NOW - 100));
+}
+
+#[test]
+fn issue_1907_an_unknown_outcome_without_an_alert_is_not_capacity() {
+    for o in ["stayed-later", "stayed_unread", "Stayed", ""] {
+        let s = parse_cycle(&ledger_1907(o, r#","alert":null"#), NOW).unwrap();
+        assert!(!s.has_capacity(), "{o:?}");
+    }
+}
+
+#[test]
+fn issue_1907_a_stay_with_only_an_advisory_alert_is_capacity() {
+    let raw = ledger_1907(
+        "stayed",
+        r#","alert":null,"advisory_alert":"no-capacity:work""#,
+    );
+    let s = parse_cycle(&raw, NOW).unwrap();
+    assert!(!s.alert, "advisory_alert is not read as alert");
+    assert!(s.has_capacity());
+    assert!(s.fresh_capacity(NOW - 100));
+    // And without the null `alert` key at all.
+    let raw = ledger_1907("stayed", r#","advisory_alert":"no-capacity:work""#);
+    assert!(parse_cycle(&raw, NOW).unwrap().fresh_capacity(NOW - 100));
+}
+
+#[test]
+fn issue_1907_a_hard_alert_still_blocks_whatever_the_advisory_field_says() {
+    let raw = ledger_1907(
+        "stayed",
+        r#","alert":"no-capacity:work","advisory_alert":null"#,
+    );
+    assert!(!parse_cycle(&raw, NOW).unwrap().has_capacity());
+}

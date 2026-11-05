@@ -31,6 +31,8 @@ fn base() -> Snap {
         live: LiveId::Known(n("work")),
         proto: None,
         account: Some("u-work".into()),
+        trusted_live: None,
+        identity_refusal: None,
         candidates: vec![n("spare"), n("spare2"), n("third")],
         skips: vec![(n("work"), Skip::Live)],
         sees_sessions: true,

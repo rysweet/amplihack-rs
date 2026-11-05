@@ -210,6 +210,8 @@ fn snap_on_unmarked_key() -> Snap {
         live: LiveId::Known(n("api-key")),
         proto: None,
         account: None,
+        trusted_live: None,
+        identity_refusal: None,
         candidates: vec![n("work"), n("spare")],
         skips: Vec::new(),
         sees_sessions: true,

@@ -3,10 +3,9 @@
 //! the kind and account checks it makes go through `kind` and
 //! [`Account::of_dir`], so no file is looked inside here.
 
-use super::identify::Account;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{CREDS, Ledger, Liveness, exists, movable_login};
-use crate::commands::profile::kind::{self, Kind, Resolved};
+use crate::commands::profile::kind::{self, Resolved};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::path::Path;
@@ -128,10 +127,6 @@ pub fn candidates(
             Some(Skip::Hosting)
         } else if exists(&parked.join(n)) {
             Some(Skip::Parked)
-        } else if resolved().kind == Kind::Subscription
-            && dir.as_deref().and_then(Account::of_dir).is_none()
-        {
-            Some(Skip::NoAccount)
         } else {
             None
         };

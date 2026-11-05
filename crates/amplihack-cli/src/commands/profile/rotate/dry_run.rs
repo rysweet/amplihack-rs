@@ -16,9 +16,11 @@ use super::swap;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, exists, now};
 
-/// The outcome a live cycle would record for `decision`. `--dry-run` returns
-/// it so the preview reports what it printed; nothing is recorded and the
-/// exit code does not depend on it.
+/// The outcome `--dry-run` reports for `decision`, matching the line it
+/// printed. It is not always what a live cycle would record: a live stay
+/// without a fresh reading records `stayed-unread`, and a live advisory ALERT
+/// records `stayed`, while this returns `Stayed` and `Alerted`. Nothing is
+/// recorded and the exit code does not depend on it.
 pub(super) fn would(decision: &Decision) -> CycleOutcome {
     match decision {
         Decision::Stay => CycleOutcome::Stayed,
@@ -31,6 +33,7 @@ pub(super) fn would(decision: &Decision) -> CycleOutcome {
 /// `would ...` lines and the `cycle` line, and returns the outcome a live
 /// cycle would have recorded.
 pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
+    ctx.identity_budget.reset();
     let mut out = Sink::new(None, true, false);
     if exists(&ctx.rs.journal) {
         match ctx.rs.load_journal() {
@@ -54,7 +57,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     // Issues #1693, #1886: what hand-change recovery would do, from the same
     // identity reads; it stops here unless it could only not tell.
     let env_for = || handfix::Env::system(ctx.store.root(), &state, ctx.scan);
-    let read = |p: &std::path::Path| (ctx.identity)(p);
+    let read = |p: &std::path::Path| ctx.identity_reader().oauth(p);
     let (store, rs, home) = (&ctx.store, &ctx.rs, &ctx.home);
     let gap = handfix::min_gap(ctx);
     let lines = handfix::preview(store, rs, home, env_for, &read, gap, now())?;

@@ -114,6 +114,9 @@ fn fx() -> Fx {
     rs.save_ledger(&RotateLedger {
         live: Some(WORK.into()),
         account: Some("u-work".into()),
+        login_identity: Some(super::login_identity::Identity::new(
+            &(super::cred_identity::DEFAULT_READ)(&home.join(".claude")).unwrap(),
+        )),
         since: Some(now() - 7200),
         swapped_at: Some(now() - 7200),
         ..RotateLedger::default()
@@ -372,10 +375,11 @@ fn a_home_key_stops_failed_probe_swaps_for_good() {
     let f = fx();
     private(&f.home.join(".claude.json"), HOME_WITH_KEY);
     let mut c = failing(&f);
+    // Issue #1907: the live probe failed, so the stay is not capacity.
     for _ in 0..4 {
         assert_eq!(
             run_cycle(&mut c, Mode::Watch).unwrap(),
-            CycleOutcome::Stayed
+            CycleOutcome::StayedUnread
         );
     }
     assert_eq!(f.home_login(), Some(f.live), "work's login stays live");

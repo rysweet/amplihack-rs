@@ -235,6 +235,7 @@ fn journal_appears(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> 
             to_lock_ino: None,
             started_at: at,
             pid: std::process::id(),
+            identity: None,
         })
         .unwrap();
     decide_measured(ctx, snap, spent(), probes, at)
@@ -568,6 +569,10 @@ fn relog(root: &Path, name: &str, uuid: &str) {
     v["oauthAccount"] =
         serde_json::json!({"accountUuid": uuid, "emailAddress": format!("{uuid}@example.com")});
     private(&path, &v.to_string());
+    let cred = root.join(name).join(CREDS);
+    let mut c = json(&cred);
+    c["task1753FakeIdentity"] = v["oauthAccount"].clone();
+    private(&cred, &c.to_string());
 }
 
 fn spare_relogged(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
@@ -721,6 +726,7 @@ fn a_home_cut_short_during_measurement_is_read_again_and_the_swap_goes_ahead() {
     let ledger = RotateLedger {
         live: Some("work".into()),
         account: Some("u-work".into()),
+        login_identity: e.rs.load_ledger().unwrap().unwrap().login_identity,
         ..RotateLedger::default()
     };
     e.rs.save_ledger(&ledger).unwrap();
@@ -742,7 +748,7 @@ fn a_home_cut_short_before_any_ledger_is_read_again_too() {
     let e = env();
     let mut ctx = ctx_with(&e, home_cut_short);
     ctx.pause = |ctx| {
-        assert_eq!(live_now(ctx), LiveId::Adopt);
+        assert_eq!(live_now(ctx), LiveId::HomeUnreadable(n("work")));
         put_home_back(&ctx.home);
     };
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
@@ -790,10 +796,14 @@ fn a_home_with_another_account_is_not_read_again() {
     ctx.pause = never_paused;
     let outcome = run_cycle(&mut ctx, Mode::Watch).unwrap();
     let log = log_of(&e);
-    assert_eq!(outcome, CycleOutcome::Skipped, "{log}");
-    assert_eq!(changed_labels(&log), ["live"]);
+    assert_eq!(outcome, CycleOutcome::Swapped, "{log}");
+    assert!(!log.contains(msg::CHANGED), "{log}");
     assert!(!log.contains(REREAD), "{log}");
-    assert_eq!(ino_at(&e.live()), Some(e.l), "nothing was moved");
+    assert_eq!(
+        ino_at(&e.live()),
+        Some(e.t),
+        "trusted target moved despite a stale session"
+    );
 }
 
 fn home_cut_short_and_journal(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {

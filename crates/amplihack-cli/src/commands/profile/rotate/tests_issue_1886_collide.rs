@@ -176,6 +176,11 @@ impl Fx {
         let mut ctx = Ctx::new(self.store.clone(), self.home.clone(), s);
         ctx.scan = |_| Liveness::Known(BTreeSet::new());
         ctx.measure = Some(work_out_spare_free);
+        let mut l = self.rs.load_ledger().unwrap().unwrap();
+        let identity = via_fake(&self.home.join(".claude")).unwrap();
+        l.account = Some(identity.key().to_string());
+        l.login_identity = Some(super::super::login_identity::Identity::new(&identity));
+        self.rs.save_ledger(&l).unwrap();
         ctx.identity = via_fake;
         ctx
     }

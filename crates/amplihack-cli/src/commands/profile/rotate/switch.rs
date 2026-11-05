@@ -60,8 +60,11 @@ pub struct AfterSwapFailure {
 }
 
 /// A log or ALERT line as a refusal reason, without its prefix.
+/// `RotateRefused` adds `swap refused: ` itself, so an ALERT that already
+/// carries it loses it here.
 fn reason_of(line: &str) -> String {
     let text = line.strip_prefix("ALERT: ").unwrap_or(line);
+    let text = text.strip_prefix("swap refused: ").unwrap_or(text);
     text.strip_prefix("skip: ").unwrap_or(text).to_string()
 }
 
@@ -151,7 +154,16 @@ pub(super) fn switch_in(
             if let Some(reason) = not_a_candidate(store, &first, name) {
                 return default_only(&ctx.rs, store, name, reason);
             }
-            let from = match swap::swap(store, &ctx.rs, home, source, name, now()) {
+            let from = match swap::swap_with(
+                store,
+                &ctx.rs,
+                home,
+                source,
+                name,
+                now(),
+                ctx.identity_reader(),
+                Some(&first),
+            ) {
                 Ok(from) => from,
                 // A swap refusal changes nothing (see `swap::swap`).
                 Err(ProfileError::RotateRefused(reason)) => {
@@ -265,7 +277,7 @@ pub(super) fn not_a_candidate(
         Skip::Leased => "auto-switch has lent its login to another profile's session".to_string(),
         Skip::Hosting => "its directory holds another account's login for auto-switch".to_string(),
         Skip::Parked => "auto-switch has parked its own login".to_string(),
-        Skip::NoAccount => "its .claude.json has no usable oauthAccount".to_string(),
+        Skip::NoAccount => "its trusted login identity is unavailable".to_string(),
     };
     Some(format!(
         "profile {name} is not a rotate candidate ({why}): {detail}"

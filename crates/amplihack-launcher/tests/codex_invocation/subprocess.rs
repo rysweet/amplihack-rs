@@ -93,8 +93,8 @@ pub(super) fn interactive_resume_subprocess_inherits_real_terminal_stdin() {
                 &mut master,
                 &mut slave,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
             )
         },
         0

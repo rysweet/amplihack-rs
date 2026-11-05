@@ -391,7 +391,11 @@ fn a_second_matching_reading_recovers_as_before() {
     let l = f.ledger();
     assert_eq!(l.live.as_deref(), Some(M));
     assert_eq!(l.since, Some(T + GAP));
-    assert_eq!(l.account, None, "never written from .claude.json");
+    assert_eq!(
+        l.account.as_deref(),
+        Some("u-mike"),
+        "from trusted credential evidence"
+    );
     assert_eq!(l.hand_suspect, None);
     assert_eq!(l.guidance, None);
     let log = f.logged();
