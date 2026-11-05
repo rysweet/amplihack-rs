@@ -1,3 +1,10 @@
+---
+title: "How to manage multiple Claude Code logins with profiles"
+description: "Create and select Claude login profiles with shared sessions on Linux and macOS."
+doc_type: howto
+last_updated: 2026-11-04
+---
+
 # How to Manage Multiple Claude Code Logins with Profiles
 
 A *Claude login profile* is a named Claude Code configuration directory. For
@@ -434,7 +441,7 @@ launch without `--profile` then use `work`. Moving the login needs Linux
 and a profile that has a login of its own. When the login cannot be moved
 (on macOS or Windows, or when `work` is open in a session of its own),
 `switch` still makes `work` the default for new launches, prints
-`Live login not moved; ...`, holds nothing, and exits 1; see
+`Live login not moved; ...`, preserves any existing rotation pin, and exits 1; see
 [Switch to a login by hand](claude-profile-rotation.md#switch-to-a-login-by-hand)
 for the details and the refusals.
 
@@ -449,6 +456,29 @@ no profile, `CLAUDE_CONFIG_DIR` is neither set nor altered, so existing
 behavior (including an ambient `CLAUDE_CONFIG_DIR` you exported yourself) is
 unchanged. When a profile is selected, it overrides the ambient value for the
 child process only.
+
+### Select a profile on macOS
+
+Create and log in to `work` with the [profile setup steps](#create-and-log-in),
+then select it explicitly for a launch. The commands in
+[Choose a profile](#choose-a-profile), such as `amplihack claude --profile work`
+and `amplihack profile run personal -- --model sonnet`, use the selected
+configuration directory on macOS as well as Linux. The `personal` example
+requires a logged-in `personal` profile too.
+
+Use `amplihack profile switch work` when you also want to set the default
+for future amplihack launches. Once recovery has settled, a refusal to move
+the login can still set that default and exit 1. Read the printed reason:
+unknown session liveness is one possible refusal reason on macOS; missing
+login or account prerequisites can refuse earlier.
+A default-only refusal leaves credentials, the existing rotation pin and
+the ledger unchanged. Plain `claude` continues using its existing login. Earlier
+validation or lock failures can prevent the default from being written.
+
+If `work` is already the identified live profile, the switch succeeds
+without an exchange and records the pin, default and successful switch.
+For exact refusal results and their state guarantees, see
+[Linux and macOS contracts](../reference/profile-command.md#linux-and-macos-contracts).
 
 ### Nested sessions keep the parent's profile
 

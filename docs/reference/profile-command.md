@@ -1,3 +1,10 @@
+---
+title: "Reference: amplihack profile"
+description: "Claude login profile commands, platform contracts, configuration and security requirements."
+doc_type: reference
+last_updated: 2026-11-04
+---
+
 # Reference: `amplihack profile`
 
 Manage Claude Code login profiles. See the
@@ -5,6 +12,25 @@ Manage Claude Code login profiles. See the
 
 See also the [capacity governor](./capacity-governor.md), which reads the
 usage readings described here to decide when new work may start.
+
+## Contents
+
+- [Synopsis](#synopsis)
+- [Linux and macOS contracts](#linux-and-macos-contracts)
+- [Subcommands](#subcommands)
+- [Configuration](#configuration)
+- [Shared session directories](#shared-session-directories)
+- [Name rules](#name-rules)
+- [Profile root](#profile-root)
+- [Resolution and environment](#resolution-and-environment)
+- [Literal argument forwarding](#literal-argument-forwarding)
+- [Auto-switch](#auto-switch)
+- [Rotate](#rotate)
+- [Usage-limit wait](#usage-limit-wait)
+- [Errors](#errors)
+- [Security notes](#security-notes)
+- [Identity and duplicate logins](#identity-and-duplicate-logins)
+- [API-key profiles](#api-key-profiles)
 
 ## Synopsis
 
@@ -40,6 +66,169 @@ amplihack profile overflow clear --platform
 amplihack launch|claude --profile <name> [...]
 ```
 
+## Linux and macOS contracts
+
+Profile selection, process liveness and login movement have separate platform
+requirements. Selecting a profile for a new launch does not require moving
+the login in `~/.claude`.
+
+### Platform capabilities
+
+| Operation | Linux | macOS |
+|-----------|-------|-------|
+| Explicit profile launch, such as `amplihack claude --profile work` | Uses the selected configuration directory, subject to the usual launch checks. | Uses the same profile selection and launch checks. |
+| Native profile liveness | Reads `/proc`; uncertain observations conservatively count as live. | Returns `Liveness::Unsupported`. `supported()` is false and `is_live()` is true for every profile. |
+| Atomic exchange of valid login files | Uses `renameat2(RENAME_EXCHANGE)` on a supporting filesystem. | Returns `MoveError::Unsupported`, including when valid credentials files exist. |
+| Shared session directories | Links directories and can merge history when the profile is not live. | Creates links; existing real directories remain unmerged because liveness is unknown. See [Shared directories platform support](#shared-directories-platform-support). |
+
+The existing [profile root](#profile-root), [resolution and environment](#resolution-and-environment)
+and [rotate settings](#rotate-settings) apply on both platforms. No setting
+enables atomic login exchange on macOS. Exchange has no copy fallback and
+does not transfer Keychain credentials.
+
+Profile liveness is separate from the [capacity governor's process checks](./capacity-governor.md#dead-processes).
+The governor uses a process identifier (PID) and, on Linux, a recorded start
+time. On macOS it retains the PID check, while start time is unknown and
+the ancestry check trusts the existing session markers. The other
+[nesting requirements](./capacity-governor.md#nesting) still apply.
+
+### Refusal results and protected state
+
+The internal Rust results below retain their existing module visibility.
+They describe operation boundaries, with different state guarantees.
+
+| Boundary | macOS result after earlier checks pass | Protected state |
+|----------|---------------------------------------|-----------------|
+| `scan_system` | `Liveness::Unsupported` | The scan writes nothing. Every profile is treated as potentially in use. |
+| `exchange_logins` with two valid private regular single-link files | `Err(MoveError::Unsupported)` | Both files retain their bytes, device and inode, ownership, permissions and link count. No temporary credential copy is created. |
+| Direct `swap` | `ProfileError::RotateRefused("atomic exchange is not supported here")` | Credentials, account labels and existing refresh locks remain unchanged. No journal, adoption directory, refresh lock or relabel write is created. |
+| Whole switch to a different otherwise eligible profile, after settled recovery | `Switched::DefaultOnly` when native liveness refuses the candidate | `.default` may change. Credentials, the existing rotation pin and the ledger remain unchanged by that refusal. No swap journal is created. The command exits 1. |
+| Switch to the already-live profile | `Switched::AlreadyLive` | No exchange occurs. The command writes the pin, default and successful switch record as on Linux. |
+
+For a target named `work`, a whole switch that reaches the native liveness
+check refuses with this reason:
+
+```text
+profile work is not a rotate candidate (session running): running sessions cannot be seen here, so its login may be in use
+```
+
+The direct swap refusal has the display text:
+
+```text
+swap refused: atomic exchange is not supported here
+```
+
+Earlier validation failures retain their own results. For example, invalid
+exchange input returns `MoveError::Other("a login file is not a private regular file with one link")`
+on both platforms. A missing login or account can stop a switch before
+either platform-specific refusal above.
+
+Whole-switch recovery and logging may run before candidate refusal.
+Recovery of an interrupted transaction remains done. The default-only
+guarantee applies to the refusal after recovery has settled; it does not
+promise that the whole command leaves every file unchanged. See
+[Rotate switch](#rotate-switch) and [Default only](#default-only).
+
+### Validation and transaction results
+
+Direct swap checks root and HOME privacy, a pending journal, the target
+directory, login file shape and kind, the target account, HOME JSON and
+device placement before checking platform exchange support. The platform
+check precedes refresh-lock checks, outgoing login placement checks,
+relabelling and journal writes.
+
+Linux retains the [swap transaction](#rotate-swap) and [recovery](#rotate-recovery):
+atomic exchange, movement without replacement, directory synchronisation,
+inode revalidation, refresh-lock ownership checks and journal phases. A
+directory-sync error can follow a completed exchange, so a general I/O error
+does not establish that nothing moved. `RotateInconsistent` preserves the
+recovery failure result. `AfterSwapFailure` means that the login moved and
+a later pin, default or ledger write failed.
+
+For a cycle that reaches the real direct swap on macOS with otherwise
+valid inputs, `Mode::Watch` returns `CycleOutcome::Alerted` after successful
+reporting. `Mode::OneShot` returns the exact direct swap refusal above.
+Reporting may update logs, alerts and the ledger while login state remains
+unchanged. Native liveness or another earlier check can prevent a normal
+cycle from reaching the swap.
+
+### Overflow eligibility
+
+Linux requires a profile's login file, or an existing live-profile ledger
+entry, when testing whether it can take a login. macOS assumes that a login
+may be in the Keychain: `can_take_login` returns true without reading the
+Keychain. Missing credential files alone do not establish that a macOS plan
+profile has no login.
+
+The rotator's measured no-room records still apply on macOS. Profile kind,
+explicit overflow marks, capacity, unreadable evidence and billing blocks
+retain their existing rules. Eligibility does not establish that an atomic
+exchange can succeed. See [Rotate overflow](#rotate-overflow) and
+[API-key profiles](#api-key-profiles).
+
+### Docker preflight
+
+`AMPLIHACK_USE_DOCKER` requests Docker when its trimmed, case-insensitive
+value is `1`, `true` or `yes`. Environment activation also requires that the
+process is outside a container and the Docker daemon is running. The
+environment value alone does not establish active Docker mode.
+
+When that mode is active, `profile run` refuses with
+`ProfileError::UnsupportedMode("docker (env-activated)")`, using the existing
+error hint. This check precedes rotator autostart, profile resolution,
+profile-root creation and launch. See [Resolution and environment](#resolution-and-environment).
+
+### Filesystem security contracts
+
+Private-directory, ownership, containment, symlink, single-link, bounded
+no-follow read and JSON checks apply before an unsupported result where
+the operation requires them. The existing private-group permission policy
+continues to apply.
+
+The atomic writer that preserves a file's mode retains ordinary permissions
+with `mode & 0o777` and removes all `0o7000` special bits. Shared-history
+migration rejects every basename beginning with `.credentials` and the exact
+basename `.claude.json`, at every depth. The classifier compares raw filename
+bytes before opening a file, including names that are not valid UTF-8.
+Migration leaves excluded files in the private backup and preserves the
+top-level credential inode. It copies no credential contents into output or
+the shared store. See [Shared session directories](#shared-session-directories).
+
+### Contract test requirements
+
+**[PLANNED]** The tests and compiler corrections below are requirements;
+native macOS and Linux qualification remains pending.
+
+Native macOS tests must execute the unsupported liveness, valid exchange and
+direct swap operations and assert the exact results above. Exchange and
+swap fixtures must satisfy earlier validation and compare protected state.
+Synthetic Unix process fixtures and portable decision tests must also execute
+on macOS. Linux must retain its successful transaction, persistence and recovery
+assertions.
+
+Docker fixtures must control the request, container and daemon observations and
+exercise the actual run preflight before resolution, autostart or launch.
+Foreign-owner fixtures must use an otherwise valid process, assert that the
+ownership check was reached and include a matching accepted-owner control;
+Linux must also retain its `/proc/1` case. Reuse existing injection points.
+Private observation helpers may be introduced only if existing injection
+proves insufficient and consensus approval is obtained. Any helper must keep
+production observations and their order unchanged.
+
+Mode tests must call the real writer and distinguish the mode accepted by the
+filesystem from the replacement mode. Linux must retain raw-byte filename
+migration coverage. macOS migration fixtures may use a representable fourth
+credential-prefixed exclusion only where the raw filename cannot be created,
+while a Unix test must exercise the actual byte classifier inside its existing
+module boundary. All four credential exclusions and private backup assertions
+must remain in the migration test. Native test execution and compiler checks
+must provide separate evidence; cross-compilation establishes no native result.
+
+Linux-only definitions and imports must compile for their actual consumers,
+while Unix synthetic-parser and session-test consumers must remain available.
+Compiler checks must treat warnings as errors. Platform-specific compilation
+must retain the non-Linux governor fallbacks and unsupported profile operations.
+
 ## Subcommands
 
 | Command | Behavior |
@@ -48,7 +237,7 @@ amplihack launch|claude --profile <name> [...]
 | `root [<dir>]` | Print the profile root in use and where it came from, or save `<dir>` as the root. See [Profile root](#profile-root). |
 | `list` | First line `root: <path> (source: env\|config\|default)`; see [Profile root](#profile-root). Then one profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
-| `switch <name>` | Moves the profile's login into `~/.claude` with the rotator's [swap](#rotate-swap), under the rotator's lock, then pins rotation to it, writes the default pointer and records the switch in the rotate ledger, so sessions stopped on a usage limit before it are resumed. The profile must exist. Then checks the [shared session links](#shared-session-directories) of both profiles in the swap; messages go to stderr. When the live login cannot be moved (any system but Linux, a profile open in a session, no login in `~/.claude`, ...), it still writes the default pointer, holds nothing and exits 1. See [Rotate switch](#rotate-switch). |
+| `switch <name>` | Moves the profile's login into `~/.claude` with the rotator's [swap](#rotate-swap), under the rotator's lock, then pins rotation to it, writes the default pointer and records the switch in the rotate ledger, so sessions stopped on a usage limit before it are resumed. The profile must exist. Then checks the [shared session links](#shared-session-directories) of both profiles in the swap; messages go to stderr. A default-only refusal still writes the default pointer, preserves any existing rotation pin and exits 1. Earlier refusals can leave the default unchanged. See [Rotate switch](#rotate-switch) and [Linux and macOS contracts](#linux-and-macos-contracts). |
 | `switch --none` | Removes the default pointer and the [rotation pin](#rotate-pin). Prints `Default profile cleared.`, or `No default profile was set.` when there was none, plus `Rotation released; the rotator picks the best login on its next cycle.` when a pin was removed; exits 0 either way. Moves no login. Conflicts with a name; `switch` with neither is a usage error. See [Clearing the default](#clearing-the-default). |
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
 | `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |

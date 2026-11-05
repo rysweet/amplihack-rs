@@ -720,6 +720,11 @@ PID keeps a dead slot until that process also exits. On Linux, a slot whose
 recorded start time can no longer be read (for example under `hidepid=`)
 counts as dead.
 
+These governor checks are separate from
+[profile liveness](./profile-command.md#linux-and-macos-contracts). On macOS
+the governor still checks PIDs, while the profile scanner reports
+`Liveness::Unsupported` and treats each profile as potentially in use.
+
 A slot is held for the whole life of the admitted process, so a forgotten
 interactive session holds a slot. `governor status` shows when each slot was
 admitted; end the session, or start other work with `AMPLIHACK_GOVERNOR=off`.
