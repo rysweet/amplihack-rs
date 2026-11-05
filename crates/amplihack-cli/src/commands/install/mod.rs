@@ -3,6 +3,7 @@
 mod binary;
 pub(crate) mod bundle_compat;
 pub(crate) mod bundle_compat_cache;
+mod bundle_manifest;
 mod claude_commands;
 mod claude_publication;
 mod clone;
@@ -11,6 +12,7 @@ mod command_staging;
 mod copilot_plugin;
 mod directories;
 pub(crate) mod filesystem;
+pub(crate) mod framework_source;
 mod hooks;
 pub(crate) mod interactive;
 mod manifest;
@@ -19,6 +21,7 @@ pub(crate) mod paths;
 mod recipe_runner;
 mod settings;
 mod stale_wrappers;
+pub(crate) mod tag_fetch;
 mod types;
 mod uninstall;
 mod verification;
@@ -33,7 +36,7 @@ mod tests;
 pub(crate) use binary::resolve_running_binary_source;
 use binary::{deploy_binaries, find_hooks_binary, stable_hooks_binary};
 use bundle_compat::validate_framework_bundle_compatibility;
-use clone::{download_and_extract_framework_repo, find_bundled_framework_root};
+use clone::{FrameworkRootQuery, find_bundled_framework_root};
 use directories::*;
 use filesystem::{all_rel_dirs, get_all_files_and_dirs};
 use manifest::{manifest_path, write_manifest};
@@ -130,66 +133,80 @@ fn run_install_scoped(
     reconcile_codex: bool,
     mode: InstallMode,
 ) -> Result<()> {
+    run_install_with_fetcher(
+        local,
+        interactive,
+        force_refresh,
+        reconcile_codex,
+        mode,
+        &framework_source::BinaryIdentity::current(),
+        &tag_fetch::ReleaseTagFetcher::production(),
+    )
+}
+
+/// The source is settled first (issue #1955): a refusal or a failed fetch comes
+/// before the wizard asks anything and before any binary is deployed, so it
+/// changes nothing on disk.
+fn run_install_with_fetcher(
+    local: Option<PathBuf>,
+    interactive: bool,
+    force_refresh: bool,
+    reconcile_codex: bool,
+    mode: InstallMode,
+    binary: &framework_source::BinaryIdentity,
+    fetcher: &dyn tag_fetch::TagFetcher,
+) -> Result<()> {
+    let local = local
+        .map(|local_path| -> Result<PathBuf> {
+            // Validate and canonicalize the --local path
+            let canonical = local_path.canonicalize().with_context(|| {
+                format!(
+                    "--local path does not exist or cannot be canonicalized: {}",
+                    local_path.display()
+                )
+            })?;
+            if !canonical.is_dir() {
+                bail!("--local path is not a directory: {}", canonical.display());
+            }
+            Ok(canonical)
+        })
+        .transpose()?;
+
+    let policy = framework_source::SourcePolicy {
+        local,
+        force_refresh,
+        mode,
+    };
+    // Lives until the install returns, because a fetched tree is deleted with it.
+    let source = framework_source::acquire_framework_source(
+        &policy,
+        &FrameworkRootQuery::from_environment(),
+        binary,
+        fetcher,
+        &|candidate| {
+            validate_framework_bundle_compatibility(candidate).map_err(|err| format!("{err:#}"))
+        },
+    )?;
+
     // Run the interactive wizard if --interactive was passed.
     // The wizard produces an optional config; if None, we proceed with defaults.
     let wizard_config = interactive::maybe_run_wizard(interactive)?;
 
-    if let Some(local_path) = local {
-        // Validate and canonicalize the --local path
-        let canonical = local_path.canonicalize().with_context(|| {
-            format!(
-                "--local path does not exist or cannot be canonicalized: {}",
-                local_path.display()
-            )
-        })?;
-        if !canonical.is_dir() {
-            bail!("--local path is not a directory: {}", canonical.display());
-        }
-        return local_install_scoped(&canonical, wizard_config.as_ref(), reconcile_codex, mode);
+    // Issue #1275: name the source *and* the step that chose it. The resolution
+    // order is not obvious from the outside, and staging from an unexpected
+    // directory used to be silent.
+    for line in source.describe(&binary.version) {
+        println!("{line}");
+    }
+    local_install_scoped(&source.root, wizard_config.as_ref(), reconcile_codex, mode)?;
+
+    if source.origin != framework_source::SourceOrigin::ReleaseTag {
+        return Ok(());
     }
 
-    // Issue #675: when triggered by `amplihack update`, force_refresh=true
-    // skips the bundled-root check so we always download fresh assets from
-    // upstream.  This prevents stale Python-era recipes from persisting after
-    // a binary update.
-    if !force_refresh {
-        // Issue #254: prefer bundled framework assets from the amplihack-rs source
-        // tree.  Only fall back to network download when the local source tree is
-        // not reachable (e.g. binary installed via `cargo install` on a machine
-        // that doesn't have the checkout).
-        if let Some(bundled) = find_bundled_framework_root() {
-            // Issue #1275: name the source *and* the step that chose it. The
-            // resolution order is not obvious from the outside, and staging
-            // from an unexpected directory used to be silent.
-            println!(
-                "📦 Using bundled framework assets from {} ({})",
-                bundled.root.display(),
-                bundled.origin.describe()
-            );
-            return local_install_scoped(
-                &bundled.root,
-                wizard_config.as_ref(),
-                reconcile_codex,
-                mode,
-            );
-        }
-    } else {
-        println!("📦 Forcing fresh framework download from upstream...");
-    }
-
-    println!("⚠️  Bundled framework source not found, falling back to network download...");
-    let temp_dir = tempfile::tempdir().context("failed to create temp dir for install")?;
-    let extracted_root = download_and_extract_framework_repo(temp_dir.path())?;
-    local_install_scoped(
-        &extracted_root,
-        wizard_config.as_ref(),
-        reconcile_codex,
-        mode,
-    )?;
-
-    // Network-fallback hard-error: every entry in the active layout's
-    // destination set must have been staged. Read the .layout marker the
-    // install just wrote to know which layout to verify.
+    // Every entry in the active layout's destination set must have been staged.
+    // Read the .layout marker the install just wrote to know which layout to
+    // verify.
     let staging_dir = staging_claude_dir()?;
     let layout = read_layout_marker(&staging_dir)?.unwrap_or(SourceLayout::LegacyClaude);
     let mut missing_essentials = Vec::new();
@@ -200,20 +217,13 @@ fn run_install_scoped(
     }
     if !missing_essentials.is_empty() {
         bail!(
-            "network-fallback install completed but the staged tree at {} is missing \
+            "release-tag install completed but the staged tree at {} is missing \
              required essentials for layout `{}`: {:?}. \
-             Re-run `amplihack install` or check upstream archive integrity.",
+             Re-run `amplihack install` or check the tag's contents.",
             staging_dir.display(),
             layout.marker_str(),
             missing_essentials
         );
-    }
-
-    // Record the upstream SHA the staged framework now reflects, so the
-    // freshness check can compare against it on subsequent launches. This
-    // is best-effort — a failed SHA fetch doesn't roll back the install.
-    if let Some(sha) = crate::freshness::current_framework_remote_sha() {
-        crate::freshness::record_framework_installed_sha(&sha);
     }
     Ok(())
 }
@@ -395,10 +405,31 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     // The Codex transaction is a no-op when current and preserves every byte
     // on failure; an older binary never gets here (#1526 refuses it first).
     if crate::freshness::codex_selected() {
-        let source = find_bundled_framework_root()
-            .context("bundled source required to reconcile native Codex resources")?;
-        codex_plugin::install(&source.root, &hooks_bin)
-            .context("failed native Codex reconciliation")?;
+        // Issue #1955 D1: a bundle kept after a failed fetch has no source with
+        // this binary's version until a fetch succeeds.
+        let source = find_bundled_framework_root();
+        let stamp = version_stamp::read_installed_version_quiet()
+            .context("reading install version stamp")?;
+        match framework_source::codex_reconcile_action(
+            source.is_some(),
+            stamp.as_deref(),
+            crate::VERSION,
+        ) {
+            framework_source::CodexReconcile::Run => {
+                let source = source
+                    .context("bundled source required to reconcile native Codex resources")?;
+                codex_plugin::install(&source.root, &hooks_bin)
+                    .context("failed native Codex reconciliation")?;
+            }
+            framework_source::CodexReconcile::SkipWithWarning => eprintln!(
+                "amplihack: warning: skipping the Codex reconcile, because no framework source \
+                 matches v{} yet.",
+                crate::VERSION
+            ),
+            framework_source::CodexReconcile::Fail => {
+                bail!("bundled source required to reconcile native Codex resources")
+            }
+        }
     }
     let settings_path = global_settings_path()?;
     match hooks_registered_in_settings(&settings_path)? {

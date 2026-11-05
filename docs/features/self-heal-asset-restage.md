@@ -32,10 +32,13 @@ Every launch, before command dispatch, `amplihack` performs a startup-time
    re-stage automatically through `repair_framework_assets` in
    [implicit mode](#never-an-implicit-downgrade-1526). A stamp **newer** than
    the binary never triggers a re-stage.
-   The third argument (`force_refresh: false`) means self-heal prefers the
-   compatible local source selected by normal install source resolution,
-   falling back to a network download only when no compatible local source is
-   found. Self-heal does not perform a separate startup compatibility scan; the
+   The third argument (`force_refresh: false`) means self-heal tries the local
+   sources first and uses one only if it is compatible and has the binary's
+   version. A source with another version is skipped with a note, not refused.
+   If none qualifies, self-heal fetches the tag of the binary's release. It
+   never fetches `main`. The rules are in the
+   [framework source selection reference](../reference/framework-source-selection.md).
+   Self-heal does not perform a separate startup compatibility scan; the
    automatic install run validates candidate and staged framework bundles. For
    the post-update install path (where the **new** binary is spawned as a
    subprocess with `--force-refresh`), see
@@ -47,8 +50,8 @@ Every launch, before command dispatch, `amplihack` performs a startup-time
    amplihack: framework assets re-staged for vX.Y.Z
    ```
 5. On failure, the error propagates and `amplihack` exits with a non-zero
-   status — there is **no silent fallback** to "continue with stale assets"
-   (Zero-BS principle).
+   status. There is **no silent fallback**. The one exception prints a warning:
+   see [Failed source fetch](#failed-source-fetch-with-a-compatible-bundle).
 
 Manual `amplihack install` invocations also write the stamp, so both the
 self-heal path and the explicit install path converge on the same source of
@@ -134,7 +137,7 @@ own configuration file this way:
 | `~/.claude/settings.json` | never written by a re-stage; the bootstrap fills in hooks only when the file has none (#202) | hooks merged, file backed up |
 | `~/.copilot/config.json` | left byte-identical once it holds any amplihack entry (`installedPlugins`, `plugins` or an amplihack hook); written only when it has none, which is a first install. Decided once per run, before any writer | amplihack entries refreshed |
 | `~/.copilot/installed-plugins/amplihack@local/`, `~/.copilot/.github/hooks/` | refreshed (amplihack-owned) | refreshed |
-| Codex plugin (`~/.codex/hooks.json`, the Codex marketplace) | reconciled only when Codex is the selected client, exactly as by `amplihack install`; a legacy or changed ownership proof, or a Codex without native plugin support, fails the command and leaves `~/.codex` untouched (#1538). Never touched by a binary older than the install | reconciled |
+| Codex plugin (`~/.codex/hooks.json`, the Codex marketplace) | reconciled only when Codex is the selected client, exactly as by `amplihack install`; a legacy or changed ownership proof, or a Codex without native plugin support, fails the command and leaves `~/.codex` untouched (#1538). Never touched by a binary older than the install. Skipped with a warning when no source was found and the stamp differs from the binary, which is the [kept-bundle](#failed-source-fetch-with-a-compatible-bundle) state | reconciled |
 
 A Copilot entry that a user disabled stays disabled. When `config.json`
 registers amplihack from a different plugin directory, a re-stage leaves it
@@ -252,7 +255,49 @@ Per the project's Zero-BS philosophy, install failures during self-heal
 - The advisory lock is released (RAII drop) so the retry is not blocked.
 
 There is no `|| true`, no silent skip, and no "continue with whatever assets
-happen to be on disk" fallback. A broken install is surfaced to the user.
+happen to be on disk" fallback. A broken install is reported to the user.
+
+These always exit `1`:
+
+- The installed bundle is missing or incompatible and no source was available.
+- A fetched release tree has the wrong or an unknown version.
+- The [manifest check](../reference/framework-source-selection.md#manifest-check)
+  failed.
+
+### Failed source fetch with a compatible bundle
+
+Without this exception, every command on an offline, upgraded host would exit 1.
+Self-heal continues only when both of these are true:
+
+- The release tag fetch failed, or this build may not fetch a tag.
+- The installed bundle passes the compatibility check.
+
+Self-heal then prints one line to stderr, leaves the stamp unchanged and runs
+your command:
+
+```
+amplihack: warning: could not fetch the framework bundle for v1.2.99 (network request timed out); keeping the installed bundle. The next launch will retry.
+```
+
+A build that may not fetch makes no network request. It prints this line instead,
+because a later launch won't fetch either:
+
+```
+amplihack: warning: this build (1.2.0+snapshot.7deb23da4) cannot fetch a release tag, and no local source matches it; keeping the installed bundle. Run `amplihack install --local <PATH>` to replace it.
+```
+
+The unchanged stamp is what makes the next launch try again. Each attempt that
+fetches waits up to 60 seconds. Parallel launches wait one after another under
+the install lock, because there is no backoff marker.
+
+An explicit `amplihack install` or `amplihack update` never continues past a
+failed fetch. Both exit non-zero.
+
+The launch bootstrap's slash-command restore never fetches. If
+`~/.claude/commands/amplihack/` is missing and no local source has this binary's
+version, the commands stay missing and the only record is a warning in the trace
+log. Run `amplihack install` to restore them. See
+[Known limits](../reference/framework-source-selection.md#known-limits).
 
 ### One documented carve-out: unresolvable home directory
 
@@ -268,8 +313,8 @@ self-heal **silently skips** rather than failing the launch. Rationale:
 - Subcommands that do not need a home directory (e.g. `--version`,
   `doctor`) should continue to work in restricted environments.
 
-This is the **only** intentionally silent path in self-heal. It is called
-out explicitly so reviewers do not mistake it for a Zero-BS violation.
+This is the **only** intentionally silent path in self-heal; a kept bundle
+always prints a warning. It is called out explicitly so reviewers do not mistake it for a Zero-BS violation.
 
 ## Implementation
 
@@ -277,8 +322,9 @@ out explicitly so reviewers do not mistake it for a Zero-BS violation.
 |------|------|
 | `crates/amplihack-cli/src/self_heal.rs` | Decision logic, advisory lock acquisition, bypass diagnostic, the #1526 downgrade guards and once-per-process warning, and public entrypoint `ensure_assets_match_binary_version(args)`. Uses closure injection (mirroring `update::post_install::run_post_update_install`) so unit tests can verify the decision tree without running a real install. |
 | `crates/amplihack-cli/src/commands/install/version_stamp.rs` | Atomic stamp read/write helpers (`read_installed_version`, `read_binaries_version`, `write_installed_version`, `write_installed_versions`, `installed_version_path`) and the #1526 semver comparison (`relation`). Performs symlink refusal via `symlink_metadata`, semver-regex validation of contents, and `0o600` permission enforcement on write. |
-| `crates/amplihack-cli/src/commands/install/mod.rs` | `local_install` writes the stamp on every successful install (covers both bundled and network-fallback paths); an implicit one that kept an installed binary also records the binaries' version, or `unknown`. `InstallMode::{Explicit, Implicit}` selects whether settings are written and binaries may be replaced; `ensure_framework_installed` applies the downgrade check before the launch bootstrap changes anything. |
+| `crates/amplihack-cli/src/commands/install/mod.rs` | `local_install` writes the stamp on every successful install (from a local source or a release tag fetch); an implicit one that kept an installed binary also records the binaries' version, or `unknown`. `InstallMode::{Explicit, Implicit}` selects whether settings are written and binaries may be replaced; `ensure_framework_installed` applies the downgrade check before the launch bootstrap changes anything. |
 | `crates/amplihack-cli/src/commands/install/binary.rs` | `deploy_binaries` keeps an existing destination in implicit mode unless the running binary is strictly newer than the stamp's binaries version (`implicit_deploy_allowed`) and the source is this build's own copy, and returns the binaries it kept. |
+| `crates/amplihack-cli/src/commands/install/framework_source.rs`, `tag_fetch.rs` | Choose the source and fetch the release tag. See [Framework source selection](../reference/framework-source-selection.md#contributor-api). `SourceFetchFailed` is the only error self-heal may continue past. |
 | `bins/amplihack/src/main.rs` | Calls `self_heal::ensure_assets_match_binary_version(&args)` after the existing update notice and before `Cli::parse_from`. |
 
 Dependencies introduced: [`fs2`](https://crates.io/crates/fs2) for the
@@ -290,6 +336,8 @@ project's 500-line module cap.
 
 - [Install Command Reference](../reference/install-command.md) — the install
   procedure invoked by self-heal.
+- [Framework Source Selection](../reference/framework-source-selection.md) —
+  which source a re-stage uses and what staging checks.
 - [Environment Variables Reference](../reference/environment-variables.md) —
   full env var contract, including `AMPLIHACK_SKIP_AUTO_INSTALL` and
   `AMPLIHACK_RELEASE_VERSION`.

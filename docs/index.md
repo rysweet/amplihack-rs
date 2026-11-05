@@ -92,7 +92,7 @@ Centralized plugin system that works across all your projects:
 - [Quick Start](../README.md) - Basic usage and first commands
 - [Stale Wrapper Repair Tutorial](tutorials/repair-install-update-path-conflicts.md) - Learn how install/update keeps the Rust binary first and refreshes stale assets
 - [Repair Stale Wrappers and PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Quarantine stale Python/uvx wrappers and make `~/.local/bin/amplihack` resolve first
-- [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets from the current Rust distribution
+- [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets, and what to do when install refuses a source
 - [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in separate `CLAUDE_CONFIG_DIR` profiles that share one session store ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
 - [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset and run once more ([reference](reference/profile-command.md#usage-limit-wait))
 
@@ -175,6 +175,7 @@ amplihack copilot
 - [`amplihack agent` Reference](reference/agent-command.md) - Register flags, `amplihack claude --supervise`, the supervisor pass, result texts, status formats, the registry and the systemd unit
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
+- [Framework Source Selection](reference/framework-source-selection.md) - Which source install, update and self-heal stage the bundle from, the release tag fetch, the manifest check and file modes
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
 - [External LiteLLM Gateway](features/README.md#external-litellm-gateway) - Route supported local agents through an operator-managed gateway
 - [External LiteLLM Gateway Tutorial](tutorials/external-litellm-gateway.md) - Configure a protected route to an existing gateway

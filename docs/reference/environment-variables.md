@@ -243,6 +243,8 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 
 **Security note:** The resolved path is validated to be absolute and must not contain `..` path components. Paths that fail validation are silently dropped; a warning is emitted to the trace log. A `paths.home` from the config must also still name an existing directory you own; otherwise it is skipped with a warning in the trace log and the next source answers.
 
+**Install source:** `amplihack install` also tries `AMPLIHACK_HOME` as its first framework source. Plain `install` refuses it when its version differs from the binary's. The post-update install of `amplihack update` uses a same-version tree without network access, and fetches the release tag only when the version differs. Install always stages into `$HOME/.amplihack`, so this variable never moves the install. See [Framework source selection](./framework-source-selection.md).
+
 **Python parity:** Corresponds to `AMPLIHACK_HOME` propagation in the Python launcher.
 
 ---
@@ -397,6 +399,10 @@ Build-time override for the version embedded in released binaries. The release
 workflow sets this value while compiling so `amplihack --version`, doctor
 output, plugin manifests, hook context loading, and the runtime
 `AMPLIHACK_VERSION` child-process variable all report the release tag version.
+
+A build may [fetch a release tag](./framework-source-selection.md#release-tag-fetch)
+for its framework bundle only when this variable was set at build time and the
+version has no `+` build metadata.
 
 Local builds normally leave this unset and use `CARGO_PKG_VERSION`.
 
