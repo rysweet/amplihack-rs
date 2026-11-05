@@ -177,7 +177,7 @@ context to the runner as `--set` arguments, the only context input the runner
 has. Each pair must fit in one argument; see [Known limits](#known-limits).
 
 Inside a run, the recipe runner pinned in `claude-plugin/recipe-runner.rev`
-(`4d5187e`) gives a bash step every context value as `RECIPE_VAR_<key>` at any size,
+(`01cf296`) gives a bash step every context value as `RECIPE_VAR_<key>` at any size,
 plus an uppercase alias such as `TASK_DESCRIPTION` for top-level scalar keys. A value
 whose `KEY=value` string is too large for one environment entry, or that has to
 move to bring the whole environment under the runner's budget, is written to a

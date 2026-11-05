@@ -507,7 +507,7 @@ length of the run. Recipe context is not a channel for secrets. The file
 options only keep values out of `amplihack`'s own argv and out of shell history.
 
 `--context-file` here is the `amplihack recipe run` option. The runner at the
-revision pinned in `claude-plugin/recipe-runner.rev` (`4d5187e`) has no option
+revision pinned in `claude-plugin/recipe-runner.rev` (`01cf296`) has no option
 of that name, and `amplihack` never passes one to it.
 
 ### JSON value conversion
@@ -578,7 +578,7 @@ read the parent's values in place of its own; see
 ### Where a step finds its context
 
 The table describes the recipe runner pinned in
-`claude-plugin/recipe-runner.rev` (`4d5187e`) and later runners.
+`claude-plugin/recipe-runner.rev` (`01cf296`) and later runners.
 
 | Channel | Set by | Present when |
 | --- | --- | --- |
