@@ -15,6 +15,11 @@
 //!
 //! A login is moved only by `move_login` (rename without replace) and never
 //! opened, copied or deleted here; the readings are `usage_direct`'s.
+//!
+//! `--recovery log` writes what a confirmed move would do instead of making
+//! it, and creates nothing: the backup path is only looked up with
+//! `first_free`. `--recovery off` skips the step and reads nothing (#1890;
+//! "Recovery mode" in docs/reference/profile-command.md).
 
 use super::backup::{BackupRefusal, discard_empty, first_free, fresh_backup, rejected_dir};
 use super::cycle::Ctx;
@@ -23,9 +28,10 @@ use super::handfix_msg as msg;
 pub use super::handfix_plan::Read;
 use super::handfix_plan::{Confirmed, Input, Plan, ino_ctime, plan, unreadable_since};
 use super::ledger::{MAX_GUIDANCE_LINE, RotateLedger, RotateState};
-use super::log::{Sink, cut};
+use super::log::{Sink, cut, msg as log_msg};
 use super::lost;
 pub use super::precheck::Env;
+use super::settings::Recovery;
 use super::swap::{self, LOGIN_NOT_MOVABLE};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
@@ -41,10 +47,11 @@ const CHANGED: &str = "~/.claude changed during recovery";
 /// What one cycle's hand-change step did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
-    /// Nothing to report: the cycle goes on.
+    /// Nothing to report, or recovery is `off`: the cycle goes on.
     Clear,
-    /// A note (a first reading, or cannot tell): the cycle goes on, and an
-    /// open suspicion then stops it as `hand-change`.
+    /// A note (a first reading, or cannot tell), or under `log` the line
+    /// for a move not made: the cycle goes on, and an open suspicion then
+    /// stops it as `hand-change`.
     Noted,
     /// The suspected profile was recorded as live: the cycle goes on with it.
     Recovered,
@@ -139,7 +146,8 @@ fn refused_lines(c: &Confirmed<'_>, why: (String, Fix)) -> Vec<String> {
 /// any line is written. A note identical to the ledger's `guidance` is not
 /// written again (D9). `read` is the identity reader; `min_gap` the
 /// rotation interval, at least 1. `env_for` is called only for a confirmed
-/// suspicion.
+/// suspicion. The cycle calls [`step_mode`]; this is its `act` form.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub fn step_with<'a>(
     store: &ProfileStore,
@@ -150,6 +158,27 @@ pub fn step_with<'a>(
     read: Read<'_>,
     min_gap: i64,
     t: i64,
+) -> Result<Step, ProfileError> {
+    let mode = Recovery::Act;
+    step_mode(store, rs, home, out, env_for, read, min_gap, t, mode)
+}
+
+/// [`step_with`] under `mode`. Under `log` a confirmed move is not made:
+/// one `recovery (log only): ` line is written instead, the suspicion is
+/// kept, the ledger's guidance is cleared and the step is `Noted`, so the
+/// open suspicion stops the cycle. Every other plan goes as under `act`.
+/// `off` is handled by [`step`], which does not call this.
+#[allow(clippy::too_many_arguments)]
+pub fn step_mode<'a>(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+    out: &mut Sink,
+    env_for: impl FnOnce() -> Env<'a>,
+    read: Read<'_>,
+    min_gap: i64,
+    t: i64,
+    mode: Recovery,
 ) -> Result<Step, ProfileError> {
     let mut ledger = rs.load_ledger()?.unwrap_or_default();
     let before = ledger.clone();
@@ -184,6 +213,10 @@ pub fn step_with<'a>(
             ledger.hand_suspect = suspect;
             ledger.guidance = Some(lines.clone());
             (Step::Guided, lines)
+        }
+        Plan::Move(c) if mode == Recovery::Log => {
+            ledger.guidance = None;
+            (Step::Noted, vec![logged(store.root(), &c.m, t)])
         }
         Plan::Move(c) => {
             let mv = Mover {
@@ -224,13 +257,19 @@ pub fn min_gap(ctx: &Ctx) -> i64 {
         .max(1)
 }
 
-/// [`step_with`] on this host: `/proc` and the auto-switch ledger are read
-/// only for a confirmed suspicion; the readings are `ctx.identity`'s.
+/// [`step_mode`] on this host under the cycle's `--recovery`: `/proc` and
+/// the auto-switch ledger are read only for a confirmed suspicion; the
+/// readings are `ctx.identity`'s. Under `off` the step is skipped: nothing
+/// is read or written, and the step is `Clear`.
 pub fn step(ctx: &Ctx, state: &State, out: &mut Sink, t: i64) -> Result<Step, ProfileError> {
+    let mode = ctx.settings.recovery;
+    if mode == Recovery::Off {
+        return Ok(Step::Clear);
+    }
     let env_for = || Env::system(ctx.store.root(), state, ctx.scan);
     let read = |p: &Path| ctx.identity_reader().oauth(p);
     let (store, rs, home) = (&ctx.store, &ctx.rs, &ctx.home);
-    step_with(store, rs, home, out, env_for, &read, min_gap(ctx), t)
+    step_mode(store, rs, home, out, env_for, &read, min_gap(ctx), t, mode)
 }
 
 /// Whether `--dry-run` stops after the preview's lines: everything but a
@@ -244,6 +283,8 @@ pub fn dry_run_stops(lines: &[String]) -> bool {
 /// `would alert: ...` and the `fix` lines; empty when nothing would be
 /// written. Takes no lock and writes nothing, so it never starts or
 /// confirms a suspicion: it applies the rules to the ledger as it stands.
+/// Dry run calls [`preview_mode`]; this is its `act` form.
+#[cfg(test)]
 pub fn preview<'a>(
     store: &ProfileStore,
     rs: &RotateState,
@@ -253,6 +294,26 @@ pub fn preview<'a>(
     min_gap: i64,
     t: i64,
 ) -> Result<Vec<String>, ProfileError> {
+    preview_mode(store, rs, home, env_for, read, min_gap, t, Recovery::Act)
+}
+
+/// [`preview`] under `mode`. `off` gives nothing and reads nothing; under
+/// `log` a confirmed move gives the log-only line and the `would alert:`
+/// line the cycle then writes, and everything else is as under `act`.
+#[allow(clippy::too_many_arguments)]
+pub fn preview_mode<'a>(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+    env_for: impl FnOnce() -> Env<'a>,
+    read: Read<'_>,
+    min_gap: i64,
+    t: i64,
+    mode: Recovery,
+) -> Result<Vec<String>, ProfileError> {
+    if mode == Recovery::Off {
+        return Ok(Vec::new());
+    }
     let ledger = rs.load_ledger()?.unwrap_or_default();
     let input = Input {
         store,
@@ -270,6 +331,9 @@ pub fn preview<'a>(
             return Ok(vec![format!("would note: {text}")]);
         }
         Plan::Guide { lines, .. } => lines,
+        Plan::Move(c) if mode == Recovery::Log => {
+            return Ok(preview_logged(store.root(), &c.m, &c.l, t));
+        }
         Plan::Move(c) => match first_free(&store.root().join(REJECTED_DIR), &c.m, t) {
             Some(dir) => {
                 let line = msg::recovered_moved(&c.m, &dir.join(CREDS));
@@ -287,4 +351,23 @@ pub fn preview<'a>(
             _ => l,
         })
         .collect())
+}
+
+/// The line `--recovery log` writes in place of moving `m`'s copy aside
+/// and recording `m` as live.
+fn logged(root: &Path, m: &ProfileName, t: i64) -> String {
+    let to = first_free(&root.join(REJECTED_DIR), m, t).map(|d| d.join(CREDS));
+    msg::log_moved(m, to.as_deref())
+}
+
+/// The `--dry-run` lines under `log` for a confirmed move: the log-only
+/// line and the `would alert:` line for the ALERT the cycle then writes
+/// about `l`, the profile the ledger names.
+fn preview_logged(root: &Path, m: &ProfileName, l: &ProfileName, t: i64) -> Vec<String> {
+    let alert = log_msg::hand_change(l);
+    let text = alert.strip_prefix("ALERT: ").unwrap_or(&alert);
+    vec![
+        cut(&logged(root, m, t), MAX_GUIDANCE_LINE),
+        cut(&format!("would alert: {text}"), MAX_GUIDANCE_LINE),
+    ]
 }

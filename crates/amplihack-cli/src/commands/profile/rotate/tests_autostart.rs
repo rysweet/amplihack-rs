@@ -29,7 +29,7 @@ use super::autostart::{
 };
 use super::cycle::prototype_guard;
 use super::ledger::RotateState;
-use super::settings::Settings;
+use super::settings::{Recovery, Settings};
 use super::tests_swap::hold_state_lock;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::euid;
@@ -628,6 +628,47 @@ fn invalid_tuning_variables_fail_without_spawning() {
         std::thread::sleep(Duration::from_millis(20));
     };
     assert_eq!(next, Outcome::Started(FAKE_PID));
+}
+
+/// Issue #1890: an invalid `AMPLIHACK_ROTATE_RECOVERY` fails step 11 like
+/// an invalid number: no panic, nothing printed, no rotator (none with the
+/// default `act` either) and one `autostart: failed:` line.
+#[test]
+fn an_invalid_recovery_variable_fails_without_spawning_an_act_rotator() {
+    let f = fx();
+    let (o, err) = f.run_with(Opts {
+        env: vec![("AMPLIHACK_ROTATE_RECOVERY", "bogus")],
+        ..Opts::default()
+    });
+    assert_eq!(o, Outcome::Failed);
+    assert_eq!(err, "");
+    assert_eq!(f.spawned(), 0, "no silent fallback to act");
+    assert!(f.seen.lock().unwrap().is_empty());
+    let log = f.rotate_err();
+    let failed: Vec<&str> = log
+        .lines()
+        .filter(|l| l.contains("autostart: failed: "))
+        .collect();
+    assert_eq!(failed.len(), 1, "{log:?}");
+    assert!(
+        failed[0].ends_with(
+            "autostart: failed: invalid rotate setting AMPLIHACK_ROTATE_RECOVERY \"bogus\": expected act, log or off"
+        ),
+        "{log:?}"
+    );
+}
+
+#[test]
+fn a_recovery_variable_reaches_the_started_rotator() {
+    let f = fx();
+    let (o, _) = f.run_with(Opts {
+        env: vec![("AMPLIHACK_ROTATE_RECOVERY", "log")],
+        ..Opts::default()
+    });
+    assert_eq!(o, Outcome::Started(FAKE_PID));
+    let seen = f.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0.recovery, Recovery::Log);
 }
 
 #[test]

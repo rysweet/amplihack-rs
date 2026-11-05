@@ -265,6 +265,8 @@ mod issue_1818_no_session_limit;
 mod issue_1846_exhausted_reading;
 #[path = "issue_1870_reread_probe_mode.rs"]
 mod issue_1870_reread_probe_mode;
+#[path = "issue_1890_rotate_recovery.rs"]
+mod issue_1890_rotate_recovery;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

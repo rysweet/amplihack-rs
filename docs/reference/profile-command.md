@@ -4698,19 +4698,34 @@ lines on failure. Output holds profile names, times and fixed text only.
 | `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | `0`-`604800` (seconds); see [Rotate overflow](#rotate-overflow) |
 | `--overflow-unknown-reset 0\|1` | `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET` | `0` | `1` lets a plan reset that no reading reports count as further away than `--overflow-wait`, so it can move work onto an overflow profile and **spend money**; see [Overflow decision](#overflow-decision) |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | `1`-`86400` (seconds); `start` and `watch` only |
+| `--recovery act\|log\|off` | `AMPLIHACK_ROTATE_RECOVERY` | `act` | What [hand-change recovery](#rotate-hand-change-recovery) does when the ledger names the wrong profile; see [Recovery mode](#recovery-mode) |
 
 A flag beats its variable, and the variable beats the default. An empty
 variable counts as unset. Values are unsigned decimal integers: a sign,
-whitespace, a fraction or an overflow is an error. The error names the flag or
-variable and shows the value escaped and cut to 32 characters:
+whitespace, a fraction or an overflow is an error. `--recovery` takes one
+of the words `act`, `log` or `off`, in lower case and with no spaces; any
+other value, `LOG` and ` log` included, is an error, and an empty
+`--recovery ""` is an error too. The error names the flag or variable and
+shows the value escaped and cut to 32 characters:
 
 ```
 error: invalid rotate setting --session-at "eighty": expected a whole number from 1 to 100
 hint: run `amplihack profile rotate --help` for the accepted values
 ```
 
+```
+error: invalid rotate setting AMPLIHACK_ROTATE_RECOVERY "bogus": expected act, log or off
+hint: run `amplihack profile rotate --help` for the accepted values
+```
+
+An invalid setting stops the command before any cycle work, so nothing is
+read, moved or recorded. It never falls back to `act`.
+
 `start` resolves every setting and passes them to the background process as
-explicit flags, so the variables are read once, when `start` runs. A rotator
+explicit flags, so the variables are read once, when `start` runs.
+`--recovery` is passed only when it is `log` or `off`; with the default
+`act` the background process gets the same arguments as before the setting
+existed. A rotator
 started by [autostart](#rotate-autostart) takes them from the environment of
 the launch that started it. The
 background process sets no `AMPLIHACK_ROTATE*` variable in the environment of
@@ -6102,6 +6117,94 @@ Recovery moves at most one login, by rename, and only after two matching
 readings on separate cycles. It never moves a login that is a profile's only
 login, and it never opens, copies or deletes a credentials file itself.
 
+#### Recovery mode
+
+`--recovery` (or `AMPLIHACK_ROTATE_RECOVERY`) sets what hand-change recovery
+does. It applies to the one-shot command, `start`, `watch` and `--dry-run`.
+`profile switch` has no such setting, because it never runs this recovery.
+There is no `rotate.recovery` config key, although issue #1890 asked for
+one: no rotate setting is read from a config file, and each is resolved
+from its flag, then its environment variable, then its default. The flag
+and `AMPLIHACK_ROTATE_RECOVERY` together are that setting.
+
+| Value | Effect |
+|-------|--------|
+| `act` (default) | Recovery runs as described in this section: it writes notes, moves a duplicate login to a backup after two readings, or writes guidance. |
+| `log` | Recovery reads and decides as usual, but where it would move a login it writes one `recovery (log only): ` line instead. The suspicion stays open, so the cycle ends `alerted` and does not swap. |
+| `off` | The step is skipped: no identity read, no line. Nothing detects a hand change, and the cycle takes the ledger at its word. |
+
+##### Log only
+
+Under `log`, a confirmed suspicion that passed every
+[check](#checks-before-the-move) is not acted on. In place of the
+`recovered:` line the step writes one of:
+
+| Case | Line under `log` |
+|------|------------------|
+| A backup name is free | `recovery (log only): would move <M>'s login to <root>/.rejected-logins/rotate-<M>-<YYYYMMDDTHHMMSSZ>/.credentials.json and record <M> as live` |
+| All 99 backup names for that second are taken | `recovery (log only): would move <M>'s login aside and record <M> as live, but no backup name is free` |
+
+The `recovery (log only): ` prefix is fixed; search for it. The words after
+it name profiles and the backup path only, never an account, e-mail address,
+organisation or token. The backup path is the first free name, but nothing
+is created. When every name is taken, the line says so and shows no path;
+under `act` the same case stops the cycle with a refusal and its `fix` line.
+
+Under `log` no `.rejected-logins/` or backup directory is made, no login is
+renamed, and the ledger's `live` and `account` are unchanged. The ledger's
+`hand_suspect` is kept, so the [live profile](#rotate-live-profile) table
+then raises the `hand-change` ALERT and the cycle does not swap. Any
+guidance saved in the ledger by an earlier `act` cycle is cleared. Every
+later cycle finds the same confirmed suspicion and writes the log-only line
+again, until a reading changes or the setting goes back to `act`:
+
+```
+recovery (log only): would move ryan-mistt-org's login to /home/you/.claude-profiles/.rejected-logins/rotate-ryan-mistt-org-20261027T031905Z/.credentials.json and record ryan-mistt-org as live
+ALERT: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); no swap
+```
+
+The `hand-change` ALERT goes through the usual ALERT de-duplication: it is
+written to the log on the first cycle and again only when its key changes.
+The one-shot command prints it on every run, so a repeated run does not
+look like success.
+
+Everything that is not a move is written as under `act`: the
+[two-readings](#two-readings) note, the cannot-tell
+[notes](#hand-change-notes), refusals from the
+[checks](#checks-before-the-move), the [only-login ALERT](#only-login-alert),
+the [stuck `~/.claude.json`](#stuck-claudejson) guidance, the lost-login
+lines and the ledger's `home_unreadable_since`. `--dry-run --recovery log`
+prints the log-only line and `would alert: ` with the `hand-change` ALERT
+text where `act` would print `would recover: `.
+
+##### Recovery off
+
+Under `off` the whole step is skipped, so it makes no identity read and
+writes no line at all. Since #1886 a hand change is found only by this
+step, so under `off`:
+
+- A manual `/login` in `~/.claude` is not detected. The cycle takes the
+  ledger at its word and measures and swaps as usual; a swap then files the
+  login in `~/.claude` under the ledger's profile, as described in the
+  how-to under "No profile answers the same". Check the logins by hand
+  with [`profile verify`](#profile-verify).
+- A `hand_suspect` recorded by an earlier `act` or `log` cycle is neither
+  confirmed nor cleared. While it is in the ledger, every cycle raises the
+  `hand-change` ALERT and does not swap, until a cycle runs under `act` or
+  `log`.
+- The [stuck `~/.claude.json`](#stuck-claudejson) guidance is never written,
+  and `home_unreadable_since` is never set or cleared. The `home-unreadable`
+  ALERT is still raised by the live profile table, logged once per key, and
+  never turns into the 5-minute guidance.
+- The lost-login lines (`ALERT: profile <L> has no login anywhere ...`) are
+  not written, and `lost_login` is neither added to nor pruned.
+- The ledger's `guidance` is not cleared. `rotate status` therefore goes on
+  showing the last saved guidance as `alert:` lines and the last lost logins
+  as `warning:` lines until a cycle runs under `act` or `log`.
+
+`--dry-run --recovery off` prints no hand-change line.
+
+
 #### Credential identity
 
 A login's *identity reading* is one `GET /api/oauth/profile` to Anthropic's
@@ -6614,6 +6717,15 @@ recovery identity reads send each login's token to the OAuth profile
 endpoint (`GET /api/oauth/profile`), as the real cycle does. Usage
 measurement is a separate read.
 
+With `--recovery log`, where `act` would print `would recover:`, `--dry-run`
+prints the `recovery (log only): ` line followed by
+`would alert: the account in ~/.claude is not the one the ledger names (live=<L>); no swap`,
+and stops with outcome `alerted`. With `--recovery off`, it prints nothing
+from this step and reads no login for it. If the ledger holds a
+`hand_suspect` from an earlier `act` or `log` cycle, the live profile table
+then prints its own `would alert:` line and the run stops `alerted`;
+otherwise the run goes on to measure.
+
 ### Rotate switch
 
 `amplihack profile switch <name>` moves a profile's login into `~/.claude`
@@ -7031,6 +7143,7 @@ run and prints their `reread:` lines; see
 | `note: ~/.claude holds the same account as profile <M> (ledger names <L>); nothing moved, the next cycle reads again` | The first of the [two readings](#two-readings). Written once until it changes. |
 | `note: cannot tell whose login is in ~/.claude (live=<L>): <why>; nothing moved` | Recovery could not tell; see [Hand-change notes](#hand-change-notes) for each `<why>`. Written once until it changes. |
 | `recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <path>; recorded <M> as live` | Hand-change recovery confirmed on two readings that `~/.claude` and `M` are the same account, and moved `M`'s copy to a backup. |
+| `recovery (log only): <action>` | With `--recovery log`, the move hand-change recovery would have made. Nothing was moved or recorded, and the `hand-change` ALERT follows. Written every cycle while the suspicion is confirmed. See [Log only](#log-only). |
 | `ALERT: profile <L> has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login <L>` | `L` is in the ledger's `lost_login`. Written every cycle. |
 | `ALERT: profile <L> has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login <L>` | `L` lost its login under an earlier release but `lost_login` already held 64 profiles. Written once. |
 | `ALERT: more than one profile matches the account in ~/.claude; no swap` | Trusted ownership evidence cannot select a unique login-less profile. |
@@ -7505,7 +7618,7 @@ step 4. Nothing is created on disk before step 9.
 | 8 | The [prototype lock](#rotate-prototype-coexistence) is free and the root is private, as `start` requires. | Skipped. |
 | 9 | Creates the state directory if needed and tries `<root>/.auto-switch.d/lock` once, without waiting. | Busy: another process holds it. |
 | 10 | Under the lock, the daemon state is still not `running`. | Already running. |
-| 11 | The `AMPLIHACK_ROTATE_*` [settings](#rotate-settings) in the launch's environment are valid. | Failed; no rotator started. |
+| 11 | The `AMPLIHACK_ROTATE_*` [settings](#rotate-settings) in the launch's environment are valid, `AMPLIHACK_ROTATE_RECOVERY` included. | Failed; no rotator started. |
 | 12 | Starts the [daemon](#rotate-daemon), writes `rotate.pid` and the [root record](#rotate-root-record), then releases the lock. | Failed. If the pid file cannot be written, the child is sent `SIGTERM`. |
 
 Steps 9 to 12 run under the state lock, and `start` and other launches check
@@ -7523,6 +7636,20 @@ failure at step 11 or 12, or an I/O error at step 9, is appended to
 `rotate.err` as one `autostart: failed: <error>` line, when that file can be
 written, and is otherwise ignored. Every `rotate.err` line has the
 [log](#rotate-log) time prefix and its control characters removed.
+
+#### Invalid settings at autostart
+
+An invalid `AMPLIHACK_ROTATE_RECOVERY` fails step 11 in the same way as an
+invalid number such as `AMPLIHACK_ROTATE_INTERVAL=ten`. The launch does not
+panic and carries on, no rotator is started (in particular, none is started
+with the default `act`), and `rotate.err` gets one line:
+
+```
+2026-10-27T03:17:05Z autostart: failed: invalid rotate setting AMPLIHACK_ROTATE_RECOVERY "bogus": expected act, log or off
+```
+
+The next launch tries again, so the line repeats until the variable is fixed
+or unset.
 
 At step 4, a marker whose owner is not running gives one stderr line per
 launch:

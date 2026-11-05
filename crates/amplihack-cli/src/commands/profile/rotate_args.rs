@@ -70,6 +70,9 @@ pub struct TuneFlags {
     /// 1: a plan reset no reading reports counts as far away, so an unknown reset can move onto an overflow profile and spend money; 0: it never does (default 0)
     #[arg(long, value_name = "0|1")]
     pub overflow_unknown_reset: Option<String>,
+    /// Hand-change recovery: act records the login in ~/.claude as live, log only writes what it would do, off skips it (default act)
+    #[arg(long, value_name = "act|log|off")]
+    pub recovery: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, clap::Args)]

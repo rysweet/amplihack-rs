@@ -54,13 +54,15 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         }
     }
     let state = State::new(ctx.store.root())?;
-    // Issues #1693, #1886: what hand-change recovery would do, from the same
-    // identity reads; it stops here unless it could only not tell.
+    // Issues #1693, #1886, #1890: what hand-change recovery would do under
+    // `--recovery`, from the same identity reads; it stops here unless it
+    // could only not tell (or recovery is `off`, which gives no line).
     let env_for = || handfix::Env::system(ctx.store.root(), &state, ctx.scan);
     let read = |p: &std::path::Path| ctx.identity_reader().oauth(p);
     let (store, rs, home) = (&ctx.store, &ctx.rs, &ctx.home);
     let gap = handfix::min_gap(ctx);
-    let lines = handfix::preview(store, rs, home, env_for, &read, gap, now())?;
+    let mode = ctx.settings.recovery;
+    let lines = handfix::preview_mode(store, rs, home, env_for, &read, gap, now(), mode)?;
     for l in &lines {
         out.emit(0, l);
     }

@@ -1,6 +1,8 @@
 //! Rotate settings: the flag, then its `AMPLIHACK_ROTATE_*` variable, then
-//! the default (D4). Values are unsigned decimal integers in range; an error
-//! names the flag or variable and shows the value escaped and cut.
+//! the default (D4). Values are unsigned decimal integers in range, except
+//! `--recovery` (`AMPLIHACK_ROTATE_RECOVERY`), which is exactly `act`, `log`
+//! or `off` (#1890). An error names the flag or variable and shows the value
+//! escaped and cut; an invalid value never falls back to the default.
 
 use super::TuneFlags;
 use crate::commands::profile::ProfileError;
@@ -25,6 +27,61 @@ pub struct Settings {
     /// nothing moves onto an overflow profile, because that move costs
     /// money and the plan login may come back in minutes.
     pub overflow_unknown_reset: bool,
+    /// What hand-change recovery does (#1890).
+    pub recovery: Recovery,
+}
+
+/// What hand-change recovery does when the ledger names a profile whose
+/// account is no longer in `~/.claude.json` (#1890).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Recovery {
+    /// Record the holder as live, moving its own copy aside when needed.
+    #[default]
+    Act,
+    /// Write what recovery would do; move and record nothing.
+    Log,
+    /// Skip the hand-change step.
+    Off,
+}
+
+const RECOVERY_FLAG: &str = "--recovery";
+const RECOVERY_VAR: &str = "AMPLIHACK_ROTATE_RECOVERY";
+
+impl Recovery {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Recovery::Act => "act",
+            Recovery::Log => "log",
+            Recovery::Off => "off",
+        }
+    }
+
+    /// Exact, lowercase match: no trimming, no case folding.
+    fn parse(name: &str, raw: &str) -> Result<Self, ProfileError> {
+        match raw {
+            "act" => Ok(Recovery::Act),
+            "log" => Ok(Recovery::Log),
+            "off" => Ok(Recovery::Off),
+            _ => Err(ProfileError::RotateConfig(format!(
+                "invalid rotate setting {name} {}: expected act, log or off",
+                shown(raw)
+            ))),
+        }
+    }
+
+    /// The flag, then a non-empty variable, then `Act`.
+    fn resolve(
+        flag: Option<&str>,
+        env: &dyn Fn(&str) -> Option<OsString>,
+    ) -> Result<Self, ProfileError> {
+        if let Some(raw) = flag {
+            return Self::parse(RECOVERY_FLAG, raw);
+        }
+        match env(RECOVERY_VAR).filter(|v| !v.is_empty()) {
+            Some(v) => Self::parse(RECOVERY_VAR, &v.to_string_lossy()),
+            None => Ok(Recovery::Act),
+        }
+    }
 }
 
 /// One setting: its flag, its variable, its default and its range.
@@ -161,6 +218,7 @@ pub fn resolve(
         overflow_unknown_reset: OVERFLOW_UNKNOWN_RESET
             .resolve(tune.overflow_unknown_reset.as_deref(), env)?
             == 1,
+        recovery: Recovery::resolve(tune.recovery.as_deref(), env)?,
     })
 }
 
@@ -210,6 +268,11 @@ impl Settings {
         if with_interval {
             args.push(INTERVAL.flag.to_string());
             args.push(self.interval.to_string());
+        }
+        // Left out for the default, so an unset setting adds no argument.
+        if self.recovery != Recovery::Act {
+            args.push(RECOVERY_FLAG.to_string());
+            args.push(self.recovery.as_str().to_string());
         }
         args
     }

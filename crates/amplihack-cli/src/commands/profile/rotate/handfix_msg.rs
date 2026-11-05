@@ -62,3 +62,21 @@ pub fn only_login(m: &ProfileName, l: &ProfileName) -> String {
         "ALERT: ~/.claude holds the same account as profile {m} on two readings (ledger names {l}), but {l} has no login of its own, so recording {m} would leave {l} with no login anywhere; nothing moved, no swap"
     )
 }
+
+/// The fixed prefix of the line `--recovery log` writes in place of a
+/// recovery (#1890). The line names profiles and paths only.
+pub const LOG_ONLY: &str = "recovery (log only): ";
+
+/// `--recovery log`: `m`'s copy would be moved to `to`; `None` when no
+/// backup name is free, so recovery would refuse.
+pub fn log_moved(m: &ProfileName, to: Option<&std::path::Path>) -> String {
+    match to {
+        Some(to) => format!(
+            "{LOG_ONLY}would move {m}'s login to {} and record {m} as live",
+            to.display()
+        ),
+        None => format!(
+            "{LOG_ONLY}would move {m}'s login aside and record {m} as live, but no backup name is free"
+        ),
+    }
+}

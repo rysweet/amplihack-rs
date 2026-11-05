@@ -51,24 +51,24 @@ use std::path::{Path, PathBuf};
 const H: &str = "hotel";
 const CREDS: &str = ".credentials.json";
 /// 2026-11-03T09:00:00Z.
-const T: i64 = 1_793_696_400;
-const GAP: i64 = 120;
+pub(super) const T: i64 = 1_793_696_400;
+pub(super) const GAP: i64 = 120;
 
-type Answer = Result<Account, &'static str>;
+pub(super) type Answer = Result<Account, &'static str>;
 
 // --- Fixture -----------------------------------------------------------------
 
-struct Fx {
+pub(super) struct Fx {
     _tmp: tempfile::TempDir,
     base: PathBuf,
-    home: PathBuf,
-    root: PathBuf,
-    store: ProfileStore,
-    rs: RotateState,
+    pub(super) home: PathBuf,
+    pub(super) root: PathBuf,
+    pub(super) store: ProfileStore,
+    pub(super) rs: RotateState,
     /// Fake token of each login, by place (`~/.claude` or a profile name).
     tokens: HashMap<String, String>,
     answers: RefCell<HashMap<PathBuf, Answer>>,
-    reads: Cell<usize>,
+    pub(super) reads: Cell<usize>,
 }
 
 fn dir700(p: &Path) {
@@ -84,7 +84,7 @@ fn acct(uuid: &str) -> String {
 /// Profiles `L`, `H`, `M` and `K`; those in `own` have a login of their
 /// own. `~/.claude` holds a login; `~/.claude.json` names `home_json`. The
 /// ledger names `live`, last swapped at `swapped_at`.
-fn fx(own: &[&str], live: &str, swapped_at: Option<i64>, home_json: &str) -> Fx {
+pub(super) fn fx(own: &[&str], live: &str, swapped_at: Option<i64>, home_json: &str) -> Fx {
     let tmp = tempfile::tempdir().unwrap();
     fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let base = tmp.path().canonicalize().unwrap();
@@ -130,23 +130,23 @@ fn fx(own: &[&str], live: &str, swapped_at: Option<i64>, home_json: &str) -> Fx 
     }
 }
 
-fn a_l() -> Account {
+pub(super) fn a_l() -> Account {
     server("u-lima")
 }
 fn a_h() -> Account {
     server("u-hotel")
 }
-fn a_m() -> Account {
+pub(super) fn a_m() -> Account {
     server("u-mike")
 }
-fn a_k() -> Account {
+pub(super) fn a_k() -> Account {
     server("u-kilo")
 }
 
 impl Fx {
     /// Sets what the fake reader returns for `place` (`~/.claude` or a
     /// profile name).
-    fn answer(&self, place: &str, a: Answer) {
+    pub(super) fn answer(&self, place: &str, a: Answer) {
         let p = if place == "~/.claude" {
             self.home.join(".claude")
         } else {
@@ -155,7 +155,7 @@ impl Fx {
         self.answers.borrow_mut().insert(p, a);
     }
 
-    fn read(&self, p: &Path) -> Answer {
+    pub(super) fn read(&self, p: &Path) -> Answer {
         self.reads.set(self.reads.get() + 1);
         let p = p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
         self.answers
@@ -186,7 +186,7 @@ impl Fx {
         preview(&self.store, &self.rs, &self.home, seam, &read, GAP, t).unwrap()
     }
 
-    fn logged(&self) -> Vec<String> {
+    pub(super) fn logged(&self) -> Vec<String> {
         fs::read_to_string(&self.rs.log)
             .unwrap_or_default()
             .lines()
@@ -194,17 +194,17 @@ impl Fx {
             .collect()
     }
 
-    fn ledger(&self) -> RotateLedger {
+    pub(super) fn ledger(&self) -> RotateLedger {
         self.rs.load_ledger().unwrap().unwrap()
     }
 
-    fn set_ledger(&self, f: impl FnOnce(&mut RotateLedger)) {
+    pub(super) fn set_ledger(&self, f: impl FnOnce(&mut RotateLedger)) {
         let mut l = self.ledger();
         f(&mut l);
         self.rs.save_ledger(&l).unwrap();
     }
 
-    fn home_login(&self) -> PathBuf {
+    pub(super) fn home_login(&self) -> PathBuf {
         self.home.join(".claude").join(CREDS)
     }
 
@@ -212,12 +212,12 @@ impl Fx {
         self.root.join(p).join(CREDS)
     }
 
-    fn rejected(&self) -> PathBuf {
+    pub(super) fn rejected(&self) -> PathBuf {
         self.root.join(".rejected-logins")
     }
 
     /// Login files under `.rejected-logins`.
-    fn backed_up(&self) -> Vec<PathBuf> {
+    pub(super) fn backed_up(&self) -> Vec<PathBuf> {
         let Ok(rd) = fs::read_dir(self.rejected()) else {
             return Vec::new();
         };
@@ -242,7 +242,7 @@ impl Fx {
     }
 
     /// The inode of every login: `~/.claude` and each profile's own.
-    fn inodes(&self) -> Vec<(String, Option<u64>)> {
+    pub(super) fn inodes(&self) -> Vec<(String, Option<u64>)> {
         let mut v = vec![("~/.claude".to_string(), ino_at(&self.home_login()))];
         for p in [L, H, M, K] {
             v.push((p.to_string(), ino_at(&self.slot(p))));
@@ -277,7 +277,7 @@ fn assert_no_new_lost(before: &BTreeSet<String>, f: &Fx) {
 }
 
 #[track_caller]
-fn assert_nothing_moved(f: &Fx, inodes: &[(String, Option<u64>)]) {
+pub(super) fn assert_nothing_moved(f: &Fx, inodes: &[(String, Option<u64>)]) {
     assert_eq!(f.inodes(), inodes, "a login moved");
     assert!(f.backed_up().is_empty(), "{:?}", f.backed_up());
 }
@@ -324,7 +324,7 @@ fn issue_1886_a_stale_claude_json_after_a_swap_changes_nothing() {
 
 /// `~/.claude` answers as M, which has its own login; L keeps a login of
 /// its own, so the move leaves nobody without one.
-fn case_a() -> Fx {
+pub(super) fn case_a() -> Fx {
     let f = fx(&[L, M, K], L, Some(T - 3600), M);
     f.answer("~/.claude", Ok(a_m()));
     f.answer(L, Ok(a_l()));
@@ -1007,11 +1007,11 @@ fn by_path(p: &Path) -> Answer {
     READINGS.with(|r| r.borrow().get(&p).cloned().unwrap_or(Err(reason::NO_FILE)))
 }
 
-fn set_reading(p: PathBuf, a: Answer) {
+pub(super) fn set_reading(p: PathBuf, a: Answer) {
     READINGS.with(|r| r.borrow_mut().insert(p, a));
 }
 
-fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
+pub(super) fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(f.store.clone(), f.home.clone(), s);
     ctx.scan = |_| Liveness::Known(BTreeSet::new());
@@ -1020,7 +1020,7 @@ fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
     ctx
 }
 
-fn never(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
+pub(super) fn never(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
     panic!("this cycle must end before measuring")
 }
 
