@@ -851,6 +851,24 @@ mod tests {
     }
 
     #[test]
+    fn a_scratch_directory_has_no_repository_marker_above_it() {
+        // Issue #1937: a stray `.git` in the scratch parent (for example
+        // `/tmp/.git`, written by a fixture that inherited a hook's GIT_DIR)
+        // makes every walk-up that starts below it stop there. The walk-up
+        // tests above all build their fixtures in a scratch directory, so the
+        // scope of a fresh one must be that directory alone.
+        let temp = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            walk_up_scope(temp.path()),
+            vec![temp.path().to_path_buf()],
+            "a repository marker above the scratch directory {} was found by the walk-up; \
+             remove the stray .git from its ancestors",
+            temp.path().display()
+        );
+    }
+
+    #[test]
     fn a_directory_that_merely_carries_a_bundle_is_not_an_install_source() {
         // The shape check alone cannot tell an amplihack checkout from any
         // project that happens to vendor a directory of the same shape.
