@@ -137,7 +137,7 @@ fn one_rotate_cycle_recovers_the_hand_change_and_swaps_to_capacity() {
     f.assert_each_login_once();
     let l = f.ledger();
     assert_eq!(l.live.as_deref(), Some(C));
-    assert_eq!(l.account.as_deref(), Some("u-src"));
+    assert_eq!(l.account.as_deref(), Some("u-charlie"));
     assert_eq!(l.last_cycle.unwrap().outcome, "swapped");
     assert_eq!(l.guidance, None);
     assert!(l.lost_login.is_empty());
@@ -198,7 +198,10 @@ fn a_profile_switch_is_never_taken_for_a_hand_change() {
     // A correct ledger: ~/.claude holds M's login.
     let mut l = f.ledger();
     l.live = Some(M.into());
-    l.account = Some("u-mistt".into());
+    l.account = Some("u-mike".into());
+    l.login_identity = Some(super::login_identity::Identity::new(
+        &super::tests_handfix::a_m(),
+    ));
     f.rs.save_ledger(&l).unwrap();
 
     assert_eq!(

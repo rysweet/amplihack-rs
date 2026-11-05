@@ -76,7 +76,18 @@ pub(super) fn alert(
 ) -> Result<(), ProfileError> {
     let t = now();
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-    alert_once(out, &mut l, &alert_key(kind, live), t, line);
+    if kind == "trusted-identity"
+        || kind == "account_mismatch"
+        || line.contains("trusted login identity")
+    {
+        // Always written, unlike `alert_once`, but stored as `should_alert`
+        // stores it: `advisory_alert` is cleared too, since a ledger with
+        // both fields set fails `valid_alerts` and stops every later load.
+        should_alert(&mut l, &alert_key(kind, live));
+        out.emit(t, line);
+    } else {
+        alert_once(out, &mut l, &alert_key(kind, live), t, line);
+    }
     save(ctx, &mut l, CycleOutcome::Alerted, t, None, None)
 }
 
@@ -94,3 +105,7 @@ pub fn refusal_kind(e: &ProfileError) -> String {
     }
     kind
 }
+
+#[cfg(test)]
+#[path = "tests_identity_after_advisory.rs"]
+mod tests_identity_after_advisory;

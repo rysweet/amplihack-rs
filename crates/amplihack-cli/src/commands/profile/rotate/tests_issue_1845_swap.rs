@@ -86,6 +86,13 @@ fn ledger_says(rs: &super::ledger::RotateState, live: &str, account: &str) {
         version: 1,
         live: Some(live.into()),
         account: Some(account.into()),
+        login_identity: Some(super::login_identity::Identity::new(
+            &if account.contains('@') {
+                email(account)
+            } else {
+                uuid(account)
+            },
+        )),
         since: Some(NOW - 7200),
         swapped_at: Some(NOW - 7200),
         ..RotateLedger::default()
@@ -302,39 +309,28 @@ fn a_damaged_record_is_no_record_and_does_not_refuse() {
     let e = env();
     rec(&e.root, "work", &uuid("u-recorded-other"));
     private(&expected_dir(&e.root).join("work.json"), "not json");
-    e.swap().unwrap();
-    e.assert_finished();
+    let before = e.rs.load_ledger().unwrap();
+    assert!(e.swap().is_err(), "uncertain ownership must refuse");
+    e.assert_unchanged();
+    assert_eq!(e.rs.load_ledger().unwrap(), before);
 }
 
-/// Review of PR #1849: a record that exists but cannot be read is still no
-/// record, but the guard warns once, naming the profile and no account. A
-/// missing record stays silent.
 #[cfg(target_os = "linux")]
 #[test]
 fn an_unreadable_record_warns_without_naming_the_account() {
-    use super::swap_expect::{decide, unchecked};
+    use super::swap_expect::decide;
     let e = env();
     let from = Source::Profile(n("work"));
-    let mut note = None;
-    decide(&e.store, &e.rs, &e.home, &from, &mut note).unwrap();
-    assert_eq!(note, None, "no record: no warning");
-
     rec(&e.root, "work", &uuid("u-recorded-other"));
-    private(&expected_dir(&e.root).join("work.json"), "not json");
-    let mut note = None;
-    decide(&e.store, &e.rs, &e.home, &from, &mut note).unwrap();
-    let note = note.expect("an unreadable record warns");
-    assert_eq!(note, unchecked(&n("work")));
-    assert!(note.contains("profile 'work'"), "{note}");
-    assert_no_account(&note);
-
-    private(
-        &expected_dir(&e.root).join("work.json"),
-        &serde_json::json!({ "account": 7 }).to_string(),
-    );
-    let mut note = None;
-    decide(&e.store, &e.rs, &e.home, &from, &mut note).unwrap();
-    assert_eq!(note, Some(unchecked(&n("work"))), "no usable key: warns");
+    for body in ["not json", "{}", r#"{"account":7}"#] {
+        private(&expected_dir(&e.root).join("work.json"), body);
+        let err = decide(&e.store, &e.rs, &e.home, &from, &mut None)
+            .err()
+            .unwrap();
+        assert!(err.to_string().contains("expected record is unreadable"));
+        assert_no_account(&err.to_string());
+        e.assert_unchanged();
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -342,31 +338,23 @@ fn an_unreadable_record_warns_without_naming_the_account() {
 fn a_home_without_an_account_is_not_checked() {
     let e = env();
     rec(&e.root, "work", &uuid("u-recorded-other"));
-    private(
-        &e.home.join(".claude.json"),
-        &serde_json::json!({"projects": {}}).to_string(),
+    private(&e.home.join(".claude.json"), r#"{"projects":{}}"#);
+    assert!(
+        e.swap().is_err(),
+        "session absence cannot hide a trusted conflict"
     );
-    assert_eq!(e.swap().unwrap(), n("work"));
-    assert_eq!(ino_at(&e.live()), Some(e.t));
-    assert_eq!(ino_at(&e.slot("work")), Some(e.l));
-    assert_eq!(
-        got(&e.root, "work").as_deref(),
-        Some("u-recorded-other"),
-        "an existing record is never overwritten by a swap"
-    );
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    assert_eq!(ino_at(&e.slot("spare")), Some(e.t));
 }
-
-// --- AC7: what a swap records ----------------------------------------------
 
 #[cfg(target_os = "linux")]
 #[test]
 fn a_swap_without_a_ledger_records_nothing() {
     let e = env();
-    assert_eq!(e.rs.load_ledger().unwrap(), None);
-    e.swap().unwrap();
+    fs::remove_file(&e.rs.ledger).unwrap();
+    assert!(e.swap().is_err());
+    e.assert_unchanged();
     assert_eq!(got(&e.root, "work"), None);
-    assert_eq!(got(&e.root, "spare"), None);
-    assert!(records(&e.root).is_empty(), "{:?}", records(&e.root));
 }
 
 #[cfg(target_os = "linux")]
@@ -396,9 +384,10 @@ fn a_swap_backfills_from_when_the_ledger_shows_the_login_came_from_it() {
 fn no_backfill_when_the_ledger_names_another_live_profile() {
     let e = env();
     ledger_says(&e.rs, "spare", "u-work");
-    e.swap().unwrap();
-    assert_eq!(got(&e.root, "work"), None);
-    assert_eq!(got(&e.root, "spare"), None);
+    let before = e.rs.load_ledger().unwrap();
+    assert!(e.swap().is_err(), "uncertain ownership must refuse");
+    e.assert_unchanged();
+    assert_eq!(e.rs.load_ledger().unwrap(), before);
 }
 
 #[cfg(target_os = "linux")]
@@ -407,8 +396,10 @@ fn no_backfill_when_the_ledger_account_is_not_the_outgoing_one() {
     // A stranger's login in `~/.claude` is never accepted as `work`'s.
     let e = env();
     ledger_says(&e.rs, "work", "u-someone-else");
-    e.swap().unwrap();
-    assert_eq!(got(&e.root, "work"), None);
+    let before = e.rs.load_ledger().unwrap();
+    assert!(e.swap().is_err(), "uncertain ownership must refuse");
+    e.assert_unchanged();
+    assert_eq!(e.rs.load_ledger().unwrap(), before);
 }
 
 #[cfg(target_os = "linux")]
@@ -421,8 +412,10 @@ fn no_backfill_when_the_ledger_has_no_account() {
         ..RotateLedger::default()
     })
     .unwrap();
-    e.swap().unwrap();
-    assert_eq!(got(&e.root, "work"), None);
+    let before = e.rs.load_ledger().unwrap();
+    assert!(e.swap().is_err(), "uncertain ownership must refuse");
+    e.assert_unchanged();
+    assert_eq!(e.rs.load_ledger().unwrap(), before);
 }
 
 #[cfg(target_os = "linux")]
@@ -445,7 +438,7 @@ fn no_backfill_when_home_has_no_account() {
         &serde_json::json!({"projects": {}}).to_string(),
     );
     e.swap().unwrap();
-    assert_eq!(got(&e.root, "work"), None);
+    assert_eq!(got(&e.root, "work").as_deref(), Some("u-work"));
 }
 
 #[cfg(target_os = "linux")]
@@ -456,7 +449,7 @@ fn swapping_back_backfills_the_outgoing_profile_and_never_the_incoming_one() {
     // (outgoing) and still nothing for `work` (incoming).
     let e = env();
     e.swap().unwrap();
-    assert!(records(&e.root).is_empty(), "{:?}", records(&e.root));
+    assert_eq!(got(&e.root, "work").as_deref(), Some("u-work"));
     swap(
         &e.store,
         &e.rs,
@@ -469,8 +462,8 @@ fn swapping_back_backfills_the_outgoing_profile_and_never_the_incoming_one() {
     assert_eq!(got(&e.root, "spare").as_deref(), Some("u-spare"));
     assert_eq!(
         got(&e.root, "work"),
-        None,
-        "the incoming side is never recorded"
+        Some("u-work".into()),
+        "the earlier outgoing record is retained"
     );
 }
 
@@ -599,24 +592,10 @@ fn a_failed_record_write_does_not_fail_the_swap() {
     ledger_says(&e.rs, "work", "u-work");
     fs::create_dir_all(e.root.join(".auto-switch.d")).unwrap();
     fs::write(expected_dir(&e.root), "in the way").unwrap();
-    assert_eq!(e.swap().unwrap(), n("work"));
-    e.assert_finished();
-}
-
-// --- Organizations and the backfill gate (#1845 review) -------------------
-
-fn uuid_in(u: &str, org: &str) -> Account {
-    Account::from_block(&serde_json::json!({ "accountUuid": u, "organizationUuid": org })).unwrap()
-}
-
-/// Adds profile `p` signed in to `body`'s account.
-fn add_profile(e: &super::tests_swap::Env, p: &str, body: serde_json::Value) {
-    e.store.add(&n(p)).unwrap();
-    private(
-        &e.root.join(p).join(".claude.json"),
-        &serde_json::json!({ "oauthAccount": body }).to_string(),
-    );
-    login(&e.root.join(p).join(CREDS));
+    let before = e.rs.load_ledger().unwrap();
+    assert!(e.swap().is_err(), "uncertain ownership must refuse");
+    e.assert_unchanged();
+    assert_eq!(e.rs.load_ledger().unwrap(), before);
 }
 
 #[cfg(target_os = "linux")]
@@ -644,6 +623,9 @@ fn a_record_in_the_same_organization_lets_the_swap_through() {
         .to_string(),
     );
     rec(&e.root, "work", &uuid_in("u-work", "o-team"));
+    let mut cred = json(&e.live());
+    cred["task1753FakeIdentity"]["organizationUuid"] = "o-team".into();
+    private(&e.live(), &cred.to_string());
     e.swap().unwrap();
     e.assert_finished();
 }
@@ -660,10 +642,10 @@ fn no_backfill_when_another_profile_holds_the_outgoing_account() {
         serde_json::json!({"accountUuid": "u-work", "emailAddress": "work@example.com"}),
     );
     ledger_says(&e.rs, "work", "u-work");
-    e.swap().unwrap();
-    e.assert_finished();
-    assert_eq!(got(&e.root, "work"), None);
-    assert!(records(&e.root).is_empty(), "{:?}", records(&e.root));
+    let before = e.rs.load_ledger().unwrap();
+    assert!(e.swap().is_err(), "uncertain ownership must refuse");
+    e.assert_unchanged();
+    assert_eq!(e.rs.load_ledger().unwrap(), before);
 }
 
 #[cfg(target_os = "linux")]
@@ -672,9 +654,10 @@ fn no_backfill_when_another_profile_has_the_outgoing_account_recorded() {
     let e = env();
     rec(&e.root, "spare", &uuid("u-work"));
     ledger_says(&e.rs, "work", "u-work");
-    e.swap().unwrap();
-    e.assert_finished();
-    assert_eq!(got(&e.root, "work"), None);
+    let before = e.rs.load_ledger().unwrap();
+    assert!(e.swap().is_err(), "uncertain ownership must refuse");
+    e.assert_unchanged();
+    assert_eq!(e.rs.load_ledger().unwrap(), before);
 }
 
 #[cfg(target_os = "linux")]
@@ -690,4 +673,16 @@ fn another_profile_in_another_organization_does_not_stop_the_backfill() {
     e.swap().unwrap();
     e.assert_finished();
     assert_eq!(got(&e.root, "work").as_deref(), Some("u-work"));
+}
+
+fn uuid_in(u: &str, org: &str) -> Account {
+    Account::from_block(&serde_json::json!({ "accountUuid": u, "organizationUuid": org })).unwrap()
+}
+fn add_profile(e: &super::tests_swap::Env, p: &str, body: serde_json::Value) {
+    e.store.add(&n(p)).unwrap();
+    private(
+        &e.root.join(p).join(".claude.json"),
+        &serde_json::json!({"oauthAccount": body}).to_string(),
+    );
+    login(&e.root.join(p).join(CREDS));
 }

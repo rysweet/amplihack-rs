@@ -1,12 +1,18 @@
 //! Recovery of an interrupted swap (D10): settles it by where the recorded
-//! inodes are. Only renames; never deletes or opens a login.
+//! inodes are, with fresh credential-bound authorization before completion.
+//! Login movement uses renames and never deletes a login.
 
+use super::identify::{LoginKind, login_kind};
 use super::ledger::{Phase, RotateJournal, RotateState};
+use super::login_identity::{Budget, Reader, UNAVAILABLE};
+use super::swap::Source;
 use super::swap::{
     LOGINS_MISPLACED, describe, drop_locks, finish, ino_at, remove_unused_adoption, show,
 };
+use super::swap_authorize::authorize;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{CREDS, move_login};
+use crate::commands::profile::kind::{self, Kind};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
@@ -37,11 +43,31 @@ fn freeze(
 }
 
 /// Settles an interrupted swap by where the recorded inodes are; the
-/// phase never decides. Only renames; never deletes or opens a login.
+/// phase never decides. Fresh trusted identity authorizes completion;
+/// login movement uses renames and never deletes a login.
 pub fn recover(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
+) -> Result<RecoverOutcome, ProfileError> {
+    let budget = Budget::new();
+    let read = super::login_identity::default_read();
+    recover_with(
+        store,
+        rs,
+        home,
+        Reader {
+            read: &read,
+            budget: &budget,
+        },
+    )
+}
+
+pub(super) fn recover_with(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+    reader: Reader<'_>,
 ) -> Result<RecoverOutcome, ProfileError> {
     let Some(mut j) = rs.load_journal()? else {
         return Ok(RecoverOutcome::None);
@@ -60,6 +86,17 @@ pub fn recover(
     }
     // Names were checked when the journal was loaded.
     let (from, to) = (ProfileName::parse(&j.from)?, ProfileName::parse(&j.to)?);
+    if j.phase == Phase::Checking {
+        // Preflight never authorizes login movement or creates adoption profiles.
+        if super::swap::check_home(home).is_err() || store.verify_profile_dir(&to).is_err() {
+            return Ok(RecoverOutcome::Inconsistent(
+                "preflight lock paths changed".into(),
+            ));
+        }
+        drop_locks(store, rs, home, &mut j)?;
+        rs.delete_journal()?;
+        return Ok(RecoverOutcome::RolledBack { from, to });
+    }
     let (Ok(from_dir), Ok(to_dir)) = (
         store.verify_profile_dir(&from),
         store.verify_profile_dir(&to),
@@ -84,18 +121,86 @@ pub fn recover(
         remove_unused_adoption(store, &j);
         return Ok(RecoverOutcome::RolledBack { from, to });
     }
-    if at_t == Some(j.live_ino) && at_s.is_none() {
-        if let Err(e) = move_login(&t, &s, &show) {
-            let why = format!(
-                "the outgoing login could not be moved to its profile: {}",
-                describe(e)
-            );
-            return freeze(store, rs, home, j, &why);
-        }
-    } else if !(at_s == Some(j.live_ino) && at_t.is_none()) {
+    let outgoing = if at_t == Some(j.live_ino) && at_s.is_none() {
+        &to_dir
+    } else if at_s == Some(j.live_ino) && at_t.is_none() {
+        &from_dir
+    } else {
         return freeze(store, rs, home, j, LOGINS_MISPLACED);
+    };
+    // Recovery may run after an earlier uncertain attempt released its
+    // locks. Reacquire them before fresh evidence authorizes any action.
+    let locked = (|| {
+        for (dir, held) in [
+            (&home.join(".claude"), &mut j.home_lock_ino),
+            (&to_dir, &mut j.to_lock_ino),
+        ] {
+            match (
+                *held,
+                ino_at(&dir.join(crate::commands::profile::auto_switch::kit::REFRESH_LOCK)),
+            ) {
+                (Some(a), Some(b)) if a == b => {}
+                (_, None) => {
+                    *held = Some(super::swap::take_lock(dir)?);
+                }
+                _ => return Err(super::swap_authorize::refused(UNAVAILABLE)),
+            }
+        }
+        rs.save_journal(&j)
+    })();
+    if let Err(e) = locked {
+        let held = j.clone();
+        if let Err(save) = drop_locks(store, rs, home, &mut j) {
+            super::swap::release_locks(store, home, &held);
+            return Err(save);
+        }
+        return Ok(RecoverOutcome::Inconsistent(e.to_string()));
     }
+    let source = if j.adopt {
+        Source::Adopt
+    } else {
+        Source::Profile(from.clone())
+    };
+    let platform_in =
+        login_kind(&l) == LoginKind::NoOAuth && kind::kind_of(store, &to, home) == Kind::Platform;
+    let platform_out = login_kind(&outgoing.join(CREDS)) == LoginKind::NoOAuth
+        && kind::kind_of(store, &from, home) == Kind::Platform;
+    let auth = match authorize(
+        store,
+        rs,
+        &source,
+        &to,
+        outgoing,
+        &home.join(".claude"),
+        platform_in,
+        platform_out,
+        reader,
+        super::swap_authorize::Proof::Recovery(j.identity.as_ref()),
+    ) {
+        Ok(auth) if auth.current(store) => auth,
+        result => {
+            // Uncertainty is retryable: retain the original journal phase,
+            // release only operation-owned locks, and move/relabel nothing.
+            drop_locks(store, rs, home, &mut j)?;
+            let why = result
+                .err()
+                .map_or_else(|| UNAVAILABLE.to_string(), |e| e.to_string());
+            return Ok(RecoverOutcome::Inconsistent(why));
+        }
+    };
+    if outgoing == &to_dir
+        && let Err(e) = move_login(&t, &s, &show)
+    {
+        let why = format!(
+            "the outgoing login could not be moved to its profile: {}",
+            describe(e)
+        );
+        return freeze(store, rs, home, j, &why);
+    }
+    // Moving the outgoing login does not change the incoming binding.
+    finish(rs, home, &j, &auth.incoming)?;
     drop_locks(store, rs, home, &mut j)?;
-    finish(store, rs, home, &j)?;
+    rs.delete_journal()?;
+    super::swap_expect::settle(store, &from, auth.pending);
     Ok(RecoverOutcome::RolledForward { from, to })
 }
