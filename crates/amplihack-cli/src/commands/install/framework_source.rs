@@ -183,10 +183,6 @@ pub(super) struct AcquiredSource {
     pub(super) root: PathBuf,
     pub(super) origin: SourceOrigin,
     pub(super) version: SourceVersion,
-    /// Notes about candidates turned down, in resolution order. Already printed
-    /// when this is returned: a fetch may take minutes, and they say why it runs.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(super) notes: Vec<String>,
     pub(super) _fetched_dir: Option<tempfile::TempDir>,
 }
 
@@ -226,16 +222,33 @@ pub(crate) struct SourceRefused {
 impl std::fmt::Display for SourceRefused {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let path = sanitize_path(&self.path);
+        let quoted = shell_quote_if_needed(&path);
         write!(
             f,
             "refusing to stage the framework bundle from {path} ({}):\n  source version: {}\n  \
-             binary version: v{}\nRun `amplihack install --local {path}` to stage this tree anyway.",
+             binary version: v{}\nRun `amplihack install --local {quoted}` to stage this tree \
+             anyway.",
             self.label, self.source_version, self.binary_version
         )
     }
 }
 
 impl std::error::Error for SourceRefused {}
+
+/// Quote `text` for a POSIX shell when it holds anything but plain path
+/// characters, so the printed hint can be pasted as it is.
+fn shell_quote_if_needed(text: &str) -> String {
+    let plain = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+:@,=~".contains(c))
+        && !text.starts_with('~');
+    if plain {
+        text.to_string()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
 
 /// What a candidate with another version gets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -313,30 +326,12 @@ pub(super) fn acquire_framework_source(
             root: local.clone(),
             origin: SourceOrigin::Local,
             version: read_source_version(local),
-            notes: Vec::new(),
             _fetched_dir: None,
         });
     }
 
-    let rule = if policy.mode == InstallMode::Explicit && !policy.force_refresh {
-        MismatchRule::RefuseUserSources
-    } else {
-        MismatchRule::NoteAndContinue
-    };
-    // D6: `--force-refresh` keeps `update` independent of the cwd. It consults
-    // `AMPLIHACK_HOME`, so a tag worktree works offline, and then the tag.
-    let resolution = if policy.force_refresh {
-        let home_only = FrameworkRootQuery {
-            amplihack_home: query.without_staged_home().amplihack_home,
-            ..FrameworkRootQuery::default()
-        };
-        resolve_gated(&home_only, &binary.version, rule, validate)
-    } else {
-        resolve_gated(query, &binary.version, rule, validate)
-    };
-
-    let notes: Vec<String> = resolution.notes.iter().map(ToString::to_string).collect();
-    for note in &notes {
+    let resolution = resolve_for_policy(policy, query, &binary.version, validate);
+    for note in &resolution.notes {
         eprintln!("{note}");
     }
     if let Some(refused) = resolution.refused {
@@ -347,20 +342,59 @@ pub(super) fn acquire_framework_source(
             root: found.root,
             origin: SourceOrigin::Resolved(found.origin),
             version: resolution.version.unwrap_or(SourceVersion::Unknown),
-            notes,
             _fetched_dir: None,
         });
     }
 
-    fetch_release_tag(policy.mode, binary, fetcher, validate, notes)
+    fetch_release_tag(policy, binary, fetcher, validate)
+}
+
+/// Resolve the local candidates a policy without `--local` consults, with the
+/// mismatch rule that policy implies. The notes are returned, not printed.
+pub(super) fn resolve_for_policy(
+    policy: &SourcePolicy,
+    query: &FrameworkRootQuery,
+    binary_version: &str,
+    validate: &dyn Fn(&Path) -> Result<(), String>,
+) -> FrameworkRootResolution {
+    let rule = if policy.mode == InstallMode::Explicit && !policy.force_refresh {
+        MismatchRule::RefuseUserSources
+    } else {
+        MismatchRule::NoteAndContinue
+    };
+    // D6: `--force-refresh` keeps `update` independent of the cwd. It consults
+    // `AMPLIHACK_HOME`, so a tag worktree works offline, and then the tag.
+    if policy.force_refresh {
+        let home_only = FrameworkRootQuery {
+            amplihack_home: query.without_staged_home().amplihack_home,
+            ..FrameworkRootQuery::default()
+        };
+        resolve_gated(&home_only, binary_version, rule, validate)
+    } else {
+        resolve_gated(query, binary_version, rule, validate)
+    }
+}
+
+/// The line printed before a tag fetch, which says why the fetch runs.
+pub(super) fn fetch_reason(version: &semver::Version, force_refresh: bool) -> String {
+    if force_refresh {
+        format!(
+            "📥 Fetching the framework bundle from release tag v{version} because \
+             --force-refresh was given."
+        )
+    } else {
+        format!(
+            "📥 Fetching the framework bundle from release tag v{version} because no local \
+             source matches this binary."
+        )
+    }
 }
 
 fn fetch_release_tag(
-    mode: InstallMode,
+    policy: &SourcePolicy,
     binary: &BinaryIdentity,
     fetcher: &dyn TagFetcher,
     validate: &dyn Fn(&Path) -> Result<(), String>,
-    notes: Vec<String>,
 ) -> Result<AcquiredSource> {
     let version = semver::Version::parse(&binary.version)
         .ok()
@@ -368,17 +402,14 @@ fn fetch_release_tag(
         .ok_or_else(|| SourceFetchFailed::NotAllowed {
             version: binary.version.clone(),
         })?;
-    let budget = match mode {
+    let budget = match policy.mode {
         InstallMode::Explicit => EXPLICIT_FETCH_BUDGET,
         InstallMode::Implicit => IMPLICIT_FETCH_BUDGET,
     };
     let fetched_dir = tempfile::tempdir().context("failed to create a temp dir for the fetch")?;
     // Stderr, because a launch on an offline host repeats this and its stdout
     // may be going somewhere that parses it.
-    eprintln!(
-        "📥 Fetching the framework bundle from release tag v{version} because no local source \
-         matches this binary."
-    );
+    eprintln!("{}", fetch_reason(&version, policy.force_refresh));
     let root = fetcher.fetch(&version, fetched_dir.path(), budget)?;
 
     let found = read_fetched_tree_version(&root);
@@ -396,31 +427,12 @@ fn fetch_release_tag(
         root,
         origin: SourceOrigin::ReleaseTag,
         version: found,
-        notes,
         _fetched_dir: Some(fetched_dir),
     })
 }
 
-/// What the launch bootstrap does about a selected Codex.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum CodexReconcile {
-    Run,
-    SkipWithWarning,
-    Fail,
-}
-
-/// No source plus a stamp that differs from the binary means a bundle was kept
-/// under D1: skip with a warning. No source with a matching stamp stays an error.
-pub(super) fn codex_reconcile_action(
-    source_found: bool,
-    stamp: Option<&str>,
-    binary_version: &str,
-) -> CodexReconcile {
-    if source_found {
-        CodexReconcile::Run
-    } else if stamp == Some(binary_version) {
-        CodexReconcile::Fail
-    } else {
-        CodexReconcile::SkipWithWarning
-    }
+/// With no source for this binary, a stamp that differs from it means a bundle
+/// was kept under D1. A matching stamp means the source really is missing.
+pub(super) fn bundle_kept_without_source(stamp: Option<&str>, binary_version: &str) -> bool {
+    stamp != Some(binary_version)
 }

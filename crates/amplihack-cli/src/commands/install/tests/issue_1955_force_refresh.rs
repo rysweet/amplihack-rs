@@ -2,7 +2,7 @@
 //! path with an injected fetcher and an isolated HOME. No test here reaches the
 //! network: see `InstallEnv`.
 
-use super::super::framework_source::{BinaryIdentity, CodexReconcile, codex_reconcile_action};
+use super::super::framework_source::{BinaryIdentity, bundle_kept_without_source};
 use super::super::run_install_with_fetcher;
 use super::super::tag_fetch::{
     EXPLICIT_FETCH_BUDGET, FetchedWrongVersion, IMPLICIT_FETCH_BUDGET, SourceFetchFailed,
@@ -497,26 +497,9 @@ fn slash_commands_are_restored_from_a_same_version_source() {
 #[test]
 fn codex_reconcile_follows_the_stamp_when_no_source_is_found() {
     let binary = "1.2.99";
-    assert_eq!(
-        codex_reconcile_action(true, Some(binary), binary),
-        CodexReconcile::Run
-    );
-    assert_eq!(
-        codex_reconcile_action(true, Some("1.2.0"), binary),
-        CodexReconcile::Run
-    );
     // A bundle kept under D1: no source, and a stamp that says so.
-    assert_eq!(
-        codex_reconcile_action(false, Some("1.2.0"), binary),
-        CodexReconcile::SkipWithWarning
-    );
-    assert_eq!(
-        codex_reconcile_action(false, None, binary),
-        CodexReconcile::SkipWithWarning
-    );
+    assert!(bundle_kept_without_source(Some("1.2.0"), binary));
+    assert!(bundle_kept_without_source(None, binary));
     // The stamp says this install is current, so a missing source is a real fault.
-    assert_eq!(
-        codex_reconcile_action(false, Some(binary), binary),
-        CodexReconcile::Fail
-    );
+    assert!(!bundle_kept_without_source(Some(binary), binary));
 }

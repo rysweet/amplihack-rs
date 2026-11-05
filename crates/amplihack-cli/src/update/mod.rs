@@ -10,7 +10,7 @@ pub use check::{
     StartupUpdateOutcome, maybe_print_update_notice_from_args, run_update,
     should_skip_update_check_for_subcommand,
 };
-pub(crate) use network::http_get_bounded;
+pub(crate) use network::{MAX_TAG_TARBALL_BYTES, http_get_bounded};
 
 use anyhow::{Result, anyhow, bail};
 use semver::Version;

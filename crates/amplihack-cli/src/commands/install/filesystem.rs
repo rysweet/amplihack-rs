@@ -1,5 +1,6 @@
 //! Filesystem walking, copying, and permission utilities.
 
+use super::paths::sanitize_path;
 use anyhow::{Context, Result};
 use std::collections::{BTreeSet, VecDeque};
 use std::ffi::OsStr;
@@ -282,7 +283,7 @@ pub(super) fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
     let entries = walk_tree_reporting(src, WalkScope::CopySet, &mut |symlink| {
         // Skip symlinks with a warning to prevent directory traversal attacks.
         if !is_known_safe_bundle_symlink(symlink) {
-            println!("  ⚠️  Skipping symlink: {}", symlink.display());
+            println!("  ⚠️  Skipping symlink: {}", sanitize_path(symlink));
         }
     })?;
     // Subdirectories whose destination aliases the source: nothing under them

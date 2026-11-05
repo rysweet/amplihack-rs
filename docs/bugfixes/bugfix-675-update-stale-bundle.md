@@ -75,7 +75,10 @@ before the bundled-root check).
 
 ## Verification
 
-After the fix, `amplihack update` produces:
+After the fix, `amplihack update` produced the output below. Since #1955 the
+second line is instead the source line (`📦 Using framework source …`) or, when
+no same-version `AMPLIHACK_HOME` exists, `📥 Fetching the framework bundle from
+release tag v… because --force-refresh was given.`
 
 ```
 ✓ Updated amplihack to v0.9.61

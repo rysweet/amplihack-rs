@@ -553,8 +553,8 @@ pub(super) fn resolve_framework_root(
 /// and — for a complete source checkout — `.claude/`) together with the step
 /// that found it. Returns `None` when no local source has this binary's version.
 ///
-/// Candidates that were turned down are printed, not swallowed: see
-/// [`ResolutionNote`].
+/// Candidates that were turned down go to the debug log, not stderr: this runs
+/// on every Codex launch, and only staging needs to say why a fetch runs.
 pub(super) fn find_bundled_framework_root() -> Option<ResolvedFrameworkRoot> {
     find_bundled_framework_root_for(&FrameworkRootQuery::from_environment(), crate::VERSION)
 }
@@ -573,7 +573,7 @@ pub(super) fn find_bundled_framework_root_for(
         },
     );
     for note in &resolution.notes {
-        eprintln!("{note}");
+        tracing::debug!("{note}");
     }
     resolution.resolved
 }

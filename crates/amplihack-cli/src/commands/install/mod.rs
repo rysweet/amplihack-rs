@@ -405,30 +405,22 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     // The Codex transaction is a no-op when current and preserves every byte
     // on failure; an older binary never gets here (#1526 refuses it first).
     if crate::freshness::codex_selected() {
-        // Issue #1955 D1: a bundle kept after a failed fetch has no source with
-        // this binary's version until a fetch succeeds.
-        let source = find_bundled_framework_root();
-        let stamp = version_stamp::read_installed_version_quiet()
-            .context("reading install version stamp")?;
-        match framework_source::codex_reconcile_action(
-            source.is_some(),
-            stamp.as_deref(),
-            crate::VERSION,
-        ) {
-            framework_source::CodexReconcile::Run => {
-                let source = source
-                    .context("bundled source required to reconcile native Codex resources")?;
-                codex_plugin::install(&source.root, &hooks_bin)
-                    .context("failed native Codex reconciliation")?;
+        if let Some(source) = find_bundled_framework_root() {
+            codex_plugin::install(&source.root, &hooks_bin)
+                .context("failed native Codex reconciliation")?;
+        } else {
+            // Issue #1955 D1: a bundle kept after a failed fetch has no source with
+            // this binary's version until a fetch succeeds.
+            let stamp = version_stamp::read_installed_version_quiet()
+                .context("reading install version stamp")?;
+            if !framework_source::bundle_kept_without_source(stamp.as_deref(), crate::VERSION) {
+                bail!("bundled source required to reconcile native Codex resources");
             }
-            framework_source::CodexReconcile::SkipWithWarning => eprintln!(
+            eprintln!(
                 "amplihack: warning: skipping the Codex reconcile, because no framework source \
                  matches v{} yet.",
                 crate::VERSION
-            ),
-            framework_source::CodexReconcile::Fail => {
-                bail!("bundled source required to reconcile native Codex resources")
-            }
+            );
         }
     }
     let settings_path = global_settings_path()?;

@@ -78,6 +78,15 @@ fn acquire(
     acquire_framework_source(policy, query, &binary(), fetcher, &accept_all)
 }
 
+/// The notes `acquire` prints for this policy and query, as text.
+fn notes(policy: &SourcePolicy, query: &FrameworkRootQuery) -> Vec<String> {
+    resolve_for_policy(policy, query, BINARY, &accept_all)
+        .notes
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
 fn expect_refused(result: anyhow::Result<AcquiredSource>) -> SourceRefused {
     let err = result.expect_err("the source must be refused");
     err.downcast_ref::<SourceRefused>()
@@ -236,7 +245,7 @@ fn executable_and_compile_time_mismatches_are_notes_then_a_fetch() {
 
     assert_eq!(source.origin, SourceOrigin::ReleaseTag);
     assert_eq!(fetcher.call_count(), 1);
-    let notes = source.notes.join("\n");
+    let notes = notes(&explicit(), &query).join("\n");
     assert!(
         notes.contains(&exe_repo.display().to_string())
             && notes.contains(&compile_root.display().to_string()),
@@ -278,7 +287,7 @@ fn a_prior_install_with_any_other_stamp_means_a_note_and_a_fetch() {
 
         assert_eq!(source.origin, SourceOrigin::ReleaseTag, "stamp {stamp:?}");
         assert!(
-            !source.notes.is_empty(),
+            !notes(&explicit(), &query).is_empty(),
             "stamp {stamp:?}: a note is needed"
         );
     }
@@ -360,7 +369,7 @@ fn implicit_install_notes_every_mismatch_and_then_fetches() {
     let source = acquire(&implicit(), &query, &fetcher).unwrap();
 
     assert_eq!(source.origin, SourceOrigin::ReleaseTag);
-    let notes = source.notes.join("\n");
+    let notes = notes(&implicit(), &query).join("\n");
     assert!(
         notes.contains(&old_home.display().to_string())
             && notes.contains(&old_cwd.display().to_string()),
@@ -412,7 +421,7 @@ fn force_refresh_with_a_mismatched_amplihack_home_notes_it_and_fetches() {
 
     assert_eq!(source.origin, SourceOrigin::ReleaseTag);
     assert_eq!(
-        source.notes,
+        notes(&force_refresh(), &home_query(&tree)),
         vec![format!(
             "ℹ️  Ignoring the framework source at {} (AMPLIHACK_HOME): its version is v{OLDER} \
              and this binary is v{BINARY}.",
@@ -581,6 +590,37 @@ fn the_refusal_names_the_source_both_versions_and_the_way_out() {
              Run `amplihack install --local {path}` to stage this tree anyway.",
             path = tree.display()
         )
+    );
+}
+
+#[test]
+fn the_local_install_hint_quotes_a_path_with_a_space() {
+    let refused = SourceRefused {
+        path: PathBuf::from("/home/alice/my src/it's here"),
+        label: "AMPLIHACK_HOME".to_string(),
+        source_version: SourceVersion::parse(OLDER),
+        binary_version: BINARY.to_string(),
+    };
+
+    let text = refused.to_string();
+
+    assert!(
+        text.contains("from /home/alice/my src/it's here (AMPLIHACK_HOME)"),
+        "{text}"
+    );
+    assert!(
+        text.contains(r#"`amplihack install --local '/home/alice/my src/it'\''s here'`"#),
+        "{text}"
+    );
+}
+
+#[test]
+fn force_refresh_gives_its_own_reason_for_the_fetch() {
+    let version = semver::Version::parse(BINARY).unwrap();
+
+    assert!(fetch_reason(&version, true).ends_with("because --force-refresh was given."));
+    assert!(
+        fetch_reason(&version, false).ends_with("because no local source matches this binary.")
     );
 }
 

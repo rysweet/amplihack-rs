@@ -277,6 +277,11 @@ Run `amplihack install --local /home/alice/src/amplihack-rs` to stage this tree 
 📥 Fetching the framework bundle from release tag v1.2.99 because no local source matches this binary.
 ```
 
+With `--force-refresh`, the reason reads `because --force-refresh was given.`
+
+A path with spaces or shell characters is single-quoted in the
+`install --local` hint, so the command can be pasted as printed.
+
 **Failed fetch:**
 
 ```text
@@ -359,6 +364,10 @@ Install never prints `Bundled framework source not found`.
 - **Codex:** while an older bundle is kept, the Codex reconcile is skipped with a
   warning. If the stamp already matches the binary and no source is found, the
   reconcile still fails with an error.
+- **Codex launches pay for the gate:** every launch with Codex selected runs
+  the version gate over the local sources. A source with no usable `Cargo.toml`
+  version runs `git describe`, which can add up to 5 seconds. Sources it turns
+  down go to the debug log; nothing prints unless a refusal occurs.
 
 **Slash commands**
 

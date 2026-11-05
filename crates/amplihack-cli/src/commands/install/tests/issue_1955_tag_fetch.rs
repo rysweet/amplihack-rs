@@ -737,9 +737,9 @@ fn too_many_entries_fails() {
     });
     let temp = tempfile::tempdir().unwrap();
 
-    let err = extract_tag_tarball(&archive, temp.path(), &SMALL).expect_err("must fail");
+    let reason = extract_tag_tarball(&archive, temp.path(), &SMALL).expect_err("must fail");
 
-    assert!(err.downcast_ref::<SourceFetchFailed>().is_some(), "{err:#}");
+    assert!(reason.contains("entries"), "{reason}");
 }
 
 #[test]
@@ -749,9 +749,9 @@ fn too_many_unpacked_bytes_fails_even_from_a_small_archive() {
     assert!((archive.len() as u64) < SMALL.max_download_bytes);
     let temp = tempfile::tempdir().unwrap();
 
-    let err = extract_tag_tarball(&archive, temp.path(), &SMALL).expect_err("must fail");
+    let reason = extract_tag_tarball(&archive, temp.path(), &SMALL).expect_err("must fail");
 
-    assert!(err.downcast_ref::<SourceFetchFailed>().is_some(), "{err:#}");
+    assert!(reason.contains("unpacks to over"), "{reason}");
 }
 
 /// `tar` reads a metadata entry into memory before the extractor sees the next
@@ -774,9 +774,13 @@ fn an_oversized_metadata_entry_fails_even_from_a_small_archive() {
     assert!((archive.len() as u64) < SMALL.max_download_bytes);
     let temp = tempfile::tempdir().unwrap();
 
-    let err = extract_tag_tarball(&archive, temp.path(), &SMALL).expect_err("must fail");
+    let reason = extract_tag_tarball(&archive, temp.path(), &SMALL).expect_err("must fail");
 
-    assert!(err.downcast_ref::<SourceFetchFailed>().is_some(), "{err:#}");
+    // Cut off by the stream cap, either inside the entry or at its end.
+    assert!(
+        reason.contains("decompresses to over") || reason.contains("can't be read"),
+        "{reason}"
+    );
 }
 
 /// GitHub's own archives hold metadata entries, so a normal one must still pass.
@@ -809,25 +813,24 @@ fn too_many_download_bytes_fails() {
     };
     let temp = tempfile::tempdir().unwrap();
 
-    let err = extract_tag_tarball(&archive, temp.path(), &limits).expect_err("must fail");
+    let reason = extract_tag_tarball(&archive, temp.path(), &limits).expect_err("must fail");
 
-    assert!(err.downcast_ref::<SourceFetchFailed>().is_some(), "{err:#}");
+    assert!(reason.contains("is over the limit"), "{reason}");
 }
 
 #[test]
 fn garbage_is_a_failed_fetch_not_a_panic() {
     let temp = tempfile::tempdir().unwrap();
 
-    let err = extract_tag_tarball(b"not a tarball", temp.path(), &SMALL).expect_err("must fail");
+    let reason = extract_tag_tarball(b"not a tarball", temp.path(), &SMALL).expect_err("must fail");
 
-    assert!(err.downcast_ref::<SourceFetchFailed>().is_some(), "{err:#}");
+    assert!(reason.contains("can't be read"), "{reason}");
 }
 
-/// A hostile entry may be refused or skipped. A refusal has to be a failed fetch,
-/// so that self-heal treats it like any other unusable download.
+/// A hostile entry may be refused or skipped. The tests check what was written.
 fn extract_hostile(archive: &[u8], dest: &Path) {
-    if let Err(err) = extract_tag_tarball(archive, dest, &SMALL) {
-        assert!(err.downcast_ref::<SourceFetchFailed>().is_some(), "{err:#}");
+    if let Err(reason) = extract_tag_tarball(archive, dest, &SMALL) {
+        assert!(!reason.is_empty());
     }
 }
 
@@ -850,7 +853,9 @@ fn a_path_above_the_destination_writes_nothing_there() {
 
 #[test]
 fn an_absolute_path_writes_nothing_there() {
-    let temp = tempfile::tempdir().unwrap();
+    // The absolute name must fit the 100-byte tar name field, which a long
+    // TMPDIR (recipe runs use one) would overflow.
+    let temp = tempfile::tempdir_in("/tmp").unwrap();
     let dest = temp.path().join("dest");
     fs::create_dir_all(&dest).unwrap();
     let outside = temp.path().join("absolute-target");

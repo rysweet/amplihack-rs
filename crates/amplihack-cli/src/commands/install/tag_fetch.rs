@@ -31,7 +31,7 @@ pub(super) struct TarballLimits {
 }
 
 pub(super) const TARBALL_LIMITS: TarballLimits = TarballLimits {
-    max_download_bytes: 256 * 1024 * 1024,
+    max_download_bytes: crate::update::MAX_TAG_TARBALL_BYTES,
     max_unpacked_bytes: 1024 * 1024 * 1024,
     max_entries: 100_000,
 };
@@ -249,12 +249,7 @@ fn fetch_tarball(
 ) -> Result<PathBuf, String> {
     let url = format!("{REPO_GIT_URL}/archive/refs/tags/{tag}.tar.gz");
     let archive = http(&url, budget).map_err(|error| format!("{error:#}"))?;
-    extract_tag_tarball(&archive, destination, &TARBALL_LIMITS).map_err(|error| {
-        match error.downcast_ref::<SourceFetchFailed>() {
-            Some(SourceFetchFailed::Failed { reason, .. }) => reason.clone(),
-            _ => format!("{error:#}"),
-        }
-    })?;
+    extract_tag_tarball(&archive, destination, &TARBALL_LIMITS)?;
     clone::find_framework_repo_root(destination).map_err(|error| format!("{error:#}"))
 }
 
@@ -266,20 +261,6 @@ fn fetch_tarball(
 /// or an absolute path fails the fetch. Setuid, setgid and sticky bits are not
 /// kept.
 pub(super) fn extract_tag_tarball(
-    archive: &[u8],
-    destination: &Path,
-    limits: &TarballLimits,
-) -> Result<()> {
-    unpack_bounded(archive, destination, limits).map_err(|reason| {
-        SourceFetchFailed::Failed {
-            version: "the requested tag".to_string(),
-            reason: one_line(&reason),
-        }
-        .into()
-    })
-}
-
-fn unpack_bounded(
     archive: &[u8],
     destination: &Path,
     limits: &TarballLimits,

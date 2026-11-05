@@ -8,7 +8,7 @@ pub(super) const NETWORK_TIMEOUT_SECS: u64 = 5;
 const MAX_BINARY_DOWNLOAD_BYTES: usize = 512 * 1024 * 1024; // 512 MiB
 
 /// Maximum size of a release tag tarball (issue #1955, SEC-3).
-const MAX_TAG_TARBALL_BYTES: u64 = 256 * 1024 * 1024;
+pub(crate) const MAX_TAG_TARBALL_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Maximum number of attempts for retryable HTTP requests.
 const HTTP_MAX_ATTEMPTS: u32 = 3;
