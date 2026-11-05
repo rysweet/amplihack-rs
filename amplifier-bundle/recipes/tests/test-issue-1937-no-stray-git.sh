@@ -17,7 +17,7 @@
 # and its first `git init` is checked; set AMPLIHACK_1937_FULL=1 to run it too.
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-issue-1937-no-stray-git.sh
-# Exit codes: 0 = pass, 1 = fail, 2 = harness error.
+# Exit codes: 0 = pass, 1 = fail, 2 = harness error (a precondition does not hold).
 
 set -uo pipefail
 
@@ -35,7 +35,7 @@ done
 
 # The harness only reads the real /tmp; it never writes there.
 if [[ -e /tmp/.git ]]; then
-  echo "HARNESS-ERROR: /tmp/.git already exists; remove the stray repository before running this test" >&2
+  echo "HARNESS-ERROR: /tmp/.git already exists; this test did not write it, and another process (a Codex sandbox, for one) may have. Remove it before running this test" >&2
   exit 2
 fi
 
@@ -65,7 +65,7 @@ run_writer() {
   fi
   if [[ -e /tmp/.git ]]; then
     fail "${name}: created /tmp/.git"
-    echo "HARNESS-ERROR: /tmp/.git now exists and was left in place for inspection" >&2
+    echo "FAIL: /tmp/.git now exists and was left in place for inspection; another process may have written it" >&2
     exit 1
   fi
   pass "${name}: no .git appeared in /tmp"
