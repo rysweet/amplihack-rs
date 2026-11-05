@@ -9,7 +9,7 @@ use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::exec_stub::write_executable;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -98,12 +98,13 @@ impl Host {
     }
 
     fn install(&self, args: &[&str], amplihack_home: Option<&Path>, cwd: &Path) -> Output {
-        let mut command = Command::new(amplihack_bin());
+        // `isolated` clears the environment and sets the test-home guard;
+        // `HOME` is then pointed at this host's own temp home.
+        let mut command = crate::isolated_amplihack::isolated(amplihack_bin());
         command
             .arg("install")
             .args(args)
             .current_dir(cwd)
-            .env_clear()
             .env("HOME", &self.home)
             .env(
                 "PATH",
