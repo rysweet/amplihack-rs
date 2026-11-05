@@ -215,7 +215,7 @@ fn unreadable_rotate_ledger_still_refreshes_then_stops() {
     assert!(ep.refreshes.load(Ordering::Relaxed) > 0, "refresh sent");
     let log = f.log();
     assert!(
-        log.contains("ALERT: rotate ledger unreadable; live identity: ok"),
+        log.contains("ALERT: rotate ledger unreadable; live identity: readable"),
         "{log}"
     );
     assert_eq!(

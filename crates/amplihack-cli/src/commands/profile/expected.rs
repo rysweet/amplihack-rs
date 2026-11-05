@@ -7,9 +7,9 @@
 //! profile's own login back that no other profile holds or has recorded
 //! (see `rotate/swap_expect.rs`), or a seed from one fresh reading (issue
 //! #1962, `rotate/seed.rs`), which never replaces a file. Every `.claude.json`
-//! is compared against it,
-//! never the other way round, with [`Account::matches_record`]: one user in
-//! two organizations is two accounts. The file is read and written through
+//! is compared against it, never the other way round, with
+//! [`Account::matches_record`]: one user in two organizations is two accounts.
+//! The file is read and written through
 //! the state helpers, so it is atomic, private and never followed through a
 //! symlink. Anything doubtful about it, including a record without an
 //! `org` entry, reads as no record; only the swap guard says so, in one
@@ -68,8 +68,8 @@ pub enum Seeded {
 pub fn seed(state: &State, name: &ProfileName, account: &Account) -> Result<Seeded, ProfileError> {
     let cannot = |why: &str| ProfileError::AutoSwitchInvariant(format!("profile {name} {why}"));
     let key = account.key();
-    let org = account.org().filter(|o| safe_account(o));
-    let Some(org) = org.filter(|_| safe_account(key) && account.has_uuid_and_org()) else {
+    let safe = account.has_uuid_and_org() && safe_account(key);
+    let Some(org) = account.org().filter(|o| safe && safe_account(o)) else {
         return Err(cannot("has no account uuid and organization to record"));
     };
     let body = serde_json::json!({ "account": key, "org": org });

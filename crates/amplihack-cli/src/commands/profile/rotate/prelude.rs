@@ -9,7 +9,7 @@
 
 use super::cycle::{Ctx, LOCK_WAIT};
 use super::handfix;
-use super::handfix_msg::{IDENTITY_OK, ledger_unreadable};
+use super::handfix_msg::ledger_unreadable;
 use super::identify::Skip;
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{Snap, live_alert, live_name, snapshot};
@@ -130,10 +130,15 @@ pub fn locked_prelude(
 /// The stop for an unreadable rotate ledger, with a fresh reading of
 /// `~/.claude`. Shared with `--dry-run`, which runs it without a refresh.
 pub(super) fn ledger_stop(ctx: &Ctx) -> String {
-    let dir = ctx.home.join(".claude");
-    let read = ctx.identity_reader().oauth(&dir);
-    ledger_unreadable(read.map_or_else(|cause| cause, |_| IDENTITY_OK))
+    let read = ctx.identity_reader().oauth(&ctx.home.join(".claude"));
+    ledger_unreadable(match read {
+        Ok(_) => LIVE_READABLE,
+        Err(cause) => cause,
+    })
 }
+
+/// The live-identity part of [`ledger_stop`] when `~/.claude` could be read.
+const LIVE_READABLE: &str = "readable";
 
 /// Logs the skipped profiles and the ignored prototype ledger when they
 /// differ from what this process last logged, and each API-key profile

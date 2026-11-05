@@ -40,6 +40,27 @@ fn write_prints_the_account_to_stdout_only() {
     );
 }
 
+/// Review fix: once the record is linked it is reported as recorded, even when
+/// the audit line cannot be written.
+#[test]
+fn a_written_record_is_reported_when_the_audit_log_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = World::new();
+    w.no_record("work");
+    // A rotate directory that is not private: `ensure` refuses it.
+    fs::set_permissions(w.f.rotate_dir(), fs::Permissions::from_mode(0o750)).unwrap();
+    let out = w.seed("work", true);
+    fs::set_permissions(w.f.rotate_dir(), fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(out.status.success(), "{}", printed(&out));
+    assert!(w.record("work").is_some(), "the record was written");
+    assert!(
+        text(&out.stderr)
+            .contains("seed-record work: recorded, but the audit log could not be written"),
+        "{}",
+        printed(&out)
+    );
+}
+
 #[test]
 fn a_cycle_seed_keeps_the_account_out_of_the_log() {
     let w = World::new();
@@ -82,6 +103,29 @@ fn escape_sequences_reach_no_terminal_and_no_record() {
         }
         assert!(!w.f.log().contains(ESC));
     }
+}
+
+/// Security review: a bidirectional override can make the account shown differ
+/// from the one recorded, so it is refused like an escape.
+#[test]
+fn bidi_overrides_reach_no_terminal_and_no_record() {
+    const RLO: char = '\u{202e}';
+    let w = World::new();
+    w.no_record("work");
+    let email = format!("work{RLO}moc.elpmaxe@");
+    w.fake.answer(
+        "work",
+        Answer::Account(account_in("uuid-work", &email, "org-work")),
+    );
+    for write in [false, true] {
+        let out = w.seed("work", write);
+        assert!(!printed(&out).contains(RLO), "{:?}", printed(&out));
+        if write {
+            assert!(!out.status.success(), "an unsafe account is never recorded");
+        }
+        assert_eq!(w.record("work"), None);
+    }
+    assert!(!w.f.log().contains(RLO));
 }
 
 /// Server text never becomes a cause: only the fixed status class reaches the log.

@@ -17,7 +17,7 @@ use crate::commands::profile::usage_direct::reason;
 /// What a failed read of another profile means to a scan. There is no default:
 /// each caller says which it wants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Unread {
+enum Unread {
     /// Swap authorization: any failed read refuses.
     Refuse,
     /// A seed: a usable record stands in for a read that failed for a cause
@@ -122,7 +122,6 @@ pub fn scan_for_seed(
     reader: Reader<'_>,
 ) -> Result<Claims, Blocked> {
     let probe: MetadataProbe<'_> = &|p| std::fs::symlink_metadata(p);
-    let policy = Unread::RecordCounts;
     walk(
         store,
         state,
@@ -131,7 +130,7 @@ pub fn scan_for_seed(
         reader,
         None,
         probe,
-        policy,
+        Unread::RecordCounts,
     )
 }
 
@@ -169,7 +168,6 @@ fn scan_with(
     ignored_login: Option<&std::path::Path>,
     probe: MetadataProbe<'_>,
 ) -> Result<Claims, &'static str> {
-    let policy = Unread::Refuse;
     walk(
         store,
         state,
@@ -178,7 +176,7 @@ fn scan_with(
         reader,
         ignored_login,
         probe,
-        policy,
+        Unread::Refuse,
     )
     .map_err(|blocked| blocked.cause())
 }

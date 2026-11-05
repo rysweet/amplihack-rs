@@ -210,29 +210,43 @@ impl PrivateTemp {
 
     /// Writes `bytes`, syncs the file and hard-links it to the target, which
     /// is never replaced, then removes the temporary name and syncs the
-    /// directory (issue #1962). `Ok(false)`: the target already exists and is
+    /// directory (issue #1962). `Ok(true)`: the target is linked and holds
+    /// `bytes`; a later failure to remove the temporary name or to sync the
+    /// directory is logged as a warning, not returned, because the target
+    /// exists either way. `Ok(false)`: the target already exists and is
     /// unchanged. A filesystem that refuses hard links is an error; there is
     /// no fallback to a rename, which could replace a file written meanwhile.
     pub fn link_new(mut self, bytes: &[u8]) -> io::Result<bool> {
-        let Some(mut f) = self.file.take() else {
-            return Err(invalid("was already committed"));
-        };
-        f.set_permissions(fs::Permissions::from_mode(0o600))?;
-        f.write_all(bytes)?;
-        f.sync_all()?;
-        drop(f);
+        self.fill(bytes, 0o600, true)?;
         match fs::hard_link(&self.tmp, &self.target) {
             Ok(()) => {}
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(false),
             Err(e) => return Err(e),
         }
-        fs::remove_file(&self.tmp)?;
-        self.tmp = PathBuf::new();
-        fsync_dir(&self.dir)?;
+        self.after_link();
         Ok(true)
     }
 
-    fn finish(mut self, bytes: &[u8], mode: u32, sync: bool) -> io::Result<()> {
+    /// Cleanup once the target is linked. A failed removal keeps `tmp` set so
+    /// `Drop` tries again.
+    fn after_link(&mut self) {
+        match fs::remove_file(&self.tmp) {
+            Ok(()) => self.tmp = PathBuf::new(),
+            Err(e) => tracing::warn!(
+                "{} linked, but its temporary name could not be removed: {e}",
+                self.target.display()
+            ),
+        }
+        if let Err(e) = fsync_dir(&self.dir) {
+            tracing::warn!(
+                "{} linked, but its directory could not be synced: {e}",
+                self.target.display()
+            );
+        }
+    }
+
+    /// Writes `bytes` to the temporary file and closes it.
+    fn fill(&mut self, bytes: &[u8], mode: u32, sync: bool) -> io::Result<()> {
         let Some(mut f) = self.file.take() else {
             return Err(invalid("was already committed"));
         };
@@ -242,7 +256,11 @@ impl PrivateTemp {
         if sync {
             f.sync_all()?;
         }
-        drop(f);
+        Ok(())
+    }
+
+    fn finish(mut self, bytes: &[u8], mode: u32, sync: bool) -> io::Result<()> {
+        self.fill(bytes, mode, sync)?;
         fs::rename(&self.tmp, &self.target)?;
         // Renamed: nothing is left for `Drop` to remove.
         self.tmp = PathBuf::new();
@@ -439,3 +457,7 @@ fn group_info(gid: u32) -> Option<(String, usize)> {
 #[cfg(test)]
 #[path = "tests_dir_rule.rs"]
 mod tests_dir_rule;
+
+#[cfg(test)]
+#[path = "tests_link_new.rs"]
+mod tests_link_new;

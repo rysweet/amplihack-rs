@@ -416,8 +416,6 @@ impl State {
             .map_err(|e| invariant(format!("{DIR}/{sub}/{name}.json: {e}")))
     }
 
-    /// Removes a file written by [`State::write_sub_json`]. A file that is
-    /// already absent is not an error; a symlink is removed, never followed.
     /// [`State::write_sub_json`] for a file that must not be replaced (issue
     /// #1962): `Ok(false)` when the name already exists, which is left as it
     /// is. A symlink at the name is refused and never followed.
@@ -437,6 +435,8 @@ impl State {
             .map_err(shown)
     }
 
+    /// Removes a file written by [`State::write_sub_json`]. A file that is
+    /// already absent is not an error; a symlink is removed, never followed.
     pub fn remove_sub_json(&self, sub: &str, name: &str) -> Result<(), ProfileError> {
         let path = self.dir.join(sub).join(format!("{name}.json"));
         match std::fs::remove_file(&path) {

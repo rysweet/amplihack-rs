@@ -6290,7 +6290,7 @@ When the rotate ledger exists but cannot be read, the cycle still refreshes an
 expired live login and reads its identity, then stops:
 
 ```
-ALERT: rotate ledger unreadable; live identity: <ok|cause>; nothing moved, no record written
+ALERT: rotate ledger unreadable; live identity: <readable|cause>; nothing moved, no record written
 ```
 
 The cycle ends as `alerted`, seeds no record, moves no login and leaves the
@@ -6753,7 +6753,7 @@ The [shared rules](#seeding-a-record) apply, together with these:
 | `<name>` is the ledger's live profile, the ledger has only an older key, and it is not the reading's uuid | Refused: `the ledger's older key does not match the reading` |
 | `<name>` is the ledger's live profile, and the older key is an e-mail | Refused: `the ledger's older key is an e-mail, which cannot prove ownership` |
 | `<name>` is not the ledger's live profile, and no rule refuses | Allowed. The folder name is the only evidence tying the profile to its login, so read the account shown before using `--write`. |
-| An account value is unsafe to print | It prints `<unprintable>`, and `--write` is refused: `the account cannot be printed safely` |
+| An account value is unsafe to print: empty, over 320 bytes, or holding a control or bidirectional-override character (U+202A–U+202E, U+2066–U+2069) | It prints `<unprintable>`, and `--write` is refused: `the account cannot be printed safely` |
 | The token has expired | Refused: `identity read failed: token expired`. Run [`profile usage <name>`](#usage-command) to refresh a non-live profile. The next rotator cycle refreshes the live login. |
 
 A refusal prints `seed-record <name>: refused: <reason>; nothing written` and exits
@@ -6768,6 +6768,12 @@ The record is created without replacing anything: a private temporary file
 (`0600`, no symlink followed) is linked to the final name, so a record that
 already exists stays as it was. A filesystem that refuses hard links gives a
 named error and no record; the command does not fall back to a rename.
+
+Once the record is linked, it counts as written. If removing the temporary name
+or syncing the directory then fails, that is logged as a warning. If the audit
+line cannot be written, stderr gets
+`seed-record <name>: recorded, but the audit log could not be written: <error>`,
+and the command still reports the record and exits 0.
 
 **A wrong record.** Seeding a non-live profile whose folder holds another
 account's login, when nothing else claims that account, records the wrong
@@ -7320,7 +7326,7 @@ run and prints their `reread:` lines; see
 | `ALERT: more than one profile matches the account in ~/.claude; no swap` | Trusted ownership evidence cannot select a unique login-less profile. |
 | `ALERT: trusted login identity unavailable: <cause>` | The live login has no usable identity reading, and the [cause](#identity-read-causes) says why. Nothing moves. |
 | `ALERT: trusted login identity unavailable for profile <name>: <cause>` | A candidate is skipped as `no account`, for that [cause](#identity-read-causes). Written on every cycle it applies to. |
-| `ALERT: rotate ledger unreadable; live identity: <ok\|cause>; nothing moved, no record written` | Written on every cycle it applies to. See [Unreadable-ledger stop](#unreadable-ledger-stop). |
+| `ALERT: rotate ledger unreadable; live identity: <readable\|cause>; nothing moved, no record written` | Written on every cycle it applies to. See [Unreadable-ledger stop](#unreadable-ledger-stop). |
 | `ALERT: cannot tell profiles <L>, <M> apart: both claim the account in ~/.claude; no record written, nothing moved` | Written on every cycle it applies to. See [Seeding a record](#seeding-a-record). |
 | `seeded: recorded account for live profile <L>` | A cycle [seeded](#seeding-a-record) the live profile's record. |
 | `note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>` | A cycle could not seed. Written once per process. |

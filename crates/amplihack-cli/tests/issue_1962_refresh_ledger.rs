@@ -45,7 +45,7 @@ fn unreadable_ledger_refreshes_then_reads_identity_then_stops() {
     let log = w.f.log();
     assert!(log.contains(REFRESHED), "{log}");
     assert!(
-        log.contains(&format!("ALERT: {}", stop_line("ok"))),
+        log.contains(&format!("ALERT: {}", stop_line("readable"))),
         "{log}"
     );
     assert_eq!(w.token("work"), "fake-task1962-work", "refreshed on disk");
@@ -91,7 +91,7 @@ fn unreadable_ledger_with_a_failed_refresh_names_the_cause() {
 fn unreadable_ledger_alert_is_written_on_every_cycle() {
     let w = expired_with_refresh();
     w.damage_ledger();
-    let line = stop_line("ok");
+    let line = stop_line("readable");
     for cycle in 1..=2 {
         let _ = w.cycle();
         assert_eq!(w.f.log().matches(&line).count(), cycle, "{}", w.f.log());
@@ -120,7 +120,7 @@ fn unreadable_ledger_switch_refuses_with_the_same_text() {
     let out = w.switch("extra");
     assert!(!out.status.success());
     assert!(
-        printed(&out).contains(&stop_line("ok")),
+        printed(&out).contains(&stop_line("readable")),
         "{}",
         printed(&out)
     );

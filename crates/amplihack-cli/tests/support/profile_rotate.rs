@@ -549,6 +549,13 @@ fn direct_usage_file(email: &str) -> String {
     format!("{email}.direct.json")
 }
 
+/// What [`Fixture::usage_direct`] set for the login in a token's `block`.
+fn direct_answer(canned: &Path, block: &serde_json::Value) -> Option<serde_json::Value> {
+    let email = block["emailAddress"].as_str().unwrap_or("");
+    let raw = fs::read(canned.join(direct_usage_file(email))).ok()?;
+    Some(serde_json::from_slice(&raw).unwrap())
+}
+
 struct IdentityEndpoint {
     base: String,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -601,6 +608,10 @@ impl IdentityEndpoint {
                             .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
                     }
                 }
+                let direct = block
+                    .as_ref()
+                    .filter(|_| usage)
+                    .and_then(|b| direct_answer(&canned, b));
                 let (status, body) = match block {
                     Some(b) if profile => (
                         "200 OK",
@@ -610,16 +621,7 @@ impl IdentityEndpoint {
                     ),
                     // Issue #1962: a dry run has no `claude` fallback, so a test
                     // of its decision sets the direct answer ([`Fixture::usage_direct`]).
-                    Some(b)
-                        if usage
-                            && canned
-                                .join(direct_usage_file(b["emailAddress"].as_str().unwrap_or("")))
-                                .exists() =>
-                    {
-                        let name = direct_usage_file(b["emailAddress"].as_str().unwrap_or(""));
-                        let raw = fs::read(canned.join(name)).unwrap();
-                        ("200 OK", serde_json::from_slice(&raw).unwrap())
-                    }
+                    Some(_) if direct.is_some() => ("200 OK", direct.unwrap()),
                     // Valid fake credentials use the existing canned Claude
                     // fallback. A 401 would request a refresh and alter the
                     // profile directory even during a dry-run measurement.

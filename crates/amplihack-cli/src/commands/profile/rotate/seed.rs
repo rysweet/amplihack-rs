@@ -5,11 +5,12 @@
 //! [`Reader`]. See "Seeding a record" in docs/reference/profile-command.md.
 //!
 //! [`evaluate`] holds every rule, behind [`in_cycle`], [`preview`] and
-//! [`explicit`]. Only [`commit`] writes, and only under the rotate lock, after
-//! checking that what `evaluate` read still holds. An account value goes only to
-//! the caller of [`explicit`], never to the log, the ledger or an alert.
+//! [`explicit`]. Only [`commit`] writes, under the rotate lock, after checking the
+//! stamped logins and records again; a record that stood in for a failed read is
+//! checked alone. Account values never reach the log, the ledger or an alert.
 
 use super::cycle::{Ctx, LOCK_WAIT, prototype_guard};
+use super::handfix_msg::join;
 use super::identify::{Account, LiveId, LoginKind, login_kind};
 use super::identity_claims::{self, Claim, Claims};
 use super::ledger::{RotateLedger, RotateState};
@@ -114,16 +115,18 @@ fn evaluate(s: &Scope<'_>, name: &ProfileName, rule: Rule) -> Verdict {
         Some(_) => s.home.join(".claude"),
         None => s.store.root().join(name.as_str()),
     };
+    // A cycle cannot seed from an older ledger whatever the reading says, so it
+    // sends no identity request that would only repeat on every cycle.
+    if rule == Rule::Cycle && live.is_some_and(|l| l.login_identity.is_none()) {
+        return stop(NO_IDENTITY);
+    }
     let bound = match s.reader.bound(&dir, false) {
         Ok(bound) => bound,
         Err(cause) => return Verdict::Stop(format!("identity read failed: {cause}")),
     };
-    let Some(account) = bound.account().cloned() else {
+    let Some(account) = bound.account().filter(|a| a.has_uuid_and_org()).cloned() else {
         return stop(NO_UUID_OR_ORG);
     };
-    if !account.has_uuid_and_org() {
-        return stop(NO_UUID_OR_ORG);
-    }
     if rule == Rule::Cycle && account.email().is_none() {
         return stop(UNPRINTABLE);
     }
@@ -215,14 +218,6 @@ fn commit(s: &Scope<'_>, name: &ProfileName, e: &Evidence) -> Result<Seeded, Str
     expected::seed(s.state, name, &e.account).map_err(|err| err.to_string())
 }
 
-fn join(names: &[ProfileName]) -> String {
-    names
-        .iter()
-        .map(ProfileName::as_str)
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 /// `ALERT: cannot tell ...` without its start, with the live profile among them.
 fn same_account_text(live: &ProfileName, claimers: &[ProfileName]) -> String {
     let mut all = claimers.to_vec();
@@ -250,6 +245,7 @@ fn live_without_record(ctx: &Ctx, state: &State, snap: &Snap) -> Option<ProfileN
         return None;
     }
     let name = live_name(&snap.live)?;
+    // An unreadable ledger was already stopped by prelude::ledger_stop.
     let ledger = ctx.rs.load_ledger().ok()??;
     let named = ledger.live.as_deref() == Some(name.as_str());
     (named && matches!(expected::lookup(state, name), Ok(None))).then(|| name.clone())
@@ -357,17 +353,14 @@ pub fn explicit(
             budget: &budget,
         },
     };
-    if !write {
-        return Ok(match evaluate(&scope, name, Rule::Explicit) {
-            Verdict::Existing => Explicit::Existing,
-            Verdict::Ready(e) => Explicit::Preview(e.account),
-            Verdict::Stop(reason) => Explicit::Refused(reason),
-            Verdict::Claimed(claimers) => Explicit::Refused(claimed(&claimers)),
-        });
-    }
-    prototype_guard(store.root())?;
-    let Some(_lock) = state.try_lock(LOCK_WAIT)? else {
-        return Err(ProfileError::RotateDaemon("lock busy".into()));
+    let _lock = if write {
+        prototype_guard(store.root())?;
+        let Some(lock) = state.try_lock(LOCK_WAIT)? else {
+            return Err(ProfileError::RotateDaemon("lock busy".into()));
+        };
+        Some(lock)
+    } else {
+        None
     };
     let e = match evaluate(&scope, name, Rule::Explicit) {
         Verdict::Existing => return Ok(Explicit::Existing),
@@ -375,6 +368,9 @@ pub fn explicit(
         Verdict::Claimed(claimers) => return Ok(Explicit::Refused(claimed(&claimers))),
         Verdict::Ready(e) => e,
     };
+    if !write {
+        return Ok(Explicit::Preview(e.account));
+    }
     // S6: what cannot be shown to the operator cannot be confirmed by them.
     if e.account.email().is_none() {
         return Ok(Explicit::Refused(UNPRINTABLE.to_string()));
@@ -383,10 +379,16 @@ pub fn explicit(
         Ok(Seeded::Existing) => Ok(Explicit::Existing),
         Err(reason) => Ok(Explicit::Refused(reason)),
         Ok(Seeded::Written) => {
-            rs.ensure()?;
-            let log = open_or_warn(&rs.log, &rs.log1);
-            let line = format!("seed-record: recorded account for profile {name}");
-            Sink::new(log, false, true).emit(now(), &line);
+            // The record exists now; a failed audit line is only a warning.
+            match rs.ensure() {
+                Ok(()) => Sink::new(open_or_warn(&rs.log, &rs.log1), false, true).emit(
+                    now(),
+                    &format!("seed-record: recorded account for profile {name}"),
+                ),
+                Err(err) => eprintln!(
+                    "seed-record {name}: recorded, but the audit log could not be written: {err}"
+                ),
+            }
             Ok(Explicit::Recorded(e.account))
         }
     }

@@ -247,6 +247,12 @@ fn missing_or_unsafe_account_values_count_as_missing() {
     assert!(Account::from_claude_json(long.as_bytes()).is_none());
     let ctl = acct("u\u{1b}1", "");
     assert!(Account::from_claude_json(ctl.as_bytes()).is_none());
+    for bidi in ['\u{202a}', '\u{202e}', '\u{2066}', '\u{2069}'] {
+        assert!(!super::ledger::safe_account(&format!("a{bidi}@b")));
+        let a = acct(&format!("u{bidi}1"), "");
+        assert!(Account::from_claude_json(a.as_bytes()).is_none());
+    }
+    assert!(super::ledger::safe_account("work@example.com"));
 }
 
 #[test]

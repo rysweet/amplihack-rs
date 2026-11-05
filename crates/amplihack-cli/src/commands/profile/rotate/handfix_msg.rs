@@ -28,7 +28,7 @@ pub fn note_suspect(m: &ProfileName, l: &ProfileName) -> String {
     )
 }
 
-fn join(v: &[ProfileName]) -> String {
+pub(super) fn join(v: &[ProfileName]) -> String {
     v.iter()
         .map(ProfileName::as_str)
         .collect::<Vec<_>>()
@@ -71,14 +71,11 @@ fn unread(v: &[(ProfileName, &'static str)]) -> String {
 }
 
 /// Issue #1962: the rotate ledger cannot be read, so nothing may move and no
-/// record may be written. `cause` is the fresh identity reading's result, or
-/// [`IDENTITY_OK`].
+/// record may be written. `cause` is the fresh identity reading's cause, or
+/// `ok`.
 pub fn ledger_unreadable(cause: &str) -> String {
     format!("rotate ledger unreadable; live identity: {cause}; nothing moved, no record written")
 }
-
-/// The `live identity` of [`ledger_unreadable`] when the read succeeded.
-pub const IDENTITY_OK: &str = "ok";
 
 /// Issue #1886: a confirmed suspicion that would leave `l` with no login
 /// anywhere (the only-login rule).
