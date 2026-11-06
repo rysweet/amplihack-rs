@@ -11,8 +11,13 @@
 //! These tests verify:
 //! 1. The flag is accepted by the CLI without error
 //! 2. The flag appears in `amplihack launch --help` output
-//! 3. The flag suppresses npm subprocess invocations (no extra latency)
-//! 4. The flag is independent of `AMPLIHACK_NONINTERACTIVE=1` (both work)
+//! 3. A launch with the flag completes without running npm
+//!
+//! Point 3 does not show that the flag is what prevents npm. These runs have
+//! no TTY on stdin, so `is_noninteractive()` already skips the check, flag or
+//! not (issue #1973). The unit test
+//! `tool_update_check::tests::check_wanted_only_without_skip_in_an_interactive_session`
+//! shows that `skip` alone suppresses the check.
 //!
 //! ## Failure modes
 //!
@@ -213,117 +218,56 @@ fn launch_without_skip_update_check_is_not_an_error() {
 }
 
 // ---------------------------------------------------------------------------
-// WS3-INT-4: --skip-update-check suppresses npm subprocess timing
+// WS3-INT-4: --skip-update-check runs no npm subprocess
 // ---------------------------------------------------------------------------
 
-/// With `--skip-update-check`, launch completes quickly because no npm
-/// subprocesses are spawned.  Without the flag (in AMPLIHACK_NONINTERACTIVE=1
-/// mode), the check is also skipped — but this test validates the flag path.
+/// With `--skip-update-check`, launch runs no npm subprocess at all.
 ///
-/// This test measures elapsed time: if npm were called, even with a 3s
-/// timeout, the overhead would be measurable.  The stub environment has no
-/// npm binary, so the subprocess would fail immediately — we verify the
-/// flag causes zero subprocess overhead.
+/// Issue #1973: this used to measure elapsed time, which a loaded host
+/// could push past any bound. Now a recording `npm` stub is the only `npm`
+/// on `PATH`; it appends its arguments to a file in the tempdir and exits 1.
+/// The test asserts that file never appeared.
+#[cfg(unix)]
 #[test]
 fn launch_with_skip_update_check_completes_without_npm_subprocess_overhead() {
     let bin = require_binary();
 
-    // Create a temp dir with stub claude but NO npm binary.
-    // This means any npm invocation would fail with ENOENT.
     let tmpdir = tempfile::tempdir().expect("failed to create tempdir");
-    let stub_bin = tmpdir.path().join("claude");
+    crate::exec_stub::write_executable(&tmpdir.path().join("claude"), healthy_stub_script(), 0o755);
+    let record = tmpdir.path().join("npm-calls");
+    let record_text = record.to_str().expect("temporary paths are UTF-8");
+    assert!(
+        !record_text.contains(['\'', '\n']),
+        "cannot single-quote {record_text:?} for /bin/sh"
+    );
+    // The record path is written into the stub, so the stub records even if
+    // launch gives npm a cleared environment.
+    crate::exec_stub::write_executable(
+        &tmpdir.path().join("npm"),
+        format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{record_text}'\nexit 1\n"),
+        0o755,
+    );
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::write(&stub_bin, healthy_stub_script()).expect("failed to write stub claude");
-        let mut perms = std::fs::metadata(&stub_bin)
-            .expect("failed to stat stub")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&stub_bin, perms).expect("failed to chmod stub");
-    }
-
-    // PATH contains only our stub dir — npm is not available.
+    // PATH contains only the stub dir: the recording npm is the only npm.
     let isolated_path = tmpdir.path().to_string_lossy().to_string();
 
-    // The timed window must hold the launch and nothing else (issue #1971).
-    // Two costs that are not npm work used to fall inside it, on origin/main
-    // as on the branch, and each took 5 s to 10 s on a loaded host:
-    //
-    // - The first launch on a fresh HOME saves `node.heap_consent` to
-    //   `~/.amplihack/config.toml` and fsyncs it; one such fsync took 9.8 s
-    //   under write load. This HOME already holds the saved answer, so the
-    //   launch has nothing to write; the file is checked afterwards.
-    // - The page-in of the ~120 MB debug binary when it is not cached. It is
-    //   read once here, before the clock starts.
-    let home = tmpdir.path().join("home");
-    let config = home.join(".amplihack").join("config.toml");
-    let saved_consent = "[node]\nheap_consent = true\n";
-    std::fs::create_dir_all(config.parent().unwrap()).expect("failed to create test HOME");
-    std::fs::write(&config, saved_consent).expect("failed to write config.toml");
-    #[cfg(unix)]
-    let config_inode = {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        // The loader ignores a user file writable by group or others.
-        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))
-            .expect("failed to chmod config.toml");
-        std::fs::metadata(&config)
-            .expect("failed to stat config.toml")
-            .ino()
-    };
-    std::io::copy(
-        &mut std::fs::File::open(&bin).expect("failed to open amplihack binary"),
-        &mut std::io::sink(),
-    )
-    .expect("failed to read amplihack binary");
-
-    let start = std::time::Instant::now();
-    let output = crate::isolated_amplihack::isolated(&bin)
-        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+    let mut cmd = crate::isolated_amplihack::isolated(&bin);
+    cmd.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["launch", "--skip-update-check"])
         .env("PATH", &isolated_path)
-        .env("HOME", &home)
         .env("AMPLIHACK_NONINTERACTIVE", "1")
-        .output()
-        .expect("failed to run amplihack launch --skip-update-check");
-    let elapsed = start.elapsed();
+        .stdin(std::process::Stdio::null());
+    let out = crate::wait::output_within("`amplihack launch --skip-update-check`", &mut cmd);
 
-    assert_eq!(
-        std::fs::read_to_string(&config).expect("config.toml was removed"),
-        saved_consent,
-        "the launch changed config.toml, so the timed window holds an fsync again"
-    );
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        assert_eq!(
-            std::fs::metadata(&config)
-                .expect("failed to stat config.toml")
-                .ino(),
-            config_inode,
-            "the launch replaced config.toml, so the timed window holds an fsync again"
-        );
-    }
-
-    // A launch that exits early would also finish inside the limit, so the
-    // time only counts if the launch succeeded.
+    let calls = std::fs::read_to_string(&record).ok();
     assert!(
-        output.status.success(),
-        "FAIL: `amplihack launch --skip-update-check` exited with status {}.\n\
+        calls.is_none(),
+        "FAIL: `amplihack launch --skip-update-check` ran npm ({}):\n{}\n\
+         Check that maybe_print_npm_update_notice respects the skip parameter.\n\
          stderr: {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    // Should complete within 5 seconds: no npm timeout overhead.
-    assert!(
-        elapsed.as_secs() < 5,
-        "FAIL: `amplihack launch --skip-update-check` took {}s (expected <5s).\n\
-         Run issue_1971_skip_guard first: if it passes, no git, npm or curl\n\
-         process ran and the time was spent elsewhere, for example in disk I/O\n\
-         on a loaded host.",
-        elapsed.as_secs()
+        out.status,
+        calls.unwrap_or_default(),
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 

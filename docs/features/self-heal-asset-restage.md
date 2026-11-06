@@ -318,20 +318,27 @@ cargo test -p amplihack --test integration issue_1971_skip_guard:: -- --nocaptur
 
 All test scratch, including the per-test `HOME`, goes under `$TMPDIR`.
 
-The test complements the timing test
+The test works alongside WS3-INT-4,
 `skip_update_check_flag::launch_with_skip_update_check_completes_without_npm_subprocess_overhead`
-in `tests/integration/skip_update_check_flag_test.rs`, which requires the same
-launch to exit successfully within 5 s. Before the clock starts, the timing
-test writes the saved `node.heap_consent` answer to `config.toml` in its `HOME`
-with mode `0600`, so the launch has no setting to save and sync to disk, and
-reads the binary once so that loading it from disk is not timed. It then checks
-that the launch left `config.toml` unchanged. The limit still depends on host
-load; the guard test
-does not, and fails with the name of the step that ran. When the timing test
-fails, run the guard test first: if it passes, no `git`, `npm` or `curl`
-process ran, and the time was spent elsewhere. The guard's recording stubs
-catch only `git`, `npm` and `curl` found through `PATH`; a call by absolute path
-would not be recorded.
+in `tests/integration/skip_update_check_flag_test.rs`. WS3-INT-4 runs the same
+launch with a recording `npm` stub as the only `npm` on `PATH` and asserts that
+the stub never ran; it has no time limit (issue #1973). The two tests divide
+the assertions as follows:
+
+| Assertion | Owned by |
+| --- | --- |
+| `--skip-update-check` runs no `npm` | WS3-INT-4 |
+| The bypass runs no `git` or `curl` | `issue_1971_skip_guard` |
+| No `.tag-fetch-failed` or `.install.lock` is created | `issue_1971_skip_guard` |
+| No fetch or re-stage message is printed, and the bypass diagnostic is | `issue_1971_skip_guard` |
+
+The guard test also records `npm`, so that its stub log lists every recorded
+tool the launch starts. An `npm` entry in that log repeats a WS3-INT-4 failure;
+it is not a separate check. Both tests run with stdin that is not a TTY, so
+neither shows that the flag alone suppresses the update check; the unit test
+`tool_update_check::tests::check_wanted_only_without_skip_in_an_interactive_session`
+covers that. The recording stubs catch only tools found through `PATH`; a call
+by absolute path would not be recorded.
 
 See also: [Environment Variables — `AMPLIHACK_SKIP_AUTO_INSTALL`](../reference/environment-variables.md#amplihack_skip_auto_install).
 

@@ -2,12 +2,15 @@
 //! must not start any network, fetch or re-stage work.
 //!
 //! `skip_update_check_flag::launch_with_skip_update_check_completes_without_npm_subprocess_overhead`
-//! checks the same scenario with a 5 s wall-clock limit. A wall-clock limit
-//! cannot tell a slow host from extra work, so this test pins the cause
-//! instead: it puts recording stubs for `git`, `npm` and `curl` on a `PATH`
-//! that holds nothing else beside a healthy stub `claude`, and asserts that
-//! none of them ran and that none of the fetch-backoff or install-lock files
-//! appeared. It makes no timing assertion.
+//! (WS3-INT-4) runs the same launch with a recording `npm` stub and owns the
+//! assertion that `--skip-update-check` runs no `npm`. This test owns what
+//! WS3-INT-4 does not check: that the self-heal bypass starts no `git` or
+//! `curl`, creates neither fetch-backoff nor install-lock file, prints none of
+//! the fetch or re-stage messages, and does print the bypass diagnostic.
+//!
+//! It also records `npm`, so that its stub log lists every recorded tool the
+//! scenario starts; an `npm` entry here duplicates a WS3-INT-4 failure rather
+//! than adding a separate assertion. Neither test makes a timing assertion.
 //!
 //! The stubs record only `git`, `npm` and `curl` found through `PATH`. A call
 //! by absolute path (for example `/usr/bin/git`) would not be recorded; no such
@@ -156,7 +159,7 @@ fn assert_guard_held(sb: &Sandbox, output: &Output, scenario: &str) {
     );
 }
 
-/// The exact scenario of the 5 s timing test, without the clock.
+/// The scenario of WS3-INT-4, with the bypass assertions added.
 #[test]
 fn skip_flag_and_skip_auto_install_run_no_git_npm_or_curl() {
     let sb = sandbox();
@@ -168,8 +171,12 @@ fn skip_flag_and_skip_auto_install_run_no_git_npm_or_curl() {
     );
 }
 
-/// Without `AMPLIHACK_NONINTERACTIVE`, `--skip-update-check` alone must still
-/// keep npm from running, and the bypass must still keep git and curl idle.
+/// Without `AMPLIHACK_NONINTERACTIVE`, the bypass must still keep git and curl
+/// idle. Stdin is not a TTY here, so the update check is skipped as
+/// non-interactive whatever the flag (issue #1973); this run does not show
+/// that the flag alone suppresses npm. The unit test
+/// `tool_update_check::tests::check_wanted_only_without_skip_in_an_interactive_session`
+/// covers that.
 #[test]
 fn skip_flag_without_noninteractive_still_runs_no_git_npm_or_curl() {
     let sb = sandbox();
