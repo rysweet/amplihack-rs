@@ -10,7 +10,7 @@ fn an_exhausted_shared_budget_starts_no_identity_read() {
     let budget = Budget::new();
     budget
         .0
-        .set(std::time::Instant::now() - super::IDENTITY_BUDGET);
+        .set(std::time::Instant::now() - super::super::cred_identity::identity_budget());
     let read = |_: &std::path::Path| -> Result<super::Account, &'static str> {
         panic!("identity read started after the shared deadline")
     };

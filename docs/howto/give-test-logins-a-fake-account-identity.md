@@ -262,5 +262,6 @@ or be explained in the pull request.
 
 - [`amplihack profile` reference](../reference/profile-command.md#identity-and-duplicate-logins) - Account identity, recorded accounts and the duplicate-login warning
 - [Claude profile rotation](./claude-profile-rotation.md) - How rotation uses login-bound identity
+- [Keep Tests Passing Under Host Load](./keep-tests-passing-under-host-load.md#rotator-tests) - The identity knobs `Fixture::base` sets, and how to test budget exhaustion
 - [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md) - `isolated(..)` and the real-root guard
 - [Keep Tests from Changing PATH and HOME](./keep-tests-from-changing-path-and-home.md) - Giving a child its own `HOME`

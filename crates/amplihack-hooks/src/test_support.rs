@@ -84,3 +84,39 @@ impl Drop for CwdGuard {
         }
     }
 }
+
+/// Writes an executable stub at `path` (mode 0755) without this process
+/// ever holding a write descriptor to it (issue #1973). A short-lived `sh`
+/// writes a temporary name, sets the mode and renames it into place. If
+/// this process wrote the file itself, a sibling test forking during the
+/// write would inherit the descriptor, and a concurrent exec of the stub
+/// would fail with `ETXTBSY`.
+#[cfg(unix)]
+pub(crate) fn write_executable(path: &std::path::Path, body: &str) {
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+    let tmp = path.with_extension("stub-tmp");
+    let mut child = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "cat > \"$1\" && chmod 755 \"$1\" && mv -f \"$1\" \"$2\"",
+            "sh",
+        ])
+        .arg(&tmp)
+        .arg(path)
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap_or_else(|e| panic!("cannot start sh to write {}: {e}", path.display()));
+    child
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(body.as_bytes())
+        .unwrap_or_else(|e| panic!("cannot stream {}: {e}", path.display()));
+    let status = child.wait().expect("wait for sh");
+    assert!(
+        status.success(),
+        "writing {} failed: {status}",
+        path.display()
+    );
+}

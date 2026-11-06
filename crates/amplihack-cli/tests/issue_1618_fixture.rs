@@ -183,6 +183,39 @@ impl Fixture {
         }
     }
 
+    /// Runs `c` like [`Self::run`], calling `on_line` with each stderr line
+    /// as it is written, so a test can act on a condition the run reports
+    /// rather than after a delay (issue #1973). The run is bounded by the
+    /// shared wait ceiling; the returned stderr is every line read.
+    pub fn run_watching(&self, c: &mut Command, mut on_line: impl FnMut(&str)) -> Output {
+        use std::io::{BufRead, BufReader, Read};
+        use std::process::Stdio;
+        c.stdout(Stdio::piped()).stderr(Stdio::piped());
+        let mut child = crate::support::wait::spawn_retrying("the step", c);
+        let mut stdout_pipe = child.stdout.take().expect("piped stdout");
+        let stdout_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            stdout_pipe
+                .read_to_end(&mut buf)
+                .expect("read the step's stdout");
+            buf
+        });
+        let mut stderr = Vec::new();
+        for line in BufReader::new(child.stderr.take().expect("piped stderr")).lines() {
+            let line = line.expect("read the step's stderr");
+            on_line(&line);
+            stderr.extend_from_slice(line.as_bytes());
+            stderr.push(b'\n');
+        }
+        let status = crate::support::wait::wait_child("the step", &mut child);
+        let stdout = stdout_reader.join().expect("the stdout reader");
+        Output {
+            status,
+            stdout,
+            stderr,
+        }
+    }
+
     pub fn count(&self, step: &str) -> u32 {
         fs::read_to_string(self.records.join(format!("count.{step}")))
             .map(|s| s.trim().parse().unwrap())

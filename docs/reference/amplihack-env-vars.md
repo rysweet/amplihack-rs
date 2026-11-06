@@ -235,9 +235,11 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_TEST_BINARY` | test-only |  | Binary under test in contract tests. |
 | `AMPLIHACK_TEST_BOOL_UNSET_XYZ` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_DENIAL_PANIC` | test-only |  | Fault injection in the hook protocol test. |
-| `AMPLIHACK_TEST_DETACH_START_SECS` | test-only |  | Shortens how long `recipe run --detach` waits for the pane to start the run (default 15 s), so a test of a pane that never starts is quick. |
+| `AMPLIHACK_TEST_DETACH_START_SECS` | test-only |  | Shortens how long `recipe run --detach` waits for the pane to start the run (default 15 s), so a test of a pane that never starts is quick. Other `recipe run --detach` tests set it to 600 so a loaded host cannot time out a pane that does start. |
 | `AMPLIHACK_TEST_FAKE_LATEST_VERSION` | test-only |  | Fakes the latest release for update tests. |
 | `AMPLIHACK_TEST_HOME_GUARD` | test-only |  | Set only by the test helper `tests/support/isolated_amplihack.rs` on each `amplihack` a test starts; the user-config loader then ignores a HOME outside the temp dir, so no test reads or migrates a real `~/.amplihack`. When it is set and not empty, a launch also skips rotator autostart before any other check, so no test starts a real `profile rotate watch --spawned` daemon; see [Keep Tests from Leaking Rotator Daemons](../howto/keep-tests-from-leaking-rotator-daemons.md). |
+| `AMPLIHACK_TEST_IDENTITY_BUDGET_SECS` | test-only |  | Read only in debug builds. Whole seconds, `1..=3600`; any other value gives the 30 s `IDENTITY_BUDGET`. Raises the total time a rotate cycle may spend on account identity reads, so a loaded host does not use it up. The rotate test fixture sets it to 600; see [Keep Tests Passing Under Host Load](../howto/keep-tests-passing-under-host-load.md#use-a-debug-only-knob). |
+| `AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS` | test-only |  | Read only in debug builds. Whole seconds, `1..=3600`; any other value gives the 5 s `IDENTITY_READ_TIMEOUT`. Raises the time one identity read may take. The rotate test fixture sets it to 600. |
 | `AMPLIHACK_TEST_MISSING_NO_DEFAULT` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_123` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_456` | test-only |  | `EnvVar` unit test name. |
