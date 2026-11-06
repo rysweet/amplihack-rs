@@ -34,7 +34,7 @@
 use std::ffi::OsStr;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Output, Stdio};
 
 use serde_json::{Value, json};
 
@@ -1279,15 +1279,28 @@ fn file_title_breaks_mentions_and_issue_references() {
     );
 }
 
+/// Every bash this file starts goes through `Drive::bash`, which builds on
+/// `isolated(..)` and a scratch HOME; none inherits the real HOME.
+#[test]
+fn every_bash_spawn_goes_through_isolated() {
+    let src = include_str!("issue_1979_crusty_minor_followups.rs");
+    let direct = concat!("Command", "::new(");
+    assert!(!src.contains(direct), "use Drive::bash, not a direct spawn");
+    let helper = concat!("isolated_amplihack::isolated(", "\"bash\")");
+    assert_eq!(src.matches(helper).count(), 1, "one isolated bash helper");
+}
+
 #[test]
 fn cell_breaks_gh_issue_references() {
-    let o = Command::new("bash")
-        .arg("-c")
-        .arg(r#". "$1/workflow_issue_tracking.sh" && . "$1/autodrive_finding_rules.sh" && cell 'see GH-45 and gh-7, not GHz-1'"#)
-        .arg("bash")
-        .arg(tools_dir())
-        .output()
-        .unwrap();
+    // Through Drive::bash, so the sourced scripts see a scratch HOME.
+    let d = Drive::new();
+    let tools = tools_dir();
+    let o = d.bash(
+        Some(r#". "$1/workflow_issue_tracking.sh" && . "$1/autodrive_finding_rules.sh" && cell 'see GH-45 and gh-7, not GHz-1'"#),
+        &[tools.as_os_str()],
+        &[],
+        "",
+    );
     assert!(o.status.success(), "{}", show(&o));
     let out = stdout(&o);
     assert_eq!(
@@ -2022,14 +2035,10 @@ fn finding_rules_are_defined_once_and_sourced_by_both_rules() {
         );
     }
     // Sourcing has no side effects: nothing on stdout or stderr.
-    let o = Command::new("bash")
-        .arg("-c")
-        .arg(format!(
-            ". {:?}",
-            tools_dir().join(RULES).display().to_string()
-        ))
-        .output()
-        .unwrap();
+    // Through Drive::bash, so sourcing sees a scratch HOME.
+    let d = Drive::new();
+    let rules_path = tools_dir().join(RULES);
+    let o = d.bash(Some(r#". "$1""#), &[rules_path.as_os_str()], &[], "");
     assert!(
         o.status.success() && o.stdout.is_empty() && o.stderr.is_empty(),
         "{}",
