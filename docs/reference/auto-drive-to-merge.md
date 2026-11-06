@@ -974,13 +974,21 @@ has already checked (#1543), in the same way as the light tools. There is no
 fallback to the worktree or another install: if the file cannot be loaded,
 step-03 keeps `CONCERNS`.
 
+Before any of this, step-03 merges crusty's `concerns` into one array: when
+`concerns` is a string holding several JSON arrays, they are joined in order,
+and any other non-array value becomes `[]`. Without `jq`, or when the text does
+not parse, the old check stays: text that starts with `[` and ends with `]` is
+kept as it is, and anything else becomes `[]`. So `.findings`, address-concerns
+and `classify` all see every finding, and a blocking finding cannot be hidden
+behind a minor one.
+
 `classify` prints `MINOR_ONLY` when every rule below holds, and prints nothing
 otherwise:
 
 | Rule | Otherwise |
 | --- | --- |
 | `jq` is available. | Not minor-only. |
-| `concerns` parses as a JSON array with at least one element. | Not minor-only. An empty array with `CONCERNS` stays `CONCERNS`. |
+| stdin is exactly one JSON value, and it is an array with at least one element. `classify` reads stdin as a whole (`jq -s`). | Not minor-only. Two arrays, an array followed by any other value, or an empty array with `CONCERNS` all stay `CONCERNS`. |
 | Every element is an object whose `severity` is exactly `minor`. | Not minor-only. A missing, empty or unknown severity (`nit`, `low`, `Minor`) counts as major. |
 | Every `id` matches `^[A-Za-z0-9._-]{1,64}$`. | Not minor-only. |
 | No `id` is a returning id: listed in `resolved-concerns.txt` or in another round's `.findings`. Both are read only from regular files that are not symlinks. | Not minor-only. |
@@ -992,9 +1000,13 @@ Both rules load them from one file, `amplifier-bundle/tools/autodrive_finding_ru
 so a minor finding about secrets, injection, authentication or permissions
 is always treated as major and is fixed before merge rather than deferred.
 
-`classify` fails closed. A missing `jq`, input that is not an array, a state
-directory or record path that is not private to the user, or any other error
-gives empty stdout and a diagnostic on stderr only. The round then stays
+`classify` fails closed. A missing `jq`, input that is not exactly one array, a
+state directory or record path that is not private to the user, or any other
+error gives empty stdout and a diagnostic on stderr only. When `jq` cannot read
+the input, the diagnostic is
+`ERROR: classify: the concerns could not be read (jq rc=N): <first line of jq's
+stderr, sanitised and clipped to 200 characters>; the verdict stays CONCERNS`,
+so a broken filter is not mistaken for a real `CONCERNS` decision. The round then stays
 `CONCERNS` and is addressed as before.
 
 On `MINOR_ONLY`, `classify` writes two files next to the round record, both
@@ -1101,10 +1113,12 @@ gh issue create --repo rysweet/amplihack-rs \
 - `--repo` is the `owner/name` taken from the PR URL (`gh pr view <pr> --json url`),
   matched by an anchored regex. A URL that does not match fails the step.
 - The title is `Follow-up (<task id>): <summary>`. The summary for the title
-  passes through `sanitize_cli_output` and has control characters removed,
-  and the whole title is clipped to 80 characters and passed as one argument.
-  The title does not go through `cell()`: GitHub shows titles as plain text,
-  so HTML entities such as `&amp;`, `&#x60;` and `&#x7C;` would appear
+  passes through `sanitize_cli_output`, has control characters removed and
+  then goes through `break_refs`, which puts a zero-width space after every
+  `@` and into each `#N`, `GH-N` and `github.com/`, as in the body. The whole
+  title is clipped to 80 characters and passed as one argument. The title
+  does not go through the rest of `cell()`: GitHub shows titles as plain
+  text, so HTML entities such as `&amp;`, `&#x60;` and `&#x7C;` would appear
   literally.
 - The body is written to a private `mktemp -d` directory under `$TMPDIR`,
   removed by an `EXIT` trap. No labels, assignees or comments are added.
@@ -1219,7 +1233,7 @@ Follow-up issues (task #1979):
 
 | Subcommand | Arguments | Output | Exit |
 | --- | --- | --- | --- |
-| `classify` | `--record FILE --state-dir DIR`; crusty's `concerns` array on stdin | `MINOR_ONLY`, or nothing | `0`; non-zero on an error, with empty stdout |
+| `classify` | `--record FILE --state-dir DIR`; exactly one JSON array, crusty's `concerns`, on stdin | `MINOR_ONLY`, or nothing | `0`; non-zero on an error, with empty stdout |
 | `collect` | `--state-dir DIR` | Nothing on stdout | `0`, or `1` with `ERROR: followup-set-invalid` |
 | `file` | `--state-dir DIR --pr N [--task-id ID] [--task-text-file FILE]` | One `INFO` line per issue created | `0`, `1` on failure, `79` passed through |
 | `check` | `--state-dir DIR --pr N` | `followups-ok <count>` | `0`, or `1` with the failing token on stdout |
@@ -4468,7 +4482,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | [Usage limits are not STUCK](#usage-limits-are-not-stuck) (#1801): `1801-evaluator-retry-verdict` (the evaluator hits a limit once, is retried inside step-02 and returns a verdict the loop records, with no `STUCK`), `1801-evaluator-usage-limit` (the limit is not lifted and the loop reports `USAGE_LIMIT`), a round and a before-round step that fail on a limit, and negative cases where the loop does not stop as `USAGE_LIMIT`: a nested `class`, the marker with exit `0`, an indented or echoed marker, and `usage_limit_wait` lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The same retry through the real step supervisor: fake `claude` and a stub `recipe-runner-rs` under an isolated `HOME` | `crates/amplihack-cli/tests/issue_1801_evaluator_retry.rs` |
 | [No-progress stop and usage budget](#no-progress-stop-and-usage-budget) (#1743): `STUCK` in code on an unchanged head and open items, no stop when either changed, when the CI signal changed or says `PENDING`, or when the round is clean, no stop when the current or previous round has a `<record>.light.json` side file (two rejected light rounds on the same head with empty findings), `BUDGET_EXHAUSTED` from each of the three limits at the pre-round, post-round and before-round check points, a relaunch with a higher limit resuming from the recorded round and one with the same limit starting no agent, the nested crusty loop counted once, `tokens` recorded as `unknown`, malformed limits and unknown keys exiting `2`, the symlink and `0600` cases, the sanitised PR comment through a stub `gh`, and the `-c` override reaching both loops. Fixture state directories, stub `amplihack`, `gh` and `git` on `PATH`, under `isolated(..)`; nothing under the real `HOME` is read or written | `crates/amplihack-cli/tests/issue_1743_autodrive_budget.rs` |
-| [Minor findings end the crusty loop](#minor-findings-end-the-crusty-loop-1979) (#1979): `classify` on all-minor, mixed, unknown-severity, missing-severity, empty and non-array input; security keywords in an id or summary and a returning id kept as `CONCERNS`; the loop ending `DONE` on `MINOR_ONLY` with `--also-clean-token` and not without it; one `gh issue create` per finding naming the task id and finding id, with N rows in `followups.tsv`; a rerun making no call; `gh` exiting `1` (error recorded, gate prints `ERROR: followups-unfiled`, no merge) and `79` (passed through after one call); an unresolved task id; the task id taken from `Closes #N` in the PR body; mentions and issue references neutralised in the body; a title with shell metacharacters reaching `gh` as one argument, with `&`, `|` and backticks kept as plain characters rather than HTML entities; an unparseable PR URL; a `CLEAN` drive filing nothing and passing the check; `collect` reading only the terminal round; `check` refusing a symlinked or group-writable `followups.tsv`, a malformed row and `MINOR_ONLY` with no set; `autodrive_crusty_final` accepting `MINOR_ONLY`; and static checks that both `SKILL.md` copies match, the old loop-end wording is gone from the recipes, skill and reference, the budgets hold, and both tools source the shared rules file. Stub `gh` on `PATH`, scratch under `$TMPDIR`, no network | `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs`, with `mod issue_1979_crusty_minor_followups;` in `crates/amplihack-cli/tests/main.rs` |
+| [Minor findings end the crusty loop](#minor-findings-end-the-crusty-loop-1979) (#1979): `classify` on all-minor, mixed, unknown-severity, missing-severity, empty and non-array input; security keywords in an id or summary and a returning id kept as `CONCERNS`; the loop ending `DONE` on `MINOR_ONLY` with `--also-clean-token` and not without it; one `gh issue create` per finding naming the task id and finding id, with N rows in `followups.tsv`; a rerun making no call; `gh` exiting `1` (error recorded, gate prints `ERROR: followups-unfiled`, no merge) and `79` (passed through after one call); an unresolved task id; the task id taken from `Closes #N` in the PR body; two JSON arrays on stdin, or a `concerns` string holding a minor and a blocking array, kept as `CONCERNS`; a `jq` parse failure logged with its exit code; mentions, `#N` and `GH-N` references neutralised in the body and the title; a title with shell metacharacters reaching `gh` as one argument, with `&`, `|` and backticks kept as plain characters rather than HTML entities; an unparseable PR URL; a `CLEAN` drive filing nothing and passing the check; `collect` reading only the terminal round; `check` refusing a symlinked or group-writable `followups.tsv`, a malformed row and `MINOR_ONLY` with no set; `autodrive_crusty_final` accepting `MINOR_ONLY`; and static checks that both `SKILL.md` copies match, the old loop-end wording is gone from the recipes, skill and reference, the budgets hold, and both tools source the shared rules file. Stub `gh` on `PATH`, scratch under `$TMPDIR`, no network | `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs`, with `mod issue_1979_crusty_minor_followups;` in `crates/amplihack-cli/tests/main.rs` |
 | A minor-only round ending the loop, and a `[minor, major]` round continuing it, through the `run_loop` stub | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |

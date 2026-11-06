@@ -218,7 +218,7 @@ steps:
              VERDICT="CONCERNS"; SOURCE="unparseable_verdict" ;;
         esac
       fi
-      case "$CONCERNS" in \[*\]) ;; *) CONCERNS='[]' ;; esac
+      N="$(printf '%s' "$CONCERNS" | jq -cs 'if length > 0 and all(.[]; type == "array") then add else [] end' 2>/dev/null)" && [ -n "$N" ] && CONCERNS="$N" || case "$CONCERNS" in \[*\]) ;; *) CONCERNS='[]' ;; esac  # #1979: every array merged into one
 
       # Stable concern ids, one per line, for the loop's recurring/resolved set
       # difference. jq is optional here: without it the loop still runs, it just

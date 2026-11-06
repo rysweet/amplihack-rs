@@ -3,7 +3,7 @@
 # one becomes a follow-up issue before the drive can be READY (issue #1979).
 #
 # Usage:
-#   autodrive_followups.sh classify --record <abs path> --state-dir <dir>   (concerns JSON array on stdin)
+#   autodrive_followups.sh classify --record <abs path> --state-dir <dir>   (exactly one concerns JSON array on stdin)
 #   autodrive_followups.sh collect  --state-dir <dir>
 #   autodrive_followups.sh file     --state-dir <dir> --pr <N> [--task-id <id>] [--task-text-file <file>]
 #   autodrive_followups.sh check    --state-dir <dir> --pr <N>
@@ -14,8 +14,10 @@
 #           when every concern is a minor finding under the shared rules
 #           (autodrive_finding_rules.sh) and none is a returning id
 #           (resolved-concerns.txt, or another crusty round's .findings).
-#           Anything else, an error included, prints nothing and leaves the
-#           verdict CONCERNS. Exit 0 on a decision, 1 on an error.
+#           Anything else - stdin that is not exactly one JSON array, two
+#           arrays included, or an error - prints nothing and leaves the
+#           verdict CONCERNS; a jq failure is logged with its first stderr
+#           line. Exit 0 on a decision, 1 on an error.
 # collect   After a crusty loop ends DONE: when the last loop-written record
 #           (crusty-records.tsv row, hash checked against the record and
 #           crusty-latest.json) is MINOR_ONLY, adds its .minor findings to
@@ -38,7 +40,8 @@
 #
 # Exit 2 is a usage error. Agent text reaches gh only through --body-file,
 # after cell() (sanitised, HTML-escaped, mentions and links broken); the title
-# is plain sanitised text clipped to 80 characters, passed as one argument.
+# is sanitised text with the same breaks (break_refs) but no HTML escaping,
+# clipped to 80 characters and passed as one argument.
 # State files are private (umask 077, written through mktemp and mv -f), and a
 # symlinked or loose state file is refused. Logs carry ids, numbers and tokens.
 # A row append that fails after gh succeeded makes a rerun file that one finding
@@ -155,27 +158,43 @@ resolve_task() {
   printf '%s' "$1"
 }
 # closing_ref: stdin text -> the number of its first Closes/Fixes/Resolves #N.
+# clip_line <text>: its first line, sanitised (when workflow_issue_tracking.sh
+# is loaded), with control characters removed, clipped to 200 characters.
+clip_line() {
+  local s="${1%%$'\n'*}"
+  ! declare -F sanitize_cli_output >/dev/null || s="$(sanitize_cli_output "$s")"
+  printf '%s' "$s" | LC_ALL=C tr -d '[:cntrl:]' | cut -c 1-200
+}
 closing_ref() {
   { grep -oiE '(^|[^A-Za-z0-9_])(closes|fixes|resolves)[[:space:]]+#[0-9]+' || true; } | head -n 1 | sed -E 's/.*#//'
 }
 
 # --- classify --------------------------------------------------------------------
 cmd_classify() {
-  local concerns ret f rows
+  local concerns ret f rows rc
   [ -z "${JQ_MISSING:-}" ] || { echo "ERROR: classify: jq is not on PATH; the verdict stays CONCERNS" >&2; exit 1; }
   state_ok || { echo "ERROR: followup-state-unsafe: the state dir is not private to this user; the verdict stays CONCERNS" >&2; exit 1; }
   concerns="$(cat)"
+  priv_dir || { echo "ERROR: classify: no private temporary directory; the verdict stays CONCERNS" >&2; exit 1; }
+  . "$HERE/workflow_issue_tracking.sh" 2>/dev/null || true
   ret=""
   for f in "$STATE/resolved-concerns.txt" "$STATE"/crusty-round-*.json.findings; do
     [ "$f" != "$RECORD.findings" ] && [ -f "$f" ] && [ ! -L "$f" ] || continue
     ret="${ret}$(cat -- "$f")"$'\n'
   done
-  rows="$(printf '%s' "$concerns" | jq -c --arg ret "$ret" --arg kw "$KEYWORDS" --arg tkw "$TEXT_KEYWORDS" "$AUTODRIVE_FINDING_JQ"'
+  # -s: stdin is decided as a whole, so a second JSON value (a blocking array
+  # after a minor one) can never be skipped; only exactly one array counts.
+  rows="$(printf '%s' "$concerns" | jq -cs --arg ret "$ret" --arg kw "$KEYWORDS" --arg tkw "$TEXT_KEYWORDS" "$AUTODRIVE_FINDING_JQ"'
     ($ret | split("\n") | map(select(length > 0))) as $r
-    | if type == "array" and length > 0
-         and all(.[]; minor_finding($kw; $tkw) and (.id as $id | any($r[]; . == $id) | not))
-      then map({id, summary: (.summary | clean), evidence: (.evidence | clean)}) | '"$DEDUPE"'
-      else empty end' 2>/dev/null)" || rows=""
+    | if length == 1 and (.[0] | type == "array") then .[0]
+        | if length > 0 and all(.[]; minor_finding($kw; $tkw) and (.id as $id | any($r[]; . == $id) | not))
+          then map({id, summary: (.summary | clean), evidence: (.evidence | clean)}) | '"$DEDUPE"'
+          else empty end
+      else empty end' 2>"$PRIV/jq.err")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "ERROR: classify: the concerns could not be read (jq rc=${rc}): $(clip_line "$(cat -- "$PRIV/jq.err" 2>/dev/null)"); the verdict stays CONCERNS" >&2
+    exit 0
+  fi
   if [ -z "$rows" ]; then
     echo "INFO: classify: not every concern is a new minor finding; the verdict stays CONCERNS" >&2
     exit 0
@@ -237,12 +256,10 @@ fail() { # fail <token> <detail> [exit code]: records the token in followups.err
   echo "ERROR: $1: $2" >&2
   exit "${3:-1}"
 }
-gh_line() { # the first line of a gh stderr file, sanitised and clipped
-  sanitize_cli_output "$(head -n 1 "$1" 2>/dev/null)" | LC_ALL=C tr -d '[:cntrl:]' | cut -c 1-200
-}
+gh_line() { clip_line "$(cat -- "$1" 2>/dev/null)"; } # the first line of a gh stderr file
 
 cmd_file() {
-  local fset done n task="" prj url body repo out rc num re title plain id summary evidence created=0 tf
+  local fset filed n task="" prj url body repo out rc num re title plain id summary evidence created=0 tf
   [ -z "${JQ_MISSING:-}" ] || { echo "ERROR: followup-create-failed: jq is not on PATH" >&2; exit 1; }
   state_ok || { echo "ERROR: followup-state-unsafe: the state dir is not private to this user" >&2; exit 1; }
   for n in followups.jsonl followups.tsv followups.error; do
@@ -250,8 +267,8 @@ cmd_file() {
   done
   fset="$(norm_set "$SET_FILE")" || fail followup-set-invalid "followups.jsonl has a line that is not a valid finding"
   rows_ok || fail followup-row-malformed "followups.tsv has a row that is not id, issue, task, PR #${PR}"
-  done="$(filed_ids)"
-  n="$(printf '%s' "$fset" | jq --argjson d "$done" '[.[] | select(.id as $i | $d | index([$i]) | not)] | length')"
+  filed="$(filed_ids)"
+  n="$(printf '%s' "$fset" | jq --argjson d "$filed" '[.[] | select(.id as $i | $d | index([$i]) | not)] | length')"
   if [ "$n" = 0 ]; then
     rm -f -- "$ERR_FILE"
     echo "INFO: followups: every minor finding has an issue ($(printf '%s' "$fset" | jq length) in the set)" >&2
@@ -282,7 +299,7 @@ cmd_file() {
   tf="$PRIV/body.md"
   while IFS=$'\x1f' read -r id summary evidence; do
     [[ "$id" =~ $ID_RE ]] || fail followup-set-invalid "a finding id is not valid"
-    plain="$(sanitize_cli_output "$summary" | LC_ALL=C tr -d '[:cntrl:]')"
+    plain="$(break_refs "$(sanitize_cli_output "$summary" | LC_ALL=C tr -d '[:cntrl:]')")"
     title="$(jq -rn --arg t "Follow-up (${task}): ${plain}" '$t[0:80]')"
     { printf 'Follow-up from the auto-drive crusty review of PR #%s.\n\n' "$PR"
       printf 'Task: %s\nFinding: %s (severity: minor)\n\n' "$task" "$id"
@@ -300,7 +317,7 @@ cmd_file() {
       || fail followup-state-unsafe "issue #${num} was created for ${id} but its followups.tsv row could not be written; a rerun files it again"
     created=$((created + 1))
     echo "INFO: followup ${id} -> #${num} (task ${task}, PR #${PR})" >&2
-  done < <(printf '%s' "$fset" | jq -r --argjson d "$done" \
+  done < <(printf '%s' "$fset" | jq -r --argjson d "$filed" \
              '.[] | select(.id as $i | $d | index([$i]) | not) | [.id, .summary, .evidence] | join("\u001f")')
   [ "$created" = "$n" ] || fail followup-create-failed "${created} of ${n} follow-up issue(s) were filed"
   rm -f -- "$ERR_FILE"
@@ -309,7 +326,7 @@ cmd_file() {
 
 # --- check -----------------------------------------------------------------------
 cmd_check() {
-  local n fset done missing
+  local n fset filed missing
   say() { printf '%s\n' "$1"; exit "${2:-1}"; }
   [ -z "${JQ_MISSING:-}" ] || say followup-check-unavailable
   state_ok || say followup-state-unsafe
@@ -326,8 +343,8 @@ cmd_check() {
     fi
     say "followups-ok 0" 0
   fi
-  done="$(filed_ids)"
-  missing="$(printf '%s' "$fset" | jq -r --argjson d "$done" 'first(.[] | select(.id as $i | $d | index([$i]) | not) | .id) // empty')"
+  filed="$(filed_ids)"
+  missing="$(printf '%s' "$fset" | jq -r --argjson d "$filed" 'first(.[] | select(.id as $i | $d | index([$i]) | not) | .id) // empty')"
   [ -z "$missing" ] || say "followup-missing:${missing}"
   say "followups-ok ${n}" 0
 }

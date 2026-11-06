@@ -290,14 +290,13 @@ steps:
       # collecting or filing fails, no marker is written: the merge gate then
       # refuses criterion 3 and the drive is not READY. The tool comes from the
       # same launch-side tree as the state helper, never the PR worktree.
-      FU="$(dirname -- "$STATE_HELPER")/autodrive_followups.sh"
+      H="$(dirname -- "$STATE_HELPER")"; FU="$H/autodrive_followups.sh"
       LAST="$(sed -n 's/^{"crusty_verdict":"\([A-Z_]*\)",.*/\1/p' "$DIR/crusty-latest.json" 2>/dev/null | head -n 1)"
       if [ -f "$FU" ] && { [ -n "$PR" ] || [ "$LAST" = "MINOR_ONLY" ]; }; then
         bash "$FU" collect --state-dir "$DIR" \
           || { echo "ERROR: followups-unfiled: the minor findings could not be collected; the crusty loop is NOT recorded complete." >&2; exit 1; }
         FT="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/autodrive-followup-task.XXXXXX")" || exit 1
         trap 'rm -rf -- "$FT"' EXIT
-        H="$(dirname -- "$STATE_HELPER")"
         printf '%s' "${RECIPE_VAR_task_description:-}" > "$FT/task.txt"
         . "$H/recipe_context_value.sh" 2>/dev/null && { write_context_value task_description "$FT/task.txt" 2>/dev/null || : > "$FT/task.txt"; }
         bash "$FU" file --state-dir "$DIR" --pr "$PR" --task-id "${RECIPE_VAR_plan_task_id:-}" --task-text-file "$FT/task.txt"

@@ -463,6 +463,54 @@ fn classify_fails_closed_on_bad_input() {
 }
 
 #[test]
+fn classify_multiple_json_values_on_stdin_is_not_minor_only() {
+    if skip() {
+        return;
+    }
+    let minor = json!([concern("naming-1", "minor", "Rename x")]);
+    let blocking = json!([concern("bug-2", "blocking", "Crash on start")]);
+    for input in [
+        format!("{minor} {blocking}"),
+        format!("{minor}\n{blocking}"),
+        format!("{minor} {minor}"),
+        format!("{minor} 1"),
+    ] {
+        let d = Drive::new();
+        private_file(&d.p("crusty-round-1.json.findings"), "naming-1\nbug-2\n");
+        let o = d.classify(1, &input);
+        assert_not_minor(&d, &o, &format!("input {input:?}"));
+        assert_eq!(
+            d.read("crusty-round-1.json.findings"),
+            "naming-1\nbug-2\n",
+            ".findings is left as step-03 wrote it\n{}",
+            show(&o)
+        );
+    }
+}
+
+#[test]
+fn classify_invalid_json_logs_jq_error_and_stays_concerns() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let o = d.classify(1, "[{\"id\":\"a\",\"severity\":\"minor\"}");
+    assert_not_minor(&d, &o, "invalid JSON");
+    let err = stderr(&o);
+    assert!(
+        err.contains("ERROR: classify: the concerns could not be read (jq rc=")
+            && err.contains("the verdict stays CONCERNS"),
+        "the jq failure is logged, not hidden\n{}",
+        show(&o)
+    );
+    assert!(
+        !err.contains("not every concern is a new minor finding"),
+        "a jq failure is not reported as a CONCERNS decision\n{}",
+        show(&o)
+    );
+}
+
+#[test]
 fn classify_rejects_unsafe_ids() {
     if skip() {
         return;
@@ -1113,6 +1161,47 @@ fn file_title_keeps_plain_characters_as_one_argument() {
 }
 
 #[test]
+fn file_title_breaks_mentions_and_issue_references() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&[("naming-1", "Ask @user about #123 and GH-45", "e")]);
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let title = arg_after(&d.creates()[0], "--title").unwrap().to_string();
+    assert!(title.starts_with("Follow-up (#1979): "), "{title}");
+    let summary = &title["Follow-up (#1979): ".len()..];
+    for raw in ["@user", "#1", "GH-4"] {
+        assert!(!summary.contains(raw), "{raw} left unbroken: {title}");
+    }
+    assert!(summary.contains(&format!("GH-{ZW}45")), "{title}");
+    assert!(
+        !title.contains("&amp;") && !title.contains("&#x"),
+        "{title}"
+    );
+}
+
+#[test]
+fn cell_breaks_gh_issue_references() {
+    let o = Command::new("bash")
+        .arg("-c")
+        .arg(r#". "$1/workflow_issue_tracking.sh" && . "$1/autodrive_finding_rules.sh" && cell 'see GH-45 and gh-7, not GHz-1'"#)
+        .arg("bash")
+        .arg(tools_dir())
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "{}", show(&o));
+    let out = stdout(&o);
+    assert_eq!(
+        out,
+        format!("see GH-{ZW}45 and gh-{ZW}7, not GHz-1"),
+        "{}",
+        show(&o)
+    );
+}
+
+#[test]
 fn file_refuses_a_symlinked_tsv() {
     if skip() {
         return;
@@ -1418,6 +1507,40 @@ fn round_step03_keeps_concerns_for_mixed_and_unknown_severities() {
         assert_eq!(j["crusty_verdict"], "CONCERNS", "{concerns}\n{}", show(&o));
         assert!(!d.p("crusty-round-1.json.minor").exists(), "{concerns}");
     }
+}
+
+#[test]
+fn round_step03_merges_concerns_given_as_a_string_of_two_arrays() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    let minor = json!([concern("naming-1", "minor", "Rename x")]);
+    let blocking = json!([concern("bug-2", "blocking", "Crash on start")]);
+    let o = step03(
+        &d,
+        &review("CONCERNS", &Value::String(format!("{minor} {blocking}"))),
+    );
+    let j = last_json(&o);
+    assert_eq!(j["crusty_verdict"], "CONCERNS", "{}", show(&o));
+    assert!(!d.p("crusty-round-1.json.minor").exists(), "{}", show(&o));
+    assert_eq!(
+        d.read("crusty-round-1.json.findings"),
+        "naming-1\nbug-2\n",
+        "the hidden blocking finding is kept\n{}",
+        show(&o)
+    );
+}
+
+#[test]
+fn round_step03_normalises_concerns_with_jq_slurp() {
+    let s03 = step_command(ROUND, "step-03-extract-crusty-verdict");
+    assert!(
+        s03.contains(
+            r#"jq -cs 'if length > 0 and all(.[]; type == "array") then add else [] end'"#
+        ),
+        "step-03 merges every concerns array into one"
+    );
 }
 
 #[test]

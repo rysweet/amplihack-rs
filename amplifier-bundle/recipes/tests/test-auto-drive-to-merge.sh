@@ -2501,6 +2501,24 @@ else
   fail "CRUSTY-review-object" "a JSON-only review, exported as RECIPE_VAR_crusty_review alone, became '${v}'"
 fi
 
+# Issue #1979: crusty writes `concerns` as a string holding two arrays, a minor
+# one and then a blocking one. step-03 merges them into one array, so the
+# blocking finding is kept in .findings and the round stays CONCERNS; it must
+# never be hidden behind the minor one and classed MINOR_ONLY.
+FU_TWO_DIR="$(mktemp -d "${WORK}/fu-two.XXXXXX")"; chmod 700 "${FU_TWO_DIR}"
+FU_TWO_REVIEW='{"crusty_verdict":"CONCERNS","concerns":"[{\"id\":\"naming-1\",\"severity\":\"minor\",\"summary\":\"Rename x\",\"evidence\":\"a.rs\"}] [{\"id\":\"bug-2\",\"severity\":\"blocking\",\"summary\":\"Crash on start\",\"evidence\":\"b.rs\"}]"}'
+v="$(PATH="${STUB_BIN}:${PATH}" RECIPE_VAR_crusty_review="${FU_TWO_REVIEW}" AUTODRIVE_ROUND_RECORD="${FU_TWO_DIR}/crusty-round-1.json" \
+  AUTODRIVE_ROUND_LABEL="r" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}" bash -c "$CRUSTY_BODY" 2>/dev/null \
+  | "$REAL_AMPLIHACK" orch helper extract-json \
+  | "$REAL_AMPLIHACK" orch helper extract-field --field crusty_verdict --default MISSING)"
+if [ "$v" = "CONCERNS" ] && grep -qx 'bug-2' "${FU_TWO_DIR}/crusty-round-1.json.findings" 2>/dev/null \
+   && [ ! -e "${FU_TWO_DIR}/crusty-round-1.json.minor" ]; then
+  pass "1979-two-arrays-stay-concerns" "a concerns string of a minor and a blocking array stays CONCERNS with the blocking id in .findings"
+else
+  fail "1979-two-arrays-stay-concerns" "verdict '${v}', .findings: $(tr '\n' ' ' < "${FU_TWO_DIR}/crusty-round-1.json.findings" 2>/dev/null)"
+fi
+rm -rf -- "${FU_TWO_DIR}"; unset FU_TWO_DIR FU_TWO_REVIEW
+
 # THE fail-open path this gate had. `extract-json` without `--require-field`
 # returns the FIRST parseable object and PREFERS a ```json fence over raw
 # prose, so a reviewer that restates its output contract — normal behaviour,

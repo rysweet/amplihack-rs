@@ -13,7 +13,11 @@
 # TEXT_KEYWORDS   matched as whole words in the lower-cased summary and
 #                 evidence, so that "second" or "author" do not match
 # ZW              a zero-width space, used to break mentions and links
-# cell <text>     one Markdown table cell or body line: needs
+# break_refs <t>  <t> with a zero-width break after every @, in #N, GH-N and
+#                 github.com/, so GitHub links and notifies nothing; used
+#                 alone for issue titles, which are not HTML-escaped
+# cell <text>     one Markdown table cell or body line (break_refs after
+#                 HTML escaping): needs
 #                 sanitize_cli_output (workflow_issue_tracking.sh) loaded
 # AUTODRIVE_FINDING_JQ
 #                 jq definitions: `clean` (any value to a one-line string of
@@ -41,12 +45,17 @@ def minor_finding($kw; $tkw):
   and (([.summary, .evidence] | map(clean) | join(" ") | ascii_downcase | test($tkw)) | not);
 '
 
+break_refs() {
+  local s="${1//@/@$ZW}"
+  printf '%s' "$s" | sed -E -e "s/#([0-9])/#${ZW}\\1/g" -e "s#(github\\.com)/#\\1/${ZW}#Ig" \
+    -e "s/\\b(GH)-([0-9])/\\1-${ZW}\\2/Ig"
+}
+
 cell() {
   local s
   s="$(sanitize_cli_output "$1")"
   s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"
-  s="${s//@/@$ZW}"
-  s="$(printf '%s' "$s" | sed -E -e "s/#([0-9])/#${ZW}\\1/g" -e "s#(github\\.com)/#\\1/${ZW}#Ig")"
+  s="$(break_refs "$s")"
   s="${s//|/&#x7C;}"; s="${s//\`/&#x60;}"
   printf '%s' "$s"
 }
