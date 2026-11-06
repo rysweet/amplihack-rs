@@ -114,7 +114,7 @@ sub-recipe. Each test asserts that:
 
 ### Level 4: explicit command beats inherited value
 
-One helper, `explicit_beats(explicit, inherited_value, inherited_tag)`, drives
+One helper, `explicit_beats(explicit, tag)`, drives
 all six tests. The parent holds `AMPLIHACK_AGENT_BINARY=<other>` with
 `AMPLIHACK_AGENT_BINARY_SOURCE` set to `session:<other>`, `default:<other>` or
 unset. In every case the explicit launcher's fake runs and records
@@ -319,9 +319,9 @@ are not covered until the stub copies them.
 | `TMUX_TMPDIR` | `<tmp>/tmux`; `TMUX` is never set | No real tmux server is reached |
 | `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL`, `GIT_TERMINAL_PROMPT` | `1`, `/dev/null`, `0` | No git credential prompt (issue #1764) |
 
-The working directory is `<tmp>/work` and stdin is `/dev/null`. Depth,
-session and tree variables are removed again after the allow-list as a
-backstop. Only `AMPLIHACK_MAX_DEPTH` may be raised by a test.
+The working directory is `<tmp>/work` and stdin is `/dev/null`. Because the
+environment is cleared first, no depth, session or tree variable reaches the
+command unless a test sets it.
 
 Self-checks in `record.rs` (and the marker-name check in `script.rs`) fail
 the suite if:

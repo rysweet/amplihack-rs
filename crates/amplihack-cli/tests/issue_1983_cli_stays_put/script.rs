@@ -30,6 +30,8 @@ pub fn fake_cli(markers: &str) -> String {
 
 const FAKE_CLI: &str = r#"#!/bin/sh
 # Fake agent CLI for issue #1983. It never runs a real claude or codex.
+# Without these the path checks below would accept any absolute path.
+: "${RECORD_DIR:?fake cli: RECORD_DIR unset}" "${WORK_DIR:?fake cli: WORK_DIR unset}"
 me=$(basename "$0")
 case "${1-}" in
   --version)
@@ -55,6 +57,7 @@ for a; do
 done
 if [ -n "$out" ]; then
   case "$out" in
+    */../*|*/..) echo "fake $me: refusing --output-last-message with '..': $out" >&2; exit 43 ;;
     "$RECORD_DIR"/*|"$WORK_DIR"/*) ;;
     *) echo "fake $me: refusing --output-last-message outside the fixture: $out" >&2; exit 43 ;;
   esac
@@ -110,6 +113,7 @@ exit 0
 /// gets `-p <prompt> --system-prompt <text> --add-dir <cwd>`. The real runner
 /// starts every step without `CLAUDECODE`.
 pub const STUB_RUNNER: &str = r#"#!/bin/sh
+: "${RECORD_DIR:?stub runner: RECORD_DIR unset}" "${WORK_DIR:?stub runner: WORK_DIR unset}"
 if [ "${1-}" = --capabilities ]; then
   printf '%s\n' '{"schema_version":1,"version":"stub","capabilities":["codex_exec"]}'
   exit 0

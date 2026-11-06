@@ -84,10 +84,11 @@ impl Record {
             assert_eq!(
                 self.get(name),
                 "<unset>",
-                "{name} reached the {} record of {}; record: {:#?}",
+                "{name} reached the {} record of {}; record: {:#?}\n{}",
                 self.get("role"),
                 self.get("ran"),
-                self.fields
+                self.fields,
+                self.logs
             );
         }
     }

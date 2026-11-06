@@ -97,7 +97,7 @@ impl Fixture {
         S: AsRef<OsStr>,
     {
         let bin = amplihack_bin();
-        let mut c = crate::isolated_amplihack::isolated(&bin);
+        let mut c = Command::new(&bin);
         c.env_clear();
         crate::isolated_amplihack::no_git_prompt(&mut c);
         c.args(args)
@@ -133,22 +133,6 @@ impl Fixture {
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_TERMINAL_PROMPT", "0");
-        // Backstop: `env_clear` already removed these.
-        for var in [
-            "TMUX",
-            "AMPLIHACK_SESSION_ID",
-            "AMPLIHACK_SESSION_DEPTH",
-            "AMPLIHACK_DEPTH",
-            "AMPLIHACK_TREE_ID",
-            "AMPLIHACK_MAX_SESSIONS",
-            "AMPLIHACK_RECIPE_RUN_ID",
-            "AMPLIHACK_ORCHESTRATION_BOOTSTRAP",
-            "AMPLIHACK_CLAUDE_PROFILE_ROOT",
-            "CLAUDE_CONFIG_DIR",
-            "CODEX_HOME",
-        ] {
-            c.env_remove(var);
-        }
         c
     }
 
@@ -270,7 +254,7 @@ impl Fixture {
         files.sort();
         let mut text = String::new();
         for f in files {
-            let body = fs::read(&f).unwrap_or_default();
+            let body = fs::read(&f).unwrap_or_else(|e| format!("<unreadable: {e}>").into_bytes());
             let cut = &body[body.len().saturating_sub(LOG_CAP)..];
             text.push_str(&format!(
                 "--- {} ---\n{}\n",
