@@ -60,6 +60,7 @@ steps:
       **Task**: {{task_description}}
       **Repo**: {{repo_path}}
 
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
       Perform the operation, report what was done. End with "STATUS: COMPLETE".
     output: "round_1_result"
 

@@ -314,7 +314,8 @@ Review which sources have changed and assess impact.
 
 ```bash
 # For each drifted source, fetch new content
-curl https://docs.claude.com/en/docs/agent-sdk/overview > /tmp/new_content.html
+NEW_CONTENT=$(mktemp "${TMPDIR:-/tmp}/new_content.XXXXXX.html")
+curl https://docs.claude.com/en/docs/agent-sdk/overview > "$NEW_CONTENT"
 ```
 
 Or use WebFetch in Claude Code:

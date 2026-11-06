@@ -310,6 +310,7 @@ steps:
       about**. Never reach for a flag that skips them — the pre-tool-use hook
       blocks it, CI would catch it later, and it is prohibited by this
       workflow. The same goes for the merge later: no bypass, ever.
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
     output: "crusty_fixes"
 
   - id: "step-05-verify-concerns-addressed"

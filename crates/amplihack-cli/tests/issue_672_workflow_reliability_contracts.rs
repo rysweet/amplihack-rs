@@ -655,7 +655,7 @@ fn issue_780_workflow_worktree_exports_one_runtime_root_to_child_flows() {
         command,
         &[
             "workflow_runtime_root.sh",
-            "${XDG_RUNTIME_DIR:-/tmp}/amplihack-runtime/$BRANCH_NAME",
+            "${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/amplihack-runtime/$BRANCH_NAME",
             "export AMPLIHACK_RUNTIME_ROOT",
         ],
     );

@@ -56,6 +56,8 @@ steps:
       2. Propose fixes
       3. Ensure fixes don't violate requirements
 
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
+
       Return as JSON:
       ```json
       {
@@ -86,6 +88,8 @@ steps:
       2. Complex use cases - edge cases
       3. Consensus-critical paths - critical code sections
       4. Integration points - external dependencies
+
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
 
       Return as JSON:
       ```json

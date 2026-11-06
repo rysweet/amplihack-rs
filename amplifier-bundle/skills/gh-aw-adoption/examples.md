@@ -54,6 +54,7 @@ Selected 10 representative workflows:
 
 ```bash
 # Read and analyze each workflow
+mkdir -p "${TMPDIR:-/tmp}/analysis"
 workflows=(
   "issue-classifier.md"
   "pr-labeler.md"
@@ -69,7 +70,7 @@ workflows=(
 
 for workflow in "${workflows[@]}"; do
   gh api repos/github/gh-aw/contents/.github/workflows/$workflow \
-    --jq '.content' | base64 -d > /tmp/analysis/$workflow
+    --jq '.content' | base64 -d > "${TMPDIR:-/tmp}/analysis/$workflow"
   echo "Analyzing $workflow..."
 done
 ```
@@ -203,7 +204,7 @@ Identified 20 high-impact workflows:
 
 ```bash
 gh api repos/github/gh-aw/contents/.github/workflows/{WORKFLOW_NAME}.md \
-  --jq '.content' | base64 -d > /tmp/{WORKFLOW_NAME}.md
+  --jq '.content' | base64 -d > "${TMPDIR:-/tmp}/{WORKFLOW_NAME}.md"
 ```
 
 ### Step 2: Analyze Structure
@@ -233,7 +234,7 @@ gh api repos/github/gh-aw/contents/.github/workflows/{WORKFLOW_NAME}.md \
 ```bash
 git checkout -b feat/{WORKFLOW_NAME}-workflow
 mkdir -p .github/workflows
-cp /tmp/{WORKFLOW_NAME}.md .github/workflows/
+cp "${TMPDIR:-/tmp}/{WORKFLOW_NAME}.md" .github/workflows/
 ```
 
 ### Step 5: Add Error Resilience

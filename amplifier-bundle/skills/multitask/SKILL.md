@@ -2,7 +2,7 @@
 name: multitask
 description: |
   Execute multiple independent development tasks in parallel using subprocess isolation.
-  Each task runs in a clean /tmp clone with Recipe Runner code-enforced workflow execution.
+  Each task runs in a clean clone under $TMPDIR (default /tmp) with Recipe Runner code-enforced workflow execution.
   Proven pattern: 4/5 PRs created successfully in first production use.
 version: 1.0.0
 auto_activates:
@@ -18,7 +18,7 @@ auto_activates:
 
 ## Purpose
 
-Execute multiple independent development tasks in parallel. Each workstream runs in an isolated `/tmp` clone with its own Recipe Runner process following code-enforced workflow steps.
+Execute multiple independent development tasks in parallel. Each workstream runs in an isolated clone under `$TMPDIR` (default `/tmp`) with its own Recipe Runner process following code-enforced workflow steps.
 
 **Key Advantage**: Uses Recipe Runner YAML recipes instead of prompt-based markdown workflows. recipe-runner-rs controls step execution, making it impossible to skip steps.
 
@@ -64,7 +64,7 @@ User provides task list
         |
         v
 For each task:
-  1. Clone branch to /tmp/amplihack-workstreams/ws-{issue}/
+  1. Clone branch to $TMPDIR/amplihack-workstreams/ws-{issue}/
   2. Write launcher.sh (Recipe Runner via amplihack CLI)
   3. Write run.sh (sets session tree vars, runs launcher.sh)
   4. Launch subprocess via Popen
@@ -87,7 +87,7 @@ Report: PR numbers, success/failure, runtime
 
 ### Critical Implementation Details
 
-1. **`/tmp` clones** (not worktrees): Worktree symlinks confuse nested Claude sessions. Clean clones avoid this.
+1. **`$TMPDIR` clones** (not worktrees): Worktree symlinks confuse nested Claude sessions. Clean clones avoid this.
 2. **`--subprocess-safe`**: Classic mode passes this flag to skip staging/env updates, preventing concurrent write races on `~/.amplihack/.claude/` (issue #2567).
 3. **Recipe Runner adapter**: `CLISubprocessAdapter` shells out to `claude -p` for each agent step within the recipe (no `amplihack` wrapper, so no staging race).
 4. **Child env cleanup**: The shared `build_child_env()` utility strips blocking env vars and propagates session tree context.
@@ -138,16 +138,16 @@ Specify per-task: `"recipe": "investigation-workflow"` in JSON config.
 
 ```bash
 # Watch all logs
-tail -f /tmp/amplihack-workstreams/log-*.txt
+tail -f "${TMPDIR:-/tmp}/amplihack-workstreams/"log-*.txt
 
 # Check specific workstream
-tail -f /tmp/amplihack-workstreams/log-123.txt
+tail -f "${TMPDIR:-/tmp}/amplihack-workstreams/log-123.txt"
 
 # Check running processes
 ps aux | grep launcher.sh
 
 # Final report
-cat /tmp/amplihack-workstreams/REPORT.md
+cat "${TMPDIR:-/tmp}/amplihack-workstreams/REPORT.md"
 ```
 
 ## When to Read Supporting Files
@@ -167,9 +167,9 @@ Each workstream creates a full git clone (~1.5GB). With 10 parallel workstreams,
 
 **Locations:**
 
-- `/tmp/amplihack-workstreams/ws-{issue}/` - Each workstream's working directory
-- `/tmp/amplihack-workstreams/log-{issue}.txt` - Log files (kept separately)
-- `/tmp/amplihack-workstreams/REPORT.md` - Final execution report
+- `$TMPDIR/amplihack-workstreams/ws-{issue}/` - Each workstream's working directory
+- `$TMPDIR/amplihack-workstreams/log-{issue}.txt` - Log files (kept separately)
+- `$TMPDIR/amplihack-workstreams/REPORT.md` - Final execution report
 
 ### When to Clean Up
 
@@ -191,19 +191,19 @@ Each workstream creates a full git clone (~1.5GB). With 10 parallel workstreams,
 
 ```bash
 # Check disk usage first
-du -sh /tmp/amplihack-workstreams/*
+du -sh "${TMPDIR:-/tmp}/amplihack-workstreams/"*
 
 # Clean up specific workstream (after PR merged)
-rm -rf /tmp/amplihack-workstreams/ws-123
+rm -rf "${TMPDIR:-/tmp}/amplihack-workstreams/ws-123"
 
 # Clean up all workstreams (after all PRs merged)
-rm -rf /tmp/amplihack-workstreams/ws-*
+rm -rf "${TMPDIR:-/tmp}/amplihack-workstreams/"ws-*
 
 # Keep log files, delete only working directories
-find /tmp/amplihack-workstreams -type d -name "ws-*" -exec rm -rf {} +
+find "${TMPDIR:-/tmp}/amplihack-workstreams" -maxdepth 1 -type d -name "ws-*" -exec rm -rf {} +
 
 # Check available disk space
-df -h /tmp
+df -h "${TMPDIR:-/tmp}"
 ```
 
 ### Automatic Cleanup (Native Command)
@@ -230,9 +230,9 @@ The cleanup command:
 The orchestrator automatically checks disk space before launching workstreams:
 
 ```
-⚠️  WARNING: Only 8.2GB free in /tmp
+⚠️  WARNING: Only 8.2GB free in $TMPDIR
 Each workstream requires ~1.5GB. Consider cleaning up:
-  rm -rf /tmp/amplihack-workstreams/ws-*
+  rm -rf "${TMPDIR:-/tmp}/amplihack-workstreams/"ws-*
 Continue anyway? (y/N):
 ```
 
@@ -243,8 +243,8 @@ Continue anyway? (y/N):
 1. **Before large multitask runs** (10+ workstreams):
 
    ```bash
-   df -h /tmp  # Check available space
-   rm -rf /tmp/amplihack-workstreams/ws-*  # Clean old workstreams
+   df -h "${TMPDIR:-/tmp}"  # Check available space
+   rm -rf "${TMPDIR:-/tmp}/amplihack-workstreams/"ws-*  # Clean old workstreams
    ```
 
 2. **After merging PRs**:
@@ -255,7 +255,7 @@ Continue anyway? (y/N):
 
 3. **Monitor during execution**:
    ```bash
-   watch -n 60 'du -sh /tmp/amplihack-workstreams && df -h /tmp'
+   watch -n 60 'du -sh "${TMPDIR:-/tmp}/amplihack-workstreams" && df -h "${TMPDIR:-/tmp}"'
    ```
 
 ## Troubleshooting
@@ -266,4 +266,4 @@ Continue anyway? (y/N):
 
 **Fallback**: If recipe mode fails, retry with `--mode classic` to use the prompt-based approach.
 
-**Disk full during execution**: The orchestrator warns if <10GB free. If disk fills mid-execution, manually clean up: `rm -rf /tmp/amplihack-workstreams/ws-*` (after stopping running workstreams).
+**Disk full during execution**: The orchestrator warns if <10GB free. If disk fills mid-execution, manually clean up: `rm -rf "${TMPDIR:-/tmp}/amplihack-workstreams/"ws-*` (after stopping running workstreams).

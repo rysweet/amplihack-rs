@@ -23,14 +23,12 @@ steps:
       echo "=== Step 17a: Step 13 Testing-Evidence Gate ==="
       echo ""
       GATE_OUTPUT="${RECIPE_VAR_local_testing_gate:-}"
-      # Outcome 3 (FATAL — code-verification failure): a genuine test/verification
-      # failure EXPLICITLY recorded as a verdict stays fatal. Issue #1062 (finding
-      # A2): the structured JSON verdict flows through the tested `orch helper`
-      # toolchain (extract-json | extract-field | normalise-verdict, mapping
-      # FAILED/FAIL/EMPTY/... to HOLLOW_SUCCESS); only the prose "VERDICT: FAILED"
-      # fail-safe token (#962) still uses a literal grep. Matching only verdict
-      # tokens avoids false-positives on benign summaries ("0 tests failed, 19
-      # passed"); real failures are caught by step-08c and step-19c.
+      # Outcome 3 (FATAL — code-verification failure): a genuine test/verification failure EXPLICITLY
+      # recorded as a verdict stays fatal. Issue #1062 (finding A2): the structured JSON verdict flows
+      # through the tested `orch helper` toolchain (extract-json | extract-field | normalise-verdict,
+      # mapping FAILED/FAIL/EMPTY/... to HOLLOW_SUCCESS); only the prose "VERDICT: FAILED" fail-safe token
+      # (#962) still uses a literal grep. Matching only verdict tokens avoids false-positives on benign
+      # summaries ("0 tests failed, 19 passed"); real failures are caught by step-08c and step-19c.
       JSON_VERDICT=$(printf '%s' "$GATE_OUTPUT" \
         | amplihack orch helper extract-json \
         | amplihack orch helper extract-field --field verdict --default '' \
@@ -130,6 +128,7 @@ steps:
       1. Identify blocking issues from each review
       2. Implement fixes for each blocking issue
       3. If issues found, re-run applicable reviews after fixing
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
       **Output:** Summary of blocking issues found and how they were addressed.
       If no blocking issues, state "No blocking issues found."
     output: "blocking_issues_addressed"
@@ -182,6 +181,7 @@ steps:
       - [ ] For disagreements, document reasoning
       - [ ] Ensure changes don't introduce new issues
       - [ ] Waiting (issue #1794): use `amplihack wait --seconds N`, or `cmd & pid=$!; wait $pid`; never `tail -f /dev/null` or `timeout N tail -f /dev/null`, whose `tail` outlives the tool call as an orphan and which the PreToolUse hook denies
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
       **Output:** Summary of changes for each feedback item.
     output: "pr_feedback_changes"
   - id: "step-18c-push-feedback-changes"

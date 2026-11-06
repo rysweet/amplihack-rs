@@ -8,14 +8,14 @@
     v
 amplihack multitask / amplihack orch
     |
-    +---> Workstream 1: /tmp/ws-123/
+    +---> Workstream 1: $TMPDIR/amplihack-workstreams/ws-123/
     |         run.sh -> amplihack recipe run default-workflow -c ... -v
     |         CLISubprocessAdapter -> claude -p (per recipe step)
     |
-    +---> Workstream 2: /tmp/ws-124/
+    +---> Workstream 2: $TMPDIR/amplihack-workstreams/ws-124/
     |         (same structure)
     |
-    +---> Workstream N: /tmp/ws-NNN/
+    +---> Workstream N: $TMPDIR/amplihack-workstreams/ws-NNN/
               (same structure)
 ```
 
@@ -59,7 +59,7 @@ amplihack multitask / amplihack orch
 | Parameter  | Type | Default                      | Description                               |
 | ---------- | ---- | ---------------------------- | ----------------------------------------- |
 | `repo_url` | str  | required                     | Git remote URL                            |
-| `tmp_base` | str  | `/tmp/amplihack-workstreams` | Base directory for clones                 |
+| `tmp_base` | str  | `$TMPDIR/amplihack-workstreams` (`TMPDIR` unset: `/tmp`) | Base directory for clones |
 | `mode`     | str  | `"recipe"`                   | Execution mode: `"recipe"` or `"classic"` |
 
 ### Methods
@@ -120,7 +120,7 @@ To use classic mode as fallback, specify `--mode classic` when invoking the orch
 ## File Layout Per Workstream
 
 ```
-/tmp/amplihack-workstreams/
+$TMPDIR/amplihack-workstreams/     # /tmp/amplihack-workstreams when TMPDIR is unset
   ws-123/           # Clone of feat/my-feature branch
     launcher.sh     # Recipe runner invocation (recipe mode)
     run.sh          # Shell wrapper (sets session tree vars)

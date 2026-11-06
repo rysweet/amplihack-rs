@@ -371,13 +371,13 @@ steps:
       git push || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
       ```
 
-      If the artifact guard objects, before or after staging, remove the
-      artifact rather than silencing it. Stage only through the block: never
-      stage ignored files or anything under `worktrees/` (staging one records a
-      gitlink to another checkout, #1528); never force a path past `.gitignore`
-      or a guard refusal. If a hook fails, fix the cause. Never reach for a flag
-      that skips hooks, nor for a branch-protection bypass at merge time. Both
-      are prohibited here without exception.
+      If the artifact guard objects, before or after staging, remove the artifact rather
+      than silencing it. Stage only through the block: never stage ignored files or
+      anything under `worktrees/` (staging one records a gitlink to another checkout,
+      #1528); never force a path past `.gitignore` or a guard refusal. If a hook fails,
+      fix the cause. Never reach for a flag that skips hooks, nor for a branch-protection
+      bypass at merge time. Both are prohibited here without exception.
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
     output: "merge_ready_fixes"
   # The round record (verdict, head_sha, qa/CI signals, qa_evidence_sha; #1517 D5): round-record.
   - id: "step-05-write-round-record"

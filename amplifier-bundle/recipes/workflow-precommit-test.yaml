@@ -64,6 +64,8 @@ steps:
          - Formatting issues
          - Type checking errors
 
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
+
       Iterate until all checks pass. Report results, then return exactly one JSON
       object with status (PASS or FAIL), exit_code (the actual aggregate exit),
       precommit_exit_code and workspace_exit_code (actual numeric exits),
@@ -202,6 +204,8 @@ steps:
       - Planning tests without executing them
       - CI/CD checks only (local execution required IN ADDITION)
       - Assuming "documentation can't be tested"
+
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
 
       Report the full test output and confirm both scenarios passed (or document
       any failures with root cause analysis). Return exactly one JSON object with

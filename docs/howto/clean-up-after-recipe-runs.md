@@ -793,3 +793,4 @@ exceed the socket limit, so choose a shorter one.
 - [Hygiene Cleanup](../operations/hygiene-cleanup.md) - Opt-in cleanup of stale worktrees, detached Cargo targets and session artifacts outside recipe runs
 - [Configure Workflow Runtime Isolation](configure-workflow-runtime-isolation.md) - Where workflow runtime output is written
 - [Correlate Recipe Runs with Logs](correlate-recipe-runs.md) - Match a run id to its logs and processes
+- [Recipe Scratch Policy](../reference/recipe-scratch-policy.md) - Why agent steps write test and scratch output under the run's `TMPDIR`, not a literal `/tmp`

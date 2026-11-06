@@ -735,7 +735,6 @@ agents:
     type: "system"
     config:
       shell: "bash"
-      cwd: "/tmp/test-student"
       timeout: 180000
       capture_output: true
 
@@ -744,7 +743,7 @@ steps:
     agent: "student-cli"
     action: "execute_command"
     params:
-      command: 'mkdir -p /tmp/test-student && uvx --from git+https://github.com/rysweet/amplihack-rs amplihack claude -- -p "Task(subagent_type=''guide'', prompt=''I am new. What is amplihack?'')" 2>&1 | head -100'
+      command: 'mkdir -p ${TMPDIR:-/tmp}/test-student && cd ${TMPDIR:-/tmp}/test-student && uvx --from git+https://github.com/rysweet/amplihack-rs amplihack claude -- -p "Task(subagent_type=''guide'', prompt=''I am new. What is amplihack?'')" 2>&1 | head -100'
     expect:
       exit_code: 0
       stdout_contains:
@@ -756,7 +755,7 @@ steps:
     agent: "student-cli"
     action: "execute_command"
     params:
-      command: "grep -i 'TRY IT\\|try this\\|run this' /tmp/test-student/.claude/agents/amplihack/core/guide.md"
+      command: "grep -i 'TRY IT\\|try this\\|run this' ${TMPDIR:-/tmp}/test-student/.claude/agents/amplihack/core/guide.md"
     expect:
       exit_code: 0
     timeout: 5000
@@ -785,7 +784,7 @@ node dist/cli.js run scenarios/amplihack-guide-test.yaml --verbose
 **From testing amplihack guide agent**:
 
 - Long-running AI commands need 180s+ timeouts
-- Testing in clean `/tmp` directory avoids state pollution
+- Testing in a clean directory under `$TMPDIR` avoids state pollution
 - Combining `uvx --from git+...` with gadugi tests unreleased branches
 - Checking file content (guide.md) verifies features beyond just output
 - Real-world tests exposed gaps (guide showing bash commands in REPL context)
