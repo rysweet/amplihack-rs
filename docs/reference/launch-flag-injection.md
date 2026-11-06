@@ -12,6 +12,7 @@ can override the defaults.
 - [--dangerously-skip-permissions](#-dangerously-skip-permissions)
 - [--model](#-model)
 - [--resume and --continue](#-resume-and-continue)
+- [Codex agent-step flags](#codex-agent-step-flags)
 - [Extra args passthrough](#extra-args-passthrough)
 - [Complete command-line assembly](#complete-command-line-assembly)
 - [Python launcher parity](#python-launcher-parity)
@@ -27,6 +28,8 @@ can override the defaults.
 | `--model <value>` | tool is Claude-compatible AND user did not pass `--model`, unless `AMPLIHACK_DEFAULT_MODEL` is set to an empty value outside the LiteLLM gateway path. Unset, the value is `claude-opus-5[1m]`; see [--model](#-model) | `claude`, `rusty`, `rustyclawd`, `amplifier` | pass `--model`, or set `AMPLIHACK_DEFAULT_MODEL=` (empty) to pass none |
 | `--resume` | only when `amplihack launch --resume` | `launch` only (not `claude`) | pass `--resume` to the `launch` subcommand |
 | `--continue` | only when `amplihack launch --continue` | `launch` only (not `claude`) | pass `--continue` to the `launch` subcommand |
+| `--sandbox workspace-write` and `-c sandbox_workspace_write.network_access=true` | argv after `--` contains an `exec`/`e` subcommand AND the caller chose no sandbox; the network pair is also skipped when the caller sets `sandbox_workspace_write.network_access` | `codex` | pass your own sandbox (`--sandbox`, `-s`, `-c sandbox_mode=…`); see [Codex agent-step flags](#codex-agent-step-flags) |
+| `--dangerously-bypass-hook-trust` | argv after `--` contains an `exec`/`e` subcommand AND the flag is not already present | `codex` | none; it is added once on every Codex `exec` launch |
 
 ---
 
@@ -80,7 +83,8 @@ may behave differently. Verify Python launcher behavior independently.
 `amplihack` passes a `--model` to **Claude-compatible** tools (`claude`, `rusty`,
 `rustyclawd`, `amplifier`) unless you pass one yourself or turn it off.
 Non-Claude tools (`copilot`, `codex`) never receive an injected `--model` and use
-their own default model selection.
+their own default model selection. (Codex `exec` launches receive sandbox and
+hook-trust flags instead; see [Codex agent-step flags](#codex-agent-step-flags).)
 
 This section summarises the rules. The full reference for the value, the
 dotted-id rewrite and every stderr line amplihack prints about the model is
@@ -254,6 +258,77 @@ The `claude`, `copilot`, `codex`, and `amplifier` subcommands do not support
 
 ---
 
+## Codex agent-step flags
+
+Recipe agent steps on Codex run `amplihack codex --no-reflection -- exec …`.
+When the arguments after `--` contain an `exec` subcommand (or its alias `e`),
+amplihack inserts three flags immediately after that token:
+
+```sh
+amplihack codex --no-reflection -- exec --output-last-message /d0/run/final-message -
+
+# amplihack spawns:
+codex exec --sandbox workspace-write -c sandbox_workspace_write.network_access=true \
+  --dangerously-bypass-hook-trust --output-last-message /d0/run/final-message -
+```
+
+For `exec resume`, the flags go before `resume`, because `--sandbox` is not an
+`exec resume` option; codex-cli 0.166.0 rejects it after `resume` with
+`unexpected argument '--sandbox' found`:
+
+```sh
+amplihack codex -- exec resume --last -
+# → codex exec --sandbox workspace-write -c sandbox_workspace_write.network_access=true --dangerously-bypass-hook-trust resume --last -
+```
+
+The `exec` token is found by scanning root-level arguments from the start. The
+values of root options that take one (`-c/--config`, `-m/--model`,
+`-p/--profile`, `-C/--cd`, `-s/--sandbox`, `-a/--ask-for-approval`,
+`-i/--image`, `--add-dir`, `--enable`, `--disable`, `--local-provider`) are
+skipped, `--x=y` and attached short forms are single tokens, and a bare `--`
+ends the scan. As in clap, one `=` after a short option is dropped, so
+`-s=read-only` is `-s read-only`. A `-c` key is trimmed before it is compared,
+so `-c 'sandbox_mode = "read-only"'` is a sandbox choice. A `-` followed by a
+non-ASCII character is passed through for Codex to reject. The lists of
+options that take a value are shared with the mode parser in
+`crates/amplihack-launcher/src/prompt_delivery/codex_args.rs`
+(`LONG_OPTIONS_WITH_VALUE` and `SHORT_OPTIONS_WITH_VALUE`). If no `exec` is
+found, the argv is passed through unchanged.
+
+| Caller argv (after `--`) | What amplihack adds |
+|---|---|
+| `exec --output-last-message F -` | all three flags after `exec` |
+| `e -` | all three flags after `e` |
+| `-m gpt-5.5 exec -` | all three flags after `exec`; `-m gpt-5.5` stays first |
+| `exec --sandbox read-only -` | `--dangerously-bypass-hook-trust` only |
+| `-s danger-full-access exec -` | `--dangerously-bypass-hook-trust` only |
+| `exec -c sandbox_mode=read-only -` | `--dangerously-bypass-hook-trust` only |
+| `exec --sandbox=read-only -`, `exec -sread-only -`, `exec -s=read-only -`, `exec --config=sandbox_mode=read-only -`, `exec -c=sandbox_mode=read-only -` | `--dangerously-bypass-hook-trust` only |
+| `exec -c 'sandbox_mode = "read-only"' -` | `--dangerously-bypass-hook-trust` only; the key is trimmed |
+| `exec --dangerously-bypass-approvals-and-sandbox -` | `--dangerously-bypass-hook-trust` only; the caller's flag is forwarded unchanged |
+| `exec -c sandbox_workspace_write.network_access=false -` | `--sandbox workspace-write` and `--dangerously-bypass-hook-trust` |
+| `exec --dangerously-bypass-hook-trust -` | `--sandbox workspace-write` and the network override; hook trust is not repeated |
+| `-p ci exec -` | all three flags; a profile is not a sandbox choice, and the command-line `--sandbox` overrides the profile's `sandbox_mode` |
+| (none), `resume --last`, `"Explain this repository"` | nothing; interactive argv is unchanged |
+| `-c exec`, `-m exec`, `-- exec` | nothing; `exec` here is a value or a positional, not the subcommand |
+
+amplihack never adds `--dangerously-bypass-approvals-and-sandbox` or `--yolo`,
+and never writes any of these settings to `config.toml`. There is no
+environment variable to turn the injection off; pass your own sandbox to change
+it. Because the caller's sandbox wins, untrusted text (prompts, issue bodies)
+must reach Codex on stdin, never in argv.
+
+**Rationale (issue #1985):** the host `config.toml` may set
+`sandbox_mode = "danger-full-access"` for interactive lanes, which agent steps
+would otherwise inherit; Codex skips untrusted hooks without saying so, which
+would turn off the command-check hook (software-factory #149); and a full
+`default-workflow` run under workspace-write with network access needed no
+per-job preparation. The preconditions, including the trusted-checkout
+requirement that follows from bypassing hook trust, are in
+[Sandbox and hook trust for agent steps](../howto/install-codex-plugin.md#sandbox-and-hook-trust-for-agent-steps).
+
+---
+
 ## Extra args passthrough
 
 All positional arguments and flags after the subcommand name are forwarded
@@ -271,7 +346,9 @@ claude --model claude-opus-5[1m] --print 'Fix the failing tests' --output-format
 ```
 
 There is no processing or escaping of `extra_args`. What the user types is what
-the subprocess receives.
+the subprocess receives, except that a Codex argv containing an `exec`
+subcommand receives the [Codex agent-step flags](#codex-agent-step-flags)
+after `exec`.
 
 ---
 
@@ -290,7 +367,10 @@ assembles the final command line. The assembly order is:
    `AMPLIHACK_DEFAULT_MODEL` outside the gateway means no `--model`
 4. `--resume` (if requested — `launch` subcommand only)
 5. `--continue` (if requested — `launch` subcommand only)
-6. All `extra_args` in the order they were passed on the command line
+6. All `extra_args` in the order they were passed on the command line. For
+   `codex`, `codex_agent_step_args()` first inserts the
+   [Codex agent-step flags](#codex-agent-step-flags) after an `exec`/`e`
+   subcommand, if there is one
 
 The following examples show the full assembled command for each launch
 subcommand with no extra args:
@@ -307,6 +387,9 @@ amplihack copilot
 
 amplihack codex
 # → codex
+
+amplihack codex -- exec -
+# → codex exec --sandbox workspace-write -c sandbox_workspace_write.network_access=true --dangerously-bypass-hook-trust -
 
 amplihack amplifier
 # → amplifier --model claude-opus-5[1m]
