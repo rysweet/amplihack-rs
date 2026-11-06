@@ -9,48 +9,34 @@
 #   autodrive_followups.sh check    --state-dir <dir> --pr <N>
 #   autodrive_followups.sh gate     --state-dir <dir> --pr <N>
 #
-# classify  Run by step-03 of autodrive-crusty-round.yaml on a crusty CONCERNS
-#           verdict. First writes <record>.severity, one `id<TAB>minor|major`
-#           line per concern (major: anything the shared rules do not call
-#           minor). Prints MINOR_ONLY, writes <record>.minor (one JSON object
-#           per finding: id, summary, evidence) and empties <record>.findings
-#           when every concern is a minor finding under the shared rules
-#           (autodrive_finding_rules.sh) and no id was ever major in another
-#           crusty round: listed as major in its .severity, or in a .findings
-#           with no .severity beside it, or in resolved-concerns.txt with no
-#           .severity naming it (history unknown, so read as major).
-#           A minor finding that recurs as minor does not block MINOR_ONLY;
-#           only a downgrade from major or blocking does (#1979, decision
-#           17.104). Stdin that is not exactly one JSON array (two arrays
-#           included) prints nothing and leaves the verdict CONCERNS. Exit 0
-#           when a decision was made, and when jq cannot read the concerns
-#           (logged as ERROR with jq's exit code and first stderr line; the
-#           verdict stays CONCERNS). Exit 1, printing nothing, when the state
-#           is unusable: jq missing, state dir not private, no temporary
-#           directory, or a state file that cannot be written.
-# collect   After a crusty loop ends DONE: when the last loop-written record
+# classify  Step-03 of autodrive-crusty-round.yaml, on a crusty CONCERNS. Writes
+#           <record>.severity (`id<TAB>minor|major` per concern). Prints
+#           MINOR_ONLY, writes <record>.minor (id, summary, evidence per line)
+#           and empties <record>.findings when every concern is minor under
+#           autodrive_finding_rules.sh and no id was ever major in another
+#           round (a .severity saying so, a .findings with no .severity, or a
+#           resolved-concerns.txt id no .severity names). Anything but exactly
+#           one JSON array on stdin leaves CONCERNS. Exit 0 when decided or
+#           when jq cannot read the concerns (ERROR logged; CONCERNS stays);
+#           exit 1, printing nothing, when the state is unusable.
+# collect   After the crusty loop ends DONE: when the last loop-written record
 #           (crusty-records.tsv row, hash checked against the record and
-#           crusty-latest.json) is MINOR_ONLY, adds its .minor findings to
-#           followups.jsonl, the follow-up set, keeping the first entry per id.
-#           Only the round that ended the loop is read, so a finding fixed in
-#           a later round is never filed. A bad line fails; it is never dropped.
+#           crusty-latest.json) is MINOR_ONLY, adds its .minor findings to the
+#           follow-up set followups.jsonl, first entry per id kept. A bad line
+#           fails; it is never dropped.
 # file      One `gh issue create --repo <owner/repo of the PR>` per finding id
-#           with no row in followups.tsv. The row (id, issue, task, PR) is
-#           appended straight after each create. The task id comes from
-#           --task-id, else the first Closes/Fixes/Resolves #N in the PR body,
-#           else the same in --task-text-file. An empty set needs no task id.
-#           On failure it writes followups.error and exits 1; exit 79 from gh
-#           is final and passed through, never retried. A run that leaves
-#           every id with a row removes followups.error.
-# check     No network. Prints `followups-ok <count>` (exit 0) or one failing
-#           token (exit 1): followup-state-unsafe, followup-error-recorded,
-#           followup-set-invalid, followup-row-malformed, followup-set-empty
-#           (the crusty verdict is MINOR_ONLY and the set is empty), or
-#           followup-missing:<id>.
-# gate      The merge gate's call: check, then one sanitised evidence line
-#           (`followups-ok <n>` and ` <id>=#<issue>` per followups.tsv row,
-#           exit 0), or `ERROR: followups-unfiled: <token>` on stderr and the
-#           gate's blocker sentence on stdout (exit 1).
+#           with no row in followups.tsv; the row (id, issue, task, PR) is
+#           appended straight after each create. The task id: --task-id, else
+#           the first Closes/Fixes/Resolves #N in the PR body, else in
+#           --task-text-file; an empty set needs none. When the task is an
+#           issue (#N), one `gh issue comment` on it then lists every
+#           follow-up, because merging the PR closes that issue while the
+#           follow-ups stay open; followups.parent records the list posted, and
+#           a changed list is posted again. On failure: followups.error, exit 1
+#           (gh's 79 is final and passed through); a full run removes it.
+# check     No network: is every finding filed, and the parent comment posted?
+# gate      The merge gate's call: check, as one evidence or blocker line.
+#           Both are in autodrive_followups_check.sh, which documents them.
 #
 # Exit 2 is a usage error. Agent text reaches gh only through --body-file,
 # after cell() (sanitised, HTML-escaped, mentions and links broken); the title
@@ -114,6 +100,7 @@ for h in autodrive_finding_rules.sh autodrive_state.sh; do
 done
 command -v jq >/dev/null 2>&1 || JQ_MISSING=1
 TSV="$STATE/followups.tsv"; SET_FILE="$STATE/followups.jsonl"; ERR_FILE="$STATE/followups.error"
+PARENT_FILE="$STATE/followups.parent"
 
 PRIV=""
 cleanup() { [ -z "$PRIV" ] || rm -rf -- "$PRIV"; }
@@ -159,6 +146,19 @@ rows_ok() {
       ok = ok && ($3 ~ /^#[1-9][0-9]*$/ || ($3 ~ /^[A-Za-z0-9._:\/-]+$/ && $3 !~ /^[0-9]+$/ && length($3) <= 64))
       if (!ok) { bad = 1; exit } }
     END { exit bad }' "$TSV"
+}
+# parent_key: `<task issue>:<follow-up issues>,` for the followups.tsv rows, or
+# nothing when there is no row or the first row's task is not an issue (#N).
+parent_key() {
+  [ -s "$TSV" ] || return 0
+  LC_ALL=C awk -F '\t' 'NF { if (p == "") p = $3; l = l $2 "," }
+    END { if (p ~ /^#[1-9][0-9]*$/) print substr(p, 2) ":" l }' "$TSV"
+}
+# parent_commented: no comment is due, or followups.parent holds the current key.
+parent_commented() {
+  local key
+  key="$(parent_key)"
+  [ -z "$key" ] || { [ -f "$PARENT_FILE" ] && [ "$(cat -- "$PARENT_FILE")" = "$key" ]; }
 }
 filed_ids() { [ -e "$TSV" ] && LC_ALL=C awk -F '\t' 'NF { print $1 }' "$TSV" | jq -Rsc 'split("\n") | map(select(length > 0))' || printf '[]'; }
 
@@ -296,24 +296,48 @@ fail() { # fail <token> <detail> [exit code]: records the token in followups.err
 }
 gh_line() { clip_line "$(cat -- "$1" 2>/dev/null)"; } # the first line of a gh stderr file
 
+# post_parent: one comment on the task issue listing every follow-up, posted
+# again only when the list changed; followups.parent records the list posted.
+post_parent() {
+  local key num tf rc
+  key="$(parent_key)"
+  if [ -z "$key" ]; then
+    [ ! -s "$TSV" ] || echo "INFO: followups: the task is not an issue number; no comment lists the follow-ups" >&2
+    return 0
+  fi
+  parent_commented && return 0
+  num="${key%%:*}"; tf="$PRIV/parent.md"
+  { printf 'Auto-drive filed follow-up issues for the minor crusty findings on PR #%s.\n' "$PR"
+    printf 'Merging that PR closes this issue. The task is not complete until these are done:\n\n'
+    LC_ALL=C awk -F '\t' 'NF { printf "- #%s (finding `%s`)\n", $2, $1 }' "$TSV"
+    printf '\n<!-- autodrive-followups-parent pr=%s -->\n' "$PR"
+  } > "$tf" || fail followup-comment-failed "the comment body for #${num} could not be written"
+  gh issue comment "$num" --repo "$repo" --body-file "$tf" < /dev/null > /dev/null 2>"$PRIV/gh.err"; rc=$?
+  [ "$rc" -ne 79 ] || fail followup-comment-failed "gh issue comment on #${num} exited 79; that code is final and is not retried" 79
+  [ "$rc" -eq 0 ] || fail followup-comment-failed "gh issue comment on #${num} exited ${rc}: $(gh_line "$PRIV/gh.err")"
+  printf '%s\n' "$key" | write_state followups.parent \
+    || fail followup-state-unsafe "the comment on #${num} was posted but followups.parent could not be written; a rerun posts it again"
+  echo "INFO: followups: the follow-up list is posted on task #${num}" >&2
+}
+
 cmd_file() {
   local fset filed n task="" prj url body repo out rc num re title plain id summary evidence created=0 tf
   [ -z "${JQ_MISSING:-}" ] || { echo "ERROR: followup-create-failed: jq is not on PATH" >&2; exit 1; }
   state_ok || { echo "ERROR: followup-state-unsafe: the state dir is not private to this user" >&2; exit 1; }
-  for n in followups.jsonl followups.tsv followups.error; do
+  for n in followups.jsonl followups.tsv followups.error followups.parent; do
     safe_file "$STATE/$n" || fail followup-state-unsafe "$n is a symlink, not a regular file, or not private"
   done
   fset="$(norm_set "$SET_FILE")" || fail followup-set-invalid "followups.jsonl has a line that is not a valid finding"
   rows_ok || fail followup-row-malformed "followups.tsv has a row that is not id, issue, task, PR #${PR}"
   filed="$(filed_ids)"
   n="$(printf '%s' "$fset" | jq --argjson d "$filed" '[.[] | select(.id as $i | $d | index([$i]) | not)] | length')"
-  if [ "$n" = 0 ]; then
+  if [ "$n" = 0 ] && parent_commented; then
     rm -f -- "$ERR_FILE"
     echo "INFO: followups: every minor finding has an issue ($(printf '%s' "$fset" | jq length) in the set)" >&2
     printf 'followups-ok %s\n' "$(printf '%s' "$fset" | jq length)"
     exit 0
   fi
-  if [ -n "$TASK_ID" ]; then
+  if [ "$n" != 0 ] && [ -n "$TASK_ID" ]; then
     task="$(resolve_task "$TASK_ID")" || fail followup-task-unresolved "the plan task id is neither #N nor 1 to 64 of A-Za-z0-9._:/-"
   fi
   . "$HERE/workflow_issue_tracking.sh" 2>/dev/null && declare -F sanitize_cli_output >/dev/null \
@@ -326,14 +350,14 @@ cmd_file() {
   re="^https://github\\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/pull/${PR}\$"
   [[ "$url" =~ $re ]] || fail followup-repo-unresolved "the URL of PR #${PR} is not https://github.com/<owner>/<repo>/pull/${PR}"
   repo="${BASH_REMATCH[1]}"
-  if [ -z "$task" ]; then
+  if [ "$n" != 0 ] && [ -z "$task" ]; then
     body="$(printf '%s' "$prj" | jq -r '.body // "" | strings' 2>/dev/null)"
     num="$(printf '%s' "$body" | closing_ref)"
     if [ -z "$num" ] && [ -n "$TASK_FILE" ] && [ -f "$TASK_FILE" ]; then num="$(closing_ref < "$TASK_FILE")"; fi
     [ -n "$num" ] && task="$(resolve_task "$num")" \
       || fail followup-task-unresolved "no plan task id, and neither the PR body nor the task names Closes/Fixes/Resolves #N"
   fi
-  echo "INFO: followups: filing ${n} follow-up issue(s) in ${repo} for task ${task}, PR #${PR}" >&2
+  [ "$n" = 0 ] || echo "INFO: followups: filing ${n} follow-up issue(s) in ${repo} for task ${task}, PR #${PR}" >&2
   tf="$PRIV/body.md"
   while IFS=$'\x1f' read -r id summary evidence; do
     [[ "$id" =~ $ID_RE ]] || fail followup-set-invalid "a finding id is not valid"
@@ -358,42 +382,16 @@ cmd_file() {
   done < <(printf '%s' "$fset" | jq -r --argjson d "$filed" \
              '.[] | select(.id as $i | $d | index([$i]) | not) | [.id, .summary, .evidence] | join("\u001f")')
   [ "$created" = "$n" ] || fail followup-create-failed "${created} of ${n} follow-up issue(s) were filed"
+  post_parent
   rm -f -- "$ERR_FILE"
   printf 'followups-ok %s\n' "$(printf '%s' "$fset" | jq length)"
 }
 
-# --- check -----------------------------------------------------------------------
-cmd_check() {
-  local n fset filed missing
-  say() { printf '%s\n' "$1"; exit "${2:-1}"; }
-  [ -z "${JQ_MISSING:-}" ] || say followup-check-unavailable
-  state_ok || say followup-state-unsafe
-  for n in followups.jsonl followups.tsv followups.error crusty-latest.json; do
-    safe_file "$STATE/$n" || say followup-state-unsafe
-  done
-  [ ! -e "$ERR_FILE" ] || say followup-error-recorded
-  fset="$(norm_set "$SET_FILE")" || say followup-set-invalid
-  rows_ok || say followup-row-malformed
-  n="$(printf '%s' "$fset" | jq length)"
-  if [ "$n" = 0 ]; then
-    if [ -f "$STATE/crusty-latest.json" ] && grep -q '^{"crusty_verdict":"MINOR_ONLY",' "$STATE/crusty-latest.json"; then
-      say followup-set-empty
-    fi
-    say "followups-ok 0" 0
-  fi
-  filed="$(filed_ids)"
-  missing="$(printf '%s' "$fset" | jq -r --argjson d "$filed" 'first(.[] | select(.id as $i | $d | index([$i]) | not) | .id) // empty')"
-  [ -z "$missing" ] || say "followup-missing:${missing}"
-  say "followups-ok ${n}" 0
-}
-
-# gate: check runs in a subshell, so its exit ends only that subshell.
-cmd_gate() {
-  local out rc
-  out="$(cmd_check)"; rc=$?; out="$(printf '%s' "$out" | head -n 1 | LC_ALL=C tr -cd 'A-Za-z0-9:._ -' | cut -c 1-200)"
-  [ "$rc" -eq 0 ] && [ -n "$out" ] && { printf '%s%s\n' "$out" "$( [ ! -e "$TSV" ] || LC_ALL=C awk -F '\t' 'NF { printf " %s=#%s", $1, $2 }' "$TSV" | LC_ALL=C tr -cd 'A-Za-z0-9._=# -' | cut -c 1-2000)"; exit 0; }
-  out="${out:-followup-check-failed}"; echo "ERROR: followups-unfiled: ${out}" >&2
-  printf 'follow-up issues not filed for every minor finding (%s); the drive is not READY (#1979)\n' "$out"; exit 1
-}
-
+# --- check, gate --------------------------------------------------------------
+case "$CMD" in
+  check|gate)
+    # shellcheck source=/dev/null
+    . "$HERE/autodrive_followups_check.sh" 2>/dev/null \
+      || { echo "ERROR: autodrive_followups: autodrive_followups_check.sh is missing beside it" >&2; exit 1; } ;;
+esac
 "cmd_${CMD}"

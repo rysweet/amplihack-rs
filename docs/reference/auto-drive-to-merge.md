@@ -934,8 +934,11 @@ A crusty verdict whose findings are all minor ends the crusty loop. The
 findings are not dropped: before the PR can merge, each one is filed as a
 follow-up issue linked to the plan task, and the issue numbers are recorded in
 the drive's evidence. A verdict with any blocking or major finding continues
-the loop as before. The parent task is not complete until its follow-up
-issues are done; auto-drive files them but does not track them.
+the loop as before. Merging the PR closes the plan task's issue when the PR
+body says `Closes #N`, while the follow-ups stay open, so `file` also posts one
+comment on that issue listing them, and the merge gate waits for it
+([The parent task comment](#the-parent-task-comment)). Auto-drive files and
+lists the follow-ups; it does not track them to completion.
 
 ```mermaid
 flowchart TD
@@ -1076,7 +1079,7 @@ minor-finding predicate and the text sanitising in `autodrive_finding_rules.sh`.
 | --- | --- | --- |
 | Issues | One per drive; later rounds add a comment | One per finding |
 | Filed | In the round, before its record is written | After the loop ends `DONE`, before the merge gate |
-| State | `follow-up-issue`, `follow-up-posted-ids`, `<record>.concerns.tsv`, `<record>.light.json` | `followups.jsonl`, `followups.tsv`, `followups.error`, `<record>.minor`, `<record>.severity` |
+| State | `follow-up-issue`, `follow-up-posted-ids`, `<record>.concerns.tsv`, `<record>.light.json` | `followups.jsonl`, `followups.tsv`, `followups.error`, `followups.parent`, `<record>.minor`, `<record>.severity` |
 | Recurring id | Any id seen before blocks deferral | Only an id once seen as major blocks `MINOR_ONLY` |
 | Merge gate | No follow-up check | `autodrive_followups.sh check` under criterion 3 |
 
@@ -1154,6 +1157,7 @@ amplihack recipe run auto-drive-to-merge \
 | Where | When | On failure |
 | --- | --- | --- |
 | `autodrive-crusty-loop.yaml` step-03 | After the loop ended `DONE` and `collect` succeeded, before the `crusty-loop` marker is written. | The step exits `1` and writes no marker, so a resumed run returns to the crusty loop. |
+| `autodrive-merge-loop.yaml` step-02b-file-followups | When `merge_loop_preflight.should_run` is `true`, after the merge-ready loop and before step-03-merge-gate. Covers findings from re-reviews. | The step exits `1`; the gate does not run. |
 
 Both steps run the tool only from `$AMPLIHACK_HOME/amplifier-bundle/tools`,
 because it writes to GitHub. Crusty-loop step-03 may still load the state
@@ -1162,7 +1166,6 @@ helper from its `REPO_PATH` or working-directory fallbacks, but it never takes
 `AMPLIHACK_HOME` unset, or without the tool under it, a loop that ended
 `MINOR_ONLY` fails with `ERROR: followups-unfiled` and writes no marker;
 merge-loop step-02b refuses to run at all.
-| `autodrive-merge-loop.yaml` step-02b-file-followups | When `merge_loop_preflight.should_run` is `true`, after the merge-ready loop and before step-03-merge-gate. Covers findings from re-reviews. | The step exits `1`; the gate does not run. |
 
 `file` makes one `gh issue create` call for each id in the set that has no row
 in `followups.tsv`:
@@ -1184,7 +1187,8 @@ gh issue create --repo rysweet/amplihack-rs \
   text, so HTML entities such as `&amp;`, `&#x60;` and `&#x7C;` would appear
   literally.
 - The body is written to a private `mktemp -d` directory under `$TMPDIR`,
-  removed by an `EXIT` trap. No labels, assignees or comments are added.
+  removed by an `EXIT` trap. No labels or assignees are added, and the
+  follow-up issue gets no comment.
 
 The body of the issue for the example finding:
 
@@ -1224,6 +1228,36 @@ A rerun files only ids that have no row, so it makes no call when every
 finding is filed. If `gh` succeeds but the append fails, the next run files
 that one finding again; this window is accepted and limited to one issue.
 
+#### The parent task comment
+
+Merging the PR closes the plan task's issue when the PR body says `Closes #N`,
+and the follow-ups would then hang off a closed issue that names none of them.
+So when every id has a row and the task id is an issue (`#N`), `file` posts one
+comment on that issue in the PR's repository:
+
+```bash
+gh issue comment 1979 --repo rysweet/amplihack-rs --body-file "$PRIVATE_TMP/parent.md"
+```
+
+```markdown
+Auto-drive filed follow-up issues for the minor crusty findings on PR #2001.
+Merging that PR closes this issue. The task is not complete until these are done:
+
+- #2017 (finding `naming-1`)
+- #2018 (finding `docs-typo-2`)
+
+<!-- autodrive-followups-parent pr=2001 -->
+```
+
+The comment carries only issue numbers and finding ids, which `followups.tsv`
+has already validated; no agent text reaches it. After it is posted, `file`
+writes `followups.parent` with `<task issue>:<follow-up issues>,`, such as
+`1979:2017,2018,`. A rerun posts nothing while that key matches the rows. When
+a crusty re-review in the merge-ready loop adds a follow-up, the key no longer
+matches and the full list is posted again. A task id that is not an issue,
+such as `plan/17.104`, gets no comment, and `file` logs
+`INFO: followups: the task is not an issue number; no comment lists the follow-ups`.
+
 #### Failures
 
 | Cause | Token written to `followups.error` | Exit |
@@ -1231,6 +1265,7 @@ that one finding again; this window is accepted and limited to one issue.
 | `gh issue create` exits non-zero, or prints no issue URL | `followup-create-failed` | `1` |
 | The set is not empty and no task id resolves | `followup-task-unresolved` | `1` |
 | The PR URL does not give `owner/name` | `followup-repo-unresolved` | `1` |
+| `gh issue comment` on the parent task exits non-zero | `followup-comment-failed` | `1` |
 | The set or a state file is invalid or not private | `followup-set-invalid`, `followup-state-unsafe` | `1` |
 | `gh` exits `79` | none; passed through | `79` |
 
@@ -1243,11 +1278,14 @@ remaining id removes `followups.error`.
 ### The follow-up check in the merge gate
 
 When the crusty verdict is `CLEAN` or `MINOR_ONLY`, `autodrive_merge_gate.sh`
-runs `autodrive_followups.sh gate` from its own directory (`${GATE_HOME}`), on
-the same line as its crusty criterion. `gate` runs `check`, which makes no
-network call, and turns the result into one evidence line or one blocker, so
-the gate stays within its 400-line budget. It passes when the set is empty and the last crusty record is
-`CLEAN`, or when every id in the set has a valid row. It fails on:
+runs `autodrive_followups.sh gate` from its own directory (`${GATE_HOME}`).
+`gate` runs `check`, which makes no network call, and turns the result into one
+evidence line or one blocker. Both commands live in
+`autodrive_followups_check.sh`, which `autodrive_followups.sh` sources from
+beside itself; when that file is missing, `check` and `gate` exit `1` with an
+error and the gate blocks. It passes when the set is empty and the last crusty
+record is `CLEAN`, or when every id in the set has a valid row and the parent
+task comment is recorded. It fails on:
 
 | Condition | Token |
 | --- | --- |
@@ -1256,6 +1294,7 @@ the gate stays within its 400-line budget. It passes when the set is empty and t
 | A row does not have four fields, a valid id, an issue number matching `^[1-9][0-9]*$`, a valid task id, and the gate's own PR number | `followup-row-malformed` |
 | An id in the set has no row | `followup-missing:<id>` |
 | The last crusty record is `MINOR_ONLY` and the set is empty | `followup-set-empty` |
+| The task in `followups.tsv` is an issue and `followups.parent` does not hold the current key | `followup-parent-uncommented` |
 
 On a failure `gate` prints the error line on stderr and the blocker sentence
 on stdout, which the gate passes to `block`:
@@ -1284,6 +1323,7 @@ bundle records them:
 | `followups.jsonl` | `collect` | The follow-up set: one object per id, first occurrence kept. |
 | `followups.tsv` | `file`, one append per created issue | `finding_id`, `issue_number`, `task_id`, `pr_number`, tab-separated. |
 | `followups.error` | `file` | One fixed token. Removed by a later run that files every id. |
+| `followups.parent` | `file`, after the parent task comment | `<task issue>:<follow-up issues>,`, the list last posted on the task issue. |
 
 All are written under `umask 077`. `file` refuses to append to a
 `followups.tsv` that is a symlink or not owned by the user. Logs and step
@@ -2915,7 +2955,7 @@ merges, it re-verifies and records:
 | qa evidence chain | `merge-ready-records.tsv`, `merge-ready-latest.json`, `qa-evidence.json` | any of them not private; `autodrive_qa_trusted` not `ok` (its token, or `qa-other`; see [The qa evidence hash chain](#the-qa-evidence-hash-chain)) |
 | gadugi scenarios | same evidence file, and `autodrive_gadugi_required .` on the checkout's own files, the same files the evidence step measured, with `AUTODRIVE_QA_BASE` set from the gate's own `baseRefName` so its changed paths match step-02's; an inherited value is replaced | Unless the gate's own `autodrive_gadugi_required` says `false` and `gadugi_status` is `NOT_REQUIRED`: `gadugi_status` other than `PASS`, or `gadugi_scenario_count` not a positive integer. An unreadable answer counts as required. |
 | Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and its record, in `--state-dir` | no `--state-dir`; the directory or a file not private; no `crusty-loop` marker; `crusty_verdict` neither `CLEAN` nor `MINOR_ONLY`; `autodrive_crusty_final` failing (its token, or `crusty-other`); `HEAD_SHA` not in the clone; `autodrive_crusty_range` not `ok` (its token, or `crusty-range-other`) |
-| Follow-up issues (#1979) | `followups.jsonl`, `followups.tsv`, `followups.error` in `--state-dir`, checked by `autodrive_followups.sh gate` from the gate's own directory | `ERROR: followups-unfiled: <token>`: a finding in the set with no issue row, a recorded filing error, a malformed or unsafe file, or `MINOR_ONLY` with an empty set. A missing tool blocks whatever the verdict. See [The follow-up check in the merge gate](#the-follow-up-check-in-the-merge-gate). |
+| Follow-up issues (#1979) | `followups.jsonl`, `followups.tsv`, `followups.error`, `followups.parent` in `--state-dir`, checked by `autodrive_followups.sh gate` from the gate's own directory | `ERROR: followups-unfiled: <token>`: a finding in the set with no issue row, no recorded comment on the parent task issue, a recorded filing error, a malformed or unsafe file, or `MINOR_ONLY` with an empty set. A missing tool blocks whatever the verdict. See [The follow-up check in the merge gate](#the-follow-up-check-in-the-merge-gate). |
 | merge-ready verdict | round record from this run | not `MERGE_READY`, or captured against a different head SHA |
 
 The review-thread query pages. `reviewThreads(first:100)` with no `pageInfo`
@@ -4524,7 +4564,8 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_pr_worktree.sh` | tool | Resolves the pull request's linked worktree for phases 2 and 3. Read-only apart from `git worktree add` and fast-forward-only fetches. Refuses a tip that is stale against origin. |
 | `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir is the main checkout of the PR's repository), each round's `step-00-review-dir-guard` (which also refuses a run-worktree gitlink in the review dir's index), `step-02b-review-dir-unchanged` (index stamp and check), the loop's stamp around each round and the evaluator, and the commit block's linked-worktree and head-branch check. Writes nothing. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv; runs as `/bin/bash -p`, the only process the merge guard trusts. Runs `autodrive_followups.sh check` from its own directory. |
-| `amplifier-bundle/tools/autodrive_followups.sh` | tool | [#1979](#minor-findings-end-the-crusty-loop-1979): `classify` (derives `MINOR_ONLY` in crusty-round step-03), `collect` (builds the follow-up set from the round that ended the loop), `file` (one `gh issue create` per unfiled minor finding) and `check` (the gate's offline follow-up check). |
+| `amplifier-bundle/tools/autodrive_followups.sh` | tool | [#1979](#minor-findings-end-the-crusty-loop-1979): `classify` (derives `MINOR_ONLY` in crusty-round step-03), `collect` (builds the follow-up set from the round that ended the loop), `file` (one `gh issue create` per unfiled minor finding, then one comment on the plan task issue listing them). |
+| `amplifier-bundle/tools/autodrive_followups_check.sh` | tool | [#1979](#the-follow-up-check-in-the-merge-gate): `check` and `gate`, sourced by `autodrive_followups.sh`: the merge gate's offline follow-up check. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only; no side effects. The single definition of the security keyword lists, `cell()` and the minor-finding predicate, used by `autodrive_followups.sh` and `autodrive_light_round.sh`. |
 | `amplifier-bundle/tools/gh-merge-guard/gh` | tool | The `gh` shim that refuses a merge outside the gate ([#1551](#merges-outside-the-gate-are-refused-1551)). |
 | `crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs` | launcher | Decides when the shim goes first on `PATH` and exports its `BASH_ENV` file; fails closed when either is missing, the shim is not executable, or either is writable by group or others. |

@@ -197,7 +197,12 @@ it as on `CLEAN`. The findings are not dropped:
 - The merge gate refuses to merge with `ERROR: followups-unfiled` while any
   minor finding has no recorded issue. A drive whose issues cannot be filed is
   never READY.
-- The parent task is not complete until its follow-up issues are done.
+- Merging the PR closes the plan task's issue when the PR body says
+  `Closes #N`, while its follow-up issues stay open. So when the task is an
+  issue, the drive posts one comment on it listing the follow-ups, and the
+  merge gate refuses (`followup-parent-uncommented`) until that comment is
+  recorded. Auto-drive files and lists the follow-ups; it does not track them
+  to completion.
 
 A finding counts as minor only when its `severity` is exactly `minor`, its id
 is valid and was never major in an earlier round, and neither the id nor its
@@ -325,7 +330,8 @@ run to their natural end. A false timeout costs more than a slow run.
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | Phase 3 loop + merge gate. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | The uncapped, agentically-terminated loop driver. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | The evidence gate and the fixed merge argv. |
-| `amplifier-bundle/tools/autodrive_followups.sh` | Classifies minor-only rounds, files the follow-up issues, and checks them for the gate. |
+| `amplifier-bundle/tools/autodrive_followups.sh` | Classifies minor-only rounds, files the follow-up issues and lists them on the plan task issue. |
+| `amplifier-bundle/tools/autodrive_followups_check.sh` | The `check` and `gate` commands: the merge gate's offline follow-up check. |
 | `amplifier-bundle/tools/autodrive_finding_rules.sh` | The minor-finding rules and text sanitising shared with auto-drive-light. |
 | `amplifier-bundle/tools/autodrive_state.sh` | Resumable local state; platform truth for merged-ness. |
 

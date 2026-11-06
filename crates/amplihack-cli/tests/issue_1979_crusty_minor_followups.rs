@@ -64,6 +64,8 @@ fn skip() -> bool {
 /// - `issue create` prints `https://github.com/o/r/issues/<101, 102, ...>`.
 ///   `$FAKE_GH_CREATE_EXIT` makes every create fail with that code;
 ///   `$FAKE_GH_CREATE_OK` lets only that many creates succeed first.
+/// - `issue comment` prints a comment URL and copies its `--body-file` to
+///   `$FAKE_LOG/comment-<n>.md`; `$FAKE_GH_COMMENT_EXIT` makes it fail.
 /// - anything else  nothing, exit 0.
 const FAKE_GH: &str = r#"#!/usr/bin/env bash
 set -u
@@ -74,7 +76,8 @@ args=("$@"); jqf=""
 for ((i=0; i<${#args[@]}; i++)); do
   case "${args[$i]}" in
     --jq|-q) jqf="${args[$((i+1))]:-}" ;;
-    --body-file) cp -- "${args[$((i+1))]}" "$log/body-$n.md" 2>/dev/null ;;
+    --body-file) [ "${1:-} ${2:-}" = "issue comment" ] && kind=comment || kind=body
+      cp -- "${args[$((i+1))]}" "$log/$kind-$n.md" 2>/dev/null ;;
   esac
 done
 emit() { if [ -n "$jqf" ]; then printf '%s' "$1" | jq -r "$jqf"; else printf '%s\n' "$1"; fi; }
@@ -91,6 +94,9 @@ case "${1:-} ${2:-}" in
     fi
     echo x >> "$log/created"
     printf 'https://github.com/o/r/issues/%s\n' "$((101 + made))" ;;
+  "issue comment")
+    [ -z "${FAKE_GH_COMMENT_EXIT:-}" ] || { echo "HTTP 410: Issue is locked" >&2; exit "$FAKE_GH_COMMENT_EXIT"; }
+    printf 'https://github.com/o/r/issues/%s#issuecomment-1\n' "${3:-0}" ;;
 esac
 exit 0
 "#;
@@ -262,13 +268,32 @@ impl Drive {
     }
 
     fn bodies(&self) -> Vec<String> {
+        self.saved("body-")
+    }
+
+    /// The bodies of `gh issue comment` calls, in call order.
+    fn comment_bodies(&self) -> Vec<String> {
+        self.saved("comment-")
+    }
+
+    fn comments(&self) -> Vec<Vec<String>> {
+        self.gh_calls()
+            .into_iter()
+            .filter(|c| {
+                c.first().map(String::as_str) == Some("issue")
+                    && c.get(1).map(String::as_str) == Some("comment")
+            })
+            .collect()
+    }
+
+    fn saved(&self, prefix: &str) -> Vec<String> {
         let mut v: Vec<(usize, String)> = std::fs::read_dir(&self.log)
             .unwrap()
             .filter_map(|e| {
                 let e = e.ok()?;
                 let name = e.file_name().into_string().ok()?;
                 let n = name
-                    .strip_prefix("body-")?
+                    .strip_prefix(prefix)?
                     .strip_suffix(".md")?
                     .parse()
                     .ok()?;
@@ -1314,6 +1339,8 @@ fn check_passes_when_every_finding_has_an_issue() {
         &d,
         &["naming-1\t101\t#1979\t7", "docs-typo-2\t102\t#1979\t7"],
     );
+    // What `file` records after listing the follow-ups on the task issue.
+    private_file(&d.p("followups.parent"), "1979:101,102,\n");
     let o = d.check();
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert_eq!(stdout(&o).trim(), "followups-ok 2");
@@ -1378,6 +1405,8 @@ fn gate_notes_each_filed_issue_on_a_pass() {
         &d,
         &["naming-1\t101\t#1979\t7", "docs-typo-2\t102\t#1979\t7"],
     );
+    // What `file` records after listing the follow-ups on the task issue.
+    private_file(&d.p("followups.parent"), "1979:101,102,\n");
     let o = d.check_as("gate");
     assert_eq!(o.status.code(), Some(0), "{}", show(&o));
     assert_eq!(
@@ -1688,6 +1717,15 @@ fn round_step03_without_the_tool_keeps_concerns() {
     ];
     let o = d.bash(Some(&script), &[], &env, "");
     assert_eq!(last_json(&o)["crusty_verdict"], "CONCERNS", "{}", show(&o));
+    // The old minor-fix loop comes back here, so the log says why (PR #1981 review, round 3).
+    assert!(
+        stderr(&o).contains(
+            "WARNING: autodrive_followups.sh not found under AUTODRIVE_LAUNCH_TOOLS; minor findings are not classified and CONCERNS stands."
+        ),
+        "{}",
+        show(&o)
+    );
+    assert!(!d.p("crusty-round-1.json.minor").exists());
 }
 
 #[test]
@@ -2219,9 +2257,209 @@ fn merge_gate_runs_the_gate_command_from_its_own_directory() {
         g.contains("ERROR: followups-unfiled: autodrive_followups.sh gate did not run"),
         "a missing or silent tool still blocks with the error token"
     );
-    let t = read(&format!("amplifier-bundle/tools/{TOOL}"));
+    let t = read("amplifier-bundle/tools/autodrive_followups_check.sh");
     assert!(
         t.contains(r#"echo "ERROR: followups-unfiled: ${out}" >&2"#),
         "the gate command prints the error"
     );
+}
+
+/// `check` and `gate` live in their own file beside the tool, and the tool
+/// refuses both when that file is missing (PR #1981 review, round 3).
+#[test]
+fn check_and_gate_are_split_out_and_refuse_without_their_file() {
+    if skip() {
+        return;
+    }
+    let t = read(&format!("amplifier-bundle/tools/{TOOL}"));
+    assert!(!t.contains("cmd_check() {"), "cmd_check is not in {TOOL}");
+    assert!(!t.contains("cmd_gate() {"), "cmd_gate is not in {TOOL}");
+    let c = read("amplifier-bundle/tools/autodrive_followups_check.sh");
+    assert!(c.contains("cmd_check() {") && c.contains("cmd_gate() {"));
+    let d = Drive::new();
+    let copy = d.tmp.path().join("tools-copy");
+    std::fs::create_dir_all(&copy).unwrap();
+    for f in [
+        TOOL,
+        RULES,
+        "autodrive_state.sh",
+        "workflow_issue_tracking.sh",
+    ] {
+        let src = tools_dir().join(f);
+        if src.exists() {
+            std::fs::copy(&src, copy.join(f)).unwrap();
+        }
+    }
+    let st = d.state.clone();
+    for cmd in ["check", "gate"] {
+        let tool = copy.join(TOOL);
+        let args: Vec<&OsStr> = vec![
+            tool.as_os_str(),
+            OsStr::new(cmd),
+            OsStr::new("--state-dir"),
+            st.as_os_str(),
+            OsStr::new("--pr"),
+            OsStr::new(PR),
+        ];
+        let o = d.bash(None, &args, &[], "");
+        assert_eq!(o.status.code(), Some(1), "{cmd}: {}", show(&o));
+        assert!(
+            stderr(&o).contains("autodrive_followups_check.sh is missing beside it"),
+            "{cmd}: {}",
+            show(&o)
+        );
+        assert!(!stdout(&o).contains("followups-ok"), "{cmd}: {}", show(&o));
+    }
+}
+
+// ===========================================================================
+// The parent task comment (PR #1981 review, round 3): merging the PR closes
+// the task issue, so `file` lists the follow-ups on it, and `check` waits.
+// ===========================================================================
+
+#[test]
+fn file_lists_the_follow_ups_on_the_parent_task_issue_once() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three());
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    let comments = d.comments();
+    assert_eq!(comments.len(), 1, "one comment on the task: {comments:?}");
+    assert_eq!(comments[0].get(2).map(String::as_str), Some("1979"));
+    assert_eq!(arg_after(&comments[0], "--repo"), Some("o/r"));
+    assert!(comments[0].iter().any(|a| a == "--body-file"));
+    let body = d.comment_bodies().pop().expect("comment body");
+    for (num, (id, _, _)) in [101, 102, 103].iter().zip(three()) {
+        assert!(
+            body.contains(&format!("- #{num} (finding `{id}`)")),
+            "{body}"
+        );
+    }
+    assert!(body.contains("PR #7"), "{body}");
+    assert!(
+        body.contains("<!-- autodrive-followups-parent pr=7 -->"),
+        "{body}"
+    );
+    assert_eq!(d.read("followups.parent").trim(), "1979:101,102,103,");
+    let mode = std::fs::metadata(d.p("followups.parent"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_eq!(mode & 0o077, 0, "followups.parent is private: {mode:o}");
+    let c = d.check();
+    assert_eq!(stdout(&c).trim(), "followups-ok 3", "{}", show(&c));
+    // A rerun posts nothing while the list is unchanged.
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(d.comments().len(), 1, "no second comment");
+}
+
+#[test]
+fn a_new_follow_up_posts_the_full_list_again() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three());
+    assert_eq!(d.file(&["--task-id", "1979"], &[]).status.code(), Some(0));
+    let mut four = three().to_vec();
+    four.push(("later-4", "Reword the log line", "x.sh line 2"));
+    d.set(&four);
+    assert_eq!(d.check().status.code(), Some(1), "the new id is unfiled");
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(d.creates().len(), 4);
+    assert_eq!(d.comments().len(), 2, "the changed list is posted again");
+    let body = d.comment_bodies().pop().unwrap();
+    assert!(body.contains("- #101 (finding `naming-1`)"), "{body}");
+    assert!(body.contains("- #104 (finding `later-4`)"), "{body}");
+    assert_eq!(d.read("followups.parent").trim(), "1979:101,102,103,104,");
+    assert_eq!(stdout(&d.check()).trim(), "followups-ok 4");
+}
+
+#[test]
+fn a_failed_parent_comment_blocks_until_a_rerun_posts_it() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three());
+    let o = d.file(&["--task-id", "1979"], &[("FAKE_GH_COMMENT_EXIT", "1")]);
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    assert!(
+        stderr(&o).contains("ERROR: followup-comment-failed: gh issue comment on #1979 exited 1"),
+        "{}",
+        show(&o)
+    );
+    assert_eq!(d.read("followups.error").trim(), "followup-comment-failed");
+    assert_eq!(d.tsv_rows().len(), 3, "the issues are filed and recorded");
+    assert!(!d.p("followups.parent").exists());
+    assert_eq!(stdout(&d.check()).trim(), "followup-error-recorded");
+    let g = d.check_as("gate");
+    assert_eq!(g.status.code(), Some(1), "{}", show(&g));
+    // The rerun files nothing again and posts the comment.
+    let o = d.file(&["--task-id", "1979"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(d.creates().len(), 3, "no issue is filed twice");
+    assert!(!d.p("followups.error").exists());
+    assert_eq!(stdout(&d.check()).trim(), "followups-ok 3");
+}
+
+#[test]
+fn a_failed_parent_comment_with_exit_79_is_final() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three());
+    let o = d.file(&["--task-id", "1979"], &[("FAKE_GH_COMMENT_EXIT", "79")]);
+    assert_eq!(o.status.code(), Some(79), "{}", show(&o));
+    assert!(!d.p("followups.parent").exists());
+}
+
+#[test]
+fn check_refuses_rows_whose_parent_comment_is_not_recorded() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three());
+    assert_eq!(d.file(&["--task-id", "1979"], &[]).status.code(), Some(0));
+    std::fs::remove_file(d.p("followups.parent")).unwrap();
+    let c = d.check();
+    assert_eq!(c.status.code(), Some(1), "{}", show(&c));
+    assert_eq!(stdout(&c).trim(), "followup-parent-uncommented");
+    let g = d.check_as("gate");
+    assert!(
+        stderr(&g).contains("ERROR: followups-unfiled: followup-parent-uncommented"),
+        "{}",
+        show(&g)
+    );
+    // A stale key (another list) is refused the same way.
+    private_file(&d.p("followups.parent"), "1979:101,102,\n");
+    assert_eq!(stdout(&d.check()).trim(), "followup-parent-uncommented");
+}
+
+#[test]
+fn a_task_that_is_not_an_issue_gets_no_comment() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three());
+    let o = d.file(&["--task-id", "plan/17.104"], &[]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert!(d.comments().is_empty(), "{:?}", d.comments());
+    assert!(
+        stderr(&o).contains(
+            "INFO: followups: the task is not an issue number; no comment lists the follow-ups"
+        ),
+        "{}",
+        show(&o)
+    );
+    assert!(!d.p("followups.parent").exists());
+    assert_eq!(stdout(&d.check()).trim(), "followups-ok 3");
 }

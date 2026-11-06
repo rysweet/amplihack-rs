@@ -436,6 +436,17 @@ if printf '%s' "${LOOP_OUT}" | grep -qF 'MINOR_ONLY'; then
 else
   fail "1979-minor-only-verdict-kept" "the loop result hides the MINOR_ONLY verdict: ${LOOP_OUT}"
 fi
+# The history the evaluator reads keeps MINOR_ONLY too; only loop_round_verdict,
+# which its DONE rule compares with loop_clean_token, carries the clean token.
+EVAL_ARGV="$(grep -F 'loop-health-evaluator.yaml' "${LOOP_LOGS}/calls.argv" 2>/dev/null | head -n 1)"
+if printf '%s' "$EVAL_ARGV" | grep -qE 'loop_history=.*crusty_verdict=MINOR_ONLY ' \
+   && ! printf '%s' "$EVAL_ARGV" | grep -qE 'loop_history=.*crusty_verdict=CLEAN ' \
+   && printf '%s' "$EVAL_ARGV" | grep -qE '(^| )loop_round_verdict=CLEAN( |$)' \
+   && printf '%s' "$EVAL_ARGV" | grep -qE '(^| )loop_clean_token=CLEAN( |$)'; then
+  pass "1979-minor-only-history-kept" "the evaluator's history records MINOR_ONLY; loop_round_verdict is the clean token"
+else
+  fail "1979-minor-only-history-kept" "the history or loop_round_verdict is wrong for a MINOR_ONLY round: ${EVAL_ARGV}"
+fi
 # Without the second token (the merge-ready loop), MINOR_ONLY is not clean.
 fu_two_rounds() { # fu_two_rounds <label> <round-1 verdict> <also-clean token|""> <why>
   set_stub '' 0 "$H_DONE"
@@ -1470,6 +1481,10 @@ crusty_mutate() { # crusty_mutate <dir> <mutation>: what an agent, or a broken l
     followups-unfiled)
       printf '{"id":"naming-1","summary":"Rename","evidence":"e"}\n' > "$d/followups.jsonl"; chmod 0600 "$d/followups.jsonl" ;;
     followups-filed)
+      crusty_mutate "$d" followups-uncommented
+      printf '1979:2017,\n' > "$d/followups.parent"; chmod 0600 "$d/followups.parent" ;;
+    # The issues are filed, but no comment on the task issue lists them.
+    followups-uncommented)
       printf '{"id":"naming-1","summary":"Rename","evidence":"e"}\n' > "$d/followups.jsonl"
       printf 'naming-1\t2017\t#1979\t42\n' > "$d/followups.tsv"; chmod 0600 "$d/followups.jsonl" "$d/followups.tsv" ;;
     followups-error)
@@ -1829,7 +1844,7 @@ if [ -x "${GUARD_1551}/gh" ]; then
   # has its merge refused: only the bundle's own gate may merge.
   COPY_1551="${WORK_PHYS}/gate-copy-1551"; mkdir -p "${COPY_1551}"
   cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" \
-     "${TOOLS}/autodrive_followups.sh" "${TOOLS}/autodrive_finding_rules.sh" "${COPY_1551}/"
+     "${TOOLS}/autodrive_followups.sh" "${TOOLS}/autodrive_followups_check.sh" "${TOOLS}/autodrive_finding_rules.sh" "${COPY_1551}/"
   GATE_PRIV=1 GATE_SCRIPT="${COPY_1551}/autodrive_merge_gate.sh" GATE_PATH_PREFIX="${GUARD_1551}" \
     gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
   if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
@@ -1960,6 +1975,8 @@ fu_gate "1979-gate-minor-unfiled" blocks minor followups-unfiled \
   "a MINOR_ONLY crusty end with an unfiled finding prints ERROR: followups-unfiled and never merges"
 fu_gate "1979-gate-minor-no-set" blocks minor "" \
   "a MINOR_ONLY crusty end with no follow-up set never merges"
+fu_gate "1979-gate-parent-uncommented" blocks minor followups-uncommented \
+  "follow-ups filed but not listed on the task issue, which the merge closes, never merge"
 fu_gate "1979-gate-error-recorded" blocks minor followups-error \
   "a recorded filing error blocks the merge even when rows exist"
 fu_gate "1979-gate-clean-no-followups" merges clean "" \
