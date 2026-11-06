@@ -9,6 +9,10 @@
 //! none of them ran and that none of the fetch-backoff or install-lock files
 //! appeared. It makes no timing assertion.
 //!
+//! The stubs record only `git`, `npm` and `curl` found through `PATH`. A call
+//! by absolute path (for example `/usr/bin/git`) would not be recorded; no such
+//! call exists in the launch path today.
+//!
 //! What still runs under the bypass, and is therefore not asserted against:
 //! the #1271 bundle-compatibility check, which may write
 //! `~/.amplihack/.bundle-compat-cache.json` on a fresh `HOME`. That is a plain
