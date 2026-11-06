@@ -247,15 +247,64 @@ fn launch_with_skip_update_check_completes_without_npm_subprocess_overhead() {
     // PATH contains only our stub dir — npm is not available.
     let isolated_path = tmpdir.path().to_string_lossy().to_string();
 
+    // The timed window must hold the launch and nothing else (issue #1971).
+    // Two costs that are not npm work used to fall inside it, on origin/main
+    // as on the branch, and each took 5 s to 10 s on a loaded host:
+    //
+    // - The first launch on a fresh HOME saves `node.heap_consent` to
+    //   `~/.amplihack/config.toml` and fsyncs it; one such fsync took 9.8 s
+    //   under write load. This HOME already holds the saved answer, so the
+    //   launch has nothing to write; the file is checked afterwards.
+    // - The page-in of the ~120 MB debug binary when it is not cached. It is
+    //   read once here, before the clock starts.
+    let home = tmpdir.path().join("home");
+    let config = home.join(".amplihack").join("config.toml");
+    let saved_consent = "[node]\nheap_consent = true\n";
+    std::fs::create_dir_all(config.parent().unwrap()).expect("failed to create test HOME");
+    std::fs::write(&config, saved_consent).expect("failed to write config.toml");
+    #[cfg(unix)]
+    let config_inode = {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // The loader ignores a user file writable by group or others.
+        std::fs::set_permissions(&config, std::fs::Permissions::from_mode(0o600))
+            .expect("failed to chmod config.toml");
+        std::fs::metadata(&config)
+            .expect("failed to stat config.toml")
+            .ino()
+    };
+    std::io::copy(
+        &mut std::fs::File::open(&bin).expect("failed to open amplihack binary"),
+        &mut std::io::sink(),
+    )
+    .expect("failed to read amplihack binary");
+
     let start = std::time::Instant::now();
     let _status = crate::isolated_amplihack::isolated(&bin)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["launch", "--skip-update-check"])
         .env("PATH", &isolated_path)
+        .env("HOME", &home)
         .env("AMPLIHACK_NONINTERACTIVE", "1")
         .output()
         .expect("failed to run amplihack launch --skip-update-check");
     let elapsed = start.elapsed();
+
+    assert_eq!(
+        std::fs::read_to_string(&config).expect("config.toml was removed"),
+        saved_consent,
+        "the launch changed config.toml, so the timed window holds an fsync again"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata(&config)
+                .expect("failed to stat config.toml")
+                .ino(),
+            config_inode,
+            "the launch replaced config.toml, so the timed window holds an fsync again"
+        );
+    }
 
     // Should complete within 1 second — no npm timeout overhead.
     assert!(
