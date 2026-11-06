@@ -66,16 +66,14 @@ impl<'a> Running<'a> {
     /// Waits until the fake claude has started, or the wrapper has exited.
     fn started(&mut self) -> bool {
         let (fx, child) = (self.fx, self.child.as_mut().unwrap());
-        wait_until(30, || {
-            fx.claude_started() || child.try_wait().unwrap().is_some()
-        });
+        wait_until(|| fx.claude_started() || child.try_wait().unwrap().is_some());
         fx.claude_started()
     }
-    fn finish(mut self, secs: u64) -> Output {
+    fn finish(mut self) -> Output {
         let mut child = self.child.take().unwrap();
-        if !wait_until(secs, || child.try_wait().unwrap().is_some()) {
+        if !wait_until(|| child.try_wait().unwrap().is_some()) {
             let _ = child.kill();
-            panic!("amplihack did not exit within {secs} s");
+            panic!("amplihack did not exit within {} s", CEILING.as_secs());
         }
         child.wait_with_output().unwrap()
     }
@@ -190,7 +188,7 @@ fn a_lost_terminal_leaves_the_agent_active_and_the_next_pass_resumes_it() {
     assert!(w.started(), "the fake claude never started");
     // SAFETY: kill has no memory-safety preconditions.
     assert_eq!(unsafe { libc::kill(w.pid(), libc::SIGHUP) }, 0);
-    w.finish(30);
+    w.finish();
     let e = fx.agent(NAME);
     assert_eq!(e["state"], "active", "{e}");
     assert!(absent(&e, "ended_at") && absent(&e, "ended_by"), "{e}");
@@ -284,14 +282,14 @@ fn the_id_thread_records_the_claude_process_and_its_conversation() {
     assert!(w.started(), "the fake claude never started");
     fx.add_proc(&Proc::new(60001, SELF_PID, &["claude", "--model", "opus"], &dir).start(4242));
     fx.sessions_file(&fx.claude_dir, 60001, CONV_C, 4242, &dir);
-    let found = wait_until(15, || {
+    let found = wait_until(|| {
         try_agent(&fx, NAME).is_some_and(|e| {
             e["conversation_id"] == CONV_C && e["claude_pid"] == 60001 && e["proc_start"] == 4242
         })
     });
     assert!(found, "{:?}", try_agent(&fx, NAME));
     fx.claude_release();
-    let out = w.finish(30);
+    let out = w.finish();
     expect_code(&out, 0);
     assert_eq!(fx.agent(NAME)["state"], "ended");
 }

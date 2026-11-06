@@ -169,6 +169,7 @@ amplihack copilot
 - [Give Test Logins a Fake Account Identity](howto/give-test-logins-a-fake-account-identity.md) - How profile tests give fake logins a server identity, re-issue a credential when its account changes, and test the no-record case
 - [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
 - [Keep Tests from Prompting for Git Credentials](howto/keep-tests-from-prompting-for-git.md) - Why git under plain `timeout` stops on `SIGTTIN`, the settings that stop test and amplihack git from prompting, and how to run long commands safely
+- [Keep Tests Passing Under Host Load](howto/keep-tests-passing-under-host-load.md) - Wait on conditions under one 10-minute ceiling, use the debug-only identity knobs, and prove a fix with all-core CPU load
 - [Wait Without Leaving Orphan Processes](howto/wait-without-orphan-processes.md) - Wait with `amplihack wait --seconds N` or `wait $pid`, use uutils `timeout` safely, and what the tail-follow guard in the `pre-tool-use` hook denies
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
 - [Capacity Governor](reference/capacity-governor.md) - How recipe runs and agent launches are admitted, made to wait or refused (exit 80) from session and weekly budgets, and `amplihack governor status`
