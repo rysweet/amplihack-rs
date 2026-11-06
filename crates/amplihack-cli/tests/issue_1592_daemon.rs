@@ -5,10 +5,11 @@
 #![cfg(target_os = "linux")]
 
 use crate::support::profile_rotate::*;
+use crate::support::wait::{output_within, wait_until};
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 /// Kills whatever pid the fixture's pid file names when a test fails, so no
 /// rotator outlives its temporary HOME.
@@ -63,19 +64,11 @@ fn status(f: &Fixture) -> String {
     rest.to_string()
 }
 
-fn wait_for(what: &str, timeout: Duration, mut cond: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !cond() {
-        assert!(start.elapsed() < timeout, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn alive(pid: i32) -> bool {
-    // SAFETY: signal 0 only checks that the process exists.
-    unsafe { libc::kill(pid, 0) == 0 }
-}
-
+/// Starts a rotator. `start` must return before the rotator's first cycle:
+/// probes are held, `start` runs to completion, a probe of the first cycle
+/// records its environment, and only then are probes released. A `start`
+/// that waited for a cycle would never return while probes are held, and
+/// the ceiling would fail it (issue #1973 replaced an elapsed-time check).
 fn start(f: &Fixture, extra: &[&str]) -> (Reaper, i32) {
     let reaper = Reaper(pid_file(f));
     let mut args = vec![
@@ -88,12 +81,25 @@ fn start(f: &Fixture, extra: &[&str]) -> (Reaper, i32) {
         "0",
     ];
     args.extend_from_slice(extra);
-    let t = Instant::now();
-    let out = f.ok(&args);
+    let probes_before = f.probe_envs().len();
+    let hold = f.hold_probes();
+    let out = output_within("`profile rotate start` with probes held", &mut f.cmd(&args));
+    assert_no_secrets(&out);
     assert!(
-        t.elapsed() < Duration::from_secs(5),
-        "start returns at once"
+        out.status.success(),
+        "`profile rotate start` failed: {}\nstderr: {}",
+        out.status,
+        text(&out.stderr)
     );
+    wait_until("the first cycle's probe to start", || {
+        f.probe_envs().len() > probes_before
+    });
+    assert!(
+        !f.log().lines().any(|l| l.contains(" cycle ")),
+        "no cycle can finish while its probe is held: {}",
+        f.log()
+    );
+    drop(hold);
     let stdout = text(&out.stdout);
     assert!(stdout.contains("rotate: started (pid "), "{stdout}");
     assert!(stdout.contains("checking every 1s"), "{stdout}");
@@ -117,7 +123,7 @@ fn start_status_and_stop() {
     );
 
     let (_reaper, pid) = start(&f, &[]);
-    wait_for("a cycle in the log", Duration::from_secs(20), || {
+    wait_until("a cycle in the log", || {
         f.log().lines().any(|l| l.contains(" cycle live=work"))
     });
     let s = status(&f);
@@ -132,12 +138,8 @@ fn start_status_and_stop() {
     assert_eq!(again.status.code(), Some(1), "a second rotator is refused");
     assert!(text(&again.stderr).contains("amplihack profile rotate status"));
 
-    let out = f.ok(&["profile", "rotate", "stop"]);
-    assert!(text(&out.stdout).contains(&format!("rotate: stopped (pid {pid})")));
-    assert!(!pid_file(&f).exists());
-    wait_for("the rotator to exit", Duration::from_secs(5), || {
-        !alive(pid)
-    });
+    let (out, refused) = f.stop_until_gone(pid);
+    f.assert_stopped(&out, refused, pid);
     assert!(status(&f).starts_with("rotate: stopped\n"));
 
     for l in f.log().lines() {
@@ -149,11 +151,10 @@ fn start_status_and_stop() {
 #[test]
 fn the_daemon_swaps_and_logs_like_the_one_shot() {
     let f = Fixture::new();
-    let (_reaper, _pid) = start(&f, &[]);
-    wait_for("a swap", Duration::from_secs(20), || {
-        f.log().contains("swap work->spare")
-    });
-    f.ok(&["profile", "rotate", "stop"]);
+    let (_reaper, pid) = start(&f, &[]);
+    wait_until("a swap", || f.log().contains("swap work->spare"));
+    let (out, refused) = f.stop_until_gone(pid);
+    f.assert_stopped(&out, refused, pid);
     assert_eq!(ino(&f.home_login()), Some(f.spare_ino));
     assert_eq!(ino(&f.slot("work")), Some(f.live_ino));
     f.assert_each_login_once();
@@ -193,6 +194,8 @@ fn a_foreign_process_named_in_the_pid_file_is_left_alone() {
     fs::write(pid_file(&f), format!("{pid}\n")).unwrap();
     assert!(status(&f).starts_with("rotate: stale\n"));
     f.ok(&["profile", "rotate", "stop"]);
+    // A kept window (issue #1973): a check that no signal arrives. Load can
+    // only make it miss a signal, never fail wrongly.
     std::thread::sleep(Duration::from_millis(200));
     assert!(alive(pid), "a foreign process was signalled");
 }
@@ -219,7 +222,7 @@ fn a_rotator_that_ignores_sigterm_keeps_its_pid_file() {
             .unwrap(),
     );
     let pid = stubborn.0.id() as i32;
-    wait_for("the stub to exec", Duration::from_secs(5), || {
+    wait_until("the stub to exec", || {
         fs::read(format!("/proc/{pid}/cmdline"))
             .is_ok_and(|c| String::from_utf8_lossy(&c).contains("watch"))
     });
@@ -254,9 +257,9 @@ fn watch_follows_the_auto_switch_toggle() {
         "start warns: {}",
         text(&out.stderr)
     );
-    wait_for("idle", Duration::from_secs(20), || {
-        f.log().contains("idle: auto-switch is off")
-    });
+    wait_until("idle", || f.log().contains("idle: auto-switch is off"));
+    // A kept window (issue #1973): a check that a line is not written
+    // again. Load can only make it miss a repeat, never fail wrongly.
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(
         f.log().matches("idle: auto-switch is off").count(),
@@ -267,14 +270,18 @@ fn watch_follows_the_auto_switch_toggle() {
     assert!(!f.log().contains("cycle "), "no probes while off");
 
     f.ok(&["profile", "auto-switch", "on"]);
-    wait_for("a cycle after on", Duration::from_secs(20), || {
-        f.log().contains("cycle live=")
-    });
+    wait_until("a cycle after on", || f.log().contains("cycle live="));
     f.ok(&["profile", "auto-switch", "off"]);
-    wait_for("idle again", Duration::from_secs(20), || {
+    wait_until("idle again", || {
         f.log().matches("idle: auto-switch is off").count() == 2
     });
-    f.ok(&["profile", "rotate", "stop"]);
+    let pid: i32 = fs::read_to_string(pid_file(&f))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let (out, refused) = f.stop_until_gone(pid);
+    f.assert_stopped(&out, refused, pid);
 }
 
 #[test]
@@ -325,10 +332,8 @@ fn two_starts_at_once_leave_one_rotator() {
         .trim()
         .parse()
         .unwrap();
-    f.ok(&["profile", "rotate", "stop"]);
-    wait_for("the rotator to exit", Duration::from_secs(5), || {
-        !alive(pid)
-    });
+    let (out, refused) = f.stop_until_gone(pid);
+    f.assert_stopped(&out, refused, pid);
 }
 
 /// `rotate autostart [on|off]` and the `autostart:` status line. No rotator

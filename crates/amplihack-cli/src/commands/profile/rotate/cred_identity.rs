@@ -28,15 +28,51 @@ pub const IDENTITY_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// already started may run its full [`IDENTITY_READ_TIMEOUT`] past it.
 pub const IDENTITY_BUDGET: Duration = Duration::from_secs(30);
 
+/// Debug builds only: raises [`IDENTITY_BUDGET`] for tests on a loaded host
+/// (issue #1973; see `crate::debug_knob`). The name is outside
+/// `AMPLIHACK_ROTATE*`, which the daemon removes from its own environment.
+#[cfg(debug_assertions)]
+pub(crate) const BUDGET_ENV: &str = "AMPLIHACK_TEST_IDENTITY_BUDGET_SECS";
+/// Debug builds only: raises [`IDENTITY_READ_TIMEOUT`] for tests.
+#[cfg(debug_assertions)]
+pub(crate) const READ_TIMEOUT_ENV: &str = "AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS";
+
+/// The identity budget of a cycle: [`IDENTITY_BUDGET`], unless a debug
+/// build has the test knob set.
+#[cfg(debug_assertions)]
+pub fn identity_budget() -> Duration {
+    crate::debug_knob::secs(BUDGET_ENV, IDENTITY_BUDGET)
+}
+
+/// The time limit of one identity read: [`IDENTITY_READ_TIMEOUT`], unless a
+/// debug build has the test knob set.
+#[cfg(debug_assertions)]
+pub fn identity_read_timeout() -> Duration {
+    crate::debug_knob::secs(READ_TIMEOUT_ENV, IDENTITY_READ_TIMEOUT)
+}
+
+/// Release builds: always [`IDENTITY_BUDGET`].
+#[cfg(not(debug_assertions))]
+pub fn identity_budget() -> Duration {
+    IDENTITY_BUDGET
+}
+
+/// Release builds: always [`IDENTITY_READ_TIMEOUT`].
+#[cfg(not(debug_assertions))]
+pub fn identity_read_timeout() -> Duration {
+    IDENTITY_READ_TIMEOUT
+}
+
 /// Reads the account of the login in a directory (`<home>/.claude` or
 /// `<root>/<name>`); the error is one of `usage_direct::reason`.
 pub type ReadFn = fn(&Path) -> Result<Account, &'static str>;
 
 /// One identity read of the login in `creds_dir` against `ep`: one
-/// `GET /api/oauth/profile`, no refresh, at most [`IDENTITY_READ_TIMEOUT`].
+/// `GET /api/oauth/profile`, no refresh, at most [`identity_read_timeout`]
+/// ([`IDENTITY_READ_TIMEOUT`] unless a debug build sets the test knob).
 pub fn read_with(ep: &Endpoints, creds_dir: &Path) -> Result<Account, &'static str> {
     let now_ms = chrono::Utc::now().timestamp_millis();
-    usage_direct::account(ep, creds_dir, IDENTITY_READ_TIMEOUT, now_ms)
+    usage_direct::account(ep, creds_dir, identity_read_timeout(), now_ms)
 }
 
 /// The reader a new `Ctx` starts with: [`read_direct`], except in unit
