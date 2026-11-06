@@ -11,9 +11,7 @@ use super::tmux::{self, SessionState, Tmux};
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-const TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_OUTPUT: usize = 64 * 1024;
 const MAX_LINE: usize = 200;
 pub const MISSING: &str = "systemd-run is not on PATH";
@@ -177,7 +175,11 @@ impl Launcher for Real<'_> {
             .args(["--", "tmux"])
             .args(&args);
         Ok(
-            match crate::util::run_output_with_timeout_limited(cmd, TIMEOUT, MAX_OUTPUT) {
+            match crate::util::run_output_with_timeout_limited(
+                cmd,
+                tmux::child_timeout(),
+                MAX_OUTPUT,
+            ) {
                 Ok(out) => scope_result(out.status.code(), &out.stderr),
                 Err(e) => {
                     let text = format!("{e:#}");
