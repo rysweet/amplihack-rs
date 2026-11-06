@@ -1828,7 +1828,8 @@ if [ -x "${GUARD_1551}/gh" ]; then
   # A copy of the gate with every helper beside it passes every check and then
   # has its merge refused: only the bundle's own gate may merge.
   COPY_1551="${WORK_PHYS}/gate-copy-1551"; mkdir -p "${COPY_1551}"
-  cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" "${COPY_1551}/"
+  cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" \
+     "${TOOLS}/autodrive_followups.sh" "${TOOLS}/autodrive_finding_rules.sh" "${COPY_1551}/"
   GATE_PRIV=1 GATE_SCRIPT="${COPY_1551}/autodrive_merge_gate.sh" GATE_PATH_PREFIX="${GUARD_1551}" \
     gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
   if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
@@ -1950,6 +1951,11 @@ fu_gate() { # fu_gate <label> <want: merges|blocks> <crusty seed> <mutation> <wh
 }
 fu_gate "1979-gate-minor-filed" merges minor followups-filed \
   "a MINOR_ONLY crusty end with every follow-up filed meets criterion 3 and merges"
+if grep -qF 'evidence: followups-ok 1 naming-1=#2017' "${GATE_DIR}/err"; then
+  pass "1979-gate-evidence-names-issue" "the gate's evidence line names each finding and its follow-up issue"
+else
+  fail "1979-gate-evidence-names-issue" "no follow-up evidence line: $(grep -F 'followups' "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
 fu_gate "1979-gate-minor-unfiled" blocks minor followups-unfiled \
   "a MINOR_ONLY crusty end with an unfiled finding prints ERROR: followups-unfiled and never merges"
 fu_gate "1979-gate-minor-no-set" blocks minor "" \

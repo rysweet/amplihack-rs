@@ -90,7 +90,9 @@ context:
   autodrive_state_dir: ""
 
   # When "true", the merge gate verifies everything and reports what it WOULD
-  # merge without merging. Every other guarantee is unchanged.
+  # merge without merging. Every other guarantee is unchanged. No follow-up
+  # issue is filed (#1979), so a MINOR_ONLY drive ends NOT_MERGED with
+  # followup-missing:<id> for each minor finding.
   autodrive_dry_run: "false"
 
   # Phase 1 never merges; auto-drive owns the merge decision.
@@ -204,6 +206,7 @@ steps:
       task_description: "{{task_description}}"
       plan_task_id: "{{plan_task_id}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
+      autodrive_dry_run: "{{autodrive_dry_run}}"
       autodrive_budget_loop_rounds: "{{autodrive_budget_loop_rounds}}"
       autodrive_budget_total_rounds: "{{autodrive_budget_total_rounds}}"
       autodrive_budget_wall_seconds: "{{autodrive_budget_wall_seconds}}"

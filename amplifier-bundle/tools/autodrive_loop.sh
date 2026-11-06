@@ -59,8 +59,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --loop-name)     LOOP_NAME="${2:-}"; shift 2 ;;
     --round-recipe)  ROUND_RECIPE="${2:-}"; shift 2 ;;
-    --clean-token)   CLEAN_TOKEN="${2:-}"; shift 2 ;;
-    --also-clean-token) ALSO_CLEAN="${2:-}"; shift 2 ;; # #1979: crusty loops pass MINOR_ONLY
+    --clean-token|--also-clean-token) [ "$1" = --clean-token ] && CLEAN_TOKEN="${2:-}" || ALSO_CLEAN="${2:-}"; shift 2 ;; # --also-clean-token MINOR_ONLY: crusty loops (#1979)
     --verdict-field) VERDICT_FIELD="${2:-}"; shift 2 ;;
     --repo)          REPO="${2:-}"; shift 2 ;;
     --review-dir)    REVIEW_DIR="${2:-}"; shift 2 ;;
@@ -259,7 +258,7 @@ while :; do
       echo "WARNING: ${ROUND_LABEL} produced no parseable '${VERDICT_FIELD}'; treated as NOT clean." >&2 ;;
     *) ROUND_CLEAN="false" ;;
   esac
-  # Only A-Za-z0-9_ of the verdict reaches the evaluator, history and #1597 messages; a non-clean one that sanitises to the token ('CLEAN!') is tagged _NONCANONICAL so none of them reads it as clean. A clean round (MINOR_ONLY too, via --also-clean-token, #1979) passes the clean token itself; the DONE line and result keep ROUND_VERDICT.
+  # Only A-Za-z0-9_ of the verdict reaches the evaluator, history and #1597 messages. A clean round (MINOR_ONLY too, #1979) passes the clean token itself; a non-clean one that sanitises to it ('CLEAN!') is tagged _NONCANONICAL.
   VERDICT_SAFE="$(printf '%s' "$ROUND_VERDICT" | LC_ALL=C tr -cd 'A-Za-z0-9_')"; { [ "$ROUND_CLEAN" = "true" ] && VERDICT_SAFE="$TOKEN_SAFE"; } || [ "$VERDICT_SAFE" != "$TOKEN_SAFE" ] || VERDICT_SAFE="${VERDICT_SAFE}_NONCANONICAL"
   FINDINGS=""
   [ -f "${RECORD}.findings" ] && FINDINGS="$(cat "${RECORD}.findings")"

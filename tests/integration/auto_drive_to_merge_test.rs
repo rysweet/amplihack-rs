@@ -38,13 +38,6 @@ use std::process::Command;
 /// files), so changing it here does not change them.
 pub(crate) const BRICK_LINE_BUDGET: usize = 400;
 
-/// Tools allowed over `BRICK_LINE_BUDGET`, each with its own ceiling. Both
-/// were at exactly 400 lines before #1979 added the `--also-clean-token`
-/// option and the follow-up check; the PR #1981 review refused rewrapping
-/// unrelated comments to make room, so the exception is stated here instead.
-const BRICK_LINE_EXCEPTIONS: [(&str, usize); 2] =
-    [("autodrive_loop.sh", 401), ("autodrive_merge_gate.sh", 407)];
-
 const AUTODRIVE_RECIPES: [&str; 7] = [
     "auto-drive-to-merge",
     "autodrive-build",
@@ -180,13 +173,9 @@ fn every_autodrive_recipe_parses_and_fits_the_brick_budget() {
         let path = tool_path(tool);
         assert!(path.is_file(), "missing tool {tool}");
         let lines = read(&path).lines().count();
-        let budget = BRICK_LINE_EXCEPTIONS
-            .iter()
-            .find(|(t, _)| *t == tool)
-            .map_or(BRICK_LINE_BUDGET, |(_, n)| *n);
         assert!(
-            lines <= budget,
-            "{tool} is {lines} lines; the brick budget is {budget}"
+            lines <= BRICK_LINE_BUDGET,
+            "{tool} is {lines} lines; the brick budget is {BRICK_LINE_BUDGET}"
         );
     }
 }

@@ -7,6 +7,7 @@
 #   autodrive_followups.sh collect  --state-dir <dir>
 #   autodrive_followups.sh file     --state-dir <dir> --pr <N> [--task-id <id>] [--task-text-file <file>]
 #   autodrive_followups.sh check    --state-dir <dir> --pr <N>
+#   autodrive_followups.sh gate     --state-dir <dir> --pr <N>
 #
 # classify  Run by step-03 of autodrive-crusty-round.yaml on a crusty CONCERNS
 #           verdict. First writes <record>.severity, one `id<TAB>minor|major`
@@ -20,14 +21,13 @@
 #           .severity naming it (history unknown, so read as major).
 #           A minor finding that recurs as minor does not block MINOR_ONLY;
 #           only a downgrade from major or blocking does (#1979, decision
-#           17.104). Anything else - stdin that is not exactly one JSON
-#           array, two arrays included - prints nothing and leaves the verdict
-#           CONCERNS. Exit 0 when a decision was made (MINOR_ONLY, or not) and
-#           also when jq cannot read the concerns: that is logged as ERROR
-#           with jq's exit code and first stderr line, nothing is printed, and
-#           the verdict stays CONCERNS. Exit 1 when the state is unusable (jq
-#           missing, state dir not private, no temporary directory, a state
-#           file that cannot be written); that also prints nothing.
+#           17.104). Stdin that is not exactly one JSON array (two arrays
+#           included) prints nothing and leaves the verdict CONCERNS. Exit 0
+#           when a decision was made, and when jq cannot read the concerns
+#           (logged as ERROR with jq's exit code and first stderr line; the
+#           verdict stays CONCERNS). Exit 1, printing nothing, when the state
+#           is unusable: jq missing, state dir not private, no temporary
+#           directory, or a state file that cannot be written.
 # collect   After a crusty loop ends DONE: when the last loop-written record
 #           (crusty-records.tsv row, hash checked against the record and
 #           crusty-latest.json) is MINOR_ONLY, adds its .minor findings to
@@ -46,11 +46,15 @@
 #           token (exit 1): followup-state-unsafe, followup-error-recorded,
 #           followup-set-invalid, followup-row-malformed, followup-set-empty
 #           (the crusty verdict is MINOR_ONLY and the set is empty), or
-#           followup-missing:<id>. The merge gate runs it from beside itself.
+#           followup-missing:<id>.
+# gate      The merge gate's call: check, then one sanitised evidence line
+#           (`followups-ok <n>` and ` <id>=#<issue>` per followups.tsv row,
+#           exit 0), or `ERROR: followups-unfiled: <token>` on stderr and the
+#           gate's blocker sentence on stdout (exit 1).
 #
 # Exit 2 is a usage error. Agent text reaches gh only through --body-file,
 # after cell() (sanitised, HTML-escaped, mentions and links broken); the title
-# is sanitised text with the same breaks (break_refs) but no HTML escaping,
+# is sanitised text with the same breaks (break_refs), not HTML-escaped,
 # clipped to 80 characters and passed as one argument.
 # State files are private (umask 077, written through mktemp and mv -f), and a
 # symlinked or loose state file is refused. Logs carry ids, numbers and tokens.
@@ -69,13 +73,13 @@ ID_RE='^[A-Za-z0-9._-]{1,64}$'
 
 usage() {
   echo "ERROR: autodrive_followups: $1" >&2
-  echo "usage: autodrive_followups.sh classify|collect|file|check --state-dir <dir> [--record <abs path>] [--pr <N>] [--task-id <id>] [--task-text-file <file>]" >&2
+  echo "usage: autodrive_followups.sh classify|collect|file|check|gate --state-dir <dir> [--record <abs path>] [--pr <N>] [--task-id <id>] [--task-text-file <file>]" >&2
   exit 2
 }
 
 # --- arguments -----------------------------------------------------------------
 CMD="${1:-}"
-case "$CMD" in classify|collect|file|check) shift ;; *) usage "the command must be classify, collect, file or check" ;; esac
+case "$CMD" in classify|collect|file|check|gate) shift ;; *) usage "the command must be classify, collect, file, check or gate" ;; esac
 RECORD=""; STATE=""; PR=""; TASK_ID=""; TASK_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -95,7 +99,7 @@ done
 [[ "$STATE" =~ [[:cntrl:]] ]] && usage "--state-dir contains a control character"
 STATE="${STATE%/}"; [ -n "$STATE" ] || usage "--state-dir must not be /"
 case "$CMD" in
-  file|check) [[ "$PR" =~ ^[1-9][0-9]{0,9}$ ]] || usage "--pr must be a positive number of 1 to 10 digits" ;;
+  file|check|gate) [[ "$PR" =~ ^[1-9][0-9]{0,9}$ ]] || usage "--pr must be a positive number of 1 to 10 digits" ;;
   classify)
     case "$RECORD" in /*) ;; *) usage "--record must be an absolute path" ;; esac
     [[ "$RECORD" =~ [[:cntrl:]] ]] && usage "--record contains a control character"
@@ -381,6 +385,15 @@ cmd_check() {
   missing="$(printf '%s' "$fset" | jq -r --argjson d "$filed" 'first(.[] | select(.id as $i | $d | index([$i]) | not) | .id) // empty')"
   [ -z "$missing" ] || say "followup-missing:${missing}"
   say "followups-ok ${n}" 0
+}
+
+# gate: check runs in a subshell, so its exit ends only that subshell.
+cmd_gate() {
+  local out rc
+  out="$(cmd_check)"; rc=$?; out="$(printf '%s' "$out" | head -n 1 | LC_ALL=C tr -cd 'A-Za-z0-9:._ -' | cut -c 1-200)"
+  [ "$rc" -eq 0 ] && [ -n "$out" ] && { printf '%s%s\n' "$out" "$( [ ! -e "$TSV" ] || LC_ALL=C awk -F '\t' 'NF { printf " %s=#%s", $1, $2 }' "$TSV" | LC_ALL=C tr -cd 'A-Za-z0-9._=# -' | cut -c 1-2000)"; exit 0; }
+  out="${out:-followup-check-failed}"; echo "ERROR: followups-unfiled: ${out}" >&2
+  printf 'follow-up issues not filed for every minor finding (%s); the drive is not READY (#1979)\n' "$out"; exit 1
 }
 
 "cmd_${CMD}"

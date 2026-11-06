@@ -47,6 +47,9 @@ context:
   # falls back to Closes/Fixes/Resolves #N in the PR body, then the task.
   plan_task_id: ""
   autodrive_state_dir: ""
+  # #1979: "true" collects the minor findings but files no follow-up issue;
+  # the merge gate then reports each as followup-missing (no GitHub write).
+  autodrive_dry_run: "false"
   # #1543: the user's own pr_number (empty when phase 1 built the PR) and
   # existing_branch. A PR number in pr_number (the build phase's) or in
   # autodrive_pr_input turns on PR worktree resolution in the preflight.
@@ -297,14 +300,18 @@ steps:
       if [ -n "$H" ] && [ -f "$FU" ] && { [ -n "$PR" ] || [ "$LAST" = "MINOR_ONLY" ]; }; then
         bash "$FU" collect --state-dir "$DIR" \
           || { echo "ERROR: followups-unfiled: the minor findings could not be collected; the crusty loop is NOT recorded complete." >&2; exit 1; }
-        FT="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/autodrive-followup-task.XXXXXX")" || exit 1
-        trap 'rm -rf -- "$FT"' EXIT
-        printf '%s' "${RECIPE_VAR_task_description:-}" > "$FT/task.txt"
-        . "$H/recipe_context_value.sh" 2>/dev/null && { write_context_value task_description "$FT/task.txt" 2>/dev/null || : > "$FT/task.txt"; }
-        bash "$FU" file --state-dir "$DIR" --pr "$PR" --task-id "${RECIPE_VAR_plan_task_id:-}" --task-text-file "$FT/task.txt"
-        RC=$?
-        [ "$RC" -ne 79 ] || { echo "ERROR: exit 79 terminal policy refusal while filing follow-up issues; final, never retried." >&2; exit 79; }
-        [ "$RC" -eq 0 ] || { echo "ERROR: followups-unfiled: the follow-up issues could not all be filed; the crusty loop is NOT recorded complete and the drive is not READY." >&2; exit 1; }
+        if [ "${AUTODRIVE_DRY_RUN:-false}" = "true" ]; then
+          echo "INFO: dry run: no follow-up issue is filed; the merge gate reports each minor finding as followup-missing." >&2
+        else
+          FT="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/autodrive-followup-task.XXXXXX")" || exit 1
+          trap 'rm -rf -- "$FT"' EXIT
+          printf '%s' "${RECIPE_VAR_task_description:-}" > "$FT/task.txt"
+          . "$H/recipe_context_value.sh" 2>/dev/null && { write_context_value task_description "$FT/task.txt" 2>/dev/null || : > "$FT/task.txt"; }
+          bash "$FU" file --state-dir "$DIR" --pr "$PR" --task-id "${RECIPE_VAR_plan_task_id:-}" --task-text-file "$FT/task.txt"
+          RC=$?
+          [ "$RC" -ne 79 ] || { echo "ERROR: exit 79 terminal policy refusal while filing follow-up issues; final, never retried." >&2; exit 79; }
+          [ "$RC" -eq 0 ] || { echo "ERROR: followups-unfiled: the follow-up issues could not all be filed; the crusty loop is NOT recorded complete and the drive is not READY." >&2; exit 1; }
+        fi
       elif [ "$LAST" = "MINOR_ONLY" ]; then
         echo "ERROR: followups-unfiled: AMPLIHACK_HOME is unset or has no autodrive_followups.sh; the minor findings cannot be filed, so the crusty loop is NOT recorded complete." >&2
         exit 1

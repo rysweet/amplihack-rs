@@ -105,7 +105,7 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c autodrive_dry_run=
 | `repo_path` | `.` | Repository to work in. |
 | `existing_branch` / `pr_number` | `""` | Point the workflow at work that already exists. Whether the PR came from `pr_number` or from phase 1, every evidence step runs in the worktree that has the PR branch checked out, and the run refuses if no worktree, or more than one, has it checked out, or that worktree is not at the PR head (see [PR head and worktree resolution](../../../docs/reference/auto-drive-to-merge.md#pr-head-and-worktree-resolution)). |
 | `autodrive_state_dir` | derived | Durable state root for resumability. |
-| `autodrive_dry_run` | `"false"` | Verify everything, merge nothing. |
+| `autodrive_dry_run` | `"false"` | Verify everything, merge nothing. Files no follow-up issue, so a drive with minor findings ends `NOT_MERGED` with `followup-missing:<id>`. |
 | `autodrive_budget_loop_rounds` | `12` | Rounds either loop may run in total, across every run on the same state directory. `0` or empty means unlimited. |
 | `autodrive_budget_total_rounds` | `20` | Rounds both loops together may run. `0` or empty means unlimited. |
 | `autodrive_budget_wall_seconds` | `14400` | Seconds that rounds, before-round steps and evaluator runs may take in total. `0` or empty means unlimited. |

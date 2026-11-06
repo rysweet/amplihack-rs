@@ -230,9 +230,14 @@ impl Drive {
     }
 
     fn check(&self) -> Output {
+        self.check_as("check")
+    }
+
+    /// `check` or `gate`: the same arguments, a different output.
+    fn check_as(&self, cmd: &str) -> Output {
         let st = self.state.clone();
         self.tool(
-            &["check", "--state-dir", st.to_str().unwrap(), "--pr", PR],
+            &[cmd, "--state-dir", st.to_str().unwrap(), "--pr", PR],
             &[],
             "",
         )
@@ -1363,6 +1368,48 @@ fn check_fails_when_an_error_is_recorded() {
 }
 
 #[test]
+fn gate_notes_each_filed_issue_on_a_pass() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three()[..2]);
+    tsv(
+        &d,
+        &["naming-1\t101\t#1979\t7", "docs-typo-2\t102\t#1979\t7"],
+    );
+    let o = d.check_as("gate");
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert_eq!(
+        stdout(&o).trim(),
+        "followups-ok 2 naming-1=#101 docs-typo-2=#102",
+        "one evidence line naming every follow-up issue"
+    );
+    assert!(d.gh_calls().is_empty(), "gate makes no network call");
+}
+
+#[test]
+fn gate_prints_the_error_and_the_blocker_on_a_miss() {
+    if skip() {
+        return;
+    }
+    let d = Drive::new();
+    d.minor_drive(&three()[..2]);
+    tsv(&d, &["naming-1\t101\t#1979\t7"]);
+    let o = d.check_as("gate");
+    assert_eq!(o.status.code(), Some(1), "{}", show(&o));
+    assert!(
+        stderr(&o).contains("ERROR: followups-unfiled: followup-missing:docs-typo-2"),
+        "{}",
+        show(&o)
+    );
+    assert_eq!(
+        stdout(&o).trim(),
+        "follow-up issues not filed for every minor finding (followup-missing:docs-typo-2); the drive is not READY (#1979)"
+    );
+}
+
+#[test]
 fn check_fails_on_minor_only_with_an_empty_set() {
     if skip() {
         return;
@@ -1757,6 +1804,34 @@ fn crusty_loop_step03_writes_no_marker_without_a_task_id() {
 }
 
 #[test]
+fn crusty_loop_step03_dry_run_collects_but_files_nothing() {
+    if skip() {
+        return;
+    }
+    // A dry run writes nothing to GitHub. The set is still collected, so the
+    // gate reports the unfiled finding and the rehearsal ends NOT_MERGED.
+    let d = Drive::new();
+    d.loop_writes_round(1, "MINOR_ONLY", 1);
+    d.minor(1, &three()[..1]);
+    let o = loop_step03(&d, "1979", &[("AUTODRIVE_DRY_RUN", "true")]);
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert!(d.creates().is_empty(), "no issue is filed\n{}", show(&o));
+    assert!(
+        d.read("followups.jsonl").contains("naming-1"),
+        "{}",
+        show(&o)
+    );
+    assert!(marker_written(&d), "{}", show(&o));
+    let g = d.check_as("gate");
+    assert_eq!(g.status.code(), Some(1), "{}", show(&g));
+    assert!(
+        stdout(&g).contains("followup-missing:naming-1"),
+        "{}",
+        show(&g)
+    );
+}
+
+#[test]
 fn crusty_loop_step03_clean_files_nothing_and_needs_no_task() {
     if skip() {
         return;
@@ -1819,6 +1894,44 @@ fn merge_loop_step02b_files_and_fails_the_step_on_error() {
         assert_eq!(o.status.code(), Some(want_rc), "fail={fail}\n{}", show(&o));
         assert_eq!(d.tsv_rows().len(), if fail { 0 } else { 1 });
     }
+}
+
+#[test]
+fn merge_loop_step02b_dry_run_files_nothing() {
+    if skip() {
+        return;
+    }
+    let script = step_command("autodrive-merge-loop", "step-02b-file-followups");
+    let root = repo_root();
+    let tools = tools_dir();
+    let d = Drive::new();
+    d.minor_drive(&three()[..1]);
+    let pre = json!({"should_run": "true", "pr": PR, "state_dir": d.state}).to_string();
+    let v: Vec<(&str, &OsStr)> = vec![
+        ("RECIPE_VAR_merge_loop_preflight", OsStr::new(&pre)),
+        ("RECIPE_VAR_plan_task_id", OsStr::new("1979")),
+        ("AMPLIHACK_HOME", root.as_os_str()),
+        ("AUTODRIVE_LAUNCH_TOOLS", tools.as_os_str()),
+        ("REPO_PATH", d.tmp.path().as_os_str()),
+        ("AUTODRIVE_DRY_RUN", OsStr::new("true")),
+    ];
+    let o = d.bash(Some(&script), &[], &v, "");
+    assert_eq!(o.status.code(), Some(0), "{}", show(&o));
+    assert!(d.creates().is_empty(), "no issue is filed\n{}", show(&o));
+    assert!(d.tsv_rows().is_empty(), "{}", show(&o));
+}
+
+#[test]
+fn auto_drive_passes_dry_run_to_the_crusty_loop() {
+    let top = step("auto-drive-to-merge", "autodrive-crusty-loop");
+    assert_eq!(
+        top["context"]["autodrive_dry_run"].as_str(),
+        Some("{{autodrive_dry_run}}")
+    );
+    assert_eq!(
+        recipe_yaml("autodrive-crusty-loop")["context"]["autodrive_dry_run"].as_str(),
+        Some("false")
+    );
 }
 
 // ===========================================================================
@@ -1891,21 +2004,10 @@ fn light_recipe_copies_the_shared_rules_file() {
     assert!(read("amplifier-bundle/recipes/auto-drive-light.yaml").contains(RULES));
 }
 
-/// The 400-line brick budget, with two named exceptions. Both files were at
-/// exactly 400 lines before #1979, which adds the `--also-clean-token` option
-/// to the loop and the follow-up check to the gate. Making room by rewrapping
-/// unrelated comments was refused in the PR #1981 review, so the ceiling is
-/// raised here, per file and in the open, rather than hidden in the source.
-/// `tests/integration/auto_drive_to_merge_test.rs` and
-/// `issue_1743_autodrive_budget.rs` carry the same two exceptions.
-fn budget_for(f: &str) -> usize {
-    match f {
-        "amplifier-bundle/tools/autodrive_loop.sh" => 401,
-        "amplifier-bundle/tools/autodrive_merge_gate.sh" => 407,
-        _ => 400,
-    }
-}
-
+/// The 400-line brick budget holds for every file #1979 touches, with no
+/// per-file exception: the loop and the gate were at exactly 400 lines before
+/// it, and the follow-up logic lives in `autodrive_followups.sh gate` so the
+/// gate gains no line (PR #1981 review, round 2).
 #[test]
 fn every_touched_recipe_and_tool_stays_within_400_lines() {
     for f in [
@@ -1922,8 +2024,7 @@ fn every_touched_recipe_and_tool_stays_within_400_lines() {
         "amplifier-bundle/recipes/auto-drive-to-merge.yaml",
     ] {
         let n = read(f).lines().count();
-        let budget = budget_for(f);
-        assert!(n <= budget, "{f} has {n} lines; the budget is {budget}");
+        assert!(n <= 400, "{f} has {n} lines; the budget is 400");
     }
 }
 
@@ -2102,18 +2203,25 @@ fn merge_loop_files_before_the_gate() {
 }
 
 #[test]
-fn merge_gate_runs_check_from_its_own_directory() {
+fn merge_gate_runs_the_gate_command_from_its_own_directory() {
     let g = read("amplifier-bundle/tools/autodrive_merge_gate.sh");
     assert!(
-        g.contains("${GATE_HOME}/autodrive_followups.sh"),
-        "check runs from GATE_HOME"
+        g.contains(
+            r#"bash "${GATE_HOME}/autodrive_followups.sh" gate --state-dir "$STATE_DIR" --pr "$PR""#
+        ),
+        "the follow-up check runs from GATE_HOME"
     );
     assert!(
-        g.contains("ERROR: followups-unfiled"),
-        "the gate prints the error itself"
+        g.contains(r#"&& note "$FU" || block "#),
+        "a pass is evidence, anything else blocks"
     );
     assert!(
-        g.contains("followups.tsv"),
-        "followups.tsv joins the evidence bundle"
+        g.contains("ERROR: followups-unfiled: autodrive_followups.sh gate did not run"),
+        "a missing or silent tool still blocks with the error token"
+    );
+    let t = read(&format!("amplifier-bundle/tools/{TOOL}"));
+    assert!(
+        t.contains(r#"echo "ERROR: followups-unfiled: ${out}" >&2"#),
+        "the gate command prints the error"
     );
 }

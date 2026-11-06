@@ -201,8 +201,7 @@ else
   fi
 fi
 
-# --- 6b. Criterion 3: the crusty loop ended DONE and CLEAN or MINOR_ONLY ----
-# MINOR_ONLY also needs a filed follow-up for every minor finding (#1979).
+# --- 6b. Criterion 3: crusty loop DONE, CLEAN or MINOR_ONLY with follow-ups filed (#1979)
 # Under auto-drive the quality-audit criterion is met by the crusty loop: the
 # `crusty-loop` marker in phases.tsv (written only after the loop reports DONE)
 # and a final CLEAN verdict in crusty-latest.json. These files are evidence, so
@@ -254,12 +253,7 @@ elif block_unless_private "crusty state" phases.tsv crusty-latest.json crusty-re
     CRUSTY_VERDICT="MISSING"
     [ -f "${STATE_DIR}/crusty-latest.json" ] && CRUSTY_VERDICT="$(field "$(cat "${STATE_DIR}/crusty-latest.json")" crusty_verdict MISSING)"
     note "crusty_phase_done=true crusty_verdict=$(printf '%s' "$CRUSTY_VERDICT" | tr -cd 'A-Za-z_')"
-    case "$CRUSTY_VERDICT" in CLEAN|MINOR_ONLY) ;; *) block "the crusty loop's final crusty_verdict is not CLEAN in ${STATE_DIR}/crusty-latest.json; criterion 3 is not met" ;; esac
-    # #1979: check reads state files only (no network); a missing tool blocks unless the drive is CLEAN with no set.
-    if [ -f "${GATE_HOME}/autodrive_followups.sh" ] || [ "$CRUSTY_VERDICT" = MINOR_ONLY ] || [ -e "${STATE_DIR}/followups.jsonl" ]; then
-      if FU="$(bash "${GATE_HOME}/autodrive_followups.sh" check --state-dir "$STATE_DIR" --pr "$PR" 2>/dev/null)"; then note "$(printf '%s' "$FU" | tr -cd 'a-z0-9 -')"
-      else FU="$(printf '%s' "${FU:-followup-check-failed}" | head -n 1 | tr -cd 'A-Za-z0-9:._ -' | cut -c 1-200)"; echo "ERROR: followups-unfiled: ${FU}" >&2; block "follow-up issues not filed for every minor finding (${FU}); the drive is not READY (#1979)"; fi
-    fi
+    case "$CRUSTY_VERDICT" in CLEAN|MINOR_ONLY) FU="$(bash "${GATE_HOME}/autodrive_followups.sh" gate --state-dir "$STATE_DIR" --pr "$PR")" && note "$FU" || block "${FU:-ERROR: followups-unfiled: autodrive_followups.sh gate did not run beside the merge gate (#1979)}" ;; *) block "the crusty loop's final crusty_verdict is not CLEAN in ${STATE_DIR}/crusty-latest.json; criterion 3 is not met" ;; esac
     # The record the manifest's last row names must be private too. Its
     # name is validated before any path is built from it.
     CRUSTY_ROW="$(autodrive_crusty_manifest_row "$STATE_DIR")" || CRUSTY_ROW=""
@@ -350,7 +344,6 @@ BUNDLE="${STATE_DIR}/merge-evidence-${PR}-${HEAD_SHA:0:12}.txt"
   { printf 'auto-drive-to-merge merge gate — PR #%s @ %s\n' "$PR" "$HEAD_SHA"
     printf 'captured: %s\n\nEVIDENCE\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf '  - %s\n' "${EVIDENCE[@]}"
-    [ "$STATE_DIR_GIVEN" = true ] && declare -F autodrive_private >/dev/null && [ -f "${STATE_DIR}/followups.tsv" ] && autodrive_private "${STATE_DIR}/followups.tsv" && { printf '\nFOLLOW-UPS (finding, issue, task, PR)\n'; LC_ALL=C tr -cd 'A-Za-z0-9._:/#\t\n-' < "${STATE_DIR}/followups.tsv" | sed 's/^/  - /'; }
     printf '\nBLOCKERS\n'
     if [ "${#BLOCKERS[@]}" -eq 0 ]; then printf '  (none)\n'; else printf '  - %s\n' "${BLOCKERS[@]}"; fi
   } > "$BUNDLE" )

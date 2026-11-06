@@ -273,6 +273,12 @@ steps:
       case "$DIR" in
         ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-02b]" >&2; exit 1 ;;
       esac
+      # A dry run writes nothing to GitHub: no follow-up issue is filed, and
+      # the gate reports each unfiled minor finding as followup-missing.
+      if [ "${AUTODRIVE_DRY_RUN:-false}" = "true" ]; then
+        echo "INFO: dry run: no follow-up issue is filed; the merge gate reports each minor finding as followup-missing." >&2
+        exit 0
+      fi
       if [ ! -f "$T/autodrive_followups.sh" ]; then
         if [ -e "$DIR/followups.jsonl" ] || grep -q '^{"crusty_verdict":"MINOR_ONLY",' "$DIR/crusty-latest.json" 2>/dev/null; then
           echo "ERROR: followups-unfiled: autodrive_followups.sh is not under AMPLIHACK_HOME; the minor findings cannot be filed (rerun amplihack install)" >&2
