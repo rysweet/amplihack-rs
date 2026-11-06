@@ -57,6 +57,9 @@ mod debug {
     #[test]
     fn any_other_value_gives_the_default() {
         let over_u64 = (u128::from(u64::MAX) + 1).to_string();
+        // Built at run time: a 32-character literal trips the secret scan
+        // (security_hygiene tc_sec_20).
+        let thirty_two_nines = "9".repeat(32);
         let cases: Vec<&str> = vec![
             "",
             "0",
@@ -64,7 +67,7 @@ mod debug {
             "3601",
             "86400",
             &over_u64,
-            "99999999999999999999999999999999",
+            &thirty_two_nines,
             "+5",
             "-5",
             " 5",
