@@ -274,3 +274,16 @@ impl Drop for ClearedGraphDbEnv {
         }
     }
 }
+
+#[cfg(unix)]
+#[path = "../tests/support/exec_stub.rs"]
+#[allow(dead_code)]
+mod exec_stub;
+
+/// Writes an executable stub at `path` (mode 0755) through a short-lived
+/// `sh`, so no fork of this process can inherit a write descriptor to it and
+/// make a concurrent exec fail with `ETXTBSY` (issue #1973).
+#[cfg(unix)]
+pub(crate) fn write_executable(path: &Path, body: &str) {
+    exec_stub::write_executable(path, body, 0o755);
+}
