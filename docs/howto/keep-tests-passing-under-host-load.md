@@ -51,7 +51,7 @@ Wall-clock dependencies to look for:
 | A budget measured from real time | the 30 s identity budget, measured from the start of a rotate cycle |
 | A fixed sleep used to order two events | `sleep(Duration::from_millis(1200))` before writing a file |
 | An `elapsed < N` assertion | `elapsed < 5 s` after `--skip-update-check` |
-| A poll count | expecting exactly two supervise log lines after a fixed delay |
+| A product timeout no test input reaches | the 10 s limit on each tmux, `systemd-run` and git call of `amplihack agent`, run against a shell-script fake tmux |
 
 ## Assert the final state
 
@@ -170,7 +170,8 @@ Older local helpers (`wait_for`, `wait_bounded`, `run_bounded`) in
 `issue_1606_config_cli` are either gone or one-line wrappers around these.
 Do not add a new local wait helper with its own ceiling.
 
-`issue_1760_fixture::wait_until` takes its ceiling in seconds. Pass `600`.
+`issue_1760_fixture::wait_until` takes only the condition and uses the same
+10-minute `CEILING`; it returns `false` when the condition never held.
 
 ## Change a test input
 
@@ -243,7 +244,8 @@ Quote every argument in the stub and never interpolate test input into
 
 Add a knob only when no test input can reach the limit. Every knob follows
 the pattern in
-`crates/amplihack-cli/src/commands/profile/limit_wait/clock.rs`:
+`crates/amplihack-cli/src/commands/profile/limit_wait/clock.rs`, and new
+knobs read their value with `crate::debug_knob::secs`:
 
 - The name starts with `AMPLIHACK_TEST_`. The rotator daemon removes every
   `AMPLIHACK_ROTATE*` variable before it starts, so a knob with that prefix
@@ -264,6 +266,7 @@ the pattern in
 |----------|---------|---------|---------|
 | `AMPLIHACK_TEST_IDENTITY_BUDGET_SECS` | 30 s (`IDENTITY_BUDGET`) | `cred_identity::identity_budget()`, used by `Budget::available` in `login_identity.rs` | Total time a rotate cycle may spend on account identity reads. |
 | `AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS` | 5 s (`IDENTITY_READ_TIMEOUT`) | `cred_identity::identity_read_timeout()`, used by `read_with` | Time one identity read may take. |
+| `AMPLIHACK_TEST_AGENT_CHILD_TIMEOUT_SECS` | 10 s (`tmux::CHILD_TIMEOUT`) | `agent::tmux::child_timeout()`, used for every tmux call, the `systemd-run` scope launch in `server.rs` and the git call in `dirty.rs` | Time each child process of `amplihack agent` may take. |
 | `AMPLIHACK_TEST_DETACH_START_SECS` | 15 s | `recipe run --detach` | How long the detach command waits for the pane to start the run. |
 
 The hand-fix lock bound in `handfix_plan.rs` keeps passing the
@@ -274,11 +277,24 @@ debug build can hold the lock for about 30 s + 3 × 600 s. In release builds,
 and in debug builds with `AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS` unset,
 the bound is 45 s.
 
-Check that a release binary contains no identity knob:
+### Agent child timeout in `issue_1760_fixture`
+
+The `amplihack agent` tests run the binary against a fake tmux, a shell
+script found first on `PATH`. The 10 s limit on each tmux call is inside the
+binary, and no test input reaches it: on a loaded host a slow fake call ended
+as `failed: tmux: …` or as an unknown session state, and the supervisor then
+wrote a different result and an extra log line. `Fx::cmd` therefore sets
+`AMPLIHACK_TEST_AGENT_CHILD_TIMEOUT_SECS` to the 600 s ceiling for every run.
+The one test of the limit itself,
+`issue_1760_agent_tmux_scope::a_systemd_run_timeout_is_treated_as_a_failure`,
+removes the knob from its command, so the product's 10 s limit applies and
+the fake's 30 s sleep still outlasts it.
+
+Check that a release binary contains no test knob:
 
 ```bash
 cargo build --release -p amplihack-cli --bin amplihack
-strings target/release/amplihack | grep -c AMPLIHACK_TEST_IDENTITY_
+strings target/release/amplihack | grep -c -e AMPLIHACK_TEST_IDENTITY_ -e AMPLIHACK_TEST_AGENT_
 # Output: 0
 ```
 
@@ -401,12 +417,16 @@ test binaries directly so the cargo lock does not queue them.
    path:
 
    ```bash
-   export TMPDIR=/d0/ryan/tmp/issue-1973
+   export TMPDIR=<scratch dir>/tmp/issue-1973
    mkdir -p -m 0700 "$TMPDIR"
    cargo test --no-run -p amplihack-cli --lib --test cli_integration 2>&1 | grep Executable
    cargo test --no-run -p amplihack-hooks --lib 2>&1 | grep Executable
    cargo test --no-run -p amplihack --test integration 2>&1 | grep Executable
    ```
+
+   Replace `<scratch dir>` with a directory on a file system with room for
+   the tests' temporary files. Keep `/tmp` in the path: some pre-push tests
+   walk up from their temporary directory and expect `/tmp` in it.
 
    `skip_update_check_flag` and `recipe_e2e` are modules of the `amplihack`
    package's `integration` target. In the commands below, `$CLI_INTEGRATION`,
@@ -419,7 +439,7 @@ test binaries directly so the cargo lock does not queue them.
 
    ```bash
    filters=(issue_1592_ issue_1606_ issue_1618_ issue_1634_
-     issue_1760_agent_supervise issue_1801_capacity_wait issue_1569_auto_switch
+     issue_1760_ issue_1801_capacity_wait issue_1569_auto_switch
      codex_frontdoor_contract)
    "$CLI_INTEGRATION" --list "${filters[@]}" | grep ': test$' | sort \
      | diff - <(sort "$TMPDIR/r1-cli.txt")
@@ -430,7 +450,7 @@ test binaries directly so the cargo lock does not queue them.
    nothing. Do the same for each other binary with its own filters.
 
 3. Run the binaries under load with the script below. It stops before
-   starting if `/` or `/d0` is more than 97% full. It then starts one busy
+   starting if `/` or the file system holding `$TMPDIR` is more than 97% full. It then starts one busy
    loop per CPU at the tests' own nice level, logs `uptime` every minute,
    runs all binaries at the same time with the default test threads, and
    stops everything when they finish or when it is interrupted:
@@ -438,7 +458,7 @@ test binaries directly so the cargo lock does not queue them.
    ```bash
    #!/usr/bin/env bash
    set -u
-   for mount in / /d0; do
+   for mount in / "$TMPDIR"; do
      used=$(df --output=pcent "$mount" | tail -n 1 | tr -dc 0-9)
      if [ "$used" -gt 97 ]; then
        echo "stop: $mount is ${used}% full" >&2

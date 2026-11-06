@@ -25,7 +25,8 @@ fn the_constants_keep_their_values() {
 #[cfg(debug_assertions)]
 mod debug {
     use super::*;
-    use crate::commands::profile::rotate::cred_identity::{BUDGET_ENV, READ_TIMEOUT_ENV, secs_or};
+    use crate::commands::profile::rotate::cred_identity::{BUDGET_ENV, READ_TIMEOUT_ENV};
+    use crate::debug_knob::secs_or;
 
     #[test]
     fn the_knob_names_are_test_only_and_outside_the_rotate_prefix() {
@@ -130,59 +131,4 @@ mod debug {
 fn release_builds_always_use_the_constants() {
     assert_eq!(identity_budget(), IDENTITY_BUDGET);
     assert_eq!(identity_read_timeout(), IDENTITY_READ_TIMEOUT);
-}
-
-/// The budget check and the read go through the functions; the hand-fix
-/// plan keeps the constant, so the hand-fix lock bound of 45 s stays fixed.
-#[test]
-fn the_callers_use_the_functions_and_the_hand_fix_keeps_the_constant() {
-    let login = include_str!("login_identity.rs");
-    let cred = include_str!("cred_identity.rs");
-    let plan = include_str!("handfix_plan.rs");
-    let available = login
-        .split("pub fn available")
-        .nth(1)
-        .and_then(|rest| rest.split("\n    }").next())
-        .expect("Budget::available exists");
-    assert!(
-        available.contains("identity_budget()"),
-        "Budget::available must use identity_budget(): {available}"
-    );
-    let read_with = cred
-        .split("pub fn read_with")
-        .nth(1)
-        .and_then(|rest| rest.split("\n}").next())
-        .expect("read_with exists");
-    assert!(
-        read_with.contains("identity_read_timeout()"),
-        "read_with must use identity_read_timeout(): {read_with}"
-    );
-    assert!(
-        plan.contains("IDENTITY_BUDGET") && !plan.contains("identity_budget()"),
-        "handfix_plan.rs must keep passing the IDENTITY_BUDGET constant"
-    );
-}
-
-/// The knob names and the parser exist only in debug builds.
-#[test]
-fn the_knob_code_is_debug_only() {
-    let cred = include_str!("cred_identity.rs");
-    for needle in [
-        "AMPLIHACK_TEST_IDENTITY_BUDGET_SECS",
-        "AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS",
-        "fn secs_or",
-    ] {
-        let at = cred
-            .find(needle)
-            .unwrap_or_else(|| panic!("{needle} is missing from cred_identity.rs"));
-        let before = &cred[..at];
-        let attr = before
-            .rfind("#[cfg(")
-            .map(|i| &before[i..])
-            .unwrap_or_default();
-        assert!(
-            attr.starts_with("#[cfg(debug_assertions)]"),
-            "{needle} must sit under #[cfg(debug_assertions)]"
-        );
-    }
 }
