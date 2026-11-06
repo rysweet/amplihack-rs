@@ -795,6 +795,7 @@ Testing strategies, quality assurance, and validation patterns.
 - [Test Gap Analyzer](claude/skills/test-gap-analyzer/SKILL.md) - Find untested code
 - [CS Validator](cs-validator/README.md) - Code style validation
 - [Testing Plan](testing/TEST_PLAN.md) - Testing strategy and execution checklist
+- [CLI Stays Put Tests](testing/CLI_STAYS_PUT_TESTS.md) - Regression tests that a claude run stays in claude and a codex run stays in codex at every level
 - [Skill Frontmatter Type Guard](testing/SKILL_FRONTMATTER_TYPE_GUARD.md) - Regression test catching Copilot CLI frontmatter string-scalar TYPE bugs
 - [Keep the Pre-commit Hooks Portable to macOS](howto/keep-pre-commit-hooks-portable-to-macos.md) - POSIX sed, bash 3.2, Linux-only clippy allows, and libc type aliases
 

@@ -8,6 +8,7 @@
 - [The solution: a config-driven resolver](#the-solution-a-config-driven-resolver)
 - [Resolution algorithm](#resolution-algorithm)
 - [How it propagates across processes](#how-it-propagates-across-processes)
+- [A run stays on the CLI it started with](#a-run-stays-on-the-cli-it-started-with)
 - [Default: copilot](#default-copilot)
 - [Consumers](#consumers)
   - [Recipe runner](#recipe-runner)
@@ -190,6 +191,35 @@ sequenceDiagram
     S->>S: resolve(step cwd) → "copilot" (layer 2)
 ```
 
+## A run stays on the CLI it started with
+
+A run started with `amplihack claude` stays in claude, and a run started with
+`amplihack codex` stays in codex, unless the user explicitly asks for another
+CLI (issue #1983). The mechanisms above give that result at each level:
+
+| Level | Why it holds |
+|---|---|
+| Nested command (`amplihack recipe run` inside the agent) | The launcher exports `session:<cli>` and removes the other CLIs' markers, so the nested command resolves the launcher's CLI at layer 2. |
+| Every workflow step, including sub-recipes | `recipe run` resolves once at entry and exports the answer to the runner, which passes it to every step unchanged. |
+| `amplihack <cli> --subprocess-safe` under a parent of the other kind | An explicit launch exports its own CLI, whatever it inherited. |
+| Explicit launch over an inherited value | An inherited `session:<other>`, `default:<other>` or untagged `<other>` never replaces the explicit command's CLI in what its children see. |
+| Explicit change | A user-set `AMPLIHACK_AGENT_BINARY` (layer 1) on a plain `recipe run`, or `agent.binary` in config when no session marker is live, chooses the CLI. |
+
+The explicit change is the only way to switch. For one recipe run inside a
+claude session:
+
+```bash
+AMPLIHACK_AGENT_BINARY=codex amplihack recipe run default-workflow
+```
+
+`recipe run` names the session it overrode on stderr, so the switch is visible.
+
+Each level is tested in both directions, claude to codex and codex to claude,
+with fake CLIs that record the environment they inherited. See
+[CLI Stays Put Tests](../testing/CLI_STAYS_PUT_TESTS.md) for the test list and
+two known limits: a stray Claude marker inside a codex session, and an
+inherited `default:<same tool>` guess.
+
 ## Default: copilot
 
 The implicit default changed from `"claude"` to `"copilot"`. This affects only sessions where:
@@ -259,4 +289,5 @@ The resolver and hook paths are derived from values that may originate in user-c
 - [Environment Variables](../reference/environment-variables.md#amplihack_agent_binary) — Env var reference
 - [Agent Configuration](../reference/agent-configuration.md) — Where this fits into broader config precedence
 - [Hook Specifications](../reference/hook-specifications.md) — Per-binary hook layout and event list
+- [CLI Stays Put Tests](../testing/CLI_STAYS_PUT_TESTS.md) - Regression suite for the stay-on-your-CLI rule (issue #1983)
 - [Bootstrap Parity](./bootstrap-parity.md) — How the Rust CLI matches the Python launcher's environment contract

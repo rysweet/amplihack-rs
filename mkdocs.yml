@@ -247,6 +247,7 @@ nav:
       - Testing: testing/TEST_PLAN.md
       - Migration Contract Tests: testing/MIGRATION_CONTRACT_TESTS.md
       - Subprocess Env Isolation Tests: testing/SUBPROCESS_ENV_ISOLATION_TESTS.md
+      - CLI Stays Put Tests: testing/CLI_STAYS_PUT_TESTS.md
       - Troubleshooting: troubleshooting/README.md
       - Code Review: CODE_REVIEW.md
       - Rust Code Quality: reference/rust-code-quality.md
