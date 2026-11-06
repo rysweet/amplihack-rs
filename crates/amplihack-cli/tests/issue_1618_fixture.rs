@@ -185,13 +185,20 @@ impl Fixture {
 
     /// Runs `c` like [`Self::run`], calling `on_line` with each stderr line
     /// as it is written, so a test can act on a condition the run reports
-    /// rather than after a delay (issue #1973). The run is bounded by the
-    /// shared wait ceiling; the returned stderr is every line read.
+    /// rather than after a delay (issue #1973). The whole run, including a
+    /// step that hangs with stderr still open, is bounded by the shared wait
+    /// ceiling: at the ceiling the step is killed and reaped and the test
+    /// fails, naming the step. The returned stderr is every line read.
     pub fn run_watching(&self, c: &mut Command, mut on_line: impl FnMut(&str)) -> Output {
+        use crate::support::wait::{self, CEILING, POLL};
         use std::io::{BufRead, BufReader, Read};
         use std::process::Stdio;
+        use std::sync::mpsc::{RecvTimeoutError, channel};
+        use std::time::Instant;
+        let start = Instant::now();
+        let left = || CEILING.saturating_sub(start.elapsed()).max(POLL);
         c.stdout(Stdio::piped()).stderr(Stdio::piped());
-        let mut child = crate::support::wait::spawn_retrying("the step", c);
+        let mut child = wait::spawn_retrying("the step", c);
         let mut stdout_pipe = child.stdout.take().expect("piped stdout");
         let stdout_reader = std::thread::spawn(move || {
             let mut buf = Vec::new();
@@ -200,14 +207,50 @@ impl Fixture {
                 .expect("read the step's stdout");
             buf
         });
+        // Lines are read on a helper thread so the test thread can stop at
+        // the ceiling; the channel closes when stderr reaches end of file.
+        let stderr_pipe = child.stderr.take().expect("piped stderr");
+        let (tx, rx) = channel::<std::io::Result<Vec<u8>>>();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stderr_pipe).split(b'\n') {
+                let failed = line.is_err();
+                if tx.send(line).is_err() || failed {
+                    return;
+                }
+            }
+        });
         let mut stderr = Vec::new();
-        for line in BufReader::new(child.stderr.take().expect("piped stderr")).lines() {
-            let line = line.expect("read the step's stderr");
-            on_line(&line);
-            stderr.extend_from_slice(line.as_bytes());
-            stderr.push(b'\n');
+        loop {
+            match rx.recv_timeout(left()) {
+                Ok(Ok(line)) => {
+                    on_line(&String::from_utf8_lossy(&line));
+                    stderr.extend_from_slice(&line);
+                    stderr.push(b'\n');
+                }
+                Ok(Err(e)) => {
+                    wait::kill_and_reap(&mut child);
+                    panic!("waiting for the step: reading its stderr failed: {e}");
+                }
+                Err(RecvTimeoutError::Disconnected) => break,
+                Err(RecvTimeoutError::Timeout) => {
+                    let spent = start.elapsed();
+                    if spent >= CEILING {
+                        wait::kill_and_reap(&mut child);
+                        // The readers are not joined: a grandchild may still
+                        // hold a pipe.
+                        panic!(
+                            "waiting for the step: timed out after {spent:?}; the child was \
+                             killed\nstderr tail:\n{}",
+                            wait::tail_of(&stderr)
+                        );
+                    }
+                }
+            }
         }
-        let status = crate::support::wait::wait_child("the step", &mut child);
+        let status = wait::wait_child_with_ceiling("the step", &mut child, left());
+        wait::wait_until_with_ceiling("the step's stdout to end", left(), || {
+            stdout_reader.is_finished()
+        });
         let stdout = stdout_reader.join().expect("the stdout reader");
         Output {
             status,

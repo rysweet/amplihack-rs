@@ -110,7 +110,9 @@ fn ac5_a_login_moved_into_place_during_the_wait_ends_it() {
     // virtual poll is 10 s real, and the 1920 s wait 640 s real, so on a
     // loaded host the wait cannot reach the reset before the change. The
     // `end reason=login changed` event proves it ended at the change, not
-    // the reset (an elapsed-time check was removed).
+    // the reset (an elapsed-time check was removed). If the change never
+    // ends the wait, `run_watching` kills the step at the shared 10-minute
+    // ceiling; the scale does not bound a failing run.
     c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "3");
     let creds = f.config.join(".credentials.json");
     let progress = format!("{WAIT_PREFIX}progress ");

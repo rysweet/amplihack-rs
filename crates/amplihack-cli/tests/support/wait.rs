@@ -21,7 +21,8 @@ use std::time::{Duration, Instant};
 /// host-wide stall, short enough that a real hang still fails.
 pub const CEILING: Duration = Duration::from_secs(600);
 
-const POLL: Duration = Duration::from_millis(50);
+/// How often every wait here checks its condition.
+pub const POLL: Duration = Duration::from_millis(50);
 const TAIL: usize = 4096;
 const BUSY_RETRIES: u32 = 50;
 const BUSY_PAUSE: Duration = Duration::from_millis(20);
@@ -172,12 +173,17 @@ fn take(buf: &Mutex<Vec<u8>>) -> Vec<u8> {
 }
 
 fn tail(buf: &Mutex<Vec<u8>>) -> String {
-    let all = lock(buf);
-    let from = all.len().saturating_sub(TAIL);
-    String::from_utf8_lossy(&all[from..]).into_owned()
+    tail_of(&lock(buf))
 }
 
-fn kill_and_reap(child: &mut Child) {
+/// At most the last 4 KiB of `bytes`, for a timeout message.
+pub fn tail_of(bytes: &[u8]) -> String {
+    let from = bytes.len().saturating_sub(TAIL);
+    String::from_utf8_lossy(&bytes[from..]).into_owned()
+}
+
+/// Kills `child` and reaps it. Kills only the child this process owns.
+pub fn kill_and_reap(child: &mut Child) {
     // An error here means the child has already exited; `wait` reaps it.
     let _ = child.kill();
     if let Err(e) = child.wait() {
