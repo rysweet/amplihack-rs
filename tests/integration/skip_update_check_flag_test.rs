@@ -279,7 +279,7 @@ fn launch_with_skip_update_check_completes_without_npm_subprocess_overhead() {
     .expect("failed to read amplihack binary");
 
     let start = std::time::Instant::now();
-    let _status = crate::isolated_amplihack::isolated(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["launch", "--skip-update-check"])
         .env("PATH", &isolated_path)
@@ -306,12 +306,23 @@ fn launch_with_skip_update_check_completes_without_npm_subprocess_overhead() {
         );
     }
 
-    // Should complete within 1 second — no npm timeout overhead.
+    // A launch that exits early would also finish inside the limit, so the
+    // time only counts if the launch succeeded.
+    assert!(
+        output.status.success(),
+        "FAIL: `amplihack launch --skip-update-check` exited with status {}.\n\
+         stderr: {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Should complete within 5 seconds: no npm timeout overhead.
     assert!(
         elapsed.as_secs() < 5,
         "FAIL: `amplihack launch --skip-update-check` took {}s (expected <5s).\n\
-         This suggests npm subprocesses are being spawned despite the flag.\n\
-         Check that maybe_print_npm_update_notice respects the skip parameter.",
+         Run issue_1971_skip_guard first: if it passes, no git, npm or curl\n\
+         process ran and the time was spent elsewhere, for example in disk I/O\n\
+         on a loaded host.",
         elapsed.as_secs()
     );
 }

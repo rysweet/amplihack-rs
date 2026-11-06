@@ -321,10 +321,17 @@ All test scratch, including the per-test `HOME`, goes under `$TMPDIR`.
 The test complements the timing test
 `skip_update_check_flag::launch_with_skip_update_check_completes_without_npm_subprocess_overhead`
 in `tests/integration/skip_update_check_flag_test.rs`, which requires the same
-launch to finish within 5 s. That limit depends on host load; the guard test
+launch to exit successfully within 5 s. Before the clock starts, the timing
+test writes the saved `node.heap_consent` answer to `config.toml` in its `HOME`
+with mode `0600`, so the launch has no setting to save and sync to disk, and
+reads the binary once so that loading it from disk is not timed. It then checks
+that the launch left `config.toml` unchanged. The limit still depends on host
+load; the guard test
 does not, and fails with the name of the step that ran. When the timing test
 fails, run the guard test first: if it passes, no `git`, `npm` or `curl`
-process ran, and the time was spent elsewhere.
+process ran, and the time was spent elsewhere. The guard's recording stubs
+catch only `git`, `npm` and `curl` found through `PATH`; a call by absolute path
+would not be recorded.
 
 See also: [Environment Variables — `AMPLIHACK_SKIP_AUTO_INSTALL`](../reference/environment-variables.md#amplihack_skip_auto_install).
 
