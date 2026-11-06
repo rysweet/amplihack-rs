@@ -22,6 +22,13 @@
 //!   pin and the default pointer together under the rotate lock;
 //!   `Released { pin, default }` says which were there.
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 use super::Released;
 use super::cycle::Ctx;
 use super::ledger::{Phase, RotateLedger};

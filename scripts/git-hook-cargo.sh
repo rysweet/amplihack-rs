@@ -557,7 +557,12 @@ fi
 # Deliberately not `exec`: the whole point of (3c) is to look at the disk after
 # a failure, which a process that replaced itself cannot do.
 set +e
-"$@"
+if [ "${1:-}" = cargo ]; then
+    shift
+    "$(dirname "${BASH_SOURCE[0]}")/cargo-with-lbug.sh" "$@"
+else
+    "$@"
+fi
 status=$?
 set -e
 

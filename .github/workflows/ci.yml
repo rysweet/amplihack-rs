@@ -112,6 +112,7 @@ jobs:
           cache-targets: false
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: ./.github/actions/lbug-cache
       - name: Recipes — no bare python invocations (issue #248)
         run: scripts/check-recipes-no-python.sh
       - name: Repository — no tracked Python assets
@@ -423,7 +424,13 @@ jobs:
       # --locked: fail fast on Cargo.lock drift here in the first job (rather than
       # only downstream in test/build), closing a dependency-substitution gap so
       # clippy can never silently resolve unpinned deps (#744 supply-chain).
-      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: scripts/cargo-with-lbug.sh clippy --locked --all-targets -- -D warnings
+      - name: Save verified local lbug output
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/amplihack/lbug
+          key: lbug-local-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build-support/lbug-cache/*.rs') }}
       - name: Disk + sccache stats (after)
         if: always()
         run: df -h / && sccache --show-stats
@@ -432,6 +439,24 @@ jobs:
         uses: ./.github/actions/sccache-save
         with:
           key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
+
+  lbug-contracts:
+    name: Local lbug cache contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
+      - name: Wrapper, filesystem, real Cargo invalidation, and entrypoint contracts
+        run: python3 -m unittest discover -s tests -p 'test_issue_1917_lbug_*.py' -v
+      - name: Dependency-free Rust helper contracts
+        run: |
+          cargo test --offline --locked --manifest-path build-support/lbug-cache/Cargo.toml
+          cargo test --offline --locked --manifest-path build-support/lbug-cache/tests/contract-harness/Cargo.toml
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '24'
+      - name: npm source and release provisioning contracts
+        run: npm test
 
   test:
     name: Test
@@ -500,7 +525,8 @@ jobs:
       - name: Disk + sccache stats (before)
         run: df -h / && sccache --show-stats
       # nextest: better parallelism and lower peak disk than `cargo test`.
-      - run: cargo nextest run --workspace --locked
+      - uses: ./.github/actions/lbug-cache
+      - run: scripts/cargo-with-lbug.sh nextest run --workspace --locked
       # Issue #1278: CI is the only place this suite runs WITHOUT git's hook
       # variables set, which is exactly why the unpassable pre-push gate stayed
       # invisible for so long. Re-run the crates that spawn git with GIT_DIR and
@@ -515,7 +541,7 @@ jobs:
           export GIT_WORK_TREE="$decoy"
           export GIT_INDEX_FILE="$decoy/.git/index"
           export GIT_PREFIX=""
-          cargo nextest run --locked \
+          scripts/cargo-with-lbug.sh nextest run --locked \
             -p amplihack-git \
             -p amplihack-safety \
             -p amplihack-recovery \
@@ -525,7 +551,13 @@ jobs:
           test -z "$(git --git-dir="$decoy/.git" --work-tree="$decoy" status --porcelain)" \
             || { echo "ERROR: tests wrote into the ambient GIT_DIR"; exit 1; }
       # nextest does not execute doctests; keep them so coverage is not lost.
-      - run: cargo test --workspace --doc --locked
+      - run: scripts/cargo-with-lbug.sh test --workspace --doc --locked
+      - name: Save verified local lbug output
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/amplihack/lbug
+          key: lbug-local-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build-support/lbug-cache/*.rs') }}
       # Issue #1690: no test may leave a detached `profile rotate watch
       # --spawned` daemon running. Reports only; never signals anything.
       - name: No leaked rotator daemons (issue #1690)
@@ -745,6 +777,8 @@ jobs:
         uses: ./.github/actions/sccache-save
         with:
           key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target }}-
+      - name: Release binaries have no local-cache loader paths
+        run: scripts/check-lbug-release-rpath.sh target/${{ matrix.target }}/release/amplihack target/${{ matrix.target }}/release/amplihack-hooks
       - name: Upload binary artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

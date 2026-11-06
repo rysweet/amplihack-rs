@@ -26,6 +26,14 @@
 //!   record is never overwritten by a swap from that profile.
 //! - `swap::is_account_mismatch(&ProfileError) -> bool`.
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 use super::ledger::RotateLedger;
 use super::swap::{Source, swap};
 use super::tests_swap::{CREDS, LOCK, NOW, env, ino_at, json, login, n, private};

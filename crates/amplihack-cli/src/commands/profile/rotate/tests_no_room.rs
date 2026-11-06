@@ -12,6 +12,14 @@
 //! while the key profile's own files pass auto-switch's check; both cases are
 //! below.
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::config::Config;
 use crate::commands::profile::auto_switch::kit::{Liveness, now};

@@ -6,6 +6,14 @@
 //! stay until the file has an account again. Fixture: `tests_handfix.rs`
 //! (the ledger names L, whose login is in `~/.claude`).
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 use super::cycle::{CycleOutcome, Mode, run_cycle};
 use super::guide::home_stuck_head;
 use super::hand_fields::HOME_UNREADABLE_GRACE;

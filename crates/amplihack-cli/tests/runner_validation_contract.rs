@@ -248,12 +248,15 @@ fn exited_probe_with_inherited_pipe_is_bounded_and_cleans_its_group() {
     failure(f.run("codex", false, &f.binary()), "RUNNER_PROBE_FAILED");
     assert!(started.elapsed() < std::time::Duration::from_secs(13));
     let pid = fs::read_to_string(f.path().join("descendant")).unwrap();
+    // Validate the fixture's PID on every Unix platform; /proc polling is Linux-only.
+    let pid: u32 = pid.trim().parse().unwrap();
+    assert!(pid > 1);
     // The group SIGKILL is delivered asynchronously, so under load the
     // descendant can still read as sleeping just after the probe returns
     // (#1748). Poll for a bounded period well under the descendant's 60 s.
     #[cfg(target_os = "linux")]
     {
-        let stat_path = format!("/proc/{}/stat", pid.trim());
+        let stat_path = format!("/proc/{pid}/stat");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while let Ok(stat) = fs::read_to_string(&stat_path) {
             let state = stat

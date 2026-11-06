@@ -1,0 +1,27 @@
+name: Restore local lbug cache
+description: Restore private development-only lbug outputs; the wrapper verifies every use.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        mkdir -p "$HOME/.cache/amplihack/lbug"
+        chmod 700 "$HOME/.cache/amplihack/lbug"
+    - uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: ~/.cache/amplihack/lbug
+        key: lbug-local-v1-${{ runner.os }}-${{ runner.arch }}-${{ github.job }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'build-support/lbug-cache/*.rs') }}
+    - name: Route nested development Cargo commands through the verifier
+      shell: bash
+      run: |
+        original_cargo="$(command -v cargo)"
+        shim_dir="$RUNNER_TEMP/lbug-cargo-dispatch"
+        mkdir -p "$shim_dir"
+        cat > "$shim_dir/cargo" <<'SH'
+        #!/usr/bin/env bash
+        exec "$GITHUB_WORKSPACE/scripts/cargo-with-lbug.sh" "$@"
+        SH
+        chmod 700 "$shim_dir/cargo"
+        printf 'AMPLIHACK_LBUG_REAL_CARGO=%s\n' "$original_cargo" >> "$GITHUB_ENV"
+        printf 'AMPLIHACK_LBUG_CARGO_SHIM=%s/cargo\n' "$shim_dir" >> "$GITHUB_ENV"
+        printf '%s\n' "$shim_dir" >> "$GITHUB_PATH"

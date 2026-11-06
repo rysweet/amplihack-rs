@@ -13,10 +13,9 @@
 //! - `reclaim(&mut Vec<Slot>, &mut Vec<QueueEntry>) -> usize`: removes the
 //!   records of dead processes; never signals anything but 0.
 
-use super::liveness::{
-    alive, parse_stat_ppid, parse_stat_start_time, reclaim, same_process, self_or_ancestor,
-    start_time,
-};
+use super::liveness::{alive, parse_stat_start_time, reclaim, same_process, start_time};
+#[cfg(target_os = "linux")]
+use super::liveness::{parse_stat_ppid, self_or_ancestor};
 use super::model::{Class, QueueEntry, Slot};
 
 fn dead_pid() -> u32 {

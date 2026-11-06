@@ -13,6 +13,14 @@
 //! the temp dir only; no test reads, prints or asserts on their contents,
 //! runs `claude` or touches a real home.
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 use super::cycle::{Ctx, CycleOutcome, MeasureFn, Mode, run_cycle};
 use super::decide::{Decision, Probed, Reading, Windows};
 use super::log::msg;

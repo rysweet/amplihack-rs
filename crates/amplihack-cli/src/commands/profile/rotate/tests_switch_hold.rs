@@ -26,6 +26,14 @@
 //! - `release` takes the lock even with no pin, so it cannot interleave with
 //!   a switch's pin and pointer writes (D-Release).
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::ledger::SWITCHED;
 use super::log::msg;

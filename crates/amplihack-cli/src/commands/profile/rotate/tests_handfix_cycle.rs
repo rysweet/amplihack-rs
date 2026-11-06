@@ -5,6 +5,14 @@
 //! runs; `Ctx::scan` sees no sessions. Each stub checks the snapshot it is
 //! handed, so these tests show what the cycle itself read after recovery.
 
+#![cfg_attr(
+    not(target_os = "linux"),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "Shared fixtures also serve Linux-only test cases"
+    )
+)]
 use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::decide::{Decision, Measured, Reading, decide};
 use super::identify::{LiveId, live};

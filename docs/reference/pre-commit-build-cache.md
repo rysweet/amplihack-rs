@@ -1,3 +1,11 @@
+---
+title: Pre-commit Build Cache Reference
+description: Per-checkout Cargo targets, cleanup, and local shared lbug outputs for Git hooks.
+doc_type: reference
+last_updated: 2026-11-03
+review_schedule: as-needed
+---
+
 # Pre-commit Build Cache Reference
 
 > [Home](../index.md) > Reference > Pre-commit Build Cache
@@ -5,8 +13,10 @@
 The Cargo hooks in `.pre-commit-config.yaml` run through
 `scripts/git-hook-cargo.sh`. The wrapper picks a build cache for the current
 checkout, removes stale caches left by other checkouts, marks the current cache
-with `CACHEDIR.TAG`, runs the command, and reports free disk space if the
-command fails. This page describes each of those rules.
+with `CACHEDIR.TAG`, and runs the requested command. It reports free disk space
+if the command fails. This page describes the hook's Cargo target rules. The
+[local lbug cache](lbug-prebuilt-cache.md) is separate from these
+existing Cargo targets.
 
 Related issues: #1278 (git environment), #1381 (per-checkout cache), #1440
 (cache location and age-based reclaim), #1771 (symlinked caches and cache
@@ -15,6 +25,7 @@ tagging).
 ## Contents
 
 - [Usage](#usage)
+- [Shared lbug artifacts](#shared-lbug-artifacts)
 - [Location](#location)
 - [Per-checkout hashing](#per-checkout-hashing)
 - [Variables](#variables)
@@ -41,6 +52,28 @@ The hooks call it in the same way, for example:
 ```yaml
 entry: scripts/git-hook-cargo.sh cargo run --locked --bin amplihack -- hygiene artifact-guard --repo . --mode pre-commit
 ```
+
+## Shared lbug artifacts
+
+Pre-commit artifact-guard/clippy builds and pre-push workspace
+tests use the shared lbug integration after Git repository variables are
+scrubbed and the hook's Cargo target is selected. Their check arguments and
+enforcement remain intact.
+Formatting does not acquire or produce lbug artifacts.
+
+Cargo targets remain checkout-specific; only verified compatible native lbug
+archives and headers are reused across targets. A hit skips bundled lbug CMake
+and core C++ compilation. The small FFI shim can still compile in each target.
+An unavailable cache uses source. A checksum or payload rejection visibly warns
+and requires source for that entire invocation, including a warm Cargo target.
+
+`AMPLIHACK_LBUG_CACHE_DIR` selects the native artifact cache independently of
+`CARGO_TARGET_DIR`. Explicit upstream library/include overrides and any defined
+`LBUG_SHARED` retain upstream behavior. Hook TTL reclamation covers prefixed
+Cargo targets only; it does not clean the native artifact cache.
+
+See [lbug configuration and fallback](lbug-prebuilt-cache.md#configuration)
+and the [two-clean-target tutorial](../tutorials/lbug-cache-reuse.md).
 
 ## Location
 
@@ -121,7 +154,7 @@ in order:
    link so Cargo can create a real directory there.
 2. Reclaim stale caches under the cache root, never touching the current cache.
 3. Write `CACHEDIR.TAG` into the current cache if it exists and has no tag.
-4. Run the command.
+4. Run the requested command.
 5. If the command failed, report free space on the cache's filesystem.
 
 ## Reclaim rules

@@ -7,8 +7,11 @@ systematic software engineering.
 
 **📚 [View Full Documentation](https://rysweet.github.io/amplihack-rs/)**
 
-**Requires**: Rust 1.88+ (edition 2024), Node.js 18+, git, and cmake for the
-LadybugDB graph database engine.
+**Requires**: Rust 1.88+ (edition 2024), Node.js 18+, git, and a C/C++ toolchain.
+Keep cmake available for LadybugDB source builds. The
+[local lbug cache](docs/reference/lbug-prebuilt-cache.md) reuses verified static
+outputs across development targets and hooks. Release and installation builds
+continue to compile bundled lbug source.
 
 ```sh
 # Quick start
@@ -76,7 +79,7 @@ high-quality code.
 - **Runtime**: Rust 1.88+ / cargo, Node.js 18+, git. `amplihack install`
   installs a user-local Rust toolchain via rustup (and `build-essential` via
   apt, as root or with passwordless sudo) if cargo or a C linker is missing.
-- **Build tools**: cmake and a C/C++ toolchain for LadybugDB.
+- **Build tools**: cmake and a C/C++ toolchain for LadybugDB source builds.
 - **Optional**: GitHub CLI (`gh`), Azure CLI (`az`).
 
 Detailed setup:
@@ -678,15 +681,20 @@ Contributing guide: [CONTRIBUTING.md](CONTRIBUTING.md).
 ```bash
 git clone https://github.com/rysweet/amplihack-rs.git
 cd amplihack-rs
-cargo build --workspace --locked
+scripts/cargo-with-lbug.sh build --workspace --locked
 amplihack install
 ```
+
+The [local lbug cache](docs/reference/lbug-prebuilt-cache.md) shares verified
+native outputs across development targets, hooks, and CI. It uses source on a
+miss or rejection. See the [two-target tutorial](docs/tutorials/lbug-cache-reuse.md).
+Publication and distributed installer integration are deferred to v2.
 
 ### Testing
 
 ```bash
-cargo test --workspace --locked
-cargo clippy -- -D warnings
+scripts/cargo-with-lbug.sh test --workspace --locked
+scripts/cargo-with-lbug.sh clippy --locked --all-targets -- -D warnings
 cargo fmt --check
 scripts/check-no-python-assets.sh
 scripts/check-recipes-no-python.sh
