@@ -1452,15 +1452,27 @@ amplihack copilot --print 'run tests'
 is treated as **unset** and the check still runs.
 
 **Diagnostic on skip-with-mismatch:** when the bypass is active *and* the
-stamp does not match `crate::VERSION`, `amplihack` emits one line on stderr
-before dispatch:
+stamp does not match `crate::VERSION` or the installed bundle is incompatible,
+`amplihack` emits one line on stderr before dispatch:
 
 ```
-amplihack: self-heal skipped (AMPLIHACK_SKIP_AUTO_INSTALL set); stamp=<old> current=<new>
+amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage (stamp=<old> current=<version>; installed_bundle="compatible")
 ```
+
+`stamp` is `<missing>` when there is no stamp file. `installed_bundle` is
+`"compatible"`, or the reason the installed bundle failed the #1271 check.
 
 This makes the "stale assets, intentionally" state visible in CI logs.
-Matching versions produce no output.
+A matching stamp with a compatible bundle produces no output.
+
+**Work it skips:** under the bypass, self-heal starts no `git` or `curl`
+process, makes no release tag fetch, takes no install lock and writes no
+`~/.amplihack/.tag-fetch-failed` marker. It still runs the bundle
+compatibility check, which may write `~/.amplihack/.bundle-compat-cache.json`.
+The npm update check is controlled separately, by `--skip-update-check` and
+`AMPLIHACK_NONINTERACTIVE`. The full list, and the integration
+test that pins it, are in
+[Self-Heal: What the bypass skips](../features/self-heal-asset-restage.md#what-the-bypass-skips).
 
 **What it does not do:**
 

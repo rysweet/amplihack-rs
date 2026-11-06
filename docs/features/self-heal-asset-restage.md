@@ -229,8 +229,12 @@ missing or older than the binary, or the installed bundle is incompatible),
 `amplihack` emits a single diagnostic line on stderr before dispatch:
 
 ```
-amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage (stamp=0.8.55 current=0.8.111; installed_bundle="compatible")
+amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage (stamp=0.8.55 current=<version>; installed_bundle="compatible")
 ```
+
+`current` is the version of the running binary. `installed_bundle` is
+`"compatible"` when the installed bundle passes the #1271 check, and otherwise
+holds the reason it failed.
 
 This makes the "stale assets, intentionally" state visible in CI logs and
 test output so a downstream failure can be traced back to the version skew
@@ -241,6 +245,86 @@ produces no output.
 Under the bypass a stamp newer than the binary also prints this line rather
 than the [downgrade warning](#never-an-implicit-downgrade-1526): the bypass
 never re-stages, so there is nothing for the guard to refuse.
+
+### What the bypass skips
+
+With the bypass set, self-heal returns before any step that touches the
+network, takes a lock or starts a subprocess. In a launch such as
+
+```sh
+AMPLIHACK_SKIP_AUTO_INSTALL=1 AMPLIHACK_NONINTERACTIVE=1 \
+  amplihack launch --skip-update-check
+```
+
+the bypass therefore prevents all of the following:
+
+| Skipped step | Observable sign if it ran |
+|--------------|---------------------------|
+| Release tag fetch (`git`, `curl`) | A `git` or `curl` process; up to 60 s of waiting |
+| Advisory install lock | `~/.amplihack/.install.lock` is created |
+| Fetch backoff marker | `~/.amplihack/.tag-fetch-failed` is created |
+| [Kept-bundle warning](#failed-source-fetch-with-a-compatible-bundle) | `keeping the installed bundle` on stderr |
+
+Self-heal never runs `npm`. The pre-launch npm tool update check is a separate
+step, skipped in this command by `--skip-update-check` and
+`AMPLIHACK_NONINTERACTIVE`, not by the bypass. See
+[Manage Tool Update Notifications](../howto/manage-tool-update-checks.md).
+
+Two checks still run under the bypass. Neither uses the network, takes a lock
+or starts a subprocess:
+
+- The [#1526 downgrade guard](#never-an-implicit-downgrade-1526), which only
+  compares two version strings.
+- The #1271 installed-bundle compatibility check, which reads local files. Its
+  verdict is memoised on a stat fingerprint of the bundle in
+  `~/.amplihack/.bundle-compat-cache.json`. When no cached verdict matches,
+  which is always the case on a fresh `HOME`, the check writes that file. This
+  is a plain file write, so `~/.amplihack` is not left empty. The verdict is
+  what the [bypass diagnostic](#bypass-diagnostic) prints as
+  `installed_bundle=`.
+
+On a fresh `HOME` the stamp is missing and there is no installed bundle, so the
+bypass diagnostic is printed once, with the reason the bundle check failed in
+place of `<reason>`:
+
+```
+amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage (stamp=<missing> current=<version>; installed_bundle="<reason>")
+```
+
+#### Guard test
+
+`tests/integration/issue_1971_skip_guard_test.rs` pins this behaviour without
+any timing assertion. It runs the built binary with a per-test `HOME` and a
+`PATH` that holds only stubs: a healthy `claude`, and `git`, `npm` and `curl`
+stubs that append their arguments to a log file and exit 1. It then asserts
+that:
+
+1. the stub log is empty, so no `git`, `npm` or `curl` process was started;
+2. `~/.amplihack/.tag-fetch-failed` does not exist;
+3. `~/.amplihack/.install.lock` does not exist;
+4. stderr contains none of `keeping the installed bundle`,
+   `could not fetch the framework bundle` or `cannot fetch a release tag`;
+5. stderr contains `AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage`.
+
+The test does not assert that `~/.amplihack` is empty, because the #1271 check
+writes `.bundle-compat-cache.json` there. The `npm` stub is present so that a
+regression in the update-check flags would also show in the log.
+
+Run it from the repository root:
+
+```sh
+cargo test -p amplihack --test integration issue_1971_skip_guard:: -- --nocapture
+```
+
+All test scratch, including the per-test `HOME`, goes under `$TMPDIR`.
+
+The test complements the timing test
+`skip_update_check_flag::launch_with_skip_update_check_completes_without_npm_subprocess_overhead`
+in `tests/integration/skip_update_check_flag_test.rs`, which requires the same
+launch to finish within 5 s. That limit depends on host load; the guard test
+does not, and fails with the name of the step that ran. When the timing test
+fails, run the guard test first: if it passes, no `git`, `npm` or `curl`
+process ran, and the time was spent elsewhere.
 
 See also: [Environment Variables — `AMPLIHACK_SKIP_AUTO_INSTALL`](../reference/environment-variables.md#amplihack_skip_auto_install).
 
