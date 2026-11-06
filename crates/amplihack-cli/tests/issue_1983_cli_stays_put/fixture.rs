@@ -233,6 +233,15 @@ impl Fixture {
         (get("binary"), get("source"))
     }
 
+    /// Point `recipe run` at a real `recipe-runner-rs` instead of the stub,
+    /// and write the level 2 recipes into the work directory.
+    pub fn use_real_runner(&self, c: &mut Command, runner: &std::path::Path) {
+        for (name, text) in script::NESTED_RECIPES {
+            fs::write(self.work().join(name), text).unwrap();
+        }
+        c.env("RECIPE_RUNNER_RS_PATH", runner);
+    }
+
     pub fn write_config_binary(&self, cli: Cli) {
         let dir = self.path("home").join(".amplihack");
         fs::create_dir_all(&dir).unwrap();

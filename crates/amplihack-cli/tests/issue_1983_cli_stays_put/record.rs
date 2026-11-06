@@ -20,6 +20,7 @@ impl Record {
             "ran",
             "self",
             "role",
+            "prompt_tag",
             "argv",
             "binary",
             "source",
