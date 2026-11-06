@@ -11,8 +11,13 @@
 //! These tests verify:
 //! 1. The flag is accepted by the CLI without error
 //! 2. The flag appears in `amplihack launch --help` output
-//! 3. The flag suppresses npm subprocess invocations (no extra latency)
-//! 4. The flag is independent of `AMPLIHACK_NONINTERACTIVE=1` (both work)
+//! 3. A launch with the flag completes without running npm
+//!
+//! Point 3 does not show that the flag is what prevents npm. These runs have
+//! no TTY on stdin, so `is_noninteractive()` already skips the check, flag or
+//! not (issue #1973). The unit test
+//! `tool_update_check::tests::check_wanted_only_without_skip_in_an_interactive_session`
+//! shows that `skip` alone suppresses the check.
 //!
 //! ## Failure modes
 //!

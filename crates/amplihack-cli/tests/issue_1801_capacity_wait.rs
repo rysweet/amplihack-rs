@@ -131,7 +131,10 @@ fn nested_x(f: &Fixture) -> Command {
 /// Runs on the real clock, sped up: a 30 s poll takes 3 s, and the
 /// longest wait here, the default six hours, 36 minutes. Issue #1973: a
 /// faster clock could end a wait at its maximum before a loaded host ran
-/// the test's change; every wait here ends on that change instead.
+/// the test's change; every wait here ends on that change instead. The
+/// scale does not bound a failing run: if the change never ends the wait,
+/// `run_watching` kills the step at the shared 10-minute ceiling and the
+/// test fails there.
 fn real_clock(c: &mut Command) {
     c.env_remove("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW")
         .env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "10");
@@ -252,7 +255,12 @@ fn ac13_an_inherited_profile_step_retries_on_the_login_with_capacity() {
     c.env("LIMIT_CALLS", "2");
     real_clock(&mut c);
     let usage = f.profiles.join(".auto-switch.d").join("usage.json");
+    let count = f.records.join("count.0");
     let out = run_during_wait(&f, &mut c, move || {
+        // The reading must change during the wait that follows Y's limit
+        // hit (call 2), not during one after X's. Checked after the write,
+        // so a wrong order fails here rather than at the ceiling.
+        let calls = fs::read_to_string(&count).unwrap_or_default();
         let now = real_now();
         let reading = |pct: f64, source: &str| {
             serde_json::json!({
@@ -267,6 +275,11 @@ fn ac13_an_inherited_profile_step_retries_on_the_login_with_capacity() {
             "accounts": {"X": reading(100.0, "statusline"), "Y": reading(10.0, "statusline")},
         });
         replace(&usage, &body.to_string());
+        assert_eq!(
+            calls.trim(),
+            "2",
+            "the wait started after call {calls:?}; expected X, then Y, then the retry"
+        );
     });
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 3, "{}", describe(&out));

@@ -76,27 +76,52 @@ mod exec_stub;
 ```
 
 Both files therefore use only `std` and refer to no other `support` module.
-The test then reaches them as `crate::wait` and `crate::exec_stub`:
+The test then reaches them as `crate::wait` and `crate::exec_stub`. From the
+committed test:
 
 ```rust
-use crate::{exec_stub::write_executable, wait};
-
-let record = tmp.path().join("npm-record");
-write_executable(
-    &bin.join("npm"),
-    "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$NPM_RECORD\"\nexit 1\n",
+let record = tmpdir.path().join("npm-calls");
+let record_text = record.to_str().expect("temporary paths are UTF-8");
+assert!(
+    !record_text.contains(['\'', '\n']),
+    "cannot single-quote {record_text:?} for /bin/sh"
+);
+// The record path is written into the stub, so the stub records even if
+// launch gives npm a cleared environment.
+crate::exec_stub::write_executable(
+    &tmpdir.path().join("npm"),
+    format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{record_text}'\nexit 1\n"),
     0o755,
 );
-let out = wait::output_within(
-    "amplihack launch --skip-update-check to exit",
-    cmd.env("NPM_RECORD", &record),
-);
+
+// PATH contains only the stub dir: the recording npm is the only npm.
+let isolated_path = tmpdir.path().to_string_lossy().to_string();
+
+let mut cmd = crate::isolated_amplihack::isolated(&bin);
+cmd.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+    .args(["launch", "--skip-update-check"])
+    .env("PATH", &isolated_path)
+    .env("AMPLIHACK_NONINTERACTIVE", "1")
+    .stdin(std::process::Stdio::null());
+let out = crate::wait::output_within("`amplihack launch --skip-update-check`", &mut cmd);
+
+let calls = std::fs::read_to_string(&record).ok();
 assert!(
-    !record.exists(),
-    "--skip-update-check must not run npm; it ran with:\n{}",
-    fs::read_to_string(&record).unwrap_or_default()
+    calls.is_none(),
+    "FAIL: `amplihack launch --skip-update-check` ran npm ({}):\n{}\n\
+     Check that maybe_print_npm_update_notice respects the skip parameter.\n\
+     stderr: {}",
+    out.status,
+    calls.unwrap_or_default(),
+    String::from_utf8_lossy(&out.stderr)
 );
 ```
+
+The test proves only that a launch with the flag completes without running
+npm. Its runs have no TTY on stdin, so `is_noninteractive()` already skips
+the check. The unit test
+`tool_update_check::tests::check_wanted_only_without_skip_in_an_interactive_session`
+shows that the flag alone suppresses it.
 
 When you remove an `elapsed` check, the behaviour it guarded must still be
 checked another way. Name that check in the PR's per-test table.
@@ -154,7 +179,7 @@ input instead of measuring real time.
 
 | Input | Example |
 |-------|---------|
-| Time scale | `AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE`. `issue_1618_wait_ends::ac5` uses `3`, so the wait's deadline is about 640 s away and cannot end the wait before the login changes. The test moves the login into place itself when the wait writes its first `progress` line (see below). `issue_1801_capacity_wait` uses `10`. |
+| Time scale | `AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE`. `issue_1618_wait_ends::ac5` uses `3`, so the wait's deadline is about 640 s away and cannot end the wait before the login changes. The test moves the login into place itself when the wait writes its first `progress` line (see below). `issue_1801_capacity_wait` uses `10`. A scale never bounds a failing run: if the change does not end the wait, `run_watching` kills the step at `CEILING`. |
 | A function parameter | `mermaid_cli::version_probe_succeeds_within(bin, configure, timeout)`. `version_probe_succeeds` calls it with `VERSION_PROBE_TIMEOUT`; the environment-capture test passes 600 s. `codex_plugin` tests call `native_with_timeout` with 600 s. |
 | An explicit mtime | The blarify staleness test sets `src/app.py` to now minus 60 s and `blarify.json` to now with `File::set_modified`, instead of sleeping 1 s between writes. |
 | A stub | A recording `npm` stub, or the rotator fixture's `FAKE_CLAUDE`. |
@@ -169,7 +194,10 @@ upper bound. `version_probe_is_bounded_for_hanging_binaries` still uses
 Do not order two events with a fixed sleep. Wait for a line or file that
 proves the first event happened, then act. The #1618 fixture's
 `run_watching(c, on_line)` runs a step under `CEILING` and calls `on_line`
-with each stderr line as it is written.
+with each stderr line as it is written. A helper thread reads the lines and
+the test thread receives them with `recv_timeout`, so a step that hangs with
+stderr still open is killed and reaped at `CEILING`, and the test fails with
+`waiting for the step: timed out after …` and the stderr tail.
 
 `issue_1618_wait_ends::ac5` creates the credentials file on the wait's first
 `progress` line. That line comes 60 virtual seconds into the wait, after the
@@ -198,8 +226,14 @@ forks at the same moment. Which fix applies depends on where the test lives:
 
 | Test location | Fix |
 |---------------|-----|
-| `crates/amplihack-cli/tests/` and the `amplihack` `integration` target | `exec_stub::write_executable`. A short-lived `sh` writes the file and sets its mode, so the test process never holds a write descriptor that a fork could inherit. |
-| Unit tests inside a crate that has a `test_support` module (`mermaid_cli` and `codex_plugin` in `amplihack-cli`, `session_start::blarify` in `amplihack-hooks`) | `crate::test_support::write_executable(path, body)`. A short-lived `sh` writes a temporary name, sets mode `0755` and renames it into place. These tests cannot reach `tests/support`. |
+| `crates/amplihack-cli/tests/` and the `amplihack` `integration` target | `exec_stub::write_executable(path, body, mode)`. |
+| Unit tests inside a crate that has a `test_support` module (`mermaid_cli` and `codex_plugin` in `amplihack-cli`, `session_start::blarify` in `amplihack-hooks`) | `crate::test_support::write_executable(path, body)`, a wrapper that includes `exec_stub.rs` with `#[path]` and passes mode `0755`. |
+
+There is one writer, `crates/amplihack-cli/tests/support/exec_stub.rs`. A
+short-lived `sh` writes `<path>.stub-tmp.<pid>`, sets the mode and renames it
+over `path`. The test process never holds a write descriptor that a fork
+could inherit, and rewriting a stub that is still running replaces the
+directory entry instead of failing with `ETXTBSY`.
 | Anywhere neither is possible | Retry the spawn once when it fails with `ErrorKind::ExecutableFileBusy`. |
 
 Quote every argument in the stub and never interpolate test input into
@@ -235,8 +269,10 @@ the pattern in
 The hand-fix lock bound in `handfix_plan.rs` keeps passing the
 `IDENTITY_BUDGET` constant in every build, so the budget knob never changes
 it. Its 45 s bound also covers one identity read, so in a debug build the
-read-timeout knob can stretch it. In release builds, and in debug builds with
-`AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS` unset, the bound is 45 s.
+read-timeout knob can stretch it: with the knob at the fixtures' 600 s, a
+debug build can hold the lock for about 30 s + 3 × 600 s. In release builds,
+and in debug builds with `AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS` unset,
+the bound is 45 s.
 
 Check that a release binary contains no identity knob:
 
@@ -306,6 +342,8 @@ A test that runs `stop` from a shell whose root resolves elsewhere uses
 `f.stop_until_gone_by(pid, || f.cmd_no_root_env(&["profile", "rotate", "stop"]))`.
 
 `stop_until_gone` has already waited for `pid` to exit before it returns.
+Each attempt is an `output_within` call with its own ceiling, inside a
+`wait_until` with another, so a real hang can take about 20 minutes to fail.
 
 It signals nothing itself and never reads a pid from the pid file to signal.
 `a_stubborn…` still asserts a single refusal and does not use it.

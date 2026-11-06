@@ -37,7 +37,7 @@ use amplihack_utils::launch_target::{LaunchTarget, OverrideOrigin, TargetSource}
 pub fn maybe_print_npm_update_notice(tool: &str, skip: bool, override_origin: OverrideOrigin) {
     // SEC-WS3: AMPLIHACK_NONINTERACTIVE check is the second guard.
     // Unconditionally prevents subprocess spawning regardless of skip flag.
-    if skip || is_noninteractive() {
+    if !check_wanted(skip, is_noninteractive()) {
         return;
     }
 
@@ -77,6 +77,14 @@ pub fn maybe_print_npm_update_notice(tool: &str, skip: bool, override_origin: Ov
         eprintln!("amplihack: update available: {pkg} {safe_installed} → {safe_latest}");
         eprintln!("(run: npm install -g {pkg} to update)");
     }
+}
+
+/// Whether the npm check may run: never when `--skip-update-check` was
+/// passed, and never when the session is non-interactive. A separate
+/// function so a test can show `skip` alone suppresses the check; under the
+/// test harness stdin is not a TTY, so `is_noninteractive()` is always true.
+fn check_wanted(skip: bool, noninteractive: bool) -> bool {
+    !skip && !noninteractive
 }
 
 /// Does an `npm install -g <pkg>` notice actually describe *this* target?
@@ -338,6 +346,19 @@ mod tests {
     // carries the parsing tests.
 
     // ── maybe_print_npm_update_notice guards ──────────────────────────────
+
+    /// Issue #1973: `--skip-update-check` alone suppresses the check, even
+    /// in an interactive session, and either guard alone is enough.
+    #[test]
+    fn check_wanted_only_without_skip_in_an_interactive_session() {
+        assert!(check_wanted(false, false));
+        assert!(
+            !check_wanted(true, false),
+            "skip alone must suppress the check"
+        );
+        assert!(!check_wanted(false, true));
+        assert!(!check_wanted(true, true));
+    }
 
     /// WS3-UNIT-17: maybe_print_npm_update_notice returns immediately when skip=true.
     #[test]
