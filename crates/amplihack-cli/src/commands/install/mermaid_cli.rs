@@ -67,13 +67,23 @@ pub(super) enum Outcome {
 /// the install console quiet and avoids allocating/reading capture pipes.
 /// `configure` runs last, just before the spawn; production passes a no-op.
 fn version_probe_succeeds(bin: &str, configure: &dyn Fn(&mut Command)) -> bool {
+    version_probe_succeeds_within(bin, configure, VERSION_PROBE_TIMEOUT)
+}
+
+/// [`version_probe_succeeds`] with the time limit as a parameter, so a test
+/// whose subject is not the limit can allow a loaded host more time.
+fn version_probe_succeeds_within(
+    bin: &str,
+    configure: &dyn Fn(&mut Command),
+    timeout: Duration,
+) -> bool {
     let mut cmd = Command::new(bin);
     amplihack_utils::litellm_proxy::scrub_inference_environment(&mut cmd);
     cmd.arg("--version")
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     configure(&mut cmd);
-    run_with_timeout(cmd, VERSION_PROBE_TIMEOUT)
+    run_with_timeout(cmd, timeout)
         .map(|status| status.success())
         .unwrap_or(false)
 }
@@ -157,10 +167,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     fn write_fake(dir: &Path, name: &str, script: &str) -> PathBuf {
         let path = dir.join(name);
-        std::fs::write(&path, script).unwrap();
-        let mut perms = std::fs::metadata(&path).unwrap().permissions();
-        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
-        std::fs::set_permissions(&path, perms).unwrap();
+        crate::test_support::write_executable(&path, script);
         path
     }
 
@@ -197,6 +204,52 @@ mod tests {
         assert!(!result, "timed-out version probes must fail closed");
     }
 
+    /// Issue #1973: the timeout is a parameter of the probe, so a test whose
+    /// subject is not the timeout can give a slow but finite binary all the
+    /// time a loaded host needs. The fake runs longer than the production
+    /// bound of 500 ms and must still pass.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn version_probe_within_a_long_timeout_waits_for_a_slow_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_bin = write_fake(temp.path(), "mmdc", "#!/bin/sh\n/bin/sleep 1\nexit 0\n");
+
+        let result = version_probe_succeeds_within(
+            fake_bin.to_str().unwrap(),
+            &|cmd: &mut Command| {
+                cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
+            },
+            Duration::from_secs(600),
+        );
+
+        assert!(result, "a slow fake that exits 0 must pass a 600 s probe");
+    }
+
+    /// Issue #1973: the parameterised probe still fails closed on a
+    /// non-zero exit.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn version_probe_within_fails_closed_on_a_failing_binary() {
+        let temp = tempfile::tempdir().unwrap();
+        let fake_bin = write_fake(temp.path(), "mmdc", "#!/bin/sh\nexit 1\n");
+
+        let result = version_probe_succeeds_within(
+            fake_bin.to_str().unwrap(),
+            &|cmd: &mut Command| {
+                cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
+            },
+            Duration::from_secs(600),
+        );
+
+        assert!(!result, "a fake that exits 1 must fail the probe");
+    }
+
+    /// Issue #1973: production keeps the 500 ms bound.
+    #[test]
+    fn the_production_version_probe_bound_is_unchanged() {
+        assert_eq!(VERSION_PROBE_TIMEOUT, Duration::from_millis(500));
+    }
+
     /// Issue #1765 (A2): the hook's environment reaches the probe's child.
     /// Kept apart from the timeout test, because a fake that is killed at the
     /// timeout may not have written anything yet. The second line proves the
@@ -217,9 +270,15 @@ mod tests {
             ),
         );
 
-        let result = version_probe_succeeds(fake_bin.to_str().unwrap(), &|cmd: &mut Command| {
-            cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
-        });
+        // Issue #1973: the subject here is the child's environment, not the
+        // time limit, so a loaded host gets the wait ceiling.
+        let result = version_probe_succeeds_within(
+            fake_bin.to_str().unwrap(),
+            &|cmd: &mut Command| {
+                cmd.env("HOME", temp.path()).env_remove(ROOT_ENV);
+            },
+            Duration::from_secs(600),
+        );
 
         assert!(result, "a fake that exits 0 must pass the version probe");
         let captured = std::fs::read_to_string(&capture).expect("the fake records its environment");

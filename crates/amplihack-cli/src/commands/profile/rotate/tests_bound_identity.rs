@@ -8,9 +8,14 @@ use std::fs;
 fn an_exhausted_shared_budget_starts_no_identity_read() {
     let e = env();
     let budget = Budget::new();
-    budget
-        .0
-        .set(std::time::Instant::now() - super::IDENTITY_BUDGET);
+    budget.0.set(
+        std::time::Instant::now()
+            .checked_sub(super::super::cred_identity::identity_budget())
+            .expect(
+                "host uptime is shorter than the identity budget; \
+                 unset AMPLIHACK_TEST_IDENTITY_* or reboot later",
+            ),
+    );
     let read = |_: &std::path::Path| -> Result<super::Account, &'static str> {
         panic!("identity read started after the shared deadline")
     };

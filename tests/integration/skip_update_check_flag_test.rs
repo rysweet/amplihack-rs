@@ -11,8 +11,13 @@
 //! These tests verify:
 //! 1. The flag is accepted by the CLI without error
 //! 2. The flag appears in `amplihack launch --help` output
-//! 3. The flag suppresses npm subprocess invocations (no extra latency)
-//! 4. The flag is independent of `AMPLIHACK_NONINTERACTIVE=1` (both work)
+//! 3. A launch with the flag completes without running npm
+//!
+//! Point 3 does not show that the flag is what prevents npm. These runs have
+//! no TTY on stdin, so `is_noninteractive()` already skips the check, flag or
+//! not (issue #1973). The unit test
+//! `tool_update_check::tests::check_wanted_only_without_skip_in_an_interactive_session`
+//! shows that `skip` alone suppresses the check.
 //!
 //! ## Failure modes
 //!
@@ -213,57 +218,56 @@ fn launch_without_skip_update_check_is_not_an_error() {
 }
 
 // ---------------------------------------------------------------------------
-// WS3-INT-4: --skip-update-check suppresses npm subprocess timing
+// WS3-INT-4: --skip-update-check runs no npm subprocess
 // ---------------------------------------------------------------------------
 
-/// With `--skip-update-check`, launch completes quickly because no npm
-/// subprocesses are spawned.  Without the flag (in AMPLIHACK_NONINTERACTIVE=1
-/// mode), the check is also skipped — but this test validates the flag path.
+/// With `--skip-update-check`, launch runs no npm subprocess at all.
 ///
-/// This test measures elapsed time: if npm were called, even with a 3s
-/// timeout, the overhead would be measurable.  The stub environment has no
-/// npm binary, so the subprocess would fail immediately — we verify the
-/// flag causes zero subprocess overhead.
+/// Issue #1973: this used to measure elapsed time, which a loaded host
+/// could push past any bound. Now a recording `npm` stub is the only `npm`
+/// on `PATH`; it appends its arguments to a file in the tempdir and exits 1.
+/// The test asserts that file never appeared.
+#[cfg(unix)]
 #[test]
 fn launch_with_skip_update_check_completes_without_npm_subprocess_overhead() {
     let bin = require_binary();
 
-    // Create a temp dir with stub claude but NO npm binary.
-    // This means any npm invocation would fail with ENOENT.
     let tmpdir = tempfile::tempdir().expect("failed to create tempdir");
-    let stub_bin = tmpdir.path().join("claude");
+    crate::exec_stub::write_executable(&tmpdir.path().join("claude"), healthy_stub_script(), 0o755);
+    let record = tmpdir.path().join("npm-calls");
+    let record_text = record.to_str().expect("temporary paths are UTF-8");
+    assert!(
+        !record_text.contains(['\'', '\n']),
+        "cannot single-quote {record_text:?} for /bin/sh"
+    );
+    // The record path is written into the stub, so the stub records even if
+    // launch gives npm a cleared environment.
+    crate::exec_stub::write_executable(
+        &tmpdir.path().join("npm"),
+        format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{record_text}'\nexit 1\n"),
+        0o755,
+    );
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::write(&stub_bin, healthy_stub_script()).expect("failed to write stub claude");
-        let mut perms = std::fs::metadata(&stub_bin)
-            .expect("failed to stat stub")
-            .permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&stub_bin, perms).expect("failed to chmod stub");
-    }
-
-    // PATH contains only our stub dir — npm is not available.
+    // PATH contains only the stub dir: the recording npm is the only npm.
     let isolated_path = tmpdir.path().to_string_lossy().to_string();
 
-    let start = std::time::Instant::now();
-    let _status = crate::isolated_amplihack::isolated(&bin)
-        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+    let mut cmd = crate::isolated_amplihack::isolated(&bin);
+    cmd.env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["launch", "--skip-update-check"])
         .env("PATH", &isolated_path)
         .env("AMPLIHACK_NONINTERACTIVE", "1")
-        .output()
-        .expect("failed to run amplihack launch --skip-update-check");
-    let elapsed = start.elapsed();
+        .stdin(std::process::Stdio::null());
+    let out = crate::wait::output_within("`amplihack launch --skip-update-check`", &mut cmd);
 
-    // Should complete within 1 second — no npm timeout overhead.
+    let calls = std::fs::read_to_string(&record).ok();
     assert!(
-        elapsed.as_secs() < 5,
-        "FAIL: `amplihack launch --skip-update-check` took {}s (expected <5s).\n\
-         This suggests npm subprocesses are being spawned despite the flag.\n\
-         Check that maybe_print_npm_update_notice respects the skip parameter.",
-        elapsed.as_secs()
+        calls.is_none(),
+        "FAIL: `amplihack launch --skip-update-check` ran npm ({}):\n{}\n\
+         Check that maybe_print_npm_update_notice respects the skip parameter.\n\
+         stderr: {}",
+        out.status,
+        calls.unwrap_or_default(),
+        String::from_utf8_lossy(&out.stderr)
     );
 }
 

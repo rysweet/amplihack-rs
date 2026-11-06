@@ -14,6 +14,11 @@
 //! recording anything, so every probe falls back to `/usage`. With
 //! `$CANNED/marks`, each `/usage` probe appends `S <email>` and `E <email>`
 //! to `$RECORD_DIR/marks` around a 0.5 s sleep.
+//!
+//! Issue #1973: every command raises the identity budget and read timeout
+//! to the wait ceiling, the identity endpoint serves each connection on its
+//! own thread, and `$CANNED/hold` (see [`Fixture::hold_probes`]) holds each
+//! `/usage` probe after it has recorded its environment.
 
 #![cfg(unix)]
 #![allow(dead_code)]
@@ -25,6 +30,13 @@ use std::process::{Command, Output};
 
 pub use super::amplihack_bin::amplihack_bin;
 use super::exec_stub::write_executable;
+use super::wait::{CEILING, output_within, wait_until};
+
+/// Debug-build knobs that raise the identity budget and read timeout.
+pub const IDENTITY_BUDGET_ENV: &str = "AMPLIHACK_TEST_IDENTITY_BUDGET_SECS";
+pub const IDENTITY_READ_TIMEOUT_ENV: &str = "AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS";
+/// What `profile rotate stop` reports when the rotator outlives its 10 s wait.
+pub const STOP_REFUSAL: &str = "did not exit within 10 seconds";
 
 pub const CREDS: &str = ".credentials.json";
 pub const ABORT_ENV: &str = "AMPLIHACK_AUTO_SWITCH_TEST_ABORT_AFTER";
@@ -49,6 +61,7 @@ esac
   printf 'CLAUDE_CONFIG_DIR=%s\n' "${CLAUDE_CONFIG_DIR-<unset>}"
   env | grep '^AMPLIHACK_ROTATE' || true
 } > "$RECORD_DIR/env.$email.$$"
+while [ -f "$CANNED/hold" ]; do sleep 0.05; done
 if [ -f "$CANNED/marks" ]; then
   echo "S $email" >> "$RECORD_DIR/marks"
   sleep 0.5
@@ -375,6 +388,10 @@ impl Fixture {
         self.base(args)
     }
 
+    /// Every fixture command. Both identity knobs are set to the wait
+    /// ceiling after `env_clear()`, so a loaded host cannot use up the 30 s
+    /// identity budget or the 5 s read timeout (issue #1973). A future test
+    /// of budget exhaustion must `env_remove` both.
     fn base(&self, args: &[&str]) -> Command {
         self.assert_isolated();
         let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
@@ -406,11 +423,97 @@ impl Fixture {
             // Launches never start a real background rotator here (autostart).
             .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
             .env("AMPLIHACK_SKIP_REFLECTION", "1");
+        let ceiling = CEILING.as_secs().to_string();
+        c.env(IDENTITY_BUDGET_ENV, &ceiling)
+            .env(IDENTITY_READ_TIMEOUT_ENV, &ceiling);
         c
     }
 
+    /// The loopback identity endpoint, `http://127.0.0.1:<port>`.
+    pub fn identity_base(&self) -> &str {
+        &self.identity.base
+    }
+
+    /// Holds every later `/usage` probe after it records its environment,
+    /// until [`Self::release_probes`] or the guard is dropped.
+    pub fn hold_probes(&self) -> ProbeHold {
+        let marker = self.canned.join("hold");
+        fs::write(&marker, "").unwrap();
+        ProbeHold(marker)
+    }
+
+    /// Lets held probes finish.
+    pub fn release_probes(&self) {
+        remove_marker(&self.canned.join("hold"));
+    }
+
+    /// Runs `profile rotate stop` until the rotator `pid` is gone. Under load
+    /// the rotator may take longer than `stop`'s own 10 s wait, so a refusal
+    /// with that text is retried; any other failure panics. Returns the last
+    /// successful output and whether any attempt was refused. Never signals
+    /// a pid itself.
+    pub fn stop_until_gone(&self, pid: i32) -> (Output, bool) {
+        self.stop_until_gone_by(pid, || self.cmd(&["profile", "rotate", "stop"]))
+    }
+
+    /// [`Self::stop_until_gone`] with the `stop` command built by `stop`,
+    /// for tests that run it from a shell whose root resolves elsewhere.
+    pub fn stop_until_gone_by(
+        &self,
+        pid: i32,
+        mut stop: impl FnMut() -> Command,
+    ) -> (Output, bool) {
+        let mut refused = false;
+        let mut last = None;
+        wait_until(&format!("`profile rotate stop` to stop pid {pid}"), || {
+            let out = output_within("`profile rotate stop`", &mut stop());
+            assert_no_secrets(&out);
+            if out.status.success() {
+                last = Some(out);
+                return true;
+            }
+            let err = text(&out.stderr);
+            assert!(
+                err.contains(STOP_REFUSAL),
+                "`profile rotate stop` failed: {}\nstdout: {}\nstderr: {err}",
+                out.status,
+                text(&out.stdout)
+            );
+            refused = true;
+            false
+        });
+        wait_until(&format!("rotator pid {pid} to exit"), || !alive(pid));
+        (last.expect("a successful stop"), refused)
+    }
+
+    /// Checks what `stop_until_gone` returned. Without a refusal `stop`
+    /// must report this pid stopped; after one, the rotator may have exited
+    /// between attempts, so `not running` or a removed stale pid file are
+    /// also correct. Either way the pid file is gone.
+    pub fn assert_stopped(&self, out: &Output, refused: bool, pid: i32) {
+        let stdout = text(&out.stdout);
+        let stopped = format!("rotate: stopped (pid {pid})");
+        if refused {
+            assert!(
+                stdout.contains(&stopped)
+                    || stdout.contains("rotate: not running")
+                    || stdout.contains("rotate: removed a stale pid file"),
+                "after a refusal: {stdout}"
+            );
+        } else {
+            assert!(stdout.contains(&stopped), "{stdout}");
+        }
+        assert!(
+            !self.rotate_dir().join("rotate.pid").exists(),
+            "stop removes the pid file"
+        );
+    }
+
     pub fn run(&self, args: &[&str]) -> Output {
-        let out = self.cmd(args).output().unwrap();
+        let out = output_within(
+            &format!("`amplihack {}`", args.join(" ")),
+            &mut self.cmd(args),
+        );
         assert_no_secrets(&out);
         // A rotate swap off a full login damps it at that whole second, and
         // only a reading strictly later may choose it again (#1870). The
@@ -536,6 +639,31 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
     assert_text_has_no_secrets(line);
 }
 
+/// Whether `pid` exists (a zombie counts until it is reaped).
+pub fn alive(pid: i32) -> bool {
+    // SAFETY: signal 0 only checks that the process exists.
+    unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Removes the probe hold marker when dropped, so a failing test never
+/// leaves probes held.
+pub struct ProbeHold(PathBuf);
+
+impl Drop for ProbeHold {
+    fn drop(&mut self) {
+        remove_marker(&self.0);
+    }
+}
+
+fn remove_marker(marker: &Path) {
+    match fs::remove_file(marker) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            panic!("cannot remove {}: {e}", marker.display())
+        }
+        _ => {}
+    }
+}
+
 fn unix_now() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     let d = SystemTime::now()
@@ -553,9 +681,12 @@ fn direct_usage_file(email: &str) -> String {
 fn direct_answer(canned: &Path, block: &serde_json::Value) -> Option<serde_json::Value> {
     let email = block["emailAddress"].as_str().unwrap_or("");
     let raw = fs::read(canned.join(direct_usage_file(email))).ok()?;
-    Some(serde_json::from_slice(&raw).unwrap())
+    Some(serde_json::from_slice(&raw).expect("canned direct usage answer is JSON"))
 }
 
+/// Each connection is served on its own thread: a slow, silent or broken
+/// client ends only its own connection (issue #1973). A `/usage` request
+/// for a login with a canned direct answer gets that answer (issue #1962).
 struct IdentityEndpoint {
     base: String,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -563,7 +694,6 @@ struct IdentityEndpoint {
 }
 impl IdentityEndpoint {
     fn new(canned: PathBuf) -> Self {
-        use std::io::{BufRead, Write};
         use std::sync::atomic::{AtomicBool, Ordering};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -572,78 +702,18 @@ impl IdentityEndpoint {
         let stopping = stop.clone();
         let worker = std::thread::spawn(move || {
             while !stopping.load(Ordering::Relaxed) {
-                let (mut stream, _) = match listener.accept() {
-                    Ok(v) => v,
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        let canned = canned.clone();
+                        std::thread::spawn(move || serve_identity(stream, &canned));
+                    }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(5));
-                        continue;
                     }
+                    // A connection that failed before it was accepted (for
+                    // example reset by its client) concerns that client only.
+                    Err(e) if e.kind() == std::io::ErrorKind::ConnectionAborted => {}
                     Err(e) => panic!("fake identity listener: {e}"),
-                };
-                stream
-                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
-                    .unwrap();
-                let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
-                let profile = line.starts_with("GET /api/oauth/profile ");
-                let usage = line.starts_with("GET /api/oauth/usage ");
-                let mut block = None;
-                loop {
-                    line.clear();
-                    if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
-                        break;
-                    }
-                    if let Some((k, v)) = line.split_once(':')
-                        && k.eq_ignore_ascii_case("authorization")
-                        && let Some(hex) = v.trim().strip_prefix("Bearer fake-rotation1753-")
-                    {
-                        let bytes: Result<Vec<u8>, _> = hex
-                            .as_bytes()
-                            .chunks_exact(2)
-                            .map(|b| u8::from_str_radix(std::str::from_utf8(b).unwrap(), 16))
-                            .collect();
-                        block = bytes
-                            .ok()
-                            .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
-                    }
-                }
-                let direct = block
-                    .as_ref()
-                    .filter(|_| usage)
-                    .and_then(|b| direct_answer(&canned, b));
-                let (status, body) = match block {
-                    Some(b) if profile => (
-                        "200 OK",
-                        serde_json::json!({"account": {
-                        "uuid": b["accountUuid"], "email": b["emailAddress"]
-                    }, "organization": {"uuid": b["organizationUuid"]}}),
-                    ),
-                    // Issue #1962: a dry run has no `claude` fallback, so a test
-                    // of its decision sets the direct answer ([`Fixture::usage_direct`]).
-                    Some(_) if direct.is_some() => ("200 OK", direct.unwrap()),
-                    // Valid fake credentials use the existing canned Claude
-                    // fallback. A 401 would request a refresh and alter the
-                    // profile directory even during a dry-run measurement.
-                    Some(_) if usage => (
-                        "503 Service Unavailable",
-                        serde_json::json!({"error":"owned fake usage uses canned fallback"}),
-                    ),
-                    _ => ("401 Unauthorized", serde_json::json!({"error":"fake-only"})),
-                };
-                let body = body.to_string();
-                let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                );
-                if let Err(e) = stream.write_all(response.as_bytes()) {
-                    assert!(
-                        matches!(
-                            e.kind(),
-                            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
-                        ),
-                        "{e}"
-                    );
                 }
             }
         });
@@ -654,9 +724,96 @@ impl IdentityEndpoint {
         }
     }
 }
+
+/// Answers one request. A read error, a timeout or an early end of input
+/// ends this connection without an answer; a failed write is the client's
+/// concern. Request data is never echoed.
+fn serve_identity(stream: std::net::TcpStream, canned: &Path) {
+    use std::io::{BufRead, Write};
+    if stream.set_nonblocking(false).is_err() || stream.set_read_timeout(Some(CEILING)).is_err() {
+        return;
+    }
+    let Ok(read_half) = stream.try_clone() else {
+        return;
+    };
+    let mut reader = std::io::BufReader::new(read_half);
+    let mut line = String::new();
+    if !matches!(reader.read_line(&mut line), Ok(n) if n > 0) {
+        return;
+    }
+    let profile = line.starts_with("GET /api/oauth/profile ");
+    let usage = line.starts_with("GET /api/oauth/usage ");
+    let mut block = None;
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) | Err(_) => return,
+            Ok(_) if line == "\r\n" => break,
+            Ok(_) => {}
+        }
+        if let Some((k, v)) = line.split_once(':')
+            && k.eq_ignore_ascii_case("authorization")
+            && let Some(hex) = v.trim().strip_prefix("Bearer fake-rotation1753-")
+        {
+            let bytes: Option<Vec<u8>> = hex
+                .as_bytes()
+                .chunks_exact(2)
+                .map(|b| {
+                    std::str::from_utf8(b)
+                        .ok()
+                        .and_then(|h| u8::from_str_radix(h, 16).ok())
+                })
+                .collect();
+            block = bytes.and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
+        }
+    }
+    let direct = block
+        .as_ref()
+        .filter(|_| usage)
+        .and_then(|b| direct_answer(canned, b));
+    let (status, body) = match block {
+        Some(b) if profile => (
+            "200 OK",
+            serde_json::json!({"account": {
+                "uuid": b["accountUuid"], "email": b["emailAddress"]
+            }, "organization": {"uuid": b["organizationUuid"]}}),
+        ),
+        // Issue #1962: a dry run has no `claude` fallback, so a test of its
+        // decision sets the direct answer ([`Fixture::usage_direct`]).
+        Some(_) if direct.is_some() => ("200 OK", direct.unwrap()),
+        // Valid fake credentials use the existing canned Claude fallback. A
+        // 401 would request a refresh and alter the profile directory even
+        // during a dry-run measurement.
+        Some(_) if usage => (
+            "503 Service Unavailable",
+            serde_json::json!({"error":"owned fake usage uses canned fallback"}),
+        ),
+        _ => ("401 Unauthorized", serde_json::json!({"error":"fake-only"})),
+    };
+    let body = body.to_string();
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let mut stream = stream;
+    // A failed write means the client has gone; it ends only this
+    // connection, and the client sees no answer.
+    if let Err(e) = stream.write_all(response.as_bytes()) {
+        eprintln!(
+            "fake identity endpoint: client gone before the answer: {}",
+            e.kind()
+        );
+    }
+}
+
 impl Drop for IdentityEndpoint {
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        self.worker.take().unwrap().join().unwrap();
+        if let Some(worker) = self.worker.take()
+            && let Err(e) = worker.join()
+            && !std::thread::panicking()
+        {
+            std::panic::resume_unwind(e);
+        }
     }
 }

@@ -1,7 +1,7 @@
 //! Short-lived credential identity bound to non-secret file metadata.
 //! A refresh invalidates the binding; only a fresh reading can authorize it.
 
-use super::cred_identity::{IDENTITY_BUDGET, ReadFn};
+use super::cred_identity::{ReadFn, identity_budget};
 use super::identify::{Account, LoginKind, login_kind};
 use crate::commands::profile::auto_switch::kit::{CREDS, dir_writable_by_others, euid};
 use crate::commands::profile::usage_direct::reason;
@@ -144,7 +144,7 @@ impl Budget {
     }
     /// Whether another bounded identity read may start.
     pub fn available(&self) -> bool {
-        self.0.get().elapsed() < IDENTITY_BUDGET
+        self.0.get().elapsed() < identity_budget()
     }
     /// Exclude time spent measuring usage from the identity-work deadline.
     pub fn exclude_measurement(&self, elapsed: Duration) {

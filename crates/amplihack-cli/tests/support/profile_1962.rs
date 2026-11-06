@@ -7,7 +7,8 @@
 #![cfg(unix)]
 #![allow(dead_code)]
 
-use super::profile_rotate::{Fixture, private_file, text};
+use super::profile_rotate::{Fixture, IDENTITY_READ_TIMEOUT_ENV, private_file, text};
+use super::wait::CEILING;
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -25,13 +26,20 @@ pub const REFRESH: &str = "fake-task1962-refresh-";
 /// The expired access token `World::expire` writes. The fake never accepts it,
 /// so a test that gets past it proves the refresh came first.
 const OLD: &str = "-old";
+/// The identity read timeout, in seconds, of a command run while a login's
+/// answer is [`Answer::Hang`]: the product's 5 s. The #1592 fixture raises the
+/// timeout to [`CEILING`] for load tolerance (issue #1973); a hang test needs
+/// the read to time out, so it puts the product value back.
+const HANG_READ_TIMEOUT_SECS: &str = "5";
 
 /// How the fake answers a login's profile and usage requests.
 #[derive(Clone)]
 pub enum Answer {
     Account(serde_json::Value),
     Status(u16),
-    /// Holds the connection past the 5-second identity timeout.
+    /// Holds the connection open without an answer until the fake is
+    /// dropped (at most [`CEILING`]), so the reader's own timeout always ends
+    /// the read first and the cause is `timeout`, never `transport`.
     Hang,
     /// The identity answers with this account, and the usage read with this status.
     UsageStatus(serde_json::Value, u16),
@@ -103,6 +111,16 @@ impl Fake {
             .unwrap()
             .answers
             .insert(who.into(), answer);
+    }
+
+    /// Whether any login's answer is [`Answer::Hang`].
+    pub fn hangs(&self) -> bool {
+        self.script
+            .lock()
+            .unwrap()
+            .answers
+            .values()
+            .any(|a| matches!(a, Answer::Hang))
     }
 
     /// `who`'s fake refresh token now renews to `to`'s access token.
@@ -208,7 +226,7 @@ fn serve(mut stream: TcpStream, script: &Mutex<Script>, stop: &AtomicBool) {
         Answer::Status(code) => (format!("{code} Fake"), serde_json::json!({"error": "fake"})),
         Answer::UsageStatus(..) => unreachable!("resolved above"),
         Answer::Hang => {
-            let until = Instant::now() + Duration::from_secs(8);
+            let until = Instant::now() + CEILING;
             while Instant::now() < until && !stop.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(20));
             }
@@ -390,6 +408,9 @@ impl World {
                 "AMPLIHACK_PROFILE_USAGE_TOKEN_URL",
                 format!("{}/v1/oauth/token", self.fake.base()),
             );
+        if self.fake.hangs() {
+            c.env(IDENTITY_READ_TIMEOUT_ENV, HANG_READ_TIMEOUT_SECS);
+        }
         c
     }
 

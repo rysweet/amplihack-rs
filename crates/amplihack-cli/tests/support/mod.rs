@@ -18,3 +18,4 @@ pub mod runner_probe;
 pub mod sessions_archive;
 pub mod socket_dir;
 pub mod test_path;
+pub mod wait;
