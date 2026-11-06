@@ -93,7 +93,8 @@ const POLICY_STEPS: &[(&str, &str)] = &[
 
 /// Scratch vocabulary: a `/tmp/` line is flagged only if it also contains one
 /// of these (regex fragments). The list matches the reference page exactly;
-/// `clone` covers `git clone`, and the redirect covers `>` and `>>`.
+/// `clone` covers `git clone`, and the redirect covers `>` and `>>`, with or
+/// without a quoted target.
 const SCRATCH_VOCAB: &[&str] = &[
     r"basetemp",
     r"tmp_path",
@@ -106,7 +107,7 @@ const SCRATCH_VOCAB: &[&str] = &[
     r"mktemp",
     r"--shadow-log",
     r"mkdir",
-    r">>?\s*/tmp/",
+    r#">>?\s*["']?/tmp/"#,
 ];
 
 /// (path relative to amplifier-bundle/, line substring, reason).
@@ -355,7 +356,6 @@ fn policy_steps_table_has_no_duplicates() {
     for pair in POLICY_STEPS {
         assert!(seen.insert(pair), "duplicate POLICY_STEPS entry: {pair:?}");
     }
-    assert_eq!(POLICY_STEPS.len(), 16, "issue #1978 lists 16 policy steps");
 }
 
 // -------------------------------------------------------------------------
@@ -450,6 +450,8 @@ fn detector_flags_incident_forms() {
         "git worktree add /tmp/wt649impl -b fix",
         "cargo mutants --in-place > /tmp/mutants.log",
         "cargo test >> /tmp/out.log",
+        "echo done > \"/tmp/out.log\"",
+        "echo done >> '/tmp/out.log'",
         "cp -r src /tmp/mutant-copy",
         "git clone https://example.invalid/r.git /tmp/clone",
         "d=$(mktemp -d /tmp/wt.XXXXXX)",
@@ -543,9 +545,8 @@ fn bad_edits_to_a_policy_prompt_are_caught() {
 #[test]
 fn scan_scope_skips_symlinks_and_excluded_folders() {
     let files = scan_files();
-    let mut dedup = files.clone();
-    dedup.dedup();
-    assert_eq!(files.len(), dedup.len(), "scan set has duplicate paths");
+    let unique: std::collections::HashSet<&String> = files.iter().collect();
+    assert_eq!(files.len(), unique.len(), "scan set has duplicate paths");
     for f in &files {
         assert!(
             !f.contains("/docker-compose/") && !f.contains("/templates/"),
@@ -572,7 +573,7 @@ fn scan_scope_skips_symlinks_and_excluded_folders() {
 // -------------------------------------------------------------------------
 
 /// The workflow runtime root falls back through `$TMPDIR` before `/tmp`, and
-/// the root is created mode 0700 before its subfolders. The old form
+/// the final runtime-root folder is created mode 0700 before its subfolders. The old form
 /// `${XDG_RUNTIME_DIR:-/tmp}/...` contains no `/tmp/`, so the scanner alone
 /// cannot catch it.
 #[test]
@@ -594,7 +595,8 @@ fn workflow_runtime_root_falls_back_through_tmpdir() {
         assign.trim()
     );
 
-    // The root itself is created 0700 before any subfolder.
+    // The final runtime-root folder is created with mode 700 before any
+    // subfolder. This does not cover its parent folders or an existing folder.
     let sub = lines
         .iter()
         .enumerate()

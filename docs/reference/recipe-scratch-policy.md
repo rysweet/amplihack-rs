@@ -49,7 +49,6 @@ Properties of the sentence:
 | Property | Value |
 |---|---|
 | Marker the test looks for | `Scratch policy (#1978)` |
-| Terms the test also requires | `$TMPDIR`, `--basetemp`, `tmp_path`, `mutation`, `worktree`, `clone` |
 | Template variables | None. It contains no `{{...}}` and is not placed next to one. |
 | Literal `/tmp/` | None. It says `/tmp path`, without a trailing slash, so it does not trip the scanner. |
 | Host-specific paths | None. |
@@ -130,7 +129,7 @@ The order of preference is:
 3. `$TMPDIR/amplihack-runtime/<branch>`.
 4. `/tmp/amplihack-runtime/<branch>`.
 
-The step creates the root with mode `0700` before it creates any subfolder, because the root may now fall back to a shared folder. The `tools/workflow_runtime_root.sh` helper is unchanged. For the wider runtime layout, see [Configure Workflow Runtime Isolation](../howto/configure-workflow-runtime-isolation.md).
+The step creates the final root folder with mode `0700` before it creates any subfolder, because the root may now fall back to a shared folder. `mkdir -p -m 700` does not set the mode on the parent `amplihack-runtime/` folder, and it does not change a folder that already exists. The `tools/workflow_runtime_root.sh` helper is unchanged. For the wider runtime layout, see [Configure Workflow Runtime Isolation](../howto/configure-workflow-runtime-isolation.md).
 
 ## The guard test
 
@@ -147,7 +146,7 @@ The crate sets `autotests = false`, so the file is a module of the single `cli_i
 | `top_level_recipes_state_policy` | The sentence is in the `description` of `auto-drive-to-merge.yaml` and `default-workflow.yaml`. |
 | `fixer_test_qa_steps_carry_policy` | Every step in [the step table](#where-the-sentence-appears) exists, has a `prompt`, and the prompt contains the marker, all required terms and the sentence verbatim. It collects every failure before it panics. |
 | `no_prompt_or_skill_directs_scratch_to_literal_tmp` | No line in the scan scope matches the [detection rule](#detection-rule) unless an [allowlist](#allowlist) entry covers it. |
-| `workflow_runtime_root_falls_back_through_tmpdir` | The runtime-root fallback in `workflow-worktree.yaml` goes through `${TMPDIR:-/tmp}`, and the root is created with mode `0700` before its subfolders. The old form contains no `/tmp/`, so the scanner alone cannot catch it. |
+| `workflow_runtime_root_falls_back_through_tmpdir` | The runtime-root fallback in `workflow-worktree.yaml` goes through `${TMPDIR:-/tmp}`, and the final root folder is created with mode `0700` before its subfolders. The old form contains no `/tmp/`, so the scanner alone cannot catch it. |
 | `multitask_cleanup_targets_tmpdir_workstreams` | No multitask `rm -rf` line removes a literal `/tmp/amplihack-workstreams` path. `rm` is not scratch vocabulary, so the scanner does not see these lines. |
 | `policy_sentence_does_not_trip_scanner` | The policy sentence itself passes the detection rule. |
 
@@ -177,7 +176,7 @@ A line is flagged when all of these hold:
 
 1. It is not a whole-line YAML comment (a line whose first non-blank character is `#` in a `.yaml` file). Markdown lines are never treated as comments, including `#` lines inside fenced shell blocks.
 2. It contains `/tmp/`. The prescribed form `"${TMPDIR:-/tmp}/..."` contains no `/tmp/`, so it passes this condition without any special case.
-3. It contains one of the scratch words on the same line. The list matches `SCRATCH_VOCAB` in the test exactly: `basetemp`, `tmp_path`, `pytest`, `mutat`, `scratch`, `cp -r`, `worktree`, `clone`, `mktemp`, `--shadow-log`, `mkdir`, `> /tmp/`. The last entry is a redirection into `/tmp/`; it also matches `>> /tmp/`. `clone` matches `git clone`.
+3. It contains one of the scratch words on the same line. The list matches `SCRATCH_VOCAB` in the test exactly: `basetemp`, `tmp_path`, `pytest`, `mutat`, `scratch`, `cp -r`, `worktree`, `clone`, `mktemp`, `--shadow-log`, `mkdir`, `> /tmp/`. The last entry is a redirection into `/tmp/`; it also matches `>> /tmp/` and a quoted target such as `> "/tmp/x"` or `> '/tmp/x'`. `clone` matches `git clone`.
 4. No allowlist entry matches it.
 
 The word list limits the rule to lines that tell an agent where to write. Prose that mentions `/tmp/` for another reason, such as a path the runtime reads, is not flagged. `rm` is not in the list.
