@@ -74,6 +74,8 @@ fn move_aside(
     // SEC-9: each read ends within IDENTITY_READ_TIMEOUT, so the two
     // re-reads together take at most 10 seconds; with `assess` the cycle
     // holds its lock for at most IDENTITY_BUDGET + 3 reads, 45 seconds.
+    // That bound holds in release builds and in debug builds with the
+    // AMPLIHACK_TEST_IDENTITY_READ_TIMEOUT_SECS knob unset (issue #1973).
     let here = (mv.read)(&mv.home.join(".claude")).map_err(|_| changed())?;
     let there = (mv.read)(&mv.store.root().join(c.m.as_str())).map_err(|_| changed())?;
     if !here.same(&there) {

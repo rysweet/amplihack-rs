@@ -19,6 +19,8 @@ mod tests_decide;
 pub(super) mod tests_fixture_identity;
 #[path = "tests_gate_record.rs"]
 mod tests_gate_record;
+#[path = "tests_identity_limits.rs"]
+mod tests_identity_limits;
 #[path = "tests_issue_1886_collide.rs"]
 mod tests_issue_1886_collide;
 #[path = "tests_ledger.rs"]
