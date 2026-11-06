@@ -258,6 +258,8 @@ In step-03 of `autodrive-crusty-round`, when the marker is present, the parsed c
 | `id` contains a security keyword: `sec`, `auth`, `secret`, `token`, `credential`, `inject`, `xss`, `csrf`, `cve`, `vuln`, `unsafe`, `privilege`, `perm` (case-insensitive substring) | `major` |
 | `summary` or `evidence` contains a security word (case-insensitive, whole words; see below) | `major` |
 
+The keyword lists, the word lists and the predicate behind this table are defined once, in `amplifier-bundle/tools/autodrive_finding_rules.sh`, which `autodrive_light_round.sh` sources. auto-drive-to-merge applies the same predicate when it decides whether a crusty round is minor-only (see [Minor findings end the crusty loop](auto-drive-to-merge.md#minor-findings-end-the-crusty-loop-1979)). Light mode keeps priority: when the marker is present, this rule runs first, and auto-drive-to-merge's `classify` step does not run on a round this rule has made `CLEAN`.
+
 In the id, keywords match as substrings, not whole tokens. An id such as `section-1`, `author-name` or `permalink-2` is therefore promoted to `major`. This is intended: a false promotion costs one fix round, while a missed security concern would be deferred to an issue.
 
 In the `summary` and `evidence`, the tool matches whole words that begin with one of these stems: `secur` (and `insecure`), `authenticat`, `authoris`/`authoriz`, `authn`, `authz`, `secret`, `token`, `credential`, `inject`, `xss`, `csrf`, `cve`, `vuln`, `unsafe`, `privilege`, `permission`, `sanitis`/`sanitiz`, `escape`, `traversal`, `ssrf`, `rce` and `password`. Whole words are used here because free text would otherwise match almost every concern (`sec` in "second", `auth` in "author"). This check covers a security concern that crusty grades `minor` under a neutral id such as `c3`. Some harmless concerns are also promoted, for example one about a parser's tokens or file permissions; each costs one fix round.
@@ -363,7 +365,7 @@ Issue numbers are validated as 1 to 10 digits before they are written or reused.
 
 ### Cell sanitising
 
-Each table cell has control characters removed, passes through `sanitize_cli_output`, has `&`, `<` and `>` HTML-encoded, has `|` and backticks replaced by the numeric entities `&#x7C;` and `&#x60;`, has `@` mentions, `#N` references and full `github.com/` URLs neutralised with U+200B (after `@`, after `#`, and after `github.com/`, matched without regard to case), and is truncated to 200 characters. The marker therefore appears exactly once, however the concern text is written. Titles and PR comments contain only fixed text and digits.
+`cell()` is defined in `amplifier-bundle/tools/autodrive_finding_rules.sh` and shared with auto-drive-to-merge's follow-up issues. Each table cell has control characters removed, passes through `sanitize_cli_output`, has `&`, `<` and `>` HTML-encoded, has `|` and backticks replaced by the numeric entities `&#x7C;` and `&#x60;`, has `@` mentions, `#N` references and full `github.com/` URLs neutralised with U+200B (after `@`, after `#`, and after `github.com/`, matched without regard to case), and is truncated to 200 characters. The marker therefore appears exactly once, however the concern text is written. In light mode, titles and PR comments contain only fixed text and digits. auto-drive-to-merge's follow-up issue titles do not use `cell()`; see [Filing the follow-up issues](./auto-drive-to-merge.md#filing-the-follow-up-issues).
 
 ## Merge criteria
 
@@ -397,7 +399,7 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 - `--admin`, `--no-verify`, `SKIP=` and `gh pr merge` do not appear in the recipe or either tool. Merging happens only through the unchanged merge loop and gate.
 - Bash steps read context only as `RECIPE_VAR_*` values and contain no `{{...}}` templates. Every value is validated before use.
 - Agent text reaches `gh` only through files (`--body-file`).
-- Judging agents run from the review directory. Round and loop recipes, and the light tools, are loaded from the tool root. `auto-drive-light.yaml` loads every tool, including `quick_change_common.sh`, only from `$AMPLIHACK_HOME/amplifier-bundle/tools`; `light-prereqs` checks that each one exists there, and a missing file stops the step rather than falling back to the worktree or another install. Inside `autodrive-crusty-round`, `autodrive_light_steps.sh` and `autodrive_light_round.sh` both come from `AUTODRIVE_LAUNCH_TOOLS`.
+- Judging agents run from the review directory. Round and loop recipes, and the light tools, are loaded from the tool root. `auto-drive-light.yaml` loads every tool, including `quick_change_common.sh`, only from `$AMPLIHACK_HOME/amplifier-bundle/tools`; `light-prereqs` checks that each one exists there, and a missing file stops the step rather than falling back to the worktree or another install. Inside `autodrive-crusty-round`, `autodrive_light_steps.sh` and `autodrive_light_round.sh` both come from `AUTODRIVE_LAUNCH_TOOLS`. `autodrive_light_round.sh` sources `autodrive_finding_rules.sh` from its own directory only, so the shared rules always come from the same install.
 - Exit code 79 is final at every level and is never retried.
 - `light-implement` and the crusty loop agents carry `[amplihack:no-merge]` in their prompts.
 
@@ -425,9 +427,10 @@ The recipe header sets `recursion.max_depth: 6` and `recursion.max_total_steps: 
 | --- | --- | --- |
 | `amplifier-bundle/recipes/auto-drive-light.yaml` | recipe | The 17-step recipe described here. |
 | `amplifier-bundle/tools/autodrive_light_eligibility.sh` | tool | Stateless eligibility measurement. |
-| `amplifier-bundle/tools/autodrive_light_round.sh` | tool | Re-measurement on head change, the minor-only rule, the follow-up issue and side files. |
+| `amplifier-bundle/tools/autodrive_light_round.sh` | tool | Re-measurement on head change, the minor-only rule, the follow-up issue and side files. Sources `autodrive_finding_rules.sh`. |
+| `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only. The security keyword and word lists, `cell()` and the minor-finding predicate, shared with `autodrive_followups.sh`. Copied by `auto-drive-light.yaml` with the other light tools. |
 | `amplifier-bundle/tools/autodrive_light_steps.sh` | tool | The light branch of step-03 and step-06, sourced by the round recipe. Functions only. |
-| `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | recipe | Step-03 and step-06 carry the marker-gated light branch. No other step changes. |
+| `amplifier-bundle/recipes/autodrive-crusty-round.yaml` | recipe | Step-03 and step-06 carry the marker-gated light branch. Outside light mode, step-03 also runs `autodrive_followups.sh classify` on a crusty `CONCERNS` verdict and takes `COUNT` from `<record>.minor`, and step-06 accepts `MINOR_ONLY` (auto-drive-to-merge, #1979). |
 | `amplifier-bundle/recipes/_recipe_manifest.json` | manifest | Hash entries for `auto-drive-light` and `autodrive-crusty-round`. |
 | `crates/amplihack-cli/tests/issue_1802_auto_drive_light_eligibility.rs` | test | Eligibility rules, boundaries and faults. |
 | `crates/amplihack-cli/tests/issue_1802_auto_drive_light_round.rs` | test | The minor-only rule, step-03 and step-06, and byte-identical output without the marker. |

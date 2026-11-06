@@ -18,9 +18,8 @@
 # CONTINUE / DONE / STUCK. Absence of progress stops the loop; number of
 # attempts does not.
 #
-# Host safety is NOT this file's job and never was. It is enforced structurally
-# one layer down by #1327 (sealed recursion ceiling) and #1332 (width cap +
-# free-memory floor), both of which refuse with exit code 79 before a child
+# Host safety is NOT this file's job and never was. It is enforced structurally one layer
+# down by #1327 (sealed recursion ceiling) and #1332 (width cap + free-memory floor), both of which refuse with exit code 79 before a child
 # runs. Rounds here are SEQUENTIAL AT CONSTANT DEPTH — each child inherits the
 # same AMPLIHACK_SESSION_DEPTH — so a long loop never walks toward that
 # ceiling and the ceiling is never raised to accommodate one.
@@ -44,14 +43,13 @@
 # BEFORE_ROUND_FAILED. The script's stdout may carry `before_round_result`,
 # which joins the round's line in the history the evaluator reads.
 #
-# Policy: this workflow NEVER passes a hook-skipping commit flag or any branch-
-# protection bypass. See docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
+# Policy: this workflow NEVER passes a hook-skipping commit flag or any branch-protection bypass. See docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
 
 set -uo pipefail
 
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 
-LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; VERDICT_FIELD=""
+LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; ALSO_CLEAN=""; VERDICT_FIELD=""
 REPO="."; REVIEW_DIR=""; STATE_DIR=""; TASK_FILE_IN=""; ROUND_CTX=(); BEFORE_ROUND=""; CTX_REFUSED=""; BUDGET_CTX=(); BEFORE_CTX=(); AD_PR=""
 
 # shellcheck disable=SC2034 # AD_PR is read by the sourced autodrive_escalate.sh
@@ -60,6 +58,7 @@ while [ $# -gt 0 ]; do
     --loop-name)     LOOP_NAME="${2:-}"; shift 2 ;;
     --round-recipe)  ROUND_RECIPE="${2:-}"; shift 2 ;;
     --clean-token)   CLEAN_TOKEN="${2:-}"; shift 2 ;;
+    --also-clean-token) ALSO_CLEAN="${2:-}"; shift 2 ;; # #1979: crusty loops pass MINOR_ONLY
     --verdict-field) VERDICT_FIELD="${2:-}"; shift 2 ;;
     --repo)          REPO="${2:-}"; shift 2 ;;
     --review-dir)    REVIEW_DIR="${2:-}"; shift 2 ;;
@@ -253,13 +252,14 @@ while :; do
   [ -f "$RECORD" ] && RAW="$(cat "$RECORD")"
   ROUND_VERDICT="$(field "$RAW" "$VERDICT_FIELD" "MISSING")"
   case "$ROUND_VERDICT" in
-    "$CLEAN_TOKEN") ROUND_CLEAN="true" ;;
+    "$CLEAN_TOKEN"|"${ALSO_CLEAN:-$CLEAN_TOKEN}") ROUND_CLEAN="true" ;;
     MISSING) ROUND_CLEAN="false"
       echo "WARNING: ${ROUND_LABEL} produced no parseable '${VERDICT_FIELD}'; treated as NOT clean." >&2 ;;
     *) ROUND_CLEAN="false" ;;
   esac
   # Only A-Za-z0-9_ of the verdict reaches the evaluator, history and #1597 messages; a non-clean one that sanitises to the token ('CLEAN!') is tagged _NONCANONICAL so none of them reads it as clean.
-  VERDICT_SAFE="$(printf '%s' "$ROUND_VERDICT" | LC_ALL=C tr -cd 'A-Za-z0-9_')"; [ "$ROUND_CLEAN" = "true" ] || [ "$VERDICT_SAFE" != "$TOKEN_SAFE" ] || VERDICT_SAFE="${VERDICT_SAFE}_NONCANONICAL"
+  # A clean round passes the clean token itself (#1979: MINOR_ONLY reads as CLEAN there); the DONE line and result keep ROUND_VERDICT.
+  VERDICT_SAFE="$(printf '%s' "$ROUND_VERDICT" | LC_ALL=C tr -cd 'A-Za-z0-9_')"; { [ "$ROUND_CLEAN" = "true" ] && VERDICT_SAFE="$TOKEN_SAFE"; } || [ "$VERDICT_SAFE" != "$TOKEN_SAFE" ] || VERDICT_SAFE="${VERDICT_SAFE}_NONCANONICAL"
   FINDINGS=""
   [ -f "${RECORD}.findings" ] && FINDINGS="$(cat "${RECORD}.findings")"
   # Stable path to the latest round record, so a later gate binds evidence to the round that made it.

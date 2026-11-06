@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-11-01
+last_updated: 2026-11-05
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -12,8 +12,11 @@ owner: workflow-team
 `auto-drive-to-merge` wraps [`default-workflow`](../../amplifier-bundle/recipes/default-workflow.yaml)
 and drives the pull request it produces all the way to a merge. It encodes the
 method of using the `crusty-old-engineer` skill as the maintainer's proxy:
-iterate on the PR until crusty has zero outstanding concerns, then iterate
-until every merge-ready criterion holds, then merge behind an evidence gate.
+iterate on the PR until crusty's verdict is `CLEAN`, or lists minor findings
+only, then iterate until every merge-ready criterion holds, then merge behind
+an evidence gate. Each minor finding left at the end of the crusty loop is
+filed as a follow-up issue linked to the plan task before the PR can merge
+([#1979](#minor-findings-end-the-crusty-loop-1979)).
 
 It is invocable as a recipe or as the [`auto-drive-to-merge`
 skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
@@ -29,6 +32,7 @@ PR to this recipe when the change exceeds its eligibility rules.
 - [Finalization hand-off from phase 1 (#1714)](#finalization-hand-off-from-phase-1-1714)
 - [Why there is no iteration cap](#why-there-is-no-iteration-cap)
 - [Structured verdicts](#structured-verdicts)
+- [Minor findings end the crusty loop (#1979)](#minor-findings-end-the-crusty-loop-1979)
 - [How the merge round applies merge-ready](#how-the-merge-round-applies-merge-ready)
 - [Reading step outputs](#reading-step-outputs)
 - [Reading the loop-health line](#reading-the-loop-health-line)
@@ -54,7 +58,7 @@ PR to this recipe when the change exceeds its eligibility rules.
 | --- | --- | --- |
 | 0. Prerequisites | `auto-drive-to-merge.yaml` step `autodrive-prerequisites` | Where criterion 1 needs `gadugi-test` (a Node repository, or `AUTODRIVE_QA_SCENARIO_DIR` set), stops the run with `ERROR: gadugi-test-not-installed` when it is not on `PATH`, before the build and the crusty loop spend hours. A Rust CLI or Python repository does not need it. |
 | 1. Build | `autodrive-build.yaml` | Runs `default-workflow` with `no_merge: "true"` to produce a PR. Never merges. A build that ends `BLOCKED_CI`, or `FAILED_IMPLEMENTATION` on a confirmed open PR, hands that PR to phases 2 and 3 instead of ending the run ([#1714](#finalization-hand-off-from-phase-1-1714)). |
-| 2. Crusty loop | `autodrive-crusty-loop.yaml` over `autodrive-crusty-round.yaml` | Runs `crusty-old-engineer` as the maintainer's proxy, addresses every concern, re-reviews, repeats until `crusty_verdict` is `CLEAN`. |
+| 2. Crusty loop | `autodrive-crusty-loop.yaml` over `autodrive-crusty-round.yaml` | Runs `crusty-old-engineer` as the maintainer's proxy, addresses every concern, re-reviews, repeats until `crusty_verdict` is `CLEAN` or `MINOR_ONLY`. Then files one follow-up issue for each minor finding ([#1979](#minor-findings-end-the-crusty-loop-1979)). |
 | 3. Merge-ready loop | `autodrive-merge-loop.yaml` over `autodrive-merge-round.yaml` | Before each round, sends code commits made after the clean crusty round back to the crusty loop (`autodrive_crusty_rereview.sh`). Syncs the base, runs the repository tests and, where criterion 1 needs them, the `gadugi-test` scenarios, waits for CI, applies the `merge-ready` criteria read from the skill's files, clears blockers, repeats, then merges behind the gate. |
 
 Phase 1 is a no-op when an open PR already exists for the branch, and the whole
@@ -726,13 +730,20 @@ token outside the allow-list falls to the safe default.
 
 | Signal | Field | Clean token | Fail-safe default | `verdict_source` values |
 | --- | --- | --- | --- | --- |
-| Crusty review | `crusty_verdict` | `CLEAN` | `CONCERNS` | `crusty`, `missing_verdict`, `unparseable_verdict` |
+| Crusty review | `crusty_verdict` | `CLEAN`; `MINOR_ONLY` also ends the crusty loop | `CONCERNS` | `crusty`, `missing_verdict`, `unparseable_verdict` |
 | Merge-ready | `merge_ready_verdict` | `MERGE_READY` | `NOT_MERGE_READY` | `merge_ready`, `missing_verdict`, `unparseable_verdict`, `evidence_downgrade` |
 | Loop health | `loop_verdict` | `DONE` | `STUCK` | see [loop-health-evaluator](loop-health-evaluator.md) |
 
 **A missing or unparseable verdict is never the permissive one.** It is
-`CONCERNS`, `NOT_MERGE_READY`, `STUCK` — never `CLEAN`, `MERGE_READY`, or
-`CONTINUE`.
+`CONCERNS`, `NOT_MERGE_READY`, `STUCK` — never `CLEAN`, `MINOR_ONLY`,
+`MERGE_READY`, or `CONTINUE`.
+
+Crusty itself emits only `CLEAN` or `CONCERNS`. `MINOR_ONLY` is never read
+from crusty's output: step-03 of the crusty round derives it from a
+`CONCERNS` verdict whose findings are all minor (see
+[How a round becomes `MINOR_ONLY`](#how-a-round-becomes-minor_only)). A
+`MINOR_ONLY` written by crusty in its `crusty_verdict` field is outside the
+allow-list and falls to `CONCERNS`.
 
 ### Advancing needs two independent signals
 
@@ -740,6 +751,16 @@ token outside the allow-list falls to the safe default.
 
 1. the round's own machine-checked verdict is the clean token, **and**
 2. the loop-health evaluator returned `DONE`.
+
+The crusty loop has a second clean token. `autodrive-crusty-loop.yaml` and
+`autodrive_crusty_rereview.sh` call `autodrive_loop.sh` with
+`--clean-token CLEAN --also-clean-token MINOR_ONLY`, so a `MINOR_ONLY` round
+counts as clean in this table. On such a round the loop passes
+`loop_round_verdict=CLEAN` to the evaluator and uses the same value for its
+own `DONE` check, so loop-health judges the health of the loop and not the
+follow-up obligation; the [follow-up check](#the-follow-up-check-in-the-merge-gate)
+enforces that. The `DONE` message and `<loop>-result.json` keep the real
+verdict, `MINOR_ONLY`. The merge-ready loop passes no second token.
 
 A clean round verdict with `CONTINUE` simply runs another confirming round,
 which is cheap and safe. `DONE` over a round that is not clean never advances.
@@ -901,6 +922,313 @@ Standalone human use is unchanged: asked a question directly, the skill answers
 in its usual structure and emits no JSON. `id` must be stable across rounds and
 derived from the substance of the concern — that is what lets the loop tell a
 recurring concern from a new one.
+
+The contract is unchanged by #1979. `severity` decides whether a `CONCERNS`
+verdict ends the loop: only a non-empty list whose every entry is a valid
+`minor` finding does. A missing, empty or unknown `severity`, such as `nit`
+or `low`, counts as `major`.
+
+## Minor findings end the crusty loop (#1979)
+
+A crusty verdict whose findings are all minor ends the crusty loop. The
+findings are not dropped: before the PR can merge, each one is filed as a
+follow-up issue linked to the plan task, and the issue numbers are recorded in
+the drive's evidence. A verdict with any blocking or major finding continues
+the loop as before. The parent task is not complete until its follow-up
+issues are done; auto-drive files them but does not track them.
+
+```mermaid
+flowchart TD
+    R[crusty round step-03] --> V{crusty verdict}
+    V -->|CLEAN| C[round clean]
+    V -->|CONCERNS| K{every finding a valid minor finding?}
+    K -->|no| A[CONCERNS: step-04 addresses, step-05 checks]
+    K -->|yes| M[MINOR_ONLY: write record.minor, empty record.findings]
+    M --> C
+    C --> L{loop-health DONE?}
+    L -->|CONTINUE| R
+    L -->|DONE| P[crusty-loop step-03: collect, then file]
+    P -->|filed| MK[crusty-loop marker written]
+    P -->|failed| X[step fails, no marker, drive not READY]
+    MK --> ML[merge-ready loop]
+    ML --> F2[step-02b: file again, covers re-reviews]
+    F2 --> G[merge gate: autodrive_followups.sh check]
+    G -->|ok| MG[merge]
+    G -->|ERROR: followups-unfiled| NM[NOT_MERGED]
+```
+
+### How a round becomes `MINOR_ONLY`
+
+Crusty still emits only `CLEAN` or `CONCERNS`. Step-03 of
+`autodrive-crusty-round.yaml` runs one extra line, and only when the parsed
+verdict is `CONCERNS`, its `verdict_source` is `crusty` and the round record
+path is set:
+
+```bash
+bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_followups.sh" classify \
+  --record "$RECORD" --state-dir "$DIR" < concerns.json
+```
+
+The tool is loaded from `AUTODRIVE_LAUNCH_TOOLS`, the tool root that step-00
+has already checked (#1543), in the same way as the light tools. There is no
+fallback to the worktree or another install: if the file cannot be loaded,
+step-03 keeps `CONCERNS`.
+
+`classify` prints `MINOR_ONLY` when every rule below holds, and prints nothing
+otherwise:
+
+| Rule | Otherwise |
+| --- | --- |
+| `jq` is available. | Not minor-only. |
+| `concerns` parses as a JSON array with at least one element. | Not minor-only. An empty array with `CONCERNS` stays `CONCERNS`. |
+| Every element is an object whose `severity` is exactly `minor`. | Not minor-only. A missing, empty or unknown severity (`nit`, `low`, `Minor`) counts as major. |
+| Every `id` matches `^[A-Za-z0-9._-]{1,64}$`. | Not minor-only. |
+| No `id` is a returning id: listed in `resolved-concerns.txt` or in another round's `.findings`. Both are read only from regular files that are not symlinks. | Not minor-only. |
+| No `id` contains a security keyword, and no `summary` or `evidence` contains a security word. | Not minor-only. |
+
+The keyword and word lists are those of auto-drive-light's minor-only rule
+(see [auto-drive-light: the minor-only rule](auto-drive-light.md#the-minor-only-rule)).
+Both rules load them from one file, `amplifier-bundle/tools/autodrive_finding_rules.sh`,
+so a minor finding about secrets, injection, authentication or permissions
+is always treated as major and is fixed before merge rather than deferred.
+
+`classify` fails closed. A missing `jq`, input that is not an array, a state
+directory or record path that is not private to the user, or any other error
+gives empty stdout and a diagnostic on stderr only. The round then stays
+`CONCERNS` and is addressed as before.
+
+On `MINOR_ONLY`, `classify` writes two files next to the round record, both
+under `umask 077`:
+
+| File | Content |
+| --- | --- |
+| `<record>.minor` | JSON Lines, one object per finding: `{"id": …, "summary": …, "evidence": …}`. `summary` and `evidence` are clipped to 200 characters. |
+| `<record>.findings` | Empty. `autodrive_record_crusty_loop_done` therefore never moves a minor id into `resolved-concerns.txt`. |
+
+Step-03 then reports `crusty_verdict` `MINOR_ONLY`, with `concern_count` set
+to the number of lines in `<record>.minor`. Step-04 (address concerns) and
+step-05 (fix check) keep their `== 'CONCERNS'` conditions, so they do not run.
+Step-06 accepts `CLEAN`, `MINOR_ONLY` and `CONCERNS`; any other value is
+written as `CONCERNS`.
+
+A round with a mix of minor and major or blocking findings writes no
+`.minor` file. All of its findings go to step-04, as before #1979.
+
+Light mode keeps priority. When the `light-mode` marker is present,
+auto-drive-light's rule runs first and turns a minor-only round into `CLEAN`
+with `verdict_source` `light-minor-rule`, so `classify` does not run on it.
+
+### Which verdicts end the loop
+
+| Findings in the round | Round verdict | Loop |
+| --- | --- | --- |
+| None | `CLEAN` | Ends on loop-health `DONE`. No follow-up issue. |
+| `[minor]`, `[minor, minor, …]` | `MINOR_ONLY` | Ends on loop-health `DONE`. One follow-up issue per finding. |
+| `[minor, major]`, `[minor, blocking]` | `CONCERNS` | Continues. |
+| `[minor]` with severity `nit`, or with no severity | `CONCERNS` | Continues. |
+| `[minor]` with id `token-leak`, or a summary that mentions a password | `CONCERNS` | Continues. |
+| `CONCERNS` with an empty `concerns` array | `CONCERNS` | Continues. |
+| No verdict, or an unparseable one | `CONCERNS` | Continues. |
+
+### The follow-up set
+
+The follow-up set is `followups.jsonl` in the drive's state directory. It is
+built only by `autodrive_followups.sh collect`, which runs when a crusty loop
+ends `DONE`:
+
+- in `autodrive-crusty-loop.yaml` step-03, before the `crusty-loop` marker is
+  written;
+- in `autodrive_crusty_rereview.sh`, before `autodrive_record_crusty_loop_done`.
+
+`collect` reads only the round that ended the loop. It takes the last row of
+`crusty-records.tsv`, checks the record and `crusty-latest.json` against the
+row's blob hash, and reads `<record>.minor` only when that record says
+`MINOR_ONLY`. A finding from an earlier round that a later round no longer
+reports was fixed and is never filed. Every line of the `.minor` file is
+validated again; a bad line fails `collect` with
+`ERROR: followup-set-invalid` rather than being dropped. When the last record
+is `CLEAN`, `collect` adds nothing and exits `0`.
+
+Rows are appended to `followups.jsonl` by id. When a re-review reports an id
+the set already holds, the first occurrence is kept.
+
+### The plan task id
+
+Each follow-up issue names the plan task it belongs to. The task id is
+resolved in this order:
+
+1. the `plan_task_id` input of `auto-drive-to-merge.yaml`, passed to both
+   loop recipes;
+2. the first `Closes #N`, `Fixes #N` or `Resolves #N` in the PR body, read with
+   `gh pr view <pr> --json body`;
+3. the same pattern in `task_description`.
+
+| Value | Task id |
+| --- | --- |
+| `1979` or `#1979` | `#1979` |
+| `plan/17.104` (matches `^[A-Za-z0-9._:/-]{1,64}$`) | `plan/17.104` |
+| `#0`, an empty value, or anything else | Unresolved |
+
+From the PR body and the task description only the digits of the anchored
+match are used. A task id is needed only when the follow-up set is not empty:
+a drive that ends `CLEAN` needs none.
+
+```bash
+amplihack recipe run auto-drive-to-merge \
+  -c task_description="Implement issue #1979" \
+  -c plan_task_id=1979 \
+  -c repo_path=.
+```
+
+### Filing the follow-up issues
+
+`autodrive_followups.sh file` runs at two points:
+
+| Where | When | On failure |
+| --- | --- | --- |
+| `autodrive-crusty-loop.yaml` step-03 | After the loop ended `DONE` and `collect` succeeded, before the `crusty-loop` marker is written. | The step exits `1` and writes no marker, so a resumed run returns to the crusty loop. |
+| `autodrive-merge-loop.yaml` step-02b-file-followups | When `merge_loop_preflight.should_run` is `true`, after the merge-ready loop and before step-03-merge-gate. Covers findings from re-reviews. | The step exits `1`; the gate does not run. |
+
+`file` makes one `gh issue create` call for each id in the set that has no row
+in `followups.tsv`:
+
+```bash
+gh issue create --repo rysweet/amplihack-rs \
+  --title "Follow-up (#1979): Rename tmp_rec to record_copy" \
+  --body-file "$PRIVATE_TMP/body.md"
+```
+
+- `--repo` is the `owner/name` taken from the PR URL (`gh pr view <pr> --json url`),
+  matched by an anchored regex. A URL that does not match fails the step.
+- The title is `Follow-up (<task id>): <summary>`. The summary for the title
+  passes through `sanitize_cli_output` and has control characters removed,
+  and the whole title is clipped to 80 characters and passed as one argument.
+  The title does not go through `cell()`: GitHub shows titles as plain text,
+  so HTML entities such as `&amp;`, `&#x60;` and `&#x7C;` would appear
+  literally.
+- The body is written to a private `mktemp -d` directory under `$TMPDIR`,
+  removed by an `EXIT` trap. No labels, assignees or comments are added.
+
+The body of the issue for the example finding:
+
+```markdown
+Follow-up from the auto-drive crusty review of PR #2001.
+
+Task: #1979
+Finding: naming-1 (severity: minor)
+
+Summary: Rename tmp_rec to record_copy
+Evidence: autodrive_last_round.sh line 41
+
+<!-- autodrive-followup task=#1979 finding=naming-1 -->
+```
+
+In the body, `summary` and `evidence` pass through the shared `cell()` of
+`autodrive_finding_rules.sh`: output sanitising, control characters removed,
+a 200-character clip, HTML escaping, `|` and backticks escaped, and a
+zero-width break after `@`, between `#` and a digit, and after `github.com/`.
+A finding cannot mention a user, link an issue or post a URL in the body. The
+task id line is the one place where `#1979` links the parent task.
+
+The issue number is read only from `/issues/<digits>` at the end of the last
+line `gh` prints. After each successful create, `file` appends a row to
+`followups.tsv` at once and prints:
+
+```text
+INFO: followup naming-1 -> #2017 (task #1979, PR #2001)
+```
+
+A follow-up issue publishes the finding's sanitised summary and evidence,
+at most 200 characters each. Security findings never take this path, because
+the shared rules treat them as major, but in a public repository any other
+minor finding becomes public before it is fixed.
+
+A rerun files only ids that have no row, so it makes no call when every
+finding is filed. If `gh` succeeds but the append fails, the next run files
+that one finding again; this window is accepted and limited to one issue.
+
+#### Failures
+
+| Cause | Token written to `followups.error` | Exit |
+| --- | --- | --- |
+| `gh issue create` exits non-zero, or prints no issue URL | `followup-create-failed` | `1` |
+| The set is not empty and no task id resolves | `followup-task-unresolved` | `1` |
+| The PR URL does not give `owner/name` | `followup-repo-unresolved` | `1` |
+| The set or a state file is invalid or not private | `followup-set-invalid`, `followup-state-unsafe` | `1` |
+| `gh` exits `79` | none; passed through | `79` |
+
+On failure `file` prints `ERROR: <token>: <detail>` to stderr. `<detail>` is
+the first line of `gh`'s stderr, sanitised and clipped to 200 characters.
+There is no retry: a GraphQL secondary rate limit fails the step visibly, and
+a rerun files only the ids that still have no row. A run that files every
+remaining id removes `followups.error`.
+
+### The follow-up check in the merge gate
+
+`autodrive_merge_gate.sh` runs `autodrive_followups.sh check` from its own
+directory (`${GATE_HOME}`), next to its crusty criterion. `check` makes no
+network call. It passes when the set is empty and the last crusty record is
+`CLEAN`, or when every id in the set has a valid row. It fails on:
+
+| Condition | Token |
+| --- | --- |
+| `followups.error` exists | `followup-error-recorded` |
+| A state file is a symlink, is not owned by the user, or is group- or world-writable | `followup-state-unsafe` |
+| A row does not have four fields, a valid id, an issue number matching `^[1-9][0-9]*$`, a valid task id, and the gate's own PR number | `followup-row-malformed` |
+| An id in the set has no row | `followup-missing:<id>` |
+| The last crusty record is `MINOR_ONLY` and the set is empty | `followup-set-empty` |
+
+The gate prints the failure itself, because its `block` function prints only
+`BLOCKER:` lines:
+
+```text
+ERROR: followups-unfiled: followup-missing:naming-1
+BLOCKER: follow-up issues not filed for every minor finding
+```
+
+and the PR is not merged. When the tool is missing beside the gate, the gate
+blocks only if the crusty verdict is `MINOR_ONLY` or `followups.jsonl` is not
+empty. `followups.tsv` joins the gate's evidence bundle under the same
+private-file check as the other state files.
+
+### State files
+
+| File | Written by | Content |
+| --- | --- | --- |
+| `<record>.minor` | `classify`, in crusty-round step-03 | One JSON object per minor finding: `id`, `summary`, `evidence`. |
+| `followups.jsonl` | `collect` | The follow-up set: one object per id, first occurrence kept. |
+| `followups.tsv` | `file`, one append per created issue | `finding_id`, `issue_number`, `task_id`, `pr_number`, tab-separated. |
+| `followups.error` | `file` | One fixed token. Removed by a later run that files every id. |
+
+All are written under `umask 077`. `file` refuses to append to a
+`followups.tsv` that is a symlink or not owned by the user. Logs and step
+output contain only finding ids, issue numbers, the task id and fixed tokens.
+
+### The run report
+
+The final summary of `auto-drive-to-merge.yaml` lists each filed follow-up:
+
+```text
+AUTO_DRIVE_TO_MERGE: MERGED — PR #2001 (crusty loop: DONE, merge gate: MERGED)
+Follow-up issues (task #1979):
+  naming-1 -> #2017
+  docs-typo-2 -> #2018
+```
+
+### `autodrive_followups.sh` reference
+
+| Subcommand | Arguments | Output | Exit |
+| --- | --- | --- | --- |
+| `classify` | `--record FILE --state-dir DIR`; crusty's `concerns` array on stdin | `MINOR_ONLY`, or nothing | `0`; non-zero on an error, with empty stdout |
+| `collect` | `--state-dir DIR` | Nothing on stdout | `0`, or `1` with `ERROR: followup-set-invalid` |
+| `file` | `--state-dir DIR --pr N [--task-id ID] [--task-text-file FILE]` | One `INFO` line per issue created | `0`, `1` on failure, `79` passed through |
+| `check` | `--state-dir DIR --pr N` | `followups-ok <count>` | `0`, or `1` with the failing token on stdout |
+| any | wrong or missing arguments | usage on stderr | `2` |
+
+The tool sources `autodrive_state.sh` and `autodrive_finding_rules.sh` from its
+own directory. It uses the ambient `gh` login, has no timeouts and no numeric
+caps, and passes agent text to `jq` only through `--arg`, `--argjson` or
+stdin. The recipe steps that call it are bash steps and call no recipes.
 
 ## How the merge round applies merge-ready
 
@@ -1622,11 +1950,14 @@ commits. In a Rust CLI or Python repository it adds the missing coverage to
 failing scenario or test is fixed, never weakened or deleted. A directory
 outside the repository gives `gadugi-scenario-dir-outside-repo`.
 
-### Criterion 3: the crusty loop ended DONE and CLEAN
+### Criterion 3: the crusty loop ended DONE and CLEAN or MINOR_ONLY
 
 Criterion 3 is met when phase 2's `crusty-old-engineer` loop ended `DONE`, its
-last loop-written record is `CLEAN`, and every later commit is a base merge or
-a description or evidence change. No minimum round count applies
+last loop-written record is `CLEAN` or `MINOR_ONLY`, and every later commit is
+a base merge or a description or evidence change. A `MINOR_ONLY` record meets
+criterion 3 only because the merge gate separately requires a filed follow-up
+issue for each of its findings (see
+[The follow-up check in the merge gate](#the-follow-up-check-in-the-merge-gate)). No minimum round count applies
 (`no_round_minimum_in_any_recipe_or_tool`), nor does the skill's three-cycle
 rule.
 
@@ -1657,8 +1988,8 @@ record and prints the reviewed SHA or the first failing token:
 | 1 | `phases.tsv` has the `crusty-loop` marker. | `crusty-loop-not-done` |
 | 2 | `crusty-records.tsv` is a regular file, not a symlink; its last row has a label, a name matching `^crusty-[A-Za-z0-9._-]+\.json$`, and a 40- or 64-hex hash. | `crusty-manifest-missing` |
 | 3 | The named record is a regular file, not a symlink. | `crusty-record-missing` |
-| 4 | The record and `crusty-latest.json` hash to the manifest hash; the record is one line starting `{"crusty_verdict":"CLEAN",` or `{"crusty_verdict":"CONCERNS",` with one `reviewed_head_sha`. | `crusty-record-modified` |
-| 5 | The verdict is `CLEAN`. | `crusty-not-clean` |
+| 4 | The record and `crusty-latest.json` hash to the manifest hash; the record is one line starting `{"crusty_verdict":"CLEAN",`, `{"crusty_verdict":"MINOR_ONLY",` or `{"crusty_verdict":"CONCERNS",` with one `reviewed_head_sha`. | `crusty-record-modified` |
+| 5 | The verdict is `CLEAN` or `MINOR_ONLY`. | `crusty-not-clean` |
 | 6 | `reviewed_head_sha` is 40 or 64 hex characters. | `crusty-head-sha-empty` |
 
 `autodrive_crusty_range` in `autodrive_trust.sh` walks
@@ -1687,7 +2018,10 @@ phase 2 ended at `round-2`, the re-review's first round is `round-3`. Phase 2's
 records, findings, logs and manifest rows stay as they were, and the
 manifest's last row is the re-review's last round. When that loop ends `DONE`,
 `autodrive_record_crusty_loop_done` writes the resolved concern ids and the
-marker back, exactly as phase 2's step-03 does. The tool prints one JSON line
+marker back, exactly as phase 2's step-03 does. Before it does, the tool
+runs `autodrive_followups.sh collect` on the state directory, so a re-review
+that ended `MINOR_ONLY` adds its findings to the follow-up set. If `collect`
+fails, the tool reports `crusty-rereview-not-done` and writes no marker. The tool prints one JSON line
 whose `before_round_result` is one of:
 
 | `before_round_result` | Exit | Merge-ready loop |
@@ -1715,7 +2049,7 @@ the current `HEAD`:
 
 | `crusty_status` | `crusty_reason` | step-02 blocker |
 | --- | --- | --- |
-| `DONE_CLEAN` | `""` | None; cites `crusty_reviewed_head_sha`. |
+| `DONE_CLEAN` | `""` | None; cites `crusty_reviewed_head_sha`. A last record of `CLEAN` or `MINOR_ONLY` both give this status. |
 | `ABSENT` | `crusty-loop-not-done` | `quality-audit-convergence-crusty-not-done-clean` |
 | `NOT_CLEAN` | `crusty-not-clean` | the same |
 | `UNTRUSTED` | `crusty-manifest-missing`, `crusty-record-missing`, `crusty-record-modified`, `crusty-head-sha-empty`, `crusty-other` | the same |
@@ -1998,7 +2332,10 @@ form. `autodrive-build` step-03's read of `workflow_result` (#1714) goes
 through `rv_field` inside `workflow_finalization_handoff.sh`, and
 `workflow_result` is the output of a `workflow-finalize.yaml` step, not of an
 autodrive step, so it is outside the checked output set and adds no row;
-`autodrive-build.yaml` only declares it `""` in `context:`. There are 36 in all:
+`autodrive-build.yaml` only declares it `""` in `context:`. The #1979 inputs
+`plan_task_id` and `task_description` are recipe context, not step outputs, so
+they add no row; `autodrive-merge-loop.yaml` step-02b's read of
+`merge_loop_preflight` does. There are 37 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
@@ -2006,7 +2343,7 @@ autodrive step, so it is outside the checked output set and adds no row;
 | `autodrive-build.yaml` | 1 |
 | `autodrive-crusty-loop.yaml` | 7 |
 | `autodrive-crusty-round.yaml` | 9 |
-| `autodrive-merge-loop.yaml` | 6 |
+| `autodrive-merge-loop.yaml` | 7 |
 | `autodrive-merge-round.yaml` | 8 |
 
 ### Step outputs ignore inherited bare variables
@@ -2480,7 +2817,8 @@ merges, it re-verifies and records:
 | qa-team scenarios | evidence file from this run | `qa_status` other than `PASS`, no evidence file, or evidence whose `head_sha` is missing or is not the SHA being merged |
 | qa evidence chain | `merge-ready-records.tsv`, `merge-ready-latest.json`, `qa-evidence.json` | any of them not private; `autodrive_qa_trusted` not `ok` (its token, or `qa-other`; see [The qa evidence hash chain](#the-qa-evidence-hash-chain)) |
 | gadugi scenarios | same evidence file, and `autodrive_gadugi_required .` on the checkout's own files, the same files the evidence step measured, with `AUTODRIVE_QA_BASE` set from the gate's own `baseRefName` so its changed paths match step-02's; an inherited value is replaced | Unless the gate's own `autodrive_gadugi_required` says `false` and `gadugi_status` is `NOT_REQUIRED`: `gadugi_status` other than `PASS`, or `gadugi_scenario_count` not a positive integer. An unreadable answer counts as required. |
-| Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and its record, in `--state-dir` | no `--state-dir`; the directory or a file not private; no `crusty-loop` marker; `crusty_verdict` not `CLEAN`; `autodrive_crusty_final` failing (its token, or `crusty-other`); `HEAD_SHA` not in the clone; `autodrive_crusty_range` not `ok` (its token, or `crusty-range-other`) |
+| Crusty loop | `phases.tsv`, `crusty-latest.json`, `crusty-records.tsv` and its record, in `--state-dir` | no `--state-dir`; the directory or a file not private; no `crusty-loop` marker; `crusty_verdict` neither `CLEAN` nor `MINOR_ONLY`; `autodrive_crusty_final` failing (its token, or `crusty-other`); `HEAD_SHA` not in the clone; `autodrive_crusty_range` not `ok` (its token, or `crusty-range-other`) |
+| Follow-up issues (#1979) | `followups.jsonl`, `followups.tsv`, `followups.error` in `--state-dir`, checked by `autodrive_followups.sh check` from the gate's own directory | `ERROR: followups-unfiled: <token>`: a finding in the set with no issue row, a recorded filing error, a malformed or unsafe file, or `MINOR_ONLY` with an empty set. A missing tool blocks only when the verdict is `MINOR_ONLY` or the set is non-empty. See [The follow-up check in the merge gate](#the-follow-up-check-in-the-merge-gate). |
 | merge-ready verdict | round record from this run | not `MERGE_READY`, or captured against a different head SHA |
 
 The review-thread query pages. `reviewThreads(first:100)` with no `pageInfo`
@@ -4088,7 +4426,9 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_crusty_rereview.sh` | tool | The merge-ready loop's `--before-round` step: sends code commits made after the clean crusty round back to the crusty loop. |
 | `amplifier-bundle/tools/autodrive_pr_worktree.sh` | tool | Resolves the pull request's linked worktree for phases 2 and 3. Read-only apart from `git worktree add` and fast-forward-only fetches. Refuses a tip that is stale against origin. |
 | `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir is the main checkout of the PR's repository), each round's `step-00-review-dir-guard` (which also refuses a run-worktree gitlink in the review dir's index), `step-02b-review-dir-unchanged` (index stamp and check), the loop's stamp around each round and the evaluator, and the commit block's linked-worktree and head-branch check. Writes nothing. |
-| `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv; runs as `/bin/bash -p`, the only process the merge guard trusts. |
+| `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv; runs as `/bin/bash -p`, the only process the merge guard trusts. Runs `autodrive_followups.sh check` from its own directory. |
+| `amplifier-bundle/tools/autodrive_followups.sh` | tool | [#1979](#minor-findings-end-the-crusty-loop-1979): `classify` (derives `MINOR_ONLY` in crusty-round step-03), `collect` (builds the follow-up set from the round that ended the loop), `file` (one `gh issue create` per unfiled minor finding) and `check` (the gate's offline follow-up check). |
+| `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only; no side effects. The single definition of the security keyword lists, `cell()` and the minor-finding predicate, used by `autodrive_followups.sh` and `autodrive_light_round.sh`. |
 | `amplifier-bundle/tools/gh-merge-guard/gh` | tool | The `gh` shim that refuses a merge outside the gate ([#1551](#merges-outside-the-gate-are-refused-1551)). |
 | `crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs` | launcher | Decides when the shim goes first on `PATH` and exports its `BASH_ENV` file; fails closed when either is missing, the shim is not executable, or either is writable by group or others. |
 | `amplifier-bundle/tools/gh-merge-guard/bash-env` | tool | Sourced through `BASH_ENV`; puts the shim back first on `PATH` after a login shell's profile. |
@@ -4128,6 +4468,8 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | [Usage limits are not STUCK](#usage-limits-are-not-stuck) (#1801): `1801-evaluator-retry-verdict` (the evaluator hits a limit once, is retried inside step-02 and returns a verdict the loop records, with no `STUCK`), `1801-evaluator-usage-limit` (the limit is not lifted and the loop reports `USAGE_LIMIT`), a round and a before-round step that fail on a limit, and negative cases where the loop does not stop as `USAGE_LIMIT`: a nested `class`, the marker with exit `0`, an indented or echoed marker, and `usage_limit_wait` lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The same retry through the real step supervisor: fake `claude` and a stub `recipe-runner-rs` under an isolated `HOME` | `crates/amplihack-cli/tests/issue_1801_evaluator_retry.rs` |
 | [No-progress stop and usage budget](#no-progress-stop-and-usage-budget) (#1743): `STUCK` in code on an unchanged head and open items, no stop when either changed, when the CI signal changed or says `PENDING`, or when the round is clean, no stop when the current or previous round has a `<record>.light.json` side file (two rejected light rounds on the same head with empty findings), `BUDGET_EXHAUSTED` from each of the three limits at the pre-round, post-round and before-round check points, a relaunch with a higher limit resuming from the recorded round and one with the same limit starting no agent, the nested crusty loop counted once, `tokens` recorded as `unknown`, malformed limits and unknown keys exiting `2`, the symlink and `0600` cases, the sanitised PR comment through a stub `gh`, and the `-c` override reaching both loops. Fixture state directories, stub `amplihack`, `gh` and `git` on `PATH`, under `isolated(..)`; nothing under the real `HOME` is read or written | `crates/amplihack-cli/tests/issue_1743_autodrive_budget.rs` |
+| [Minor findings end the crusty loop](#minor-findings-end-the-crusty-loop-1979) (#1979): `classify` on all-minor, mixed, unknown-severity, missing-severity, empty and non-array input; security keywords in an id or summary and a returning id kept as `CONCERNS`; the loop ending `DONE` on `MINOR_ONLY` with `--also-clean-token` and not without it; one `gh issue create` per finding naming the task id and finding id, with N rows in `followups.tsv`; a rerun making no call; `gh` exiting `1` (error recorded, gate prints `ERROR: followups-unfiled`, no merge) and `79` (passed through after one call); an unresolved task id; the task id taken from `Closes #N` in the PR body; mentions and issue references neutralised in the body; a title with shell metacharacters reaching `gh` as one argument, with `&`, `|` and backticks kept as plain characters rather than HTML entities; an unparseable PR URL; a `CLEAN` drive filing nothing and passing the check; `collect` reading only the terminal round; `check` refusing a symlinked or group-writable `followups.tsv`, a malformed row and `MINOR_ONLY` with no set; `autodrive_crusty_final` accepting `MINOR_ONLY`; and static checks that both `SKILL.md` copies match, the old loop-end wording is gone from the recipes, skill and reference, the budgets hold, and both tools source the shared rules file. Stub `gh` on `PATH`, scratch under `$TMPDIR`, no network | `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs`, with `mod issue_1979_crusty_minor_followups;` in `crates/amplihack-cli/tests/main.rs` |
+| A minor-only round ending the loop, and a `[minor, major]` round continuing it, through the `run_loop` stub | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
@@ -4143,10 +4485,15 @@ cargo test -p amplihack-cli --test cli_integration issue_1551
 cargo test -p amplihack-cli --test cli_integration issue_1561
 cargo test -p amplihack-cli --test cli_integration issue_1801
 cargo test -p amplihack-cli --test cli_integration issue_1743
+cargo test -p amplihack-cli --test cli_integration issue_1979_crusty_minor_followups::
 bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
 gadugi-test validate -d tests/gadugi/scenarios
 bash tests/gadugi/run-autodrive-crusty-rereview-scenario.sh   # and the other run-autodrive-*-scenario.sh
 ```
+
+`amplihack-cli` builds all its integration tests as the single
+`cli_integration` binary, so a new test file runs only once
+`crates/amplihack-cli/tests/main.rs` declares it with a `mod` line.
 
 ### Which `amplihack` binary the shell test uses
 

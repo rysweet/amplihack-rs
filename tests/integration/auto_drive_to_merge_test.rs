@@ -48,11 +48,13 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 21] = [
+const AUTODRIVE_TOOLS: [&str; 23] = [
     "autodrive_budget.sh",
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
     "autodrive_escalate.sh",
+    "autodrive_finding_rules.sh",
+    "autodrive_followups.sh",
     "autodrive_last_round.sh",
     "autodrive_loop.sh",
     "autodrive_merge_gate.sh",
@@ -4356,7 +4358,7 @@ fn state_dir_guards_name_their_recipe_and_step() {
     const GUARD: &str = "ERROR: no state_dir (empty or unsafe: refusing to touch it)";
     for (recipe, want, pattern) in [
         ("autodrive-crusty-loop", 2, r#"''|/|-*|*$'\n'*)"#),
-        ("autodrive-merge-loop", 3, r#"''|/|-*|*$'\n'*)"#),
+        ("autodrive-merge-loop", 4, r#"''|/|-*|*$'\n'*)"#),
         ("autodrive-build", 1, r#"/|-*|*$'\n'*)"#),
     ] {
         let mut found = 0;

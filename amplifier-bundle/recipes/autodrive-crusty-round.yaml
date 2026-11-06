@@ -3,7 +3,8 @@ description: |
   One round of the auto-drive-to-merge crusty loop: put the PR in front of the
   `crusty-old-engineer` skill acting as the maintainer's proxy, read its
   STRUCTURED verdict, address every concern it raised, and record a
-  machine-checkable round record.
+  machine-checkable round record. A CONCERNS verdict whose findings are all
+  minor is recorded as MINOR_ONLY and not addressed here (#1979).
 
   This brick performs exactly ONE round and contains no loop of its own. The
   loop — and its agentic terminator — lives in autodrive-crusty-loop.yaml,
@@ -20,10 +21,9 @@ tags: ["auto-drive", "crusty", "review", "verdict", "loop"]
 # reviewer that thinks for twenty minutes is doing its job; a false timeout
 # costs more than a slow run.
 #
-# PROHIBITIONS (see docs/reference/auto-drive-to-merge.md): the commit made by
-# this brick runs the repository's hooks. A hook-skipping commit flag is NEVER
-# passed, and a branch-protection bypass is NEVER used anywhere in this
-# workflow. When a hook fails, the cause is fixed.
+# PROHIBITIONS (see docs/reference/auto-drive-to-merge.md): the commit made by this brick runs the
+# repository's hooks. A hook-skipping commit flag is NEVER passed, and a branch-protection
+# bypass is NEVER used anywhere in this workflow. When a hook fails, the cause is fixed.
 
 recursion:
   max_depth: 6
@@ -238,8 +238,9 @@ steps:
         COUNT="$(grep -c . "${RECORD}.findings" 2>/dev/null || true)"
       fi
       case "$COUNT" in ''|*[!0-9]*) COUNT=0 ;; esac
-      # Issue #1802: a regular light-mode marker sends the concerns to autodrive_light_round.sh (via autodrive_light_steps.sh); minor-only ones may give a light-minor-rule CLEAN.
+      # Issue #1802: a regular light-mode marker sends the concerns to autodrive_light_round.sh (via autodrive_light_steps.sh); minor-only ones may give a light-minor-rule CLEAN. Issue #1979, after the light rule: a crusty CONCERNS verdict whose findings are all minor (autodrive_followups.sh classify, from the launch tools only) is MINOR_ONLY; COUNT is then the number of minor findings in <record>.minor.
       LM="$(dirname -- "${RECORD:-.}")/light-mode"; if [ -n "$RECORD" ] && [ -f "$LM" ] && [ ! -L "$LM" ]; then . "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_light_steps.sh" && autodrive_light_step03 || { [ $? -ne 79 ] || exit 79; echo "WARNING: autodrive_light_steps.sh not found under AUTODRIVE_LAUNCH_TOOLS; the minor-only rule is not applied and CONCERNS stands." >&2; }; fi
+      FU="${AUTODRIVE_LAUNCH_TOOLS:-}"; FU="/${FU#/}/autodrive_followups.sh"; if [ "$VERDICT" = CONCERNS ] && [ "$SOURCE" = crusty ] && [ -n "$RECORD" ] && [ -f "$FU" ] && [ "$(printf '%s' "$CONCERNS" | bash "$FU" classify --record "$RECORD" --state-dir "$(dirname -- "$RECORD")")" = MINOR_ONLY ]; then VERDICT=MINOR_ONLY; COUNT="$(grep -c . "${RECORD}.minor" 2>/dev/null)" || COUNT=0; fi
       echo "INFO: crusty ${AUTODRIVE_ROUND_LABEL:-round}: verdict=${VERDICT} (source=${SOURCE}) concerns=${COUNT}" >&2
       printf '{"crusty_verdict":"%s","verdict_source":"%s","concern_count":%s}\n' \
         "$VERDICT" "$SOURCE" "${COUNT:-0}"
@@ -358,7 +359,7 @@ steps:
       VERDICT="$(printf '%s' "${RECIPE_VAR_crusty_verdict:-}" \
         | amplihack orch helper extract-json --require-field crusty_verdict \
         | amplihack orch helper extract-field --field crusty_verdict --default CONCERNS)"
-      case "$VERDICT" in CLEAN|CONCERNS) ;; *) VERDICT="CONCERNS" ;; esac
+      case "$VERDICT" in CLEAN|MINOR_ONLY|CONCERNS) ;; *) VERDICT="CONCERNS" ;; esac
       COUNT="$(g "${RECIPE_VAR_crusty_verdict:-}" concern_count 0)"
       COMMITS="$(g "${RECIPE_VAR_crusty_fix_evidence:-}" commits 0)"
       digits "$COUNT" || { echo "WARNING: concern_count '$(printf '%s' "$COUNT" | tr -cd '0-9A-Za-z' | cut -c1-32)' is not a number; recorded as 0" >&2; COUNT=0; }
