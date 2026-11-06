@@ -125,7 +125,7 @@ codex exec --sandbox workspace-write -c sandbox_workspace_write.network_access=t
   --dangerously-bypass-hook-trust resume 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b -
 ```
 
-The flags were checked against codex-cli 0.166.0. There is no environment variable or configuration key to turn them off; a recipe that needs a different sandbox passes its own, as described below.
+The flags were checked against codex-cli 0.166.0. There is no environment variable or configuration key to turn them off; a recipe that needs a different sandbox passes its own, as described below. The hook-trust flag is added to every `amplihack codex -- exec` launch, including one a person types, not only to recipe agent steps; issue #2009 tracks limiting it to recipe runs or adding an opt-out. Nothing is printed when the flags are added; issue #2010 tracks a one-line stderr notice.
 
 ### Why the flags are added
 
@@ -165,7 +165,7 @@ amplihack codex --no-reflection -- exec --sandbox read-only --output-last-messag
   - A `.codex/` in a subdirectory is writable. In a trusted project, one step can therefore write `sub/.codex/hooks.json` and a later step whose working directory is `sub/` runs it.
 
   Run Codex agent steps only in checkouts you trust, and run them from the checkout root. Issue #1993 tracks the subdirectory case.
-- **The injected sandbox overrides a stricter host setting.** Workspace-write with network access is narrower than danger-full-access but wider than a host `config.toml` that sets `read-only` or turns network access off. A recipe that needs the stricter mode passes it explicitly, as shown above.
+- **The injected sandbox overrides a stricter host setting.** Workspace-write with network access is narrower than danger-full-access but wider than a host `config.toml` that sets `read-only` or turns network access off. A recipe that needs the stricter mode passes it explicitly, as shown above. No message reports the override (issue #2010).
 - **Profiles do not count as a sandbox choice.** Command-line flags take precedence over a `-p <profile>` profile's `sandbox_mode`, so `amplihack codex -- -p ci exec -` still receives `--sandbox workspace-write`. To keep the profile's mode, pass the same `--sandbox` value explicitly.
 
 ## Preserve configuration
