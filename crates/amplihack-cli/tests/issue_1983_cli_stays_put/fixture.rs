@@ -97,7 +97,9 @@ impl Fixture {
         S: AsRef<OsStr>,
     {
         let bin = amplihack_bin();
-        let mut c = Command::new(&bin);
+        // `isolated(..)` is required by tests/integration/isolated_amplihack_scan.rs.
+        // `env_clear()` then narrows its environment to this suite's allow-list.
+        let mut c = crate::isolated_amplihack::isolated(&bin);
         c.env_clear();
         crate::isolated_amplihack::no_git_prompt(&mut c);
         c.args(args)
