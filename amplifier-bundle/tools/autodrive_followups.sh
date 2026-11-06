@@ -9,15 +9,25 @@
 #   autodrive_followups.sh check    --state-dir <dir> --pr <N>
 #
 # classify  Run by step-03 of autodrive-crusty-round.yaml on a crusty CONCERNS
-#           verdict. Prints MINOR_ONLY, writes <record>.minor (one JSON object
+#           verdict. First writes <record>.severity, one `id<TAB>minor|major`
+#           line per concern (major: anything the shared rules do not call
+#           minor). Prints MINOR_ONLY, writes <record>.minor (one JSON object
 #           per finding: id, summary, evidence) and empties <record>.findings
 #           when every concern is a minor finding under the shared rules
-#           (autodrive_finding_rules.sh) and none is a returning id
-#           (resolved-concerns.txt, or another crusty round's .findings).
-#           Anything else - stdin that is not exactly one JSON array, two
-#           arrays included, or an error - prints nothing and leaves the
-#           verdict CONCERNS; a jq failure is logged with its first stderr
-#           line. Exit 0 on a decision, 1 on an error.
+#           (autodrive_finding_rules.sh) and no id was ever major in another
+#           crusty round: listed as major in its .severity, or in a .findings
+#           with no .severity beside it, or in resolved-concerns.txt with no
+#           .severity naming it (history unknown, so read as major).
+#           A minor finding that recurs as minor does not block MINOR_ONLY;
+#           only a downgrade from major or blocking does (#1979, decision
+#           17.104). Anything else - stdin that is not exactly one JSON
+#           array, two arrays included - prints nothing and leaves the verdict
+#           CONCERNS. Exit 0 when a decision was made (MINOR_ONLY, or not) and
+#           also when jq cannot read the concerns: that is logged as ERROR
+#           with jq's exit code and first stderr line, nothing is printed, and
+#           the verdict stays CONCERNS. Exit 1 when the state is unusable (jq
+#           missing, state dir not private, no temporary directory, a state
+#           file that cannot be written); that also prints nothing.
 # collect   After a crusty loop ends DONE: when the last loop-written record
 #           (crusty-records.tsv row, hash checked against the record and
 #           crusty-latest.json) is MINOR_ONLY, adds its .minor findings to
@@ -171,17 +181,41 @@ closing_ref() {
 
 # --- classify --------------------------------------------------------------------
 cmd_classify() {
-  local concerns ret f rows rc
+  local concerns sevs ret seen f sev rows rc
   [ -z "${JQ_MISSING:-}" ] || { echo "ERROR: classify: jq is not on PATH; the verdict stays CONCERNS" >&2; exit 1; }
   state_ok || { echo "ERROR: followup-state-unsafe: the state dir is not private to this user; the verdict stays CONCERNS" >&2; exit 1; }
   concerns="$(cat)"
   priv_dir || { echo "ERROR: classify: no private temporary directory; the verdict stays CONCERNS" >&2; exit 1; }
   . "$HERE/workflow_issue_tracking.sh" 2>/dev/null || true
-  ret=""
-  for f in "$STATE/resolved-concerns.txt" "$STATE"/crusty-round-*.json.findings; do
+  # This round's severities, kept for later rounds whatever this one decides.
+  # Written only when stdin is exactly one array; otherwise there is no file,
+  # and a later round reads this round's .findings ids as major.
+  rm -f -- "$RECORD.severity"
+  if sevs="$(printf '%s' "$concerns" | jq -rs --arg kw "$KEYWORDS" --arg tkw "$TEXT_KEYWORDS" "$AUTODRIVE_FINDING_JQ"'
+      if length == 1 and (.[0] | type == "array") then .[0][] | select(type == "object" and .id != null)
+        | "\(.id | tostring | gsub("[[:cntrl:]]"; " "))\t\(if minor_finding($kw; $tkw) then "minor" else "major" end)"
+      else error("not one array") end' 2>/dev/null)"; then
+    printf '%s\n' "$sevs" | write_state "${RECORD##*/}.severity" \
+      || { echo "ERROR: classify: ${RECORD##*/}.severity could not be written; the verdict stays CONCERNS" >&2; exit 1; }
+  fi
+  # Severity history: ids another crusty round saw as major. A round with a
+  # .findings but no .severity (classify did not run there) counts as major,
+  # and so does a resolved-concerns.txt id that no .severity file names.
+  ret=""; seen=""
+  for f in "$STATE"/crusty-round-*.json.findings; do
     [ "$f" != "$RECORD.findings" ] && [ -f "$f" ] && [ ! -L "$f" ] || continue
-    ret="${ret}$(cat -- "$f")"$'\n'
+    sev="${f%.findings}.severity"
+    if [ -f "$sev" ] && [ ! -L "$sev" ]; then
+      ret="${ret}$(LC_ALL=C awk -F '\t' '$2 != "minor" { print $1 }' "$sev")"$'\n'
+      seen="${seen}$(LC_ALL=C cut -f 1 "$sev")"$'\n'
+    else
+      ret="${ret}$(cat -- "$f")"$'\n'
+    fi
   done
+  f="$STATE/resolved-concerns.txt"
+  if [ -f "$f" ] && [ ! -L "$f" ]; then
+    ret="${ret}$(printf '%s' "$seen" | LC_ALL=C grep -Fxv -f /dev/stdin -- "$f" 2>/dev/null)"$'\n'
+  fi
   # -s: stdin is decided as a whole, so a second JSON value (a blocking array
   # after a minor one) can never be skipped; only exactly one array counts.
   rows="$(printf '%s' "$concerns" | jq -cs --arg ret "$ret" --arg kw "$KEYWORDS" --arg tkw "$TEXT_KEYWORDS" "$AUTODRIVE_FINDING_JQ"'
@@ -196,7 +230,7 @@ cmd_classify() {
     exit 0
   fi
   if [ -z "$rows" ]; then
-    echo "INFO: classify: not every concern is a new minor finding; the verdict stays CONCERNS" >&2
+    echo "INFO: classify: not every concern is a minor finding never seen as major; the verdict stays CONCERNS" >&2
     exit 0
   fi
   if ! printf '%s' "$rows" | jq -c '.[]' | write_state "${RECORD##*/}.minor" \

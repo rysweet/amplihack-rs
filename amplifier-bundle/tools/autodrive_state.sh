@@ -253,8 +253,8 @@ autodrive_crusty_manifest_row() { autodrive_manifest_row "${1:-}" crusty; }
 # autodrive_crusty_final <state dir> -> criterion 3 under auto-drive (#1517).
 #
 # Prints only the reviewed head SHA and returns 0 when the crusty loop ended
-# DONE and its last loop-written round record is CLEAN or MINOR_ONLY (#1979; the
-# gate checks follow-ups apart). Otherwise prints one token and returns 1, checking in this order:
+# DONE and its last loop-written round record is CLEAN or MINOR_ONLY (#1979).
+# Otherwise prints one token and returns 1. The checks run in this order:
 #
 #   crusty-loop-not-done     no `crusty-loop` marker in phases.tsv
 #   crusty-manifest-missing  crusty-records.tsv absent, a symlink, or its last row malformed
@@ -266,9 +266,9 @@ autodrive_crusty_manifest_row() { autodrive_manifest_row "${1:-}" crusty; }
 #   crusty-head-sha-empty    reviewed_head_sha is not a 40- or 64-character hex SHA
 #
 # The record is copied once into a private temporary file, and that copy is
-# both hashed and parsed, so it cannot change between them. It is never printed,
-# and records the manifest does not name are ignored. Needs only bash, git and
-# coreutils, and is safe under `set -u`.
+# both hashed and parsed, so the file cannot change between the two. File
+# contents are never printed. Records the manifest does not name are ignored.
+# Needs only bash, git and coreutils, and is safe under `set -u`.
 autodrive_crusty_final() {
   local -x LC_ALL=C
   local dir="${1:-}" row="" file="" want="" copy="" tok="" sha="" latest=""

@@ -288,11 +288,13 @@ steps:
       # Issue #1979: a loop that ended on MINOR_ONLY files one follow-up issue
       # per minor finding of that last round before anything is recorded. If
       # collecting or filing fails, no marker is written: the merge gate then
-      # refuses criterion 3 and the drive is not READY. The tool comes from the
-      # same launch-side tree as the state helper, never the PR worktree.
-      H="$(dirname -- "$STATE_HELPER")"; FU="$H/autodrive_followups.sh"
+      # refuses criterion 3 and the drive is not READY. The tool writes to
+      # GitHub, so, as in merge-loop step-02b, it runs only from AMPLIHACK_HOME,
+      # never from the STATE_HELPER fallbacks (REPO_PATH or the cwd can be a PR
+      # checkout). Without AMPLIHACK_HOME a MINOR_ONLY loop is refused.
+      H=""; [ -z "${AMPLIHACK_HOME:-}" ] || H="${AMPLIHACK_HOME}/amplifier-bundle/tools"; FU="$H/autodrive_followups.sh"
       LAST="$(sed -n 's/^{"crusty_verdict":"\([A-Z_]*\)",.*/\1/p' "$DIR/crusty-latest.json" 2>/dev/null | head -n 1)"
-      if [ -f "$FU" ] && { [ -n "$PR" ] || [ "$LAST" = "MINOR_ONLY" ]; }; then
+      if [ -n "$H" ] && [ -f "$FU" ] && { [ -n "$PR" ] || [ "$LAST" = "MINOR_ONLY" ]; }; then
         bash "$FU" collect --state-dir "$DIR" \
           || { echo "ERROR: followups-unfiled: the minor findings could not be collected; the crusty loop is NOT recorded complete." >&2; exit 1; }
         FT="$(umask 077; mktemp -d "${TMPDIR:-/tmp}/autodrive-followup-task.XXXXXX")" || exit 1
@@ -304,7 +306,7 @@ steps:
         [ "$RC" -ne 79 ] || { echo "ERROR: exit 79 terminal policy refusal while filing follow-up issues; final, never retried." >&2; exit 79; }
         [ "$RC" -eq 0 ] || { echo "ERROR: followups-unfiled: the follow-up issues could not all be filed; the crusty loop is NOT recorded complete and the drive is not READY." >&2; exit 1; }
       elif [ "$LAST" = "MINOR_ONLY" ]; then
-        echo "ERROR: followups-unfiled: autodrive_followups.sh is not beside ${STATE_HELPER}; the minor findings cannot be filed, so the crusty loop is NOT recorded complete." >&2
+        echo "ERROR: followups-unfiled: AMPLIHACK_HOME is unset or has no autodrive_followups.sh; the minor findings cannot be filed, so the crusty loop is NOT recorded complete." >&2
         exit 1
       fi
       # Every concern crusty raised during this loop is now settled or filed:

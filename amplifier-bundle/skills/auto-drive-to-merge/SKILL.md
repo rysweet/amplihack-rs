@@ -200,9 +200,11 @@ it as on `CLEAN`. The findings are not dropped:
 - The parent task is not complete until its follow-up issues are done.
 
 A finding counts as minor only when its `severity` is exactly `minor`, its id
-is valid and not a returning id, and neither the id nor its text names a
-security subject such as secrets, tokens, injection, authentication or
-permissions. A missing or unknown severity counts as major. Any blocking or
+is valid and was never major in an earlier round, and neither the id nor its
+text names a security subject such as secrets, tokens, injection,
+authentication or permissions. A minor finding that recurs as minor does not
+keep the loop running; a major one downgraded to minor does. A missing or
+unknown severity counts as major. Any blocking or
 major finding keeps the round `CONCERNS`, and the loop continues as before.
 See [Minor findings end the crusty loop](../../../docs/reference/auto-drive-to-merge.md#minor-findings-end-the-crusty-loop-1979).
 

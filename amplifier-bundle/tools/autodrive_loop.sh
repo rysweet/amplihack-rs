@@ -18,8 +18,9 @@
 # CONTINUE / DONE / STUCK. Absence of progress stops the loop; number of
 # attempts does not.
 #
-# Host safety is NOT this file's job and never was. It is enforced structurally one layer
-# down by #1327 (sealed recursion ceiling) and #1332 (width cap + free-memory floor), both of which refuse with exit code 79 before a child
+# Host safety is NOT this file's job and never was. It is enforced structurally
+# one layer down by #1327 (sealed recursion ceiling) and #1332 (width cap +
+# free-memory floor), both of which refuse with exit code 79 before a child
 # runs. Rounds here are SEQUENTIAL AT CONSTANT DEPTH — each child inherits the
 # same AMPLIHACK_SESSION_DEPTH — so a long loop never walks toward that
 # ceiling and the ceiling is never raised to accommodate one.
@@ -43,7 +44,8 @@
 # BEFORE_ROUND_FAILED. The script's stdout may carry `before_round_result`,
 # which joins the round's line in the history the evaluator reads.
 #
-# Policy: this workflow NEVER passes a hook-skipping commit flag or any branch-protection bypass. See docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
+# Policy: this workflow NEVER passes a hook-skipping commit flag or any branch-
+# protection bypass. See docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
 
 set -uo pipefail
 
@@ -257,8 +259,7 @@ while :; do
       echo "WARNING: ${ROUND_LABEL} produced no parseable '${VERDICT_FIELD}'; treated as NOT clean." >&2 ;;
     *) ROUND_CLEAN="false" ;;
   esac
-  # Only A-Za-z0-9_ of the verdict reaches the evaluator, history and #1597 messages; a non-clean one that sanitises to the token ('CLEAN!') is tagged _NONCANONICAL so none of them reads it as clean.
-  # A clean round passes the clean token itself (#1979: MINOR_ONLY reads as CLEAN there); the DONE line and result keep ROUND_VERDICT.
+  # Only A-Za-z0-9_ of the verdict reaches the evaluator, history and #1597 messages; a non-clean one that sanitises to the token ('CLEAN!') is tagged _NONCANONICAL so none of them reads it as clean. A clean round (MINOR_ONLY too, via --also-clean-token, #1979) passes the clean token itself; the DONE line and result keep ROUND_VERDICT.
   VERDICT_SAFE="$(printf '%s' "$ROUND_VERDICT" | LC_ALL=C tr -cd 'A-Za-z0-9_')"; { [ "$ROUND_CLEAN" = "true" ] && VERDICT_SAFE="$TOKEN_SAFE"; } || [ "$VERDICT_SAFE" != "$TOKEN_SAFE" ] || VERDICT_SAFE="${VERDICT_SAFE}_NONCANONICAL"
   FINDINGS=""
   [ -f "${RECORD}.findings" ] && FINDINGS="$(cat "${RECORD}.findings")"

@@ -3,8 +3,7 @@ description: |
   One round of the auto-drive-to-merge crusty loop: put the PR in front of the
   `crusty-old-engineer` skill acting as the maintainer's proxy, read its
   STRUCTURED verdict, address every concern it raised, and record a
-  machine-checkable round record. A CONCERNS verdict whose findings are all
-  minor is recorded as MINOR_ONLY and not addressed here (#1979).
+  machine-checkable round record. An all-minor CONCERNS is MINOR_ONLY (#1979).
 
   This brick performs exactly ONE round and contains no loop of its own. The
   loop — and its agentic terminator — lives in autodrive-crusty-loop.yaml,
@@ -21,9 +20,10 @@ tags: ["auto-drive", "crusty", "review", "verdict", "loop"]
 # reviewer that thinks for twenty minutes is doing its job; a false timeout
 # costs more than a slow run.
 #
-# PROHIBITIONS (see docs/reference/auto-drive-to-merge.md): the commit made by this brick runs the
-# repository's hooks. A hook-skipping commit flag is NEVER passed, and a branch-protection
-# bypass is NEVER used anywhere in this workflow. When a hook fails, the cause is fixed.
+# PROHIBITIONS (see docs/reference/auto-drive-to-merge.md): the commit made by
+# this brick runs the repository's hooks. A hook-skipping commit flag is NEVER
+# passed, and a branch-protection bypass is NEVER used anywhere in this
+# workflow. When a hook fails, the cause is fixed.
 
 recursion:
   max_depth: 6

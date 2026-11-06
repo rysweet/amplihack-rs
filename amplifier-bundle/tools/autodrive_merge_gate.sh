@@ -37,7 +37,8 @@ while [ $# -gt 0 ]; do
 done
 case "$PR" in ''|*[!0-9]*) echo "ERROR: --pr must be a positive integer (got '${PR}')" >&2; exit 2 ;; esac
 # This gate's own directory, found before the cd below because BASH_SOURCE may
-# be relative. Every helper the gate sources or runs comes from here, never from the PR.
+# be relative. Every helper the gate sources or runs comes from here, and from
+# nowhere a pull request could populate.
 GATE_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 # gh resolves {owner}/{repo} from the working directory, so every read below
 # must run inside the repository the PR belongs to.
@@ -200,25 +201,31 @@ else
   fi
 fi
 
-# --- 6b. Criterion 3: the crusty loop of this run ended DONE and CLEAN or MINOR_ONLY
-# Under auto-drive the quality-audit criterion is met by the crusty loop: the `crusty-loop`
-# marker in phases.tsv (written only after the loop reports DONE) and a final CLEAN or
-# MINOR_ONLY verdict in crusty-latest.json; with MINOR_ONLY, every minor finding must also
-# have a follow-up issue in followups.tsv (#1979). These files are evidence, so they are
-# read only from a state dir that was given explicitly, is owned by this user and writable
-# by nobody else, and only when they are regular files rather than symlinks. Helpers come
-# from beside this gate only. The writers make the directory and every file private
-# whatever the caller's umask (autodrive_state.sh, PRIVATE STATE).
+# --- 6b. Criterion 3: the crusty loop ended DONE and CLEAN or MINOR_ONLY ----
+# MINOR_ONLY also needs a filed follow-up for every minor finding (#1979).
+# Under auto-drive the quality-audit criterion is met by the crusty loop: the
+# `crusty-loop` marker in phases.tsv (written only after the loop reports DONE)
+# and a final CLEAN verdict in crusty-latest.json. These files are evidence, so
+# they are read only from a state dir that was given explicitly, is owned by
+# this user and writable by nobody else, and only when they are regular files
+# rather than symlinks. The state helper is sourced from beside this gate and
+# from nowhere a pull request could populate. The writers make the directory
+# and every file private whatever the caller's umask (autodrive_state.sh,
+# PRIVATE STATE), so on a host whose umask is 0002 this check still passes for
+# state the workflow wrote itself.
 #
-# Since #1517 the last loop-written round record must also check out against crusty-records.tsv,
-# the manifest autodrive_loop.sh writes before any agent runs: autodrive_crusty_final rejects an
-# injected, edited or archived record. These checks only add to the ones above.
-# autodrive_private <path> (autodrive_state.sh): owned by this user, not a symlink, no g/o write.
+# Since #1517 the last loop-written round record must also check out against
+# crusty-records.tsv, the manifest autodrive_loop.sh writes before any agent
+# runs: autodrive_crusty_final rejects an injected, edited or archived record.
+# These checks only add to the ones above; none of them replaces one.
+# autodrive_private <path> comes from autodrive_state.sh: owned by this user,
+# not a symlink, no group or world write bit.
 #
-# block_unless_private <what> <name>...: blocks each named file in STATE_DIR that is a symlink,
-# or that exists and is not a private regular file, as not evidence of <what>. An empty name,
-# or a file that does not exist, passes here; the checks that read the file decide what
-# absence means. Returns 1 when any file blocked.
+# block_unless_private <what> <name>...: blocks each named file in STATE_DIR
+# that is a symlink, or that exists and is not a private regular file, as not
+# evidence of <what>. An empty name, or a file that does not exist, passes
+# here; the checks that read the file decide what absence means. Returns 1
+# when any file blocked.
 block_unless_private() {
   local what="$1" f p rc=0
   shift
