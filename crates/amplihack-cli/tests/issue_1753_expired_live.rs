@@ -139,6 +139,11 @@ fn assert_no_live_refresh(f: &Fixture, ep: &Endpoint) {
 /// rotation stalls. The refresh is not identity evidence, and the lease itself is
 /// kept. A barred profile folder is still never refreshed; see
 /// `issue_1962_refresh_ledger`.
+///
+/// The move that follows is pinned exactly. The identity was read from the
+/// refreshed login, so #1753 allows a move. `work` at 90% swaps to `extra`, the
+/// only candidate the lease leaves: `spare`, hosted by auto-switch, is skipped as
+/// leased and its login stays where it was. No other login moves.
 #[cfg(target_os = "linux")]
 #[test]
 fn lease_barred_live_login_is_still_refreshed_and_the_cycle_goes_on() {
@@ -175,11 +180,20 @@ fn lease_barred_live_login_is_still_refreshed_and_the_cycle_goes_on() {
         hosts["hosts"]["work"]["live"], "spare",
         "lease kept: {out:?}"
     );
-    assert!(
-        oauth(&f.home_login())["expiresAt"].as_i64().unwrap()
-            > chrono::Utc::now().timestamp_millis(),
-        "the live token is the refreshed one"
-    );
+    assert!(log.contains("skip: spare (leased)"), "{log}");
+    assert!(log.contains("swap work->extra"), "{log}");
+    let ledger = f.ledger().unwrap();
+    assert_eq!(ledger["live"], "extra", "{log}");
+    assert_eq!(ledger["account"], "uuid-extra");
+    // The refreshed work login moved, still fresh, into its own slot; extra's
+    // login is the one now in `~/.claude`; spare's is untouched.
+    let work = oauth(&f.slot("work"));
+    assert_eq!(work["accessToken"], "fake-task1753-work");
+    assert!(work["expiresAt"].as_i64().unwrap() > chrono::Utc::now().timestamp_millis());
+    assert_eq!(ino(&f.home_login()), Some(f.extra_ino));
+    assert_eq!(ino(&f.slot("extra")), None);
+    assert_eq!(ino(&f.slot("spare")), Some(f.spare_ino));
+    assert_eq!(f.logins().len(), 3, "{:?}", f.logins());
 }
 
 /// A live token that has not expired is never sent to the token endpoint,

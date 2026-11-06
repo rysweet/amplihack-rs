@@ -493,3 +493,25 @@ pub fn assert_refused(w: &World, name: &str, out: &Output, reason: &str) {
     assert!(all.contains(&want), "want {want:?}, got: {all}");
     assert_eq!(w.record(name), None, "no record for a refused seed");
 }
+
+/// Whether `dir`'s group is the user's private group: their primary group, named
+/// like the user, with no listed members.
+pub fn group_is_private(dir: &Path) -> bool {
+    let gid = std::fs::metadata(dir).unwrap().gid();
+    // SAFETY: getgid has no preconditions.
+    if gid != unsafe { libc::getgid() } {
+        return false;
+    }
+    let tool = |args: &[&str]| {
+        Command::new(args[0])
+            .args(&args[1..])
+            .output()
+            .map_or(String::new(), |o| {
+                String::from_utf8_lossy(&o.stdout).trim().to_string()
+            })
+    };
+    let user = tool(&["id", "-un"]);
+    let entry = tool(&["getent", "group", &gid.to_string()]);
+    let fields: Vec<&str> = entry.split(':').collect();
+    fields.len() == 4 && fields[0] == user && fields[3].is_empty()
+}

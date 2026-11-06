@@ -5926,7 +5926,15 @@ retain their separately documented behavior.
 #### Login directory rule
 
 An identity read and a [token refresh](#token-refresh) use a login only when
-its directory is a real directory owned by you that no other user can write:
+its directory is a real directory owned by you that no other user can write.
+The one rule governs every identity read, through `stamp()` in
+`rotate/login_identity.rs` (the rotate cycle and its swap, recovery and
+revalidation, the dry run, `profile seed-record` and `profile usage`), and
+every refresh made by a direct usage read, through `dir_private()` in
+`usage_direct.rs` (rotate measurement and `profile usage`). Issue #1962 widened it for all of
+these callers, not only for seeding: before, any group write bit was refused.
+This is a change to which credential directories are trusted. The reason is
+[the cause on candide](#cause-on-candide-issue-1962).
 
 | Directory | Result |
 |-----------|--------|
@@ -5953,6 +5961,39 @@ This rule applies to the directory only. A login file stays refused when group
 or others can write it, whatever its group. The
 [swap's](#rotate-swap) `~/.claude` check and the
 [shared session](#shared-session-directories) checks do not read ACLs.
+
+#### Cause on candide (issue #1962)
+
+1.2.99 refused every rotate cycle on candide with `~/.claude could not be
+read` and the identity alert. The cause was the directory mode, not an
+expired token, a 401 or a 429.
+
+- On candide the umask is `002`. `~/.claude` is mode `775`, owned by
+  `ryan:ryan`, where `ryan` is the user's own private group (gid 1000, no
+  listed members) and the directory has no access ACL.
+- 1.2.99 refused any login directory with `mode & 0o022 != 0`. The identity
+  read stopped in `stamp()` before any request was sent. A live refresh would
+  have been refused by `dir_private()` in the same way.
+- That matches the candide log: the refusal and the alert, with no refresh,
+  401, 429 or expiry line. With an expired token, 1.2.99 also logs
+  `refresh: expired login in ~/.claude not refreshed (refresh refused)`.
+  Candide's log has no such line, so the token was still valid and the
+  directory check alone explains the refusal. `profile verify` and 1.2.97 do
+  not apply this check, which is why they read the same login.
+
+The reproduction is `crates/amplihack-cli/tests/issue_1962_candide_cause.rs`.
+It uses fake logins and a loopback endpoint, with `~/.claude` set to candide's
+mode. Run against the 1.2.99 release binary (`AMPLIHACK_TEST_BINARY`), the two
+`775` tests fail with candide's lines, and the fake endpoint sees requests for
+the other profiles only, none for the live login. The `700` control passes.
+Against this build all three pass.
+
+The fix is the private-group case of the [rule above](#login-directory-rule).
+`chmod 700 ~/.claude` also clears the refusal on 1.2.99.
+
+The acceptance dry run on candide (#1962 item 5) is tracked in issue #1988.
+Candide stays on 1.2.97 until that run names the live login with no identity
+alert.
 
 ### Rotate live profile
 
