@@ -24,7 +24,8 @@ amplihack config set recipe.verbose true
 Then, for each run, write the task to a file and start it detached:
 
 ```bash
-TASK_FILE=$(mktemp "${TMPDIR:-/tmp}/task.XXXXXX.md")
+TASK_DIR=$(mktemp -d "${TMPDIR:-/tmp}/task.XXXXXX")
+TASK_FILE="$TASK_DIR/task.md"
 cat > "$TASK_FILE" <<'TASK'
 TASK_DESCRIPTION_HERE
 TASK

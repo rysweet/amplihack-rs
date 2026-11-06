@@ -203,8 +203,9 @@ Identified 20 high-impact workflows:
 ### Step 1: Read Reference Workflow
 
 ```bash
+GH_AW_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gh-aw.XXXXXX")
 gh api repos/github/gh-aw/contents/.github/workflows/{WORKFLOW_NAME}.md \
-  --jq '.content' | base64 -d > "${TMPDIR:-/tmp}/{WORKFLOW_NAME}.md"
+  --jq '.content' | base64 -d > "$GH_AW_DIR/{WORKFLOW_NAME}.md"
 ```
 
 ### Step 2: Analyze Structure
@@ -234,7 +235,7 @@ gh api repos/github/gh-aw/contents/.github/workflows/{WORKFLOW_NAME}.md \
 ```bash
 git checkout -b feat/{WORKFLOW_NAME}-workflow
 mkdir -p .github/workflows
-cp "${TMPDIR:-/tmp}/{WORKFLOW_NAME}.md" .github/workflows/
+cp "$GH_AW_DIR/{WORKFLOW_NAME}.md" .github/workflows/
 ```
 
 ### Step 5: Add Error Resilience

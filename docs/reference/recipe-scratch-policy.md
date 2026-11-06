@@ -100,6 +100,7 @@ Use these forms in any recipe or skill file under `amplifier-bundle/` that an ag
 |---|---|---|
 | Shell command | Quoted `"${TMPDIR:-/tmp}/..."` | `pytest --basetemp "${TMPDIR:-/tmp}/pytest-smart-test"` |
 | Single output file | `mktemp` under the same root | `out=$(mktemp "${TMPDIR:-/tmp}/qa-shadow.XXXXXX")` |
+| Output file that needs a suffix | `mktemp -d`, then a fixed name inside it | `dir=$(mktemp -d "${TMPDIR:-/tmp}/view.XXXXXX")` then `out="$dir/view.html"` |
 | Scratch worktree | `mktemp -d` under the same root | `wt=$(mktemp -d "${TMPDIR:-/tmp}/wt-issue.XXXXXX")` then `git worktree add "$wt/tree" -b fix/issue` |
 | Cleanup with a glob | Quoted root, glob outside the quotes | `rm -rf "${TMPDIR:-/tmp}/amplihack-workstreams/"ws-*` |
 | Prose and tables | `$TMPDIR/...` (default `/tmp`) | "Logs go to `$TMPDIR/amplihack-workstreams/` (default `/tmp`)." |
@@ -107,24 +108,12 @@ Use these forms in any recipe or skill file under `amplifier-bundle/` that an ag
 Rules:
 
 - Never write a bare `$TMPDIR/...` in a shell line. If `TMPDIR` is unset, a bare `$TMPDIR/x` becomes `/x`, a write at the filesystem root. The `:-/tmp` default prevents that.
-- Quote every expanded path. The one exception is the single-quoted YAML scenario in `qa-team/README.md`, which uses an unquoted `${TMPDIR:-/tmp}/test-student` inside the single quotes.
+- Quote every expanded path.
 - When an example writes to a path, change every later read of the same path in that example (`diff`, `cat`, `mkdir`, `rm -rf`) in the same edit, so the example stays consistent.
 - Prefer `mktemp` when an example creates one file and nothing later needs its fixed name. It avoids predictable names under the `/tmp` fallback.
+- Keep the `X`s at the end of a `mktemp` template. BSD and macOS `mktemp` randomise only trailing `X`s, so `name.XXXXXX.html` gives a fixed name there. When the file needs a suffix, create a folder with `mktemp -d` and name the file inside it.
 
 The multitask skill documents match the runtime. `utils.rs` places workstream folders under `std::env::temp_dir()`, which honours `TMPDIR`, so the skill now gives the location as `$TMPDIR/amplihack-workstreams/` (default `/tmp`), and its cleanup lines remove that folder.
-
-### Files rewritten under this policy
-
-| File (`amplifier-bundle/`) | Change |
-|---|---|
-| `skills/dev-orchestrator/reference.md` | `mktemp` lines use `"${TMPDIR:-/tmp}/..."` |
-| `skills/smart-test/SKILL.md` | Test temporary roots use `"${TMPDIR:-/tmp}/..."` |
-| `skills/qa-team/SKILL.md`, `skills/qa-team/README.md` | `--shadow-log` targets use `"${TMPDIR:-/tmp}/..."` |
-| `skills/multitask/SKILL.md`, `reference.md`, `examples.md`, `TIMEOUT_LIFECYCLE.md` | Workstream location and its `rm -rf` cleanup lines use `$TMPDIR` |
-| `skills/transcript-viewer/SKILL.md` | Output files use `"${TMPDIR:-/tmp}/..."` |
-| `skills/gh-aw-adoption/GENERIC_ADOPTION_PROMPT.md`, `examples.md` | Scratch clones and output use `"${TMPDIR:-/tmp}/..."` |
-| `skills/claude-agent-sdk/drift-detection.md` | Scratch output uses `"${TMPDIR:-/tmp}/..."` |
-| `recipes/workflow-worktree.yaml` | Runtime-root fallback (next section) |
 
 ## The workflow runtime root
 

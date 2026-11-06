@@ -743,7 +743,7 @@ steps:
     agent: "student-cli"
     action: "execute_command"
     params:
-      command: 'mkdir -p ${TMPDIR:-/tmp}/test-student && cd ${TMPDIR:-/tmp}/test-student && uvx --from git+https://github.com/rysweet/amplihack-rs amplihack claude -- -p "Task(subagent_type=''guide'', prompt=''I am new. What is amplihack?'')" 2>&1 | head -100'
+      command: 'mkdir -p "${TMPDIR:-/tmp}/test-student" && cd "${TMPDIR:-/tmp}/test-student" && uvx --from git+https://github.com/rysweet/amplihack-rs amplihack claude -- -p "Task(subagent_type=''guide'', prompt=''I am new. What is amplihack?'')" 2>&1 | head -100'
     expect:
       exit_code: 0
       stdout_contains:
@@ -755,7 +755,7 @@ steps:
     agent: "student-cli"
     action: "execute_command"
     params:
-      command: "grep -i 'TRY IT\\|try this\\|run this' ${TMPDIR:-/tmp}/test-student/.claude/agents/amplihack/core/guide.md"
+      command: "grep -i 'TRY IT\\|try this\\|run this' \"${TMPDIR:-/tmp}/test-student/.claude/agents/amplihack/core/guide.md\""
     expect:
       exit_code: 0
     timeout: 5000

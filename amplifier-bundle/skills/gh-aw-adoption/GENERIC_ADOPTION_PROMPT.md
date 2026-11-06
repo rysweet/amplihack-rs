@@ -135,9 +135,10 @@ For EACH workflow in priority list:
 
 ```bash
 workflow_name="<WORKFLOW_NAME>"  # e.g., "secret-validation"
+GH_AW_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gh-aw.XXXXXX")
 
 gh api repos/github/gh-aw/contents/.github/workflows/${workflow_name}.md \
-  --jq '.content' | base64 -d > "${TMPDIR:-/tmp}/${workflow_name}.md"
+  --jq '.content' | base64 -d > "$GH_AW_DIR/${workflow_name}.md"
 ```
 
 #### 2. Read and understand structure
@@ -240,7 +241,7 @@ git checkout -b feat/${workflow_name}-workflow
 
 ```bash
 mkdir -p .github/workflows
-cp "${TMPDIR:-/tmp}/${workflow_name}.md" ".github/workflows/${workflow_name}.md"
+cp "$GH_AW_DIR/${workflow_name}.md" ".github/workflows/${workflow_name}.md"
 # (with all adaptations applied)
 ```
 

@@ -314,7 +314,8 @@ Review which sources have changed and assess impact.
 
 ```bash
 # For each drifted source, fetch new content
-NEW_CONTENT=$(mktemp "${TMPDIR:-/tmp}/new_content.XXXXXX.html")
+DRIFT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/drift.XXXXXX")
+NEW_CONTENT="$DRIFT_DIR/new_content.html"
 curl https://docs.claude.com/en/docs/agent-sdk/overview > "$NEW_CONTENT"
 ```
 

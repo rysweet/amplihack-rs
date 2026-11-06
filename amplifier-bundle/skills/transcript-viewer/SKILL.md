@@ -410,7 +410,8 @@ conversation. Best for quick reading in the terminal or Claude Code.
 Pass `--format html` to `claude-code-log`. Write the output to a file and open it:
 
 ```bash
-HTML_OUT=$(mktemp "${TMPDIR:-/tmp}/transcript-view.XXXXXX.html")
+OUT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/transcript-view.XXXXXX")
+HTML_OUT="$OUT_DIR/view.html"
 $CCL <file> --format html > "$HTML_OUT"
 open "$HTML_OUT" 2>/dev/null \
   || xdg-open "$HTML_OUT" 2>/dev/null \
