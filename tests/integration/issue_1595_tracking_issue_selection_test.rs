@@ -16,7 +16,11 @@
 //!    request) whose URL ends in `/issues/N`. Marked references
 //!    (`Issue #N`, `Fixes #N`, ...) are tried before bare `#N`; `PR #N`,
 //!    `owner/repo#N` and `AB#N` are never looked up; at most five lookups.
-//! 3. Otherwise the existing title search and `gh issue create` path runs.
+//! 3. Otherwise, only with `create_issue=true` (#1881), an open issue with
+//!    exactly the same title is reused, or a new one is created. Without the
+//!    opt-in step-03 uses local tracking. `run_step_03` opts in by default so
+//!    the selection cases below can observe the create path;
+//!    `no_selection_without_opt_in_uses_local_tracking` checks the default.
 //!
 //! Every test runs the shipped step bodies (or sources the shipped helper)
 //! against a fake `gh` and a fake `git`. The PATH puts the fakes first, the
@@ -106,7 +110,11 @@ fn write_executable(path: &Path, content: &str) {
 ///   equals `GH_VIEW_ISSUE`. `GH_VIEW_URL` overrides the URL printed.
 ///   `GH_VIEW_EXIT` makes it print a token-like error and exit with that code
 ///   (a timeout, rate limit or auth failure).
-/// - `issue list`: prints `GH_LIST_URL` if set.
+/// - `issue list`: prints `GH_LIST_JSON` (default `[]`), the JSON array the
+///   #1881 exact-title lookup reads.
+/// - `repo view`: prints this repository's `nameWithOwner`.
+/// - `api user`: prints the login `example-user`, the author the #1881
+///   lookup requires.
 /// - `label create`: succeeds.
 /// - `issue create`: prints the issue #901 URL.
 /// - anything else: exit 7.
@@ -117,6 +125,7 @@ lookup_state() {
   eval "state=\${GH_API_$1:-}"
 }
 case "$1:$2" in
+  api:user) echo "example-user"; exit 0 ;;
   api:repos/*)
     n="${2##*/}"
     case "$2" in */issues/"$n") ;; *) echo "fake gh: unexpected api path $2" >&2; exit 7 ;; esac
@@ -144,7 +153,8 @@ case "$1:$2" in
     echo "GraphQL: Could not resolve to an issue or pull request with the number of $3." >&2
     exit 1
     ;;
-  issue:list) [ -n "${GH_LIST_URL:-}" ] && printf '%s\n' "$GH_LIST_URL"; exit 0 ;;
+  issue:list) printf '%s\n' "${GH_LIST_JSON:-[]}"; exit 0 ;;
+  repo:view) case " $* " in *" --jq"*|*" -q "*) echo "example-org/example-repo" ;; *) echo '{"nameWithOwner":"example-org/example-repo"}' ;; esac; exit 0 ;;
   label:create) exit 0 ;;
   issue:create) printf '%s/issues/901\n' "$FAKE_REPO_URL"; exit 0 ;;
 esac
@@ -314,6 +324,8 @@ fn run_step_03(host: &str, issue_number: &str, task: &str, env: &[(&str, &str)])
     let mut cmd = sandbox.bash(&extract_step_body("step-03-create-issue"));
     cmd.env("RECIPE_VAR_remote_host_type", host)
         .env("RECIPE_VAR_issue_number", issue_number)
+        // #1881: creation is opt-in; tests override this with `env`.
+        .env("RECIPE_VAR_create_issue", "true")
         .env("TASK_DESCRIPTION", task)
         .env(
             "RECIPE_VAR_final_requirements",
@@ -929,7 +941,7 @@ fn candidate_url_without_https_is_rejected() {
     assert!(run.looked_up(42), "{}", run.diag());
 }
 
-/// (j) No reference: the title search and create path are unchanged.
+/// (j) No reference: with the opt-in, the title lookup and create path run.
 #[test]
 fn task_without_references_uses_the_unchanged_search_and_create_path() {
     let run = run_github("", "Add a --json flag to recipe list.", &[]);
@@ -937,7 +949,7 @@ fn task_without_references_uses_the_unchanged_search_and_create_path() {
     assert!(run.api_lookups().is_empty(), "{}", run.diag());
     assert!(
         run.called("issue list"),
-        "the title search must still run\n{}",
+        "the exact-title lookup must run\n{}",
         run.diag()
     );
     assert!(run.called("label create"), "{}", run.diag());
@@ -948,15 +960,23 @@ fn task_without_references_uses_the_unchanged_search_and_create_path() {
     );
 }
 
-/// The title search still reuses a matching open issue when no candidate
-/// passes.
+/// The exact-title lookup (#1881) still reuses a matching open issue when no
+/// candidate passes.
 #[test]
 fn rejected_candidates_fall_through_to_the_title_search() {
     let found = "https://github.com/example-org/example-repo/issues/777";
     let run = run_github(
         "",
         "Follows #1585.",
-        &[("GH_API_1585", "pr"), ("GH_LIST_URL", found)],
+        &[
+            ("GH_API_1585", "pr"),
+            (
+                "GH_LIST_JSON",
+                &format!(
+                    r#"[{{"number":777,"title":"Follows #1585.","url":"{found}","author":{{"login":"example-user"}}}}]"#
+                ),
+            ),
+        ],
     );
     run.assert_success();
     assert_eq!(run.stdout().trim(), found, "{}", run.diag());
@@ -1362,4 +1382,36 @@ fn helper_header_names_the_file_and_lists_the_new_functions() {
         assert!(header.contains(f), "header must list {f}\n{header}");
         assert!(text.contains(&format!("{f}()")), "helper must define {f}");
     }
+}
+
+/// #1881: when nothing is selected and `create_issue` is not set, step-03
+/// uses local tracking and makes no `gh issue list`, `gh label create` or
+/// `gh issue create` call.
+#[test]
+fn no_selection_without_opt_in_uses_local_tracking() {
+    let run = run_github(
+        "",
+        "Related to #1578.",
+        &[("GH_API_1578", "closed"), ("RECIPE_VAR_create_issue", "")],
+    );
+    run.assert_success();
+    let stdout = run.stdout();
+    assert!(
+        stdout.contains("tracking_system=local")
+            && stdout.contains("issue_creation=local-tracking"),
+        "step-03 must use local tracking without the opt-in\n{}",
+        run.diag()
+    );
+    for call in ["issue list", "label create", "issue create"] {
+        assert!(
+            !run.called(call),
+            "`gh {call}` must not run\n{}",
+            run.diag()
+        );
+    }
+    assert!(
+        run.looked_up(1578),
+        "selection still runs first\n{}",
+        run.diag()
+    );
 }

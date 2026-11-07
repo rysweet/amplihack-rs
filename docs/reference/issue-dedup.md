@@ -7,7 +7,8 @@ task runs more than once.
 
 - [Current implementation](#current-implementation)
 - [Guard 1: Reference extraction](#guard-1-reference-extraction)
-- [Guard 2: Title search](#guard-2-title-search)
+- [Opt-in gate](#opt-in-gate)
+- [Guard 2: Exact-title search](#guard-2-exact-title-search)
 - [smart-orchestrator gap](#smart-orchestrator-gap)
 - [Proposed design: Rust-side dedup](#proposed-design-rust-side-dedup)
 - [Configuration](#configuration)
@@ -18,31 +19,41 @@ task runs more than once.
 
 The `workflow-prep.yaml` sub-recipe of `default-workflow` (step
 `step-03-create-issue`) uses a two-guard idempotency pattern implemented
-entirely in Bash. Both guards run before any `gh issue create` call. On
-GitHub, Guard 1 is `select_github_tracking_issue` in
-`amplifier-bundle/tools/workflow_issue_tracking.sh`; the
-[Tracking Issue Selection Reference](workflow-tracking-issue-selection.md)
-(#1595) describes it in full.
+entirely in Bash, with an opt-in gate between the guards (#1881). Both guards
+run before any `gh issue create` call. On GitHub, Guard 1 is
+`select_github_tracking_issue` in
+`amplifier-bundle/tools/workflow_issue_tracking.sh`, and Guard 2 and the
+create are `find_open_issue_before_create` and
+`create_github_issue_bounded` in `amplifier-bundle/tools/workflow_issue_create.sh`.
+The [Tracking Issue Selection Reference](workflow-tracking-issue-selection.md)
+describes all three in full.
 
 ```
 task_description
        │
        ▼
-┌──────────────┐    match    ┌──────────────┐   exists   ┌──────────┐
-│ issue_number │───────────▶│ gh issue view │──────────▶│ Reuse    │
-│ or task #NNN │            │ / gh api      │  (open)   │ (exit 0) │
-└──────────────┘            └──────────────┘           └──────────┘
-       │ no match                   │ not found
-       ▼                            ▼
-┌──────────────┐    found    ┌──────────┐
-│ gh issue list│───────────▶│ Reuse    │
-│ --search     │            │ (exit 0) │
-└──────────────┘            └──────────┘
-       │ not found
+┌──────────────┐  match   ┌──────────────┐  exists  ┌──────────┐
+│ issue_number │─────────▶│ gh issue view│─────────▶│ Reuse    │
+│ or task #NNN │          │ / gh api     │  (open)  │ (exit 0) │
+└──────────────┘          └──────────────┘          └──────────┘
+       │ no match                │ not found
+       ▼                         ▼
+┌──────────────┐   no     ┌────────────────┐
+│ create_issue │─────────▶│ Local tracking │
+│ = true?      │          │ (exit 0)       │
+└──────────────┘          └────────────────┘
+       │ yes
        ▼
-┌──────────────┐
-│ gh issue     │
-│ create       │
+┌──────────────┐ identical┌──────────┐
+│ gh issue list│─────────▶│ Reuse    │
+│ exact title  │  title   │ (exit 0) │
+└──────────────┘          └──────────┘
+       │ lookup failed (search, then recent listing) ──▶ local tracking
+       │ no match
+       ▼
+┌──────────────┐  secondary limit: wait 60 s + jitter, look up again,
+│ gh issue     │  give up to local tracking after
+│ create       │  AMPLIHACK_ISSUE_BACKOFF_MAX_TOTAL_SECS
 └──────────────┘
 ```
 
@@ -67,22 +78,45 @@ On Azure DevOps, step-03 still takes the first `AB#N`, otherwise the first
 `#N`, into `REF_ISSUE_NUM` and reuses that work item if
 `az boards work-item show` finds it.
 
-## Guard 2: Title search
+## Opt-in gate
 
-When Guard 1 selects nothing (no explicit number and no task-text
-reference accepted as an open issue), Guard 2 searches open issues by title:
+When Guard 1 selects nothing, step-03 creates nothing unless the run passed
+`create_issue=true` (also `1` or `yes`, any case). Without it, step-03 writes
+local tracking metadata and makes no GitHub write, so repeated runs of the
+same task cannot add issues at all. See
+[Local tracking by default](workflow-tracking-issue-selection.md#local-tracking-by-default).
+
+## Guard 2: Exact-title search
+
+With the opt-in on, Guard 2 lists up to 100 open issues whose title contains
+the task title as a phrase, then keeps only the one whose title is exactly
+equal to the normalised title (control characters removed, cut to 200
+characters, trimmed):
 
 ```bash
-SEARCH_QUERY="${ISSUE_TITLE:0:100}"
-FOUND_URL=$(timeout 60 gh issue list --state open \
-    --search "$SEARCH_QUERY" --json url --jq '.[0].url // ""' 2>/dev/null || echo '')
+GH_PROMPT_DISABLED=1 timeout 30 gh issue list --state open --limit 100 \
+  --search='"Add a --json flag to recipe list" in:title' \
+  --json number,title,url </dev/null
 ```
 
-This matches the first 100 characters of the issue title. If a matching
-open issue is found, its URL is reused.
+A `jq` program then checks the title, the URL shape and the repository of
+every result, and prints the URL of the first one that passes all three. A
+result for another repository is skipped, not reused. Who opened the issue is
+not checked, so a run under a different gh account reuses the same issue.
+If the search fails, Guard 2 tries a plain listing of the newest open issues
+instead, which uses the core API quota. If that fails too, step-03 uses local
+tracking and creates nothing, because it cannot tell whether another run of
+the task has already made the issue. The full program is in
+[Exact-title reuse](workflow-tracking-issue-selection.md#lookup). Before every
+retry of a rate-limited create, and once after a create that timed out, the
+lookup runs again as a plain listing of the newest open issues without
+`--search`, so a create that GitHub accepted but reported as failed is reused
+instead of duplicated. See
+[Exact-title reuse](workflow-tracking-issue-selection.md#exact-title-reuse).
 
-**Limitation**: Title search uses GitHub's search API, which is fuzzy.
-Unrelated issues with similar titles can cause false positives.
+This replaces the earlier fuzzy match, which reused the first search hit for
+the first 100 characters of the title and could attach a run to an unrelated
+issue.
 
 ## smart-orchestrator gap
 

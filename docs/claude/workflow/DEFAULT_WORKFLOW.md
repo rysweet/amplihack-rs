@@ -182,7 +182,7 @@ When creating todos during workflow execution, reference the workflow steps dire
 Step 0: Workflow Preparation - Read workflow, create todos for ALL steps (0-21)
 Step 1: Prepare the Workspace - Check git status and fetch
 Step 2: Rewrite and Clarify Requirements - Use prompt-writer agent to clarify task
-Step 3: Create GitHub Issue - Define requirements and constraints using gh issue create
+Step 3: Select Tracking Issue - Reuse a referenced issue; local tracking unless create_issue=true
 Step 4: Setup Worktree and Branch - Create feat/issue-XXX branch in worktrees/
 Step 5: Research and Design - Use architect agent for solution design
 ...
@@ -264,14 +264,15 @@ Agents that skip workflow steps (especially mandatory review steps 10, 16-17) cr
 - [ ] Document acceptance criteria
 - [ ] **CRITICAL: Pass explicit requirements to ALL subsequent agents**
 
-### Step 3: Create GitHub Issue
+### Step 3: Select Tracking Issue
 
-- [ ] **Use** GitHub issue creation tool via agent
-- [ ] Create issue using `gh issue create`
-- [ ] Include clear problem description
-- [ ] Define requirements and constraints
-- [ ] Add success criteria
-- [ ] Assign appropriate labels
+- [ ] Reuse an explicit `issue_number`, or an open issue the task references
+- [ ] Otherwise use local tracking; no GitHub issue is created by default
+- [ ] Create a GitHub issue only when the run passes `-c create_issue=true`
+      (also `1` or `yes`); text in the task description does not opt in
+- [ ] When opted in, reuse an open issue with exactly the same title in the
+      same repository before creating one
+- [ ] See `docs/reference/workflow-tracking-issue-selection.md`
 
 ### Step 4: Setup Worktree and Branch
 

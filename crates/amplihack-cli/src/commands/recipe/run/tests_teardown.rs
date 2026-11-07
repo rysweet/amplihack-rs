@@ -90,11 +90,6 @@ fn write_stub(path: &Path, body: &str) {
         .expect("failed to chmod runner stub");
 }
 
-/// True if a process with `pid` still exists (signal 0 probe).
-fn process_alive(pid: u32) -> bool {
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
-}
-
 // -------------------------------------------------------------------------
 // Test 1 — teardown fires on the FAILURE (non-timeout) path.
 //
@@ -309,11 +304,13 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let temp = tempfile::tempdir().expect("failed to create temp dir");
 
     // Sibling process in the TEST's process group (NOT the runner's session).
+    // It outlives any plausible run, so its exit can only mean a signal; the
+    // test kills it at the end. A short sleep made the check a time budget that
+    // a loaded host missed (PR #1885).
     let mut sibling = std::process::Command::new("/bin/sleep")
-        .arg("8")
+        .arg("600")
         .spawn()
         .expect("failed to spawn sibling process");
-    let sibling_pid = sibling.id();
 
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("orphan-marker");
@@ -352,18 +349,20 @@ fn test_teardown_is_scoped_to_runner_process_group() {
 
     // The unrelated sibling (outside the runner's process group) must survive
     // the teardown, proving the reaper is pgid-scoped and not a broadcast.
+    // `try_wait` rather than `kill(pid, 0)`: an unreaped child that was
+    // killed is a zombie, and `kill(pid, 0)` still succeeds on a zombie.
     assert!(
-        started.elapsed() < Duration::from_secs(8),
+        started.elapsed() < Duration::from_secs(600),
         "test setup ran too long to validate sibling survival"
     );
     assert!(
-        process_alive(sibling_pid),
+        matches!(sibling.try_wait(), Ok(None)),
         "teardown must be scoped to the runner's process group and must NOT \
          signal unrelated processes (issue #964)"
     );
 
     // Clean up the sibling deterministically.
-    unsafe { libc::kill(sibling_pid as libc::pid_t, libc::SIGKILL) };
+    let _ = sibling.kill();
     let _ = sibling.wait();
 }
 

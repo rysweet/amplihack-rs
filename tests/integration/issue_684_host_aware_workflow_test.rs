@@ -244,9 +244,12 @@ case "$1:$2" in
     exit "${GH_VIEW_STATUS:-1}"
     ;;
   issue:list)
-    [ -n "${GH_LIST_URL:-}" ] && printf '%s\n' "$GH_LIST_URL"
+    printf '%s\n' "${GH_LIST_JSON:-[]}"
     exit "${GH_LIST_STATUS:-0}"
     ;;
+  repo:view)
+    case " $* " in *" --jq "*) echo 'example-org/example-repo' ;; *) echo '{"nameWithOwner":"example-org/example-repo"}' ;; esac
+    exit 0 ;;
   label:create) exit 0 ;;
   issue:create)
     [ -n "${GH_CREATE_OUTPUT:-}" ] && printf '%s\n' "$GH_CREATE_OUTPUT"
@@ -315,6 +318,14 @@ exit 7
         gh_log: fs::read_to_string(&gh_log).unwrap_or_default(),
         az_log: fs::read_to_string(&az_log).unwrap_or_default(),
     }
+}
+
+fn issue_create_helper_text() -> String {
+    let path = workspace_root()
+        .join("amplifier-bundle")
+        .join("tools")
+        .join("workflow_issue_create.sh");
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
 fn run_step_03(host_type: &str, issue_number: &str, task_description: &str) -> Step03Run {
@@ -1054,6 +1065,8 @@ fn step_03_preserves_github_issue_create_success_path() {
         "",
         "GitHub follow-up without existing issue",
         &[
+            // #1881: GitHub issue creation is opt-in.
+            ("RECIPE_VAR_create_issue", "true"),
             (
                 "GH_CREATE_OUTPUT",
                 "https://github.com/example-org/example-repo/issues/901",
@@ -1078,17 +1091,64 @@ fn step_03_preserves_github_issue_create_success_path() {
     );
 }
 
+/// Issue #1881: without `create_issue=true`, a GitHub run with nothing to
+/// reuse uses local tracking and makes no GitHub write.
+#[test]
+fn step_03_github_without_opt_in_uses_local_tracking() {
+    let run = run_step_03_with_env(
+        "github",
+        "",
+        "GitHub follow-up without existing issue",
+        &[
+            (
+                "GH_CREATE_OUTPUT",
+                "https://github.com/example-org/example-repo/issues/901",
+            ),
+            ("GH_CREATE_STATUS", "0"),
+        ],
+    );
+
+    let stdout = String::from_utf8_lossy(&run.output.stdout);
+    let stderr = String::from_utf8_lossy(&run.output.stderr);
+    assert!(
+        run.output.status.success(),
+        "local default must succeed; stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("tracking_system=local")
+            && stdout.contains("issue_creation=local-tracking"),
+        "github host without the opt-in must use local tracking; stdout:\n{stdout}"
+    );
+    assert!(
+        !run.gh_log.contains("issue create")
+            && !run.gh_log.contains("label create")
+            && !run.gh_log.contains("issue list"),
+        "github host without the opt-in must not write to GitHub; gh log:\n{}",
+        run.gh_log
+    );
+}
+
 #[test]
 fn step_03_github_issue_create_external_calls_are_timeout_wrapped_without_transient_retry() {
     let recipe = load_recipe("workflow-prep");
     let body = extract_step_body(recipe, "step-03-create-issue");
+    // #1881: the create moved into amplifier-bundle/tools/workflow_issue_create.sh.
+    let helper = issue_create_helper_text();
 
     assert!(
-        body.contains("timeout 30 gh label create") && body.contains("timeout 60 gh issue create"),
+        body.contains("create_github_issue_bounded"),
+        "step-03 must create GitHub issues through create_github_issue_bounded (#1881)"
+    );
+    assert!(
+        helper.contains("timeout 30 gh label create")
+            && helper.contains("timeout 60 gh issue create"),
         "GitHub label/create calls must be bounded external-service calls"
     );
     assert!(
-        !body.contains("retrying once") && !body.contains("GH_RETRY_DELAY_SECONDS"),
+        !helper.contains("retrying once")
+            && !helper.contains("GH_RETRY_DELAY_SECONDS")
+            && !body.contains("retrying once")
+            && !body.contains("GH_RETRY_DELAY_SECONDS"),
         "GitHub issue create must not add broad transient retry logic; only repo access/resolution failures may fall back locally"
     );
 }
@@ -1101,6 +1161,8 @@ fn step_03_github_repo_resolution_failure_falls_back_to_local_tracking() {
         "",
         "Please see issue #763; create tracking for the workflow",
         &[
+            // #1881: GitHub issue creation is opt-in.
+            ("RECIPE_VAR_create_issue", "true"),
             ("GIT_REMOTE_URL", secret_remote),
             (
                 "GH_CREATE_OUTPUT",
@@ -1145,6 +1207,8 @@ fn step_03_github_repo_resolution_failure_uses_issue_number_for_local_tracking()
         "763",
         "Create tracking for a workflow without an inline issue reference",
         &[
+            // #1881: GitHub issue creation is opt-in.
+            ("RECIPE_VAR_create_issue", "true"),
             (
                 "GH_CREATE_OUTPUT",
                 "GraphQL: Could not resolve to a Repository with the name 'cloud-ecosystem-security/hyenas'.",
@@ -1173,6 +1237,8 @@ fn step_03_github_unexpected_create_failure_remains_error() {
         "",
         "Create tracking for an unexpected GitHub failure",
         &[
+            // #1881: GitHub issue creation is opt-in.
+            ("RECIPE_VAR_create_issue", "true"),
             (
                 "GH_CREATE_OUTPUT",
                 "GraphQL: unexpected create failure for https://token:ghp_secret123@github.com/example-org/example-repo",
@@ -1459,9 +1525,11 @@ fn step_03_preserves_github_path() {
     let recipe = load_recipe("workflow-prep");
     let body = extract_step_body(recipe, "step-03-create-issue");
 
+    // Issue #1881: creation moved into workflow_issue_create.sh.
     assert!(
-        body.contains("gh issue create"),
-        "step-03 must preserve the GitHub issue creation path (Issue #684)"
+        body.contains("create_github_issue_bounded")
+            && issue_create_helper_text().contains("gh issue create"),
+        "step-03 must preserve the GitHub issue creation path (Issues #684, #1881)"
     );
     // Issue #1595: the GitHub tracking-issue lookup moved into the sourced
     // helper, so the idempotency check now looks there.
