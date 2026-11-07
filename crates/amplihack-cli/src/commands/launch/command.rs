@@ -1,6 +1,7 @@
 //! Command building for tool binaries: argument injection, UVX plugin
 //! handling, Docker launcher args, and Claude-specific env augmentation.
 
+use super::codex_agent_step;
 use super::system_prompt_append;
 use crate::binary_finder::BinaryInfo;
 use crate::commands::uvx_help::is_uvx_deployment;
@@ -220,7 +221,14 @@ pub(super) fn build_command_for_dir(
         cmd.arg(fragment);
     }
 
-    cmd.args(extra_args);
+    // Issue #1985: a recipe agent step on Codex (`amplihack codex -- exec …`)
+    // gets workspace-write with network access and the hook-trust bypass,
+    // unless the caller chose otherwise. Interactive argv is unchanged.
+    if binary.name == "codex" {
+        cmd.args(codex_agent_step::codex_agent_step_args(extra_args));
+    } else {
+        cmd.args(extra_args);
+    }
 
     // These routed-Copilot restrictions deliberately come last. Copilot has
     // enabling counterparts for remote control and export, so user arguments
