@@ -107,7 +107,7 @@ fn all_three_findings_are_reported_together() {
 
 #[test]
 fn a_manifest_holds_relative_paths_and_sha256() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     fs::create_dir_all(temp.path().join("sub")).unwrap();
     fs::write(temp.path().join("sub/abc.txt"), "abc").unwrap();
 
@@ -124,7 +124,7 @@ fn a_manifest_holds_relative_paths_and_sha256() {
 
 #[test]
 fn the_source_manifest_leaves_out_what_the_copy_leaves_out() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     mixed_tree(temp.path());
 
     assert_eq!(keys(&of_source(temp.path()).unwrap()), COPIED);
@@ -132,7 +132,7 @@ fn the_source_manifest_leaves_out_what_the_copy_leaves_out() {
 
 #[test]
 fn the_staged_manifest_sees_everything_so_an_excluded_name_counts_as_extra() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     mixed_tree(temp.path());
 
     let staged = of_staged(temp.path()).unwrap();
@@ -154,7 +154,7 @@ fn the_staged_manifest_sees_everything_so_an_excluded_name_counts_as_extra() {
 
 #[test]
 fn a_copied_tree_matches_its_source() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let src = temp.path().join("src");
     mixed_tree(&src);
     let dst = temp.path().join("dst");
@@ -167,7 +167,7 @@ fn a_copied_tree_matches_its_source() {
 
 #[test]
 fn a_missing_root_is_an_error_not_an_empty_manifest() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     assert!(
         of_source(temp.path()).is_ok(),
         "an empty root is a valid walk"
@@ -181,7 +181,7 @@ fn a_missing_root_is_an_error_not_an_empty_manifest() {
 
 #[test]
 fn walk_tree_copy_set_matches_what_the_copy_takes() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     mixed_tree(temp.path());
 
     let entries = walk_tree(temp.path(), WalkScope::CopySet).unwrap();
@@ -217,7 +217,7 @@ fn walk_tree_copy_set_matches_what_the_copy_takes() {
 #[cfg(unix)]
 #[test]
 fn walk_tree_everything_reports_symlinks_without_following_them() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     mixed_tree(temp.path());
 
     let entries = walk_tree(temp.path(), WalkScope::Everything).unwrap();
@@ -313,7 +313,7 @@ struct Staging {
 
 /// A source repo plus an existing installed bundle with a sentinel in it.
 fn staging_with_installed_bundle() -> Staging {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let repo = temp.path().join("repo");
     create_source_repo(&repo);
     fs::create_dir_all(repo.join("amplifier-bundle/skills/deep")).unwrap();
@@ -473,7 +473,7 @@ fn a_leftover_staging_directory_is_removed_first() {
 #[test]
 fn a_symlinked_bundle_root_fails_and_creates_no_staging() {
     // SEC-12.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let real = temp.path().join("real");
     create_source_repo(&real);
     let repo = temp.path().join("repo");

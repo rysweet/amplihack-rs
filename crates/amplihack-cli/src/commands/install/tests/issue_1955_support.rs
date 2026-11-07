@@ -131,8 +131,8 @@ pub(super) struct InstallEnv {
 
 impl InstallEnv {
     pub(super) fn new() -> Self {
-        let home_dir = tempfile::tempdir().unwrap();
-        let outside = tempfile::tempdir().unwrap();
+        let home_dir = crate::test_support::tempdir_outside_framework_roots();
+        let outside = crate::test_support::tempdir_outside_framework_roots();
         let home = home_dir.path().to_path_buf();
         let stub_bin = outside.path().join("stub_bin");
         create_exe_stub(&stub_bin, "python3");

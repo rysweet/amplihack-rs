@@ -169,36 +169,16 @@ struct Fixture {
     task: PathBuf,
 }
 
-/// A temporary directory outside the real `~/.claude` and `~/.amplihack`.
-///
-/// [`Fixture::assert_no_real_home`] fails on any file that names those
-/// directories, and every fixture path appears in the stub logs, so a `TMPDIR`
-/// inside `~/.amplihack` (as recipe runs set it) would fail every check.
-fn tempdir_outside_real_home_dirs() -> tempfile::TempDir {
-    let forbidden: Vec<PathBuf> = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .map(|home| vec![home.join(".claude"), home.join(".amplihack")])
-        .unwrap_or_default();
-    let candidates = [
-        std::env::temp_dir(),
-        PathBuf::from("/var/tmp"),
-        PathBuf::from("/tmp"),
-    ];
-    let base = candidates
-        .iter()
-        .find(|base| base.is_dir() && !forbidden.iter().any(|f| base.starts_with(f)))
-        .cloned()
-        .unwrap_or_else(std::env::temp_dir);
-    tempfile::tempdir_in(base).unwrap()
-}
-
 impl Fixture {
     fn new() -> Option<Self> {
         if !jq_available() {
             eprintln!("SKIP: jq is not installed; the stub orch helper needs it");
             return None;
         }
-        let tmp = tempdir_outside_real_home_dirs();
+        // Outside the real `~/.claude` and `~/.amplihack`: `assert_no_real_home`
+        // fails on any file naming them, and every fixture path appears in the
+        // stub logs (tests/support/scratch_base.rs).
+        let tmp = tempfile::tempdir_in(crate::support::scratch_base::scratch_base()).unwrap();
         let p = |n: &str| tmp.path().join(n);
         let (bin, log, stub, state, repo, cwd, task) = (
             p("bin"),

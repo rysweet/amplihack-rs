@@ -107,7 +107,7 @@ fn only_a_release_build_may_fetch() {
 
 #[test]
 fn git_fetches_exactly_the_tag_from_the_fixed_url() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let git = recording_git(temp.path(), "exit 0");
     let (_, http) = refused_http();
     let fetcher = ReleaseTagFetcher {
@@ -132,7 +132,7 @@ fn git_fetches_exactly_the_tag_from_the_fixed_url() {
 
 #[test]
 fn git_never_clones_or_touches_a_branch_or_a_remote() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let git = recording_git(temp.path(), "exit 0");
     let (_, http) = refused_http();
     let fetcher = ReleaseTagFetcher {
@@ -152,7 +152,7 @@ fn git_never_clones_or_touches_a_branch_or_a_remote() {
 #[test]
 fn every_git_call_turns_off_hooks_fsmonitor_and_credential_helpers() {
     // SEC-6.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let git = recording_git(temp.path(), "exit 0");
     let (_, http) = refused_http();
     let fetcher = ReleaseTagFetcher {
@@ -201,7 +201,7 @@ fn inherited_git_location_variables_do_not_reach_git() {
         "SSH_ASKPASS",
         "GIT_TEMPLATE_DIR",
     ];
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let git = recording_git(temp.path(), "exit 0");
     let hostile = std::ffi::OsStr::new("/hostile/value");
     let vars: Vec<(&str, Option<&std::ffi::OsStr>)> =
@@ -230,7 +230,7 @@ fn inherited_git_location_variables_do_not_reach_git() {
 
 #[test]
 fn git_runs_with_no_stdin_and_in_its_own_session() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let sessions = temp.path().join("sessions.log");
     let git = recording_git(
         temp.path(),
@@ -263,7 +263,7 @@ fn git_runs_with_no_stdin_and_in_its_own_session() {
 /// clone --branch` the wrong tool (D7).
 #[test]
 fn the_real_git_route_gets_the_tag_even_when_a_branch_has_the_same_name() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let upstream = temp.path().join("upstream");
     // Read under the lock `InstallEnv` holds while it changes PATH.
     let git_path = {
@@ -349,7 +349,7 @@ fn the_real_git_route_gets_the_tag_even_when_a_branch_has_the_same_name() {
 
 /// A tag tarball as GitHub makes it: one top-level directory, with symlinks.
 fn tag_tarball(version: &str) -> Vec<u8> {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = temp.path().join(format!("amplihack-rs-{version}"));
     versioned_tree(&tree, version);
     std::os::unix::fs::symlink(
@@ -379,7 +379,7 @@ fn gz_of(fill: impl FnOnce(&mut tar::Builder<flate2::write::GzEncoder<&mut Vec<u
 
 #[test]
 fn when_git_fails_the_exact_tag_tarball_is_downloaded() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let git = recording_git(temp.path(), "exit 1");
     let (calls, http) = recording_http(|| Ok(tag_tarball("1.2.99")));
     let fetcher = ReleaseTagFetcher {
@@ -401,7 +401,7 @@ fn when_git_fails_the_exact_tag_tarball_is_downloaded() {
 
 #[test]
 fn with_no_git_the_tarball_is_the_only_route() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let (calls, http) = recording_http(|| Ok(tag_tarball("1.2.99")));
     let fetcher = ReleaseTagFetcher { git: None, http };
     let dest = temp.path().join("dest");
@@ -416,7 +416,7 @@ fn with_no_git_the_tarball_is_the_only_route() {
 
 #[test]
 fn a_partial_git_tree_is_not_left_for_the_tarball_to_unpack_into() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let dest = temp.path().join("dest");
     fs::create_dir_all(&dest).unwrap();
     let git = recording_git(
@@ -444,7 +444,7 @@ fn a_partial_git_tree_is_not_left_for_the_tarball_to_unpack_into() {
 
 #[test]
 fn the_budget_is_shared_across_both_routes() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let git = recording_git(temp.path(), "/bin/sleep 1\nexit 1");
     let (calls, http) = refused_http();
     let fetcher = ReleaseTagFetcher {
@@ -466,7 +466,7 @@ fn the_budget_is_shared_across_both_routes() {
 
 #[test]
 fn a_hung_git_is_killed_with_its_children_when_the_budget_runs_out() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let marker = temp.path().join("orphan-marker");
     let git = recording_git(
         temp.path(),
@@ -499,7 +499,7 @@ fn a_hung_git_is_killed_with_its_children_when_the_budget_runs_out() {
 
 #[test]
 fn both_routes_failing_is_a_source_fetch_failure() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let git = recording_git(temp.path(), "exit 1");
     let (_, http) = refused_http();
     let fetcher = ReleaseTagFetcher {
@@ -513,7 +513,7 @@ fn both_routes_failing_is_a_source_fetch_failure() {
 #[test]
 fn the_failure_reason_is_one_line_with_no_captured_output() {
     // SEC-14: the reason ends up in a one-line warning on every launch.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let git = recording_git(
         temp.path(),
         "printf 'fatal\\033[2J\\nsecond line\\n' >&2\nexit 1",
@@ -533,7 +533,7 @@ fn the_failure_reason_is_one_line_with_no_captured_output() {
 #[test]
 fn a_version_with_build_metadata_is_rejected_before_any_route_runs() {
     // SEC-7: checked inside the fetcher as well as in D2.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let git = recording_git(temp.path(), "exit 0");
     let (calls, http) = refused_http();
     let fetcher = ReleaseTagFetcher {
@@ -563,7 +563,7 @@ fn a_version_with_build_metadata_is_rejected_before_any_route_runs() {
 fn a_relative_path_entry_is_not_searched_for_git() {
     // Version reading runs in untrusted directories, so `.` on PATH must not
     // hand git to whatever the directory holds.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     write_script(&temp.path().join("planted/git"), "#!/bin/sh\nexit 0\n");
     write_script(&temp.path().join("trusted/git"), "#!/bin/sh\nexit 0\n");
     let _lock = crate::test_support::cwd_env_lock()
@@ -579,7 +579,7 @@ fn a_relative_path_entry_is_not_searched_for_git() {
 
 #[test]
 fn only_relative_entries_means_no_git() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     write_script(&temp.path().join("planted/git"), "#!/bin/sh\nexit 0\n");
     let _lock = crate::test_support::cwd_env_lock()
         .lock()
@@ -594,7 +594,7 @@ fn only_relative_entries_means_no_git() {
 #[test]
 fn a_hung_git_describe_gives_unknown_within_the_limit() {
     use super::super::framework_source::{SourceVersion, read_source_version_with_git};
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let git = recording_git(temp.path(), "exec /bin/sleep 60");
     let started = Instant::now();
 
@@ -612,7 +612,7 @@ fn a_hung_git_describe_gives_unknown_within_the_limit() {
 #[test]
 fn oversized_git_describe_output_gives_unknown() {
     use super::super::framework_source::{SourceVersion, read_source_version_with_git};
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let git = recording_git(
         temp.path(),
         "head -c 4096 /dev/zero | tr '\\0' '1'\nprintf '.2.3\\n'\nexit 0",
@@ -627,7 +627,7 @@ fn oversized_git_describe_output_gives_unknown() {
 #[test]
 fn git_describe_asks_for_an_exact_v_tag_with_the_same_protections() {
     use super::super::framework_source::read_source_version_with_git;
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let git = recording_git(temp.path(), "echo v1.2.99");
 
     let version = read_source_version_with_git(temp.path(), Some(&git));
@@ -698,7 +698,7 @@ fn a_clean_archive_unpacks_with_its_contents_and_execute_bit() {
         regular(b, "top/file.txt", 0o664, b"data");
         regular(b, "top/run.sh", 0o775, b"#!/bin/sh\n");
     });
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
 
     extract_tag_tarball(&archive, temp.path(), &SMALL).unwrap();
 
@@ -717,7 +717,7 @@ fn a_clean_archive_unpacks_with_its_contents_and_execute_bit() {
 #[test]
 fn setuid_is_not_kept() {
     let archive = gz_of(|b| regular(b, "top/tool", 0o6755, b"x"));
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
 
     extract_tag_tarball(&archive, temp.path(), &SMALL).unwrap();
 
@@ -735,7 +735,7 @@ fn too_many_entries_fails() {
             regular(b, &format!("top/f{i}"), 0o644, b"");
         }
     });
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
 
     let reason = extract_tag_tarball(&archive, temp.path(), &SMALL).expect_err("must fail");
 
@@ -747,7 +747,7 @@ fn too_many_unpacked_bytes_fails_even_from_a_small_archive() {
     let data = vec![0u8; 65 * 1024];
     let archive = gz_of(|b| regular(b, "top/bomb", 0o644, &data));
     assert!((archive.len() as u64) < SMALL.max_download_bytes);
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
 
     let reason = extract_tag_tarball(&archive, temp.path(), &SMALL).expect_err("must fail");
 
@@ -772,7 +772,7 @@ fn an_oversized_metadata_entry_fails_even_from_a_small_archive() {
         regular(b, "top/file.txt", 0o644, b"data");
     });
     assert!((archive.len() as u64) < SMALL.max_download_bytes);
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
 
     let reason = extract_tag_tarball(&archive, temp.path(), &SMALL).expect_err("must fail");
 
@@ -797,7 +797,7 @@ fn a_normal_metadata_entry_still_unpacks() {
         );
         regular(b, "top/file.txt", 0o644, b"data");
     });
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
 
     extract_tag_tarball(&archive, temp.path(), &SMALL).unwrap();
 
@@ -811,7 +811,7 @@ fn too_many_download_bytes_fails() {
         max_download_bytes: archive.len() as u64 - 1,
         ..SMALL
     };
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
 
     let reason = extract_tag_tarball(&archive, temp.path(), &limits).expect_err("must fail");
 
@@ -820,7 +820,7 @@ fn too_many_download_bytes_fails() {
 
 #[test]
 fn garbage_is_a_failed_fetch_not_a_panic() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
 
     let reason = extract_tag_tarball(b"not a tarball", temp.path(), &SMALL).expect_err("must fail");
 
@@ -836,7 +836,7 @@ fn extract_hostile(archive: &[u8], dest: &Path) {
 
 #[test]
 fn a_path_above_the_destination_writes_nothing_there() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let dest = temp.path().join("nested/dest");
     fs::create_dir_all(&dest).unwrap();
     let archive = gz_of(|b| {
@@ -868,7 +868,7 @@ fn an_absolute_path_writes_nothing_there() {
 
 #[test]
 fn a_file_through_a_symlink_entry_writes_nothing_outside() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let dest = temp.path().join("dest");
     fs::create_dir_all(&dest).unwrap();
     let outside = temp.path().join("outside");
@@ -892,7 +892,7 @@ fn a_file_through_a_symlink_entry_writes_nothing_outside() {
 
 #[test]
 fn a_hard_link_to_a_file_outside_gets_none_of_its_bytes() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let dest = temp.path().join("dest");
     fs::create_dir_all(&dest).unwrap();
     let secret = temp.path().join("secret");
@@ -920,7 +920,7 @@ fn a_hard_link_to_a_file_outside_gets_none_of_its_bytes() {
 fn symlinks_in_a_real_tag_tarball_do_not_stop_the_extraction_or_the_copy() {
     // The real bundle's 6 symlinks arrive this way. The copy skips them.
     let archive = tag_tarball("1.2.99");
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let dest = temp.path().join("dest");
     fs::create_dir_all(&dest).unwrap();
 

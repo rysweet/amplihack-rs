@@ -103,7 +103,7 @@ fn known(version: &str) -> SourceVersion {
 
 #[test]
 fn amplihack_home_at_the_same_version_is_staged_without_a_fetch() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = versioned_tree(&temp.path().join("src"), BINARY);
     let fetcher = FakeFetcher::failing("must not be called");
 
@@ -120,7 +120,7 @@ fn amplihack_home_at_the_same_version_is_staged_without_a_fetch() {
 
 #[test]
 fn older_amplihack_home_is_refused_not_staged_silently() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = versioned_tree(&temp.path().join("src"), OLDER);
     let fetcher = FakeFetcher::serving(BINARY);
 
@@ -134,7 +134,7 @@ fn older_amplihack_home_is_refused_not_staged_silently() {
 
 #[test]
 fn newer_amplihack_home_is_refused() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = versioned_tree(&temp.path().join("src"), NEWER);
 
     let refused = expect_refused(acquire(
@@ -148,7 +148,7 @@ fn newer_amplihack_home_is_refused() {
 
 #[test]
 fn older_current_directory_is_refused() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = versioned_tree(&temp.path().join("checkout"), OLDER);
     mark_repository(&tree);
     let nested = tree.join("crates/amplihack-cli");
@@ -166,7 +166,7 @@ fn older_current_directory_is_refused() {
 #[test]
 fn a_source_with_no_readable_version_is_refused() {
     let _path = path_lock();
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = unversioned_tree(&temp.path().join("src"));
 
     let refused = expect_refused(acquire(
@@ -181,7 +181,7 @@ fn a_source_with_no_readable_version_is_refused() {
 #[test]
 fn the_first_valid_candidate_decides() {
     // A mismatched AMPLIHACK_HOME refuses even though the cwd would match.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let old_home = versioned_tree(&temp.path().join("old"), OLDER);
     let matching_cwd = versioned_tree(&temp.path().join("cwd"), BINARY);
     let query = FrameworkRootQuery {
@@ -199,7 +199,7 @@ fn the_first_valid_candidate_decides() {
 fn an_incompatible_source_is_skipped_before_its_version_is_considered() {
     // Validation runs first (D4), which keeps issue #734's workflow working: an
     // incompatible AMPLIHACK_HOME falls through to a compatible checkout.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let bad_home = versioned_tree(&temp.path().join("bad"), OLDER);
     let matching_cwd = versioned_tree(&temp.path().join("cwd"), BINARY);
     let query = FrameworkRootQuery {
@@ -229,7 +229,7 @@ fn an_incompatible_source_is_skipped_before_its_version_is_considered() {
 
 #[test]
 fn executable_and_compile_time_mismatches_are_notes_then_a_fetch() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let exe_repo = versioned_tree(&temp.path().join("exe-repo"), OLDER);
     mark_repository(&exe_repo);
     let exe = exe_repo.join("target/debug/amplihack");
@@ -256,7 +256,7 @@ fn executable_and_compile_time_mismatches_are_notes_then_a_fetch() {
 
 #[test]
 fn a_prior_install_qualifies_only_when_its_stamp_equals_the_binary() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let home = temp.path().join("home");
     let staged = staged_install(&home, Some(BINARY));
     let query = FrameworkRootQuery {
@@ -274,7 +274,7 @@ fn a_prior_install_qualifies_only_when_its_stamp_equals_the_binary() {
 #[test]
 fn a_prior_install_with_any_other_stamp_means_a_note_and_a_fetch() {
     for stamp in [Some(OLDER), Some(NEWER), Some("garbage"), None] {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let home = temp.path().join("home");
         staged_install(&home, stamp);
         let query = FrameworkRootQuery {
@@ -300,7 +300,7 @@ fn a_prior_install_with_any_other_stamp_means_a_note_and_a_fetch() {
 fn amplihack_home_at_the_staged_install_never_refuses() {
     // Sessions set this variable themselves; a refusal would name a directory
     // the user never chose.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let home = temp.path().join("home");
     let staged = staged_install(&home, Some(OLDER));
     let query = FrameworkRootQuery {
@@ -319,7 +319,7 @@ fn amplihack_home_at_the_staged_install_never_refuses() {
 #[cfg(unix)]
 #[test]
 fn amplihack_home_through_a_symlink_to_the_staged_install_never_refuses() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let home = temp.path().join("home");
     let staged = staged_install(&home, Some(OLDER));
     let link = temp.path().join("link");
@@ -338,7 +338,7 @@ fn amplihack_home_through_a_symlink_to_the_staged_install_never_refuses() {
 #[test]
 fn a_different_amplihack_home_with_the_same_name_still_refuses() {
     // Only a canonical-path match is treated as the staged install.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let home = temp.path().join("home");
     staged_install(&home, Some(BINARY));
     let other = versioned_tree(&temp.path().join("elsewhere/.amplihack"), OLDER);
@@ -357,7 +357,7 @@ fn a_different_amplihack_home_with_the_same_name_still_refuses() {
 
 #[test]
 fn implicit_install_notes_every_mismatch_and_then_fetches() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let old_home = versioned_tree(&temp.path().join("old-home"), OLDER);
     let old_cwd = versioned_tree(&temp.path().join("old-cwd"), NEWER);
     let query = FrameworkRootQuery {
@@ -380,7 +380,7 @@ fn implicit_install_notes_every_mismatch_and_then_fetches() {
 
 #[test]
 fn implicit_install_uses_a_later_matching_candidate() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let old_home = versioned_tree(&temp.path().join("old-home"), OLDER);
     let matching_cwd = versioned_tree(&temp.path().join("cwd"), BINARY);
     let query = FrameworkRootQuery {
@@ -402,7 +402,7 @@ fn implicit_install_uses_a_later_matching_candidate() {
 fn force_refresh_uses_a_matching_amplihack_home_without_a_fetch() {
     // The reported bug: `update` with AMPLIHACK_HOME at a valid tag worktree
     // printed "Bundled framework source not found" and went to the network.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = versioned_tree(&temp.path().join("tag-worktree"), BINARY);
     let fetcher = FakeFetcher::failing("must not be called");
 
@@ -414,7 +414,7 @@ fn force_refresh_uses_a_matching_amplihack_home_without_a_fetch() {
 
 #[test]
 fn force_refresh_with_a_mismatched_amplihack_home_notes_it_and_fetches() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = versioned_tree(&temp.path().join("old"), OLDER);
     let fetcher = FakeFetcher::serving(BINARY);
 
@@ -434,7 +434,7 @@ fn force_refresh_with_a_mismatched_amplihack_home_notes_it_and_fetches() {
 #[test]
 fn force_refresh_consults_nothing_but_amplihack_home_and_the_tag() {
     // Every other source would match, and none may be used.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let cwd = versioned_tree(&temp.path().join("cwd"), BINARY);
     let exe_repo = versioned_tree(&temp.path().join("exe"), BINARY);
     mark_repository(&exe_repo);
@@ -458,7 +458,7 @@ fn force_refresh_consults_nothing_but_amplihack_home_and_the_tag() {
 
 #[test]
 fn force_refresh_does_not_use_the_staged_install_through_amplihack_home() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let home = temp.path().join("home");
     let staged = staged_install(&home, Some(BINARY));
     let query = FrameworkRootQuery {
@@ -482,7 +482,7 @@ fn local_stages_a_tree_of_any_version_with_a_warning_and_no_fetch() {
         (Some(NEWER), "v1.3.0"),
         (None, "unknown"),
     ] {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let tree = temp.path().join("tree");
         match version {
             Some(version) => versioned_tree(&tree, version),
@@ -513,7 +513,7 @@ fn local_stages_a_tree_of_any_version_with_a_warning_and_no_fetch() {
 
 #[test]
 fn local_at_the_same_version_prints_no_warning() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = versioned_tree(&temp.path().join("tree"), BINARY);
 
     let source = acquire(
@@ -534,7 +534,7 @@ fn local_at_the_same_version_prints_no_warning() {
 
 #[test]
 fn local_takes_priority_over_force_refresh_and_amplihack_home() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let chosen = versioned_tree(&temp.path().join("chosen"), OLDER);
     let other = versioned_tree(&temp.path().join("other"), BINARY);
     let policy = SourcePolicy {
@@ -553,7 +553,7 @@ fn local_takes_priority_over_force_refresh_and_amplihack_home() {
 
 #[test]
 fn a_matching_source_names_its_path_version_and_origin() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = versioned_tree(&temp.path().join("src"), BINARY);
 
     let source = acquire(
@@ -574,7 +574,7 @@ fn a_matching_source_names_its_path_version_and_origin() {
 
 #[test]
 fn the_refusal_names_the_source_both_versions_and_the_way_out() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = versioned_tree(&temp.path().join("src"), OLDER);
 
     let refused = expect_refused(acquire(
@@ -628,7 +628,7 @@ fn force_refresh_gives_its_own_reason_for_the_fetch() {
 #[test]
 fn control_characters_in_a_source_path_do_not_reach_the_terminal() {
     // SEC-14.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = versioned_tree(&temp.path().join("evil\n\u{1b}[2Jdir"), OLDER);
 
     let refused = expect_refused(acquire(
@@ -656,7 +656,7 @@ fn an_unknown_version_prints_as_the_word_unknown() {
 
 #[test]
 fn a_build_that_may_not_fetch_makes_no_request_and_names_the_local_route() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let home = temp.path().join("home");
     staged_install(&home, Some(OLDER));
     let query = FrameworkRootQuery {
@@ -691,7 +691,7 @@ fn a_build_that_may_not_fetch_makes_no_request_and_names_the_local_route() {
 
 #[test]
 fn build_metadata_is_ignored_when_versions_are_compared() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let tree = versioned_tree(&temp.path().join("main"), "1.2.0");
     let build = BinaryIdentity {
         version: "1.2.0+snapshot.7deb23da4".to_string(),
@@ -732,7 +732,7 @@ fn read_without_git(root: &Path) -> SourceVersion {
 
 #[test]
 fn version_comes_from_workspace_package_in_an_amplihack_cargo_toml() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     write_workspace_toml(temp.path(), "1.2.99");
 
     assert_eq!(read_without_git(temp.path()), known("1.2.99"));
@@ -740,7 +740,7 @@ fn version_comes_from_workspace_package_in_an_amplihack_cargo_toml() {
 
 #[test]
 fn a_cargo_toml_that_does_not_name_amplihack_gives_no_version() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     write_workspace_toml(temp.path(), "1.2.99");
     assert_eq!(read_without_git(temp.path()), known("1.2.99"));
     fs::write(
@@ -754,7 +754,7 @@ fn a_cargo_toml_that_does_not_name_amplihack_gives_no_version() {
 
 #[test]
 fn a_package_version_outside_workspace_package_is_not_the_source_version() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     write_workspace_toml(temp.path(), "1.2.99");
     assert_eq!(read_without_git(temp.path()), known("1.2.99"));
     fs::write(
@@ -770,7 +770,7 @@ fn a_package_version_outside_workspace_package_is_not_the_source_version() {
 #[test]
 fn a_hostile_version_string_is_unknown_and_cannot_reach_a_message() {
     // SEC-5: only a successful semver parse may become `Known`.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     write_workspace_toml(temp.path(), "\\u001b[31m1.2.99");
 
     assert_eq!(read_without_git(temp.path()), SourceVersion::Unknown);
@@ -789,7 +789,7 @@ fn a_hostile_version_string_is_unknown_and_cannot_reach_a_message() {
 #[test]
 fn a_cargo_toml_over_64_kib_gives_no_version() {
     // SEC-11.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     write_workspace_toml(temp.path(), "1.2.99");
     assert_eq!(read_without_git(temp.path()), known("1.2.99"));
     let path = temp.path().join("Cargo.toml");
@@ -805,7 +805,7 @@ fn a_cargo_toml_over_64_kib_gives_no_version() {
 #[test]
 fn a_symlinked_cargo_toml_gives_no_version() {
     // SEC-11: only a regular file counts.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let elsewhere = temp.path().join("elsewhere");
     write_workspace_toml(&elsewhere, "1.2.99");
     let tree = temp.path().join("tree");
@@ -841,7 +841,7 @@ fn mkfifo(path: &Path) {
 #[test]
 fn a_fifo_at_cargo_toml_gives_no_version_and_does_not_block() {
     // SEC-11: version reading runs in directories the user only stands in.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     write_workspace_toml(temp.path(), "1.2.99");
     assert_eq!(read_without_git(temp.path()), known("1.2.99"));
     fs::remove_file(temp.path().join("Cargo.toml")).unwrap();
@@ -857,7 +857,7 @@ fn a_fifo_at_cargo_toml_gives_no_version_and_does_not_block() {
 #[test]
 fn a_fifo_at_cargo_toml_does_not_block_the_source_shape_check() {
     // SEC-11 also covers looks_like_amplihack_source, reached from the walk-up.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let repo = temp.path().join("repo");
     fs::create_dir_all(repo.join("amplifier-bundle/recipes")).unwrap();
     mark_repository(&repo);
@@ -926,7 +926,7 @@ fn repo_with_one_commit(dir: &Path) {
 #[test]
 fn with_no_cargo_version_the_exact_release_tag_is_used() {
     let _path = path_lock();
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     repo_with_one_commit(temp.path());
     git_in(temp.path(), &["tag", "v1.2.99"]);
 
@@ -936,7 +936,7 @@ fn with_no_cargo_version_the_exact_release_tag_is_used() {
 #[test]
 fn a_commit_past_the_tag_has_no_version() {
     let _path = path_lock();
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     repo_with_one_commit(temp.path());
     git_in(temp.path(), &["tag", "v1.2.99"]);
     assert_eq!(read_source_version(temp.path()), known("1.2.99"));
@@ -952,7 +952,7 @@ fn a_commit_past_the_tag_has_no_version() {
 #[test]
 fn a_snapshot_tag_is_not_a_version() {
     let _path = path_lock();
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     repo_with_one_commit(temp.path());
     git_in(temp.path(), &["tag", "snapshot-7deb23da4"]);
     git_in(temp.path(), &["tag", "vnext"]);
@@ -966,7 +966,7 @@ fn a_snapshot_tag_is_not_a_version() {
 #[test]
 fn cargo_toml_outranks_a_tag_of_another_version() {
     let _path = path_lock();
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     repo_with_one_commit(temp.path());
     git_in(temp.path(), &["tag", "v1.2.99"]);
     write_workspace_toml(temp.path(), "1.2.0");
@@ -978,7 +978,7 @@ fn cargo_toml_outranks_a_tag_of_another_version() {
 fn a_fetched_tree_is_read_from_cargo_toml_only() {
     let _path = path_lock();
     // SEC-10: a matching tag in a tree with no declared version isn't enough.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     repo_with_one_commit(temp.path());
     git_in(temp.path(), &["tag", "v1.2.99"]);
 
@@ -995,7 +995,7 @@ fn a_fetched_tree_is_read_from_cargo_toml_only() {
 
 #[test]
 fn the_read_style_lookup_is_gated_too() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let old = versioned_tree(&temp.path().join("old"), OLDER);
     mark_repository(&old);
     let query = cwd_query(&old);

@@ -11,29 +11,6 @@ use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 use std::fs;
 
-/// A temporary base with no framework root (`.claude` or `src/amplihack/.claude`)
-/// among its ancestors. Framework files resolve by walking up from the project,
-/// so a `TMPDIR` inside `~/.amplihack` (as recipe runs set it) or a host
-/// `/tmp/.claude` would otherwise resolve ahead of the root a test sets up.
-fn temp_base_outside_framework_roots() -> std::path::PathBuf {
-    let candidates = [
-        std::env::temp_dir(),
-        std::path::PathBuf::from("/var/tmp"),
-        std::path::PathBuf::from("/tmp"),
-    ];
-    candidates
-        .iter()
-        .find(|base| {
-            base.is_dir()
-                && base.ancestors().all(|ancestor| {
-                    !ancestor.join(".claude").is_dir()
-                        && !ancestor.join("src/amplihack/.claude").is_dir()
-                })
-        })
-        .cloned()
-        .unwrap_or_else(std::env::temp_dir)
-}
-
 /// Never resolves the real profile root.
 fn test_hook() -> UserPromptSubmitHook {
     UserPromptSubmitHook::with_prompt_root(|| None)
@@ -452,7 +429,7 @@ fn load_user_preferences_uses_amplihack_root_override() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let base = temp_base_outside_framework_roots();
+    let base = crate::test_support::scratch_base::scratch_base();
     let project = tempfile::tempdir_in(&base).unwrap();
     let framework = tempfile::tempdir_in(&base).unwrap();
     fs::create_dir_all(framework.path().join(".claude/context")).unwrap();

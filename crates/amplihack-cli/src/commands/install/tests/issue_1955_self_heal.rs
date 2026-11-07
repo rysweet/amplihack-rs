@@ -55,7 +55,7 @@ fn run_with_failure(error: anyhow::Error) -> (anyhow::Result<()>, String) {
 
 #[test]
 fn a_failed_fetch_with_a_compatible_bundle_warns_and_runs_the_command() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let _env = IsolatedHome::new(temp.path());
     let stamp = stale_install(temp.path());
 
@@ -79,7 +79,7 @@ fn a_failed_fetch_with_a_compatible_bundle_warns_and_runs_the_command() {
 
 #[test]
 fn a_build_that_may_not_fetch_gets_its_own_warning_with_no_promise_of_a_retry() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let _env = IsolatedHome::new(temp.path());
     stale_install(temp.path());
 
@@ -100,7 +100,7 @@ fn a_build_that_may_not_fetch_gets_its_own_warning_with_no_promise_of_a_retry() 
 #[test]
 fn the_warning_is_one_line_with_no_control_characters() {
     // SEC-14: the reason can hold text a remote or a hostile tree controlled.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let _env = IsolatedHome::new(temp.path());
     stale_install(temp.path());
 
@@ -117,7 +117,7 @@ fn the_warning_is_one_line_with_no_control_characters() {
 
 #[test]
 fn the_next_launch_tries_again() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let _env = IsolatedHome::new(temp.path());
     stale_install(temp.path());
     let attempts = Cell::new(0u32);
@@ -136,7 +136,7 @@ fn the_next_launch_tries_again() {
 
 #[test]
 fn the_error_is_recognised_through_added_context() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let _env = IsolatedHome::new(temp.path());
     stale_install(temp.path());
 
@@ -147,7 +147,7 @@ fn the_error_is_recognised_through_added_context() {
 
 #[test]
 fn a_failed_fetch_with_no_bundle_is_still_a_hard_failure() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let _env = IsolatedHome::new(temp.path());
     version_stamp::write_installed_version(&older_than_binary()).unwrap();
 
@@ -159,7 +159,7 @@ fn a_failed_fetch_with_no_bundle_is_still_a_hard_failure() {
 
 #[test]
 fn a_failed_fetch_with_an_incompatible_bundle_is_still_a_hard_failure() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let _env = IsolatedHome::new(temp.path());
     stale_install(temp.path());
     write_stale_bundle(temp.path());
@@ -175,7 +175,7 @@ fn a_failed_fetch_with_an_incompatible_bundle_is_still_a_hard_failure() {
 
 #[test]
 fn a_build_that_may_not_fetch_with_an_incompatible_bundle_is_a_hard_failure() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let _env = IsolatedHome::new(temp.path());
     stale_install(temp.path());
     write_stale_bundle(temp.path());
@@ -187,7 +187,7 @@ fn a_build_that_may_not_fetch_with_an_incompatible_bundle_is_a_hard_failure() {
 
 #[test]
 fn a_fetched_tree_with_the_wrong_version_is_a_hard_failure() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let _env = IsolatedHome::new(temp.path());
     stale_install(temp.path());
 
@@ -204,7 +204,7 @@ fn a_fetched_tree_with_the_wrong_version_is_a_hard_failure() {
 fn any_other_install_failure_is_a_hard_failure() {
     // A manifest failure in particular: the source was reachable and the copy
     // was wrong, which a retry on the next launch won't paper over.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let _env = IsolatedHome::new(temp.path());
     stale_install(temp.path());
 
@@ -223,7 +223,7 @@ fn any_other_install_failure_is_a_hard_failure() {
 fn the_install_runs_under_the_install_lock() {
     use fs4::fs_std::FileExt;
 
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let _env = IsolatedHome::new(temp.path());
     stale_install(temp.path());
     let lock_path = temp.path().join(".amplihack/.install.lock");
@@ -248,7 +248,7 @@ fn the_install_runs_under_the_install_lock() {
 
 #[test]
 fn an_older_binary_still_never_stages_over_a_newer_stamp() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let _env = IsolatedHome::new(temp.path());
     create_minimal_staged_assets(temp.path());
     version_stamp::write_installed_version(&newer_version()).unwrap();

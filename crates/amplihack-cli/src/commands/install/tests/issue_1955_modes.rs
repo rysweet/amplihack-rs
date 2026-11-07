@@ -73,7 +73,7 @@ struct Fixture {
 
 /// A source repo at 775/664 with a merge guard, a gate file and a script.
 fn loose_fixture() -> Fixture {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let repo = temp.path().join("repo");
     create_source_repo(&repo);
     let tools = repo.join("amplifier-bundle/tools");
@@ -112,7 +112,7 @@ fn loose_fixture() -> Fixture {
 
 #[test]
 fn normalize_applies_the_mode_rule() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let root = temp.path().join("bundle");
     fs::create_dir_all(root.join("dir/sub")).unwrap();
     // (file, source mode, expected mode)
@@ -153,7 +153,7 @@ fn normalize_applies_the_mode_rule() {
 
 #[test]
 fn normalize_clears_setuid_setgid_and_sticky_bits() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let root = temp.path().join("bundle");
     fs::create_dir_all(root.join("dir")).unwrap();
     fs::write(root.join("dir/tool"), "x").unwrap();
@@ -170,7 +170,7 @@ fn normalize_clears_setuid_setgid_and_sticky_bits() {
 fn normalize_returns_an_error_on_a_symlink_and_leaves_its_target_alone() {
     // SEC-12: set_permissions follows links, so a symlink in staging could
     // chmod a file outside the bundle.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let outside = temp.path().join("outside");
     fs::write(&outside, "x").unwrap();
     chmod(&outside, 0o600);
@@ -188,7 +188,7 @@ fn normalize_returns_an_error_on_a_symlink_and_leaves_its_target_alone() {
 fn normalize_reaches_a_directory_with_no_search_permission() {
     // A 0o000 source directory copied by a later change must not make the walk
     // skip what is under it. Directories are opened up before they are read.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let root = temp.path().join("bundle");
     fs::create_dir_all(root.join("dir")).unwrap();
     fs::write(root.join("dir/file"), "x").unwrap();
@@ -320,7 +320,7 @@ fn a_tar_extracted_source_is_staged_clean() {
         }
         bytes
     };
-    let extracted = tempfile::tempdir().unwrap();
+    let extracted = crate::test_support::tempdir_outside_framework_roots();
 
     extract_tag_tarball(&archive, extracted.path(), &TARBALL_LIMITS).unwrap();
 
@@ -365,7 +365,7 @@ fn under_umask(test: &str, mask: libc::mode_t, body: impl FnOnce()) {
 
 fn stage_under_current_umask() {
     // The source is created here, so its modes come from this umask too.
-    let temp = tempfile::tempdir().unwrap();
+    let temp = crate::test_support::tempdir_outside_framework_roots();
     let repo = temp.path().join("repo");
     create_source_repo(&repo);
     let script = repo.join("amplifier-bundle/tools/run-me.sh");
