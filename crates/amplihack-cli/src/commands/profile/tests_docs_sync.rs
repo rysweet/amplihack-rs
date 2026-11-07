@@ -783,9 +783,9 @@ const ISSUE_1886_LINES: &[&str] = &[
 
 /// The `<why>` texts of the cannot-tell note.
 const ISSUE_1886_WHY: &[&str] = &[
-    "~/.claude could not be read",
+    "~/.claude identity read failed: <cause>",
     "it holds the same account as more than one profile (<M1>, <M2>)",
-    "profile <P1>, <P2> could not be read",
+    "profile <P1> not read (<cause>), <P2> not read (<cause>)",
     "the reads ran out of time",
     "the last swap time is later than now",
     "it holds the same account as profile <M>, which is not the account recorded for <M>; run amplihack profile verify",

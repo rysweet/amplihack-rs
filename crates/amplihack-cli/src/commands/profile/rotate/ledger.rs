@@ -222,9 +222,9 @@ fn inconsistent(msg: impl Into<String>) -> ProfileError {
 }
 
 /// An account value amplihack may store: non-empty, at most 320 bytes, no
-/// control characters.
+/// control or bidirectional-override characters ([`unprintable`]).
 pub fn safe_account(v: &str) -> bool {
-    !v.is_empty() && v.len() <= MAX_ACCOUNT && !v.chars().any(char::is_control)
+    !v.is_empty() && v.len() <= MAX_ACCOUNT && !v.chars().any(unprintable)
 }
 
 impl RotateState {
