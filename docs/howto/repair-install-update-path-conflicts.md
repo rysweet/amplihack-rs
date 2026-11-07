@@ -35,7 +35,7 @@ Deployed amplihack -> /home/alice/.local/bin/amplihack
 Deployed amplihack-hooks -> /home/alice/.local/bin/amplihack-hooks
 Updated shell PATH profile block
 Quarantined stale amplihack wrapper -> /home/alice/.amplihack/quarantine/stale-wrappers/...
-Refreshed amplifier-bundle from current distribution
+📥 Fetching the framework bundle from release tag v1.2.99 because no local source matches this binary.
 Verified Rust amplihack resolves first
 ```
 

@@ -429,8 +429,9 @@ fn load_user_preferences_uses_amplihack_root_override() {
     let _guard = env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let project = tempfile::tempdir().unwrap();
-    let framework = tempfile::tempdir().unwrap();
+    let base = crate::test_support::scratch_base::scratch_base();
+    let project = tempfile::tempdir_in(&base).unwrap();
+    let framework = tempfile::tempdir_in(&base).unwrap();
     fs::create_dir_all(framework.path().join(".claude/context")).unwrap();
     fs::write(
         framework.path().join(".claude/context/USER_PREFERENCES.md"),

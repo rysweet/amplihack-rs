@@ -115,11 +115,23 @@ pub(super) fn stage_claude_commands_in(
 /// (review finding 4) is exactly such a gap. So this is a single bounded
 /// top-up instead: one attempt per launch, warn and continue on failure.
 pub(super) fn ensure_claude_commands_staged() -> Result<()> {
+    ensure_claude_commands_staged_for(
+        &super::clone::FrameworkRootQuery::from_environment(),
+        crate::VERSION,
+    )
+}
+
+/// [`ensure_claude_commands_staged`] with the source decision's inputs passed in.
+/// Only a same-version local source qualifies, and nothing is fetched (#1955).
+pub(super) fn ensure_claude_commands_staged_for(
+    query: &super::clone::FrameworkRootQuery,
+    binary_version: &str,
+) -> Result<()> {
     let target = claude_commands_dir()?;
     if target.is_dir() {
         return Ok(());
     }
-    let Some(source) = super::clone::find_bundled_framework_root() else {
+    let Some(source) = super::clone::find_bundled_framework_root_for(query, binary_version) else {
         tracing::warn!(
             path = %target.display(),
             "amplihack slash commands are missing and no framework source was found to restage them"
