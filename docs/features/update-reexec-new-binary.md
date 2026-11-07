@@ -33,8 +33,8 @@ never executed.
 
 The durable repair also prevents stale Python/uvx wrappers and stale installed
 `amplifier-bundle` assets from regaining control after update. Update must end
-with the Rust user-level binary selected and the installed bundle replaced from
-the current Rust distribution.
+with the Rust user-level binary selected and the installed bundle replaced by
+the one belonging to the release it just installed.
 
 ### Why `current_exe()` is unreliable after binary replacement
 
@@ -92,11 +92,14 @@ amplihack update
 
 2. **`--force-refresh` hidden flag** - The subprocess runs with
    `amplihack install --force-refresh`, a hidden CLI flag that bypasses the
-   installed `~/.amplihack/amplifier-bundle` as a source and refreshes assets
-   from the current Rust distribution. This flag is not shown in `--help`
+   installed `~/.amplihack/amplifier-bundle` as a source. It stages from
+   `AMPLIHACK_HOME` when that tree has the binary's version, and otherwise
+   fetches the tag `v<version>` of the binary's release. It doesn't consult the
+   current directory or fetch `main`. This flag is not shown in `--help`
    output; it exists for the update-to-install repair path and direct
    stale-bundle repair. The source and staged destination are validated by the
-   framework bundle compatibility checker.
+   framework bundle compatibility checker. See
+   [Framework source selection](../reference/framework-source-selection.md).
 
 3. **Recursion prevention** — The subprocess environment includes
    `AMPLIHACK_NO_UPDATE_CHECK=1`, which prevents the child `amplihack install`
@@ -119,10 +122,11 @@ amplihack update
   managed PATH profile block, and fails if an unknown or inaccessible
   executable still shadows the Rust binary.
 
-7. **Staged bundle activation** - The repair install stages and validates
-   `~/.amplihack/amplifier-bundle` from the current Rust distribution, then
-   activates the staged bundle as the installed bundle. It does not merge
-   source files over the old installed bundle.
+7. **Staged bundle activation** - The repair install stages
+   `~/.amplihack/amplifier-bundle` from the release's source, compares the copy
+   with that source, sets its modes, validates it, then activates it as the
+   installed bundle. It does not merge source files over the old installed
+   bundle.
 
 ### `--skip-install` bypass
 
@@ -159,10 +163,34 @@ The error message includes both the executable path and the exit status:
 Error: post-update install subprocess /home/user/.local/bin/amplihack exited with exit status: 1
 ```
 
-The binary update itself has already succeeded. The user can re-run
-`amplihack install` manually. The self-heal mechanism will also retry
-automatically on the next `amplihack` invocation when the version stamp still
-requires an install.
+The binary update itself has already succeeded, and `amplihack update` exits
+non-zero. The user can re-run `amplihack install` manually. The self-heal
+mechanism will also retry automatically on the next `amplihack` invocation when
+the version stamp still requires an install.
+
+### Release tag can't be fetched
+
+The child install waits up to 180 seconds across git and the tarball, which is
+inside the parent's 300-second limit for the child. On failure it keeps the
+bundle and stamp, names `amplihack install --local`, and exits non-zero. It
+doesn't fall back to `main` or to an older tree.
+
+```
+error: could not fetch the framework bundle from release tag v1.2.99: network request timed out
+The installed bundle and version stamp were not changed.
+Run `amplihack install --local <PATH>` to install from a checkout.
+```
+
+To skip the tag fetch, set `AMPLIHACK_HOME` to a worktree of the release tag:
+
+```sh
+git -C ~/src/amplihack-rs worktree add ~/src/amplihack-v1.2.99 v1.2.99
+AMPLIHACK_HOME=~/src/amplihack-v1.2.99 amplihack update
+```
+
+The child install prints the worktree path and version and stages from it.
+Update itself still needs the network to download the binary, and the worktree
+must have the version of the binary being installed.
 
 ### New binary missing or not executable
 
@@ -212,6 +240,8 @@ include the unrecognized flag name.
 | `crates/amplihack-cli/src/commands/install/stale_wrappers.rs` | Quarantines positively identified shadowing stale Python/uvx wrappers and writes manifests. |
 | `crates/amplihack-cli/src/commands/install/paths.rs` | Owns user-local path construction, safe path helpers, and managed PATH profile blocks. |
 | `crates/amplihack-cli/src/commands/install/settings.rs` | Keeps hook registrations aligned with the selected `amplihack-hooks` binary path. |
+| `crates/amplihack-cli/src/commands/install/framework_source.rs` | Chooses the source for `--force-refresh`: `--local`, a same-version `AMPLIHACK_HOME`, or the release tag. |
+| `crates/amplihack-cli/src/commands/install/tag_fetch.rs` | Fetches the tree for `v<binary version>` and checks its version. |
 | `crates/amplihack-cli/src/commands/install/bundle_compat.rs` | Validates source and staged framework bundles, rejects active `orch_helper.py` dependencies, and supports staged installed-bundle activation. |
 | `crates/amplihack-cli/src/cli_commands.rs` | `Commands::Install` gains a hidden `--force-refresh` flag (`#[arg(long = "force-refresh", hide = true)]`). |
 | `crates/amplihack-cli/src/commands/mod.rs` | Destructures and passes `force_refresh` through to `run_install`. |
@@ -233,6 +263,7 @@ No new crate dependencies introduced.
 | Stale wrapper repair tests | `tests/install_stale_wrapper_repair.rs` | Python wrapper quarantine, uvx wrapper quarantine, safe symlink handling, and no mutation of unknown executables |
 | Update repair flow tests | `tests/update_repair_flow.rs` | Update invokes the new binary's install repair path and ends with Rust-first resolution |
 | Install/update smoke output assertions | install/update tests | Normal output excludes stale hook-file `❌` lines, `profile_management` warnings, and literal `Skipping symlink` noise |
+| Release source tests | `commands/install/tests/issue_1955_force_refresh.rs`, `issue_1955_tag_fetch.rs` | `--force-refresh` uses a same-version `AMPLIHACK_HOME` with no false "not found" message, fetches only the release tag, and fails non-zero without touching the bundle |
 | Bundle compatibility tests | `commands/install/bundle_compat.rs` and `tests/active_recipe_guard.rs` | Stale monolithic smart-orchestrator bundles are rejected; active `orch_helper.py` dependencies fail; stale installed bundles are atomically replaced |
 
 ## Interaction with related features
@@ -251,8 +282,8 @@ scan. When it re-runs install, that install run uses the same source and staged
 bundle compatibility validation as an explicit `amplihack install`.
 
 The post-update install subprocess still passes `--force-refresh`, so update
-continues to bypass installed-bundle reuse and validate the current-distribution
-source and staged destination.
+continues to bypass installed-bundle reuse and validate the release source and
+staged destination.
 
 ### Startup self-update prompt
 
@@ -267,6 +298,8 @@ own update prompt. The `AMPLIHACK_NO_UPDATE_CHECK=1` env var set by
   procedure invoked by the subprocess.
 - [Install/update PATH conflict reference](../reference/install-update-path-conflicts.md) —
   shadowing stale wrapper quarantine, PATH precedence, and manual repair guidance.
+- [Framework source selection reference](../reference/framework-source-selection.md) -
+  which source update stages from and what staging checks.
 - [Framework bundle compatibility reference](../reference/framework-bundle-compatibility.md) -
   active smart-orchestrator guard and staged bundle activation.
 - [Repair install/update PATH conflicts](../howto/repair-install-update-path-conflicts.md) —

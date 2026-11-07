@@ -83,6 +83,17 @@ impl Account {
         self.email.as_deref().or(self.uuid.as_deref()).unwrap_or("")
     }
 
+    /// Whether this names one account in one organization: only such an
+    /// account can be seeded as a record (issue #1962).
+    pub fn has_uuid_and_org(&self) -> bool {
+        self.uuid.is_some() && self.org.is_some()
+    }
+
+    /// The e-mail, when the server sent one that is safe to print.
+    pub fn email(&self) -> Option<&str> {
+        self.email.as_deref()
+    }
+
     /// The account in `dir/.claude.json`.
     pub fn of_dir(dir: &Path) -> Option<Self> {
         Self::from_value(&read_claude_json(dir)?.0)

@@ -23,7 +23,7 @@ use std::sync::OnceLock;
 use super::paths::{home_dir, sanitize_path};
 
 /// Filename of the stamp inside `~/.amplihack/`.
-const STAMP_FILE: &str = ".installed-version";
+pub(super) const STAMP_FILE: &str = ".installed-version";
 
 /// Sibling tempfile used for atomic writes.
 const STAMP_TMP: &str = ".installed-version.tmp";

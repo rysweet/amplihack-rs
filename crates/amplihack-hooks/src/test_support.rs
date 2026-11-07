@@ -85,6 +85,12 @@ impl Drop for CwdGuard {
     }
 }
 
+/// The scratch base no framework lookup can see past; the rule is shared
+/// with `amplihack-cli` and `amplihack-types` (see the file's documentation).
+#[path = "../../amplihack-cli/tests/support/scratch_base.rs"]
+#[allow(dead_code)]
+pub(crate) mod scratch_base;
+
 #[cfg(unix)]
 #[path = "../../amplihack-cli/tests/support/exec_stub.rs"]
 #[allow(dead_code)]
