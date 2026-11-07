@@ -283,6 +283,8 @@ mod issue_1818_no_session_limit;
 mod issue_1846_exhausted_reading;
 #[path = "issue_1870_reread_probe_mode.rs"]
 mod issue_1870_reread_probe_mode;
+#[path = "issue_1955_install_cli.rs"]
+mod issue_1955_install_cli;
 #[path = "issue_1973_rotate_fixture.rs"]
 mod issue_1973_rotate_fixture;
 #[path = "issue_1973_wait_helpers.rs"]
