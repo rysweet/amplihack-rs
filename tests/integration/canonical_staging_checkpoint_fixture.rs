@@ -166,6 +166,7 @@ impl Owner {
         let mut projection = Command::new("python3");
         projection
             .env_clear()
+            .env("PYTHONDONTWRITEBYTECODE", "1")
             .env("HOME", evidence.path())
             .env("AMPLIHACK_TEST_HOME_GUARD", "1")
             .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
