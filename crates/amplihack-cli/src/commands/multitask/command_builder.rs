@@ -61,8 +61,18 @@ pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, bas
 }
 
 /// Build context map for recipe-based resume.
+///
+/// The config entry's extra `context` (the caller's `create_issue` and
+/// `remote_host_type`, #1887) goes in first, so the keys set below win.
+/// `issue_number` is set only when the workstream has a tracking issue; with
+/// none the recipe's own empty default applies and it uses local tracking
+/// (#1900).
 pub(super) fn build_resume_context(ws: &Workstream) -> HashMap<String, serde_json::Value> {
-    let mut ctx = HashMap::new();
+    let mut ctx: HashMap<String, serde_json::Value> = ws
+        .extra_context
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
     ctx.insert(
         "task_description".to_string(),
         serde_json::Value::String(ws.task.clone()),
@@ -71,7 +81,10 @@ pub(super) fn build_resume_context(ws: &Workstream) -> HashMap<String, serde_jso
         "repo_path".to_string(),
         serde_json::Value::String(".".to_string()),
     );
-    ctx.insert("issue_number".to_string(), serde_json::json!(ws.issue));
+    match ws.tracking_issue {
+        Some(n) => ctx.insert("issue_number".to_string(), serde_json::json!(n)),
+        None => ctx.remove("issue_number"),
+    };
     ctx.insert(
         "workstream_state_file".to_string(),
         serde_json::Value::String(ws.state_file.to_string_lossy().to_string()),
@@ -175,10 +188,14 @@ export AMPLIHACK_WORKTREE_PATH='{worktree_path}'
 }
 
 pub(super) fn classic_task_markdown(ws: &Workstream) -> String {
+    let heading = match ws.tracking_issue {
+        Some(n) => format!("Issue #{n}"),
+        None => format!("Workstream {} (local tracking, no issue)", ws.issue),
+    };
     format!(
-        "# Issue #{}\n\n{}\n\nUse the canonical {} autonomously via {} and {}. \
+        "# {}\n\n{}\n\nUse the canonical {} autonomously via {} and {}. \
          NO QUESTIONS. Work through all required workflow steps. Create PR when complete.",
-        ws.issue,
+        heading,
         ws.task,
         workflow::DEFAULT_WORKFLOW_SELECTION,
         workflow::DEV_ORCHESTRATOR_SKILL,

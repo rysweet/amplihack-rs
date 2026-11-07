@@ -39,9 +39,15 @@ amplihack multitask / amplihack orch
 
 | Field    | Type         | Description                                            |
 | -------- | ------------ | ------------------------------------------------------ |
-| `issue`  | int or `"TBD"` | GitHub issue number; `"TBD"` auto-creates an issue   |
+| `issue` or `id` | int  | At least one. `issue` is the tracking issue, passed as `issue_number`; `id` is the workstream's own key and defaults to `issue` |
 | `branch` | string       | Git branch name (must exist in remote)                 |
 | `task`   | string       | Detailed task instructions                             |
+
+There is no placeholder issue. `"TBD"` and other non-numeric `issue` values
+are rejected (`Invalid issue number`). For a workstream with no tracking
+issue, leave `issue` out, set `id`, and pass `"context": {"create_issue":
+"false"}` so its recipe uses local tracking (#1900). Several workstreams may
+share one `issue` if each has its own `id`.
 
 ### Optional Fields
 
@@ -51,6 +57,7 @@ amplihack multitask / amplihack orch
 | `recipe`         | string | `"default-workflow"` | Recipe to execute                                                           |
 | `timeout_policy` | string | `"interrupt-preserve"` | What to do when `max_runtime` is exceeded: `"interrupt-preserve"` or `"continue-preserve"` |
 | `max_runtime`    | int    | `7200`               | Per-workstream wall-clock budget in seconds                                 |
+| `context`        | object | `{}`                 | Extra recipe context, such as `create_issue` and `remote_host_type`; the keys the orchestrator sets win |
 
 ## Orchestrator API
 

@@ -24,6 +24,9 @@ context:
   # Inherited from smart-orchestrator; either one rules out quick-change (#1740).
   existing_branch: ""
   pr_number: ""
+  issue_number: "" # #1887/#1900: from smart-orchestrator; create-workstreams-config
+  create_issue: "" # writes all three into every parallel workstream's context.
+  remote_host_type: ""
 
 steps:
   # ─────────────────────────────────────────────────────────────────────────
@@ -185,11 +188,9 @@ steps:
     command: |
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
-      # FIX (heredoc-bulletproof): use env var — no heredoc needed.
-      printf '%s' "${RECIPE_VAR_decomposition_json:-}" > "$_DECOMP_TMPFILE"
-      # #1740: the helper reads the -c workflow= override from RECIPE_VAR_workflow, and
-      # RECIPE_VAR_existing_branch, RECIPE_VAR_pr_number and a `Branch: <ref>` line in
-      # RECIPE_VAR_task_description, which rule out quick-change.
+      printf '%s' "${RECIPE_VAR_decomposition_json:-}" > "$_DECOMP_TMPFILE"  # env var, no heredoc
+      # The helper reads RECIPE_VAR_workflow, _existing_branch, _pr_number and a `Branch: <ref>` line in _task_description (#1740),
+      # and _issue_number, _create_issue, _remote_host_type, which it gives every workstream; no issue = local tracking (#1900).
       amplihack orch helper build-workstreams-config < "$_DECOMP_TMPFILE"
     output: "workstreams_file"
 

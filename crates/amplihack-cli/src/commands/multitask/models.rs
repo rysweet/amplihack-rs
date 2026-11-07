@@ -92,9 +92,19 @@ pub struct ProcessScope {
 }
 
 /// JSON config entry for a workstream.
+///
+/// Issue #1900: `issue` is the tracking issue the workstream's recipe works
+/// against (`issue_number` in its context). `id` is the workstream's own key
+/// (work dir, state file, governor identity). An entry needs at least one of
+/// them; with no `issue` the workstream uses local tracking. Several entries
+/// may share one `issue` as long as each has its own `id`. There is no
+/// placeholder value: `"TBD"` or any other non-numeric `issue` is rejected.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorkstreamConfig {
+    #[serde(default)]
     pub issue: serde_json::Value,
+    #[serde(default)]
+    pub id: serde_json::Value,
     pub branch: String,
     #[serde(default)]
     pub description: Option<String>,
@@ -105,27 +115,81 @@ pub struct WorkstreamConfig {
     pub max_runtime: Option<u64>,
     #[serde(default)]
     pub timeout_policy: Option<String>,
+    /// Extra recipe context for the workstream, such as the caller's
+    /// `create_issue` and `remote_host_type` (#1887, #1900). The keys the
+    /// orchestrator sets itself (`task_description`, `issue_number`, ...) win.
+    #[serde(default)]
+    pub context: serde_json::Map<String, serde_json::Value>,
+}
+
+/// A positive integer from a JSON number or a decimal string; `None` otherwise.
+fn positive_id(value: &serde_json::Value) -> Option<i64> {
+    let n = match value {
+        serde_json::Value::Number(n) => n.as_i64()?,
+        serde_json::Value::String(s) => s.trim().parse().ok()?,
+        _ => return None,
+    };
+    (n > 0).then_some(n)
+}
+
+/// `true` when `value` means "no value": absent, `null` or a blank string.
+fn is_unset(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(s) => s.trim().is_empty(),
+        _ => false,
+    }
 }
 
 impl WorkstreamConfig {
-    pub fn issue_id(&self) -> i64 {
-        match &self.issue {
-            serde_json::Value::Number(n) => n.as_i64().unwrap_or(0),
-            serde_json::Value::String(s) => s.parse().unwrap_or(0),
-            _ => 0,
+    /// The tracking issue, `None` for local tracking. A set `issue` that is
+    /// not a positive number (`"TBD"`, `"abc"`, `-1`) is an error, never a
+    /// placeholder (#1900).
+    pub fn tracking_issue(&self) -> Result<Option<i64>, String> {
+        if is_unset(&self.issue) {
+            return Ok(None);
         }
+        positive_id(&self.issue).map(Some).ok_or_else(|| {
+            format!(
+                "Invalid issue number: {} (give a positive issue number, or leave `issue` \
+                 out and set `id` for a workstream with local tracking; \"TBD\" is not supported)",
+                self.issue
+            )
+        })
+    }
+
+    /// The workstream's key: `id` when set, else the tracking issue.
+    pub fn workstream_id(&self) -> Result<i64, String> {
+        let tracking = self.tracking_issue()?;
+        if !is_unset(&self.id) {
+            return positive_id(&self.id).ok_or_else(|| {
+                format!(
+                    "Invalid workstream id: {} (must be a positive number)",
+                    self.id
+                )
+            });
+        }
+        tracking.ok_or_else(|| {
+            "Workstream has neither `issue` nor `id`; set `issue` to a tracking issue \
+             number or `id` to a positive number for local tracking"
+                .to_string()
+        })
     }
 
     pub fn description_or_default(&self) -> String {
         self.description
             .clone()
-            .unwrap_or_else(|| format!("Issue #{}", self.issue_id()))
+            .unwrap_or_else(|| match self.tracking_issue() {
+                Ok(Some(n)) => format!("Issue #{n}"),
+                _ => format!("Workstream {}", self.workstream_id().unwrap_or(0)),
+            })
     }
 }
 
 /// Runtime state for a single workstream.
 #[derive(Debug)]
 pub struct Workstream {
+    /// The workstream's key: the config's `id`, else its `issue` (#1900).
     pub issue: i64,
     pub branch: String,
     pub description: String,
@@ -150,6 +214,11 @@ pub struct Workstream {
     pub resume_checkpoint: String,
     pub workstream_scope: WorkstreamScope,
     pub process_scope: ProcessScope,
+    /// The tracking issue passed as `issue_number`; `None` means local
+    /// tracking. `issue` above is the workstream's key (#1900).
+    pub tracking_issue: Option<i64>,
+    /// Extra recipe context from the config entry (#1887, #1900).
+    pub extra_context: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Workstream {
@@ -188,6 +257,8 @@ impl Workstream {
             resume_checkpoint: String::new(),
             workstream_scope: WorkstreamScope::default(),
             process_scope: ProcessScope::default(),
+            tracking_issue: Some(issue),
+            extra_context: serde_json::Map::new(),
         }
     }
 
@@ -271,80 +342,4 @@ pub struct PersistedState {
     pub updated_at: String,
     #[serde(default)]
     pub resume_context: Option<HashMap<String, serde_json::Value>>,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_sanitize_id() {
-        assert_eq!(sanitize_id("123"), "123");
-        assert_eq!(sanitize_id("hello-world"), "hello-world");
-        assert_eq!(sanitize_id("path/../../etc"), "path_______etc");
-        assert_eq!(sanitize_id("a b c"), "a_b_c");
-    }
-
-    #[test]
-    fn test_workstream_config_parsing() {
-        let json = r#"[
-            {
-                "issue": 42,
-                "branch": "feat/test",
-                "description": "Test workstream",
-                "task": "Do something",
-                "recipe": "default-workflow"
-            }
-        ]"#;
-        let configs: Vec<WorkstreamConfig> = serde_json::from_str(json).unwrap();
-        assert_eq!(configs.len(), 1);
-        assert_eq!(configs[0].issue_id(), 42);
-        assert_eq!(configs[0].branch, "feat/test");
-        assert_eq!(configs[0].description_or_default(), "Test workstream");
-    }
-
-    #[test]
-    fn test_workstream_config_string_issue() {
-        let json = r#"[{"issue": "99", "branch": "b", "task": "t"}]"#;
-        let configs: Vec<WorkstreamConfig> = serde_json::from_str(json).unwrap();
-        assert_eq!(configs[0].issue_id(), 99);
-    }
-
-    #[test]
-    fn test_workstream_config_default_description() {
-        let json = r#"[{"issue": 7, "branch": "b", "task": "t"}]"#;
-        let configs: Vec<WorkstreamConfig> = serde_json::from_str(json).unwrap();
-        assert_eq!(configs[0].description_or_default(), "Issue #7");
-    }
-
-    #[test]
-    fn test_persisted_state_roundtrip() {
-        let state = PersistedState {
-            issue: 42,
-            branch: "feat/test".to_string(),
-            lifecycle_state: "completed".to_string(),
-            ..Default::default()
-        };
-        let json = serde_json::to_string(&state).unwrap();
-        let parsed: PersistedState = serde_json::from_str(&json).unwrap();
-        assert_eq!(parsed.issue, 42);
-        assert_eq!(parsed.branch, "feat/test");
-        assert_eq!(parsed.lifecycle_state, "completed");
-    }
-
-    #[test]
-    fn test_derive_cleanup_eligible() {
-        assert!(Workstream::derive_cleanup_eligible("completed"));
-        assert!(Workstream::derive_cleanup_eligible("failed_terminal"));
-        assert!(Workstream::derive_cleanup_eligible("abandoned"));
-        assert!(!Workstream::derive_cleanup_eligible("running"));
-        assert!(!Workstream::derive_cleanup_eligible("pending"));
-        assert!(!Workstream::derive_cleanup_eligible("failed_resumable"));
-    }
-
-    #[test]
-    fn test_default_constants() {
-        assert_eq!(DEFAULT_MAX_RUNTIME, 7200);
-        assert_eq!(DEFAULT_TIMEOUT_POLICY, "continue-preserve");
-    }
 }

@@ -139,19 +139,24 @@ Any workstream in a resumable state can be relaunched. The orchestrator restores
 - `resume_checkpoint` — forwarded to the Recipe Runner so it skips completed steps
 - `resume_context` — arbitrary key/value dict stored in the state file by the workstream itself
 
-### Automatic Resume on `add()` with `"TBD"` Issue
+### Automatic Resume of a Workstream Without an Issue
 
-If you pass `issue="TBD"` and a matching saved state exists (same `branch` + `description`), the orchestrator automatically reuses the saved workstream rather than creating a new GitHub issue:
+`"TBD"` is no longer accepted as an issue number (#1900). A workstream with no
+tracking issue has an `id` instead, and its saved state is found by that id.
+`amplihack orch helper build-workstreams-config` derives each `id` from the
+workstream's branch and description, so rerunning the same decomposition
+finds the state of the earlier run and resumes from its checkpoint:
 
-```python
-orch.add(
-    issue="TBD",          # ← triggers saved-state search
-    branch="feat/my-feature",
-    description="JWT auth",
-    task="...",
-)
-# If a prior timed_out_resumable state exists for that branch+description,
-# the prior issue number is reused and work resumes from checkpoint.
+```json
+[
+  {
+    "id": 482913377,
+    "branch": "feat/orch-1-jwt-auth",
+    "description": "JWT auth",
+    "task": "...",
+    "context": { "create_issue": "false" }
+  }
+]
 ```
 
 ### Manual Resume

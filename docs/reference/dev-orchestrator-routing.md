@@ -127,7 +127,7 @@ The helper normalizes whichever per-workstream classification field is present. 
 ```json
 [
   {
-    "issue": "TBD",
+    "id": 1,
     "branch": "feat/orch-1-routing-normalization",
     "task": "Fix deterministic routing normalization",
     "description": "routing-normalization",
@@ -135,6 +135,12 @@ The helper normalizes whichever per-workstream classification field is present. 
   }
 ]
 ```
+
+The `id` values shown are placeholders for the stable ids the helper derives
+from each branch and description. Each entry also has `context` with the
+caller's tracking settings, and `issue` when the caller passed
+`issue_number`; no entry has a placeholder issue (#1900, see
+[Parallel workstreams](./workflow-tracking-issue-selection.md#parallel-workstreams)).
 
 The output uses the `amplihack orch run` workstreams schema. See [`orch run`](./orch-run-command.md#workstreams-json-schema) for the complete execution schema.
 
@@ -182,7 +188,7 @@ Normalized output:
 ```json
 [
   {
-    "issue": "TBD",
+    "id": 1,
     "branch": "feat/orch-1-api-fix",
     "task": "Fix the user API timeout",
     "description": "api-fix",
@@ -214,7 +220,7 @@ Normalized output:
 ```json
 [
   {
-    "issue": "TBD",
+    "id": 1,
     "branch": "feat/orch-1-test-regression",
     "task": "Add regression tests for routing",
     "description": "test-regression",
@@ -252,14 +258,14 @@ Normalized output:
 ```json
 [
   {
-    "issue": "TBD",
+    "id": 1,
     "branch": "feat/orch-1-trace-current-routing",
     "task": "Trace current workstream route selection",
     "description": "trace-current-routing",
     "recipe": "investigation-workflow"
   },
   {
-    "issue": "TBD",
+    "id": 2,
     "branch": "feat/orch-2-fix-routing",
     "task": "Enforce Development routing in Rust",
     "description": "fix-routing",
@@ -292,7 +298,7 @@ Normalized output:
 ```json
 [
   {
-    "issue": "TBD",
+    "id": 1,
     "branch": "feat/orch-1-unclassified-fix",
     "task": "Fix an unclassified development workstream",
     "description": "unclassified-fix",

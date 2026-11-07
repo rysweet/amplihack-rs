@@ -48,6 +48,14 @@ context:
   reflection_final: ""
   summary: ""
   session_complete_status: ""
+  # #1887/#1900: caller tracking settings, honoured on the single and the parallel path.
+  # issue_number: N|#N|issue URL to work against (empty = none); remote_host_type:
+  # github|azdo|other (empty = detect from origin); create_issue: false|0|no|off disables
+  # issue creation. Parallel workstreams each get these three (orch build-workstreams-config);
+  # with no issue_number they default to create_issue=false (local tracking, never "TBD").
+  issue_number: ""
+  remote_host_type: ""
+  create_issue: ""
   force_single_workstream: "false" # set to "true" to prevent parallel decomposition
   adaptive_recipe: "" # set by detect-execution-gap when routing fails
   infra_error_details: "" # diagnostic info for infrastructure failures

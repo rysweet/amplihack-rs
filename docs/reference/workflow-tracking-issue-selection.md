@@ -1,9 +1,10 @@
-# Tracking Issue Selection Reference (Issue #1595)
+# Tracking Issue Selection Reference (Issues #1595, #1887)
 
 > [Home](../index.md) > Reference > Tracking Issue Selection
 
 How `workflow-prep` `step-03-create-issue` chooses the tracking issue for a
-run on a GitHub repository, and how that choice reaches `step-03b`.
+run on a GitHub repository, how that choice reaches `step-03b`, and how a
+caller can fix the host type or turn off issue creation.
 
 ## Contents
 
@@ -16,6 +17,7 @@ run on a GitHub repository, and how that choice reaches `step-03b`.
 - [Diagnostics](#diagnostics)
 - [Behaviour by example](#behaviour-by-example)
 - [Azure DevOps and local tracking](#azure-devops-and-local-tracking)
+- [Caller overrides](#caller-overrides)
 - [Known limitations](#known-limitations)
 - [Tests](#tests)
 - [Related documentation](#related-documentation)
@@ -277,6 +279,175 @@ The selection described above applies only to `github` hosts.
 | `other` | `local-issue-763` | Used by `derive_local_tracking_id`, unchanged |
 | not a git repository | `local-issue-763` | Used by `derive_local_tracking_id`, unchanged |
 
+## Caller overrides
+
+A caller can fix the host type and turn off issue creation through two recipe
+context keys (issue #1887). Both are declared in `workflow-prep.yaml`,
+`default-workflow.yaml`, `smart-orchestrator.yaml` and
+`smart-execute-routing.yaml`, with an empty default. They are read only from
+recipe context (`-c` or a parent recipe), never from the task description or
+the requirements text. When the run starts at `smart-orchestrator`, they reach
+step-03 on both paths; see [Parallel workstreams](#parallel-workstreams).
+
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Fix issue #1887 on rysweet/amplihack-rs" \
+  -c issue_number=1887 \
+  -c create_issue=false
+```
+
+```bash
+amplihack recipe run default-workflow \
+  -c task_description="Tidy the release notes script" \
+  -c remote_host_type=other
+```
+
+### `remote_host_type`
+
+`step-02d-detect-host-type` trims the value and folds it to lower case
+under `LC_ALL=C`, then checks it before any `git` call.
+
+| Value after trimming and folding | Result |
+| -------------------------------- | ------ |
+| `github`, `azdo`, `other` | Kept. stderr gets `INFO: Remote host type: <v> (caller-provided)`; stdout is `<v>`; `git remote get-url` is not run |
+| `azure-devops` | Normalised to `azdo`, then kept as above |
+| empty or unset | Detected from `origin` as before; output is byte-identical to earlier releases |
+| anything else | stderr gets `WARN: unrecognised remote_host_type ignored; detecting from origin (accepted: github\|azdo\|azure-devops\|other)`, then detection runs |
+
+The check runs before the "not a git repository" branch, so a valid caller
+value is also kept outside a repository. Without one, `other` remains the
+fallback there.
+
+The WARN line never repeats the value. It lists the accepted values. Values
+with newlines, NUL bytes or look-alike Unicode characters never match the
+allowed list and take the WARN path. The remote URL is never printed.
+
+Step-03 still checks the host type it receives against `github`, `azdo` and
+`other`, so a value that bypasses step-02d is handled as before.
+
+### `create_issue`
+
+`create_issue` is an input. It is unrelated to step-03's `issue_creation` output.
+It governs only the tracking issue that step-03 creates. Other recipes that
+file issues, such as smart-orchestrator's routing-gap report
+(`amplifier-bundle/tools/smart_routing_gap_report.sh`), `code-atlas` and
+`consensus-issue-worktree`, do not read it.
+
+`issue_creation_disabled` in
+`amplifier-bundle/tools/workflow_issue_tracking.sh` decides whether step-03
+may create an issue or work item.
+
+| Value after trimming and folding | Result |
+| -------------------------------- | ------ |
+| `false`, `0`, `no`, `off` | Creation suppressed on every host |
+| `true`, `1`, `yes` | Creation allowed |
+| empty or unset | Creation allowed; behaviour is unchanged |
+| anything else | Creation allowed; stderr gets a fixed WARN that does not repeat the value |
+
+So `False`, `NO` and ` off ` all suppress creation, while `falsey` and `o ff`
+do not.
+
+When creation is suppressed, step-03 prints
+`INFO: create_issue=false; issue creation disabled, using local tracking` to
+stderr, writes the local metadata block (with a `tracking_reference=local-…`
+line) to stdout, and exits 0. Step-03b reads that block as it does for
+`other` hosts.
+
+### Order of precedence in step-03
+
+1. An explicit `issue_number`. On GitHub it goes through
+   [`select_github_tracking_issue`](#select_github_tracking_issue); on AzDO a
+   numeric value is printed as `AB#N` without any `az` call.
+2. Read-only reuse of a reference in the task text (GitHub candidates; the
+   AzDO `REF_ISSUE_NUM` lookup with `az boards work-item show`).
+3. `create_issue=false`: local tracking.
+4. The existing host logic: title search and `gh issue create` on GitHub,
+   `az boards work-item create` on AzDO.
+
+An explicit `issue_number` therefore takes precedence over
+`create_issue=false`. Nothing is created, and the explicit-number paths in
+[Explicit issue number](#explicit-issue-number) and
+[Azure DevOps and local tracking](#azure-devops-and-local-tracking) apply
+unchanged. On GitHub this includes the fallback to local metadata when
+`gh issue view` fails or the number resolves outside this repository.
+
+### Behaviour by host with `create_issue=false`
+
+| Host | Still runs | Never runs |
+| ---- | ---------- | ---------- |
+| `github` | `gh issue view`, `gh api repos/{owner}/{repo}/issues/N` | `gh issue list --search`, `gh label create`, `gh issue create`, the temporary file for the issue body |
+| `azdo` | `az boards work-item show` (not when `issue_number` is numeric, which prints `AB#N` directly) | `az account show`, `az ad signed-in-user show`, `az boards work-item create`, the temporary file for `az` errors |
+| `other` | nothing new; tracking was already local | any `gh` or `az` call |
+
+Each gate sits before the first command in its branch that creates data or
+writes the task description to a temporary file.
+
+`create_issue=false` does not make the run offline. The read-only lookups in
+steps 1 and 2 above still call `gh` or `az` with the caller's credentials.
+Callers that want no provider calls at all should pass
+`remote_host_type=other`.
+
+### Interaction with issue-creation opt-in (#1885)
+
+Issue #1881 and pull request #1885 add an opt-in for issue creation with a
+default of `create_issue: "false"`. Once that default is in place, the gate
+described here applies it to every host, so Azure DevOps work items are also
+no longer created unless the caller passes `create_issue=true`. On GitHub,
+#1885's `issue_creation_opted_in` check sits at the same point in step-03 as
+this gate.
+
+Whichever of #1885 and #1896 merges second must be rebased so that each host
+arm of step-03 keeps exactly one creation gate. Both PRs are authored by
+`ryan-mistt`, who does that rebase whichever merges second. The test
+`issue_1887_caller_host_type_create_issue::step_03_has_exactly_one_creation_gate_per_host`
+counts calls to `issue_creation_disabled` and `issue_creation_opted_in` in
+the `github)` and `azdo|azure-devops)` arms and fails on two gates, on none,
+or on a gate placed after the arm's first network write, so a wrong rebase
+cannot pass CI.
+
+### Parallel workstreams
+
+Issue #1900. When `smart-orchestrator` splits a task into parallel
+workstreams, `smart-execute-routing`'s `create-workstreams-config` step runs
+`amplihack orch helper build-workstreams-config`. It reads
+`RECIPE_VAR_issue_number`, `RECIPE_VAR_create_issue` and
+`RECIPE_VAR_remote_host_type` and writes them into every workstream entry;
+`amplihack orch run` puts them in each workstream's `context.json`, so the
+workstream's own step-03 sees the same values as a single-workstream run.
+
+| Caller `issue_number` | Caller `create_issue` | Each workstream gets |
+| --------------------- | --------------------- | -------------------- |
+| `N`, `#N` or `…/issues/N` | any | `issue_number=N`, the caller's `create_issue` |
+| empty | empty | no `issue_number`, `create_issue=false`: local tracking |
+| empty | set | no `issue_number`, the caller's `create_issue` |
+| anything else (`TBD`, `abc`) | any | the step fails: `issue_number "…" is not an issue number` |
+
+`remote_host_type` is passed on when set. The workstreams never receive a
+placeholder: the old `"issue": "TBD"` entry, which `amplihack orch run`
+rejected with `Invalid issue number: "TBD"`, is gone. Each entry has its own
+`id`, which keys its work directory and state file, so several workstreams
+can share the caller's issue.
+
+### Outdated helper copies
+
+step-03 loads the first `workflow_issue_tracking.sh` it finds, starting with
+`$AMPLIHACK_HOME`. If that copy predates #1887, step-03 stops with exit 2 and
+the message `ERROR: <path> predates #1887 (missing <function>); update the
+amplihack bundle at that path`. It does not look up or create any issue.
+Without this check, a missing `issue_creation_disabled` would fail quietly
+and step-03 would create an issue even with `create_issue=false`.
+
+### Caller override examples
+
+| `remote_host_type` | `create_issue` | `issue_number` | Origin | Outcome |
+| ------------------ | -------------- | -------------- | ------ | ------- |
+| `other` | unset | unset | GitHub | step-03 receives `other`; local metadata; no `gh` call |
+| unset | `false` | unset | GitHub | host `github`; no title search or creation; local metadata |
+| `azdo` | `false` | unset | Azure DevOps | no `az boards work-item create`; local metadata |
+| unset | `false` | `42` | GitHub | issue #42 reused if `gh issue view` confirms it, otherwise local metadata for #42; nothing created |
+| ` Azure-DevOps ` | unset | unset | GitHub | host `azdo`; org and project parsing fails, so step-03 uses local tracking |
+| `gitlab` | unset | unset | GitHub | WARN, then host `github` from detection |
+
 ## Known limitations
 
 - **Incidental open issues can be reused.** When no marked reference passes,
@@ -299,6 +470,20 @@ The selection described above applies only to `github` hosts.
   still takes the first `#N` in the task text, and `derive_local_tracking_id`
   still reads task-text numbers on the local and repository-failure paths.
   Neither is reached on a GitHub path that prints an `issues/N` URL.
+- **A caller-provided `github` follows `gh`'s repository choice.** With
+  `remote_host_type=github` on a repository whose `origin` is not on GitHub,
+  `gh` resolves the repository itself and may pick another remote, such as a
+  public upstream fork parent, and create the issue there. Pass
+  `create_issue=false` when the target repository is uncertain.
+- **A caller-provided `azdo` on a GitHub origin** cannot parse an organisation
+  and project, so step-03 falls back to local tracking.
+- **Parallel workstreams do not receive the overrides.** When
+  smart-orchestrator splits a task into parallel workstreams, each workstream
+  runs `default-workflow` with a context built by the multitask launcher,
+  which sets `issue_number` but not `create_issue` or `remote_host_type`. Each
+  workstream therefore detects the host from `origin` and may create an
+  issue. The overrides apply to single-workstream runs and to
+  `default-workflow` run directly.
 
 ## Tests
 
@@ -320,6 +505,32 @@ The selection described above applies only to `github` hosts.
 - `tests/integration/workflow_prep_requirements_sanitizer_test.rs` checks that
   `workflow-prep` still filters launcher preference notices out of the task
   requirements after step-03 is edited.
+- `tests/integration/issue_1887_caller_host_type_create_issue_test.rs` runs
+  step-02d and step-03 under `isolated("bash")` with fake `git`, `gh` and `az`
+  binaries that log every call and exit 7 on unexpected ones. It chains
+  step-02d's stdout into step-03 as `RECIPE_VAR_remote_host_type`, as the
+  runner does, and covers caller values, the `azure-devops` alias, the WARN
+  fallback (which never repeats the value), `create_issue=false` on GitHub and AzDO, the
+  accepted spellings, and `issue_number` taking precedence. It also checks
+  that no remote URL or token reaches stdout or stderr. To prove precedence
+  on AzDO, it chains `step_02d_normalises_azure_devops` into step-03 with
+  `issue_number` set, because step-03 matches only `azdo)`.
+  `github_create_retries_after_rate_limit_with_moved_helpers` and
+  `github_create_auth_failure_is_not_retried` cover the rate-limit retry
+  helpers that moved from step-03 into `workflow_issue_tracking.sh`.
+  The unit tests `issue_creation_disabled_rejects_other_values` and
+  `unrecognised_create_issue_warns_without_echo` cover the `create_issue`
+  predicate on its own.
+- `tests/integration/issue_1900_smart_orchestrator_tracking_test.rs` runs the
+  shipped `smart-orchestrator.yaml` and `smart-execute-routing.yaml` through
+  `recipe-runner-rs` with `-c create_issue=false`, `-c issue_number=368` or
+  neither, on the single and the parallel path. Only classification,
+  reflection and validation are stubbed; the stub `default-workflow` holds
+  the shipped step-02d, step-03 and step-03b. On the parallel path the real
+  `amplihack orch run` launches each workstream from a local origin. A fake
+  `gh` logs every call; the tests check each workstream's `context.json`,
+  what its step-03 decided, and that no `gh issue create` was made. A control
+  case without `create_issue=false` shows that a creation is seen.
 - `tests/issue_1423_bash4_constructs.sh` checks the helper for bash 4 constructs.
 - `scripts/check-brick-budget.sh` checks that `workflow-prep.yaml` stays within
   the phase sub-recipe line limit after the step-03 change.
@@ -328,6 +539,8 @@ Run them with:
 
 ```bash
 cargo test --test integration issue_1595
+cargo test --test integration issue_1887
+cargo test --test integration issue_1900
 cargo test --test integration issue_684
 cargo test --test integration issue_815_804
 cargo test --test integration workflow_prep_requirements_sanitizer
@@ -338,5 +551,6 @@ scripts/check-brick-budget.sh
 ## Related documentation
 
 - [Step 03 Host-Aware Tracking Idempotency](recipe-step-03-idempotency.md)
+- [Issue Deduplication](issue-dedup.md) - how recipes avoid duplicate GitHub issues, including the title search that `create_issue=false` skips
 - [Workflow Issue Extraction Reference](workflow-issue-extraction.md) - how step-03b turns the step-03 output into `issue_number`
 - [Local Tracking Issue-Number Extraction](../recipes/issue-815-804-local-tracking-issue-number.md) - the local metadata format used when an explicit lookup fails
