@@ -8,8 +8,10 @@ description: |
                       decision away from it.
     2. CRUSTY LOOP  — put the PR in front of the `crusty-old-engineer` skill
                       acting as the maintainer's proxy, address every concern,
-                      re-review, and repeat until crusty has ZERO outstanding
-                      concerns.
+                      re-review, and repeat until crusty is CLEAN, or minor
+                      findings only once each has a follow-up issue linked to
+                      the plan task (issue #1979). Any blocking or major
+                      finding keeps the loop going.
     3. MERGE-READY  — iterate until every merge-ready criterion holds: the
        LOOP           `merge-ready` skill's criteria, all `qa-team` scenarios
                       passing, CI green, no merge conflicts, review threads
@@ -78,12 +80,19 @@ context:
   pr_number: ""
   pr_url: ""
 
+  # #1979: the plan task id the follow-up issues for minor crusty findings name
+  # (#N or an id). Empty falls back to Closes/Fixes/Resolves #N in the PR body,
+  # then in task_description; a drive with minor findings and no task id is not READY.
+  plan_task_id: ""
+
   # Durable state root for resumability. Empty means "derive it from the repo
   # remote and the PR/branch identity".
   autodrive_state_dir: ""
 
   # When "true", the merge gate verifies everything and reports what it WOULD
-  # merge without merging. Every other guarantee is unchanged.
+  # merge without merging. Every other guarantee is unchanged. No follow-up
+  # issue is filed (#1979), so a MINOR_ONLY drive ends NOT_MERGED with
+  # followup-missing:<id> for each minor finding.
   autodrive_dry_run: "false"
 
   # Phase 1 never merges; auto-drive owns the merge decision.
@@ -195,7 +204,9 @@ steps:
       existing_branch: "{{existing_branch}}"
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
+      plan_task_id: "{{plan_task_id}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
+      autodrive_dry_run: "{{autodrive_dry_run}}"
       autodrive_budget_loop_rounds: "{{autodrive_budget_loop_rounds}}"
       autodrive_budget_total_rounds: "{{autodrive_budget_total_rounds}}"
       autodrive_budget_wall_seconds: "{{autodrive_budget_wall_seconds}}"
@@ -241,6 +252,7 @@ steps:
       existing_branch: "{{existing_branch}}"
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
+      plan_task_id: "{{plan_task_id}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
       autodrive_budget_loop_rounds: "{{autodrive_budget_loop_rounds}}"
@@ -303,6 +315,12 @@ steps:
       echo "AUTO_DRIVE_TO_MERGE: ${OUTCOME} — PR #${PR:-<none>} (crusty loop: ${CRUSTY}, merge-ready loop: ${MLOOP}, merge gate: ${MERGE})" >&2
       printf '{"outcome":"%s","pr":"%s","crusty_loop":"%s","merge_result":"%s","merge_loop":"%s"}\n' \
         "$OUTCOME" "$PR" "$CRUSTY" "$MERGE" "$MLOOP"
+      # #1979: each minor finding filed as a follow-up issue (followups.tsv in the state dir).
+      SD="$(g "$BR" state_dir '')"; FT="${SD:+${SD}/followups.tsv}"
+      if [ -n "$FT" ] && [ -f "$FT" ] && [ ! -L "$FT" ]; then
+        LC_ALL=C awk -F '\t' 'NF == 4 && $1 ~ /^[A-Za-z0-9._-]+$/ && $2 ~ /^[1-9][0-9]*$/ { if (!n++) printf "Follow-up issues (task %s):\n", $3; printf "  %s -> #%s\n", $1, $2 }' "$FT" \
+          | LC_ALL=C tr -cd 'A-Za-z0-9 ._:/#>()\n-' >&2
+      fi
       [ -z "$STOPPED" ] || exit 1
     output: "autodrive_summary"
 

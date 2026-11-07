@@ -252,6 +252,7 @@ nav:
       - Rust Code Quality: reference/rust-code-quality.md
       - CLI Reference: reference/cli.md
       - install Command: reference/install-command.md
+      - Framework Source Selection: reference/framework-source-selection.md
       - Install/Update PATH Conflicts: reference/install-update-path-conflicts.md
       - recipe Command: reference/recipe-command.md
       - RustyClawd Command: reference/rustyclawd-command.md
