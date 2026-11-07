@@ -608,25 +608,49 @@ fn find_framework_repo_root_finds_github_tarball_layout() {
     assert_eq!(found, extracted);
 }
 
-#[test]
-fn find_compatible_framework_repo_root_accepts_downloaded_composable_bundle() {
-    let temp = tempfile::tempdir().unwrap();
-    let extracted = temp.path().join("amplihack-main");
-    create_source_repo(&extracted);
-
-    let found = clone::find_compatible_framework_repo_root(temp.path(), "test download").unwrap();
-
-    assert_eq!(found, extracted);
+/// A plain install whose only source is `fetcher`, checked with the real
+/// compatibility rules. Issue #1955 moved this check here from the removed
+/// `find_compatible_framework_repo_root`.
+fn acquire_from_download(
+    fetcher: &super::issue_1955_support::FakeFetcher,
+) -> Result<framework_source::AcquiredSource> {
+    framework_source::acquire_framework_source(
+        &framework_source::SourcePolicy {
+            local: None,
+            force_refresh: true,
+            mode: InstallMode::Explicit,
+            fetch_backoff: None,
+        },
+        &clone::FrameworkRootQuery::default(),
+        &framework_source::BinaryIdentity {
+            version: "1.2.99".to_string(),
+            may_fetch: true,
+        },
+        fetcher,
+        &|candidate| {
+            validate_framework_bundle_compatibility(candidate).map_err(|err| format!("{err:#}"))
+        },
+    )
 }
 
 #[test]
-fn find_compatible_framework_repo_root_rejects_downloaded_stale_bundle() {
-    let temp = tempfile::tempdir().unwrap();
-    let extracted = temp.path().join("amplihack-main");
-    create_source_repo(&extracted);
-    fs::write(
-        extracted.join("amplifier-bundle/recipes/smart-orchestrator.yaml"),
-        r#"name: "smart-orchestrator"
+fn a_downloaded_composable_bundle_is_accepted() {
+    let fetcher = super::issue_1955_support::FakeFetcher::serving("1.2.99");
+
+    let source = acquire_from_download(&fetcher).unwrap();
+
+    assert_eq!(source.origin, framework_source::SourceOrigin::ReleaseTag);
+    assert!(source.root.ends_with("amplihack-rs-1.2.99"));
+}
+
+#[test]
+fn a_downloaded_stale_bundle_is_rejected() {
+    let fetcher = super::issue_1955_support::FakeFetcher::new(|destination| {
+        let root = destination.join("amplihack-rs-1.2.99");
+        super::issue_1955_support::versioned_tree(&root, "1.2.99");
+        fs::write(
+            root.join("amplifier-bundle/recipes/smart-orchestrator.yaml"),
+            r#"name: "smart-orchestrator"
 steps:
   - id: "parse-decomposition"
     type: "shell"
@@ -636,18 +660,23 @@ steps:
       import importlib
       PY
 "#,
-    )
-    .unwrap();
+        )?;
+        Ok(root)
+    });
 
-    let err = clone::find_compatible_framework_repo_root(temp.path(), "test download")
+    let err = acquire_from_download(&fetcher)
         .expect_err("downloaded stale smart-orchestrator bundle must be rejected");
     let msg = err.to_string();
 
     assert!(
-        msg.contains("downloaded framework bundle")
+        msg.contains("release tag v1.2.99")
             && msg.contains("incompatible")
             && msg.contains("smart-orchestrator"),
         "error must explain the incompatible downloaded bundle, got: {msg}"
+    );
+    assert!(
+        err.downcast_ref::<tag_fetch::SourceFetchFailed>().is_none(),
+        "self-heal must not be able to continue past a bad tree: {err:#}"
     );
 }
 
@@ -1708,66 +1737,33 @@ fn run_install_force_refresh_false_uses_bundled_root_when_available() {
 
 #[test]
 fn run_install_force_refresh_true_skips_bundled_root() {
-    // Contract (THE FIX): when `force_refresh=true` and `local` is `None`,
-    // `run_install` must NOT use `find_bundled_framework_root()`. It must
-    // fall through directly to the network download path.
-    //
-    // In the test environment, `find_bundled_framework_root()` always returns
-    // `Some` (the workspace root is discoverable). With `force_refresh=true`,
-    // the function must skip it and attempt a fresh network download instead.
-    //
-    // Since network download may succeed or fail depending on environment
-    // (git availability, network connectivity), this test verifies the
-    // contract by checking that the code path taken is different from
-    // the `force_refresh=false` path. Specifically:
-    //
-    // - `force_refresh=false` uses bundled root → stages from local source
-    // - `force_refresh=true` skips bundled root → downloads from upstream
-    //
-    // We verify the download path was taken by checking for the
-    // freshness SHA stamp that is ONLY written after a network-fallback
-    // install (see mod.rs L100-102), NOT after a bundled-root install.
+    // Contract (issue #675, as changed by #1955): with `force_refresh=true` and
+    // no `AMPLIHACK_HOME`, the install must not use the bundled root it would
+    // find in this workspace. It goes to the release tag instead.
     with_install_env(|home| {
-        // First: install with force_refresh=false (bundled root path).
-        // This should succeed and NOT write the framework-sha stamp.
-        let result_default = run_install(None, false, false);
-        result_default.expect("baseline install with force_refresh=false must succeed");
+        let fetcher = super::issue_1955_support::FakeFetcher::serving(crate::VERSION);
+        let binary = framework_source::BinaryIdentity {
+            version: crate::VERSION.to_string(),
+            may_fetch: true,
+        };
 
-        let sha_stamp = home.join(".amplihack/.framework-sha");
-        let had_sha_after_default = sha_stamp.exists();
+        run_install_with_fetcher(
+            None,
+            false,
+            true,
+            false,
+            InstallMode::Explicit,
+            &binary,
+            &fetcher,
+        )
+        .expect("force_refresh=true must install from the release tag");
 
-        // Clean staged assets for a fresh run
-        let _ = fs::remove_dir_all(home.join(".amplihack/.claude"));
-        let _ = fs::remove_file(&sha_stamp);
-
-        // Second: install with force_refresh=true (network download path).
-        // This test validates that the code ATTEMPTS the network path.
-        // If the network download succeeds, the framework-sha stamp will
-        // be written (distinguishing it from the bundled-root path).
-        // If the download fails (no network), that's also acceptable —
-        // the error message should reference network/download, not bundled root.
-        let result_refresh = run_install(None, false, true);
-        match result_refresh {
-            Ok(()) => {
-                // Network download succeeded — verify the SHA stamp was written
-                // (this stamp is ONLY written after network-fallback installs).
-                assert!(
-                    sha_stamp.exists() || !had_sha_after_default,
-                    "issue #675: force_refresh=true must take the network download path, \
-                     which writes the framework-sha stamp"
-                );
-            }
-            Err(ref e) => {
-                let msg = e.to_string();
-                // Network download failed — the error must reference the
-                // download/network path, NOT the bundled root.
-                assert!(
-                    !msg.contains("Using bundled framework"),
-                    "issue #675: force_refresh=true must NOT use bundled framework root. \
-                     Got error: {msg}"
-                );
-            }
-        }
+        assert_eq!(fetcher.call_count(), 1, "the tag must have been fetched");
+        assert!(
+            home.join(".amplihack/amplifier-bundle/context/fetched-sentinel.txt")
+                .is_file(),
+            "the fetched tree must be what was staged"
+        );
     });
 }
 
@@ -1782,5 +1778,7 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
     ]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    // A session's own AMPLIHACK_HOME is a source install would now refuse (#1955).
+    unsafe { std::env::remove_var("AMPLIHACK_HOME") };
     saved
 }

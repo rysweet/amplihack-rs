@@ -121,14 +121,27 @@ fn classic_workstream_stays(cli: Cli) {
     // The launcher puts its own flags first; the prompt form comes right
     // before the prompt.
     let argv = fx.records()[0].get("argv").to_string();
-    let verb = if cli == Cli::Codex { "exec" } else { "-p" };
+    // Claude gets `@TASK.md`, its file mention, which attaches the task.
+    // Codex takes the prompt as plain text, so it is told to read the file;
+    // a bare `@TASK.md` would reach it as a literal string.
+    let (verb, task) = if cli == Cli::Codex {
+        ("exec", "Read TASK.md in the current directory")
+    } else {
+        ("-p", "@TASK.md")
+    };
     assert!(
-        argv.contains(&format!(" {verb} @TASK.md "))
-            || argv.starts_with(&format!("{verb} @TASK.md ")),
+        argv.contains(&format!(" {verb} {task} ")) || argv.starts_with(&format!("{verb} {task} ")),
         "{} must get its own prompt form, got argv {argv:?}\n{}",
         cli.name(),
         fx.logs()
     );
+    if cli != Cli::Claude {
+        assert!(
+            !argv.contains("@TASK.md"),
+            "{} got a claude file mention: {argv:?}",
+            cli.name()
+        );
+    }
 }
 
 #[test]

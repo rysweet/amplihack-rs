@@ -87,6 +87,14 @@ fn all_plan_logins_out(f: &Fixture) {
     f.usage_resetting("extra", 100, 100, 3);
 }
 
+/// Issue #1962: a dry run reads the usage endpoint only, so its decision needs the
+/// same figures there.
+fn all_plan_logins_out_direct(f: &Fixture) {
+    f.usage_direct("work", 100, 40);
+    f.usage_direct("spare", 100, 100);
+    f.usage_direct("extra", 100, 100);
+}
+
 /// The issue's cycle in miniature: live past `--session-at`, spare with
 /// session room and the most weekly room among those, extra with the lowest
 /// week but its session nearly spent. No candidate beats the live login by
@@ -334,6 +342,7 @@ fn a_dry_run_reports_that_it_would_refuse_a_failed_login_check() {
     add_console(&f);
     f.ok(&["profile", "overflow", "add", "console"]);
     all_plan_logins_out(&f);
+    all_plan_logins_out_direct(&f);
     let s = stdout(&f.ok(&["profile", "rotate", "--dry-run"]));
     assert!(
         s.contains(&format!("would_refuse console: {NO_KEY}")),
@@ -402,6 +411,7 @@ fn a_key_only_in_the_profile_is_refused_because_the_swap_never_delivers_it() {
     );
     f.ok(&["profile", "overflow", "add", "console"]);
     all_plan_logins_out(&f);
+    all_plan_logins_out_direct(&f);
     let dry = stdout(&f.ok(&["profile", "rotate", "--dry-run"]));
     assert!(
         dry.contains(&format!("would_refuse console: {NO_KEY}")),
@@ -425,6 +435,7 @@ fn a_dry_run_with_a_key_in_settings_never_prints_the_value() {
     );
     f.ok(&["profile", "overflow", "add", "console"]);
     all_plan_logins_out(&f);
+    all_plan_logins_out_direct(&f);
     let out = f.ok(&["profile", "rotate", "--dry-run"]);
     let s = stdout(&out);
     assert!(s.contains("would swap work->console"), "{s}");

@@ -1,11 +1,14 @@
 use super::*;
 use std::io::Read;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub(super) const NETWORK_TIMEOUT_SECS: u64 = 5;
 
 /// Maximum size for binary release downloads (amplihack + hooks binaries).
 const MAX_BINARY_DOWNLOAD_BYTES: usize = 512 * 1024 * 1024; // 512 MiB
+
+/// Maximum size of a release tag tarball (issue #1955, SEC-3).
+pub(crate) const MAX_TAG_TARBALL_BYTES: u64 = 256 * 1024 * 1024;
 
 /// Maximum number of attempts for retryable HTTP requests.
 const HTTP_MAX_ATTEMPTS: u32 = 3;
@@ -86,6 +89,101 @@ pub(crate) fn validate_download_url(url: &str) -> Result<()> {
         Only https://api.github.com/, https://github.com/, and \
         https://objects.githubusercontent.com/ are trusted."
     )
+}
+
+/// Issue #1955 (SEC-1): the hosts a release tag tarball may come from, checked
+/// on the first URL and on the final one after redirects. GitHub redirects a
+/// tag tarball to `codeload.github.com`, which only this download may use.
+pub(crate) fn validate_bounded_download_url(url: &str) -> Result<()> {
+    let allowed_hosts = ["https://github.com/", "https://codeload.github.com/"];
+    if allowed_hosts.iter().any(|prefix| url.starts_with(prefix)) {
+        return Ok(());
+    }
+    bail!(
+        "download URL is not from an allowed host: {url}. Only https://github.com/ and \
+        https://codeload.github.com/ are trusted for a release tag download."
+    )
+}
+
+/// HTTPS download with an overall time limit shared across its retries, and a
+/// check of the final URL before any of the body is read (issue #1955).
+pub(crate) fn http_get_bounded(url: &str, budget: Duration) -> Result<Vec<u8>> {
+    validate_bounded_download_url(url)?;
+    let deadline = Instant::now() + budget;
+    let mut delay = Duration::from_millis(HTTP_INITIAL_BACKOFF_MS);
+    for attempt in 1..=HTTP_MAX_ATTEMPTS {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            bail!("the time limit ran out before {url} finished downloading");
+        }
+        match http_get_bounded_once(url, remaining) {
+            Ok(body) => return Ok(body),
+            Err(err) => {
+                let time_left = deadline.saturating_duration_since(Instant::now());
+                if !is_retryable_http_get_error(&err)
+                    || attempt == HTTP_MAX_ATTEMPTS
+                    || delay >= time_left
+                {
+                    return Err(err);
+                }
+                tracing::debug!(attempt, url, error = %err, "bounded download failed; retrying");
+                std::thread::sleep(delay);
+                delay *= 2;
+            }
+        }
+    }
+    unreachable!("loop exits via return inside the body")
+}
+
+/// Not [`github_error_message`]: its advice is about update checks, and this
+/// text ends up in an install's warning after the retries have run.
+pub(super) fn bounded_status_message(status: u16, url: &str) -> String {
+    format!("HTTP {status} from {url}")
+}
+
+fn http_get_bounded_once(url: &str, timeout: Duration) -> Result<Vec<u8>> {
+    let response = match ureq::AgentBuilder::new()
+        .https_only(true)
+        // Overall: connection, redirects and reading the body.
+        .timeout(timeout)
+        .build()
+        .get(url)
+        .set("User-Agent", &format!("amplihack/{}", crate::VERSION))
+        .call()
+    {
+        Ok(response) => response,
+        Err(ureq::Error::Status(status, _)) => {
+            return Err(HttpClientError::Status {
+                status,
+                url: url.to_string(),
+                message: bounded_status_message(status, url),
+            }
+            .into());
+        }
+        Err(error) => {
+            return Err(HttpClientError::Transport {
+                url: url.to_string(),
+                source: Box::new(error),
+            }
+            .into());
+        }
+    };
+    validate_bounded_download_url(response.get_url())
+        .context("a release tag download redirected to a host that isn't allowed")?;
+
+    let mut body = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_TAG_TARBALL_BYTES + 1)
+        .read_to_end(&mut body)
+        .map_err(|source| HttpClientError::Read {
+            url: url.to_string(),
+            source,
+        })?;
+    if body.len() as u64 > MAX_TAG_TARBALL_BYTES {
+        bail!("the download from {url} exceeded the limit of {MAX_TAG_TARBALL_BYTES} bytes");
+    }
+    Ok(body)
 }
 
 /// Returns `true` when the error is transient and the request should be retried.

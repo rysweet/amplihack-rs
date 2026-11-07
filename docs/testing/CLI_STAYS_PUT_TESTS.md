@@ -118,14 +118,18 @@ repository the fixture commits (`Fixture::source_repo`). The scripts call
 `PATH`, moves `TMPDIR` into the fixture, where multitask keeps its
 workstreams, and sets `AMPLIHACK_SESSION_TREE_DIR` inside the fixture.
 
-- Classic mode runs `amplihack <delegate> --subprocess-safe -- <verb> "@TASK.md ..."`.
+- Classic mode runs `amplihack <delegate> --subprocess-safe -- <verb> "<task> ..."`.
   The delegate is `AMPLIHACK_DELEGATE` when it names one of the four
   `amplihack <cli>` commands, else `amplihack <active agent binary>`. Before
   issue #1983 it defaulted to `amplihack claude` whatever the session, and
   `amplihack codex` was not accepted. The verb is the CLI's own
   non-interactive form: `-p` for claude and copilot, `exec` for codex, `run`
-  for amplifier. The tests assert that exactly one record exists, that it
-  shows the session's CLI, and that its argv starts with that CLI's verb.
+  for amplifier. `<task>` is `@TASK.md` for claude, whose file mention
+  attaches the file. `codex exec`, `amplifier run` and copilot's `-p` take the
+  prompt as plain text, so they get "Read TASK.md in the current directory and
+  execute the task it describes." instead. The tests assert that exactly one
+  record exists, that it shows the session's CLI, that its argv starts with
+  that CLI's verb and task form, and that codex never gets `@TASK.md`.
 - `orch run` is the command smart-orchestrator's `launch-parallel-round-1`
   bash step runs. It is `multitask run` in recipe mode, so the workstream's
   `launcher.sh` runs `amplihack recipe run`. A nested `recipe run` refuses to

@@ -204,6 +204,8 @@ fn snap_with(skip: Skip, sees_sessions: bool) -> Snap {
         account: None,
         trusted_live: None,
         identity_refusal: None,
+        identity_cause: None,
+        candidate_refusals: Vec::new(),
         candidates: Vec::new(),
         skips: vec![(n("work"), Skip::Live), (n("spare"), skip)],
         sees_sessions,

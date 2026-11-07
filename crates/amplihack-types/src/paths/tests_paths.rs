@@ -8,7 +8,7 @@ fn temp_test_dir(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!(
+    let path = crate::test_support::scratch_base::scratch_base().join(format!(
         "amplihack-types-{name}-{}-{unique}",
         std::process::id()
     ));

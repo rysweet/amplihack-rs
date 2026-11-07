@@ -69,6 +69,20 @@ pub(super) fn delegate_prompt_verb(delegate: &str) -> &'static str {
     }
 }
 
+/// How the classic-mode prompt points `delegate` at the task file.
+///
+/// `@TASK.md` is Claude Code's file mention: claude attaches the file's
+/// contents to the prompt. `codex exec`, `amplifier run` and copilot's `-p`
+/// take the prompt as plain text, so for them `@TASK.md` would arrive as a
+/// literal string. They get a plain instruction to read the file instead; the
+/// script `cd`s into the workstream directory, where `TASK.md` is written.
+pub(super) fn delegate_task_reference(delegate: &str) -> &'static str {
+    match delegate {
+        "amplihack claude" => "@TASK.md",
+        _ => "Read TASK.md in the current directory and execute the task it describes.",
+    }
+}
+
 /// The scope's repository is `owner/repo` for a GitHub origin (issue #1642).
 /// Any other URL is stored with its userinfo, which may be a token, redacted;
 /// a local path is stored as is.
@@ -237,7 +251,7 @@ export AMPLIHACK_TREE_ID='{tree_id}'
 export AMPLIHACK_SESSION_DEPTH='{depth}'
 export AMPLIHACK_MAX_DEPTH='{max_depth}'
 export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
-{profile_exports}{delegate} --subprocess-safe -- {prompt_verb} "@TASK.md Execute task autonomously using the canonical {workflow_selection} via {dev_orchestrator} and {smart_orchestrator}. NO QUESTIONS. Work through all required workflow steps. Create PR when complete."
+{profile_exports}{delegate} --subprocess-safe -- {prompt_verb} "{task_reference} Execute task autonomously using the canonical {workflow_selection} via {dev_orchestrator} and {smart_orchestrator}. NO QUESTIONS. Work through all required workflow steps. Create PR when complete."
 "#,
         work_dir = ws.work_dir.display(),
         tree_id = tree_id,
@@ -246,6 +260,7 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
         max_sessions = max_sessions,
         delegate = delegate,
         prompt_verb = delegate_prompt_verb(delegate),
+        task_reference = delegate_task_reference(delegate),
         workflow_selection = workflow::DEFAULT_WORKFLOW_SELECTION,
         dev_orchestrator = workflow::DEV_ORCHESTRATOR_SKILL,
         smart_orchestrator = workflow::SMART_ORCHESTRATOR_RECIPE_COMMAND,

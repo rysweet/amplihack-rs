@@ -83,19 +83,24 @@ fn classic_script_uses_each_delegates_prompt_form() {
         ),
         (
             "amplihack copilot",
-            "amplihack copilot --subprocess-safe -- -p \"@TASK.md",
+            "amplihack copilot --subprocess-safe -- -p \"Read TASK.md in the current directory",
         ),
         (
             "amplihack codex",
-            "amplihack codex --subprocess-safe -- exec \"@TASK.md",
+            "amplihack codex --subprocess-safe -- exec \"Read TASK.md in the current directory",
         ),
         (
             "amplihack amplifier",
-            "amplihack amplifier --subprocess-safe -- run \"@TASK.md",
+            "amplihack amplifier --subprocess-safe -- run \"Read TASK.md in the current directory",
         ),
     ] {
         let script = classic_run_script(&ws, delegate).unwrap();
         assert!(script.contains(form), "{delegate}: {script}");
+        // `@file` is a Claude Code mention; any other CLI would get it as a
+        // literal string instead of the task.
+        if delegate != "amplihack claude" {
+            assert!(!script.contains("@TASK.md"), "{delegate}: {script}");
+        }
     }
 }
 
