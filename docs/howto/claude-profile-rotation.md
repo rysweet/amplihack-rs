@@ -108,9 +108,9 @@ would swap work->spare live s=88% w=41% target s=0% w=12% reason=threshold
 ```
 
 A dry run probes every profile and prints what it would do. It takes no lock,
-writes no rotate state, moves nothing and logs nothing. A direct read may
-still refresh a login's OAuth token that is close to expiry, which Claude
-saves under its own lock. It also does not finish an
+writes no rotate state, moves nothing and logs nothing. It never refreshes a
+token or starts `claude`, so an expired login shows as unmeasured with its
+cause, and the target can differ from a real run's. It also does not finish an
 interrupted swap: if one is pending it prints
 `would recover an interrupted swap (phase <phase>)` and leaves it for the next
 real run. Run a dry run first, and again whenever you change a threshold.
@@ -939,9 +939,12 @@ line shows the figures as usual. To see why a login fell back, run
 
 The direct read may refresh a candidate's expired token, under Claude's own
 refresh lock, and write the new token back to that profile's
-`.credentials.json`. It never refreshes the login in `~/.claude` or a login
-lent to or from another directory; `claude` does that itself. The details
-are in the [reference](../reference/profile-command.md#token-refresh).
+`.credentials.json`. It never refreshes a login lent to or from another
+directory; `claude` does that itself. The login in `~/.claude` is refreshed
+once per cycle only when its token has already expired, so that its
+[identity can be read](../reference/profile-command.md#an-expired-live-login).
+The details are in the
+[reference](../reference/profile-command.md#token-refresh).
 
 ### Readings that take longer than a cycle
 
@@ -1095,8 +1098,8 @@ The `<why>` of a cannot-tell note is one of:
 
 | `<why>` | Usual cause |
 |---------|-------------|
-| `~/.claude could not be read` | An expired token (the check never refreshes one), a rate limit, or no network. It clears after the next refresh or swap. |
-| `profile <P1>, <P2> could not be read` | Those profiles' tokens have expired or were rate-limited. |
+| `~/.claude identity read failed: <cause>` | The lookup failed, and `<cause>` says why: for example `http 429` (wait), `http 401` (log in again), `token expired` (the refresh failed; see its `refresh:` line) or `directory not private` (see the [directory rule](../reference/profile-command.md#login-directory-rule)). All causes are in [Identity read causes](../reference/profile-command.md#identity-read-causes). |
+| `profile <P1> not read (<cause>), <P2> not read (<cause>)` | Those profiles' lookups failed, each for the cause shown. |
 | `it holds the same account as more than one profile (<M1>, <M2>)` | Those profiles hold the same account; keep it in one of them. |
 | `it holds the same account as profile <M>, which is not the account recorded for <M>; run amplihack profile verify` | `<M>`'s folder holds another profile's login. See [Check which account each folder holds](#check-which-account-each-folder-holds). |
 | `it holds an account other than the one recorded for <L>; run amplihack profile verify` | `~/.claude` holds an account no profile's own login holds, and not `<L>`'s. Usually a `/login` to a new account. See [Check which account each folder holds](#check-which-account-each-folder-holds). |
@@ -2233,8 +2236,10 @@ swap. A credential-bound conflict alerts and moves nothing, even when
 
 If the live profile has no ownership record, only the existing adoption
 or backfill rules can establish ownership, using trusted login evidence.
-Session JSON cannot supply the missing proof. See
-[Recorded account](../reference/profile-command.md#recorded-account).
+Session JSON cannot supply the missing proof. A cycle can also seed the
+live profile's record, and when it cannot it names the command to run; see
+[Record a profile that shows `no record`](#record-a-profile-that-shows-no-record)
+and [Recorded account](../reference/profile-command.md#recorded-account).
 
 A legacy ledger containing only the user UUID cannot prove which
 organization owns an unrecorded outgoing login. The existing ledger now
@@ -2252,9 +2257,23 @@ An unavailable identity endpoint, expired token, incomplete response,
 conflicting record, changed login, unreadable duplicate candidate or
 exhausted identity-read budget leaves the required evidence uncertain.
 The affected operation writes an actionable ALERT on each attempt and
-moves no login or ledger identity. Follow the reported reason: wait for
+moves no login or ledger identity. The ALERT names the
+[cause](../reference/profile-command.md#identity-read-causes):
+
+```
+2026-11-05T09:27:02Z ALERT: trusted login identity unavailable: http 429
+```
+
+Follow the reported cause: wait for
 network or refresh failures to clear, and resolve genuine ownership
 conflicts before retrying. Editing session JSON does not resolve them.
+
+An expired login in `~/.claude` is refreshed before any identity read, even
+when the ledger is unreadable or the lease view bars the live profile. The
+refresh proves nothing about the account: only the fresh reading after it can
+let a login move. With an unreadable ledger the cycle then stops, with no move
+and no record; see
+[Unreadable-ledger stop](../reference/profile-command.md#unreadable-ledger-stop).
 
 An otherwise eligible stored OAuth login still receives the usual usage
 read, which can refresh expired credentials. A reading started without
@@ -2284,25 +2303,74 @@ nnorth -> mmorrison@mistt.com: MISMATCH, recorded for mmorrison
 ```
 
 Here `nnorth`'s folder holds `mmorrison`'s login, as the 3 November misfire
-left it. To move each such login into the folder recorded for it:
-
-```bash
-amplihack profile verify --fix
-```
-
-```
-...
-backup: the moves and how to undo them are in /home/you/.claude-profiles/.rejected-logins/verify-20261103T120000Z/moves
-moved nnorth's login to mmorrison
-```
-
-`--fix` only moves a login into a folder that holds no login, never into the
-live profile's folder, and never moves `~/.claude`. Anything else it prints
-as `<profile>: not moved: <why>` and leaves for you. The `moves` file lists
-the `mv -n` command that undoes each move. Run `amplihack profile verify`
-again afterwards; it exits 0 once every folder holds its recorded account.
-The full rules are in
+left it. To correct a folder, run `amplihack profile login <name>` with the
+browser signed out of claude.ai or in a private window. Do not use the `--fix`
+flag until [#1960](https://github.com/rysweet/amplihack-rs/issues/1960) is
+closed. Run `amplihack profile verify` again afterwards; it exits 0 once every
+folder holds its recorded account. The full rules are in
 [profile verify](../reference/profile-command.md#profile-verify).
+
+#### Record a profile that shows `no record`
+
+Plain `verify` shows `no record` for a profile the rotator has no recorded
+account for. The rotator cannot swap away from a live profile until it has
+ownership evidence, and on a ledger written before login identities were kept
+it logs:
+
+```
+note: no record for live profile ryan-mistt-personal: the ledger has no login identity; nothing moved; run: amplihack profile seed-record ryan-mistt-personal
+```
+
+Do this once, in this order:
+
+1. Install the fixed build and restart the rotator. An older rotator running
+   beside a new record has not been tested.
+2. Read the dry run. It must name the live login and report no identity alert:
+
+   ```bash
+   amplihack profile rotate --dry-run
+   ```
+
+   If it reports `token expired`, wait for the rotator's next cycle, which
+   refreshes the live login, and run the dry run again. If it reports `http 429`,
+   wait a few minutes and run it again. Other causes are in
+   [Identity read causes](../reference/profile-command.md#identity-read-causes).
+
+3. Preview the record. This writes nothing:
+
+   ```bash
+   amplihack profile seed-record ryan-mistt-personal
+   ```
+
+   ```
+   ryan-mistt-personal -> you@example.com, organization 00000000-0000-0000-0000-000000000000: no record; nothing written; run with --write to record it
+   ```
+
+4. Check that this is the right account and organization. Then write it:
+
+   ```bash
+   amplihack profile seed-record ryan-mistt-personal --write
+   ```
+
+If step 3 refuses with
+`the ledger's older key is an e-mail, which cannot prove ownership`, this login
+cannot be seeded while the ledger names it. Stop the rotator, run
+`rm <root>/.auto-switch.d/rotate/ledger.json` and start it again. With no ledger,
+the next swap keeps this login under a new `default-original` profile, as
+[Rotate live profile](../reference/profile-command.md#rotate-live-profile)
+describes. Then run `amplihack profile login <name>` to give `<name>` a login of
+its own.
+
+The command moves no login and never overwrites a usable record. Two profiles
+that share an e-mail, such as `ryan-mistt-personal` and `ryan-mistt-org`, are
+told apart by account uuid and organization. If they cannot be, the command
+refuses, and a rotate cycle's alert names both.
+
+Step 4 matters most for a profile that isn't live: its folder name is the only
+link to its login, so a misfiled login could be recorded as correct. To remove a
+wrong record, run `rm <root>/.auto-switch.d/expected/<name>.json`. The full rules
+are in
+[profile seed-record](../reference/profile-command.md#profile-seed-record).
 
 #### Stuck `~/.claude.json`
 
