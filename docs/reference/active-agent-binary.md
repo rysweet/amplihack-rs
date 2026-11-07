@@ -628,3 +628,4 @@ AMPLIHACK_AGENT_BINARY=codex amplihack recipe run smart-orchestrator \
 - [User Configuration](./user-config.md#agentbinary) — Setting `agent.binary` once, and the `user_config:<binary>` tag
 - [Agent Configuration](./agent-configuration.md#agent-binary-resolution) — Where the default fits into config precedence
 - [Hook Specifications](./hook-specifications.md) — Per-binary hook layout and supported events
+- [CLI Stays Put Tests](../testing/CLI_STAYS_PUT_TESTS.md) - Regression tests that a run keeps the CLI it started with
