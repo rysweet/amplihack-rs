@@ -1255,9 +1255,22 @@ fn a_successful_read_kills_what_the_server_left_running() {
 #[test]
 fn the_child_gets_codex_home_and_no_api_keys_and_the_parent_env_is_unchanged() {
     let _l = lock();
+    // The sentinels are made unique per run: a literal could already appear
+    // in an inherited variable (a recipe runner exports its design notes),
+    // which would make the "not in the child" check fail for the wrong reason.
+    let tag = format!(
+        "{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    );
+    let openai_key = format!("sk-sentinel-{tag}");
+    let codex_key = format!("codex-sentinel-{tag}");
     let _v = Vars::set(&[
-        ("OPENAI_API_KEY", Some("sk-test-should-be-removed")),
-        ("CODEX_API_KEY", Some("codex-key-should-be-removed")),
+        ("OPENAI_API_KEY", Some(openai_key.as_str())),
+        ("CODEX_API_KEY", Some(codex_key.as_str())),
         ("RUST_LOG", Some("trace")),
         ("CODEX_HOME", None),
     ]);
@@ -1285,8 +1298,8 @@ fn the_child_gets_codex_home_and_no_api_keys_and_the_parent_env_is_unchanged() {
             "{gone} in {env}"
         );
     }
-    assert!(!env.contains("sk-test-should-be-removed"));
-    assert!(!env.contains("codex-key-should-be-removed"));
+    assert!(!env.contains(&openai_key));
+    assert!(!env.contains(&codex_key));
     assert_eq!(
         std::env::var_os("CODEX_HOME"),
         None,
@@ -1294,7 +1307,7 @@ fn the_child_gets_codex_home_and_no_api_keys_and_the_parent_env_is_unchanged() {
     );
     assert_eq!(
         std::env::var_os("OPENAI_API_KEY").as_deref(),
-        Some(OsStr::new("sk-test-should-be-removed")),
+        Some(OsStr::new(&openai_key)),
         "removed from the child only"
     );
 }
