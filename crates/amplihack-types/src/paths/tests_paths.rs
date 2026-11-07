@@ -3,12 +3,35 @@ use crate::test_support::env_lock;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+/// A temporary base with no framework root (`.claude` or `src/amplihack/.claude`)
+/// among its ancestors. `framework_roots_from` walks up from the project, so a
+/// `TMPDIR` inside `~/.amplihack` (as recipe runs set it) or a host `/tmp/.claude`
+/// would otherwise resolve ahead of the root a test sets up.
+fn temp_base_outside_framework_roots() -> PathBuf {
+    let candidates = [
+        std::env::temp_dir(),
+        PathBuf::from("/var/tmp"),
+        PathBuf::from("/tmp"),
+    ];
+    candidates
+        .iter()
+        .find(|base| {
+            base.is_dir()
+                && base.ancestors().all(|ancestor| {
+                    !ancestor.join(".claude").is_dir()
+                        && !ancestor.join("src/amplihack/.claude").is_dir()
+                })
+        })
+        .cloned()
+        .unwrap_or_else(std::env::temp_dir)
+}
+
 fn temp_test_dir(name: &str) -> PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_nanos();
-    let path = std::env::temp_dir().join(format!(
+    let path = temp_base_outside_framework_roots().join(format!(
         "amplihack-types-{name}-{}-{unique}",
         std::process::id()
     ));

@@ -855,7 +855,7 @@ mod tests {
     fn walk_up_finds_the_checkout_that_contains_the_current_directory() {
         // Fix #341's workflow: `amplihack install` run from deep inside the
         // clone must stage from that clone.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let repo = temp.path().join("amplihack-rs");
         amplihack_source(&repo);
         git_dir(&repo);
@@ -881,7 +881,7 @@ mod tests {
         // well-formed amplihack source tree; the user is working in an
         // unrelated repository underneath it. The old walk-up staged from
         // `~/src`; nothing about the user's cwd asked for that.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let ancestor = temp.path().join("src");
         amplihack_source(&ancestor);
         let project = ancestor.join("unrelated-project");
@@ -914,7 +914,7 @@ mod tests {
         // An unpacked tarball has no `.git`. Installing from inside it still
         // works (this is the shape `bugfix_341_install_freshness` builds), but
         // it does not license a climb towards `$HOME`.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let checkout = temp.path().join("checkout");
         amplihack_source(&checkout);
         let nested = checkout.join("docs");
@@ -948,7 +948,7 @@ mod tests {
         // makes every walk-up that starts below it stop there. The walk-up
         // tests above all build their fixtures in a scratch directory, so the
         // scope of a fresh one must be that directory alone.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
 
         assert_eq!(
             walk_up_scope(temp.path()),
@@ -963,7 +963,7 @@ mod tests {
     fn a_directory_that_merely_carries_a_bundle_is_not_an_install_source() {
         // The shape check alone cannot tell an amplihack checkout from any
         // project that happens to vendor a directory of the same shape.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let repo = temp.path().join("some-project");
         bundle_only(&repo);
         git_dir(&repo);
@@ -994,7 +994,7 @@ mod tests {
     fn a_git_file_marks_a_worktree_root() {
         // Linked worktrees and submodules carry `.git` as a file, not a
         // directory. Getting that wrong would silently unbound the walk.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let ancestor = temp.path().join("src");
         amplihack_source(&ancestor);
         let worktree = ancestor.join("wt-1275");
@@ -1020,7 +1020,7 @@ mod tests {
     fn amplihack_home_is_taken_at_its_word() {
         // An explicit override needs no source markers and no walk: the user
         // named this directory.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let explicit = bundle_only(&temp.path().join("explicit"));
 
         let resolution = resolve_framework_root(
@@ -1042,7 +1042,7 @@ mod tests {
 
     #[test]
     fn an_incompatible_bundle_is_reported_rather_than_dropped() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let explicit = bundle_only(&temp.path().join("explicit"));
 
         let resolution = resolve_framework_root(
@@ -1064,7 +1064,7 @@ mod tests {
 
     #[test]
     fn the_executable_walk_up_stays_inside_its_own_checkout() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
 
         // In-tree dev binary: `<repo>/target/debug/amplihack` must still find
         // the repo it was built in.
@@ -1114,7 +1114,7 @@ mod tests {
 
     #[test]
     fn a_prior_staged_install_is_the_last_local_step() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let home = temp.path().join("home");
         let staged = home.join(".amplihack");
         amplihack_source(&staged);
@@ -1140,7 +1140,7 @@ mod tests {
     fn the_current_checkout_outranks_the_compile_time_workspace() {
         // Fix #341 in one assertion: a binary built elsewhere must not pin the
         // bundle to whatever was on disk at build time.
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let built_from = amplihack_source(&temp.path().join("build-host"));
         let repo = temp.path().join("amplihack-rs");
         amplihack_source(&repo);
@@ -1193,7 +1193,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn bounded_git_reports_nonzero_exit_with_captured_output() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let fake = fake_git(
             temp.path(),
             "echo stdout-marker; echo stderr-marker >&2; exit 42",
@@ -1210,7 +1210,7 @@ mod tests {
 
     #[test]
     fn read_limited_reports_discarded_bytes() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let output = temp.path().join("captured.log");
         fs::write(&output, vec![b'x'; CAPTURE_LIMIT + 7]).unwrap();
 
@@ -1229,7 +1229,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn bounded_git_times_out_and_reaps_child() {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = crate::test_support::tempdir_outside_framework_roots();
         let marker = temp.path().join("orphan-marker");
         let marker_text = marker.to_str().expect("temporary paths are UTF-8");
         assert!(

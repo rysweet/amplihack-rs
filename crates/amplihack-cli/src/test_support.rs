@@ -21,6 +21,33 @@ pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
     env_lock()
 }
 
+/// A temporary directory with no `amplifier-bundle` or `.claude` among its
+/// ancestors.
+///
+/// Framework resolution walks up from the directories a test builds, so a
+/// `TMPDIR` inside `~/.amplihack` (as recipe runs set it) would otherwise
+/// supply a bundle root, or notes, that the test never set up. Falls back to
+/// the plain temporary directory when no candidate base is clear.
+pub(crate) fn tempdir_outside_framework_roots() -> tempfile::TempDir {
+    let candidates = [
+        std::env::temp_dir(),
+        PathBuf::from("/var/tmp"),
+        PathBuf::from("/tmp"),
+    ];
+    let base = candidates
+        .iter()
+        .find(|base| {
+            base.is_dir()
+                && base.ancestors().all(|ancestor| {
+                    !ancestor.join("amplifier-bundle").is_dir()
+                        && !ancestor.join(".claude").is_dir()
+                })
+        })
+        .cloned()
+        .unwrap_or_else(std::env::temp_dir);
+    tempfile::tempdir_in(base).unwrap()
+}
+
 /// RAII guard for process environment variables mutated by tests.
 ///
 /// Tests must acquire `env_lock()` before constructing this guard.
