@@ -62,6 +62,7 @@ pub fn executable(path: &Path, body: &str) {
 pub fn isolated(command: &mut Command, home: &Path) {
     command
         .env_clear()
+        .env("PYTHONDONTWRITEBYTECODE", "1")
         .env("HOME", home)
         .env("XDG_CONFIG_HOME", home)
         .env(
