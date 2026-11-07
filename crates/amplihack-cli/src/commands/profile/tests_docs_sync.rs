@@ -868,3 +868,95 @@ fn docs_describe_credential_identity_and_display_only_claude_json() {
     assert!(ROTATE_HOWTO.contains("#### No profile answers the same"));
     assert!(ROTATE_HOWTO.contains("```bash\namplihack profile rotate\n```"));
 }
+
+// ---------------------------------------------------------------------------
+// Issue #2001: the Codex block of `profile usage`
+// ---------------------------------------------------------------------------
+
+const ENV_VARS: &str = include_str!("../../../../../docs/reference/amplihack-env-vars.md");
+
+#[test]
+fn every_codex_json_key_is_in_the_reference_key_table() {
+    use super::usage_codex::{json_rows, view};
+    use amplihack_utils::codex_capacity::{AccountResult, Outcome, Reading, Window, WindowName};
+    let mut r = Reading::default();
+    r.windows = vec![Window {
+        name: WindowName::Primary,
+        used_percent: Some(1.0),
+        window_minutes: Some(300),
+        resets_at: Some(1_794_001_200),
+    }];
+    let v = view(
+        std::path::PathBuf::from("/r"),
+        vec![AccountResult::new(
+            "a",
+            std::path::PathBuf::from("/r/a"),
+            Outcome::Ok(r),
+            1_793_992_140,
+        )],
+        20,
+    );
+    let row = serde_json::to_value(json_rows(&v)).unwrap()[0].clone();
+    let mut keys: Vec<String> = row.as_object().unwrap().keys().cloned().collect();
+    keys.extend(
+        row["windows"][0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(|k| format!("windows[].{k}")),
+    );
+    for k in keys {
+        assert!(
+            REFERENCE.contains(&format!("| `{k}` |")),
+            "reference has no key-table row for Codex `{k}`"
+        );
+    }
+}
+
+#[test]
+fn the_codex_settings_are_documented_in_both_references() {
+    use amplihack_utils::codex_capacity::{BIN_ENV, ROOT_ENV, TIMEOUT_ENV};
+    for var in [ROOT_ENV, BIN_ENV, TIMEOUT_ENV] {
+        assert!(REFERENCE.contains(&format!("`{var}`")), "reference: {var}");
+        assert!(ENV_VARS.contains(&format!("`{var}`")), "env-vars: {var}");
+    }
+}
+
+#[test]
+fn the_docs_use_the_claude_key_in_jq_examples() {
+    for (name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        for l in doc
+            .lines()
+            .filter(|l| l.contains("profile usage --json | jq"))
+        {
+            // A filter kept in `$q` is checked where `q=` is set.
+            let via_q = l.contains("jq -c \"$q\"") && doc.contains("  .claude[] | {profile");
+            assert!(
+                l.contains(".claude[]") || l.contains(".codex[]") || via_q,
+                "{name}: a jq example still reads the old top-level array: {l}"
+            );
+        }
+    }
+    assert!(REFERENCE.contains("Changed in #2001"));
+    assert!(!REFERENCE.contains("The output stays a single array"));
+}
+
+#[test]
+fn the_reference_quotes_the_codex_texts_the_code_prints() {
+    for text in [
+        "Codex accounts under ",
+        "Codex: no accounts under ",
+        "codex binary not found: ",
+        "unexpected response from codex app-server",
+        "codex usage read is supported only on Unix",
+        "codex account authentication required to read rate limits",
+        "<- next",
+        "no windows reported",
+        "warning: AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS=\"0\" is not a whole number from 1 to 300; using 20",
+    ] {
+        assert!(
+            REFERENCE.contains(text),
+            "reference does not quote {text:?}"
+        );
+    }
+}

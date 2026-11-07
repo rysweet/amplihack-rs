@@ -269,6 +269,8 @@ mod issue_1870_reread_probe_mode;
 mod issue_1973_rotate_fixture;
 #[path = "issue_1973_wait_helpers.rs"]
 mod issue_1973_wait_helpers;
+#[path = "issue_2001_codex_usage.rs"]
+mod issue_2001_codex_usage;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

@@ -39,6 +39,7 @@ mod shared_dirs;
 mod store;
 mod supervise_gate;
 mod usage_cmd;
+mod usage_codex;
 #[cfg(unix)]
 mod usage_direct;
 mod usage_history;
@@ -97,6 +98,8 @@ mod tests_shared_dirs;
 mod tests_store;
 #[cfg(test)]
 mod tests_usage_cmd;
+#[cfg(test)]
+mod tests_usage_codex;
 #[cfg(all(test, unix))]
 mod tests_usage_direct;
 #[cfg(all(test, unix))]
@@ -428,11 +431,12 @@ pub enum ProfileCommands {
         args: Vec<String>,
     },
     /// Show each profile's weekly and session usage as a bar view, in the
-    /// order the rotator ranks headroom
+    /// order the rotator ranks headroom, then each Codex account's live
+    /// rate limits
     Usage {
-        /// Profiles to probe (default: all)
+        /// Profiles to probe (default: all, and the Codex accounts)
         names: Vec<String>,
-        /// Print a JSON array instead of the bar view
+        /// Print one JSON object: `claude` (the profile rows) and `codex` (the Codex accounts)
         #[arg(long)]
         json: bool,
         /// Print the previous 7-column table instead of the bar view
@@ -441,7 +445,7 @@ pub enum ProfileCommands {
         /// Show reset times in UTC instead of local time (bar view only)
         #[arg(long, conflicts_with_all = ["json", "table", "summary_json"])]
         utc: bool,
-        /// Print one JSON object: the --json rows and the capacity summary
+        /// Print one JSON object: the --json Claude rows, the capacity summary and the Codex rows
         #[arg(long, conflicts_with_all = ["json", "raw"])]
         summary_json: bool,
         /// Also print what `claude` wrote to stdout and stderr

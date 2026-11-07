@@ -22,6 +22,7 @@
 //! - [`llm_client`] — SDK launcher detection and LLM completion routing
 //! - [`bundle_generator`] — Agent bundle generation, packaging, and distribution
 //! - [`docker_manager`] — Docker container management for isolated execution
+//! - [`codex_capacity`] — Live Codex rate-limit readings (issue #2001)
 //! - [`idle_watchdog`] — Idle/liveness watchdog supervising child processes (issue #867)
 
 /// Single source of truth for resolving the active agent binary identifier.
@@ -41,6 +42,8 @@ pub mod claude_md;
 /// `@anthropic-ai/claude-code`. See issue #1266.
 pub mod claude_native;
 pub mod cleanup;
+/// Live Codex rate-limit readings through `codex app-server` (issue #2001).
+pub mod codex_capacity;
 pub mod defensive;
 pub mod docker_detector;
 pub mod docker_manager;
