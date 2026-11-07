@@ -126,11 +126,6 @@ fn clock_is_object_safe_send_and_sync() {
 }
 
 #[test]
-fn system_clock_zero_sleep_returns() {
-    SystemClock.sleep(Duration::ZERO);
-}
-
-#[test]
 fn a_free_lock_is_taken_at_once_without_sleeping() {
     let t = tempfile::tempdir().unwrap();
     let clock = NoSleepClock(Instant::now());

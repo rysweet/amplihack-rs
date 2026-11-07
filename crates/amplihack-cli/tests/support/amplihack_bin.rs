@@ -87,7 +87,9 @@ fn private_copy(built_dir: &Path) -> io::Result<PathBuf> {
 }
 
 /// Writes `src` to `dir/.name.tmp` (created new, mode 0755), then renames it
-/// to `dir/name`, so a caller never sees a partial file.
+/// to `dir/name`, so a caller never sees a partial file. There is no fsync:
+/// the copy is private and removed at exit, so it need not survive a crash,
+/// and on a loaded disk an fsync of the 100+ MB binary can take seconds.
 fn copy_into(src: &Path, dir: &Path, name: &str) -> io::Result<PathBuf> {
     let tmp = dir.join(format!(".{name}.tmp"));
     let dest = dir.join(name);
@@ -101,7 +103,6 @@ fn copy_into(src: &Path, dir: &Path, name: &str) -> io::Result<PathBuf> {
     let mut out = opts.open(&tmp)?;
     let mut input = fs::File::open(src)?;
     io::copy(&mut input, &mut out)?;
-    out.sync_all()?;
     drop(out);
     #[cfg(unix)]
     {
@@ -119,7 +120,8 @@ fn remove_at_exit() {
     #[cfg(unix)]
     {
         extern "C" fn remove() {
-            if let Ok(mut dir) = DIR.lock() {
+            // `try_lock`: never wait at exit on a thread that holds `DIR`.
+            if let Ok(mut dir) = DIR.try_lock() {
                 drop(dir.take());
             }
         }

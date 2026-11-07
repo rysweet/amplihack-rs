@@ -353,6 +353,21 @@ impl Gate {
     fn release(&self) {
         let _ = self.open.try_send(());
     }
+
+    /// Releases the gate when dropped. Declared after the fake server, it
+    /// is dropped before it, so a failed assertion frees the held handler
+    /// and the server's drop does not wait out [`HANG_GUARD`].
+    fn release_on_drop(&self) -> Release<'_> {
+        Release(self)
+    }
+}
+
+struct Release<'a>(&'a Gate);
+
+impl Drop for Release<'_> {
+    fn drop(&mut self) {
+        self.0.release();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -945,6 +960,7 @@ fn a_401_refresh_and_retry_share_one_deadline() {
             Reply::json(401, &json!({"error": "expired"}))
         }
     });
+    let _release = gate.release_on_drop();
     let l = login();
     let journals = l.journals();
     let mut req = request(&l, &journals, true);
@@ -1620,6 +1636,7 @@ fn the_refresh_counter_covers_a_refresh_in_progress() {
     let (arrived, posted) = mpsc::sync_channel(8);
     let gate = Gate::new();
     let fake = refreshing_held(arrived, &gate);
+    let _release = gate.release_on_drop();
     let l = login();
     let dir = l.dir.clone();
     let root = l.root.clone();
@@ -1662,6 +1679,7 @@ fn read_uses_the_process_wide_counter() {
     let (arrived, posted) = mpsc::sync_channel(8);
     let gate = Gate::new();
     let fake = refreshing_held(arrived, &gate);
+    let _release = gate.release_on_drop();
     let l = login();
     let dir = l.dir.clone();
     let root = l.root.clone();

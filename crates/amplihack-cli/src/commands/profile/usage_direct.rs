@@ -454,6 +454,9 @@ pub(super) fn refresh_status(code: u16) -> &'static str {
 /// `TimedOut` error, which `ureq` reports as `ErrorKind::Dns`, and no byte
 /// of the request is sent. A lookup given up on keeps its thread until the
 /// system resolver returns; its answer is dropped.
+///
+/// `until` must be a real [`Instant`] (from `Instant::now()`), never one from
+/// an injected [`Clock`]: the wait is measured against the real clock.
 pub(super) fn bounded_lookup<L>(
     until: Instant,
     lookup: L,
@@ -538,7 +541,7 @@ pub(super) struct Ctx<'a> {
 
 impl<'a> Ctx<'a> {
     /// A context with `clock` and the counter `refreshing`.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(super) fn new(clock: &'a dyn Clock, refreshing: &'a AtomicUsize) -> Self {
         Self { clock, refreshing }
     }
@@ -734,10 +737,17 @@ pub(super) fn post_step(left: Duration) -> Duration {
     left.min(MAX_STEP)
 }
 
-/// The agent for the `GET`s. Its DNS lookups end at the read's deadline.
+/// The agent for the `GET`s. Its DNS lookups end once the time left on the
+/// read's deadline has passed in real time; with none left they end at once,
+/// and the caller's own check of [`Deadline::left`] sends no request then.
 fn agent(ep: &Endpoints, timeout: Duration, deadline: Deadline<'_>) -> ureq::Agent {
+    let left = deadline.left().unwrap_or_default();
+    let now = Instant::now();
     agent_builder(ep, timeout, get_step(timeout))
-        .resolver(bounded_lookup(deadline.end, system_lookup))
+        .resolver(bounded_lookup(
+            now.checked_add(left).unwrap_or(now),
+            system_lookup,
+        ))
         .build()
 }
 
@@ -935,7 +945,7 @@ fn refresh(
     // connect deadline's I/O timeout.
     let step = post_step(left);
     let dns = bounded_lookup(
-        ctx.clock.now() + step.saturating_sub(MIN_STEP),
+        Instant::now() + step.saturating_sub(MIN_STEP),
         system_lookup,
     );
     let post = agent_builder(ep, left, step)

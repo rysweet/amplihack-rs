@@ -123,7 +123,8 @@ impl FsGuard {
         }
     }
 
-    /// How long a commit waits for the lock.
+    /// How long a commit waits for the lock. It exists so that tests can
+    /// check the defaults.
     pub fn lock_timeout(&self) -> Duration {
         self.lock_timeout
     }

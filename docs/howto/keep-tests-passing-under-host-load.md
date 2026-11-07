@@ -284,15 +284,6 @@ The existing call signatures and defaults do not change: the 5 s lock timeout,
 `REFRESH_BUDGET`, `MAX_STEP`, the 60 s expiry window and the global
 `REFRESHING` counter are the same in every build.
 
-`lock_exclusive_timeout_with` keeps the old loop. It tries `flock` without
-blocking, retries at once on `EINTR`, returns any other error as it is, and
-otherwise sleeps `RETRY.min(timeout - waited)` through the clock. It checks
-`waited >= timeout` before it subtracts, and measures `waited` with
-`saturating_duration_since`, so a clock that goes backwards cannot panic. A
-zero timeout means one try and no sleep. The error is still
-`ErrorKind::TimedOut` with the message
-`timed out waiting for an exclusive lock`.
-
 ### Frozen and advancing fakes
 
 A fake keeps virtual time as a base `Instant` plus an `AtomicU64` offset in
@@ -321,13 +312,14 @@ holds the lock through another handle, then commits with an advancing clock:
 assert_eq!(LOCK_TIMEOUT, Duration::from_secs(5));
 assert_eq!(FsGuard::new(root).lock_timeout(), LOCK_TIMEOUT);
 
-let clock = Arc::new(AdvancingClock::new());
-let guard = FsGuard::with_clock(root, LOCK_TIMEOUT, clock.clone());
-let err = guard.commit(/* .. */).unwrap_err();
+let clock = AdvancingClock::new(); // an Arc
+let mut g = FsGuard::with_clock(root, LOCK_TIMEOUT, clock.clone());
+assert!(matches!(g.commit(/* .. */), Err(CommitError::Io)));
 
-assert!(matches!(err, CommitError::Io(ref e) if e.kind() == ErrorKind::TimedOut));
-assert!(clock.last_sleep_started_at() < LOCK_TIMEOUT);
-assert!(clock.elapsed() >= LOCK_TIMEOUT);
+let at_failure = clock.elapsed();
+let (last_start, _) = *clock.sleeps.lock().unwrap().last().unwrap();
+assert!(last_start < LOCK_TIMEOUT);
+assert!(at_failure >= LOCK_TIMEOUT);
 ```
 
 The test asserts on virtual time only. The old assertion that the failure took
@@ -354,37 +346,12 @@ hang fail sooner, and do not assert that something finished within it.
 
 ### Deadlines in `usage_direct`
 
-`Deadline` holds its end `Instant` and a `&dyn Clock`. `Deadline::after`
-computes the end with `checked_add` and falls back to `now` on overflow, so it
-fails closed. `left()` saturates at zero.
-
-The socket step for each request is a pure function of the time left:
-
-| Function | Formula | Used for |
-|----------|---------|----------|
-| `get_step(t)` | `MAX_STEP.min(t.saturating_sub(1 s)).max(MIN_STEP)` | connect, read and write timeouts of the `GET` agent |
-| `post_step(left)` | `left.min(MAX_STEP)` | connect, read and write timeouts of the refresh `POST` |
-
-The bound on DNS resolution also reads the injected clock: it is
-`now + post_step(left) - MIN_STEP`, so a test's fake clock decides it, not
-the host's real clock.
-
-Unit tests check the step functions directly. For example, they prove that a refresh `POST`
-with the full budget left keeps a step longer than the `GET` step would give
-it. That property was once checked by timing a slow server; it no longer
-needs one.
-
-Tests that are about the deadline move time only through the fake clock:
-
-- `a_slow_refresh_within_the_deadline_still_reads`: each fake handler calls
-  `clock.advance(Duration::from_millis(300))` instead of sleeping. Three
-  handlers use 900 ms of the 5 s virtual budget, and the read succeeds.
-- `a_401_refresh_and_retry_share_one_deadline`: the token handler advances
-  virtual time until only a short time is left. The retry `GET` handler then
-  blocks on a channel that the test releases only after `read_with` returns,
-  so the client must hit its own socket timeout. The test asserts two `GET`s,
-  one `POST`, the rotated tokens saved and the error `timeout`, and no longer
-  asserts how long it took.
+`Deadline` reads the injected clock, and the socket step of each request comes
+from the pure functions `get_step` and `post_step`. Unit tests check those
+functions directly, so the property that a refresh `POST` keeps its full step
+no longer needs a slow server. Tests about the deadline move time only through
+the fake clock, for example by calling `clock.advance(300 ms)` from a fake
+handler instead of sleeping, and assert the outcome, never the elapsed time.
 
 ### A counter per test
 
@@ -396,26 +363,14 @@ refresh could make another test's `wait_for_refreshes` wait.
 Each rewritten test now passes its own counter:
 
 ```rust
-let refreshing = AtomicUsize::new(0);
-let clock = FrozenClock::new();
-let ctx = Ctx::new(&clock, &refreshing);
+let counter = AtomicUsize::new(0);
+let clock = FakeClock::new(); // moves only through advance()
+let req = request_guarded(&login, &[], true);
 
-let got = read_with(&ep, &request_guarded(&dirs), &ctx);
+let r = read_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter));
 
-assert_eq!(got.err(), Some(reason::REFRESH_BUSY));
-assert_eq!(refreshing.load(Ordering::SeqCst), 0);
+assert_eq!(counter.load(Ordering::SeqCst), 0);
 ```
-
-The refresh lock holder stores the counter it was given, so the increment, the
-early decrements on the cancel and lock-error paths, and the decrement on
-drop all use the same counter.
-
-To check a refresh that is still in progress, a test blocks the token handler
-instead of slowing it. In `the_refresh_counter_covers_a_refresh_in_progress`
-the handler sends "POST arrived" on one channel and waits on another. The test
-then asserts that the counter is at least 1 and the lock directory exists,
-releases the handler, joins the reading thread, and asserts that the counter
-is 0 and the lock is gone.
 
 `read_uses_the_process_wide_counter` pins the default path: it calls `read()`
 with a blocked handler and asserts that `refreshes_in_progress()` is at least
@@ -434,6 +389,8 @@ replace it.
 that guarantee. On its first call in a test process it:
 
 1. Returns `AMPLIHACK_TEST_BINARY` unchanged if it is set, without copying.
+   Do not point it at `target/debug/amplihack`: cargo can re-link that file
+   during the run, which is the race the private copy prevents.
 2. Otherwise runs `cargo build -p amplihack --bin amplihack` once.
 3. Creates a private `tempfile::TempDir` with mode `0700` under
    `CARGO_TARGET_TMPDIR`, or under `env::temp_dir()` when that is unset.
@@ -470,9 +427,12 @@ completeness check (`real_relative_dirs` in
 directory in the source. A concurrent install test then reports the
 `__pycache__` directory as missing from the staged bundle and fails.
 
-No test sets `PYTHONDONTWRITEBYTECODE` today. The fix, making the
-completeness check skip the same directories as the copy (`is_excluded_dir`),
-is tracked in
+No test sets `PYTHONDONTWRITEBYTECODE`, because `amplifier-bundle/` on
+`main` holds no Python source and nothing in the tree can write a
+`__pycache__` there. The race appears once Python modules are added under the
+bundle, as the recipe tests in #1554 do. The fix, making the completeness
+check skip the same directories as the copy (`is_excluded_dir`) and running
+those Python tests with `PYTHONDONTWRITEBYTECODE=1`, is tracked in
 [#2017](https://github.com/rysweet/amplihack-rs/issues/2017); the related
 staging problem is in
 [#1554](https://github.com/rysweet/amplihack-rs/issues/1554).
