@@ -36,13 +36,11 @@
 //! fetch itself backs off for 10 minutes after a failure (`fetch_backoff`).
 
 use std::ffi::OsString;
-use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use anyhow::{Context, Result};
-use fs4::fs_std::FileExt;
 
 use crate::commands::install::bundle_compat_cache;
 use crate::commands::install::paths::{home_dir, sanitize_path, sanitize_text};
@@ -90,11 +88,6 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
 /// Top-level flags that short-circuit clap and should not pay for an
 /// install check.
 const SKIP_FLAGS: &[&str] = &["--help", "-h", "--version", "-V"];
-
-/// Filename of the inter-process advisory lock guarding the installer
-/// critical section (issue #502 R5). Sits next to the install stamp under
-/// `~/.amplihack/`.
-const INSTALL_LOCK_FILE: &str = ".install.lock";
 
 /// Issue #1526: set once this process has emitted the implicit-downgrade
 /// warning, so the launch bootstrap does not print it a second time.
@@ -159,12 +152,6 @@ pub fn resolve_startup_client(command: &crate::Commands) -> Result<()> {
         )?;
     }
     Ok(())
-}
-
-/// Resolve the path to the install advisory lock file. Mirrors
-/// `version_stamp::installed_version_path` so both files live side-by-side.
-fn install_lock_path() -> Result<PathBuf> {
-    Ok(home_dir()?.join(".amplihack").join(INSTALL_LOCK_FILE))
 }
 
 /// The five-line implicit-downgrade warning (issue #1526).
@@ -258,34 +245,10 @@ pub(crate) fn set_downgrade_warned(warned: bool) {
     DOWNGRADE_WARNED.store(warned, AtomicOrdering::Relaxed);
 }
 
-/// Run `body` while holding an exclusive advisory `flock` on the install
-/// lock file (issue #502 R5). The lock serialises concurrent
-/// `ensure_assets_match_binary_version` callers within a host so two
-/// processes never run the installer body at the same time.
-///
-/// The lock file is created with default permissions if missing — its
-/// contents are never inspected, only its inode is used as the lock token,
-/// so it does not need 0o600 like the stamp.
-fn with_install_lock<T, F: FnOnce() -> Result<T>>(body: F) -> Result<T> {
-    let lock_path = install_lock_path()?;
-    if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let lock_file = OpenOptions::new()
-        .create(true)
-        .read(true)
-        .write(true)
-        .truncate(false)
-        .open(&lock_path)
-        .with_context(|| format!("failed to open install lock {}", lock_path.display()))?;
-    FileExt::lock_exclusive(&lock_file)
-        .with_context(|| format!("failed to acquire install lock {}", lock_path.display()))?;
-    let result = body();
-    // Best-effort unlock; the kernel will release on drop regardless.
-    let _ = FileExt::unlock(&lock_file);
-    result
-}
+/// The install lock (issues #502 R5 and #1954), shared with `amplihack
+/// install`, `update` and `uninstall`. Re-entrant on the owning thread, so the
+/// install this calls takes it again without deadlocking.
+pub(crate) use crate::install_lock::with_install_lock;
 
 /// Decision-logic core, factored out for testability.
 ///

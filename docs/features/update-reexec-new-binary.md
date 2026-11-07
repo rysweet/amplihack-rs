@@ -285,6 +285,18 @@ The post-update install subprocess still passes `--force-refresh`, so update
 continues to bypass installed-bundle reuse and validate the release source and
 staged destination.
 
+### Versioned install layout
+
+`amplihack update` copies the downloaded binaries into a new release under
+`~/.amplihack/releases/`, checks the release binary's version, then switches
+only the links it planned: `~/.local/bin/amplihack` and `amplihack-hooks`.
+`amplihack-asset-resolver` and `~/.amplihack/amplifier-bundle` stay on their
+earlier release. The post-install child then switches `amplifier-bundle`, and
+`amplihack-asset-resolver` only if it has a resolver binary to deploy. It holds `~/.amplihack/.install.lock` while it does
+this and releases it before it starts the post-install child, which takes the
+lock again. Runs already alive keep their old binary and bundle. See
+[Versioned Install Layout](../concepts/versioned-install-layout.md#self-heal-and-update).
+
 ### Startup self-update prompt
 
 The [subprocess-safe skip](startup-update-prompt-subprocess-safe.md)
@@ -294,6 +306,8 @@ own update prompt. The `AMPLIHACK_NO_UPDATE_CHECK=1` env var set by
 
 ## See also
 
+- [Versioned Install Layout](../concepts/versioned-install-layout.md) — release
+  directories, link switch and in-use cleanup used by update and install.
 - [Install Command Reference](../reference/install-command.md) — the install
   procedure invoked by the subprocess.
 - [Install/update PATH conflict reference](../reference/install-update-path-conflicts.md) —

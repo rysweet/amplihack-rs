@@ -1,0 +1,468 @@
+# Versioned Install Layout
+
+> [Home](../index.md) > Concepts > Versioned Install Layout
+
+`amplihack install`, `amplihack update` and the startup self-heal never change
+files that a running recipe run may still execute or read. Each install writes
+a new release directory, then switches the symlinks it planned (up to four)
+to it. Old releases are
+deleted only when no process uses them. The installer never sends a signal to
+a process it did not start.
+
+This page explains the layout and why it works this way (issue
+[#1954](https://github.com/rysweet/amplihack-rs/issues/1954)).
+
+## Contents
+
+- [Why releases are versioned](#why-releases-are-versioned)
+- [Layout on disk](#layout-on-disk)
+- [How a switch works](#how-a-switch-works)
+- [What a running run sees](#what-a-running-run-sees)
+- [Cleanup of old releases](#cleanup-of-old-releases)
+- [Mapped directories under ~/.amplihack/.claude](#mapped-directories-under-amplihackclaude)
+- [The install lock](#the-install-lock)
+- [No signals](#no-signals)
+- [Self-heal and update](#self-heal-and-update)
+- [One-time migration from the old layout](#one-time-migration-from-the-old-layout)
+- [Uninstall](#uninstall)
+- [Security rules](#security-rules)
+- [Known limits](#known-limits)
+- [Inspecting an install](#inspecting-an-install)
+- [Tests](#tests)
+- [See also](#see-also)
+
+## Why releases are versioned
+
+Before this layout, an install deleted and replaced files in place:
+
+- `stage_and_swap_bundle` and `copy_mapped_dir` (in
+  `commands/install/directories.rs`) renamed the live tree to `*.old`, renamed
+  the new tree into place and then ran `remove_dir_all` on `*.old`. Between
+  the two renames the path did not exist. After the delete, a run whose
+  working directory or open files were in the old tree lost them.
+- The startup self-heal could re-stage the bundle while an explicit install
+  was doing the same, because the explicit install did not take the install
+  lock.
+
+On 5 Nov at 22:00:27Z a binary and bundle swap of this kind ended two
+long-running recipe drives within seconds. In the runs examined, the `SIGTERM`
+that ended step `bb:0` came from the run's own teardown after a step failed
+(`stop_signal.rs`, runner tree teardown). The failure itself came from files
+removed under the run. No other process sent the signal.
+
+The versioned layout removes the cause: published files are never changed or
+deleted while in use.
+
+## Layout on disk
+
+```
+~/.local/bin/
+├── amplihack                 -> ~/.amplihack/releases/<release>/bin/amplihack
+├── amplihack-hooks           -> ~/.amplihack/releases/<release>/bin/amplihack-hooks
+└── amplihack-asset-resolver  -> ~/.amplihack/releases/<release>/bin/amplihack-asset-resolver
+
+~/.amplihack/
+├── amplifier-bundle          -> ~/.amplihack/releases/<release>/amplifier-bundle
+├── .install.lock
+├── .installed-version
+├── .claude/                  (mapped framework assets; see below)
+└── releases/                 (mode 0700, owned by you)
+    ├── 0.9.41/
+    │   ├── .complete
+    │   ├── bin/
+    │   │   ├── amplihack
+    │   │   ├── amplihack-hooks
+    │   │   └── amplihack-asset-resolver
+    │   └── amplifier-bundle/
+    ├── 0.9.42/
+    ├── 0.9.42-20261105T220027Z-48113/
+    └── .retired/             (mode 0700; old trees waiting for cleanup)
+        └── 20261105T220027Z-48113-skills/
+```
+
+Naming rules:
+
+| Case | Release directory |
+|------|-------------------|
+| First install of a version | `releases/<version>/` |
+| Same version again (`--force-refresh`, reinstall, self-heal) | `releases/<version>-<UTC yyyymmddTHHMMSSZ>-<pid>/` |
+
+Old trees that are replaced but may still be in use (mapped directories, the
+old real-directory bundle found at migration) are not releases. They are moved
+to `releases/.retired/<ts>-<pid>-<label>/`.
+
+- An existing release directory is never reused or written to.
+- `<version>` must match `^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`. Names such as
+  `.`, `..` and `.retired` are rejected. An invalid version stops
+  the install with an error. It is never silently rewritten.
+- `.complete` is written last, before any link switches. A release without
+  `.complete` is never a link target.
+- After `.complete` is written, the release root is mode `0755` and no file in
+  the release is writable by group or others. Nothing writes into a release
+  after its links switch. Runtime state goes to `~/.amplihack/.claude/`
+  (#1929).
+
+Hook commands in `~/.claude/settings.json` keep the stable path
+`~/.local/bin/amplihack-hooks`, so settings do not change on each install.
+
+## How a switch works
+
+The install builds the whole release first, then switches the links:
+
+1. Copy the binaries into `releases/<release>/bin/`.
+2. Stage the framework bundle into `releases/<release>/amplifier-bundle.staging/`
+   and run every check from
+   [framework source selection](../reference/framework-source-selection.md):
+   version match, manifest check, `normalize_bundle_modes` and the merge-guard
+   check. Then rename the staging directory to `amplifier-bundle/`.
+3. Write `.complete` and fix modes.
+4. Switch the links this install planned, in this order: `amplihack-hooks`,
+   `amplihack-asset-resolver`, `amplihack`, `amplifier-bundle`.
+
+An install plans a link only when it has the file to put behind it. A full
+install plans all four when an `amplihack-asset-resolver` binary is available,
+and three otherwise. `amplihack update` plans only `amplihack` and
+`amplihack-hooks` (see [Self-heal and update](#self-heal-and-update)). A link
+that is not planned is left alone and keeps pointing at its earlier release, so
+the links can point into different releases. Each one still points into a
+release with `.complete`.
+
+Each link switch is atomic. The installer creates a temporary symlink
+`.<name>.tmp-<pid>-<n>` next to the target and calls `rename(2)` over the
+target. At every moment the path names either the old release or the new one.
+It never points at a missing file or a half-written tree.
+
+When the target is still a real directory from the old layout, Linux swaps it
+with `renameat2(RENAME_EXCHANGE)`. See
+[one-time migration](#one-time-migration-from-the-old-layout).
+
+If the install fails before step 4, no link changes. The unpublished release
+directory is removed, and the previous release stays in use.
+
+### A failure partway through switching
+
+Switching returns a report of which links switched. It does not roll back. If
+one link switch fails after an earlier one succeeded, install stops with an
+error naming the link that failed, and the links are mixed: some point into the
+new release and some into the old one. Every link still names a complete
+release, and both releases are kept by the per-link rule in
+[cleanup](#cleanup-of-old-releases). The next successful install switches the
+remaining links.
+
+## What a running run sees
+
+| A running process has... | After the switch |
+|--------------------------|------------------|
+| An `amplihack` binary already executing | Keeps running the old inode. The old release is not deleted. |
+| Its working directory inside the bundle | The directory still exists, unchanged, in the old release. |
+| Open files in the old release | Still valid; the files are not changed or deleted. |
+| A shell that re-reads `~/.amplihack/amplifier-bundle/...` by path | Reads the new release's files. Each file is complete, never half-written. |
+| A new `amplihack` or `amplihack-hooks` exec | Starts the new release's binary. |
+| The merge-guard shim on `PATH` | Uses the release pinned at run start. See below. |
+
+### One release per run for the merge guard
+
+At `recipe run` start, `merge_guard::pin_bundle` resolves
+`$AMPLIHACK_HOME/amplifier-bundle` to its physical release path once. That one
+path is used for the merge-guard `PATH` entry, `BASH_ENV` and the `PATH`
+de-duplication check. Child processes inherit it and never resolve the link
+again, so a later switch cannot make the shim's checks straddle two releases.
+
+Pinning applies only when `amplifier-bundle` is a symlink. A real directory is
+used as given. The pinned path must be under `~/.amplihack/releases/`, must
+have `.complete`, and must pass the guard's owner and mode checks on every
+directory from the release root up to `releases/`. If any check fails, the run
+stops before its first step.
+
+`AMPLIHACK_BUNDLE_DIR` is exported with the pinned path for information.
+amplihack never reads it.
+
+## Cleanup of old releases
+
+Cleanup runs after every successful switch, still under the install lock.
+
+It always keeps, for each link separately:
+
+- the release the link points to now;
+- the release the link pointed to before this switch.
+
+Because the rule is per link, mixed links (after an update, an unplanned link
+or a failed switch) never lose their target.
+
+Any other entry in `releases/` or `releases/.retired/` is deleted only if no
+process uses it. On Linux the installer checks, for every process owned by
+your uid, these entries in `/proc/<pid>/`:
+
+- `exe`, `cwd`, `root`
+- `fd/*` (link targets only)
+- `maps`
+- `environ` (only "does any value name a path under the candidate")
+
+The check is read-only. It never uses `ptrace`, never sends a signal and
+never logs or stores an environment value.
+
+If any entry of a same-uid process cannot be read for a reason other than
+"process exited", the result is unknown and every candidate is kept.
+Processes owned by other uids are skipped. On non-Linux hosts cleanup is
+skipped. When the result is unknown, install prints:
+
+```
+ℹ Old amplihack releases kept: a running process of this user could not be inspected, so no release was removed (~/.amplihack/releases)
+```
+
+Processes that make themselves non-dumpable, such as `ssh-agent` or
+`gnome-keyring-daemon`, have `/proc` entries their own user cannot read. While
+one runs, no release is removed. This is deliberate: deleting a tree a process
+might use is the failure this layout exists to prevent. To reclaim the space,
+stop that process and run `amplihack install` again, or remove releases by
+hand once no run uses them (see [Inspecting an install](#inspecting-an-install)).
+
+Anything kept is checked again on the next install. When more than 5 releases
+are kept because they are in use, install prints this warning:
+
+```
+⚠️  7 amplihack releases kept because running processes use them (~/.amplihack/releases); they are removed by a later install once unused
+```
+
+A candidate is deleted only if it is a direct child of `releases/` or
+`releases/.retired/`, is a real directory owned by you, and is still not a
+symlink when checked again just before deletion. Read-only modes are cleared
+only on files you own, without following symlinks or crossing devices, and
+only right before deletion.
+
+Expect about 2–3 times the disk use of a single install while old runs are
+alive.
+
+## Mapped directories under ~/.amplihack/.claude
+
+Install also copies mapped framework directories (skills, agents, context,
+recipes, tools and so on) into `~/.amplihack/.claude/`. These stay outside the
+release because `~/.claude` publication depends on their paths. They follow
+the same rule:
+
+- The new tree is built at a staging name, then swapped with the live tree
+  using `renameat2(RENAME_EXCHANGE)`, so the path always exists.
+- The old tree, now at the staging name, is moved to
+  `releases/.retired/<ts>-<pid>-<name>/`. Cleanup deletes it once unused.
+- Leftover `.staging` and `.old` directories from an older amplihack are
+  retired the same way, not deleted.
+- If a move into `.retired/` fails with `EXDEV` (different filesystem), the
+  tree stays where it is and install prints a warning.
+- The user's own backups are never deleted.
+
+The only directory install deletes directly is its own staging tree that was
+never swapped into place.
+
+If `RENAME_EXCHANGE` is not supported (`EINVAL` or `ENOSYS`), install falls
+back to two renames and logs that the path was missing for a few
+microseconds.
+
+## The install lock
+
+All install work takes an exclusive lock on `~/.amplihack/.install.lock`:
+
+- explicit `amplihack install`;
+- `amplihack update` while it downloads and switches the binaries;
+- the install child that `amplihack update` starts afterwards;
+- the startup self-heal;
+- `amplihack uninstall`.
+
+Rules:
+
+- The lock blocks with no timeout. After about 2 seconds of waiting, this
+  exact line is printed once:
+
+  ```
+  ⏳ waiting for another amplihack install to finish (lock: /home/ryan/.amplihack/.install.lock)
+  ```
+
+- The lock is re-entrant on the thread that holds it, so self-heal calling
+  install does not deadlock. Another thread in the same process waits.
+- `amplihack update` releases the lock before it starts the post-update
+  install child, and the child takes it again.
+- Self-heal re-reads the version stamp once it holds the lock. If another
+  process already installed the same version, self-heal does nothing (#1526).
+- The lock file is opened with `O_NOFOLLOW`, mode `0600` and close-on-exec.
+  A symlink at the lock path is refused.
+
+An `amplihack` command started inside a run while an update holds the lock
+waits for the update to finish. This is intended.
+
+## No signals
+
+Install, update, self-heal, migration, cleanup and uninstall never signal a
+process they did not start. The only allowed `kill` is
+`util::run_with_timeout` / `terminate_timed_out_child` on the installer's own
+timed-out child. A source-scan test enforces this; see [Tests](#tests).
+
+## Self-heal and update
+
+The startup [self-heal](../features/self-heal-asset-restage.md) re-stages by
+calling the same install path, under the same lock. It creates a new release
+and switches links like any install.
+
+`amplihack update`:
+
+1. downloads the release and checks its checksum (unchanged);
+2. allocates a release from the validated tag;
+3. copies `amplihack` and `amplihack-hooks` into it (the release archive has
+   no other binary);
+4. runs `--version` on the release binary and checks it matches the tag;
+5. switches only `amplihack-hooks` and `amplihack`;
+   `amplihack-asset-resolver` and `amplifier-bundle` stay on their earlier
+   release;
+6. releases the lock and starts the new binary's install child. The child
+   builds a further release with the binaries and the bundle, and switches
+   `amplihack-hooks`, `amplihack` and `amplifier-bundle`, plus
+   `amplihack-asset-resolver` only if it has a resolver binary to deploy. See
+   [post-update re-exec](../features/update-reexec-new-binary.md).
+
+If the child fails, the binaries point into the update's release and the
+bundle into the earlier one. Both are kept, and the next install brings them
+together.
+
+When the running binary is a release path, update targets the link that led
+to it (`~/.local/bin/amplihack`, or the `PATH` entry that resolves to that
+release). The free-space check is made on `releases/`, for the full size of
+both binaries. A binary installed under a system prefix that is not a link is
+updated as before.
+
+## One-time migration from the old layout
+
+The first install with this layout finds real files and directories where
+links now go:
+
+| Found | What install does |
+|-------|-------------------|
+| Regular file `~/.local/bin/amplihack` (or `-hooks`, `-asset-resolver`) | Renames the new link over it. Running processes keep the old inode. |
+| Real directory `~/.amplihack/amplifier-bundle/` | Swaps it with the new link using `RENAME_EXCHANGE`, then moves the old tree to `releases/.retired/<ts>-<pid>-amplifier-bundle/`. Cleanup deletes it once unused. |
+| Old directory on another filesystem (`EXDEV`) | Leaves it at its temporary name, `~/.amplihack/.amplifier-bundle.tmp-<pid>-<n>`, prints a warning and continues. |
+| Old directory that is a symlink or owned by another user | Refuses with an error naming the path. |
+
+Runs already alive keep their working directory and open files. A run that
+resolves `~/.amplihack/amplifier-bundle` by path after the migration sees the
+new release.
+
+## Uninstall
+
+`amplihack uninstall` takes the install lock, then:
+
+1. Removes each link in `~/.local/bin/` and `~/.amplihack/amplifier-bundle`
+   only if it is a symlink. A regular file or directory at a link path is
+   retired, not deleted.
+2. Runs cleanup with no releases kept by default, including `.retired/`.
+3. Lists the releases kept because running processes use them, in this
+   format:
+
+```
+  🗑️  Removed amplifier-bundle at /home/ryan/.amplihack/amplifier-bundle
+  🗑️  Removed binary /home/ryan/.local/bin/amplihack
+  🗑️  Removed /home/ryan/.amplihack/releases/0.9.42
+ℹ Kept 1 release in use by running processes:
+    ~/.amplihack/releases/0.9.41 (pid 48113)
+  Run `amplihack uninstall` again after those processes exit to remove it.
+```
+
+A binary path recorded in the install manifest that is a regular file (a
+pre-#1954 install) is unlinked as before; a process still running it keeps
+its inode. Once nothing is left in them, `releases/.retired/` and
+`releases/` are removed too.
+
+## Security rules
+
+- Every decision about a path under `releases/` goes through
+  `release_layout::is_release_path`. It canonicalises the path, compares by
+  component (never by matching the string `/releases/`), requires at least
+  one component below `releases/`, and treats a canonicalise failure as "not a
+  release".
+- Paths read back from the install manifest or from `read_link` must pass
+  `is_release_path` before any removal, retirement or exchange.
+- `releases/` and `.retired/` must be owned by you and not writable by group
+  or others. If not, install stops with an error naming the directory and
+  does not repair it.
+- Deletion uses only `std::fs::remove_dir_all`, which does not follow
+  symlinks.
+- A temporary link name left over from a crash is removed only if it is a
+  symlink.
+- Downloaded binaries enter a release only after the checksum check passes.
+- All `unsafe` code is in `release_layout.rs`, Linux only, with `SAFETY`
+  comments.
+
+### Link-aware checks
+
+These checks accept a link into a release and still reject anything else:
+
+| Check | Rule |
+|-------|------|
+| `bundle_compat` | A top-level `amplifier-bundle` symlink is accepted if its target is a real directory inside `releases/` with `.complete`. Validation runs on the target. Symlinks inside the tree are still rejected. |
+| `find_source_root` | A symlinked source bundle is accepted only if it resolves to a complete release. |
+| `clean_broken_symlinks`, `stale_wrappers` | Skip links whose target is a release path. |
+| `path_verify`, `path_conflicts` | Compare canonical targets, so a link and its release count as one copy. |
+
+## Known limits
+
+- Slash-command directories that install publishes outside `~/.amplihack`
+  (`~/.claude/commands/amplihack/` and the Copilot plugin's commands) are
+  swapped with `RENAME_EXCHANGE`, so the path is never missing, but the old
+  command set is then deleted rather than retired. These are Markdown files a
+  client reads at session start; no recipe run executes from them, and
+  `.retired/` only takes trees from inside `~/.amplihack`.
+
+- Only the merge guard is pinned to one release per run. A recipe step that
+  reads `$AMPLIHACK_HOME/amplifier-bundle/<file>` by path after a switch reads
+  the new release's file. That file is complete, but may differ from what an
+  earlier step read.
+- Mapped directories under `~/.amplihack/.claude/` are swapped, not
+  versioned. A run reading them by path after a swap sees the new tree.
+- On non-Linux hosts, cleanup is skipped and old releases accumulate until
+  `amplihack uninstall` or manual removal.
+
+## Inspecting an install
+
+```bash
+readlink ~/.local/bin/amplihack ~/.amplihack/amplifier-bundle
+# /home/ryan/.amplihack/releases/0.9.42/bin/amplihack
+# /home/ryan/.amplihack/releases/0.9.42/amplifier-bundle
+
+ls ~/.amplihack/releases ~/.amplihack/releases/.retired
+# /home/ryan/.amplihack/releases:
+# 0.9.41  0.9.42
+#
+# /home/ryan/.amplihack/releases/.retired:
+```
+
+To find which process keeps an old release (Linux):
+
+```bash
+for p in /proc/[0-9]*; do
+  ls -l "$p/cwd" "$p/exe" 2>/dev/null | grep -q releases/0.9.41 && echo "${p#/proc/}"
+done
+```
+
+Do not delete release directories by hand while runs are alive. Running
+`amplihack install` again removes those that are no longer used.
+
+## Tests
+
+| Test | Covers |
+|------|--------|
+| `tests/issue_1954_install_leaves_live_runs_alone.rs` | A long bash run with its working directory in the bundle, a signal sentinel and a link sampler stay alive and correct across two `--force-refresh` installs and a self-heal. The run finishes normally, no signal arrives, and each link always names a complete release. |
+| `tests/issue_1954_no_foreign_signals.rs` | Source scan: no `kill`, `killpg`, `Signal::` or `kill`/`pkill`/`killall` command in install, update, self-heal, lock, layout or uninstall code, except `util.rs` and `Child::kill`. |
+| `commands/install/tests/issue_1954_release_layout.rs` | Release naming, atomic switch over a file, link or directory, switching only planned links, a partial switch report with the per-link keep set, exchange fallback, `EXDEV` retire, in-use cleanup, the exact message text and the security rules above. |
+| `commands/install/tests/issue_1954_install_lock.rs` | Lock re-entrancy on one thread, a second thread or process waiting, no lock passed to a child, a symlinked lock path refused, no truncation, mode 0600 and the exact wait message. |
+| `commands/recipe/run/tests_merge_guard_pin.rs` | Pinning rejects a link outside `releases/` or a group-writable release, and never reads `AMPLIHACK_BUNDLE_DIR`. |
+
+## See also
+
+- [amplihack install reference](../reference/install-command.md) — install
+  phases and uninstall
+- [Install completeness](../reference/install-completeness.md) — what an
+  install must contain, including "a run alive across an install completes"
+- [Idempotent installation](./idempotent-installation.md) — what repeated
+  installs change
+- [Post-update re-exec](../features/update-reexec-new-binary.md) — how
+  `amplihack update` starts the new binary's install
+- [Self-heal asset re-stage](../features/self-heal-asset-restage.md) — the
+  startup check that re-runs install
+- [Framework source selection](../reference/framework-source-selection.md) —
+  the checks a staged bundle must pass

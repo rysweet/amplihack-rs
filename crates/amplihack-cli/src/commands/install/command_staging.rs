@@ -208,6 +208,19 @@ fn swap_into_place(staging: &Path, target: &Path, backup: &Path) -> Result<()> {
             .with_context(|| format!("failed to move commands into {}", target.display()));
     }
 
+    // Issue #1954: exchange the two directories in one step where the
+    // filesystem allows it, so `target` is never missing. The previous
+    // command set ends up at `staging`, our own scratch directory, which the
+    // caller's guard removes. Command Markdown is read by a client when a
+    // session starts; no recipe run executes from or holds open these files.
+    let is_real_dir = fs::symlink_metadata(target)
+        .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink());
+    if is_real_dir {
+        return super::release_layout::exchange_dirs(staging, target)
+            .map(|_| ())
+            .with_context(|| format!("failed to swap commands into {}", target.display()));
+    }
+
     fs::rename(target, backup).with_context(|| {
         format!(
             "failed to back up existing {} to {}",

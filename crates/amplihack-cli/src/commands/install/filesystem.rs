@@ -22,6 +22,9 @@ use std::path::{Component, Path, PathBuf};
 ///   replacement is atomically visible as executable.
 /// - On `EXDEV` (cross-filesystem rename), falls back to a copy-then-rename
 ///   inside the destination filesystem.
+// Issue #1954: installs stage binaries into a release and link to them; this
+// in-place copy remains for the #302/#524 tests of its no-op rules.
+#[cfg(test)]
 pub(super) fn deploy_binary(src: &Path, dst: &Path) -> Result<()> {
     // Same-file no-op (issue #302).
     if let (Ok(s), Ok(d)) = (src.canonicalize(), dst.canonicalize())
