@@ -580,6 +580,11 @@ fn classify_rejects_minor_findings_with_security_keywords() {
         json!([{"id": "token-leak", "severity": "minor", "summary": "s", "evidence": "e"}]),
         json!([{"id": "auth-1", "severity": "minor", "summary": "s", "evidence": "e"}]),
         json!([{"id": "sec-3", "severity": "minor", "summary": "s", "evidence": "e"}]),
+        json!([{"id": "auth_bypass", "severity": "minor", "summary": "s", "evidence": "e"}]),
+        json!([{"id": "perm.check", "severity": "minor", "summary": "s", "evidence": "e"}]),
+        json!([{"id": "creds-in-log", "severity": "minor", "summary": "s", "evidence": "e"}]),
+        json!([{"id": "CVE-2026-1234", "severity": "minor", "summary": "s", "evidence": "e"}]),
+        json!([{"id": "stored-xss", "severity": "minor", "summary": "s", "evidence": "e"}]),
         // summary words
         json!([{"id": "n-1", "severity": "minor", "summary": "Logs the password on failure", "evidence": "e"}]),
         json!([{"id": "n-1", "severity": "minor", "summary": "Possible command injection", "evidence": "e"}]),
@@ -597,6 +602,50 @@ fn classify_rejects_minor_findings_with_security_keywords() {
     let c = json!([{"id": "n-1", "severity": "minor", "summary": "The second author line", "evidence": "e"}]);
     let o = d.classify(1, &c.to_string());
     assert_eq!(stdout(&o).trim(), "MINOR_ONLY", "{}", show(&o));
+}
+
+#[test]
+fn classify_keeps_ids_that_only_contain_keyword_letters_minor() {
+    if skip() {
+        return;
+    }
+    // Ids are read as words, split on "-", "_" and ".", like summary and
+    // evidence. Ids from past crusty rounds that only contain the letters of a
+    // keyword ("section", "author", "second", "permitted") stay minor; with a
+    // substring match they would each have sent the round back to a fix cycle.
+    for id in [
+        "pr-body-testing-section-stale",
+        "head-commit-wrong-author-identity",
+        "test-f-one-second-timing-margin",
+        "drive_commit_writes_outside_permitted_scope",
+        "interim.saves.permanently.unreplayable",
+    ] {
+        let d = Drive::new();
+        let o = d.classify(1, &json!([concern(id, "minor", "Rename x")]).to_string());
+        assert_eq!(
+            stdout(&o).trim(),
+            "MINOR_ONLY",
+            "id {id:?} is not a security id\n{}",
+            show(&o)
+        );
+    }
+}
+
+#[test]
+fn light_mode_keeps_its_substring_id_rule() {
+    // auto-drive-light (#1802) keeps the stricter substring id pattern; only
+    // the crusty loop reads ids as words.
+    let light = read("amplifier-bundle/tools/autodrive_light_round.sh");
+    assert!(
+        light.contains(r#"--arg kw "$KEYWORDS""#),
+        "light mode passes KEYWORDS"
+    );
+    let followups = read(&format!("amplifier-bundle/tools/{TOOL}"));
+    assert!(
+        !followups.contains(r#"--arg kw "$KEYWORDS""#)
+            && followups.contains(r#"--arg kw "$ID_KEYWORDS""#),
+        "{TOOL} passes ID_KEYWORDS, never the substring KEYWORDS"
+    );
 }
 
 #[test]
@@ -2018,7 +2067,13 @@ fn new_files_exist_and_the_tool_is_executable() {
 #[test]
 fn finding_rules_are_defined_once_and_sourced_by_both_rules() {
     let rules = read(&format!("amplifier-bundle/tools/{RULES}"));
-    for def in ["KEYWORDS=", "TEXT_KEYWORDS=", "ZW=", "cell()"] {
+    for def in [
+        "KEYWORDS=",
+        "ID_KEYWORDS=",
+        "TEXT_KEYWORDS=",
+        "ZW=",
+        "cell()",
+    ] {
         assert!(rules.contains(def), "{RULES} defines {def}");
     }
     for user in ["autodrive_light_round.sh", TOOL] {
@@ -2026,6 +2081,7 @@ fn finding_rules_are_defined_once_and_sourced_by_both_rules() {
         assert!(body.contains(RULES), "{user} sources {RULES}");
         assert!(
             !body.lines().any(|l| l.trim_start().starts_with("KEYWORDS=")
+                || l.trim_start().starts_with("ID_KEYWORDS=")
                 || l.trim_start().starts_with("TEXT_KEYWORDS=")),
             "{user} must not define the keyword lists inline"
         );

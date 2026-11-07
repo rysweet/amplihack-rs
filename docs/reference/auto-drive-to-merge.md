@@ -995,13 +995,29 @@ otherwise:
 | Every element is an object whose `severity` is exactly `minor`. | Not minor-only. A missing, empty or unknown severity (`nit`, `low`, `Minor`) counts as major. |
 | Every `id` matches `^[A-Za-z0-9._-]{1,64}$`. | Not minor-only. |
 | No `id` was ever major in another crusty round (see [Severity history](#severity-history)). | Not minor-only. |
-| No `id` contains a security keyword, and no `summary` or `evidence` contains a security word. | Not minor-only. |
+| No `id` contains a security word (whole words, `-`, `_` and `.` read as spaces), and no `summary` or `evidence` contains a security word. | Not minor-only. |
 
-The keyword and word lists are those of auto-drive-light's minor-only rule
-(see [auto-drive-light: the minor-only rule](auto-drive-light.md#the-minor-only-rule)).
-Both rules load them from one file, `amplifier-bundle/tools/autodrive_finding_rules.sh`,
-so a minor finding about secrets, injection, authentication or permissions
-is always treated as major and is fixed before merge rather than deferred.
+The `summary` and `evidence` word list is that of auto-drive-light's minor-only
+rule (see [auto-drive-light: the minor-only rule](auto-drive-light.md#the-minor-only-rule)).
+Both rules load their lists and the predicate from one file,
+`amplifier-bundle/tools/autodrive_finding_rules.sh`, so a minor finding about
+secrets, injection, authentication or permissions is always treated as major
+and is fixed before merge rather than deferred.
+
+The id pattern differs. Light mode matches its keywords anywhere in the id,
+so `section-1` counts as `sec`. `classify` instead passes `ID_KEYWORDS`: the
+id is lower-cased, `-`, `_` and `.` are read as spaces, and the result is
+matched against whole words. `ID_KEYWORDS` is the summary word list plus the
+short forms used in ids: `sec`, `auth`, `perm`/`perms`, `cred`/`creds`,
+`priv`/`privs`, `privesc` and `xsrf`. `sec-3`, `auth_bypass`, `perm.check`,
+`creds-in-log` and `CVE-2026-1234` are therefore major, while
+`pr-body-testing-section-stale`, `head-commit-wrong-author-identity` and
+`test-f-one-second-timing-margin` stay minor. Across the 2,371 distinct ids in
+past crusty rounds, the substring rule promoted 38 such ids that contain only
+the letters of a keyword; each would have cost another review round, which is
+the cost #1979 removes. An id written as one run of letters, such as
+`authbypass`, is not split and is not matched; its `summary` and `evidence`
+are still checked.
 
 #### Severity history
 

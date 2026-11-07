@@ -195,7 +195,7 @@ cmd_classify() {
   # Written only when stdin is exactly one array; otherwise there is no file,
   # and a later round reads this round's .findings ids as major.
   rm -f -- "$RECORD.severity"
-  if sevs="$(printf '%s' "$concerns" | jq -rs --arg kw "$KEYWORDS" --arg tkw "$TEXT_KEYWORDS" "$AUTODRIVE_FINDING_JQ"'
+  if sevs="$(printf '%s' "$concerns" | jq -rs --arg kw "$ID_KEYWORDS" --arg tkw "$TEXT_KEYWORDS" "$AUTODRIVE_FINDING_JQ"'
       if length == 1 and (.[0] | type == "array") then .[0][] | select(type == "object" and .id != null)
         | "\(.id | tostring | gsub("[[:cntrl:]]"; " "))\t\(if minor_finding($kw; $tkw) then "minor" else "major" end)"
       else error("not one array") end' 2>/dev/null)"; then
@@ -222,7 +222,7 @@ cmd_classify() {
   fi
   # -s: stdin is decided as a whole, so a second JSON value (a blocking array
   # after a minor one) can never be skipped; only exactly one array counts.
-  rows="$(printf '%s' "$concerns" | jq -cs --arg ret "$ret" --arg kw "$KEYWORDS" --arg tkw "$TEXT_KEYWORDS" "$AUTODRIVE_FINDING_JQ"'
+  rows="$(printf '%s' "$concerns" | jq -cs --arg ret "$ret" --arg kw "$ID_KEYWORDS" --arg tkw "$TEXT_KEYWORDS" "$AUTODRIVE_FINDING_JQ"'
     ($ret | split("\n") | map(select(length > 0))) as $r
     | if length == 1 and (.[0] | type == "array") then .[0]
         | if length > 0 and all(.[]; minor_finding($kw; $tkw) and (.id as $id | any($r[]; . == $id) | not))
