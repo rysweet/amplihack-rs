@@ -291,6 +291,8 @@ mod issue_1973_rotate_fixture;
 mod issue_1973_wait_helpers;
 #[path = "issue_1979_crusty_minor_followups.rs"]
 mod issue_1979_crusty_minor_followups;
+#[path = "issue_1985_codex_agent_step_flags.rs"]
+mod issue_1985_codex_agent_step_flags;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

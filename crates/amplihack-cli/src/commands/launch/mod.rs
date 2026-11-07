@@ -5,6 +5,8 @@
 
 mod blarify;
 mod checkout;
+/// Issue #1985 — sandbox and hook-trust flags for Codex agent steps.
+mod codex_agent_step;
 mod command;
 mod context;
 mod power_steering;
@@ -14,6 +16,8 @@ mod system_prompt_append;
 
 #[cfg(test)]
 mod tests_blarify;
+#[cfg(test)]
+mod tests_codex_agent_step;
 #[cfg(test)]
 mod tests_command;
 #[cfg(test)]
