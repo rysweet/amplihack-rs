@@ -1,0 +1,15 @@
+{
+  "workflow-prep": "e2e3d13155a2b073dde80bc52cece20fd322a7a9dd80f91b9e43fbceaea59e25",
+  "workflow-worktree": "af1556919d697f5de25b3784deabeda3086a81aaf625bd5a5b94a40483db5fce",
+  "workflow-design": "0302d5c02a5d0b8636c78ef0ec47e2eae74fb12559a5e24d2f933b2aea4ec940",
+  "workflow-tdd": "44399b0dc82f5b003dfb41eda133af8c780c402e01f3f213e1fa9067b7a8a18e",
+  "workflow-refactor-review": "1a2b086e55ccbe7809a1cf0a57bee187a7b01d1f51aa6e9b22622769a611d401",
+  "workflow-precommit-test": "15d5ca68a3851948ce9514f9e9cb046fe60f42d342ee7d98a36d2ce29a286633",
+  "workflow-publish": "f56463925b6886b17e7152f2b90565565ceab39bd773fcfe4d6c25d22e80389b",
+  "workflow-pr-review": "df505dbbcf86363c5d74e4de1e5ceb18fd11f27fbb8d6cb9f971deb9bee13ebf",
+  "workflow-finalize": "ab3405036bafce7272724b2cdeb8408da95e7fa235ac931459e52cbf2b18aafe",
+  "autodrive-crusty-round": "0596ba34184d43c14edaba86d224cead20eaf6291d10bc71175666311e453b82",
+  "workflow-terminal-state": "afa13ddfef352ccd8995ae8b33e3930b20a0984f042fe194d556baa4a6446997",
+  "workflow-terminal-adjudication": "3e789844b5579ba8753a245ce82fda4fc4c9039712b238671c05cf618eb36f97",
+  "default-workflow": "1d68cfff84fb2a973c050743509e2b3242a44a1b87229e36645d07baa11788cb"
+}

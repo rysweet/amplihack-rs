@@ -25,6 +25,7 @@ context:
 
 steps:
   - id: "step-07-write-tests"
+    auto_stage: false
     agent: "amplihack:tester"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
@@ -53,6 +54,7 @@ steps:
     output: "test_spec"
 
   - id: "step-08-implement"
+    auto_stage: false
     agent: "amplihack:builder"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
@@ -107,6 +109,7 @@ steps:
   # STEP 8c: AGENTIC WORK-VERIFIER — replaces legacy bash hollow-success guard (#615).
   # Two-step pair: work-verifier (agent→JSON verdict) + enforce-verdict (bash→exit code).
   - id: "step-08c-work-verifier"
+    auto_stage: false
     agent: "amplihack:analyzer"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
@@ -235,6 +238,7 @@ steps:
     output: "implementation_noop_guard"
 
   - id: "step-08b-integration"
+    auto_stage: false
     # The resume-checkpoint term governs resumption; the applicability term is
     # what makes the prompt's "Skip if no external integrations" real (#1334).
     agent: "amplihack:integration"

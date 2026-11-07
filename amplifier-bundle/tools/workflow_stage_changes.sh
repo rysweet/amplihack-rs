@@ -60,7 +60,72 @@ workflow_stage_filter() {
   done
 }
 
+# Strict callers supply a complete literal list. Validate it in memory before
+# the first index write, then pass those same bytes to Git without a shell.
+workflow_stage_strict() {
+  [ "$#" -eq 3 ] && [ "$1" = --strict ] && [ "$2" = --path-list ] || {
+    echo 'stage_workflow_changes: expected --strict --path-list <nul-file>' >&2; return 2;
+  }
+  python3 -I - "$3" <<'STRICT_PATHS_PY'
+import os, stat, subprocess, sys
+
+def git(*args, data=None):
+    return subprocess.run(['git', '--literal-pathspecs', *args], input=data,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True).stdout
+try:
+    info = os.lstat(sys.argv[1])
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError('path list must be a regular file')
+    fd = os.open(sys.argv[1], os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(fd, 'rb') as stream:
+        raw = stream.read()
+    if raw and not raw.endswith(b'\0'):
+        raise ValueError('unterminated path list')
+    paths = raw[:-1].split(b'\0') if raw else []
+    if len(paths) != len(set(paths)):
+        raise ValueError('duplicate path')
+    top = os.path.realpath(git('rev-parse', '--show-toplevel').rstrip(b'\n'))
+    tracked = set(filter(None, git('-C', top, 'ls-files', '-z').split(b'\0')))
+    directory_entries = {}
+    for path in paths:
+        if not path or path.startswith(b'/') or any(p in (b'', b'.', b'..') for p in path.split(b'/')):
+            raise ValueError('path must be an exact worktree-relative identity')
+        parent = top
+        components = path.split(b'/')
+        for number, component in enumerate(components):
+            # A case-insensitive filesystem can resolve a different spelling.
+            # Compare directory-entry bytes without normalisation or folding.
+            if os.path.isdir(parent):
+                if parent not in directory_entries:
+                    directory_entries[parent] = set(os.listdir(parent))
+                if component not in directory_entries[parent] and os.path.lexists(os.path.join(parent, component)):
+                    raise ValueError('path spelling differs from filesystem identity')
+            if number == len(components) - 1:
+                break
+            parent = os.path.join(parent, component)
+            if os.path.islink(parent):
+                raise ValueError('symlink parent is unsupported')
+            if os.path.lexists(parent) and not os.path.isdir(parent):
+                raise ValueError('non-directory parent')
+        full = os.path.join(top, path)
+        if os.path.lexists(full):
+            mode = os.lstat(full).st_mode
+            if not (stat.S_ISREG(mode) or stat.S_ISLNK(mode)):
+                raise ValueError('directory or special-file selector')
+        elif path not in tracked:
+            raise ValueError('missing untracked path')
+    if paths:
+        git('-C', top, 'add', '--pathspec-from-file=-', '--pathspec-file-nul', data=raw)
+except (OSError, ValueError, subprocess.CalledProcessError) as error:
+    if isinstance(error, subprocess.CalledProcessError) and error.stderr:
+        sys.stderr.buffer.write(error.stderr)
+    print('stage_workflow_changes: strict refusal: ' + str(error), file=sys.stderr)
+    sys.exit(2)
+STRICT_PATHS_PY
+}
+
 stage_workflow_changes() {
+  if [ "$#" -gt 0 ]; then workflow_stage_strict "$@"; return $?; fi
   local top git_dir scratch physical list add_help rc=0
   top="$(git rev-parse --show-toplevel)" || return $?
   git_dir="$(git rev-parse --absolute-git-dir)" || return $?

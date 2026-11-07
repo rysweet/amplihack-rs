@@ -5244,7 +5244,8 @@ CTX_OUT=""; CTX_RC=0; CTX_ERR="${WORK_PHYS}/ctx.err"
 ctx_run() { # ctx_run <gh-mode> <gh-head> [VAR=value ...]: FX's HEAD is wherever fx_head left it
   local mode="$1" head="$2"; shift 2
   CTX_OUT="$(env -i HOME="${TEST_HOME}" PATH="${STUB_BIN}:/usr/bin:/bin" REPO_PATH="${FX}" PR_NUMBER=42 \
-    GH_MODE="$mode" GH_HEAD="$head" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@" \
+    GH_MODE="$mode" GH_HEAD="$head" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}" \
+    GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 "$@" \
     bash -c "${CTX_BODY}" 2>"${CTX_ERR}")"; CTX_RC=$?
 }
 ctx_expect_error() { # ctx_expect_error <label> <ERROR text> <reason text> <why>

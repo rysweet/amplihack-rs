@@ -69,7 +69,10 @@ fn recipe_text(name: &str) -> String {
 fn parse_recipe(name: &str) -> Value {
     let path = recipe_path(name);
     let text = recipe_text(name);
-    serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {} as YAML: {e}", path.display()))
+    crate::canonical_staging_checkpoint_fixture::inspect_recipe(
+        serde_yaml::from_str(&text)
+            .unwrap_or_else(|e| panic!("parse {} as YAML: {e}", path.display())),
+    )
 }
 
 fn load_recipe(name: &str) -> &'static Value {

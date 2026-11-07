@@ -55,7 +55,10 @@ static RECIPES: LazyLock<HashMap<&'static str, Recipe>> = LazyLock::new(|| {
         .filter(|&(name, _)| *name != "smart-validate-summarize")
         .map(|(&name, text)| {
             let path = recipe_path(name);
-            let recipe = serde_yaml::from_str(text)
+            let inspected = crate::canonical_staging_checkpoint_fixture::inspect_recipe(
+                serde_yaml::from_str(text).unwrap(),
+            );
+            let recipe = serde_yaml::from_value(inspected)
                 .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
             (name, recipe)
         })
@@ -265,6 +268,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-14b-sync-lockfile",
     "step-14c-sync-package-json",
     "step-14g-artifact-guard",
+    "step-15-commit-push-scope-capture",
+    "step-15-commit-push-scope-review",
     "step-15-commit-push",
     "step-16-create-draft-pr",
     "step-16b-outside-in-fix-loop",
@@ -277,6 +282,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-17f-verification-gate",
     "step-18a-analyze-feedback",
     "step-18b-implement-feedback",
+    "step-18c-push-feedback-changes-scope-capture",
+    "step-18c-push-feedback-changes-scope-review",
     "step-18c-push-feedback-changes",
     "step-18d-respond-to-comments",
     "step-18e-verification-gate",
@@ -292,6 +299,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // Issue #1467: the audit runs before the guard and push, so its fixes are pushed.
     "step-20c-quality-audit",
     "step-20a-artifact-guard",
+    "step-20b-push-cleanup-scope-capture",
+    "step-20b-push-cleanup-scope-review",
     "step-20b-push-cleanup",
     "step-21-pr-ready",
     "step-22-ensure-mergeable",
@@ -327,6 +336,8 @@ const PR_REVIEW_STEP_INVENTORY: &[&str] = &[
     "step-17f-verification-gate",
     "step-18a-analyze-feedback",
     "step-18b-implement-feedback",
+    "step-18c-push-feedback-changes-scope-capture",
+    "step-18c-push-feedback-changes-scope-review",
     "step-18c-push-feedback-changes",
     "step-18d-respond-to-comments",
     "step-18e-verification-gate",
@@ -379,7 +390,8 @@ fn every_phase_subrecipe_loads_and_has_steps() {
 }
 
 /// Concatenating the steps of all 9 phase sub-recipes (in composer order) must
-/// reproduce the original 58-step inventory in the original order.
+/// preserve the original 77 steps in order and add only the six approved
+/// checkpoint capture and review steps.
 #[test]
 fn composed_step_inventory_matches_expected_in_order() {
     let mut composed: Vec<String> = Vec::new();

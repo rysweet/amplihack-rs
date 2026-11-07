@@ -12,6 +12,12 @@ use std::process::Command;
 use serde_yaml::Value;
 use tempfile::TempDir;
 
+const OWNER: crate::canonical_staging_checkpoint_fixture::Owner =
+    crate::canonical_staging_checkpoint_fixture::Owner {
+        task: "publish existing feature branch",
+        paths: &["feature.txt"],
+    };
+
 fn workspace_root() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop();
@@ -238,7 +244,10 @@ fn publish_treats_non_github_hosts_as_structured_successful_skip() {
 #[test]
 fn publish_commit_push_redacts_pull_and_push_failure_output() {
     let recipe = load_publish_recipe();
-    let command = step_command(&recipe, "step-15-commit-push");
+    let command = crate::canonical_staging_checkpoint_fixture::inspect(
+        "step-15-commit-push",
+        &step_command(&recipe, "step-15-commit-push"),
+    );
 
     assert!(
         command.contains("redact_sensitive_file"),
@@ -252,9 +261,20 @@ fn publish_commit_push_redacts_pull_and_push_failure_output() {
         !command.contains("cat \"$push_stderr_file\""),
         "publish commit/push step must not print raw push stderr"
     );
+    crate::canonical_staging_checkpoint_fixture::assert_uri_redaction(
+        &command,
+        "redact_sensitive_file",
+    );
+    let unredacted = "redact_sensitive_file() {\n  cat \"$1\"\n}\n";
     assert!(
-        command.contains("https?://"),
-        "publish redaction must cover both http:// and https:// credential-bearing URLs"
+        std::panic::catch_unwind(|| {
+            crate::canonical_staging_checkpoint_fixture::assert_uri_redaction(
+                unredacted,
+                "redact_sensitive_file",
+            );
+        })
+        .is_err(),
+        "the redaction oracle must reject an unchanged credential-bearing URI"
     );
 }
 
@@ -365,8 +385,8 @@ fn commit_push_marks_already_pushed_branch_as_publishable() {
         &["worktree", "add", worktree.to_str().unwrap(), "feature"],
     );
 
-    let output = Command::new("bash")
-        .arg("-c")
+    let mut run = Command::new("bash");
+    run.arg("-c")
         .arg(command)
         .current_dir(&worktree)
         .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
@@ -384,9 +404,15 @@ fn commit_push_marks_already_pushed_branch_as_publishable() {
         )
         .env("TASK_DESCRIPTION", "publish existing feature branch")
         .env("ISSUE_NUMBER", "7")
-        .env("REMOTE_HOST_TYPE", "github")
-        .output()
-        .expect("run step-15 commit-push command");
+        .env("REMOTE_HOST_TYPE", "github");
+    let output = OWNER.project(
+        &run,
+        "workflow-publish",
+        &repo,
+        &worktree,
+        "feature",
+        "feature",
+    );
 
     assert!(
         output.status.success(),

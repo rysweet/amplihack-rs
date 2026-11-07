@@ -26,6 +26,11 @@
 mod isolated_amplihack;
 mod support;
 
+// Both recipe-inspection modules use this one fixture definition. Public
+// visibility keeps its other test-only entry points available to consumers.
+#[path = "../../../tests/integration/canonical_staging_checkpoint_fixture.rs"]
+pub mod canonical_staging_checkpoint_fixture;
+
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
 #[path = "issue_1753_login_identity.rs"]

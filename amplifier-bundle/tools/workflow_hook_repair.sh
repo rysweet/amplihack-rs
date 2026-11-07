@@ -389,11 +389,33 @@ hook_repair_refusal_check() {
 # its redacted combined output, in <out> and <output-file> if one is given.
 # The raw output lives beside <out>, private, only until it is redacted.
 # Returns the command's exit code.
+# A scoped checkpoint cannot lose its binding in a nested repair. Legacy
+# callers do not set WF_CHECKPOINT_REQUIRED and retain their existing route.
+hook_repair_scope_check() {
+  [ "${WF_CHECKPOINT_REQUIRED:-}" = 1 ] || return 0
+  declare -F workflow_checkpoint_check >/dev/null &&
+    [ -n "${WF_CHECKPOINT_RECORD:-}" ] && [ -n "${WF_CHECKPOINT_HASH:-}" ] || {
+      echo 'ERROR: scoped repair authority is missing; refusing continuation' >&2; return 78;
+    }
+  workflow_checkpoint_check || return 78
+}
+
+hook_repair_scope_stage() {
+  if [ "${WF_CHECKPOINT_REQUIRED:-}" = 1 ]; then
+    hook_repair_scope_check || return $?
+    workflow_checkpoint_stage
+  else
+    stage_workflow_changes
+  fi
+}
+
 hook_repair_attempt() {
   local out="$1" copy="$2" rc=0
   shift 2
+  hook_repair_scope_check || return $?
   ( umask 077 && : >"${out}.raw" ) 2>/dev/null || true
   "$@" >"${out}.raw" 2>&1 || rc=$?
+  if [ "$rc" -ne 79 ]; then hook_repair_scope_check || rc=78; fi
   hook_repair_redact "${out}.raw" >"$out"; rm -f -- "${out}.raw"
   [ -z "$copy" ] || cat -- "$out" >"$copy"
   return "$rc"
@@ -478,6 +500,7 @@ hook_repair_step15_reason() {
 # a plain `git commit`, as step-15's own commit is. Returns the nested
 # repair's code; HOOK_REPAIR_* then describe the nested repair.
 hook_repair_push_commit() {
+  hook_repair_scope_check || return $?
   if declare -F amplihack_prepare_git_commit_identity >/dev/null; then
     amplihack_prepare_git_commit_identity || true
   fi
@@ -575,6 +598,8 @@ hook_repair_run() {
     hook_repair_usage "--fix-message applies to push only"; return 2
   fi
 
+  hook_repair_scope_check || { HOOK_REPAIR_STATUS="refused"; return 78; }
+
   local wt gd hr hooks bin round_recipe health_recipe attempt_dir physical tmp_root
   wt="$(git rev-parse --show-toplevel 2>/dev/null)" || { hook_repair_usage "not inside a git work tree"; return 2; }
   [[ "$wt" == /* && -d "$wt" ]] || { hook_repair_usage "empty or invalid worktree path"; return 2; }
@@ -613,6 +638,8 @@ hook_repair_run() {
     HOOK_REPAIR_STATUS="not_hook"; return "$rc"
   fi
   if hook_repair_attempt "$out" "$output_file" "$@"; then rc=0; else rc=$?; fi
+  if [ "${WF_CHECKPOINT_REQUIRED:-}" = 1 ] && [ "$rc" -eq 79 ]; then HOOK_REPAIR_STATUS="terminal"; return 79; fi
+  if [ "${WF_CHECKPOINT_REQUIRED:-}" = 1 ] && [ "$rc" -eq 78 ]; then HOOK_REPAIR_STATUS="refused"; return 78; fi
   if [ "$rc" -eq 0 ]; then
     rm -rf -- "${attempt_dir:?}"; HOOK_REPAIR_STATUS="ok"; return 0
   fi
@@ -668,6 +695,7 @@ hook_repair_run() {
   local baseline before after tree_before tree_after evidence agent_log terminal
   local refusal diffstat out_hash changed inner_rc inner_rounds=0
   while [ -z "$status" ]; do
+    hook_repair_scope_check || { status="refused"; reasoning="checkpoint scope no longer holds"; break; }
     round=$((round + 1))
     HOOK_REPAIR_ROUNDS=$((round + inner_rounds))
     baseline="$(git rev-parse -q --verify HEAD 2>/dev/null || true)"
@@ -701,8 +729,16 @@ hook_repair_run() {
       echo "ERROR: hook_repair_run: the fixing agent returned the exit-${HOOK_REPAIR_EXIT_TERMINAL} terminal policy refusal; not retried (#1327)." >&2
       status="terminal"; break
     fi
-    if ! stage_workflow_changes; then
-      status="stuck"; reasoning="staging the agent's changes failed"; break
+    if hook_repair_scope_stage; then
+      :
+    else
+      inner_rc=$?
+      if [ "${WF_CHECKPOINT_REQUIRED:-}" = 1 ] && [ "$inner_rc" -eq 78 ]; then
+        status="refused"; reasoning="checkpoint scope no longer holds before staging"
+      else
+        status="stuck"; reasoning="staging the agent's changes failed"
+      fi
+      break
     fi
     # The step ran the guard before the first attempt; the agent's round adds
     # files after it, so what is now staged is checked again before a retry.
@@ -747,8 +783,11 @@ hook_repair_run() {
       esac
     fi
 
+    hook_repair_scope_check || { status="refused"; reasoning="checkpoint scope no longer holds before retry"; break; }
     # Retry the same operation.
     if hook_repair_attempt "$out" "$output_file" "$@"; then rc=0; else rc=$?; fi
+    if [ "${WF_CHECKPOINT_REQUIRED:-}" = 1 ] && [ "$rc" -eq 79 ]; then status="terminal"; break; fi
+    if [ "${WF_CHECKPOINT_REQUIRED:-}" = 1 ] && [ "$rc" -eq 78 ]; then status="refused"; reasoning="checkpoint scope changed during retry"; break; fi
     if [ "$rc" -eq 0 ]; then
       status="ok"; break
     fi

@@ -1222,18 +1222,8 @@ const PLAIN_READS_NOT_YET_CONVERTED: &[(&str, &str, &str, usize)] = &[
         "REMOTE_HOST_TYPE",
         1,
     ),
-    (
-        "workflow-publish.yaml",
-        "step-15-commit-push",
-        "ISSUE_NUMBER",
-        1,
-    ),
-    (
-        "workflow-publish.yaml",
-        "step-15-commit-push",
-        "REMOTE_HOST_TYPE",
-        1,
-    ),
+    ("workflow_publish_checkpoint.sh", "", "ISSUE_NUMBER", 1),
+    ("workflow_publish_checkpoint.sh", "", "REMOTE_HOST_TYPE", 1),
     (
         "workflow-worktree.yaml",
         "step-04-setup-worktree",
@@ -1453,6 +1443,23 @@ fn bundle_plain_bare_reads() -> BTreeMap<(String, String, String), Vec<String>> 
 
 #[test]
 fn no_bundle_file_reads_a_step_output_through_a_plain_bare_name() {
+    // These are the two unchanged environment reads from the complete step-15
+    // extraction. Their allowance moved with the command; no count was added.
+    let publish = tool_files()
+        .into_iter()
+        .find(|(path, _)| path.ends_with("/workflow_publish_checkpoint.sh"))
+        .expect("extracted step-15 helper")
+        .1;
+    for line in [
+        r#"ISSUE_NUMBER="${ISSUE_NUMBER:-}""#,
+        r#"HOST_TYPE="${REMOTE_HOST_TYPE:-other}""#,
+    ] {
+        assert_eq!(
+            publish.lines().filter(|raw| raw.trim() == line).count(),
+            1,
+            "unchanged extraction provenance: {line}"
+        );
+    }
     let reads = bundle_plain_bare_reads();
     let allowed: BTreeMap<(String, String, String), usize> = PLAIN_READS_NOT_YET_CONVERTED
         .iter()

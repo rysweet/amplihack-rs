@@ -1542,13 +1542,53 @@ extract_step_command() {
 STEP_TDD="${WORK}/checkpoint-after-implementation.sh"
 STEP_REFACTOR="${WORK}/checkpoint-after-review-feedback.sh"
 STEP_15="${WORK}/step-15-commit-push.sh"
+STEP_15_INSPECT="${TOOLS}/workflow_publish_checkpoint.sh"
 extract_step_command "${TDD_RECIPE}" "checkpoint-after-implementation" "${STEP_TDD}"
 extract_step_command "${REFACTOR_RECIPE}" "checkpoint-after-review-feedback" "${STEP_REFACTOR}"
 extract_step_command "${PUBLISH_RECIPE}" "step-15-commit-push" "${STEP_15}"
 
+# This synthetic owner grants src.txt before any section-H source mutation.
+# Projection substitutes only finite scope judgement, not the checkpoint body,
+# hooks, repair loop, runtime staging or native runner acceptance.
+cat > "${WORK}/publish-projection.py" <<'PY_PROJECTION'
+import importlib.util, json, os, pathlib, subprocess, sys, unittest
+root, directory = map(pathlib.Path, sys.argv[1:])
+spec = importlib.util.spec_from_file_location('checkpoint_scope', root / 'amplifier-bundle/recipes/tests/test-checkpoint-scope.py')
+contract = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(contract)
+class Fixture:
+    case = unittest.TestCase()
+    allowed = {b'src.txt'}
+    def __init__(self):
+        self.task = (directory / 'repo').resolve()
+        self.env = dict(os.environ)
+        self.branch = self.git(self.task, 'branch', '--show-current').decode().strip()
+        self.owner = os.environ.get('TASK_DESCRIPTION', 'add the widget')
+        self.context = {'task_description': self.owner, 'final_requirements': self.owner,
+                        'repo_path': str((directory / 'main').resolve()),
+                        'worktree_setup': {'worktree_path': str(self.task), 'branch_name': self.branch,
+                                           'local_branch': self.branch, 'base_ref': 'refs/remotes/origin/main'},
+                        'version_bump': json.loads(os.environ.get('RECIPE_VAR_version_bump', '{}'))}
+        self.sync_context()
+    def sync_context(self):
+        for key, value in self.context.items():
+            self.env['RECIPE_VAR_' + key] = json.dumps(value) if isinstance(value, (dict, list, bool)) else str(value)
+    def git(self, repo, *args):
+        result = subprocess.run(['git', '-C', str(repo), *args], env=self.env, capture_output=True)
+        self.case.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+    def shell(self, body):
+        return subprocess.run(['bash', '-c', body], cwd=self.task, env=self.env, capture_output=True)
+fixture = Fixture()
+result = contract.PhaseProjection(fixture, contract.PHASES[0]).run()
+sys.stdout.buffer.write(result.stdout)
+sys.stderr.buffer.write(result.stderr)
+sys.exit(result.returncode)
+PY_PROJECTION
+
 section_h_static() {
     local label file id
-    for spec in "checkpoint-after-implementation|${STEP_TDD}" "checkpoint-after-review-feedback|${STEP_REFACTOR}" "step-15-commit-push|${STEP_15}"; do
+    for spec in "checkpoint-after-implementation|${STEP_TDD}" "checkpoint-after-review-feedback|${STEP_REFACTOR}" "step-15-commit-push|${STEP_15_INSPECT}"; do
         id="${spec%%|*}"; file="${spec#*|}"; label="H-static ${id}"
         if grep -nE '(^|[;&|[:space:]])git[[:space:]]+add[[:space:]]+-A' "${file}" >/dev/null; then
             fail "${label}: git add -A must be replaced by stage_workflow_changes"
@@ -1557,6 +1597,7 @@ section_h_static() {
         # before validation; the other two stage with stage_workflow_changes.
         local stage_text="stage_workflow_changes"
         [[ "${id}" == "checkpoint-after-implementation" ]] && stage_text="git --literal-pathspecs add -A --pathspec-from-file"
+        [[ "${id}" == "step-15-commit-push" ]] && stage_text="workflow_checkpoint_stage"
         expect_file_contains "${label}: initial staging (${stage_text})" "${file}" "${stage_text}"
         expect_file_contains "${label}: commit goes through hook_repair_run" "${file}" "hook_repair_run commit ${id}"
         if [[ "${id}" == "step-15-commit-push" ]]; then
@@ -1579,23 +1620,28 @@ section_h_static() {
         local first stage second
         first="$(grep -n 'artifact-guard --repo . --mode pre-publish' "${file}" | sed -n 1p | cut -d: -f1 || true)"
         second="$(grep -n 'artifact-guard --repo . --mode pre-publish' "${file}" | sed -n 2p | cut -d: -f1 || true)"
+        [[ "${id}" == "step-15-commit-push" ]] && stage_text="workflow_checkpoint_stage;"
         stage="$(grep -nF -- "${stage_text}" "${file}" | grep -v '^[0-9]*:[[:space:]]*#' | grep -v 'WORKFLOW_STAGE_CHANGES_HELPER' | sed -n 1p | cut -d: -f1 || true)"
         if [[ -n "${first}" && -n "${stage}" && -n "${second}" ]] && (( first < stage && stage <= second )); then pass; else
             fail "${label}: ${stage_text} must run between the two artifact-guard calls (lines ${first:-?} ${stage:-?} ${second:-?})"
         fi
     done
-    expect_file_contains "H-static step-15: push goes through hook_repair_run" "${STEP_15}" "hook_repair_run push step-15-commit-push"
-    expect_file_contains "H-static step-15: fix message template" "${STEP_15}" 'fix: address {hook_ids} pre-push rejection'
-    expect_file_contains "H-static step-15: orchestration-unavailable reason" "${STEP_15}" "orchestration-unavailable"
-    expect_file_contains "H-static step-15: commit-failed reason" "${STEP_15}" "commit-failed"
-    expect_file_contains "H-static step-15: #978 divergence check kept" "${STEP_15}" "diverged-upstream"
-    expect_file_contains "H-static step-15: #1269 verification kept" "${STEP_15}" "verify_pushed_ref.sh"
+    expect_file_contains "H-static step-15: push goes through hook_repair_run" "${STEP_15_INSPECT}" "hook_repair_run push step-15-commit-push"
+    expect_file_contains "H-static step-15: fix message template" "${STEP_15_INSPECT}" 'fix: address {hook_ids} pre-push rejection'
+    expect_file_contains "H-static step-15: orchestration-unavailable reason" "${STEP_15_INSPECT}" "orchestration-unavailable"
+    expect_file_contains "H-static step-15: commit-failed reason" "${STEP_15_INSPECT}" "commit-failed"
+    expect_file_contains "H-static step-15: #978 divergence check kept" "${STEP_15_INSPECT}" "diverged-upstream"
+    expect_file_contains "H-static step-15: #1269 verification kept" "${STEP_15_INSPECT}" "verify_pushed_ref.sh"
 }
 
 # run_step <case-dir> <step-file> [VAR=value...]: run an extracted step body as
 # the recipe runner would. STEP_PATH_PREFIX puts shims in front of the stub.
 run_step() {
     local dir="$1" step="$2"
+    local -a step_command=(bash "${step}")
+    if [[ "${step}" == "${STEP_15}" ]]; then
+        step_command=(python3 -I -B "${WORK}/publish-projection.py" "${REPO_ROOT}" "${dir}")
+    fi
     shift 2
     mkdir -p "${dir}/home"
     if env "$@" \
@@ -1605,7 +1651,7 @@ run_step() {
         WORKFLOW_HOOK_REPAIR_HELPER="${RUN_STEP_HOOK_HELPER:-${DRIVER}}" WORKFLOW_STAGE_CHANGES_HELPER="${STAGE_HELPER}" \
         WORKTREE_SETUP_WORKTREE_PATH="${dir}/repo" \
         RECIPE_VAR_worktree_setup="$(jq -nc --arg p "${dir}/repo" '{worktree_path: $p}')" \
-        bash "${step}" >"${dir}/step.out" 2>"${dir}/step.err"; then
+        "${step_command[@]}" >"${dir}/step.out" 2>"${dir}/step.err"; then
         echo 0 > "${dir}/rc"
     else
         echo "$?" > "${dir}/rc"
@@ -1824,8 +1870,16 @@ SHIM
     new_repo "${dir}"
     install_pre_push_hook "${dir}/repo"
     printf 'clean\n' > "${dir}/repo/src.txt"
-    git -C "${dir}/repo" remote set-url --push origin "${dir}/missing.git"
-    run_step "${dir}" "${STEP_15}" "${STEP15_ENV[@]}"
+    # Keep the reviewed destination resolvable so this case reaches the
+    # intended non-hook push failure, rather than failing scope preparation.
+    mkdir -p "${dir}/gitbin"
+    cat > "${dir}/gitbin/git" <<SHIM
+#!/usr/bin/env bash
+if [ "\${1:-}" = "push" ]; then echo "fatal: simulated push transport failure" >&2; exit 128; fi
+exec "$(command -v git)" "\$@"
+SHIM
+    chmod +x "${dir}/gitbin/git"
+    STEP_PATH_PREFIX="${dir}/gitbin:" run_step "${dir}" "${STEP_15}" "${STEP15_ENV[@]}"
     expect_one_stdout_line H14 "${dir}"
     [[ "$(step15_field "${dir}" reason)" == "push-failed: "* ]] && pass \
         || fail "H14: reason must stay push-failed (got '$(step15_field "${dir}" reason)')"

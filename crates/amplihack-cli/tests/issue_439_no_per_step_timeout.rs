@@ -22,6 +22,8 @@
 //!      the *presence* of a per-step timeout that #439 removes) must be
 //!      deleted — it is superseded by #439.
 
+use crate::canonical_staging_checkpoint_fixture as checkpoint_fixture;
+
 use std::path::{Path, PathBuf};
 
 use serde_yaml::Value;
@@ -75,7 +77,8 @@ fn step_command(recipe_file: &str, step_id: &str) -> String {
         .find(|step| step.get("id").and_then(Value::as_str) == Some(step_id))
         .unwrap_or_else(|| panic!("{}: missing step `{step_id}`", path.display()));
 
-    step.get("command")
+    let command = step
+        .get("command")
         .and_then(Value::as_str)
         .or_else(|| step.get("bash").and_then(Value::as_str))
         .or_else(|| {
@@ -87,7 +90,8 @@ fn step_command(recipe_file: &str, step_id: &str) -> String {
                 .and_then(|bash| bash.get("script").and_then(Value::as_str))
         })
         .unwrap_or_else(|| panic!("{}: step `{step_id}` has no shell command", path.display()))
-        .to_string()
+        .to_string();
+    checkpoint_fixture::inspect(step_id, &command)
 }
 
 /// Returns true if the given bash command string looks like it talks to an
@@ -398,15 +402,46 @@ fn default_workflow_direct_commit_paths_use_safe_pre_commit_handling() {
             ));
         }
 
+        let staging = if matches!(
+            *step_id,
+            "step-18c-push-feedback-changes" | "step-20b-push-cleanup"
+        ) {
+            checkpoint_fixture::assert_strict_staging(&cmd);
+            "workflow_checkpoint_stage;"
+        } else {
+            "git add -A"
+        };
+        let commit_output = match *step_id {
+            "step-18c-push-feedback-changes" => r#"redact_sensitive_file "$commit_output_file""#,
+            "step-20b-push-cleanup" => r#"redact_sensitive_output < "$commit_output_file""#,
+            _ => r#"cat "$commit_output_file""#,
+        };
+        if matches!(
+            *step_id,
+            "step-18c-push-feedback-changes" | "step-20b-push-cleanup"
+        ) {
+            assert_eq!(cmd.matches(commit_output).count(), 2);
+            assert!(!cmd.contains(r#"cat "$commit_output_file""#));
+            let mut positions = Vec::new();
+            for suffix in ["", " >&2"] {
+                let line = format!("    {commit_output}{suffix}");
+                assert_eq!(
+                    cmd.lines().filter(|candidate| *candidate == line).count(),
+                    1
+                );
+                positions.push(cmd.lines().position(|candidate| candidate == line).unwrap());
+            }
+            assert!(positions[0] < positions[1]);
+        }
         for required in [
             "set -euo pipefail",
-            "git add -A",
+            staging,
             "git diff --cached --name-only",
             "commit_output_file=$(mktemp",
             "git commit",
             "commit_rc=$?",
             "ERROR: git commit failed",
-            "cat \"$commit_output_file\"",
+            commit_output,
             "git --no-pager diff --cached --name-status",
             "git --no-pager status --short",
             "exit \"$commit_rc\"",

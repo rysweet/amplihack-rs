@@ -570,6 +570,7 @@ dependencies = [
 name = "amplihack-workflows"
 version = "1.2.0"
 dependencies = [
+ "amplihack-git",
  "amplihack-utils",
  "chrono",
  "serde",

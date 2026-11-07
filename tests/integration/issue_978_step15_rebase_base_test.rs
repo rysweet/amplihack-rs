@@ -18,6 +18,12 @@ use std::process::Command;
 use serde_yaml::Value;
 use tempfile::TempDir;
 
+const OWNER: crate::canonical_staging_checkpoint_fixture::Owner =
+    crate::canonical_staging_checkpoint_fixture::Owner {
+        task: "publish workstream branch (issue #978)",
+        paths: &["feature.txt"],
+    };
+
 fn workspace_root() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop();
@@ -88,8 +94,8 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
 }
 
 fn run_step15(repo: &Path, command: &str) -> std::process::Output {
-    Command::new("bash")
-        .arg("-c")
+    let mut run = Command::new("bash");
+    run.arg("-c")
         .arg(command)
         .current_dir(repo)
         .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
@@ -106,9 +112,8 @@ fn run_step15(repo: &Path, command: &str) -> std::process::Output {
         )
         .env("TASK_DESCRIPTION", "publish workstream branch (issue #978)")
         .env("ISSUE_NUMBER", "978")
-        .env("REMOTE_HOST_TYPE", "github")
-        .output()
-        .expect("run step-15 commit-push command")
+        .env("REMOTE_HOST_TYPE", "github");
+    OWNER.project(&run, "workflow-publish", repo, repo, "feature", "feature")
 }
 
 /// Build a clone whose `feature` branch is `ahead` of `origin/feature`, and
@@ -222,6 +227,25 @@ fn step15_fails_closed_on_divergent_upstream_instead_of_rebasing() {
     git(&repo, &["commit", "-m", "local workstream commit 2"]);
     let head_before = git_stdout(&repo, &["rev-parse", "HEAD"]);
     let file_before = fs::read_to_string(repo.join("feature.txt")).unwrap();
+    // Admission inspects the actual destination before the original fetch.
+    // Hydrate only that object, preserving the stale tracking reference that
+    // makes this a genuine divergence control.
+    let upstream_tip = git_stdout(&other, &["rev-parse", "HEAD"]);
+    let tracking_before = git_stdout(&repo, &["rev-parse", "origin/feature"]);
+    git(
+        &repo,
+        &[
+            "fetch",
+            "--no-tags",
+            origin.to_str().unwrap(),
+            &upstream_tip,
+        ],
+    );
+    assert_eq!(
+        git_stdout(&repo, &["rev-parse", "origin/feature"]),
+        tracking_before
+    );
+    assert_eq!(git_stdout(&repo, &["rev-parse", "HEAD"]), head_before);
 
     let output = run_step15(&repo, &command);
     let stdout = String::from_utf8_lossy(&output.stdout);
