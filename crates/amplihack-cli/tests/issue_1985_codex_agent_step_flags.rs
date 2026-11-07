@@ -76,14 +76,18 @@ fn tools_dir(home: &Path) -> PathBuf {
     tools
 }
 
-/// Runs `amplihack codex --no-reflection [-- tail…]` against the fake.
+/// Runs `amplihack codex [-- tail…]` against the fake. No amplihack option
+/// comes before `--`: the recipe runner (`amplihack-recipe-runner`,
+/// `src/adapters/cli_subprocess.rs`) sends exactly
+/// `amplihack codex -- exec --output-last-message <file> [--model m] -`,
+/// with no `--no-reflection`, so this is the command under test.
 fn launch(tail: &[&str], stdin: &[u8]) -> Launch {
     let home = tempfile::tempdir().unwrap();
     let tools = tools_dir(home.path());
     let codex_home = home.path().join(".codex");
     fs::create_dir_all(&codex_home).unwrap();
     fs::write(codex_home.join("config.toml"), HOST_CONFIG).unwrap();
-    let mut args = vec!["codex", "--no-reflection"];
+    let mut args = vec!["codex"];
     if !tail.is_empty() {
         args.push("--");
         args.extend_from_slice(tail);

@@ -125,7 +125,7 @@ This makes amplihack agent-agnostic: `amplihack <command>` will use the configur
 #### Codex agent steps
 
 With `AMPLIHACK_AGENT_BINARY=codex`, each agent step runs as
-`amplihack codex --no-reflection -- exec …`, and amplihack adds these flags
+`amplihack codex -- exec …`, and amplihack adds these flags
 directly after `exec`:
 
 ```text

@@ -97,7 +97,7 @@ authority rules, preserved policies and acceptance requirements.
 
 ## Sandbox and hook trust for agent steps
 
-When a recipe agent step runs on Codex, it is launched as `amplihack codex --no-reflection -- exec …`. On that path amplihack adds three flags directly after the `exec` token (or its alias `e`):
+When a recipe agent step runs on Codex, it is launched as `amplihack codex -- exec …`. On that path amplihack adds three flags directly after the `exec` token (or its alias `e`):
 
 ```text
 --sandbox workspace-write
@@ -108,7 +108,7 @@ When a recipe agent step runs on Codex, it is launched as `amplihack codex --no-
 A step that the runner starts as
 
 ```bash
-amplihack codex --no-reflection -- exec --output-last-message /d0/run/final-message -
+amplihack codex -- exec --output-last-message /d0/run/final-message -
 ```
 
 therefore runs
@@ -151,7 +151,7 @@ The flags were checked against codex-cli 0.166.0. There is no environment variab
 To run an agent step with a stricter sandbox, pass it in the step's Codex arguments:
 
 ```bash
-amplihack codex --no-reflection -- exec --sandbox read-only --output-last-message /d0/run/final-message -
+amplihack codex -- exec --sandbox read-only --output-last-message /d0/run/final-message -
 # spawns: codex exec --dangerously-bypass-hook-trust --sandbox read-only --output-last-message /d0/run/final-message -
 ```
 

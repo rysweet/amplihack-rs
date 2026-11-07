@@ -260,12 +260,12 @@ The `claude`, `copilot`, `codex`, and `amplifier` subcommands do not support
 
 ## Codex agent-step flags
 
-Recipe agent steps on Codex run `amplihack codex --no-reflection -- exec …`.
+Recipe agent steps on Codex run `amplihack codex -- exec …`.
 When the arguments after `--` contain an `exec` subcommand (or its alias `e`),
 amplihack inserts three flags immediately after that token:
 
 ```sh
-amplihack codex --no-reflection -- exec --output-last-message /d0/run/final-message -
+amplihack codex -- exec --output-last-message /d0/run/final-message -
 
 # amplihack spawns:
 codex exec --sandbox workspace-write -c sandbox_workspace_write.network_access=true \
