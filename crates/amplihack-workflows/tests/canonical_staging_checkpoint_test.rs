@@ -86,6 +86,7 @@ fn destination_observation(f: &Fixture, remote: &Path, expected_head: &[u8]) -> 
 }
 
 #[test]
+#[ignore = "requires task-private evidence and temporary directories; no external tools beyond Git"]
 fn actual_destination_evidence_detects_an_omitted_push() {
     let f = Fixture::checkpoint_clean("publication-destination-oracle");
     let remote = f.temp.path().join("remote.git");

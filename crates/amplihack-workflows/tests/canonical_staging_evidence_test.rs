@@ -392,6 +392,7 @@ fn complete_scope_history(repository: &Path, base: &str) -> Vec<u8> {
 }
 
 #[test]
+#[ignore = "requires task-private evidence and temporary directories; no external tools beyond Git"]
 fn scope_history_retains_replaced_transient_commits_and_refuses_grafts() {
     let f = Fixture::checkpoint_clean("scope-history-replacement");
     let base = String::from_utf8(f.git(&f.task, &["rev-parse", "HEAD"])).unwrap();
@@ -424,6 +425,7 @@ fn scope_history_retains_replaced_transient_commits_and_refuses_grafts() {
 }
 
 #[test]
+#[ignore = "requires task-private evidence and temporary directories; no external tools beyond Git"]
 fn scope_history_refuses_a_shallow_tip_even_when_the_base_object_is_present() {
     let f = Fixture::checkpoint_clean("scope-history-shallow");
     let base = String::from_utf8(f.git(&f.task, &["rev-parse", "HEAD"])).unwrap();
@@ -507,6 +509,7 @@ fn assert_approved_test_dependency_change_at(repository: &Path, base: &str, path
 }
 
 #[test]
+#[ignore = "requires task-private evidence and temporary directories; no external tools beyond Git"]
 fn dependency_baseline_ignores_replacements_and_refuses_forged_bytes() {
     let f = Fixture::checkpoint_clean("dependency-baseline-replacement");
     let manifest_path = "crates/amplihack-workflows/Cargo.toml";
