@@ -2,6 +2,8 @@
 
 mod codex_args;
 
+pub use codex_args::{LONG_OPTIONS_WITH_VALUE, SHORT_OPTIONS_WITH_VALUE};
+
 use std::ffi::OsStr;
 use std::io::{self, ErrorKind};
 use std::path::Path;
