@@ -72,20 +72,32 @@ fn target_reason(why: Option<Skip>) -> &'static str {
     why.map_or("gone", Skip::as_str)
 }
 
+/// The accounts of [`Snap::candidate_accounts`], and why a read failed.
+type CandidateReads = (
+    Vec<(ProfileName, Option<Account>)>,
+    Vec<(ProfileName, &'static str)>,
+);
+
 /// The trusted account bound to each candidate's login, for
-/// [`Snap::candidate_accounts`]. Compared, never logged.
-pub fn accounts_with(ctx: &Ctx, candidates: &[ProfileName]) -> Vec<(ProfileName, Option<Account>)> {
-    candidates
-        .iter()
-        .map(|n| {
-            let account = ctx
-                .store
-                .verify_profile_dir(n)
-                .ok()
-                .and_then(|dir| ctx.identity_reader().oauth(&dir).ok());
-            (n.clone(), account)
-        })
-        .collect()
+/// [`Snap::candidate_accounts`], and the cause of each failed read, for
+/// [`Snap::candidate_refusals`]. Compared and logged by cause, never by account.
+pub fn accounts_with(ctx: &Ctx, candidates: &[ProfileName]) -> CandidateReads {
+    let mut accounts = Vec::with_capacity(candidates.len());
+    let mut refusals = Vec::new();
+    for n in candidates {
+        let read = match ctx.store.verify_profile_dir(n) {
+            Ok(dir) => ctx.identity_reader().oauth(&dir),
+            Err(_) => Err(super::login_identity::DIR_NOT_PRIVATE),
+        };
+        match read {
+            Ok(account) => accounts.push((n.clone(), Some(account))),
+            Err(cause) => {
+                accounts.push((n.clone(), None));
+                refusals.push((n.clone(), cause));
+            }
+        }
+    }
+    (accounts, refusals)
 }
 
 /// Whether `name` is a candidate in `fresh` and holds the account it held
@@ -126,6 +138,9 @@ pub fn changed(first: &Snap, fresh: &Snap, decision: &Decision, journal: bool) -
         account,
         trusted_live,
         identity_refusal,
+        // Only say why a reading above is missing, and only log.
+        identity_cause: _,
+        candidate_refusals: _,
         candidates: _,
         skips: _,
         sees_sessions: _,

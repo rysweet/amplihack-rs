@@ -19,7 +19,7 @@
 //!   its own.
 
 use super::auto_switch::kit::State;
-use super::expected::{lookup, mismatched, record, recorded, save};
+use super::expected::{Seeded, lookup, mismatched, record, recorded, save, seed};
 use super::name::ProfileName;
 use super::rotate::identify::Account;
 use super::store::ProfileStore;
@@ -480,4 +480,110 @@ fn a_record_without_an_org_entry_or_with_a_bad_one_is_no_record() {
             "{body}"
         );
     }
+}
+
+// --- Issue #1962 (S2): the no-overwrite write a seed uses ---------------------
+//
+// `expected::seed(&State, &ProfileName, &Account) -> Result<Seeded, ProfileError>`
+// with `Seeded::{Written, Existing}`, over
+// `State::create_sub_json(sub, name, &Value) -> Result<bool, ProfileError>`, which
+// is `true` when it created the file and `false` when the name already existed.
+
+fn account_in_org(uuid: &str, org: Option<&str>) -> Account {
+    let mut block = serde_json::json!({"accountUuid": uuid, "emailAddress": "w@example.com"});
+    if let Some(o) = org {
+        block["organizationUuid"] = o.into();
+    }
+    Account::from_block(&block).unwrap()
+}
+
+fn expected_dir_names(e: &Env) -> Vec<String> {
+    let mut v: Vec<String> = fs::read_dir(e.file("work").parent().unwrap())
+        .unwrap()
+        .map(|d| d.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    v.sort();
+    v
+}
+
+#[test]
+fn seed_writes_a_private_record_and_leaves_no_temporary_file() {
+    let e = env();
+    let a = account_in_org("u-seed", Some("o-seed"));
+    assert_eq!(seed(&e.state, &n("work"), &a).unwrap(), Seeded::Written);
+    let record = lookup(&e.state, &n("work")).unwrap().unwrap();
+    assert_eq!(record.account, "u-seed");
+    assert_eq!(record.org.as_deref(), Some("o-seed"));
+    let meta = fs::symlink_metadata(e.file("work")).unwrap();
+    assert_eq!(meta.mode() & 0o777, 0o600);
+    assert_eq!(meta.nlink(), 1, "the temporary link is gone");
+    assert_eq!(expected_dir_names(&e), vec!["work.json".to_string()]);
+}
+
+#[test]
+fn seed_never_overwrites_a_usable_record() {
+    let e = env();
+    let first = account_in_org("u-first", Some("o-first"));
+    assert_eq!(seed(&e.state, &n("work"), &first).unwrap(), Seeded::Written);
+    let before = fs::read(e.file("work")).unwrap();
+    let other = account_in_org("u-other", Some("o-other"));
+    assert_eq!(
+        seed(&e.state, &n("work"), &other).unwrap(),
+        Seeded::Existing
+    );
+    assert_eq!(fs::read(e.file("work")).unwrap(), before);
+    assert_eq!(expected_dir_names(&e), vec!["work.json".to_string()]);
+}
+
+/// A record written first by another process that cannot be used is not a success
+/// for the caller, and it stays for the owner to repair.
+#[test]
+fn seed_stops_on_an_unusable_record_and_leaves_it() {
+    let e = env();
+    e.raw_json(serde_json::json!({"account": "u-x"}));
+    let before = fs::read(e.file("work")).unwrap();
+    let a = account_in_org("u-seed", Some("o-seed"));
+    assert!(seed(&e.state, &n("work"), &a).is_err());
+    assert_eq!(fs::read(e.file("work")).unwrap(), before);
+}
+
+#[test]
+fn seed_refuses_an_account_with_no_organization() {
+    let e = env();
+    assert!(seed(&e.state, &n("work"), &account_in_org("u-seed", None)).is_err());
+    assert!(!e.file("work").exists());
+}
+
+#[test]
+fn seed_never_follows_a_symlink_at_the_final_name() {
+    let e = env();
+    e.state.ensure().unwrap();
+    e.state
+        .ensure_sub(e.file("work").parent().unwrap())
+        .unwrap();
+    let target = e.root.join("elsewhere.json");
+    fs::write(&target, "{}").unwrap();
+    std::os::unix::fs::symlink(&target, e.file("work")).unwrap();
+    let a = account_in_org("u-seed", Some("o-seed"));
+    assert!(seed(&e.state, &n("work"), &a).is_err());
+    assert_eq!(fs::read_to_string(&target).unwrap(), "{}");
+    assert!(
+        fs::symlink_metadata(e.file("work"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
+fn create_sub_json_reports_whether_it_created_the_file() {
+    let e = env();
+    let body = serde_json::json!({"account": "u-a", "org": "o-a"});
+    assert!(e.state.create_sub_json("expected", "work", &body).unwrap());
+    let other = serde_json::json!({"account": "u-b", "org": "o-b"});
+    assert!(!e.state.create_sub_json("expected", "work", &other).unwrap());
+    assert_eq!(
+        lookup(&e.state, &n("work")).unwrap().unwrap().account,
+        "u-a"
+    );
 }

@@ -34,6 +34,8 @@ mod root_config;
 mod rotate;
 mod rotate_args;
 mod run;
+#[cfg(unix)]
+mod seed_cmd;
 mod settings_refresh;
 mod shared_dirs;
 mod store;
@@ -217,6 +219,9 @@ pub enum ProfileError {
     RotateRefused(String),
     #[error("profile verify: {0}")]
     Verify(String),
+    /// `profile seed-record` refused: the whole line, reason included.
+    #[error("{0}")]
+    SeedRefused(String),
     #[error("rotate state is inconsistent: {0}")]
     RotateInconsistent(String),
     #[error("rotation gate did not settle")]
@@ -309,6 +314,9 @@ impl ProfileError {
             }
             Self::Verify(_) => {
                 "nothing was moved; see \"profile verify\" in docs/reference/profile-command.md"
+            }
+            Self::SeedRefused(_) => {
+                "nothing was moved; see \"profile seed-record\" in docs/reference/profile-command.md"
             }
             Self::RotateInconsistent(_) => {
                 "see the Recovery section of docs/howto/claude-profile-rotation.md"
@@ -480,6 +488,15 @@ pub enum ProfileCommands {
         #[arg(long)]
         fix: bool,
     },
+    /// Show the account a profile with no record would be recorded with, from one
+    /// fresh reading; --write records it. Moves no login
+    #[cfg(unix)]
+    SeedRecord {
+        name: String,
+        /// Write the record, under the rotate lock; never replaces a record
+        #[arg(long)]
+        write: bool,
+    },
     /// Show or override each profile's kind: subscription or api-key (billed per token)
     #[cfg(unix)]
     Kind {
@@ -637,6 +654,8 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
         ProfileCommands::Overflow { command } => overflow::run(&store, command)?,
+        #[cfg(unix)]
+        ProfileCommands::SeedRecord { name, write } => seed_cmd::run(&store, &name, write)?,
         #[cfg(unix)]
         ProfileCommands::Verify { fix } => {
             let s = verify_cmd::run(&store, fix)?;
