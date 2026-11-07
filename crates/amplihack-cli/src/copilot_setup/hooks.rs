@@ -570,4 +570,36 @@ mod tests {
              re-running setup replaces it instead of leaving a duplicate"
         );
     }
+
+    /// Issue #1878 item 1: no Copilot wrapper sets or forwards an XPIA
+    /// variable, and no staged wrapper mentions XPIA.
+    #[test]
+    fn xpia_copilot_wrappers_do_not_mention_xpia() {
+        for spec in super::super::COPILOT_HOOK_WRAPPERS {
+            let script = build_wrapper_script(spec);
+            assert!(
+                !script.to_ascii_uppercase().contains("XPIA"),
+                "{} wrapper must not mention XPIA: {script}",
+                spec.hook_name
+            );
+        }
+        let repo = tempfile::tempdir().unwrap();
+        stage_repo_hooks(repo.path()).unwrap();
+        let copilot_home = tempfile::tempdir().unwrap();
+        write_user_level_hooks(copilot_home.path()).unwrap();
+        for root in [repo.path(), copilot_home.path()] {
+            let hooks_dir = root.join(".github/hooks");
+            for entry in fs::read_dir(&hooks_dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_file() {
+                    let body = fs::read_to_string(&path).unwrap();
+                    assert!(
+                        !body.contains("XPIA_ENABLED") && !body.contains("tools/xpia"),
+                        "{} must not enable XPIA: {body}",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
 }

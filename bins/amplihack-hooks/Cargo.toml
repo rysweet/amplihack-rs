@@ -26,6 +26,8 @@ signal = ["amplihack-hooks/signal"]
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# `tests/support/isolated_amplihack.rs` (shared through `#[path]`) uses libc.
+libc = { workspace = true }
 serde_json = { workspace = true }
 
 [[test]]

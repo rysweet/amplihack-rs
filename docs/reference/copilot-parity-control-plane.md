@@ -1,7 +1,7 @@
 ---
 title: "Copilot Parity Control Plane Reference"
 description: "Reference for the Copilot launcher wrapper contract, XPIA precedence, Rust runner discovery, and nested Copilot normalization."
-last_updated: 2026-04-02
+last_updated: 2026-11-02
 review_schedule: as-needed
 owner: amplihack
 doc_type: reference
@@ -47,6 +47,8 @@ The generated `.github/hooks/pre-tool-use` wrapper evaluates both hook stacks an
 | 4        | none      | no explicit decision                             | Return `{}`                                              |
 
 This contract keeps XPIA in control of explicit Bash security decisions while preserving existing amplihack block semantics.
+
+> **XPIA is off by default.** The XPIA Bash policy described on this page applies only when XPIA is enabled (`XPIA_ENABLED=true`). With XPIA off, the wrapper still runs, but no XPIA decision is made. See the [XPIA Configuration Reference](../reference/xpia-configuration.md).
 
 ## XPIA Hook Contract
 

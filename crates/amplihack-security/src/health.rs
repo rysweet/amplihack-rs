@@ -1,6 +1,6 @@
 //! XPIA system health checks.
 
-use crate::config::XpiaConfig;
+use crate::config::{EnabledValue, XpiaConfig, classify_enabled, unrecognised_enabled_message};
 use crate::patterns::XpiaPatterns;
 use serde::{Deserialize, Serialize};
 
@@ -51,17 +51,38 @@ pub fn check_health_with(config: &XpiaConfig) -> HealthReport {
 
     let mut checks = Vec::new();
 
-    // Check 1: XPIA enabled. Off is the default, so this always passes and
-    // only reports the state. `config_summary.enabled` is the machine-readable
-    // answer to whether XPIA is scanning.
+    // Check 1: XPIA enabled (#1737 item 2). Passes when the state is what a
+    // recognised `XPIA_ENABLED` value asks for, on or off; fails, naming the
+    // value, when the value is not recognised. A configuration built in code
+    // (no raw value) follows `enabled`. The reported state is always
+    // `config.enabled`, so a hand-set `enabled` that disagrees with the raw
+    // value fails rather than hiding a running (or missing) scanner.
+    // `config_summary.enabled` is the machine-readable answer to whether XPIA
+    // is scanning.
+    let asked = match &config.enabled_raw {
+        Some(raw) => classify_enabled(Some(raw)),
+        None => EnabledValue::Recognised(config.enabled),
+    };
+    let state = if config.enabled { "on" } else { "off" };
+    let (passed, message) = match asked {
+        EnabledValue::Unrecognised(raw) => (false, unrecognised_enabled_message(&raw)),
+        EnabledValue::Recognised(asked) if asked != config.enabled => (
+            false,
+            format!(
+                "XPIA_ENABLED asks for XPIA {} but XPIA is {state}",
+                if asked { "on" } else { "off" }
+            ),
+        ),
+        EnabledValue::Recognised(true) => (true, "XPIA defense is enabled".to_string()),
+        EnabledValue::Recognised(false) => (
+            true,
+            "XPIA defense is disabled (default; set XPIA_ENABLED=true to opt in)".to_string(),
+        ),
+    };
     checks.push(CheckResult {
         name: "xpia_enabled".into(),
-        passed: true,
-        message: if config.enabled {
-            "XPIA defense is enabled".into()
-        } else {
-            "XPIA defense is disabled (default; set XPIA_ENABLED=true to opt in)".into()
-        },
+        passed,
+        message,
     });
 
     // Check 2: Patterns loaded
@@ -279,5 +300,115 @@ mod tests {
                 check.name, check.message
             );
         }
+    }
+}
+
+/// Issue #1737 item 2 (D4): `xpia_enabled` passes when the state is what a
+/// recognised `XPIA_ENABLED` asks for, and fails, naming the value, when the
+/// value is not recognised.
+#[cfg(test)]
+mod enabled_check_tests {
+    use super::*;
+
+    fn config_for(value: &str) -> XpiaConfig {
+        let value = value.to_string();
+        XpiaConfig::from_lookup(move |k| (k == "XPIA_ENABLED").then(|| value.clone()))
+    }
+
+    fn enabled_check(report: &HealthReport) -> &CheckResult {
+        report
+            .checks
+            .iter()
+            .find(|c| c.name == "xpia_enabled")
+            .expect("xpia_enabled check present")
+    }
+
+    #[test]
+    fn unrecognised_enabled_fails_and_names_value() {
+        for value in ["on", "enabled", " true "] {
+            let report = check_health_with(&config_for(value));
+            let check = enabled_check(&report);
+            assert!(!check.passed, "XPIA_ENABLED={value:?} must fail the check");
+            assert_eq!(
+                check.message,
+                format!(
+                    "XPIA_ENABLED={value:?} is not recognised; XPIA is off (set XPIA_ENABLED=true to opt in)"
+                )
+            );
+            assert_eq!(report.status, HealthStatus::Degraded, "{value:?}");
+            assert_eq!(report.config_summary["enabled"], false);
+            assert_eq!(report.checks.len(), 6);
+        }
+    }
+
+    #[test]
+    fn recognised_on_values_pass() {
+        for value in ["1", "TRUE", "yes"] {
+            let report = check_health_with(&config_for(value));
+            let check = enabled_check(&report);
+            assert!(check.passed, "XPIA_ENABLED={value:?}: {}", check.message);
+            assert_eq!(check.message, "XPIA defense is enabled");
+            assert_eq!(report.config_summary["enabled"], true);
+        }
+    }
+
+    #[test]
+    fn recognised_off_values_pass_with_opt_in_hint() {
+        for value in ["", "0", "false", "no"] {
+            let report = check_health_with(&config_for(value));
+            let check = enabled_check(&report);
+            assert!(check.passed, "XPIA_ENABLED={value:?}: {}", check.message);
+            assert_eq!(
+                check.message,
+                "XPIA defense is disabled (default; set XPIA_ENABLED=true to opt in)"
+            );
+            assert_eq!(report.status, HealthStatus::Healthy);
+        }
+    }
+
+    #[test]
+    fn non_utf8_placeholder_fails_and_names_it() {
+        // `from_env` records a non-UTF-8 value as the placeholder, so health
+        // reports it as the hook does instead of as "disabled (default)".
+        let report = check_health_with(&config_for(crate::config::NON_UTF8_PLACEHOLDER));
+        let check = enabled_check(&report);
+        assert!(!check.passed);
+        assert!(check.message.contains("<non-UTF-8>"), "{}", check.message);
+        assert_eq!(report.config_summary["enabled"], false);
+    }
+
+    #[test]
+    fn enabled_field_that_disagrees_with_raw_value_fails() {
+        // A caller that sets `enabled` by hand after `from_lookup` must not
+        // make health report a state XPIA is not in.
+        let mut config = config_for("false");
+        config.enabled = true;
+        let check = enabled_check(&check_health_with(&config)).clone();
+        assert!(!check.passed);
+        assert_eq!(
+            check.message,
+            "XPIA_ENABLED asks for XPIA off but XPIA is on"
+        );
+
+        let mut config = config_for("true");
+        config.enabled = false;
+        let check = enabled_check(&check_health_with(&config)).clone();
+        assert!(!check.passed);
+        assert_eq!(
+            check.message,
+            "XPIA_ENABLED asks for XPIA on but XPIA is off"
+        );
+    }
+
+    #[test]
+    fn config_built_in_code_uses_enabled_field() {
+        // No raw value (built in code, not from the environment): the check
+        // follows `enabled` and passes either way.
+        let mut config = XpiaConfig::defaults();
+        assert!(enabled_check(&check_health_with(&config)).passed);
+        config.enabled = true;
+        let report = check_health_with(&config);
+        assert!(enabled_check(&report).passed);
+        assert_eq!(enabled_check(&report).message, "XPIA defense is enabled");
     }
 }

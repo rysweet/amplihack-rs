@@ -1,7 +1,7 @@
 ---
 title: "Tutorial: Enable the Copilot parity control plane"
 description: "Launch amplihack with GitHub Copilot CLI, verify staged hooks, and validate the Rust-backed parity control plane end to end."
-last_updated: 2026-03-24
+last_updated: 2026-11-02
 review_schedule: as-needed
 owner: amplihack
 doc_type: tutorial
@@ -19,6 +19,8 @@ By the end of this tutorial you will have:
 - verified the generated `.github/hooks/pre-tool-use` wrapper
 - confirmed that the canonical XPIA hook allows safe Bash input
 - validated that recipe execution keeps using Copilot in nested contexts
+
+> **XPIA is off by default.** The XPIA Bash policy described on this page applies only when XPIA is enabled (`XPIA_ENABLED=true`). With XPIA off, the wrapper still runs, but no XPIA decision is made. See the [XPIA Configuration Reference](../reference/xpia-configuration.md).
 
 ## Prerequisites
 

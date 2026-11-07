@@ -15,7 +15,10 @@ pub mod health;
 pub mod patterns;
 pub mod risk;
 
-pub use config::XpiaConfig;
+pub use config::{
+    EnabledValue, NON_UTF8_PLACEHOLDER, XpiaConfig, classify_enabled, enabled_raw_from_os,
+    unrecognised_enabled_message,
+};
 pub use defender::XpiaDefender;
 pub use health::{HealthReport, HealthStatus};
 pub use patterns::{AttackPattern, PatternCategory, XpiaPatterns};
