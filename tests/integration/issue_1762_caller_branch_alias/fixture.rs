@@ -2,7 +2,7 @@
 //!
 //! Each [`Fx`] owns a temp directory holding:
 //! - `remotes/acme/widget.git`: the bare origin. The caller's `origin` is
-//!   `https://github.com/acme/widget.git`, and every child gets
+//!   `https://github.com/acme/widget.git`, and its private configuration has
 //!   `url.<tmp>/remotes/.insteadOf=https://github.com/`, so fetches and pushes
 //!   stay on disk while the provider helpers still see a github.com origin;
 //! - `caller/`: the caller's clone, on `main`, with `origin/HEAD` set;
@@ -223,6 +223,16 @@ impl Fx {
         ] {
             fx.git(&fx.caller, &["config", key, value]);
         }
+        // Keep the rewrite in this fixture's repository configuration. The
+        // real checkpoint must still refuse inherited configuration selectors.
+        fx.git(
+            &fx.caller,
+            &[
+                "config",
+                &format!("url.{}/.insteadOf", fx.root.join("remotes").display()),
+                "https://github.com/",
+            ],
+        );
         fx.git(&fx.caller, &["remote", "add", "origin", ORIGIN_URL]);
         fx.write_in(&fx.caller, "README.md", "base\n");
         fx.git(&fx.caller, &["add", "README.md"]);
@@ -243,12 +253,6 @@ impl Fx {
             .env("GH_CONFIG_DIR", root.join("home/.config/gh"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_COUNT", "1")
-            .env(
-                "GIT_CONFIG_KEY_0",
-                format!("url.{}/.insteadOf", root.join("remotes").display()),
-            )
-            .env("GIT_CONFIG_VALUE_0", "https://github.com/")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_ALLOW_PROTOCOL", "file")
             .env("GH_FIXTURE_DIR", root)

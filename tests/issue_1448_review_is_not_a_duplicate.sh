@@ -218,10 +218,14 @@ run "$WORK/on-pr-branch" FAKE_GH=none
 echo "== 7. the recipe step carries all of it end to end =="
 STEP="$WORK/step03c.sh"
 if python3 - "$PREP" "$STEP" <<'PY'
-import sys, yaml
-steps = yaml.safe_load(open(sys.argv[1]))["steps"]
-step = next(s for s in steps if s["id"] == "step-03c-issue-claim-check")
-open(sys.argv[2], "w").write(step["command"])
+import importlib.util, pathlib, sys
+recipe = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("checkpoint_contract", recipe.parent / "tests/test-checkpoint-scope.py")
+contract = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(contract)
+steps = contract.blocks(recipe.read_text())
+assert "step-03c-issue-claim-check" in steps
+open(sys.argv[2], "w").write(contract.literal(steps["step-03c-issue-claim-check"], "command"))
 PY
 then
   pass "workflow-prep still declares step-03c-issue-claim-check"

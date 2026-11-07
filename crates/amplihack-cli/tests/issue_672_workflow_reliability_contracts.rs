@@ -4,6 +4,8 @@
 //! implementation. They cover YAML/docs/version contracts that do not have a
 //! narrow Rust API surface.
 
+use crate::canonical_staging_checkpoint_fixture as checkpoint_fixture;
+
 use amplihack_cli::commands::orch::build_workstreams_config_to_tempfile;
 use serde_yaml::Value;
 use std::path::{Path, PathBuf};
@@ -23,7 +25,9 @@ fn read_repo_file(rel: &str) -> String {
 
 fn load_recipe(rel: &str) -> Value {
     let text = read_repo_file(rel);
-    serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {rel}: {e}"))
+    checkpoint_fixture::inspect_recipe(
+        serde_yaml::from_str(&text).unwrap_or_else(|e| panic!("parse {rel}: {e}")),
+    )
 }
 
 fn find_step<'a>(recipe: &'a Value, step_id: &str) -> &'a Value {
@@ -300,7 +304,18 @@ fn recipe_files_with_git_commands_disable_interactive_pagers() {
     for path in collect_files(&recipes, &["yaml"]) {
         let content = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-        let file_has_pager_default = content.contains("GIT_PAGER=cat");
+        let inspected = checkpoint_fixture::inspect_recipe(
+            serde_yaml::from_str(&content).expect("recipe YAML"),
+        );
+        let commands = inspected["steps"]
+            .as_sequence()
+            .into_iter()
+            .flatten()
+            .filter_map(|step| step["command"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let file_has_pager_default =
+            content.contains("GIT_PAGER=cat") || commands.contains("GIT_PAGER=cat");
         for (idx, line) in content.lines().enumerate() {
             let trimmed = line.trim();
             if trimmed.starts_with('#') {
@@ -691,12 +706,12 @@ fn issue_780_lifecycle_recipes_preflight_runtime_artifacts_before_sensitive_oper
         (
             "amplifier-bundle/recipes/workflow-pr-review.yaml",
             "step-18c-push-feedback-changes",
-            "git add",
+            "workflow_checkpoint_stage;",
         ),
         (
             "amplifier-bundle/recipes/workflow-publish.yaml",
             "step-15-commit-push",
-            "git add",
+            "workflow_checkpoint_stage;",
         ),
         (
             "amplifier-bundle/recipes/workflow-publish.yaml",
@@ -711,7 +726,7 @@ fn issue_780_lifecycle_recipes_preflight_runtime_artifacts_before_sensitive_oper
         (
             "amplifier-bundle/recipes/workflow-finalize.yaml",
             "step-20b-push-cleanup",
-            "git add",
+            "workflow_checkpoint_stage;",
         ),
         (
             "amplifier-bundle/recipes/workflow-finalize.yaml",
@@ -721,6 +736,9 @@ fn issue_780_lifecycle_recipes_preflight_runtime_artifacts_before_sensitive_oper
     ] {
         let recipe = load_recipe(recipe_rel);
         let command = step_command(&recipe, step_id);
+        if sensitive_operation == "workflow_checkpoint_stage;" {
+            checkpoint_fixture::assert_strict_staging(command);
+        }
         let preflight = command
             .find("preflight_known_workflow_runtime_artifacts")
             .unwrap_or_else(|| {

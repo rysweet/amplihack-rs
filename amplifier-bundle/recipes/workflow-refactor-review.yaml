@@ -31,6 +31,7 @@ context:
 
 steps:
   - id: "step-09-refactor"
+    auto_stage: false
     agent: "amplihack:cleanup"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
@@ -62,6 +63,7 @@ steps:
     output: "refactored_code"
 
   - id: "step-09b-optimize"
+    auto_stage: false
     agent: "amplihack:optimizer"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
@@ -84,6 +86,7 @@ steps:
   # STEP 10: REVIEW PASS BEFORE COMMIT
   # ==========================================================================
   - id: "step-10-pre-commit-review"
+    auto_stage: false
     agent: "amplihack:reviewer"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
@@ -117,6 +120,7 @@ steps:
     output: "pre_commit_review"
 
   - id: "step-10b-security-review"
+    auto_stage: false
     agent: "amplihack:security"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
@@ -138,6 +142,7 @@ steps:
     output: "security_review"
 
   - id: "step-10c-philosophy-check"
+    auto_stage: false
     agent: "amplihack:philosophy-guardian"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
@@ -161,6 +166,7 @@ steps:
   # STEP 11: INCORPORATE REVIEW FEEDBACK
   # ==========================================================================
   - id: "step-11-incorporate-feedback"
+    auto_stage: false
     agent: "amplihack:architect"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
@@ -180,6 +186,7 @@ steps:
     output: "feedback_assessment"
 
   - id: "step-11b-implement-feedback"
+    auto_stage: false
     agent: "amplihack:builder"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"

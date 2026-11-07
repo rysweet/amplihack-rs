@@ -23,6 +23,7 @@ context:
 
 steps:
   - id: "step-12-run-precommit"
+    auto_stage: false
     agent: "amplihack:pre-commit-diagnostic"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
@@ -96,6 +97,7 @@ steps:
   # choose the appropriate local outside-in validation strategy.
   # ==========================================================================
   - id: "step-13-local-testing"
+    auto_stage: false
     agent: "amplihack:builder"
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"

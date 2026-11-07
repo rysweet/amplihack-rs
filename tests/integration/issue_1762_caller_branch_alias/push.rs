@@ -14,6 +14,12 @@ use serde_json::json;
 
 use super::fixture::*;
 
+const OWNER: crate::canonical_staging_checkpoint_fixture::Owner =
+    crate::canonical_staging_checkpoint_fixture::Owner {
+        task: "fix the fixture branch for issue 1762",
+        paths: &["feature.txt", "alias-work.txt"],
+    };
+
 /// An alias worktree with one new, uncommitted file, under `push_default`.
 fn alias_with_work(fx: &Fx, push_default: Option<&str>) -> PathBuf {
     fx.on_pushed_branch();
@@ -57,7 +63,12 @@ fn run_step_in(
     if let Some(home) = home {
         command.env("AMPLIHACK_HOME", home);
     }
-    run(&mut command)
+    let output = OWNER.project(&command, recipe, &fx.caller, wt, branch_name, &alias(1));
+    Run {
+        code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+        stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+    }
 }
 
 /// origin/<B> now holds the alias worktree's HEAD, no alias reached origin,
@@ -115,10 +126,42 @@ fn step15_refuses_unbound_push_target() {
 
     assert_ne!(run.code, Some(0), "{}", run.describe());
     assert!(
-        run.stderr_line_with(&["ERROR:", "refusing to push", "#1762"])
-            .is_some(),
+        run.stderr.contains("checkpoint scope refusal:")
+            && run.stderr.contains("invalid step-04 branch alias"),
         "{}",
         run.describe()
+    );
+    let body = crate::canonical_staging_checkpoint_fixture::inspect(
+        "step-15-commit-push",
+        &step_text("workflow-publish", "step-15-commit-push", "command"),
+    );
+    // Exercise the unchanged real push-target guard too. Full admission now
+    // refuses the inconsistent owner context before this publication boundary.
+    let guard = body
+        .lines()
+        .find(|line| line.starts_with("WF_TOOLS="))
+        .expect("real push-target guard");
+    let mut command = fx.bash(&wt);
+    command
+        .arg("-c")
+        .arg(guard)
+        .env(
+            "RUNTIME_ARTIFACT_HELPER",
+            tool_path("workflow_runtime_artifacts.sh"),
+        )
+        .env("GIT_IDENTITY_HELPER", tool_path("git-identity.sh"))
+        .env(
+            "RECIPE_VAR_worktree_setup",
+            json!({"branch_name": "feat/some-other-branch"}).to_string(),
+        );
+    let guarded = super::fixture::run(&mut command);
+    assert_ne!(guarded.code, Some(0), "{}", guarded.describe());
+    assert!(
+        guarded
+            .stderr_line_with(&["ERROR:", "refusing to push", "#1762"])
+            .is_some(),
+        "{}",
+        guarded.describe()
     );
     assert_eq!(fx.origin_refs(), before, "nothing may reach origin");
 }
@@ -186,10 +229,44 @@ fn missing_resolver_stops_push_steps() {
         let run = run_step_in(&fx, recipe, id, &wt, BRANCH, Some(&home));
 
         assert_ne!(run.code, Some(0), "{id}\n{}", run.describe());
+        // A missing configured upstream can refuse at capture before the
+        // missing resolver is reached. The complete checkpoint still refuses.
+        // Exercise the real resolver call separately to retain its error check.
+        let body = crate::canonical_staging_checkpoint_fixture::inspect(
+            id,
+            &step_text(recipe, id, "command"),
+        );
+        let guard = body
+            .lines()
+            .find(|line| {
+                if id == "step-15-commit-push" {
+                    line.starts_with("WF_TOOLS=")
+                } else {
+                    line.starts_with("current_branch=$(git branch --show-current);")
+                }
+            })
+            .expect("real remote-branch resolver call");
+        let tools = home.join("amplifier-bundle/tools");
+        let mut command = fx.bash(&wt);
+        command
+            .arg("-c")
+            .arg(guard)
+            .env("WT_TOOL", tools.join("worktree_setup_path.sh"))
+            .env(
+                "RUNTIME_ARTIFACT_HELPER",
+                tools.join("workflow_runtime_artifacts.sh"),
+            )
+            .env("GIT_IDENTITY_HELPER", tools.join("git-identity.sh"))
+            .env(
+                "RECIPE_VAR_worktree_setup",
+                json!({"branch_name": BRANCH}).to_string(),
+            );
+        let guarded = super::fixture::run(&mut command);
+        assert_ne!(guarded.code, Some(0), "{id}\n{}", guarded.describe());
         assert!(
-            run.stderr_line_with(&[RESOLVER]).is_some(),
+            guarded.stderr_line_with(&[RESOLVER]).is_some(),
             "{id}: stderr names the missing resolver\n{}",
-            run.describe()
+            guarded.describe()
         );
         assert_eq!(fx.origin_refs(), before, "{id}: nothing may reach origin");
     }

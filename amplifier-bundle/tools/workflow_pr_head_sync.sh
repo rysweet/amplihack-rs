@@ -26,12 +26,25 @@
 # A local HEAD that is equal to, ahead of or diverged from origin/<branch> is
 # left alone: step-20b's `git pull --rebase` handles it, as before.
 #
-# Exit status is always 0. A failed fetch, a detached HEAD, a branch that was
+# Without --strict-fetch, exit status is always 0. A failed fetch, a detached HEAD, a branch that was
 # never pushed, or a refused fast-forward prints one WARNING or INFO line on
 # stderr and changes nothing more; step-20b then fails or succeeds on its own
 # terms, exactly as without this tool.
 
 set -uo pipefail
+
+# Checkpoint callers must retain a failed transport instead of treating it as
+# optional enrichment. Other callers keep the original best-effort contract.
+strict_fetch=false
+probe_origin_ref=false
+case "${1:-}" in
+  --strict-fetch)
+    strict_fetch=true
+    if [ "$#" -eq 2 ] && [ "$2" = --probe-origin-ref ]; then probe_origin_ref=true
+    elif [ "$#" -ne 1 ]; then exit 2; fi ;;
+  '') [ "$#" -eq 0 ] || exit 2 ;;
+  *) echo 'ERROR: invalid workflow_pr_head_sync argument' >&2; exit 2 ;;
+esac
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=workflow_pr_head_fetch.sh
@@ -52,10 +65,61 @@ bound=""
 ! command -v timeout >/dev/null 2>&1 || bound="timeout 60"
 ssh_cmd=""
 _finalization_batch_ssh_command . ssh_cmd
-if ! GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$ssh_cmd" $bound git \
+# Owner-approved #1554 early mode (17.116 amendment): this fetch-origin read
+# is opt-in for the earlier finalization caller only. Cleanup does not select it.
+if [ "$probe_origin_ref" = true ]; then
+  probe_output=$(mktemp "${TMPDIR:?assigned TMPDIR required}/early-sync-origin.XXXXXX") || exit $?
+  probe_rc=0
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$ssh_cmd" $bound git \
+    -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 \
+    ls-remote --exit-code -- origin </dev/null >"$probe_output" || probe_rc=$?
+  if [ "$probe_rc" -ne 0 ] && [ "$probe_rc" -ne 2 ]; then
+    rm -f -- "$probe_output"
+    echo "ERROR: workflow_pr_head_sync: origin ref inspection failed (exit $probe_rc)" >&2
+    exit "$probe_rc"
+  fi
+  inspection_rc=0
+  python3 -I - "$probe_output" "refs/heads/$branch" "$probe_rc" <<'ORIGIN_REF_PY' || inspection_rc=$?
+import os,pathlib,re,sys
+raw=pathlib.Path(sys.argv[1]).read_bytes(); target=os.fsencode(sys.argv[2]); rc=int(sys.argv[3])
+refs={}
+for line in raw.splitlines():
+    parts=line.split(b'\t')
+    if len(parts)!=2 or not (parts[1]==b'HEAD' or parts[1].startswith(b'refs/')): sys.exit(78)
+    if not re.fullmatch(b'[0-9a-f]{40}|[0-9a-f]{64}',parts[0]) or parts[1] in refs: sys.exit(78)
+    refs[parts[1]]=parts[0]
+if rc==2 and refs: sys.exit(78)
+sys.exit(0 if target in refs else 3)
+ORIGIN_REF_PY
+  rm -f -- "$probe_output"
+  if [ "$inspection_rc" -eq 3 ]; then
+    echo "INFO: workflow_pr_head_sync: origin task ref is absent; skipping early sync before first publication" >&2
+    exit 0
+  fi
+  if [ "$inspection_rc" -ne 0 ]; then
+    echo "ERROR: workflow_pr_head_sync: malformed origin task-ref advertisement (transport exit $probe_rc; inspection exit $inspection_rc)" >&2
+    exit "$inspection_rc"
+  fi
+fi
+
+workflow_pr_head_sync_fetch() {
+  GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$ssh_cmd" $bound git \
     -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 \
     fetch --quiet --no-tags --no-write-fetch-head \
-    origin "+refs/heads/$branch:refs/remotes/origin/$branch" </dev/null >/dev/null 2>&1; then
+    origin "+refs/heads/$branch:refs/remotes/origin/$branch" </dev/null
+}
+if [ "$strict_fetch" = true ]; then
+  fetch_output=$(mktemp "${TMPDIR:?assigned TMPDIR required}/checkpoint-sync-fetch.XXXXXX") || exit $?
+  fetch_rc=0
+  workflow_pr_head_sync_fetch >"$fetch_output" 2>&1 || fetch_rc=$?
+  # The strict caller captures and redacts this private output before emission.
+  cat "$fetch_output" >&2
+  rm -f -- "$fetch_output"
+  if [ "$fetch_rc" -ne 0 ]; then
+    echo "ERROR: workflow_pr_head_sync: fetch failed (exit $fetch_rc); checkpoint stopped" >&2
+    exit "$fetch_rc"
+  fi
+elif ! workflow_pr_head_sync_fetch >/dev/null 2>&1; then
   echo "WARNING: workflow_pr_head_sync: could not fetch origin/$branch; worktree left as it is (#1714)" >&2
   exit 0
 fi

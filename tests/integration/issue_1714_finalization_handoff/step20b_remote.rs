@@ -11,6 +11,12 @@ use super::fixture::*;
 use crate::artifact_guard_workflow::worktree_setup_json;
 use crate::isolated_amplihack::isolated;
 
+const OWNER: crate::canonical_staging_checkpoint_fixture::Owner =
+    crate::canonical_staging_checkpoint_fixture::Owner {
+        task: "synchronise the fixture PR and publish its audit correction (issue #1714)",
+        paths: &["work.txt", "audit.txt"],
+    };
+
 pub const BR: &str = "feat/sync";
 
 pub fn git(dir: &Path, args: &[&str]) -> String {
@@ -67,7 +73,8 @@ pub struct Remote {
 impl Remote {
     /// main and <branch> (L) pushed; then, from another clone, main moves
     /// on and is merged into <branch> (M, a fast-forward of L) and pushed.
-    /// The run's worktree is at L and has never seen M.
+    /// The run's worktree remains at L. Destination objects are prepared
+    /// locally without advancing or creating its tracking references.
     pub fn new(tracking: Tracking) -> Self {
         let tmp = TempDir::new().expect("tempdir");
         let root = fs::canonicalize(tmp.path()).expect("canonicalize");
@@ -125,6 +132,33 @@ impl Remote {
         );
         git(&other, &["push", "-q", "origin", BR]);
         let pr_head = git(&other, &["rev-parse", "HEAD"]);
+        // Prepare the actual destination objects before admission. An exact
+        // object fetch writes only the owned object store and FETCH_HEAD;
+        // missing/stale tracking conditions remain part of the original test.
+        let tracking_before = git(
+            &wt,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/remotes/origin/",
+            ],
+        );
+        git(
+            &wt,
+            &["fetch", "--no-tags", &bare.to_string_lossy(), &pr_head],
+        );
+        assert_eq!(
+            git(
+                &wt,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname)",
+                    "refs/remotes/origin/"
+                ]
+            ),
+            tracking_before
+        );
+        assert_eq!(git(&wt, &["rev-parse", "HEAD"]), local);
 
         let bin = root.join("bin");
         fs::create_dir_all(&bin).expect("mkdir bin");
@@ -154,7 +188,8 @@ impl Remote {
             self.root.join("bin").display(),
             std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
         );
-        isolated("bash")
+        let mut command = isolated("bash");
+        command
             .arg("-c")
             .arg(finalize_command(id))
             .current_dir(self.root.join("launch"))
@@ -163,16 +198,25 @@ impl Remote {
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_CEILING_DIRECTORIES", &self.root)
             .env("AMPLIHACK_GIT_AUTHOR_NAME", "workflow")
             .env("AMPLIHACK_GIT_AUTHOR_EMAIL", "workflow@example.com")
             .env("AMPLIHACK_GIT_COMMITTER_NAME", "workflow")
             .env("AMPLIHACK_GIT_COMMITTER_EMAIL", "workflow@example.com")
             .env("REPO_PATH", self.root.join("launch"))
             .env("AMPLIHACK_HOME", workspace_root())
-            .env("RECIPE_VAR_worktree_setup", worktree_setup_json(&self.wt))
-            .output()
-            .expect("spawn bash")
+            .env("RECIPE_VAR_worktree_setup", worktree_setup_json(&self.wt));
+        if id == "step-20b-push-cleanup" {
+            OWNER.project(
+                &command,
+                "workflow-finalize",
+                &self.root.join("launch"),
+                &self.wt,
+                BR,
+                BR,
+            )
+        } else {
+            command.output().expect("spawn bash")
+        }
     }
 
     pub fn head(&self) -> String {

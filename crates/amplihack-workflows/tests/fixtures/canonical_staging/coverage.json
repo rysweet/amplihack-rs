@@ -1,0 +1,254 @@
+{
+  "evidence_classification": "Historical planning evidence only; authored statuses are not execution acceptance.",
+  "authoritative_current_ledger": "/Users/ryan/src/bb/worker-logs/canonical-default-staging-1554/refactor-approved/acceptance-ledger.json",
+  "reconciliation": "Match authoritative-candidate.json digest, exact candidate file hashes, runner and requirements identity, and complete planned case population. Prior receipts remain historical when identities differ.",
+  "test_files": [
+    "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs",
+    "crates/amplihack-workflows/tests/canonical_staging_runner_test.rs",
+    "crates/amplihack-workflows/tests/canonical_staging_checkpoint_test.rs",
+    "crates/amplihack-workflows/tests/canonical_staging_evidence_test.rs"
+  ],
+  "support_files": [
+    "crates/amplihack-workflows/tests/support/canonical_staging.rs",
+    "crates/amplihack-workflows/tests/fixtures/canonical_staging/private_adapter.py",
+    "crates/amplihack-workflows/tests/fixtures/canonical_staging/inventory.json",
+    "crates/amplihack-workflows/tests/fixtures/canonical_staging/baseline_asset_sha256.json",
+    "crates/amplihack-workflows/tests/fixtures/canonical_staging/audit_receipts.py"
+  ],
+  "requirements_coverage": [
+    {
+      "requirement": "R1. Repository provenance precedes source analysis.",
+      "tests": [
+        "final_candidate_delivery_requires_separate_complete_receipts"
+      ],
+      "evidence": "test-design/provenance.json",
+      "status": "Provenance verified; test execution pending."
+    },
+    {
+      "requirement": "R2. Complete inventory, directories, staging settings and source ownership.",
+      "tests": [
+        "inventory_accounts_for_all_direct_and_transitive_agents",
+        "nested_adjudicator_is_a_visible_scope_exclusion",
+        "documentation_review_evidence_is_not_a_source_commit_owner",
+        "mergeability_repairs_have_an_explicit_source_publication_owner"
+      ],
+      "status": "Authored; orphan and nested coverage limitation remain."
+    },
+    {
+      "requirement": "R3. Bounded diff preserves existing blocks, helpers, hooks, runner and dependencies.",
+      "tests": [
+        "bounded_recipe_changes_preserve_all_other_asset_bytes",
+        "final_diff_contains_only_authorised_paths"
+      ],
+      "status": "Authored; production assets remain unchanged."
+    },
+    {
+      "requirement": "R4-R5. Every required opt-out preserves the index through the actual runner and has its own valid removal control.",
+      "tests": [
+        "step_02_clarify_requirements_integrity_and_removal_control",
+        "step_02b_analyze_codebase_integrity_and_removal_control",
+        "step_02c_resolve_ambiguity_integrity_and_removal_control",
+        "step_05_architecture_integrity_and_removal_control",
+        "step_05b_api_design_integrity_and_removal_control",
+        "step_05c_database_design_integrity_and_removal_control",
+        "step_05d_security_review_integrity_and_removal_control",
+        "step_05e_design_consolidation_integrity_and_removal_control",
+        "step_06_documentation_integrity_and_removal_control",
+        "step_06b_documentation_review_integrity_and_removal_control",
+        "step_06c_documentation_refinement_integrity_and_removal_control",
+        "step_07_write_tests_integrity_and_removal_control",
+        "step_08_implement_integrity_and_removal_control",
+        "step_08c_work_verifier_integrity_and_removal_control",
+        "step_08b_integration_integrity_and_removal_control",
+        "step_09_refactor_integrity_and_removal_control",
+        "step_09b_optimize_integrity_and_removal_control",
+        "step_10_pre_commit_review_integrity_and_removal_control",
+        "step_10b_security_review_integrity_and_removal_control",
+        "step_10c_philosophy_check_integrity_and_removal_control",
+        "step_11_incorporate_feedback_integrity_and_removal_control",
+        "step_11b_implement_feedback_integrity_and_removal_control",
+        "step_12_run_precommit_integrity_and_removal_control",
+        "step_13_local_testing_integrity_and_removal_control",
+        "step_14_bump_version_integrity_and_removal_control",
+        "step_16b_outside_in_fix_loop_integrity_and_removal_control",
+        "step_17b_reviewer_agent_integrity_and_removal_control",
+        "step_17c_security_review_integrity_and_removal_control",
+        "step_17d_philosophy_guardian_integrity_and_removal_control",
+        "step_17e_address_blocking_issues_integrity_and_removal_control",
+        "step_18a_analyze_feedback_integrity_and_removal_control",
+        "step_18b_implement_feedback_integrity_and_removal_control",
+        "step_19a_philosophy_check_integrity_and_removal_control",
+        "step_19b_patterns_check_integrity_and_removal_control",
+        "step_20_final_cleanup_integrity_and_removal_control",
+        "step_20c_quality_audit_integrity_and_removal_control",
+        "step_22_ensure_mergeable_integrity_and_removal_control",
+        "agentic_finalizer_integrity_and_removal_control",
+        "step_02_crusty_review_integrity_and_removal_control",
+        "step_04_address_concerns_integrity_and_removal_control",
+        "step_02_clarify_requirements_opts_out",
+        "step_02b_analyze_codebase_opts_out",
+        "step_02c_resolve_ambiguity_opts_out",
+        "step_05_architecture_opts_out",
+        "step_05b_api_design_opts_out",
+        "step_05c_database_design_opts_out",
+        "step_05d_security_review_opts_out",
+        "step_05e_design_consolidation_opts_out",
+        "step_06_documentation_opts_out",
+        "step_06b_documentation_review_opts_out",
+        "step_06c_documentation_refinement_opts_out",
+        "step_07_write_tests_opts_out",
+        "step_08_implement_opts_out",
+        "step_08c_work_verifier_opts_out",
+        "step_08b_integration_opts_out",
+        "step_09_refactor_opts_out",
+        "step_09b_optimize_opts_out",
+        "step_10_pre_commit_review_opts_out",
+        "step_10b_security_review_opts_out",
+        "step_10c_philosophy_check_opts_out",
+        "step_11_incorporate_feedback_opts_out",
+        "step_11b_implement_feedback_opts_out",
+        "step_12_run_precommit_opts_out",
+        "step_13_local_testing_opts_out",
+        "step_14_bump_version_opts_out",
+        "step_16b_outside_in_fix_loop_opts_out",
+        "step_17b_reviewer_agent_opts_out",
+        "step_17c_security_review_opts_out",
+        "step_17d_philosophy_guardian_opts_out",
+        "step_17e_address_blocking_issues_opts_out",
+        "step_18a_analyze_feedback_opts_out",
+        "step_18b_implement_feedback_opts_out",
+        "step_19a_philosophy_check_opts_out",
+        "step_19b_patterns_check_opts_out",
+        "step_20_final_cleanup_opts_out",
+        "step_20c_quality_audit_opts_out",
+        "step_22_ensure_mergeable_opts_out",
+        "agentic_finalizer_opts_out",
+        "step_02_crusty_review_opts_out",
+        "step_04_address_concerns_opts_out"
+      ],
+      "status": "Authored; no executed RED, GREEN or removal-control results."
+    },
+    {
+      "requirement": "R6. Raw index bytes, staged blobs, modes and visible runtime metadata are checked independently.",
+      "tests": [
+        "disabled_staging_noop_preserves_raw_index_bytes",
+        "deferred_mutation_preserves_partial_staging_and_linked_indexes",
+        "crusty_review_preserves_three_independent_indexes_with_edge_entries",
+        "inherited_git_selectors_cannot_change_caller_or_alternate_indexes",
+        "repeated_agent_sequence_preserves_indexes_after_context_propagation"
+      ],
+      "status": "Authored; actual-runner execution pending."
+    },
+    {
+      "requirement": "R7. Unchanged checkpoints stage authorised source and execute successful and rejecting hooks.",
+      "tests": [
+        "unchanged_checkpoints_stage_and_publish_only_authorised_source",
+        "successful_hooks_execute_in_unchanged_checkpoint_blocks",
+        "rejecting_hooks_prevent_commits_and_propagate_checkpoint_failure"
+      ],
+      "status": "Authored for seven blocks; execution pending."
+    },
+    {
+      "requirement": "R8. Unsafe checkpoints and orphaned mutation block publication and require parent sequencing.",
+      "tests": [
+        "unchanged_checkpoints_stage_and_publish_only_authorised_source",
+        "mergeability_repairs_have_an_explicit_source_publication_owner",
+        "final_candidate_delivery_requires_separate_complete_receipts"
+      ],
+      "status": "Acceptance remains unresolved; assertions have not been weakened."
+    },
+    {
+      "requirement": "R9. Critical consensus implementation and review steps execute despite #1966.",
+      "tests": [
+        "final_candidate_delivery_requires_separate_complete_receipts"
+      ],
+      "status": "Evidence consistency check authored; execution and final design approval are unverified."
+    },
+    {
+      "requirement": "R10. Actual auto-drive acceptance comes from an eligible authorised platform.",
+      "tests": [
+        "final_candidate_delivery_requires_separate_complete_receipts"
+      ],
+      "status": "Blocked on supported Linux execution; Darwin and missing /proc verified."
+    },
+    {
+      "requirement": "R11. Resource admission, native/proof qualification, normal hooks and full quality checks have distinct receipts.",
+      "tests": [
+        "final_candidate_delivery_requires_separate_complete_receipts"
+      ],
+      "status": "Qualification incomplete: exact commands, 4 GiB mechanism and 595+5 procedure are unresolved."
+    },
+    {
+      "requirement": "R12. Independent review, Crusty, CI and review threads identify the exact final candidate.",
+      "tests": [
+        "final_candidate_delivery_requires_separate_complete_receipts"
+      ],
+      "status": "Evidence not supplied."
+    },
+    {
+      "requirement": "R13. Owner integration has separate authority and a platform-confirmed merged state.",
+      "tests": [
+        "final_candidate_delivery_requires_separate_complete_receipts"
+      ],
+      "status": "No integration authority or merge evidence supplied; no merge attempted."
+    },
+    {
+      "requirement": "R14. Final issue audit retains failed requirements and broader issues remain open with both Refs references.",
+      "tests": [
+        "final_candidate_delivery_requires_separate_complete_receipts"
+      ],
+      "status": "Authored; both issue bodies and comments retained in task reports."
+    }
+  ],
+  "edge_cases_covered": [
+    "Partially staged contents differ from working-tree contents.",
+    "Staged executable mode differs from the working-tree mode.",
+    "Linked-worktree index paths and a shared common Git directory.",
+    "Independent caller, review and fixer indexes.",
+    "Staged deletion with working-tree recreation.",
+    "Staged rename with subsequent unstaged content.",
+    "Symlink-target changes.",
+    "Spaces, tabs, newlines, leading hyphens and pathspec-like names.",
+    "New untracked metadata and tracked runtime modifications.",
+    "New and modified deferred source files.",
+    "Hostile Git repository selectors and a private alternate index.",
+    "Disabled-staging no-op bookkeeping.",
+    "Parsed-output propagation to a second conditional invocation.",
+    "Successful and rejecting hooks with terminal repair refusal."
+  ],
+  "excluded_cases": [
+    "Absent, split, sparse and unmerged indexes.",
+    "Concurrent Git writers and interrupted adapters.",
+    "Complete retry, resume, terminal-repair and multi-phase sequences.",
+    "Live acceptance on Darwin."
+  ],
+  "test_counts": {
+    "crates/amplihack-workflows/tests/canonical_staging_policy_test.rs": 43,
+    "crates/amplihack-workflows/tests/canonical_staging_runner_test.rs": 45,
+    "crates/amplihack-workflows/tests/canonical_staging_checkpoint_test.rs": 4,
+    "crates/amplihack-workflows/tests/canonical_staging_evidence_test.rs": 3
+  },
+  "total_tests": 95,
+  "individual_removal_controls": 40,
+  "tests_should_fail": true,
+  "execution_status": "Not compiled or executed. Rust formatting, Python syntax and Cargo target discovery checked.",
+  "expected_initial_policy_failures": 40,
+  "default_active_tests": 43,
+  "explicitly_ignored_external_or_acceptance_tests": 52,
+  "authoring_epoch": "The original per-requirement statuses below describe the preceding test-authoring step, not current delivery acceptance.",
+  "implementation_evidence_directory": "/Users/ryan/src/bb/worker-logs/canonical-default-staging-1554/conservative-v1",
+  "conditional_role_amendment": "step-05-architecture permits conditional source implementation; its baseline, corrected and removal-control cases were renewed.",
+  "bounded_execution_summary": {
+    "policy_tests_passed": 43,
+    "runner_tests_passed": 45,
+    "required_opt_outs": 40,
+    "normal_hook_cases_passed": 7,
+    "rejecting_hook_cases_passed": 7,
+    "checkpoint_safety": "failed",
+    "brick_budget": "failed",
+    "full_delivery": "incomplete",
+    "runner_test_scope": "Resolved-directory projections only; not unchanged-template acceptance.",
+    "unchanged_template_controls": "failed: successful Crusty adapter execution does not lead to the intended removal-control integrity failure under the installed runner",
+    "runner_fidelity_acceptance": "incomplete"
+  }
+}

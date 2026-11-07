@@ -20,6 +20,7 @@ context: {}
 
 steps:
   - id: "step-05-architecture"
+    auto_stage: false
     agent: "amplihack:architect"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
@@ -83,6 +84,7 @@ steps:
     output: "architecture_design"
 
   - id: "step-05b-api-design"
+    auto_stage: false
     condition: "clarified_requirements.requires_api_design != 'false'"
     agent: "amplihack:api-designer"
     working_dir: "{{worktree_setup.worktree_path}}"
@@ -101,6 +103,7 @@ steps:
     output: "api_design"
 
   - id: "step-05c-database-design"
+    auto_stage: false
     condition: "clarified_requirements.requires_database_design != 'false'"
     agent: "amplihack:database"
     working_dir: "{{worktree_setup.worktree_path}}"
@@ -119,6 +122,7 @@ steps:
     output: "database_design"
 
   - id: "step-05d-security-review"
+    auto_stage: false
     agent: "amplihack:security"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
@@ -139,6 +143,7 @@ steps:
     output: "security_requirements"
 
   - id: "step-05e-design-consolidation"
+    auto_stage: false
     agent: "amplihack:architect"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
@@ -169,6 +174,7 @@ steps:
   # STEP 6: RETCON DOCUMENTATION WRITING
   # ==========================================================================
   - id: "step-06-documentation"
+    auto_stage: false
     agent: "amplihack:documentation-writer"
     working_dir: "{{worktree_setup.worktree_path}}"
     prompt: |
@@ -191,6 +197,7 @@ steps:
     output: "documentation"
 
   - id: "step-06b-documentation-review"
+    auto_stage: false
     agent: "amplihack:architect"
     working_dir: "{{worktree_setup.worktree_path}}"
     # Documentation review is a QUALITY SIGNAL, not a gate (#834): non-fatal so a
@@ -228,6 +235,7 @@ steps:
     output: "doc_review_feedback"
 
   - id: "step-06c-documentation-refinement"
+    auto_stage: false
     agent: "amplihack:documentation-writer"
     working_dir: "{{worktree_setup.worktree_path}}"
     continue_on_error: true

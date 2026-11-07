@@ -437,14 +437,16 @@ kw() { printf '%s\n' "$1" | bash "$IREF" --keyword; }
 echo "== 5. the recipes and the publish helper are wired to all of it =="
 STEP="$WORK/step03c.sh"
 if python3 - "$PREP" "$STEP" <<'PY'
-import sys, yaml
-recipe, out = sys.argv[1], sys.argv[2]
-steps = yaml.safe_load(open(recipe))["steps"]
-ids = [s["id"] for s in steps]
+import importlib.util, pathlib, sys
+recipe, out = pathlib.Path(sys.argv[1]), sys.argv[2]
+spec = importlib.util.spec_from_file_location("checkpoint_contract", recipe.parent / "tests/test-checkpoint-scope.py")
+contract = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(contract)
+steps = contract.blocks(recipe.read_text())
+ids = list(steps)
 assert "step-03c-issue-claim-check" in ids, ids
 assert ids.index("step-03c-issue-claim-check") > ids.index("step-03b-extract-issue-number")
-step = next(s for s in steps if s["id"] == "step-03c-issue-claim-check")
-open(out, "w").write(step["command"])
+open(out, "w").write(contract.literal(steps["step-03c-issue-claim-check"], "command"))
 PY
 then
   pass "workflow-prep declares step-03c-issue-claim-check once the issue number is known"
@@ -503,10 +505,16 @@ grep -q 'workflow_issue_reference.sh' "$PUBLISH_TOOL" \
 
 STEP15="$WORK/step15.sh"
 python3 - "$PUBLISH_RECIPE" "$STEP15" <<'PY'
-import sys, yaml
-steps = yaml.safe_load(open(sys.argv[1]))["steps"]
-step = next(s for s in steps if s["id"] == "step-15-commit-push")
-open(sys.argv[2], "w").write(step["command"])
+import importlib.util, pathlib, sys
+recipe = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("checkpoint_contract", recipe.parent / "tests/test-checkpoint-scope.py")
+contract = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(contract)
+wrapper = contract.literal(contract.blocks(recipe.read_text())["step-15-commit-push"], "command")
+assert "/workflow_publish_checkpoint.sh" in wrapper
+assert wrapper.splitlines().count('bash "$CHECKPOINT_TOOL"') == 1
+helper = recipe.parent.parent / "tools/workflow_publish_checkpoint.sh"
+open(sys.argv[2], "w").write(helper.read_text())
 PY
 grep -q 'workflow_issue_reference.sh' "$STEP15" && ! grep -q 'ISSUE_REF="Closes #' "$STEP15" \
   && pass "the step-15 commit message's closing keyword comes from the diff too" \

@@ -21,6 +21,9 @@ use serde_json::Value;
 use serde_yaml::Value as Yaml;
 use tempfile::TempDir;
 
+#[path = "fixture_transport.rs"]
+mod transport;
+
 use crate::isolated_amplihack::isolated;
 use crate::issue_1641_finalization_open_pr::fixture::LEAK_MARKER;
 pub use crate::issue_1641_finalization_open_pr::fixture::{
@@ -100,13 +103,7 @@ fn bash_in(tmp: &Path) -> Command {
         .env("AMPLIHACK_STATE_DIR", tmp.join("state"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        // github.com fetches (the open-PR check's, #1714) stay in the fixture.
-        .env("GIT_CONFIG_COUNT", "1")
-        .env(
-            "GIT_CONFIG_KEY_0",
-            format!("url.{}/.insteadOf", tmp.join("remotes").display()),
-        )
-        .env("GIT_CONFIG_VALUE_0", "https://github.com/")
+        .env("GIT_ALLOW_PROTOCOL", "file")
         .env("GH_FIXTURE_DIR", tmp)
         .env(
             "PATH",
@@ -119,6 +116,7 @@ fn bash_in(tmp: &Path) -> Command {
 /// private HOME, stub `gh`, github.com rewritten to its private remotes, and
 /// the leak marker its `gh` stub echoes on failure. Runs in the fixture repo.
 pub fn fixture_bash(fx: &Fixture) -> Command {
+    transport::prepare_repository_rewrite(fx);
     let mut command = bash_in(fx.tmp.path());
     command
         .current_dir(&fx.repo)
@@ -128,6 +126,7 @@ pub fn fixture_bash(fx: &Fixture) -> Command {
 
 /// Run the finalization dispatcher in `mode` with exactly `envs`.
 pub fn dispatch(fx: &Fixture, mode: &str, envs: &[(&str, &str)]) -> Outcome {
+    transport::prepare_repository_rewrite(fx);
     let mut command = bash_in(fx.tmp.path());
     command
         .current_dir(&fx.repo)

@@ -29,9 +29,13 @@ fn read(path: &Path) -> String {
     fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
-fn load_recipe(name: &str) -> Value {
+fn raw_recipe(name: &str) -> Value {
     let path = recipe_path(name);
     serde_yaml::from_str(&read(&path)).unwrap_or_else(|e| panic!("parse {}: {e}", path.display()))
+}
+
+fn load_recipe(name: &str) -> Value {
+    crate::canonical_staging_checkpoint_fixture::inspect_recipe(raw_recipe(name))
 }
 
 fn steps(recipe: &Value) -> &[Value] {
@@ -118,15 +122,16 @@ fn finalize_push_cleanup_guards_immediately_before_broad_staging() {
     let command = step_text(&recipe, "step-20b-push-cleanup", "command");
     let guard = command
         .find("amplihack hygiene artifact-guard --repo . --mode pre-publish")
-        .expect("step-20b must guard the exact repo before broad staging");
+        .expect("step-20b must guard the exact repo before strict staging");
     let add = command
-        .find("git add -A")
-        .expect("step-20b currently performs broad staging");
+        .find("workflow_checkpoint_stage;")
+        .expect("step-20b performs strict staging");
+    crate::canonical_staging_checkpoint_fixture::assert_strict_staging(command);
     let between = &command[guard..add];
 
     assert!(
         guard < add,
-        "step-20b must invoke Artifact Guard before git add -A"
+        "step-20b must invoke Artifact Guard before strict staging"
     );
     assert!(
         between
@@ -135,11 +140,11 @@ fn finalize_push_cleanup_guards_immediately_before_broad_staging() {
                 let trimmed = line.trim();
                 !trimmed.is_empty()
                     && !trimmed.starts_with("amplihack hygiene artifact-guard")
-                    && !trimmed.starts_with("git add -A")
+                    && !trimmed.starts_with("workflow_checkpoint_stage;")
             })
             .count()
             == 0,
-        "Artifact Guard must be the deterministic final gate immediately before git add -A; intervening lines:\n{between}"
+        "Artifact Guard must be the deterministic final gate immediately before strict staging; intervening lines:\n{between}"
     );
 }
 
@@ -210,8 +215,10 @@ fn recipe_commands_with_guarded_broad_staging_fail_loudly() {
     let mut unsafe_commands = Vec::new();
 
     for path in recipe_files() {
-        let recipe = serde_yaml::from_str::<Value>(&read(&path))
-            .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        let recipe = crate::canonical_staging_checkpoint_fixture::inspect_recipe(
+            serde_yaml::from_str::<Value>(&read(&path))
+                .unwrap_or_else(|e| panic!("parse {}: {e}", path.display())),
+        );
         for step in steps(&recipe) {
             let id = step
                 .get("id")
@@ -485,8 +492,10 @@ fn every_recipe_broad_add_followed_by_commit_is_rechecked_by_the_guard() {
     let mut missing = Vec::new();
     let mut checked = 0;
     for path in recipe_files() {
-        let recipe = serde_yaml::from_str::<Value>(&read(&path))
-            .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        let recipe = crate::canonical_staging_checkpoint_fixture::inspect_recipe(
+            serde_yaml::from_str::<Value>(&read(&path))
+                .unwrap_or_else(|e| panic!("parse {}: {e}", path.display())),
+        );
         for (label, body) in step_bodies(&recipe) {
             if broad_add_spans(&body).is_empty() {
                 continue;
@@ -532,8 +541,10 @@ fn post_add_guard_uses_the_same_mode_as_the_pre_add_guard() {
     // Both runs are the same gate: the second must not quietly weaken it.
     let mut mismatched = Vec::new();
     for path in recipe_files() {
-        let recipe = serde_yaml::from_str::<Value>(&read(&path))
-            .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        let recipe = crate::canonical_staging_checkpoint_fixture::inspect_recipe(
+            serde_yaml::from_str::<Value>(&read(&path))
+                .unwrap_or_else(|e| panic!("parse {}: {e}", path.display())),
+        );
         for (label, body) in step_bodies(&recipe) {
             for (start, end) in broad_add_spans(&body) {
                 let Some(commit) = body[end..].find("git commit") else {
@@ -719,7 +730,9 @@ fn finalize_push_cleanup_never_commits_in_repo_path_or_cwd() {
         .find("exit 0")
         .map(|offset| warning + offset)
         .expect("step-20b must exit 0 (resilient, #414) when it skips");
-    let add = command.find("git add -A").expect("step-20b stages");
+    let add = command
+        .find("workflow_checkpoint_stage;")
+        .expect("step-20b stages strictly");
     assert!(skip < add, "the skip must happen before anything is staged");
     for linked_check in ["--absolute-git-dir", "--git-common-dir"] {
         let at = command
@@ -779,7 +792,7 @@ mod finalize_runtime {
     #[test]
     fn finalize_push_cleanup_skips_without_a_linked_task_worktree() {
         let command = step_text(
-            &load_recipe("workflow-finalize.yaml"),
+            &raw_recipe("workflow-finalize.yaml"),
             "step-20b-push-cleanup",
             "command",
         )
@@ -988,8 +1001,10 @@ fn every_guard_call_in_every_recipe_can_stop_its_step() {
     let mut problems = Vec::new();
     let mut checked = 0;
     for path in recipe_files() {
-        let recipe = serde_yaml::from_str::<Value>(&read(&path))
-            .unwrap_or_else(|e| panic!("parse {}: {e}", path.display()));
+        let recipe = crate::canonical_staging_checkpoint_fixture::inspect_recipe(
+            serde_yaml::from_str::<Value>(&read(&path))
+                .unwrap_or_else(|e| panic!("parse {}: {e}", path.display())),
+        );
         let name = path
             .strip_prefix(workspace_root())
             .unwrap_or(&path)
@@ -1047,14 +1062,14 @@ fn checkpoint_and_review_recheck_after_staging() {
         "TDD checkpoint must recheck artifacts between scoped staging and commit: {command}"
     );
 
-    // Review feedback still uses broad staging and keeps the guard on the
-    // same line, so `set -e` binds a failed add before the guard can run.
+    // Review feedback keeps its artifact recheck after the strict stage call.
     let review = load_recipe("workflow-pr-review.yaml");
     let command = step_text(&review, "step-18c-push-feedback-changes", "command");
+    crate::canonical_staging_checkpoint_fixture::assert_strict_staging(command);
     assert!(
         command.lines().any(|line| line.trim()
-            == "git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish"),
-        "workflow-pr-review.yaml must recheck artifacts after broad staging: {command}"
+            == "workflow_checkpoint_stage; amplihack hygiene artifact-guard --repo . --mode pre-publish"),
+        "workflow-pr-review.yaml must recheck artifacts after strict staging: {command}"
     );
 }
 
@@ -1085,7 +1100,7 @@ fn recipes_touched_by_issue_1528_stay_under_the_brick_budget() {
 // WORKTREE_SETUP_WORKTREE_PATH nor a nested RECIPE_VAR_worktree_setup__worktree_path
 // can outrank the recipe's own worktree. A rejected or unset path skips the step
 // ("worktree path gone"); a missing tool skips with "worktree_setup_path.sh not found".
-const STEP_20B_CONTEXT_DEFAULT: &str = r#"wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20b-push-cleanup)" || skip "${WT_TOOL:+worktree path gone}"; cd -P "$wt""#;
+const STEP_20B_CONTEXT_DEFAULT: &str = r#"wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20b-push-cleanup)" || workflow_cleanup_skip "${WT_TOOL:+worktree path gone}"; cd -P "$wt""#;
 
 /// `worktree_setup` as the runner hands it back: JSON in the base key (#1561).
 pub(crate) fn worktree_setup_json(worktree: &Path) -> String {
@@ -1131,7 +1146,7 @@ fn finalize_push_cleanup_skips_before_the_runtime_preflight() {
         "preflight_known_workflow_runtime_artifacts",
         "cleanup_known_workflow_runtime_artifacts",
         GUARD,
-        "git add -A",
+        "workflow_checkpoint_stage;",
     ] {
         if let Some(at) = command.find(later) {
             assert!(
@@ -1175,7 +1190,7 @@ mod finalize_skip_reasons {
     #[test]
     fn finalize_push_cleanup_names_its_reason_and_leaves_a_main_checkout_alone() {
         let command = step_text(
-            &load_recipe("workflow-finalize.yaml"),
+            &raw_recipe("workflow-finalize.yaml"),
             "step-20b-push-cleanup",
             "command",
         )
@@ -1249,7 +1264,6 @@ mod finalize_skip_reasons {
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_NOSYSTEM", "1")
                 .env("GIT_TERMINAL_PROMPT", "0")
-                .env("GIT_CEILING_DIRECTORIES", &root)
                 .env("REPO_PATH", &launch)
                 .env("AMPLIHACK_HOME", workspace_root());
             if let Some(worktree) = worktree {
@@ -1319,6 +1333,9 @@ fn phase1_commit_sites_never_fall_back_to_repo_path() {
         let command = step_text(&loaded, step, "command");
         let add_command = if step == "checkpoint-after-implementation" {
             SCOPED_TDD_ADD
+        } else if step == "step-15-commit-push" {
+            crate::canonical_staging_checkpoint_fixture::assert_strict_staging(command);
+            "workflow_checkpoint_stage; amplihack hygiene artifact-guard"
         } else {
             "stage_workflow_changes; amplihack hygiene artifact-guard"
         };
@@ -1404,12 +1421,19 @@ mod phase1_commit_runtime {
         )
     }
 
+    const OWNER: crate::canonical_staging_checkpoint_fixture::Owner =
+        crate::canonical_staging_checkpoint_fixture::Owner {
+            task: "publish the independently owned fixture source",
+            paths: &["pending.txt", "sub/pending.txt"],
+        };
+
     fn run(
         command: &str,
         root: &Path,
         cwd: &Path,
         launch: &Path,
         worktree: Option<&Path>,
+        project: bool,
     ) -> std::process::Output {
         let mut run = Command::new("bash");
         run.arg("-c")
@@ -1432,13 +1456,24 @@ mod phase1_commit_runtime {
                 crate::artifact_guard_workflow::worktree_setup_json(worktree),
             );
         }
-        run.output().expect("run step")
+        if project && command.contains("/workflow_publish_checkpoint.sh") {
+            OWNER.project(
+                &run,
+                "workflow-publish",
+                launch,
+                worktree.unwrap(),
+                "task",
+                "task",
+            )
+        } else {
+            run.output().expect("run step")
+        }
     }
 
     #[test]
     fn phase1_commit_sites_hard_fail_outside_a_linked_task_worktree() {
         for (recipe, step) in PHASE1_COMMIT_SITES {
-            let command = step_text(&load_recipe(recipe), step, "command").to_string();
+            let command = step_text(&raw_recipe(recipe), step, "command").to_string();
             let tmp = TempDir::new().expect("tempdir");
             let root = fs::canonicalize(tmp.path()).expect("canonicalize");
             let launch = root.join("launch");
@@ -1457,6 +1492,16 @@ mod phase1_commit_runtime {
                     linked.to_str().unwrap(),
                 ],
             );
+            // The positive publication fixture has a known, local ancestry
+            // and transport before capture. No pending path grants permission.
+            let origin = root.join("origin.git");
+            hgit(&root, &["init", "-q", "--bare", origin.to_str().unwrap()]);
+            hgit(
+                &launch,
+                &["remote", "add", "origin", origin.to_str().unwrap()],
+            );
+            hgit(&launch, &["push", "-q", "-u", "origin", "main"]);
+            hgit(&linked, &["push", "-q", "-u", "origin", "task"]);
             fs::create_dir_all(linked.join("sub")).expect("mkdir sub");
             fs::write(linked.join("sub/pending.txt"), "not from the top\n").expect("write");
 
@@ -1486,7 +1531,7 @@ mod phase1_commit_runtime {
             ];
             for (label, worktree, names_1528) in cases {
                 let before = (state(&launch), state(&cwd), state(&linked));
-                let output = run(&command, &root, &cwd, &launch, worktree);
+                let output = run(&command, &root, &cwd, &launch, worktree, false);
                 let stderr = String::from_utf8_lossy(&output.stderr);
 
                 assert_ne!(
@@ -1523,18 +1568,16 @@ mod phase1_commit_runtime {
             // At the top of the linked worktree the check lets the step through
             // to the artifact guard, and the launch checkout stays untouched.
             let launch_before = state(&launch);
-            let output = run(&command, &root, &cwd, &launch, Some(&linked));
+            let output = run(&command, &root, &cwd, &launch, Some(&linked), true);
             let stderr = String::from_utf8_lossy(&output.stderr);
             assert!(
                 !stderr.contains("not the top of a linked task worktree"),
                 "{step}: a linked worktree top must pass the check\nstderr:\n{stderr}"
             );
-            if step != "step-15-commit-push" || stderr.contains("Staging Changes") {
-                assert!(
-                    fs::read_to_string(&log).is_ok_and(|l| l.contains("artifact-guard")),
-                    "{step}: the step must reach the artifact guard in the linked worktree\nstderr:\n{stderr}"
-                );
-            }
+            assert!(
+                fs::read_to_string(&log).is_ok_and(|l| l.contains("artifact-guard")),
+                "{step}: the step must reach the artifact guard in the linked worktree\nstderr:\n{stderr}"
+            );
             assert_eq!(
                 state(&launch),
                 launch_before,

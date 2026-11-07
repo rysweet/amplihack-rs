@@ -1566,15 +1566,18 @@ fn agentic_finalization_validate_and_complete_emit_canonical_success_json() {
 
 #[test]
 fn cleanup_push_logging_redacts_embedded_remote_credentials() {
-    let command = step_command(&load_finalize_recipe(), "step-20b-push-cleanup");
+    let command = crate::canonical_staging_checkpoint_fixture::inspect(
+        "step-20b-push-cleanup",
+        &step_command(&load_finalize_recipe(), "step-20b-push-cleanup"),
+    );
 
     assert!(
         command.contains("redact_sensitive_output"),
         "cleanup push step must route remote output through a redaction boundary"
     );
-    assert!(
-        command.contains("https?://"),
-        "cleanup redaction must cover both http:// and https:// credential-bearing URLs"
+    crate::canonical_staging_checkpoint_fixture::assert_uri_redaction(
+        &command,
+        "redact_sensitive_output",
     );
     assert!(
         command.contains("pull_output_file")

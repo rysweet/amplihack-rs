@@ -501,3 +501,9 @@ mod issue_1764_git_never_prompts;
 // `cargo test --workspace` covers the shell change as well as CI's lint job.
 #[path = "issue_1771_precommit_symlinked_caches_test.rs"]
 mod issue_1771_precommit_symlinked_caches;
+
+// This test-only API is shared by two integration targets with different
+// consumer modules. Public reachability preserves private dead-code checks
+// without treating an API unused by one target as abandoned implementation.
+#[path = "canonical_staging_checkpoint_fixture.rs"]
+pub mod canonical_staging_checkpoint_fixture;

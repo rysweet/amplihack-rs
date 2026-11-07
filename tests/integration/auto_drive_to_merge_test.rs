@@ -2290,7 +2290,10 @@ fn crusty_round_records_the_reviewed_head_sha_every_round() {
     // Point 5 of #1517: a CLEAN round with no commits wrote "head_sha":"", so
     // the clean verdict could not be tied to a commit.
     let recipe = recipe_yaml("autodrive-crusty-round");
-    let ctx = field(step(&recipe, "step-01-round-context"), "command");
+    let ctx = crate::canonical_staging_checkpoint_fixture::inspect(
+        "step-01-round-context",
+        field(step(&recipe, "step-01-round-context"), "command"),
+    );
     assert!(
         ctx.contains("git rev-parse HEAD"),
         "step-01 must read the reviewed head with git, in bash"
