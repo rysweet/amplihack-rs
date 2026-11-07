@@ -5,7 +5,7 @@
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_wait_ends;`.
 
-use super::plan::Bound;
+use super::plan::{Bound, Plan, PlanKind};
 use super::tests_wait::{Fake, capacity_plan_in, plan_in};
 use super::wait::{End, wait};
 
@@ -148,4 +148,67 @@ fn a_signal_and_a_passed_deadline_outrank_other_capacity() {
         End::CapacityExpired,
         "the deadline is read before the 30 s probes"
     );
+}
+
+// --- issue #2022: an unbounded capacity wait ------------------------------
+
+fn unbounded() -> Plan {
+    Plan {
+        until: None,
+        bound: Bound::Unbounded,
+        kind: PlanKind::Capacity,
+        reset: None,
+    }
+}
+
+#[test]
+fn an_unbounded_wait_has_no_deadline_and_ends_on_another_logins_capacity() {
+    let mut f = Fake::new();
+    // Well past the former six-hour capacity default.
+    f.other_from = Some(7 * 3600);
+    assert_eq!(wait(&unbounded(), &mut f), End::OtherCapacity);
+    assert!(
+        f.elapsed() >= 7 * 3600,
+        "ended early at {}: no default ceiling applies",
+        f.elapsed()
+    );
+}
+
+#[test]
+fn an_unbounded_wait_ends_on_rotator_capacity_or_a_login_change() {
+    let mut f = Fake::new();
+    f.capacity_from = Some(9 * 3600);
+    assert_eq!(wait(&unbounded(), &mut f), End::RotatorCapacity);
+
+    let mut f = Fake::new();
+    f.prints = vec![(0, Some(1)), (8 * 3600, Some(2))];
+    assert_eq!(wait(&unbounded(), &mut f), End::LoginChanged);
+}
+
+// S11, S12: an unbounded wait still sleeps between polls and still stops on
+// a signal or the end of the step's session.
+#[test]
+fn an_unbounded_wait_stops_on_a_signal_within_one_slice() {
+    let mut f = Fake::new();
+    f.signal_from = Some((6 * 3600 + 10, libc::SIGTERM));
+    assert_eq!(wait(&unbounded(), &mut f), End::Signal(libc::SIGTERM));
+    assert_eq!(f.sleeps_after_signal, 0);
+    assert!(f.elapsed() <= 6 * 3600 + 11, "noticed at {}", f.elapsed());
+
+    let mut f = Fake::new();
+    f.parent_gone_from = Some(10);
+    assert_eq!(wait(&unbounded(), &mut f), End::SessionEnded);
+}
+
+#[test]
+fn an_unbounded_wait_logs_progress_without_remaining() {
+    let mut f = Fake::new();
+    f.other_from = Some(300);
+    assert_eq!(wait(&unbounded(), &mut f), End::OtherCapacity);
+    let progress = f.progress();
+    assert!(!progress.is_empty(), "progress lines are still written");
+    for l in progress {
+        assert!(l.ends_with(" progress"), "bare progress line: {l}");
+        assert!(!l.contains("remaining="), "{l}");
+    }
 }

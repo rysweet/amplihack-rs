@@ -65,7 +65,7 @@ amplihack remote exec <COMMAND> <PROMPT> [OPTIONS] [-- <AZLIN_ARGS>...]
 | `--vm-name <NAME>` | none | Reuse a specific VM. |
 | `--keep-vm` | `false` | Keep the VM after execution. |
 | `--no-reuse` | `false` | Always provision a fresh VM. |
-| `--timeout <MINUTES>` | `120` | Maximum remote execution time. Must be from `5` through `480`. |
+| `--timeout <MINUTES>` | unset: no limit | Optional limit on the remote session: it is stopped after this many minutes with no output. Must be from `5` through `480` when given. Without it, the session runs until it finishes or is stopped. |
 | `--region <REGION>` | azlin default | Azure region for provisioning. |
 | `--port <PORT>` | none | Reuse an existing local bastion tunnel port. |
 

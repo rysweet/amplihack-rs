@@ -119,7 +119,7 @@ pub fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Result<ExitStatu
     let pid = child.id();
 
     if let Some(status) =
-        wait_for_child_exit(&mut child, timeout).context("failed to wait for subprocess")?
+        wait_for_child_exit(&mut child, Some(timeout)).context("failed to wait for subprocess")?
     {
         return Ok(status);
     }
@@ -145,7 +145,7 @@ pub fn run_with_timeout_described(
     let pid = child.id();
 
     if let Some(status) =
-        wait_for_child_exit(&mut child, timeout).context("failed to wait for subprocess")?
+        wait_for_child_exit(&mut child, Some(timeout)).context("failed to wait for subprocess")?
     {
         return Ok(status);
     }
@@ -161,7 +161,41 @@ pub fn run_with_timeout_described(
 
 /// Run a pre-built `Command` with stdout/stderr capture and a hard timeout.
 pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
-    run_output_with_timeout_inner(&mut cmd, timeout, None, None)
+    run_output_with_timeout_inner(&mut cmd, Some(timeout), None, None)
+}
+
+/// Run a pre-built `Command` to completion with no time limit (issue #2022).
+///
+/// For work (builds, agent sessions, containers) that must not be bounded by
+/// a default limit. Stdio is inherited as configured by the caller; the
+/// caller's process group and environment are left unchanged, so stop
+/// signals delivered to the group still reach the child.
+pub fn run_untimed(mut cmd: Command) -> Result<ExitStatus> {
+    let mut child = spawn_subprocess(&mut cmd).context("failed to spawn subprocess")?;
+    match wait_for_child_exit(&mut child, None).context("failed to wait for subprocess")? {
+        Some(status) => Ok(status),
+        None => bail!(
+            "subprocess `{}` ended its wait without an exit status",
+            cmd.get_program().to_string_lossy()
+        ),
+    }
+}
+
+/// [`run_output_with_timeout_stdin`] with no time limit (issue #2022).
+///
+/// Stdout and stderr are captured and read concurrently, and a stdin payload
+/// is written by a separate thread, so a child with large output or input
+/// cannot deadlock the untimed wait.
+pub fn run_output_untimed_stdin(
+    mut cmd: Command,
+    stdin_payload: Option<Vec<u8>>,
+) -> Result<Output> {
+    cmd.stdin(if stdin_payload.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+    run_output_with_timeout_inner(&mut cmd, None, None, stdin_payload)
 }
 
 /// [`run_output_with_timeout`] that also owns the child's stdin (issue #1570).
@@ -184,7 +218,7 @@ pub fn run_output_with_timeout_stdin(
     } else {
         Stdio::null()
     });
-    run_output_with_timeout_inner(&mut cmd, timeout, None, stdin_payload)
+    run_output_with_timeout_inner(&mut cmd, Some(timeout), None, stdin_payload)
 }
 
 /// Run a pre-built `Command` with stdout/stderr capture capped per stream.
@@ -196,16 +230,17 @@ pub fn run_output_with_timeout_limited(
     timeout: Duration,
     max_bytes_per_stream: usize,
 ) -> Result<Output> {
-    run_output_with_timeout_inner(&mut cmd, timeout, Some(max_bytes_per_stream), None)
+    run_output_with_timeout_inner(&mut cmd, Some(timeout), Some(max_bytes_per_stream), None)
 }
 
 /// How long a finished subprocess's stdin writer may take to end before it is
 /// detached.
 const STDIN_WRITER_GRACE: Duration = Duration::from_secs(2);
 
+/// With `timeout = None` the child is waited for until it exits.
 fn run_output_with_timeout_inner(
     cmd: &mut Command,
-    timeout: Duration,
+    timeout: Option<Duration>,
     max_bytes_per_stream: Option<usize>,
     stdin_payload: Option<Vec<u8>>,
 ) -> Result<Output> {
@@ -260,11 +295,12 @@ fn run_output_with_timeout_inner(
     // wall-clock timeout.
     drop(stdin_writer);
     // Name only the program: the arguments may hold a prompt under argv
-    // delivery.
+    // delivery. `wait_for_child_exit` returns `None` only when a limit was
+    // set, so `timeout` is `Some` here.
     bail!(
         "subprocess `{}` timed out after {:?} (pid {})",
         cmd.get_program().to_string_lossy(),
-        timeout,
+        timeout.unwrap_or_default(),
         pid
     )
 }
@@ -358,18 +394,27 @@ fn spawn_subprocess(cmd: &mut Command) -> io::Result<Child> {
     }
 }
 
-fn wait_for_child_exit(child: &mut Child, timeout: Duration) -> io::Result<Option<ExitStatus>> {
+/// Polls `child` until it exits. Returns `Ok(None)` only when `timeout` is
+/// `Some` and has elapsed; with `None` it waits until the child exits.
+fn wait_for_child_exit(
+    child: &mut Child,
+    timeout: Option<Duration>,
+) -> io::Result<Option<ExitStatus>> {
     let started = Instant::now();
     let mut poll_interval = CHILD_WAIT_INITIAL_POLL_INTERVAL;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        let elapsed = started.elapsed();
-        if elapsed >= timeout {
-            return Ok(None);
+        let mut sleep_for = poll_interval;
+        if let Some(timeout) = timeout {
+            let elapsed = started.elapsed();
+            if elapsed >= timeout {
+                return Ok(None);
+            }
+            sleep_for = sleep_for.min(timeout.saturating_sub(elapsed));
         }
-        thread::sleep(poll_interval.min(timeout.saturating_sub(elapsed)));
+        thread::sleep(sleep_for);
         poll_interval = (poll_interval + poll_interval).min(CHILD_WAIT_MAX_POLL_INTERVAL);
     }
 }
@@ -859,6 +904,80 @@ mod tests {
 
         assert!(output.status.success());
         assert_eq!(output.stdout.len(), 1024);
+    }
+
+    // ── Issue #2022: untimed helpers for work that has no default limit ──
+
+    /// The 70 000-byte pipe test against the untimed variant: stdout larger
+    /// than a pipe buffer must be read concurrently or the child blocks
+    /// forever, and an untimed wait would never end (S13).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_output_untimed_stdin_drains_a_large_stdout() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "head -c 70000 /dev/zero; head -c 70000 /dev/zero >&2"]);
+        let output = run_output_untimed_stdin(cmd, None).unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 70_000);
+        assert_eq!(output.stderr.len(), 70_000);
+    }
+
+    /// The stdin writer thread is kept: a child that writes before reading
+    /// does not deadlock with a large payload.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn run_output_untimed_stdin_writes_the_payload_and_reads_output() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "head -c 70000 /dev/zero; wc -c"]);
+        let payload = vec![b'x'; 200_000];
+        let output = run_output_untimed_stdin(cmd, Some(payload)).unwrap();
+        assert!(output.status.success());
+        let text = String::from_utf8_lossy(&output.stdout[70_000..]).to_string();
+        assert_eq!(text.trim(), "200000");
+    }
+
+    /// No limit: a child that runs past what a short limit would allow is
+    /// waited for, and its exit status is returned.
+    #[cfg(unix)]
+    #[test]
+    fn run_untimed_waits_for_the_child_and_returns_its_status() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 2; exit 5"]);
+        let started = std::time::Instant::now();
+        let status = run_untimed(cmd).unwrap();
+        assert_eq!(status.code(), Some(5));
+        assert!(started.elapsed() >= Duration::from_millis(1900));
+    }
+
+    #[test]
+    fn run_untimed_reports_a_spawn_failure() {
+        let cmd = std::process::Command::new("/nonexistent/amplihack-2022-no-such-binary");
+        assert!(run_untimed(cmd).is_err());
+        let cmd = std::process::Command::new("/nonexistent/amplihack-2022-no-such-binary");
+        assert!(run_output_untimed_stdin(cmd, None).is_err());
+    }
+
+    /// The timed helpers keep their behaviour: an explicit limit still ends
+    /// a hung child.
+    #[cfg(unix)]
+    #[test]
+    fn the_timed_helpers_still_time_out() {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 30"]);
+        let err = run_output_with_timeout(cmd, Duration::from_millis(300)).unwrap_err();
+        assert!(format!("{err:#}").contains("timed out after"), "{err:#}");
     }
 
     /// The pid a test shell wrote with `echo $! > file`. The shell must have

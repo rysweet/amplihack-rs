@@ -76,6 +76,9 @@ impl End {
             (Bound::ResetMargin, _) => End::ResetReached,
             (Bound::MaxWait, PlanKind::Reset) => End::MaxReached,
             (Bound::MaxWait, PlanKind::Capacity) => End::CapacityExpired,
+            // An unbounded wait has no deadline to reach; mapped for
+            // completeness, never panicking.
+            (Bound::Unbounded, _) => End::CapacityExpired,
         }
     }
 }
@@ -99,7 +102,7 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
             return End::SessionEnded;
         }
         let now = deps.now();
-        if now >= plan.until {
+        if plan.until.is_some_and(|until| now >= until) {
             return End::at_deadline(plan.bound, plan.kind);
         }
         if now >= next_poll {
@@ -124,11 +127,17 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
             next_poll = now.saturating_add(POLL_SECS);
         }
         if now >= next_progress {
-            let remaining = u64::try_from(plan.until.saturating_sub(now)).unwrap_or(0);
+            let remaining = plan
+                .until
+                .map(|until| u64::try_from(until.saturating_sub(now)).unwrap_or(0));
             deps.log(&line(&Event::Progress { remaining }, &chrono::Local));
             next_progress = now.saturating_add(PROGRESS_SECS);
         }
-        let left = plan.until.saturating_sub(now);
-        deps.sleep(Duration::from_secs(u64::try_from(left.min(1)).unwrap_or(1)));
+        // At most one second, so a signal is noticed promptly; an unbounded
+        // wait sleeps the full second.
+        let left = plan
+            .until
+            .map_or(1, |until| until.saturating_sub(now).min(1));
+        deps.sleep(Duration::from_secs(u64::try_from(left).unwrap_or(1)));
     }
 }

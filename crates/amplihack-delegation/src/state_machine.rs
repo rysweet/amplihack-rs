@@ -104,9 +104,6 @@ impl SubprocessStateMachine {
         }
     }
 
-    /// The default timeout used by the Python implementation (30 minutes).
-    pub const DEFAULT_TIMEOUT: u64 = 1800;
-
     /// Current lifecycle state.
     pub fn current_state(&self) -> ProcessState {
         self.current_state
@@ -362,10 +359,5 @@ mod tests {
         assert!(!ProcessState::Completing.is_terminal());
         assert!(ProcessState::Completed.is_terminal());
         assert!(ProcessState::Failed.is_terminal());
-    }
-
-    #[test]
-    fn default_timeout_constant() {
-        assert_eq!(SubprocessStateMachine::DEFAULT_TIMEOUT, 1800);
     }
 }

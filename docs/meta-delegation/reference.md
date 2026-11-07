@@ -23,7 +23,7 @@ def run_meta_delegation(
     persona_type: str = "guide",
     platform: str = "claude-code",
     context: Optional[str] = None,
-    timeout_minutes: int = 30,
+    timeout_minutes: Optional[int] = None,
     enable_scenarios: bool = False,
     working_directory: Optional[str] = None,
     environment: Optional[Dict[str, str]] = None
@@ -37,7 +37,7 @@ def run_meta_delegation(
         persona_type: Agent behavior persona (guide, qa_engineer, architect, junior_dev)
         platform: Platform CLI to use (claude-code, copilot, amplifier)
         context: Optional context information to provide to the agent
-        timeout_minutes: Maximum execution time before timeout (default: 30)
+        timeout_minutes: Maximum execution time before timeout (default: None, meaning no limit)
         enable_scenarios: Whether to generate test scenarios using Gadugi (default: False)
         working_directory: Custom working directory for subprocess (default: temp dir)
         environment: Additional environment variables for subprocess (default: None)
@@ -617,11 +617,10 @@ from enum import Enum
 
 ### Timeouts
 
-- Default timeout: 30 minutes
-- Minimum recommended: 5 minutes
-- Maximum supported: 4 hours
+- Default timeout: none; a delegation runs until it finishes or is stopped
+- Minimum recommended, when you set one: 5 minutes
 
-**Guideline:**
+**Guideline, when you set a timeout:**
 
 - Simple tasks (< 100 LOC): 10-15 minutes
 - Medium tasks (100-500 LOC): 30-45 minutes

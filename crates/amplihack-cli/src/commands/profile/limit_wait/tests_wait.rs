@@ -57,11 +57,11 @@ impl Fake {
         self.ms.div_euclid(1000)
     }
 
-    fn progress(&self) -> Vec<&str> {
+    pub(super) fn progress(&self) -> Vec<&str> {
         self.logs
             .iter()
             .map(String::as_str)
-            .filter(|l| l.contains(" progress "))
+            .filter(|l| l.contains(" progress ") || l.ends_with(" progress"))
             .collect()
     }
 }
@@ -128,7 +128,7 @@ impl WaitDeps for Fake {
 
 pub(super) fn plan_in(secs: i64, bound: Bound) -> Plan {
     Plan {
-        until: T0 + secs,
+        until: Some(T0 + secs),
         bound,
         kind: PlanKind::Reset,
         reset: Some(T0),

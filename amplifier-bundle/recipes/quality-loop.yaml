@@ -14,7 +14,6 @@ tags: ["self-improvement", "automation", "quality", "ci", "iteration"]
 recursion:
   max_depth: 3
   max_total_steps: 60
-default_step_timeout: 1800
 context:
   repo_path: "."
   admin_merge: "false"

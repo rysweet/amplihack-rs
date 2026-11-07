@@ -1024,6 +1024,14 @@ ${UL_WAIT} end reason=capacity expired
 ${UL_WAIT} failed reason=capacity_expired: usage limit not lifted" \
   "V5: wait lines without the runner's marker are not a usage limit"
 
+# Issue #2022: an unbounded capacity wait logs `until=none bound=unbounded`
+# and bare `progress` lines. Without the runner's marker they are not a usage
+# limit either.
+ul_not_limit "2022-unbounded-wait-lines" "${UL_WAIT} start reason=usage_limit wait=capacity harness=claude reset=none until=none bound=unbounded
+${UL_WAIT} progress
+${UL_WAIT} end reason=signal" \
+  "issue #2022: unbounded wait lines without the runner's marker are not a usage limit"
+
 # The runner writes the marker with serde_json's default map, so its keys are
 # in alphabetical order (docs/reference/auto-drive-to-merge.md). A class
 # nested in evidence sorts after the top-level one and must not count (V6).

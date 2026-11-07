@@ -436,6 +436,8 @@ mod tests_merge_guard;
 #[cfg(test)]
 mod tests_root_sandbox;
 #[cfg(test)]
+mod tests_runner_timeout;
+#[cfg(test)]
 mod tests_teardown;
 #[cfg(test)]
 mod tests_terminal_record;

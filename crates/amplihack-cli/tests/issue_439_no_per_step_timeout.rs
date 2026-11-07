@@ -13,10 +13,11 @@
 //!      `curl`, `git fetch`, `git push`, `git pull`, `git clone`, or
 //!      `git ls-remote`). When present, the value must be >= 1800 seconds —
 //!      a generous availability floor, never a mid-thought abort gate.
-//!   3. Recipe-level fields (e.g. `default_step_timeout:` at the document
-//!      root) are explicitly NOT covered by this test — they act as global
-//!      ceilings, not per-step gates, and `quality-loop.yaml` is allowed to
-//!      keep its 1800s default.
+//!   3. Issue #2022: no recipe sets a recipe-level `default_step_timeout:`,
+//!      and no recipe wraps work (`amplihack`, `cargo`, `claude`, `copilot`,
+//!      `codex`) in a shell `timeout <N>`. Short shell timeouts on `gh`, `az`
+//!      and helper probes are not work and are not matched. Comment lines are
+//!      not inspected.
 //!   4. Every recipe file must still parse as valid YAML after the cleanup.
 //!   5. The legacy `issue_449_step_02b_timeout.rs` test file (which asserted
 //!      the *presence* of a per-step timeout that #439 removes) must be
@@ -255,29 +256,92 @@ fn legacy_issue_449_test_is_removed() {
     );
 }
 
-/// (3) Sanity: `quality-loop.yaml` keeps its recipe-level `default_step_timeout`
-/// (this is explicitly OUT of scope for #439).
+/// (3a) Issue #2022: no recipe sets a recipe-level `default_step_timeout`.
+/// A limit on work applies only when someone sets one explicitly.
 #[test]
-fn quality_loop_keeps_recipe_level_default_step_timeout() {
-    let path = recipes_dir().join("quality-loop.yaml");
-    if !path.exists() {
-        return; // Recipe not present in this checkout — nothing to assert.
+fn no_recipe_sets_default_step_timeout() {
+    let mut violations = Vec::new();
+    for file in recipe_files() {
+        let recipe = load_yaml(&file);
+        if let Some(v) = recipe.get("default_step_timeout") {
+            violations.push(format!(
+                "{}: top-level `default_step_timeout: {v:?}`",
+                file.display()
+            ));
+        }
     }
-    let recipe = load_yaml(&path);
-    let v = recipe
-        .get("default_step_timeout")
-        .and_then(Value::as_u64)
-        .unwrap_or_else(|| {
-            panic!(
-                "{}: expected top-level `default_step_timeout: <int>` to remain (recipe-level ceiling, not a per-step gate)",
-                path.display()
-            )
-        });
     assert!(
-        v >= 1800,
-        "{}: default_step_timeout={v} should be >= 1800s availability floor",
-        path.display()
+        violations.is_empty(),
+        "issue #2022 violation — recipes must not set a default step timeout:\n  {}",
+        violations.join("\n  ")
     );
+}
+
+/// The shell `timeout` wrapper around a work command: `timeout [opts] N[smhd]
+/// [VAR=value ...] <work>`. Built on the linear-time `regex` crate.
+fn work_timeout_pattern() -> regex::Regex {
+    regex::Regex::new(
+        r"(?:^|[\s;&|(`$])timeout\s+(?:-{1,2}[A-Za-z-]+(?:[= ]\S+)?\s+)*\d+(?:\.\d+)?[smhd]?\s+(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*(?:\S*/)?(?:amplihack|cargo|claude|copilot|codex)\b",
+    )
+    .expect("valid regex")
+}
+
+/// Every non-comment line of every recipe, as `(file, line number, text)`.
+fn non_comment_lines() -> Vec<(PathBuf, usize, String)> {
+    let mut out = Vec::new();
+    for file in recipe_files() {
+        let text = std::fs::read_to_string(&file).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
+            out.push((file.clone(), n + 1, line.to_string()));
+        }
+    }
+    out
+}
+
+/// (3b) Issue #2022: no recipe wraps work in a shell `timeout`.
+#[test]
+fn no_shell_timeout_wraps_work() {
+    let re = work_timeout_pattern();
+    let violations: Vec<String> = non_comment_lines()
+        .into_iter()
+        .filter(|(_, _, line)| re.is_match(line))
+        .map(|(file, n, line)| format!("{}:{n}: {}", file.display(), line.trim()))
+        .collect();
+    assert!(
+        violations.is_empty(),
+        "issue #2022 violation — work must not run under a shell timeout:\n  {}",
+        violations.join("\n  ")
+    );
+}
+
+/// The guard's pattern matches the forms it must catch and leaves probes alone.
+#[test]
+fn the_work_timeout_pattern_matches_work_and_spares_probes() {
+    let re = work_timeout_pattern();
+    for work in [
+        "      timeout 900 amplihack recipe run quality-audit-cycle \\",
+        "timeout 1800 cargo test --workspace",
+        "x=$(timeout 60s claude -p hi)",
+        "timeout --signal=KILL 30 copilot --prompt x",
+        "timeout -k 5 600 codex exec",
+        "FOO=1 && timeout 10m RUST_LOG=info cargo build",
+        "timeout 5 /usr/local/bin/amplihack --version",
+    ] {
+        assert!(re.is_match(work), "must match: {work}");
+    }
+    for probe in [
+        "PR_MERGED=$(timeout 30 gh pr view \"$PR_NUM\" --json mergedAt)",
+        "WI_URL=$(timeout 60 az boards work-item show --id 1)",
+        "GH_RETRY_TMPDIR=\"$D\" timeout 1800 bash -c '. \"$1\"; _gh_retry_core'",
+        "if output=$(timeout 60 gh \"$@\" 2>\"$f\"); then",
+        "timeout_seconds: 300",
+        "# Bug #646: Shell timeout 900s prevents unbounded recursion hangs.",
+    ] {
+        assert!(!re.is_match(probe), "must not match: {probe}");
+    }
 }
 
 /// (6) The full default-workflow chain (top-level recipe + all 9 sub-recipes)

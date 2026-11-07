@@ -35,22 +35,24 @@ DelegationTimeout: Execution exceeded 30 minutes
   timeout_minutes: 30
 ```
 
+This error appears only when the caller set `timeout_minutes`. No timeout applies by default.
+
 **Causes:**
 
-1. Task is too complex for the timeout
+1. The task needs longer than the `timeout_minutes` you set
 2. Agent is stuck in a loop
 3. Platform CLI is hanging
 
 **Solutions:**
 
-#### Solution 1: Increase Timeout
+#### Solution 1: Remove or Raise the Timeout
 
 ```rust
-# For complex tasks, allow more time
+# Leave timeout_minutes unset for no limit, or raise it
 result = run_meta_delegation(
     goal="Complex architecture design",
     success_criteria="...",
-    timeout_minutes=60  # Increase from default 30
+    timeout_minutes=60  # Raised from the 30 set earlier
 )
 ```
 

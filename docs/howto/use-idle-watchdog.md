@@ -48,10 +48,11 @@ let mut child = Command::new("copilot")
 let stdout = child.stdout.take();
 let stderr = child.stderr.take();
 
-// Default idle window (300 s) from the environment.
+// Idle window from AMPLIHACK_IDLE_TIMEOUT_SECS; unset means no idle kill.
 let outcome = wait_with_idle_watchdog(&mut child, stdout, stderr, IdleConfig::from_env()).await;
 
 if outcome.killed_for_idle {
+    // Only possible when an idle window was set.
     anyhow::bail!("agent idle: no output for the idle window");
 }
 let status = outcome.status?;

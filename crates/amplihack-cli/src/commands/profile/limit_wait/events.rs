@@ -16,13 +16,15 @@ pub(super) enum Event {
         harness: Harness,
         /// `None` when a capacity wait's limit stated no readable reset.
         reset: Option<i64>,
-        until: i64,
+        /// `None` for an unbounded wait (issue #2022): `until=none`.
+        until: Option<i64>,
         bound: Bound,
         /// A capacity wait (issue #1801); a reset wait's line is unchanged.
         capacity: bool,
     },
     Progress {
-        remaining: u64,
+        /// `None` for an unbounded wait: a bare `progress` line.
+        remaining: Option<u64>,
     },
     End(End),
     Resume {
@@ -85,10 +87,13 @@ where
             if *capacity { " wait=capacity" } else { "" },
             harness.as_str(),
             reset.map_or_else(|| "none".to_string(), time),
-            time(*until),
+            until.map_or_else(|| "none".to_string(), time),
             bound.as_str()
         ),
-        Event::Progress { remaining } => format!("progress remaining={remaining}s"),
+        Event::Progress {
+            remaining: Some(remaining),
+        } => format!("progress remaining={remaining}s"),
+        Event::Progress { remaining: None } => "progress".to_string(),
         Event::End(end) => format!("end reason={}", end.as_str()),
         Event::Resume { attempt } => format!("resume attempt={attempt}"),
         Event::Skipped(skip) => format!(

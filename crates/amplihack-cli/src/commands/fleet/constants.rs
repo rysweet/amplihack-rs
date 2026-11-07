@@ -41,7 +41,6 @@ pub(crate) const CONFIDENCE_UNKNOWN: f64 = 0.3;
 pub(crate) const MIN_CONFIDENCE_SEND: f64 = 0.6;
 pub(crate) const MIN_CONFIDENCE_RESTART: f64 = 0.8;
 pub(crate) const MIN_SUBSTANTIAL_OUTPUT_LEN: usize = 50;
-pub(crate) const SCOUT_REASONER_TIMEOUT: Duration = Duration::from_secs(180);
 // T5: LRU capture cache capacity (64 entries — one per session).
 pub(crate) const CAPTURE_CACHE_CAPACITY: usize = 64;
 pub(crate) const CAPTURE_CACHE_CAPACITY_NONZERO: NonZeroUsize =

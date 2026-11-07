@@ -43,7 +43,7 @@ print(f"Status: {result.status}")
 
 - Platform: `claude-code`
 - Persona: `guide`
-- Timeout: 30 minutes
+- Timeout: none; the delegation runs until it finishes or you stop it
 
 ---
 
@@ -205,7 +205,7 @@ print(f"Found {len(py_files)} Python files")
 
 ## Handle Timeouts
 
-**Problem**: Your delegation is taking too long and you want to control timeout behavior.
+**Problem**: You want a delegation to stop after a set time. No time limit applies unless you set one.
 
 **Solution**:
 
@@ -244,8 +244,8 @@ Evidence collected before timeout: 8
 
 **Best Practices**:
 
-- Default timeout (30 min) works for most tasks
-- Use 60+ minutes for complex analyses
+- No timeout applies by default
+- Set `timeout_minutes` only when the task must stop by a fixed time
 - Always catch `DelegationTimeout` for long-running tasks
 - Partial results are still valuable
 
@@ -293,7 +293,7 @@ if result.status == "SUCCESS":
 1. **Simplify criteria**: Remove optional requirements
 2. **Change persona**: Try `qa_engineer` if `junior_dev` failed
 3. **Break into steps**: Multiple smaller delegations
-4. **Increase timeout**: Allow more time for complex tasks
+4. **Remove or raise the timeout**: Leave `timeout_minutes` unset, or set it higher
 5. **Add context**: Provide more background information
 
 ---

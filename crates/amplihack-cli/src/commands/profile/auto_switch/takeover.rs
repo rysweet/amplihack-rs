@@ -41,8 +41,8 @@ fn live_profile(store: &ProfileStore) -> Option<String> {
 /// holds only while a rotator is running with auto-switch on, and another
 /// stored login could take over from the profile live there. A running
 /// rotator with auto-switch off is idle: it records no cycle and makes no
-/// swap, so it does not count. Without a rotating rotator a far reset stays
-/// `reset_too_far`, failing at once as before. The store is read only when the
+/// swap, so it does not count. Without a rotating rotator a far reset stays a
+/// reset wait on the same login (issue #2022). The store is read only when the
 /// check is called, which is when a limit is seen.
 pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
     Box::new(move || {
@@ -59,8 +59,8 @@ pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
 /// unattended recipe run no rotator starts and a `claude -p` step has no
 /// status line, so without a running rotator nothing may record a reading and
 /// the wait would run to its maximum. The check therefore holds only while a
-/// rotator is running with auto-switch on, as [`home_check`] does, and a far reset stays
-/// `reset_too_far`, failing at once as before.
+/// rotator is running with auto-switch on, as [`home_check`] does; otherwise a
+/// far reset stays a reset wait on the same login (issue #2022).
 pub(crate) fn profile_check(store: &ProfileStore, own: &str) -> bool {
     rotate::daemon::rotating(store.root()) && could_take_over(Some(store), Some(own))
 }

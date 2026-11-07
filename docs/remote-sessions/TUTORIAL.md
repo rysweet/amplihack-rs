@@ -66,8 +66,9 @@ amplihack remote exec ultrathink \
   --timeout 240
 ```
 
-`--max-turns` must be between `1` and `50`. `--timeout` must be between `5` and
-`480` minutes.
+`--max-turns` must be between `1` and `50`. `--timeout` is optional; when
+given, it must be between `5` and `480` minutes. Without it, the remote
+session has no time limit.
 
 ### Step 3: Preserve the VM for debugging
 

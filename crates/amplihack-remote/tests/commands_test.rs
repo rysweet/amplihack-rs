@@ -169,7 +169,7 @@ fn exec_options_construction() {
         prompt: "hello".into(),
         max_turns: 10,
         vm_options: amplihack_remote::orchestrator::VMOptions::default(),
-        timeout_minutes: 30,
+        timeout_minutes: Some(30),
         skip_secret_scan: false,
         api_key: "key".into(),
     };

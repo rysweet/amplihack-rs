@@ -355,7 +355,8 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                     let reset = wait_now.saturating_add(r.saturating_sub(fsx::now()));
                     let wait = plan::from_reading(Harness::Claude, reset, wait_now);
                     let seen = Some((Harness::Claude, Some(reset)));
-                    inherited_wait = Some(plan::upgrade(wait, seen, || takeover(&waiter)));
+                    inherited_wait =
+                        Some(plan::upgrade(wait, seen, wait_now, || takeover(&waiter)));
                 }
                 None => inherited_has_capacity = true,
             }
@@ -386,13 +387,16 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             profile.as_ref(),
             switch.as_ref().map(|sw| sw.store.root()),
         );
-        let Some(lim) = usage_limited(&attempt, waiter.now()) else {
+        let limit_now = waiter.now();
+        let Some(lim) = usage_limited(&attempt, limit_now) else {
             return attempt.finish(None);
         };
         if profile.is_none() {
             // This attempt ran under the inherited profile: its limit is the
             // freshest word on that profile.
-            inherited_wait = Some(plan::upgrade(lim.wait, lim.seen, || takeover(&waiter)));
+            inherited_wait = Some(plan::upgrade(lim.wait, lim.seen, limit_now, || {
+                takeover(&waiter)
+            }));
         }
         if let Some(sw) = &switch {
             let current = profile.as_ref().unwrap_or(&sw.inherited).clone();

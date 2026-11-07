@@ -266,7 +266,8 @@ impl<E: PromptExecutor> AgentSession for AutoModeRunner<E> {
 Key rules:
 
 - **`run_prompt` is called verbatim.** No shell, no `sh -c`, no string
-  interpolation — the same arg-vector exec path (and `QUERY_TIMEOUT`) as before.
+  interpolation. It uses the same arg-vector exec path as before, with no time limit
+  on the subprocess.
 - **A ran-but-non-zero subprocess is `Ok`, NOT an error.** A non-zero exit code
   means the subprocess ran; it is carried back via `with_exit_code`. Only a
   failure to spawn / capture (the executor's own `Err`) becomes

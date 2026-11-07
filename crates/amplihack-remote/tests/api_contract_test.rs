@@ -23,12 +23,12 @@ async fn exec_rejects_invalid_inputs_before_remote_side_effects() {
     let repo = temp_git_repo();
 
     for (prompt, max_turns, timeout_minutes, api_key, expected) in [
-        ("   ", 10, 120, "sk-ant-test", "prompt"),
-        ("ship it", 0, 120, "sk-ant-test", "max-turns"),
-        ("ship it", 51, 120, "sk-ant-test", "max-turns"),
-        ("ship it", 10, 4, "sk-ant-test", "timeout"),
-        ("ship it", 10, 481, "sk-ant-test", "timeout"),
-        ("ship it", 10, 120, "", "ANTHROPIC_API_KEY"),
+        ("   ", 10, Some(120), "sk-ant-test", "prompt"),
+        ("ship it", 0, Some(120), "sk-ant-test", "max-turns"),
+        ("ship it", 51, None, "sk-ant-test", "max-turns"),
+        ("ship it", 10, Some(4), "sk-ant-test", "timeout"),
+        ("ship it", 10, Some(481), "sk-ant-test", "timeout"),
+        ("ship it", 10, Some(120), "", "ANTHROPIC_API_KEY"),
     ] {
         let result = exec(ExecOptions {
             repo_path: repo.path().to_path_buf(),

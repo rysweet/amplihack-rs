@@ -35,7 +35,7 @@ Execute amplihack commands on remote Azure VMs using azlin for provisioning.
 - `--vm-name NAME` - Reuse specific VM by name
 - `--keep-vm` - Don't cleanup VM after execution (for debugging)
 - `--no-reuse` - Always provision fresh VM (skip reuse logic)
-- `--timeout MINUTES` - Max execution time in minutes (default: 120, range: 5-480)
+- `--timeout MINUTES` - Optional idle limit in minutes (range: 5-480). Unset by default: the remote session then has no idle or wall-clock limit
 - `--region REGION` - Azure region (default: from azlin config)
 
 ## Examples

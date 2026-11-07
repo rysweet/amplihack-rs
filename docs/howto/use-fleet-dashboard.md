@@ -158,11 +158,12 @@ From the Fleet tab, with a session selected:
    Reason: Session appears idle — tests have not been run since last commit.
    ```
 
-> **Reasoner timeout** — The reasoner runs with a 180 s timeout.  If the
-> backend does not respond within that window, the reasoner returns an error,
-> the proposal field is replaced with a dry-run failure notice (not left blank),
-> and the cockpit returns to its normal responsive state — it is not stuck
-> waiting.  Press `d` to retry once the backend is available.
+> **Reasoner time limit.** The reasoner has no time limit; it runs until the
+> backend answers or fails.  If the backend returns an error, the proposal
+> field is replaced with a dry-run failure notice (not left blank) and the
+> cockpit returns to its normal responsive state.  Press `d` to retry once the
+> backend is available.  To abandon a reasoner call that does not return,
+> quit the cockpit with Ctrl-C.
 
 ---
 

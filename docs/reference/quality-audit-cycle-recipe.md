@@ -244,16 +244,18 @@ variable to remain empty. Converting to a `type: bash` step that invokes
 `amplihack recipe run quality-audit-cycle` as a subprocess captures stdout
 directly into `output: "final_report"`.
 
-**Timeout guard:**
+**No time limit:**
 
-The subprocess call is wrapped in `timeout 900` (15 minutes) inside the bash
-script to prevent unbounded recursion hangs. This is a **shell-level** timeout,
-not a YAML-level `timeout:` field — the recipe does not use a YAML `timeout:`
-on this step, which would violate the issue #439 no-per-step-timeout policy
-(bash step YAML timeouts are restricted to network commands and must be ≥1800s).
+The subprocess call has no shell `timeout` wrapper and no YAML `timeout:`.
+A nested cycle is work, and under issue #2022 work has no default time limit.
+Recursion stays bounded by the recipe's `recursion.max_depth`, so the nesting
+cannot grow without end. The guard test
+`crates/amplihack-cli/tests/issue_439_no_per_step_timeout.rs` fails if any
+bundled recipe wraps `amplihack`, `cargo`, `claude`, `copilot` or `codex` in a
+shell `timeout`, or sets `default_step_timeout`.
 
-On timeout, the subprocess receives SIGTERM, which the recipe runner handles
-gracefully. The step exits non-zero and the recipe halts.
+To stop a long run, use `amplihack recipe stop` or Ctrl-C; to bound it, set
+[`AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS`](./environment-variables.md#amplihack_recipe_runner_timeout_secs).
 
 **cycle_history handling:**
 

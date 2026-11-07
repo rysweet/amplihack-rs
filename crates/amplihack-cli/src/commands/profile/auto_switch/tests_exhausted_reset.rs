@@ -44,7 +44,7 @@ fn no_exhausted_window_or_one_already_reset_gives_none() {
 
 /// A weekly window at 92%, over a 90% threshold, with a reset days away:
 /// the profile still has capacity, so it gives no reset at all, rather than
-/// a `ResetTooFar` that would cancel the wait.
+/// a days-long reset wait on a login that could still work.
 #[test]
 fn a_window_over_the_threshold_but_not_used_up_does_not_count() {
     let r = reading(Some((30.0, NOW + 1800)), Some((92.0, NOW + 3 * 86_400)));

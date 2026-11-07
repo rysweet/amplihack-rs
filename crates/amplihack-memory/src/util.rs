@@ -9,7 +9,14 @@ const CHILD_WAIT_MAX_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const SUBPROCESS_SPAWN_RETRY_TIMEOUT: Duration = Duration::from_millis(250);
 const SUBPROCESS_SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(10);
 
-pub(crate) fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
+/// Run `cmd` to completion with stdout and stderr captured and no time limit
+/// (issue #2022). Both streams are drained concurrently so a child with large
+/// output cannot deadlock the wait.
+pub(crate) fn run_output_untimed(cmd: Command) -> Result<Output> {
+    run_output_inner(cmd, None)
+}
+
+fn run_output_inner(mut cmd: Command, timeout: Option<Duration>) -> Result<Output> {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child = spawn_subprocess(&mut cmd).context("failed to spawn subprocess")?;
@@ -41,6 +48,8 @@ pub(crate) fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Re
 
     let _ = child.kill();
     let _ = child.wait();
+    // Reached only when a limit was set.
+    let timeout = timeout.unwrap_or_default();
     bail!("subprocess `{cmd:?}` timed out after {timeout:?} (pid {pid})")
 }
 
@@ -59,20 +68,26 @@ fn spawn_subprocess(cmd: &mut Command) -> Result<std::process::Child> {
     }
 }
 
+/// Returns `Ok(None)` only when `timeout` is `Some` and has elapsed.
 fn wait_for_child_exit(
     child: &mut std::process::Child,
-    timeout: Duration,
+    timeout: Option<Duration>,
 ) -> Result<Option<std::process::ExitStatus>> {
-    let deadline = Instant::now() + timeout;
+    let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
     let mut interval = CHILD_WAIT_INITIAL_POLL_INTERVAL;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        if Instant::now() >= deadline {
-            return Ok(None);
+        let mut sleep_for = interval;
+        if let Some(deadline) = deadline {
+            let now = Instant::now();
+            if now >= deadline {
+                return Ok(None);
+            }
+            sleep_for = sleep_for.min(deadline.saturating_duration_since(now));
         }
-        thread::sleep(interval.min(deadline.saturating_duration_since(Instant::now())));
+        thread::sleep(sleep_for);
         interval = (interval * 2).min(CHILD_WAIT_MAX_POLL_INTERVAL);
     }
 }
@@ -81,4 +96,44 @@ fn drain_pipe(mut pipe: impl Read) -> std::io::Result<Vec<u8>> {
     let mut buf = Vec::new();
     pipe.read_to_end(&mut buf)?;
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Issue #2022: SCIP indexing is a build-type job and runs without a
+    /// limit. Large output on both streams is drained concurrently, so the
+    /// untimed wait cannot deadlock on a full pipe.
+    #[cfg(unix)]
+    #[test]
+    fn run_output_untimed_drains_both_streams() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args([
+            "-c",
+            "head -c 70000 /dev/zero; head -c 70000 /dev/zero >&2; exit 3",
+        ]);
+        let output = run_output_untimed(cmd).unwrap();
+        assert_eq!(output.status.code(), Some(3));
+        assert_eq!(output.stdout.len(), 70_000);
+        assert_eq!(output.stderr.len(), 70_000);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_output_untimed_waits_past_a_short_window() {
+        let mut cmd = Command::new("/bin/sh");
+        cmd.args(["-c", "sleep 2; echo indexed"]);
+        let started = Instant::now();
+        let output = run_output_untimed(cmd).unwrap();
+        assert!(output.status.success());
+        assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "indexed");
+        assert!(started.elapsed() >= Duration::from_millis(1900));
+    }
+
+    #[test]
+    fn run_output_untimed_reports_a_spawn_failure() {
+        let cmd = Command::new("/nonexistent/amplihack-2022-no-such-indexer");
+        assert!(run_output_untimed(cmd).is_err());
+    }
 }
