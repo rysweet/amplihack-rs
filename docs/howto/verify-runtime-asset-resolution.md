@@ -1,7 +1,7 @@
 ---
 title: Verify runtime asset resolution
 description: Confirm native amplihack asset resolution for helper, session, hooks, and multitask assets.
-last_updated: 2026-06-05
+last_updated: 2026-11-05
 review_schedule: as-needed
 owner: amplihack-maintainers
 doc_type: howto
@@ -73,6 +73,31 @@ AMPLIHACK_HOME="$HOME/.amplihack" amplihack resolve-bundle-asset helper-path
 `AMPLIHACK_HOME` must point to the directory that contains
 `amplifier-bundle/`, not to `amplifier-bundle/` itself.
 
+Resolving an asset only reads the bundle. `amplihack install` also treats
+`AMPLIHACK_HOME` as a possible source, and refuses it if its version differs from
+the binary's. See
+[Framework source selection](../reference/framework-source-selection.md).
+
+## Check the staged modes
+
+Confirm nothing under the bundle is writable by group or others:
+
+```bash
+find "$HOME/.amplihack/amplifier-bundle" -perm /022
+```
+
+A clean bundle prints nothing. Confirm a resolved script is still executable:
+
+```bash
+test -x "$(amplihack resolve-bundle-asset multitask-orchestrator)" && echo ok
+```
+
+Expected output:
+
+```text
+ok
+```
+
 ## Verify child-process resolution
 
 Recipe runners and launchers expose the standalone resolver through
@@ -107,3 +132,4 @@ Rust named-asset table, so usage output and accepted names stay in sync.
 - [resolve-bundle-asset Command Reference](../reference/resolve-bundle-asset-command.md)
 - [Environment Variables](../reference/environment-variables.md#amplihack_asset_resolver)
 - [Install Manifest](../reference/install-manifest.md)
+- [Framework Source Selection](../reference/framework-source-selection.md)

@@ -1,7 +1,5 @@
-//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude`
-//! on the account with the most capacity left, by moving logins between
-//! `~/.claude` and the profiles. One-shot, `--dry-run`, and a background
-//! `watch`; `profile switch NAME` uses the same swap and pins rotation.
+//! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude` on
+//! the account with the most capacity left; `profile switch` uses the same swap.
 //! See docs/reference/profile-command.md.
 #[cfg(unix)]
 mod account;
@@ -99,6 +97,8 @@ mod prelude;
 mod recover;
 #[cfg(unix)]
 mod revalidate;
+#[cfg(unix)]
+pub(super) mod seed;
 #[cfg(unix)]
 mod sessions_daily;
 #[cfg(unix)]

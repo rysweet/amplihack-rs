@@ -32,6 +32,24 @@ mod issue_1753_expired_live;
 mod issue_1753_login_identity;
 #[path = "issue_1753_refusal_named_once.rs"]
 mod issue_1753_refusal_named_once;
+#[path = "issue_1962_candide_cause.rs"]
+mod issue_1962_candide_cause;
+#[path = "issue_1962_causes.rs"]
+mod issue_1962_causes;
+#[path = "issue_1962_dir_rule.rs"]
+mod issue_1962_dir_rule;
+#[path = "issue_1962_dry_run.rs"]
+mod issue_1962_dry_run;
+#[path = "issue_1962_refresh_ledger.rs"]
+mod issue_1962_refresh_ledger;
+#[path = "issue_1962_seed.rs"]
+mod issue_1962_seed;
+#[path = "issue_1962_seed_cmd.rs"]
+mod issue_1962_seed_cmd;
+#[path = "issue_1962_seed_output.rs"]
+mod issue_1962_seed_output;
+#[path = "issue_1962_seed_scan.rs"]
+mod issue_1962_seed_scan;
 
 #[path = "active_agent_binary_default_test.rs"]
 mod active_agent_binary_default;
@@ -265,10 +283,14 @@ mod issue_1818_no_session_limit;
 mod issue_1846_exhausted_reading;
 #[path = "issue_1870_reread_probe_mode.rs"]
 mod issue_1870_reread_probe_mode;
+#[path = "issue_1955_install_cli.rs"]
+mod issue_1955_install_cli;
 #[path = "issue_1973_rotate_fixture.rs"]
 mod issue_1973_rotate_fixture;
 #[path = "issue_1973_wait_helpers.rs"]
 mod issue_1973_wait_helpers;
+#[path = "issue_1979_crusty_minor_followups.rs"]
+mod issue_1979_crusty_minor_followups;
 #[path = "issue_2001_codex_usage.rs"]
 mod issue_2001_codex_usage;
 #[path = "issue_439_no_per_step_timeout.rs"]

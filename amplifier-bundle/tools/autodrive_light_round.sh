@@ -48,11 +48,8 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 umask 077
 
 TOOLS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-KEYWORDS='sec|auth|secret|token|credential|inject|xss|csrf|cve|vuln|unsafe|privilege|perm'
-# Matched as whole words in the summary and evidence, so that common words such
-# as "second" or "author" do not match.
-TEXT_KEYWORDS='\b(secur[a-z]*|insecure|authenticat[a-z]*|authori[sz][a-z]*|authn|authz|secrets?|tokens?|credentials?|inject[a-z]*|xss|csrf|cve|vuln[a-z]*|unsafe|privileges?|permissions?|sanitis[a-z]*|sanitiz[a-z]*|escap(e|es|ed|ing)|traversal|ssrf|rce|password[a-z]*)\b'
-ZW=$'\xe2\x80\x8b'
+# KEYWORDS, TEXT_KEYWORDS, ZW and cell() come from autodrive_finding_rules.sh,
+# shared with autodrive_followups.sh (#1979); it is loaded after the marker check.
 
 usage() {
   echo "ERROR: autodrive_light_round: $1" >&2
@@ -113,6 +110,9 @@ private() {
 }
 
 command -v jq >/dev/null 2>&1 || { echo "ERROR: light round: jq is not on PATH; the marker cannot be checked" >&2; none state-unsafe; }
+# shellcheck source=autodrive_finding_rules.sh
+. "$TOOLS/autodrive_finding_rules.sh" 2>/dev/null \
+  || { echo "ERROR: light round: autodrive_finding_rules.sh is missing from $TOOLS" >&2; none state-unsafe; }
 if [ ! -d "$STATE" ] || ! private "$STATE"; then none state-unsafe; fi
 private "$MARKER_FILE" || none state-unsafe
 MHEAD="$(cat -- "$MARKER_FILE" 2>/dev/null)" || none marker-invalid
@@ -303,16 +303,6 @@ repo_name() {
   re="^https://github\\.com/([A-Za-z0-9-]+/[A-Za-z0-9._-]+)/pull/${PR}\$"
   [[ "$url" =~ $re ]] || return 1
   GH_REPO_NAME="${BASH_REMATCH[1]}"
-}
-
-cell() {
-  local s
-  s="$(sanitize_cli_output "$1")"
-  s="${s//&/&amp;}"; s="${s//</&lt;}"; s="${s//>/&gt;}"
-  s="${s//@/@$ZW}"
-  s="$(printf '%s' "$s" | sed -E -e "s/#([0-9])/#${ZW}\\1/g" -e "s#(github\\.com)/#\\1/${ZW}#Ig")"
-  s="${s//|/&#x7C;}"; s="${s//\`/&#x60;}"
-  printf '%s' "$s"
 }
 
 # table <id>...: the Markdown table of the named concerns.

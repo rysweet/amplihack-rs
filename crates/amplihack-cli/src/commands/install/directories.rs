@@ -3,7 +3,9 @@
 use super::bundle_compat::{
     validate_framework_bundle_compatibility, validate_staged_framework_bundle,
 };
+use super::bundle_manifest;
 use super::filesystem::*;
+use super::paths::sanitize_path;
 use super::types::*;
 use anyhow::{Context, Result};
 use std::fs;
@@ -391,6 +393,9 @@ fn backup_path(target: &Path) -> PathBuf {
 /// The copy is performed via a temp-dir + atomic-rename pattern so a failed
 /// mid-flight copy never destroys an existing working bundle.
 ///
+/// The staged copy is compared with its source file for file before the swap,
+/// and modes are set by staging itself, not inherited (issue #1955).
+///
 /// The source `amplifier-bundle/` root must be a real directory; symlinked
 /// roots are rejected to prevent a malicious local repo from copying an
 /// arbitrary readable directory into the user's staging area.
@@ -437,63 +442,20 @@ pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Resu
     // because `ensure_framework_installed` swallows refresh errors and
     // expects the previous staged framework to still be usable.
     let staging_temp = target_bundle.with_extension("staging");
-    if staging_temp.exists() {
-        fs::remove_dir_all(&staging_temp).with_context(|| {
-            format!(
-                "failed to clean stale staging dir {}",
+    remove_stale_staging(&staging_temp)?;
+    if let Err(err) =
+        stage_and_swap_bundle(repo_root, &source_bundle, &staging_temp, &target_bundle)
+    {
+        // A swap may already have moved staging away, so a missing dir is fine.
+        if let Err(cleanup) = fs::remove_dir_all(&staging_temp)
+            && cleanup.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                "could not remove staging dir {}: {cleanup}",
                 staging_temp.display()
-            )
-        })?;
-    }
-    copy_dir_recursive(&source_bundle, &staging_temp).with_context(|| {
-        format!(
-            "failed to copy amplifier-bundle into staging dir {}",
-            staging_temp.display()
-        )
-    })?;
-    if let Err(err) = secure_merge_guard(&staging_temp) {
-        let _ = fs::remove_dir_all(&staging_temp);
+            );
+        }
         return Err(err);
-    }
-    if let Err(err) = validate_staged_framework_bundle(&staging_temp) {
-        let _ = fs::remove_dir_all(&staging_temp);
-        return Err(err).with_context(|| {
-            format!(
-                "copied amplifier-bundle staging dir {} is incompatible",
-                staging_temp.display()
-            )
-        });
-    }
-
-    if target_bundle.exists() {
-        let backup = target_bundle.with_extension("old");
-        if backup.exists() {
-            fs::remove_dir_all(&backup).ok();
-        }
-        fs::rename(&target_bundle, &backup).with_context(|| {
-            format!(
-                "failed to back up existing amplifier-bundle at {}",
-                target_bundle.display()
-            )
-        })?;
-        if let Err(err) = fs::rename(&staging_temp, &target_bundle) {
-            // Roll the previous bundle back into place so the install isn't bricked.
-            let _ = fs::rename(&backup, &target_bundle);
-            return Err(err).with_context(|| {
-                format!(
-                    "failed to swap new amplifier-bundle into {}",
-                    target_bundle.display()
-                )
-            });
-        }
-        let _ = fs::remove_dir_all(&backup);
-    } else {
-        fs::rename(&staging_temp, &target_bundle).with_context(|| {
-            format!(
-                "failed to move new amplifier-bundle into {}",
-                target_bundle.display()
-            )
-        })?;
     }
 
     validate_staged_framework_bundle(&target_bundle).with_context(|| {
@@ -508,6 +470,160 @@ pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Resu
         target_bundle.display()
     );
     Ok(true)
+}
+
+/// A leftover staging path from an interrupted install, whatever it now is.
+fn remove_stale_staging(staging: &Path) -> Result<()> {
+    let removed = match fs::symlink_metadata(staging) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => Err(err),
+        Ok(meta) if meta.is_dir() => fs::remove_dir_all(staging),
+        Ok(_) => fs::remove_file(staging),
+    };
+    removed.with_context(|| format!("failed to clean stale staging dir {}", staging.display()))
+}
+
+/// Create the staging root so only this user can reach it while the copy and
+/// its check run (SEC-4). `create` fails if the path reappeared since cleanup.
+fn create_private_staging_dir(staging: &Path) -> Result<()> {
+    #[cfg(unix)]
+    let created = {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().mode(0o700).create(staging)
+    };
+    #[cfg(not(unix))]
+    let created = fs::create_dir(staging);
+    created.with_context(|| format!("failed to create staging dir {}", staging.display()))
+}
+
+/// Issue #1955 D11: copy, compare with the source, set modes, secure the merge
+/// guard, check compatibility, then swap. The caller deletes staging on error.
+fn stage_and_swap_bundle(
+    repo_root: &Path,
+    source_bundle: &Path,
+    staging_temp: &Path,
+    target_bundle: &Path,
+) -> Result<()> {
+    create_private_staging_dir(staging_temp)?;
+    copy_dir_recursive(source_bundle, staging_temp).with_context(|| {
+        format!(
+            "failed to copy amplifier-bundle into staging dir {}",
+            staging_temp.display()
+        )
+    })?;
+    #[cfg(test)]
+    staging_hook::run(staging_temp);
+
+    let diff = bundle_manifest::compare(
+        &bundle_manifest::of_source(source_bundle)?,
+        &bundle_manifest::of_staged(staging_temp)?,
+    );
+    if !diff.is_clean() {
+        anyhow::bail!("{}", bundle_manifest::render_mismatch(repo_root, &diff));
+    }
+
+    normalize_bundle_modes(staging_temp)?;
+    // After the mode rule, so the guard's exact modes are the ones kept.
+    secure_merge_guard(staging_temp)?;
+    validate_staged_framework_bundle(staging_temp).with_context(|| {
+        format!(
+            "copied amplifier-bundle staging dir {} is incompatible",
+            staging_temp.display()
+        )
+    })?;
+
+    if target_bundle.exists() {
+        let backup = target_bundle.with_extension("old");
+        if backup.exists() {
+            fs::remove_dir_all(&backup).ok();
+        }
+        fs::rename(target_bundle, &backup).with_context(|| {
+            format!(
+                "failed to back up existing amplifier-bundle at {}",
+                target_bundle.display()
+            )
+        })?;
+        if let Err(err) = fs::rename(staging_temp, target_bundle) {
+            // Roll the previous bundle back into place so the install isn't bricked.
+            let _ = fs::rename(&backup, target_bundle);
+            return Err(err).with_context(|| {
+                format!(
+                    "failed to swap new amplifier-bundle into {}",
+                    target_bundle.display()
+                )
+            });
+        }
+        let _ = fs::remove_dir_all(&backup);
+    } else {
+        fs::rename(staging_temp, target_bundle).with_context(|| {
+            format!(
+                "failed to move new amplifier-bundle into {}",
+                target_bundle.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Apply the mode rule across a staged bundle (issue #1955): directories and
+/// files with any execute bit get `0755`, other files `0644`.
+///
+/// A directory is opened up before it is read, so one with no search permission
+/// can't hide what is under it. The root stays `0700` until everything else is
+/// done (SEC-4). A symlink or special file is an error, because `set_permissions`
+/// follows links and could change a file outside the bundle (SEC-12).
+#[cfg(unix)]
+pub(super) fn normalize_bundle_modes(root: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let set_mode = |path: &Path, mode: u32| {
+        fs::set_permissions(path, fs::Permissions::from_mode(mode))
+            .with_context(|| format!("failed to set mode {mode:o} on {}", path.display()))
+    };
+    let root_meta = fs::symlink_metadata(root)
+        .with_context(|| format!("failed to inspect {}", root.display()))?;
+    if !root_meta.is_dir() {
+        anyhow::bail!(
+            "the staged bundle root {} is not a directory",
+            sanitize_path(root)
+        );
+    }
+    set_mode(root, 0o700)?;
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in
+            fs::read_dir(&dir).with_context(|| format!("failed to read {}", dir.display()))?
+        {
+            let entry = entry.with_context(|| format!("failed to read {}", dir.display()))?;
+            let path = entry.path();
+            let meta = fs::symlink_metadata(&path)
+                .with_context(|| format!("failed to inspect {}", path.display()))?;
+            let kind = meta.file_type();
+            if kind.is_dir() {
+                set_mode(&path, 0o755)?;
+                pending.push(path);
+            } else if kind.is_file() {
+                let executable = meta.permissions().mode() & 0o111 != 0;
+                set_mode(&path, if executable { 0o755 } else { 0o644 })?;
+            } else if kind.is_symlink() {
+                anyhow::bail!(
+                    "the staged bundle holds a symlink: {}",
+                    sanitize_path(&path)
+                );
+            } else {
+                anyhow::bail!(
+                    "the staged bundle holds a special file: {}",
+                    sanitize_path(&path)
+                );
+            }
+        }
+    }
+    set_mode(root, 0o755)
+}
+
+#[cfg(not(unix))]
+pub(super) fn normalize_bundle_modes(_root: &Path) -> Result<()> {
+    Ok(())
 }
 
 pub(super) fn initialize_project_md(claude_dir: &Path) -> Result<()> {
@@ -593,4 +709,37 @@ fn secure_merge_guard(bundle: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Test seam: `copy_amplifier_bundle` calls the installed hook with the staging
+/// directory after the copy and before the manifest comparison. Issue #1955.
+#[cfg(test)]
+pub(super) mod staging_hook {
+    use std::cell::RefCell;
+    use std::path::Path;
+
+    type Hook = Box<dyn FnMut(&Path)>;
+
+    thread_local! {
+        static HOOK: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    /// Run `body` with `hook` installed on this thread.
+    pub(in super::super) fn with_staging_hook<R>(
+        hook: impl FnMut(&Path) + 'static,
+        body: impl FnOnce() -> R,
+    ) -> R {
+        HOOK.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+        let result = body();
+        HOOK.with(|slot| *slot.borrow_mut() = None);
+        result
+    }
+
+    pub(in super::super) fn run(staging: &Path) {
+        HOOK.with(|slot| {
+            if let Some(hook) = slot.borrow_mut().as_mut() {
+                hook(staging);
+            }
+        });
+    }
 }

@@ -7,7 +7,9 @@ use crate::commands::profile::overflow::{PLATFORM_TIER, tiers_detail};
 
 pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
     let root = ctx.store.root();
-    let trusted_live = ctx.identity_reader().oauth(&ctx.home.join(".claude")).ok();
+    let live_read = ctx.identity_reader().oauth(&ctx.home.join(".claude"));
+    let identity_cause = live_read.as_ref().err().copied();
+    let trusted_live = live_read.ok();
     let mut identity_refusal = None;
     if let Some(l) = ctx.rs.load_ledger()?
         && let Some(raw) = l.live.as_deref()
@@ -64,7 +66,8 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
     let detected_mark = marked
         .filter(|n| kinds.resolve_kind(&ctx.store, n).source != kind::KindSource::Override)
         .cloned();
-    let candidate_accounts = super::super::revalidate::accounts_with(ctx, &candidates);
+    let (candidate_accounts, mut candidate_refusals) =
+        super::super::revalidate::accounts_with(ctx, &candidates);
     candidates.retain(|n| {
         let readable = marked == Some(n)
             || candidate_accounts
@@ -75,10 +78,13 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         }
         readable
     });
+    candidate_refusals.retain(|(n, _)| !candidates.contains(n));
     Ok(Snap {
         account: trusted_live.as_ref().map(|a| a.key().to_string()),
         trusted_live,
         identity_refusal,
+        identity_cause,
+        candidate_refusals,
         candidate_accounts,
         live,
         proto,
