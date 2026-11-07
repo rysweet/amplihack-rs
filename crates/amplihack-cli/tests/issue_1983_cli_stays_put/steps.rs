@@ -79,6 +79,20 @@ fn every_nested_step_uses(cli: Cli) {
     fx.session(&mut cmd, cli);
     fx.use_real_runner(&mut cmd, &runner);
     fx.run_ok(cmd);
+
+    // Every record counts, tagged or not: a run of the wrong CLI by the
+    // runner, or by a launcher it starts, must not escape the check by
+    // carrying no `issue1983-level-*` prompt tag.
+    let records = fx.records();
+    assert_eq!(
+        records.len(),
+        3,
+        "exactly the three nested steps, and no untagged run\n{}",
+        fx.logs()
+    );
+    for record in &records {
+        record.assert_cli(cli);
+    }
     assert_nested_steps(&fx, cli);
 }
 

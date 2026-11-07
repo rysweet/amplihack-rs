@@ -120,9 +120,11 @@ sub-recipes in its own process. Each agent step goes runner →
 `amplihack <cli>` → fake CLI. The fake records the `issue1983-level-*` word
 from its prompt as `prompt_tag`. Each test asserts that:
 
-- exactly three step records exist, tagged outer, sub and subsub, in that
-  order;
-- each shows `ran`, `binary`, `source` and `children_see` for the run's CLI,
+- the run leaves exactly three records in total, counting records with no
+  prompt tag, so an untagged run of the wrong CLI fails the test (the test
+  from a Claude shell expects four: the top codex plus three steps);
+- the tagged records are outer, sub and subsub, in that order;
+- every record shows `ran`, `binary`, `source` and `children_see` for the run's CLI,
   and `nonce_set=true`.
 
 `codex_run_from_a_claude_shell_keeps_claude_markers_out_of_nested_steps`
@@ -362,6 +364,7 @@ runner's `build_agent_command` and then update `STUB_RUNNER_REV`.
 | `AMPLIHACK_ROTATE_AUTOSTART` | `0` | The login rotator does not start |
 | `TMUX_TMPDIR` | `<tmp>/tmux`; `TMUX` is never set | No real tmux server is reached |
 | `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL`, `GIT_TERMINAL_PROMPT` | `1`, `/dev/null`, `0` | No git credential prompt (issue #1764) |
+| `GIT_ASKPASS`, `SSH_ASKPASS` | `true`, `true` | Set by `no_git_prompt` (`tests/support/isolated_amplihack.rs`), with `GIT_TERMINAL_PROMPT=0`, so no git or ssh password prompt can open |
 
 The working directory is `<tmp>/work` and stdin is `/dev/null`. Because the
 environment is cleared first, no depth, session or tree variable reaches the
@@ -371,8 +374,10 @@ Self-checks in `record.rs` (and the marker-name check in `script.rs`) fail
 the suite if:
 
 - a marker name taken from `SESSION_MARKERS` does not match `^[A-Z_][A-Z0-9_]*$`;
-- `cmd()` sets any variable matching `*TOKEN*`, `*KEY*`, `*SECRET*`, `SSH_*` or
-  `CLAUDE_CONFIG_DIR`;
+- `cmd()` sets any variable matching `*TOKEN*`, `*KEY*`, `*SECRET*` or
+  `SSH_*`, or sets `CLAUDE_CONFIG_DIR` or `DBUS_SESSION_BUS_ADDRESS`. The one
+  exemption is `SSH_ASKPASS=true` from `no_git_prompt`; any other
+  `SSH_ASKPASS` value still fails;
 - `command -v claude` or `command -v codex` under the fixture `PATH` resolves
   outside `<tmp>/tools`;
 - any record's `self` lies outside `<tmp>/tools`.
