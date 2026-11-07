@@ -217,17 +217,39 @@ pub(super) type RootSandboxDecision = fn() -> amplihack_utils::root_sandbox::Ski
 #[derive(Debug, Clone)]
 pub(super) enum NativeReasonerBackend {
     None,
+    /// The heuristic reasoner, chosen because the run is on the named CLI and
+    /// the only native backend starts `claude` (issue #1983).
+    StaysOn(String),
     Claude(PathBuf, RootSandboxDecision),
 }
 
 impl NativeReasonerBackend {
+    /// `requested` is the backend name; `auto` follows the run's CLI.
     pub(super) fn detect(requested: &str) -> Result<Self> {
+        let run = crate::env_builder::active_agent_binary_resolution();
+        let observed = (!run.source.is_inferred()).then_some(run.binary.as_str());
+        Self::detect_for(requested, observed)
+    }
+
+    /// [`Self::detect`] with the run's CLI passed in: `observed` is the binary
+    /// the resolver named when it was observed (an explicit
+    /// `AMPLIHACK_AGENT_BINARY`, the configured `agent.binary`, or a live
+    /// session marker) and `None` when it was inferred from a launcher
+    /// context file or the built-in default.
+    ///
+    /// Issue #1983: a run stays on the CLI it started with. The only native
+    /// backend starts `claude`, so under `auto` a run observed on another CLI
+    /// gets the heuristic reasoner rather than a `claude` it did not ask for.
+    /// Naming `claude` (or `anthropic`) is the explicit request that starts
+    /// `claude` anyway. When nothing observed a CLI, `auto` keeps using
+    /// `claude` when it is installed, as before.
+    pub(super) fn detect_for(requested: &str, observed: Option<&str>) -> Result<Self> {
         match requested {
-            "auto" | "anthropic" | "claude" => Ok(find_reasoner_binary()
-                .map(|path| {
-                    NativeReasonerBackend::Claude(path, amplihack_utils::root_sandbox::detect)
-                })
-                .unwrap_or(NativeReasonerBackend::None)),
+            "auto" => match observed {
+                Some(cli) if cli != "claude" => Ok(NativeReasonerBackend::StaysOn(cli.to_string())),
+                _ => Ok(Self::claude_if_installed()),
+            },
+            "anthropic" | "claude" => Ok(Self::claude_if_installed()),
             "copilot" | "litellm" => bail!(
                 "native fleet reasoner backend `{requested}` is not implemented yet; use the default Claude backend"
             ),
@@ -235,19 +257,31 @@ impl NativeReasonerBackend {
         }
     }
 
+    fn claude_if_installed() -> Self {
+        find_reasoner_binary()
+            .map(|path| NativeReasonerBackend::Claude(path, amplihack_utils::root_sandbox::detect))
+            .unwrap_or(NativeReasonerBackend::None)
+    }
+
     pub(super) fn label(&self) -> &'static str {
         match self {
-            NativeReasonerBackend::None => "heuristic",
+            NativeReasonerBackend::None | NativeReasonerBackend::StaysOn(_) => "heuristic",
             NativeReasonerBackend::Claude(..) => "claude",
         }
     }
 
-    /// Issue #1482: the line announcing an automatic `IS_SANDBOX=1` for this
-    /// backend's `claude`, for the caller to show once where the user sees it
-    /// (stderr for the fleet commands, the notice panel in the TUI).
+    /// The line the caller shows once where the user sees it (stderr for the
+    /// fleet commands, the notice panel in the TUI): an automatic
+    /// `IS_SANDBOX=1` for this backend's `claude` (issue #1482), or why the
+    /// heuristic reasoner runs instead of `claude` (issue #1983).
     pub(super) fn root_sandbox_notice(&self) -> Option<String> {
         match self {
             NativeReasonerBackend::None => None,
+            NativeReasonerBackend::StaysOn(cli) => Some(format!(
+                "fleet reasoner: this run is on {cli} and the native reasoner only starts \
+                 claude, so the heuristic reasoner is used; run `amplihack fleet dry-run \
+                 --backend claude` to ask for claude explicitly"
+            )),
             NativeReasonerBackend::Claude(_, decision) => decision().notice(),
         }
     }
@@ -270,6 +304,11 @@ impl NativeReasonerBackend {
         match self {
             NativeReasonerBackend::None => {
                 bail!("no native reasoner backend available")
+            }
+            NativeReasonerBackend::StaysOn(cli) => {
+                bail!(
+                    "this run is on {cli} and no native reasoner starts {cli}; claude is not started"
+                )
             }
             NativeReasonerBackend::Claude(path, decision) => {
                 let mut cmd = reasoner_command(path, &decision())?;

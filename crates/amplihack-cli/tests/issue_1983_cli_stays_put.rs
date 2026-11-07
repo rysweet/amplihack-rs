@@ -25,3 +25,5 @@ mod script;
 mod steps;
 #[path = "issue_1983_cli_stays_put/subprocess_safe.rs"]
 mod subprocess_safe;
+#[path = "issue_1983_cli_stays_put/workstreams.rs"]
+mod workstreams;

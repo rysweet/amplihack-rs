@@ -220,10 +220,10 @@ When a log reaches the cap, writes stop and a truncation notice is written to st
 Subprocess delegates are validated against a frozenset allowlist before any process is spawned:
 
 ```
-VALID_DELEGATES = {"amplihack claude", "amplihack copilot", "amplihack amplifier"}
+VALID_DELEGATES = {"amplihack amplifier", "amplihack claude", "amplihack codex", "amplihack copilot"}
 ```
 
-Any value not in this set (from `AMPLIHACK_DELEGATE` env var or auto-detection) is rejected and the orchestrator falls back to the next candidate. This prevents injection of arbitrary executables via environment variables.
+An `AMPLIHACK_DELEGATE` value not in this set is rejected, and the orchestrator falls back to `amplihack <active agent binary>`, the CLI of the session that started the run (issue #1983). It never falls back to a fixed `amplihack claude`. This prevents injection of arbitrary executables via environment variables.
 
 ### Path Sanitisation
 
@@ -249,7 +249,7 @@ All subprocess invocations use list-form args (`["cmd", "arg1", "arg2"]`), never
 |---|---|---|
 | `AMPLIHACK_TIMEOUT_POLICY` | `interrupt-preserve` | Default timeout policy for all workstreams |
 | `AMPLIHACK_MAX_LOG_BYTES` | `104857600` (100 MB) | Per-workstream log size cap |
-| `AMPLIHACK_DELEGATE` | *(auto-detected)* | Override the subprocess delegate binary |
+| `AMPLIHACK_DELEGATE` | `amplihack <active agent binary>` | Override the subprocess delegate binary |
 | `AMPLIHACK_MAX_DEPTH` | `3` | Max recursion depth passed to launched agents |
 | `AMPLIHACK_MAX_SESSIONS` | `10` | Max concurrent sessions passed to launched agents |
 

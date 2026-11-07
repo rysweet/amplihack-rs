@@ -201,6 +201,8 @@ CLI (issue #1983). The mechanisms above give that result at each level:
 |---|---|
 | Nested command (`amplihack recipe run` inside the agent) | The launcher exports `session:<cli>` and removes the other CLIs' markers, so the nested command resolves the launcher's CLI at layer 2. |
 | Every workflow step, including sub-recipes | `recipe run` resolves once at entry and exports the answer to the runner, which passes it to every step unchanged. |
+| `multitask` and `orch run` workstreams, including smart-orchestrator's parallel bash step | Classic mode runs `amplihack <active binary>`, or `AMPLIHACK_DELEGATE` when it names one of the four `amplihack <cli>` commands. Recipe mode runs `amplihack recipe run` in the workstream, which resolves again from the inherited environment. |
+| Fleet reasoner | Under the default `auto` backend, a run observed on a CLI other than claude uses the heuristic reasoner rather than start `claude`, the only native backend. `fleet dry-run --backend claude` asks for claude explicitly. |
 | `amplihack <cli> --subprocess-safe` under a parent of the other kind | An explicit launch exports its own CLI, whatever it inherited. |
 | Explicit launch over an inherited value | An inherited `session:<other>`, `default:<other>` or untagged `<other>` never replaces the explicit command's CLI in what its children see. |
 | Explicit change | A user-set `AMPLIHACK_AGENT_BINARY` (layer 1) on a plain `recipe run`, or `agent.binary` in config when no session marker is live, chooses the CLI. |
@@ -217,8 +219,9 @@ AMPLIHACK_AGENT_BINARY=codex amplihack recipe run default-workflow
 Each level is tested in both directions, claude to codex and codex to claude,
 with fake CLIs that record the environment they inherited. See
 [CLI Stays Put Tests](../testing/CLI_STAYS_PUT_TESTS.md) for the test list and
-two known limits: a stray Claude marker inside a codex session, and an
-inherited `default:<same tool>` guess.
+the known limits: a stray Claude marker inside a codex session, an inherited
+`default:<same tool>` guess, and the fleet reasoner, which has no codex
+backend.
 
 ## Default: copilot
 

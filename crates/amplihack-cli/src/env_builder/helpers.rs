@@ -21,8 +21,14 @@ use std::path::{Path, PathBuf};
 /// it calls [`resolve_agent_binary_in`] itself, as `recipe run` and
 /// `agent-binary` do.
 pub fn active_agent_binary() -> String {
+    active_agent_binary_resolution().binary
+}
+
+/// [`active_agent_binary`] with the layer that supplied it, for a caller that
+/// treats an observed CLI differently from a guess (issue #1983).
+pub fn active_agent_binary_resolution() -> amplihack_utils::agent_binary::Resolution {
     let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    resolve_agent_binary_in(&cwd).binary
+    resolve_agent_binary_in(&cwd)
 }
 
 /// Resolve the agent binary with the launcher-context walk-up starting at

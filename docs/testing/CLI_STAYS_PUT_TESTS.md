@@ -58,17 +58,23 @@ variable the level 2 tests print that they are skipping and pass.
 
 Each row names the test that covers that level in that direction. "Claude
 direction" means the case ends with claude running; "codex direction" means it
-ends with codex running. The table has 18 rows: three each for
-levels 1 and 2, two for level 3, six for level 4 and four for level 5.
+ends with codex running. The table has 25 rows: seven for level 1, five for
+level 2, two for level 3, six for level 4 and five for level 5.
 
 | Level | What is checked | Direction | Covering test (`file::name`) |
 |---|---|---|---|
 | 1 | Nested command | Claude session stays claude | `nested.rs::claude_session_runs_recipe_under_claude` |
 | 1 | Nested command | Codex session stays codex | `nested.rs::codex_session_runs_recipe_under_codex` |
 | 1 | Nested command, two hops | Codex session stays codex | `nested.rs::codex_session_launching_an_agent_command_stays_codex` |
+| 1 | `multitask run --mode classic` workstream | Codex session stays codex | `workstreams.rs::classic_workstream_from_a_codex_session_runs_codex` |
+| 1 | `multitask run --mode classic` workstream | Claude session stays claude | `workstreams.rs::classic_workstream_from_a_claude_session_runs_claude` |
+| 1 | `orch run` workstream, recipe mode | Codex session stays codex | `workstreams.rs::orch_run_workstream_from_a_codex_session_runs_codex` |
+| 1 | `orch run` workstream, recipe mode | Claude session stays claude | `workstreams.rs::orch_run_workstream_from_a_claude_session_runs_claude` |
 | 2 | Agent steps of nested sub-recipes, real runner | Claude run, all steps claude | `steps.rs::every_nested_step_of_a_claude_run_uses_claude` |
 | 2 | Agent steps of nested sub-recipes, real runner | Codex run, all steps codex | `steps.rs::every_nested_step_of_a_codex_run_uses_codex` |
 | 2 | Agent steps of nested sub-recipes, real runner, two hops | Codex run from a Claude shell, all steps codex | `steps.rs::codex_run_from_a_claude_shell_keeps_claude_markers_out_of_nested_steps` |
+| 2 | Bash step running `orch run`, workstream agent step, real runner | Codex run, step codex | `workstreams.rs::parallel_bash_step_from_a_codex_session_runs_codex` |
+| 2 | Bash step running `orch run`, workstream agent step, real runner | Claude run, step claude | `workstreams.rs::parallel_bash_step_from_a_claude_session_runs_claude` |
 | 3 | `--subprocess-safe` launch | Codex parent, explicit claude | `subprocess_safe.rs::claude_subprocess_safe_from_a_codex_parent_runs_claude` |
 | 3 | `--subprocess-safe` launch | Claude parent, explicit codex | `subprocess_safe.rs::codex_subprocess_safe_from_a_claude_parent_runs_codex` |
 | 4 | Inherited `session:codex` | Explicit claude wins | `explicit_launch.rs::claude_beats_inherited_session_codex` |
@@ -81,6 +87,7 @@ levels 1 and 2, two for level 3, six for level 4 and four for level 5.
 | 5 | User-set `AMPLIHACK_AGENT_BINARY` | Codex session told claude | `explicit_change.rs::codex_session_told_claude_dispatches_claude` |
 | 5 | `agent.binary` config | Configured codex | `explicit_change.rs::config_agent_binary_codex_dispatches_codex` |
 | 5 | `agent.binary` config | Configured claude | `explicit_change.rs::config_agent_binary_claude_dispatches_claude` |
+| 5 | `AMPLIHACK_DELEGATE='amplihack codex'` | Claude session told codex | `workstreams.rs::explicit_codex_delegate_is_honoured` |
 
 All file paths are relative to `crates/amplihack-cli/tests/issue_1983_cli_stays_put/`.
 
@@ -102,6 +109,33 @@ ran.
 It runs `amplihack codex`, and the fake codex runs `amplihack recipe run`
 itself, so the chain is test → `amplihack codex` → fake codex →
 `amplihack recipe run` → runner → step → fake codex.
+
+### Level 1: workstreams
+
+`multitask` starts each workstream as `bash run.sh` in a fresh clone of a git
+repository the fixture commits (`Fixture::source_repo`). The scripts call
+`amplihack` by name, so `Fixture::workstream_cmd` puts the binary under test on
+`PATH`, moves `TMPDIR` into the fixture, where multitask keeps its
+workstreams, and sets `AMPLIHACK_SESSION_TREE_DIR` inside the fixture.
+
+- Classic mode runs `amplihack <delegate> --subprocess-safe -- <verb> "@TASK.md ..."`.
+  The delegate is `AMPLIHACK_DELEGATE` when it names one of the four
+  `amplihack <cli>` commands, else `amplihack <active agent binary>`. Before
+  issue #1983 it defaulted to `amplihack claude` whatever the session, and
+  `amplihack codex` was not accepted. The verb is the CLI's own
+  non-interactive form: `-p` for claude and copilot, `exec` for codex, `run`
+  for amplifier. The tests assert that exactly one record exists, that it
+  shows the session's CLI, and that its argv starts with that CLI's verb.
+- `orch run` is the command smart-orchestrator's `launch-parallel-round-1`
+  bash step runs. It is `multitask run` in recipe mode, so the workstream's
+  `launcher.sh` runs `amplihack recipe run`. A nested `recipe run` refuses to
+  start unless a session tree holds its recursion ceiling (issue #1326), so
+  the tests copy smart-orchestrator: `amplihack session-tree register --json`,
+  then `orch run` with that `tree_id` and `depth` (`LAUNCH_PARALLEL` in
+  `workstreams.rs`). The `orch_run_*` tests run it from a fake CLI started by
+  `amplihack <cli>`, with the stub runner, and assert that the runner was
+  handed the session's CLI and that the top fake and the three steps, and no
+  other run, show that CLI.
 
 ### Level 2: workflow steps
 
@@ -126,6 +160,18 @@ from its prompt as `prompt_tag`. Each test asserts that:
 - the tagged records are outer, sub and subsub, in that order;
 - every record shows `ran`, `binary`, `source` and `children_see` for the run's CLI,
   and `nonce_set=true`.
+
+The `workstreams.rs::parallel_bash_step_*` tests follow smart-orchestrator's
+parallel route under the real runner: `recipe run` → runner → a bash step
+running `LAUNCH_PARALLEL` → `amplihack orch run` → multitask → `bash run.sh` → `launcher.sh` →
+`amplihack recipe run` → runner → the workstream's `issue1983-subsub` agent
+step → `amplihack <cli>` → fake CLI. Each asserts that exactly one record
+exists, tagged `issue1983-level-subsub`, showing the session's CLI. The runner
+gives the bash step a private `TMPDIR`, so the step sets it back to the
+fixture's. The bash step runs at depth 2 and the workstream's `recipe run` at
+depth 3, which the default ceiling of 3 refuses (smart-orchestrator's
+`recursion_guard` then takes its single-session route), so the test starts the
+root with `AMPLIHACK_MAX_DEPTH=6`.
 
 `codex_run_from_a_claude_shell_keeps_claude_markers_out_of_nested_steps`
 starts from a parent that holds a Claude session's environment and every
@@ -366,6 +412,12 @@ runner's `build_agent_command` and then update `STUB_RUNNER_REV`.
 | `GIT_CONFIG_NOSYSTEM`, `GIT_CONFIG_GLOBAL`, `GIT_TERMINAL_PROMPT` | `1`, `/dev/null`, `0` | No git credential prompt (issue #1764) |
 | `GIT_ASKPASS`, `SSH_ASKPASS` | `true`, `true` | Set by `no_git_prompt` (`tests/support/isolated_amplihack.rs`), with `GIT_TERMINAL_PROMPT=0`, so no git or ssh password prompt can open |
 
+`Fixture::workstream_cmd`, used by `workstreams.rs`, then adds
+`TMPDIR=<tmp>/tmp`, `AMPLIHACK_SESSION_TREE_DIR=<tmp>/trees` and
+`AMPLIHACK_REPO_PATH=<tmp>/source`, links `amplihack` into `<tmp>/tools`, and
+runs from `<tmp>/source`, a git repository it commits with
+`GIT_CONFIG_GLOBAL=/dev/null`.
+
 The working directory is `<tmp>/work` and stdin is `/dev/null`. Because the
 environment is cleared first, no depth, session or tree variable reaches the
 command unless a test sets it.
@@ -419,6 +471,18 @@ adapter itself launches `amplihack <binary>`, so the command line cannot show
 whether a person chose the CLI. A `default:` value means no CLI was chosen,
 so no run "started with codex" exists. The suite does not assert on this case;
 `launch/tests_env.rs` covers it.
+
+**The fleet reasoner has no codex backend.** Its only native backend starts
+`claude`. Under the default `auto` backend, `fleet scout`, `fleet advance`,
+`fleet dry-run` and the TUI dry run use the heuristic reasoner when the run
+was observed on another CLI (an explicit `AMPLIHACK_AGENT_BINARY`, the
+configured `agent.binary`, or a live session marker), and print a line saying
+so. `fleet dry-run --backend claude` is the explicit request that starts
+`claude` anyway. When nothing observed a CLI (a launcher context file or the
+built-in default), `auto` still uses `claude` if it is installed. A codex
+reasoner backend is follow-up issue #2015. These are unit tests in
+`crates/amplihack-cli/src/commands/fleet/tests_issue_1983_reasoner.rs`, not
+part of this suite, because the fleet commands need `azlin`.
 
 **Level 1 uses the stub runner.** The level 1 tests check what `amplihack`
 hands to the runner and to each step, using the stub's copy of the runner's

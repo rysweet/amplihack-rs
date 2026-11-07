@@ -18,7 +18,7 @@ use super::script::STUB_RUNNER_REV;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn real_runner() -> Option<PathBuf> {
+pub fn real_runner() -> Option<PathBuf> {
     let required = std::env::var_os("RECIPE_RUNNER_RS_PATH").is_some()
         || std::env::var_os("AMPLIHACK_1983_REQUIRE_RECIPE_RUNNER").is_some();
     let found = std::env::var_os("RECIPE_RUNNER_RS_PATH")

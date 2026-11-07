@@ -256,9 +256,12 @@ impl Fixture {
 
     /// Every record and log file, each cut to [`LOG_CAP`] bytes.
     pub fn logs(&self) -> String {
-        let mut files: Vec<PathBuf> = ["records", "logs"]
+        // `tmp/amplihack-workstreams` holds the `multitask` workstream logs,
+        // when a test made it.
+        let mut files: Vec<PathBuf> = ["records", "logs", "tmp/amplihack-workstreams"]
             .iter()
-            .flat_map(|d| fs::read_dir(self.path(d)).unwrap())
+            .filter_map(|d| fs::read_dir(self.path(d)).ok())
+            .flatten()
             .map(|e| e.unwrap().path())
             .filter(|p| p.is_file())
             .collect();
