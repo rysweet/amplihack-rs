@@ -231,10 +231,10 @@ steps:
 
         # `created=false`: the branch pre-existed (its worktree may still be new).
         CREATED=false
-
-        # Push/upstream best-effort (idempotent on existing PR branches); never for an alias.
-        [ -n "$LOCAL_BRANCH" ] || git -C "$WORKTREE_PATH" push origin "$BRANCH_NAME" > /dev/null 2>&1 || true
-        [ -n "$LOCAL_BRANCH" ] || git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/${BRANCH_NAME}" "$BRANCH_NAME" > /dev/null 2>&1 || true
+        # MIRROR #1930: setup never pushes; link only a matching remote ref locally.
+        if [ -z "$LOCAL_BRANCH" ] && git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+          git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/$BRANCH_NAME" "$BRANCH_NAME" >&2
+        fi
 
         echo "" >&2
         echo "=== Worktree Setup Complete (existing-branch path) ===" >&2
@@ -361,10 +361,10 @@ steps:
         CREATED=true
       fi
 
-      # Push branch to remote with tracking (idempotent). Push failures are
-      # suppressed here and surface at step-16 PR creation, so re-runs converge.
-      git -C "${WORKTREE_PATH}" push origin "${BRANCH_NAME}" > /dev/null 2>&1 || true
-      git -C "${WORKTREE_PATH}" branch --set-upstream-to="origin/${BRANCH_NAME}" "${BRANCH_NAME}" > /dev/null 2>&1 || true
+      # MIRROR #1930: setup never pushes; link only a matching remote ref locally.
+      if git show-ref --verify --quiet "refs/remotes/origin/$BRANCH_NAME"; then
+        git -C "$WORKTREE_PATH" branch --set-upstream-to="origin/$BRANCH_NAME" "$BRANCH_NAME" >&2
+      fi
 
       # Per-branch runtime root and its folders: tools/workflow_runtime_root.sh, else made here (#1808).
       RUNTIME_HELPER="$TOOLS_DIR/workflow_runtime_root.sh"
