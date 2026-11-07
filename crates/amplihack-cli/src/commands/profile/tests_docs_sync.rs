@@ -941,6 +941,28 @@ fn the_docs_use_the_claude_key_in_jq_examples() {
     assert!(!REFERENCE.contains("The output stays a single array"));
 }
 
+/// Crusty round 1 on #2001: the stability promise must name #2001 as its
+/// one break, the how-to's saved-file cron example must say the file changed
+/// shape, and neither doc may claim the `<- next` marker is `codex-pick`'s
+/// own choice (it reads session files; this view reads live).
+#[test]
+fn the_docs_name_the_2001_json_break_and_the_live_next_rule() {
+    let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let (reference, howto) = (flat(REFERENCE), flat(HOWTO));
+    assert!(reference.contains("From #2001 on, keys are only ever added"));
+    assert!(reference.contains("this is the one break in that promise"));
+    assert!(!reference.contains(". Keys are only ever added, never renamed or removed"));
+    assert!(reference.contains("named `claude` here and `profiles` in"));
+    let cron = howto
+        .find("profile usage --json > /tmp/claude-usage.json")
+        .expect("howto cron example");
+    assert!(howto[cron..].contains("Changed in #2001: the saved file is now an object"));
+    for (name, doc) in [("reference", &reference), ("howto", &howto)] {
+        assert!(!doc.contains("`codex-pick` would choose"), "{name}");
+    }
+    assert!(reference.contains("refreshing the account's login"));
+}
+
 #[test]
 fn the_reference_quotes_the_codex_texts_the_code_prints() {
     for text in [

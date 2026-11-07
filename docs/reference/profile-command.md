@@ -88,7 +88,8 @@ reset, how long the weekly capacity lasts at the recent rate, and which
 weekly limits reset in the next 24 hours. With no
 names it covers every profile under the root, as `list` does, and then
 reads each [Codex account](#codex-accounts) live and lists it after the
-Claude output, marking the one `codex-pick` would choose next. Each name
+Claude output, marking the one `codex-pick`'s rule picks from these live
+readings. Each name
 must pass the [name rules](#name-rules) and must exist. A name given twice
 is probed once. Names select Claude profiles only; with names, Codex is not
 read.
@@ -2117,8 +2118,11 @@ window with no reset shows `-`.
 
 ##### Codex next choice
 
-The `<- next` marker goes on the account `codex-pick` would choose, using
-the same rule on the live readings:
+The `<- next` marker goes on the account `codex-pick`'s rule picks from
+these live readings. It is not always the account `codex-pick` itself
+would choose: `codex-pick` reads the rate limits stored in each account's
+session files, which can be days old, while this view reads them live, so
+the two can disagree. The rule:
 
 1. Only `signed in` rows are candidates. A row that timed out, failed or is
    not signed in is never chosen.
@@ -2157,6 +2161,11 @@ signed-in account always answers with its figures.
 - Readings are not stored anywhere. amplihack writes nothing into an
   account directory; the Codex app server itself keeps its state files
   there, as any `codex` run does.
+- It does not stop the Codex app server from refreshing the account's
+  login. The server may refresh that account's tokens and rewrite its login
+  file, as any `codex` run in that directory can. This includes `~/.codex`
+  and any account a live Codex session is using at the time; a session that
+  still holds the old refresh token may then have to sign in again.
 
 #### JSON output
 
@@ -2166,12 +2175,19 @@ of [Codex rows](#codex-json-rows). stdout holds only the JSON; warnings go
 to stderr. With no Claude profiles, `claude` is `[]`; with no Codex
 accounts, or with profile names given, `codex` is `[]`. This is the stable
 interface for scripts, and the key tables below are its specification.
-Keys are only ever added, never renamed or removed, and string values that
-name a state or kind may gain new values. There is no version field.
+From #2001 on, keys are only ever added, never renamed or removed, and
+string values that name a state or kind may gain new values. There is no
+version field.
 
-Changed in #2001: before it, `--json` printed the Claude array alone, with
-no top-level object. Scripts that read `.[]` now read `.claude[]`; see
-[the jq examples](#claude-rows-in-scripts).
+Changed in #2001: this is the one break in that promise. Before #2001,
+`--json` printed the Claude array alone, with no top-level object. Scripts
+that read `.[]` now read `.claude[]`; see
+[the jq examples](#claude-rows-in-scripts). Nothing warns at run time: a
+script still using `.[]` gets the two arrays instead of the rows, and a
+saved file such as the cron example in the how-to now holds the object.
+
+The same Claude rows are named `claude` here and `profiles` in
+[`--summary-json`](#summary-json); the arrays are identical.
 
 With one Claude profile and no Codex accounts:
 
@@ -2383,7 +2399,7 @@ such as `34.0`; read them as floats. Server strings (`plan_type`,
 before they are stored, so `jq -r` cannot print terminal escapes from
 them.
 
-To print the account `codex-pick` would choose:
+To print the account `codex-pick`'s rule picks from the live readings:
 
 ```bash
 amplihack profile usage --json | jq -r '.codex[] | select(.next_choice) | .account'

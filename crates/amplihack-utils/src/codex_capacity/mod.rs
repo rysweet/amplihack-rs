@@ -304,7 +304,9 @@ pub fn headroom(r: &Reading, floor: f64) -> f64 {
     if credited { 0.5 } else { -1.0 }
 }
 
-/// The index of the account `codex-pick` would choose: among signed-in rows
+/// The index of the account `codex-pick`'s rule picks from these live
+/// readings (not always `codex-pick`'s own choice, which reads possibly
+/// older session files): among signed-in rows
 /// with room above 0, the most room, then the greatest path as bytes.
 pub fn next_choice(rows: &[AccountResult], floor: f64) -> Option<usize> {
     rows.iter()

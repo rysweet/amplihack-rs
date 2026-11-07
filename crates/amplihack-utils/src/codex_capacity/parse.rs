@@ -12,6 +12,12 @@ use serde_json::{Map, Value};
 pub(super) const MAX_TEXT: usize = 200;
 
 /// Lower-case phrases of an error message that mean "not signed in" (D1).
+///
+/// Checked against codex-cli 0.166.0 on 2026-11-07: `codex app-server` with
+/// an empty `CODEX_HOME` answers `account/rateLimits/read` with error -32600,
+/// "codex account authentication required to read rate limits", which the
+/// first phrase matches. The test `the_real_not_signed_in_wording_is_not_signed_in`
+/// replays that exact answer.
 const NOT_SIGNED_IN: [&str; 4] = [
     "authentication required",
     "not logged in",

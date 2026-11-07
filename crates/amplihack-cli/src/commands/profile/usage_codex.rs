@@ -32,7 +32,9 @@ const NEXT_MARK: &str = "<- next";
 pub(super) struct CodexView {
     /// The results in listing order.
     pub(super) rows: Vec<AccountResult>,
-    /// The row `codex-pick` would choose next, if any.
+    /// The row `codex-pick`'s rule picks from these live readings, if any.
+    /// `codex-pick` reads session files, which can be older, so the two can
+    /// disagree.
     pub(super) next: Option<usize>,
     /// The Codex profiles root, as named in the header.
     pub(super) root: PathBuf,

@@ -637,6 +637,10 @@ root: /home/you/.claude-profiles (source: config)
 */30 * * * * amplihack profile usage --json > /tmp/claude-usage.json
 ```
 
+Changed in #2001: the saved file is now an object, `{"claude": [...],
+"codex": [...]}`, not the Claude array alone. A script that reads it with
+`jq '.[]'` must read `jq '.claude[]'` instead.
+
 ```bash
 tmux new-session -d -s work 'amplihack claude --profile work'
 ```
@@ -915,7 +919,9 @@ With no profile names, `profile usage` also asks each Codex account under
 and lists it after the Claude output. `~/.codex` is included when it is
 signed in. Each row shows the five-hour and weekly use with their resets,
 any credit balance, the plan and the time of the reading, and `<- next`
-marks the account `codex-pick` would choose:
+marks the account `codex-pick`'s rule picks from these live readings
+(`codex-pick` itself reads session files, which can be older, so the two
+can disagree):
 
 ```
 Codex accounts under /home/ryan/.codex-profiles
