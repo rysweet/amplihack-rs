@@ -28,7 +28,7 @@
 //! anything it cannot prove it owns, and keeps its scratch directories out of
 //! the scan root — see [`super::command_staging`].
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 use super::command_staging::{StageRequest, command_source_dir_excluding, stage_command_files};
@@ -77,6 +77,12 @@ pub(super) fn stage_claude_commands_in(
     repo_root: &Path,
 ) -> Result<StagedClaudeCommands> {
     let target = claude_home.join("commands").join("amplihack");
+    // `staged_framework` is `<amplihack home>/.claude` (`staging_claude_dir`),
+    // so its parent is where the previous command set is retired to.
+    let retire_root = staged_framework
+        .parent()
+        .with_context(|| format!("{} has no parent", staged_framework.display()))?
+        .to_path_buf();
     let manifest = crate::claude_plugin::ownership_manifest_path(staged_framework);
     let Some(source) = command_source_dir_excluding(repo_root, Some(&target)) else {
         return Ok(StagedClaudeCommands {
@@ -91,6 +97,7 @@ pub(super) fn stage_claude_commands_in(
             source: &source,
             target: &target,
             scratch_root: &claude_home.join(SCRATCH_DIR),
+            retire_root: &retire_root,
             target_is_owned: crate::claude_plugin::claude_commands_are_owned(&manifest, &target)?,
         },
         |_path, body| Ok(body.to_string()),

@@ -146,7 +146,16 @@ pub(crate) fn pin_bundle(home: &Path) -> Result<PathBuf> {
             release_layout::COMPLETE_MARKER
         );
     }
-    for dir in [&release_root, &releases] {
+    let pinned = std::fs::canonicalize(&link)
+        .map_err(|e| anyhow!("amplihack: cannot resolve {}: {e} (#1954)", link.display()))?;
+    if !std::fs::symlink_metadata(&pinned).is_ok_and(|m| m.is_dir()) {
+        bail!(
+            "amplihack: {} is not a directory; refusing to trust its merge guard (#1954)",
+            pinned.display()
+        );
+    }
+    // S2: every directory from the bundle up to `releases/`.
+    for dir in [&pinned, &release_root, &releases] {
         if is_group_or_other_writable(dir) {
             bail!(
                 "amplihack: {}, which holds the merge guard of this run, is writable by group or \
@@ -156,13 +165,18 @@ pub(crate) fn pin_bundle(home: &Path) -> Result<PathBuf> {
             );
         }
     }
-    let pinned = std::fs::canonicalize(&link)
-        .map_err(|e| anyhow!("amplihack: cannot resolve {}: {e} (#1954)", link.display()))?;
-    if !std::fs::symlink_metadata(&pinned).is_ok_and(|m| m.is_dir()) {
-        bail!(
-            "amplihack: {} is not a directory; refusing to trust its merge guard (#1954)",
-            pinned.display()
-        );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let owned = std::fs::symlink_metadata(&release_root)
+            .is_ok_and(|m| m.uid() == release_layout::euid());
+        if !owned {
+            bail!(
+                "amplihack: release {} is not owned by this user; refusing to trust its merge \
+                 guard (#1954)",
+                release_root.display()
+            );
+        }
     }
     let dir = pinned.join(GUARD_IN_BUNDLE);
     if dir.join("gh").exists() {

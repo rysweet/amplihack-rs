@@ -169,6 +169,22 @@ fn wait_for_proc_link(pid: u32, entry: &str, under: &Path) {
     panic!("pid {pid} never had {entry} under {}", under.display());
 }
 
+/// Waits until `pid` has called `exec`. Between `fork` and `exec` the child
+/// already has its new working directory, but `/proc/<pid>/environ` still
+/// shows the parent's environment, so a scan in that window misses the
+/// child's own variables. Before `exec`, `exe` is this test binary.
+fn wait_for_exec(pid: u32) {
+    let me = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+    let end = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < end {
+        if fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|exe| exe != me) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("pid {pid} never called exec");
+}
+
 // ------------------------------------------------------- naming (D1, S6)
 
 #[test]
@@ -960,6 +976,7 @@ fn in_use_scan_never_returns_env_values() {
             .current_dir(&fx.home),
     );
     wait_for_proc_link(child.pid(), "cwd", &fx.home);
+    wait_for_exec(child.pid());
 
     let result = scan_pids(std::slice::from_ref(&r0), &[child.pid()]);
 
@@ -1103,4 +1120,49 @@ fn release_layout_module_names_its_constants() {
     assert_eq!(release_layout::RELEASES_DIR, "releases");
     assert_eq!(RETIRED_DIR, ".retired");
     assert_eq!(COMPLETE_MARKER, ".complete");
+}
+
+// ------------------------------------------------- resolve_bundle_link (S7)
+
+#[test]
+fn resolve_bundle_link_accepts_a_link_into_a_complete_release() {
+    let fx = Fixture::new();
+    let root = fx.release("1.0.0");
+    let link = fx.amp.join("amplifier-bundle");
+    symlink(root.join("amplifier-bundle"), &link).unwrap();
+    assert_eq!(
+        release_layout::resolve_bundle_link(&link),
+        Some(fs::canonicalize(root.join("amplifier-bundle")).unwrap())
+    );
+}
+
+/// A source checkout with `releases -> /elsewhere` must not have the tree
+/// behind it staged, even when that tree looks like a complete release.
+#[test]
+fn resolve_bundle_link_rejects_a_symlinked_releases_dir() {
+    let temp = tempfile::tempdir().unwrap();
+    let elsewhere = temp.path().join("elsewhere");
+    let release = elsewhere.join("x");
+    fs::create_dir_all(release.join("amplifier-bundle/recipes")).unwrap();
+    fs::write(release.join(COMPLETE_MARKER), "").unwrap();
+    set_mode(&elsewhere, 0o700);
+
+    let repo = temp.path().join("repo");
+    fs::create_dir_all(&repo).unwrap();
+    symlink(&elsewhere, repo.join("releases")).unwrap();
+    let link = repo.join("amplifier-bundle");
+    symlink("releases/x/amplifier-bundle", &link).unwrap();
+
+    assert!(link.is_dir(), "the fixture link must resolve");
+    assert_eq!(release_layout::resolve_bundle_link(&link), None);
+}
+
+#[test]
+fn resolve_bundle_link_rejects_a_group_writable_releases_dir() {
+    let fx = Fixture::new();
+    let root = fx.release("1.0.0");
+    let link = fx.amp.join("amplifier-bundle");
+    symlink(root.join("amplifier-bundle"), &link).unwrap();
+    set_mode(&fx.releases(), 0o770);
+    assert_eq!(release_layout::resolve_bundle_link(&link), None);
 }

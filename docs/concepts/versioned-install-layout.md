@@ -253,6 +253,22 @@ the same rule:
 The only directory install deletes directly is its own staging tree that was
 never swapped into place.
 
+### Slash-command directories
+
+Install also publishes the slash commands outside `~/.amplihack`, to
+`~/.claude/commands/amplihack/` and to the Copilot plugin's `commands/`. Each
+new command set is built in a scratch directory that the client does not
+scan, then exchanged with the live directory, so the path is never missing.
+The previous command set is moved to
+`releases/.retired/<ts>-<pid>-commands/`, and cleanup deletes it once unused.
+Leftover `.old` command trees from an interrupted install are retired the same
+way.
+
+The new commands are already in place at that point, so a failed move only
+prints a warning. A tree that cannot be moved (for example `EXDEV`, because
+`~/.claude` is on another filesystem than `~/.amplihack`) is then removed,
+because leaving it in the scratch directory would block the next install.
+
 If `RENAME_EXCHANGE` is not supported (`EINVAL` or `ENOSYS`), install falls
 back to two renames and logs that the path was missing for a few
 microseconds.
@@ -380,6 +396,15 @@ its inode. Once nothing is left in them, `releases/.retired/` and
 - `releases/` and `.retired/` must be owned by you and not writable by group
   or others. If not, install stops with an error naming the directory and
   does not repair it.
+- A source checkout's `amplifier-bundle` link is followed only when the
+  `releases/` beside it is a real directory that meets the same rule, so a
+  `releases` symlink cannot point staging at another tree.
+- `recipe run` pins the merge guard only from a release owned by you, and
+  only when the bundle directory, the release root and `releases/` are not
+  writable by group or others.
+- A release is allocated only under the install lock. Cleanup removes an
+  incomplete release with no age check, which is safe only because no other
+  process can be staging one at the same time.
 - Deletion uses only `std::fs::remove_dir_all`, which does not follow
   symlinks.
 - A temporary link name left over from a crash is removed only if it is a
@@ -401,13 +426,11 @@ These checks accept a link into a release and still reject anything else:
 
 ## Known limits
 
-- Slash-command directories that install publishes outside `~/.amplihack`
-  (`~/.claude/commands/amplihack/` and the Copilot plugin's commands) are
-  swapped with `RENAME_EXCHANGE`, so the path is never missing, but the old
-  command set is then deleted rather than retired. These are Markdown files a
-  client reads at session start; no recipe run executes from them, and
-  `.retired/` only takes trees from inside `~/.amplihack`.
-
+- Cleanup never runs while a process of your user has `/proc` entries you
+  cannot read (`ssh-agent`, `gpg-agent`, `gnome-keyring-daemon`). On such a
+  host every install, `--force-refresh` and self-heal adds a release of about
+  640 MB, most of it `amplihack-asset-resolver`. Remove old releases by hand
+  as described in [Inspecting an install](#inspecting-an-install).
 - Only the merge guard is pinned to one release per run. A recipe step that
   reads `$AMPLIHACK_HOME/amplifier-bundle/<file>` by path after a switch reads
   the new release's file. That file is complete, but may differ from what an
@@ -450,19 +473,21 @@ Do not delete release directories by hand while runs are alive. Running
 | `tests/issue_1954_no_foreign_signals.rs` | Source scan: no `kill`, `killpg`, `Signal::` or `kill`/`pkill`/`killall` command in install, update, self-heal, lock, layout or uninstall code, except `util.rs` and `Child::kill`. |
 | `commands/install/tests/issue_1954_release_layout.rs` | Release naming, atomic switch over a file, link or directory, switching only planned links, a partial switch report with the per-link keep set, exchange fallback, `EXDEV` retire, in-use cleanup, the exact message text and the security rules above. |
 | `commands/install/tests/issue_1954_install_lock.rs` | Lock re-entrancy on one thread, a second thread or process waiting, no lock passed to a child, a symlinked lock path refused, no truncation, mode 0600 and the exact wait message. |
-| `commands/recipe/run/tests_merge_guard_pin.rs` | Pinning rejects a link outside `releases/` or a group-writable release, and never reads `AMPLIHACK_BUNDLE_DIR`. |
+| `commands/recipe/run/tests_merge_guard_pin.rs` | Pinning rejects a link outside `releases/`, a group-writable release or bundle directory, and never reads `AMPLIHACK_BUNDLE_DIR`. |
+| `commands/install/command_staging/tests.rs` | The previous slash-command set is retired under `releases/.retired/`, not deleted. |
+| `commands/install/tests/deploy_binary_tests.rs` (`stage_binary`) | The #302, #524 and #885 rules on the production path: a deleted source with an installed binary is left alone, a missing source and destination is an error, and re-staging the installed binary copies it without touching the previous release. |
 
 ## See also
 
-- [amplihack install reference](../reference/install-command.md) — install
+- [amplihack install reference](../reference/install-command.md): install
   phases and uninstall
-- [Install completeness](../reference/install-completeness.md) — what an
+- [Install completeness](../reference/install-completeness.md): what an
   install must contain, including "a run alive across an install completes"
-- [Idempotent installation](./idempotent-installation.md) — what repeated
+- [Idempotent installation](./idempotent-installation.md): what repeated
   installs change
-- [Post-update re-exec](../features/update-reexec-new-binary.md) — how
+- [Post-update re-exec](../features/update-reexec-new-binary.md): how
   `amplihack update` starts the new binary's install
-- [Self-heal asset re-stage](../features/self-heal-asset-restage.md) — the
+- [Self-heal asset re-stage](../features/self-heal-asset-restage.md): the
   startup check that re-runs install
-- [Framework source selection](../reference/framework-source-selection.md) —
+- [Framework source selection](../reference/framework-source-selection.md):
   the checks a staged bundle must pass

@@ -189,7 +189,7 @@ pub(super) fn deploy_binaries(
 /// release commits, so a process already running the old binary keeps it.
 /// A source that no longer exists (an update replaced it under a running
 /// process, #524) with `dst` present leaves `dst` as it is.
-fn stage_binary(txn: &mut ReleaseTxn, src: &Path, dst: &Path) -> Result<bool> {
+pub(super) fn stage_binary(txn: &mut ReleaseTxn, src: &Path, dst: &Path) -> Result<bool> {
     if let Err(e) = src.metadata()
         && e.kind() == std::io::ErrorKind::NotFound
     {

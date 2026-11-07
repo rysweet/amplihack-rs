@@ -9,11 +9,17 @@ fn verbatim(_path: &Path, body: &str) -> Result<String> {
 
 /// Build a request whose scratch root is a sibling of `target`'s parent, i.e.
 /// never inside the directory a host tool would scan.
-fn request<'a>(source: &'a Path, target: &'a Path, scratch_root: &'a Path) -> StageRequest<'a> {
+fn request<'a>(
+    source: &'a Path,
+    target: &'a Path,
+    scratch_root: &'a Path,
+    retire_root: &'a Path,
+) -> StageRequest<'a> {
     StageRequest {
         source,
         target,
         scratch_root,
+        retire_root,
         target_is_owned: false,
     }
 }
@@ -27,6 +33,7 @@ struct Fixture {
     source: PathBuf,
     target: PathBuf,
     scratch: PathBuf,
+    amp: PathBuf,
 }
 
 impl Fixture {
@@ -35,17 +42,19 @@ impl Fixture {
         let source = td.path().join("source");
         let target = td.path().join("commands").join("amplihack");
         let scratch = td.path().join("scratch");
+        let amp = td.path().join(".amplihack");
         fs::create_dir_all(&source).unwrap();
         Self {
             _td: td,
             source,
             target,
             scratch,
+            amp,
         }
     }
 
     fn request(&self) -> StageRequest<'_> {
-        request(&self.source, &self.target, &self.scratch)
+        request(&self.source, &self.target, &self.scratch, &self.amp)
     }
 
     fn staging_dir(&self) -> PathBuf {
@@ -119,8 +128,13 @@ fn staging_a_directory_from_itself_is_refused() {
     fs::create_dir_all(&fixture.target).unwrap();
     fs::write(fixture.target.join("lock.md"), "v1\n").unwrap();
 
-    let error = stage(&request(&fixture.target, &fixture.target, &fixture.scratch))
-        .expect_err("source == target must be refused, not reported as success");
+    let error = stage(&request(
+        &fixture.target,
+        &fixture.target,
+        &fixture.scratch,
+        &fixture.amp,
+    ))
+    .expect_err("source == target must be refused, not reported as success");
 
     assert!(
         format!("{error:#}").contains("into itself"),
@@ -312,4 +326,45 @@ fn transform_is_applied_to_every_staged_file() {
         fs::read_to_string(fixture.target.join("b.md")).unwrap(),
         "b:body\n"
     );
+}
+
+/// Issue #1954 D4: the previous command set is retired under
+/// `releases/.retired/`, not deleted, whichever swap path ran.
+#[test]
+fn restaging_retires_the_previous_command_set() {
+    let fixture = Fixture::new();
+    fs::write(fixture.source.join("lock.md"), "v2\n").unwrap();
+    fs::create_dir_all(&fixture.target).unwrap();
+    fs::write(fixture.target.join("lock.md"), "v1\n").unwrap();
+
+    let mut request = fixture.request();
+    request.target_is_owned = true;
+    stage(&request).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(fixture.target.join("lock.md")).unwrap(),
+        "v2\n"
+    );
+    let retired_dir = fixture.amp.join("releases").join(".retired");
+    let retired: Vec<PathBuf> = fs::read_dir(&retired_dir)
+        .unwrap_or_else(|e| panic!("{} must exist: {e}", retired_dir.display()))
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(retired.len(), 1, "one retired tree expected: {retired:?}");
+    assert!(
+        retired[0]
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .ends_with(&format!("-{RETIRE_LABEL}")),
+        "unexpected retired name {}",
+        retired[0].display()
+    );
+    assert_eq!(
+        fs::read_to_string(retired[0].join("lock.md")).unwrap(),
+        "v1\n",
+        "the retired tree must be the previous command set"
+    );
+    assert!(!fixture.staging_dir().exists());
+    assert!(!fixture.backup_dir().exists());
 }

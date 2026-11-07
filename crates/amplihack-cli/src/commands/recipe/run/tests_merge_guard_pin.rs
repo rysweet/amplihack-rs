@@ -135,6 +135,21 @@ fn pin_rejects_group_writable_release() {
 }
 
 #[test]
+fn pin_rejects_a_group_writable_bundle_dir_in_the_release() {
+    let (_tmp, home, release) = linked_home();
+    let bundle = release.join("amplifier-bundle");
+    set_mode(&bundle, 0o775);
+    let err =
+        pin_bundle(&home).expect_err("a group-writable <release>/amplifier-bundle is refused");
+    assert!(
+        format!("{err:#}").contains("amplifier-bundle"),
+        "the error names the directory: {err:#}"
+    );
+    set_mode(&bundle, 0o755);
+    assert!(pin_bundle(&home).is_ok());
+}
+
+#[test]
 fn pin_rejects_a_group_writable_shim_in_the_release() {
     let (_tmp, home, release) = linked_home();
     set_mode(

@@ -212,8 +212,7 @@ fn open_lock_file(path: &Path) -> Result<File> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        // SAFETY: geteuid has no preconditions and cannot fail.
-        let euid = unsafe { libc::geteuid() };
+        let euid = crate::commands::install::release_layout::euid();
         if meta.uid() != euid {
             bail!(
                 "install lock {} is owned by uid {}, not by this user",

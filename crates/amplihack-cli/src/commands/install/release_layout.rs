@@ -65,7 +65,7 @@ fn utc_stamp() -> String {
 }
 
 #[cfg(unix)]
-fn euid() -> u32 {
+pub(crate) fn euid() -> u32 {
     // SAFETY: geteuid has no preconditions and cannot fail.
     unsafe { libc::geteuid() }
 }
@@ -147,13 +147,17 @@ pub fn is_complete_release_path(releases: &Path, path: &Path) -> bool {
 
 /// For a published link at `link` (`<amp>/amplifier-bundle` or similar): the
 /// canonical directory it names, when that is a real directory inside a
-/// complete release under `<link's parent>/releases`. `None` otherwise.
+/// complete release under `<link's parent>/releases`. `None` otherwise,
+/// including when that `releases` is a symlink, is not owned by this user or
+/// is writable by group or others: a source checkout could otherwise point
+/// `releases` anywhere and have that tree staged (#243).
 pub fn resolve_bundle_link(link: &Path) -> Option<PathBuf> {
     let meta = fs::symlink_metadata(link).ok()?;
     if !meta.file_type().is_symlink() {
         return None;
     }
     let releases = releases_dir(link.parent()?);
+    check_private_dir(&releases, &fs::symlink_metadata(&releases).ok()?).ok()?;
     if !is_complete_release_path(&releases, link) {
         return None;
     }
@@ -278,6 +282,12 @@ impl ReleaseTxn {
     ///
     /// `releases/<version>` when free, else `releases/<version>-<ts>-<pid>`,
     /// else that name with `-<n>`. An existing directory is never reused.
+    ///
+    /// Call this only while holding the install lock
+    /// ([`crate::install_lock`]). [`cleanup_unused`] removes any release
+    /// without [`COMPLETE_MARKER`] that is not in the keep set, with no age
+    /// check, so a release allocated outside the lock could be removed while
+    /// it is still being staged.
     pub fn allocate(amplihack_dir: &Path, version: &str) -> Result<Self> {
         validate_version(version)?;
         let releases = releases_dir(amplihack_dir);
@@ -787,6 +797,27 @@ pub fn retire_with(
     label: &str,
     rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
 ) -> Result<Retired> {
+    retire_checked(amplihack_dir, path, label, true, rename)
+}
+
+/// Retires a scratch directory that the installer itself created outside
+/// `amplihack_dir`: the old slash-command trees under `~/.claude` and the
+/// Copilot plugin directory (#1954 D4). Every check of [`retire`] applies
+/// except the one that confines `path` to `amplihack_dir`, so callers must
+/// pass only paths they built themselves, never a path read from disk.
+pub fn retire_scratch(amplihack_dir: &Path, path: &Path, label: &str) -> Result<Retired> {
+    retire_checked(amplihack_dir, path, label, false, |from, to| {
+        fs::rename(from, to)
+    })
+}
+
+fn retire_checked(
+    amplihack_dir: &Path,
+    path: &Path,
+    label: &str,
+    confine: bool,
+    rename: impl FnOnce(&Path, &Path) -> io::Result<()>,
+) -> Result<Retired> {
     if label.is_empty()
         || label.starts_with('.')
         || !label
@@ -795,12 +826,11 @@ pub fn retire_with(
     {
         bail!("refusing retire label {label:?}");
     }
-    let lexically_inside = path.starts_with(amplihack_dir)
-        && path != amplihack_dir
-        && !path
-            .components()
-            .any(|c| matches!(c, Component::ParentDir | Component::CurDir));
-    if !lexically_inside {
+    let no_dots = !path
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::CurDir));
+    let lexically_inside = path.starts_with(amplihack_dir) && path != amplihack_dir && no_dots;
+    if !no_dots || (confine && !lexically_inside) {
         bail!(
             "refusing to retire {}: it is not inside {}",
             path.display(),

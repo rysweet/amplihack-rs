@@ -23,16 +23,23 @@
 //!    23 phantom `/amplihack.staging:*` commands. The scratch directories
 //!    therefore live in a caller-supplied `scratch_root` that Claude does not
 //!    scan, and are cleaned on every exit path (including `?`, via
-//!    [`ScratchGuard`]) and recovered on the next run after a crash.
+//!    [`ScratchGuard`]) and recovered on the next run after a crash. The
+//!    previous command set is never deleted: it is retired to
+//!    `<retire_root>/releases/.retired/` (issue #1954 D4), and only a tree
+//!    that cannot be retired there (another filesystem, `EXDEV`) is removed.
 //! 2. **The directory is user-reachable.** A user may legitimately keep their
 //!    own `~/.claude/commands/amplihack/my-thing.md`. Unless the caller can
 //!    prove the whole directory is still amplihack's (`target_is_owned`,
 //!    derived from the recorded content digest), anything the new command set
 //!    does not itself provide is carried across the swap and reported.
 
+use super::release_layout::{self, Retired};
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Label of a retired command set under `releases/.retired/`.
+const RETIRE_LABEL: &str = "commands";
 
 /// One staging request: where the commands come from, where they go, and what
 /// the installer is allowed to destroy on the way.
@@ -45,6 +52,9 @@ pub(super) struct StageRequest<'a> {
     /// the same filesystem as `target`, and must NOT be a directory the host
     /// tool scans (see the module docs).
     pub(super) scratch_root: &'a Path,
+    /// The amplihack home (`~/.amplihack`). The previous command set is
+    /// retired to its `releases/.retired/` rather than deleted.
+    pub(super) retire_root: &'a Path,
     /// `true` only when the caller has verified that everything currently in
     /// `target` was put there by amplihack. `false` makes the swap preserve
     /// entries the new command set does not provide instead of deleting them.
@@ -124,6 +134,7 @@ pub(super) fn stage_command_files(
         source,
         target,
         scratch_root,
+        retire_root,
         target_is_owned,
     } = *request;
 
@@ -145,7 +156,7 @@ pub(super) fn stage_command_files(
             .with_context(|| format!("failed to create {}", parent.display()))?;
     }
     let backup = scratch_path(scratch_root, target, ".old");
-    recover_interrupted_swap(target, &backup)?;
+    recover_interrupted_swap(target, &backup, retire_root)?;
 
     let staging = ScratchGuard::create(scratch_path(scratch_root, target, ".staging"))?;
     let copied = copy_markdown(source, staging.path(), transform)?;
@@ -161,7 +172,7 @@ pub(super) fn stage_command_files(
     } else {
         carry_over_unrecognized(target, staging.path())?
     };
-    swap_into_place(staging.path(), target, &backup)?;
+    swap_into_place(staging.path(), target, &backup, retire_root)?;
     Ok(StagedCommands { copied, preserved })
 }
 
@@ -200,9 +211,9 @@ fn copy_markdown(
 /// Publish `staging` as `target`, moving any existing `target` aside first.
 ///
 /// By the time this runs, `staging` already holds everything that must survive
-/// (see [`carry_over_unrecognized`]), so deleting the backup afterwards can no
-/// longer lose anything.
-fn swap_into_place(staging: &Path, target: &Path, backup: &Path) -> Result<()> {
+/// (see [`carry_over_unrecognized`]). The previous command set is then retired
+/// with [`retire_old_commands`], never deleted outright.
+fn swap_into_place(staging: &Path, target: &Path, backup: &Path, retire_root: &Path) -> Result<()> {
     if !target.exists() {
         return fs::rename(staging, target)
             .with_context(|| format!("failed to move commands into {}", target.display()));
@@ -210,15 +221,15 @@ fn swap_into_place(staging: &Path, target: &Path, backup: &Path) -> Result<()> {
 
     // Issue #1954: exchange the two directories in one step where the
     // filesystem allows it, so `target` is never missing. The previous
-    // command set ends up at `staging`, our own scratch directory, which the
-    // caller's guard removes. Command Markdown is read by a client when a
-    // session starts; no recipe run executes from or holds open these files.
+    // command set ends up at `staging` and is retired from there; the
+    // caller's guard then finds nothing to remove.
     let is_real_dir = fs::symlink_metadata(target)
         .is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink());
     if is_real_dir {
-        return super::release_layout::exchange_dirs(staging, target)
-            .map(|_| ())
-            .with_context(|| format!("failed to swap commands into {}", target.display()));
+        release_layout::exchange_dirs(staging, target)
+            .with_context(|| format!("failed to swap commands into {}", target.display()))?;
+        retire_old_commands(retire_root, staging);
+        return Ok(());
     }
 
     fs::rename(target, backup).with_context(|| {
@@ -233,8 +244,39 @@ fn swap_into_place(staging: &Path, target: &Path, backup: &Path) -> Result<()> {
         return Err(error)
             .with_context(|| format!("failed to swap commands into {}", target.display()));
     }
-    let _ = fs::remove_dir_all(backup);
+    retire_old_commands(retire_root, backup);
     Ok(())
+}
+
+/// Moves a previous command set to `<retire_root>/releases/.retired/`, where
+/// cleanup removes it once no process uses it.
+///
+/// The new commands are already in place when this runs, so a failure is a
+/// warning, not an error. A tree that could not be retired is then removed,
+/// as before #1954: left in the scratch root it would block the next swap.
+fn retire_old_commands(retire_root: &Path, old: &Path) {
+    let reason = match release_layout::retire_scratch(retire_root, old, RETIRE_LABEL) {
+        Ok(Retired::Moved(to)) => {
+            tracing::info!("retired previous commands to {}", to.display());
+            return;
+        }
+        Ok(Retired::LeftInPlace(_)) => format!(
+            "it is on another filesystem than {}",
+            release_layout::releases_dir(retire_root).display()
+        ),
+        Err(error) => format!("{error:#}"),
+    };
+    eprintln!(
+        "amplihack: warning: could not retire the previous commands at {} ({reason}); \
+         removing them",
+        old.display()
+    );
+    if let Err(error) = fs::remove_dir_all(old) {
+        eprintln!(
+            "amplihack: warning: could not remove {}: {error}",
+            old.display()
+        );
+    }
 }
 
 /// Copy every entry of the existing `target` that the new command set does not
@@ -317,19 +359,19 @@ fn copy_entry(source: &Path, destination: &Path) -> Result<()> {
 /// A crash between the two renames of [`swap_into_place`] leaves no `target`
 /// and the user's previous directory sitting in `backup`. Move it back so the
 /// normal path can preserve anything unrecognized inside it. A stale backup
-/// beside an existing `target` is simply removed, because leaving it means it
-/// is never cleaned at all — the old "target missing" branch skipped it
-/// entirely, so `.old` became permanent and, being inside Claude's scan root,
-/// surfaced every command a second time.
+/// beside an existing `target` is retired (issue #1954 D4), because leaving it
+/// means it is never cleaned at all — the old "target missing" branch skipped
+/// it entirely, so `.old` became permanent and, being inside Claude's scan
+/// root, surfaced every command a second time.
 ///
 /// A backup that cannot be restored is an error, never a deletion: at that
 /// moment it holds the only copy of the user's command directory.
-fn recover_interrupted_swap(target: &Path, backup: &Path) -> Result<()> {
+fn recover_interrupted_swap(target: &Path, backup: &Path, retire_root: &Path) -> Result<()> {
     if !backup.exists() {
         return Ok(());
     }
     if target.exists() {
-        let _ = fs::remove_dir_all(backup);
+        retire_old_commands(retire_root, backup);
         return Ok(());
     }
     fs::rename(backup, target).with_context(|| {
@@ -350,8 +392,9 @@ fn recover_interrupted_swap(target: &Path, backup: &Path) -> Result<()> {
 ///
 /// Every `?` in the copy loop used to return without cleaning `.staging`, and
 /// the orphan then surfaced as a phantom command namespace. The guard is held
-/// across the swap too: once `.staging` has been renamed onto the target the
-/// drop simply finds nothing there.
+/// across the swap too: once `.staging` has been renamed onto the target, or
+/// the previous command set exchanged into it has been retired, the drop
+/// simply finds nothing there.
 struct ScratchGuard(PathBuf);
 
 impl ScratchGuard {
