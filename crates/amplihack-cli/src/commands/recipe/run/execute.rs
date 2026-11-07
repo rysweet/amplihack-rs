@@ -964,6 +964,19 @@ fn spawn_with_streaming_stderr(
             });
         }
     }
+    // Publish a durable, live-owner-bound stop handle before any workload.
+    #[cfg(target_os = "macos")]
+    let mut launch_control =
+        crate::commands::recipe::run_control::LaunchControl::prepare(correlation.run_id())
+            .map_err(|error| {
+                fail_with_final_record(
+                    &correlation,
+                    RecipeRunFinalStatus::SpawnFailure,
+                    None,
+                    None,
+                    error,
+                )
+            })?;
     correlation.emit_early();
     let mut child = match command.spawn() {
         Ok(child) => child,
@@ -978,6 +991,18 @@ fn spawn_with_streaming_stderr(
         }
     };
     let child_pid = Some(child.id());
+    #[cfg(target_os = "macos")]
+    if let Err(error) = launch_control.start(correlation.run_id(), &child) {
+        let tracked = launch_control.teardown(recipe_runner_teardown_grace());
+        let error = cleanup_unverifiable_runner(&mut child, error, tracked);
+        return Err(fail_with_final_record(
+            &correlation,
+            RecipeRunFinalStatus::SpawnFailure,
+            child_pid,
+            None,
+            error,
+        ));
+    }
 
     let captured_stderr: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
     let dropped_stderr_lines: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
@@ -1022,17 +1047,31 @@ fn spawn_with_streaming_stderr(
         let _ = stdout_tx.send(result);
     });
 
-    let status = match wait_for_recipe_runner(&mut child, timeout)
-        .context("failed to wait for recipe-runner-rs")
-        .map_err(|error| {
-            fail_with_final_record(
-                &correlation,
-                RecipeRunFinalStatus::Failure,
-                child_pid,
-                None,
-                error,
-            )
-        })? {
+    let status = match wait_for_recipe_runner(&mut child, timeout, |_child| {
+        #[cfg(target_os = "macos")]
+        launch_control
+            .refresh_unreaped(_child)
+            .map_err(std::io::Error::other)?;
+        Ok(())
+    })
+    .context("failed to wait for recipe-runner-rs")
+    .map_err(|error| {
+        #[cfg(target_os = "macos")]
+        let error = {
+            launch_control.mark_error(&error);
+            // Observation failed before the direct Child was reaped. Never
+            // abandon it merely because libproc cannot inspect descendants.
+            let tracked = launch_control.teardown(recipe_runner_teardown_grace());
+            cleanup_unverifiable_runner(&mut child, error, tracked)
+        };
+        fail_with_final_record(
+            &correlation,
+            RecipeRunFinalStatus::Failure,
+            child_pid,
+            None,
+            error,
+        )
+    })? {
         RunnerWait::Exited(status) => {
             // Issue #1606: a signal that arrived as the runner exited still
             // stops the run; it must not end in a success.
@@ -1042,7 +1081,15 @@ fn spawn_with_streaming_stderr(
                 // members only. Every descendant that left the group is still
                 // found through them.
                 let tree = crate::commands::recipe::stop::snapshot_group(child.id() as i32);
-                #[cfg(unix)]
+                #[cfg(target_os = "macos")]
+                native_teardown_result(
+                    &correlation,
+                    child_pid,
+                    status.code(),
+                    Some(signal),
+                    launch_control.teardown(recipe_runner_teardown_grace()),
+                )?;
+                #[cfg(all(unix, not(target_os = "macos")))]
                 reap_recipe_runner_group(child.id(), recipe_runner_teardown_grace());
                 crate::commands::recipe::stop::terminate(&tree);
                 crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
@@ -1077,6 +1124,11 @@ fn spawn_with_streaming_stderr(
             // The sweep runs whatever the group teardown reports: a runner
             // that could not be reaped must not leave its descendants behind.
             let teardown = terminate_recipe_runner(&mut child);
+            #[cfg(target_os = "macos")]
+            let teardown = {
+                let tracked = launch_control.teardown(recipe_runner_teardown_grace());
+                teardown.and(tracked)
+            };
             crate::commands::recipe::stop::terminate(&tree);
             crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
             let stopped = anyhow::Error::new(super::stop_signal::StoppedBySignal(signal));
@@ -1102,7 +1154,12 @@ fn spawn_with_streaming_stderr(
             );
             let detail = super::format::format_log_pointer_summary(&summary);
             let run_id = summary.run_id.clone();
-            terminate_recipe_runner(&mut child).with_context(|| {
+            #[cfg(target_os = "macos")]
+            let tracked = launch_control.teardown(recipe_runner_teardown_grace());
+            let termination = terminate_recipe_runner(&mut child);
+            #[cfg(target_os = "macos")]
+            let termination = termination.and(tracked);
+            termination.with_context(|| {
                 format!("recipe run {run_id} timed out and could not be terminated: {detail}")
             })?;
             anyhow::bail!(
@@ -1123,8 +1180,16 @@ fn spawn_with_streaming_stderr(
     // process group. Deterministically reap that tree BEFORE draining pipes so
     // a failed/early-exiting runner cannot leak a recursive subprocess tree and
     // cannot wedge the drain by holding the inherited stdout pipe open.
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     reap_recipe_runner_group(child.id(), recipe_runner_teardown_grace());
+    #[cfg(target_os = "macos")]
+    native_teardown_result(
+        &correlation,
+        child_pid,
+        status.code(),
+        None,
+        launch_control.teardown(recipe_runner_teardown_grace()),
+    )?;
 
     let stdout_buf = stdout_rx
         .recv_timeout(RECIPE_RUNNER_PIPE_DRAIN_TIMEOUT)
@@ -1373,6 +1438,30 @@ fn fail_with_final_record(
     error.context(format!("recipe run {} ended: {detail}", summary.run_id))
 }
 
+#[cfg(target_os = "macos")]
+fn native_teardown_result(
+    correlation: &RecipeRunCorrelation,
+    child_pid: Option<u32>,
+    exit_code: Option<i32>,
+    signal: Option<i32>,
+    teardown: Result<()>,
+) -> Result<()> {
+    teardown.map_err(|cleanup| {
+        let error = match signal {
+            Some(signal) => anyhow::Error::new(super::stop_signal::StoppedBySignal(signal))
+                .context(format!("native runner teardown failed: {cleanup:#}")),
+            None => cleanup,
+        };
+        fail_with_final_record(
+            correlation,
+            RecipeRunFinalStatus::Failure,
+            child_pid,
+            exit_code,
+            error,
+        )
+    })
+}
+
 fn exit_status_label(status: &std::process::ExitStatus) -> String {
     #[cfg(unix)]
     {
@@ -1465,9 +1554,25 @@ enum RunnerWait {
     Stopped(i32),
 }
 
-fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Result<RunnerWait> {
+fn wait_for_recipe_runner(
+    child: &mut Child,
+    timeout: Duration,
+    mut observe: impl FnMut(&Child) -> std::io::Result<()>,
+) -> std::io::Result<RunnerWait> {
     let started = Instant::now();
     loop {
+        observe(child)?;
+        #[cfg(target_os = "macos")]
+        if crate::commands::recipe::darwin_process::waitable(child)
+            .map_err(std::io::Error::other)?
+        {
+            // The runner can fork and exit after the preceding snapshot.
+            // WNOWAIT pins the exited leader while this final capture admits
+            // those last children; only then may wait consume its identity.
+            observe(child)?;
+            return child.wait().map(RunnerWait::Exited);
+        }
+        #[cfg(not(target_os = "macos"))]
         if let Some(status) = child.try_wait()? {
             return Ok(RunnerWait::Exited(status));
         }
@@ -1487,7 +1592,23 @@ fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Resu
 
 fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
     let pid = child.id();
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
+    let native_attribution = {
+        // Native cancellation captures identities before parents can exit.
+        // Never expand a launcher's shared group or signal a PGID after its
+        // leader has been reaped and may have been reused.
+        let tree = crate::commands::recipe::darwin_process::identity(pid as i32)
+            .and_then(|root| root.context("unreaped runner identity unavailable"))
+            .and_then(|root| {
+                crate::commands::recipe::darwin_process::unreaped_group(child, root.start)
+            });
+        if let Ok(tree) = &tree {
+            crate::commands::recipe::stop::terminate(tree);
+            crate::commands::recipe::stop::sweep(tree, recipe_runner_teardown_grace());
+        }
+        tree.map(|_| ())
+    };
+    #[cfg(all(unix, not(target_os = "macos")))]
     {
         // Issue #964: reap the recipe-runner tree DETERMINISTICALLY and
         // GRACEFULLY. The runner is a session leader (see the `setsid` in
@@ -1516,6 +1637,16 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
             .stderr(Stdio::null());
         let _ = run_with_timeout(command, RECIPE_RUNNER_TERMINATE_TIMEOUT);
     }
+    #[cfg(target_os = "macos")]
+    {
+        finish_native_cleanup(child, native_attribution)
+    }
+    #[cfg(not(target_os = "macos"))]
+    kill_and_wait_runner(child)
+}
+
+fn kill_and_wait_runner(child: &mut Child) -> Result<()> {
+    let pid = child.id();
     child
         .kill()
         .or_else(|kill_error| match child.try_wait() {
@@ -1528,6 +1659,45 @@ fn terminate_recipe_runner(child: &mut Child) -> Result<()> {
         .wait()
         .with_context(|| format!("failed to wait for timed-out recipe-runner-rs pid {pid}"))?;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn finish_native_cleanup(child: &mut Child, attribution: Result<()>) -> Result<()> {
+    // A stale Child after an unexpected external reaper is not authority to
+    // signal a newly reused PID. WNOWAIT proves our child remains pinned.
+    let direct = crate::commands::recipe::darwin_process::waitable(child)
+        .and_then(|_| kill_and_wait_runner(child));
+    match attribution {
+        Ok(()) => direct,
+        Err(error) => Err(cleanup_context(error, Ok(()), direct)),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn cleanup_unverifiable_runner(
+    child: &mut Child,
+    error: anyhow::Error,
+    tracked: Result<()>,
+) -> anyhow::Error {
+    let direct = terminate_recipe_runner(child);
+    cleanup_context(error, tracked, direct)
+}
+
+#[cfg(target_os = "macos")]
+fn cleanup_context(
+    mut error: anyhow::Error,
+    tracked: Result<()>,
+    direct: Result<()>,
+) -> anyhow::Error {
+    if let Err(cleanup) = tracked {
+        error = error.context(format!(
+            "captured descendant cleanup also failed: {cleanup:#}"
+        ));
+    }
+    if let Err(cleanup) = direct {
+        error = error.context(format!("direct runner cleanup also failed: {cleanup:#}"));
+    }
+    error
 }
 
 /// Resolve the SIGTERM -> SIGKILL grace window for recipe-runner teardown.
@@ -1549,7 +1719,7 @@ fn recipe_runner_teardown_grace() -> Duration {
 /// `RECIPE_RUNNER_POLL_INTERVAL` steps (floored at 1ms, never past the remaining
 /// grace) so a zero grace escalates almost immediately. Shared by both teardown
 /// paths so the SIGTERM -> grace -> SIGKILL timing policy lives in one place.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn wait_until_exited(grace: Duration, mut still_running: impl FnMut() -> bool) -> bool {
     let started = Instant::now();
     while still_running() {
@@ -1569,7 +1739,7 @@ fn wait_until_exited(grace: Duration, mut still_running: impl FnMut() -> bool) -
 
 /// Send `signal` to the process group `pgid` (targets `-pgid`). A missing group
 /// (`ESRCH`) is expected and silent; any other failure is logged.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) {
     let result = unsafe { libc::kill(-pgid, signal) };
     if result != 0 {
@@ -1585,7 +1755,7 @@ fn signal_process_group(pgid: libc::pid_t, signal: libc::c_int) {
 /// reaped by [`wait_for_recipe_runner`]; this sweeps any survivors that
 /// outlived the session leader using the same graceful SIGTERM -> grace ->
 /// SIGKILL contract, scoped strictly to `-pgid`.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "macos")))]
 fn reap_recipe_runner_group(pgid_pid: u32, grace: Duration) {
     let pgid = pgid_pid as libc::pid_t;
     // `kill(-pgid, 0)` probes group liveness without delivering a signal.
@@ -1895,5 +2065,171 @@ fn git_run(dir: &Path, args: &[&str]) -> bool {
         // `git config --unset` of a missing key -> exit code 5; benign here.
         Ok(status) if args.contains(&"--unset") && status.code() == Some(5) => true,
         _ => false,
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod darwin_cleanup_tests {
+    use super::*;
+    struct OwnedChild(Child);
+    impl Drop for OwnedChild {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    fn child() -> OwnedChild {
+        OwnedChild(Command::new("/bin/sleep").arg("300").spawn().unwrap())
+    }
+
+    #[test]
+    fn child_born_after_last_live_snapshot_is_captured_before_reaping() {
+        use crate::commands::recipe::{darwin_process, stop};
+        use std::os::unix::process::CommandExt;
+
+        struct OwnedTree(stop::Tree);
+        impl Drop for OwnedTree {
+            fn drop(&mut self) {
+                stop::terminate(&self.0);
+                stop::sweep(&self.0, Duration::from_millis(100));
+            }
+        }
+
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "read go; /bin/sleep 300 </dev/null >/dev/null 2>&1 & echo $!; exit 23",
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+        let mut runner = OwnedChild(command.spawn().unwrap());
+        let root = darwin_process::identity(runner.0.id() as i32)
+            .unwrap()
+            .unwrap();
+        let mut input = runner.0.stdin.take().unwrap();
+        let mut output = BufReader::new(runner.0.stdout.take().unwrap());
+        let mut known = OwnedTree(stop::Tree::new());
+        let mut late_child = None;
+        let mut observations = 0;
+        let result = wait_for_recipe_runner(&mut runner.0, Duration::from_secs(10), |child| {
+            known.0.extend(
+                darwin_process::unreaped_group(child, root.start).map_err(std::io::Error::other)?,
+            );
+            observations += 1;
+            if observations == 1 {
+                assert_eq!(known.0.len(), 1, "runner must still be waiting to fork");
+                // Release the fork only AFTER the last live snapshot. Wait
+                // for a pending exit so the original try_wait path would
+                // deterministically reap before seeing this child.
+                writeln!(input, "go")?;
+                let mut pid = String::new();
+                output.read_line(&mut pid)?;
+                let pid = pid.trim().parse::<i32>().unwrap();
+                let p = darwin_process::inspect(pid).unwrap().unwrap();
+                late_child = Some(OwnedTree(stop::Tree::from([(pid, p.start)])));
+                assert!(!known.0.contains_key(&pid));
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while !darwin_process::waitable(child).map_err(std::io::Error::other)? {
+                    assert!(Instant::now() < deadline, "runner did not exit");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                assert!(darwin_process::identity(root.pid).unwrap().unwrap().zombie);
+            }
+            Ok(())
+        })
+        .unwrap();
+        let RunnerWait::Exited(status) = result else {
+            panic!("runner must exit normally");
+        };
+        assert_eq!(status.code(), Some(23));
+        assert_eq!(observations, 2, "exit needs a final unreaped capture");
+        assert!(darwin_process::waitable(&runner.0).is_err());
+        let late_child = late_child.unwrap();
+        for (pid, start) in &late_child.0 {
+            assert_eq!(
+                known.0.get(pid),
+                Some(start),
+                "late child escaped inventory"
+            );
+        }
+        stop::terminate(&known.0);
+        stop::sweep(&known.0, Duration::from_millis(100));
+        stop::verify_terminal(&known.0, Duration::from_secs(5)).unwrap();
+        for (pid, start) in &late_child.0 {
+            assert!(!darwin_process::matches(*pid, *start).unwrap());
+        }
+    }
+
+    #[test]
+    fn native_attribution_error_still_reaps_direct_child() {
+        let mut child = child();
+        let error = finish_native_cleanup(
+            &mut child.0,
+            Err(anyhow::anyhow!("native attribution failed")),
+        )
+        .unwrap_err();
+        assert!(format!("{error:#}").contains("native attribution failed"));
+        assert!(child.0.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn observation_error_cleans_runner_and_preserves_both_errors() {
+        let mut child = child();
+        let failure = wait_for_recipe_runner(&mut child.0, Duration::from_secs(1), |_| {
+            Err(std::io::Error::from_raw_os_error(libc::EPERM))
+        })
+        .err()
+        .expect("observation must fail");
+        let error = cleanup_unverifiable_runner(
+            &mut child.0,
+            failure.into(),
+            Err(anyhow::anyhow!("retained identity unreadable")),
+        );
+        let text = format!("{error:#}");
+        assert!(text.contains("retained identity unreadable"));
+        assert!(text.contains("Operation not permitted"));
+        assert!(child.0.try_wait().unwrap().is_some());
+    }
+
+    #[test]
+    fn native_teardown_failure_keeps_terminal_record_and_signal_cause() {
+        let temp = tempfile::tempdir().unwrap();
+        let correlation = RecipeRunCorrelation::new(
+            "native-failure".into(),
+            temp.path(),
+            &BTreeMap::new(),
+            Path::new("/bin/sleep"),
+        );
+        for signal in [None, Some(libc::SIGTERM)] {
+            let error = native_teardown_result(
+                &correlation,
+                Some(42),
+                Some(0),
+                signal,
+                Err(anyhow::anyhow!("process metadata unavailable")),
+            )
+            .unwrap_err();
+            let text = format!("{error:#}");
+            assert!(text.contains(correlation.run_id()));
+            assert!(text.contains("status=failure"));
+            assert!(text.contains("child_pid=42"));
+            assert!(text.contains("process metadata unavailable"));
+            assert_eq!(
+                error
+                    .downcast_ref::<super::super::stop_signal::StoppedBySignal>()
+                    .is_some(),
+                signal.is_some()
+            );
+        }
     }
 }

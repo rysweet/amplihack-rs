@@ -11,13 +11,16 @@
 //! - A run id (the `run_id` of an `amplihack.recipe.log_pointer` line): every
 //!   process started with `AMPLIHACK_RECIPE_RUN_ID=<run_id>` is found in
 //!   `/proc`, and the same SIGTERM, grace, SIGKILL is applied to them, their
-//!   descendants and their process groups. Linux only.
+//!   descendants and their process groups on Linux. On Darwin, a private
+//!   launch record and authenticated live Unix peer identify the exact owner;
+//!   native start identities attribute descendants without group expansion.
 //!
 //! The tree is found once, before any signal: by parent links and process
 //! groups, so a descendant that started its own session is still in it. Each
 //! process is recorded with its start time and is signalled only while that
-//! still matches, so a pid the kernel has reused is never hit. This process
-//! and its ancestors are never signalled.
+//! still matches. The check and signal are separate syscalls on Darwin;
+//! known replacement identities are refused. This process and its ancestors
+//! are never signalled.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::process::{Command, Stdio};
@@ -93,6 +96,9 @@ fn stop_session(session: &str) -> Result<()> {
     }
     let tree = snapshot_tree(&panes);
     // A pane this command itself runs in is left to `kill-session` below.
+    #[cfg(target_os = "macos")]
+    terminate(&tree);
+    #[cfg(not(target_os = "macos"))]
     for pane in panes.iter().filter(|pid| tree.contains_key(pid)) {
         signal_group(*pane, libc::SIGTERM);
     }
@@ -117,17 +123,55 @@ fn stop_run_id(run_id: &str) -> Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn stop_run_id(run_id: &str) -> Result<()> {
+    let (mut tree, (owner, start), stream) = super::run_control::request_stop(run_id)?;
+    // The authenticated owner uses the normal cancellation path; frozen
+    // descendants remain ours even after their parents exit or they setsid.
+    terminate(&tree);
+    let mut killed = sweep(&tree, STOP_GRACE);
+    let final_tree = super::run_control::final_tree(&stream)?;
+    terminate(&final_tree);
+    killed += sweep(&final_tree, Duration::from_secs(1));
+    tree.extend(final_tree);
+    tree.insert(owner, start);
+    verify_terminal(&tree, Duration::from_secs(5))?;
+    report(&format!("run {run_id}"), tree.len(), killed);
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+pub(super) fn verify_terminal(tree: &Tree, grace: Duration) -> Result<()> {
+    let deadline = Instant::now() + grace;
+    loop {
+        let mut alive = Vec::new();
+        for (pid, start) in tree {
+            if super::darwin_process::inspect(*pid)?.is_some_and(|p| p.start == *start) {
+                alive.push(*pid);
+            }
+        }
+        if alive.is_empty() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            bail!("recipe stop: still has live owned processes: {alive:?}");
+        }
+        thread::sleep(POLL);
+    }
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn stop_run_id(run_id: &str) -> Result<()> {
     bail!(
-        "recipe stop: no tmux session named {run_id}; stopping by run id needs /proc and is \
-         supported on Linux only"
+        "recipe stop: no tmux session named {run_id}; stopping by run id is supported \
+         on Linux and macOS only"
     )
 }
 
 /// `roots`, everything descended from them and every member of their process
-/// groups, with start times; never this process or its ancestors. Off Linux
-/// only the roots, by pid.
+/// groups on Linux, with start times; never this process or its ancestors.
+/// Darwin follows only positively linked descendants, with native identities.
 pub(crate) fn snapshot_tree(roots: &BTreeSet<i32>) -> Tree {
     #[cfg(target_os = "linux")]
     {
@@ -141,7 +185,11 @@ pub(crate) fn snapshot_tree(roots: &BTreeSet<i32>) -> Tree {
             .map(|p| (p.pid, p.start))
             .collect()
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        super::darwin_process::tree(roots).unwrap_or_default()
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         roots.iter().map(|pid| (*pid, 0)).collect()
     }
@@ -194,10 +242,19 @@ pub(crate) fn sweep(tree: &Tree, grace: Duration) -> usize {
         thread::sleep(POLL);
     }
     let survivors = alive();
+    let mut killed = 0;
     for pid in &survivors {
-        signal_pid(*pid, libc::SIGKILL);
+        // Liveness may have changed since survivors was collected. In
+        // particular, never send KILL to a reused PID from that cached list.
+        if tree
+            .get(pid)
+            .is_some_and(|start| same_process(*pid, *start))
+        {
+            signal_pid(*pid, libc::SIGKILL);
+            killed += 1;
+        }
     }
-    survivors.len()
+    killed
 }
 
 /// `pid` is alive, not a zombie, and still the process recorded with `start`.
@@ -206,7 +263,11 @@ fn same_process(pid: i32, start: u64) -> bool {
     {
         super::process_tree::start_time(pid) == Some(start)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        super::darwin_process::same(pid, start)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = start;
         // SAFETY: signal 0 only checks that the process exists.
@@ -214,6 +275,7 @@ fn same_process(pid: i32, start: u64) -> bool {
     }
 }
 
+#[cfg(not(target_os = "macos"))]
 fn signal_group(pgid: i32, signal: libc::c_int) {
     if pgid > 1 {
         // SAFETY: kill has no memory-safety preconditions.

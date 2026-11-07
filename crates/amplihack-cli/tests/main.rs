@@ -24,6 +24,8 @@
 
 #[path = "../../../tests/support/isolated_amplihack.rs"]
 mod isolated_amplihack;
+#[path = "issue_1928_darwin_stop.rs"]
+mod issue_1928_darwin_stop;
 mod support;
 
 #[path = "issue_1753_expired_live.rs"]
