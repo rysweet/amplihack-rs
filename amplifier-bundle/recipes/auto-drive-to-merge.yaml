@@ -37,6 +37,8 @@ description: |
   that merges, binds all of it to ONE head SHA, writes the evidence down before
   merging, and merges with a fixed argv that accepts no caller-supplied flags.
   An unreadable criterion is a failure, never a pass.
+
+  Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
 version: "1.0.0"
 author: "Amplihack Team"
 tags: ["auto-drive", "workflow", "crusty", "merge-ready", "merge", "issue-1337"]

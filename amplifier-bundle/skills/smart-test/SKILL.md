@@ -478,7 +478,7 @@ python -c "import yaml; print(yaml.safe_load(open('.claude/data/test-mapping/rel
 pytest --ignore-glob='**/test_slow_*'
 
 # Find tests with no source mapping (orphaned tests)
-find tests -name "test_*.py" -exec basename {} \; | sort > /tmp/tests.txt
+find tests -name "test_*.py" -exec basename {} \; | sort > "${TMPDIR:-/tmp}/tests.txt"
 ```
 
 ## Cache Maintenance

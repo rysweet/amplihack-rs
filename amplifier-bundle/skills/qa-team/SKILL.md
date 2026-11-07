@@ -2128,7 +2128,7 @@ ab-comparison-harness \
     --b "myapp-canary" \
     --scenario tests/scenarios/*.yaml \
     --shadow-mode \
-    --shadow-log /tmp/canary-divergences.jsonl
+    --shadow-log "${TMPDIR:-/tmp}/canary-divergences.jsonl"
 
 # Self-improving audit cycle (iterate until convergence)
 ab-audit-cycle \

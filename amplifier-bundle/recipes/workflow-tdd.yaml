@@ -49,6 +49,8 @@ steps:
       - Fail initially (code doesn't exist yet)
       - Pass once implementation is complete
 
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
+
       Output test files with clear file path headers.
     output: "test_spec"
 
@@ -91,6 +93,8 @@ steps:
         and try again. Do not produce a final output until you have either (a)
         written changes that show in `git diff`, or (b) determined the task is
         provably impossible per rule 0.
+
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
 
       **Output (structured — all sections required):**
       - `Files modified:` — newline-separated list of paths you created or edited.
@@ -195,6 +199,8 @@ steps:
         wording, etc). The bash gate warns loudly but lets the workflow continue,
         so use this only when you genuinely cannot decide.
 
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
+
       ## Output (REQUIRED)
       Write whatever investigation prose you like, then on the **very last
       line** emit a single JSON object — no code fence, no trailing text:
@@ -253,6 +259,8 @@ steps:
       - Retry logic and resilience
 
       Skip if no external integrations are required.
+
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
     output: "integration_code"
 
   - id: "checkpoint-after-implementation"

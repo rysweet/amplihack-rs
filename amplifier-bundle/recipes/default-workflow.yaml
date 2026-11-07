@@ -1,5 +1,8 @@
 name: "default-workflow"
-description: "Composable 23-step development workflow — orchestrates 9 phase sub-recipes"
+description: |
+  Composable 23-step development workflow — orchestrates 9 phase sub-recipes
+
+  Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
 version: "3.0.0"
 author: "Amplihack Team"
 tags: ["development", "feature", "bugfix", "refactoring", "standard", "full-workflow", "composable"]

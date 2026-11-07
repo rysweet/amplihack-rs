@@ -160,7 +160,7 @@ orch.add(
 orch = ParallelOrchestrator(repo_url=REPO_URL)
 orch.setup()
 orch.add(issue=123, branch="feat/my-feature", description="...", task="...")
-# The state file at /tmp/amplihack-workstreams/state/ws-123.json is read
+# The state file at $TMPDIR/amplihack-workstreams/state/ws-123.json is read
 # automatically; if it is in a resumable state the checkpoint is restored.
 orch.launch_all()
 orch.monitor()
@@ -170,7 +170,7 @@ orch.monitor()
 
 ## State Files
 
-Every workstream writes two files under `/tmp/amplihack-workstreams/state/`:
+Every workstream writes two files under `$TMPDIR/amplihack-workstreams/state/` (`/tmp/...` when `TMPDIR` is unset):
 
 | File | Purpose |
 |---|---|
@@ -181,6 +181,8 @@ Both files are written atomically (write to `.tmp`, then `rename`) and permissio
 
 ### State File Schema (`ws-<issue>.json`)
 
+The real file holds absolute paths; `$TMPDIR` below stands for the resolved temporary folder.
+
 ```json
 {
   "issue": 123,
@@ -189,8 +191,8 @@ Both files are written atomically (write to `.tmp`, then `rename`) and permissio
   "lifecycle_state": "timed_out_resumable",
   "cleanup_eligible": false,
   "checkpoint_id": "implement-changes",
-  "worktree_path": "/tmp/amplihack-workstreams/ws-123/worktrees/feat/my-feature",
-  "work_dir": "/tmp/amplihack-workstreams/ws-123",
+  "worktree_path": "$TMPDIR/amplihack-workstreams/ws-123/worktrees/feat/my-feature",
+  "work_dir": "$TMPDIR/amplihack-workstreams/ws-123",
   "max_runtime": 7200,
   "timeout_policy": "interrupt-preserve",
   "attempt": 1,
@@ -203,7 +205,7 @@ Both files are written atomically (write to `.tmp`, then `rename`) and permissio
 
 ## Log Management
 
-Each workstream writes stdout and stderr to `log-<issue>.txt` in `tmp_base`. Log growth is capped to prevent `/tmp` exhaustion.
+Each workstream writes stdout and stderr to `log-<issue>.txt` in `tmp_base`. Log growth is capped to prevent exhaustion of the temporary filesystem.
 
 | Setting | Default | Override |
 |---|---|---|

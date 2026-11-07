@@ -33,10 +33,10 @@ Before starting, verify:
 # List all markdown workflows in gh-aw repository
 gh api repos/github/gh-aw/contents/.github/workflows \
   --jq '.[] | select(.name | endswith(".md")) | .name' \
-  > /tmp/available-workflows.txt
+  > "${TMPDIR:-/tmp}/available-workflows.txt"
 
 # Count total workflows
-wc -l /tmp/available-workflows.txt
+wc -l "${TMPDIR:-/tmp}/available-workflows.txt"
 ````
 
 ### Step 2: Sample and analyze diverse workflows
@@ -52,8 +52,9 @@ Select 10-15 representative workflows spanning:
 For each sampled workflow:
 
 ```bash
+mkdir -p "${TMPDIR:-/tmp}/analysis"
 gh api repos/github/gh-aw/contents/.github/workflows/<workflow-name>.md \
-  --jq '.content' | base64 -d > /tmp/analysis/<workflow-name>.md
+  --jq '.content' | base64 -d > "${TMPDIR:-/tmp}/analysis/<workflow-name>.md"
 ```
 
 Analyze:
@@ -134,9 +135,10 @@ For EACH workflow in priority list:
 
 ```bash
 workflow_name="<WORKFLOW_NAME>"  # e.g., "secret-validation"
+GH_AW_DIR=$(mktemp -d "${TMPDIR:-/tmp}/gh-aw.XXXXXX")
 
 gh api repos/github/gh-aw/contents/.github/workflows/${workflow_name}.md \
-  --jq '.content' | base64 -d > /tmp/${workflow_name}.md
+  --jq '.content' | base64 -d > "$GH_AW_DIR/${workflow_name}.md"
 ```
 
 #### 2. Read and understand structure
@@ -239,7 +241,7 @@ git checkout -b feat/${workflow_name}-workflow
 
 ```bash
 mkdir -p .github/workflows
-cp /tmp/${workflow_name}.md .github/workflows/${workflow_name}.md
+cp "$GH_AW_DIR/${workflow_name}.md" ".github/workflows/${workflow_name}.md"
 # (with all adaptations applied)
 ```
 

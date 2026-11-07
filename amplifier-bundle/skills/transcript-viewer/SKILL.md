@@ -388,14 +388,14 @@ find ~/.claude/projects -name "*.jsonl" -mtime -7
 
 # Filter by date range using find -newer
 find ~/.claude/projects -name "*.jsonl" \
-  -newer /tmp/start_date_ref \
-  ! -newer /tmp/end_date_ref
+  -newer "${TMPDIR:-/tmp}/start_date_ref" \
+  ! -newer "${TMPDIR:-/tmp}/end_date_ref"
 ```
 
 Create the reference files with `touch -d`:
 ```bash
-touch -d "2025-11-01" /tmp/start_date_ref
-touch -d "2025-11-30" /tmp/end_date_ref
+touch -d "2025-11-01" "${TMPDIR:-/tmp}/start_date_ref"
+touch -d "2025-11-30" "${TMPDIR:-/tmp}/end_date_ref"
 ```
 
 ## Output Formats
@@ -410,10 +410,12 @@ conversation. Best for quick reading in the terminal or Claude Code.
 Pass `--format html` to `claude-code-log`. Write the output to a file and open it:
 
 ```bash
-$CCL <file> --format html > /tmp/transcript-view.html
-open /tmp/transcript-view.html 2>/dev/null \
-  || xdg-open /tmp/transcript-view.html 2>/dev/null \
-  || echo "HTML saved to /tmp/transcript-view.html — open it in your browser."
+OUT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/transcript-view.XXXXXX")
+HTML_OUT="$OUT_DIR/view.html"
+$CCL <file> --format html > "$HTML_OUT"
+open "$HTML_OUT" 2>/dev/null \
+  || xdg-open "$HTML_OUT" 2>/dev/null \
+  || echo "HTML saved to $HTML_OUT — open it in your browser."
 ```
 
 The user can request HTML explicitly: "view transcript as HTML" or "export to HTML".
@@ -590,9 +592,9 @@ Legacy sessions may be stored at `~/.copilot/history-session-state/` with the sa
 | "show session abc123" | Claude Code | Specific session | `$CCL ~/.claude/projects/**/*abc123*.jsonl --format markdown` |
 | "view agent output" | Claude Code | Agent output | `cat .agent-step-*.log` or `$CCL *.jsonl` |
 | "browse all sessions" | Claude Code | All sessions | list + summarize all `~/.claude/projects/**/*.jsonl` |
-| "view transcript as HTML" | Claude Code | Any + HTML | `$CCL <file> --format html > /tmp/view.html` |
+| "view transcript as HTML" | Claude Code | Any + HTML | `$CCL <file> --format html > "${TMPDIR:-/tmp}/view.html"` |
 | "last 7 days" (with browse) | Claude Code | Date filter | `find ... -mtime -7` |
 | "view current copilot session" | Copilot | Current session | `$CCL ~/.copilot/session-state/<latest>/events.jsonl --format markdown` |
 | "show copilot session abc123" | Copilot | Specific session | `$CCL ~/.copilot/session-state/abc123/events.jsonl --format markdown` |
 | "browse copilot sessions" | Copilot | All sessions | list dirs in `~/.copilot/session-state/`, show session IDs |
-| "view copilot session as HTML" | Copilot | Any + HTML | `$CCL <events.jsonl> --format html > /tmp/view.html` |
+| "view copilot session as HTML" | Copilot | Any + HTML | `$CCL <events.jsonl> --format html > "${TMPDIR:-/tmp}/view.html"` |

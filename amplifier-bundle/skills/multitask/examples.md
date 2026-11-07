@@ -95,13 +95,13 @@ While workstreams are running:
 
 ```bash
 # Real-time log of workstream #100
-tail -f /tmp/amplihack-workstreams/log-100.txt
+tail -f "${TMPDIR:-/tmp}/amplihack-workstreams/log-100.txt"
 
 # Check which processes are still running
 ps aux | grep launcher.sh
 
 # See the final report after completion
-cat /tmp/amplihack-workstreams/REPORT.md
+cat "${TMPDIR:-/tmp}/amplihack-workstreams/REPORT.md"
 ```
 
 ## Example 6: Post-Execution Cleanup
@@ -111,10 +111,10 @@ cat /tmp/amplihack-workstreams/REPORT.md
 gh pr list --limit 10
 
 # Review a specific workstream's full output
-cat /tmp/amplihack-workstreams/log-100.txt
+cat "${TMPDIR:-/tmp}/amplihack-workstreams/log-100.txt"
 
 # Clean up all workstream files
-rm -rf /tmp/amplihack-workstreams
+rm -rf "${TMPDIR:-/tmp}/amplihack-workstreams"
 ```
 
 ## Production Results

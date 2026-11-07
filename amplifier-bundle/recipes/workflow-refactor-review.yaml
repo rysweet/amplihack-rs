@@ -59,6 +59,8 @@ steps:
       - [ ] No unimplemented functions
 
       **VALIDATE:** All explicit user requirements still preserved.
+
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
     output: "refactored_code"
 
   - id: "step-09b-optimize"
@@ -78,6 +80,8 @@ steps:
       - Unnecessary operations
 
       Apply optimizations without sacrificing clarity or correctness.
+
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
     output: "optimized_code"
 
   # ==========================================================================
@@ -195,6 +199,8 @@ steps:
 
       Implement all required changes from the reviews.
       Update documentation as needed.
+
+      Scratch policy (#1978): put test --basetemp and tmp_path roots, mutation-test and other scratch copies, and any scratch worktree or clone under "$TMPDIR" (or this recipe's own worktree), never under a literal /tmp path.
 
       Output the updated implementation.
     output: "review_feedback"
