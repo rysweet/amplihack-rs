@@ -186,6 +186,7 @@ impl Owner {
             .env("TASK_DESCRIPTION", self.task)
             .env("TMPDIR", evidence.path())
             .arg("-I")
+            .arg("-B")
             .arg("-c")
             .arg(PROJECTION)
             .arg(request.to_string())

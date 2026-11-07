@@ -1640,7 +1640,7 @@ run_step() {
     local dir="$1" step="$2"
     local -a step_command=(bash "${step}")
     if [[ "${step}" == "${STEP_15}" ]]; then
-        step_command=(python3 -I "${WORK}/publish-projection.py" "${REPO_ROOT}" "${dir}")
+        step_command=(python3 -I -B "${WORK}/publish-projection.py" "${REPO_ROOT}" "${dir}")
     fi
     shift 2
     mkdir -p "${dir}/home"

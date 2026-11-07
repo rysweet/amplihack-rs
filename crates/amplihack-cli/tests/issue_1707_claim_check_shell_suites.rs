@@ -126,7 +126,8 @@ fn isolated_suite_command(script: &Path, tmp: &Path, pyyaml_dir: Option<&Path>) 
     command
         .env("PATH", path)
         .env("HOME", home)
-        .env("TMPDIR", tmp);
+        .env("TMPDIR", tmp)
+        .env("PYTHONDONTWRITEBYTECODE", "1");
     command
 }
 fn run_suite(script: &str) {
