@@ -5,7 +5,7 @@
 //! literals, not taken from the module's constants, so a change to the
 //! injected flags has to change this file too.
 
-use super::codex_agent_step::{codex_agent_step_args, exec_subcommand_index};
+use super::codex_agent_step::{SANDBOX_FLAGS, codex_agent_step_args, exec_subcommand_index};
 
 const SANDBOX: [&str; 2] = ["--sandbox", "workspace-write"];
 const NETWORK: [&str; 2] = ["-c", "sandbox_workspace_write.network_access=true"];
@@ -192,7 +192,7 @@ fn caller_sandbox_suppresses_sandbox_and_network_but_not_hook_trust() {
         &["-c", "sandbox_mode = \"read-only\""],
         &["--config", " sandbox_mode=read-only"],
         &[APPROVALS_BYPASS],
-        &["--full-auto"],
+        &["--approve-for-me"],
         &["--yolo"],
     ];
     for choice in cases {
@@ -452,4 +452,89 @@ fn injection_is_idempotent() {
         let twice = codex_agent_step_args(&once);
         assert_eq!(once, twice, "input {input:?}");
     }
+}
+
+// ---- the sandbox-choice table matches codex-cli 0.166.0 ----
+
+/// `codex exec --help` from codex-cli 0.166.0, the version the issue names.
+const EXEC_HELP_0_166_0: &str = include_str!("fixtures/codex-exec-help-0.166.0.txt");
+
+/// Hidden aliases Codex accepts but does not print in `--help`.
+const HIDDEN_SANDBOX_ALIASES: &[&str] = &["--yolo"];
+
+/// Each long option in the help text with its description.
+fn help_entries(help: &str) -> Vec<(String, String)> {
+    let mut entries: Vec<(String, String)> = Vec::new();
+    for line in help.lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if trimmed.starts_with('-') && indent <= 6 {
+            let long = trimmed
+                .split([' ', ','])
+                .find(|t| t.starts_with("--"))
+                .unwrap_or("")
+                .to_string();
+            entries.push((long, String::new()));
+        } else if let Some(entry) = entries.last_mut() {
+            entry.1.push_str(trimmed);
+            entry.1.push(' ');
+        }
+    }
+    entries
+}
+
+/// True when the description names the sandbox as a word (`sandbox`,
+/// `sandboxing`), not inside a config key such as `sandbox_permissions`.
+fn mentions_sandbox(description: &str) -> bool {
+    description
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .any(|word| word.to_ascii_lowercase().starts_with("sandbox") && !word.contains('_'))
+}
+
+#[test]
+fn sandbox_flags_match_codex_0_166_0_exec_help() {
+    let documented: Vec<String> = help_entries(EXEC_HELP_0_166_0)
+        .into_iter()
+        .filter(|(long, description)| {
+            !long.is_empty() && long != "--sandbox" && mentions_sandbox(description)
+        })
+        .map(|(long, _)| long)
+        .collect();
+    assert!(
+        documented.iter().any(|f| f == "--approve-for-me"),
+        "help parser lost --approve-for-me: {documented:?}"
+    );
+    let mut expected: Vec<&str> = documented.iter().map(String::as_str).collect();
+    expected.extend(HIDDEN_SANDBOX_ALIASES);
+    expected.sort_unstable();
+    let mut actual = SANDBOX_FLAGS.to_vec();
+    actual.sort_unstable();
+    assert_eq!(
+        actual, expected,
+        "SANDBOX_FLAGS must list every option that `codex exec --help` (0.166.0) \
+         describes as choosing a sandbox, plus hidden aliases"
+    );
+}
+
+#[test]
+fn full_auto_is_not_a_codex_0_166_0_option() {
+    assert!(!EXEC_HELP_0_166_0.contains("--full-auto"));
+    assert!(!SANDBOX_FLAGS.contains(&"--full-auto"));
+}
+
+#[test]
+fn approve_for_me_suppresses_sandbox_and_network() {
+    // codex-cli 0.166.0 rejects `--sandbox` with `--approve-for-me` (exit 2).
+    for argv in [
+        &["exec", "--approve-for-me", "-"][..],
+        &["--approve-for-me", "exec", "-"][..],
+        &["exec", "resume", "--last", "--approve-for-me"][..],
+    ] {
+        let out = codex_agent_step_args(&v(argv));
+        assert_eq!(count(&out, "--sandbox"), 0, "argv {argv:?}: {out:?}");
+        assert_eq!(count(&out, NETWORK[1]), 0, "argv {argv:?}: {out:?}");
+        assert_eq!(count(&out, HOOK_TRUST), 1, "argv {argv:?}: {out:?}");
+    }
+    let out = codex_agent_step_args(&v(&["exec", "--approve-for-me", "-"]));
+    assert_eq!(out, v(&["exec", HOOK_TRUST, "--approve-for-me", "-"]));
 }

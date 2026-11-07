@@ -14,9 +14,21 @@ const SANDBOX: [&str; 2] = ["--sandbox", "workspace-write"];
 const NETWORK: [&str; 2] = ["-c", "sandbox_workspace_write.network_access=true"];
 const HOOK_TRUST: &str = "--dangerously-bypass-hook-trust";
 const SANDBOX_MODES: &[&str] = &["read-only", "workspace-write", "danger-full-access"];
-/// Flags that choose a sandbox on their own.
-const SANDBOX_FLAGS: &[&str] = &[
-    "--full-auto",
+/// Flags that choose a sandbox on their own, taken from `codex exec --help`
+/// for codex-cli 0.166.0 (frozen in `fixtures/codex-exec-help-0.166.0.txt`
+/// and checked by `tests_codex_agent_step.rs`):
+///
+/// - `--approve-for-me` selects the workspace-write sandbox, and clap rejects
+///   it together with `--sandbox` (exit 2), so adding `--sandbox` would stop
+///   the launch.
+/// - `--dangerously-bypass-approvals-and-sandbox` runs with no sandbox.
+/// - `--yolo` is the hidden alias of the bypass flag; it is accepted but not
+///   listed in the help output.
+///
+/// `--full-auto` is not listed: codex-cli 0.140.0 to 0.166.0 reject it as an
+/// unexpected argument.
+pub(super) const SANDBOX_FLAGS: &[&str] = &[
+    "--approve-for-me",
     "--dangerously-bypass-approvals-and-sandbox",
     "--yolo",
 ];

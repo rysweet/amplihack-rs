@@ -295,6 +295,14 @@ options that take a value are shared with the mode parser in
 (`LONG_OPTIONS_WITH_VALUE` and `SHORT_OPTIONS_WITH_VALUE`). If no `exec` is
 found, the argv is passed through unchanged.
 
+The flags that choose a sandbox on their own are `--approve-for-me`,
+`--dangerously-bypass-approvals-and-sandbox` and its hidden alias `--yolo`.
+The list is taken from `codex exec --help` for codex-cli 0.166.0, a copy of
+which is kept in
+`crates/amplihack-cli/src/commands/launch/fixtures/codex-exec-help-0.166.0.txt`;
+a unit test fails if the list and that copy disagree. `--full-auto` is not
+on the list because codex-cli 0.140.0 to 0.166.0 reject it.
+
 | Caller argv (after `--`) | What amplihack adds |
 |---|---|
 | `exec --output-last-message F -` | all three flags after `exec` |
@@ -305,6 +313,7 @@ found, the argv is passed through unchanged.
 | `exec -c sandbox_mode=read-only -` | `--dangerously-bypass-hook-trust` only |
 | `exec --sandbox=read-only -`, `exec -sread-only -`, `exec -s=read-only -`, `exec --config=sandbox_mode=read-only -`, `exec -c=sandbox_mode=read-only -` | `--dangerously-bypass-hook-trust` only |
 | `exec -c 'sandbox_mode = "read-only"' -` | `--dangerously-bypass-hook-trust` only; the key is trimmed |
+| `exec --approve-for-me -` | `--dangerously-bypass-hook-trust` only; `--approve-for-me` selects the workspace-write sandbox and codex-cli 0.166.0 refuses it alongside `--sandbox` |
 | `exec --dangerously-bypass-approvals-and-sandbox -` | `--dangerously-bypass-hook-trust` only; the caller's flag is forwarded unchanged |
 | `exec -c sandbox_workspace_write.network_access=false -` | `--sandbox workspace-write` and `--dangerously-bypass-hook-trust` |
 | `exec --dangerously-bypass-hook-trust -` | `--sandbox workspace-write` and the network override; hook trust is not repeated |

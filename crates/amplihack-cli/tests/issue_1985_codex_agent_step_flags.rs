@@ -215,6 +215,22 @@ fn caller_sandbox_is_respected() {
     }
 }
 
+/// `--approve-for-me` chooses the workspace-write sandbox, and codex-cli
+/// 0.166.0 refuses it alongside `--sandbox`, so neither the sandbox nor the
+/// network override may be added.
+#[test]
+fn approve_for_me_is_a_sandbox_choice() {
+    let launch = launch(&["exec", "--approve-for-me", "-"], b"prompt\n");
+    assert!(launch.out.status.success(), "{:?}", launch.out);
+    assert_eq!(
+        launch.argv,
+        strings(&["exec", HOOK_TRUST, "--approve-for-me", "-"])
+    );
+    assert_eq!(count(&launch.argv, SANDBOX[0]), 0);
+    assert_eq!(count(&launch.argv, NETWORK[1]), 0);
+    assert_no_approvals_bypass(&launch);
+}
+
 /// AC3: a caller that already bypasses hook trust gets it once.
 #[test]
 fn caller_hook_trust_appears_once() {

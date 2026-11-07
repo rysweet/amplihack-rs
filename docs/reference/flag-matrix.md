@@ -118,7 +118,7 @@ The UVX rows describe automatic launcher injection only. Codex accepts explicit 
    and network pair is skipped when the caller already chose a sandbox:
    `--sandbox X`, `--sandbox=X` or `-s X` for any `X`; attached `-s<mode>`
    or `-s=<mode>` for `read-only`, `workspace-write` or `danger-full-access`;
-   `--full-auto`, `--dangerously-bypass-approvals-and-sandbox` or `--yolo`;
+   `--approve-for-me`, `--dangerously-bypass-approvals-and-sandbox` or `--yolo`;
    or a `-c` override whose trimmed key is `sandbox_mode`, as `-c V`, `-cV`,
    `-c=V`, `--config V` or `--config=V`. The network pair alone is skipped when the
    caller sets `sandbox_workspace_write.network_access`; hook trust is skipped

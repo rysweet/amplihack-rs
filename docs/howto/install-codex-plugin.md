@@ -138,7 +138,7 @@ The flags were checked against codex-cli 0.166.0. There is no environment variab
 - **The caller's sandbox choice wins.** If the step's own arguments already choose a sandbox, amplihack adds neither `--sandbox workspace-write` nor the network override. These forms count as a choice, before or after `exec`:
   - `--sandbox <value>`, `--sandbox=<value>` and `-s <value>`, whatever the value;
   - attached `-s<mode>` or `-s=<mode>`, only when `<mode>` is `read-only`, `workspace-write` or `danger-full-access`;
-  - `--full-auto`, `--dangerously-bypass-approvals-and-sandbox` and `--yolo`;
+  - `--approve-for-me` (which selects the workspace-write sandbox, and which codex-cli 0.166.0 refuses alongside `--sandbox`), `--dangerously-bypass-approvals-and-sandbox` and its hidden alias `--yolo`;
   - a configuration override whose key is `sandbox_mode`, in any spelling: `-c <value>`, `-c<value>`, `-c=<value>`, `--config <value>` or `--config=<value>`. Spaces around the key are ignored, as Codex ignores them, so `-c 'sandbox_mode = "read-only"'` counts.
 
   Hook trust is still bypassed.
