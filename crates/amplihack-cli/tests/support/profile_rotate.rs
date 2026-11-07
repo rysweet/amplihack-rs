@@ -186,7 +186,7 @@ impl Fixture {
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
         write_executable(&tools.join("claude"), FAKE_CLAUDE, 0o755);
         let mut f = Self {
-            identity: IdentityEndpoint::new(),
+            identity: IdentityEndpoint::new(canned.clone()),
             root: home.join("profiles"),
             tmp,
             home,
@@ -273,6 +273,21 @@ impl Fixture {
                  Current week (all models): {week}% used\n"
             ),
         );
+    }
+
+    /// Issue #1962: what the fake usage endpoint answers for `p`, with both
+    /// windows resetting in 3 hours. A dry run reads only this, never `claude`.
+    pub fn usage_direct(&self, p: &str, session: u32, week: u32) {
+        let at = (chrono::Utc::now() + chrono::Duration::hours(3)).to_rfc3339();
+        let body = serde_json::json!({
+            "five_hour": {"utilization": session, "resets_at": at},
+            "seven_day": {"utilization": week, "resets_at": at}
+        });
+        fs::write(
+            self.canned.join(direct_usage_file(&email(p))),
+            body.to_string(),
+        )
+        .unwrap();
     }
 
     /// Issue #1818: a plan with no session limit. Claude prints only the
@@ -658,15 +673,27 @@ fn unix_now() -> i64 {
 }
 
 /// Loopback-only profile answers for the explicit fake moving identities.
+fn direct_usage_file(email: &str) -> String {
+    format!("{email}.direct.json")
+}
+
+/// What [`Fixture::usage_direct`] set for the login in a token's `block`.
+fn direct_answer(canned: &Path, block: &serde_json::Value) -> Option<serde_json::Value> {
+    let email = block["emailAddress"].as_str().unwrap_or("");
+    let raw = fs::read(canned.join(direct_usage_file(email))).ok()?;
+    Some(serde_json::from_slice(&raw).expect("canned direct usage answer is JSON"))
+}
+
 /// Each connection is served on its own thread: a slow, silent or broken
-/// client ends only its own connection (issue #1973).
+/// client ends only its own connection (issue #1973). A `/usage` request
+/// for a login with a canned direct answer gets that answer (issue #1962).
 struct IdentityEndpoint {
     base: String,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl IdentityEndpoint {
-    fn new() -> Self {
+    fn new(canned: PathBuf) -> Self {
         use std::sync::atomic::{AtomicBool, Ordering};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -677,7 +704,8 @@ impl IdentityEndpoint {
             while !stopping.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
-                        std::thread::spawn(move || serve_identity(stream));
+                        let canned = canned.clone();
+                        std::thread::spawn(move || serve_identity(stream, &canned));
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -700,7 +728,7 @@ impl IdentityEndpoint {
 /// Answers one request. A read error, a timeout or an early end of input
 /// ends this connection without an answer; a failed write is the client's
 /// concern. Request data is never echoed.
-fn serve_identity(stream: std::net::TcpStream) {
+fn serve_identity(stream: std::net::TcpStream, canned: &Path) {
     use std::io::{BufRead, Write};
     if stream.set_nonblocking(false).is_err() || stream.set_read_timeout(Some(CEILING)).is_err() {
         return;
@@ -739,6 +767,10 @@ fn serve_identity(stream: std::net::TcpStream) {
             block = bytes.and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok());
         }
     }
+    let direct = block
+        .as_ref()
+        .filter(|_| usage)
+        .and_then(|b| direct_answer(canned, b));
     let (status, body) = match block {
         Some(b) if profile => (
             "200 OK",
@@ -746,6 +778,9 @@ fn serve_identity(stream: std::net::TcpStream) {
                 "uuid": b["accountUuid"], "email": b["emailAddress"]
             }, "organization": {"uuid": b["organizationUuid"]}}),
         ),
+        // Issue #1962: a dry run has no `claude` fallback, so a test of its
+        // decision sets the direct answer ([`Fixture::usage_direct`]).
+        Some(_) if direct.is_some() => ("200 OK", direct.unwrap()),
         // Valid fake credentials use the existing canned Claude fallback. A
         // 401 would request a refresh and alter the profile directory even
         // during a dry-run measurement.
