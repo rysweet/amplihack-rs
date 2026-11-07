@@ -1024,14 +1024,7 @@ mod shell {
             "amplihack",
             format!(
                 "#!/bin/sh\nif [ \"$1\" = internal ]; then exec '{}' \"$@\"; fi\necho 'amplihack {installed}'\n",
-                std::env::current_exe()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .parent()
-                    .unwrap()
-                    .join("amplihack")
-                    .display()
+                crate::support::amplihack_bin::amplihack_bin().display()
             ),
         )];
         if with_hooks {
@@ -1177,13 +1170,7 @@ fi
                     .env("PATH", tools.path())
                     .env(
                         "VALIDATION_TEST_CLI",
-                        std::env::current_exe()
-                            .unwrap()
-                            .parent()
-                            .unwrap()
-                            .parent()
-                            .unwrap()
-                            .join("amplihack"),
+                        crate::support::amplihack_bin::amplihack_bin(),
                     )
                     .env("CLAUDE_PLUGIN_ROOT", repo_root())
                     .env("CLAUDE_PLUGIN_DATA", data.path())
@@ -1225,13 +1212,7 @@ fi
     #[test]
     fn claude_capability_validation_uses_native_schema_without_json_runtimes() {
         let tools = tempfile::tempdir().unwrap();
-        let cli = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .parent()
-            .unwrap()
-            .join("amplihack");
+        let cli = crate::support::amplihack_bin::amplihack_bin();
         std::os::unix::fs::symlink(cli, tools.path().join("amplihack")).unwrap();
         let runner = tools.path().join("runner");
         for (report, accepted) in [

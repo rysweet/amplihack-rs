@@ -41,6 +41,8 @@ pub mod claude_md;
 /// `@anthropic-ai/claude-code`. See issue #1266.
 pub mod claude_native;
 pub mod cleanup;
+/// Injectable clock for timed waits (issue #2019).
+pub mod clock;
 pub mod defensive;
 pub mod docker_detector;
 pub mod docker_manager;

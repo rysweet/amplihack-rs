@@ -14,20 +14,22 @@
 
 use amplihack_hooks::limit_resume::decide::{event_key, session_key};
 use amplihack_hooks::limit_resume::guard::{
-    CommitError, FsGuard, GuardStore, PROMPTED_RETENTION_SECS,
+    CommitError, FsGuard, GuardStore, LOCK_TIMEOUT, PROMPTED_RETENTION_SECS,
 };
 use amplihack_hooks::limit_resume::log::{LOG_MAX_BYTES, LogEntry, append, format_line, sanitize};
 use amplihack_hooks::limit_resume::{
     Deps, MAX_RESUMES_PER_SESSION, Outcome, record_prompt_at, run_with,
 };
 use amplihack_types::HookInput;
+use amplihack_utils::clock::Clock;
 use amplihack_utils::rotator_status::CycleStatus;
 use amplihack_utils::secure_files::{lock_exclusive_timeout, open_private_nofollow};
 use serde_json::json;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Barrier};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Barrier, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 const NOW: i64 = 1_792_592_000;
@@ -386,9 +388,79 @@ fn stuck_lock_times_out_as_io_error() {
     assert!(!g.seen(&ev(1)).unwrap(), "no marker after a failed lock");
 }
 
+// Issue #2019: no test here measures real elapsed time. The lock wait reads
+// an injected clock (`FsGuard::with_clock`); the fakes below keep virtual
+// time as a base `Instant` plus an offset.
+
+/// The longest a racing test waits for a thread's result. A hang cap only:
+/// no test asserts on it, and a correct run never comes near it.
+const HANG_GUARD: Duration = Duration::from_secs(120);
+
+/// Virtual time that moves only when something sleeps on it, and records
+/// the virtual start and length of each sleep. Never sleeps for real.
+struct AdvancingClock {
+    base: Instant,
+    offset_ns: AtomicU64,
+    sleeps: Mutex<Vec<(Duration, Duration)>>,
+}
+
+impl AdvancingClock {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            base: Instant::now(),
+            offset_ns: AtomicU64::new(0),
+            sleeps: Mutex::new(Vec::new()),
+        })
+    }
+
+    fn elapsed(&self) -> Duration {
+        Duration::from_nanos(self.offset_ns.load(Ordering::SeqCst))
+    }
+}
+
+impl Clock for AdvancingClock {
+    fn now(&self) -> Instant {
+        self.base + self.elapsed()
+    }
+
+    fn sleep(&self, d: Duration) {
+        self.sleeps.lock().unwrap().push((self.elapsed(), d));
+        self.offset_ns
+            .fetch_add(d.as_nanos() as u64, Ordering::SeqCst);
+    }
+}
+
+/// Virtual time that never moves, so a lock wait on it never times out
+/// however loaded the host is. `sleep` really sleeps 1 ms so a waiter
+/// yields instead of spinning a CPU while the lock is held.
+struct FrozenClock(Instant);
+
+impl FrozenClock {
+    fn new() -> Arc<Self> {
+        Arc::new(Self(Instant::now()))
+    }
+}
+
+impl Clock for FrozenClock {
+    fn now(&self) -> Instant {
+        self.0
+    }
+
+    fn sleep(&self, _d: Duration) {
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 #[test]
 fn default_lock_timeout_is_five_seconds() {
+    assert_eq!(LOCK_TIMEOUT, Duration::from_secs(5));
     let r = root();
+    assert_eq!(FsGuard::new(r.path()).lock_timeout(), LOCK_TIMEOUT);
+    assert_eq!(
+        FsGuard::with_lock_timeout(r.path(), Duration::from_millis(7)).lock_timeout(),
+        Duration::from_millis(7)
+    );
+
     let d = resume_dir(r.path());
     private_dir(&d);
     let held = lock_exclusive_timeout(
@@ -396,42 +468,87 @@ fn default_lock_timeout_is_five_seconds() {
         Duration::ZERO,
     )
     .unwrap();
-    let mut g = FsGuard::new(r.path());
-    let start = Instant::now();
-    assert!(g.commit(&ev(1), &sess(), NOW, NOW).is_err());
-    let waited = start.elapsed();
+    let clock = AdvancingClock::new();
+    let mut g = FsGuard::with_clock(r.path(), LOCK_TIMEOUT, clock.clone());
+    assert_eq!(g.lock_timeout(), LOCK_TIMEOUT);
+    assert!(matches!(
+        g.commit(&ev(1), &sess(), NOW, NOW),
+        Err(CommitError::Io)
+    ));
+    let at_failure = clock.elapsed();
     drop(held);
+    let sleeps = clock.sleeps.lock().unwrap().clone();
+    assert!(!sleeps.is_empty(), "a held lock is waited for");
+    let (last_start, _) = *sleeps.last().unwrap();
     assert!(
-        waited >= Duration::from_millis(4500) && waited < Duration::from_secs(8),
-        "waited {waited:?}"
+        last_start < LOCK_TIMEOUT,
+        "the last wait starts before 5 s of virtual time: {last_start:?}"
     );
+    assert!(
+        at_failure >= LOCK_TIMEOUT,
+        "the commit gave up at {at_failure:?} of virtual time, before 5 s"
+    );
+    assert!(
+        at_failure < LOCK_TIMEOUT + Duration::from_millis(100),
+        "the commit waited {at_failure:?} of virtual time, past one retry beyond 5 s"
+    );
+    assert!(!g.seen(&ev(1)).unwrap(), "no marker after a failed lock");
 }
 
-// ── FsGuard: concurrency ────────────────────────────────────────────────────
+#[test]
+fn a_guard_debug_does_not_show_its_clock() {
+    let r = root();
+    let g = FsGuard::with_clock(r.path(), LOCK_TIMEOUT, FrozenClock::new());
+    let shown = format!("{g:?}");
+    assert!(shown.starts_with("FsGuard"), "{shown}");
+    assert!(!shown.contains("Frozen"), "{shown}");
+    let copy = g.clone();
+    assert_eq!(copy.lock_timeout(), LOCK_TIMEOUT);
+}
+
+/// Runs `commit` on eight threads released together by a barrier, each
+/// with a frozen clock so a loser waiting for the lock cannot time out.
+/// Results come back over a channel; a thread that hangs fails the test at
+/// `HANG_GUARD` instead of hanging it.
+fn race_eight(
+    root: &Path,
+    commit: impl Fn(&mut FsGuard, u32) -> Result<(), CommitError> + Send + Sync + 'static,
+) -> Vec<Result<(), CommitError>> {
+    let path = Arc::new(root.to_path_buf());
+    let barrier = Arc::new(Barrier::new(8));
+    let commit = Arc::new(commit);
+    let clock = FrozenClock::new();
+    let (tx, rx) = mpsc::channel();
+    for i in 0..8u32 {
+        let (p, b, c, tx) = (path.clone(), barrier.clone(), commit.clone(), tx.clone());
+        let clock: Arc<dyn Clock> = clock.clone();
+        std::thread::spawn(move || {
+            let mut g = FsGuard::with_clock(&p, LOCK_TIMEOUT, clock);
+            b.wait();
+            let _ = tx.send(c(&mut g, i));
+        });
+    }
+    drop(tx);
+    (0..8)
+        .map(|n| {
+            rx.recv_timeout(HANG_GUARD)
+                .unwrap_or_else(|e| panic!("racer {n} gave no result: {e}"))
+        })
+        .collect()
+}
 
 #[test]
 fn eight_racing_hooks_on_one_event_commit_exactly_once() {
     let r = root();
-    let path = Arc::new(r.path().to_path_buf());
-    let barrier = Arc::new(Barrier::new(8));
-    let handles: Vec<_> = (0..8)
-        .map(|_| {
-            let (p, b) = (path.clone(), barrier.clone());
-            std::thread::spawn(move || {
-                let mut g = FsGuard::new(&p);
-                b.wait();
-                g.commit(&ev(1), &sess(), NOW, NOW)
-            })
-        })
-        .collect();
-    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let results = race_eight(r.path(), |g, _| g.commit(&ev(1), &sess(), NOW, NOW));
+    assert_eq!(results.len(), 8);
     assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
     assert!(
         results
             .iter()
             .filter(|r| r.is_err())
             .all(|r| matches!(r, Err(CommitError::Duplicate))),
-        "losers must see Duplicate"
+        "losers must see Duplicate: {results:?}"
     );
     assert_eq!(FsGuard::new(r.path()).resumes(&sess(), NOW).unwrap(), 1);
 }
@@ -440,25 +557,15 @@ fn eight_racing_hooks_on_one_event_commit_exactly_once() {
 fn eight_racing_waiters_for_one_session_wake_it_once() {
     // Distinct events, one session, all waiting since NOW.
     let r = root();
-    let path = Arc::new(r.path().to_path_buf());
-    let barrier = Arc::new(Barrier::new(8));
-    let handles: Vec<_> = (0..8u32)
-        .map(|i| {
-            let (p, b) = (path.clone(), barrier.clone());
-            std::thread::spawn(move || {
-                let mut g = FsGuard::new(&p);
-                b.wait();
-                g.commit(&ev(i), &sess(), NOW, NOW + 100)
-            })
-        })
-        .collect();
-    let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    let results = race_eight(r.path(), |g, i| g.commit(&ev(i), &sess(), NOW, NOW + 100));
+    assert_eq!(results.len(), 8);
     assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
     assert!(
         results
             .iter()
             .filter(|r| r.is_err())
-            .all(|r| matches!(r, Err(CommitError::Duplicate)))
+            .all(|r| matches!(r, Err(CommitError::Duplicate))),
+        "losers must see Duplicate: {results:?}"
     );
     assert_eq!(
         FsGuard::new(r.path()).resumes(&sess(), NOW + 100).unwrap(),

@@ -1,8 +1,8 @@
 ---
 title: Keep Tests Passing Under Host Load
 type: howto
-updated: 2026-11-05
-related: issue #1973, issue #1765, issue #1961
+updated: 2026-11-07
+related: issue #1973, issue #1765, issue #1961, issue #2019, issue #2017
 ---
 
 # Keep Tests Passing Under Host Load
@@ -20,6 +20,8 @@ knobs to use, and how to prove a fix under CPU load.
 - [Assert the final state](#assert-the-final-state)
 - [Wait on the condition](#wait-on-the-condition)
 - [Change a test input](#change-a-test-input)
+- [Inject a clock](#inject-a-clock)
+- [Run a private copy of the binary](#run-a-private-copy-of-the-binary)
 - [Use a debug-only knob](#use-a-debug-only-knob)
 - [Rotator tests](#rotator-tests)
 - [Checks that something does not happen](#checks-that-something-does-not-happen)
@@ -38,7 +40,8 @@ method in this list that works:
 2. Wait on the condition with `wait_until`, under the 10-minute ceiling.
 3. Change a test input: a stub, a time scale, a function parameter or an
    explicit mtime.
-4. Add a debug-only knob, as a last resort.
+4. Inject a clock, when the product measures the time itself.
+5. Add a debug-only knob, as a last resort.
 
 Product timeouts and budgets keep their defaults in every build. A test
 changes only its own inputs.
@@ -52,6 +55,8 @@ Wall-clock dependencies to look for:
 | A fixed sleep used to order two events | `sleep(Duration::from_millis(1200))` before writing a file |
 | An `elapsed < N` assertion | `elapsed < 5 s` after `--skip-update-check` |
 | A product timeout no test input reaches | the 10 s limit on each tmux, `systemd-run` and git call of `amplihack agent`, run against a shell-script fake tmux |
+| A lock wait or request deadline measured inside the product | the 5 s `FsGuard` lock timeout, timed with real sleeps; the `usage_direct` refresh deadline, run against a slow fake server |
+| A binary that another build replaces mid-run | `current_exe()/../../amplihack`, re-linked by cargo while a test runs it |
 
 ## Assert the final state
 
@@ -240,6 +245,250 @@ directory entry instead of failing with `ETXTBSY`.
 Quote every argument in the stub and never interpolate test input into
 `sh -c`.
 
+## Inject a clock
+
+When the product itself measures time, such as a lock wait or a request
+deadline, a test cannot change that through a parameter or a time scale. The
+product reads time through a `Clock` instead, and the test passes a fake one.
+
+### The `Clock` trait
+
+`amplihack_utils::clock` defines the trait and the only implementation that
+production code uses:
+
+```rust
+use std::time::{Duration, Instant};
+
+pub trait Clock: Send + Sync {
+    fn now(&self) -> Instant;
+    fn sleep(&self, d: Duration);
+}
+
+/// Real time: `Instant::now()` and `std::thread::sleep`.
+pub struct SystemClock;
+```
+
+No environment variable, global or config setting selects a clock. Production
+code always passes `SystemClock`, and no fake ships in a library. Each test
+module that needs a fake defines its own.
+
+These seams take a clock:
+
+| Seam | Default path | Test path |
+|------|--------------|-----------|
+| `amplihack_utils::secure_files` lock wait | `lock_exclusive_timeout(file, timeout)` calls the `_with` form with `&SystemClock` | `lock_exclusive_timeout_with(file, timeout, &clock)` |
+| `amplihack_hooks::limit_resume::guard::FsGuard` | `FsGuard::new(root)` uses `LOCK_TIMEOUT` (5 s) and `SystemClock`; `with_lock_timeout(root, t)` uses `SystemClock` | `FsGuard::with_clock(root, timeout, Arc::new(clock))` |
+| `amplihack-cli` `profile::usage_direct` read and refresh | `read(ep, req)` and `refresh_expired(ep, req)` pass `Ctx::system()`: `SystemClock` and the process-wide refresh counter | `read_with(ep, req, &ctx)` and `refresh_expired_with(ep, req, &ctx)`, where `ctx` is `Ctx::new(&clock, &refreshing)` |
+
+The existing call signatures and defaults do not change: the 5 s lock timeout,
+`REFRESH_BUDGET`, `MAX_STEP`, the 60 s expiry window and the global
+`REFRESHING` counter are the same in every build.
+
+`lock_exclusive_timeout_with` keeps the old loop. It tries `flock` without
+blocking, retries at once on `EINTR`, returns any other error as it is, and
+otherwise sleeps `RETRY.min(timeout - waited)` through the clock. It checks
+`waited >= timeout` before it subtracts, and measures `waited` with
+`saturating_duration_since`, so a clock that goes backwards cannot panic. A
+zero timeout means one try and no sleep. The error is still
+`ErrorKind::TimedOut` with the message
+`timed out waiting for an exclusive lock`.
+
+### Frozen and advancing fakes
+
+A fake keeps virtual time as a base `Instant` plus an `AtomicU64` offset in
+nanoseconds. No third-party crate is used. There are two kinds:
+
+| Fake | `now()` | `sleep(d)` | Use it when |
+|------|---------|------------|-------------|
+| Advancing | base + offset | adds `d` to the offset and returns at once | the rule under test is about time, such as "a commit fails only after 5 s" |
+| Frozen | base + offset | really sleeps a short time, and leaves the offset alone | elapsed time is not the subject, and a slow host must not run a deadline out |
+
+A test can also call `advance(d)` on either kind to move virtual time from a
+fake HTTP handler, so "the token endpoint took 300 ms" costs no real time.
+
+The frozen fake's `sleep()` must really sleep, for a short fixed time such as
+1 ms. If it returned at once, a lock wait under a frozen clock would retry in
+a tight loop and keep a CPU busy for as long as the lock is held.
+
+A frozen clock makes a lock wait unbounded, because virtual time never reaches
+the timeout. That is why `FsGuard::with_clock` is documented as test-only, and
+why every test that uses a frozen clock has a hang guard (see below).
+
+Example from `limit_resume_fs::default_lock_timeout_is_five_seconds`. The test
+holds the lock through another handle, then commits with an advancing clock:
+
+```rust
+assert_eq!(LOCK_TIMEOUT, Duration::from_secs(5));
+assert_eq!(FsGuard::new(root).lock_timeout(), LOCK_TIMEOUT);
+
+let clock = Arc::new(AdvancingClock::new());
+let guard = FsGuard::with_clock(root, LOCK_TIMEOUT, clock.clone());
+let err = guard.commit(/* .. */).unwrap_err();
+
+assert!(matches!(err, CommitError::Io(ref e) if e.kind() == ErrorKind::TimedOut));
+assert!(clock.last_sleep_started_at() < LOCK_TIMEOUT);
+assert!(clock.elapsed() >= LOCK_TIMEOUT);
+```
+
+The test asserts on virtual time only. The old assertion that the failure took
+between 4.5 s and 8 s of real time is gone.
+
+### Hang guards
+
+A wait that a fake clock cannot end must still end. Each such test sets a
+named constant, `HANG_GUARD = Duration::from_secs(120)`, and no test asserts on
+it. It only turns a real hang into a test failure:
+
+- The eight racing threads in `eight_racing_waiters_for_one_session_wake_it_once`
+  and `eight_racing_hooks_on_one_event_commit_exactly_once` start together on
+  a `Barrier`, use a frozen clock, and send their results over an `mpsc`
+  channel. The test collects them with `recv_timeout(HANG_GUARD)` and still
+  asserts one `Ok`, seven `Duplicate` and `resumes == 1`.
+- In `tests_usage_direct`, tests where elapsed time is not the subject set the
+  request timeout to `HANG_GUARD`. The ureq socket timeouts are still real and
+  are derived from the time left on the injected clock, so a server that never
+  answers still ends the request.
+
+A hang guard is not a limit the product must meet. Do not lower it to make a
+hang fail sooner, and do not assert that something finished within it.
+
+### Deadlines in `usage_direct`
+
+`Deadline` holds its end `Instant` and a `&dyn Clock`. `Deadline::after`
+computes the end with `checked_add` and falls back to `now` on overflow, so it
+fails closed. `left()` saturates at zero.
+
+The socket step for each request is a pure function of the time left:
+
+| Function | Formula | Used for |
+|----------|---------|----------|
+| `get_step(t)` | `MAX_STEP.min(t.saturating_sub(1 s)).max(MIN_STEP)` | connect, read and write timeouts of the `GET` agent |
+| `post_step(left)` | `left.min(MAX_STEP)` | connect, read and write timeouts of the refresh `POST` |
+
+The bound on DNS resolution also reads the injected clock: it is
+`now + post_step(left) - MIN_STEP`, so a test's fake clock decides it, not
+the host's real clock.
+
+Unit tests check the step functions directly. For example, they prove that a refresh `POST`
+with the full budget left keeps a step longer than the `GET` step would give
+it. That property was once checked by timing a slow server; it no longer
+needs one.
+
+Tests that are about the deadline move time only through the fake clock:
+
+- `a_slow_refresh_within_the_deadline_still_reads`: each fake handler calls
+  `clock.advance(Duration::from_millis(300))` instead of sleeping. Three
+  handlers use 900 ms of the 5 s virtual budget, and the read succeeds.
+- `a_401_refresh_and_retry_share_one_deadline`: the token handler advances
+  virtual time until only a short time is left. The retry `GET` handler then
+  blocks on a channel that the test releases only after `read_with` returns,
+  so the client must hit its own socket timeout. The test asserts two `GET`s,
+  one `POST`, the rotated tokens saved and the error `timeout`, and no longer
+  asserts how long it took.
+
+### A counter per test
+
+`usage_direct` counts refreshes in progress so that `wait_for_refreshes` can
+wait for them before the process exits. In production that is the
+process-wide `REFRESHING`. Tests that ran in parallel shared it, so one test's
+refresh could make another test's `wait_for_refreshes` wait.
+
+Each rewritten test now passes its own counter:
+
+```rust
+let refreshing = AtomicUsize::new(0);
+let clock = FrozenClock::new();
+let ctx = Ctx::new(&clock, &refreshing);
+
+let got = read_with(&ep, &request_guarded(&dirs), &ctx);
+
+assert_eq!(got.err(), Some(reason::REFRESH_BUSY));
+assert_eq!(refreshing.load(Ordering::SeqCst), 0);
+```
+
+The refresh lock holder stores the counter it was given, so the increment, the
+early decrements on the cancel and lock-error paths, and the decrement on
+drop all use the same counter.
+
+To check a refresh that is still in progress, a test blocks the token handler
+instead of slowing it. In `the_refresh_counter_covers_a_refresh_in_progress`
+the handler sends "POST arrived" on one channel and waits on another. The test
+then asserts that the counter is at least 1 and the lock directory exists,
+releases the handler, joins the reading thread, and asserts that the counter
+is 0 and the lock is gone.
+
+`read_uses_the_process_wide_counter` pins the default path: it calls `read()`
+with a blocked handler and asserts that `refreshes_in_progress()` is at least
+1 before it releases the handler. Without it, `read()` could stop using
+`REFRESHING` and `wait_for_refreshes` would no longer see a refresh.
+
+## Run a private copy of the binary
+
+Some `cli_integration` failures under load were not timeouts. Cargo can
+re-link `target/debug/amplihack` while sibling tests are running it, and a
+test then fails with `NotFound`, `cp: cannot stat` or a failed runner check.
+A test is ready to run the binary once the binary is built and nothing can
+replace it.
+
+`crates/amplihack-cli/tests/support/amplihack_bin.rs::amplihack_bin()` gives
+that guarantee. On its first call in a test process it:
+
+1. Returns `AMPLIHACK_TEST_BINARY` unchanged if it is set, without copying.
+2. Otherwise runs `cargo build -p amplihack --bin amplihack` once.
+3. Creates a private `tempfile::TempDir` with mode `0700` under
+   `CARGO_TARGET_TMPDIR`, or under `env::temp_dir()` when that is unset.
+4. Copies `amplihack`, and `amplihack-hooks` when `symlink_metadata` shows it
+   is a regular file, into that directory. Each copy is written to
+   `.name.tmp` with `create_new`, set to mode `0755`, and renamed into place.
+
+Every later call returns the same path. Nothing re-links the copy while the
+test process runs, and the directory is removed when the process exits.
+`amplihack-hooks` is copied beside it because the binary
+finds its hooks binary as a sibling of its own path.
+
+Use it for every path to the binary, including the ones a test hands to a
+script:
+
+```rust
+use crate::support::amplihack_bin::amplihack_bin;
+
+let bin = amplihack_bin();
+std::os::unix::fs::symlink(&bin, plugin_bin.join("amplihack"))?;
+cmd.env("VALIDATION_TEST_CLI", &bin);
+```
+
+Do not build the path from `std::env::current_exe()` and `../../amplihack`.
+That path is the shared build output, and cargo may replace it during the run.
+
+### Python bytecode in the source tree
+
+A second race is not fixed yet. When a test or hook runs Python against files
+under `amplifier-bundle/`, Python can write a `__pycache__` directory into the
+source tree. The install copy skips git-ignored directories, but the install
+completeness check (`real_relative_dirs` in
+`crates/amplihack-cli/src/commands/install/verification.rs`) walks every
+directory in the source. A concurrent install test then reports the
+`__pycache__` directory as missing from the staged bundle and fails.
+
+No test sets `PYTHONDONTWRITEBYTECODE` today. The fix, making the
+completeness check skip the same directories as the copy (`is_excluded_dir`),
+is tracked in
+[#2017](https://github.com/rysweet/amplihack-rs/issues/2017); the related
+staging problem is in
+[#1554](https://github.com/rysweet/amplihack-rs/issues/1554).
+
+Until #2017 ships, check by hand before a load run that the tree is clean:
+
+```bash
+find amplifier-bundle -name __pycache__
+# Output: (nothing)
+```
+
+If it prints anything, delete those directories before you start. A clean
+tree only removes this one cause of failure. It does not prove the install
+check is sound: the completeness check fails open in other cases, so a
+passing install test is not evidence that every directory was staged.
+
 ## Use a debug-only knob
 
 Add a knob only when no test input can reach the limit. Every knob follows
@@ -402,6 +651,8 @@ Sleeps that remain because the rule under test is about time, such as
 - Do not delete a test or weaken an assertion. Removing an `elapsed` check is
   allowed only when another check proves the behaviour.
 - Do not add a fixed sleep to order two events.
+- Do not select a fake clock from an environment variable, global or config
+  setting. Pass it through a `_with` function or constructor.
 - Do not change a product timeout's default.
 - Do not pause, cap or renice other sessions to make a run pass.
 - Do not signal a process by `pkill -f`, `killall` or a pid read from a file.

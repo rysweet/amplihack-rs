@@ -37,17 +37,7 @@ esac
         )
         .unwrap();
     }
-    let cli = std::env::var_os("AMPLIHACK_TEST_BINARY")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("amplihack")
-        });
+    let cli = crate::support::amplihack_bin::amplihack_bin();
     let out = crate::isolated_amplihack::isolated(cli)
         .args(["codex", "--no-reflection", "--", "exec", "-"])
         .env("HOME", home.path())

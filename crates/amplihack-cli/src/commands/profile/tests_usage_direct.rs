@@ -44,6 +44,20 @@
 //! - `refreshes_in_progress() -> usize` counts refreshes holding a lock;
 //!   `wait_for_refreshes(limit) -> bool` waits up to `limit` for it to
 //!   reach 0.
+//! - Issue #2019: `read_with(&Endpoints, &Request, &Ctx)` and
+//!   `refresh_expired_with(&Endpoints, &Request, &Ctx)` take the clock the
+//!   read's deadline is measured on and the refresh counter, through
+//!   `Ctx::new(&dyn Clock, &AtomicUsize)`. `read` and `refresh_expired` are
+//!   the same with `Ctx::system()`: `SystemClock` and the process-wide
+//!   counter `refreshes_in_progress` reads. `get_step(timeout)` is the `GET`
+//!   agent's connect and read step, `MAX_STEP.min(timeout - 1 s)
+//!   .max(MIN_STEP)`; `post_step(left)` is the refresh POST's,
+//!   `left.min(MAX_STEP)`.
+//!
+//! No refresh or deadline test asserts on real elapsed time. Virtual time
+//! moves only through `FakeClock`; a fake server that must outlast a
+//! deadline blocks on a channel until the test releases it; and real socket
+//! limits that remain are `HANG_GUARD`, a hang cap no test asserts on.
 //!
 //! Every test uses a loopback fake server and fake tokens; nothing reads a
 //! real credential or reaches a real endpoint.
@@ -56,13 +70,16 @@ use super::usage_direct::{
     TOKEN_URL_ENV, Token, USAGE_PATH, USER_AGENT, base_ok, bounded_lookup, expires_in, map_err,
     post_failure, read, reason, refresh_status, refreshes_in_progress, wait_for_refreshes,
 };
+use super::usage_direct::{Ctx, get_step, post_step, read_with, refresh_expired_with};
 use super::usage_parse::UsageState;
+use amplihack_utils::clock::Clock;
 use serde_json::{Value, json};
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 /// A stop flag that is never set.
@@ -241,6 +258,101 @@ fn token_answer() -> Value {
         "expires_in": 28_800,
         "token_type": "Bearer"
     })
+}
+
+// ---------------------------------------------------------------------------
+// Issue #2019: an injected clock and a per-test refresh counter
+// ---------------------------------------------------------------------------
+
+/// The real socket limit for reads whose deadline is not under test, and
+/// the longest a test waits on a channel. A hang cap only: no test asserts
+/// on it, and a correct run never comes near it.
+const HANG_GUARD: Duration = Duration::from_secs(120);
+
+/// Virtual time: a base `Instant` plus an offset that moves only through
+/// `advance` (or `sleep`). Real time passing does not move it, so a loaded
+/// host cannot use up a deadline measured on it.
+struct FakeClock {
+    base: Instant,
+    offset_ns: AtomicU64,
+}
+
+impl FakeClock {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            base: Instant::now(),
+            offset_ns: AtomicU64::new(0),
+        })
+    }
+
+    fn advance(&self, d: Duration) {
+        self.offset_ns
+            .fetch_add(d.as_nanos() as u64, Ordering::SeqCst);
+    }
+
+    fn elapsed(&self) -> Duration {
+        Duration::from_nanos(self.offset_ns.load(Ordering::SeqCst))
+    }
+}
+
+impl Clock for FakeClock {
+    fn now(&self) -> Instant {
+        self.base + self.elapsed()
+    }
+
+    fn sleep(&self, d: Duration) {
+        self.advance(d);
+    }
+}
+
+/// A request whose deadline is `HANG_GUARD`: only the fake clock can use
+/// it up.
+fn request_guarded<'a>(l: &'a Login, journals: &'a [PathBuf], allow_refresh: bool) -> Request<'a> {
+    Request {
+        timeout: HANG_GUARD,
+        ..request(l, journals, allow_refresh)
+    }
+}
+
+/// `read_with` on a clock that does not move, with a counter of the test's
+/// own; the counter must be back at zero when the read returns.
+fn run_with(fake: &FakeHttp, l: &Login, allow_refresh: bool) -> Result<Direct, &'static str> {
+    let clock = FakeClock::new();
+    let counter = AtomicUsize::new(0);
+    let journals = l.journals();
+    let req = request_guarded(l, &journals, allow_refresh);
+    let r = read_with(&endpoints(fake), &req, &Ctx::new(&*clock, &counter));
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "a refresh count leaked");
+    r
+}
+
+/// A gate a fake server's handler blocks on until the test opens it. The
+/// sender drops on unwind, which also opens it, and a handler never waits
+/// past `HANG_GUARD`.
+struct Gate {
+    open: mpsc::SyncSender<()>,
+    wait: Arc<Mutex<mpsc::Receiver<()>>>,
+}
+
+impl Gate {
+    fn new() -> Self {
+        let (open, wait) = mpsc::sync_channel(64);
+        Self {
+            open,
+            wait: Arc::new(Mutex::new(wait)),
+        }
+    }
+
+    fn waiter(&self) -> impl Fn() + Send + Sync + 'static {
+        let wait = Arc::clone(&self.wait);
+        move || {
+            let _ = wait.lock().unwrap().recv_timeout(HANG_GUARD);
+        }
+    }
+
+    fn release(&self) {
+        let _ = self.open.try_send(());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -723,19 +835,49 @@ const RETURN_SLACK: Duration = Duration::from_secs(2);
 /// as the count is zero, so a long limit costs nothing when nothing is held.
 const COUNTER_WAIT: Duration = Duration::from_secs(30);
 
-/// The connect and read step of the `GET` agent for a read deadline `t`;
-/// mirrors `agent` in `usage_direct.rs`.
-fn get_step(t: Duration) -> Duration {
-    MAX_STEP
-        .min(t.saturating_sub(Duration::from_secs(1)))
-        .max(MIN_STEP)
-}
-
 #[test]
 fn get_step_mirrors_the_agent_formula() {
     assert_eq!(get_step(REFRESH_T), Duration::from_secs(6));
     assert_eq!(get_step(Duration::from_secs(60)), MAX_STEP);
     assert_eq!(get_step(Duration::from_millis(1200)), MIN_STEP);
+    assert_eq!(get_step(Duration::ZERO), MIN_STEP);
+}
+
+/// The POST step is the time left, capped at `MAX_STEP`: never more than
+/// is left (SEC-9), and never cut down to the `GET` agent's step.
+#[test]
+fn post_step_is_the_time_left_capped_at_max_step() {
+    assert_eq!(post_step(Duration::ZERO), Duration::ZERO);
+    assert_eq!(post_step(REFRESH_BUDGET), REFRESH_BUDGET);
+    assert_eq!(post_step(REFRESH_T), REFRESH_T);
+    assert_eq!(post_step(MAX_STEP), MAX_STEP);
+    assert_eq!(post_step(Duration::from_secs(60)), MAX_STEP);
+    assert_eq!(post_step(HANG_GUARD), MAX_STEP);
+    for ms in [
+        0, 1, 499, 500, 2_999, 3_000, 6_050, 9_999, 10_000, 10_001, 120_000,
+    ] {
+        let left = Duration::from_millis(ms);
+        assert!(post_step(left) <= left, "{left:?}");
+        assert!(post_step(left) <= MAX_STEP, "{left:?}");
+    }
+}
+
+/// A refresh sent with the budget left has a step of at least the budget,
+/// and with `T` = `REFRESH_T` its step outlasts the `GET` agent's: the
+/// property `a_refresh_with_the_budget_left_saves_the_rotated_token` used
+/// to show by timing a token answer between the two.
+#[test]
+fn a_refresh_step_is_not_cut_to_the_get_step() {
+    assert!(post_step(REFRESH_T) > get_step(REFRESH_T));
+    assert_eq!(
+        post_step(REFRESH_T) - get_step(REFRESH_T),
+        Duration::from_secs(1)
+    );
+    for ms in (REFRESH_BUDGET.as_millis() as u64..=MAX_STEP.as_millis() as u64).step_by(250) {
+        let left = Duration::from_millis(ms);
+        assert!(post_step(left) >= REFRESH_BUDGET, "{left:?}");
+        assert!(post_step(left) >= get_step(left), "{left:?}");
+    }
 }
 
 /// A server that answers nothing in time gives `timeout` by the read's
@@ -773,38 +915,45 @@ fn refreshing_after(old: Duration, token: Duration, retry: Duration) -> FakeHttp
 }
 
 /// The deadline covers the whole read, not each request. With `T` =
-/// `REFRESH_T` (7 s):
-/// - the 401 comes at once and leaves about `T`, `SEND_MARGIN` more than
-///   `REFRESH_BUDGET`, so the refresh is sent;
-/// - the token answer comes after `TOKEN_D` (2.5 s), well inside the time
-///   left, so the rotated tokens are saved;
-/// - the retry `GET` is answered after `RETRY_D` (5.5 s), which fits both
-///   its own `T` and the `GET` step (6 s), so per-request deadlines would
-///   read; but `TOKEN_D + RETRY_D` (8 s) is past `T`, so the one deadline
-///   gives `timeout`.
-///
-/// A stall before the POST skips the refresh only above `SEND_MARGIN`;
-/// a stall before the token answer gives `refresh not saved` only above
-/// `T - TOKEN_D` (4.5 s). Any shorter stall only adds elapsed time.
+/// `REFRESH_T` on a fake clock:
+/// - the 401 comes at once, virtual time has not moved, so the refresh is
+///   admitted against `REFRESH_BUDGET`;
+/// - the token server's answer moves virtual time to `T - RETRY_LEFT`, so
+///   the rotated tokens are saved and the retry `GET` is given only
+///   `RETRY_LEFT` of the one deadline;
+/// - the retry `GET` is never answered until the read has returned, so it
+///   ends at its socket limit, whatever the host load. Per-request
+///   deadlines would have given it a fresh `T`.
 #[test]
 fn a_401_refresh_and_retry_share_one_deadline() {
+    const RETRY_LEFT: Duration = Duration::from_millis(300);
     let t = REFRESH_T;
-    let token_d = Duration::from_millis(2500);
-    let retry_d = get_step(t) - Duration::from_millis(500);
     assert!(t >= REFRESH_BUDGET + SEND_MARGIN);
-    assert!(token_d < t - REFRESH_BUDGET);
-    assert!(retry_d < get_step(t));
-    assert!(retry_d < t);
-    assert!(token_d + retry_d > t);
-    let fake = refreshing_after(Duration::ZERO, token_d, retry_d);
+    assert!(RETRY_LEFT < get_step(t));
+    let clock = FakeClock::new();
+    let gate = Gate::new();
+    let hold = gate.waiter();
+    let c = Arc::clone(&clock);
+    let fake = FakeHttp::start(move |s, _| {
+        if s.path == TOKEN_PATH {
+            c.advance(t - RETRY_LEFT);
+            Reply::json(200, &token_answer())
+        } else if bearer(s) == Some(&format!("Bearer {NEW_ACCESS}")) {
+            hold();
+            Reply::json(200, &body_100_55())
+        } else {
+            Reply::json(401, &json!({"error": "expired"}))
+        }
+    });
     let l = login();
     let journals = l.journals();
     let mut req = request(&l, &journals, true);
     req.timeout = t;
-    let start = Instant::now();
-    assert_eq!(read(&endpoints(&fake), &req), Err(reason::TIMEOUT));
-    let took = start.elapsed();
-    assert!(took < t + RETURN_SLACK, "{took:?}");
+    let counter = AtomicUsize::new(0);
+    let r = read_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter));
+    gate.release();
+    assert_eq!(r, Err(reason::TIMEOUT));
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
     // The refresh was answered in time, so the rotated tokens are saved
     // even though the second GET ran out of time.
     assert_eq!(posts(&fake), 1);
@@ -819,17 +968,99 @@ fn a_401_refresh_and_retry_share_one_deadline() {
     assert_eq!(l.entries(), [CREDS]);
 }
 
-/// With enough time for all three, the same slow sequence reads.
+/// With enough time for all three, the same slow sequence reads: each
+/// answer takes 300 ms of virtual time, 900 ms in all, inside 5 s.
 #[test]
 fn a_slow_refresh_within_the_deadline_still_reads() {
     let d = Duration::from_millis(300);
-    let fake = refreshing_after(d, d, d);
+    let clock = FakeClock::new();
+    let c = Arc::clone(&clock);
+    let fake = FakeHttp::start(move |s, _| {
+        c.advance(d);
+        if s.path == TOKEN_PATH {
+            Reply::json(200, &token_answer())
+        } else if bearer(s) == Some(&format!("Bearer {NEW_ACCESS}")) {
+            Reply::json(200, &body_100_55())
+        } else {
+            Reply::json(401, &json!({"error": "expired"}))
+        }
+    });
     let l = login();
     let journals = l.journals();
     let mut req = request(&l, &journals, true);
     req.timeout = Duration::from_secs(5);
-    let r = read(&endpoints(&fake), &req).expect("read after a slow refresh");
+    let counter = AtomicUsize::new(0);
+    let r = read_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter))
+        .expect("read after a slow refresh");
     assert_eq!(r.report.week_all.map(|w| w.used_percentage), Some(55.0));
+    assert_eq!(clock.elapsed(), d * 3, "three answers, 300 ms each");
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
+}
+
+/// The refresh budget is measured on the injected clock: a 401 that takes
+/// all but just under `REFRESH_BUDGET` of the read's virtual deadline sends
+/// no refresh, and the read is `timeout` with the file untouched.
+#[test]
+fn the_refresh_budget_is_checked_against_the_injected_clock() {
+    let t = REFRESH_T;
+    let clock = FakeClock::new();
+    let c = Arc::clone(&clock);
+    let fake = FakeHttp::start(move |s, _| {
+        if s.path == TOKEN_PATH {
+            Reply::json(200, &token_answer())
+        } else {
+            c.advance(t - REFRESH_BUDGET + Duration::from_millis(1));
+            Reply::json(401, &json!({"error": "expired"}))
+        }
+    });
+    let l = login();
+    let before = fs::read(l.path()).unwrap();
+    let journals = l.journals();
+    let mut req = request(&l, &journals, true);
+    req.timeout = t;
+    let counter = AtomicUsize::new(0);
+    assert_eq!(
+        read_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter)),
+        Err(reason::TIMEOUT)
+    );
+    assert_eq!(posts(&fake), 0);
+    assert_eq!(fs::read(l.path()).unwrap(), before);
+    assert_eq!(l.entries(), [CREDS]);
+    assert!(!l.lock().exists());
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
+}
+
+/// A deadline used up on the injected clock before a request starts sends
+/// that request no more: the second `GET` is never made.
+#[test]
+fn a_deadline_spent_on_the_injected_clock_sends_nothing_more() {
+    let clock = FakeClock::new();
+    let c = Arc::clone(&clock);
+    let fake = FakeHttp::start(move |s, _| {
+        if s.path == TOKEN_PATH {
+            c.advance(HANG_GUARD);
+            Reply::json(200, &token_answer())
+        } else if bearer(s) == Some(&format!("Bearer {NEW_ACCESS}")) {
+            Reply::json(200, &body_100_55())
+        } else {
+            Reply::json(401, &json!({"error": "expired"}))
+        }
+    });
+    let l = login();
+    let journals = l.journals();
+    let req = request_guarded(&l, &journals, true);
+    let counter = AtomicUsize::new(0);
+    assert_eq!(
+        read_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter)),
+        Err(reason::TIMEOUT)
+    );
+    assert_eq!(posts(&fake), 1);
+    assert_eq!(
+        gets(&fake).len(),
+        1,
+        "no GET starts once the deadline is spent"
+    );
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
 }
 
 /// A 401 that leaves less than `REFRESH_BUDGET` of the read sends no
@@ -863,31 +1094,38 @@ fn a_refresh_with_too_little_time_left_is_not_sent() {
     assert!(!l.lock().exists());
 }
 
-/// A refresh sent with the budget left is waited for beyond the `GET`
-/// agent's own step: with `T` = `REFRESH_T` that step is 6 s, and a token
-/// answer after `TOKEN_D` (6.05 s) is still taken and the rotated refresh
-/// token saved. The 401 comes at once, so the POST is sent with
-/// `SEND_MARGIN` to spare. The retry `GET` then has `T - TOKEN_D` (about
-/// 0.95 s); that window is fixed by the production step formula (`T - 1 s`)
-/// and cannot be widened from the test.
+/// A refresh sent with the budget left is waited for and its rotated
+/// tokens saved. The token answer takes longer, in virtual time, than the
+/// `GET` agent's step for `REFRESH_T`; the step property itself is proved
+/// on the pure step functions (`a_refresh_step_is_not_cut_to_the_get_step`).
 #[test]
 fn a_refresh_with_the_budget_left_saves_the_rotated_token() {
-    let t = REFRESH_T;
-    let token_d = get_step(t) + Duration::from_millis(50);
-    assert!(token_d > get_step(t));
+    let token_d = get_step(REFRESH_T) + Duration::from_millis(50);
     assert!(token_d < MAX_STEP);
-    assert!(token_d < t);
-    let fake = refreshing_after(Duration::ZERO, token_d, Duration::ZERO);
+    let clock = FakeClock::new();
+    let c = Arc::clone(&clock);
+    let fake = FakeHttp::start(move |s, _| {
+        if s.path == TOKEN_PATH {
+            c.advance(token_d);
+            Reply::json(200, &token_answer())
+        } else if bearer(s) == Some(&format!("Bearer {NEW_ACCESS}")) {
+            Reply::json(200, &body_100_55())
+        } else {
+            Reply::json(401, &json!({"error": "expired"}))
+        }
+    });
     let l = login();
     let journals = l.journals();
-    let mut req = request(&l, &journals, true);
-    req.timeout = t;
-    let r = read(&endpoints(&fake), &req).expect("read after a slow refresh");
+    let req = request_guarded(&l, &journals, true);
+    let counter = AtomicUsize::new(0);
+    let r = read_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter))
+        .expect("read after a slow refresh");
     assert_eq!(r.report.week_all.map(|w| w.used_percentage), Some(55.0));
     assert_eq!(posts(&fake), 1);
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], NEW_ACCESS);
     assert_eq!(l.doc()["claudeAiOauth"]["refreshToken"], NEW_REFRESH);
     assert_eq!(l.entries(), [CREDS]);
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
 }
 
 /// A refresh POST that is sent but answered only after the read's deadline
@@ -943,7 +1181,9 @@ fn a_401_refreshes_once_writes_back_and_reads_again() {
     let fake = refreshing(Reply::json(200, &token_answer()));
     let l = login();
     let before = now_ms();
-    let r = run(&fake, &l, true).expect("read after refresh");
+    let r = run_with(&fake, &l, true)
+        .expect("read after refresh")
+        .report;
     let after = now_ms();
     assert_eq!(r.week_all.map(|w| w.used_percentage), Some(55.0));
 
@@ -989,7 +1229,7 @@ fn a_401_refreshes_once_writes_back_and_reads_again() {
 fn a_token_expiring_within_60_seconds_is_refreshed_before_the_first_get() {
     let fake = refreshing(Reply::json(200, &token_answer()));
     let l = login_expiring_in(30_000);
-    run(&fake, &l, true).expect("read");
+    run_with(&fake, &l, true).expect("read");
     let g = gets(&fake);
     assert_eq!(g.len(), 1, "{g:?}");
     assert_eq!(bearer(&g[0]), Some(&*format!("Bearer {NEW_ACCESS}")));
@@ -1002,7 +1242,7 @@ fn a_refresh_answer_with_no_refresh_token_keeps_the_old_one() {
     answer.as_object_mut().unwrap().remove("refresh_token");
     let fake = refreshing(Reply::json(200, &answer));
     let l = login();
-    run(&fake, &l, true).expect("read");
+    run_with(&fake, &l, true).expect("read");
     assert_eq!(l.doc()["claudeAiOauth"]["refreshToken"], REFRESH);
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], NEW_ACCESS);
 }
@@ -1017,7 +1257,7 @@ fn a_second_401_after_the_refresh_is_not_refreshed_again() {
         }
     });
     let l = login();
-    assert_eq!(run(&fake, &l, true), Err("http 401"));
+    assert_eq!(run_with(&fake, &l, true), Err("http 401"));
     assert_eq!(posts(&fake), 1);
     assert_eq!(gets(&fake).len(), 2);
 }
@@ -1027,16 +1267,15 @@ fn a_held_lock_is_refresh_busy_and_left_alone() {
     let fake = refreshing(Reply::json(200, &token_answer()));
     let l = login();
     fs::create_dir(l.lock()).unwrap();
-    assert_eq!(run(&fake, &l, true), Err(reason::REFRESH_BUSY));
+    // `run_with` checks the test's own counter: it went up before the
+    // `mkdir` and must be back at zero, or it would never reach zero.
+    assert_eq!(run_with(&fake, &l, true), Err(reason::REFRESH_BUSY));
     assert_eq!(posts(&fake), 0);
     assert!(
         l.lock().is_dir(),
         "a lock held by someone else is never broken"
     );
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], ACCESS);
-    // The count went up before the `mkdir` and must come down again: a
-    // leaked count would keep this from ever reaching zero.
-    assert!(wait_for_refreshes(COUNTER_WAIT));
 }
 
 #[test]
@@ -1048,16 +1287,21 @@ fn a_set_stop_flag_takes_no_lock_and_sends_no_post() {
     let journals = l.journals();
     let req = Request {
         cancel: &cancel,
-        ..request(&l, &journals, true)
+        ..request_guarded(&l, &journals, true)
     };
-    assert_eq!(read(&endpoints(&fake), &req), Err(reason::REFRESH_BUSY));
+    let clock = FakeClock::new();
+    let counter = AtomicUsize::new(0);
+    assert_eq!(
+        read_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter)),
+        Err(reason::REFRESH_BUSY)
+    );
+    // A count left raised by this read would keep the rotator's wait from
+    // ever ending.
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
     assert_eq!(posts(&fake), 0);
     assert!(!l.lock().exists(), "no lock was taken");
     assert_eq!(l.entries(), [CREDS]);
     assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], ACCESS);
-    // Other tests may refresh in parallel; a count left raised by this one
-    // would keep it above zero for ever.
-    assert!(wait_for_refreshes(COUNTER_WAIT));
 }
 
 #[test]
@@ -1352,40 +1596,118 @@ fn errors_and_results_never_hold_a_token() {
     assert!(!shown.contains("FAKE-"), "{shown}");
 }
 
+/// A token server that reports each POST on `arrived`, then holds its
+/// answer until `gate` opens.
+fn refreshing_held(arrived: mpsc::SyncSender<()>, gate: &Gate) -> FakeHttp {
+    let hold = gate.waiter();
+    let arrived = Mutex::new(arrived);
+    FakeHttp::start(move |s, _| {
+        if s.path == TOKEN_PATH {
+            let _ = arrived.lock().unwrap().try_send(());
+            hold();
+            return Reply::json(200, &token_answer());
+        }
+        if bearer(s) == Some(&format!("Bearer {NEW_ACCESS}")) {
+            Reply::json(200, &body_100_55())
+        } else {
+            Reply::json(401, &json!({"error": "expired"}))
+        }
+    })
+}
+
 #[test]
 fn the_refresh_counter_covers_a_refresh_in_progress() {
-    let fake = refreshing(Reply::json(200, &token_answer()).after(Duration::from_millis(1500)));
+    let (arrived, posted) = mpsc::sync_channel(8);
+    let gate = Gate::new();
+    let fake = refreshing_held(arrived, &gate);
     let l = login();
     let dir = l.dir.clone();
     let root = l.root.clone();
-    let base = fake.base();
-    let token = fake.token_url();
+    let ep = endpoints(&fake);
+    let clock = FakeClock::new();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let (c, n) = (Arc::clone(&clock), Arc::clone(&counter));
     let reader = std::thread::spawn(move || {
-        let (ep, _) = Endpoints::resolve(Some(OsStr::new(&base)), Some(OsStr::new(&token)));
         let journals = vec![root.join(".auto-switch.d/journal.json")];
         let req = Request {
             creds_dir: &dir,
             journals: &journals,
             allow_refresh: true,
             cancel: &NO_CANCEL,
-            timeout: Duration::from_secs(5),
+            timeout: HANG_GUARD,
+            now_ms: now_ms(),
+        };
+        read_with(&ep, &req, &Ctx::new(&*c, &n)).is_ok()
+    });
+    posted
+        .recv_timeout(HANG_GUARD)
+        .expect("the refresh POST reached the token server");
+    assert_eq!(
+        counter.load(Ordering::SeqCst),
+        1,
+        "the refresh holding the lock is counted"
+    );
+    assert!(l.lock().is_dir(), "the refresh holds Claude's lock");
+    gate.release();
+    assert!(reader.join().unwrap(), "the read completes once answered");
+    assert_eq!(counter.load(Ordering::SeqCst), 0, "released with the lock");
+    assert!(!l.lock().exists());
+}
+
+/// SR-9: `read` counts its refresh on the process-wide counter that
+/// `refreshes_in_progress` and `wait_for_refreshes` read, so the rotator's
+/// wait still covers it. Other tests may also count, so only `>= 1` holds.
+#[test]
+fn read_uses_the_process_wide_counter() {
+    let (arrived, posted) = mpsc::sync_channel(8);
+    let gate = Gate::new();
+    let fake = refreshing_held(arrived, &gate);
+    let l = login();
+    let dir = l.dir.clone();
+    let root = l.root.clone();
+    let ep = endpoints(&fake);
+    let reader = std::thread::spawn(move || {
+        let journals = vec![root.join(".auto-switch.d/journal.json")];
+        let req = Request {
+            creds_dir: &dir,
+            journals: &journals,
+            allow_refresh: true,
+            cancel: &NO_CANCEL,
+            timeout: HANG_GUARD,
             now_ms: now_ms(),
         };
         read(&ep, &req).is_ok()
     });
-    let start = Instant::now();
-    while posts(&fake) == 0 && start.elapsed() < Duration::from_secs(3) {
-        std::thread::sleep(Duration::from_millis(20));
-    }
+    posted
+        .recv_timeout(HANG_GUARD)
+        .expect("the refresh POST reached the token server");
     assert!(
         refreshes_in_progress() >= 1,
-        "a refresh is holding the lock"
+        "read() counts on the process-wide counter"
     );
-    assert!(l.lock().is_dir());
-    assert!(COUNTER_WAIT >= (REFRESH_T + RETURN_SLACK) * 3);
-    assert!(wait_for_refreshes(COUNTER_WAIT));
+    gate.release();
     assert!(reader.join().unwrap());
     assert!(!l.lock().exists());
+}
+
+/// `refresh_expired_with` refreshes an expired login on the injected clock
+/// and counter, and leaves the counter at zero.
+#[test]
+fn refresh_expired_with_uses_the_injected_counter() {
+    let fake = refreshing(Reply::json(200, &token_answer()));
+    let l = login_expiring_in(-1_000);
+    let journals = l.journals();
+    let req = request_guarded(&l, &journals, true);
+    let clock = FakeClock::new();
+    let counter = AtomicUsize::new(0);
+    assert_eq!(
+        refresh_expired_with(&endpoints(&fake), &req, &Ctx::new(&*clock, &counter)),
+        Ok(true)
+    );
+    assert_eq!(counter.load(Ordering::SeqCst), 0);
+    assert_eq!(posts(&fake), 1);
+    assert_eq!(l.doc()["claudeAiOauth"]["accessToken"], NEW_ACCESS);
+    assert_eq!(l.entries(), [CREDS]);
 }
 
 #[test]

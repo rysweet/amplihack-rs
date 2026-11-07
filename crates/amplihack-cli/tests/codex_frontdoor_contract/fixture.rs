@@ -5,17 +5,7 @@ pub(super) fn cold_client_install_registers_hooks_and_launches_with_fresh_or_sta
     use std::io::Write;
     use std::process::Stdio;
     let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let cli = std::env::var_os("AMPLIHACK_TEST_BINARY")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            std::env::current_exe()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .parent()
-                .unwrap()
-                .join("amplihack")
-        });
+    let cli = crate::support::amplihack_bin::amplihack_bin();
     for staged in [false, true] {
         let home = tempfile::tempdir().unwrap();
         let tools = home.path().join("tools");
