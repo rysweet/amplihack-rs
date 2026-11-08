@@ -186,12 +186,152 @@ gh_pr_create_with_retry() {
   return "$status"
 }
 
-sanitize_provider_stderr() {
+# stdin -> stdout: masks URL userinfo and GitHub tokens. The one copy of these
+# patterns, shared by provider stderr and derived PR title text (#1968).
+redact_credentials() {
   sed -E \
     -e 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' \
     -e 's#gh[pousr]_[A-Za-z0-9]{16,}#REDACTED_TOKEN#g' \
-    -e 's#github_pat_[A-Za-z0-9_]{16,}#REDACTED_TOKEN#g' \
-    "$1" | tr '\n' ' ' | head -c 500
+    -e 's#github_pat_[A-Za-z0-9_]{16,}#REDACTED_TOKEN#g'
+}
+
+sanitize_provider_stderr() {
+  redact_credentials <"$1" | tr '\n' ' ' | head -c 500
+}
+
+# ---------------------------------------------------------------------------
+# PR title helpers (#1968). The issue title is untrusted text and the task
+# description is operator text that has never been published before, so both
+# are treated as data: bounded, redacted, stripped of control characters,
+# defused of issue claims, capped, and only ever passed as a printf %s argument
+# or a single argv element. Nothing here evaluates its input.
+
+# normalise_pr_title_text <text>: one line, no control characters, single
+# spaces, trimmed. Reads at most the first 1024 bytes. Bytes >= 0x80 pass.
+normalise_pr_title_text() {
+  # A here-string, not a pipe from printf, so a large input cannot SIGPIPE.
+  head -c 1024 <<<"${1:-}" \
+    | redact_credentials \
+    | LC_ALL=C tr '\r\n\t' '   ' \
+    | LC_ALL=C tr -d '\000-\037\177' \
+    | sed -E 's/  +/ /g; s/^ //; s/ $//'
+}
+
+# conventional_pr_title <text>: prefixes "<type>: " from whole-word keywords,
+# checked in the order fix, docs, test, refactor, feat. Text that already has a
+# conventional prefix, or matches no keyword, is returned unchanged. No scope is
+# ever invented.
+conventional_pr_title() {
+  local text="$1" lower type words re
+  local existing_prefix_re='^[a-z]+(\([^)]*\))?!?: '
+  if [[ "$text" =~ $existing_prefix_re ]]; then
+    printf '%s\n' "$text"
+    return 0
+  fi
+  lower="$(printf '%s' "$text" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  for type in fix docs test refactor feat; do
+    case "$type" in
+      fix) words='fix|fixes|fixed|bug|bugs|regression|broken|wrong|wrongly|incorrect|incorrectly|crash|crashes|fails|failing' ;;
+      docs) words='docs|documentation|document' ;;
+      test) words='test|tests|testing' ;;
+      refactor) words='refactor|refactors|refactoring' ;;
+      feat) words='add|adds|implement|implements|support|introduce|introduces' ;;
+    esac
+    # [^[:alnum:]_] rather than \b: bash 3.2 and BSD regex have no \b.
+    re="(^|[^[:alnum:]_])(${words})([^[:alnum:]_]|\$)"
+    if [[ "$lower" =~ $re ]]; then
+      printf '%s: %s\n' "$type" "$text"
+      return 0
+    fi
+  done
+  printf '%s\n' "$text"
+}
+
+# defuse_issue_refs <text>: stops derived text from claiming or closing issues.
+# 1. "(#M)" becomes "#M": workflow_issue_claim_check.sh treats "(#M)" in a PR
+#    title as a claim on #M.
+# 2. "issue " goes before any reference that follows a closing keyword, using
+#    the claim check's own keyword pattern (keyword at the start or after a
+#    non-word character, optional ":", any whitespace, then #M, owner/repo#M or
+#    an issues URL). GitHub would otherwise close #M on merge.
+# Rule 1 runs first because it can create a reference: "Closes (#7)".
+# Case-insensitive through bracket classes; BSD sed has no I flag.
+defuse_issue_refs() {
+  local kw='([Cc][Ll][Oo][Ss][Ee][SsDd]?|[Ff][Ii][Xx]([Ee][SsDd])?|[Rr][Ee][Ss][Oo][Ll][Vv][Ee][SsDd]?)'
+  local ref='(#[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|https?://[^[:space:]]+/issues/[0-9]+)'
+  printf '%s\n' "$1" | sed -E \
+    -e 's/\(#([0-9]+)\)/#\1/g' \
+    -e "s~(^|[^A-Za-z0-9_])${kw}(:?)[[:space:]]*${ref}~\\1\\2\\4 issue \\5~g"
+}
+
+# cap_pr_title <base> <issue-number>: base cut so that "<base> (#N)" fits in
+# 200 bytes, never inside a UTF-8 sequence, trailing spaces dropped. The
+# " (#N)" suffix is always kept: the claim check's title signal relies on it.
+cap_pr_title() {
+  local base="$1" suffix=" (#$2)" limit lead2 lead3 lead4 cont
+  limit=$((200 - ${#suffix}))
+  base="$(head -c "$limit" <<<"$base")"
+  # Drop an incomplete trailing multibyte sequence left by the byte cut (or by
+  # the 1024-byte input bound): a lead byte followed by fewer continuation
+  # bytes than it announces.
+  lead2="$(printf '\300-\337')"
+  lead3="$(printf '\340-\357')"
+  lead4="$(printf '\360-\367')"
+  cont="$(printf '\200-\277')"
+  base="$(printf '%s\n' "$base" | LC_ALL=C sed -E \
+    -e "s/[${lead2}]\$//" \
+    -e "s/[${lead3}][${cont}]?\$//" \
+    -e "s/[${lead4}][${cont}]{0,2}\$//")"
+  base="${base%"${base##*[! ]}"}"
+  printf '%s%s\n' "$base" "$suffix"
+}
+
+# stdin: changed paths, one per line. Prints the true count, at most 40
+# entries, and how many were left out. One awk pass and no head, so pipefail
+# never sees a SIGPIPE.
+format_changed_files_body() {
+  awk '
+    $0 == "" { next }
+    { n++; if (n <= 40) shown[n] = $0 }
+    END {
+      if (n == 0) { print "- No changed files detected by git diff"; exit }
+      printf "%d %s changed\n", n, (n == 1 ? "file" : "files")
+      for (i = 1; i <= n && i <= 40; i++) print "- " shown[i]
+      if (n > 40) printf "- ... and %d more\n", n - 40
+    }'
+}
+
+# First non-blank line of this run's task description. Reads only
+# RECIPE_VAR_task_description: the bare TASK_DESCRIPTION alias may be inherited
+# from another run and is dropped by the runner for large values (#1684).
+first_task_line() {
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    case "$line" in
+      *[![:space:]]*) printf '%s\n' "$line"; return 0 ;;
+    esac
+  done <<<"${RECIPE_VAR_task_description:-}"
+  return 0
+}
+
+# lookup_issue_title <issue-number> <owner/repo>: the issue's title, or nothing.
+# Advisory: any failure (no identity, gh error, timeout, non-JSON, no title)
+# prints nothing and returns 0, and the caller falls back to the next source.
+# No identity means no call, so gh can never resolve GH_REPO or another remote
+# and answer with a different repository's issue. Not routed through
+# _gh_retry_core: one bounded attempt, no retry.
+lookup_issue_title() {
+  local num="$1" repo="$2" raw="" cmd=()
+  [ -n "$repo" ] || return 0
+  if command -v timeout >/dev/null 2>&1; then cmd=(timeout 30); fi
+  cmd+=(gh issue view "$num" --repo "$repo" --json title)
+  raw="$("${cmd[@]}" </dev/null 2>/dev/null)" || raw=""
+  [ -n "$raw" ] || return 0
+  printf '%s\n' "$raw" \
+    | jq -r 'if type == "object" then ((.title // "") | tostring) else "" end' 2>/dev/null \
+    || true
+  return 0
 }
 
 provider_stderr_file() {
@@ -372,6 +512,16 @@ if [ -n "$(git status --porcelain)" ]; then
   finish_publish "FAILED_DIRTY_WORKTREE" "dirty-worktree" "failure" "dirty worktree blocks no-diff or obsolete terminal success; commit or discard changes explicitly" 1
 fi
 if git diff --quiet "${BASE_REF}..HEAD"; then BRANCH_DIFF_STATUS="no-diff"; else BRANCH_DIFF_STATUS="has-diff"; fi
+# Issue #1968: the changed-file list, count and diff stat describe what the
+# branch changed, so they are measured from the merge base. A two-dot range
+# also lists every file that landed on the base after the branch was cut.
+# BRANCH_DIFF_STATUS, COMMITS_AHEAD and RECENT_COMMITS keep their ranges.
+if git merge-base "$BASE_REF" HEAD >/dev/null 2>&1; then
+  DIFF_RANGE="${BASE_REF}...HEAD"
+else
+  echo "WARNING: no merge base between ${BASE_REF} and HEAD (shallow clone?); listing changed files with the two-dot range ${BASE_REF}..HEAD, which may include base-branch changes (#1968)" >&2
+  DIFF_RANGE="${BASE_REF}..HEAD"
+fi
 
 if [ "$HOST_TYPE" = "azdo" ]; then
   if [ "$BRANCH_DIFF_STATUS" = "no-diff" ]; then
@@ -393,10 +543,9 @@ if [ "$HOST_TYPE" = "azdo" ]; then
     finish_publish "EXISTING_OPEN_PR" "existing-open-pr" "success" "existing active AzDO PR found for branch"
   fi
 
-  CHANGED_FILES=$(git diff --name-only "${BASE_REF}..HEAD" 2>/dev/null | head -40 || true)
-  CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d; s/^/- /')
-  [ -n "$CHANGED_FILES_BODY" ] || CHANGED_FILES_BODY="- No changed files detected by git diff"
-  DIFF_STAT=$(git diff --stat "${BASE_REF}..HEAD" 2>/dev/null | tail -20 || true)
+  CHANGED_FILES_ALL=$(git diff --name-only "$DIFF_RANGE" 2>/dev/null || true)
+  CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES_ALL" | format_changed_files_body)
+  DIFF_STAT=$(git diff --stat "$DIFF_RANGE" 2>/dev/null | tail -20 || true)
   DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
   PR_TITLE="Update ${CURRENT_BRANCH} (AB#${ISSUE_NUM})"
   PR_TITLE="${PR_TITLE:0:200}"
@@ -475,9 +624,11 @@ else
   echo "WARNING: workflow_issue_claim_check.sh not found at ${CLAIM_CHECK_HELPER} — creating this PR without a duplicate-claim check (#1361)" >&2
 fi
 
-CHANGED_FILES=$(git diff --name-only "${BASE_REF}..HEAD" 2>/dev/null | head -40 || true)
-CHANGED_COUNT=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d' | wc -l | tr -d ' ')
-DIFF_STAT=$(git diff --stat "${BASE_REF}..HEAD" 2>/dev/null | tail -20 || true)
+# Issue #1968: the full merge-base list feeds the count, scope, risk and
+# closing-keyword decisions; only the body's display list is cut at 40.
+CHANGED_FILES_ALL=$(git diff --name-only "$DIFF_RANGE" 2>/dev/null || true)
+CHANGED_COUNT=$(printf '%s\n' "$CHANGED_FILES_ALL" | awk '$0 != "" {n++} END {print n + 0}')
+DIFF_STAT=$(git diff --stat "$DIFF_RANGE" 2>/dev/null | tail -20 || true)
 RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/null || true)
 # Issue #929: derive the PR-title scope from the first *substantive* changed
 # file, ignoring generated/lockfiles. The lockfile-sync step (#915) commits
@@ -499,25 +650,45 @@ while IFS= read -r changed_path; do
     break
   fi
 done <<EOF
-$CHANGED_FILES
+$CHANGED_FILES_ALL
 EOF
 if [ -n "$SUBSTANTIVE_FIRST" ]; then
   FIRST_CHANGED="$SUBSTANTIVE_FIRST"
 else
-  FIRST_CHANGED=$(printf '%s\n' "$CHANGED_FILES" | awk 'NF {print; exit}')
+  FIRST_CHANGED=$(printf '%s\n' "$CHANGED_FILES_ALL" | awk 'NF {print; exit}')
 fi
 case "$FIRST_CHANGED" in amplifier-bundle/recipes/*) PR_SCOPE="workflow recipes" ;; crates/amplihack-cli/*) PR_SCOPE="amplihack CLI" ;; crates/*) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f2)" ;; tests/*) PR_SCOPE="regression coverage" ;; docs/*) PR_SCOPE="documentation" ;; "") PR_SCOPE="workflow changes" ;; *) PR_SCOPE="$(printf '%s' "$FIRST_CHANGED" | cut -d/ -f1)" ;; esac
-if [ "$CHANGED_COUNT" -gt 1 ]; then PR_TITLE="Update ${PR_SCOPE} with ${CHANGED_COUNT} changed files"; else PR_TITLE="Update ${PR_SCOPE}"; fi
-PR_TITLE="${PR_TITLE} (#${ISSUE_NUM})"
-PR_TITLE="${PR_TITLE:0:200}"
-CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d; s/^/- /')
-[ -n "$CHANGED_FILES_BODY" ] || CHANGED_FILES_BODY="- No changed files detected by git diff"
+# Issue #1968: the title says what the change is for. Sources, first usable
+# wins: the issue's own title, the first line of this run's task description,
+# and only then the file-count template. Derived text is normalised, given a
+# conventional prefix, defused of issue claims and capped; the template is
+# built from repository evidence and only capped.
+PR_TITLE_SOURCE="template"
+PR_TITLE_TEXT="$(normalise_pr_title_text "$(lookup_issue_title "$ISSUE_NUM" "$REPO_IDENTITY")")"
+if [ -n "$PR_TITLE_TEXT" ]; then
+  PR_TITLE_SOURCE="issue"
+else
+  echo "NOTE: no usable title from issue #${ISSUE_NUM}; trying the task description (#1968)" >&2
+  PR_TITLE_TEXT="$(normalise_pr_title_text "$(first_task_line)")"
+  [ -z "$PR_TITLE_TEXT" ] || PR_TITLE_SOURCE="task"
+fi
+if [ "$PR_TITLE_SOURCE" = "template" ]; then
+  if [ "$CHANGED_COUNT" -gt 1 ]; then PR_TITLE_BASE="Update ${PR_SCOPE} with ${CHANGED_COUNT} changed files"; else PR_TITLE_BASE="Update ${PR_SCOPE}"; fi
+  PR_SUMMARY="Concise workflow-generated PR for ${PR_SCOPE}."
+else
+  PR_TITLE_BASE="$(defuse_issue_refs "$(conventional_pr_title "$PR_TITLE_TEXT")")"
+  PR_SUMMARY="Workflow-generated PR for #${ISSUE_NUM}: ${PR_TITLE_BASE}."
+fi
+PR_TITLE="$(cap_pr_title "$PR_TITLE_BASE" "$ISSUE_NUM")"
+# The source only: the title itself may be untrusted text.
+echo "PR title source: ${PR_TITLE_SOURCE}" >&2
+CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES_ALL" | format_changed_files_body)
 # Both outputs are parse_json objects, which the runner never exports under a
 # bare name, so only RECIPE_VAR_<key> holds this run's evidence (#1684).
 VALIDATION_SOURCE="${RECIPE_VAR_local_testing_gate:-${RECIPE_VAR_precommit_results:-}}"
 if [ -n "$VALIDATION_SOURCE" ]; then VALIDATION_BODY=$(printf '%s\n' "$VALIDATION_SOURCE" | sed -n '1,12p'); else VALIDATION_BODY="step-13 local testing gate is expected before ready-for-review; no structured step-13 output was available to step-16."; fi
 if [ -n "$RECENT_COMMITS" ]; then BEHAVIOR_BODY=$(printf 'Implemented behavior through these branch commits:\n%s' "$RECENT_COMMITS"); else BEHAVIOR_BODY="Branch is ${COMMITS_AHEAD} commit(s) ahead of ${BASE_BRANCH}; behavior impact is represented by the changed files and diff stat."; fi
-case "$CHANGED_FILES" in *amplifier-bundle/recipes/*) RISK_BODY="Workflow behavior changed; review recipe gates and regression coverage carefully." ;; *crates/amplihack-cli/*) RISK_BODY="CLI behavior changed; verify command help, exit codes, and JSON/table output contracts." ;; *) RISK_BODY="No high-risk subsystem pattern detected from changed paths." ;; esac
+case "$CHANGED_FILES_ALL" in *amplifier-bundle/recipes/*) RISK_BODY="Workflow behavior changed; review recipe gates and regression coverage carefully." ;; *crates/amplihack-cli/*) RISK_BODY="CLI behavior changed; verify command help, exit codes, and JSON/table output contracts." ;; *) RISK_BODY="No high-risk subsystem pattern detected from changed paths." ;; esac
 DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
 # The closing keyword is EARNED BY THE DIFF (#1361). PR #1283's body said
 # `Closes #1277` while its whole change was one added planning document; had it
@@ -526,13 +697,13 @@ DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
 # the conservative `Refs`: under-linking costs a manual close, over-linking
 # closes a live bug silently.
 if [ -f "$ISSUE_REFERENCE_HELPER" ]; then
-  ISSUE_KEYWORD="$(printf '%s\n' "$CHANGED_FILES" | bash "$ISSUE_REFERENCE_HELPER" --keyword)"
+  ISSUE_KEYWORD="$(printf '%s\n' "$CHANGED_FILES_ALL" | bash "$ISSUE_REFERENCE_HELPER" --keyword)"
 else
   echo "WARNING: workflow_issue_reference.sh not found at ${ISSUE_REFERENCE_HELPER} — using the non-closing 'Refs' keyword (#1361)" >&2
   ISSUE_KEYWORD="Refs"
 fi
 ISSUE_LINK="${ISSUE_KEYWORD:-Refs} #${ISSUE_NUM}"
-PR_BODY=$(printf '## Summary\nConcise workflow-generated PR for %s.\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SCOPE" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH")
+PR_BODY=$(printf '## Summary\n%s\n\n## Issue\n%s\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n\n## Behavior\n%s\n\n## Validation\n%s\n\n## Risk\n%s\n\n## Checklist\n- [x] Branch has %s commit(s) ahead of %s\n- [ ] Code review completed\n- [ ] Philosophy check passed\n\n---\n*This PR was created as a draft for review before merging.*\n' "$PR_SUMMARY" "$ISSUE_LINK" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY" "$BEHAVIOR_BODY" "$VALIDATION_BODY" "$RISK_BODY" "$COMMITS_AHEAD" "$BASE_BRANCH")
 
 PUBLISH_STATE="FOLLOWUP_CREATED"
 LEGACY_PUBLISH_STATE="create-new-pr"
