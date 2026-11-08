@@ -1,0 +1,306 @@
+//! Issue #2014: the multitask launcher tests failed intermittently in the full
+//! `--lib` run, because another test set `AMPLIHACK_CLAUDE_PROFILE_ROOT` to
+//! invalid UTF-8 while they read the process environment without the shared
+//! env lock.
+//!
+//! Contract assumed by these tests:
+//!
+//!   pub(super) fn write_recipe_launcher_with(
+//!       ws: &Workstream,
+//!       delegate: &str,
+//!       get: impl Fn(&str) -> Option<OsString>,
+//!       substitute: impl Fn(&str) -> Option<String>,
+//!   ) -> anyhow::Result<()>;
+//!
+//!   pub(super) fn write_classic_launcher_with(/* same parameters */)
+//!       -> anyhow::Result<()>;
+//!
+//! The `_with` launchers take the profile variables only from `get`, and never
+//! from the process. `write_recipe_launcher(ws, delegate)` and
+//! `write_classic_launcher(ws, delegate)` keep their signatures and still read
+//! the process environment, so a parent's pinned profile reaches nested
+//! sessions.
+#![cfg(unix)]
+
+use super::command_builder_tests::{keep, no_env};
+use super::launcher::{
+    write_classic_launcher, write_classic_launcher_with, write_recipe_launcher,
+    write_recipe_launcher_with,
+};
+use super::launcher_tests::{assert_script_is_lf_only_and_bash_valid, test_workstream};
+use super::models::Workstream;
+use crate::commands::profile::{PROFILE_ENV, ROOT_ENV};
+use crate::test_support::with_env;
+use std::ffi::{OsStr, OsString};
+use std::fs;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
+use tempfile::TempDir;
+
+const DELEGATE: &str = "amplihack copilot";
+
+/// Launcher iterations the main thread runs beside the mutator.
+const ITERATIONS: usize = 20;
+
+/// Upper bound on the number of locked windows in which the mutator holds the
+/// invalid value, so that a stalled main thread cannot keep it running.
+const MAX_WINDOWS: usize = 500;
+
+/// How long the main thread waits for the mutator's first window.
+const START_DEADLINE: Duration = Duration::from_secs(10);
+
+/// How long the main thread keeps building launchers, after `ITERATIONS`, while
+/// it waits for the mutator to open another window.
+const OVERLAP_DEADLINE: Duration = Duration::from_secs(30);
+
+fn non_utf8_root() -> &'static OsStr {
+    OsStr::from_bytes(b"/\xff")
+}
+
+/// A workstream whose base and state directories are fresh tempdirs, with the
+/// work directory created. The tempdirs are returned so that they outlive it.
+fn fresh_workstream() -> (TempDir, TempDir, Workstream) {
+    let base = tempfile::tempdir().unwrap();
+    let state = tempfile::tempdir().unwrap();
+    let ws = test_workstream(base.path(), state.path());
+    fs::create_dir_all(&ws.work_dir).unwrap();
+    (base, state, ws)
+}
+
+fn assert_refused_for_non_utf8_root(result: anyhow::Result<()>, launcher: &str) {
+    let msg = format!(
+        "{:#}",
+        result.expect_err(&format!(
+            "{launcher} launcher must read the process environment and refuse a non-UTF-8 root"
+        ))
+    );
+    assert!(msg.contains(ROOT_ENV), "{launcher}: {msg}");
+    assert!(msg.contains("not valid UTF-8"), "{launcher}: {msg}");
+    assert!(
+        !msg.contains('\u{fffd}'),
+        "{launcher}: value must not be printed: {msg}"
+    );
+}
+
+fn build_and_check_recipe(ws: &Workstream) {
+    write_recipe_launcher_with(ws, DELEGATE, no_env, keep)
+        .expect("recipe launcher with an injected environment must not read the process");
+    assert_script_is_lf_only_and_bash_valid(&ws.work_dir.join("launcher.sh"));
+    assert_script_is_lf_only_and_bash_valid(&ws.work_dir.join("run.sh"));
+}
+
+fn build_and_check_classic(ws: &Workstream) {
+    write_classic_launcher_with(ws, DELEGATE, no_env, keep)
+        .expect("classic launcher with an injected environment must not read the process");
+    assert_script_is_lf_only_and_bash_valid(&ws.work_dir.join("run.sh"));
+}
+
+/// Shows the race deterministically. While the process holds a non-UTF-8
+/// root, the two-argument launchers fail with the error from #2014 and write
+/// nothing, and the `_with` launchers called with an empty environment succeed.
+#[test]
+fn process_reading_launchers_see_a_non_utf8_root_and_the_seam_does_not() {
+    let (_rb, _rs, plain_recipe) = fresh_workstream();
+    let (_cb, _cs, plain_classic) = fresh_workstream();
+    let (_sb, _ss, seam_recipe) = fresh_workstream();
+    let (_tb, _ts, seam_classic) = fresh_workstream();
+
+    // The profile name is unset so that the real substitution path, and with
+    // it the developer's profile store, is never reached.
+    let (plain, seam) = with_env(
+        &[(PROFILE_ENV, None), (ROOT_ENV, Some(non_utf8_root()))],
+        || {
+            let plain = (
+                write_recipe_launcher(&plain_recipe, DELEGATE),
+                write_classic_launcher(&plain_classic, DELEGATE),
+            );
+            let seam = (
+                write_recipe_launcher_with(&seam_recipe, DELEGATE, no_env, keep),
+                write_classic_launcher_with(&seam_classic, DELEGATE, no_env, keep),
+            );
+            (plain, seam)
+        },
+    );
+
+    assert_refused_for_non_utf8_root(plain.0, "recipe");
+    assert_refused_for_non_utf8_root(plain.1, "classic");
+
+    // Scripts are built before any file is written, so a refused export
+    // leaves nothing behind.
+    for name in ["run.sh", "launcher.sh", "context.json"] {
+        assert!(
+            !plain_recipe.work_dir.join(name).exists(),
+            "refused recipe launcher left {name} behind"
+        );
+    }
+    for name in ["run.sh", "TASK.md"] {
+        assert!(
+            !plain_classic.work_dir.join(name).exists(),
+            "refused classic launcher left {name} behind"
+        );
+    }
+
+    seam.0
+        .expect("recipe launcher with an injected environment must ignore the process root");
+    seam.1
+        .expect("classic launcher with an injected environment must ignore the process root");
+    assert_script_is_lf_only_and_bash_valid(&seam_recipe.work_dir.join("launcher.sh"));
+    assert_script_is_lf_only_and_bash_valid(&seam_recipe.work_dir.join("run.sh"));
+    assert_script_is_lf_only_and_bash_valid(&seam_classic.work_dir.join("run.sh"));
+}
+
+/// The injected getter and substitute reach the written `run.sh`, so the seam
+/// carries the profile and does not just drop it.
+#[test]
+fn injected_profile_reaches_the_written_run_scripts() {
+    let (_rb, _rs, recipe) = fresh_workstream();
+    let (_cb, _cs, classic) = fresh_workstream();
+    let get = |k: &str| match k {
+        k if k == PROFILE_ENV => Some(OsString::from("work")),
+        k if k == ROOT_ENV => Some(OsString::from("/p/it's")),
+        _ => None,
+    };
+    let spare = |inherited: &str| (inherited == "work").then(|| "spare".to_string());
+
+    write_recipe_launcher_with(&recipe, DELEGATE, get, spare).unwrap();
+    write_classic_launcher_with(&classic, DELEGATE, get, spare).unwrap();
+
+    for ws in [&recipe, &classic] {
+        let run_sh = ws.work_dir.join("run.sh");
+        let script = fs::read_to_string(&run_sh).unwrap();
+        assert!(
+            script.contains("export AMPLIHACK_CLAUDE_PROFILE='spare'\n"),
+            "{script}"
+        );
+        assert!(
+            script.contains("export AMPLIHACK_CLAUDE_PROFILE_ROOT='/p/it'\\''s'\n"),
+            "{script}"
+        );
+        assert!(!script.contains("'work'"), "{script}");
+        assert_script_is_lf_only_and_bash_valid(&run_sh);
+    }
+}
+
+/// A non-UTF-8 root supplied through the injected getter is refused in the
+/// same way as one read from the process, and no script is written.
+#[test]
+fn injected_non_utf8_root_is_refused_and_writes_nothing() {
+    let (_rb, _rs, recipe) = fresh_workstream();
+    let (_cb, _cs, classic) = fresh_workstream();
+    let bad = |k: &str| match k {
+        k if k == ROOT_ENV => Some(OsString::from_vec(vec![b'/', 0xff])),
+        _ => None,
+    };
+
+    assert_refused_for_non_utf8_root(
+        write_recipe_launcher_with(&recipe, DELEGATE, bad, keep),
+        "recipe",
+    );
+    assert_refused_for_non_utf8_root(
+        write_classic_launcher_with(&classic, DELEGATE, bad, keep),
+        "classic",
+    );
+    for name in ["run.sh", "launcher.sh", "context.json"] {
+        assert!(!recipe.work_dir.join(name).exists(), "{name} written");
+    }
+    for name in ["run.sh", "TASK.md"] {
+        assert!(!classic.work_dir.join(name).exists(), "{name} written");
+    }
+}
+
+/// Stops the mutator thread and joins it, including when the test panics.
+struct StopGuard {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl StopGuard {
+    /// Stops and joins the mutator, failing the test if the mutator panicked.
+    fn finish(mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        let handle = self.handle.take().expect("mutator already joined");
+        assert!(handle.join().is_ok(), "mutator thread panicked");
+    }
+}
+
+impl Drop for StopGuard {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Starts a thread that repeatedly sets the root to invalid UTF-8 through
+/// `with_env`. It holds the env lock only while the value is invalid, and
+/// `with_env` restores the previous value at the end of each window.
+fn spawn_mutator(windows: Arc<AtomicUsize>) -> StopGuard {
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let handle = std::thread::spawn(move || {
+        while !thread_stop.load(Ordering::SeqCst) && windows.load(Ordering::SeqCst) < MAX_WINDOWS {
+            with_env(&[(ROOT_ENV, Some(non_utf8_root()))], || {
+                windows.fetch_add(1, Ordering::SeqCst);
+                std::thread::yield_now();
+            });
+            // Lets other tests that wait for the env lock take it.
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    StopGuard {
+        stop,
+        handle: Some(handle),
+    }
+}
+
+/// The regression test for #2014. A parallel thread sets the root to invalid
+/// UTF-8 while the main thread runs the launcher checks without the env lock.
+/// The checks must still pass.
+#[test]
+fn launcher_tests_pass_while_another_thread_sets_a_non_utf8_root() {
+    let windows = Arc::new(AtomicUsize::new(0));
+    let guard = spawn_mutator(Arc::clone(&windows));
+
+    // Start barrier: the mutator must be running before the checks begin.
+    let started = Instant::now();
+    while windows.load(Ordering::SeqCst) == 0 {
+        assert!(
+            started.elapsed() < START_DEADLINE,
+            "mutator opened no window within {START_DEADLINE:?}"
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    let at_barrier = windows.load(Ordering::SeqCst);
+
+    // Runs at least ITERATIONS rounds, and goes on until the mutator has
+    // opened another window, so the checks and the mutation overlap.
+    let overlap_started = Instant::now();
+    let mut iteration = 0;
+    loop {
+        let (_rb, _rs, recipe) = fresh_workstream();
+        build_and_check_recipe(&recipe);
+        let (_cb, _cs, classic) = fresh_workstream();
+        build_and_check_classic(&classic);
+        iteration += 1;
+
+        if iteration >= ITERATIONS && windows.load(Ordering::SeqCst) > at_barrier {
+            break;
+        }
+        assert!(
+            overlap_started.elapsed() < OVERLAP_DEADLINE,
+            "mutator opened no window after the barrier within {OVERLAP_DEADLINE:?} \
+             ({iteration} iterations, {at_barrier} windows)"
+        );
+    }
+
+    guard.finish();
+    let total = windows.load(Ordering::SeqCst);
+    assert!(
+        total > at_barrier,
+        "windows did not grow during the checks: {at_barrier} at the barrier, {total} at the end"
+    );
+}
