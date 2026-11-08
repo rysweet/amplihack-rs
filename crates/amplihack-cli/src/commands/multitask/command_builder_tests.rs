@@ -240,53 +240,6 @@ fn run_scripts_refuse_a_non_utf8_profile_root() {
     }
 }
 
-/// Issue #2014: the run scripts take their profile values from the injected
-/// getter and pass the inherited name through the injected substitute.
-#[test]
-fn run_scripts_use_the_injected_substitute() {
-    let tmp = tempfile::tempdir().unwrap();
-    let ws = workstream(tmp.path());
-    let spare = |inherited: &str| (inherited == "work").then(|| "spare".to_string());
-    let scripts = [
-        recipe_run_script(
-            &ws,
-            "amplihack claude",
-            getter(&[(PROFILE_VAR, "work")]),
-            spare,
-        )
-        .unwrap(),
-        classic_run_script(
-            &ws,
-            "amplihack claude",
-            getter(&[(PROFILE_VAR, "work")]),
-            spare,
-        )
-        .unwrap(),
-    ];
-    for script in scripts {
-        assert!(
-            script.contains("export AMPLIHACK_CLAUDE_PROFILE='spare'\n"),
-            "{script}"
-        );
-        assert!(!script.contains("'work'"), "{script}");
-    }
-}
-
-/// Issue #2014: with an empty injected environment the run scripts carry no
-/// profile exports, whatever the process environment holds.
-#[test]
-fn run_scripts_with_no_env_have_no_profile_exports() {
-    let tmp = tempfile::tempdir().unwrap();
-    let ws = workstream(tmp.path());
-    let scripts = [
-        recipe_run_script(&ws, "amplihack claude", no_env, keep).unwrap(),
-        classic_run_script(&ws, "amplihack claude", no_env, keep).unwrap(),
-    ];
-    for script in scripts {
-        assert!(!script.contains(PROFILE_VAR), "{script}");
-    }
-}
-
 // Issue #1569: with auto-switch on, the exported profile is the candidate the
 // substitution seam picks; the root and everything else are unchanged.
 

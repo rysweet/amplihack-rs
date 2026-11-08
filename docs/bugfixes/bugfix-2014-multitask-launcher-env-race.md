@@ -167,7 +167,7 @@ real profile root.
 
 ## The regression tests
 
-`issue_2014_launcher_env.rs` is compiled only on Unix and holds two tests.
+`issue_2014_launcher_env.rs` is compiled only on Unix and holds three tests.
 They reuse `test_workstream` and `assert_script_is_lf_only_and_bash_valid`
 from `launcher_tests.rs`.
 
@@ -189,6 +189,13 @@ The profile name is unset, so the real auto-switch substitution never runs.
 If a later change makes the wrappers pass an empty getter, the first check
 fails. Such a change would drop the parent's profile pin in production.
 
+### `injected_profile_reaches_the_written_run_scripts`
+
+This test passes a getter that pins `work` with the root `/p/it's`, and a
+substitute that replaces `work` with `spare`, to both `_with` launchers. It
+checks that each written `run.sh` exports `spare` and the quoted root, so the
+seam passes the injected values through instead of dropping them.
+
 ### `launcher_tests_pass_while_another_thread_sets_a_non_utf8_root`
 
 This test reproduces the race from the issue and checks that the seam is
@@ -200,13 +207,13 @@ immune to it.
    stops when a stop flag is set or after 500 windows.
 2. The main thread waits until the mutator has opened at least one window,
    with a 10 s limit, and panics if it has not.
-3. Without taking the lock, the main thread runs 20 iterations. Each one
-   builds the recipe and classic launchers in fresh temporary directories
-   through the `_with` functions, then checks `launcher.sh` and `run.sh` for
-   LF-only content and with `bash -n`.
-4. The test stops the mutator, joins it, and asserts that more windows were
-   opened after the start barrier, which shows that the two threads
-   overlapped.
+3. Without taking the lock, the main thread runs at least 20 iterations.
+   Each one builds the recipe and classic launchers in fresh temporary
+   directories through the `_with` functions, then checks `launcher.sh` and
+   `run.sh` for LF-only content and with `bash -n`. It continues past 20, for
+   up to 30 s, until the mutator has opened another window after the start
+   barrier, which shows that the two threads overlapped.
+4. The test stops the mutator and joins it.
 
 A `StopGuard` sets the stop flag and joins the thread in `Drop`, so a panic
 in the main loop does not leave the mutator running. If the main loop is

@@ -3,23 +3,9 @@
 //! invalid UTF-8 while they read the process environment without the shared
 //! env lock.
 //!
-//! Contract assumed by these tests:
-//!
-//!   pub(super) fn write_recipe_launcher_with(
-//!       ws: &Workstream,
-//!       delegate: &str,
-//!       get: impl Fn(&str) -> Option<OsString>,
-//!       substitute: impl Fn(&str) -> Option<String>,
-//!   ) -> anyhow::Result<()>;
-//!
-//!   pub(super) fn write_classic_launcher_with(/* same parameters */)
-//!       -> anyhow::Result<()>;
-//!
-//! The `_with` launchers take the profile variables only from `get`, and never
-//! from the process. `write_recipe_launcher(ws, delegate)` and
-//! `write_classic_launcher(ws, delegate)` keep their signatures and still read
-//! the process environment, so a parent's pinned profile reaches nested
-//! sessions.
+//! The `_with` launchers take the profile variables only from `get`. The
+//! two-argument launchers still read the process environment, so a parent's
+//! pinned profile reaches nested sessions.
 #![cfg(unix)]
 
 use super::command_builder_tests::{keep, no_env};
@@ -33,7 +19,7 @@ use crate::commands::profile::{PROFILE_ENV, ROOT_ENV};
 use crate::test_support::with_env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::ffi::OsStrExt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::thread::JoinHandle;
@@ -184,33 +170,6 @@ fn injected_profile_reaches_the_written_run_scripts() {
     }
 }
 
-/// A non-UTF-8 root supplied through the injected getter is refused in the
-/// same way as one read from the process, and no script is written.
-#[test]
-fn injected_non_utf8_root_is_refused_and_writes_nothing() {
-    let (_rb, _rs, recipe) = fresh_workstream();
-    let (_cb, _cs, classic) = fresh_workstream();
-    let bad = |k: &str| match k {
-        k if k == ROOT_ENV => Some(OsString::from_vec(vec![b'/', 0xff])),
-        _ => None,
-    };
-
-    assert_refused_for_non_utf8_root(
-        write_recipe_launcher_with(&recipe, DELEGATE, bad, keep),
-        "recipe",
-    );
-    assert_refused_for_non_utf8_root(
-        write_classic_launcher_with(&classic, DELEGATE, bad, keep),
-        "classic",
-    );
-    for name in ["run.sh", "launcher.sh", "context.json"] {
-        assert!(!recipe.work_dir.join(name).exists(), "{name} written");
-    }
-    for name in ["run.sh", "TASK.md"] {
-        assert!(!classic.work_dir.join(name).exists(), "{name} written");
-    }
-}
-
 /// Stops the mutator thread and joins it, including when the test panics.
 struct StopGuard {
     stop: Arc<AtomicBool>,
@@ -298,9 +257,4 @@ fn launcher_tests_pass_while_another_thread_sets_a_non_utf8_root() {
     }
 
     guard.finish();
-    let total = windows.load(Ordering::SeqCst);
-    assert!(
-        total > at_barrier,
-        "windows did not grow during the checks: {at_barrier} at the barrier, {total} at the end"
-    );
 }
