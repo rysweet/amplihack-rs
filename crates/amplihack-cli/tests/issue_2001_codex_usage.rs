@@ -265,16 +265,40 @@ fn line_of<'a>(block: &'a str, label: &str) -> &'a str {
 }
 
 // ---------------------------------------------------------------------------
-// --json
+// --json stays the bare array of Claude rows
+// ---------------------------------------------------------------------------
+
+/// Host scripts index `--json` with `.[]` and `.[0]` and send stderr to
+/// /dev/null, so an object there would make them report no capacity without
+/// a message. `--json` is the array of Claude rows it always was, and starts
+/// no Codex; the Codex rows are in `--summary-json`.
+#[test]
+fn json_stays_an_array_of_claude_rows_and_reads_no_codex() {
+    let c = Codex::new();
+    let v = json(&ok(c.cmd(&["--json"])));
+    let rows = v.as_array().unwrap_or_else(|| panic!("an array: {v}"));
+    let mut got: Vec<&str> = rows
+        .iter()
+        .map(|r| r["profile"].as_str().unwrap())
+        .collect();
+    got.sort_unstable();
+    let mut want = PROFILES.to_vec();
+    want.sort_unstable();
+    assert_eq!(got, want, "{v}");
+    assert!(c.runs().is_empty(), "no Codex was started: {:?}", c.runs());
+}
+
+// ---------------------------------------------------------------------------
+// --summary-json
 // ---------------------------------------------------------------------------
 
 #[test]
-fn json_lists_every_account_in_order_with_its_state() {
+fn summary_json_lists_every_account_in_order_with_its_state() {
     let c = Codex::new();
-    let out = ok(c.cmd(&["--json"]));
+    let out = ok(c.cmd(&["--summary-json"]));
     let v = json(&out);
-    assert!(v["claude"].is_array(), "{v}");
-    assert!(!v["claude"].as_array().unwrap().is_empty(), "{v}");
+    assert!(v["profiles"].is_array(), "{v}");
+    assert!(!v["profiles"].as_array().unwrap().is_empty(), "{v}");
     let rows = codex_rows(&v);
     assert_eq!(field(&rows, "account"), ACCOUNTS);
     assert_eq!(
@@ -307,7 +331,7 @@ fn json_lists_every_account_in_order_with_its_state() {
 #[test]
 fn json_rows_carry_the_live_figures() {
     let c = Codex::new();
-    let rows = codex_rows(&json(&ok(c.cmd(&["--json"]))));
+    let rows = codex_rows(&json(&ok(c.cmd(&["--summary-json"]))));
     let ff = &rows[0];
     assert_eq!(ff["windows"].as_array().unwrap().len(), 2);
     assert_eq!(ff["windows"][0]["name"], "primary");
@@ -339,7 +363,7 @@ fn json_rows_carry_the_live_figures() {
 #[test]
 fn the_next_choice_is_marked_on_exactly_one_row() {
     let c = Codex::new();
-    let rows = codex_rows(&json(&ok(c.cmd(&["--json"]))));
+    let rows = codex_rows(&json(&ok(c.cmd(&["--summary-json"]))));
     let marked: Vec<&str> = rows
         .iter()
         .filter(|r| r["next_choice"] == true)
@@ -429,7 +453,7 @@ fn utc_applies_to_the_codex_times() {
 #[test]
 fn no_login_file_is_opened_and_no_api_key_reaches_codex() {
     let c = Codex::new();
-    let mut cmd = c.cmd(&["--json"]);
+    let mut cmd = c.cmd(&["--summary-json"]);
     cmd.env("OPENAI_API_KEY", OPENAI_SENTINEL)
         .env("CODEX_API_KEY", CODEX_KEY_SENTINEL)
         .env("RUST_LOG", "trace");
@@ -452,7 +476,7 @@ fn no_login_file_is_opened_and_no_api_key_reaches_codex() {
 #[test]
 fn no_codex_process_outlives_the_command() {
     let c = Codex::new();
-    ok(c.cmd(&["--json"]));
+    ok(c.cmd(&["--summary-json"]));
     let pids = c.pids();
     assert!(pids.len() >= ACCOUNTS.len(), "{pids:?}");
     for pid in pids {
@@ -463,7 +487,7 @@ fn no_codex_process_outlives_the_command() {
 #[test]
 fn every_account_is_started_once() {
     let c = Codex::new();
-    ok(c.cmd(&["--json"]));
+    ok(c.cmd(&["--summary-json"]));
     let mut runs = c.runs();
     runs.sort();
     let mut want: Vec<String> = ACCOUNTS.iter().map(|s| s.to_string()).collect();
@@ -477,7 +501,7 @@ fn codex_failures_never_change_the_exit_status() {
     let out = run(c.cmd(&[]));
     assert!(out.status.success(), "{}", text(&out.stderr));
     let missing = Codex::new();
-    let mut cmd = missing.cmd(&["--json"]);
+    let mut cmd = missing.cmd(&["--summary-json"]);
     cmd.env("CODEX_BIN", missing.root.join("no-such-codex"));
     let out = run(cmd);
     assert!(out.status.success(), "{}", text(&out.stderr));
@@ -502,7 +526,7 @@ fn codex_failures_never_change_the_exit_status() {
 fn home_codex_is_listed_last_when_signed_in() {
     let c = Codex::with(&["ggrant"]);
     trapped(&c.home_codex());
-    let mut cmd = c.cmd(&["--json"]);
+    let mut cmd = c.cmd(&["--summary-json"]);
     cmd.env("FAKE_HOME_STATE", "ok");
     let rows = codex_rows(&json(&ok(cmd)));
     assert_eq!(field(&rows, "account"), ["ggrant", "~/.codex"]);
@@ -517,7 +541,7 @@ fn home_codex_is_listed_last_when_signed_in() {
 fn home_codex_is_dropped_when_not_signed_in() {
     let c = Codex::with(&["ggrant"]);
     trapped(&c.home_codex());
-    let rows = codex_rows(&json(&ok(c.cmd(&["--json"]))));
+    let rows = codex_rows(&json(&ok(c.cmd(&["--summary-json"]))));
     assert_eq!(field(&rows, "account"), ["ggrant"]);
     assert!(c.runs().contains(&".codex".to_string()), "it was read");
     let s = text(&ok(c.cmd(&[])).stdout);
@@ -528,7 +552,7 @@ fn home_codex_is_dropped_when_not_signed_in() {
 fn home_codex_linked_to_a_profile_is_not_read_twice() {
     let c = Codex::with(&["ggrant"]);
     std::os::unix::fs::symlink(c.root.join("ggrant"), c.home_codex()).unwrap();
-    let mut cmd = c.cmd(&["--json"]);
+    let mut cmd = c.cmd(&["--summary-json"]);
     cmd.env("FAKE_HOME_STATE", "ok");
     let rows = codex_rows(&json(&ok(cmd)));
     assert_eq!(field(&rows, "account"), ["ggrant"]);
@@ -539,7 +563,7 @@ fn home_codex_linked_to_a_profile_is_not_read_twice() {
 fn hidden_directories_and_files_in_the_root_are_not_accounts() {
     let c = Codex::with(&["ggrant", ".hidden"]);
     fs::write(c.root.join("notes.txt"), "not an account").unwrap();
-    let rows = codex_rows(&json(&ok(c.cmd(&["--json"]))));
+    let rows = codex_rows(&json(&ok(c.cmd(&["--summary-json"]))));
     assert_eq!(field(&rows, "account"), ["ggrant"]);
 }
 
@@ -548,7 +572,7 @@ fn the_default_root_is_home_codex_profiles() {
     let c = Codex::with(&[]);
     let default_root = c.f.home.join(".codex-profiles");
     trapped(&default_root.join("ggrant"));
-    let mut cmd = c.cmd(&["--json"]);
+    let mut cmd = c.cmd(&["--summary-json"]);
     cmd.env_remove("CODEX_PROFILES_ROOT");
     let rows = codex_rows(&json(&ok(cmd)));
     assert_eq!(field(&rows, "account"), ["ggrant"]);
@@ -562,8 +586,7 @@ fn the_default_root_is_home_codex_profiles() {
 fn names_given_select_claude_profiles_only() {
     let c = Codex::new();
     let v = json(&ok(c.cmd(&["--json", PROFILES[0]])));
-    assert_eq!(v["codex"], serde_json::json!([]));
-    assert_eq!(v["claude"].as_array().unwrap().len(), 1);
+    assert_eq!(v.as_array().unwrap().len(), 1, "{v}");
     let v = json(&ok(c.cmd(&["--summary-json", PROFILES[0]])));
     assert_eq!(v["codex"], serde_json::json!([]));
     let s = text(&ok(c.cmd(&[PROFILES[0]])).stdout);
@@ -583,7 +606,7 @@ fn an_empty_or_missing_root_is_one_line_and_an_empty_array() {
         "{s}"
     );
     assert_eq!(
-        json(&ok(c.cmd(&["--json"])))["codex"],
+        json(&ok(c.cmd(&["--summary-json"])))["codex"],
         serde_json::json!([])
     );
 
@@ -605,7 +628,7 @@ fn an_unreadable_root_warns_and_still_prints_the_claude_output() {
     fs::set_permissions(&c.root, fs::Permissions::from_mode(0o000)).unwrap();
     let readable_anyway = fs::read_dir(&c.root).is_ok();
     let text_out = run(c.cmd(&[]));
-    let json_out = run(c.cmd(&["--json"]));
+    let json_out = run(c.cmd(&["--summary-json"]));
     fs::set_permissions(&c.root, fs::Permissions::from_mode(0o700)).unwrap();
     if readable_anyway {
         // Running as root: the mode does not stop the listing.
@@ -640,7 +663,7 @@ fn an_unreadable_root_warns_and_still_prints_the_claude_output() {
 #[test]
 fn a_bad_timeout_warns_once_and_uses_20_seconds() {
     let c = Codex::with(&["ggrant"]);
-    let mut cmd = c.cmd(&["--json"]);
+    let mut cmd = c.cmd(&["--summary-json"]);
     cmd.env("AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS", "0");
     let out = ok(cmd);
     let err = text(&out.stderr);
@@ -660,7 +683,7 @@ fn labels_and_server_strings_cannot_send_terminal_escapes() {
     }
     assert!(block.contains("plan pro"), "{block}");
 
-    let out = ok(c.cmd(&["--json"]));
+    let out = ok(c.cmd(&["--summary-json"]));
     assert!(!text(&out.stdout).contains('\u{1b}'), "JSON escapes it");
     let rows = codex_rows(&json(&out));
     assert_eq!(rows[0]["account"], evil, "the name as it is");

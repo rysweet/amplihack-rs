@@ -922,41 +922,46 @@ fn the_codex_settings_are_documented_in_both_references() {
     }
 }
 
+/// Crusty round 3 on #2001: `--json` stays the bare array, because host
+/// scripts read it with `.[]` and `.[0]` and drop stderr. Every `--json | jq`
+/// example reads the array, and every Codex example reads `--summary-json`.
 #[test]
-fn the_docs_use_the_claude_key_in_jq_examples() {
+fn the_docs_read_json_as_an_array_and_codex_from_summary_json() {
     for (name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
-        for l in doc
-            .lines()
-            .filter(|l| l.contains("profile usage --json | jq"))
-        {
-            // A filter kept in `$q` is checked where `q=` is set.
-            let via_q = l.contains("jq -c \"$q\"") && doc.contains("  .claude[] | {profile");
-            assert!(
-                l.contains(".claude[]") || l.contains(".codex[]") || via_q,
-                "{name}: a jq example still reads the old top-level array: {l}"
-            );
+        for l in doc.lines() {
+            if l.contains("profile usage --json | jq") {
+                assert!(
+                    !l.contains(".claude[]") && !l.contains(".codex"),
+                    "{name}: a jq example reads `--json` as an object: {l}"
+                );
+            }
+            if l.contains(".codex[]") {
+                assert!(
+                    l.contains("profile usage --summary-json | jq"),
+                    "{name}: a Codex example does not read `--summary-json`: {l}"
+                );
+            }
         }
+        assert!(!doc.contains(".claude[]"), "{name}");
+        assert!(!doc.contains("one break in that promise"), "{name}");
     }
-    assert!(REFERENCE.contains("Changed in #2001"));
-    assert!(!REFERENCE.contains("The output stays a single array"));
 }
 
-/// Crusty round 1 on #2001: the stability promise must name #2001 as its
-/// one break, the how-to's saved-file cron example must say the file changed
-/// shape, and neither doc may claim the `<- next` marker is `codex-pick`'s
-/// own choice (it reads session files; this view reads live).
+/// Crusty rounds 1 and 3 on #2001: the reference says `--json` has no Codex
+/// rows and why, the how-to's saved-file cron example says the file is the
+/// Claude array, and neither doc claims the `<- next` marker is
+/// `codex-pick`'s own choice (it reads session files; this view reads live).
 #[test]
-fn the_docs_name_the_2001_json_break_and_the_live_next_rule() {
+fn the_docs_keep_json_an_array_and_name_the_live_next_rule() {
     let flat = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
     let (reference, howto) = (flat(REFERENCE), flat(HOWTO));
-    assert!(reference.contains("From #2001 on, keys are only ever added"));
-    assert!(reference.contains("this is the one break in that promise"));
-    assert!(!reference.contains(". Keys are only ever added, never renamed or removed"));
-    assert!(reference.contains("named `claude` here and `profiles` in"));
+    assert!(reference.contains("`--json` prints one JSON array of Claude profile rows"));
+    assert!(reference.contains("`--json` has no Codex rows, and does not read Codex at all."));
+    assert!(reference.contains("Keys are only ever added, never renamed or removed"));
     let cron = howto
         .find("profile usage --json > /tmp/claude-usage.json")
         .expect("howto cron example");
-    assert!(howto[cron..].contains("Changed in #2001: the saved file is now an object"));
+    assert!(howto[cron..].contains("The saved file is the array of Claude rows"));
     for (name, doc) in [("reference", &reference), ("howto", &howto)] {
         assert!(!doc.contains("`codex-pick` would choose"), "{name}");
     }

@@ -444,7 +444,7 @@ pub enum ProfileCommands {
     Usage {
         /// Profiles to probe (default: all, and the Codex accounts)
         names: Vec<String>,
-        /// Print one JSON object: `claude` (the profile rows) and `codex` (the Codex accounts)
+        /// Print the profile rows as one JSON array (Claude only; the Codex rows are in --summary-json)
         #[arg(long)]
         json: bool,
         /// Print the previous 7-column table instead of the bar view

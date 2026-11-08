@@ -637,9 +637,8 @@ root: /home/you/.claude-profiles (source: config)
 */30 * * * * amplihack profile usage --json > /tmp/claude-usage.json
 ```
 
-Changed in #2001: the saved file is now an object, `{"claude": [...],
-"codex": [...]}`, not the Claude array alone. A script that reads it with
-`jq '.[]'` must read `jq '.claude[]'` instead.
+The saved file is the array of Claude rows, so a script reads it with
+`jq '.[]'`. It has no Codex rows; save `--summary-json` instead for those.
 
 ```bash
 tmux new-session -d -s work 'amplihack claude --profile work'
@@ -863,7 +862,7 @@ without `--raw` that line is not printed.
 To see how each row was read, use the `source` key of `--json`:
 
 ```bash
-amplihack profile usage --json | jq -r '.claude[] | "\(.profile) \(.source)"'
+amplihack profile usage --json | jq -r '.[] | "\(.profile) \(.source)"'
 ```
 
 ```
@@ -877,7 +876,7 @@ scratch fallback
 For scripts, use `--json`. This picks the profile with the most capacity:
 
 ```bash
-amplihack profile usage --json | jq -r '[.claude[] | select(.state == "ok")][0].profile'
+amplihack profile usage --json | jq -r '[.[] | select(.state == "ok")][0].profile'
 ```
 
 ```
@@ -933,11 +932,11 @@ jjones   not signed in  read 19:09:00
 The accounts are read at once, each with a 20-second limit
 (`AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS`); one that does not answer shows
 `timed out`, never an older figure. amplihack does not open `auth.json`;
-Codex reads its own login. In `--json`, the Claude rows are under `claude`
-and the Codex rows under `codex`:
+Codex reads its own login. `--json` stays the array of Claude rows and does
+not read Codex; the Codex rows are under `codex` in `--summary-json`:
 
 ```bash
-amplihack profile usage --json | jq -r '.codex[] | select(.next_choice) | .account'
+amplihack profile usage --summary-json | jq -r '.codex[] | select(.next_choice) | .account'
 ```
 
 ```
@@ -1006,7 +1005,7 @@ never 100%, and it is not recorded for auto-switch. Check which profiles
 timed out:
 
 ```bash
-amplihack profile usage --json | jq -r '.claude[] | select(.state == "timeout") | .profile'
+amplihack profile usage --json | jq -r '.[] | select(.state == "timeout") | .profile'
 ```
 
 ```
@@ -1059,7 +1058,7 @@ send decimals, so this rounds both to whole numbers before comparing:
 
 ```bash
 q='def whole: if type == "number" then round else . end;
-  .claude[] | {profile, state, session: (.session.used_percentage | whole), week: (.week_all.used_percentage | whole)}'
+  .[] | {profile, state, session: (.session.used_percentage | whole), week: (.week_all.used_percentage | whole)}'
 AMPLIHACK_PROFILE_USAGE_PROBE=text amplihack profile usage --json | jq -c "$q" | sort > ~/usage-text.jsonl
 AMPLIHACK_PROFILE_USAGE_PASSIVE_MAX_AGE_SECS=0 amplihack profile usage --json | jq -c "$q" | sort > ~/usage-direct.jsonl
 diff ~/usage-text.jsonl ~/usage-direct.jsonl && echo same
@@ -1116,7 +1115,7 @@ The numbers on that row are the account's real usage, and the row is not
 other row has `null`:
 
 ```bash
-amplihack profile usage --json | jq -r '.claude[] | select(.live_in != null) | .profile'
+amplihack profile usage --json | jq -r '.[] | select(.live_in != null) | .profile'
 ```
 
 ```

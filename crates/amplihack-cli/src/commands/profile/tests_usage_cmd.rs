@@ -600,13 +600,13 @@ fn error_reasons_are_the_four_fixed_texts() {
 // JSON (D14)
 // ---------------------------------------------------------------------------
 
-/// The `claude` array of `--json` for `rows` with no Codex rows (#2001).
+/// The `--json` array for `rows`.
 fn json(rows: &[Row]) -> serde_json::Value {
-    let text = render_json(rows, &[]);
+    let text = render_json(rows);
     let v: serde_json::Value =
         serde_json::from_str(&text).unwrap_or_else(|e| panic!("not JSON ({e}): {text}"));
-    assert_eq!(v["codex"], serde_json::json!([]), "{text}");
-    v["claude"].clone()
+    assert!(v.is_array(), "{text}");
+    v
 }
 
 fn keys(v: &serde_json::Value) -> Vec<&str> {
@@ -709,23 +709,23 @@ fn json_raw_only_when_kept_and_strings_are_escaped_not_cleaned() {
         stdout: "out\u{1b}[31m".into(),
         stderr: "err".into(),
     });
-    let text = render_json(&[r], &[]);
+    let text = render_json(&[r]);
     assert!(
         !text.contains('\u{1b}'),
         "JSON escaping, never a raw ESC: {text:?}"
     );
     let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-    let v = &v["claude"];
     assert_eq!(keys(&v[0]["raw"]), ["stderr", "stdout"]);
     assert_eq!(v[0]["raw"]["stdout"], "out\u{1b}[31m");
     assert_eq!(v[0]["session"]["resets_text"], "a\u{1b}b");
 }
 
 #[test]
-fn json_for_no_rows_is_an_object_of_empty_arrays() {
-    // Issue #2001: `--json` is one object, `claude` and `codex`.
-    let v: serde_json::Value = serde_json::from_str(&render_json(&[], &[])).unwrap();
-    assert_eq!(v, serde_json::json!({"claude": [], "codex": []}));
+fn json_for_no_rows_is_an_empty_array() {
+    // Issue #2001 keeps `--json` a bare array: host scripts read it with
+    // `.[]` and `.[0]`. The Codex rows are in `--summary-json` only.
+    let v: serde_json::Value = serde_json::from_str(&render_json(&[])).unwrap();
+    assert_eq!(v, serde_json::json!([]));
 }
 
 // ---------------------------------------------------------------------------
@@ -1387,9 +1387,8 @@ mod under_load {
 
     #[test]
     fn a_timed_out_probe_is_timeout_with_null_windows_in_json() {
-        let text = render_json(&[timed_out_row("slow")], &[]);
+        let text = render_json(&[timed_out_row("slow")]);
         let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-        let v = &v["claude"];
         assert_eq!(v[0]["profile"], "slow");
         assert_eq!(v[0]["state"], "timeout");
         assert!(v[0]["session"].is_null(), "{text}");
@@ -2099,12 +2098,11 @@ fn golden_rows() -> Vec<Row> {
 fn json_claude_rows_match_the_golden_file() {
     let want: serde_json::Value =
         serde_json::from_str(include_str!("testdata/usage_json_golden.json")).unwrap();
-    let got: serde_json::Value = serde_json::from_str(&render_json(&golden_rows(), &[])).unwrap();
+    let got: serde_json::Value = serde_json::from_str(&render_json(&golden_rows())).unwrap();
     assert_eq!(
-        got["claude"], want,
-        "the Claude rows of `--json` must not change (issues #1797, #2001)"
+        got, want,
+        "the `--json` array must not change (issues #1797, #2001)"
     );
-    assert_eq!(got["codex"], serde_json::json!([]));
 }
 
 mod summary_1797 {
@@ -2152,7 +2150,7 @@ mod summary_1797 {
         let rows = golden_rows();
         let s = summary(&rows);
         let v = parse(&render_summary_json(NOW, &rows, s.as_ref(), &[]));
-        assert_eq!(v["profiles"], parse(&render_json(&rows, &[]))["claude"]);
+        assert_eq!(v["profiles"], parse(&render_json(&rows)));
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();
         assert_eq!(keys, ["at", "codex", "profiles", "summary"]);
@@ -2413,7 +2411,7 @@ fn json_rows_carry_session_limit_right_after_session() {
         weekly_only("free", UsageState::Ok, 40.0),
         row("slow", report(UsageState::Timeout, None, None)),
     ];
-    let text = render_json(&rows, &[]);
+    let text = render_json(&rows);
     let v = json(&rows);
     assert_eq!(v[0]["session_limit"], true);
     assert_eq!(v[1]["session_limit"], false);
@@ -2563,7 +2561,7 @@ fn json_gives_the_source_or_null() {
             &serde_json::Value::Null,
         ]
     );
-    let text = render_json(&rows, &[]);
+    let text = render_json(&rows);
     let first = text.find("\"state\"").unwrap();
     let source = text.find("\"source\"").unwrap();
     let after = text[first..].find('\n').map(|i| first + i).unwrap();
@@ -2775,7 +2773,7 @@ fn json_gives_the_spend_after_the_source_on_every_row() {
         got,
         ["limit_reached", "not_probed", "unknown", "ok", "n/a", "n/a"]
     );
-    let text = render_json(&rows, &[]);
+    let text = render_json(&rows);
     let source = text.find("\"source\"").unwrap();
     let spend = text.find("\"spend\"").unwrap();
     let session = text.find("\"session\"").unwrap();
@@ -2788,7 +2786,7 @@ fn json_gives_the_spend_after_the_source_on_every_row() {
 #[test]
 fn json_never_carries_the_shape() {
     let rows = vec![credits_on_row("aa", Spend::Ok)];
-    let text = render_json(&rows, &[]);
+    let text = render_json(&rows);
     for leak in [
         "extra_usage",
         "is_enabled",

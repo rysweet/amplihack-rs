@@ -96,7 +96,7 @@ read.
 
 | Flag | Effect |
 |------|--------|
-| `--json` | Print one JSON object instead of the bar view: `claude` (the profile rows) and `codex` (the Codex accounts). No summary. See [JSON output](#json-output). Conflicts with `--table` and `--utc`. |
+| `--json` | Print the profile rows as one JSON array instead of the bar view. Claude rows only: Codex is not read, and the Codex rows are in `--summary-json`. No summary. See [JSON output](#json-output). Conflicts with `--table` and `--utc`. |
 | `--summary-json` | Print one JSON object holding the same Claude rows, the summary and the Codex rows. Cannot be combined with `--json`, `--raw`, `--table` or `--utc` (exit status 2). See [Summary JSON](#summary-json). |
 | `--table` | Print the eight-column text table instead of the bar view. The capacity summary follows it as it follows the bar view. See [Table output](#table-output). Conflicts with `--json`, `--summary-json` and `--utc`. |
 | `--utc` | Show reset times in the bar view in UTC, as `MM-DD HH:MMZ`, instead of local time. See [Reset times](#reset-times). Conflicts with `--json`, `--summary-json` and `--table`. |
@@ -1930,8 +1930,8 @@ Codex rows never change the Claude rows, the
 the [auto-switch readings](#refreshing-auto-switch-readings) or the
 [exit status](#exit-status-and-refusals). With profile names given
 (`amplihack profile usage work review`), Codex is not read and no Codex
-block is printed; `--json` and `--summary-json` still have the `codex` key,
-as an empty array.
+block is printed; `--summary-json` still has the `codex` key, as an empty
+array. [`--json`](#json-output) never reads Codex and has no Codex rows.
 
 ##### Which accounts are read
 
@@ -1960,7 +1960,8 @@ is the single `Codex: no accounts under` line:
 warning: cannot list Codex accounts under /home/ryan/.codex-profiles: Permission denied (os error 13)
 ```
 
-The exit status does not change, and `codex` in `--json` is an empty array.
+The exit status does not change, and `codex` in `--summary-json` is an
+empty array.
 
 ##### Live read
 
@@ -2169,71 +2170,63 @@ signed-in account always answers with its figures.
 
 #### JSON output
 
-`--json` prints one JSON object with two keys: `claude`, the array of
-Claude profile rows in [display order](#ordering), and `codex`, the array
-of [Codex rows](#codex-json-rows). stdout holds only the JSON; warnings go
-to stderr. With no Claude profiles, `claude` is `[]`; with no Codex
-accounts, or with profile names given, `codex` is `[]`. This is the stable
-interface for scripts, and the key tables below are its specification.
-From #2001 on, keys are only ever added, never renamed or removed, and
-string values that name a state or kind may gain new values. There is no
-version field.
+`--json` prints one JSON array of Claude profile rows, in
+[display order](#ordering). stdout holds only the JSON; warnings go to
+stderr. With no profiles it prints `[]`. This is the stable interface for
+scripts, and the key table below is its specification. Keys are only ever
+added, never renamed or removed, and string values that name a state or kind
+may gain new values. There is no version field.
 
-Changed in #2001: this is the one break in that promise. Before #2001,
-`--json` printed the Claude array alone, with no top-level object. Scripts
-that read `.[]` now read `.claude[]`; see
-[the jq examples](#claude-rows-in-scripts). Nothing warns at run time: a
-script still using `.[]` gets the two arrays instead of the rows, and a
-saved file such as the cron example in the how-to now holds the object.
+`--json` has no Codex rows, and does not read Codex at all. #2001 left it
+the bare array it was before, because scripts read it with `.[]` and `.[0]`,
+often with stderr sent to `/dev/null`: a top-level object would make `jq`
+fail in those scripts and leave them reporting an empty result with no
+message. The [Codex rows](#codex-json-rows) are in
+[`--summary-json`](#summary-json), under `codex`. The same Claude rows are
+named `profiles` there; the arrays are identical.
 
-The same Claude rows are named `claude` here and `profiles` in
-[`--summary-json`](#summary-json); the arrays are identical.
-
-With one Claude profile and no Codex accounts:
+With one profile:
 
 ```json
-{
-  "claude": [
-    {
-      "profile": "work",
-      "account": "personal",
-      "default": true,
-      "leased_to": null,
-      "live_in": null,
-      "overflow": false,
-      "overflow_blocked_until": null,
-      "state": "ok",
-      "source": "direct",
-      "spend": "n/a",
-      "session": {
-        "label": "session",
-        "used_percentage": 20.0,
-        "resets_text": "2026-10-17T02:00:00Z",
-        "resets_at": 1792202400
-      },
-      "session_limit": true,
-      "week_all": {
-        "label": "all models",
-        "used_percentage": 30.0,
+[
+  {
+    "profile": "work",
+    "account": "personal",
+    "default": true,
+    "leased_to": null,
+    "live_in": null,
+    "overflow": false,
+    "overflow_blocked_until": null,
+    "state": "ok",
+    "source": "direct",
+    "spend": "n/a",
+    "session": {
+      "label": "session",
+      "used_percentage": 20.0,
+      "resets_text": "2026-10-17T02:00:00Z",
+      "resets_at": 1792202400
+    },
+    "session_limit": true,
+    "week_all": {
+      "label": "all models",
+      "used_percentage": 30.0,
+      "resets_text": "2026-10-22T09:00:00Z",
+      "resets_at": 1792659600
+    },
+    "week_models": [
+      {
+        "label": "Fable",
+        "used_percentage": 0.0,
         "resets_text": "2026-10-22T09:00:00Z",
         "resets_at": 1792659600
-      },
-      "week_models": [
-        {
-          "label": "Fable",
-          "used_percentage": 0.0,
-          "resets_text": "2026-10-22T09:00:00Z",
-          "resets_at": 1792659600
-        }
-      ],
-      "error": null
-    }
-  ],
-  "codex": []
-}
+      }
+    ],
+    "error": null
+  }
+]
 ```
 
-Each `claude` row has these keys:
+Each row has these keys:
 
 | Key | Type | Meaning |
 |-----|------|---------|
@@ -2274,7 +2267,7 @@ either a `state` of `"session_exhausted"` or `"weekly_exhausted"`, or a
 test the footer uses:
 
 ```bash
-amplihack profile usage --json | jq -r '.claude[]
+amplihack profile usage --json | jq -r '.[]
   | select(.live_in == "~/.claude" and .overflow
            and (.state == "session_exhausted" or .state == "weekly_exhausted"
                 or (.state == "ok"
@@ -2308,7 +2301,7 @@ Its other keys are left out here. To list the profiles with
 [no session limit](#no-session-limit):
 
 ```bash
-amplihack profile usage --json | jq -r '.claude[] | select(.session_limit == false) | .profile'
+amplihack profile usage --json | jq -r '.[] | select(.session_limit == false) | .profile'
 ```
 
 ```
@@ -2317,8 +2310,9 @@ weekly
 
 ##### Codex JSON rows
 
-Each `codex` row is one [Codex account](#codex-accounts), in the same order
-as the text rows. For the `ggrant`, `hhale` and `kkim` rows of the
+Each row of `codex` in [`--summary-json`](#summary-json) is one
+[Codex account](#codex-accounts), in the same order as the text rows.
+[`--json`](#json-output) has no Codex rows. For the `ggrant`, `hhale` and `kkim` rows of the
 [example](#codex-accounts):
 
 ```json
@@ -2402,7 +2396,7 @@ them.
 To print the account `codex-pick`'s rule picks from the live readings:
 
 ```bash
-amplihack profile usage --json | jq -r '.codex[] | select(.next_choice) | .account'
+amplihack profile usage --summary-json | jq -r '.codex[] | select(.next_choice) | .account'
 ```
 
 ```
@@ -2412,7 +2406,7 @@ ggrant
 To list the Codex accounts that could not be read:
 
 ```bash
-amplihack profile usage --json | jq -r '.codex[] | select(.state == "timeout" or .state == "error") | "\(.account): \(.error)"'
+amplihack profile usage --summary-json | jq -r '.codex[] | select(.state == "timeout" or .state == "error") | "\(.account): \(.error)"'
 ```
 
 ```
@@ -2614,11 +2608,10 @@ too.
 
 `--summary-json` prints one JSON object instead of the bar view and summary.
 stdout holds only the JSON; warnings go to stderr. `profiles` is exactly the
-`claude` array [`--json`](#json-output) would print in the same run, and
-`codex`, after `summary`, is exactly its `codex` array. The Claude rows are
-named `profiles` here and `claude` in `--json`; the summary JSON kept its
-original key when the Codex rows were added. For the run above, with only
-the first of the six rows shown and no Codex accounts:
+array [`--json`](#json-output) would print in the same run. `codex`, after
+`summary`, holds the [Codex rows](#codex-json-rows); this is the only JSON
+form that has them. For the run above, with only the first of the six rows
+shown and no Codex accounts:
 
 ```json
 {
@@ -2671,7 +2664,7 @@ the first of the six rows shown and no Codex accounts:
 | Key | Type | Meaning |
 |-----|------|---------|
 | `at` | string | When the summary was worked out: after the window readings and before any [spend probe](#spend-probe), so `--spend` never makes it later. |
-| `profiles` | array | The `claude` rows of [`--json`](#json-output), unchanged. |
+| `profiles` | array | The array of [`--json`](#json-output), unchanged. |
 | `summary` | object or `null` | `null` when there are no profiles or no row is a subscription profile. |
 | `summary.weekly_headroom_login_weeks` | number | Unweighted headroom, two decimal places. `0.0` with no valid reading. |
 | `summary.weekly_headroom_pct` | number or `null` | Unweighted headroom as a percentage of `valid_readings`, one decimal place. `null` with no valid reading. |
@@ -2691,7 +2684,8 @@ not finite is printed as `null`. Keys are only ever added, as for `--json`.
 Times differ by place, on purpose: inside `profiles`, `resets_at` keeps its
 `--json` form, Unix epoch seconds, so the array matches `--json` byte for
 byte; `at` and every time in `summary` are ISO 8601 UTC strings ending in
-`Z`. The times in `codex` are as in `--json`. To read the runway in a script:
+`Z`. The times in `codex` are as described under
+[Codex JSON rows](#codex-json-rows). To read the runway in a script:
 
 ```bash
 amplihack profile usage --summary-json | jq '.summary.runway_hours'
@@ -2940,8 +2934,8 @@ recorded or noted.
 
 With no profiles, the bar view and `--table` print
 `` no profiles; create one with `amplihack profile add <name>` `` followed by
-the [Codex block](#codex-accounts), the JSON form prints
-`{"claude":[],"codex":[...]}`, and the summary JSON form prints
+the [Codex block](#codex-accounts), the JSON form prints `[]`, and the
+summary JSON form prints
 `{"at":"<time>","profiles":[],"summary":null,"codex":[...]}`.
 
 `--table` with `--json`, and `--utc` with `--json` or `--table`, are usage

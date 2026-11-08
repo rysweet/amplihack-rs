@@ -17,6 +17,10 @@
 //! (`amplihack_utils::codex_capacity`) on a thread started before the Claude
 //! probes, and printed after the Claude output (`usage_codex`). Codex rows
 //! never reach the recording, the history, the summary or the exit status.
+//! `--json` stays the bare array of Claude rows it has always been, and does
+//! not read Codex at all: scripts on the owner's host index it with `.[]` and
+//! `.[0]`. The Codex rows are in `--summary-json`, which was already an
+//! object, under `codex`.
 
 use super::auto_switch::{self, Observation, ObservedWindow, RecordOutcome};
 use super::capacity_summary::{self, Summary};
@@ -210,7 +214,7 @@ pub(super) enum Output {
     Bars,
     /// The `--table` text table, then the capacity summary.
     Table,
-    /// The `--json` object: the Claude rows and the Codex rows (#2001).
+    /// The `--json` array of Claude rows. It never holds Codex rows (#2001).
     Json,
     /// One object: the Claude rows, the capacity summary and the Codex rows.
     SummaryJson,
@@ -255,8 +259,10 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     }
     let profiles = selected_profiles(store, names)?;
     // Issue #2001: names select Claude profiles only; with none, every
-    // Codex account is read alongside the Claude probes.
-    let codex = names.is_empty().then(CodexRead::start);
+    // Codex account is read alongside the Claude probes. `--json` keeps its
+    // array of Claude rows, so it has no place for Codex rows and skips the
+    // read.
+    let codex = (names.is_empty() && output != Output::Json).then(CodexRead::start);
     if profiles.is_empty() {
         let codex = codex.map(CodexRead::finish);
         print_empty(output, &time, codex.as_ref());
@@ -566,7 +572,7 @@ fn codex_json(codex: Option<&CodexView>) -> Vec<CodexJsonRow> {
 fn print_empty(output: Output, time: &TimeView, codex: Option<&CodexView>) {
     let rows = codex_json(codex);
     match output {
-        Output::Json => println!("{}", render_json(&[], &rows)),
+        Output::Json => println!("{}", render_json(&[])),
         Output::SummaryJson => {
             println!("{}", render_summary_json(now_secs(), &[], None, &rows))
         }
@@ -855,7 +861,7 @@ fn print_output(
             }
             print_codex_text(output, codex, time);
         }
-        Output::Json => println!("{}", render_json(rows, &codex_rows)),
+        Output::Json => println!("{}", render_json(rows)),
         Output::SummaryJson => {
             println!("{}", render_summary_json(at, rows, summary, &codex_rows))
         }
@@ -1899,22 +1905,15 @@ struct JsonRow<'a> {
     raw: Option<&'a Raw>,
 }
 
-#[derive(Serialize)]
-struct JsonOutput<'a> {
-    claude: Vec<JsonRow<'a>>,
-    codex: &'a [CodexJsonRow],
-}
-
-/// The stable interface (issue #2001): one object, `claude`, the array of
-/// Claude rows in display order, and `codex`, the Codex rows. Strings use
-/// JSON escaping and are not otherwise cleaned.
-pub(super) fn render_json(rows: &[Row], codex: &[CodexJsonRow]) -> String {
-    let out = JsonOutput {
-        claude: json_rows(rows),
-        codex,
-    };
+/// The stable interface: one array of Claude rows in display order. Issue
+/// #2001 leaves it an array, with no Codex rows: host scripts read it with
+/// `.[]` and `.[0]`, and send stderr to `/dev/null`, so an object here would
+/// make them report no capacity without a message. Codex rows are in
+/// `--summary-json` only. Strings use JSON escaping and are not otherwise
+/// cleaned.
+pub(super) fn render_json(rows: &[Row]) -> String {
     // Plain structs of strings, numbers and options always serialise.
-    serde_json::to_string_pretty(&out).expect("usage rows serialise to JSON")
+    serde_json::to_string_pretty(&json_rows(rows)).expect("usage rows serialise to JSON")
 }
 
 /// The capacity summary after the table: a blank line, then six lines.
@@ -1936,8 +1935,8 @@ struct SummaryOutput<'a> {
 }
 
 /// `--summary-json` (issue #1797): `at` as ISO UTC, `profiles` exactly the
-/// `claude` array of `--json`, the summary, `null` when there is none, and
-/// (issue #2001) the same `codex` rows as `--json`.
+/// array of `--json`, the summary, `null` when there is none, and (issue
+/// #2001) `codex`, the Codex rows, which `--json` does not hold.
 pub(super) fn render_summary_json(
     at: i64,
     rows: &[Row],

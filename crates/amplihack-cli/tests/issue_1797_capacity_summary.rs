@@ -195,15 +195,11 @@ fn the_summary_follows_the_table_and_adds_no_probe() {
 fn json_has_no_summary_and_summary_json_holds_the_same_array() {
     let f = Fixture::new();
     let json: serde_json::Value = serde_json::from_str(&usage_ok(&f, &["--json"], &[])).unwrap();
-    // Issue #2001: `--json` is an object; the Claude rows are `claude`.
-    assert!(json["claude"].is_array(), "{json}");
-    assert_eq!(json["codex"], serde_json::json!([]), "{json}");
+    // Issue #2001 keeps `--json` a bare array of Claude rows.
+    assert!(json.is_array(), "{json}");
     let both: serde_json::Value =
         serde_json::from_str(&usage_ok(&f, &["--summary-json"], &[])).unwrap();
-    assert_eq!(
-        both["profiles"], json["claude"],
-        "the same rows in the same order"
-    );
+    assert_eq!(both["profiles"], json, "the same rows in the same order");
     assert_eq!(both["codex"], serde_json::json!([]));
     let at = both["at"].as_str().unwrap();
     assert!(at.ends_with('Z') && at.len() == 20, "{at}");

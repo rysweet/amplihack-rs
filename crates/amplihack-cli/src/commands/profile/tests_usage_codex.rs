@@ -14,7 +14,7 @@
 //!   header line to its last row, every line ending in `\n`;
 //! - `json_rows(&CodexView) -> Vec<CodexJsonRow>` (`Serialize`);
 //! - `window_label(WindowName, Option<u64>) -> String`;
-//! - `usage_cmd::render_json(&[Row], &[CodexJsonRow])` and
+//! - `usage_cmd::render_json(&[Row])`, which has no Codex rows, and
 //!   `usage_cmd::render_summary_json(at, &[Row], Option<&Summary>, &[CodexJsonRow])`.
 
 use super::usage_codex::{CodexView, bars_block, json_rows, table_block, view, window_label};
@@ -655,28 +655,17 @@ fn json_names_and_paths_are_escaped_not_cleaned() {
 }
 
 // ---------------------------------------------------------------------------
-// The whole `--json` and `--summary-json` objects
+// The whole `--json` array and `--summary-json` object
 // ---------------------------------------------------------------------------
 
 #[test]
-fn json_output_is_an_object_of_claude_and_codex() {
+fn json_output_stays_a_bare_array_that_old_jq_filters_read() {
+    // Host scripts run `.[] | select(.profile == $p)` and `.[0]` on `--json`
+    // with stderr sent to /dev/null. An object would make jq fail and the
+    // scripts report no capacity, so `--json` stays an array of Claude rows.
     use super::usage_cmd::render_json;
-    let codex = json_rows(&example());
-    let text = render_json(&[], &codex);
-    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
-    let mut k = keys(&v);
-    k.sort_unstable();
-    assert_eq!(k, ["claude", "codex"]);
-    assert_eq!(v["claude"], serde_json::json!([]));
-    assert_eq!(v["codex"], serde_json::to_value(&codex).unwrap());
-    assert!(
-        text.find("\"claude\"").unwrap() < text.find("\"codex\"").unwrap(),
-        "claude first: {text}"
-    );
-    assert_eq!(
-        serde_json::from_str::<serde_json::Value>(&render_json(&[], &[])).unwrap(),
-        serde_json::json!({"claude": [], "codex": []})
-    );
+    let v: serde_json::Value = serde_json::from_str(&render_json(&[])).unwrap();
+    assert_eq!(v, serde_json::json!([]));
 }
 
 #[test]
