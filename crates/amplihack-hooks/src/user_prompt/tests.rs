@@ -259,6 +259,8 @@ fn returns_additional_context_without_mutating_prompt() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = test_hook();
@@ -310,6 +312,8 @@ fn extracts_prompt_from_extra_prompt_key() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = test_hook();
@@ -339,6 +343,8 @@ fn extracts_prompt_from_user_message_dict() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = test_hook();
@@ -370,6 +376,8 @@ fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = test_hook();
@@ -381,10 +389,11 @@ fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
         })
         .unwrap();
 
-    let workflow_state = dir
+    let workflow_state = home
         .path()
-        .join(".claude/runtime/workflow_state/workflow-session.json");
+        .join(".amplihack/runtime/sessions/workflow-session/workflow_state.json");
     assert!(workflow_state.exists());
+    assert!(!dir.path().join(".claude/runtime/workflow_state").exists());
     assert!(
         result["hookSpecificOutput"]["additionalContext"]
             .as_str()
