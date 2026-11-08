@@ -1,6 +1,5 @@
 //! The checkpoint actions and the publication decisions they share.
 
-use super::advert::AdvertMap;
 use super::authority::{
     binding_str, capture_publication, file_identity, observe, private_dir, retain,
 };
@@ -127,7 +126,8 @@ pub(crate) fn dispatch(ctx: &mut Ctx, action: &str, args: &[OsString]) -> Res<Do
         "admit" => admit(ctx, arg(args, 0)?),
         "check" => ctx.check().map(|_| Vec::new()),
         "paths" => paths(ctx),
-        "stage-strict" => super::strict::stage_strict(args),
+        // Selectors::Ignored row: GitEnv::Inherit, from the row via ctx.
+        "stage-strict" => super::strict::stage_strict(ctx.git_env, args),
         "before" => before(ctx, &texts(args)?),
         "sync-fetch-mode" => sync_fetch_mode(ctx, &texts(args)?),
         "after" => after(ctx, args),
@@ -333,6 +333,7 @@ fn verify_pushed_ref(ctx: &mut Ctx, args: &[OsString]) -> Res<Done> {
             super::repo::os(expected),
         ],
         &env,
+        ctx.bounded_git_env()?,
     )?;
     // The alias is private transport preparation, not a user-facing remote
     // name. Keep the original verifier's origin/branch messages. The alias is
@@ -657,7 +658,14 @@ fn after(ctx: &mut Ctx, args: &[OsString]) -> Res<Vec<u8>> {
     let token = object(parse(&token_bytes)?, "malformed operation observation")?;
     // 918c :946 reads `sys.argv[3]` and `int(sys.argv[4])` only here.
     let op = arg(args, 1)?.to_owned();
-    let rc = py_int(arg(args, 2)?)?;
+    // 17.138 #2: ASCII digits within i64 (i64::MIN included). A refused
+    // value is the ValueError 918c caught as a refusal; it is never 0.
+    let text = arg(args, 2)?;
+    let rc = super::num::py_int(text, super::num::IntPolicy::AfterRc)
+        .and_then(|value| value.to_i64())
+        .ok_or_else(|| {
+            Fail::Refusal(format!("invalid literal for int() with base 10: '{text}'"))
+        })?;
     let (record, actual) = ctx.load_authority()?;
     let token_head = get_str(&token, "head")?.to_owned();
     observe(
@@ -852,19 +860,19 @@ fn advertised_ref(args: &[OsString]) -> Res<Lookup> {
     let file = super::indexed(args, 0)?;
     let raw = std::fs::read(file).map_err(|e| Fail::Crash(format!("OSError: {e}")))?;
     let target = super::indexed(args, 1)?.as_bytes().to_vec();
+    // cc 00:42Z: the status is full Python int(): Unicode Nd digits, any
+    // size, underscores and surrounding whitespace. ORIGIN_REF_PY only asks
+    // `rc == 2`, and so does `origin_ref_lookup`; the exact comparison is
+    // made on the normalised value, so nothing else can become 2.
     let rc = super::indexed(args, 2)?
         .to_str()
         .ok_or_else(|| Fail::Crash("ValueError: non-UTF-8 status".into()))
-        .and_then(|text| py_int(text).map_err(|_| Fail::Crash(format!("ValueError: {text}"))))?;
-    let advertisement = AdvertMap::parse(
-        &raw,
-        rc.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-    )
-    .map_err(Fail::Advert)?;
-    Ok(match advertisement.tip(&target) {
-        Some(_) => Lookup::Present,
-        None => Lookup::Absent,
-    })
+        .and_then(|text| {
+            super::num::py_int(text, super::num::IntPolicy::AdvertisedRc)
+                .ok_or_else(|| Fail::Crash(format!("ValueError: {text}")))
+        })?;
+    let rc = if rc.equals_small(2) { 2 } else { 0 };
+    super::advert::origin_ref_lookup(&raw, &target, rc).map_err(Fail::Advert)
 }
 
 // ---------------------------------------------------- publication decisions
@@ -1180,31 +1188,6 @@ pub(crate) fn push_selection(record: &Map<String, Value>, argv: &[&str]) -> Res<
         )?;
     }
     Ok(())
-}
-
-/// Python's `int(text)` for a base-10 string: surrounding whitespace, one
-/// sign, and single underscores between digits. Anything else is the
-/// `ValueError` 918c caught as a refusal.
-pub(crate) fn py_int(text: &str) -> Res<i64> {
-    let invalid = || Fail::Refusal(format!("invalid literal for int() with base 10: '{text}'"));
-    let body = text.trim_matches(|c: char| c.is_whitespace());
-    let (negative, digits) = match body.as_bytes().first() {
-        Some(b'-') => (true, &body[1..]),
-        Some(b'+') => (false, &body[1..]),
-        _ => (false, body),
-    };
-    let bytes = digits.as_bytes();
-    let well_formed = !bytes.is_empty()
-        && bytes.first().is_some_and(u8::is_ascii_digit)
-        && bytes.last().is_some_and(u8::is_ascii_digit)
-        && bytes.iter().all(|b| b.is_ascii_digit() || *b == b'_')
-        && !digits.contains("__");
-    if !well_formed {
-        return Err(invalid());
-    }
-    let clean: String = digits.chars().filter(char::is_ascii_digit).collect();
-    let magnitude: i64 = clean.parse().map_err(|_| invalid())?;
-    Ok(if negative { -magnitude } else { magnitude })
 }
 
 #[cfg(test)]

@@ -1,0 +1,148 @@
+# Corpus for `stage-strict`, captured from the 918c256cf Python (python3 3.14.10,
+# unidata 16.0.0) by ~/.amplihack/work/pr2020-corpus/capture.py. @ROOT@ is the
+# canonicalised temp root unless the case sets raw_path = true.
+
+[[case]]
+name = "missing_path_list"
+argv = ["@ROOT@/tmp/list"]
+setup = "quiet_repo"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "stage_workflow_changes: strict refusal: [Errno 2] No such file or directory: '@ROOT@/tmp/list'\n"
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#missing_path_list"
+
+[[case]]
+name = "path_list_is_a_directory"
+argv = ["@ROOT@/tmp"]
+setup = "quiet_repo"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "stage_workflow_changes: strict refusal: path list must be a regular file\n"
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#path_list_is_a_directory"
+
+[[case]]
+name = "empty_path_list_stages_nothing"
+argv = ["@ROOT@/tmp/list"]
+files = { "tmp/list" = "" }
+setup = "quiet_repo"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+expect_files = { ".git/index" = "unchanged" }
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#empty_path_list_stages_nothing"
+
+[[case]]
+name = "unterminated_path_list"
+argv = ["@ROOT@/tmp/list"]
+files = { "tmp/list" = "README" }
+setup = "quiet_repo"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "stage_workflow_changes: strict refusal: unterminated path list\n"
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#unterminated_path_list"
+
+[[case]]
+name = "duplicate_path"
+argv = ["@ROOT@/tmp/list"]
+files = { "tmp/list" = "README\u0000README\u0000" }
+setup = "quiet_repo"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "stage_workflow_changes: strict refusal: duplicate path\n"
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#duplicate_path"
+
+[[case]]
+name = "parent_component_refused"
+argv = ["@ROOT@/tmp/list"]
+files = { "tmp/list" = "../x\u0000" }
+setup = "quiet_repo"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "stage_workflow_changes: strict refusal: path must be an exact worktree-relative identity\n"
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#parent_component_refused"
+
+[[case]]
+name = "absolute_path_refused"
+argv = ["@ROOT@/tmp/list"]
+files = { "tmp/list" = "/etc/passwd\u0000" }
+setup = "quiet_repo"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "stage_workflow_changes: strict refusal: path must be an exact worktree-relative identity\n"
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#absolute_path_refused"
+
+[[case]]
+name = "missing_untracked_path"
+argv = ["@ROOT@/tmp/list"]
+files = { "tmp/list" = "nope\u0000" }
+setup = "quiet_repo"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "stage_workflow_changes: strict refusal: missing untracked path\n"
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#missing_untracked_path"
+
+[[case]]
+name = "directory_selector_refused"
+argv = ["@ROOT@/tmp/list"]
+files = { "tmp/list" = "d\u0000", "a/d/f" = "x\n" }
+setup = "quiet_repo"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "stage_workflow_changes: strict refusal: directory or special-file selector\n"
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#directory_selector_refused"
+
+[[case]]
+name = "non_directory_parent"
+argv = ["@ROOT@/tmp/list"]
+files = { "tmp/list" = "README/x\u0000" }
+setup = "quiet_repo"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "stage_workflow_changes: strict refusal: non-directory parent\n"
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#non_directory_parent"
+
+[[case]]
+name = "new_file_is_staged"
+argv = ["@ROOT@/tmp/list"]
+files = { "tmp/list" = "new.txt\u0000", "a/new.txt" = "new\n" }
+setup = "quiet_repo"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+expect_files = { ".git/index" = "changed" }
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#new_file_is_staged"
+
+[[case]]
+name = "extra_arguments_are_ignored"
+argv = ["@ROOT@/tmp/list", "extra"]
+files = { "tmp/list" = "new.txt\u0000", "a/new.txt" = "new\n" }
+setup = "quiet_repo"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+expect_files = { ".git/index" = "changed" }
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#extra_arguments_are_ignored"
+
+[[case]]
+name = "inherited_index_selector_is_honoured"
+argv = ["@ROOT@/tmp/list"]
+env = { GIT_INDEX_FILE = "@ROOT@/alt.idx" }
+files = { "tmp/list" = "new.txt\u0000", "a/new.txt" = "new\n" }
+setup = "alt_index"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+expect_files = { ".git/index" = "unchanged", "@ROOT@/alt.idx" = "present" }
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#inherited_index_selector_is_honoured"
+
+[[case]]
+name = "inherited_git_dir_selects_the_other_repository"
+argv = ["@ROOT@/tmp/list"]
+env = { GIT_DIR = "@ROOT@/b/.git", GIT_WORK_TREE = "@ROOT@/b" }
+files = { "tmp/list" = "new.txt\u0000", "b/new.txt" = "new\n" }
+setup = "two_repos_a_b"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+expect_files = { "@ROOT@/a/.git" = "unchanged", "@ROOT@/b/.git/index" = "changed" }
+provenance = "python-918c256cf:workflow_stage_changes.sh:69 STRICT_PATHS_PY#inherited_git_dir_selects_the_other_repository"

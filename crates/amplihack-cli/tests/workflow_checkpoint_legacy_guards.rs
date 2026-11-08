@@ -8,8 +8,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use sha2::{Digest, Sha256};
-
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -20,8 +18,6 @@ fn root() -> PathBuf {
 fn read(rel: &str) -> String {
     fs::read_to_string(root().join(rel)).unwrap_or_else(|e| panic!("{rel}: {e}"))
 }
-
-const FIXTURES: &str = "crates/amplihack-cli/tests/fixtures/workflow_checkpoint";
 
 const WRAPPERS: [&str; 4] = [
     "amplifier-bundle/tools/workflow_publish_checkpoint.sh",
@@ -40,65 +36,8 @@ fn at_918c(rel: &str) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
-// ------------------------------------------------------------ fixtures
-
-#[test]
-fn legacy_fixture_bytes_match_their_sha256sums() {
-    let sums = read(&format!("{FIXTURES}/SHA256SUMS"));
-    let mut seen = 0;
-    for line in sums.lines().filter(|l| !l.trim().is_empty()) {
-        let (digest, name) = line.split_once("  ").expect("sha256sum format");
-        let bytes = fs::read(root().join(FIXTURES).join(name)).unwrap();
-        let got: String = Sha256::digest(&bytes)
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect();
-        assert_eq!(got, digest, "{name} changed (line-ending normalisation?)");
-        seen += 1;
-    }
-    assert!(seen >= 3, "the three D1 inputs must be listed");
-    for name in ["no-final-lf", "crlf", "mixed-oid-widths"] {
-        assert!(
-            sums.contains(&format!("legacy_parser/{name}.advert")),
-            "{name} not checksummed"
-        );
-    }
-}
-
-#[test]
-fn legacy_fixtures_are_protected_from_text_conversion() {
-    let attrs = read(&format!("{FIXTURES}/.gitattributes"));
-    assert!(
-        attrs.lines().any(|l| l.trim() == "* -text"),
-        "fixtures need `* -text`: {attrs}"
-    );
-}
-
-#[test]
-fn d1_packet_hashes_are_the_ones_cc_recorded() {
-    // From cc's result.json (input_sha256 per row).
-    let expected = [
-        (
-            "no-final-lf",
-            "59161683958a9adeaacaf650be033f302e118cdf7b2f739b2b8ada2ac088b337",
-        ),
-        (
-            "crlf",
-            "3de27459abf113af2fb4595d897bb57b03c55592afae3ed74e8c85250f5e3f60",
-        ),
-        (
-            "mixed-oid-widths",
-            "6b3d32ef35f078ce6d11b8c3ba8e2162460c98892014accd2e5db0d74b499dea",
-        ),
-    ];
-    let sums = read(&format!("{FIXTURES}/SHA256SUMS"));
-    for (name, digest) in expected {
-        assert!(
-            sums.contains(&format!("{digest}  legacy_parser/{name}.advert")),
-            "{name}"
-        );
-    }
-}
+// The D1 inputs are byte literals checked in
+// workflow_checkpoint_consensus_guards.rs (zero-A); no fixture file remains.
 
 // ------------------------------------------------------------ manifests
 
@@ -147,7 +86,7 @@ fn base64_is_pinned_to_0_22_1_in_amplihack_cli() {
 // ------------------------------------------------------------- docs
 
 #[test]
-fn reference_lists_only_the_two_17_126_authorised_changes() {
+fn reference_lists_only_the_approved_17_126_change() {
     let doc = read("docs/reference/workflow-checkpoint-cli.md");
     assert!(
         !doc.contains("Deliberate differences"),
@@ -169,13 +108,26 @@ fn reference_lists_only_the_two_17_126_authorised_changes() {
         .nth(1)
         .expect("the reference must have an Authorised changes (17.126) section");
     let section = section.split("\n## ").next().unwrap();
+    // The first table lists the authorised changes; the second lists the
+    // eight allowlist rows with their pin tests.
     let rows: Vec<&str> = section
         .lines()
-        .filter(|l| l.starts_with('|') && !l.contains("---"))
+        .skip_while(|l| !l.starts_with('|'))
+        .take_while(|l| l.starts_with('|'))
+        .filter(|l| !l.contains("---"))
         .skip(1)
         .collect();
-    assert_eq!(rows.len(), 2, "exactly two authorised rows: {rows:#?}");
-    assert!(rows.iter().all(|r| r.contains("79")), "{rows:#?}");
+    // bb approved the destination-read 79 at both sites and the 17.126
+    // stage-strict addendum (a real Git 79 passes through), nothing else.
+    assert_eq!(rows.len(), 2, "exactly two authorised changes: {rows:#?}");
+    assert!(
+        rows[0].contains("destination-is-head") && rows[0].contains("79"),
+        "{rows:#?}"
+    );
+    assert!(
+        rows[1].contains("`stage-strict`") && rows[1].contains("79"),
+        "{rows:#?}"
+    );
     assert!(read("docs/index.md").contains("reference/workflow-checkpoint-cli.md"));
 }
 
@@ -297,22 +249,30 @@ fn a_panic_is_not_mapped_to_78() {
 #[test]
 fn main_scopes_the_coded_exit_to_workflow_checkpoint() {
     let main = read("bins/amplihack/src/main.rs");
-    let internal = main
-        .split("if args.get(1).is_some_and(|arg| arg == \"internal\")")
+    let checkpoint = main
+        .split("arg == \"workflow-checkpoint\")")
         .nth(1)
-        .expect("internal branch")
-        .split("return;")
+        .expect("checkpoint branch")
+        .split("if args.get(1).is_some_and(|arg| arg == \"internal\") {")
         .next()
         .unwrap();
     assert!(
-        internal.contains("workflow-checkpoint"),
-        "pass-through is not scoped: {internal}"
+        checkpoint.contains("command_error::exit_code(&error)"),
+        "pass-through is not scoped: {checkpoint}"
     );
+    let generic = main
+        .split("if args.get(1).is_some_and(|arg| arg == \"internal\") {")
+        .nth(1)
+        .expect("generic internal branch")
+        .split("return;")
+        .next()
+        .unwrap();
+    assert!(!generic.contains("exit_code"), "{generic}");
     assert!(
-        internal.contains("eprintln!(\"error: {error:#}\")"),
-        "{internal}"
+        generic.contains("eprintln!(\"error: {error:#}\")"),
+        "{generic}"
     );
-    assert!(internal.contains("std::process::exit(1)"), "{internal}");
+    assert!(generic.contains("std::process::exit(1)"), "{generic}");
 }
 
 // ------------------------------------------------- inventory mapping

@@ -160,6 +160,31 @@ pub fn interactive_command() -> Command {
     command
 }
 
+/// A `git` command that keeps the caller's whole environment, including every
+/// repository selector in [`REPOSITORY_ENV_VARS`].
+///
+/// This is the deliberate exception to [`command`]. It removes nothing and
+/// sets nothing: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the rest
+/// reach git exactly as the caller set them, so the caller's selectors choose
+/// the repository and index, as `os.environ` did for the 918c256cf Python it
+/// replaces (#1554, P1).
+///
+/// It does not set `GIT_TERMINAL_PROMPT=0`. The Python never set it, and the
+/// committed P1 probe pins the inherited environment byte for byte; this
+/// reverses the consensus design's choice and is recorded in PR #2020. Its
+/// one route, `stage-strict`, runs only local commands (`rev-parse`,
+/// `ls-files`, `add`), which never prompt.
+///
+/// The only permitted caller is `git_command(GitEnv::Inherit)` in
+/// `amplihack-cli/src/workflow_checkpoint/repo.rs`, and that builder is
+/// chosen only by a `Selectors::Ignored` action row. The advertisement
+/// transports take `&Ctx` and refuse an inheriting row. Static guards in
+/// amplihack-cli fail on any other caller. Everything else uses [`command`]
+/// (#1278, #1764).
+pub fn selector_inheriting_command() -> Command {
+    Command::new("git")
+}
+
 /// The async twin of [`command`], for callers already inside a tokio runtime.
 #[cfg(feature = "tokio")]
 pub fn tokio_command() -> tokio::process::Command {
@@ -416,5 +441,67 @@ mod tests {
                 assert_scrubbed(name, builder.as_std());
             }
         }
+    }
+
+    /// `get_envs` reports a removed variable as `(name, None)`. The
+    /// inheriting builder reports no entry at all, so whatever the parent set
+    /// reaches the child.
+    #[test]
+    fn selector_inheriting_command_touches_no_environment_variable() {
+        let builder = selector_inheriting_command();
+        assert_eq!(builder.get_envs().count(), 0);
+        assert_eq!(builder.get_program(), "git");
+        assert_eq!(builder.get_args().count(), 0);
+        assert_eq!(builder.get_current_dir(), None);
+    }
+
+    /// Pins both builders side by side, so an edit to either is caught.
+    #[test]
+    fn command_strips_every_selector_and_the_inheriting_builder_strips_none() {
+        let strip = command();
+        let inherit = selector_inheriting_command();
+        for var in REPOSITORY_ENV_VARS {
+            let name = OsStr::new(var);
+            assert!(
+                strip.get_envs().any(|(k, v)| k == name && v.is_none()),
+                "command() must remove {var}"
+            );
+            assert!(
+                !inherit.get_envs().any(|(k, _)| k == name),
+                "selector_inheriting_command() must not touch {var}"
+            );
+        }
+        assert!(
+            strip
+                .get_envs()
+                .any(|(k, v)| k == OsStr::new(TERMINAL_PROMPT_VAR) && v == Some(OsStr::new("0")))
+        );
+    }
+
+    /// A real child: a selector set for the child reaches git.
+    #[test]
+    fn a_git_dir_given_to_the_inheriting_builder_selects_the_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let init = command_in(dir.path())
+            .args(["init", "-q", "repo"])
+            .status()
+            .unwrap();
+        assert!(init.success());
+        let git_dir = dir.path().join("repo/.git");
+        let out = selector_inheriting_command()
+            .current_dir(dir.path())
+            .env("GIT_DIR", &git_dir)
+            .args(["rev-parse", "--absolute-git-dir"])
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            std::path::PathBuf::from(String::from_utf8(out.stdout).unwrap().trim_end()),
+            std::fs::canonicalize(&git_dir).unwrap()
+        );
     }
 }

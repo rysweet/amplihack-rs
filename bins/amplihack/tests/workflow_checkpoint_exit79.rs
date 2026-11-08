@@ -94,37 +94,46 @@ fn the_wrapper_has_exactly_two_destination_is_head_sites() {
     assert_eq!(site_blocks().len(), 2, "{:#?}", site_blocks());
 }
 
+/// A real 79 from one `destination-is-head` site's read stops the wrapper
+/// with 79 (decision 17.126), through the engine and never python3.
+fn assert_site_reports_a_terminal_79(site: usize) {
+    let blocks = site_blocks();
+    let block = &blocks[site - 1];
+    let (out, sb, calls) = run_site(block, 79, "");
+    assert_eq!(
+        status(&out),
+        79,
+        "site {site}: 79 flattened\n{block}\nstderr: {}",
+        stderr(&out)
+    );
+    assert!(
+        fs::read_to_string(&calls)
+            .unwrap_or_default()
+            .contains("destination-is-head"),
+        "site {site}: the engine shim was never called"
+    );
+    assert!(
+        !sb.path().join("python3-was-called").exists(),
+        "site {site}: python3 ran"
+    );
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("reached:"));
+    assert!(
+        stderr(&out).contains("reason=publication-destination-inspection-failed"),
+        "site {site}: {}",
+        stderr(&out)
+    );
+}
+
+/// Allowlist row 17.126-dest-read-79-site-1.
 #[test]
-fn a_terminal_79_from_the_destination_read_is_reported_as_79_at_both_sites() {
-    for (n, block) in site_blocks().iter().enumerate() {
-        let (out, sb, calls) = run_site(block, 79, "");
-        assert_eq!(
-            status(&out),
-            79,
-            "site {}: 79 flattened\n{block}\nstderr: {}",
-            n + 1,
-            stderr(&out)
-        );
-        assert!(
-            fs::read_to_string(&calls)
-                .unwrap_or_default()
-                .contains("destination-is-head"),
-            "site {}: the engine shim was never called",
-            n + 1
-        );
-        assert!(
-            !sb.path().join("python3-was-called").exists(),
-            "site {}: python3 ran",
-            n + 1
-        );
-        assert!(!String::from_utf8_lossy(&out.stdout).contains("reached:"));
-        assert!(
-            stderr(&out).contains("reason=publication-destination-inspection-failed"),
-            "site {}: {}",
-            n + 1,
-            stderr(&out)
-        );
-    }
+fn site_1_reports_a_terminal_79_from_the_destination_read_as_79() {
+    assert_site_reports_a_terminal_79(1);
+}
+
+/// Allowlist row 17.126-dest-read-79-site-2.
+#[test]
+fn site_2_reports_a_terminal_79_from_the_destination_read_as_79() {
+    assert_site_reports_a_terminal_79(2);
 }
 
 #[test]

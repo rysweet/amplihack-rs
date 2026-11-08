@@ -1,0 +1,48 @@
+# Corpus for `cleanup-skip-result`, captured from the 918c256cf Python (python3 3.14.10,
+# unidata 16.0.0) by ~/.amplihack/work/pr2020-corpus/capture.py. @ROOT@ is the
+# canonicalised temp root unless the case sets raw_path = true.
+
+[[case]]
+name = "default_reason"
+argv = ["worktree_setup_path.sh not found"]
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"skipped\": true, \"admitted\": false, \"reason\": \"worktree_setup_path.sh not found\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_cleanup_checkpoint.sh:17 CLEANUP_SKIP_JSON#default_reason"
+
+[[case]]
+name = "quoted_reason"
+argv = ["say \"hi\" \\ there"]
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"skipped\": true, \"admitted\": false, \"reason\": \"say \\\"hi\\\" \\\\ there\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_cleanup_checkpoint.sh:17 CLEANUP_SKIP_JSON#quoted_reason"
+
+[[case]]
+name = "unicode_reason"
+argv = ["café  "]
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"skipped\": true, \"admitted\": false, \"reason\": \"caf\\u00e9 \\u2028\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_cleanup_checkpoint.sh:17 CLEANUP_SKIP_JSON#unicode_reason"
+
+[[case]]
+name = "empty_reason"
+argv = [""]
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"skipped\": true, \"admitted\": false, \"reason\": \"\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_cleanup_checkpoint.sh:17 CLEANUP_SKIP_JSON#empty_reason"
+
+[[case]]
+name = "extra_arguments_are_ignored"
+argv = ["r", "extra"]
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"skipped\": true, \"admitted\": false, \"reason\": \"r\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_cleanup_checkpoint.sh:17 CLEANUP_SKIP_JSON#extra_arguments_are_ignored"

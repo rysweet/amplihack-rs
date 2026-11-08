@@ -1,0 +1,39 @@
+# Corpus for `sync-fetch-mode`, captured from the 918c256cf Python (python3 3.14.10,
+# unidata 16.0.0) by ~/.amplihack/work/pr2020-corpus/capture.py. @ROOT@ is the
+# canonicalised temp root unless the case sets raw_path = true.
+
+[[case]]
+name = "no_descriptor"
+argv = []
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: invalid sync operation descriptor\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#no_descriptor"
+
+[[case]]
+name = "two_descriptors"
+argv = ["{}", "{}"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: invalid sync operation descriptor\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#two_descriptors"
+
+[[case]]
+name = "descriptor_not_json"
+argv = ["x"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Expecting value: line 1 column 1 (char 0)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#descriptor_not_json"
+
+[[case]]
+name = "descriptor_without_authority"
+argv = ["{\"path\":\"p\"}"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: authority record identity changed\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#descriptor_without_authority"

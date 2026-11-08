@@ -104,34 +104,10 @@ impl Sandbox {
         format!("{}:{}", self.shims().display(), host)
     }
 
-    /// An isolated command with the full hermetic environment applied.
+    /// An isolated command with the full hermetic environment applied. See
+    /// [`checkpoint_cmd`].
     pub fn command(&self, program: impl AsRef<OsStr>) -> Command {
-        let mut c = Command::new(program);
-        c.env_clear()
-            .env("PATH", self.path_env())
-            .env("HOME", self.home())
-            .env("TMPDIR", self.tmp())
-            .env("XDG_CONFIG_HOME", self.path().join("xdg/config"))
-            .env("XDG_CACHE_HOME", self.path().join("xdg/cache"))
-            .env("XDG_DATA_HOME", self.path().join("xdg/data"))
-            .env("XDG_STATE_HOME", self.path().join("xdg/state"))
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_AUTHOR_NAME", "Checkpoint Test")
-            .env("GIT_AUTHOR_EMAIL", "checkpoint@example.invalid")
-            .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00Z")
-            .env("GIT_COMMITTER_NAME", "Checkpoint Test")
-            .env("GIT_COMMITTER_EMAIL", "checkpoint@example.invalid")
-            .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
-            .env("AMPLIHACK_BIN", AMPLIHACK)
-            .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
-            .env("LC_ALL", "C")
-            .stdin(Stdio::null());
-        for name in FORBIDDEN_SELECTORS {
-            c.env_remove(name);
-        }
-        c
+        checkpoint_cmd(self, program)
     }
 
     /// `amplihack internal workflow-checkpoint <action> <args...>`.
@@ -321,4 +297,73 @@ pub fn oid1(c: char) -> String {
 /// A SHA-256 object ID made of one repeated hex digit.
 pub fn oid256(c: char) -> String {
     std::iter::repeat_n(c, 64).collect()
+}
+
+/// Inherited variables that can change what a checkpoint child or its Git
+/// does. Each is removed by name; nothing else of the host is relied on
+/// except PATH's system directories.
+const HOST_STATE_PREFIXES: [&str; 12] = [
+    "GIT_",
+    "RECIPE_VAR_",
+    "AMPLIHACK_",
+    "CANONICAL_STAGING_",
+    "CLAUDE",
+    "CODEX",
+    "PYTHON",
+    "XDG_",
+    "LC_",
+    "LANG",
+    "SSH_",
+    "TMPDIR",
+];
+
+/// The one way checkpoint tests build a binary or wrapper command (T3).
+///
+/// 1. `amplihack_git::scrub` removes every repository selector, which
+///    matters under pre-push, where GIT_DIR, GIT_WORK_TREE and
+///    GIT_INDEX_FILE are exported into `cargo test`;
+/// 2. the other inherited host state that could steer a child is removed
+///    by name, and the 918c FORBIDDEN_SELECTORS too;
+/// 3. HOME, TMPDIR, XDG_* and global Git config point into the sandbox, and
+///    PATH is the shim directory, then the host's.
+///
+/// A case adds its own selectors to the command it gets back.
+pub fn checkpoint_cmd(sb: &Sandbox, program: impl AsRef<OsStr>) -> Command {
+    let mut c = Command::new(program);
+    amplihack_git::scrub(&mut c);
+    for (name, _) in std::env::vars_os() {
+        let text = name.to_string_lossy();
+        if HOST_STATE_PREFIXES.iter().any(|p| text.starts_with(p)) {
+            c.env_remove(&name);
+        }
+    }
+    for name in FORBIDDEN_SELECTORS {
+        c.env_remove(name);
+    }
+    // A shell child (the wrappers run under `bash -c`) would source these
+    // before the wrapper, and could put back a selector removed above.
+    for name in ["BASH_ENV", "ENV", "BASH_FUNC_git%%", "CDPATH"] {
+        c.env_remove(name);
+    }
+    c.env("PATH", sb.path_env())
+        .env("HOME", sb.home())
+        .env("TMPDIR", sb.tmp())
+        .env("XDG_CONFIG_HOME", sb.path().join("xdg/config"))
+        .env("XDG_CACHE_HOME", sb.path().join("xdg/cache"))
+        .env("XDG_DATA_HOME", sb.path().join("xdg/data"))
+        .env("XDG_STATE_HOME", sb.path().join("xdg/state"))
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_AUTHOR_NAME", "Checkpoint Test")
+        .env("GIT_AUTHOR_EMAIL", "checkpoint@example.invalid")
+        .env("GIT_AUTHOR_DATE", "2026-01-01T00:00:00Z")
+        .env("GIT_COMMITTER_NAME", "Checkpoint Test")
+        .env("GIT_COMMITTER_EMAIL", "checkpoint@example.invalid")
+        .env("GIT_COMMITTER_DATE", "2026-01-01T00:00:00Z")
+        .env("AMPLIHACK_BIN", AMPLIHACK)
+        .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
+        .env("LC_ALL", "C")
+        .stdin(Stdio::null());
+    c
 }

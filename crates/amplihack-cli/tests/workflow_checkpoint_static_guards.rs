@@ -369,31 +369,50 @@ fn production_tmpdir_checks_are_unchanged() {
 
 // ------------------------------------------------------- Rust structure
 
-#[test]
-fn main_passes_only_checkpoint_statuses_through() {
+/// main.rs's two internal branches: the raw-argv checkpoint route, then
+/// every other internal command.
+fn main_internal_branches() -> (String, String) {
     let main = read("bins/amplihack/src/main.rs");
-    let internal = main
-        .split("if args.get(1).is_some_and(|arg| arg == \"internal\")")
-        .nth(1)
-        .expect("internal branch")
+    let checkpoint_start = main
+        .find("arg == \"workflow-checkpoint\")")
+        .expect("raw-argv checkpoint branch");
+    let rest = &main[checkpoint_start..];
+    let generic_start = rest
+        .find("if args.get(1).is_some_and(|arg| arg == \"internal\") {")
+        .expect("generic internal branch");
+    let checkpoint = rest[..generic_start].to_owned();
+    let generic = rest[generic_start..]
         .split("return;")
         .next()
-        .unwrap();
-    // The coded status is passed through only for the checkpoint variant;
-    // every other internal command keeps main's print-and-exit-1.
+        .unwrap()
+        .to_owned();
+    (checkpoint, generic)
+}
+
+#[test]
+fn main_passes_only_checkpoint_statuses_through() {
+    let (checkpoint, generic) = main_internal_branches();
+    // 17.138 #5: the checkpoint argv bypasses clap and reaches the gate.
     assert!(
-        internal.contains("InternalCommands::WorkflowCheckpoint"),
-        "{internal}"
+        checkpoint.contains("workflow_checkpoint::run_argv(&args[3..])"),
+        "{checkpoint}"
     );
     assert!(
-        internal.contains("if checkpoint && let Some(code) = command_error::exit_code(&error)"),
-        "{internal}"
+        !checkpoint.contains("Cli::parse_from"),
+        "clap must not see the checkpoint argv: {checkpoint}"
     );
+    // The coded status is passed through only here.
     assert!(
-        internal.contains("eprintln!(\"error: {error:#}\");"),
-        "{internal}"
+        checkpoint.contains("command_error::exit_code(&error)"),
+        "{checkpoint}"
     );
-    assert!(internal.contains("std::process::exit(1);"), "{internal}");
+    // Every other internal command keeps main's print-and-exit-1.
+    assert!(!generic.contains("exit_code"), "{generic}");
+    assert!(
+        generic.contains("eprintln!(\"error: {error:#}\");"),
+        "{generic}"
+    );
+    assert!(generic.contains("std::process::exit(1);"), "{generic}");
 }
 
 #[test]
@@ -437,7 +456,7 @@ fn no_profile_aborts_on_panic() {
 }
 
 /// Files with no file-system or process access.
-const PURE_MODULES: [&str; 2] = ["json.rs", "advert.rs"];
+const PURE_MODULES: [&str; 3] = ["json.rs", "json_errors.rs", "advert.rs"];
 
 #[test]
 fn checkpoint_module_has_the_planned_layout() {
@@ -448,7 +467,10 @@ fn checkpoint_module_has_the_planned_layout() {
         "authority.rs",
         "history.rs",
         "json.rs",
+        "json_errors.rs",
         "legacy_parity_tests.rs",
+        "num.rs",
+        "py_printable.rs",
         "repo.rs",
         "spec_tests.rs",
         "strict.rs",
@@ -818,4 +840,297 @@ fn no_test_spawns_python3_or_includes_a_py_fixture() {
             }
         }
     }
+}
+
+// ------------------------------------------------- C-a: main.rs and tokens
+
+fn rs_files_under(dir: &Path, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if p.file_name().is_some_and(|n| n == "target") {
+                continue;
+            }
+            rs_files_under(&p, out);
+        } else if p.extension().is_some_and(|x| x == "rs") {
+            out.push(p);
+        }
+    }
+}
+
+/// The checkpoint route flushes stdout and stderr before its one
+/// `std::process::exit`, which skips destructors.
+#[test]
+fn the_checkpoint_route_flushes_both_streams_before_it_exits() {
+    let (checkpoint, _) = main_internal_branches();
+    let exits: Vec<usize> = checkpoint
+        .match_indices("process::exit(")
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(exits.len(), 1, "{checkpoint}");
+    for flush in ["stdout().flush()", "stderr().flush()"] {
+        let at = checkpoint
+            .find(flush)
+            .unwrap_or_else(|| panic!("no {flush}: {checkpoint}"));
+        assert!(at < exits[0], "{flush} after the exit: {checkpoint}");
+    }
+}
+
+/// R2(b): the concat!-built token is confined to test sources.
+#[test]
+fn no_production_source_builds_the_interactive_token_with_concat() {
+    let mut files = Vec::new();
+    for top in ["crates", "bins"] {
+        rs_files_under(&root().join(top), &mut files);
+    }
+    let offenders: Vec<_> = files
+        .iter()
+        .filter(|p| {
+            p.strip_prefix(root())
+                .unwrap()
+                .components()
+                .any(|c| c.as_os_str() == "src")
+        })
+        .filter(|p| {
+            fs::read_to_string(p)
+                .unwrap_or_default()
+                .contains("concat!(\"interactive_\"")
+        })
+        .collect();
+    assert!(offenders.is_empty(), "{offenders:?}");
+}
+
+// ------------------------------------------- R12: selector commands
+
+/// selector_inheriting_command() changes no environment variable;
+/// command() still strips and sets the prompt variable.
+#[test]
+fn selector_inheriting_command_touches_no_environment_variable() {
+    let inherit = amplihack_git::selector_inheriting_command();
+    assert_eq!(inherit.get_envs().count(), 0);
+    assert_eq!(inherit.get_program(), "git");
+    let strip = amplihack_git::command();
+    let envs: std::collections::BTreeMap<_, _> = strip.get_envs().collect();
+    assert!(
+        envs.get(std::ffi::OsStr::new("GIT_DIR"))
+            .is_some_and(|v| v.is_none())
+    );
+    assert_eq!(
+        envs.get(std::ffi::OsStr::new("GIT_TERMINAL_PROMPT")),
+        Some(&Some(std::ffi::OsStr::new("0")))
+    );
+}
+
+// ------------------------------------------- R8: D1 fixtures
+
+#[test]
+fn the_legacy_parser_fixture_directory_is_gone() {
+    let fixtures = root().join("crates/amplihack-cli/tests/fixtures/workflow_checkpoint");
+    let dir = fixtures.join("legacy_parser");
+    assert!(!dir.exists(), "{} still exists", dir.display());
+    for name in [".gitattributes", "README.md"] {
+        if let Ok(text) = fs::read_to_string(fixtures.join(name)) {
+            assert!(
+                !text.contains(".advert"),
+                "{name} names a deleted .advert fixture"
+            );
+        }
+    }
+}
+
+// ------------------------------------------- R4/R10: docs
+
+#[test]
+fn the_reference_lists_exactly_the_eight_rows_each_with_its_pin_test() {
+    let doc = read("docs/reference/workflow-checkpoint-cli.md");
+    assert!(!doc.contains("Deliberate differences"));
+    for id in [
+        "17.138-1",
+        "17.138-2",
+        "17.138-3",
+        "17.138-4",
+        "17.138-6",
+        "17.126-dest-read-79-site-1",
+        "17.126-dest-read-79-site-2",
+        "17.126-stage-strict-79",
+    ] {
+        let line = doc
+            .lines()
+            .find(|l| l.contains(id))
+            .unwrap_or_else(|| panic!("docs: {id} not listed"));
+        assert!(line.contains('`'), "docs: {id} cites no pin_test: {line}");
+    }
+}
+
+// ------------------------------------------- R18: manifests
+
+#[test]
+fn root_cargo_toml_has_no_base64_and_no_added_comment() {
+    let root_toml = read("Cargo.toml");
+    assert!(
+        !root_toml.contains("base64"),
+        "base64 belongs in amplihack-cli only"
+    );
+    let cli = read("crates/amplihack-cli/Cargo.toml");
+    assert!(cli.lines().any(|l| l.trim() == "base64 = \"0.22.1\""));
+}
+
+// ------------------------------------------- 17.116: push-range provenance
+
+/// The functions that derive or check the outgoing range. The range comes
+/// only from the destination advertisement read at push time, so none of
+/// them may read a tracking ref or FETCH_HEAD. The sync paths in `after`,
+/// `sync_fetch_mode` and `publication` use FETCH_HEAD and refs/remotes as
+/// 918c's workflow_pr_head_sync.sh did, which is why this guard names
+/// function bodies rather than whole modules. A new range helper must be
+/// added here; the poisoned-ref behavioural test is the backstop.
+const PUSH_RANGE_FNS: [(&str, &str); 5] = [
+    ("actions.rs", "before"),
+    ("actions.rs", "destination_is_head"),
+    ("actions.rs", "push_selection"),
+    ("history.rs", "outgoing"),
+    ("repo.rs", "destination_tip"),
+];
+
+/// The code of `fn name(`'s body with comments and string contents blanked:
+/// braces are matched outside `//` and `/* */` comments, string literals
+/// (including raw strings) and char literals. String contents are kept,
+/// because a forbidden ref name would appear inside a string argument.
+/// Panics if the function is missing, so a rename cannot empty the guard.
+fn code_of_fn(text: &str, name: &str) -> String {
+    let start = text
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("fn {name} not found"));
+    let bytes = text.as_bytes();
+    let mut out = String::new();
+    let (mut depth, mut i, mut opened) = (0usize, start, false);
+    while i < bytes.len() {
+        let rest = &text[i..];
+        if rest.starts_with("//") {
+            i += rest.find('\n').unwrap_or(rest.len());
+            continue;
+        }
+        if rest.starts_with("/*") {
+            i += rest.find("*/").map_or(rest.len(), |e| e + 2);
+            continue;
+        }
+        if rest.starts_with("r#\"") || rest.starts_with("r\"") {
+            let hashes = rest[1..].bytes().take_while(|&b| b == b'#').count();
+            let open = 1 + hashes + 1;
+            let close = format!("\"{}", "#".repeat(hashes));
+            let end = rest[open..]
+                .find(&close)
+                .map_or(rest.len(), |e| open + e + close.len());
+            out.push_str(&rest[..end]);
+            i += end;
+            continue;
+        }
+        match bytes[i] {
+            b'"' => {
+                let mut j = i + 1;
+                while j < bytes.len() && bytes[j] != b'"' {
+                    j += if bytes[j] == b'\\' { 2 } else { 1 };
+                }
+                out.push_str(&text[i..=j.min(bytes.len() - 1)]);
+                i = j + 1;
+                continue;
+            }
+            b'\'' if bytes.get(i + 2) == Some(&b'\'') => {
+                i += 3;
+                continue;
+            }
+            b'\'' if bytes.get(i + 1) == Some(&b'\\') && bytes.get(i + 3) == Some(&b'\'') => {
+                i += 4;
+                continue;
+            }
+            b'{' => {
+                depth += 1;
+                opened = true;
+            }
+            b'}' => {
+                depth -= 1;
+                if opened && depth == 0 {
+                    out.push('}');
+                    return out;
+                }
+            }
+            _ => {}
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    panic!("fn {name}: unbalanced braces");
+}
+
+#[test]
+fn the_push_range_never_reads_tracking_refs_or_fetch_head() {
+    let forbidden = [
+        "FETCH_HEAD",
+        "refs/remotes",
+        "@{u}",
+        "@{upstream}",
+        "origin/",
+    ];
+    let mut hits = Vec::new();
+    for (file, name) in PUSH_RANGE_FNS {
+        let text = read(&format!(
+            "crates/amplihack-cli/src/workflow_checkpoint/{file}"
+        ));
+        let code = code_of_fn(&text, name);
+        for pattern in forbidden {
+            if code.contains(pattern) {
+                hits.push(format!("{file}::{name} contains {pattern:?}"));
+            }
+        }
+        // A name split across a macro's arguments would hide from the
+        // substring check, so the range code may not build strings that way.
+        if code.contains("concat!(") {
+            hits.push(format!("{file}::{name} builds a string with concat!"));
+        }
+    }
+    assert!(hits.is_empty(), "{hits:#?}");
+}
+
+/// Negative half: the extractor finds a planted pattern in code and in a
+/// string argument, ignores it in comments, and is not ended early by
+/// braces inside strings, raw strings or char literals.
+#[test]
+fn code_of_fn_sees_planted_patterns_and_skips_comments() {
+    let text = concat!(
+        "fn a() { let s = \"}{\"; let r = r#\"}\"#; let c = '}';\n",
+        "  // FETCH_HEAD in a comment\n",
+        "  /* refs/remotes { */ git(&[\"rev-parse\", \"FETCH_HEAD\"]) }\n",
+        "fn b() { /* FETCH_HEAD */ }\n",
+    );
+    let a = code_of_fn(text, "a");
+    assert!(a.contains("FETCH_HEAD"), "{a}");
+    assert!(!a.contains("refs/remotes"), "{a}");
+    assert!(!a.contains("in a comment"), "{a}");
+    assert!(!code_of_fn(text, "b").contains("FETCH_HEAD"));
+}
+
+/// Macro case: a pattern passed to a macro is code, and so is a `concat!`
+/// that could assemble one from pieces; braces inside the macro's strings do
+/// not end the body early.
+#[test]
+fn code_of_fn_sees_patterns_inside_macro_invocations() {
+    let text = concat!(
+        "fn m() { let a = format!(\"{}\", \"refs/remotes/x\"); ",
+        "let b = concat!(\"FETCH_\", \"HEAD\"); git(&[&a, b]) }\n",
+        "fn after() {}\n",
+    );
+    let m = code_of_fn(text, "m");
+    assert!(m.contains("refs/remotes"), "{m}");
+    assert!(m.contains("concat!("), "{m}");
+    assert!(m.ends_with("git(&[&a, b]) }"), "{m}");
+    assert!(!m.contains("after"), "{m}");
+}
+
+#[test]
+#[should_panic(expected = "fn missing not found")]
+fn code_of_fn_refuses_a_missing_function() {
+    code_of_fn("fn present() {}", "missing");
 }

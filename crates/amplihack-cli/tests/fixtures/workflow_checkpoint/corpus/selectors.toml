@@ -1,0 +1,81 @@
+# Corpus for `selectors`, captured from the 918c256cf Python (python3 3.14.10,
+# unidata 16.0.0) by ~/.amplihack/work/pr2020-corpus/capture.py. @ROOT@ is the
+# canonicalised temp root unless the case sets raw_path = true.
+
+[[case]]
+name = "no_selector_passes"
+argv = []
+setup = "none"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#no_selector_passes"
+
+[[case]]
+name = "git_dir_selector_refused"
+argv = []
+env = { GIT_DIR = "@ROOT@/a/.git" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: unsupported inherited Git selector\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#git_dir_selector_refused"
+
+[[case]]
+name = "git_ceiling_selector_refused"
+argv = []
+env = { GIT_CEILING_DIRECTORIES = "@ROOT@" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: unsupported inherited Git selector\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#git_ceiling_selector_refused"
+
+[[case]]
+name = "git_config_count_selector_refused"
+argv = []
+env = { GIT_CONFIG_COUNT = "0" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: unsupported inherited Git selector\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#git_config_count_selector_refused"
+
+[[case]]
+name = "git_index_file_selector_refused"
+argv = []
+env = { GIT_INDEX_FILE = "@ROOT@/idx" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: unsupported inherited Git selector\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#git_index_file_selector_refused"
+
+[[case]]
+name = "git_namespace_selector_refused"
+argv = []
+env = { GIT_NAMESPACE = "n" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: unsupported inherited Git selector\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#git_namespace_selector_refused"
+
+[[case]]
+name = "icase_pathspecs_selector_refused"
+argv = []
+env = { GIT_ICASE_PATHSPECS = "1" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: unsupported inherited Git selector\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#icase_pathspecs_selector_refused"
+
+[[case]]
+name = "extra_arguments_are_ignored"
+argv = ["x", "y"]
+setup = "none"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#extra_arguments_are_ignored"

@@ -3,7 +3,7 @@
 
 use super::advert::AdvertMap;
 use super::json::{b64, digest, literal, parse};
-use super::{Ctx, Fail, Res, io_refusal, refuse};
+use super::{Ctx, Fail, Res, Selectors, io_refusal, refuse};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -18,21 +18,70 @@ pub(crate) fn status(output: &Output) -> i32 {
     output.status.code().unwrap_or(-1)
 }
 
-/// A command for `program`. Git goes through `amplihack_git::command()`, which
-/// drops inherited repository variables and sets `GIT_TERMINAL_PROMPT=0`
-/// (issues #1278 and #1764); any other program is started as given.
-pub(crate) fn command_for(program: &str) -> Command {
-    if program == "git" {
-        amplihack_git::command()
-    } else {
-        Command::new(program)
+/// Which Git builder a spawn uses. It comes only from the action row's
+/// `Selectors` column (`From<Selectors>`), is stored once by
+/// [`Ctx::for_row`], and is never chosen by a handler. There is no default:
+/// every construction names the row or the builder.
+///
+/// `Strip` re-runs the selector refusal before every spawn (see
+/// [`git_command`]), so a bounded-route spawn refuses loudly when a selector
+/// is set instead of silently writing the caller's repository.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum GitEnv {
+    /// `amplihack_git::selector_inheriting_command()`: 918c ran git with
+    /// `os.environ` unchanged, so the caller's selectors choose the
+    /// repository and index.
+    Inherit,
+    /// `amplihack_git::command()`: selectors removed after `selectors()` has
+    /// refused any that were set (the 17.116 bounded route).
+    Strip,
+}
+
+impl From<Selectors> for GitEnv {
+    fn from(selectors: Selectors) -> Self {
+        match selectors {
+            Selectors::Ignored => GitEnv::Inherit,
+            Selectors::Context => GitEnv::Strip,
+        }
     }
 }
 
+/// The only place inside `workflow_checkpoint` that builds a Git child.
+///
+/// `Strip` checks `FORBIDDEN_SELECTORS` again before returning a command. On
+/// the bounded route `selectors()` has already refused by this point, so the
+/// check never changes a 918c outcome; it guarantees that no Git child starts
+/// on that route while a selector is set, whatever order a handler runs in.
+pub(crate) fn git_command(git_env: GitEnv) -> Res<Command> {
+    match git_env {
+        GitEnv::Inherit => Ok(amplihack_git::selector_inheriting_command()),
+        GitEnv::Strip => {
+            selectors()?;
+            Ok(amplihack_git::command())
+        }
+    }
+}
+
+/// A command for `program`. Git goes through [`git_command`]; any other
+/// program is started as given. A path to git (`/usr/bin/git`) is refused
+/// rather than started raw, so the builder choice cannot be bypassed.
+pub(crate) fn command_for(program: &str, git_env: GitEnv) -> Res<Command> {
+    if program == "git" {
+        return git_command(git_env);
+    }
+    if Path::new(program).file_name().is_some_and(|n| n == "git") {
+        return Err(Fail::Crash(format!(
+            "git must be run by name, not {program}"
+        )));
+    }
+    Ok(Command::new(program))
+}
+
 /// Run a command with the inherited environment plus `env`, no stdin. A
-/// command that cannot start is a refusal.
-pub(crate) fn run_cmd(program: &str, args: &[&OsStr], env: &Env) -> Res<Output> {
-    command_for(program)
+/// command that cannot start is a refusal. `git_env` has no default: every
+/// caller states which builder its row uses.
+pub(crate) fn run_cmd(program: &str, args: &[&OsStr], env: &Env, git_env: GitEnv) -> Res<Output> {
+    command_for(program, git_env)?
         .args(args)
         .stdin(Stdio::null())
         .envs(env.iter().map(|(k, v)| (k, v)))
@@ -40,15 +89,19 @@ pub(crate) fn run_cmd(program: &str, args: &[&OsStr], env: &Env) -> Res<Output> 
         .map_err(|e| Fail::Refusal(format!("could not run {program}: {e}")))
 }
 
-/// Run an advertisement transport. A transport that cannot start is the
+/// Run an advertisement transport: [`run_cmd`] for git with the builder
+/// from [`Ctx::bounded_git_env`]. A transport that cannot start is the
 /// caught `OSError` refusal 918c reported.
-pub(crate) fn run_transport(args: &[&OsStr], env: &Env) -> Res<Output> {
-    amplihack_git::command()
-        .args(args)
-        .stdin(Stdio::null())
-        .envs(env.iter().map(|(k, v)| (k, v)))
-        .output()
-        .map_err(|e| Fail::Refusal(format!("could not run git: {e}")))
+///
+/// Audit (918c256cf): the only callers are `publication_transport` and
+/// `destination_tip`, reached from `before`, `sync-fetch-mode`,
+/// `destination-is-head` and `verify-pushed-ref`, all `Selectors::Context`.
+/// `advertised-ref` (ORIGIN_REF_PY) reads a saved advertisement and spawns
+/// nothing; its `git ls-remote` runs in `workflow_pr_head_sync.sh`, whose
+/// own environment already inherits. Taking `&Ctx` rather than a `GitEnv`
+/// means no caller can hand a transport the inheriting builder.
+pub(crate) fn run_transport(ctx: &Ctx, args: &[&OsStr], env: &Env) -> Res<Output> {
+    run_cmd("git", args, env, ctx.bounded_git_env()?)
 }
 
 pub(crate) fn os(s: &str) -> &OsStr {
@@ -91,6 +144,18 @@ pub(crate) fn path_text(path: &Path) -> Res<&str> {
 }
 
 impl Ctx {
+    /// The builder for helpers that only the bounded (Context) route
+    /// reaches. Fails closed if one of them is ever reached from an Ignored
+    /// row, instead of silently stripping or inheriting.
+    pub(crate) fn bounded_git_env(&self) -> Res<GitEnv> {
+        match self.git_env {
+            GitEnv::Strip => Ok(GitEnv::Strip),
+            GitEnv::Inherit => Err(Fail::Crash(
+                "bounded-route Git helper reached from a selector-inheriting action".into(),
+            )),
+        }
+    }
+
     /// `git --literal-pathspecs -C <root> ARGS`. Exit 79 always leaves with
     /// 79. Other failures refuse, unless `optional`, which yields no output.
     /// Git errors can repeat a credential-bearing URL, so only the status is
@@ -101,7 +166,7 @@ impl Ctx {
         let mut full: Vec<&OsStr> =
             vec![os("--literal-pathspecs"), os("-C"), self.root.as_os_str()];
         full.extend_from_slice(args);
-        let output = run_cmd("git", &full, &env)?;
+        let output = run_cmd("git", &full, &env, self.bounded_git_env()?)?;
         match status(&output) {
             0 => Ok(output.stdout),
             79 => Err(Fail::Terminal79),
@@ -424,6 +489,7 @@ impl Ctx {
                 os("--git-common-dir"),
             ],
             &vec![("GIT_OPTIONAL_LOCKS".into(), "0".into())],
+            self.bounded_git_env()?,
         )?;
         refuse(
             status(&parent) == 0
@@ -485,6 +551,7 @@ impl Ctx {
                 os(r"^filter\..*\.(clean|process|required)$"),
             ],
             &base_env(),
+            self.bounded_git_env()?,
         )?;
         refuse(
             matches!(status(&configured), 0 | 1),
@@ -714,6 +781,7 @@ impl Ctx {
         ));
         env.push(("GIT_CONFIG_VALUE_0".into(), OsString::from_vec(push_url)));
         let resolved = run_transport(
+            self,
             &[
                 os("--literal-pathspecs"),
                 os("-C"),
@@ -746,6 +814,7 @@ impl Ctx {
     ) -> Res<Option<String>> {
         let (env, alias) = self.publication_transport(publication)?;
         let result = run_transport(
+            self,
             &[
                 os("--literal-pathspecs"),
                 os("-C"),

@@ -3,7 +3,8 @@
 use super::actions::{approved, row_paths};
 use super::json::{digest, parse, serial};
 use super::repo::{
-    canonical, env_os, env_text, get_obj, get_str, identity_of, os, path_text, run_cmd, status,
+    GitEnv, canonical, env_os, env_text, get_obj, get_str, identity_of, os, path_text, run_cmd,
+    status,
 };
 use super::{Ctx, Fail, Res, io_refusal, refuse};
 use serde_json::{Map, Value, json};
@@ -320,6 +321,7 @@ impl Ctx {
                 directory.as_os_str(),
             ],
             &env,
+            GitEnv::Strip,
         )?;
         refuse(
             status(&initialized) == 0,
@@ -339,6 +341,7 @@ impl Ctx {
                 os(new_head),
             ],
             &env,
+            GitEnv::Strip,
         )?;
         refuse(
             status(&reference) == 0,
@@ -379,6 +382,7 @@ impl Ctx {
                         os(before),
                     ],
                     &env,
+                    GitEnv::Strip,
                 )?;
                 refuse(
                     status(&merged) == 0,

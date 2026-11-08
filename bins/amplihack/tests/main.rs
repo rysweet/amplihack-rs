@@ -40,10 +40,16 @@ mod spec_conformance_process;
 mod workflow_checkpoint_actions;
 #[path = "workflow_checkpoint_binary_contract.rs"]
 mod workflow_checkpoint_binary_contract;
+#[path = "workflow_checkpoint_d1_literals.rs"]
+mod workflow_checkpoint_d1_literals;
 #[path = "workflow_checkpoint_exit79.rs"]
 mod workflow_checkpoint_exit79;
 #[path = "workflow_checkpoint_legacy_parity.rs"]
 mod workflow_checkpoint_legacy_parity;
+#[path = "workflow_checkpoint_p1_selectors.rs"]
+mod workflow_checkpoint_p1_selectors;
+#[path = "workflow_checkpoint_restorations.rs"]
+mod workflow_checkpoint_restorations;
 #[path = "workflow_checkpoint_support.rs"]
 mod workflow_checkpoint_support;
 #[path = "workflow_checkpoint_wrappers.rs"]

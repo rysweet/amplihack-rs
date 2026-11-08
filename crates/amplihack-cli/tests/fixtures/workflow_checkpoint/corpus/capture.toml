@@ -1,0 +1,134 @@
+# Corpus for `capture`, captured from the 918c256cf Python (python3 3.14.10,
+# unidata 16.0.0) by ~/.amplihack/work/pr2020-corpus/capture.py. @ROOT@ is the
+# canonicalised temp root unless the case sets raw_path = true.
+
+[[case]]
+name = "git_dir_selector_refused"
+argv = ["publish"]
+env = { GIT_DIR = "@ROOT@/a/.git" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: unsupported inherited Git selector\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#git_dir_selector_refused"
+
+[[case]]
+name = "git_ceiling_selector_refused"
+argv = ["publish"]
+env = { GIT_CEILING_DIRECTORIES = "@ROOT@" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: unsupported inherited Git selector\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#git_ceiling_selector_refused"
+
+[[case]]
+name = "git_config_count_selector_refused"
+argv = ["publish"]
+env = { GIT_CONFIG_COUNT = "0" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: unsupported inherited Git selector\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#git_config_count_selector_refused"
+
+[[case]]
+name = "missing_owner_task"
+argv = ["publish"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: missing parent owner task\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#missing_owner_task"
+
+[[case]]
+name = "blank_owner_task"
+argv = ["publish"]
+env = { RECIPE_VAR_task_description = "  " }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: missing parent owner task\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#blank_owner_task"
+
+[[case]]
+name = "inconsistent_task_identity"
+argv = ["publish"]
+env = { RECIPE_VAR_task_description = "corpus owner task", TASK_DESCRIPTION = "other" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: inconsistent parent task identity\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#inconsistent_task_identity"
+
+[[case]]
+name = "missing_worktree_setup"
+argv = ["publish"]
+env = { RECIPE_VAR_task_description = "corpus owner task" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Expecting value: line 1 column 1 (char 0)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#missing_worktree_setup"
+
+[[case]]
+name = "worktree_setup_not_an_object"
+argv = ["publish"]
+env = { RECIPE_VAR_task_description = "corpus owner task", RECIPE_VAR_worktree_setup = "[]" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: missing step-04 worktree ownership\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#worktree_setup_not_an_object"
+
+[[case]]
+name = "relative_worktree_path"
+argv = ["publish"]
+env = { RECIPE_VAR_task_description = "corpus owner task", RECIPE_VAR_worktree_setup = "{\"worktree_path\":\"rel\",\"branch_name\":\"feat/x\"}" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: invalid step-04 ownership\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#relative_worktree_path"
+
+[[case]]
+name = "empty_branch_name"
+argv = ["publish"]
+env = { RECIPE_VAR_task_description = "corpus owner task", RECIPE_VAR_worktree_setup = "{\"worktree_path\":\"@ROOT@\",\"branch_name\":\"\"}" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: invalid step-04 ownership\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#empty_branch_name"
+
+[[case]]
+name = "main_checkout_is_not_a_linked_worktree"
+argv = ["publish"]
+env = { RECIPE_VAR_task_description = "corpus owner task", RECIPE_VAR_worktree_setup = "{\"worktree_path\":\"@ROOT@/a\",\"branch_name\":\"feat/x\"}" }
+setup = "quiet_repo"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: not a linked worktree\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#main_checkout_is_not_a_linked_worktree"
+
+[[case]]
+name = "not_started_at_the_worktree_top"
+argv = ["publish"]
+env = { RECIPE_VAR_task_description = "corpus owner task", RECIPE_VAR_worktree_setup = "{\"worktree_path\":\"@ROOT@/a\",\"branch_name\":\"feat/x\"}" }
+setup = "quiet_repo"
+cwd = "@ROOT@"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: checkpoint must start at the owned worktree top\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#not_started_at_the_worktree_top"
+
+[[case]]
+name = "nonexistent_raw_worktree_path"
+argv = ["publish"]
+env = { RECIPE_VAR_task_description = "corpus owner task", RECIPE_VAR_worktree_setup = "{\"worktree_path\":\"/nonexistent-wf-corpus\",\"branch_name\":\"feat/x\"}" }
+setup = "none"
+raw_path = true
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: checkpoint must start at the owned worktree top\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#nonexistent_raw_worktree_path"

@@ -10,6 +10,7 @@
 
 use std::ffi::OsStr;
 use std::num::NonZeroI32;
+use std::os::unix::ffi::OsStrExt;
 
 use serde_json::{Value, json};
 
@@ -60,7 +61,7 @@ fn unknown_action_is_the_918c_refusal() {
 #[test]
 fn a_missing_action_is_the_918c_index_error() {
     assert_eq!(
-        crate::command_error::exit_code(&super::missing_action()),
+        crate::command_error::exit_code(&super::run_argv(&[]).unwrap_err()),
         Some(1)
     );
 }
@@ -462,7 +463,7 @@ fn literal_paths_refuse_dot_components_and_nul() {
 #[test]
 fn observations_are_written_only_after_admission() {
     let tmp = tempfile::tempdir().unwrap();
-    let mut ctx = super::Ctx::default();
+    let mut ctx = super::Ctx::for_row(ACTIONS.iter().find(|r| r.name == "check").unwrap());
     // Before admission there is no private directory: nothing is written.
     super::authority::observation(&ctx, &json!({"boundary": "refusal"})).unwrap();
     assert_eq!(std::fs::read_dir(tmp.path()).unwrap().count(), 0);
@@ -478,9 +479,172 @@ fn an_observation_write_error_is_reported_to_the_caller_only() {
     // run() ignores this error; the refusal keeps status 2. The missing
     // parent lies inside this test's own temporary directory.
     let tmp = tempfile::tempdir().unwrap();
-    let ctx = super::Ctx {
-        observation_directory: Some(tmp.path().join("missing-parent/checkpoint")),
-        ..Default::default()
-    };
+    let mut ctx = super::Ctx::for_row(ACTIONS.iter().find(|r| r.name == "check").unwrap());
+    ctx.observation_directory = Some(tmp.path().join("missing-parent/checkpoint"));
     assert!(super::authority::observation(&ctx, &json!({})).is_err());
+}
+
+// ------------------------------------------- P1: Git builder per action row
+
+use super::repo::GitEnv;
+
+const IGNORED_ROWS: [&str; 6] = [
+    "stage-strict",
+    "advertised-ref",
+    "sha256",
+    "admission-refused-result",
+    "cleanup-skip-result",
+    "worktree-path",
+];
+const CONTEXT_ROWS: [&str; 10] = [
+    "selectors",
+    "capture",
+    "admit",
+    "check",
+    "paths",
+    "before",
+    "after",
+    "destination-is-head",
+    "sync-fetch-mode",
+    "verify-pushed-ref",
+];
+
+#[test]
+fn every_ignored_row_maps_to_inherit() {
+    for name in IGNORED_ROWS {
+        let row = ACTIONS.iter().find(|r| r.name == name).expect(name);
+        assert_eq!(row.selectors, Selectors::Ignored, "{name}");
+        assert_eq!(GitEnv::from(row.selectors), GitEnv::Inherit, "{name}");
+    }
+}
+
+#[test]
+fn every_context_row_maps_to_strip() {
+    for name in CONTEXT_ROWS {
+        let row = ACTIONS.iter().find(|r| r.name == name).expect(name);
+        assert_eq!(row.selectors, Selectors::Context, "{name}");
+        assert_eq!(GitEnv::from(row.selectors), GitEnv::Strip, "{name}");
+    }
+}
+
+#[test]
+fn the_routing_audit_covers_the_whole_table_exactly_once() {
+    let mut listed: Vec<&str> = IGNORED_ROWS.iter().chain(&CONTEXT_ROWS).copied().collect();
+    listed.sort_unstable();
+    let mut table: Vec<&str> = ACTIONS.iter().map(|r| r.name).collect();
+    table.sort_unstable();
+    assert_eq!(listed, table);
+}
+
+#[test]
+fn ctx_for_row_takes_the_builder_from_the_row() {
+    for row in &ACTIONS {
+        assert_eq!(
+            super::Ctx::for_row(row).git_env,
+            GitEnv::from(row.selectors),
+            "{}",
+            row.name
+        );
+    }
+}
+
+#[test]
+fn bounded_helpers_refuse_an_inheriting_ctx() {
+    let ctx = super::Ctx::for_row(ACTIONS.iter().find(|r| r.name == "stage-strict").unwrap());
+    assert_eq!(ctx.git_env, GitEnv::Inherit);
+    assert!(matches!(ctx.bounded_git_env(), Err(Fail::Crash(_))));
+    let ctx = super::Ctx::for_row(ACTIONS.iter().find(|r| r.name == "check").unwrap());
+    assert_eq!(ctx.bounded_git_env().ok(), Some(GitEnv::Strip));
+}
+
+#[test]
+fn a_transport_from_an_inheriting_ctx_is_a_crash_and_starts_nothing() {
+    let ctx = super::Ctx::for_row(ACTIONS.iter().find(|r| r.name == "advertised-ref").unwrap());
+    let env = super::repo::base_env();
+    assert!(matches!(
+        super::repo::run_transport(&ctx, &[], &env),
+        Err(Fail::Crash(_))
+    ));
+}
+
+#[test]
+fn a_path_to_git_is_a_crash_and_is_never_started_raw() {
+    for builder in [GitEnv::Inherit, GitEnv::Strip] {
+        for program in ["/usr/bin/git", "./git", "bin/git"] {
+            assert!(
+                matches!(
+                    super::repo::command_for(program, builder),
+                    Err(Fail::Crash(_))
+                ),
+                "{program} {builder:?}"
+            );
+        }
+    }
+    assert!(super::repo::command_for("bash", GitEnv::Strip).is_ok());
+}
+
+// -------------------------------------------------- 17.138 #5: the gate
+
+#[test]
+fn gate_refuses_leading_dash_empty_non_utf8_and_unknown_names() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+    let refused: Vec<OsString> = [
+        "--help",
+        "-h",
+        "-V",
+        "--version",
+        "-x",
+        "--",
+        "-",
+        "",
+        "nope",
+        "Stage-strict",
+    ]
+    .iter()
+    .map(OsString::from)
+    .chain([OsString::from_vec(vec![b's', 0xff])])
+    .collect();
+    for name in refused {
+        match super::gate(std::slice::from_ref(&name)) {
+            Err(Fail::Refusal(r)) => {
+                assert_eq!(r, "unknown private checkpoint operation", "{name:?}");
+            }
+            other => panic!("{name:?}: {other:?}"),
+        }
+    }
+    assert!(matches!(super::gate(&[]), Err(Fail::Crash(_))));
+    let argv = [
+        OsString::from("stage-strict"),
+        OsString::from("--path-list"),
+    ];
+    let (row, rest) = super::gate(&argv).expect("valid action");
+    assert_eq!(row.name, "stage-strict");
+    assert_eq!(rest, &argv[1..]);
+}
+
+// ------------------------------------------------ 17.138 #1: decoding audit
+
+#[test]
+fn surrogateescape_audit_matches_decision_17_138_1() {
+    use super::Decoding;
+    let audit = super::SURROGATEESCAPE_AUDIT;
+    let kept = audit
+        .iter()
+        .filter(|(_, d)| *d == Decoding::Surrogateescape)
+        .count();
+    assert_eq!(kept, 4);
+    assert_eq!(audit.len() - kept, 4);
+    // Kept: invalid bytes become U+DC80..U+DCFF, as Python's decoder does.
+    assert_eq!(cjson::surrogateescape(b"a\xff"), vec![0x61, 0xdcff]);
+    assert_eq!(cjson::py_dumps_os(b"r\xfe"), "\"r\\udcfe\"");
+    // Refused: each RefusedNonUtf8 row's helper refuses with status 2.
+    let git_output = super::repo::text(vec![0xff]).unwrap_err();
+    assert!(matches!(&git_output, Fail::Refusal(r) if r == "non-UTF-8 Git output"));
+    let path = std::path::Path::new(std::ffi::OsStr::from_bytes(b"/p\xff"));
+    assert!(matches!(
+        super::repo::path_text(path),
+        Err(Fail::Refusal(_))
+    ));
+    assert_eq!(status(git_output), 2);
 }

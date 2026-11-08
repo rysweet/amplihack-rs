@@ -1,0 +1,52 @@
+# Corpus for `sha256`, captured from the 918c256cf Python (python3 3.14.10,
+# unidata 16.0.0) by ~/.amplihack/work/pr2020-corpus/capture.py. @ROOT@ is the
+# canonicalised temp root unless the case sets raw_path = true.
+
+[[case]]
+name = "abc"
+argv = []
+stdin = "abc"
+setup = "none"
+expect_status = 0
+expect_stdout = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1010#abc"
+
+[[case]]
+name = "empty_stdin"
+argv = []
+stdin = ""
+setup = "none"
+expect_status = 0
+expect_stdout = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1010#empty_stdin"
+
+[[case]]
+name = "no_stdin"
+argv = []
+setup = "none"
+expect_status = 0
+expect_stdout = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1010#no_stdin"
+
+[[case]]
+name = "arguments_are_ignored"
+argv = ["x"]
+stdin = "abc"
+setup = "none"
+expect_status = 0
+expect_stdout = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1010#arguments_are_ignored"
+
+[[case]]
+name = "unicode_input"
+argv = []
+stdin = "café\n"
+setup = "none"
+expect_status = 0
+expect_stdout = "7b49b9e063bd91a4f9252b413261f5557b9c570aa61516989499f64a62dbcdd6\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1010#unicode_input"

@@ -1,0 +1,64 @@
+# Corpus for `worktree-path`, captured from the 918c256cf Python (python3 3.14.10,
+# unidata 16.0.0) by ~/.amplihack/work/pr2020-corpus/capture.py. @ROOT@ is the
+# canonicalised temp root unless the case sets raw_path = true.
+
+[[case]]
+name = "rooted_path"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"worktree_path\":\"@ROOT@/wt\"}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "@ROOT@/wt\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow-publish.yaml:137#rooted_path"
+
+[[case]]
+name = "raw_absolute_path"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"worktree_path\":\"/srv/work tree\"}" }
+setup = "none"
+raw_path = true
+expect_status = 0
+expect_stdout = "/srv/work tree\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow-publish.yaml:137#raw_absolute_path"
+
+[[case]]
+name = "nested_value_is_python_str"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"worktree_path\":{\"x\":[1.5,1e-05,null,true]}}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{'x': [1.5, 1e-05, None, True]}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow-publish.yaml:137#nested_value_is_python_str"
+
+[[case]]
+name = "nested_quotes_and_unicode"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"worktree_path\":[\"it's\",\"café\",\"a\\nb\",\"\\u2028\"]}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "[\"it's\", 'café', 'a\\nb', '\\u2028']\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow-publish.yaml:137#nested_quotes_and_unicode"
+
+[[case]]
+name = "integer_value"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"worktree_path\":12345678901234567890}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "12345678901234567890\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow-publish.yaml:137#integer_value"
+
+[[case]]
+name = "arguments_are_ignored"
+argv = ["x"]
+env = { RECIPE_VAR_worktree_setup = "{\"worktree_path\":\"p\"}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "p\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow-publish.yaml:137#arguments_are_ignored"

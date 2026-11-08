@@ -1,0 +1,193 @@
+# Corpus for `advertised-ref`, captured from the 918c256cf Python (python3 3.14.10,
+# unidata 16.0.0) by ~/.amplihack/work/pr2020-corpus/capture.py. @ROOT@ is the
+# canonicalised temp root unless the case sets raw_path = true.
+
+[[case]]
+name = "present"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "0"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\n" }
+setup = "none"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#present"
+
+[[case]]
+name = "absent"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "0"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/y\n" }
+setup = "none"
+expect_status = 3
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#absent"
+
+[[case]]
+name = "empty_rc0"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "0"]
+files = { "tmp/saved" = "" }
+setup = "none"
+expect_status = 3
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#empty_rc0"
+
+[[case]]
+name = "empty_rc2"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "2"]
+files = { "tmp/saved" = "" }
+setup = "none"
+expect_status = 3
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#empty_rc2"
+
+[[case]]
+name = "rc2_with_records"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "2"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\n" }
+setup = "none"
+expect_status = 78
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#rc2_with_records"
+
+[[case]]
+name = "head_only"
+argv = ["@ROOT@/tmp/saved", "HEAD", "0"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tHEAD\n" }
+setup = "none"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#head_only"
+
+[[case]]
+name = "duplicate_ref"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "0"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\ncccccccccccccccccccccccccccccccccccccccc\trefs/heads/x\n" }
+setup = "none"
+expect_status = 78
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#duplicate_ref"
+
+[[case]]
+name = "uppercase_oid"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "0"]
+files = { "tmp/saved" = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\trefs/heads/x\n" }
+setup = "none"
+expect_status = 78
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#uppercase_oid"
+
+[[case]]
+name = "three_fields"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "0"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\textra\n" }
+setup = "none"
+expect_status = 78
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#three_fields"
+
+[[case]]
+name = "blank_interior"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "0"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\n\ncccccccccccccccccccccccccccccccccccccccc\trefs/heads/y\n" }
+setup = "none"
+expect_status = 78
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#blank_interior"
+
+[[case]]
+name = "d1_no_final_lf"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "0"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x" }
+setup = "none"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+provenance = "owner:D1:no-final-lf"
+
+[[case]]
+name = "d1_crlf"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "0"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\r\n" }
+setup = "none"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+provenance = "owner:D1:crlf"
+
+[[case]]
+name = "d1_mixed_oid_widths"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "0"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\nbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\trefs/heads/y\n" }
+setup = "none"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+provenance = "owner:D1:mixed-oid-widths"
+
+[[case]]
+name = "rc_surrounding_whitespace"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", " 2 \n"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\n" }
+setup = "none"
+expect_status = 78
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#rc_surrounding_whitespace"
+
+[[case]]
+name = "rc_arabic_indic_two"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "٢"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\n" }
+setup = "none"
+expect_status = 78
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#rc_arabic_indic_two"
+
+[[case]]
+name = "rc_underscore"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "0_2"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\n" }
+setup = "none"
+expect_status = 78
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#rc_underscore"
+
+[[case]]
+name = "rc_beyond_i64"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "99999999999999999999999"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\n" }
+setup = "none"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#rc_beyond_i64"
+
+[[case]]
+name = "rc_plus_sign"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "+2"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\n" }
+setup = "none"
+expect_status = 78
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#rc_plus_sign"
+
+[[case]]
+name = "rc_negative"
+argv = ["@ROOT@/tmp/saved", "refs/heads/x", "-2"]
+files = { "tmp/saved" = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\trefs/heads/x\n" }
+setup = "none"
+expect_status = 0
+expect_stdout = ""
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_pr_head_sync.sh:83-92 ORIGIN_REF_PY#rc_negative"

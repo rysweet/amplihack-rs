@@ -165,17 +165,17 @@ pub enum InternalCommands {
     /// Default-workflow publication checkpoint (#1554). Called only by the
     /// checkpoint tools and recipes; the contract is in
     /// `docs/reference/workflow-checkpoint-cli.md`.
-    #[command(hide = true)]
+    #[command(hide = true, disable_help_flag = true, disable_version_flag = true)]
     WorkflowCheckpoint(CheckpointArgs),
 }
 #[derive(clap::Args, Debug)]
 pub struct CheckpointArgs {
-    /// The action, matched by the engine against its closed table. Optional
-    /// so that a missing action is 918c's `IndexError` (status 1), not a
-    /// usage error.
-    action: Option<std::ffi::OsString>,
+    /// Raw argv after `workflow-checkpoint`. clap never chooses the action;
+    /// `workflow_checkpoint::gate` does (17.138 #5). The `amplihack` binary
+    /// bypasses clap for this subcommand altogether, so this route serves
+    /// in-process callers only.
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
-    args: Vec<std::ffi::OsString>,
+    argv: Vec<std::ffi::OsString>,
 }
 #[derive(clap::Args, Debug)]
 pub struct ValidationArgs {
@@ -195,10 +195,7 @@ pub(crate) fn run(command: InternalCommands) -> Result<()> {
     let args = match command {
         InternalCommands::ValidateRecipeRunner(args) => args,
         InternalCommands::WorkflowCheckpoint(checkpoint) => {
-            return match checkpoint.action {
-                Some(action) => crate::workflow_checkpoint::run(&action, checkpoint.args),
-                None => Err(crate::workflow_checkpoint::missing_action()),
-            };
+            return crate::workflow_checkpoint::run_argv(&checkpoint.argv);
         }
     };
     let result = (|| -> Result<Value> {

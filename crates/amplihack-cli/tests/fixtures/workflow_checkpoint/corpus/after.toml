@@ -1,0 +1,184 @@
+# Corpus for `after`, captured from the 918c256cf Python (python3 3.14.10,
+# unidata 16.0.0) by ~/.amplihack/work/pr2020-corpus/capture.py. @ROOT@ is the
+# canonicalised temp root unless the case sets raw_path = true.
+
+[[case]]
+name = "token_not_json"
+argv = ["x", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Expecting value: line 1 column 1 (char 0)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#token_not_json"
+
+[[case]]
+name = "token_without_path"
+argv = ["{}", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: 'path'\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#token_without_path"
+
+[[case]]
+name = "token_file_missing"
+argv = ["{\"path\":\"@ROOT@/tmp/op.json\",\"identity\":\"0:0\"}", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: [Errno 2] No such file or directory: '@ROOT@/tmp/op.json'\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#token_file_missing"
+
+[[case]]
+name = "token_identity_mismatch"
+argv = ["{\"path\":\"@ROOT@/tmp/op.json\",\"identity\":\"0:0\"}", "commit", "0"]
+files = { "tmp/op.json" = "{}" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: operation observation identity changed\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#token_identity_mismatch"
+
+[[case]]
+name = "json_bom"
+argv = ["﻿{}", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Unexpected UTF-8 BOM (decode using utf-8-sig): line 1 column 1 (char 0)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_bom"
+
+[[case]]
+name = "json_property_name"
+argv = ["{1:1}", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_property_name"
+
+[[case]]
+name = "json_colon_delimiter"
+argv = ["{\"a\" 1}", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Expecting ':' delimiter: line 1 column 6 (char 5)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_colon_delimiter"
+
+[[case]]
+name = "json_comma_delimiter"
+argv = ["[1 2]", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Expecting ',' delimiter: line 1 column 4 (char 3)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_comma_delimiter"
+
+[[case]]
+name = "json_trailing_comma_array"
+argv = ["[1,]", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Illegal trailing comma before end of array: line 1 column 3 (char 2)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_trailing_comma_array"
+
+[[case]]
+name = "json_trailing_comma_object"
+argv = ["{\"a\":1,}", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Illegal trailing comma before end of object: line 1 column 7 (char 6)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_trailing_comma_object"
+
+[[case]]
+name = "json_unterminated_string"
+argv = ["\"ab", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Unterminated string starting at: line 1 column 1 (char 0)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_unterminated_string"
+
+[[case]]
+name = "json_control_character"
+argv = ["\"a\tb\"", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Invalid control character at: line 1 column 3 (char 2)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_control_character"
+
+[[case]]
+name = "json_invalid_escape"
+argv = ["\"\\x\"", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Invalid \\escape: line 1 column 2 (char 1)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_invalid_escape"
+
+[[case]]
+name = "json_invalid_u_escape"
+argv = ["\"\\u12g4\"", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Invalid \\uXXXX escape: line 1 column 3 (char 2)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_invalid_u_escape"
+
+[[case]]
+name = "json_extra_data"
+argv = ["{} {}", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Extra data: line 1 column 4 (char 3)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_extra_data"
+
+[[case]]
+name = "json_multiline_position"
+argv = ["\n\n x", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: Expecting value: line 3 column 2 (char 3)\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_multiline_position"
+
+[[case]]
+name = "json_duplicate_field"
+argv = ["{\"a\":1,\"a\":2}", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: duplicate JSON field\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_duplicate_field"
+
+[[case]]
+name = "json_numeric_constant"
+argv = ["[NaN]", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: non-JSON numeric constant\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_numeric_constant"
+
+[[case]]
+name = "json_non_finite_number"
+argv = ["1e400", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: non-finite JSON number\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_non_finite_number"
+
+[[case]]
+name = "json_lone_surrogate"
+argv = ["\"\\ud800\"", "commit", "0"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: 'utf-8' codec can't encode character '\\ud800' in position 0: surrogates not allowed\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#json_lone_surrogate"

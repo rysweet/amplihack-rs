@@ -2,7 +2,7 @@
 title: amplihack internal workflow-checkpoint
 type: reference
 issues: [1554, 1914]
-decisions: [17.116, 17.126]
+decisions: [17.116, 17.126, 17.138]
 ---
 
 # `amplihack internal workflow-checkpoint` reference
@@ -29,6 +29,9 @@ No recipe or tool step needs `python3` for checkpoints. They need the
 - [JSON output](#json-output)
 - [Private files](#private-files)
 - [Authorised changes (17.126)](#authorised-changes-17126)
+- [Decision 17.138](#decision-17138)
+- [D1/D2 dispositions](#d1d2-dispositions)
+- [Unresolved differences for owner disposition](#unresolved-differences-for-owner-disposition)
 - [Tests](#tests)
 
 ## Invocation
@@ -44,8 +47,11 @@ workflow_checkpoint() { "${AMPLIHACK_BIN:-amplihack}" internal workflow-checkpoi
 ```
 
 The subcommand is hidden from `amplihack --help` and from
-`amplihack internal --help`. It accepts arguments that start with `-`, so
-path lists and refspecs pass through unchanged.
+`amplihack internal --help`. The `amplihack` binary reads the arguments
+after `internal workflow-checkpoint` itself, before the command-line parser
+sees them, so no argument is ever taken as a flag: `--help`, `-V` or `--` in
+the action position is an unknown action, and arguments after a valid action
+(path lists, refspecs, `--path-list`) pass through unchanged.
 
 `AMPLIHACK_BIN` is trusted on the same terms as `PATH`. The tools never derive
 it from worktree contents. `autodrive_loop.sh` and
@@ -65,7 +71,7 @@ it from worktree contents. `autodrive_loop.sh` and
 ## Exit status
 
 Each status is the one the 918c256cf Python returned for the same input. The
-two exceptions are listed under
+exceptions are listed under
 [Authorised changes (17.126)](#authorised-changes-17126).
 
 | Status | Meaning | Returned by |
@@ -75,7 +81,7 @@ two exceptions are listed under
 | 2 | Refusal. stderr has exactly one line, `checkpoint scope refusal: <reason>` (`stage_workflow_changes: strict refusal: <reason>` for `stage-strict`). stdout is empty. | every checkpoint action, `stage-strict` |
 | 3 | The exact ref is absent from a validated advertisement. stdout and stderr are empty. | `advertised-ref` only |
 | 78 | A malformed advertisement. stdout and stderr are empty. | `advertised-ref` only |
-| 79 | A Git command exited 79 (terminal policy status). Passed through unchanged; never reported as a refusal. stdout is empty. | every action that runs Git |
+| 79 | A Git command exited 79 (terminal policy status). Passed through unchanged; never reported as a refusal. stdout is empty. | every action that runs Git, `stage-strict` included (17.126 stage-strict addendum) |
 | any | The verifier's own status. The verifier's stdout is on stdout and its stderr on stderr, whatever the status. | `verify-pushed-ref` only |
 
 No failure path maps to 0.
@@ -111,8 +117,11 @@ with no source location or payload. This needs the release profile's
 `panic = "unwind"`, which the workspace `Cargo.toml` already has.
 
 **Unknown and missing actions.** An action not in the table exits 2 with
-`checkpoint scope refusal: unknown private checkpoint operation`. A missing
-action name exits 1, as `sys.argv[1]` did.
+`checkpoint scope refusal: unknown private checkpoint operation`. That
+includes an empty name, a name that is not UTF-8 and every name starting
+with `-` (`--help`, `-h`, `-V`, `--version`, `-x`, `--`, `-`), as the 918c
+`sys.argv[1]` lookup refused them (decision 17.138, row 5). A missing action
+name exits 1, as `sys.argv[1]` did.
 
 Only `internal workflow-checkpoint` passes a coded status through `main`.
 Every other internal command keeps its own behaviour; for example
@@ -130,7 +139,9 @@ exits 1.
 | Any other Git command failing | 2 | `Git inspection failed (exit <n>)` |
 | A Git or helper process that cannot start | 2 | `could not run <program>: <os error>` |
 | Reading or writing the index, capture, authority record, operation token, private history, replay directory or an observation | 2 | `<what>: <os error>` |
-| `after` with a non-integer status | 2 | `invalid literal for int() with base 10: '<value>'` |
+| `after` with a status Python's `int()` refuses, or (17.138 row 2) one with non-ASCII digits or outside the 64-bit signed range | 2 | `invalid literal for int() with base 10: '<value>'` |
+| `advertised-ref` with a status Python's `int()` refuses | 1 | `checkpoint internal error: ValueError: <value>` |
+| `stage-strict` with a path list that cannot be read | 2 | `[Errno <n>] <strerror>: '<path>'`, as Python's `OSError` printed it |
 | A missing positional argument | 1 | `checkpoint internal error: IndexError: list index out of range` |
 
 ## Actions
@@ -168,7 +179,7 @@ arguments are ignored unless the Python checked the count.
 | `worktree-path` | none | `RECIPE_VAR_worktree_setup` (JSON) | `str(worktree_path)` and `\n` | 0; 1 if the variable is unset, is not JSON, is not an object or has no `worktree_path` |
 | `admission-refused-result` | none | `RECIPE_VAR_worktree_setup`, optional | one-line `commit_result` JSON | always 0 |
 | `cleanup-skip-result` | `<reason>` | none | one-line skip JSON | 0; 1 without a reason |
-| `stage-strict` | `<nul-file>` | the NUL-terminated path list in `<nul-file>` | nothing; Git stages the paths | 0; 2 on refusal; 79 if Git exits 79 |
+| `stage-strict` | `<nul-file>` | the NUL-terminated path list in `<nul-file>` | nothing; Git stages the paths | 0; 2 on refusal, including any Git failure other than 79; 79 when Git exits 79 |
 | `advertised-ref` | `<saved-output-file> <ref> <ls-remote-rc>` | the saved `ls-remote` output | nothing | 0 present, 3 absent, 78 malformed, 1 unreadable file or non-integer status |
 
 None of these six looks at inherited Git selectors; the Python they replace
@@ -232,9 +243,18 @@ before the first index write, then passes the same bytes to
 `git --literal-pathspecs add --pathspec-from-file=- --pathspec-file-nul`.
 Paths are bytes; they are never converted to UTF-8.
 
+`stage-strict` reads only its first argument, as `sys.argv[1]` did: with no
+argument it exits 1 (`IndexError`), and extra arguments are ignored. Its Git
+children inherit every repository selector the caller set (`GIT_DIR`,
+`GIT_WORK_TREE`, `GIT_INDEX_FILE` and the rest), so the repository and index
+the caller selects are the ones staged; the caller's own repository is left
+alone. The first `rev-parse --show-toplevel` runs without `-C`; later calls
+use `-C <top>`, so a relative `GIT_INDEX_FILE` resolves against the top.
+
 On refusal stderr has `stage_workflow_changes: strict refusal: <reason>`
 (preceded by Git's own stderr when Git failed) and the exit status is 2.
-The reasons are:
+When a Git child exits 79, stderr has Git's own stderr only and the exit
+status is 79 (17.126 stage-strict addendum). The reasons are:
 
 | Reason | Cause |
 | --- | --- |
@@ -247,7 +267,8 @@ The reasons are:
 | `non-directory parent` | a parent component exists and is not a directory |
 | `directory or special-file selector` | the path names a directory, socket, FIFO or device |
 | `missing untracked path` | the path does not exist and is not tracked |
-| the operating-system error text | the list could not be opened or read |
+| `[Errno <n>] <strerror>: '<path>'` | the list could not be opened or read |
+| `Command '[...]' returned non-zero exit status <n>.` | a Git command failed with a status other than 79; the list is Python's repr of the argv, with the toplevel as `b'...'` (`died with <Signals.NAME: n>.` for a signal) |
 
 An empty list stages nothing and exits 0.
 
@@ -271,7 +292,14 @@ action applies the `ORIGIN_REF_PY` rules:
   `refs/`, and is matched byte for byte;
 - each `<oid>` is 40 or 64 lowercase hex digits on its own, so 40- and
   64-digit IDs may be mixed;
-- no name repeats, and transport status 2 with any record is malformed.
+- no name repeats, and transport status 2 with any record is malformed;
+- the status is read as Python's `int()` reads it: surrounding whitespace
+  (the set `int()` strips: ASCII tab to carriage return and space, plus
+  non-ASCII Unicode whitespace; U+001C..U+001F are refused), one sign, single
+  underscores between digits, any Unicode decimal digit (Arabic-Indic,
+  fullwidth and so on) and any size up to CPython's 4300-digit limit. A
+  value outside the 32-bit range equals neither 0 nor 2, so it never reads
+  as success or as "records with status 2".
 
 | Input | Exit |
 | --- | --- |
@@ -330,7 +358,11 @@ unit test pins it. `GIT_EXEC_PATH`, `GIT_SSH*` and `GIT_ASKPASS` are not on
 the list on purpose.
 
 `stage-strict` runs Git with the environment unchanged, as the Python it
-replaced did. `advertised-ref` runs no Git at all.
+replaced did: it neither removes a selector nor adds `GIT_TERMINAL_PROMPT`.
+`advertised-ref` runs no Git at all; its `ls-remote` runs in the shell. The
+action table's `Selectors` column decides which Git builder an action gets;
+a refusing action that is ever wrongly routed to the inheriting builder
+fails with status 1 rather than running Git.
 
 All Git calls use separate arguments and `--`; none goes through `sh -c`.
 Input to Git is written on a separate thread while stdout and stderr are
@@ -368,16 +400,66 @@ and create-new semantics, inside a private `0700` directory under the absolute
 
 ## Authorised changes (17.126)
 
-The port keeps the 918c256cf behaviour everywhere except these two rows,
-which decision 17.126 authorises.
+The port keeps the 918c256cf behaviour everywhere except these rows, which
+decision 17.126 and its stage-strict addendum authorise.
 
 | Site | 918c256cf | Now |
 | --- | --- | --- |
 | Both `destination-is-head` call sites in `workflow_publish_checkpoint.sh` | `\|\| { …; exit 1; }` turned a terminal 79 from the destination read into 1 | the real status is kept, so a terminal 79 exits 79 before any push |
-| `stage-strict` | Git exit 79 during `git add` was a strict refusal (2) | 79 is passed through unchanged |
+| `stage-strict` | a Git child's 79 was a `CalledProcessError`, reported as a strict refusal with status 2 | Git's stderr is written and the status is 79, with no refusal line |
 
-Any other legacy behaviour the port does not keep is listed in the PR for the
-owner's disposition; it is not an accepted change.
+The validator's allowlist has exactly these eight rows. Each is pinned by
+the named test, and no other disposition is accepted.
+
+| Row | Decision | Pinning test |
+| --- | --- | --- |
+| 17.138-1 | 17.138 | `surrogateescape_audit_matches_decision_17_138_1` |
+| 17.138-2 | 17.138 | `owner_17_138_2_after_refuses_nd_digits_and_values_outside_i64` |
+| 17.138-3 | 17.138 | `owner_17_138_3_a_top_level_lone_surrogate_worktree_path_exits_1` |
+| 17.138-4 | 17.138 | `records_refuse_a_field_containing_nul` |
+| 17.138-6 | 17.138 | `a_panic_maps_to_status_1_like_an_uncaught_python_exception` |
+| 17.126-dest-read-79-site-1 | 17.126 | `site_1_reports_a_terminal_79_from_the_destination_read_as_79` |
+| 17.126-dest-read-79-site-2 | 17.126 | `site_2_reports_a_terminal_79_from_the_destination_read_as_79` |
+| 17.126-stage-strict-79 | 17.126 | `stage_strict_passes_a_real_git_79_through` |
+
+Any other legacy behaviour the port does not keep is listed under
+[Unresolved differences for owner disposition](#unresolved-differences-for-owner-disposition);
+it is not an accepted change.
+
+## Decision 17.138
+
+The owner accepted differences 1 to 4 and 6 and asked for difference 5 to be
+restored. Each row is pinned by the named test.
+
+| Row | Difference | Disposition | Pinning test |
+| --- | --- | --- | --- |
+| 1. | Non-UTF-8 argument, environment, Git-output and private-path text is refused (status 2) where 918c carried `\udcXX` through with `surrogateescape`. The sites that keep `surrogateescape` are listed in `SURROGATEESCAPE_AUDIT`. | accepted | `surrogateescape_audit_matches_decision_17_138_1` |
+| 2. | `after <token> <op> <rc>` refuses an `rc` with non-ASCII digits or outside i64; i64::MIN is accepted. | accepted | `owner_17_138_2_after_refuses_nd_digits_and_values_outside_i64`, `after_accepts_every_i64_including_i64_min` |
+| 3. | `worktree-path` printing a string with a lone surrogate exits 1 (`UnicodeEncodeError` under a UTF-8 locale). | accepted | `owner_17_138_3_a_top_level_lone_surrogate_worktree_path_exits_1`, `print_of_a_json_value_is_python_str` |
+| 4. | `admit` refuses a record field containing NUL instead of writing it. | accepted | `records_refuse_a_field_containing_nul` |
+| 5. | Action names starting with `-` are refused as an unknown operation before any parser reads them. | restored | `owner_17_138_5_leading_dash_actions_are_unknown_private_checkpoint_operations`, `gate_refuses_leading_dash_empty_non_utf8_and_unknown_names` |
+| 6. | A panic is covered by a unit test only; no input makes the engine panic, and no test-only trigger is added. | accepted | `a_panic_maps_to_status_1_like_an_uncaught_python_exception` |
+
+## D1/D2 dispositions
+
+| Item | Disposition | Pinning test |
+| --- | --- | --- |
+| D1: a final advertisement record with no line feed | accepted with exit 0, as 918c | `d1_no_final_lf_literal_is_accepted_with_status_0` |
+| D1: a CRLF record | accepted with exit 0, as 918c | `d1_crlf_literal_is_accepted_with_status_0` |
+| D1: mixed 40- and 64-digit object IDs | accepted with exit 0, as 918c | `d1_mixed_oid_widths_literal_is_accepted_with_status_0` |
+| D1: truncated or non-hex object IDs | still malformed (78) | `d1_leniency_is_not_vacuous_truncated_and_non_hex_oids_are_still_78` |
+| D2: a substituted authority file | refused; the test keeps the old inode alive and checks that the substitute has a different (device, inode) first | `authority_refuses_substitution` |
+
+The D1 inputs are byte literals in `crates/amplihack-cli/tests/support/d1_literals.rs`,
+written into each test's own temporary directory, so no checkout rule or
+commit hook can rewrite them.
+
+## Unresolved differences for owner disposition
+
+| Difference | Current behaviour | Pinning test |
+| --- | --- | --- |
+| cc's 00:42Z request asks for full Python `int()` on the transport status. That is done for `advertised-ref`. Decision 17.138 row 2 keeps `after` narrower (ASCII digits within i64), and 918c accepted Unicode digits and big integers there too. The two rulings are kept action by action until the owner confirms. | `after` refuses; `advertised-ref` accepts | `owner_17_138_2_after_refuses_nd_digits_and_values_outside_i64` |
+| The bounded route builds its Git children with `amplihack_git::command()`, which removes `GIT_DISCOVERY_ACROSS_FILESYSTEM`, `GIT_INDEX_VERSION`, `GIT_PREFIX` and `GIT_QUARANTINE_PATH`. 918c's `git()` used `dict(os.environ, ...)` and passed them through. `command()` is shared outside the checkpoint and its body is pinned, so it is left unchanged until the owner decides. None of the four is in 918c's refusal list, so the bounded route still accepts them. | removed from bounded Git children; not refused | `frozen_set_is_the_disjoint_union_of_the_two_lists` |
 
 ## Tests
 

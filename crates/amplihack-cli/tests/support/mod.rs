@@ -2,6 +2,7 @@
 
 pub mod amplihack_bin;
 pub mod auto_drive_light;
+pub mod d1_literals;
 pub mod exec_stub;
 pub mod profile_1962;
 pub mod profile_default;

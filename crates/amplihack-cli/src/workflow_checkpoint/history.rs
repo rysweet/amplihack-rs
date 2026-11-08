@@ -6,8 +6,8 @@
 use super::authority::{file_identity, private_dir, retain};
 use super::json::{digest, parse, serial};
 use super::repo::{
-    Env, base_env, canonical, get_str, getuid, identity_of, lines, os, path_text, run_cmd, status,
-    strip_newlines, text,
+    Env, GitEnv, base_env, canonical, get_str, getuid, git_command, identity_of, lines, os,
+    path_text, run_cmd, status, strip_newlines, text,
 };
 use super::{Ctx, Fail, Res, io_refusal, refuse};
 use serde_json::{Map, Value, json};
@@ -46,7 +46,7 @@ fn history_command(directory: &Path, args: &[&str], env: Option<&Env>) -> Res<Ou
     let mut full: Vec<&OsStr> = vec![os("--literal-pathspecs"), git_dir.as_os_str()];
     full.extend(args.iter().map(|a| os(a)));
     let private = history_environment(directory);
-    let output = run_cmd("git", &full, env.unwrap_or(&private))?;
+    let output = run_cmd("git", &full, env.unwrap_or(&private), GitEnv::Strip)?;
     if status(&output) == 79 {
         return Err(Fail::Terminal79);
     }
@@ -201,6 +201,7 @@ impl Ctx {
                 directory.as_os_str(),
             ],
             &history_environment(directory),
+            GitEnv::Strip,
         )?;
         record(journal, "private-init", &initialized);
         if status(&initialized) == 79 {
@@ -222,7 +223,10 @@ impl Ctx {
             .create_new(true)
             .open(&seed_file)
             .map_err(io_refusal("private history seed"))?;
-        let mut command = amplihack_git::command();
+        // 918c CHECKPOINT_PY private history ran only after `context()` had
+        // refused every inherited selector, then pinned the repository with
+        // `-C root` / `--git-dir`. Context-only, so always Strip.
+        let mut command = git_command(GitEnv::Strip)?;
         command
             .args([
                 os("--literal-pathspecs"),
@@ -256,7 +260,7 @@ impl Ctx {
             status(&packed) == 0,
             "private history seed preparation failed",
         )?;
-        let imported = amplihack_git::command()
+        let imported = git_command(GitEnv::Strip)?
             .arg({
                 let mut git_dir = OsString::from("--git-dir=");
                 git_dir.push(directory);

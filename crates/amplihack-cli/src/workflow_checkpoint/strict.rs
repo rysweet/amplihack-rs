@@ -2,7 +2,7 @@
 //! of literal paths. Validate all of it before the first index write, then
 //! pass the same bytes to `git add`.
 
-use super::repo::{canonical, os, split_nul, status, strip_newlines};
+use super::repo::{GitEnv, canonical, git_command, split_nul, strip_newlines};
 use super::{Fail, Res};
 use std::collections::{BTreeSet, HashMap};
 use std::ffi::{OsStr, OsString};
@@ -20,14 +20,129 @@ fn os_error(error: std::io::Error) -> Fail {
     Fail::Refusal(error.to_string())
 }
 
-/// Run Git with the inherited environment, less the repository variables
-/// `amplihack_git::command()` removes. Input is written on its own
-/// thread while the output is read. Exit 79 passes through; any other
-/// failure shows Git's stderr and refuses.
-fn git(args: &[&OsStr], data: Option<&[u8]>) -> Res<Vec<u8>> {
-    let mut child = amplihack_git::command()
+/// An `OSError` on the path list as `str(exc)` printed it in 918c:
+/// `[Errno N] <strerror>: '<filename>'`.
+fn list_error(list: &Path) -> impl Fn(std::io::Error) -> Fail + '_ {
+    move |error| match error.raw_os_error() {
+        Some(errno) => {
+            let text = error.to_string();
+            let suffix = format!(" (os error {errno})");
+            let strerror = text.strip_suffix(&suffix).unwrap_or(&text);
+            Fail::Refusal(format!(
+                "[Errno {errno}] {strerror}: {}",
+                super::json::py_repr_os(list.as_os_str().as_bytes())
+            ))
+        }
+        None => os_error(error),
+    }
+}
+
+/// One argument of a STRICT_PATHS_PY Git call, kept with its Python type so
+/// a failure can quote the argv list exactly as `CalledProcessError` did:
+/// the literal options were `str`, the toplevel from `os.path.realpath` of
+/// Git's bytes output was `bytes`.
+#[derive(Clone, Copy)]
+enum Arg<'a> {
+    Str(&'a str),
+    Bytes(&'a OsStr),
+}
+
+impl Arg<'_> {
+    fn os(&self) -> &OsStr {
+        match self {
+            Arg::Str(s) => OsStr::new(s),
+            Arg::Bytes(b) => b,
+        }
+    }
+
+    fn repr(&self) -> String {
+        match self {
+            Arg::Str(s) => super::json::py_repr_os(s.as_bytes()),
+            Arg::Bytes(b) => super::json::py_bytes_repr(b.as_bytes()),
+        }
+    }
+}
+
+/// `str(subprocess.CalledProcessError)` for `['git', '--literal-pathspecs',
+/// *args]`: `Command '[...]' returned non-zero exit status N.`, or, for a
+/// signal, `died with <Signals.NAME: N>.` (`unknown signal N.` when Python's
+/// `signal.Signals` has no name for it).
+fn called_process_error(args: &[Arg], output: &std::process::Output) -> String {
+    use std::os::unix::process::ExitStatusExt;
+    let mut argv = vec![Arg::Str("git"), Arg::Str("--literal-pathspecs")];
+    argv.extend_from_slice(args);
+    let list: Vec<String> = argv.iter().map(Arg::repr).collect();
+    let cmd = format!("[{}]", list.join(", "));
+    match (output.status.code(), output.status.signal()) {
+        (Some(code), _) => format!("Command '{cmd}' returned non-zero exit status {code}."),
+        (None, Some(signal)) => match signal_name(signal) {
+            Some(name) => format!("Command '{cmd}' died with <Signals.{name}: {signal}>."),
+            None => format!("Command '{cmd}' died with unknown signal {signal}."),
+        },
+        (None, None) => format!("Command '{cmd}' returned non-zero exit status -1."),
+    }
+}
+
+/// Linux names of Python's `signal.Signals` members.
+fn signal_name(signal: i32) -> Option<&'static str> {
+    const NAMES: [&str; 31] = [
+        "SIGHUP",
+        "SIGINT",
+        "SIGQUIT",
+        "SIGILL",
+        "SIGTRAP",
+        "SIGABRT",
+        "SIGBUS",
+        "SIGFPE",
+        "SIGKILL",
+        "SIGUSR1",
+        "SIGSEGV",
+        "SIGUSR2",
+        "SIGPIPE",
+        "SIGALRM",
+        "SIGTERM",
+        "SIGSTKFLT",
+        "SIGCHLD",
+        "SIGCONT",
+        "SIGSTOP",
+        "SIGTSTP",
+        "SIGTTIN",
+        "SIGTTOU",
+        "SIGURG",
+        "SIGXCPU",
+        "SIGXFSZ",
+        "SIGVTALRM",
+        "SIGPROF",
+        "SIGWINCH",
+        "SIGIO",
+        "SIGPWR",
+        "SIGSYS",
+    ];
+    usize::try_from(signal)
+        .ok()
+        .and_then(|n| n.checked_sub(1))
+        .and_then(|i| NAMES.get(i).copied())
+}
+
+/// Run Git for `stage-strict`. 918c STRICT_PATHS_PY ran git with
+/// `os.environ` unchanged, so the builder is the row's `GitEnv` (Inherit):
+/// GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE and the rest select the repository
+/// and index exactly as they did for the Python.
+///
+/// Input is written on its own thread while the output is read. A write
+/// error is ignored, as `subprocess.run(input=...)` ignored the
+/// `BrokenPipeError` of a Git that exited before reading all of it; Git's
+/// own status then decides.
+///
+/// A non-zero status is the `CalledProcessError` 918c caught: Git's stderr,
+/// then a strict refusal (status 2) quoting the command. The one exception
+/// is a real 79, which the 17.126 stage-strict addendum (ApprovedRow
+/// `17.126-stage-strict-79`) passes through as 79 after Git's stderr, with
+/// no refusal line, so a terminal policy status is never reported as 2.
+fn git(git_env: GitEnv, args: &[Arg], data: Option<&[u8]>) -> Res<Vec<u8>> {
+    let mut child = git_command(git_env)?
         .arg("--literal-pathspecs")
-        .args(args)
+        .args(args.iter().map(Arg::os))
         .stdin(if data.is_some() {
             Stdio::piped()
         } else {
@@ -41,26 +156,25 @@ fn git(args: &[&OsStr], data: Option<&[u8]>) -> Res<Vec<u8>> {
     let output = std::thread::scope(|scope| {
         if let (Some(data), Some(mut stdin)) = (data, stdin) {
             scope.spawn(move || {
-                // A write error shows up as Git's own failure status.
                 let _ = stdin.write_all(data);
             });
         }
         child.wait_with_output()
     })
     .map_err(os_error)?;
-    match status(&output) {
-        0 => Ok(output.stdout),
-        79 => Err(Fail::Terminal79),
-        _ => {
-            let _ = std::io::stderr().write_all(&output.stderr);
-            Err(refusal("Git command failed"))
-        }
+    if output.status.success() {
+        return Ok(output.stdout);
     }
+    let _ = std::io::stderr().write_all(&output.stderr);
+    if output.status.code() == Some(79) {
+        return Err(Fail::Terminal79);
+    }
+    Err(Fail::Refusal(called_process_error(args, &output)))
 }
 
-fn validate(list: &Path) -> Res<(PathBuf, Vec<u8>, usize)> {
+fn validate(git_env: GitEnv, list: &Path) -> Res<(PathBuf, Vec<u8>, usize)> {
     let fail = |reason: &str| Err(refusal(reason));
-    let info = std::fs::symlink_metadata(list).map_err(os_error)?;
+    let info = std::fs::symlink_metadata(list).map_err(list_error(list))?;
     if !info.file_type().is_file() {
         return fail("path list must be a regular file");
     }
@@ -70,7 +184,7 @@ fn validate(list: &Path) -> Res<(PathBuf, Vec<u8>, usize)> {
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
             .open(list)
-            .map_err(os_error)?,
+            .map_err(list_error(list))?,
         &mut raw,
     )
     .map_err(os_error)?;
@@ -85,12 +199,23 @@ fn validate(list: &Path) -> Res<(PathBuf, Vec<u8>, usize)> {
     if paths.iter().collect::<BTreeSet<_>>().len() != paths.len() {
         return fail("duplicate path");
     }
+    // First call: no -C, so Git's own discovery (cwd and the inherited
+    // GIT_DIR / GIT_WORK_TREE) decides the top, as STRICT_PATHS_PY did.
     let top = canonical(Path::new(OsStr::from_bytes(&strip_newlines(git(
-        &[os("rev-parse"), os("--show-toplevel")],
+        git_env,
+        &[Arg::Str("rev-parse"), Arg::Str("--show-toplevel")],
         None,
     )?))));
+    // Later calls: -C top. Under GIT_DIR without GIT_WORK_TREE, -C changes
+    // only the cwd; GIT_DIR still selects the repository, as in 918c.
     let tracked = split_nul(&git(
-        &[os("-C"), top.as_os_str(), os("ls-files"), os("-z")],
+        git_env,
+        &[
+            Arg::Str("-C"),
+            Arg::Bytes(top.as_os_str()),
+            Arg::Str("ls-files"),
+            Arg::Str("-z"),
+        ],
         None,
     )?);
     let mut directory_entries: HashMap<PathBuf, BTreeSet<Vec<u8>>> = HashMap::new();
@@ -150,19 +275,22 @@ fn validate(list: &Path) -> Res<(PathBuf, Vec<u8>, usize)> {
     Ok((top, raw, count))
 }
 
-pub(super) fn stage_strict(args: &[OsString]) -> Res<Vec<u8>> {
-    let [list] = args else {
-        return Err(refusal("expected one path list"));
-    };
-    let (top, raw, count) = validate(Path::new(list))?;
+/// 918c STRICT_PATHS_PY read `sys.argv[1]` with no length check: a missing
+/// list is IndexError (status 1, `Arity::Indexed(1)`); extra arguments are
+/// ignored. `git_env` is the row's builder, `Inherit` for this
+/// `Selectors::Ignored` row.
+pub(super) fn stage_strict(git_env: GitEnv, args: &[OsString]) -> Res<Vec<u8>> {
+    let list = super::indexed(args, 0)?;
+    let (top, raw, count) = validate(git_env, Path::new(list))?;
     if count > 0 {
         git(
+            git_env,
             &[
-                os("-C"),
-                top.as_os_str(),
-                os("add"),
-                os("--pathspec-from-file=-"),
-                os("--pathspec-file-nul"),
+                Arg::Str("-C"),
+                Arg::Bytes(top.as_os_str()),
+                Arg::Str("add"),
+                Arg::Str("--pathspec-from-file=-"),
+                Arg::Str("--pathspec-file-nul"),
             ],
             Some(&raw),
         )?;

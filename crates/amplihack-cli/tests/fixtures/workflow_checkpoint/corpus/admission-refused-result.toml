@@ -1,0 +1,265 @@
+# Corpus for `admission-refused-result`, captured from the 918c256cf Python (python3 3.14.10,
+# unidata 16.0.0) by ~/.amplihack/work/pr2020-corpus/capture.py. @ROOT@ is the
+# canonicalised temp root unless the case sets raw_path = true.
+
+[[case]]
+name = "unset"
+argv = []
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": \"\", \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1155,1184 ADMISSION_RESULT_PY#unset"
+
+[[case]]
+name = "string_branch"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":\"feat/x\"}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": \"feat/x\", \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1155,1184 ADMISSION_RESULT_PY#string_branch"
+
+[[case]]
+name = "no_branch"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": \"\", \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1155,1184 ADMISSION_RESULT_PY#no_branch"
+
+[[case]]
+name = "invalid_json"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": \"\", \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1155,1184 ADMISSION_RESULT_PY#invalid_json"
+
+[[case]]
+name = "array_setup"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "[]" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": \"\", \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1155,1184 ADMISSION_RESULT_PY#array_setup"
+
+[[case]]
+name = "empty_setup"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": \"\", \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1155,1184 ADMISSION_RESULT_PY#empty_setup"
+
+[[case]]
+name = "unicode_branch"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":\"café\"}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": \"caf\\u00e9\", \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1155,1184 ADMISSION_RESULT_PY#unicode_branch"
+
+[[case]]
+name = "null_branch"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":null}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": null, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1155,1184 ADMISSION_RESULT_PY#null_branch"
+
+[[case]]
+name = "duplicate_key_last_wins"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":\"a\",\"branch_name\":\"b\"}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": \"b\", \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1155,1184 ADMISSION_RESULT_PY#duplicate_key_last_wins"
+
+[[case]]
+name = "python_1e_05"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":1e-5}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 1e-05, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1155,1184 ADMISSION_RESULT_PY#python_1e_05"
+
+[[case]]
+name = "python_1e_06"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":1e-6}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 1e-06, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1155,1184 ADMISSION_RESULT_PY#python_1e_06"
+
+[[case]]
+name = "python_1e_07"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":1e-7}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 1e-07, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:1155,1184 ADMISSION_RESULT_PY#python_1e_07"
+
+[[case]]
+name = "cc_float_01"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":1e20}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 1e+20, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:1e20"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"
+
+[[case]]
+name = "cc_float_02"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":1e21}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 1e+21, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:1e21"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"
+
+[[case]]
+name = "cc_float_03"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":-0.0}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": -0.0, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:-0.0"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"
+
+[[case]]
+name = "cc_float_04"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":1e-4}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 0.0001, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:1e-4"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"
+
+[[case]]
+name = "cc_float_05"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":1e16}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 1e+16, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:1e16"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"
+
+[[case]]
+name = "cc_float_06"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":18446744073709551615}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 18446744073709551615, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:18446744073709551615"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"
+
+[[case]]
+name = "cc_float_07"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":18446744073709551616}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 18446744073709551616, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:18446744073709551616"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"
+
+[[case]]
+name = "cc_float_08"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":100000000000000000001}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 100000000000000000001, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:100000000000000000001"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"
+
+[[case]]
+name = "cc_float_09"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":-9223372036854775809}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": -9223372036854775809, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:-9223372036854775809"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"
+
+[[case]]
+name = "cc_float_10"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":1.2345678901234567}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 1.2345678901234567, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:1.2345678901234567"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"
+
+[[case]]
+name = "cc_float_11"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":4.9406564584124654e-324}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 5e-324, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:4.9406564584124654e-324"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"
+
+[[case]]
+name = "cc_float_12"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":1.7976931348623157e308}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": 1.7976931348623157e+308, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:1.7976931348623157e308"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"
+
+[[case]]
+name = "cc_float_13"
+argv = []
+env = { RECIPE_VAR_worktree_setup = "{\"branch_name\":1e400}" }
+setup = "none"
+expect_status = 0
+expect_stdout = "{\"pushed\": \"false\", \"sha\": \"\", \"branch\": Infinity, \"reason\": \"scope-admission-refused\"}\n"
+expect_stderr = ""
+provenance = "cc-22:36Z-float:1e400"
+note = "input from cc 22:36Z numeric parity; expected bytes from ADMISSION_RESULT_PY at 918c256cf"

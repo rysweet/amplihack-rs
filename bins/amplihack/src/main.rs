@@ -10,25 +10,41 @@ use amplihack_cli::update;
 
 fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
+    if args.get(1).is_some_and(|arg| arg == "internal")
+        && args.get(2).is_some_and(|arg| arg == "workflow-checkpoint")
+    {
+        // The private checkpoint surface (#1554) bypasses clap: clap would
+        // read `--help`, `-V` or a first `--` as its own before the engine's
+        // gate saw them (17.138 #5). Only this route passes a coded exit
+        // status through; the checkpoint has already said why on stderr.
+        amplihack_cli::workflow_checkpoint::install_panic_hook();
+        let status = match amplihack_cli::workflow_checkpoint::run_argv(&args[3..]) {
+            Ok(()) => 0,
+            Err(error) => command_error::exit_code(&error).unwrap_or_else(|| {
+                // Every checkpoint failure carries a status; one without is
+                // a contract break, reported on one line as status 1.
+                eprintln!(
+                    "{}{error:#}",
+                    amplihack_cli::workflow_checkpoint::CRASH_PREFIX
+                );
+                1
+            }),
+        };
+        // std::process::exit skips destructors, so flush both streams here
+        // or a buffered record or diagnostic could be lost. A flush error is
+        // discarded: the stream is already broken, so there is nowhere left
+        // to report it, and the exit status must stay the checkpoint's own.
+        use std::io::Write as _;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+        std::process::exit(status);
+    }
     if args.get(1).is_some_and(|arg| arg == "internal") {
         let cli = Cli::parse_from(&args);
-        // Only `internal workflow-checkpoint` reports a coded exit status
-        // (#1554). Every other internal command keeps main's behaviour:
-        // print the error and exit 1.
-        let checkpoint = matches!(
-            cli.command,
-            amplihack_cli::Commands::Internal {
-                command: amplihack_cli::InternalCommands::WorkflowCheckpoint(_)
-            }
-        );
-        if checkpoint {
-            amplihack_cli::workflow_checkpoint::install_panic_hook();
-        }
+        // Every other internal command keeps main's behaviour: print the
+        // error and exit 1. validate-recipe-runner prints its JSON and exits
+        // itself, so it never reaches this printer on failure.
         if let Err(error) = commands::dispatch(cli.command) {
-            if checkpoint && let Some(code) = command_error::exit_code(&error) {
-                // The checkpoint has already reported why on stderr.
-                std::process::exit(code);
-            }
             eprintln!("error: {error:#}");
             std::process::exit(1);
         }

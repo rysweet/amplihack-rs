@@ -3,8 +3,7 @@
 //!
 //! The oracle is the Python at 918c256cf. Every expected value below was
 //! recorded on 2026-11-07 by running the 918c fragment under `python3 -I`
-//! outside the repository (see
-//! `crates/amplihack-cli/tests/fixtures/workflow_checkpoint/README.md`):
+//! outside the repository:
 //!
 //! * `ORIGIN_REF_PY`, `workflow_pr_head_sync.sh:83-92`, SHA-256
 //!   e4fbb280abb1693c1c9e263bd70b076cca4220e2219368f72fd993c28f0b6472;
@@ -19,18 +18,15 @@ use super::advert::{AdvertMap, lines};
 use super::json;
 use crate::command_error::exit_code;
 
-const NO_FINAL_LF: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/workflow_checkpoint/legacy_parser/no-final-lf.advert"
-));
-const CRLF: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/workflow_checkpoint/legacy_parser/crlf.advert"
-));
-const MIXED_OID_WIDTHS: &[u8] = include_bytes!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/tests/fixtures/workflow_checkpoint/legacy_parser/mixed-oid-widths.advert"
-));
+/// The D1 inputs (zero-A): byte literals shared with the integration tests,
+/// so no checkout or hook can rewrite them.
+mod d1 {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/support/d1_literals.rs"
+    ));
+}
+use d1::{D1_CRLF as CRLF, D1_MIXED_OID_WIDTHS as MIXED_OID_WIDTHS, D1_NO_FINAL_LF as NO_FINAL_LF};
 
 fn oid(c: u8, width: usize) -> Vec<u8> {
     vec![c; width]
@@ -51,8 +47,12 @@ fn cat(parts: &[Vec<u8>]) -> Vec<u8> {
 // ------------------------------------------------------------------ D1
 
 #[test]
-fn d1_fixture_bytes_are_the_packet_bytes() {
-    // A checkout that normalised line endings would hollow out the D1 rows.
+fn d1_literal_bytes_are_the_packet_bytes() {
+    // A literal that a tool "fixed" would hollow out the D1 rows.
+    for (name, bytes, len, _) in d1::D1_INPUTS {
+        assert_eq!(bytes.len(), len, "{name}");
+        assert!(d1::d1_property_holds(name, bytes), "{name}");
+    }
     assert_eq!(NO_FINAL_LF.len(), 56);
     assert!(!NO_FINAL_LF.ends_with(b"\n"));
     assert_eq!(CRLF.len(), 58);
@@ -446,7 +446,7 @@ const FLOAT_ROWS: [(f64, &str); 21] = [
 #[test]
 fn floats_are_written_as_python_repr() {
     for (value, python) in FLOAT_ROWS {
-        assert_eq!(json::py_float_repr(value), python, "{value:e}");
+        assert_eq!(super::num::py_repr_float(value), python, "{value:e}");
     }
 }
 
@@ -511,22 +511,4 @@ fn print_of_a_json_value_is_python_str() {
     // print() of a lone surrogate raised UnicodeEncodeError.
     let lone = json::py_loads(&json::surrogateescape(br#""\ud800""#)).unwrap();
     assert_eq!(json::py_print(&lone), None);
-}
-
-#[test]
-fn python_int_accepts_what_int_accepts() {
-    use super::actions::py_int;
-    for (text, value) in [
-        ("0", 0),
-        (" 0 ", 0),
-        ("-0", 0),
-        ("+7", 7),
-        ("1_0", 10),
-        ("\t79\n", 79),
-    ] {
-        assert_eq!(py_int(text).ok(), Some(value), "{text:?}");
-    }
-    for text in ["", "x", "1__0", "_1", "1_", "0x10", "1.0", "- 1"] {
-        assert!(py_int(text).is_err(), "{text:?}");
-    }
 }

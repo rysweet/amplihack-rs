@@ -1,0 +1,74 @@
+# Corpus for `verify-pushed-ref`, captured from the 918c256cf Python (python3 3.14.10,
+# unidata 16.0.0) by ~/.amplihack/work/pr2020-corpus/capture.py. @ROOT@ is the
+# canonicalised temp root unless the case sets raw_path = true.
+
+[[case]]
+name = "git_dir_selector_refused"
+argv = ["@ROOT@/v.sh", "feat/x", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+env = { GIT_DIR = "@ROOT@/a/.git" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: authority record identity changed\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#git_dir_selector_refused"
+
+[[case]]
+name = "git_ceiling_selector_refused"
+argv = ["@ROOT@/v.sh", "feat/x", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+env = { GIT_CEILING_DIRECTORIES = "@ROOT@" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: authority record identity changed\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#git_ceiling_selector_refused"
+
+[[case]]
+name = "git_config_count_selector_refused"
+argv = ["@ROOT@/v.sh", "feat/x", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+env = { GIT_CONFIG_COUNT = "0" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: authority record identity changed\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#git_config_count_selector_refused"
+
+[[case]]
+name = "no_authority_record"
+argv = ["@ROOT@/v.sh", "feat/x", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: authority record identity changed\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#no_authority_record"
+
+[[case]]
+name = "missing_authority_file"
+argv = ["@ROOT@/v.sh", "feat/x", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+env = { WF_CHECKPOINT_RECORD = "@ROOT@/tmp/authority.json" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: [Errno 2] No such file or directory: '@ROOT@/tmp/authority.json'\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#missing_authority_file"
+
+[[case]]
+name = "authority_identity_mismatch"
+argv = ["@ROOT@/v.sh", "feat/x", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+env = { WF_CHECKPOINT_RECORD = "@ROOT@/tmp/authority.json", WF_CHECKPOINT_RECORD_ID = "0:0" }
+files = { "tmp/authority.json" = "{}" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: authority record identity changed\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#authority_identity_mismatch"
+
+[[case]]
+name = "authority_is_a_directory"
+argv = ["@ROOT@/v.sh", "feat/x", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]
+env = { WF_CHECKPOINT_RECORD = "@ROOT@/tmp/authority.json", WF_CHECKPOINT_RECORD_ID = "0:0" }
+files = { "tmp/authority.json/x" = "" }
+setup = "none"
+expect_status = 2
+expect_stdout = ""
+expect_stderr = "checkpoint scope refusal: authority is not a regular file\n"
+provenance = "python-918c256cf:workflow_publish_checkpoint.sh:6-1000 CHECKPOINT_PY#authority_is_a_directory"

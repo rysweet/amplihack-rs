@@ -18,16 +18,9 @@
 //! pin draft-only behaviour that the owner has not authorised.
 
 use std::fs;
-use std::path::PathBuf;
 use std::process::Output;
 
 use crate::workflow_checkpoint_support::*;
-
-const FIXTURES: &str = "crates/amplihack-cli/tests/fixtures/workflow_checkpoint";
-
-fn fixture(name: &str) -> PathBuf {
-    repo_root().join(FIXTURES).join(name)
-}
 
 /// `advertised-ref <saved-output-file> <ref> <ls-remote-rc>`, the 918c argv
 /// order (`workflow_pr_head_sync.sh:82`).
@@ -46,55 +39,9 @@ fn rec(oid: &str, name: &str, end: &str) -> String {
     format!("{oid}\t{name}{end}")
 }
 
-// ------------------------------------------------------------------ D1
-
-#[test]
-fn legacy_advertised_ref_accepts_an_advertisement_without_a_final_lf() {
-    let sb = Sandbox::new();
-    let saved = fixture("legacy_parser/no-final-lf.advert");
-    let out = sb
-        .checkpoint(
-            "advertised-ref",
-            [saved.as_os_str(), "refs/heads/task".as_ref(), "0".as_ref()],
-        )
-        .output()
-        .unwrap();
-    assert_eq!(status(&out), 0, "918c exit 0; stderr: {}", stderr(&out));
-    assert!(
-        out.stdout.is_empty() && out.stderr.is_empty(),
-        "918c printed nothing"
-    );
-}
-
-#[test]
-fn legacy_advertised_ref_accepts_a_crlf_advertisement() {
-    let sb = Sandbox::new();
-    let saved = fixture("legacy_parser/crlf.advert");
-    let out = sb
-        .checkpoint(
-            "advertised-ref",
-            [saved.as_os_str(), "refs/heads/task".as_ref(), "0".as_ref()],
-        )
-        .output()
-        .unwrap();
-    assert_eq!(status(&out), 0, "918c exit 0; stderr: {}", stderr(&out));
-    assert!(out.stdout.is_empty() && out.stderr.is_empty());
-}
-
-#[test]
-fn legacy_advertised_ref_accepts_mixed_40_and_64_digit_object_ids() {
-    let sb = Sandbox::new();
-    let saved = fixture("legacy_parser/mixed-oid-widths.advert");
-    let out = sb
-        .checkpoint(
-            "advertised-ref",
-            [saved.as_os_str(), "refs/heads/a".as_ref(), "0".as_ref()],
-        )
-        .output()
-        .unwrap();
-    assert_eq!(status(&out), 0, "918c exit 0; stderr: {}", stderr(&out));
-    assert!(out.stdout.is_empty() && out.stderr.is_empty());
-}
+// D1 (three accepted inputs) is in workflow_checkpoint_d1_literals.rs; the
+// validate-recipe-runner contract is in workflow_checkpoint_restorations.rs
+// (`validate_recipe_runner_failure_prints_json_only`).
 
 // ----------------------------------------------- recorded status table
 
@@ -694,38 +641,6 @@ fn legacy_cleanup_skip_result_ignores_extra_arguments_and_crashes_without_one() 
 }
 
 // ---------------------------------------------------- main.rs exit scope
-
-#[test]
-fn validate_recipe_runner_keeps_its_json_only_failure_and_status_1() {
-    // On main (and at 918c) validate-recipe-runner prints one JSON error on
-    // stderr and calls process::exit(1) itself: no `error:` line, empty
-    // stdout. Only
-    // `internal workflow-checkpoint` may pass a coded status through main.
-    let sb = Sandbox::new();
-    let out = sb
-        .command(AMPLIHACK)
-        .args([
-            "internal",
-            "validate-recipe-runner",
-            "--provider",
-            "claude",
-            "--binary",
-            "relative/runner",
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(status(&out), 1, "stderr: {}", stderr(&out));
-    assert!(out.stdout.is_empty(), "stdout: {:?}", out.stdout);
-    let stdout = String::from_utf8(out.stderr).unwrap();
-    assert!(!stdout.contains("error: "), "{stdout}");
-    assert_eq!(stdout.lines().count(), 1, "{stdout}");
-    let value: serde_json::Value = serde_json::from_str(stdout.trim_end()).unwrap();
-    assert_eq!(
-        value["error"]["code"], "INVALID_VALIDATION_REQUEST",
-        "{stdout}"
-    );
-    assert_eq!(value["error"]["details"]["provider"], "claude", "{stdout}");
-}
 
 #[test]
 fn workflow_checkpoint_statuses_pass_through_without_an_error_line() {

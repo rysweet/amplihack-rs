@@ -69,8 +69,16 @@ impl<'de> Visitor<'de> for Strict {
     }
 }
 
-/// Parse one JSON document, refusing duplicate keys and trailing data.
+/// Parse one JSON document as 918c's `parse` did: its refusals (syntax,
+/// duplicate keys, non-finite numbers, lone surrogates) carry CPython's text,
+/// from [`super::json_errors`]. Non-UTF-8 input (17.138 item 1) and nesting
+/// past that scanner's depth are refused by the value parser.
 pub(crate) fn parse(raw: &[u8]) -> Result<Value, Fail> {
+    if let Ok(text) = std::str::from_utf8(raw)
+        && let super::json_errors::Diagnosis::Refused(reason) = super::json_errors::diagnose(text)
+    {
+        return Err(Fail::Refusal(reason));
+    }
     let mut de = serde_json::Deserializer::from_slice(raw);
     let value = Strict
         .deserialize(&mut de)
@@ -147,52 +155,8 @@ fn number(n: &Number) -> String {
     match (n.as_i64(), n.as_u64(), n.as_f64()) {
         (Some(i), _, _) => i.to_string(),
         (None, Some(u), _) => u.to_string(),
-        (None, None, Some(f)) => py_float_repr(f),
+        (None, None, Some(f)) => super::num::py_repr_float(f),
         (None, None, None) => n.to_string(),
-    }
-}
-
-/// Python's `repr(float)` for a finite value: the shortest round-trip
-/// digits, positional when the decimal exponent is in -4..16, otherwise
-/// scientific with a signed exponent of at least two digits.
-pub(crate) fn py_float_repr(value: f64) -> String {
-    if value == 0.0 {
-        return if value.is_sign_negative() {
-            "-0.0"
-        } else {
-            "0.0"
-        }
-        .into();
-    }
-    // Rust's `{:e}` is also the shortest round-trip form: "d.ddde-x".
-    let sci = format!("{value:e}");
-    let (mantissa, exponent) = sci.split_once('e').unwrap_or((&sci, "0"));
-    let exponent: i32 = exponent.parse().unwrap_or(0);
-    let (sign, mantissa) = match mantissa.strip_prefix('-') {
-        Some(rest) => ("-", rest),
-        None => ("", mantissa),
-    };
-    let digits: String = mantissa.chars().filter(char::is_ascii_digit).collect();
-    if (-4..16).contains(&exponent) {
-        let point = exponent + 1;
-        let body = if point <= 0 {
-            format!("0.{}{digits}", "0".repeat(point.unsigned_abs() as usize))
-        } else if point as usize >= digits.len() {
-            format!("{digits}{}.0", "0".repeat(point as usize - digits.len()))
-        } else {
-            let (whole, fraction) = digits.split_at(point as usize);
-            format!("{whole}.{fraction}")
-        };
-        format!("{sign}{body}")
-    } else {
-        let (first, rest) = digits.split_at(1);
-        let mantissa = if rest.is_empty() {
-            first.to_owned()
-        } else {
-            format!("{first}.{rest}")
-        };
-        let exp_sign = if exponent < 0 { '-' } else { '+' };
-        format!("{sign}{mantissa}e{exp_sign}{:02}", exponent.unsigned_abs())
     }
 }
 
@@ -467,7 +431,7 @@ fn py_float_text(value: f64, json: bool) -> String {
         (true, _, false) => "nan".into(),
         (_, true, true) => if value > 0.0 { "Infinity" } else { "-Infinity" }.into(),
         (_, true, false) => if value > 0.0 { "inf" } else { "-inf" }.into(),
-        _ => py_float_repr(value),
+        _ => super::num::py_repr_float(value),
     }
 }
 
@@ -525,6 +489,40 @@ pub(crate) fn py_dumps(value: &PyValue) -> String {
     out
 }
 
+/// CPython's `repr(str)` of bytes decoded with `surrogateescape`, as an
+/// `OSError` message quotes a filename.
+pub(crate) fn py_repr_os(raw: &[u8]) -> String {
+    py_str_repr(&surrogateescape(raw))
+}
+
+/// CPython's `repr(bytes)`: `b'...'`, double quotes only when the bytes
+/// hold a single quote and no double quote.
+pub(crate) fn py_bytes_repr(raw: &[u8]) -> String {
+    let quote = if raw.contains(&b'\'') && !raw.contains(&b'"') {
+        b'"'
+    } else {
+        b'\''
+    };
+    let mut out = String::from("b");
+    out.push(char::from(quote));
+    for &b in raw {
+        match b {
+            b'\\' => out.push_str("\\\\"),
+            b'\n' => out.push_str("\\n"),
+            b'\r' => out.push_str("\\r"),
+            b'\t' => out.push_str("\\t"),
+            b if b == quote => {
+                out.push('\\');
+                out.push(char::from(b));
+            }
+            b if !(0x20..0x7f).contains(&b) => out.push_str(&format!("\\x{b:02x}")),
+            b => out.push(char::from(b)),
+        }
+    }
+    out.push(char::from(quote));
+    out
+}
+
 /// CPython's `repr(str)`.
 fn py_str_repr(text: &[u32]) -> String {
     let has = |c: u32| text.contains(&c);
@@ -541,13 +539,21 @@ fn py_str_repr(text: &[u32]) -> String {
                 out.push('\\');
                 out.push(char::from(c as u8));
             }
-            c if c < 0x20 || (0x7f..0xa1).contains(&c) || c == 0xad => {
-                out.push_str(&format!("\\x{c:02x}"));
+            // CPython: anything `str.isprintable()` rejects is escaped, by
+            // width: \xhh up to U+00FF, \uhhhh up to U+FFFF, else \U.
+            c if !super::py_printable::py_isprintable(c) => {
+                if c <= 0xff {
+                    out.push_str(&format!("\\x{c:02x}"));
+                } else if c <= 0xffff {
+                    out.push_str(&format!("\\u{c:04x}"));
+                } else {
+                    out.push_str(&format!("\\U{c:08x}"));
+                }
             }
             c => match char::from_u32(c) {
-                Some(ch) if !ch.is_control() && !(0xd800..0xe000).contains(&c) => out.push(ch),
-                _ if c < 0x10000 => out.push_str(&format!("\\u{c:04x}")),
-                _ => out.push_str(&format!("\\U{c:08x}")),
+                Some(ch) => out.push(ch),
+                // Unreachable: surrogates are non-printable above.
+                None => out.push_str(&format!("\\u{c:04x}")),
             },
         }
     }
