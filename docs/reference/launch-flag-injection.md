@@ -321,6 +321,37 @@ on the list because codex-cli 0.140.0 to 0.166.0 reject it.
 | (none), `resume --last`, `"Explain this repository"` | nothing; interactive argv is unchanged |
 | `-c exec`, `-m exec`, `-- exec` | nothing; `exec` here is a value or a positional, not the subcommand |
 
+**Notice (issue #2010).** When amplihack adds `--sandbox workspace-write`, it
+writes one line to stderr before Codex starts. The line lists what was added,
+in the order it appears in the argv; `network access` stands for
+`-c sandbox_workspace_write.network_access=true`. The four possible lines are:
+
+| Caller already set | Line written to stderr |
+|---|---|
+| nothing | `amplihack: codex exec: added --sandbox workspace-write, network access, --dangerously-bypass-hook-trust (#1985)` |
+| the network override | `amplihack: codex exec: added --sandbox workspace-write, --dangerously-bypass-hook-trust (#1985)` |
+| `--dangerously-bypass-hook-trust` | `amplihack: codex exec: added --sandbox workspace-write, network access (#1985)` |
+| both | `amplihack: codex exec: added --sandbox workspace-write (#1985)` |
+
+The line is written once per launch, and only to stderr, so a step's stdout
+and its `--output-last-message` file are unchanged. The recipe runner streams
+stderr and keeps a tail of it, so the line does appear in recipe logs. The
+line is built from fixed text only: it never contains the caller's arguments,
+paths, profile names, prompt text or anything read from `config.toml`, so it
+is safe to keep in CI logs.
+
+No line is written when:
+
+- the caller chose a sandbox, in any of the forms listed above. The hook-trust
+  flag is still added in that case, without a line; issue #2009 tracks the
+  hook-trust behaviour;
+- the argv has no `exec`/`e` subcommand, including an empty argv,
+  `resume --last`, `-c exec` and `-- exec`.
+
+There is no option or environment variable to turn the line off. It is
+informational: the spawned argv remains the authoritative record of what Codex
+received, and nothing in amplihack reads or acts on the line.
+
 amplihack never adds `--dangerously-bypass-approvals-and-sandbox` or `--yolo`,
 and never writes any of these settings to `config.toml`. There is no
 environment variable to turn the injection off; pass your own sandbox to change
@@ -379,7 +410,9 @@ assembles the final command line. The assembly order is:
 6. All `extra_args` in the order they were passed on the command line. For
    `codex`, `codex_agent_step_args()` first inserts the
    [Codex agent-step flags](#codex-agent-step-flags) after an `exec`/`e`
-   subcommand, if there is one
+   subcommand, if there is one. When the sandbox is among them,
+   `codex_agent_step_notice()` supplies the one stderr line described under
+   [Codex agent-step flags](#codex-agent-step-flags)
 
 The following examples show the full assembled command for each launch
 subcommand with no extra args:

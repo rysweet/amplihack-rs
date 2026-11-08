@@ -42,9 +42,9 @@ cat > /dev/null
 exit 0
 "#;
 
-struct Launch {
-    argv: Vec<String>,
-    out: Output,
+pub(crate) struct Launch {
+    pub(crate) argv: Vec<String>,
+    pub(crate) out: Output,
     home: tempfile::TempDir,
 }
 
@@ -81,7 +81,7 @@ fn tools_dir(home: &Path) -> PathBuf {
 /// `src/adapters/cli_subprocess.rs`) sends exactly
 /// `amplihack codex -- exec --output-last-message <file> [--model m] -`,
 /// with no `--no-reflection`, so this is the command under test.
-fn launch(tail: &[&str], stdin: &[u8]) -> Launch {
+pub(crate) fn launch(tail: &[&str], stdin: &[u8]) -> Launch {
     let home = tempfile::tempdir().unwrap();
     let tools = tools_dir(home.path());
     let codex_home = home.path().join(".codex");
