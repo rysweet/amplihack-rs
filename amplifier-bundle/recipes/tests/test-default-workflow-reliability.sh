@@ -1446,7 +1446,7 @@ fi
 if [[ "${1:-}" == "issue" && "${2:-}" == "view" && " $* " == *" --json title "* ]]; then
     case "${PUBLISH_1968_ISSUE_MODE:-answer}" in
         answer)    printf '{"title":"workflow_publish_pr.sh titles PRs wrongly from a two-dot diff"}\n' ;;
-        hostile)   printf '%s\n' '{"title":"Fixes #7 (#999) $(touch PWNED) `id` %s %n \u001b[31m @someone"}' ;;
+        hostile)   printf '%s\n' '{"title":"Fixes #7 ((#999)) $(touch PWNED) `id` %s %n \u001b[31m @someone"}' ;;
         empty)     printf '{"title":""}\n' ;;
         nulltitle) printf '{"title":null}\n' ;;
         array)     printf '[]\n' ;;
@@ -1655,8 +1655,9 @@ docs: tidy the index|docs: tidy the index
 fix(#5): x|fix(#5): x
 ROWS
 
-        # defuse_issue_refs: "(#M)" -> "#M" first, then "issue " before any
-        # reference that follows a closing keyword.
+        # defuse_issue_refs: "(#M)" -> "#M" until nothing changes, then
+        # "issue " before any reference that follows a closing keyword, with
+        # or without markdown emphasis round the keyword.
         while IFS='|' read -r input want; do
             eq "defuse_issue_refs '${input}'" "${want}" "$(defuse_issue_refs "${input}")"
         done <<'ROWS'
@@ -1675,6 +1676,12 @@ prefix#7|prefix#7
 prefixes #8|prefixes #8
 Refs #12|Refs #12
 No references in this title|No references in this title
+Tidy ((#999)) handling|Tidy #999 handling
+(((#7)))|#7
+Closes ((#7))|Closes issue #7
+_Fixes #7_|_Fixes issue #7_
+**Fixes** #7|**Fixes** issue #7
+Fixes GH-7|Fixes issue GH-7
 ROWS
         eq "defuse_issue_refs is idempotent" "Fixes issue #7 #999" \
             "$(defuse_issue_refs "$(defuse_issue_refs 'Fixes #7 (#999)')")"
@@ -1696,6 +1703,13 @@ ROWS
             "$(normalise_pr_title_text "caf$(printf '\303\251')")"
         eq "normalise: empty input" "" "$(normalise_pr_title_text "")"
         eq "normalise: input bounded to 1024 bytes" "1024" "$(bytes "$(normalise_pr_title_text "$(rep a 2000)")")"
+        eq "normalise: a control character cannot split a token past redaction" "REDACTED_TOKEN" \
+            "$(normalise_pr_title_text $'ghp_ABCDEFGH\x01IJKLMNOPQRSTUVWX')"
+        case "$(normalise_pr_title_text "$(rep 'x ' 506)ghp_ABCDEFGHIJKLMNOPQRSTUV")" in
+            *ghp_*) fail "issue #1968 helper: normalise left a token fragment at the 1024-byte cut" ;;
+        esac
+        normalise_pr_title_text "ab$(printf '\377')cd" >/dev/null \
+            || fail "issue #1968 helper: normalise must not fail on bytes that are not valid UTF-8"
 
         # redact_credentials (shared with sanitize_provider_stderr)
         eq "redact_credentials" "https://REDACTED@h/x REDACTED_TOKEN and REDACTED_TOKEN" \
@@ -1767,11 +1781,15 @@ ROWS
         eq "lookup_issue_title answered: status" "0" "${rc}"
         grep -qxF 'issue view 1968 --repo example/repo --json title' "${log}" \
             || { cat "${log}" >&2; fail "issue #1968 helper: lookup_issue_title must run 'gh issue view N --repo R --json title'"; }
-        local mode
+        # A gh failure is reported by its exit status only; gh's own stdout and
+        # stderr ("rate limit exceeded") never reach the output.
+        local mode want
         for mode in fail empty nulltitle array notjson; do
+            want=""
+            [ "${mode}" != "fail" ] || want="NOTE: gh issue view for #1968 exited 1 (#1968)"
             rc=0
             got="$(PUBLISH_1968_ISSUE_MODE="${mode}" lookup_issue_title 1968 example/repo 2>&1)" || rc=$?
-            eq "lookup_issue_title ${mode}: no output (stdout or stderr)" "" "${got}"
+            eq "lookup_issue_title ${mode}: output (stdout and stderr)" "${want}" "${got}"
             eq "lookup_issue_title ${mode}: status" "0" "${rc}"
         done
     )
@@ -1850,12 +1868,34 @@ assert_pr_title_from_issue_on_moved_base() {
             || publish_1968_fail "${tag}" "issue #1968 case 3 (${mode}): title must come from the task description, got: ${title}"
         grep -qxF "Workflow-generated PR for #1968: feat: Add merge-base diff to publish." "${WORK}/publish-1968-${tag}.body" \
             || publish_1968_fail "${tag}" "issue #1968 case 3 (${mode}): Summary must carry the task-derived title"
+        # The Summary repeats the capped title, not the uncapped derived text.
+        local summary
+        summary="$(sed -n '/^Workflow-generated PR for #1968: /{s/^Workflow-generated PR for #1968: //;p;q;}' "${WORK}/publish-1968-${tag}.body")"
+        [ "${summary%.}" = "${title% (#1968)}" ] \
+            || publish_1968_fail "${tag}" "issue #1968 case 3 (${mode}): Summary must equal the capped title without its suffix, got: ${summary}"
         grep -qF 'PR title source: task' "${WORK}/publish-1968-${tag}.err" \
             || publish_1968_fail "${tag}" "issue #1968 case 3 (${mode}): stderr must name the title source (task)"
+        if [ "${mode}" = "fail" ]; then
+            grep -qF 'gh issue view for #1968 exited 1' "${WORK}/publish-1968-${tag}.err" \
+                || publish_1968_fail "${tag}" "issue #1968 case 3 (fail): stderr must report the lookup's exit status"
+        fi
         if grep -qF 'rate limit exceeded' "${WORK}/publish-1968-${tag}.err"; then
             publish_1968_fail "${tag}" "issue #1968 case 3 (${mode}): gh stderr from the lookup must be discarded"
         fi
     done
+
+    # Case 3b: a task line longer than the title cap. The Summary must be the
+    # capped title text, not the 1024-byte normalised line.
+    tag="task-long"; repo="${WORK}/publish-1968-${tag}"
+    setup_publish_1968_repo "${repo}" 3
+    rc=0; run_publish_1968_case "${repo}" "${tag}" empty "Add $(printf 'word %.0s' $(seq 1 100))" || rc=$?
+    [ "${rc}" -eq 0 ] || publish_1968_fail "${tag}" "issue #1968 case 3b: publish must succeed (exit ${rc})"
+    title="$(head -n1 "${WORK}/publish-1968-${tag}.title")"
+    [ "$(printf '%s' "${title}" | LC_ALL=C wc -c | tr -d ' ')" -le 200 ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 3b: title exceeds 200 bytes"
+    summary="$(sed -n '/^Workflow-generated PR for #1968: /{s/^Workflow-generated PR for #1968: //;p;q;}' "${WORK}/publish-1968-${tag}.body")"
+    [ -n "${summary}" ] && [ "${summary%.}" = "${title% (#1968)}" ] \
+        || publish_1968_fail "${tag}" "issue #1968 case 3b: Summary must equal the capped title without its suffix, got: ${summary}"
 
     # Case 4: lookup empty and no task description -> template with the true
     # count. Bare TASK_DESCRIPTION / ISSUE_TITLE decoys must be ignored (#1684).

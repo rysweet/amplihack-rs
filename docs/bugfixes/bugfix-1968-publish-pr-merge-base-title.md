@@ -73,8 +73,10 @@ and the Azure DevOps paths. No other computation uses it.
 ## Changed-file count and body list
 
 `CHANGED_FILES_ALL` is the complete output of
-`git diff --name-only "$DIFF_RANGE"`. Nothing truncates it. It is the only input
-to:
+`git diff --name-only "$DIFF_RANGE"`. Nothing truncates it. If that command
+fails, the script prints `WARNING: git diff --name-only <range> failed;
+changed-file list is empty (#1968)` and continues with an empty list, on both
+the GitHub and the Azure DevOps paths. It is the only input to:
 
 - `CHANGED_COUNT` (the number of non-empty lines)
 - the #929 substantive-scope loop used by the template title
@@ -135,16 +137,29 @@ first three and goes straight to the cap.
 
 `normalise_pr_title_text`:
 
-1. keeps the first 1024 bytes of its input
-2. removes credentials with `redact_credentials` (userinfo in `http(s)` URLs,
+1. keeps the first 8 KiB (8192 bytes) of its input
+2. turns CR, LF and TAB into spaces
+3. deletes the remaining C0 control bytes and DEL, which removes ESC and so any
+   terminal escape sequence
+4. removes credentials with `redact_credentials` (userinfo in `http(s)` URLs,
    `gh[pousr]_` tokens and `github_pat_` tokens); this is the same filter
    `sanitize_provider_stderr` uses
-3. turns CR, LF and TAB into spaces
-4. deletes the remaining C0 control bytes and DEL, which removes ESC and so any
-   terminal escape sequence
 5. collapses runs of spaces and trims both ends
+6. keeps the first 1024 bytes of the result
 
-Bytes from `0x80` upwards pass through unchanged.
+Control bytes are removed before redaction, so a control byte inside a token
+cannot split it into two pieces that are each too short to match:
+`ghp_ABCDEFGH<SOH>IJKLMNOPQRSTUVWX` becomes `REDACTED_TOKEN`. The 1024-byte cut
+comes after redaction, so a token that crosses byte 1024 is redacted whole
+rather than left as a fragment. The 8 KiB bound before the pipeline keeps the
+work small on very large input. Both bounds use `head -c` on a here-string, so
+neither can send SIGPIPE to a producer under `pipefail`.
+
+Bytes from `0x80` upwards pass through unchanged. Every `sed` and `tr` in the
+title helpers, and the `sed` in `redact_credentials`, runs with `LC_ALL=C`.
+All their patterns are ASCII, and BSD `sed` in a UTF-8 locale stops with
+"illegal byte sequence" on input that is not valid UTF-8, which `pipefail`
+would turn into a failed publish.
 
 ### 2. Conventional type prefix
 
@@ -179,10 +194,10 @@ acting on other issues:
 
 | Order | Pattern in the text | Rewritten to | Why |
 | --- | --- | --- | --- |
-| 1 | `(#M)` | `#M` | The claim check treats `(#M)` in a PR title as a claim on issue M. |
-| 2 | A closing keyword, an optional `:`, zero or more whitespace characters, then `#M`, `owner/repo#M` or an issues URL | the keyword and any `:`, one space, `issue `, then the reference | GitHub closes the referenced issue on merge when it sees this pattern in a PR body or a squash commit subject, and the claim check reads it as a claim. |
+| 1 | `(#M)`, repeated until nothing changes | `#M` | The claim check treats `(#M)` in a PR title as a claim on issue M. A single pass would turn `((#999))` into `(#999)`. |
+| 2 | A closing keyword, optionally wrapped in markdown emphasis (`*`, `_`, `~`), an optional `:`, zero or more whitespace characters, then `#M`, `GH-M`, `owner/repo#M` or an issues URL | the keyword with its emphasis and any `:`, one space, `issue `, then the reference | GitHub closes the referenced issue on merge when it sees this pattern in a PR body or a squash commit subject, and the claim check reads it as a claim. |
 
-The second pattern mirrors the body-keyword test in
+The second pattern starts from the body-keyword test in
 `workflow_issue_claim_check.sh`:
 
 ```text
@@ -191,18 +206,33 @@ The second pattern mirrors the body-keyword test in
 
 The keywords are close, closes, closed, fix, fixes, fixed, resolve, resolves
 and resolved, matched case-insensitively. A keyword counts only at the start of
-the text or after a character outside `[A-Za-z0-9_]`, so `prefix#7` is left
+the text or after a character outside `[A-Za-z0-9]`, so `prefix#7` is left
 alone. Because the whitespace may be absent, `Fixes#7` and `fixes:#7` are
-references and are defused. Unlike the claim check, the rewrite matches any
-`owner/repo`, not only the current repository.
+references and are defused.
+
+The rewrite is deliberately wider than the claim check. It matches any
+`owner/repo`, not only the current repository; it accepts `_` before the
+keyword and `*`, `_` or `~` round it, so `_Fixes #7_` and `**Fixes** #7` are
+defused; and it also matches the `GH-M` reference form. It has not been
+confirmed whether GitHub acts on each of these spellings. Defusing them costs
+nothing, because the output is display text and not a claim signal.
 
 | Input | Output |
 | --- | --- |
+| `Tidy ((#999)) handling` | `Tidy #999 handling` |
+| `Closes ((#7))` | `Closes issue #7` |
+| `_Fixes #7_` | `_Fixes issue #7_` |
+| `**Fixes** #7` | `**Fixes** issue #7` |
+| `Fixes GH-7` | `Fixes issue GH-7` |
 | `Closes owner/repo#3` | `Closes issue owner/repo#3` |
 | `Fixes#7` | `Fixes issue #7` |
 | `fixes:#7` | `fixes: issue #7` |
 | `Closes (#7)` | `Closes issue #7` |
 | `prefix#7` | `prefix#7` |
+
+Rule 1 is a `sed` loop (`:a`, the substitution, `ta`), with the label and
+the branch as separate `-e` arguments, as BSD `sed` requires. Rule 2 uses `,`
+as its delimiter because `~` appears in the emphasis class.
 
 The `(#M)` rewrite runs first because it can create a reference:
 `Closes (#7)` becomes `Closes #7`, which the second rewrite then turns into
@@ -255,8 +285,11 @@ call. It is advisory.
 - The output is parsed with the fixed `jq` filter
   `if type=="object" then ((.title // "") | tostring) else "" end`.
 - A non-zero exit, a timeout, empty output, `[]`, invalid JSON or an empty
-  `.title` all yield no output. The function always returns 0 and the publish
-  continues to the next title source.
+  `.title` all yield no output on standard output. The function always returns
+  0 and the publish continues to the next title source.
+- A non-zero exit, including 124 from `timeout`, is reported on standard error
+  by its status only: `NOTE: gh issue view for #<N> exited <status> (#1968)`.
+  `gh`'s own standard output and standard error are never printed.
 - The call is not retried and does not go through `_gh_retry_core`.
 
 The lookup runs on the GitHub path only, after the issue claim check and before
@@ -271,8 +304,12 @@ section reads:
 Workflow-generated PR for #1968: fix: workflow_publish_pr.sh titles PRs wrongly from a two-dot diff.
 ```
 
-The text after `#<issue>: ` is the base title after normalisation, prefixing
-and defusal, before the cap and without the ` (#N)` suffix. The title can
+The text after `#<issue>: ` is the final PR title without its ` (#N)` suffix,
+so it has been normalised, prefixed, defused and capped. Building the summary
+from the capped title keeps the body within the same 200-byte bound as the
+title and removes any incomplete trailing UTF-8 sequence. The suffix is removed
+with the quoted pattern `${PR_TITLE%" (#${ISSUE_NUM})"}`, so `(` and `#` match
+literally even with `extglob` enabled. The title can
 contain colons of its own, as in `fix: ...`, so this prefix is the boundary.
 The line is written with `printf`, and the title is passed to it only as a `%s`
 argument, never as part of the format string. When the template is used, the
@@ -431,7 +468,7 @@ Update workflow recipes with 3 changed files (#1968)
 An issue on a public repository is titled:
 
 ```text
-Fixes #7 (#999) $(touch PWNED) `id` %s %n <ESC>[31m @someone
+Fixes #7 ((#999)) $(touch PWNED) `id` %s %n <ESC>[31m @someone
 ```
 
 The resulting PR title is:
@@ -441,7 +478,7 @@ fix: Fixes issue #7 #999 $(touch PWNED) `id` %s %n [31m @someone (#1968)
 ```
 
 The ESC byte is gone, neither `#7` nor `#999` follows a closing keyword, and
-`(#999)` no longer claims issue 999. The shell fragments stay literal text and
+neither `((#999))` nor the `(#999)` a single pass would leave claims issue 999. The shell fragments stay literal text and
 are never executed.
 
 ## Security considerations
@@ -450,8 +487,8 @@ The issue title is untrusted: anyone who can open an issue on a public
 repository controls it. The first line of the task description is operator text
 that is now published. Both are treated as data:
 
-- They pass through the 1024-byte bound, credential redaction, control-byte
-  removal, defusal and the UTF-8-safe cap before use.
+- They pass through the 8 KiB input bound, control-byte removal, credential
+  redaction, the 1024-byte bound, defusal and the UTF-8-safe cap before use.
 - Derived text appears only as a `%s` argument to `printf` and on the left of
   `=~`. Patterns and the `jq` filter are fixed literals.
 - The title reaches `gh` as one argument after `--title`, so a leading `--`
@@ -472,6 +509,11 @@ Known residual risks:
 - `RECIPE_VAR_local_testing_gate` and `RECIPE_VAR_precommit_results` still go
   into the body without credential redaction, as before.
 - File names come from the branch's own commits and are not a new input.
+- A token that crosses the 8 KiB input bound is cut before redaction and can
+  survive as a fragment. Reaching that bound before the 1024-byte cut needs
+  more than about 7 KB of control bytes or whitespace ahead of the token, so
+  this applies only to operator text in the task description: GitHub issue
+  titles are at most 256 characters.
 
 ## Regression coverage
 
@@ -494,10 +536,11 @@ It appends every invocation's arguments to a call log. Any other call exits 99.
 | --- | --- | --- |
 | 1 | N = 3, lookup answered | No `.github` in title or body; body has `3 files changed` and 3 equals the expected count; title is `fix: workflow_publish_pr.sh titles PRs wrongly from a two-dot diff (#1968)` and does not match `Update .* with [0-9]+ changed files` |
 | 2 | N = 45 | Body has `45 files changed` and `... and 5 more`; 40 is never reported as the count |
-| 3 | Lookup fails, task description `Add merge-base diff to publish` | Publish succeeds; title is `feat: Add merge-base diff to publish (#1968)` |
+| 3 | Lookup fails, task description `Add merge-base diff to publish` | Publish succeeds; title is `feat: Add merge-base diff to publish (#1968)`; the Summary equals the title without ` (#1968)`; in `fail` mode stderr reports `exited 1` and not `gh`'s own message |
+| 3b | Task line of about 500 bytes | Title is at most 200 bytes; the Summary equals the capped title without ` (#1968)` |
 | 4 | Lookup fails, no task description | Title is the template with the true count |
-| 5 | Helpers sourced through `WORKFLOW_PUBLISH_PR_LIB_ONLY` | Prefix order; word boundaries; `defuse_issue_refs` gives `x #5 y` for `x (#5) y`, `fix: issue #9 bad` for `fix: #9 bad`, `Closes issue owner/repo#3` for `Closes owner/repo#3`, `Fixes issue #7` for `Fixes#7`, `fixes: issue #7` for `fixes:#7`, `Closes issue #7` for `Closes (#7)` and `fix issue #5: x` for `fix(#5): x`; `prefix#7` and reference-free text unchanged; valid UTF-8 from `cap_pr_title` on 300 bytes of `é` |
-| 6 | Hostile issue title | Exit 0; no `(#999)`; `issue #7` present; no closing keyword before `#7` or `#999`; shell fragments literal; no ESC byte; title ends ` (#1968)`; no `PWNED` file anywhere under the work directory |
+| 5 | Helpers sourced through `WORKFLOW_PUBLISH_PR_LIB_ONLY` | Prefix order; word boundaries; `defuse_issue_refs` gives `x #5 y` for `x (#5) y`, `fix: issue #9 bad` for `fix: #9 bad`, `Closes issue owner/repo#3` for `Closes owner/repo#3`, `Fixes issue #7` for `Fixes#7`, `fixes: issue #7` for `fixes:#7`, `Closes issue #7` for `Closes (#7)` and `fix issue #5: x` for `fix(#5): x`, plus the nested, emphasis and `GH-M` rows above; `prefix#7` and reference-free text unchanged; normalisation redacts a token split by a control byte and one that crosses byte 1024, and exits 0 on a byte that is not valid UTF-8; valid UTF-8 from `cap_pr_title` on 300 bytes of `é` |
+| 6 | Hostile issue title containing `((#999))` | Exit 0; no `(#999)`; `issue #7` present; no closing keyword before `#7` or `#999`; shell fragments literal; no ESC byte; title ends ` (#1968)`; no `PWNED` file anywhere under the work directory |
 | 7a | `lookup_issue_title 1968 ""` called directly through `WORKFLOW_PUBLISH_PR_LIB_ONLY` | No output, return status 0, and the call log stays empty |
 | 7b | Full publish run on the case 1 fixture with `REMOTE_HOST_TYPE=github`, after `git remote set-url origin https://example.invalid/acme/widgets.git`; `parse_github_repo_identity` rejects that URL | Non-zero exit with `FAILED_PR_IDENTITY`; no `issue view` line in the call log; no `pr create` call |
 

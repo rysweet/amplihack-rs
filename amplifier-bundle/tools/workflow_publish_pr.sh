@@ -188,8 +188,10 @@ gh_pr_create_with_retry() {
 
 # stdin -> stdout: masks URL userinfo and GitHub tokens. The one copy of these
 # patterns, shared by provider stderr and derived PR title text (#1968).
+# LC_ALL=C: every pattern is ASCII, and BSD sed in a UTF-8 locale aborts on
+# bytes that are not valid UTF-8, which pipefail would turn into a failed run.
 redact_credentials() {
-  sed -E \
+  LC_ALL=C sed -E \
     -e 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' \
     -e 's#gh[pousr]_[A-Za-z0-9]{16,}#REDACTED_TOKEN#g' \
     -e 's#github_pat_[A-Za-z0-9_]{16,}#REDACTED_TOKEN#g'
@@ -202,19 +204,25 @@ sanitize_provider_stderr() {
 # ---------------------------------------------------------------------------
 # PR title helpers (#1968). The issue title is untrusted text and the task
 # description is operator text that has never been published before, so both
-# are treated as data: bounded, redacted, stripped of control characters,
+# are treated as data: bounded, stripped of control characters, redacted,
 # defused of issue claims, capped, and only ever passed as a printf %s argument
-# or a single argv element. Nothing here evaluates its input.
+# or a single argv element. Nothing here evaluates its input. Every sed runs
+# with LC_ALL=C, so input that is not valid UTF-8 cannot abort it.
 
-# normalise_pr_title_text <text>: one line, no control characters, single
-# spaces, trimmed. Reads at most the first 1024 bytes. Bytes >= 0x80 pass.
+# normalise_pr_title_text <text>: one line, no control characters, credentials
+# redacted, single spaces, trimmed, at most 1024 bytes. Order: bound the input
+# to 8 KiB, strip control characters (so they cannot split a token), redact,
+# collapse spaces, and only then cut to 1024 bytes (so the cut cannot leave a
+# token fragment too short to match). Bytes >= 0x80 pass.
 normalise_pr_title_text() {
-  # A here-string, not a pipe from printf, so a large input cannot SIGPIPE.
-  head -c 1024 <<<"${1:-}" \
-    | redact_credentials \
+  local s
+  # Here-strings, not pipes from printf: neither head can SIGPIPE a producer.
+  s="$(head -c 8192 <<<"${1:-}" \
     | LC_ALL=C tr '\r\n\t' '   ' \
     | LC_ALL=C tr -d '\000-\037\177' \
-    | sed -E 's/  +/ /g; s/^ //; s/ $//'
+    | redact_credentials \
+    | LC_ALL=C sed -E 's/  +/ /g; s/^ //; s/ $//')"
+  head -c 1024 <<<"$s"
 }
 
 # conventional_pr_title <text>: prefixes "<type>: " from whole-word keywords,
@@ -222,25 +230,23 @@ normalise_pr_title_text() {
 # conventional prefix, or matches no keyword, is returned unchanged. No scope is
 # ever invented.
 conventional_pr_title() {
-  local text="$1" lower type words re
+  local text="$1" lower rule re
   local existing_prefix_re='^[a-z]+(\([^)]*\))?!?: '
   if [[ "$text" =~ $existing_prefix_re ]]; then
     printf '%s\n' "$text"
     return 0
   fi
   lower="$(printf '%s' "$text" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
-  for type in fix docs test refactor feat; do
-    case "$type" in
-      fix) words='fix|fixes|fixed|bug|bugs|regression|broken|wrong|wrongly|incorrect|incorrectly|crash|crashes|fails|failing' ;;
-      docs) words='docs|documentation|document' ;;
-      test) words='test|tests|testing' ;;
-      refactor) words='refactor|refactors|refactoring' ;;
-      feat) words='add|adds|implement|implements|support|introduce|introduces' ;;
-    esac
+  for rule in \
+    'fix:fix|fixes|fixed|bug|bugs|regression|broken|wrong|wrongly|incorrect|incorrectly|crash|crashes|fails|failing' \
+    'docs:docs|documentation|document' \
+    'test:test|tests|testing' \
+    'refactor:refactor|refactors|refactoring' \
+    'feat:add|adds|implement|implements|support|introduce|introduces'; do
     # [^[:alnum:]_] rather than \b: bash 3.2 and BSD regex have no \b.
-    re="(^|[^[:alnum:]_])(${words})([^[:alnum:]_]|\$)"
+    re="(^|[^[:alnum:]_])(${rule#*:})([^[:alnum:]_]|\$)"
     if [[ "$lower" =~ $re ]]; then
-      printf '%s: %s\n' "$type" "$text"
+      printf '%s: %s\n' "${rule%%:*}" "$text"
       return 0
     fi
   done
@@ -248,40 +254,41 @@ conventional_pr_title() {
 }
 
 # defuse_issue_refs <text>: stops derived text from claiming or closing issues.
-# 1. "(#M)" becomes "#M": workflow_issue_claim_check.sh treats "(#M)" in a PR
-#    title as a claim on #M.
-# 2. "issue " goes before any reference that follows a closing keyword, using
-#    the claim check's own keyword pattern (keyword at the start or after a
-#    non-word character, optional ":", any whitespace, then #M, owner/repo#M or
-#    an issues URL). GitHub would otherwise close #M on merge.
+# 1. "(#M)" becomes "#M", repeated until nothing changes, so "((#M))" cannot
+#    leave a "(#M)" behind: workflow_issue_claim_check.sh treats "(#M)" in a
+#    PR title as a claim on #M.
+# 2. "issue " goes before any reference that follows a closing keyword: the
+#    keyword at the start or after a non-alphanumeric character, optionally
+#    wrapped in markdown emphasis (*, _, ~), an optional ":", any whitespace,
+#    then #M, GH-M, owner/repo#M or an issues URL. GitHub would otherwise close
+#    #M on merge. The leading boundary is deliberately wider than the claim
+#    check's pattern: defusing too much display text is harmless.
 # Rule 1 runs first because it can create a reference: "Closes (#7)".
-# Case-insensitive through bracket classes; BSD sed has no I flag.
+# Case-insensitive through bracket classes; BSD sed has no I flag. The ":a"
+# label and the "ta" branch are separate -e arguments, as BSD sed requires.
+# The rule 2 delimiter is "," because "~" appears in the emphasis class.
 defuse_issue_refs() {
   local kw='([Cc][Ll][Oo][Ss][Ee][SsDd]?|[Ff][Ii][Xx]([Ee][SsDd])?|[Rr][Ee][Ss][Oo][Ll][Vv][Ee][SsDd]?)'
-  local ref='(#[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|https?://[^[:space:]]+/issues/[0-9]+)'
-  printf '%s\n' "$1" | sed -E \
-    -e 's/\(#([0-9]+)\)/#\1/g' \
-    -e "s~(^|[^A-Za-z0-9_])${kw}(:?)[[:space:]]*${ref}~\\1\\2\\4 issue \\5~g"
+  local ref='(#[0-9]+|[Gg][Hh]-[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|https?://[^[:space:]]+/issues/[0-9]+)'
+  printf '%s\n' "$1" | LC_ALL=C sed -E \
+    -e ':a' -e 's/\(#([0-9]+)\)/#\1/g' -e 'ta' \
+    -e "s,(^|[^A-Za-z0-9])([*_~]*)${kw}([*_~]*)(:?)([*_~]*)[[:space:]]*${ref},\\1\\2\\3\\5\\6\\7 issue \\8,g"
 }
 
 # cap_pr_title <base> <issue-number>: base cut so that "<base> (#N)" fits in
 # 200 bytes, never inside a UTF-8 sequence, trailing spaces dropped. The
 # " (#N)" suffix is always kept: the claim check's title signal relies on it.
 cap_pr_title() {
-  local base="$1" suffix=" (#$2)" limit lead2 lead3 lead4 cont
+  local base="$1" suffix=" (#$2)" limit
   limit=$((200 - ${#suffix}))
   base="$(head -c "$limit" <<<"$base")"
   # Drop an incomplete trailing multibyte sequence left by the byte cut (or by
   # the 1024-byte input bound): a lead byte followed by fewer continuation
   # bytes than it announces.
-  lead2="$(printf '\300-\337')"
-  lead3="$(printf '\340-\357')"
-  lead4="$(printf '\360-\367')"
-  cont="$(printf '\200-\277')"
   base="$(printf '%s\n' "$base" | LC_ALL=C sed -E \
-    -e "s/[${lead2}]\$//" \
-    -e "s/[${lead3}][${cont}]?\$//" \
-    -e "s/[${lead4}][${cont}]{0,2}\$//")"
+    -e $'s/[\300-\337]$//' \
+    -e $'s/[\340-\357][\200-\277]?$//' \
+    -e $'s/[\360-\367][\200-\277]{0,2}$//')"
   base="${base%"${base##*[! ]}"}"
   printf '%s%s\n' "$base" "$suffix"
 }
@@ -318,6 +325,7 @@ first_task_line() {
 # lookup_issue_title <issue-number> <owner/repo>: the issue's title, or nothing.
 # Advisory: any failure (no identity, gh error, timeout, non-JSON, no title)
 # prints nothing and returns 0, and the caller falls back to the next source.
+# A non-zero gh exit is reported by its status only; gh's output never is.
 # No identity means no call, so gh can never resolve GH_REPO or another remote
 # and answer with a different repository's issue. Not routed through
 # _gh_retry_core: one bounded attempt, no retry.
@@ -326,7 +334,12 @@ lookup_issue_title() {
   [ -n "$repo" ] || return 0
   if command -v timeout >/dev/null 2>&1; then cmd=(timeout 30); fi
   cmd+=(gh issue view "$num" --repo "$repo" --json title)
-  raw="$("${cmd[@]}" </dev/null 2>/dev/null)" || raw=""
+  local rc=0
+  raw="$("${cmd[@]}" </dev/null 2>/dev/null)" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "NOTE: gh issue view for #${num} exited ${rc} (#1968)" >&2
+    return 0
+  fi
   [ -n "$raw" ] || return 0
   printf '%s\n' "$raw" \
     | jq -r 'if type == "object" then ((.title // "") | tostring) else "" end' 2>/dev/null \
@@ -543,7 +556,10 @@ if [ "$HOST_TYPE" = "azdo" ]; then
     finish_publish "EXISTING_OPEN_PR" "existing-open-pr" "success" "existing active AzDO PR found for branch"
   fi
 
-  CHANGED_FILES_ALL=$(git diff --name-only "$DIFF_RANGE" 2>/dev/null || true)
+  if ! CHANGED_FILES_ALL=$(git diff --name-only "$DIFF_RANGE" 2>/dev/null); then
+    echo "WARNING: git diff --name-only ${DIFF_RANGE} failed; changed-file list is empty (#1968)" >&2
+    CHANGED_FILES_ALL=""
+  fi
   CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES_ALL" | format_changed_files_body)
   DIFF_STAT=$(git diff --stat "$DIFF_RANGE" 2>/dev/null | tail -20 || true)
   DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
@@ -626,7 +642,10 @@ fi
 
 # Issue #1968: the full merge-base list feeds the count, scope, risk and
 # closing-keyword decisions; only the body's display list is cut at 40.
-CHANGED_FILES_ALL=$(git diff --name-only "$DIFF_RANGE" 2>/dev/null || true)
+if ! CHANGED_FILES_ALL=$(git diff --name-only "$DIFF_RANGE" 2>/dev/null); then
+  echo "WARNING: git diff --name-only ${DIFF_RANGE} failed; changed-file list is empty (#1968)" >&2
+  CHANGED_FILES_ALL=""
+fi
 CHANGED_COUNT=$(printf '%s\n' "$CHANGED_FILES_ALL" | awk '$0 != "" {n++} END {print n + 0}')
 DIFF_STAT=$(git diff --stat "$DIFF_RANGE" 2>/dev/null | tail -20 || true)
 RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/null || true)
@@ -677,9 +696,13 @@ if [ "$PR_TITLE_SOURCE" = "template" ]; then
   PR_SUMMARY="Concise workflow-generated PR for ${PR_SCOPE}."
 else
   PR_TITLE_BASE="$(defuse_issue_refs "$(conventional_pr_title "$PR_TITLE_TEXT")")"
-  PR_SUMMARY="Workflow-generated PR for #${ISSUE_NUM}: ${PR_TITLE_BASE}."
 fi
 PR_TITLE="$(cap_pr_title "$PR_TITLE_BASE" "$ISSUE_NUM")"
+# The body summary repeats the capped title, so it is bounded and trimmed the
+# same way. The pattern is quoted so "(" and "#" match literally under extglob.
+if [ "$PR_TITLE_SOURCE" != "template" ]; then
+  PR_SUMMARY="Workflow-generated PR for #${ISSUE_NUM}: ${PR_TITLE%" (#${ISSUE_NUM})"}."
+fi
 # The source only: the title itself may be untrusted text.
 echo "PR title source: ${PR_TITLE_SOURCE}" >&2
 CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES_ALL" | format_changed_files_body)
