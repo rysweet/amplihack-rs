@@ -1244,10 +1244,13 @@ fn a_row_whose_direct_read_failed_is_unknown_and_in_no_figure() {
 // figure that reappears after a higher one made the week look as if it fell
 // and rose again, and each fall was counted as a reset. Before a line is
 // written, each passive reading is compared with that login's newest
-// reading in the history and left out, its login listed as unknown, when:
-// (1) its week has ended (`w_reset` at or before the line's `at`), (2) it
-// is the same week within `SAME_WEEK_SLACK` and its `w` is lower, or (3)
-// its week is more than `SAME_WEEK_SLACK` earlier than the recorded one.
+// reading in the history. It is stale when (1) its week has ended
+// (`w_reset` at or before the line's `at`), (2) it is the same week within
+// `SAME_WEEK_SLACK` and its `w` is lower, or (3) its week is more than
+// `SAME_WEEK_SLACK` earlier than the recorded one. A stale reading is
+// replaced by the newest recorded reading while that one's week has not
+// ended, so the login, which is one in use, stays in the line; otherwise
+// its login is listed as unknown.
 
 use super::usage_history::{SAME_WEEK_SLACK, stale};
 
@@ -1459,7 +1462,7 @@ mod stale_file {
     }
 
     #[test]
-    fn a_stale_passive_reading_is_recorded_as_unknown() {
+    fn a_stale_passive_reading_is_replaced_by_the_recorded_one() {
         let r = Root::new();
         r.append(
             &by(
@@ -1471,8 +1474,9 @@ mod stale_file {
             T - HOUR,
         );
 
-        // A cached 38 for the same week: left out, listed as unknown. The
-        // other login's passive reading is kept.
+        // A cached 38 for the same week: the recorded reading, session
+        // figure and reset included, is written in its place, and the login
+        // is not unknown. The other login's passive reading is kept.
         r.append(
             &by(
                 Writer::Rotate,
@@ -1484,9 +1488,9 @@ mod stale_file {
         );
         let e = r.last(T);
         assert_eq!(e.at, T);
-        assert!(!e.profiles.contains_key("work"), "{:?}", e.profiles);
+        assert_eq!(e.profiles["work"], p(Some(1), 50, Some(WEEK)));
         assert_eq!(e.profiles["home"].w, 20);
-        assert_eq!(e.unknown, ["work"]);
+        assert!(e.unknown.is_empty(), "{:?}", e.unknown);
         assert!(!r.lines().last().unwrap().contains(r#""w":38"#));
 
         // A passive 52 for the same week is written.
@@ -1516,14 +1520,16 @@ mod stale_file {
     fn the_unknown_list_stays_sorted_without_duplicates() {
         let r = Root::new();
         r.append(
-            &entry(T - HOUR, &[("mid", p(Some(1), 50, Some(WEEK)))]),
+            &entry(T - HOUR, &[("mid", p(Some(1), 50, Some(T - 120)))]),
             T - HOUR,
         );
+        // `mid`'s passive reading is from a week that ended, and the
+        // recorded one is too: nothing known is left, so it is unknown.
         r.append(
             &by(
                 Writer::Rotate,
                 T,
-                &[("mid", pp(38, Some(WEEK)))],
+                &[("mid", pp(38, Some(T - 60)))],
                 &["zed", "alpha"],
             ),
             T,
@@ -1571,8 +1577,8 @@ mod stale_file {
         );
         r.append(&entry(T, &[("work", pp(35, Some(WEEK)))]), T);
         let e = r.last(T);
-        assert!(!e.profiles.contains_key("work"));
-        assert_eq!(e.unknown, ["work"]);
+        assert_eq!(e.profiles["work"].w, 40, "the newest, not the older 30");
+        assert!(e.unknown.is_empty());
 
         // An older 60 from the last week, then 30 in this one: a passive
         // 35 is above the newest reading and is written.
@@ -1606,8 +1612,8 @@ mod stale_file {
         assert_eq!(lines.len(), 2, "the over-age line was trimmed: {lines:?}");
         assert_eq!(lines[0], kept);
         let e = parse_line(&lines[1], T).unwrap();
-        assert!(e.profiles.is_empty());
-        assert_eq!(e.unknown, ["work"]);
+        assert_eq!(e.profiles["work"].w, 50);
+        assert!(e.unknown.is_empty());
     }
 
     /// A line of about 1 KiB holding 20 other logins.
@@ -1646,7 +1652,7 @@ mod stale_file {
         r.append(&entry(T, &[("work", pp(38, Some(WEEK)))]), T);
         assert_eq!(r.last(T).profiles["work"].w, 38);
 
-        // Within the lookback it is found and the 38 is left out.
+        // Within the lookback it is found and the 38 is replaced by it.
         let r = Root::new();
         let mut body = String::new();
         for i in 0..8 {
@@ -1657,8 +1663,8 @@ mod stale_file {
         r.seed(&body);
         r.append(&entry(T, &[("work", pp(38, Some(WEEK)))]), T);
         let e = r.last(T);
-        assert!(!e.profiles.contains_key("work"));
-        assert_eq!(e.unknown, ["work"]);
+        assert_eq!(e.profiles["work"].w, 50);
+        assert!(e.unknown.is_empty());
     }
 
     #[test]
@@ -1672,5 +1678,84 @@ mod stale_file {
         ));
         r.append(&entry(T, &[("work", pp(38, Some(WEEK)))]), T);
         assert_eq!(r.last(T).profiles["work"].w, 38);
+    }
+
+    #[test]
+    fn a_passive_reading_from_an_ended_or_earlier_week_takes_the_recorded_figure() {
+        // Rule 1: the passive reading's week ended at T - 60, but the
+        // recorded 50 is of the week now running, so it is written.
+        let r = Root::new();
+        r.append(
+            &entry(T - HOUR, &[("work", p(Some(1), 50, Some(WEEK)))]),
+            T - HOUR,
+        );
+        r.append(&entry(T, &[("work", pp(90, Some(T - 60)))]), T);
+        assert_eq!(r.last(T).profiles["work"], p(Some(1), 50, Some(WEEK)));
+
+        // Rule 3: a figure from the week before, however high, is replaced.
+        let r = Root::new();
+        r.append(
+            &entry(T - HOUR, &[("work", p(Some(1), 5, Some(WEEK)))]),
+            T - HOUR,
+        );
+        r.append(&entry(T, &[("work", pp(90, Some(WEEK - 7 * DAY)))]), T);
+        assert_eq!(r.last(T).profiles["work"].w, 5);
+
+        // Rule 1 with a recorded reading whose week has ended too: nothing
+        // known is left, so the login is unknown.
+        let r = Root::new();
+        r.append(
+            &entry(T - HOUR, &[("work", p(Some(1), 50, Some(T - 120)))]),
+            T - HOUR,
+        );
+        r.append(&entry(T, &[("work", pp(90, Some(T - 60)))]), T);
+        let e = r.last(T);
+        assert!(e.profiles.is_empty());
+        assert_eq!(e.unknown, ["work"]);
+    }
+
+    #[test]
+    fn rotate_status_keeps_a_login_whose_passive_reading_was_stale() {
+        use super::super::capacity_summary::status_line;
+        use super::super::capacity_weight::Weights;
+        // `profile usage` read both logins 5 h and 1 h ago. Then a rotator
+        // cycle got a cached 38 for `work`, which is in use and at 50.
+        let r = Root::new();
+        let both = |w| {
+            [
+                ("work", p(Some(1), w, Some(WEEK))),
+                ("home", p(Some(1), 20, Some(WEEK))),
+            ]
+        };
+        r.append(
+            &by(Writer::Usage, T - 5 * HOUR, &both(40), &[]),
+            T - 5 * HOUR,
+        );
+        r.append(&by(Writer::Usage, T - HOUR, &both(50), &[]), T - HOUR);
+        r.append(
+            &by(
+                Writer::Rotate,
+                T,
+                &[("work", pp(38, Some(WEEK))), ("home", pp(20, Some(WEEK)))],
+                &[],
+            ),
+            T,
+        );
+        let (all, warning) = read_all(&r.root, T + 60);
+        assert_eq!(warning, None);
+        let (newest, earlier) = all.split_last().unwrap();
+        assert_eq!(newest.by, Some(Writer::Rotate));
+        let line = status_line(newest, earlier, &Weights::default(), 95, T + 60);
+
+        // The cycle read every login, so the line says none was left out
+        // and none is unknown. Headroom counts `work` at its recorded 50,
+        // not the cached 38: (50 + 80) points of 2 logins. Its runway is
+        // its own: 10 points used over 5 h, 0.02 login-weeks an hour, and
+        // 1.30 login-weeks of headroom last about 65 h.
+        assert_eq!(
+            line,
+            "capacity: headroom 1.30 login-weeks of 2 (65%), usable 2 of 2 logins, \
+             runway ~65 h (as of 2026-10-30T16:15:00Z, 1m ago, rotate cycle: probed profiles only)"
+        );
     }
 }

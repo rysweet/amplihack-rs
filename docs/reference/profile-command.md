@@ -2177,14 +2177,22 @@ It is read from the [usage history](#usage-history):
    when every weight is `1.0` it equals the unweighted rate. It is never
    negative.
 
-For example, in history written before stale readings were filtered, one
-login read 34% at 13:00 and 50% at 18:55. Between those
-times a stale status-line reading of 38% reappeared between rising figures:
-40, 38, 42, 38, 43, 38, 44, and so on up to 46, 49 and 50. Each fall is 7
-points or less, so none is a reset, and the login's use is 50 − 34 = 16
-points: 0.16 login-weeks over 5.92 hours, a rate of `0.027`. Had the login
-read 90% at the start, reached 100%, reset to 0% and then read 12% now, its
-use would be (100 − 90) + 12 = 22 points.
+For example, on 5 November 2026 one login read 34% at 16:52 and 50% at
+18:55. In between, a stale status-line figure of 38% reappeared five times
+between rising ones (40, 38, 40, 41, 38, 42, and so on), and once 46
+appeared between 48 and 49. Each fall is 5 points or less, so none is a
+reset, and the login's use over those two hours is 50 − 34 = 16 points.
+Release 1.2.97 counted every fall as a reset and each fall's whole lower
+figure as use: 269 points. Had the login read 90% at the start, reached
+100%, reset to 0% and then read 12% now, its use would be
+(100 − 90) + 12 = 22 points.
+
+On the same day, `profile usage` at 16:52 reported a rate of `0.483` and a
+runway of `7.5` hours. The start was a rotator entry at 10:53:20 that held
+every login read at 16:52. Under the rule above, three logins used 59
+points over those 5.99 hours, a rate of `0.099` and a runway of `36.5`
+hours. Release 1.2.97 counted 289 points; most came from falls of 1 to 3
+points counted as resets.
 
 The runway is the weighted headroom of this run divided by the rate. When the
 rate is zero, nothing was used over the window and the runway is `unknown`;
@@ -2495,10 +2503,22 @@ newest reading in the history, and is stale when any of these holds:
 | Its `w_reset` and the recorded one are both known and within one hour of each other, so it is the same week, and its `w` is lower than the recorded `w`. | Recorded `w` 50, passive `w` 38, both resetting at `2026-11-10T09:00:00Z`. |
 | Its `w_reset` is more than one hour earlier than the recorded one, so it belongs to an earlier week. | Recorded `w_reset` `2026-11-10T09:00:00Z`, passive `w_reset` `2026-11-03T09:00:00Z`. |
 
-A stale reading is left out of the line and its login is listed under
-`unknown`, as for a reading that failed. A rotator line with such a login
-therefore cannot be the start of the [rate](#rate-and-runway), and a
-`profile usage` line that is the start leaves that login out of the rate.
+A stale reading is not written. In its place the line holds that login's
+newest recorded reading (its `s`, `w` and `w_reset`), so the login stays in
+the line. Passive readings come from Claude's status line, so a stale one
+belongs to a login in use, and leaving it out would hide the login being
+used up: a `profile usage` line that is the start of the
+[rate](#rate-and-runway) would leave it out of the rate, and
+[`rotate status`](#rotate-status) would say the rotator cycle left a login
+out and leave its headroom out of the `capacity:` line. The recorded figure
+adds nothing to the rate, since the week has not risen above it, and the
+true figure is at least that high, because within a week it only rises.
+
+The recorded reading is used only while its own week has not ended at the
+line's `at`. When it has, or when the history holds no reading of the
+login, nothing known is left to write: the login is listed under `unknown`,
+as for a reading that failed. This happens only under the first rule.
+
 A passive reading equal to or higher than the recorded one in the same week
 is written. A reading taken during the run, directly or by `claude`, is
 never treated as stale, and nor is a passive reading whose own `w_reset`
@@ -2513,7 +2533,7 @@ unchecked. The filter changes what is recorded. In the same run, the table,
 the headroom and usable count of the summary, and the auto-switch readings
 still use the reading; the rate does not (step 4 of
 [Rate and runway](#rate-and-runway)). No message is given when a reading is
-left out. Lines already in the history are not rewritten.
+replaced or left out. Lines already in the history are not rewritten.
 
 #### Refreshing auto-switch readings
 

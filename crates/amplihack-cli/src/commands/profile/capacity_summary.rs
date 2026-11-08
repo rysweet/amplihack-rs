@@ -346,6 +346,11 @@ pub(super) fn compute(i: &Inputs<'_>) -> Summary {
 /// login as unknown left it out: skipped as busy (and so likely being used
 /// up) or a failed probe. A `profile usage` line, or an older line without
 /// a writer, tried every login; its unknowns are failed readings.
+///
+/// A stale passive reading does not make its login unknown while the
+/// history holds a figure of the week now running: the writer records that
+/// figure instead (`usage_history::stale_replaced`, issue #1970), so a cycle
+/// that read a cached figure still reads every login here.
 fn reads_every_login(e: &Entry) -> bool {
     e.by != Some(Writer::Rotate) || e.unknown.is_empty()
 }

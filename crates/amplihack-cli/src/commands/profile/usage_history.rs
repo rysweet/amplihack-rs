@@ -15,7 +15,8 @@
 //!
 //! Issue #1970: before a line is written, each passive reading is checked
 //! with [`stale`] against its login's newest reading in the history; a stale
-//! one is left out and its login listed as unknown.
+//! one is replaced by that recorded reading, so the login stays in the line
+//! ([`stale_replaced`]).
 
 use super::name::ProfileName;
 use super::usage_cmd::{Row, utc_time};
@@ -367,8 +368,9 @@ fn point_of_probe(p: &super::rotate::decide::Probed) -> Option<Point> {
     // counts a missing session as 0% used; the point keeps it unread and
     // says why.
     let no_session_limit = p.windows.no_session_limit && session.is_none();
-    // Issue #1970: as in `entry_of`, a capture time marks a passive reading.
-    let passive = p.observed_at.is_some();
+    // Issue #1970: the probe says whether it is a passive reading. Its
+    // capture time cannot: a #1870 re-read is a direct read that has one.
+    let passive = p.passive;
     match p.reading {
         Reading::Failed => None,
         Reading::Measured { week: used, .. } => Some(Point {
@@ -455,21 +457,40 @@ fn newest_points(bytes: &[u8], now: i64) -> BTreeMap<String, (i64, Point)> {
     newest
 }
 
-/// `entry` without its stale passive readings ([`stale`] against
-/// `newest`); each login left out is listed as unknown, as a reading that
-/// failed would be.
+/// `entry` with each stale passive reading ([`stale`] against `newest`)
+/// replaced by that login's newest recorded reading.
+///
+/// The login stays in the line. Passive readings come from Claude's status
+/// line, so a stale one belongs to a login in use, and a line without it
+/// would leave the busiest login out: a `profile usage` start would drop it
+/// from the rate, and `rotate status` would report a rotator line as having
+/// left a login out (`capacity_summary::status_line`). The recorded figure
+/// adds nothing to the rate, because the week has not risen above it, and
+/// it is a lower bound of the true figure, which only rises within a week,
+/// so headroom is never overstated by the cached figure.
+///
+/// A recorded reading is used only while its own week has not ended at
+/// `entry.at`. Without one (a reading from an ended week, with no newer
+/// recorded figure of the current week) nothing known is left to write:
+/// the login is listed as unknown, as a failed reading would be.
 #[cfg(unix)]
-fn without_stale(entry: &Entry, newest: &BTreeMap<String, (i64, Point)>) -> Entry {
+fn stale_replaced(entry: &Entry, newest: &BTreeMap<String, (i64, Point)>) -> Entry {
     let mut out = entry.clone();
-    let dropped: Vec<String> = entry
-        .profiles
-        .iter()
-        .filter(|(n, p)| p.passive && stale(newest.get(*n).map(|(_, q)| q), p, entry.at))
-        .map(|(n, _)| n.clone())
-        .collect();
-    for name in dropped {
-        out.profiles.remove(&name);
-        out.unknown.push(name);
+    for (name, p) in &entry.profiles {
+        let recorded = newest.get(name).map(|(_, q)| q);
+        if !p.passive || !stale(recorded, p, entry.at) {
+            continue;
+        }
+        let current_week = recorded.filter(|q| q.w_reset.is_some_and(|r| r > entry.at));
+        match current_week {
+            Some(q) => {
+                out.profiles.insert(name.clone(), q.clone());
+            }
+            None => {
+                out.profiles.remove(name);
+                out.unknown.push(name.clone());
+            }
+        }
     }
     out.unknown.sort();
     out.unknown.dedup();
@@ -850,8 +871,8 @@ pub(super) fn append(root: &Path, entry: &Entry, now: i64) -> Result<(), History
 /// ([`HistoryError::NoStateDir`]); neither prints anything. Never creates
 /// `.auto-switch.d`. A line appended after a failed trim gives
 /// [`HistoryError::TrimFailed`]. A passive reading that is [`stale`]
-/// against its login's newest reading in the last 256 KiB is left out and
-/// its login listed as unknown (issue #1970).
+/// against its login's newest reading in the last 256 KiB is replaced by
+/// that reading ([`stale_replaced`], issue #1970).
 #[cfg(unix)]
 pub(super) fn append_with(
     root: &Path,
@@ -879,14 +900,14 @@ pub(super) fn append_with(
         .len();
     // Issue #1970: a passive reading lower than the recorded one for its
     // week, or from an ended week, is a stale cached figure and is not
-    // written as new history. Read from the handle already checked, under
+    // written as new history; the recorded figure is written instead. Read from the handle already checked, under
     // the lock, and before the line is made, so a rewrite writes the
     // filtered line too. A failed read writes nothing rather than the
     // unfiltered line.
     let filtered;
     let entry = if entry.profiles.values().any(|p| p.passive) {
         let tail = read_last(&file, len, STALE_LOOKBACK).map_err(|_| HistoryError::WriteFailed)?;
-        filtered = without_stale(entry, &newest_points(&tail, now));
+        filtered = stale_replaced(entry, &newest_points(&tail, now));
         &filtered
     } else {
         entry

@@ -59,6 +59,7 @@ fn probed(s: f64, w: f64) -> Probed {
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     }
 }
 
@@ -207,10 +208,36 @@ fn from_probes_marks_passive_readings_and_only_those() {
     // it is written, so the snapshot says which readings are passive.
     let mut cached = probed(10.0, 20.0);
     cached.observed_at = Some(T - 30);
-    let probes = (cached, vec![(n("direct"), probed(30.0, 40.0))]);
+    cached.passive = true;
+    // A #1870 re-read is a direct read that has a reading time: it is not
+    // passive, so a figure it reads is never replaced as a cached one.
+    let mut reread = probed(50.0, 60.0);
+    reread.observed_at = Some(T - 5);
+    let probes = (
+        cached,
+        vec![(n("direct"), probed(30.0, 40.0)), (n("reread"), reread)],
+    );
     let s = from_probes(T, Some(&n("live")), &probes, None, &[]);
     assert!(s.points["live"].passive);
     assert!(!s.points["direct"].passive);
+    assert!(!s.points["reread"].passive);
+}
+
+#[test]
+fn a_probe_is_passive_only_when_its_report_came_from_the_status_line() {
+    use crate::commands::profile::usage_parse::{UsageReport, UsageState};
+    let mut r = UsageReport {
+        state: UsageState::Ok,
+        session: None,
+        week_all: None,
+        week_models: Vec::new(),
+        session_limit: true,
+        observed_at: None,
+    };
+    assert!(!Probed::from_report(&r).passive);
+    // Only the passive reader sets a capture time on a report.
+    r.observed_at = Some(T - 30);
+    assert!(Probed::from_report(&r).passive);
 }
 
 // ---------------------------------------------------------------------------

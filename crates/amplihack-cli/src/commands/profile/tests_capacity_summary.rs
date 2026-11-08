@@ -21,7 +21,7 @@ use super::capacity_summary::{
     Inputs, RESET_FALL, RateParts, Summary, compute, rate_parts, rounded,
 };
 use super::capacity_weight::Weights;
-use super::usage_history::{Entry, Point, Snapshot, Writer};
+use super::usage_history::{Entry, Point, Snapshot, Writer, parse_line};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -1043,201 +1043,268 @@ fn raw_rate(p: &RateParts) -> f64 {
     total / 100.0 / (p.span as f64 / 3600.0)
 }
 
-/// The week of recovery-ryansweet on 5 Nov resets on 10 Nov at 09:00Z.
-const FLICKER_RESET: i64 = N5 + 5 * DAY + 9 * HOUR;
-const FLICKER: &str = "recovery-ryansweet";
+// The 5 November history, replayed. `usage-history.jsonl` no longer holds
+// that day, so the fixture is rebuilt from the rotator log's cycle lines;
+// `testdata/README.md` says how, and what in it is inferred.
 
-/// The sequence from the issue. A `profile usage` line read 34% at 13:00Z
-/// and rotator lines held 34% at 14:00Z and 15:30Z. From 16:48Z the
-/// figure rose to 50%, but a cached 38% kept reappearing between rising
-/// readings. Every fall is 7 points or less.
-fn flicker_history() -> Vec<Entry> {
-    let mut h = vec![written_by(
-        Writer::Usage,
-        n5(13, 0, 0),
-        &[(FLICKER, wr(34, FLICKER_RESET))],
-        &[],
-    )];
-    let seq: [(i64, i64, u8); 22] = [
-        (14, 0, 34),
-        (15, 30, 34),
-        (16, 48, 34),
-        (17, 0, 35),
-        (17, 15, 36),
-        (17, 30, 37),
-        (17, 45, 38),
-        (17, 47, 40),
-        (17, 54, 38),
-        (17, 56, 42),
-        (18, 2, 38),
-        (18, 4, 43),
-        (18, 8, 38),
-        (18, 9, 44),
-        (18, 15, 38),
-        (18, 17, 45),
-        (18, 25, 38),
-        (18, 27, 45),
-        (18, 35, 38),
-        (18, 40, 46),
-        (18, 42, 49),
-        (18, 48, 50),
-    ];
-    for (hh, mm, w) in seq {
-        h.push(written_by(
-            Writer::Rotate,
-            n5(hh, mm, 0),
-            &[(FLICKER, wr(w, FLICKER_RESET))],
-            &[],
-        ));
-    }
-    h
+/// `testdata/issue_1970_5nov.jsonl`: 10:52Z to 19:00Z on 5 Nov 2026.
+const NOV5: &str = include_str!("testdata/issue_1970_5nov.jsonl");
+/// The two logins the issue names keep their names in the fixture.
+const REC: &str = "recovery-ryansweet";
+const RMP: &str = "ryan-mistt-personal";
+/// ryanc2-mistt-org in the rotator log.
+const L19: &str = "login-19";
+
+/// Every fixture line, oldest first.
+fn nov5() -> Vec<Entry> {
+    NOV5.lines()
+        .map(|l| parse_line(l, N5 + DAY).unwrap_or_else(|| panic!("unreadable: {l}")))
+        .collect()
 }
 
-fn flicker_now() -> Snapshot {
-    snap(n5(18, 55, 0), &[(FLICKER, wr(50, FLICKER_RESET))], &[])
+/// The fixture line at `at` as the current snapshot, and every line before
+/// it as the history.
+fn nov5_at(at: i64) -> (Snapshot, Vec<Entry>) {
+    let all = nov5();
+    let e = all
+        .iter()
+        .find(|e| e.at == at)
+        .unwrap_or_else(|| panic!("no fixture line at {at}"))
+        .clone();
+    let earlier = all.into_iter().filter(|x| x.at < at).collect();
+    let now = Snapshot {
+        at: e.at,
+        points: e.profiles,
+        unknown: e.unknown,
+    };
+    (now, earlier)
+}
+
+/// The rate rule of release 1.2.97 (`rate_of`, `can_start`,
+/// `reset_between` and `used_between` in `capacity_summary.rs` at tag
+/// v1.2.97), copied here so the replay shows the figure that release
+/// printed. Every fall in `w` was a reset, and after a reset the whole
+/// later figure was counted as use. Gives the start and each login's
+/// points; weights are 1.0 in the fixture.
+fn rate_1_2_97(current: &Snapshot, history: &[Entry]) -> Option<(i64, BTreeMap<String, i64>)> {
+    let reset_between =
+        |a: &Point, b: &Point, b_at: i64| a.w_reset.is_some_and(|r| r <= b_at) || b.w < a.w;
+    let used_between = |a: &Point, b: &Point, b_at: i64| {
+        if reset_between(a, b, b_at) {
+            i64::from(b.w)
+        } else {
+            i64::from(b.w) - i64::from(a.w)
+        }
+    };
+    let can_start = |e: &Entry| match e.by {
+        Some(Writer::Rotate) => current.points.keys().all(|n| e.profiles.contains_key(n)),
+        Some(Writer::Usage) | None => true,
+    };
+    let from = current.at - 6 * HOUR;
+    let mut window: Vec<&Entry> = history
+        .iter()
+        .filter(|e| e.at >= from && e.at < current.at)
+        .collect();
+    window.sort_by_key(|e| e.at);
+    let first = window.iter().position(|e| can_start(e))?;
+    let (start, rest) = window[first..].split_first()?;
+    let mut used = BTreeMap::new();
+    for (name, now_point) in &current.points {
+        let Some(mut prev) = start.profiles.get(name) else {
+            continue;
+        };
+        let mut u = 0i64;
+        for e in rest {
+            if let Some(p) = e.profiles.get(name) {
+                u += used_between(prev, p, e.at);
+                prev = p;
+            }
+        }
+        u += used_between(prev, now_point, current.at);
+        used.insert(name.clone(), u);
+    }
+    Some((start.at, used))
+}
+
+/// The `profile usage` reading the issue reports, at 16:52Z. The log does
+/// not give the second; any time from 16:52:11Z to 16:52:43Z prints the
+/// same two figures.
+fn nov5_report() -> (Snapshot, Vec<Entry>) {
+    nov5_at(n5(16, 52, 30))
+}
+
+/// Logins with a non-zero figure in `used`.
+fn nonzero(used: impl IntoIterator<Item = (String, i64)>) -> Vec<(String, i64)> {
+    used.into_iter().filter(|(_, u)| *u != 0).collect()
+}
+
+#[test]
+fn the_5_nov_fixture_is_the_day_the_issue_describes() {
+    let all = nov5();
+    assert_eq!(all.len(), 303);
+    assert_eq!(all.first().unwrap().at, n5(10, 52, 12));
+    assert_eq!(all.last().unwrap().at, n5(18, 59, 8));
+    // recovery-ryansweet's week was full and reset at 12:00Z, as the
+    // deputy found: 100 at 11:59:41Z, 0 at 12:00:57Z.
+    let rec: Vec<(i64, u8)> = all
+        .iter()
+        .filter_map(|e| e.profiles.get(REC).map(|p| (e.at, p.w)))
+        .collect();
+    let fall = rec
+        .windows(2)
+        .find(|w| w[0].1 == 100 && w[1].1 == 0)
+        .expect("the 100 -> 0 reset");
+    assert_eq!(fall[1].0, n5(12, 0, 57));
+    // It read 34% from 15:45Z to 17:17Z, as Crusty's 16:48Z reading did,
+    // and 50% from 18:48Z.
+    let at = |t: i64| rec.iter().rev().find(|(a, _)| *a <= t).unwrap().1;
+    assert_eq!(at(n5(16, 48, 51)), 34);
+    assert_eq!(at(n5(18, 54, 55)), 50);
+}
+
+#[test]
+fn the_5_nov_history_gives_0_483_and_7_5_h_under_the_1_2_97_rule() {
+    let (now, h) = nov5_report();
+    // The two logins `profile usage` could not read are left out: the
+    // headroom of the other 20 is the issue's 360 points.
+    assert_eq!(now.points.len(), 20);
+    assert_eq!(now.unknown, ["login-01", "login-06"]);
+
+    let (start, old) = rate_1_2_97(&now, &h).expect("a start");
+    // Not the 13:23:37Z `profile usage` line the deputy took: that is only
+    // 3.48 h old, under the 4.5 h minimum, and 1.2.97 would have printed
+    // no rate from it. The start is the oldest line in the window holding
+    // every login read now, the rotator cycle at 10:53:20Z.
+    assert_eq!(start, n5(10, 53, 20));
+    let span = now.at - start;
+    assert_eq!(span, 5 * HOUR + 59 * MIN + 10);
+
+    // Each login's contribution. Most of it comes from falls counted as
+    // resets (issue #1841): ryan-mistt-personal's five falls from 27-29 to
+    // 26 between 11:30Z and 11:57Z add 26 points each, and the seven falls
+    // of 1 to 3 points in recovery-ryansweet's new week add their whole
+    // lower figures, 67 in all.
+    assert_eq!(
+        nonzero(old),
+        [
+            ("login-19".to_string(), 22),
+            (REC.to_string(), 111),
+            (RMP.to_string(), 156),
+        ]
+    );
+    let rate = 289.0 / 100.0 / (span as f64 / 3600.0);
+    assert_eq!(rounded(rate, 3), Some(0.483));
+
+    // The runway the issue saw: 3.6 weighted login-weeks over that rate.
+    let v = js(&summary(&now, &Weights::default(), 95, &h));
+    assert_eq!(v["weighted_headroom_login_weeks"], json!(3.6));
+    assert_eq!(rounded(3.6 / rate, 1), Some(7.5));
+}
+
+#[test]
+fn the_5_nov_history_gives_0_099_under_the_net_rise_rule() {
+    let (now, h) = nov5_report();
+    let p = parts(&now, &h).expect("a start");
+    assert_eq!(p.start, n5(10, 53, 20), "the same start as 1.2.97");
+    assert_eq!(p.span, 5 * HOUR + 59 * MIN + 10);
+    let used: Vec<(String, i64)> = p.used.iter().map(|(n, (u, _))| (n.clone(), *u)).collect();
+    assert_eq!(
+        nonzero(used),
+        [
+            // 0 -> 9, through a fall from 5 to 1 at 12:12:30Z.
+            ("login-19".to_string(), 9),
+            // 100 at the start, its week full: nothing. Then a reset to 0
+            // and a new week up to 34.
+            (REC.to_string(), 34),
+            // 24 -> 40.
+            (RMP.to_string(), 16),
+        ]
+    );
+    assert!(p.used.values().all(|(_, w)| *w == 1.0));
+
+    let v = js(&summary(&now, &Weights::default(), 95, &h));
+    assert_eq!(v["rate_login_weeks_per_hour"], json!(0.099));
+    assert_eq!(v["runway_hours"], json!(36.5));
+}
+
+/// The rotator line at 18:54:55Z, and the lines from the 16:52:30Z
+/// `profile usage` line to it: the span of the issue comment's flicker.
+fn nov5_flicker() -> (Snapshot, Vec<Entry>) {
+    let (now, h) = nov5_at(n5(18, 54, 55));
+    let from_report = h.into_iter().filter(|e| e.at >= n5(16, 52, 30)).collect();
+    (now, from_report)
 }
 
 #[test]
 fn the_5_nov_flicker_counts_its_net_rise_of_16_points() {
-    let h = flicker_history();
-    // Every fall in the fixture is within the threshold, so none is a
-    // reset; the test would not show the fix otherwise.
-    let ws: Vec<u8> = h.iter().map(|e| e.profiles[FLICKER].w).collect();
-    let biggest_fall = ws
+    let (now, h) = nov5_flicker();
+    let rec: Vec<u8> = h
+        .iter()
+        .filter_map(|e| e.profiles.get(REC).map(|p| p.w))
+        .chain([now.points[REC].w])
+        .collect();
+    // The cached 38% (and one 46%) reappear between rising readings, as
+    // the comment on the issue shows. Every fall is within the threshold.
+    let falls: Vec<(u8, u8)> = rec
         .windows(2)
-        .map(|p| i16::from(p[0]) - i16::from(p[1]))
-        .max()
-        .unwrap();
-    assert_eq!(biggest_fall, 7);
-    assert!(biggest_fall <= i16::from(RESET_FALL));
+        .filter(|w| w[1] < w[0])
+        .map(|w| (w[0], w[1]))
+        .collect();
+    assert_eq!(
+        falls,
+        [(39, 38), (40, 38), (41, 38), (42, 38), (43, 38), (48, 46)]
+    );
+    assert!(falls.iter().all(|(a, b)| a - b <= RESET_FALL));
 
-    let p = parts(&flicker_now(), &h).expect("a start 5.92 h old");
-    assert_eq!(p.start, n5(13, 0, 0));
-    assert_eq!(p.span, 5 * HOUR + 55 * MIN);
-    assert_eq!(used(&p, FLICKER), 16, "50 - 34, whatever the flicker");
-    assert_eq!(p.used[FLICKER].1, 1.0);
+    let p = parts(&now, &h).expect("the parts are given below 4.5 h too");
+    assert_eq!(p.start, n5(16, 52, 30), "the profile usage line");
+    assert_eq!(used(&p, REC), 50 - 34, "whatever the flicker");
 
-    // 0.16 login-weeks over 5.9167 h.
-    let s = summary(&flicker_now(), &Weights::default(), 95, &h);
-    let v = js(&s);
-    assert_eq!(v["rate_login_weeks_per_hour"], json!(0.027));
-    assert!(v["rate_login_weeks_per_hour"].as_f64().unwrap() < 0.05);
-    // 0.5 login-weeks of headroom at 0.02704 an hour.
-    assert_eq!(v["runway_hours"], json!(18.5));
+    // The 1.2.97 rule counted each fall as a reset: every rise (the net 16
+    // plus the 17 points the falls took back) and each fall's whole lower
+    // figure.
+    let (_, old) = rate_1_2_97(&now, &h).unwrap();
+    assert_eq!(old[REC], 16 + 17 + 5 * 38 + 46);
 }
 
 #[test]
 fn a_flicker_of_stale_readings_adds_the_same_as_none() {
-    // The same day without the cached 38%: the rate must not change.
-    let clean: Vec<Entry> = flicker_history()
-        .into_iter()
-        .enumerate()
-        .filter(|(i, e)| *i == 0 || e.at <= n5(17, 45, 0) || e.profiles[FLICKER].w != 38)
-        .map(|(_, e)| e)
+    // The same lines with every recovery-ryansweet reading below its
+    // running highest taken out: the use must not change.
+    let (now, h) = nov5_flicker();
+    let mut highest = 0;
+    let mut removed = 0;
+    let clean: Vec<Entry> = h
+        .iter()
+        .cloned()
+        .map(|mut e| {
+            if let Some(w) = e.profiles.get(REC).map(|p| p.w) {
+                if w < highest {
+                    e.profiles.remove(REC);
+                    removed += 1;
+                }
+                highest = highest.max(w);
+            }
+            e
+        })
         .collect();
-    assert!(clean.len() < flicker_history().len());
+    assert_eq!(removed, 6);
     assert_eq!(
-        rate_of(&flicker_now(), &flicker_history()),
-        rate_of(&flicker_now(), &clean)
+        used(&parts(&now, &h).unwrap(), REC),
+        used(&parts(&now, &clean).unwrap(), REC)
     );
-}
-
-// The per-login check from the issue, at the 16:52Z reading: three logins
-// with small stale falls, and ryan-mistt-personal's 100 -> 0 reset at
-// 12:00:56Z before the `profile usage` start at 13:23:37Z.
-
-const RMP: &str = "ryan-mistt-personal";
-const REC: &str = "recovery-ryansweet";
-const CC: &str = "ccapstone";
-
-fn per_login_resets() -> (i64, i64, i64) {
-    (
-        n5(12, 0, 56) + 7 * DAY,
-        N5 + 5 * DAY + 9 * HOUR,
-        N5 + 3 * DAY + 17 * HOUR,
-    )
-}
-
-/// One reading per login that has a figure; `None` means the line left
-/// that login out.
-fn per_login_line(by: Writer, at: i64, rmp: Option<u8>, rec: Option<u8>, cc: Option<u8>) -> Entry {
-    let (r1, r2, r3) = per_login_resets();
-    let mut points = Vec::new();
-    let mut unknown = Vec::new();
-    for (n, w, r) in [(RMP, rmp, r1), (REC, rec, r2), (CC, cc, r3)] {
-        match w {
-            Some(w) => points.push((n, wr(w, r))),
-            None => unknown.push(n),
-        }
-    }
-    written_by(by, at, &points, &unknown)
-}
-
-fn per_login_history() -> Vec<Entry> {
-    let rotate = Writer::Rotate;
-    let old_reset = n5(12, 0, 56);
-    vec![
-        // Before the start: rmp's week was full and reset at 12:00:56Z.
-        // These lines left the other logins out, so neither is the start.
-        written_by(
-            rotate,
-            n5(11, 50, 0),
-            &[(RMP, wr(100, old_reset))],
-            &[REC, CC],
-        ),
-        per_login_line(rotate, n5(12, 5, 0), Some(0), None, None),
-        per_login_line(Writer::Usage, n5(13, 23, 37), Some(8), Some(20), Some(50)),
-        per_login_line(rotate, n5(14, 10, 0), Some(12), Some(24), Some(52)),
-        per_login_line(rotate, n5(14, 40, 0), Some(15), Some(29), None),
-        per_login_line(rotate, n5(15, 5, 0), Some(18), Some(26), Some(55)),
-        per_login_line(rotate, n5(15, 20, 0), Some(15), None, Some(54)),
-        per_login_line(rotate, n5(15, 50, 0), Some(20), Some(30), None),
-        per_login_line(rotate, n5(16, 30, 0), Some(22), Some(31), Some(57)),
-    ]
-}
-
-fn per_login_now() -> Snapshot {
-    let (r1, r2, r3) = per_login_resets();
-    snap(
-        n5(16, 52, 0),
-        &[(RMP, wr(23, r1)), (REC, wr(31, r2)), (CC, wr(57, r3))],
-        &[],
-    )
-}
-
-#[test]
-fn the_5_nov_logins_each_count_their_own_net_rise() {
-    let h = per_login_history();
-    let now = per_login_now();
-    let p = parts(&now, &h).expect("the parts are given below 4.5 h too");
-    assert_eq!(p.start, n5(13, 23, 37), "the profile usage line");
-    assert_eq!(p.span, 3 * HOUR + 28 * MIN + 23);
-    // 18 -> 15 and 29 -> 26 and 55 -> 54 each add nothing.
-    assert_eq!(used(&p, RMP), 23 - 8);
-    assert_eq!(used(&p, REC), 31 - 20);
-    assert_eq!(used(&p, CC), 57 - 50);
-    assert_eq!(p.used.len(), 3);
-    assert!(p.used.values().all(|(_, w)| *w == 1.0));
-
-    let total: i64 = p.used.values().map(|(u, _)| u).sum();
-    assert_eq!(total, 33);
-    // About 10 points an hour, far below the 0.483 of release 1.2.97.
-    let r = raw_rate(&p);
-    assert!((0.08..=0.22).contains(&r), "{r}");
-
-    // At 3.48 h the start is too young for the printed rate.
-    let v = js(&summary(&now, &Weights::default(), 95, &h));
-    assert_eq!(v["rate_login_weeks_per_hour"], Value::Null);
-    assert_eq!(v["runway_hours"], Value::Null);
 }
 
 #[test]
 fn rate_parts_carry_each_logins_weight() {
-    let w = Weights::from_pairs(&[(RMP, 2.0), (CC, 0.5)]);
-    let p = parts_with(&per_login_now(), &per_login_history(), &w).unwrap();
-    assert_eq!(p.used[RMP], (15, 2.0));
-    assert_eq!(p.used[REC], (11, 1.0));
-    assert_eq!(p.used[CC], (7, 0.5));
+    let (now, h) = nov5_report();
+    let w = Weights::from_pairs(&[(RMP, 2.0), (L19, 0.5)]);
+    let p = parts_with(&now, &h, &w).unwrap();
+    assert_eq!(p.used[RMP], (16, 2.0));
+    assert_eq!(p.used[REC], (34, 1.0));
+    assert_eq!(p.used[L19], (9, 0.5));
+    // (16 · 2 + 34 + 9 · 0.5) / 100 over 5.986 h.
+    assert_eq!(rounded(raw_rate(&p), 4), Some(0.1178));
 }
 
 #[test]

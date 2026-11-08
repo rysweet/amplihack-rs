@@ -561,6 +561,19 @@ fn the_rate_window_and_weighting_are_in_help_and_docs() {
         summary_json.contains("6 h") && summary_json.contains("4.5 h"),
         "--summary-json does not state the window: {summary_json}"
     );
+    // The start rule as `capacity_summary::can_start` applies it: any
+    // `profile usage` entry, or a rotator entry holding every login read
+    // now, which must itself be at least 4.5 h old.
+    assert!(
+        !help.contains("first entry that read every login")
+            && !help.contains("entry in that window that read every login"),
+        "the help describes a stricter start than the code: {help}"
+    );
+    assert!(help.contains("must itself be at least 4.5 h old"), "{help}");
+    assert!(
+        summary_json.contains("entry to be at least 4.5 h old"),
+        "{summary_json}"
+    );
 
     let reference = flat(REFERENCE);
     for want in [
