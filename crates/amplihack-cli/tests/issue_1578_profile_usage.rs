@@ -278,8 +278,7 @@ impl Fixture {
         let v: serde_json::Value = serde_json::from_str(&stdout)
             .unwrap_or_else(|e| panic!("stdout must be only JSON ({e}): {stdout:?}"));
         (
-            // Issue #2001: the Claude rows are under `claude`.
-            v["claude"].as_array().expect("a `claude` array").clone(),
+            v.as_array().expect("a JSON array").clone(),
             text(&out.stderr),
         )
     }
@@ -309,12 +308,6 @@ fn text(b: &[u8]) -> String {
 
 /// Data rows of the table: lines after the header that start a row (not
 /// indented raw text, and not the `times:` and `order:` footer lines).
-/// The `claude` array of a `--json` run (issue #2001).
-fn claude_rows(stdout: &[u8]) -> Vec<serde_json::Value> {
-    let v: serde_json::Value = serde_json::from_slice(stdout).unwrap();
-    v["claude"].as_array().expect("a `claude` array").clone()
-}
-
 fn table_rows(stdout: &str) -> Vec<&str> {
     let mut lines = stdout.lines();
     let header = lines.next().unwrap_or_default();
@@ -672,7 +665,7 @@ fn a_bad_parallel_value_warns_and_every_profile_is_still_probed() {
     );
     let n: usize = warning.rsplit(' ').next().unwrap().parse().unwrap();
     assert!((2..=4).contains(&n), "derived bound {n}");
-    let rows = claude_rows(&out.stdout);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
     assert!(!rows.is_empty());
 }
 
@@ -720,7 +713,7 @@ fn a_refused_profile_directory_is_an_error_row_not_a_failure() {
     let f = Fixture::new(false);
     fs::set_permissions(f.root.join("b"), fs::Permissions::from_mode(0o755)).unwrap();
     let out = f.ok(&["profile", "usage", "--json"]);
-    let rows = claude_rows(&out.stdout);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(names(&rows), ["c", "a", "d", "b"], "error rows sort last");
     assert_eq!(rows[3]["state"], "error");
     assert_eq!(rows[3]["error"], "profile directory refused");
@@ -789,8 +782,8 @@ fn no_profiles_prints_the_list_message_or_an_empty_array() {
     // Issue #2001: the Codex block follows, after one empty line.
     assert!(stdout.contains("\n\nCodex: no accounts under "), "{stdout}");
     let out = f.ok(&["profile", "usage", "--json"]);
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v, serde_json::json!({"claude": [], "codex": []}));
+    // Issue #2001 keeps `--json` the bare array, with no Codex rows.
+    assert_eq!(text(&out.stdout).trim(), "[]");
 }
 
 impl Fixture {
@@ -926,7 +919,7 @@ fn a_swap_during_the_probe_is_warned_and_not_recorded() {
         1,
         "{stderr}"
     );
-    let rows = claude_rows(&out.stdout);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
     let c = rows.iter().find(|r| r["profile"] == "c").unwrap();
     assert_eq!(c["state"], "ok");
     assert_eq!(c["session"]["used_percentage"], 40.0);
@@ -976,7 +969,7 @@ fn an_auto_switch_swap_during_the_probe_is_not_recorded() {
         ),
         "{stderr}"
     );
-    let rows = claude_rows(&out.stdout);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
     let b = rows.iter().find(|r| r["profile"] == "b").unwrap();
     assert_eq!(b["account"], "b", "the account live when the probe started");
     let u = f.usage_json().expect("usage.json written");
@@ -1096,7 +1089,7 @@ fn text_mode_runs_only_usage() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", text(&out.stderr));
-    let rows = claude_rows(&out.stdout);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(session(&rows[0]), 20.0);
     assert_eq!(f.recorded("stdin.a"), None);
     assert_eq!(f.recorded("args-request.a"), None);
@@ -1128,7 +1121,7 @@ fn a_bad_method_warns_once_and_still_uses_the_request() {
             "warning: ignored AMPLIHACK_PROFILE_USAGE_PROBE \"Text\" (use direct, auto or text); using the default order"
         ]
     );
-    let rows = claude_rows(&out.stdout);
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(session(&rows[0]), 42.0);
 }
 

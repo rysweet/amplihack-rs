@@ -427,8 +427,7 @@ fn profile_usage_attributes_home_to_the_rotated_in_profile() {
     let f = Fixture::new();
     f.ok(&["profile", "rotate"]);
     let out = f.ok(&["profile", "usage", "--json"]);
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let rows = v["claude"].as_array().expect("a `claude` array (#2001)");
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
     let live: Vec<_> = rows
         .iter()
         .filter(|r| r["live_in"] == "~/.claude")

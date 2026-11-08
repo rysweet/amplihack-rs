@@ -268,7 +268,7 @@ fn json_rows(out: &std::process::Output) -> Vec<serde_json::Value> {
     serde_json::from_slice::<serde_json::Value>(&out.stdout)
         .unwrap_or_else(|e| panic!("not JSON ({e}): {}", text(&out.stdout)))
         .as_array()
-        .expect("`--json` is an array")
+        .unwrap()
         .clone()
 }
 

@@ -969,7 +969,7 @@ fn profile_usage_never_reports_a_home_reading_as_passive() {
     let stdout = text(&out.stdout);
     let rows: serde_json::Value = serde_json::from_str(&stdout)
         .unwrap_or_else(|e| panic!("{e}: {stdout}\n{}", text(&out.stderr)));
-    let x = rows["claude"]
+    let x = rows
         .as_array()
         .unwrap()
         .iter()
