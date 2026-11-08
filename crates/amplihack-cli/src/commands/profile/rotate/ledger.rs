@@ -40,9 +40,13 @@ pub const SWITCHED: &str = "switched";
 pub struct LastCycle {
     /// When the cycle was recorded, at its end.
     pub at: i64,
-    /// When the cycle started measuring usage (issue #1659): a waiting
+    /// When the usage the cycle relied on was read (issue #1659): a waiting
     /// limit-resume hook trusts only a measurement taken after its limit.
-    /// Absent for a cycle that measured nothing.
+    /// A `stayed` cycle records when the live reading was taken: a passive
+    /// reading's `observed_at`, but never later than when the cycle started
+    /// measuring (see `capacity::recorded_at`). Every other rotate outcome
+    /// records when the cycle started measuring. [`SWITCHED`] records the
+    /// time of the switch. Absent for a cycle that measured nothing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measured_at: Option<i64>,
     pub outcome: String,
