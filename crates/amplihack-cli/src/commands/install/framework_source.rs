@@ -4,19 +4,23 @@
 //! named it with `--local`. The rules are in
 //! `docs/reference/framework-source-selection.md`.
 //!
-//! The gate checks the version a source declares about itself. It doesn't prove
-//! where the source came from.
+//! The gate checks the version a source declares about itself. In a release
+//! build it also compares the source's `amplifier-bundle/` with the release
+//! manifest embedded in the binary (issue #1972), which shows the source matches
+//! that release but doesn't prove where the release came from.
 
 use super::InstallMode;
+use super::bundle_manifest;
 use super::clone::{
     self, CandidateVerdict, FrameworkRootOrigin, FrameworkRootQuery, FrameworkRootResolution,
     ResolutionNote,
 };
 use super::fetch_backoff;
 use super::paths::sanitize_path;
+use super::release_manifest::{ManifestFinding, ReleaseManifest};
 use super::tag_fetch::{
-    EXPLICIT_FETCH_BUDGET, FetchedWrongVersion, IMPLICIT_FETCH_BUDGET, SourceFetchFailed,
-    TagFetcher, fetch_allowed,
+    EXPLICIT_FETCH_BUDGET, FetchedManifestMismatch, FetchedWrongVersion, IMPLICIT_FETCH_BUDGET,
+    SourceFetchFailed, TagFetcher, fetch_allowed,
 };
 use super::version_stamp::{self, VersionRelation};
 use anyhow::{Context, Result};
@@ -188,6 +192,9 @@ pub(super) struct AcquiredSource {
     pub(super) origin: SourceOrigin,
     pub(super) version: SourceVersion,
     pub(super) _fetched_dir: Option<tempfile::TempDir>,
+    /// Issue #1972 (M3): a `--local` source at the binary's version that does
+    /// not match the embedded release manifest. Always `None` for other origins.
+    pub(super) manifest_warning: Option<String>,
 }
 
 impl AcquiredSource {
@@ -212,7 +219,73 @@ impl AcquiredSource {
         }
         lines
     }
+
+    /// Warnings printed to stderr before staging (issue #1972).
+    pub(super) fn warnings(&self) -> Vec<String> {
+        self.manifest_warning.iter().cloned().collect()
+    }
 }
+
+/// Message M3: `--local` stages a mismatched tree anyway.
+fn local_manifest_warning(root: &Path, version: &str, finding: &ManifestFinding) -> String {
+    let subject = format!(
+        "⚠️  The --local source {} declares v{version}, but it",
+        sanitize_path(root)
+    );
+    format!(
+        "{}\nStaging it anyway because --local was given.",
+        finding.render(&subject, version)
+    )
+}
+
+/// Why resolution stopped at a source the user pointed at (issue #1972 adds
+/// the release manifest case). Converts to the inner error, so callers keep
+/// downcasting to [`SourceRefused`] or [`ReleaseManifestRefused`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Refusal {
+    Version(SourceRefused),
+    /// Boxed, so `Result<_, Refusal>` stays small.
+    ReleaseManifest(Box<ReleaseManifestRefused>),
+}
+
+impl From<Refusal> for anyhow::Error {
+    fn from(refusal: Refusal) -> Self {
+        match refusal {
+            Refusal::Version(refused) => refused.into(),
+            Refusal::ReleaseManifest(refused) => (*refused).into(),
+        }
+    }
+}
+
+/// Message M1: a plain `install` refused an `AMPLIHACK_HOME` or cwd source that
+/// declares the binary's version but does not match the embedded manifest.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ReleaseManifestRefused {
+    pub(super) path: PathBuf,
+    pub(super) label: String,
+    pub(super) binary_version: String,
+    pub(super) finding: ManifestFinding,
+}
+
+impl std::fmt::Display for ReleaseManifestRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let path = sanitize_path(&self.path);
+        let quoted = shell_quote_if_needed(&path);
+        let subject = format!(
+            "refusing to stage the framework bundle from {path} ({}): it declares v{} but its \
+             amplifier-bundle/",
+            self.label, self.binary_version
+        );
+        write!(
+            f,
+            "{}\nNothing was deployed and the installed bundle is unchanged.\nRun `amplihack \
+             install --local {quoted}` to stage this tree anyway.",
+            self.finding.render(&subject, &self.binary_version)
+        )
+    }
+}
+
+impl std::error::Error for ReleaseManifestRefused {}
 
 /// A plain `install` refused a mismatched `AMPLIHACK_HOME` or cwd source.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,11 +345,15 @@ fn read_stamp(staged: &Path) -> Option<String> {
         .map(|line| line.trim().to_string())
 }
 
-/// Resolve the local candidates, applying the version gate to each one.
+/// Resolve the local candidates, applying the version gate to each one. With a
+/// release manifest, a candidate that passes the version gate is also hashed
+/// and compared with it, and a mismatch takes the same branch as a version
+/// mismatch (issue #1972).
 pub(super) fn resolve_gated(
     query: &FrameworkRootQuery,
     binary_version: &str,
     rule: MismatchRule,
+    release: Option<&ReleaseManifest>,
     validate: &dyn Fn(&Path) -> Result<(), String>,
 ) -> FrameworkRootResolution {
     let gate = |candidate: &Path, origin: FrameworkRootOrigin| {
@@ -291,20 +368,41 @@ pub(super) fn resolve_gated(
             let matches = version.matches(binary_version);
             (version, matches)
         };
-        if matches {
-            return CandidateVerdict::Accept(version);
-        }
         let user_pointed_here = matches!(
             origin,
             FrameworkRootOrigin::AmplihackHome | FrameworkRootOrigin::CurrentDirectory
         );
-        if rule == MismatchRule::RefuseUserSources && user_pointed_here {
-            CandidateVerdict::Refuse(SourceRefused {
+        let refuse = rule == MismatchRule::RefuseUserSources && user_pointed_here;
+        if matches {
+            let Some(finding) = release.and_then(|release| release.check_candidate(candidate))
+            else {
+                return CandidateVerdict::Accept(version);
+            };
+            return if refuse {
+                CandidateVerdict::Refuse(Refusal::ReleaseManifest(Box::new(
+                    ReleaseManifestRefused {
+                        path: candidate.to_path_buf(),
+                        label: origin.label().to_string(),
+                        binary_version: binary_version.to_string(),
+                        finding,
+                    },
+                )))
+            } else {
+                CandidateVerdict::Skip(ResolutionNote::ReleaseManifestMismatch {
+                    path: candidate.to_path_buf(),
+                    label: origin.label(),
+                    binary_version: binary_version.to_string(),
+                    finding,
+                })
+            };
+        }
+        if refuse {
+            CandidateVerdict::Refuse(Refusal::Version(SourceRefused {
                 path: candidate.to_path_buf(),
                 label: origin.label().to_string(),
                 source_version: version,
                 binary_version: binary_version.to_string(),
-            })
+            }))
         } else {
             CandidateVerdict::Skip(ResolutionNote::VersionMismatch {
                 path: candidate.to_path_buf(),
@@ -317,7 +415,9 @@ pub(super) fn resolve_gated(
     clone::resolve_framework_root_gated(&query.without_staged_home(), validate, &gate)
 }
 
-/// Decide the source. Every input is a parameter.
+/// [`acquire_framework_source_with_manifest`] for a binary with no release
+/// manifest.
+#[cfg(test)]
 pub(super) fn acquire_framework_source(
     policy: &SourcePolicy,
     query: &FrameworkRootQuery,
@@ -325,16 +425,41 @@ pub(super) fn acquire_framework_source(
     fetcher: &dyn TagFetcher,
     validate: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<AcquiredSource> {
+    acquire_framework_source_with_manifest(policy, query, binary, None, fetcher, validate)
+}
+
+/// Decide the source. Every input is a parameter, including the release
+/// manifest (`None`: this binary carries none).
+pub(super) fn acquire_framework_source_with_manifest(
+    policy: &SourcePolicy,
+    query: &FrameworkRootQuery,
+    binary: &BinaryIdentity,
+    release: Option<&ReleaseManifest>,
+    fetcher: &dyn TagFetcher,
+    validate: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<AcquiredSource> {
     if let Some(local) = &policy.local {
+        let version = read_source_version(local);
+        // D13: only a tree that claims to be this release is hashed; `--local`
+        // stages it whatever the result.
+        let manifest_warning = release
+            .filter(|_| version.matches(&binary.version))
+            .and_then(|release| {
+                release
+                    .check_candidate(local)
+                    .map(|finding| local_manifest_warning(local, &release.version, &finding))
+            });
         return Ok(AcquiredSource {
             root: local.clone(),
             origin: SourceOrigin::Local,
-            version: read_source_version(local),
+            version,
             _fetched_dir: None,
+            manifest_warning,
         });
     }
 
-    let resolution = resolve_for_policy(policy, query, &binary.version, validate);
+    let resolution =
+        resolve_for_policy_with_manifest(policy, query, &binary.version, release, validate);
     for note in &resolution.notes {
         eprintln!("{note}");
     }
@@ -347,18 +472,31 @@ pub(super) fn acquire_framework_source(
             origin: SourceOrigin::Resolved(found.origin),
             version: resolution.version.unwrap_or(SourceVersion::Unknown),
             _fetched_dir: None,
+            manifest_warning: None,
         });
     }
 
-    fetch_release_tag(policy, binary, fetcher, validate)
+    fetch_release_tag(policy, binary, release, fetcher, validate)
 }
 
-/// Resolve the local candidates a policy without `--local` consults, with the
-/// mismatch rule that policy implies. The notes are returned, not printed.
+/// [`resolve_for_policy_with_manifest`] for a binary with no release manifest.
+#[cfg(test)]
 pub(super) fn resolve_for_policy(
     policy: &SourcePolicy,
     query: &FrameworkRootQuery,
     binary_version: &str,
+    validate: &dyn Fn(&Path) -> Result<(), String>,
+) -> FrameworkRootResolution {
+    resolve_for_policy_with_manifest(policy, query, binary_version, None, validate)
+}
+
+/// Resolve the local candidates a policy without `--local` consults, with the
+/// mismatch rule that policy implies. The notes are returned, not printed.
+pub(super) fn resolve_for_policy_with_manifest(
+    policy: &SourcePolicy,
+    query: &FrameworkRootQuery,
+    binary_version: &str,
+    release: Option<&ReleaseManifest>,
     validate: &dyn Fn(&Path) -> Result<(), String>,
 ) -> FrameworkRootResolution {
     let rule = if policy.mode == InstallMode::Explicit && !policy.force_refresh {
@@ -373,9 +511,9 @@ pub(super) fn resolve_for_policy(
             amplihack_home: query.without_staged_home().amplihack_home,
             ..FrameworkRootQuery::default()
         };
-        resolve_gated(&home_only, binary_version, rule, validate)
+        resolve_gated(&home_only, binary_version, rule, release, validate)
     } else {
-        resolve_gated(query, binary_version, rule, validate)
+        resolve_gated(query, binary_version, rule, release, validate)
     }
 }
 
@@ -397,6 +535,7 @@ pub(super) fn fetch_reason(version: &semver::Version, force_refresh: bool) -> St
 fn fetch_release_tag(
     policy: &SourcePolicy,
     binary: &BinaryIdentity,
+    release: Option<&ReleaseManifest>,
     fetcher: &dyn TagFetcher,
     validate: &dyn Fn(&Path) -> Result<(), String>,
 ) -> Result<AcquiredSource> {
@@ -450,6 +589,25 @@ fn fetch_release_tag(
         }
         .into());
     }
+    // Issue #1972 D12: before validation, so nothing in a mismatched tree is
+    // read beyond its hashes. Returning drops `fetched_dir`, which deletes the
+    // tree, and no backoff marker is written: this is not a network failure.
+    if let Some(release) = release {
+        let actual =
+            bundle_manifest::of_source(&root.join("amplifier-bundle")).with_context(|| {
+                format!(
+                    "could not hash the tree fetched for release tag v{version} to compare it \
+                     with the release manifest embedded in this binary; nothing was staged"
+                )
+            })?;
+        if let Some(diff) = release.check(&actual) {
+            return Err(FetchedManifestMismatch {
+                version: binary.version.clone(),
+                diff,
+            }
+            .into());
+        }
+    }
     validate(&root).map_err(|error| {
         anyhow::anyhow!("the framework bundle from release tag v{version} is incompatible: {error}")
     })?;
@@ -458,6 +616,7 @@ fn fetch_release_tag(
         origin: SourceOrigin::ReleaseTag,
         version: found,
         _fetched_dir: Some(fetched_dir),
+        manifest_warning: None,
     })
 }
 

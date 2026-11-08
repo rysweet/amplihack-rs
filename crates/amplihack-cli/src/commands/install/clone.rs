@@ -53,8 +53,9 @@
 //! one it picked when the answer is not obvious.
 
 use super::bundle_compat::validate_framework_bundle_compatibility;
-use super::framework_source::{self, MismatchRule, SourceRefused, SourceVersion};
+use super::framework_source::{self, MismatchRule, Refusal, SourceVersion};
 use super::paths::{sanitize_path, sanitize_text};
+use super::release_manifest::ManifestFinding;
 #[cfg(windows)]
 use crate::util::run_with_timeout;
 use anyhow::{Context, Result, bail};
@@ -186,6 +187,14 @@ pub(super) enum ResolutionNote {
         source_version: SourceVersion,
         binary_version: String,
     },
+    /// A candidate at the binary's version that does not match the release
+    /// manifest embedded in the binary (issue #1972, message M2).
+    ReleaseManifestMismatch {
+        path: PathBuf,
+        label: &'static str,
+        binary_version: String,
+        finding: ManifestFinding,
+    },
 }
 
 impl std::fmt::Display for ResolutionNote {
@@ -223,6 +232,23 @@ impl std::fmt::Display for ResolutionNote {
                  {source_version} and this binary is v{binary_version}.",
                 sanitize_path(path),
             ),
+            Self::ReleaseManifestMismatch {
+                path,
+                label,
+                binary_version,
+                finding,
+            } => {
+                let subject = format!(
+                    "ℹ️  Ignoring the framework source at {} ({label}): it declares \
+                     v{binary_version}, but its amplifier-bundle/",
+                    sanitize_path(path)
+                );
+                write!(
+                    f,
+                    "{}\n  Trying the next source.",
+                    finding.render(&subject, binary_version)
+                )
+            }
         }
     }
 }
@@ -234,7 +260,7 @@ pub(super) struct FrameworkRootResolution {
     /// The version the gate read for `resolved`.
     pub(super) version: Option<SourceVersion>,
     /// A plain `install` stops at a mismatched source the user pointed at.
-    pub(super) refused: Option<SourceRefused>,
+    pub(super) refused: Option<Refusal>,
     pub(super) notes: Vec<ResolutionNote>,
 }
 
@@ -243,7 +269,7 @@ pub(super) struct FrameworkRootResolution {
 pub(super) enum CandidateVerdict {
     Accept(SourceVersion),
     Skip(ResolutionNote),
-    Refuse(SourceRefused),
+    Refuse(Refusal),
 }
 
 /// The environment resolution reads, gathered up front.
@@ -376,7 +402,7 @@ impl CandidateChecks<'_> {
         &mut self,
         candidate: &Path,
         origin: FrameworkRootOrigin,
-    ) -> Result<Option<SourceVersion>, SourceRefused> {
+    ) -> Result<Option<SourceVersion>, Refusal> {
         if !candidate.join("amplifier-bundle").is_dir() {
             return Ok(None);
         }
@@ -409,7 +435,7 @@ impl CandidateChecks<'_> {
         start: &Path,
         origin: FrameworkRootOrigin,
         report_out_of_scope: bool,
-    ) -> Result<Option<(PathBuf, SourceVersion)>, SourceRefused> {
+    ) -> Result<Option<(PathBuf, SourceVersion)>, Refusal> {
         let scope = walk_up_scope(start);
         for dir in &scope {
             if !dir.join("amplifier-bundle").is_dir() {
@@ -444,7 +470,7 @@ impl CandidateChecks<'_> {
     fn walk_candidates(
         &mut self,
         query: &FrameworkRootQuery,
-    ) -> Result<Option<(PathBuf, FrameworkRootOrigin, SourceVersion)>, SourceRefused> {
+    ) -> Result<Option<(PathBuf, FrameworkRootOrigin, SourceVersion)>, Refusal> {
         // 1. AMPLIHACK_HOME env var — explicit user override. No source-shape
         //    requirement: the user named this directory on purpose.
         let origin = FrameworkRootOrigin::AmplihackHome;
@@ -568,6 +594,8 @@ pub(super) fn find_bundled_framework_root_for(
         query,
         binary_version,
         MismatchRule::NoteAndContinue,
+        // Codex reconcile and slash-command restore: no hashing on this path.
+        None,
         &|candidate| {
             validate_framework_bundle_compatibility(candidate).map_err(|err| format!("{err:#}"))
         },

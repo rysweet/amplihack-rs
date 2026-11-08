@@ -1,8 +1,10 @@
 //! Fetch the tree of one exact release tag (issue #1955).
 //!
-//! The tree isn't checked against a published hash: its version is checked by
-//! the caller, and the git route is limited by time only.
+//! The caller checks the tree's version and, in a release build, compares it
+//! with the release manifest embedded in the binary (issue #1972). The git
+//! route is limited by time only.
 
+use super::bundle_manifest::{self, ManifestDiff};
 use super::clone;
 use super::framework_source::SourceVersion;
 use super::paths::sanitize_text;
@@ -99,6 +101,31 @@ impl std::fmt::Display for FetchedWrongVersion {
 }
 
 impl std::error::Error for FetchedWrongVersion {}
+
+/// Issue #1972: a fetched tree that does not match the release manifest
+/// embedded in the binary (message M4). A hard failure: it is not a network
+/// failure, so it must never be, or downcast to, [`SourceFetchFailed`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FetchedManifestMismatch {
+    pub(super) version: String,
+    pub(super) diff: ManifestDiff,
+}
+
+impl std::fmt::Display for FetchedManifestMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let subject = format!("the tree fetched for release tag v{}", self.version);
+        write!(
+            f,
+            "{}\nThis is not a network failure: the tag's contents differ from the release this \
+             binary was built with, so nothing was staged and the installed bundle and version \
+             stamp were not changed.\nPlease report this at \
+             https://github.com/rysweet/amplihack-rs/issues.",
+            bundle_manifest::render_release_mismatch(&subject, &self.version, &self.diff)
+        )
+    }
+}
+
+impl std::error::Error for FetchedManifestMismatch {}
 
 /// D2: only a build with `AMPLIHACK_RELEASE_VERSION` set and no `+` metadata.
 /// `v1.2.0` is a real tag, so a dev build fetching it would stage a very old

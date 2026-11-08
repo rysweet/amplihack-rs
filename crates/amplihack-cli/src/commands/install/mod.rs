@@ -20,6 +20,7 @@ mod manifest;
 mod mermaid_cli;
 pub(crate) mod paths;
 mod recipe_runner;
+mod release_manifest;
 mod settings;
 mod stale_wrappers;
 pub(crate) mod tag_fetch;
@@ -134,20 +135,24 @@ fn run_install_scoped(
     reconcile_codex: bool,
     mode: InstallMode,
 ) -> Result<()> {
-    run_install_with_fetcher(
+    let binary = framework_source::BinaryIdentity::current();
+    // Issue #1972 D3: a malformed embedded manifest stops the install here,
+    // before a source is chosen or anything is deployed.
+    let release = release_manifest::ReleaseManifest::embedded(&binary)?;
+    run_install_with_manifest(
         local,
         interactive,
         force_refresh,
         reconcile_codex,
         mode,
-        &framework_source::BinaryIdentity::current(),
+        &binary,
+        release.as_ref(),
         &tag_fetch::ReleaseTagFetcher::production(),
     )
 }
 
-/// The source is settled first (issue #1955): a refusal or a failed fetch comes
-/// before the wizard asks anything and before any binary is deployed, so it
-/// changes nothing on disk.
+/// [`run_install_with_manifest`] for a binary with no release manifest.
+#[cfg(test)]
 fn run_install_with_fetcher(
     local: Option<PathBuf>,
     interactive: bool,
@@ -155,6 +160,32 @@ fn run_install_with_fetcher(
     reconcile_codex: bool,
     mode: InstallMode,
     binary: &framework_source::BinaryIdentity,
+    fetcher: &dyn tag_fetch::TagFetcher,
+) -> Result<()> {
+    run_install_with_manifest(
+        local,
+        interactive,
+        force_refresh,
+        reconcile_codex,
+        mode,
+        binary,
+        None,
+        fetcher,
+    )
+}
+
+/// The source is settled first (issue #1955): a refusal or a failed fetch comes
+/// before the wizard asks anything and before any binary is deployed, so it
+/// changes nothing on disk.
+#[allow(clippy::too_many_arguments)]
+fn run_install_with_manifest(
+    local: Option<PathBuf>,
+    interactive: bool,
+    force_refresh: bool,
+    reconcile_codex: bool,
+    mode: InstallMode,
+    binary: &framework_source::BinaryIdentity,
+    release: Option<&release_manifest::ReleaseManifest>,
     fetcher: &dyn tag_fetch::TagFetcher,
 ) -> Result<()> {
     let local = local
@@ -182,10 +213,11 @@ fn run_install_with_fetcher(
             .and_then(|stamp| stamp.parent().map(fetch_backoff::marker_path)),
     };
     // Lives until the install returns, because a fetched tree is deleted with it.
-    let source = framework_source::acquire_framework_source(
+    let source = framework_source::acquire_framework_source_with_manifest(
         &policy,
         &FrameworkRootQuery::from_environment(),
         binary,
+        release,
         fetcher,
         &|candidate| {
             validate_framework_bundle_compatibility(candidate).map_err(|err| format!("{err:#}"))
@@ -202,7 +234,19 @@ fn run_install_with_fetcher(
     for line in source.describe(&binary.version) {
         println!("{line}");
     }
-    local_install_scoped(&source.root, wizard_config.as_ref(), reconcile_codex, mode)?;
+    for warning in source.warnings() {
+        eprintln!("{warning}");
+    }
+    // Issue #1972 R11: the staged copy is checked for every origin except
+    // `--local`. This is the only place `--local` is excluded.
+    let expected = release.filter(|_| source.origin != framework_source::SourceOrigin::Local);
+    local_install_scoped_with_manifest(
+        &source.root,
+        wizard_config.as_ref(),
+        reconcile_codex,
+        mode,
+        expected,
+    )?;
 
     if source.origin != framework_source::SourceOrigin::ReleaseTag {
         return Ok(());
@@ -648,11 +692,24 @@ fn local_install(
     local_install_scoped(repo_root, wizard_config, true, InstallMode::Explicit)
 }
 
+#[cfg(test)]
 fn local_install_scoped(
     repo_root: &Path,
     wizard_config: Option<&interactive::InteractiveConfig>,
     reconcile_codex: bool,
     mode: InstallMode,
+) -> Result<()> {
+    local_install_scoped_with_manifest(repo_root, wizard_config, reconcile_codex, mode, None)
+}
+
+/// Stage from `repo_root`. `expected` is the release manifest the staged
+/// bundle copy must match (issue #1972 R11), `None` for `--local`.
+fn local_install_scoped_with_manifest(
+    repo_root: &Path,
+    wizard_config: Option<&interactive::InteractiveConfig>,
+    reconcile_codex: bool,
+    mode: InstallMode,
+    expected: Option<&release_manifest::ReleaseManifest>,
 ) -> Result<()> {
     let claude_dir = staging_claude_dir()?;
     let timestamp = unix_timestamp();
@@ -774,7 +831,7 @@ fn local_install_scoped(
 
     println!();
     println!("📦 Staging amplifier-bundle (recipes, modules, tools):");
-    copy_amplifier_bundle(repo_root, &claude_dir)?;
+    copy_amplifier_bundle_with_manifest(repo_root, &claude_dir, expected)?;
 
     println!();
     println!("📝 Initializing PROJECT.md:");

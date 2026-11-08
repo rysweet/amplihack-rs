@@ -6,6 +6,7 @@ use super::bundle_compat::{
 use super::bundle_manifest;
 use super::filesystem::*;
 use super::paths::sanitize_path;
+use super::release_manifest::ReleaseManifest;
 use super::types::*;
 use anyhow::{Context, Result};
 use std::fs;
@@ -399,7 +400,20 @@ fn backup_path(target: &Path) -> PathBuf {
 /// The source `amplifier-bundle/` root must be a real directory; symlinked
 /// roots are rejected to prevent a malicious local repo from copying an
 /// arbitrary readable directory into the user's staging area.
+#[cfg(test)]
 pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Result<bool> {
+    copy_amplifier_bundle_with_manifest(repo_root, claude_dir, None)
+}
+
+/// [`copy_amplifier_bundle`], and in a release build the staged copy is also
+/// compared with the release manifest embedded in the binary before the swap
+/// (issue #1972 R11). `expected` is `None` for `--local` and for a binary with
+/// no manifest.
+pub(super) fn copy_amplifier_bundle_with_manifest(
+    repo_root: &Path,
+    claude_dir: &Path,
+    expected: Option<&ReleaseManifest>,
+) -> Result<bool> {
     let source_bundle = repo_root.join("amplifier-bundle");
     let source_meta = fs::symlink_metadata(&source_bundle).with_context(|| {
         format!(
@@ -443,9 +457,13 @@ pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Resu
     // expects the previous staged framework to still be usable.
     let staging_temp = target_bundle.with_extension("staging");
     remove_stale_staging(&staging_temp)?;
-    if let Err(err) =
-        stage_and_swap_bundle(repo_root, &source_bundle, &staging_temp, &target_bundle)
-    {
+    if let Err(err) = stage_and_swap_bundle(
+        repo_root,
+        &source_bundle,
+        &staging_temp,
+        &target_bundle,
+        expected,
+    ) {
         // A swap may already have moved staging away, so a missing dir is fine.
         if let Err(cleanup) = fs::remove_dir_all(&staging_temp)
             && cleanup.kind() != std::io::ErrorKind::NotFound
@@ -496,13 +514,15 @@ fn create_private_staging_dir(staging: &Path) -> Result<()> {
     created.with_context(|| format!("failed to create staging dir {}", staging.display()))
 }
 
-/// Issue #1955 D11: copy, compare with the source, set modes, secure the merge
-/// guard, check compatibility, then swap. The caller deletes staging on error.
+/// Issue #1955 D11: copy, compare with the source, compare with the release
+/// manifest (issue #1972), set modes, secure the merge guard, check
+/// compatibility, then swap. The caller deletes staging on error.
 fn stage_and_swap_bundle(
     repo_root: &Path,
     source_bundle: &Path,
     staging_temp: &Path,
     target_bundle: &Path,
+    expected: Option<&ReleaseManifest>,
 ) -> Result<()> {
     create_private_staging_dir(staging_temp)?;
     copy_dir_recursive(source_bundle, staging_temp).with_context(|| {
@@ -514,12 +534,21 @@ fn stage_and_swap_bundle(
     #[cfg(test)]
     staging_hook::run(staging_temp);
 
-    let diff = bundle_manifest::compare(
-        &bundle_manifest::of_source(source_bundle)?,
-        &bundle_manifest::of_staged(staging_temp)?,
-    );
+    let staged = bundle_manifest::of_staged(staging_temp)?;
+    let diff = bundle_manifest::compare(&bundle_manifest::of_source(source_bundle)?, &staged);
     if !diff.is_clean() {
         anyhow::bail!("{}", bundle_manifest::render_mismatch(repo_root, &diff));
+    }
+    // R11: closes the window between the source check and the copy. Uses the
+    // staged listing, so a stray file with an excluded name counts as extra.
+    if let Some(expected) = expected
+        && let Some(diff) = expected.check(&staged)
+    {
+        let subject = format!("the staged copy at {}", sanitize_path(staging_temp));
+        anyhow::bail!(
+            "{}\nNothing was swapped in; the installed bundle is unchanged.",
+            bundle_manifest::render_release_mismatch(&subject, &expected.version, &diff)
+        );
     }
 
     normalize_bundle_modes(staging_temp)?;

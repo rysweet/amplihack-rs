@@ -1,7 +1,7 @@
 ---
 title: Repair a stale framework bundle
 description: Diagnose and repair an install where the binary is current but smart-orchestrator recipes are stale.
-last_updated: 2026-11-05
+last_updated: 2026-11-07
 review_schedule: as-needed
 owner: amplihack-maintainers
 doc_type: howto
@@ -147,6 +147,28 @@ at the same time. Wait for those to finish and run the install again.
 
 Binaries and `~/.amplihack/.claude` may already be new at this point. Self-heal
 retries at the next launch.
+
+## If the release manifest check fails
+
+A release binary compares the bundle it stages with the manifest of its own
+release. See
+[Release manifest check](../reference/framework-source-selection.md#release-manifest-check).
+
+- **A local source is refused or skipped:** the source declares the binary's
+  version but its `amplifier-bundle/` has local changes, such as an edited
+  recipe or a file left by a tool. Check out the release tag cleanly, or let
+  install fetch it by running `amplihack install` from another directory with
+  `AMPLIHACK_HOME` unset. To stage the changed tree on purpose, run the
+  `amplihack install --local <PATH>` command the message prints.
+- **The fetched tree doesn't match:** the message says this is not a network
+  failure. Nothing was staged. Retrying won't help; report it at
+  <https://github.com/rysweet/amplihack-rs/issues>. Until a fixed release is
+  out, `amplihack install --local` with a clean checkout of the tag stages a
+  bundle.
+- **The staged copy doesn't match:** something changed the source during the
+  copy. Wait for other installs or builds to finish and run the install again.
+- **The embedded manifest is malformed:** the binary itself is defective.
+  Reinstall amplihack from a published release.
 
 ## Repair after update
 
