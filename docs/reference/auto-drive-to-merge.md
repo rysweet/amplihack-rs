@@ -997,25 +997,35 @@ otherwise:
 | No `id` was ever major in another crusty round (see [Severity history](#severity-history)). | Not minor-only. |
 | No `id` contains a security word (whole words, `-`, `_` and `.` read as spaces), and no `summary` or `evidence` contains a security word. | Not minor-only. |
 
-The `summary` and `evidence` word list is that of auto-drive-light's minor-only
-rule (see [auto-drive-light: the minor-only rule](auto-drive-light.md#the-minor-only-rule)).
-Both rules load their lists and the predicate from one file,
+In the `summary` and `evidence`, `classify` matches `TEXT_KEYWORDS`: whole
+words that begin with one of these stems: `secur` (and `insecure`),
+`authenticat`, `authoris`/`authoriz`, `authn`, `authz`, `secret`, `token`,
+`credential`, `inject`, `xss`, `csrf`, `cve`, `vuln`, `unsafe`, `privilege`,
+`permission`, `sanitis`/`sanitiz`, `escape`, `traversal`, `ssrf`, `rce` and
+`password`. Whole words are used because free text would otherwise match
+almost every finding (`sec` in "second", `auth` in "author"). This check
+covers a security finding that crusty grades `minor` under a neutral id such
+as `c3`. Some harmless findings are also promoted, for example one about a
+parser's tokens or file permissions; each costs one fix round.
+
+The lists and the predicate are defined once, in
 `amplifier-bundle/tools/autodrive_finding_rules.sh`, so a minor finding about
 secrets, injection, authentication or permissions is always treated as major
-and is fixed before merge rather than deferred.
+and is fixed before merge rather than filed. auto-drive-light uses the same
+`classify` step and the same lists; it has no rule of its own (see
+[auto-drive-light: minor findings and follow-up issues](auto-drive-light.md#minor-findings-and-follow-up-issues)).
 
-The id pattern differs. Light mode matches its keywords anywhere in the id,
-so `section-1` counts as `sec`. `classify` instead passes `ID_KEYWORDS`: the
-id is lower-cased, `-`, `_` and `.` are read as spaces, and the result is
-matched against whole words. `ID_KEYWORDS` is the summary word list plus the
-short forms used in ids: `sec`, `auth`, `perm`/`perms`, `cred`/`creds`,
-`priv`/`privs`, `privesc` and `xsrf`. `sec-3`, `auth_bypass`, `perm.check`,
-`creds-in-log` and `CVE-2026-1234` are therefore major, while
+For the id, `classify` passes `ID_KEYWORDS`: the id is lower-cased, `-`, `_`
+and `.` are read as spaces, and the result is matched against whole words.
+`ID_KEYWORDS` is the summary word list plus the short forms used in ids:
+`sec`, `auth`, `perm`/`perms`, `cred`/`creds`, `priv`/`privs`, `privesc` and
+`xsrf`. `sec-3`, `auth_bypass`, `perm.check`, `creds-in-log` and
+`CVE-2026-1234` are therefore major, while `section-1`,
 `pr-body-testing-section-stale`, `head-commit-wrong-author-identity` and
 `test-f-one-second-timing-margin` stay minor. Across the 2,371 distinct ids in
-past crusty rounds, the substring rule promoted 38 such ids that contain only
-the letters of a keyword; each would have cost another review round, which is
-the cost #1979 removes. An id written as one run of letters, such as
+past crusty rounds, a substring match on the same keywords would have
+promoted 38 such ids that contain only the letters of a keyword; each would
+have cost another review round. An id written as one run of letters, such as
 `authbypass`, is not split and is not matched; its `summary` and `evidence`
 are still checked.
 
@@ -1078,31 +1088,18 @@ written as `CONCERNS`.
 A round with a mix of minor and major or blocking findings writes no
 `.minor` file. All of its findings go to step-04, as before #1979.
 
-Light mode keeps priority. When the `light-mode` marker is present,
-auto-drive-light's rule runs first and turns a minor-only round into `CLEAN`
-with `verdict_source` `light-minor-rule`, so `classify` does not run on it.
+#### Light mode
 
-#### Light-mode deferral and per-finding follow-ups
-
-The two mechanisms are separate and do not read each other's state. A light
-drive whose minor findings are deferred under #1802 gets one follow-up issue
-for the drive, reused across rounds, filed by `autodrive_light_round.sh` in the
-round itself. A full drive gets one issue per finding, naming the task id,
-filed by `autodrive_followups.sh` after the loop ends. They share only the
-minor-finding predicate and the text sanitising in `autodrive_finding_rules.sh`.
-
-| | auto-drive-light (#1802) | auto-drive-to-merge (#1979) |
-| --- | --- | --- |
-| Issues | One per drive; later rounds add a comment | One per finding |
-| Filed | In the round, before its record is written | After the loop ends `DONE`, before the merge gate |
-| State | `follow-up-issue`, `follow-up-posted-ids`, `<record>.concerns.tsv`, `<record>.light.json` | `followups.jsonl`, `followups.tsv`, `followups.error`, `followups.parent`, `<record>.minor`, `<record>.severity` |
-| Recurring id | Any id seen before blocks deferral | Only an id once seen as major blocks `MINOR_ONLY` |
-| Merge gate | No follow-up check | `autodrive_followups.sh check` under criterion 3 |
-
-A light drive that escalates to auto-drive-to-merge can therefore end with
-follow-ups in both shapes. #1979 does not change light mode. Unifying the two,
-including whether light mode moves to the per-finding model, is tracked in
-#1982.
+An [auto-drive-light](auto-drive-light.md) drive uses this model unchanged
+(#1982). When the `light-mode` marker is present, step-03 first runs
+`autodrive_light_round.sh check`, which may measure a moved head again and
+escalate, but never sets the verdict, its source or its count; the `classify`
+branch then runs as above. A light drive, a light drive that escalates
+part-way, and a full drive therefore all file one issue per finding through
+`collect` and `file`, keep the same state files, apply the same severity
+history, and pass the same `check` in the merge gate. The task id a light
+drive forwards is described in
+[auto-drive-light: the task id](auto-drive-light.md#the-task-id).
 
 ### Which verdicts end the loop
 
@@ -1144,7 +1141,8 @@ Each follow-up issue names the plan task it belongs to. The task id is
 resolved in this order:
 
 1. the `plan_task_id` input of `auto-drive-to-merge.yaml`, passed to both
-   loop recipes;
+   loop recipes (auto-drive-light passes its effective task id here; see
+   [auto-drive-light: the task id](auto-drive-light.md#the-task-id));
 2. the first `Closes #N`, `Fixes #N` or `Resolves #N` in the PR body, read with
    `gh pr view <pr> --json body`;
 3. the same pattern in `task_description`.
@@ -1221,10 +1219,8 @@ Evidence: autodrive_last_round.sh line 41
 ```
 
 In the body, `summary` and `evidence` pass through the shared `cell()` of
-`autodrive_finding_rules.sh`: output sanitising, control characters removed,
-a 200-character clip, HTML escaping, `|` and backticks escaped, and a
-zero-width break after `@`, between `#` and a digit, and after `github.com/`.
-A finding cannot mention a user, link an issue or post a URL in the body. The
+`autodrive_finding_rules.sh` (see [Cell sanitising](#cell-sanitising)). A
+finding cannot mention a user, link an issue or post a URL in the body. The
 task id line is the one place where `#1979` links the parent task.
 
 The issue number is read only from `/issues/<digits>` at the end of the last
@@ -1290,6 +1286,30 @@ the first line of `gh`'s stderr, sanitised and clipped to 200 characters.
 There is no retry: a GraphQL secondary rate limit fails the step visibly, and
 a rerun files only the ids that still have no row. A run that files every
 remaining id removes `followups.error`.
+
+#### Cell sanitising
+
+`cell()` and `break_refs` are defined once, in
+`amplifier-bundle/tools/autodrive_finding_rules.sh`, which
+`autodrive_followups.sh` sources. Before a finding reaches `cell()`, the jq
+`clean` definition in the same file turns it into one line: control
+characters become spaces and the text is clipped to 200 characters. `cell()`
+then, in order:
+
+1. passes the text through `sanitize_cli_output` from
+   `workflow_issue_tracking.sh`;
+2. encodes `&`, `<` and `>` as HTML entities;
+3. runs `break_refs`, which puts U+200B (a zero-width space) after every `@`,
+   between `#` and a following digit, between `GH-` and a following digit,
+   and after `github.com/`, matching `GH-` and `github.com/` without regard to
+   case;
+4. replaces `|` and backticks with the numeric entities `&#x7C;` and `&#x60;`.
+
+A finding therefore cannot mention a user, link an issue or a URL, break the
+Markdown, or write the `<!-- autodrive-followup … -->` marker, however its
+text is written. Titles use `break_refs` alone, as described above, because
+GitHub shows titles as plain text. The parent task comment carries only
+validated finding ids and issue numbers, and does not use `cell()`.
 
 ### The follow-up check in the merge gate
 
@@ -3573,17 +3593,6 @@ Exemptions:
   and a row with `2` never matches the next round either. The post-round
   budget check still runs, so a loop of crashing rounds is bounded by the
   budget.
-- **A light round that is not clean.** In an
-  [auto-drive-light](auto-drive-light.md) run, `autodrive_light_round.sh`
-  empties `<record>.findings` and writes `<record>.light.json` when it applies
-  the minor-only rule. A minor-deferred round that step-06 accepts is
-  recorded as clean and is covered by the first exemption. When step-06
-  rejects the side files, the round is recorded as `CONCERNS` with an empty
-  findings file, which does not describe its open concerns. The no-progress
-  check therefore does not run when the current round's record has a
-  `<record>.light.json` side file, or when the record of the round named in
-  the previous row has one. The round goes to the evaluator, and its row is
-  appended as usual.
 - **An untrusted progress file.** A progress file that is a symlink, is not a
   regular file or is readable by group or others is not read. The driver
   prints a `WARNING` and the evaluator decides. This check fails open, because
@@ -3596,6 +3605,11 @@ Exemptions:
   stop; the evaluator still decides. A missing head SHA (above) has the same
   effect for one round. Every one of these cases prints a `WARNING` and fails
   open to the evaluator; none of them stops the loop.
+
+No other file exempts a round. A `<record>.light.json` file that an earlier
+version of [auto-drive-light](auto-drive-light.md) left beside a round record
+is not read, so a light round on an unchanged head with unchanged open items
+stops as `STUCK` like any other round.
 
 The reason is written to `<loop>-stuck-reason.txt` and is also the `reason`
 field of the `escalate` line:
@@ -4582,7 +4596,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv; runs as `/bin/bash -p`, the only process the merge guard trusts. Runs `autodrive_followups.sh check` from its own directory. |
 | `amplifier-bundle/tools/autodrive_followups.sh` | tool | [#1979](#minor-findings-end-the-crusty-loop-1979): `classify` (derives `MINOR_ONLY` in crusty-round step-03), `collect` (builds the follow-up set from the round that ended the loop), `file` (one `gh issue create` per unfiled minor finding, then one comment on the plan task issue listing them). |
 | `amplifier-bundle/tools/autodrive_followups_check.sh` | tool | [#1979](#the-follow-up-check-in-the-merge-gate): `check` and `gate`, sourced by `autodrive_followups.sh`: the merge gate's offline follow-up check. |
-| `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only; no side effects. The single definition of the security keyword lists, `cell()` and the minor-finding predicate, used by `autodrive_followups.sh` and `autodrive_light_round.sh`. |
+| `amplifier-bundle/tools/autodrive_finding_rules.sh` | tool | Sourced only; no side effects. The single definition of the security keyword lists, `cell()` and the minor-finding predicate, used by `autodrive_followups.sh`. |
 | `amplifier-bundle/tools/gh-merge-guard/gh` | tool | The `gh` shim that refuses a merge outside the gate ([#1551](#merges-outside-the-gate-are-refused-1551)). |
 | `crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs` | launcher | Decides when the shim goes first on `PATH` and exports its `BASH_ENV` file; fails closed when either is missing, the shim is not executable, or either is writable by group or others. |
 | `amplifier-bundle/tools/gh-merge-guard/bash-env` | tool | Sourced through `BASH_ENV`; puts the shim back first on `PATH` after a login shell's profile. |
@@ -4621,8 +4635,8 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | [Finalization hand-off](#finalization-hand-off-from-phase-1-1714) (#1714): the allow-list and flag exactness, the validator's hand-off on both `BLOCKED_CI` exits and on `FAILED_IMPLEMENTATION` with a confirmed open PR (and its refusal without one), the open-PR check's PR head rule (a fast-forward PR head present locally or fetched without writing refs is the same PR; a diverged, rewritten or unfetchable head is not), the real terminal-state probe followed by the validator on a merge already on the PR before finalization (`EXISTING_OPEN_PR` when green, `FAILED_IMPLEMENTATION` handed off when pending, `BLOCKED_CI` handed off when red; a diverged head, a rewound remote, or a probe without `accept_pr_head_ahead` still `FAILED_INVALID_INPUT` and never handed off), `step-20-sync-pr-head` and step-20b run from the YAML against a remote that is ahead, with an upstream, with only `origin/<branch>` and with neither (the push lands on the PR head), standalone runs and all five other prior-state blockers still failing closed, step-03 run from its YAML against a stub `gh` (hand-off, closed or different PR, a non-digit `pr_number` printed as `<invalid>`, no PR, resume, `BLOCKED_CI` with no `handoff` field, a state outside the vocabulary, a missing brick), and static guards on the flag's only setter and on the merge gate | `tests/integration/issue_1714_finalization_handoff.rs` |
 | [Usage limits are not STUCK](#usage-limits-are-not-stuck) (#1801): `1801-evaluator-retry-verdict` (the evaluator hits a limit once, is retried inside step-02 and returns a verdict the loop records, with no `STUCK`), `1801-evaluator-usage-limit` (the limit is not lifted and the loop reports `USAGE_LIMIT`), a round and a before-round step that fail on a limit, and negative cases where the loop does not stop as `USAGE_LIMIT`: a nested `class`, the marker with exit `0`, an indented or echoed marker, and `usage_limit_wait` lines alone | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The same retry through the real step supervisor: fake `claude` and a stub `recipe-runner-rs` under an isolated `HOME` | `crates/amplihack-cli/tests/issue_1801_evaluator_retry.rs` |
-| [No-progress stop and usage budget](#no-progress-stop-and-usage-budget) (#1743): `STUCK` in code on an unchanged head and open items, no stop when either changed, when the CI signal changed or says `PENDING`, or when the round is clean, no stop when the current or previous round has a `<record>.light.json` side file (two rejected light rounds on the same head with empty findings), `BUDGET_EXHAUSTED` from each of the three limits at the pre-round, post-round and before-round check points, a relaunch with a higher limit resuming from the recorded round and one with the same limit starting no agent, the nested crusty loop counted once, `tokens` recorded as `unknown`, malformed limits and unknown keys exiting `2`, the symlink and `0600` cases, the sanitised PR comment through a stub `gh`, and the `-c` override reaching both loops. Fixture state directories, stub `amplihack`, `gh` and `git` on `PATH`, under `isolated(..)`; nothing under the real `HOME` is read or written | `crates/amplihack-cli/tests/issue_1743_autodrive_budget.rs` |
-| [Minor findings end the crusty loop](#minor-findings-end-the-crusty-loop-1979) (#1979): `classify` on all-minor, mixed, unknown-severity, missing-severity, empty and non-array input; security keywords in an id or summary kept as `CONCERNS`; severity history (a minor finding recurring as minor still `MINOR_ONLY`, a major one downgraded to minor kept as `CONCERNS`, unknown history read as major, no `.severity` file for unreadable input); crusty-loop step-03 refusing to file without `AMPLIHACK_HOME` even when `REPO_PATH` holds the tool; the loop ending `DONE` on `MINOR_ONLY` with `--also-clean-token` and not without it; one `gh issue create` per finding naming the task id and finding id, with N rows in `followups.tsv`; a rerun making no call; `gh` exiting `1` (error recorded, gate prints `ERROR: followups-unfiled`, no merge) and `79` (passed through after one call); an unresolved task id; the task id taken from `Closes #N` in the PR body; two JSON arrays on stdin, or a `concerns` string holding a minor and a blocking array, kept as `CONCERNS`; a `jq` parse failure logged with its exit code; mentions, `#N` and `GH-N` references neutralised in the body and the title; a title with shell metacharacters reaching `gh` as one argument, with `&`, `|` and backticks kept as plain characters rather than HTML entities; an unparseable PR URL; a `CLEAN` drive filing nothing and passing the check; a dry run filing nothing in either step while the gate reports `followup-missing`; `gate` naming each filed issue in its evidence line and printing the error and blocker on a miss; `collect` reading only the terminal round; `check` refusing a symlinked or group-writable `followups.tsv`, a malformed row and `MINOR_ONLY` with no set; `autodrive_crusty_final` accepting `MINOR_ONLY`; and static checks that both `SKILL.md` copies match, the old loop-end wording is gone from the recipes, skill and reference, the 400-line budgets hold with no per-file exception, and both tools source the shared rules file. Stub `gh` on `PATH`, scratch under `$TMPDIR`, no network | `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs`, with `mod issue_1979_crusty_minor_followups;` in `crates/amplihack-cli/tests/main.rs` |
+| [No-progress stop and usage budget](#no-progress-stop-and-usage-budget) (#1743): `STUCK` in code on an unchanged head and open items, no stop when either changed, when the CI signal changed or says `PENDING`, or when the round is clean, a leftover `<record>.light.json` beside the current or previous round's record exempting nothing, `BUDGET_EXHAUSTED` from each of the three limits at the pre-round, post-round and before-round check points, a relaunch with a higher limit resuming from the recorded round and one with the same limit starting no agent, the nested crusty loop counted once, `tokens` recorded as `unknown`, malformed limits and unknown keys exiting `2`, the symlink and `0600` cases, the sanitised PR comment through a stub `gh`, and the `-c` override reaching both loops. Fixture state directories, stub `amplihack`, `gh` and `git` on `PATH`, under `isolated(..)`; nothing under the real `HOME` is read or written | `crates/amplihack-cli/tests/issue_1743_autodrive_budget.rs` |
+| [Minor findings end the crusty loop](#minor-findings-end-the-crusty-loop-1979) (#1979): `classify` on all-minor, mixed, unknown-severity, missing-severity, empty and non-array input; security keywords in an id or summary kept as `CONCERNS`; severity history (a minor finding recurring as minor still `MINOR_ONLY`, a major one downgraded to minor kept as `CONCERNS`, unknown history read as major, no `.severity` file for unreadable input); crusty-loop step-03 refusing to file without `AMPLIHACK_HOME` even when `REPO_PATH` holds the tool; the loop ending `DONE` on `MINOR_ONLY` with `--also-clean-token` and not without it; one `gh issue create` per finding naming the task id and finding id, with N rows in `followups.tsv`; a rerun making no call; `gh` exiting `1` (error recorded, gate prints `ERROR: followups-unfiled`, no merge) and `79` (passed through after one call); an unresolved task id; the task id taken from `Closes #N` in the PR body; two JSON arrays on stdin, or a `concerns` string holding a minor and a blocking array, kept as `CONCERNS`; a `jq` parse failure logged with its exit code; mentions, `#N` and `GH-N` references neutralised in the body and the title; a title with shell metacharacters reaching `gh` as one argument, with `&`, `|` and backticks kept as plain characters rather than HTML entities; an unparseable PR URL; a `CLEAN` drive filing nothing and passing the check; a dry run filing nothing in either step while the gate reports `followup-missing`; `gate` naming each filed issue in its evidence line and printing the error and blocker on a miss; `collect` reading only the terminal round; `check` refusing a symlinked or group-writable `followups.tsv`, a malformed row and `MINOR_ONLY` with no set; `autodrive_crusty_final` accepting `MINOR_ONLY`; and static checks that both `SKILL.md` copies match, the old loop-end wording is gone from the recipes, skill and reference, the 400-line budgets hold with no per-file exception, and `autodrive_followups.sh` sources the shared rules file while `autodrive_light_round.sh` does not. Stub `gh` on `PATH`, scratch under `$TMPDIR`, no network | `crates/amplihack-cli/tests/issue_1979_crusty_minor_followups.rs`, with `mod issue_1979_crusty_minor_followups;` in `crates/amplihack-cli/tests/main.rs` |
 | A minor-only round ending the loop, and a `[minor, major]` round continuing it, through the `run_loop` stub | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |

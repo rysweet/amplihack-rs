@@ -13,10 +13,13 @@ description: |
                       handed to auto-drive-to-merge, and nothing below runs.
     3. LIGHT PATH   - a light-mode marker is written, then the unchanged
                       autodrive-crusty-loop, the #1551 unmerged check and the
-                      unchanged autodrive-merge-loop run on the PR. In light
-                      mode a crusty round that raises only minor concerns
-                      defers them to a follow-up issue (autodrive-crusty-round
-                      step-03 and step-06, autodrive_light_round.sh).
+                      unchanged autodrive-merge-loop run on the PR. The
+                      marker only makes a crusty round measure a moved head
+                      again (autodrive_light_round.sh check). Minor findings
+                      are classified, filed and gated by autodrive_followups.sh
+                      exactly as in auto-drive-to-merge (#1979, #1982); the
+                      effective task id (plan_task_id, else #issue_number)
+                      is forwarded to every child as plan_task_id.
 
   The merge criteria and the merge gate are those of auto-drive-to-merge,
   unchanged. Contract: docs/reference/auto-drive-light.md
@@ -47,6 +50,9 @@ context:
   task_description: ""
   repo_path: "."
   issue_number: ""
+  # The plan task follow-up issues name (#1982): #N, N, or 1 to 64 characters
+  # from A-Za-z0-9._:/-. Empty: #<issue_number>, else the PR body and task text.
+  plan_task_id: ""
   # Either names an open PR to drive; the build steps are then skipped.
   existing_branch: ""
   pr_number: ""
@@ -66,6 +72,7 @@ context:
   # Filled as the steps run.
   light_prereqs: ""
   autodrive_pr_input: ""
+  light_task_id: ""
   worktree_setup: ""
   light_base: ""
   # Read by quick_change_common.sh (qc_base, qc_checks_summary); each build
@@ -73,7 +80,7 @@ context:
   quick_change_base: ""
   quick_change_checks: ""
   # Read by autodrive_light_steps.sh, which light-prereqs checks for; the
-  # crusty round sets it before its step-03 and step-06 load that file.
+  # crusty round sets it before its step-03 loads that file.
   crusty_round_context: ""
   light_implementation: ""
   light_checks: ""
@@ -100,7 +107,9 @@ steps:
       command -v jq >/dev/null 2>&1 || die "jq is not on PATH; auto-drive-light needs it"
       case "${AMPLIHACK_HOME:-}" in /*) ;; *) die "AMPLIHACK_HOME must be an absolute path; tools are loaded only from it" ;; esac
       T="${AMPLIHACK_HOME}/amplifier-bundle/tools"
-      for f in autodrive_light_eligibility.sh autodrive_light_round.sh autodrive_finding_rules.sh autodrive_light_steps.sh autodrive_state.sh autodrive_trust.sh quick_change_common.sh; do
+      for f in autodrive_light_eligibility.sh autodrive_light_round.sh autodrive_finding_rules.sh autodrive_light_steps.sh \
+               autodrive_followups.sh autodrive_followups_check.sh workflow_issue_tracking.sh \
+               autodrive_state.sh autodrive_trust.sh quick_change_common.sh; do
         [ -f "$T/$f" ] || die "$f not found under AMPLIHACK_HOME"
       done
       cd "${RECIPE_VAR_repo_path:-.}" 2>/dev/null || die "cannot enter repo_path"
@@ -109,6 +118,16 @@ steps:
       ISS="${RECIPE_VAR_issue_number:-}"; SD="${RECIPE_VAR_autodrive_state_dir:-}"
       [ -z "$PRN" ] || [[ "$PRN" =~ ^[0-9]{1,10}$ ]] || die "pr_number must be 1 to 10 digits" 2
       [ -z "$ISS" ] || [[ "$ISS" =~ ^[0-9]{1,10}$ ]] || die "issue_number must be 1 to 10 digits" 2
+      # #1982: task_ok is resolve_task of autodrive_followups.sh:166 (keep the two in step).
+      # The value is never logged.
+      task_ok() {
+        if [[ "$1" =~ ^#?[0-9]+$ ]]; then [[ "$1" =~ ^#?0*[1-9][0-9]{0,9}$ ]]; return; fi
+        [[ "$1" =~ ^[A-Za-z0-9._:/-]{1,64}$ ]]
+      }
+      if [ -n "${RECIPE_VAR_plan_task_id:-}" ] && ! task_ok "${RECIPE_VAR_plan_task_id}"; then
+        echo "ERROR: auto-drive-light: plan_task_id must be #N or 1 to 64 characters from A-Za-z0-9._:/-" >&2
+        exit 2
+      fi
       if [ -n "$BR" ]; then
         case "$BR" in -*) die "existing_branch must not begin with '-'" 2 ;; esac
         git check-ref-format --branch "$BR" >/dev/null 2>&1 || die "existing_branch fails git check-ref-format" 2
@@ -141,6 +160,27 @@ steps:
     command: |
       printf '%s' "${RECIPE_VAR_pr_number:-}"
     output: "autodrive_pr_input"
+
+  # #1982: the task id the follow-up issues name, worked out once and passed to
+  # light-escalate, light-crusty-loop and light-merge-loop as plan_task_id:
+  # plan_task_id, else #<issue_number>, else empty (file then reads the PR body
+  # and the task text). Checked again here (S1), with light-prereqs' rule.
+  - id: "light-task-id"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      task_ok() {
+        if [[ "$1" =~ ^#?[0-9]+$ ]]; then [[ "$1" =~ ^#?0*[1-9][0-9]{0,9}$ ]]; return; fi
+        [[ "$1" =~ ^[A-Za-z0-9._:/-]{1,64}$ ]]
+      }
+      P="${RECIPE_VAR_plan_task_id:-}"; ISS="${RECIPE_VAR_issue_number:-}"
+      if [ -n "$P" ]; then
+        task_ok "$P" || { echo "ERROR: auto-drive-light: plan_task_id must be #N or 1 to 64 characters from A-Za-z0-9._:/-" >&2; exit 2; }
+        printf '%s' "$P"
+      elif [[ "$ISS" =~ ^0*[1-9][0-9]{0,9}$ ]]; then
+        printf '#%s' "$ISS"
+      fi
+    output: "light_task_id"
 
   # Build, steps 3 to 9: only for a new change.
   - id: "light-worktree"
@@ -480,6 +520,7 @@ steps:
       autodrive_state_dir: "{{build_result.state_dir}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
       no_merge: "{{no_merge}}"
+      plan_task_id: "{{light_task_id}}"
     output: "light_escalation_result"
 
   # The light-mode marker: one line, the measured head. Written atomically,
@@ -516,6 +557,7 @@ steps:
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
+      plan_task_id: "{{light_task_id}}"
 
   # Issue #1551, as autodrive-check-unmerged in auto-drive-to-merge: a PR
   # merged outside the gate during the crusty loop stops the run.
@@ -558,9 +600,11 @@ steps:
       task_description: "{{task_description}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
+      plan_task_id: "{{light_task_id}}"
 
   # Which path ran (light, escalate, or light-escalated when a crusty round
-  # escalated inside the loop), the reason, the follow-up issue and the merge
+  # escalated inside the loop), the reason, the follow-up issues filed by
+  # autodrive_followups.sh (column 2 of followups.tsv, #1982) and the merge
   # gate's result. Only plain tokens and digits reach the report.
   - id: "light-report"
     type: "bash"
@@ -580,19 +624,22 @@ steps:
         PATH_TAKEN="light-escalated"
         REASON="$(tok "$(jq -r '.reason // "" | tostring' "$DIR/escalation.json" 2>/dev/null)")"
       fi
-      ISSUE=""
-      if [ -n "$DIR" ] && [ -f "$DIR/follow-up-issue" ] && [ ! -L "$DIR/follow-up-issue" ]; then
-        ISSUE="$(cat "$DIR/follow-up-issue")"; [[ "$ISSUE" =~ ^[0-9]{1,10}$ ]] || ISSUE=""
+      # followups.tsv only when it is a regular file owned by this user and not a symlink;
+      # column 2 is the issue number, kept only as 1 to 10 digits, each once, in row order.
+      ISSUES=""; TSV="$DIR/followups.tsv"
+      if [ -n "$DIR" ] && [ -f "$TSV" ] && [ ! -L "$TSV" ] && [ -O "$TSV" ]; then
+        ISSUES="$(cut -f2 -- "$TSV" | LC_ALL=C grep -E '^[0-9]{1,10}$' | awk '!seen[$0]++ { printf "%s#%s", (n++ ? "," : ""), $0 }')"
       fi
+      ISSUES="${ISSUES:-none}"
       MERGE="$(tok "$(j "${RECIPE_VAR_merge_gate_result:-}" merge_result)")"; MERGE="${MERGE:-NOT_MERGED}"
       case "$MERGE" in
         MERGED|ALREADY_MERGED) OUTCOME="MERGED" ;;
         DRY_RUN) OUTCOME="DRY_RUN" ;;
         *) OUTCOME="NOT_MERGED" ;;
       esac
-      echo "AUTO_DRIVE_LIGHT: ${OUTCOME} - PR #${PR:-<none>} (path: ${PATH_TAKEN}, reason: ${REASON:-none}, follow-up issue: ${ISSUE:-none}, merge gate: ${MERGE})" >&2
-      jq -nc --arg o "$OUTCOME" --arg pr "$PR" --arg p "$PATH_TAKEN" --arg r "$REASON" --arg i "$ISSUE" --arg m "$MERGE" \
-        '{outcome: $o, pr: $pr, path: $p, reason: $r, follow_up_issue: $i, merge_result: $m}'
+      echo "AUTO_DRIVE_LIGHT: ${OUTCOME} - PR #${PR:-<none>} (path: ${PATH_TAKEN}, reason: ${REASON:-none}, follow-up issues: ${ISSUES}, merge gate: ${MERGE})" >&2
+      jq -nc --arg o "$OUTCOME" --arg pr "$PR" --arg p "$PATH_TAKEN" --arg r "$REASON" --arg i "$ISSUES" --arg m "$MERGE" \
+        '{outcome: $o, pr: $pr, path: $p, reason: $r, follow_up_issues: $i, merge_result: $m}'
     output: "light_summary"
 
 output:
@@ -606,5 +653,5 @@ output:
     | --- | --- |
     | Path | {{light_summary.path}} |
     | Reason | {{light_summary.reason}} |
-    | Follow-up issue | {{light_summary.follow_up_issue}} |
+    | Follow-up issues | {{light_summary.follow_up_issues}} |
     | Merge gate | {{light_summary.merge_result}} |
