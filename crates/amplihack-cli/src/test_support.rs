@@ -21,6 +21,19 @@ pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
     env_lock()
 }
 
+/// One lock for tests that start a token refresh or read the refresh count
+/// (issue #2036). The count (`usage_direct::refreshes_in_progress`) covers the
+/// whole process, and the rotator's stop waits for it to reach zero, so a test
+/// that checks it must not run beside another test's refresh. Poisoning is
+/// ignored: a failed test must not fail the others.
+pub(crate) fn refresh_count_lock() -> std::sync::MutexGuard<'static, ()> {
+    static REFRESH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    REFRESH_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 #[path = "../tests/support/scratch_base.rs"]
 #[allow(dead_code)]
 mod scratch_base;
