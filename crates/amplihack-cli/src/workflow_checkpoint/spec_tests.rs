@@ -562,7 +562,17 @@ fn a_transport_from_an_inheriting_ctx_is_a_crash_and_starts_nothing() {
     let ctx = super::Ctx::for_row(ACTIONS.iter().find(|r| r.name == "advertised-ref").unwrap());
     let env = super::repo::base_env();
     assert!(matches!(
-        super::repo::run_transport(&ctx, &[], &env),
+        ctx.bounded_git_env()
+            .and_then(|git_env| super::repo::run_transport(git_env, &[], &env)),
+        Err(Fail::Crash(_))
+    ));
+}
+
+#[test]
+fn a_transport_given_the_inheriting_builder_is_a_crash_and_starts_nothing() {
+    let env = super::repo::base_env();
+    assert!(matches!(
+        super::repo::run_transport(GitEnv::Inherit, &[], &env),
         Err(Fail::Crash(_))
     ));
 }

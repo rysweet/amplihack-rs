@@ -98,10 +98,17 @@ pub(crate) fn run_cmd(program: &str, args: &[&OsStr], env: &Env, git_env: GitEnv
 /// `destination-is-head` and `verify-pushed-ref`, all `Selectors::Context`.
 /// `advertised-ref` (ORIGIN_REF_PY) reads a saved advertisement and spawns
 /// nothing; its `git ls-remote` runs in `workflow_pr_head_sync.sh`, whose
-/// own environment already inherits. Taking `&Ctx` rather than a `GitEnv`
-/// means no caller can hand a transport the inheriting builder.
-pub(crate) fn run_transport(ctx: &Ctx, args: &[&OsStr], env: &Env) -> Res<Output> {
-    run_cmd("git", args, env, ctx.bounded_git_env()?)
+/// own environment already inherits. The `GitEnv` is a required argument,
+/// so every caller names its builder; callers pass
+/// [`Ctx::bounded_git_env`], and an inheriting builder is refused here as
+/// well, so a transport never starts with the caller's selectors.
+pub(crate) fn run_transport(git_env: GitEnv, args: &[&OsStr], env: &Env) -> Res<Output> {
+    if git_env == GitEnv::Inherit {
+        return Err(Fail::Crash(
+            "advertisement transport given the selector-inheriting GitEnv".into(),
+        ));
+    }
+    run_cmd("git", args, env, git_env)
 }
 
 pub(crate) fn os(s: &str) -> &OsStr {
@@ -781,7 +788,7 @@ impl Ctx {
         ));
         env.push(("GIT_CONFIG_VALUE_0".into(), OsString::from_vec(push_url)));
         let resolved = run_transport(
-            self,
+            self.bounded_git_env()?,
             &[
                 os("--literal-pathspecs"),
                 os("-C"),
@@ -814,7 +821,7 @@ impl Ctx {
     ) -> Res<Option<String>> {
         let (env, alias) = self.publication_transport(publication)?;
         let result = run_transport(
-            self,
+            self.bounded_git_env()?,
             &[
                 os("--literal-pathspecs"),
                 os("-C"),

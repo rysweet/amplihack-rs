@@ -178,7 +178,7 @@ pub fn interactive_command() -> Command {
 /// The only permitted caller is `git_command(GitEnv::Inherit)` in
 /// `amplihack-cli/src/workflow_checkpoint/repo.rs`, and that builder is
 /// chosen only by a `Selectors::Ignored` action row. The advertisement
-/// transports take `&Ctx` and refuse an inheriting row. Static guards in
+/// transport takes a required `GitEnv` and refuses `Inherit`. Static guards in
 /// amplihack-cli fail on any other caller. Everything else uses [`command`]
 /// (#1278, #1764).
 pub fn selector_inheriting_command() -> Command {

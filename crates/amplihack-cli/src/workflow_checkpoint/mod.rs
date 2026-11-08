@@ -635,34 +635,55 @@ mod selector_set_tests {
         assert!(SELECTORS_NOT_REFUSED.iter().all(|(_, why)| !why.is_empty()));
     }
 
-    /// Assigned names that `git rev-parse --local-env-vars` does not print,
-    /// each with the reason it is assigned anyway. The reverse drift check
-    /// accepts only these.
-    const NOT_PRINTED_BY_GIT: [(&str, &str); 8] = [
-        (
-            "GIT_NAMESPACE",
-            "in 918c's list; git treats it as a ref prefix, not a local selector",
-        ),
-        (
-            "GIT_CEILING_DIRECTORIES",
-            "in 918c's list; bounds repository discovery",
-        ),
-        (
-            "GIT_GLOB_PATHSPECS",
-            "in 918c's list; changes pathspec interpretation",
-        ),
-        (
-            "GIT_NOGLOB_PATHSPECS",
-            "in 918c's list; changes pathspec interpretation",
-        ),
-        (
-            "GIT_ICASE_PATHSPECS",
-            "in 918c's list; changes pathspec interpretation",
-        ),
-        ("GIT_DISCOVERY_ACROSS_FILESYSTEM", "command() strips it"),
-        ("GIT_INDEX_VERSION", "command() strips it"),
-        ("GIT_QUARANTINE_PATH", "command() strips it"),
+    /// What `git rev-parse --local-env-vars` printed when this list was
+    /// frozen (git 2.56.0, 2026-11-08). The test below compares it with the
+    /// host's git in both directions, so a Git upgrade that adds or drops a
+    /// name fails by name instead of silently changing the expected set.
+    const FROZEN_SELECTOR_SET: [&str; 15] = [
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_DIR",
+        "GIT_GRAFT_FILE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_WORK_TREE",
     ];
+
+    /// 918c's `selectors()` refusal list (the five assigned names below that
+    /// Git does not print come from it).
+    const REF_918C_SELECTORS: &str = "918c256cf workflow_publish_checkpoint.sh:74-79 selectors()";
+
+    /// 918c's `git()` ran Git with `dict(os.environ, ...)`, so it neither
+    /// refused nor removed these names.
+    const REF_918C_GIT: &str = "918c256cf workflow_publish_checkpoint.sh:86-87 git()";
+
+    /// Assigned names that `git rev-parse --local-env-vars` does not print,
+    /// each tied to the 918c code that decides how it is treated.
+    const NOT_PRINTED_BY_GIT: [(&str, &str); 8] = [
+        ("GIT_NAMESPACE", REF_918C_SELECTORS),
+        ("GIT_CEILING_DIRECTORIES", REF_918C_SELECTORS),
+        ("GIT_GLOB_PATHSPECS", REF_918C_SELECTORS),
+        ("GIT_NOGLOB_PATHSPECS", REF_918C_SELECTORS),
+        ("GIT_ICASE_PATHSPECS", REF_918C_SELECTORS),
+        ("GIT_DISCOVERY_ACROSS_FILESYSTEM", REF_918C_GIT),
+        ("GIT_INDEX_VERSION", REF_918C_GIT),
+        ("GIT_QUARANTINE_PATH", REF_918C_GIT),
+    ];
+
+    fn assigned() -> BTreeSet<&'static str> {
+        FORBIDDEN_SELECTORS
+            .into_iter()
+            .chain(SELECTORS_NOT_REFUSED.iter().map(|(n, _)| *n))
+            .collect()
+    }
 
     /// The host's `git rev-parse --local-env-vars`, queried once per run.
     fn host_local_env_vars() -> &'static BTreeSet<String> {
@@ -687,46 +708,60 @@ mod selector_set_tests {
         })
     }
 
-    fn assigned() -> BTreeSet<&'static str> {
-        FORBIDDEN_SELECTORS
-            .into_iter()
-            .chain(SELECTORS_NOT_REFUSED.iter().map(|(n, _)| *n))
-            .collect()
-    }
-
-    /// Drift check against the host's git: a name the host calls local that
-    /// is in neither list fails, with its name.
+    /// The committed literal against the host's Git, in both directions.
     #[test]
-    fn every_host_local_env_var_is_assigned() {
-        let assigned = assigned();
-        let unassigned: Vec<&String> = host_local_env_vars()
-            .iter()
-            .filter(|n| !assigned.contains(n.as_str()))
-            .collect();
+    fn frozen_selector_set_matches_the_host_git_in_both_directions() {
+        let frozen: BTreeSet<&str> = FROZEN_SELECTOR_SET.into_iter().collect();
+        assert_eq!(frozen.len(), FROZEN_SELECTOR_SET.len(), "duplicate name");
+        let host: BTreeSet<&str> = host_local_env_vars().iter().map(String::as_str).collect();
+        let new_on_host: Vec<&str> = host.difference(&frozen).copied().collect();
+        let gone_from_host: Vec<&str> = frozen.difference(&host).copied().collect();
         assert!(
-            unassigned.is_empty(),
-            "unassigned selector(s): {unassigned:?}"
+            new_on_host.is_empty() && gone_from_host.is_empty(),
+            "host git differs from FROZEN_SELECTOR_SET: printed by the host but not frozen \
+             {new_on_host:?}; frozen but not printed by the host {gone_from_host:?}"
         );
     }
 
-    /// Reverse drift check: an assigned name the host does not print must be
-    /// a documented exception, and every exception must be assigned.
+    /// Without consulting the host: the assigned names are exactly the
+    /// frozen set plus the documented exceptions, each difference named.
     #[test]
-    fn every_assigned_name_is_printed_by_git_or_a_documented_exception() {
-        let assigned = assigned();
-        let host = host_local_env_vars();
+    fn assigned_names_are_exactly_the_frozen_set_and_the_exceptions() {
+        let frozen: BTreeSet<&str> = FROZEN_SELECTOR_SET.into_iter().collect();
         let exceptions: BTreeSet<&str> = NOT_PRINTED_BY_GIT.iter().map(|(n, _)| *n).collect();
-        assert!(NOT_PRINTED_BY_GIT.iter().all(|(_, why)| !why.is_empty()));
-        let undocumented: Vec<&str> = assigned
-            .iter()
-            .copied()
-            .filter(|n| !host.contains(*n) && !exceptions.contains(n))
-            .collect();
-        assert!(
-            undocumented.is_empty(),
-            "assigned but neither printed by git nor documented: {undocumented:?}"
+        assert_eq!(
+            exceptions.len(),
+            NOT_PRINTED_BY_GIT.len(),
+            "duplicate exception"
         );
-        let stray: Vec<&str> = exceptions.difference(&assigned).copied().collect();
-        assert!(stray.is_empty(), "exceptions not assigned: {stray:?}");
+        let overlap: Vec<&str> = frozen.intersection(&exceptions).copied().collect();
+        assert!(
+            overlap.is_empty(),
+            "printed by git yet listed as an exception: {overlap:?}"
+        );
+        let expected: BTreeSet<&str> = frozen.union(&exceptions).copied().collect();
+        let assigned = assigned();
+        let unassigned: Vec<&str> = expected.difference(&assigned).copied().collect();
+        let unexpected: Vec<&str> = assigned.difference(&expected).copied().collect();
+        assert!(
+            unassigned.is_empty() && unexpected.is_empty(),
+            "not assigned to either list: {unassigned:?}; assigned but neither frozen nor an \
+             exception: {unexpected:?}"
+        );
+    }
+
+    /// Every exception names its 918c reference, and the five taken from
+    /// 918c's refusal list are refused here too.
+    #[test]
+    fn each_exception_is_tied_to_a_918c_reference() {
+        for (name, reference) in NOT_PRINTED_BY_GIT {
+            assert!(reference.starts_with("918c256cf "), "{name}: {reference}");
+            let refused = FORBIDDEN_SELECTORS.contains(&name);
+            assert_eq!(
+                refused,
+                reference == REF_918C_SELECTORS,
+                "{name}: refused={refused} but referenced {reference}"
+            );
+        }
     }
 }
