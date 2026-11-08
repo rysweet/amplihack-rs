@@ -900,10 +900,10 @@ pub(super) fn append_with(
         .len();
     // Issue #1970: a passive reading lower than the recorded one for its
     // week, or from an ended week, is a stale cached figure and is not
-    // written as new history; the recorded figure is written instead. Read from the handle already checked, under
-    // the lock, and before the line is made, so a rewrite writes the
-    // filtered line too. A failed read writes nothing rather than the
-    // unfiltered line.
+    // written as new history; the recorded figure is written instead. Read
+    // from the handle already checked, under the lock, and before the line
+    // is made, so a rewrite writes the filtered line too. A failed read
+    // writes nothing rather than the unfiltered line.
     let filtered;
     let entry = if entry.profiles.values().any(|p| p.passive) {
         let tail = read_last(&file, len, STALE_LOOKBACK).map_err(|_| HistoryError::WriteFailed)?;
