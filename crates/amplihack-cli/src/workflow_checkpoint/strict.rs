@@ -20,23 +20,6 @@ fn os_error(error: std::io::Error) -> Fail {
     Fail::Refusal(error.to_string())
 }
 
-/// An `OSError` on the path list as `str(exc)` printed it in 918c:
-/// `[Errno N] <strerror>: '<filename>'`.
-fn list_error(list: &Path) -> impl Fn(std::io::Error) -> Fail + '_ {
-    move |error| match error.raw_os_error() {
-        Some(errno) => {
-            let text = error.to_string();
-            let suffix = format!(" (os error {errno})");
-            let strerror = text.strip_suffix(&suffix).unwrap_or(&text);
-            Fail::Refusal(format!(
-                "[Errno {errno}] {strerror}: {}",
-                super::json::py_repr_os(list.as_os_str().as_bytes())
-            ))
-        }
-        None => os_error(error),
-    }
-}
-
 /// One argument of a STRICT_PATHS_PY Git call, kept with its Python type so
 /// a failure can quote the argv list exactly as `CalledProcessError` did:
 /// the literal options were `str`, the toplevel from `os.path.realpath` of
@@ -174,7 +157,7 @@ fn git(git_env: GitEnv, args: &[Arg], data: Option<&[u8]>) -> Res<Vec<u8>> {
 
 fn validate(git_env: GitEnv, list: &Path) -> Res<(PathBuf, Vec<u8>, usize)> {
     let fail = |reason: &str| Err(refusal(reason));
-    let info = std::fs::symlink_metadata(list).map_err(list_error(list))?;
+    let info = std::fs::symlink_metadata(list).map_err(super::py_os_error(list))?;
     if !info.file_type().is_file() {
         return fail("path list must be a regular file");
     }
@@ -184,7 +167,7 @@ fn validate(git_env: GitEnv, list: &Path) -> Res<(PathBuf, Vec<u8>, usize)> {
             .read(true)
             .custom_flags(libc::O_NOFOLLOW)
             .open(list)
-            .map_err(list_error(list))?,
+            .map_err(super::py_os_error(list))?,
         &mut raw,
     )
     .map_err(os_error)?;

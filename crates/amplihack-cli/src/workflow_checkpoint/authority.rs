@@ -61,7 +61,8 @@ pub(crate) fn retain(path: &Path, value: &Value) -> Res<String> {
 }
 
 pub(crate) fn file_identity(path: &Path) -> Res<String> {
-    let info = std::fs::symlink_metadata(path).map_err(io_refusal("private record"))?;
+    // 918c file_identity: os.lstat(path), an OSError naming the path.
+    let info = std::fs::symlink_metadata(path).map_err(super::py_os_error(path))?;
     refuse(
         info.file_type().is_file(),
         "authority is not a regular file",
@@ -112,7 +113,8 @@ impl Ctx {
             Some(file_identity(&path)?) == env_text("WF_CHECKPOINT_RECORD_ID")?,
             "authority record identity changed",
         )?;
-        let raw = std::fs::read(&path).map_err(io_refusal("authority record"))?;
+        // 918c load_authority: pathlib.Path(path).read_bytes().
+        let raw = std::fs::read(&path).map_err(super::py_os_error(&path))?;
         refuse(
             Some(digest(&raw)) == env_text("WF_CHECKPOINT_HASH")?,
             "immutable authority hash mismatch",

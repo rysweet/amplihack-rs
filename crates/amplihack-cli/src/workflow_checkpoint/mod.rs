@@ -392,6 +392,25 @@ pub(crate) fn io_refusal(what: &'static str) -> impl Fn(std::io::Error) -> Fail 
     move |error| Fail::Refusal(format!("{what}: {error}"))
 }
 
+/// An `OSError` on `path` as `str(exc)` printed it in 918c:
+/// `[Errno N] <strerror>: '<filename>'`. Used where the Python opened, read
+/// or `lstat`ed a named path and the refusal handler printed the exception.
+pub(crate) fn py_os_error(path: &std::path::Path) -> impl Fn(std::io::Error) -> Fail + '_ {
+    use std::os::unix::ffi::OsStrExt;
+    move |error| match error.raw_os_error() {
+        Some(errno) => {
+            let text = error.to_string();
+            let suffix = format!(" (os error {errno})");
+            let strerror = text.strip_suffix(&suffix).unwrap_or(&text);
+            Fail::Refusal(format!(
+                "[Errno {errno}] {strerror}: {}",
+                json::py_repr_os(path.as_os_str().as_bytes())
+            ))
+        }
+        None => Fail::Refusal(error.to_string()),
+    }
+}
+
 /// The one place an advertisement error becomes a status: the action's
 /// [`AdvertStatus`] column decides.
 pub(crate) fn advert_fail(spec: &ActionSpec, error: advert::AdvertError) -> Fail {

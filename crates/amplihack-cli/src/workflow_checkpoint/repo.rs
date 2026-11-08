@@ -275,9 +275,12 @@ pub(crate) fn env_required(name: &str) -> Res<String> {
     env_text(name)?.ok_or_else(|| Fail::Refusal(format!("missing {name}")))
 }
 
+/// `map[key]`. A missing key is the `KeyError` 918c printed as `str(exc)`,
+/// which is the key's repr; every key here is an ASCII identifier, so that
+/// is the key in single quotes.
 pub(crate) fn get<'a>(map: &'a Map<String, Value>, key: &str) -> Res<&'a Value> {
     map.get(key)
-        .ok_or_else(|| Fail::Refusal(format!("missing field '{key}'")))
+        .ok_or_else(|| Fail::Refusal(format!("'{key}'")))
 }
 
 pub(crate) fn get_str<'a>(map: &'a Map<String, Value>, key: &str) -> Res<&'a str> {
@@ -310,8 +313,19 @@ pub(crate) fn selectors() -> Res<()> {
     )
 }
 
+/// 918c `context` (:113): `parse(os.environ.get('RECIPE_VAR_worktree_setup',
+/// ''))`, so a missing value is parsed as `''` and refused with the JSON
+/// decoder's message.
+pub(crate) fn worktree_setup_or_empty() -> Res<Map<String, Value>> {
+    let raw = env_text("RECIPE_VAR_worktree_setup")?;
+    setup_object(raw.as_deref().unwrap_or("").as_bytes())
+}
+
+/// 918c `publication` (:259): `parse(os.environ['RECIPE_VAR_worktree_setup'])`,
+/// so a missing value is a `KeyError`, printed as the quoted name.
 pub(crate) fn worktree_setup() -> Res<Map<String, Value>> {
-    let raw = env_required("RECIPE_VAR_worktree_setup")?;
+    let raw = env_text("RECIPE_VAR_worktree_setup")?
+        .ok_or_else(|| Fail::Refusal("'RECIPE_VAR_worktree_setup'".into()))?;
     setup_object(raw.as_bytes())
 }
 
@@ -347,7 +361,7 @@ impl Ctx {
         if let Some(task) = env_text("TASK_DESCRIPTION")? {
             refuse(task == owner, "inconsistent parent task identity")?;
         }
-        let setup = worktree_setup()?;
+        let setup = worktree_setup_or_empty()?;
         let path = setup.get("worktree_path").and_then(Value::as_str);
         let branch = setup.get("branch_name").and_then(Value::as_str);
         let (path, branch) = match (path, branch) {

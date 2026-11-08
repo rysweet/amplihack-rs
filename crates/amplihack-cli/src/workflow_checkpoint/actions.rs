@@ -549,7 +549,7 @@ fn sync_fetch_mode(ctx: &mut Ctx, args: &[&str]) -> Res<Vec<u8>> {
         Some(file_identity(&path)?.as_str()) == descriptor.get("identity").and_then(Value::as_str),
         "sync operation identity changed",
     )?;
-    let raw = std::fs::read(&path).map_err(io_refusal("sync operation"))?;
+    let raw = std::fs::read(&path).map_err(super::py_os_error(Path::new(&path)))?;
     refuse(
         Some(digest(&raw).as_str()) == descriptor.get("sha256").and_then(Value::as_str),
         "sync operation hash changed",
@@ -650,7 +650,8 @@ fn after(ctx: &mut Ctx, args: &[OsString]) -> Res<Vec<u8>> {
             == descriptor.get("identity").and_then(Value::as_str),
         "operation observation identity changed",
     )?;
-    let token_bytes = std::fs::read(&token_path).map_err(io_refusal("operation observation"))?;
+    let token_bytes =
+        std::fs::read(&token_path).map_err(super::py_os_error(Path::new(&token_path)))?;
     refuse(
         Some(digest(&token_bytes).as_str()) == descriptor.get("sha256").and_then(Value::as_str),
         "operation observation hash changed",

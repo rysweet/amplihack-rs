@@ -351,14 +351,17 @@ fn check_structure(action: &str, cases: &[toml::value::Table]) -> Vec<String> {
                 ));
             }
         }
-        // Same input with contradicting provenance and expectations.
+        // The same input (every field the runner feeds the child, including
+        // the case's files) must never carry two different expectations.
         let input = format!(
-            "{:?}|{:?}|{:?}|{:?}|{:?}",
+            "{:?}|{:?}|{:?}|{:?}|{:?}|{:?}|{:?}",
             c.get("argv"),
             c.get("env"),
             c.get("stdin").or(c.get("stdin_b64")),
             s(c, "setup"),
-            s(c, "cwd")
+            s(c, "cwd"),
+            c.get("files"),
+            c.get("raw_path")
         );
         let expect = format!(
             "{:?}|{:?}|{:?}",
@@ -367,9 +370,9 @@ fn check_structure(action: &str, cases: &[toml::value::Table]) -> Vec<String> {
             c.get("expect_stderr").or(c.get("expect_stderr_b64"))
         );
         if let Some((other_prov, other_expect)) = by_input.get(&input) {
-            if *other_expect != expect && *other_prov != prov {
+            if *other_expect != expect {
                 p.push(format!(
-                    "{action}#{name}: contradicts a {other_prov} case for the same input"
+                    "{action}#{name}: contradicts the {other_prov} case for the same input"
                 ));
             }
         } else {
@@ -474,6 +477,16 @@ fn structure_check_rejects_its_negative_cases() {
     other.insert("name".into(), "b".into());
     other.insert("expect_status".into(), toml::Value::Integer(2));
     assert!(!check_structure("x", &[good.clone(), other]).is_empty());
+    // Same provenance, same input, different expectation: still refused.
+    let mut same_prov = good.clone();
+    same_prov.insert("name".into(), "c".into());
+    same_prov.insert("expect_status".into(), toml::Value::Integer(2));
+    assert!(!check_structure("x", &[good.clone(), same_prov.clone()]).is_empty());
+    // Different fixture files are a different input, not a contradiction.
+    let mut files = toml::value::Table::new();
+    files.insert("tmp/list".into(), "a\0".into());
+    same_prov.insert("files".into(), files.into());
+    assert!(check_structure("x", &[good.clone(), same_prov]).is_empty());
     // A file with no python-918c256cf case.
     let mut owner_only = good;
     owner_only.insert("provenance".into(), "owner:D1".into());

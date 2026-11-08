@@ -465,6 +465,14 @@ fn validate(args: &[&str]) -> Output {
     c.output().unwrap()
 }
 
+/// origin/main's stderr for a relative `--binary`, byte for byte. Captured
+/// on 2026-11-08 from amplihack 1.2.107 (v1.2.107; no change to
+/// runner_validation.rs, bins/amplihack/src/main.rs or
+/// crates/amplihack-cli/src/lib.rs between v1.2.107 and origin/main
+/// 7b8d32e7e); the capture and its provenance are in
+/// ~/.amplihack/work/pr2020-r17-capture/.
+const ORIGIN_MAIN_RELATIVE_BINARY_STDERR: &[u8] = b"{\"error\":{\"code\":\"INVALID_VALIDATION_REQUEST\",\"details\":{\"provider\":\"claude\"},\"message\":\"provide an absolute binary and all or none of cargo-home, repository and revision\"}}\n";
+
 #[test]
 fn validate_recipe_runner_failure_prints_json_only() {
     // 918c runner_validation.rs:236-240: one JSON object on stderr, then
@@ -472,15 +480,18 @@ fn validate_recipe_runner_failure_prints_json_only() {
     let out = validate(&["--provider", "claude", "--binary", "relative/runner"]);
     assert_eq!(status(&out), 1);
     assert!(out.stdout.is_empty(), "stdout: {:?}", out.stdout);
+    assert_eq!(
+        out.stderr,
+        ORIGIN_MAIN_RELATIVE_BINARY_STDERR,
+        "stderr differs from origin/main: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let err = String::from_utf8(out.stderr).unwrap();
-    assert_eq!(err.lines().count(), 1, "exactly one line: {err:?}");
-    assert!(err.ends_with('\n'));
-    assert!(!err.contains("error:"), "{err}");
-    let value: serde_json::Value = serde_json::from_str(err.trim_end()).unwrap();
-    assert_eq!(value["error"]["code"], "INVALID_VALIDATION_REQUEST");
-    assert_eq!(value["error"]["details"]["provider"], "claude");
-    assert!(value["error"]["message"].is_string());
-    assert_eq!(value.as_object().unwrap().len(), 1);
+    assert!(
+        !err.lines()
+            .any(|l| l.starts_with("error:") || l.contains("error: ")),
+        "{err}"
+    );
 }
 
 #[test]

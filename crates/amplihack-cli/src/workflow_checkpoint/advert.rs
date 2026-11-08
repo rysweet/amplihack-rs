@@ -205,6 +205,27 @@ mod first_publication_tests {
         assert_eq!(lookup(&mixed, 0), Ok(Lookup::Present));
     }
 
+    /// The R8 D1 reference input (`no-final-lf`, the original bytes kept in
+    /// ~/.amplihack/work/pr2020-d1-original-bytes/no-final-lf.advert): its
+    /// length, SHA-256 and missing final LF are checked before the call, so a
+    /// literal that a hook "fixed" fails here instead of passing vacuously.
+    #[test]
+    fn lookup_accepts_the_r8_no_final_lf_reference_bytes() {
+        mod d1 {
+            include!("../../tests/support/d1_literals.rs");
+        }
+        let bytes = d1::D1_NO_FINAL_LF;
+        assert_eq!(bytes.len(), 56, "R8 no-final-lf length");
+        assert_eq!(
+            super::super::json::digest(bytes),
+            "59161683958a9adeaacaf650be033f302e118cdf7b2f739b2b8ada2ac088b337",
+            "R8 no-final-lf sha256"
+        );
+        assert_ne!(bytes.last(), Some(&b'\n'), "R8 input must not end in LF");
+        assert!(d1::d1_property_holds("no-final-lf", bytes));
+        assert_eq!(lookup(bytes, 0), Ok(Lookup::Present));
+    }
+
     /// Only a fully valid advertisement without the exact ref is `Absent`;
     /// every refused row would otherwise let the caller skip the fetch.
     #[test]
