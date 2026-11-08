@@ -69,6 +69,7 @@ fn pt(s: Option<u8>, w: u8, w_reset: Option<i64>, s_reset: Option<i64>) -> Point
         w_reset,
         s_reset,
         no_session_limit: false,
+        passive: false,
     }
 }
 
@@ -198,6 +199,18 @@ fn from_probes_counts_a_passive_reading_over_300_s_old_as_unknown() {
     let e = s.entry(Writer::Rotate);
     assert_eq!(e.at, T);
     assert_eq!(e.unknown, ["hour", "live"], "so no runway is taken from it");
+}
+
+#[test]
+fn from_probes_marks_passive_readings_and_only_those() {
+    // Issue #1970: a passive reading is checked against the history before
+    // it is written, so the snapshot says which readings are passive.
+    let mut cached = probed(10.0, 20.0);
+    cached.observed_at = Some(T - 30);
+    let probes = (cached, vec![(n("direct"), probed(30.0, 40.0))]);
+    let s = from_probes(T, Some(&n("live")), &probes, None, &[]);
+    assert!(s.points["live"].passive);
+    assert!(!s.points["direct"].passive);
 }
 
 // ---------------------------------------------------------------------------
