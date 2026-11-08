@@ -23,7 +23,7 @@
 #   cleanup_on_failure <repo_path> <branch>
 #       Tear down THIS run's worktree+branch after a failed/aborted run, but
 #       only AFTER archiving any unique commits to refs/amplihack-archive/<branch>
-#       (and best-effort pushing them). Never destroys unmerged meaningful work.
+#       (local refs only; never pushed, #1930). Never destroys unmerged meaningful work.
 #
 # This is a self-contained brick: it is safe to `source` (it only defines
 # functions until invoked — the strict-mode block below is guarded to apply
@@ -148,8 +148,8 @@ content_merged() {
 }
 
 # archive_branch <repo> <branch> <sha> — record <sha> under the archive
-# namespace so unique work stays reachable after a prune. Best-effort remote
-# push (relies on configured auth; never echoes tokens).
+# namespace so unique work stays reachable after a prune. Archives remain local:
+# setup and failure cleanup must never publish another branch's work (#1930).
 archive_branch() {
     local repo="$1" branch="$2" sha="$3"
     local ref="${ARCHIVE_NS}/${branch}"
@@ -159,15 +159,6 @@ archive_branch() {
         log_warn "Could not archive '${branch}' to ${ref} locally."
         return 1
     fi
-    # Update the remote branch only while the remote still has it: pushing
-    # refs/heads/<branch> after a merged PR's branch was deleted would bring it
-    # back. Otherwise push the archive ref, which no branch listing shows.
-    if git -C "$repo" ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null 2>&1 \
-        && git -C "$repo" push origin "${sha}:refs/heads/${branch}" >/dev/null 2>&1; then
-        return 0
-    fi
-    git -C "$repo" push origin "${ref}:${ref}" >/dev/null 2>&1 \
-        || log_warn "Best-effort archive push for '${branch}' did not complete; local archive ref retained."
     return 0
 }
 
