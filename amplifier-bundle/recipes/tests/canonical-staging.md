@@ -22,8 +22,7 @@ than these changes.
 ## Source and fixture inputs
 
 Use the repository's pinned Rust toolchain. Supply the complete task contract
-through `--requirements-file` for Python matrix fixtures or
-`CANONICAL_STAGING_REQUIREMENTS_FILE` for Rust fixtures. Keep reports, temporary
+through `CANONICAL_STAGING_REQUIREMENTS_FILE`. Keep reports, temporary
 repositories and build outputs outside the source checkout. `TMPDIR` must name
 an assigned executable directory that is not inside a Git worktree.
 
@@ -45,39 +44,47 @@ Keep default test parallelism and the execution limits assigned to the job.
 
 ## Diagnostic suites
 
-The standard-library Python suites execute Git operations against newly created
-local bare repositories. Their scope review is an independent synthetic owner
-decision. No provider or review model runs.
+The checkpoint suites are Rust integration tests. They run the cargo-built
+`amplihack` binary as a subprocess against newly created local bare
+repositories, with a cleared environment, a private `HOME` and no global or
+system Git configuration. Their scope review is an independent synthetic owner
+decision. No provider or review model runs. They run in plain
+`cargo test --workspace --locked` and in CI nextest.
 
-| Suite | Responsibility |
-| --- | --- |
-| [test-checkpoint-scope.py](test-checkpoint-scope.py) | Literal staging, invocation authority, refusal, repair and publication history. |
-| [test-checkpoint-conservative-boundaries.py](test-checkpoint-conservative-boundaries.py) | Strict paths and authority identity. |
-| [test-checkpoint-synthesis-alias.py](test-checkpoint-synthesis-alias.py) | Branch aliases and exact filename spelling. |
-| [test-checkpoint-publication-boundaries.py](test-checkpoint-publication-boundaries.py) | Configuration substitution, publication range and shallow history. |
-| [test-checkpoint-review-boundaries.py](test-checkpoint-review-boundaries.py) | Refusal logging, terminal fetch status, inventory and fixture preparation. |
-| [test-checkpoint-scope-history.py](test-checkpoint-scope-history.py) | Staged and committed scope, exact Cargo inputs and independent second-parent coverage. |
-| [test-checkpoint-rebase-identity.py](test-checkpoint-rebase-identity.py) | Significant whitespace, lossless replay and private object writes. |
-| [test-checkpoint-refusal-evidence.py](test-checkpoint-refusal-evidence.py) | Admission evidence and refusal state. |
-| [test-checkpoint-value-transport.py](test-checkpoint-value-transport.py) | Fixed data-only fields, exact framing and hostile-data refusal. |
+| Rust test file | Former Python suite | Responsibility |
+| --- | --- | --- |
+| `crates/amplihack-cli/tests/workflow_checkpoint_ports.rs` | `test-checkpoint-scope.py` | Literal staging, invocation authority, refusal, repair and publication history. |
+| same | `test-checkpoint-conservative-boundaries.py` | Strict paths and authority identity. |
+| same | `test-checkpoint-synthesis-alias.py` | Branch aliases and exact filename spelling. |
+| same, and `tests/integration/checkpoint_owner_controls.rs` | `test-checkpoint-publication-boundaries.py` | Configuration substitution, publication range and shallow history; the 20 `OwnerOutgoingOnlyControls` cases. |
+| same | `test-checkpoint-review-boundaries.py` | Refusal logging, terminal fetch status, inventory and fixture preparation. |
+| same | `test-checkpoint-scope-history.py` | Staged and committed scope, exact Cargo inputs and independent second-parent coverage. |
+| same | `test-checkpoint-rebase-identity.py` | Significant whitespace, lossless replay and private object writes. |
+| same | `test-checkpoint-refusal-evidence.py` | Admission evidence and refusal state. |
+| same | `test-checkpoint-value-transport.py` | Fixed data-only fields, exact framing and hostile-data refusal. |
+| `tests/integration/checkpoint_exit79.rs` | none (new) | A terminal 79 from the destination read stops step 15 with 79 and no push. |
 
-Run each suite through the assigned deterministic QA command. Preserve stdout,
-stderr and exact source bindings. Invalid-UTF-8 filename cases that fail at creation with `EILSEQ` are recorded
-as unavailable, rather than passed. Other creation errors remain failures.
-Linux executes the unchanged cases. A partial platform result does not
-establish complete acceptance.
+Each Rust test is named after its Python method without the `test_` prefix and
+keeps the same cases and assertions. The PR #2020 mapping comment lists every
+method and its Rust path. Invalid-UTF-8 filename cases that fail at creation
+with `EILSEQ` are recorded as unavailable, rather than passed. Other creation
+errors remain failures. Linux executes the unchanged cases. A partial platform
+result does not establish complete acceptance.
+
+The binary these tests call is described in the
+[`amplihack internal workflow-checkpoint` reference](../../../docs/reference/workflow-checkpoint-cli.md).
 
 ## Native matrices and checkpoints
 
 The Rust policy and evidence targets reconcile the original 40 steps and four
-additions. `test-minimalist-auto-stage.py` and `test-pragmatic-auto-stage.py`
-retain native, resolved and individual removal cases. Pass an explicit runner,
-baseline, candidate, report and requirements file. Ruby remains the pragmatic
-fixture's existing YAML parser dependency. Resolved directory projections
+additions. `crates/amplihack-cli/tests/workflow_checkpoint_auto_stage.rs` retains the
+minimalist and pragmatic native, resolved and individual removal cases. Cases
+that need an installed `recipe-runner-rs` stay `#[ignore]` with a reason that
+names it; pass the runner, baseline, candidate, report and requirements file
+through the documented `CANONICAL_STAGING_*` variables. Resolved directory projections
 do not qualify native implicit staging.
 
-The Rust checkpoint tests and `test-pragmatic-checkpoints.py` retain all seven
-checkpoint sites. Positive fixtures start with independently clean linked task
+The Rust checkpoint tests retain all seven checkpoint sites. Positive fixtures start with independently clean linked task
 indexes. Unrelated staging in caller and review worktrees remains observable.
 Negative fixtures preserve partial staging, unknown metadata, raw indexes,
 blobs, modes, worktrees and heads. Normal and rejecting hooks must execute
@@ -205,4 +212,37 @@ Cleanup adds no advertisement read. Its existing `before(sync)` check already ha
 
 The forged-range shell control now starts with genuinely published and fetched unrelated history. After the authorised wrapped source commit, only its disposable bare task ref is rewound to the known earlier base. Held HEAD/upstream remain genuine. The real outgoing range therefore exposes the previously remote unrelated history; the required refusal must name outgoing scope. Two disposable helper mutants that exclude ancestry using tracking or FETCH_HEAD actually publish that history and are rejected by the same oracle. These local fixture publications are not GitHub publication or production acceptance. The original twelve owner test methods retain their assertions; the later insensitive control and all failed preparations remain historical evidence.
 
-The exact earlier-call/status/redaction sequence and amended comment have finite Python/Rust preservation mappings. Raw and parsed comparisons still cover every other command, field and original opt-out. Mutation controls reject missing flags, status laundering, wrong channels, duplicate calls and extra commands. Inventory preparation deliberately stops before native execution. Normal committed-head checks, independent delta approval, CI and protected canonical integration remain required; neither a fixture result nor recipe completion substitutes for them.
+The exact earlier-call/status/redaction sequence and amended comment have finite preservation mappings in the Rust inventory tests. Raw and parsed comparisons still cover every other command, field and original opt-out. Mutation controls reject missing flags, status laundering, wrong channels, duplicate calls and extra commands. Inventory preparation deliberately stops before native execution. Normal committed-head checks, independent delta approval, CI and protected canonical integration remain required; neither a fixture result nor recipe completion substitutes for them.
+
+
+## Rust checkpoint helper: decision 17.126
+
+The repository ships no Python. Decision 17.126 grants no exception for the
+checkpoint, so the publish, review-feedback and cleanup helpers are part of
+the `amplihack` binary, behind the hidden subcommand
+`amplihack internal workflow-checkpoint <action>`. The tools and recipes call
+it as `"${AMPLIHACK_BIN:-amplihack}" internal workflow-checkpoint …`. No
+recipe or tool step needs `python3` for a checkpoint, and
+`scripts/check-no-python-assets.sh` passes unchanged. The actions, exit
+statuses, environment and JSON byte format are in the
+[`amplihack internal workflow-checkpoint` reference](../../../docs/reference/workflow-checkpoint-cli.md).
+
+Every 17.116 rule above is unchanged. Two step-15 call sites change one
+detail: both `destination-is-head` reads now exit with the real status, so a
+terminal 79 from the destination read is reported as 79, not 1.
+`tests/integration/checkpoint_exit79.rs` puts a Git wrapper first on `PATH`
+that exits 79 for the destination read, and checks exit 79, the stderr
+diagnostic and an unchanged bare remote at both sites.
+
+The `verify-pushed-ref` call still maps its verifier failure to 1. That is a
+separate follow-up and not part of this change.
+
+The `python3` uses already present in `git-identity.sh`,
+`workflow_sync_package_version.sh` and `autodrive_qa_sources.sh` predate this
+change and are outside it; the last one is a pattern that matches the word in
+a command string, not a call.
+
+Some evidence tests still compare exact script text, because the behaviour
+they cover cannot be observed without a native runner or model CLI. The PR
+#2020 body lists each one with its reason. Every other former string check is
+a behavioural test against the binary.

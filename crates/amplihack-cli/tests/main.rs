@@ -370,3 +370,7 @@ mod signal_validator_parity;
 mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
+#[path = "workflow_checkpoint_legacy_guards.rs"]
+mod workflow_checkpoint_legacy_guards;
+#[path = "workflow_checkpoint_static_guards.rs"]
+mod workflow_checkpoint_static_guards;

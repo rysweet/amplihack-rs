@@ -830,6 +830,9 @@ mod finalize_runtime {
                 .current_dir(&cwd)
                 .env_clear()
                 .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                // The checkpoint engine is the real binary; the stub on PATH
+                // records only the guard and staging calls (#1554).
+                .env("AMPLIHACK_BIN", env!("CARGO_BIN_EXE_amplihack"))
                 .env("HOME", tmp.path())
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -1260,6 +1263,9 @@ mod finalize_skip_reasons {
                 .current_dir(&launch)
                 .env_clear()
                 .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+                // The checkpoint engine is the real binary; the stub on PATH
+                // records only the guard and staging calls (#1554).
+                .env("AMPLIHACK_BIN", env!("CARGO_BIN_EXE_amplihack"))
                 .env("HOME", root.join("home"))
                 .env("GIT_CONFIG_GLOBAL", "/dev/null")
                 .env("GIT_CONFIG_NOSYSTEM", "1")
@@ -1444,6 +1450,9 @@ mod phase1_commit_runtime {
                 "PATH",
                 format!("{}:/usr/bin:/bin", root.join("bin").display()),
             )
+            // The checkpoint engine is the real binary; the stub on PATH records
+            // only the guard and staging calls (#1554).
+            .env("AMPLIHACK_BIN", env!("CARGO_BIN_EXE_amplihack"))
             .env("HOME", root)
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")

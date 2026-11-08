@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 . "${BASH_SOURCE[0]%/*}/workflow_publish_checkpoint.sh"
-workflow_checkpoint_python selectors || exit $?
+workflow_checkpoint selectors || exit $?
 CHECKPOINT_CAPTURE=false
 if [ "$#" -eq 2 ] && [ "$1" = --scope-capture ] && [ "$2" = cleanup ]; then
   CHECKPOINT_CAPTURE=true
@@ -14,10 +14,7 @@ set -euo pipefail
 skip() { echo "WARNING: step-20b ${1:-worktree_setup_path.sh not found}; skipping cleanup commit/push — never commits in REPO_PATH (#1528)" >&2; exit 0; }
 workflow_cleanup_skip() {
   if [ "$CHECKPOINT_CAPTURE" = true ]; then
-    python3 -I - "${1:-worktree_setup_path.sh not found}" <<'CLEANUP_SKIP_JSON'
-import json, sys
-print(json.dumps(dict(skipped=True, admitted=False, reason=sys.argv[1])))
-CLEANUP_SKIP_JSON
+    workflow_checkpoint cleanup-skip-result "${1:-worktree_setup_path.sh not found}"
   fi
   skip "$@"
 }
@@ -26,7 +23,7 @@ wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20b-push-cleanup)
 git rev-parse --is-inside-work-tree >/dev/null 2>&1 || workflow_cleanup_skip "not a git repo at $(pwd -P) (#537)"
 { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || workflow_cleanup_skip "worktree path is not a linked worktree"
 if [ "$CHECKPOINT_CAPTURE" = true ]; then
-  workflow_checkpoint_python capture cleanup
+  workflow_checkpoint capture cleanup
   exit $?
 fi
 workflow_checkpoint_enter cleanup || exit $?

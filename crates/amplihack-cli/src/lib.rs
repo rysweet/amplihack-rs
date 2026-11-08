@@ -68,6 +68,7 @@ pub mod uninstall;
 pub mod update;
 pub(crate) mod user_config;
 pub mod util;
+pub mod workflow_checkpoint;
 
 use clap::{
     Parser,

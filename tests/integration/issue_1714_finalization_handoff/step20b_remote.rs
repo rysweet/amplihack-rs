@@ -204,7 +204,12 @@ impl Remote {
             .env("AMPLIHACK_GIT_COMMITTER_EMAIL", "workflow@example.com")
             .env("REPO_PATH", self.root.join("launch"))
             .env("AMPLIHACK_HOME", workspace_root())
-            .env("RECIPE_VAR_worktree_setup", worktree_setup_json(&self.wt));
+            .env("RECIPE_VAR_worktree_setup", worktree_setup_json(&self.wt))
+            // The tools require an assigned TMPDIR (`${TMPDIR:?assigned TMPDIR
+            // required}`); the test owns this one. The checkpoint engine is the
+            // real binary, not the `amplihack` stub on PATH.
+            .env("TMPDIR", self.tmpdir())
+            .env("AMPLIHACK_BIN", env!("CARGO_BIN_EXE_amplihack"));
         if id == "step-20b-push-cleanup" {
             OWNER.project(
                 &command,
@@ -217,6 +222,38 @@ impl Remote {
         } else {
             command.output().expect("spawn bash")
         }
+    }
+
+    /// The test-owned TMPDIR for the tools, created on first use.
+    pub fn tmpdir(&self) -> PathBuf {
+        let dir = self.root.join("tmp");
+        fs::create_dir_all(&dir).expect("mkdir tmp");
+        dir
+    }
+
+    /// `run` with TMPDIR removed, to prove the tools still require it.
+    pub fn run_without_tmpdir(&self, id: &str) -> std::process::Output {
+        let path = format!(
+            "{}:{}",
+            self.root.join("bin").display(),
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
+        );
+        let mut command = isolated("bash");
+        command
+            .arg("-c")
+            .arg(finalize_command(id))
+            .current_dir(self.root.join("launch"))
+            .env("PATH", path)
+            .env("HOME", self.root.join("home"))
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("REPO_PATH", self.root.join("launch"))
+            .env("AMPLIHACK_HOME", workspace_root())
+            .env("AMPLIHACK_BIN", env!("CARGO_BIN_EXE_amplihack"))
+            .env("RECIPE_VAR_worktree_setup", worktree_setup_json(&self.wt))
+            .env_remove("TMPDIR");
+        command.output().expect("spawn bash")
     }
 
     pub fn head(&self) -> String {

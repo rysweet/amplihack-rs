@@ -66,6 +66,8 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 tracing = { workspace = true }
 sha2 = { workspace = true }
+# Issue #1554: canonical path identities in checkpoint records (already locked).
+base64 = "0.22.1"
 toml = "0.8"
 # Issue #1453 — Codex's config.toml is a file users hand-edit, so amplihack
 # merges its one key into the existing document rather than reserializing it,

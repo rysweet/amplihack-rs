@@ -367,6 +367,9 @@ fn hook_rejection_repair_shell_contract_passes() {
         .env("HOME", fixture.path().join("home"))
         .env("XDG_CONFIG_HOME", fixture.path().join("home/.config"))
         .env("TMPDIR", fixture.path().join("tmp"))
+        // The stub `amplihack` forwards `internal workflow-checkpoint` to the
+        // real engine under test (#1554).
+        .env("AMPLIHACK_REAL_BIN", env!("CARGO_BIN_EXE_amplihack"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_DIR", fixture.path().join(".git"))
         .env("GIT_COMMON_DIR", &common)

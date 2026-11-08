@@ -12,7 +12,23 @@ fn main() {
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if args.get(1).is_some_and(|arg| arg == "internal") {
         let cli = Cli::parse_from(&args);
+        // Only `internal workflow-checkpoint` reports a coded exit status
+        // (#1554). Every other internal command keeps main's behaviour:
+        // print the error and exit 1.
+        let checkpoint = matches!(
+            cli.command,
+            amplihack_cli::Commands::Internal {
+                command: amplihack_cli::InternalCommands::WorkflowCheckpoint(_)
+            }
+        );
+        if checkpoint {
+            amplihack_cli::workflow_checkpoint::install_panic_hook();
+        }
         if let Err(error) = commands::dispatch(cli.command) {
+            if checkpoint && let Some(code) = command_error::exit_code(&error) {
+                // The checkpoint has already reported why on stderr.
+                std::process::exit(code);
+            }
             eprintln!("error: {error:#}");
             std::process::exit(1);
         }

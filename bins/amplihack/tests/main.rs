@@ -36,3 +36,15 @@ mod issue_538_install_completeness;
 mod issue_625_update_prompt_subprocess_safe;
 #[path = "spec_conformance_process.rs"]
 mod spec_conformance_process;
+#[path = "workflow_checkpoint_actions.rs"]
+mod workflow_checkpoint_actions;
+#[path = "workflow_checkpoint_binary_contract.rs"]
+mod workflow_checkpoint_binary_contract;
+#[path = "workflow_checkpoint_exit79.rs"]
+mod workflow_checkpoint_exit79;
+#[path = "workflow_checkpoint_legacy_parity.rs"]
+mod workflow_checkpoint_legacy_parity;
+#[path = "workflow_checkpoint_support.rs"]
+mod workflow_checkpoint_support;
+#[path = "workflow_checkpoint_wrappers.rs"]
+mod workflow_checkpoint_wrappers;

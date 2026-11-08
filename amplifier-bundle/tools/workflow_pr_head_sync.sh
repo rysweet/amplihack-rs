@@ -79,18 +79,14 @@ if [ "$probe_origin_ref" = true ]; then
     exit "$probe_rc"
   fi
   inspection_rc=0
-  python3 -I - "$probe_output" "refs/heads/$branch" "$probe_rc" <<'ORIGIN_REF_PY' || inspection_rc=$?
-import os,pathlib,re,sys
-raw=pathlib.Path(sys.argv[1]).read_bytes(); target=os.fsencode(sys.argv[2]); rc=int(sys.argv[3])
-refs={}
-for line in raw.splitlines():
-    parts=line.split(b'\t')
-    if len(parts)!=2 or not (parts[1]==b'HEAD' or parts[1].startswith(b'refs/')): sys.exit(78)
-    if not re.fullmatch(b'[0-9a-f]{40}|[0-9a-f]{64}',parts[0]) or parts[1] in refs: sys.exit(78)
-    refs[parts[1]]=parts[0]
-if rc==2 and refs: sys.exit(78)
-sys.exit(0 if target in refs else 3)
-ORIGIN_REF_PY
+  # The checkpoint engine validates the saved advertisement (#1554, decision
+  # 17.126): 0 present, 3 absent, 78 malformed. A missing engine stops here.
+  command -v -- "${AMPLIHACK_BIN:-amplihack}" >/dev/null 2>&1 || {
+    rm -f -- "$probe_output"
+    echo "ERROR: workflow_pr_head_sync: workflow checkpoint engine not found (AMPLIHACK_BIN=${AMPLIHACK_BIN:-amplihack}); checkpoint stopped" >&2
+    exit 78
+  }
+  "${AMPLIHACK_BIN:-amplihack}" internal workflow-checkpoint advertised-ref "$probe_output" "refs/heads/$branch" "$probe_rc" || inspection_rc=$?
   rm -f -- "$probe_output"
   if [ "$inspection_rc" -eq 3 ]; then
     echo "INFO: workflow_pr_head_sync: origin task ref is absent; skipping early sync before first publication" >&2

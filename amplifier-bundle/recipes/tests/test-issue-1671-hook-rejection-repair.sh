@@ -68,6 +68,15 @@ PUBLISH_RECIPE="${RECIPES}/workflow-publish.yaml"
 for tool in git python3 jq; do
     command -v "${tool}" >/dev/null 2>&1 || { echo "HARNESS-ERROR: ${tool} is required" >&2; exit 2; }
 done
+# The checkpoint engine is the real `amplihack internal workflow-checkpoint`
+# (#1554); the stub below forwards exactly that subcommand to it. A Rust
+# caller passes AMPLIHACK_REAL_BIN; a standalone run builds the binary once.
+if [[ -z "${AMPLIHACK_REAL_BIN:-}" ]]; then
+    command -v cargo >/dev/null 2>&1 || { echo "HARNESS-ERROR: cargo or AMPLIHACK_REAL_BIN is required" >&2; exit 2; }
+    AMPLIHACK_REAL_BIN="$(cd -- "${REPO_ROOT}" && cargo build --locked --quiet -p amplihack --bin amplihack --message-format=json-render-diagnostics | jq -r 'select(.executable != null) | .executable' | tail -n 1)" || exit 2
+fi
+[[ -x "${AMPLIHACK_REAL_BIN}" ]] || { echo "HARNESS-ERROR: AMPLIHACK_REAL_BIN is not executable: ${AMPLIHACK_REAL_BIN}" >&2; exit 2; }
+export AMPLIHACK_REAL_BIN
 for path in "${GIT_IDENTITY}" "${CHECKPOINT_COMMIT}" "${TDD_RECIPE}" "${REFACTOR_RECIPE}" "${PUBLISH_RECIPE}"; do
     [[ -f "${path}" ]] || { echo "HARNESS-ERROR: ${path} not found" >&2; exit 2; }
 done
@@ -162,6 +171,9 @@ case "${1:-}" in
   orch)
     echo "stub amplihack: the hook-repair driver must not need orch helpers (#1671 design: anchored ERE, closed sets)" >&2
     exit 127 ;;
+  internal)
+    [ "${2:-}" = workflow-checkpoint ] || { echo "stub amplihack: unexpected internal call: $*" >&2; exit 127; }
+    exec "${AMPLIHACK_REAL_BIN:?real amplihack engine required}" "$@" ;;
   recipe) ;;
   *) echo "stub amplihack: unexpected call: $*" >&2; exit 127 ;;
 esac

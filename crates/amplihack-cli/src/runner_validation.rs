@@ -162,6 +162,20 @@ pub(crate) fn provenance(
 #[derive(clap::Subcommand, Debug)]
 pub enum InternalCommands {
     ValidateRecipeRunner(ValidationArgs),
+    /// Default-workflow publication checkpoint (#1554). Called only by the
+    /// checkpoint tools and recipes; the contract is in
+    /// `docs/reference/workflow-checkpoint-cli.md`.
+    #[command(hide = true)]
+    WorkflowCheckpoint(CheckpointArgs),
+}
+#[derive(clap::Args, Debug)]
+pub struct CheckpointArgs {
+    /// The action, matched by the engine against its closed table. Optional
+    /// so that a missing action is 918c's `IndexError` (status 1), not a
+    /// usage error.
+    action: Option<std::ffi::OsString>,
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+    args: Vec<std::ffi::OsString>,
 }
 #[derive(clap::Args, Debug)]
 pub struct ValidationArgs {
@@ -178,7 +192,15 @@ pub struct ValidationArgs {
 }
 
 pub(crate) fn run(command: InternalCommands) -> Result<()> {
-    let InternalCommands::ValidateRecipeRunner(args) = command;
+    let args = match command {
+        InternalCommands::ValidateRecipeRunner(args) => args,
+        InternalCommands::WorkflowCheckpoint(checkpoint) => {
+            return match checkpoint.action {
+                Some(action) => crate::workflow_checkpoint::run(&action, checkpoint.args),
+                None => Err(crate::workflow_checkpoint::missing_action()),
+            };
+        }
+    };
     let result = (|| -> Result<Value> {
         if !args.binary.is_absolute() {
             return Err(error("INVALID_VALIDATION_REQUEST"));

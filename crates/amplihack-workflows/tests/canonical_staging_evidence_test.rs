@@ -253,7 +253,7 @@ fn restore_checkpoint_delta(asset: &str, text: String) -> String {
     redact_sensitive_file "$fetch_output_file" >&2"#;
         assert_eq!(extracted.matches(current_failure).count(), 1);
         let extracted = extracted.replacen(current_failure, original_failure, 1);
-        let decision = r#"DESTINATION_IS_HEAD=$(workflow_checkpoint_python destination-is-head) || { reason="publication-destination-inspection-failed"; exit 1; }"#;
+        let decision = r#"rc=0; DESTINATION_IS_HEAD=$(workflow_checkpoint destination-is-head) || rc=$?; [ "$rc" -eq 0 ] || { reason="publication-destination-inspection-failed"; exit "$rc"; }"#;
         assert_eq!(extracted.matches(decision).count(), 2);
         let extracted = extracted.replace(&format!("{decision}\n"), "");
         let extracted = extracted.replace(
@@ -264,7 +264,7 @@ fn restore_checkpoint_delta(asset: &str, text: String) -> String {
             r#"if [ "$COMMITS_AHEAD" -eq 0 ] && [ "$DESTINATION_IS_HEAD" = true ]; then"#,
             r#"if [ "$COMMITS_AHEAD" -eq 0 ]; then"#,
         );
-        let corrected = r#"workflow_checkpoint_python verify-pushed-ref "$V" "${REMOTE_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}" "$raw_sha""#;
+        let corrected = r#"workflow_checkpoint verify-pushed-ref "$V" "${REMOTE_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}" "$raw_sha""#;
         let original =
             r#"bash "$V" origin "${REMOTE_BRANCH:-$(git rev-parse --abbrev-ref HEAD)}" "$raw_sha""#;
         assert_eq!(extracted.matches(corrected).count(), 1);

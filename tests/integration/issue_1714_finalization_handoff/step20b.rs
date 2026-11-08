@@ -122,3 +122,15 @@ fn sync_leaves_a_worktree_alone_when_the_remote_is_not_ahead() {
     assert_ok("step-20-sync-pr-head", &sync);
     assert_eq!(fx.head(), fx.local, "{}", describe("sync", &sync));
 }
+
+#[test]
+fn sync_still_refuses_to_run_without_an_assigned_tmpdir() {
+    // The production requirement is unchanged: the tests above pass a
+    // test-owned TMPDIR, and without one the sync stops before any fetch.
+    let fx = Remote::new(Tracking::Upstream);
+    let before = fx.head();
+    let sync = fx.run_without_tmpdir("step-20-sync-pr-head");
+    let text = describe("step-20-sync-pr-head", &sync);
+    assert!(text.contains("assigned TMPDIR required"), "{text}");
+    assert_eq!(fx.head(), before, "{text}");
+}

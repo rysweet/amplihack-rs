@@ -134,7 +134,7 @@ steps:
         if [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_publish_checkpoint.sh" ]; then CHECKPOINT_TOOL="$c/amplifier-bundle/tools/workflow_publish_checkpoint.sh"; break; fi
       done
       [ -n "$CHECKPOINT_TOOL" ] || { echo 'ERROR: bounded checkpoint helper not found' >&2; exit 2; }
-      checkpoint_worktree="$(python3 -I -c 'import json,os; s=json.loads(os.environ["RECIPE_VAR_worktree_setup"]); print(s["worktree_path"])')"
+      checkpoint_worktree="$("${AMPLIHACK_BIN:-amplihack}" internal workflow-checkpoint worktree-path)"
       cd -P "${checkpoint_worktree:?missing owned worktree}"
       bash "$CHECKPOINT_TOOL" --scope-capture publish
     output: "checkpoint_scope_capture"
@@ -176,7 +176,7 @@ steps:
         if [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_publish_checkpoint.sh" ]; then CHECKPOINT_TOOL="$c/amplifier-bundle/tools/workflow_publish_checkpoint.sh"; break; fi
       done
       [ -n "$CHECKPOINT_TOOL" ] || { echo 'ERROR: bounded checkpoint helper not found' >&2; exit 2; }
-      checkpoint_worktree="$(python3 -I -c 'import json,os; s=json.loads(os.environ["RECIPE_VAR_worktree_setup"]); print(s["worktree_path"])')"
+      checkpoint_worktree="$("${AMPLIHACK_BIN:-amplihack}" internal workflow-checkpoint worktree-path)"
       cd -P "${checkpoint_worktree:?missing owned worktree}"
       bash "$CHECKPOINT_TOOL"
     output: "commit_result"

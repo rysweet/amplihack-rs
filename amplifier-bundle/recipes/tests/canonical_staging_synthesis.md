@@ -16,8 +16,8 @@ entry bytes before writing the index. A case-insensitive filesystem must not
 resolve reviewed spelling to a different filename. Symlink parents and
 malformed or stale inputs refuse without a broad staging fallback.
 
-[test-checkpoint-synthesis-alias.py](test-checkpoint-synthesis-alias.py)
-exercises alias capture, normal and rejecting hooks, failed publication,
+The synthesis-alias tests in
+`crates/amplihack-cli/tests/workflow_checkpoint_ports.rs` exercise alias capture, normal and rejecting hooks, failed publication,
 stale ownership, unrelated staging and literal spelling. The additional
 publication and history suites cover routing, complete ancestry and
 independent merge-parent differences. Their results remain separate from

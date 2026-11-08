@@ -45,7 +45,7 @@ for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilo
   if [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_publish_checkpoint.sh" ]; then CHECKPOINT_TOOL="$c/amplifier-bundle/tools/workflow_publish_checkpoint.sh"; break; fi
 done
 [ -n "$CHECKPOINT_TOOL" ] || { echo 'ERROR: bounded checkpoint helper not found' >&2; exit 2; }
-checkpoint_worktree="$(python3 -I -c 'import json,os; s=json.loads(os.environ["RECIPE_VAR_worktree_setup"]); print(s["worktree_path"])')"
+checkpoint_worktree="$("${AMPLIHACK_BIN:-amplihack}" internal workflow-checkpoint worktree-path)"
 cd -P "${checkpoint_worktree:?missing owned worktree}"
 bash "$CHECKPOINT_TOOL"
 "###
@@ -57,7 +57,7 @@ for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilo
   if [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_review_checkpoint.sh" ]; then CHECKPOINT_TOOL="$c/amplifier-bundle/tools/workflow_review_checkpoint.sh"; break; fi
 done
 [ -n "$CHECKPOINT_TOOL" ] || { echo 'ERROR: bounded checkpoint helper not found' >&2; exit 2; }
-checkpoint_worktree="$(python3 -I -c 'import json,os; s=json.loads(os.environ["RECIPE_VAR_worktree_setup"]); print(s["worktree_path"])')"
+checkpoint_worktree="$("${AMPLIHACK_BIN:-amplihack}" internal workflow-checkpoint worktree-path)"
 cd -P "${checkpoint_worktree:?missing owned worktree}"
 bash "$CHECKPOINT_TOOL"
 "###
@@ -130,7 +130,7 @@ pub fn assert_strict_staging(body: &str) {
         .next()
         .unwrap();
     assert!(stage.contains("workflow_checkpoint_check || return $?"));
-    assert!(stage.contains("workflow_checkpoint_python paths >\"$list\""));
+    assert!(stage.contains("workflow_checkpoint paths >\"$list\""));
     assert!(stage.contains("stage_workflow_changes --strict --path-list \"$list\" || rc=$?"));
     assert!(!stage.contains("git add"));
 }
@@ -181,6 +181,14 @@ impl Owner {
             if let Some(value) = value {
                 projection.env(key, value);
             }
+        }
+        // The checkpoint engine is the real binary under test, whatever
+        // `amplihack` stub a fixture puts on PATH (#1554). Only the test
+        // targets of the binary package know its path.
+        if let Some(engine) = option_env!("CARGO_BIN_EXE_amplihack")
+            && !command.get_envs().any(|(key, _)| key == "AMPLIHACK_BIN")
+        {
+            projection.env("AMPLIHACK_BIN", engine);
         }
         projection
             .env("TASK_DESCRIPTION", self.task)
