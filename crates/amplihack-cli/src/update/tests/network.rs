@@ -1,7 +1,9 @@
 use super::super::network::{
-    github_error_message, is_retryable_error, parse_latest_release, validate_download_url,
+    bounded_status_message, github_error_message, http_get_bounded, is_retryable_error,
+    parse_latest_release, validate_bounded_download_url, validate_download_url,
 };
 use super::super::*;
+use std::time::Duration;
 
 #[test]
 fn is_retryable_error_classifies_status_codes() {
@@ -172,6 +174,110 @@ fn fake_latest_version_env_returns_synthetic_release() {
         src.contains("is_empty"),
         "AMPLIHACK_TEST_FAKE_LATEST_VERSION MUST be guarded by !is_empty() so an \
          exported-but-empty env value falls through to the production path"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Issue #1955 (SEC-1): the tag tarball download.
+//
+// GitHub redirects a tag tarball to codeload.github.com, so the allow-list of
+// the bounded download has to name it, and that list has to hold for the final
+// URL too. No test here reaches the network: each URL is refused first.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn bounded_download_allows_the_hosts_a_tag_tarball_goes_through() {
+    for url in [
+        "https://github.com/rysweet/amplihack-rs/archive/refs/tags/v1.2.99.tar.gz",
+        "https://codeload.github.com/rysweet/amplihack-rs/tar.gz/refs/tags/v1.2.99",
+    ] {
+        validate_bounded_download_url(url).unwrap_or_else(|e| panic!("{url}: {e:#}"));
+    }
+}
+
+#[test]
+fn bounded_download_refuses_other_hosts_and_look_alikes() {
+    for url in [
+        "http://github.com/rysweet/amplihack-rs/archive/refs/tags/v1.2.99.tar.gz",
+        "http://codeload.github.com/x.tar.gz",
+        "https://codeload.github.com.evil.example/x.tar.gz",
+        "https://github.com.evil.example/x.tar.gz",
+        "https://github.com@evil.example/x.tar.gz",
+        "https://evil.example/https://codeload.github.com/x.tar.gz",
+        "",
+    ] {
+        assert!(
+            validate_bounded_download_url(url).is_err(),
+            "{url:?} must be refused"
+        );
+    }
+}
+
+#[test]
+fn codeload_is_allowed_for_the_bounded_download_only() {
+    assert!(
+        validate_download_url("https://codeload.github.com/x.tar.gz").is_err(),
+        "binary downloads must keep their shorter allow-list"
+    );
+}
+
+#[test]
+fn http_get_bounded_refuses_a_bad_url_without_a_request() {
+    for url in [
+        "http://github.com/x.tar.gz",
+        "https://evil.example/x.tar.gz",
+    ] {
+        let err = http_get_bounded(url, Duration::from_secs(5))
+            .expect_err("a URL outside the allow-list must be refused");
+        assert!(
+            format!("{err:#}").contains("allowed"),
+            "the error must say the host isn't allowed: {err:#}"
+        );
+    }
+}
+
+#[test]
+fn http_get_bounded_fails_at_once_when_the_budget_is_spent() {
+    let started = std::time::Instant::now();
+    let err = http_get_bounded(
+        "https://github.com/rysweet/amplihack-rs/archive/refs/tags/v1.2.99.tar.gz",
+        Duration::ZERO,
+    )
+    .expect_err("a spent budget must fail");
+    assert!(started.elapsed() < Duration::from_secs(1), "{err:#}");
+}
+
+/// The update check's messages suggest `AMPLIHACK_NO_UPDATE_CHECK` and promise a
+/// retry, and neither is true of a failure that reaches an install's warning.
+#[test]
+fn a_tag_download_status_message_gives_no_update_check_advice() {
+    let url = "https://github.com/rysweet/amplihack-rs/archive/refs/tags/v1.2.99.tar.gz";
+    for status in [403, 404, 429, 503] {
+        assert_eq!(
+            bounded_status_message(status, url),
+            format!("HTTP {status} from {url}")
+        );
+    }
+}
+
+/// A redirect can't be driven without the network, so this pins the two calls
+/// that make the final-URL rule hold. Enforcing the final host without adding
+/// codeload.github.com would break every tarball fetch; the tests above cover
+/// the list, and this covers its use on the final URL.
+#[test]
+fn http_get_bounded_enforces_https_and_checks_the_final_url() {
+    let src = include_str!("../network.rs");
+    let body = src
+        .split_once("fn http_get_bounded(")
+        .map(|(_, rest)| rest)
+        .expect("http_get_bounded is in network.rs");
+    assert!(
+        src.contains(".https_only(true)"),
+        "the bounded download must refuse an HTTP redirect"
+    );
+    assert!(
+        body.contains(".get_url()"),
+        "the bounded download must check the final URL before reading the body"
     );
 }
 

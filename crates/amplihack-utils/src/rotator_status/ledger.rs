@@ -45,6 +45,13 @@ impl CycleStatus {
     /// `profile switch` to one the person chose (`switched`, issue #1691;
     /// held cycles leave that record in place). Any other outcome, known or
     /// not, `held` included, is no capacity.
+    ///
+    /// Issue #1907: the rotator writes `stayed` only after a fresh,
+    /// successful reading of the live login below 100% on both windows (or
+    /// for a live API-key profile). A stay on a failed, carried or unknown
+    /// probe is `stayed-unread`, which is not capacity here. A no-capacity
+    /// ALERT while the live login reads below 100% is stored in
+    /// `advisory_alert`, which this reader ignores, so it does not block.
     pub fn has_capacity(&self) -> bool {
         !self.alert
             && matches!(

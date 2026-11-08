@@ -19,7 +19,6 @@ use super::capacity_weight;
 use super::name::ProfileName;
 use super::probe_limits::ProbeMode;
 use super::rotate::decide::Reading;
-use super::rotate::identify::Account;
 use super::store::ProfileStore;
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
 use super::usage_request::ExtraUsageShape;
@@ -178,9 +177,6 @@ pub(super) struct Row {
     /// The end of the rotator's active spend block on this overflow
     /// profile, epoch seconds.
     pub(super) overflow_blocked_until: Option<i64>,
-    /// The `~/.claude` row: a login no profile holds (issue #1693). Shown,
-    /// never recorded.
-    pub(super) live_in_home: bool,
     /// An API-key profile (issue #1700): not probed, billed per token.
     pub(super) api_key: bool,
     /// The API-key block on an API-key row: its reason and end.
@@ -256,13 +252,7 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         return Ok(());
     }
     let home = home_dir();
-    let (live, home_row) = detect_live(store, home.as_deref(), &profiles);
-    // The account in `~/.claude` when its row is built, read before any
-    // probe: the `~/.claude` row's spend is kept only while this account is
-    // still the one there (crusty round 6).
-    let home_account = home_row
-        .then(|| home.as_deref().and_then(Account::of_dir))
-        .flatten();
+    let live = detect_live(store, home.as_deref(), &profiles);
     // Issue #1700: API-key profiles are never probed; a probe costs tokens
     // or times out, and there are no plan limits to read.
     let keys = ApiKeys::load(store, home.as_deref(), &profiles);
@@ -304,8 +294,6 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
         let name = &profiles[i];
         reader.profile(name, live_name.as_ref() == Some(name))
     });
-    // Only when every profile is listed: naming profiles asks about those.
-    let mut home_probe = (home_row && names.is_empty()).then(|| reader.home());
     // The login in `~/.claude` may have been swapped during the probe; its
     // numbers are shown but not recorded against the profile. Checked
     // before any spend probe, so that a long `--spend` pass cannot widen
@@ -331,34 +319,17 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
                     .as_ref()
                     .is_some_and(|l| default_live::still_live(store, home.as_deref(), l))
         };
-        // The `~/.claude` row's spend probe reads `~/.claude` too, so its
-        // result is kept only while the account read before the windows is
-        // still the one there. With no account to compare, it is dropped.
-        let still_home = || {
-            home_account.as_ref().is_some_and(|before| {
-                home.as_deref()
-                    .and_then(Account::of_dir)
-                    .is_some_and(|now| now.same(before))
-            })
-        };
         spend_pass(
             &reader,
             &profiles,
             live_name.as_ref(),
-            Guards {
-                live: &still_live,
-                home: &still_home,
-            },
+            &still_live,
             &mut probes,
-            home_probe.as_mut(),
             claude_bound,
         );
     }
     let mut rows = build_rows(&marks, &profiles, probes, live_name.as_ref());
     rows.extend(keys.rows(&marks, &keyed));
-    if let Some(p) = home_probe {
-        rows.push(home_row_of(p));
-    }
     order(&mut rows, at);
     // Issue #1797: the capacity summary, from these rows only; no probe.
     // `--raw` is diagnostic output and gets neither summary nor history.
@@ -396,14 +367,10 @@ pub(super) fn run(store: &ProfileStore, names: &[String], opts: UsageOpts) -> Re
     Ok(())
 }
 
-/// Which login a spend probe reads.
+/// Which login a spend probe reads: a profile, against `~/.claude` when
+/// the flag is set.
 #[derive(Debug, Clone, Copy)]
-enum SpendTarget<'a> {
-    /// A profile, against `~/.claude` when the flag is set.
-    Profile(&'a ProfileName, bool),
-    /// The `~/.claude` row of a login no profile holds.
-    Home,
-}
+struct SpendTarget<'a>(&'a ProfileName, bool);
 
 /// Issue #1856: with `--spend`, one spend-only `/usage` probe per
 /// credits-on direct row, at most `bound` at once, each under the normal
@@ -411,60 +378,36 @@ enum SpendTarget<'a> {
 /// `spend` changes: its windows, state, error and source stay as the
 /// direct read gave them.
 ///
-/// Two probes read `~/.claude`: the live profile's and the `~/.claude`
-/// row's. Each is started only while its guard holds, and its result is
-/// dropped for `Unknown` unless the guard holds again once it has finished,
-/// so a swap before or during the pass never shows another login's spend
-/// on either row.
+/// The live profile's probe reads `~/.claude`. It is started only while
+/// `still_live` holds, and its result is dropped for `Unknown` unless it
+/// holds again once it has finished, so a swap before or during the pass
+/// never shows another login's spend on that row.
 fn spend_pass(
     reader: &RowReader,
     profiles: &[ProfileName],
     live: Option<&ProfileName>,
-    guards: Guards<'_>,
+    still_live: &(dyn Fn() -> bool + Sync),
     probes: &mut [Probe],
-    mut home: Option<&mut Probe>,
     bound: usize,
 ) {
     let needs = |p: &Probe| p.source == Some(Source::Direct) && p.extra_shape.is_some();
-    // A profile's index, or `None` for the `~/.claude` row.
-    let mut slots: Vec<Option<usize>> = (0..probes.len())
-        .filter(|&i| needs(&probes[i]))
-        .map(Some)
-        .collect();
-    if home.as_deref().is_some_and(needs) {
-        slots.push(None);
-    }
+    let slots: Vec<usize> = (0..probes.len()).filter(|&i| needs(&probes[i])).collect();
     if slots.is_empty() {
         return;
     }
-    let spends = pooled(slots.len(), bound, |j| match slots[j] {
-        Some(i) if live == Some(&profiles[i]) => guarded_spend(
-            reader,
-            SpendTarget::Profile(&profiles[i], true),
-            guards.live,
-            || spend_swap_note(&profiles[i]),
-        ),
-        Some(i) => reader.spend(SpendTarget::Profile(&profiles[i], false)),
-        None => guarded_spend(reader, SpendTarget::Home, guards.home, home_spend_swap_note),
-    });
-    for (slot, spend) in slots.into_iter().zip(spends) {
-        match slot {
-            Some(i) => probes[i].spend = spend,
-            None => {
-                home.as_deref_mut()
-                    .expect("the home slot is only queued when home is Some")
-                    .spend = spend;
-            }
+    let spends = pooled(slots.len(), bound, |j| {
+        let i = slots[j];
+        if live == Some(&profiles[i]) {
+            guarded_spend(reader, SpendTarget(&profiles[i], true), still_live, || {
+                spend_swap_note(&profiles[i])
+            })
+        } else {
+            reader.spend(SpendTarget(&profiles[i], false))
         }
+    });
+    for (i, spend) in slots.into_iter().zip(spends) {
+        probes[i].spend = spend;
     }
-}
-
-/// Whether `~/.claude` still holds the login a row's windows were read
-/// from: `live` for the live profile's row, `home` for the `~/.claude` row.
-#[derive(Clone, Copy)]
-struct Guards<'a> {
-    live: &'a (dyn Fn() -> bool + Sync),
-    home: &'a (dyn Fn() -> bool + Sync),
 }
 
 /// A spend read in `~/.claude`, kept only while `still()` holds before and
@@ -552,46 +495,18 @@ fn record(store: &ProfileStore, rows: &[Row], swapped: Option<&ProfileName>, jso
 
 /// The selected profile whose login is live in `~/.claude`, printing at
 /// most one warning, and none when every selected profile has its own login
-/// (so none of them could be live); and whether `~/.claude` holds a login no
-/// profile has, after a manual `/login` (issue #1693).
+/// (so none of them could be live). Issue #1886: by the ledgers only; no
+/// identity read and no account comparison.
 fn detect_live(
     store: &ProfileStore,
     home: Option<&std::path::Path>,
     profiles: &[ProfileName],
-) -> (Option<default_live::Live>, bool) {
-    let (live, warning) = match default_live::detect_for_usage(store, home) {
-        default_live::UsageLive::Profile(name) => (Some(default_live::Live::holder(name)), None),
-        default_live::UsageLive::Home => return (None, true),
-        default_live::UsageLive::Detected(live, warning) => (live, warning),
-    };
+) -> Option<default_live::Live> {
+    let (live, warning) = default_live::detect(store, home);
     if let Some(w) = warning.filter(|w| live_warning_applies(store, profiles, w)) {
         eprintln!("{w}");
     }
-    (live.filter(|l| profiles.contains(&l.name)), false)
-}
-
-/// The `~/.claude` row, probed with no `CLAUDE_CONFIG_DIR`.
-fn home_row_of(p: Probe) -> Row {
-    Row {
-        profile: default_live::LABEL.to_string(),
-        account: default_live::LABEL.to_string(),
-        default: false,
-        leased_to: None,
-        live_in: true,
-        // A login no profile holds is never marked overflow.
-        overflow: false,
-        overflow_blocked_until: None,
-        live_in_home: true,
-        api_key: false,
-        api_key_blocked: None,
-        report: p.report,
-        error: p.error,
-        raw: p.raw,
-        source: p.source,
-        direct_failure: p.direct_failure,
-        spend: p.spend,
-        extra_shape: p.extra_shape,
-    }
+    live.filter(|l| profiles.contains(&l.name))
 }
 
 /// Whether a live-detection warning can concern any selected profile. The
@@ -736,7 +651,6 @@ impl ApiKeys {
                     overflow_blocked_until: None,
                     api_key: true,
                     api_key_blocked: self.block.clone(),
-                    live_in_home: false,
                     report: UsageReport::empty(UsageState::Ok),
                     error: None,
                     raw: None,
@@ -782,7 +696,6 @@ fn build_rows(
                     .contains(name)
                     .then(|| blocked.get(n).copied())
                     .flatten(),
-                live_in_home: false,
                 api_key: false,
                 api_key_blocked: None,
                 report: p.report,
@@ -854,13 +767,6 @@ pub(super) fn spend_swap_note(name: &ProfileName) -> String {
         "note: the login in ~/.claude changed while profile \"{}\" was probed for its spend; its spend is unknown this run",
         sanitize_display(name.as_str(), false)
     )
-}
-
-/// Crusty round 6: the note for the `~/.claude` row (a login no profile
-/// holds) whose `--spend` probe was not started, or was dropped, because
-/// the account in `~/.claude` changed or could not be read. Fixed text.
-pub(super) fn home_spend_swap_note() -> String {
-    "note: the login in ~/.claude changed while the ~/.claude row was probed for its spend; its spend is unknown this run".to_string()
 }
 
 /// Named profiles (validated, deduplicated, each must exist), or every
@@ -977,7 +883,8 @@ impl RowReader {
             creds_dir: creds_dir
                 .unwrap_or_else(|| self.store.root().join(name.as_str()).join(".no-home")),
             passive: Some(name.clone()),
-            // SR-3(d): never the live login's token.
+            // SR-3(d): never the live login's token in a usage read. Only the
+            // rotate prelude refreshes it, once, when it has expired (#1753).
             allow_refresh: refresh_ok && !live,
             overflow: self.overflow.contains(name),
         })
@@ -1025,19 +932,17 @@ impl RowReader {
         };
         self.gate.run(|| {
             let timeout = self.env.timeout;
-            let p = match target {
-                SpendTarget::Profile(name, live) => probe_profile(
-                    &self.store,
-                    bin,
-                    name,
-                    live,
-                    ProbeMode::Text,
-                    timeout,
-                    self.now,
-                    false,
-                ),
-                SpendTarget::Home => probe_home(bin, ProbeMode::Text, timeout, self.now, false),
-            };
+            let SpendTarget(name, live) = target;
+            let p = probe_profile(
+                &self.store,
+                bin,
+                name,
+                live,
+                ProbeMode::Text,
+                timeout,
+                self.now,
+                false,
+            );
             p.spend
         })
     }
@@ -2030,11 +1935,10 @@ pub(super) fn observations(rows: &[Row]) -> Vec<Observation> {
         // would keep it fresh for ever.
         .filter(|r| r.source != Some(Source::Passive))
         .filter(|r| {
-            !r.live_in_home
-                && matches!(
-                    r.report.state,
-                    UsageState::Ok | UsageState::SessionExhausted | UsageState::WeeklyExhausted
-                )
+            matches!(
+                r.report.state,
+                UsageState::Ok | UsageState::SessionExhausted | UsageState::WeeklyExhausted
+            )
         })
         .map(|r| Observation {
             profile: r.profile.clone(),

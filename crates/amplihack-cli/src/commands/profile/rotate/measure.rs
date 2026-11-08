@@ -178,6 +178,9 @@ pub(super) fn measure_with(
 // Issue #1844: reading in order, with reads that may outlast the cycle
 // ---------------------------------------------------------------------------
 
+/// The reads a watching rotator keeps across cycles (issue #1844).
+pub type Reads = super::inflight::InFlight<Key, crate::commands::profile::usage_cmd::Probe>;
+
 /// Which login a read is for. The live login is its own key, so a read
 /// started while a profile was live is never used once it is not.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -188,13 +191,16 @@ pub enum Key {
     Unowned,
     /// A candidate in its own directory.
     Candidate(ProfileName),
+    /// A structurally eligible login whose identity is not yet readable.
+    /// Its usage read may refresh expired credentials, but cannot select it.
+    UnboundCandidate(ProfileName),
 }
 
 impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Live(_) | Self::Unowned => f.write_str("~/.claude"),
-            Self::Candidate(n) => f.write_str(n.as_str()),
+            Self::Candidate(n) | Self::UnboundCandidate(n) => f.write_str(n.as_str()),
         }
     }
 }
@@ -281,12 +287,13 @@ pub fn measure_ordered(
     ctx: &Ctx,
     live: Live<'_>,
     candidates: &[ProfileName],
+    unbound: &[ProfileName],
     now: i64,
 ) -> (Probed, Vec<(ProfileName, Probed)>) {
     let start = Instant::now();
-    let mode = mode();
+    let mode = ctx.read_only_mode().unwrap_or_else(mode);
     let timeout = timeout();
-    let n = candidates.len() + usize::from(live.probed());
+    let n = candidates.len() + unbound.len() + usize::from(live.probed());
     let (claude_bound, warning) = probe_limits::parallel_from_host(n);
     if let Some(w) = warning {
         eprintln!("{w}");
@@ -315,18 +322,21 @@ pub fn measure_ordered(
         Live::Platform => {}
     }
     keys.extend(candidates.iter().cloned().map(Key::Candidate));
+    keys.extend(unbound.iter().cloned().map(Key::UnboundCandidate));
     let make = |k: &Key| -> Job<Probe> {
         let reader = Arc::clone(&reader);
         let k = k.clone();
         Box::new(move || match &k {
             Key::Live(name) => reader.profile(name, true),
             Key::Unowned => reader.home(),
-            Key::Candidate(name) => reader.profile(name, false),
+            Key::Candidate(name) | Key::UnboundCandidate(name) => reader.profile(name, false),
         })
     };
     let mut read = match &ctx.in_flight {
         Some(fl) => {
             let mut fl = fl.lock().unwrap_or_else(PoisonError::into_inner);
+            // Join outstanding refresh reads without trusting their results.
+            join_pending(&fl, &mut keys);
             fl.set_bound(bound);
             let until = cycle_deadline(start, Duration::from_secs(ctx.settings.interval));
             gather(&mut fl, &keys, make, Wait::Until(until))
@@ -345,22 +355,43 @@ pub fn measure_ordered(
     let others = candidates
         .iter()
         .cloned()
-        .zip(read.into_iter().map(|(_, p)| p))
+        .zip(read.into_iter().map(|(key, p)| {
+            if matches!(key, Key::Candidate(_)) {
+                p
+            } else {
+                Probed::failed()
+            }
+        }))
         .collect();
     (live, others)
 }
 
+/// A trust change does not permit two reads of one stored login at once.
+/// Results retain the key (and trust class) they had when started.
+pub(super) fn join_pending(fl: &Reads, keys: &mut [Key]) {
+    for key in keys {
+        let other = match key {
+            Key::Candidate(name) => Key::UnboundCandidate(name.clone()),
+            Key::UnboundCandidate(name) => Key::Candidate(name.clone()),
+            _ => continue,
+        };
+        if fl.busy(&other) {
+            *key = other;
+        }
+    }
+}
+
 /// The row reader of one cycle, with `env` and at most `claude_bound`
 /// `claude` reads at once. Shared by [`measure_ordered`] and the freshness
-/// gate's re-read (`fresh::reread_as_configured`).
+/// gate's re-read (`fresh::reread_as_configured`); [`Ctx`] makes it read-only.
 pub(super) fn reader(ctx: &Ctx, env: SourceEnv, claude_bound: usize, now: i64) -> RowReader {
     RowReader {
         store: ctx.store.clone(),
-        env,
+        env: ctx.read_env(env),
         binary: LazyBinary::claude(),
         gate: ClaudeGate::new(claude_bound),
         home: Some(ctx.home.clone()),
-        no_refresh: usage_cmd::no_refresh_dirs(&ctx.store),
+        no_refresh: ctx.no_refresh_dirs(),
         overflow: crate::commands::profile::overflow::overflow_names(ctx.store.root()),
         now,
         keep_raw: false,

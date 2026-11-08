@@ -1,3 +1,10 @@
+---
+title: How to Rotate Claude Logins Automatically
+description: Rotate and switch Claude logins with credential-bound ownership checks.
+doc_type: howto
+review_schedule: as-needed
+---
+
 # How to Rotate Claude Logins Automatically
 
 `amplihack profile rotate` keeps the default Claude login in `~/.claude` on
@@ -13,6 +20,13 @@ profiles. [Auto-switch](claude-profiles.md#switch-accounts-automatically) is
 the separate feature that swaps logins inside sessions started with
 `amplihack claude --profile`. Both use the same on/off toggle and the same
 state lock, so they never move logins at the same time.
+
+Rotation and manual switching identify each login from trusted evidence
+bound to that login. Running sessions can rewrite `~/.claude.json`; its
+`oauthAccount` is display state and cannot establish ownership. A stale
+session account does not block an otherwise authorized swap or trigger
+recovery, even after the recovery grace period ends. See
+[Rotation login identity](../reference/profile-command.md#rotation-login-identity).
 
 The exact flags, files, exit codes and log lines are in the
 [`profile rotate` reference](../reference/profile-command.md#rotate).
@@ -94,9 +108,9 @@ would swap work->spare live s=88% w=41% target s=0% w=12% reason=threshold
 ```
 
 A dry run probes every profile and prints what it would do. It takes no lock,
-writes no rotate state, moves nothing and logs nothing. A direct read may
-still refresh a login's OAuth token that is close to expiry, which Claude
-saves under its own lock. It also does not finish an
+writes no rotate state, moves nothing and logs nothing. It never refreshes a
+token or starts `claude`, so an expired login shows as unmeasured with its
+cause, and the target can differ from a real run's. It also does not finish an
 interrupted swap: if one is pending it prints
 `would recover an interrupted swap (phase <phase>)` and leaves it for the next
 real run. Run a dry run first, and again whenever you change a threshold.
@@ -150,9 +164,10 @@ Rotation held on spare until `amplihack profile switch --none`.
 `switch` makes the same swap the rotator makes, under the same lock, and
 writes the same ledger entry, so `profile usage` and `rotate status` show
 `spare` as live afterwards. The move works whether or not a rotator is
-running (waking stopped sessions does not; see below), and it measures
-nothing, so it starts no `claude` process and works with no `claude` on
-`PATH`. It moves the login even when `spare` has no capacity
+running (waking stopped sessions does not; see below), and it does not
+measure usage, so it starts no `claude` process and works with no `claude` on
+`PATH`. It does make the bounded identity reads needed to authorize the
+swap. It moves the login even when `spare` has no capacity
 left: you asked for `spare`, so the usage checks that stop a rotate swap do
 not apply.
 
@@ -283,7 +298,7 @@ then refuses. Without a pending recovery, a refusal changes nothing but
 | `profile spare is not a rotate candidate (session running): ...` | A running session uses `spare` (`CLAUDE_CONFIG_DIR` set to its directory). Moving its login would log that session out. End it, then switch; `spare` is already the default for new launches. If the message says running sessions cannot be seen, `/proc` cannot be scanned here (every system but Linux, including macOS), so no login can be moved; the rotator cannot swap there either. `switch` there only sets the default for new launches and exits 1. |
 | `profile spare is not a rotate candidate (leased): ...`, `(hosting)`, `(parked)` | Auto-switch has lent `spare`'s login to another session, or `spare`'s directory holds another account's login. Wait for that session to end; auto-switch then returns the logins. |
 | `profile spare is not a rotate candidate (excluded): ...` | `spare` is in the auto-switch exclude list, which keeps it out of rotation; a switch is a rotation done by hand. Set the list without it with `amplihack profile auto-switch exclude`, then switch. |
-| `profile spare is not a rotate candidate (no account): ...` | `spare/.claude.json` has no `oauthAccount`, so `~/.claude.json` could not be updated. Run `amplihack profile login spare`. |
+| `profile spare is not a rotate candidate (no account): ...` | The login has no usable trusted account evidence. Resolve the identity-read failure; editing `oauthAccount` cannot authorize the switch. |
 | `profile spare is not a rotate candidate (directory refused): ...` | The `spare` directory is a symlink, not yours, or open to group or other users. Run `chmod 700` on it, or recreate it if it is not yours. While it is refused, the rotator does not move onto overflow profiles; see [When a plan login cannot be measured](#when-a-plan-login-cannot-be-measured). |
 | `profile spare is not a rotate candidate (no login): ...` | `spare`'s `.credentials.json` is a symlink, not yours, readable by others or hard-linked. See [Swap refused](#swap-refused). |
 | Any reason in the [Swap refused](#swap-refused) table | As described there. |
@@ -924,9 +939,12 @@ line shows the figures as usual. To see why a login fell back, run
 
 The direct read may refresh a candidate's expired token, under Claude's own
 refresh lock, and write the new token back to that profile's
-`.credentials.json`. It never refreshes the login in `~/.claude` or a login
-lent to or from another directory; `claude` does that itself. The details
-are in the [reference](../reference/profile-command.md#token-refresh).
+`.credentials.json`. It never refreshes a login lent to or from another
+directory; `claude` does that itself. The login in `~/.claude` is refreshed
+once per cycle only when its token has already expired, so that its
+[identity can be read](../reference/profile-command.md#an-expired-live-login).
+The details are in the
+[reference](../reference/profile-command.md#token-refresh).
 
 ### Readings that take longer than a cycle
 
@@ -1040,15 +1058,61 @@ toggle; see [See who turned rotation off](#see-who-turned-rotation-off).
 
 The same ALERT is written to the log once. It is written again only after
 something changes: a swap succeeds, a cycle needs no swap, or the reason
-changes. The one-shot `rotate` still prints it on every run. The ALERT for a
-[manual `/login` in `~/.claude`](#after-a-manual-login-in-claude), its `fix`
-lines, the `has no login anywhere` line and the
+changes. The one-shot `rotate` still prints it on every run. The ALERTs for a
+[manual `/login` in `~/.claude`](#after-a-manual-login-in-claude), their `fix`
+lines, refusals caused by missing or conflicting trusted identity, the
+`has no login anywhere` line and the
 [exhausted-while-off](#see-who-turned-rotation-off) ALERT are the exception:
 they are written on every cycle until the problem is resolved. The log
 holds profile names, percentages, fixed text and, in `recovered:` and `fix`
 lines, paths under your home directory and the profile root. `change:` lines
 also hold a redacted parent command line and run ids. It never holds
 account IDs, e-mail addresses, tokens or Claude's output.
+
+### Hand-change notes and alerts
+
+These lines come from the check for a
+[manual `/login` in `~/.claude`](#after-a-manual-login-in-claude). The
+rotator reads the OAuth profile endpoint with the login in `~/.claude` and
+with each profile's own login, and compares their account identities.
+Session JSON and usage reset times cannot establish ownership. Hand-change
+recovery does not run for 10 minutes after a swap (`SWAP_GRACE`, 600
+seconds); swap authorization still checks trusted identity during that time.
+
+To see only these lines:
+
+```bash
+grep -E ' (note: |recovered: |ALERT: (the account in ~/.claude |~/.claude holds the same )|fix [0-9]+: )' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+| Line | What it means | What to do |
+|------|---------------|------------|
+| `note: ~/.claude holds the same account as profile <M> (ledger names <L>); nothing moved, the next cycle reads again` | First of two readings. The cycle does not swap. | Nothing. The next cycle reads again. |
+| `note: cannot tell whose login is in ~/.claude (live=<L>): <why>; nothing moved` | A failed read, more than one match, or an account that is not the recorded one. Required uncertain evidence blocks login movement and ledger relabeling. | Nothing, unless it persists; then see the `<why>`. |
+| `recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <path>; recorded <M> as live` | Two readings matched and `<L>` keeps its own login, so `<M>`'s copy was moved to a backup. | Nothing. |
+| `ALERT: ~/.claude holds the same account as profile <M> on two readings (ledger names <L>), but <L> has no login of its own, so recording <M> would leave <L> with no login anywhere; nothing moved, no swap` | The only-login rule refused. Both logins stay. | Follow `fix 1` or `fix 2`. |
+| `ALERT: the account in ~/.claude is not the one the ledger names (live=<L>); profile <M> holds the same account and has its own login; recovery refused: <reason>; no swap` | Two readings matched, but a check before the move failed. | Follow its `fix 1` line. |
+| `ALERT: the account in ~/.claude is not the one the ledger names (live=<L>); no swap` | A suspicion is open, so the cycle does not swap. The identity refusal remains visible on each affected cycle. | Nothing; it follows a note or ALERT above. |
+
+The `<why>` of a cannot-tell note is one of:
+
+| `<why>` | Usual cause |
+|---------|-------------|
+| `~/.claude identity read failed: <cause>` | The lookup failed, and `<cause>` says why: for example `http 429` (wait), `http 401` (log in again), `token expired` (the refresh failed; see its `refresh:` line) or `directory not private` (see the [directory rule](../reference/profile-command.md#login-directory-rule)). All causes are in [Identity read causes](../reference/profile-command.md#identity-read-causes). |
+| `profile <P1> not read (<cause>), <P2> not read (<cause>)` | Those profiles' lookups failed, each for the cause shown. |
+| `it holds the same account as more than one profile (<M1>, <M2>)` | Those profiles hold the same account; keep it in one of them. |
+| `it holds the same account as profile <M>, which is not the account recorded for <M>; run amplihack profile verify` | `<M>`'s folder holds another profile's login. See [Check which account each folder holds](#check-which-account-each-folder-holds). |
+| `it holds an account other than the one recorded for <L>; run amplihack profile verify` | `~/.claude` holds an account no profile's own login holds, and not `<L>`'s. Usually a `/login` to a new account. See [Check which account each folder holds](#check-which-account-each-folder-holds). |
+| `the reads ran out of time` | The reads took more than 30 seconds in all. |
+| `the last swap time is later than now` | The clock went back. Recovery stays off until 10 minutes after the last swap time. |
+
+A note is written once and not again until its text changes, so a lasting
+cause writes one note, not one per cycle. When uncertainty blocks a
+required ownership check, its identity-refusal ALERT still repeats on
+every affected cycle. ALERT and `fix` lines are written on every cycle
+while they hold. None of these lines holds a token, an
+account ID or an e-mail address. The full rules are in
+[Rotate hand-change recovery](../reference/profile-command.md#rotate-hand-change-recovery).
 
 ## Resume sessions stopped by a usage limit
 
@@ -1130,6 +1194,20 @@ Verified on Claude Code 2.1.307: a weekly-limit stop runs `StopFailure` with
 The hook trusts the rotator's verdict. It never applies the thresholds itself
 and never reads a login.
 
+The rotator records a stay as `stayed` only when it read the live login in
+that cycle and the reading was below 100% on both the session and the week
+window. A stay after a failed, carried or unknown live probe, for example
+the line `stay: live probe failed (1/3)`, is recorded as `stayed-unread`,
+and the hook keeps waiting. When every other login has passed a threshold
+but the live login still reads below 100%, the rotator writes the
+`ALERT: no profile has capacity` line once and records `stayed`, so the
+session resumes on the login it already has. When the live login is at 100%,
+at a spend limit, or was not read in this cycle (a failed, carried or
+unknown probe), the ALERT blocks and the hook waits. A stay on an overflow
+profile that was read in that cycle runs on credits, so it records `stayed`
+whatever its plan figures. The full rule is in
+[Stays and capacity](../reference/profile-command.md#rotate-stays-and-capacity).
+
 ### See what it did
 
 Each decision is one line in `<root>/.auto-switch.d/resume/resume.log`:
@@ -1160,10 +1238,49 @@ rotator was not running when the limit hit; start it with
 - **A fresh cycle every time.** Each resume needs a rotator cycle recorded
   after the limit hit, so one session resumes at most once per `--interval`.
 - **No resume without capacity.** When every login is at its limit the
-  rotator records an ALERT, and the hook does nothing.
+  rotator records an ALERT, and the hook does nothing. A stay whose live
+  probe failed is not capacity either.
 - **At most 3 resumes per session in 24 hours.** After that it logs `cap`.
 
 If anything it needs cannot be read or written safely, it does not resume.
+
+### Limits during a wait, after a resume, and in Claude Code's timed wait
+
+The hook acts only when Claude Code runs it, on a `StopFailure` event with
+`error: "rate_limit"`. Every run it gets writes one line to `resume.log`,
+including `duplicate`. A limit stop with no line in `resume.log` is one for
+which Claude Code did not run the hook.
+
+- **A limit while a hook for the same session is waiting.** Claude Code
+  starts a second hook. Its event differs in the error text or the live
+  login, so it waits as well. The first to see capacity wakes the session;
+  the other logs `duplicate`.
+- **A limit just after a resume.** The same text on the same live login is
+  the same event: the hook logs `duplicate` and does not wake the session
+  again. A limit after the rotator swapped to another login is a new event,
+  and the hook waits for a fresh cycle.
+- **A stop on one login, then a swap to another.** Cycles on the first login
+  that are not capacity (`alerted`, `stayed-unread`) do not wake the
+  session. The swap to the second login does, once, and the log line reads
+  `live=<second login> cycle=swapped`.
+
+Some Claude Code versions show their own timed wait at a limit:
+`Usage limit reached · Continuing automatically at <time>`. It has not been
+established whether Claude Code runs `StopFailure` when it enters that wait,
+or whether the hook's wake ends it. On 3 November 2026 sessions in that wait
+were not woken after a swap to a fresh login
+([#1907](https://github.com/rysweet/amplihack-rs/issues/1907)). The hook
+sends no keystrokes and never chooses a menu option, so it cannot leave that
+wait by itself. To continue such a session before the time shown:
+
+1. Press Esc.
+2. Check that the input box is empty. Text drawn dimmed is Claude Code's
+   predicted next prompt, not yours; clear it with Ctrl+U.
+3. Type `continue` and press Enter.
+
+If Esc does not end the wait, the session continues by itself at the time
+shown. Establishing what the timed wait accepts, and resuming from it, is
+tracked in [#1932](https://github.com/rysweet/amplihack-rs/issues/1932).
 
 ### Stop using the tmux nudger
 
@@ -1226,7 +1343,7 @@ to give the runway a starting point.
 `capacity:` line from the rotator's last cycle, without probing anything.
 That cycle may have measured only some logins, so its `of N` can be smaller
 than in `profile usage`; the logins it skipped as busy, and any whose
-`.claude.json` has no usable `oauthAccount`, are counted in its `unknown`.
+login has no usable trusted identity, are counted in its `unknown`.
 When that cycle left logins out, the line does not use it for the runway:
 it shows the runway of the newest line that read every login, with that
 line's time (`runway ~14 h from the <time> entry (this cycle left out 2
@@ -1251,6 +1368,14 @@ When the `ALERT: no profile has capacity` line is written, the rotator has
 nowhere to move the login, so it stays put. With an
 [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted)
 marked, it moves there instead when the next plan reset is far enough away.
+
+If the live login still reads below 100% on both windows, the ALERT is
+advisory: the ledger keeps it in `advisory_alert`, `alert` stays `null`,
+and the cycle records `stayed`, so sessions stopped by a limit resume on
+that login. Once the live login reaches 100% or a spend limit, or its probe
+fails, is carried or is unknown in that cycle, the ALERT moves to `alert`
+and the cycle records `alerted`. See
+[Advisory alert](../reference/profile-command.md#rotate-advisory-alert).
 
 When some candidates could not be measured, the ALERT ends with a count,
 for example:
@@ -1757,21 +1882,18 @@ and believes whichever was updated more recently.
 
 ## Where a login with no profile goes
 
-If the login in `~/.claude` belongs to no profile and there is no ledger, the
-first swap keeps it by creating a profile for it called `default-original`
-(or `default-original-2`, and so on, if that name is taken) and moving the
-outgoing login there. Only the `oauthAccount` block from `~/.claude.json` is
-copied into the new profile's `.claude.json`. A dry run prints
+When trusted evidence establishes that no profile owns the login in
+`~/.claude` and no ledger assigns it, the first swap creates
+`default-original` (or the next free numbered name) and returns the
+outgoing login there. Its display account and any ownership record come
+from the trusted outgoing identity. A dry run prints
 `would adopt ~/.claude as default-original`.
 
-If the rotator is stopped after creating `default-original` but before
-copying the account into it, the profile is left empty and nothing has moved.
-The next swap does not recognise it and adopts the login again as
-`default-original-2`. Remove the empty one:
-
-```bash
-amplihack profile remove default-original --yes
-```
+Adoption requires a complete ownership check. An unreadable login or
+ownership record cannot prove that the login is unclaimed. If the check
+is incomplete, the command alerts and leaves logins and ledger identity
+unchanged. Session JSON cannot authorize adoption or let an empty profile
+claim the live login. See [Rotate live profile](../reference/profile-command.md#rotate-live-profile).
 
 ## Swap refused
 
@@ -1801,18 +1923,39 @@ Three situations write an ALERT instead of refusing:
 
 - `ALERT: no login in ~/.claude; no swap`. Log in with plain `claude` first.
   The rotator never fills an empty `~/.claude`.
-- `ALERT: the account in ~/.claude is not the one the ledger names (live=work); <what it found>; no swap`.
-  Someone ran `/login` in `~/.claude`. A manual `/login` in `~/.claude`
-  replaces whatever login was there; the profile that login belonged to is
-  left with no login. When the new account belongs to exactly one profile,
-  the rotator recovers by itself and this ALERT is not written. Otherwise
-  the ALERT is followed by numbered `fix` lines with the exact commands, and
-  it is repeated on every cycle until it is resolved. See
+- `ALERT: the account in ~/.claude is not the one the ledger names (live=work); no swap`.
+  The login in `~/.claude` holds the same account as another profile's login. A manual
+  `/login` in `~/.claude` replaces whatever login was there; the profile
+  that login belonged to is left with no login. The rotator reads again on
+  the next cycle, and moves a duplicate copy aside only when no profile is
+  left with no login. Otherwise it writes an ALERT with numbered `fix`
+  lines, repeated on every cycle until it is resolved. See
   [After a manual /login in ~/.claude](#after-a-manual-login-in-claude).
 - `ALERT: auto-switch recovery is inconsistent; no swap`. Run
   `amplihack profile auto-switch repair`.
 
 ### The live login is not the profile's account
+
+Both automatic rotation and `profile switch` check the outgoing login,
+incoming login, expected ownership records and duplicate claims before
+moving a login. They use credential-bound account evidence, including the
+organization, and recheck the evidence under the swap locks. A login that
+changes during a read must be read again successfully; a normal token
+refresh is accepted only after fresh evidence confirms the same account.
+
+If a required identity read fails, times out, lacks the fields needed for
+the ownership check, or conflicts with a record, the command reports an
+identity refusal and moves nothing. It also keeps the existing ledger identity. An unreadable
+duplicate candidate is uncertainty, not proof that no duplicate exists.
+Identity refusals remain visible on every affected attempt or cycle.
+
+For example, if `work`'s login is live while a running session writes
+`personal` into `~/.claude.json`, a switch to `spare` still succeeds when
+the trusted evidence and records authorize it. `spare` becomes live,
+`work`'s login returns to `work`, and the ledger identifies `spare`'s
+trusted account. Neither login is moved to rejection storage. A later
+session rewrite to `work` does not change that result, including after
+10 minutes have passed.
 
 amplihack records the account each profile is meant to hold when you run
 `amplihack profile login <name>` and the login is accepted. A swap that
@@ -1833,10 +1976,9 @@ refused and nothing moves:
 2026-11-01T09:40:05Z ALERT: swap refused: the login in ~/.claude is not the account recorded for profile work
 ```
 
-The ALERT is written to the log once for `work`, not on every cycle, but
-every cycle refuses to swap until it is fixed. It names the profile and
-never the account. `amplihack profile switch` reports the same refusal and
-exits 1.
+The ALERT is written on every affected cycle until the conflict is fixed.
+It names the profile and a redacted reason, never the account or token. `amplihack profile switch` reports the same
+refusal and exits 1.
 
 This usually follows a `/login` in `~/.claude` to the wrong account, or a
 browser that signed Claude in to whichever account it already had. To fix
@@ -1846,77 +1988,69 @@ it, put the right login back in `~/.claude`:
 2. Run plain `claude`, then `/login`, and sign in to the account `work` is
    meant for.
 3. Run `amplihack profile rotate` once, or wait for the next cycle. The
-   ledger still names the account that was there before, so the cycle sees
-   a hand change. Because the new login is the account recorded for `work`,
-   it keeps `work` as the live profile and logs:
-
-   ```
-   2026-11-01T09:52:05Z recovered: ~/.claude holds the account recorded for work; kept work as live
-   ```
-
-   When a swap is due, it now goes ahead instead of being refused. Before
+   ledger still names `work`, and the new login is the account recorded for
+   `work`, so `work` stays live and nothing is logged about it. When a
+   swap is due, it now goes ahead instead of being refused, because the
+   login in `~/.claude` is the account recorded for `work`. Before
    moving the login into `work`, the swap writes its account into
    `<root>/work/.claude.json`, which still named the account before the
    `/login`, so the next swap back into `work` puts the right account in
    `~/.claude.json`. While the login is still wrong, the one-shot command
-   prints the refusal and exits 1. `--dry-run` does not run this check, so
-   it cannot confirm the fix.
+   prints the refusal and exits 1. A preview does not reserve the evidence
+   or authorize a later swap: the actual attempt validates it again.
 
 `amplihack profile login work` does not help here: `work` is the live
 profile, so `login` refuses it before Claude starts.
 
-If `work` is now meant to hold the other account, the record is out of date.
-Delete it, and the next cycle swaps as before. With the default profile
-root:
+If `work` is meant to hold a different account, reconcile the ownership
+record with that intended account before retrying. Use the supported
+[profile login](../reference/profile-command.md#login-check) flow when the
+profile is no longer live. Removing a record alone cannot prove ownership
+or authorize the next swap.
 
-```bash
-rm ~/.amplihack/claude-profiles/.auto-switch.d/expected/work.json
-```
+A missing record may be adopted or backfilled only when trusted evidence
+establishes ownership and no other profile claims the account. A record
+that exists but cannot be read or trusted blocks the affected operation;
+it is not treated as a missing record. Resolve the record's permissions or
+contents before retrying. Do not delete a record merely to bypass a conflict.
 
-If you saved another root, the file is under that root instead;
-`amplihack profile root` prints it.
-
-Profiles with no record are not checked. A profile created before this
-check existed has no record until one of two things happens: its next
-accepted `profile login`, or a swap away from it while the ledger shows the
-outgoing login came from that profile and no other profile holds that
-account.
-
-A record that exists but cannot be read (not valid JSON, no usable
-`account` or `org`, or not a private file) is also treated as no record, so the swap
-is not checked. The rotator then prints one line to stderr, which a
-background rotator appends to `rotate.err`:
-
-```
-warning: the recorded account for profile 'work' could not be read; the swap was not checked against it
-```
-
-Delete the file, as above, to stop the warning; the next accepted
-`profile login work` records the account again.
-
-The comparison is exact. A record written from a login that had an account
-UUID holds that UUID. If `~/.claude.json` later shows the same account by
-email only, with no UUID, the swap is still refused, even though the account
-is the right one. Run plain `claude` and `/login` to that account again, as
-in the steps above, so that `~/.claude.json` names the UUID once more. If
-that is not possible, delete the record instead.
+Supported legacy email-keyed records continue to match under the existing
+[record compatibility rules](../reference/profile-command.md#recorded-account).
+A UUID is not newly required for every legacy account. A UUID-keyed record
+still needs evidence sufficient to match that UUID and organization;
+a session's email-only `oauthAccount` neither satisfies nor invalidates it.
 
 ## Recovery
 
 A swap is two renames and an update to `~/.claude.json`, recorded in a
 journal before the first rename. If the rotator is killed part-way, the next
-`rotate`, `start` or cycle finishes the swap or undoes it before doing
-anything else. It decides by where the outgoing and incoming logins actually
-are, found by inode number, not by the step the journal last recorded. It
-only renames logins; it never deletes or overwrites one. It also removes the
-refresh locks it took, and only those, even when it then marks the journal
-`inconsistent`. A run with a different `HOME` (under `sudo` or `cron`) leaves
-the journal alone for the run with the right `HOME`. After that it checks for
-a [manual `/login` in `~/.claude`](#after-a-manual-login-in-claude) and
+`rotate`, `start` or cycle attempts recovery before doing anything else.
+The recorded inode placement determines whether to finish or undo the
+swap; the last recorded step is only a hint. Before further login movement
+or ledger settlement, recovery reconstructs fresh trusted login identity
+and applicable ownership-record evidence. It only renames logins; it never
+deletes or overwrites one.
+
+If required trusted evidence is unavailable, insufficient, changed or
+conflicting, recovery retains the unresolved journal, leaves login
+placement and ledger identity unchanged, and reports the identity refusal
+on each affected attempt. A retry requires fresh authorization; session
+JSON cannot supply it.
+
+Recovery safely releases only the refresh locks whose inodes match those
+it recorded, including when identity is uncertain or it marks a valid
+journal `inconsistent`. A lock with another inode, or one acquired but
+never recorded, is left alone. A run with a different `HOME` (under `sudo`
+or `cron`) leaves the journal and locks untouched for the correct `HOME`;
+an invalid journal cannot authorize cleanup either. See the
+[recovery reference](../reference/profile-command.md#rotate-recovery).
+After recovery completes, the cycle checks for a
+[manual `/login` in `~/.claude`](#after-a-manual-login-in-claude) and
 recovers from it where that is safe.
 
-When it cannot tell which way is safe, it marks the journal `inconsistent`,
-writes an ALERT, and stops swapping until you resolve it:
+When login placement is inconsistent or a directory fails its safety
+check, recovery marks the journal `inconsistent`, writes an ALERT, and
+stops swapping until you resolve it:
 
 ```
 error: rotate state is inconsistent: the login files are not where the journal expects
@@ -1965,43 +2099,96 @@ again from the accounts.
 
 A manual `/login` in `~/.claude` replaces whatever login was there; the
 profile that login belonged to is left with no login. The rotate ledger still
-names that profile as live, so the account in `~/.claude.json` no longer
-matches it. On every `rotate`, `start` and background cycle the rotator then
-asks which profiles hold the account that is now in `~/.claude`, comparing
-user and organization, and acts on the answer before it measures anything.
+names that profile as live. The rotator finds out whose login `~/.claude`
+now holds by asking Anthropic's OAuth profile endpoint, the one Claude
+Code's `/status` uses, with the login in `~/.claude` and with each profile's
+own login. The server answers with the account each token belongs to, and
+the rotator compares those accounts, and the account recorded for the live
+profile. It never decides from `~/.claude.json`, which running sessions
+rewrite, from `claude auth status`, which reads that file, or from usage
+reset times, which accounts created together share.
 
-The examples below use the case from
-[#1693](https://github.com/rysweet/amplihack-rs/issues/1693): the ledger names
-`ryan-ryansweet`, someone ran `/login` in `~/.claude` as the account of
-profile `ryan-mistt-org`, and the root is `/home/you/.claude-profiles`.
+It does this only when the last swap is at least 10 minutes old
+(`SWAP_GRACE`, 600 seconds), and it acts only on two matching readings taken
+on separate cycles. The tokens are used in memory only, in the request
+header; they are never printed, logged or stored.
 
-#### One profile has the account and no login of its own
+The examples below use the root `/home/you/.claude-profiles`, a ledger
+naming `ryan-ryansweet`, and a `/login` in `~/.claude` as the account of
+profile `ryan-mistt-org`, which also has its own login.
 
-The login in `~/.claude` is that profile's, and nothing needs to move. The
-rotator records `ryan-mistt-org` as live and says what was lost:
+#### Right after a swap
+
+For 10 minutes after a swap the rotator skips hand-change recovery,
+whatever `~/.claude.json` says. Normal swap authorization still requires
+trusted identity evidence. In
+[#1886](https://github.com/rysweet/amplihack-rs/issues/1886) the rotator
+swapped from `rssourcelabs` to `hharkness`, and two minutes later a running
+session still had `rssourcelabs` in `~/.claude.json`. An earlier release took
+that as a `/login` and moved `rssourcelabs`'s only login aside. Now the next
+cycles simply carry on:
 
 ```
-2026-10-27T03:17:05Z recovered: ~/.claude holds ryan-mistt-org's login (ledger named ryan-ryansweet); recorded ryan-mistt-org as live
-2026-10-27T03:17:05Z ALERT: profile ryan-ryansweet has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login ryan-ryansweet
+2026-11-03T04:50:10Z swap rssourcelabs->hharkness live s=91% w=40% target s=3% w=22% reason=threshold
+2026-11-03T04:52:10Z cycle live=hharkness hharkness:s=4%,w=22% rssourcelabs:s=91%,w=40%
 ```
 
-#### One profile has the account and its own login too
+After 10 minutes, the server reports `hharkness`'s account for the login in
+`~/.claude`, which is the account recorded for `hharkness`, so nothing
+happens then either. On 3 November the same pattern hit `nnorth` and
+`mmorrison`, whose usage windows reset at the same times; because identity
+is now the server's account, a swap between those two goes ahead with no
+note and no ALERT.
 
-Now the same account is logged in twice: in `~/.claude` and in
-`ryan-mistt-org`. The rotator keeps the copy in `~/.claude` and moves the
-profile's copy to a backup. It renames the file; it never copies, opens or
-deletes a login:
+#### One profile answers the same
+
+The first cycle that finds `~/.claude` answering as `ryan-mistt-org` writes a
+note and stops without swapping:
 
 ```
-2026-10-27T03:17:05Z recovered: ~/.claude and ryan-mistt-org held the same account; kept ~/.claude, moved ryan-mistt-org's copy to /home/you/.claude-profiles/.rejected-logins/rotate-ryan-mistt-org-20261027T031705Z/.credentials.json; recorded ryan-mistt-org as live
-2026-10-27T03:17:05Z ALERT: profile ryan-ryansweet has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login ryan-ryansweet
+2026-10-27T03:17:05Z note: ~/.claude holds the same account as profile ryan-mistt-org (ledger names ryan-ryansweet); nothing moved, the next cycle reads again
+2026-10-27T03:17:05Z ALERT: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); no swap
+```
+
+On a later cycle, if the reading is the same, the rotator would keep the copy
+in `~/.claude` and move `ryan-mistt-org`'s copy to a backup. Here it does
+not: `ryan-ryansweet`'s only login was the one the `/login` replaced, and
+recording `ryan-mistt-org` as live would leave `ryan-ryansweet` with no login
+anywhere. The rotator refuses, leaves both logins where they are, and says
+what to do:
+
+```
+2026-10-27T03:19:05Z ALERT: ~/.claude holds the same account as profile ryan-mistt-org on two readings (ledger names ryan-ryansweet), but ryan-ryansweet has no login of its own, so recording ryan-mistt-org would leave ryan-ryansweet with no login anywhere; nothing moved, no swap
+2026-10-27T03:19:05Z fix 1: if a /login in ~/.claude replaced ryan-ryansweet's login: close every claude session that uses ~/.claude, then run: mkdir -m 700 /home/you/.claude-profiles/.rejected-logins/manual-20261027T031905Z && mv -n /home/you/.claude-profiles/ryan-mistt-org/.credentials.json /home/you/.claude-profiles/.rejected-logins/manual-20261027T031905Z/ && rm /home/you/.claude-profiles/.auto-switch.d/rotate/ledger.json; then run: amplihack profile login ryan-ryansweet
+2026-10-27T03:19:05Z fix 2: if ryan-ryansweet and ryan-mistt-org are profiles of one account, run amplihack profile verify to see the account each folder holds, then remove one of the two profiles
+```
+
+The server reported one account for both logins, so this is not a
+coincidence of reset times. If you ran `/login` in `~/.claude`, follow
+`fix 1`. If you did not, the two profiles hold one account: run
+`amplihack profile verify` and remove one of them.
+
+`amplihack profile login ryan-ryansweet` can run straight after `rm`; you do
+not need to run a rotate cycle first. With no ledger, it treats `ryan-ryansweet` as
+the live profile only if `~/.claude.json` still names `ryan-ryansweet`'s
+account. If it is refused with `profile 'ryan-ryansweet' is the rotator's
+live profile`, a session rewrote that file before you closed it. Run plain
+`claude` without `/login` and quit it, so that it writes the account it
+holds; remove the ledger again if a cycle has rewritten it; then run
+`amplihack profile login ryan-ryansweet` again.
+
+The rotator moves a copy itself only when `ryan-ryansweet` still has its own
+login in its folder, so that no profile is left with none. Then the line is:
+
+```
+2026-10-27T03:19:05Z recovered: ~/.claude and ryan-mistt-org held the same account; kept ~/.claude, moved ryan-mistt-org's copy to /home/you/.claude-profiles/.rejected-logins/rotate-ryan-mistt-org-20261027T031905Z/.credentials.json; recorded ryan-mistt-org as live
 ```
 
 The backup directory is `0700`. If that name is taken, `-2`, `-3` and so on
 are added. Backups are never deleted. The profile's `.claude.json` is not
 changed.
 
-The move happens only when every check passes:
+Before that move, the rotator checks that:
 
 - no `claude` session is running on `ryan-mistt-org`, and the rotator can
   see running sessions at all;
@@ -2012,107 +2199,19 @@ The move happens only when every check passes:
 - `~/.claude`, the profile and the profile root are on the same filesystem,
   and all of them are private and owned by you;
 - no swap journal is pending or inconsistent;
-- `~/.claude` still holds the same account just before the move.
+- just before the rename, both logins still read the same and neither file
+  has been replaced.
 
-If one fails, nothing moves, and you get a refusal with its fix line (see
-below). Most refusals clear by themselves, and the next cycle tries again.
-The checks on `~/.claude`, the profile root and the swap journal also apply
-when the profile has no login of its own; a failure there is refused the
-same way, with the ALERT saying `profile ryan-mistt-org holds the same
-account; recovery refused: <reason>`.
-
-If the rotator is killed part-way, the next cycle finishes the job: an empty
-backup directory is harmless, and a moved login with no ledger update is
-handled as the first case.
-
-#### The same cycle carries on
-
-After recovery the cycle measures and decides as usual. `ryan-ryansweet` has
-no login, so it is skipped. On 27 Oct `ryan-mistt-org` was weekly-exhausted
-and `rssourcelabs` had capacity, so the same cycle swaps:
+When a check fails, nothing moves and the cycle writes an ALERT and one
+`fix` line:
 
 ```
-2026-10-27T03:17:05Z skip: ryan-ryansweet (no login)
-2026-10-27T03:17:35Z cycle live=ryan-mistt-org ryan-mistt-org:s=37%,w=100% rssourcelabs:s=12%,w=40%
-2026-10-27T03:17:35Z swap ryan-mistt-org->rssourcelabs live s=37% w=100% target s=12% w=40% reason=threshold
+2026-10-27T03:19:05Z ALERT: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); profile ryan-mistt-org holds the same account and has its own login; recovery refused: a claude session is running on ryan-mistt-org; no swap
+2026-10-27T03:19:05Z fix 1: close the claude sessions that use ryan-mistt-org; the next cycle retries
 ```
-
-With no candidate that has capacity, it writes the usual
-`ALERT: no profile has capacity` instead.
-
-The `has no login anywhere` line is written on every cycle until
-`ryan-ryansweet` has a login again or the profile is removed:
-
-```bash
-amplihack profile login ryan-ryansweet
-```
-
-If the profile the ledger names is the one that matches (the ledger's
-account was out of date), the same two rules apply and there is no
-`has no login anywhere` line.
-
-#### When the rotator cannot tell
-
-In every other case nothing moves. The ALERT says what it found, and the
-numbered `fix` lines after it are the commands to run, with the real
-profile names and paths. Paths are shell-quoted where needed. The lines are
-written on every cycle until the account in `~/.claude` matches the ledger
-again, and `amplihack profile rotate status` shows them too. The
-`fix 1: amplihack profile login <name>` line appears only when the profile
-the ledger names has no login.
-
-| What it found | ALERT ends with | Fix lines after `amplihack profile login ryan-ryansweet` |
-|---------------|-----------------|------------------------------------------------------------|
-| Several profiles have the account | `it matches more than one profile (mistt-spare, ryan-mistt-org); no swap` | `keep this account in one of mistt-spare, ryan-mistt-org: log the others in to another account or remove them; the next cycle then recovers` |
-| No profile has the account | `no profile has that account; no swap` | Two lines; see the example below. |
-| A profile's account cannot be read | `the account of profile old-work cannot be read, so the match is uncertain; no swap` | `amplihack profile login old-work; the next cycle then recovers` |
-| `~/.claude.json` lost its account between two reads | `the account in ~/.claude.json cannot be read; no swap` | `none needed; the next cycle reads ~/.claude.json again` |
-| `~/.claude` has no login | `~/.claude has no login; no swap` | `run claude with no CLAUDE_CONFIG_DIR and /login` |
-| One profile has the account, and a check failed | `profile ryan-mistt-org holds the same account and has its own login; recovery refused: <reason>; no swap` (without `and has its own login` when it has none) | One line for that reason; see the refusal table below. |
-
-When `~/.claude.json` has no account the rotator can read at all, it is not
-treated as a hand change. Claude rewrites that file often, and one bad read
-says nothing about whose login is in `~/.claude`. The cycle moves nothing,
-does not swap, and writes one line:
-
-```
-ALERT: the account in ~/.claude.json cannot be read (live=ryan-ryansweet); no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace ryan-ryansweet's login
-```
-
-Do not run `/login` in `~/.claude` because of this line. If the ledger is
-right, the login there is `ryan-ryansweet`'s, and a `/login` would leave that
-profile with no login anywhere. The next cycle reads the file again.
-
-If the file still has no readable account 5 minutes later, the line changes:
-it says what is wrong with the file and gives two fixes, both of which keep
-`ryan-ryansweet`'s login. `rotate status` shows them too:
-
-```
-ALERT: ~/.claude.json has had no account that can be read for 5 minutes or more (live=ryan-ryansweet): it has no oauthAccount block; no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace ryan-ryansweet's login
-fix 1: run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if /home/you/.claude.json then holds an account, the next cycle goes on
-fix 2: or give ryan-ryansweet its login back and start over: close every claude session that uses ~/.claude, then run: test ! -e /home/you/.claude-profiles/ryan-ryansweet/.credentials.json && mv -n /home/you/.claude/.credentials.json /home/you/.claude-profiles/ryan-ryansweet/ && rm /home/you/.claude-profiles/.auto-switch.d/rotate/ledger.json; then run claude with no CLAUDE_CONFIG_DIR and /login
-```
-
-Try `fix 1` first. `fix 2` puts the login back in the profile it belongs to
-before you log in to `~/.claude` again. The other things the file can be:
-missing, not valid JSON, not a JSON object, or an `oauthAccount` with no
-usable account id or e-mail. The reference lists each wording under
-[Stuck `~/.claude.json`](../reference/profile-command.md#stuck-claudejson).
-
-For example, with no profile holding the account:
-
-```
-2026-10-27T03:17:05Z ALERT: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); no profile has that account; no swap
-2026-10-27T03:17:05Z fix 1: amplihack profile login ryan-ryansweet
-2026-10-27T03:17:05Z fix 2: rm /home/you/.claude-profiles/.auto-switch.d/rotate/ledger.json (the next swap keeps the login in ~/.claude as profile default-original)
-2026-10-27T03:17:05Z fix 3: or, to set that login aside instead: close every claude session that uses ~/.claude, then run: mkdir -m 700 /home/you/.claude-profiles/.rejected-logins/manual-20261027T031705Z && mv -n /home/you/.claude/.credentials.json /home/you/.claude-profiles/.rejected-logins/manual-20261027T031705Z/ && rm /home/you/.claude-profiles/.auto-switch.d/rotate/ledger.json; then run claude with no CLAUDE_CONFIG_DIR and /login
-```
-
-Without the final `/login`, `~/.claude` stays empty and every cycle only
-writes `ALERT: no login in ~/.claude; no swap`.
 
 Refusals, with the fix line written for each (`<dir>` is
-`/home/you/.claude-profiles/.rejected-logins/manual-20261027T031705Z`):
+`/home/you/.claude-profiles/.rejected-logins/manual-20261027T031905Z`):
 
 | `<reason>` | Fix line |
 |------------|----------|
@@ -2127,23 +2226,210 @@ Refusals, with the fix line written for each (`<dir>` is
 | `a login file is not a private regular file with one link`, `~/.claude and the profile root are on different devices`, `cannot create the backup directory: <error>`, `backup directory is not private: <path>`, `no free backup name` | `move ryan-mistt-org's copy by hand: mkdir -m 700 <dir> && mv -n /home/you/.claude-profiles/ryan-mistt-org/.credentials.json <dir>/` |
 | `~/.claude changed during recovery` | `none needed; the next cycle retries` |
 
-The first four can appear whether or not the profile has its own login; the
-rest only when it does.
+#### No profile answers the same
 
-`amplihack profile rotate status` shows the current lines:
+A complete trusted scan that finds no duplicate does not by itself prove
+which profile owns the live login. The rotator retains the ledger's live
+profile and applies the expected-record and ownership checks before any
+swap. A credential-bound conflict alerts and moves nothing, even when
+`~/.claude.json` still names the expected account.
+
+If the live profile has no ownership record, only the existing adoption
+or backfill rules can establish ownership, using trusted login evidence.
+Session JSON cannot supply the missing proof. A cycle can also seed the
+live profile's record, and when it cannot it names the command to run; see
+[Record a profile that shows `no record`](#record-a-profile-that-shows-no-record)
+and [Recorded account](../reference/profile-command.md#recorded-account).
+
+A legacy ledger containing only the user UUID cannot prove which
+organization owns an unrecorded outgoing login. The existing ledger now
+retains sanitized full identity after an authorized swap or confirmed
+credential recovery; ordinary observations do not upgrade legacy keys.
+An interrupted swap retains both authorized identities in its journal,
+so recovery cannot substitute a different unrecorded incoming account or
+lose outgoing ownership after the ledger has advanced. Missing legacy
+evidence refuses conservatively. New journals also retain preflight lock
+ownership before final requests; recovery of `checking` moves no login.
+
+#### When the rotator cannot tell
+
+An unavailable identity endpoint, expired token, incomplete response,
+conflicting record, changed login, unreadable duplicate candidate or
+exhausted identity-read budget leaves the required evidence uncertain.
+The affected operation writes an actionable ALERT on each attempt and
+moves no login or ledger identity. The ALERT names the
+[cause](../reference/profile-command.md#identity-read-causes):
+
+```
+2026-11-05T09:27:02Z ALERT: trusted login identity unavailable: http 429
+```
+
+Follow the reported cause: wait for
+network or refresh failures to clear, and resolve genuine ownership
+conflicts before retrying. Editing session JSON does not resolve them.
+
+An expired login in `~/.claude` is refreshed before any identity read, even
+when the ledger is unreadable or the lease view bars the live profile. The
+refresh proves nothing about the account: only the fresh reading after it can
+let a login move. With an unreadable ledger the cycle then stops, with no move
+and no record; see
+[Unreadable-ledger stop](../reference/profile-command.md#unreadable-ledger-stop).
+
+An otherwise eligible stored OAuth login still receives the usual usage
+read, which can refresh expired credentials. A reading started without
+trusted identity cannot select that login. A later cycle must validate
+the refreshed credentials and take a new usage reading before a swap.
+
+Recovery still requires two consistent readings on separate cycles.
+An uncertain intervening reading cannot count as confirmation: a later
+match starts the confirmation sequence again. The 600-second grace and
+the protection against moving a profile's only login remain in force.
+
+#### Check which account each folder holds
+
+`amplihack profile verify` asks the OAuth profile endpoint which account the
+login in `~/.claude` and in each profile folder belongs to, and compares the
+answer with the account recorded for that profile:
+
+```bash
+amplihack profile verify
+```
+
+```
+~/.claude (live ffarmer) -> ffarmer@mistt.com: ok
+ffarmer -> no login
+mmorrison -> no login
+nnorth -> mmorrison@mistt.com: MISMATCH, recorded for mmorrison
+```
+
+Here `nnorth`'s folder holds `mmorrison`'s login, as the 3 November misfire
+left it. To correct a folder, run `amplihack profile login <name>` with the
+browser signed out of claude.ai or in a private window. Do not use the `--fix`
+flag until [#1960](https://github.com/rysweet/amplihack-rs/issues/1960) is
+closed. Run `amplihack profile verify` again afterwards; it exits 0 once every
+folder holds its recorded account. The full rules are in
+[profile verify](../reference/profile-command.md#profile-verify).
+
+#### Record a profile that shows `no record`
+
+Plain `verify` shows `no record` for a profile the rotator has no recorded
+account for. The rotator cannot swap away from a live profile until it has
+ownership evidence, and on a ledger written before login identities were kept
+it logs:
+
+```
+note: no record for live profile ryan-mistt-personal: the ledger has no login identity; nothing moved; run: amplihack profile seed-record ryan-mistt-personal
+```
+
+Do this once, in this order:
+
+1. Install the fixed build and restart the rotator. An older rotator running
+   beside a new record has not been tested.
+2. Read the dry run. It must name the live login and report no identity alert:
+
+   ```bash
+   amplihack profile rotate --dry-run
+   ```
+
+   If it reports `token expired`, wait for the rotator's next cycle, which
+   refreshes the live login, and run the dry run again. If it reports `http 429`,
+   wait a few minutes and run it again. Other causes are in
+   [Identity read causes](../reference/profile-command.md#identity-read-causes).
+
+3. Preview the record. This writes nothing:
+
+   ```bash
+   amplihack profile seed-record ryan-mistt-personal
+   ```
+
+   ```
+   ryan-mistt-personal -> you@example.com, organization 00000000-0000-0000-0000-000000000000: no record; nothing written; run with --write to record it
+   ```
+
+4. Check that this is the right account and organization. Then write it:
+
+   ```bash
+   amplihack profile seed-record ryan-mistt-personal --write
+   ```
+
+If step 3 refuses with
+`the ledger's older key is an e-mail, which cannot prove ownership`, this login
+cannot be seeded while the ledger names it. Stop the rotator, run
+`rm <root>/.auto-switch.d/rotate/ledger.json` and start it again. With no ledger,
+the next swap keeps this login under a new `default-original` profile, as
+[Rotate live profile](../reference/profile-command.md#rotate-live-profile)
+describes. Then run `amplihack profile login <name>` to give `<name>` a login of
+its own.
+
+The command moves no login and never overwrites a usable record. Two profiles
+that share an e-mail, such as `ryan-mistt-personal` and `ryan-mistt-org`, are
+told apart by account uuid and organization. If they cannot be, the command
+refuses, and a rotate cycle's alert names both.
+
+Step 4 matters most for a profile that isn't live: its folder name is the only
+link to its login, so a misfiled login could be recorded as correct. To remove a
+wrong record, run `rm <root>/.auto-switch.d/expected/<name>.json`. The full rules
+are in
+[profile seed-record](../reference/profile-command.md#profile-seed-record).
+
+#### Stuck `~/.claude.json`
+
+A missing or stale `oauthAccount` cannot establish ownership or trigger
+recovery. The swap constructs display account details from trusted
+identity, preserving unrelated JSON fields and the existing file mode.
+If the display file cannot be safely read or updated, such as when it is
+not a JSON object or its permissions are unsafe, the swap can still
+refuse on that file-safety check before moving a login.
+
+Repair the reported file or permission problem and retry. Do not run
+`/login` or move a credential solely to repair a display account. See
+[Stuck `~/.claude.json`](../reference/profile-command.md#stuck-claudejson).
+
+
+Some recovery diagnostics retain their earlier display-file wording. These
+messages describe file safety or older retained guidance; they never make
+session account values proof of login ownership. A stale or missing
+`oauthAccount` alone does not trigger recovery. Resolve the actual reported
+file problem and trusted-identity refusal before following recovery guidance.
+The retained message grammar is:
+
+```text
+ALERT: the account in ~/.claude.json cannot be read (live=<L>); no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace <L>'s login
+ALERT: ~/.claude.json has had no account that can be read for 5 minutes or more (live=<L>): <problem>; no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace <L>'s login
+fix 1: run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if <home>/.claude.json then holds an account, the next cycle goes on
+fix 2: or give <L> its login back and start over: close every claude session that uses ~/.claude, then run: test ! -e <root>/<L>/.credentials.json && mv -n <home>/.claude/.credentials.json <root>/<L>/ && rm <ledger>; then run claude with no CLAUDE_CONFIG_DIR and /login
+```
+
+Older guidance can include `it has no oauthAccount block`. That display
+condition cannot establish which account the moving credential belongs to.
+
+#### See the current state
+
+`amplihack profile rotate status` shows the current note or ALERT lines:
 
 ```
 live: ryan-ryansweet
 last cycle: 2026-10-27T03:17:05Z alerted
-alert: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); no profile has that account; no swap
-alert: fix 1: amplihack profile login ryan-ryansweet
-alert: fix 2: rm /home/you/.claude-profiles/.auto-switch.d/rotate/ledger.json (the next swap keeps the login in ~/.claude as profile default-original)
-alert: fix 3: or, to set that login aside instead: close every claude session that uses ~/.claude, then run: mkdir -m 700 /home/you/.claude-profiles/.rejected-logins/manual-20261027T031705Z && mv -n /home/you/.claude/.credentials.json /home/you/.claude-profiles/.rejected-logins/manual-20261027T031705Z/ && rm /home/you/.claude-profiles/.auto-switch.d/rotate/ledger.json; then run claude with no CLAUDE_CONFIG_DIR and /login
+note: ~/.claude holds the same account as profile ryan-mistt-org (ledger names ryan-ryansweet); nothing moved, the next cycle reads again
 ```
 
-After a recovery the `alert:` lines are gone, and `status` shows
-`warning: profile ryan-ryansweet has no login anywhere: …` until that
-profile is logged in again.
+A profile that an earlier release recorded as having lost its login is
+still reported on every cycle, and in `status` as a `warning:` line, until
+it is logged in again:
+
+```
+2026-10-27T03:17:05Z ALERT: profile ryan-ryansweet has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login ryan-ryansweet
+```
+
+The rotator no longer adds profiles to that list, because it refuses any
+move that would leave a profile with no login.
+
+While a suspicion like this is open, `amplihack profile switch` refuses. If
+the rotator is stopped, run one cycle to settle it:
+
+```bash
+amplihack profile rotate
+```
 
 To see what the next cycle would do, without moving anything:
 
@@ -2151,15 +2437,14 @@ To see what the next cycle would do, without moving anything:
 amplihack profile rotate --dry-run
 ```
 
-It prints the recovery it would make, or the ALERT and its `fix` lines, and
-stops there without measuring:
+It makes the same reads and prints `would recover:`, `would note:` or
+`would alert:` with the `fix` lines. A dry run never records a suspicion, so
+it reports `would recover:` only when a real cycle has already recorded one
+for the same profile.
 
 ```
-would alert: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); no profile has that account; no swap
-fix 1: amplihack profile login ryan-ryansweet
+would note: ~/.claude holds the same account as profile ryan-mistt-org (ledger names ryan-ryansweet); nothing moved, the next cycle reads again
 ```
-
-The `fix 2` and `fix 3` lines that follow are the same as in the log example above.
 
 ### Go back to an older amplihack
 
@@ -2457,23 +2742,14 @@ same account as `~/.claude`. The live profile itself is never flagged against
 `~/.claude`. See [Duplicate logins](claude-profiles.md#duplicate-logins).
 
 After a [manual `/login` in `~/.claude`](#after-a-manual-login-in-claude),
-and until the rotator has recovered, the ledger names a profile whose
-account is no longer in `~/.claude`. In that state `profile usage` still
-reports the account that is actually there:
-
-- If exactly one profile has that account, its row is marked
-  `live in ~/.claude` and its numbers are read from `~/.claude`, even when
-  the profile also has its own login. The duplicate-login warning for
-  `'~/.claude'` and that profile is still printed, because both copies exist
-  until recovery moves one aside. The warnings still go by the ledger, so
-  only the profile the ledger names (`ryan-ryansweet`) is treated as the
-  live login, and `profile login` still names the holder
-  `~/.claude (rotator live profile 'ryan-ryansweet')`.
-- If no profile has it, and no profile names were given, an extra row named
-  `~/.claude` shows its numbers. In `--json` its `profile`, `account` and
-  `live_in` are all `"~/.claude"`. That row is never recorded as an
-  auto-switch reading.
-- Otherwise no row is marked, as before.
+the ledger can name a profile whose login is no longer in `~/.claude`.
+`profile usage` does not try to tell whose login is there: it marks the
+profile the ledger names, as always, and its row shows the numbers of the
+login that is actually in `~/.claude`. The duplicate-login warning for
+`'~/.claude'` and another profile is printed while both are the same
+account. Only the rotator decides whose login `~/.claude` holds, from what
+the credential returns; see
+[Hand-change notes and alerts](#hand-change-notes-and-alerts).
 
 `amplihack profile login`, the live-profile launch and the duplicate-login
 warnings do not change in this state: they still go by the ledger.

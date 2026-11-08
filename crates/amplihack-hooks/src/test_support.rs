@@ -84,3 +84,23 @@ impl Drop for CwdGuard {
         }
     }
 }
+
+/// The scratch base no framework lookup can see past; the rule is shared
+/// with `amplihack-cli` and `amplihack-types` (see the file's documentation).
+#[path = "../../amplihack-cli/tests/support/scratch_base.rs"]
+#[allow(dead_code)]
+pub(crate) mod scratch_base;
+
+#[cfg(unix)]
+#[path = "../../amplihack-cli/tests/support/exec_stub.rs"]
+#[allow(dead_code)]
+mod exec_stub;
+
+/// Writes an executable stub at `path` (mode 0755) through the shared
+/// `exec_stub` writer, so no fork of this process can inherit a write
+/// descriptor to it and make a concurrent exec fail with `ETXTBSY` (issue
+/// #1973).
+#[cfg(unix)]
+pub(crate) fn write_executable(path: &std::path::Path, body: &str) {
+    exec_stub::write_executable(path, body, 0o755);
+}

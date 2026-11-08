@@ -21,6 +21,64 @@ pub(crate) fn cwd_env_lock() -> &'static Mutex<()> {
     env_lock()
 }
 
+#[path = "../tests/support/scratch_base.rs"]
+#[allow(dead_code)]
+mod scratch_base;
+
+/// A temporary directory that no framework lookup can see past: no
+/// `amplifier-bundle/`, `.claude/` or `src/amplihack/.claude/` above it, and
+/// not under the real `~/.claude` or `~/.amplihack`. Panics when no candidate
+/// base qualifies. The rule, and the lookups that need it, are in
+/// `tests/support/scratch_base.rs`, shared with `amplihack-hooks`,
+/// `amplihack-types` and `cli_integration`.
+pub(crate) fn tempdir_outside_framework_roots() -> tempfile::TempDir {
+    tempfile::tempdir_in(scratch_base::scratch_base()).unwrap()
+}
+
+#[cfg(test)]
+mod scratch_base_tests {
+    use super::scratch_base::{FRAMEWORK_MARKERS, scratch_base_rejection};
+    use std::fs;
+
+    #[test]
+    fn a_base_below_any_framework_marker_is_rejected_by_name() {
+        for marker in FRAMEWORK_MARKERS {
+            let root = tempfile::tempdir().unwrap();
+            fs::create_dir_all(root.path().join(marker)).unwrap();
+            let base = root.path().join("runtime/tmp");
+            fs::create_dir_all(&base).unwrap();
+            let reason = scratch_base_rejection(&base, None)
+                .unwrap_or_else(|| panic!("{marker} above the base was not rejected"));
+            assert!(
+                reason.contains(&root.path().join(marker).display().to_string()),
+                "the rejection must name the offending ancestor: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_base_under_the_real_home_dirs_is_rejected_without_any_marker() {
+        let home = tempfile::tempdir().unwrap();
+        for dir in [".claude", ".amplihack"] {
+            let base = home.path().join(dir).join("work");
+            fs::create_dir_all(&base).unwrap();
+            let reason = scratch_base_rejection(&base, Some(home.path()));
+            assert!(
+                reason.as_deref().is_some_and(|r| r.contains(dir)),
+                "{}: {reason:?}",
+                base.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_missing_base_is_rejected_and_a_clean_one_accepted() {
+        let root = super::tempdir_outside_framework_roots();
+        assert_eq!(scratch_base_rejection(root.path(), None), None);
+        assert!(scratch_base_rejection(&root.path().join("absent"), None).is_some());
+    }
+}
+
 /// RAII guard for process environment variables mutated by tests.
 ///
 /// Tests must acquire `env_lock()` before constructing this guard.
@@ -273,4 +331,17 @@ impl Drop for ClearedGraphDbEnv {
             }
         }
     }
+}
+
+#[cfg(unix)]
+#[path = "../tests/support/exec_stub.rs"]
+#[allow(dead_code)]
+mod exec_stub;
+
+/// Writes an executable stub at `path` (mode 0755) through a short-lived
+/// `sh`, so no fork of this process can inherit a write descriptor to it and
+/// make a concurrent exec fail with `ETXTBSY` (issue #1973).
+#[cfg(unix)]
+pub(crate) fn write_executable(path: &Path, body: &str) {
+    exec_stub::write_executable(path, body, 0o755);
 }

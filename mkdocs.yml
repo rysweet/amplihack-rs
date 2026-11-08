@@ -68,6 +68,7 @@ nav:
       - Supervise Agent Sessions: howto/supervise-agent-sessions.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
       - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md
+      - Give Test Logins a Fake Account Identity: howto/give-test-logins-a-fake-account-identity.md
       - Keep Tests from Changing PATH and HOME: howto/keep-tests-from-changing-path-and-home.md
       - Keep Tests from Prompting for Git Credentials: howto/keep-tests-from-prompting-for-git.md
       - Wait Without Leaving Orphan Processes: howto/wait-without-orphan-processes.md
@@ -251,6 +252,7 @@ nav:
       - Rust Code Quality: reference/rust-code-quality.md
       - CLI Reference: reference/cli.md
       - install Command: reference/install-command.md
+      - Framework Source Selection: reference/framework-source-selection.md
       - Install/Update PATH Conflicts: reference/install-update-path-conflicts.md
       - recipe Command: reference/recipe-command.md
       - RustyClawd Command: reference/rustyclawd-command.md

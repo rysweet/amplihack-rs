@@ -1,3 +1,10 @@
+---
+title: "Reference: amplihack profile"
+description: Commands, configuration, ownership checks, and recovery for Claude profiles.
+doc_type: reference
+review_schedule: as-needed
+---
+
 # Reference: `amplihack profile`
 
 Manage Claude Code login profiles. See the
@@ -35,6 +42,8 @@ amplihack profile rotate autostart [on|off]
 amplihack profile rotate owner [clear]
 amplihack profile kind list
 amplihack profile kind set <name> <subscription|api-key|auto>
+amplihack profile verify [--fix]
+amplihack profile seed-record <name> [--write]
 amplihack profile overflow clear --platform
 amplihack launch|claude --profile <name> [...]
 ```
@@ -57,6 +66,8 @@ amplihack launch|claude --profile <name> [...]
 | `overflow …` | Mark or unmark a credit-backed profile that the rotator may use when every plan login is exhausted, list the marks, or lift a spend-limit block. See [Overflow commands](#overflow-commands). |
 | `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
 | `kind list`, `kind set <name> <kind>` | Show whether each profile is a subscription or an [API-key profile](#api-key-profiles), and set or remove an override. See [Kind override](#kind-override). |
+| `verify [--fix]` | Unix only. For `~/.claude` and each profile folder, print the account Anthropic's OAuth profile endpoint reports for the folder's own token, against the account [recorded](#recorded-account) for it. `--fix` moves a profile's login that is another profile's recorded account into that profile's empty folder; do not use it until [#1960](https://github.com/rysweet/amplihack-rs/issues/1960) is closed. See [profile verify](#profile-verify). |
+| `seed-record <name> [--write]` | Unix only. Shows the account a profile with no [record](#recorded-account) would be recorded with, from one fresh reading. `--write` saves it. Moves no login and writes no credentials file. See [profile seed-record](#profile-seed-record). |
 
 `remove` and `login` are also refused while auto-switch has an account's
 login away from home; see [Leases](#leases). `run`, `switch` and
@@ -114,7 +125,6 @@ Every row records which step gave it as its [source](#reading-source):
 | [API-key profile](#api-key-usage) | None. It is not probed, as before. |
 | Marked as [overflow](#rotate-overflow) | Fallback only, as `/usage` text. The spend limit is visible only in `/usage`, so the [spend-limit block](#overflow-spend-limit-block) keeps working. Source `fallback`. Under `AMPLIHACK_PROFILE_USAGE_PROBE=direct` the row is not probed and reads `error`; see [Probe method](#probe-method). |
 | A direct answer shows usage credits turned on (`extra_usage` is not absent, `null` or `{"is_enabled": false}`) | The windows and state come from the direct answer. Source `direct`. Spend `not_probed`, unless `--spend` asks for one `/usage` text probe, under the normal per-probe timeout (`--timeout-secs`, 120 s by default), that reads only the spend status; see [Usage credits on](#usage-credits-on). If neither window in the answer is usable, the direct read fails with `usage credits on` and the profile goes to the fallback. |
-| The extra [`~/.claude` row](#logins-in-claude), which no profile owns | Direct, then fallback. No passive reading, because no account is known for it. |
 | Any profile, with `AMPLIHACK_PROFILE_USAGE_PROBE` set to `auto` or `text` | Fallback only, with the method named. See [Probe method](#probe-method). |
 | Any profile, with `AMPLIHACK_PROFILE_USAGE_PROBE=direct` | Passive, then direct. A failed direct read gives state `error`, and the reading starts no `claude`. An account with usage credits on gives its direct windows, with spend `not_probed`, because no spend probe runs, even under `--spend`. Overflow profiles read `error` without a direct read. The one exception is the rotator's [held-cycle spend-limit check](#pin-and-overflow). |
 
@@ -217,7 +227,7 @@ side makes direct reads fail, and every profile then falls back to
 | Row | File |
 |-----|------|
 | A profile in its own directory | `<root>/<name>/.credentials.json` |
-| A profile [live in `~/.claude`](#logins-in-claude), and the extra `~/.claude` row | `$HOME/.claude/.credentials.json` |
+| A profile [live in `~/.claude`](#logins-in-claude) | `$HOME/.claude/.credentials.json` |
 
 The file is opened without following symlinks and read up to 64 KiB. It
 must be a regular file owned by you and not writable by group or others.
@@ -395,8 +405,7 @@ them when the spend limit is what you want to know.
 **What `--spend` runs.** One `claude -p /usage` in the profile's directory
 for each direct row whose account has usage credits on, with the same
 command line and environment as the fallback's
-[text attempt](#fallback-probe), so no token is passed to it. The extra
-[`~/.claude` row](#logins-in-claude) is probed in `~/.claude`. Spend probes
+[text attempt](#fallback-probe), so no token is passed to it. Spend probes
 start only after every passive and direct read has finished, at most the
 [`claude` bound](#probe-parallelism) run at once, and each runs under the
 same [probe deadline](#probe-deadline) as a fallback: 120 seconds by
@@ -485,12 +494,16 @@ the first `GET` returns `401`. There is at most one refresh per profile per
 read. It is tried only for a profile read in its own directory, and never
 for:
 
-- `~/.claude`, either for the live profile or for the extra `~/.claude` row;
+- `~/.claude`, for the live profile;
 - a profile whose login is [lent](#leases) to another directory, or whose
   directory [hosts](#leases) another profile's login.
 
 In those cases a session may be using the login, and `claude` refreshes it
-itself, so the row falls back with `token expired` or `http 401`.
+itself, so the row falls back with `token expired` or `http 401`. The one
+exception is outside the usage read: a rotate cycle refreshes the login in
+`~/.claude` once, by these steps, when its token has already expired, so
+that its identity can be read (see
+[An expired live login](#an-expired-live-login)).
 
 The refresh runs as follows:
 
@@ -505,8 +518,8 @@ The refresh runs as follows:
    token is used and no refresh request is sent. Only `accessToken` is
    compared; a refresh always replaces it, and a changed `refreshToken`
    alone does not give a token to send.
-3. Check that the directory is owned by you and not writable by group or
-   others, that the file can be replaced safely, and that a private
+3. Check that the directory passes the
+   [login directory rule](#login-directory-rule), that the file can be replaced safely, and that a private
    temporary file can be created beside it. If any check fails, the reason
    is `refresh refused` and no request is sent.
 4. If less than 3 seconds of the [deadline](#probe-deadline) are left,
@@ -624,8 +637,7 @@ there, such as `.claude.json`, as any `claude` run does.
   at a time. A row that falls back waits for a free `claude` slot, and at
   most the [`claude` bound](#probe-parallelism) of `claude` processes run
   at a time, however many reads are running. With `auto` or `text`, every
-  row starts `claude`, so the `claude` bound is the only one. The extra
-  `~/.claude` row, when there is one, is read after the others.
+  row starts `claude`, so the `claude` bound is the only one.
 - The fallback's [deadline](#probe-deadline), 120 seconds by default, runs
   from its first spawn and covers both attempts. The `/usage` attempt gets only the
   time left; when none is left, the state is `timeout`. When the deadline
@@ -1735,27 +1747,13 @@ The live profile is found once, before probing, and nothing is written:
    cannot be trusted or read, its warning is printed and the other decides.
    A `profile rotate` ledger with no `live` value (written by a cycle that
    only raised an ALERT or found the rotator idle) names nobody and counts as
-   absent. One whose `account` is not the account in `~/.claude.json`
-   (someone ran `/login` in `~/.claude` and the rotator has not yet
-   [recovered](#rotate-hand-change-recovery)) does not decide either; the
-   account in `~/.claude.json` is matched against every profile instead,
-   with or without its own login, by the
-   [account identity rule](#account-identity):
-
-   | Profiles with the account in `~/.claude.json` | Result |
-   |-----------------------------------------------|--------|
-   | Exactly one, `M` | `M` is live, even if it has its own `.credentials.json`. Its row is probed against `~/.claude` and marked `live in ~/.claude`. |
-   | None, and no profile names were given | An extra row `~/.claude` is added, probed against `~/.claude`, with `profile`, `account` and `live_in` all `"~/.claude"` in the JSON (see the [key table](#json-output)). It is never the default and is never leased. |
-   | Anything else (several, an unreadable account, or names were given) | The ledger counts as absent, as before. |
-
-   This applies to `profile usage` only. The live-profile launch, the
-   `profile login` refusal and the duplicate-login warning still go by the
-   ledger, so the warning for `~/.claude` and `M` is still printed while
-   both copies exist. The `~/.claude` row is never recorded as an
-   auto-switch reading. Both ledgers are only read. The deciding ledger's `live` field names the profile
+   absent. An open [hand-change suspicion](#two-readings) does not change
+   which profile the ledger names here: `profile usage` makes no identity
+   reads and does not compare `~/.claude.json` with the ledger. The
+   duplicate-login warning for `~/.claude` and a profile `M` is still
+   printed while both logins are the same account. Both ledgers are only read. The deciding ledger's `live` field names the profile
    and its `since` is used only for the
-   [check after the probes](#swaps-during-the-probe); other fields, apart from
-   the `profile rotate` ledger's `account`, are ignored. The checks run in this order, and the first that fails decides:
+   [check after the probes](#swaps-during-the-probe); other fields are ignored. The checks run in this order, and the first that fails decides:
 
    | `live` in a trusted ledger | Result | stderr |
    |----------------------------|--------|--------|
@@ -1769,8 +1767,7 @@ The live profile is found once, before probing, and nothing is written:
    `<root>/.rotator/` directory you cannot search). The second case is
    treated as an unreadable ledger.
 
-   Apart from the `profile rotate` ledger's `account` check above, the
-   ledger is taken at its word: amplihack does not compare the account in
+   The ledger is taken at its word: amplihack does not compare the account in
    `~/.claude.json` with the named profile's account. If the prototype
    ledger names the wrong profile (the rotator stopped partway through a
    swap, or someone ran `/login` in `~/.claude`), that profile's row shows
@@ -1863,18 +1860,6 @@ recorded as usual:
 note: the login in ~/.claude changed while profile "work" was probed for its spend; its spend is unknown this run
 ```
 
-The `~/.claude` row (a login no profile holds, after a manual `/login`)
-gets the same guard. Its spend probe also reads `~/.claude`, so the account
-in `~/.claude.json` is read when the row is built, before any probe, and
-again before the spend probe starts and once it has finished. If the account
-is different at either check, or cannot be read, the row's spend is
-`unknown` rather than the spend of the login swapped in, and one note goes
-to stderr. The row's windows were read before the change:
-
-```
-note: the login in ~/.claude changed while the ~/.claude row was probed for its spend; its spend is unknown this run
-```
-
 The check has two known gaps. Closing them would need a lock on the
 rotator's ledger, which amplihack does not take:
 
@@ -1900,8 +1885,7 @@ status, and none marks a profile live when there is doubt.
 | `warning: could not list profiles; no profile is marked live in ~/.claude` | No ledger, and the profile root could not be listed (for example, it is not readable), so no account match was tried. |
 | `note: the login in ~/.claude changed while profile "<name>" was probed; its usage was not recorded this run` | The evidence for the live profile changed during the probe. A note rather than a warning. See [Swaps during the probe](#swaps-during-the-probe). |
 | `note: the login in ~/.claude changed while profile "<name>" was probed for its spend; its spend is unknown this run` | With `--spend`, the evidence for the live profile changed before or during its spend probe. Its spend is `unknown`; its windows are recorded. See [Swaps during the probe](#swaps-during-the-probe). |
-| `note: the login in ~/.claude changed while the ~/.claude row was probed for its spend; its spend is unknown this run` | With `--spend`, the account in `~/.claude` changed, or could not be read, before or during the `~/.claude` row's spend probe. Its spend is `unknown`. See [Swaps during the probe](#swaps-during-the-probe). |
-| `warning: profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); …` | Two logins are the same account. One line per pair, after the other warnings. The line names the profile whose login is not its [recorded account](#recorded-account), or `~/.claude` when it is not the live profile's recorded account, or says amplihack cannot tell which one is wrong. See [Duplicate-login warning](#duplicate-login-warning). Printed for `~/.claude` and `M` while a manual `/login` in `~/.claude` has left both with the same account; the next rotate cycle moves `M`'s copy aside when it [safely can](#rotate-hand-change-recovery). |
+| `warning: profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); …` | Two logins are the same account. One line per pair, after the other warnings. The line names the profile whose login is not its [recorded account](#recorded-account), or `~/.claude` when it is not the live profile's recorded account, or says amplihack cannot tell which one is wrong. See [Duplicate-login warning](#duplicate-login-warning). Printed for `~/.claude` and `M` while a manual `/login` in `~/.claude` has left both with the same account. The rotator moves `M`'s copy aside only after [two matching credential readings](#rotate-hand-change-recovery), and only when no profile is left with no login. |
 
 A manual `/login` in `~/.claude` replaces whatever login was there; the
 profile that login belonged to is left with no login. `profile usage` prints
@@ -1957,8 +1941,8 @@ there is no version field.
 
 | Key | Type | Meaning |
 |-----|------|---------|
-| `profile` | string | Profile name, or the literal `~/.claude` for the extra row added when the account in `~/.claude` [belongs to no profile](#logins-in-claude) after a manual `/login`. No profile can have that name, because it fails the [name rules](#name-rules). |
-| `account` | string | The account whose login is live in the profile's directory: the profile's own name unless it [hosts](#leases) another account. The numbers belong to this account. The literal `~/.claude` on the extra `~/.claude` row. |
+| `profile` | string | Profile name. |
+| `account` | string | The account whose login is live in the profile's directory: the profile's own name unless it [hosts](#leases) another account. The numbers belong to this account. |
 | `default` | bool | Whether this is the default profile. |
 | `leased_to` | string or `null` | The directory this profile's login is lent to. |
 | `live_in` | string or `null` | `"~/.claude"` when this profile's login is [live in `~/.claude`](#logins-in-claude) and its numbers were read from there; otherwise `null`. The key is always present, and at most one row has a non-null value. The value is always the literal `~/.claude`, never the expanded home path. |
@@ -2085,7 +2069,7 @@ prints only the `no profiles` line.
 ##### Valid and unknown readings
 
 The summary counts subscription profiles only. [API-key profile](#api-key-profiles)
-rows and the extra [`~/.claude` row](#logins-in-claude) are not logins in
+rows are not logins in
 the summary and are not listed as unknown. An overflow profile is a
 subscription profile and is counted.
 
@@ -2383,7 +2367,7 @@ Who writes it:
 | Writer | When |
 |--------|------|
 | `profile usage` | After the probes, when no profile names were given and `--raw` was not given. With or without `--json` and `--summary-json`. |
-| The [rotator](#rotate-cycle) | After every cycle that measured usage, once its state lock is released. It records the profiles it measured, and lists as unknown the plan logins it did not probe: those skipped as busy (a session running, leased, hosting or parked) and those whose `.claude.json` has no usable `oauthAccount` (`no account`). The entry therefore says how many it did not read. Such an entry is not used as the start of the [rate](#rate-and-runway), and `rotate status` does not take a runway from it (see [Capacity line](#capacity-line)). The [live login](#rotate-live-profile) is recorded under its profile, and a login in `~/.claude` that belongs to no profile is not recorded. A cycle that measured nothing writes nothing. |
+| The [rotator](#rotate-cycle) | After every cycle that measured usage, once its state lock is released. It records the profiles it measured, and lists as unknown the plan logins it did not probe: those skipped as busy (a session running, leased, hosting or parked) and those whose login has no usable trusted account evidence (`no account`). The entry therefore says how many it did not read. Such an entry is not used as the start of the [rate](#rate-and-runway), and `rotate status` does not take a runway from it (see [Capacity line](#capacity-line)). The [live login](#rotate-live-profile) is recorded under its profile, and a login in `~/.claude` that belongs to no profile is not recorded. A cycle that measured nothing writes nothing. |
 
 Both writers record only when all of these hold, and otherwise write nothing
 and print nothing about the history:
@@ -4572,7 +4556,7 @@ amplihack profile rotate owner [clear]
 | Command | Behaviour |
 |---------|-----------|
 | `rotate` | Runs one [cycle](#rotate-cycle): recover, measure, decide, and swap if needed. Prints its log lines to stdout and appends them to the log. Runs whether the toggle is on or off. |
-| `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no rotate state, moves nothing (a direct read may still refresh a login's near-expiry OAuth token, as any probe does), and skips both the [prototype check](#rotate-prototype-coexistence) and [recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. Reads the [pin](#rotate-pin): a pin in force prints `would stay (held by switch to <name>)`, or `would stay (pin unreadable)`, and measures nothing. Reports a [hand change](#rotate-hand-change-recovery) as `would recover: <recovered line>`, or as `would alert: <ALERT line>` with its `fix` lines; either way it then stops without measuring, and the alert case ends with outcome `alerted`. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
+| `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no rotate state, moves nothing, and never refreshes a token or starts `claude`: every read is a direct read with refresh off, so an expired login shows as unmeasured with its [cause](#identity-read-causes), and the dry run can pick a different target than a real cycle that would have refreshed that login. It prints `would refresh: expired login in ~/.claude` when a real cycle would refresh the live login, and the `would` lines of [seeding](#seeding-a-record) for a live profile with no record. It skips both the [prototype check](#rotate-prototype-coexistence) and [journal recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. Reads the [pin](#rotate-pin): a pin in force prints `would stay (held by switch to <name>)`, or `would stay (pin unreadable)`, and measures nothing. Makes the same [hand-change](#rotate-hand-change-recovery) identity reads as a real cycle, never writes `hand_suspect`, and reports the result as `would recover: <recovered line>`, `would note: <note>`, or `would alert: <ALERT line>` with its `fix` lines; see the dry-run table there. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
 | `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Pins the child to its root and records that root; see [Rotate root record](#rotate-root-record). Prints `rotate: started (pid <pid>), checking every <interval>s`, `log: <path>` and `root: <path>`, and returns at once. |
 | `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log, apart from the [owner marker](#rotate-owner) when it runs supervised. |
 | `rotate watch --supervised[=UNIT]` | As `rotate watch`, and records itself as the [rotation owner](#rotate-owner) so that launches do not start a second rotator. `UNIT` names the service manager unit, for example `--supervised=amplihack-rotator.service`; the `=` is required. Without `UNIT` the name is found as described in [Owner unit name](#owner-unit-name). A `watch` that systemd runs as a service records itself without the flag: `INVOCATION_ID` is set and the unit is found in `/proc/self/cgroup` as in step 2 of [Owner unit name](#owner-unit-name). Like any `watch`, it refuses with status 1 when another verified rotator is running, and then writes no marker; stop that rotator with `rotate stop` before starting the unit. `rotate start --supervised` is refused with `RotateRefused` (`--supervised applies to rotate watch only`, status 1). |
@@ -4758,13 +4742,19 @@ Every non-dry-run cycle runs these steps in order:
 3. **Lock and recover.** Take `<root>/.auto-switch.d/lock`, waiting up to
    2 seconds. If it is busy, log `skip: state lock busy` and end the cycle.
    Under the lock, run auto-switch [recovery](#session-end-and-recovery), then
-   [rotate recovery](#rotate-recovery), then
+   [rotate recovery](#rotate-recovery), then the one refresh of an
+   [expired live login](#an-expired-live-login), then the
+   [unreadable-ledger stop](#unreadable-ledger-stop), then
    [hand-change recovery](#rotate-hand-change-recovery), then
-   [identify](#rotate-live-profile) the live profile and the
-   [candidates](#rotate-candidates). If hand-change recovery could not act, it
-   writes its guidance and the cycle ends as `alerted`; if it did act, the
-   cycle carries on from the new state. An ALERT about the live login
-   (`no-login`, `hand-change`, `home-unreadable`, `ambiguous`) is written here and ends the
+   [identify](#rotate-live-profile) the live profile, [seed](#seeding-a-record)
+   its record if one is missing and allowed, and find the
+   [candidates](#rotate-candidates). Hand-change recovery makes its
+   identity reads here, under the lock, unless the last swap is under
+   `SWAP_GRACE` old. Identification and swap authorization have their own
+   required trusted readings, including during that recovery grace. If
+   recovery refused or holds an open suspicion, it writes its note or guidance and the cycle ends as `alerted`; if it moved a login, or
+   found nothing, the cycle carries on from the resulting state. An ALERT about the live login
+   (`no-login`, `hand-change`, an identity refusal, or `ambiguous`) is written here and ends the
    cycle. Then check the [rotation pin](#rotate-pin): if it holds rotation,
    log the `skip: held by switch ...` or `skip: pin unreadable ...` line,
    clear the stored ALERT key, record the cycle as `held` (unless the last
@@ -4809,7 +4799,10 @@ Every non-dry-run cycle runs these steps in order:
 7. **Record.** Write the log lines and the ledger's `last_cycle`, with
    `overflow` set when the cycle moved onto, off or stayed on an
    [overflow](#rotate-overflow) profile. Add any new
-   [spend blocks](#overflow-spend-limit-block) and drop expired ones. When the
+   [spend blocks](#overflow-spend-limit-block) and drop expired ones. A stay
+   records `stayed` or `stayed-unread` and a no-capacity ALERT is hard or
+   advisory, by the live reading; see
+   [Stays and capacity](#rotate-stays-and-capacity). When the
    cycle stays or raises the no-capacity ALERT and the live profile is known,
    also record it as `live`, with its `account`. Update the ledger's
    [`swapped_away`](#rotate-reading-freshness-and-swap-back-damping) entries:
@@ -4848,22 +4841,16 @@ different target, a stay or an ALERT.
 | Change since step 3 | Label | Applies to |
 |---------------------|-------|------------|
 | The rotate journal exists | `journal` | Every decision |
-| The live profile, the account in `~/.claude.json`, the prototype ledger state, or whether `~/.claude/.credentials.json` is a readable login without OAuth (an API-key login), differs | `live` | Every decision |
+| The live profile, full trusted live account, material ownership evidence, prototype ledger state, display-file safety of `~/.claude.json`, or login kind in `~/.claude/.credentials.json` differs | `live` | Every decision |
 | The [rotation pin](#rotate-pin) differs | `pin` | Every decision |
 | The [overflow](#rotate-overflow) list or its ignored entries differ | `overflow` | Every decision |
 | The swap target is no longer a candidate | `target eligibility: <reason>` | Swap only |
-| The swap target is still a candidate, but the account in its `.claude.json` is not the one it had in step 3 | `target identity` | Swap only |
+| The swap target is still a candidate, but its full trusted account differs from step 3 or cannot be bound to the current login | `target identity` | Swap only |
 
-The last of the `live` fields is read from the login file,
-`~/.claude/.credentials.json`, not from `~/.claude.json`. It holds only when
-the login file is a readable JSON object without a `claudeAiOauth` key, the
-[API-key](#api-key-profiles) case. A login file that is missing, cannot be
-read or trusted, or holds an OAuth login does not satisfy it, so this field
-changes only when the live login becomes or stops being an API-key login. A
-login file that was readable in step 3 but cannot be read in step 6 leaves
-no profile live, so it shows as a change in the live profile. That change
-on its own is not read again: the second read described below is made only
-when `~/.claude.json` has lost its account.
+The live and target accounts come from [login-bound trusted
+readings](#rotation-login-identity). Session JSON rewrites do not change
+these fields. A missing or unsafe login, or unavailable identity evidence,
+cannot retain an earlier authorization.
 
 For the target, `<reason>` is the [skip reason](#rotate-candidates) it now
 has, such as `no login`, `excluded`, `session running`, `parked` or
@@ -4874,14 +4861,14 @@ ahead. Whether `/proc` can be scanned is not compared in its own right: a
 change in it shows only through the target's skip reason, so it has no
 label of its own and never affects a stay or an ALERT.
 
-The target's account is the `oauthAccount` in `<root>/<name>/.claude.json`,
-compared by the [account identity](#account-identity) rule that every other
-account comparison in amplihack uses. A `profile login <name>` to another
-account during step 4 is a `target identity` change, so the cycle never
-moves in a login whose usage it did not measure. A rewrite of that file that keeps the account, such as the
-probe itself updating it, is not a change. No other profile's account is
-compared, and the login file's inode is not compared at all, because a
-probe may refresh the OAuth token and rewrite it.
+The target's full trusted account is compared with the snapshot using the
+[account identity](#account-identity) rule, including organization. A changed
+login invalidates its binding. If usage measurement refreshed the token,
+fresh matching identity evidence is required before the old measurement
+can support a swap. An account key alone cannot prove continuity.
+Material records and duplicate claims are revalidated when they support
+the selected placement, adoption or backfill; unrelated profile changes
+remain irrelevant.
 
 Exclusion is checked for the target only. The live profile is always
 skipped as `live` before the `exclude` list is read, so adding the live
@@ -4893,20 +4880,13 @@ One of these means a person or another process has acted, for example with
 [`profile switch`](#rotate-switch) or `auto-switch` settings, and the
 rotator does not act against it. The next cycle measures again.
 
-There is one exception. Running Claude Code sessions rewrite
-`~/.claude.json`, and a read during a rewrite can find no account. When
-`~/.claude.json` held an account in step 3 and holds none in step 6, and the
-only other changes are to the target, the cycle logs
-`revalidate: ~/.claude.json held no account; read again`, waits 500
-milliseconds with the lock still held, and makes the comparison once more.
-The cycle then acts on the second comparison alone: it goes ahead,
-reconsiders the target as below, or skips with the labels the second
-comparison found. There is at most one second read per cycle. A
-`~/.claude.json` that names a different account is never read again: the
-next cycle identifies the live login afresh, and
-[hand-change recovery](#rotate-hand-change-recovery) acts when the ledger
-names another account. A `journal`, `pin` or `overflow` change is never
-read again either.
+A readable session block naming the previous account does not require an
+identity retry or invalidate a trusted reading. The existing readability
+gate remains: a missing/unusable `oauthAccount` pauses movement and uses
+the documented readability retry, even when trusted identity is available.
+A changed login does require fresh bound evidence.
+If that evidence is unavailable or conflicting, the operation refuses
+before movement and remains visible on subsequent affected attempts.
 
 When the only changes are to the target's eligibility or identity, the
 cycle reconsiders once:
@@ -4976,19 +4956,12 @@ same comparison with the rules for a stay: it stops only on a `journal`,
 `live`, `pin` or `overflow` change, logs the same skip line, and never
 reads again or reconsiders.
 
-These related problems are known and tracked in their own issues:
+Revalidation and swap completion use trusted identity; later session
+rewrites cannot restore the previous account in the ledger. These checks
+do not change the separate usage-selection and stale-reading policies.
 
-- The live account and the target's account are read from `.claude.json`.
-  A running session that writes the previous account back into
-  `~/.claude.json` after a swap is not detected by step 6, and it can make
-  [hand-change recovery](#rotate-hand-change-recovery) act on false
-  evidence. Reading the account from data that moves with the login is
-  [#1753](https://github.com/rysweet/amplihack-rs/issues/1753).
-- Nothing checks after a swap that `~/.claude` holds the account the
-  ledger records:
-  [#1755](https://github.com/rysweet/amplihack-rs/issues/1755).
-- A profile has been seen read as exhausted after its reset time:
-  [#1754](https://github.com/rysweet/amplihack-rs/issues/1754).
+A profile has been seen read as exhausted after its reset time:
+[#1754](https://github.com/rysweet/amplihack-rs/issues/1754).
 
 ### Rotate decision rule
 
@@ -5066,8 +5039,136 @@ still limits these swaps to one every three cycles.
 
 Nothing else changes: an ALERT when no candidate meets the margin, swaps on
 a measured threshold, swaps on an exhausted live login and upgrade swaps
-behave as in the table above. A damped stay counts as a stay without an
-alert, so it clears the stored ALERT key.
+behave as in the table above.
+
+A damped stay is recorded as `stayed-unread`, not `stayed`: the cycle did
+not read the live login, so it cannot say that login has room. A
+`stayed-unread` cycle is not [capacity for a resume](#capacity-for-a-resume),
+and it leaves the stored ALERT key and the ledger's `alert` as they were.
+A `no-capacity` ALERT written before the probe failed therefore stays in
+place, and a session stopped by a limit keeps waiting. The next cycle whose
+live probe succeeds with the live login below 100% on both windows records
+`stayed` again and clears the key; see
+[Stays and capacity](#rotate-stays-and-capacity).
+
+#### Rotate stays and capacity
+
+A cycle that stays on the live login records one of two outcomes. Which one
+depends only on the reading of the live login taken in this cycle.
+
+The live reading *qualifies* when all of these hold:
+
+- the probe succeeded in this cycle with measured figures: it is not failed,
+  not `unknown, still running`, not a result
+  [collected from a read started in an earlier cycle](#reads-that-outlast-a-cycle),
+  and not unknown;
+- it is not a [spend limit](#spend-status), and the live login has no
+  active [spend block](#overflow-spend-limit-block): no unexpired entry
+  for it in the ledger's `overflow_blocked`, and none added in this cycle;
+- `session_used` is below `100` and `week_used` is below `100`, as numbers
+  (a value of exactly `100.0`, or one that is not a number, does not
+  qualify).
+
+The [reading freshness](#rotate-reading-freshness-and-swap-back-damping)
+gate does not apply here, as it does not apply to any stay or ALERT. A
+passive reading of the live login that is measured and below `100` on both
+windows qualifies, but its age still matters. A `stayed` cycle records, as
+`last_cycle.measured_at`, the time the live reading was taken: its
+`observed_at` for a passive reading, otherwise the time the cycle started
+measuring, whichever is earlier. The limit-resume hook resumes only on a
+`measured_at` strictly later than the limit hit, so a passive reading taken
+before the limit never wakes a session that the limit stopped; the next
+reading taken after the limit does.
+
+A live login with an active spend block cannot spend, whatever its plan
+windows read. A stay on it records `stayed-unread`, and its
+`no-capacity` ALERT is never [advisory](#rotate-advisory-alert): the key is
+stored in `alert` and the hook does not resume.
+
+A live login on the [platform tier](#overflow-tiers) has no usage windows.
+Its reading counts as qualifying for a stay, so a platform stay records
+`stayed` as before, but it never makes an ALERT
+[advisory](#rotate-advisory-alert): `platform-blocked` always blocks.
+
+A stay on an [overflow](#rotate-overflow) profile (`overflow=on`) runs on
+credits, so its plan windows may read `100`. When its probe read the login
+in this cycle, the stay records `stayed`, whatever the figures, and the
+hook resumes as before. Like a platform stay, it never makes an ALERT
+advisory. A failed, carried, unknown or spend-limited probe of the overflow
+profile, or a stay on one with an active
+[spend block](#overflow-spend-limit-block), records `stayed-unread`.
+
+| Live reading | Stay outcome | Capacity | ALERT key |
+|--------------|--------------|----------|-----------|
+| Qualifies | `stayed` | yes | `alert` and `advisory_alert` cleared |
+| Read in this cycle on an overflow profile (`overflow=on`) with no active spend block, at any figures | `stayed` | yes | `alert` and `advisory_alert` cleared |
+| Qualifies, but a passive reading taken before the limit hit | `stayed`, recorded at the reading's time | not for that limit | `alert` and `advisory_alert` cleared |
+| Failed, carried, unknown, still running, spend-limited, or at 100% on either window (and not a read overflow stay) | `stayed-unread` | no | unchanged |
+| Live login with an active spend block, at any figures | `stayed-unread` | no | unchanged |
+
+Every stay that does not read the live login records `stayed-unread`: a
+damped stay after a failed live probe, a stay because the
+[home key](#api-key-login-check) applies to every login, a stay on an
+[overflow](#rotate-overflow) profile whose live probe failed, and a stay
+on a carried result.
+
+A threshold reached on a candidate never changes this. Which candidate is
+best, and whether any candidate has room, does not decide whether a stay
+is capacity; only the live reading does.
+
+#### Rotate advisory alert
+
+When every candidate has passed a threshold, or none meets the margin, the
+[decision rule](#rotate-decision-rule) gives the `no-capacity` ALERT. If the
+live login's reading [qualifies](#rotate-stays-and-capacity) at the same
+time (below 100% on both windows, with no active spend block), the login
+in `~/.claude` can still be used, so the ALERT is *advisory*:
+
+- the `ALERT: no profile has capacity ...` line is written to the
+  [log](#rotate-log) once per key, exactly as for any ALERT;
+- the key is stored in the ledger's `advisory_alert` field, and `alert` is
+  set to `null`;
+- the cycle records `stayed`, which is capacity, so a session stopped by a
+  limit [is resumed](#capacity-for-a-resume).
+
+For example, with `--session-at 90` and three logins:
+
+```
+2026-11-03T10:02:05Z ALERT: no profile has capacity live=work s=92% w=60% (candidates: 0 failed, 2 exhausted)
+```
+
+The ledger after this cycle and the next, which writes no second ALERT
+line:
+
+```json
+{
+  "version": 1,
+  "live": "work",
+  "account": "<accountUuid>",
+  "since": 1793696405,
+  "advisory_alert": "no-capacity:work",
+  "last_cycle": { "at": 1793701445, "measured_at": 1793701325, "outcome": "stayed" }
+}
+```
+
+Every other ALERT is *hard*: `alert` is set, `advisory_alert` is cleared,
+and the cycle records `alerted`, which is not capacity. That covers
+`no-capacity` when the live reading does not qualify (live at 100%, a spend
+limit, or a failed probe), `platform-blocked`, `key-held`, the swap-refused
+ALERTs and every ALERT written before measuring, such as `no-login` and
+`hand-change`.
+
+`alert` and `advisory_alert` are never both set; a hand-edited ledger that
+sets both is refused as `RotateInconsistent`. The two share one
+de-duplication key: when the same key moves from advisory to hard, or back,
+no second ALERT line is written, but `last_cycle.outcome` changes. Every
+step that clears the ALERT key (a completed swap, a stay recorded as `stayed`, a held
+cycle, [hand-change recovery](#rotate-hand-change-recovery)) clears both
+fields.
+
+The one-shot `amplihack profile rotate` exits `0` after an advisory ALERT,
+as after a hard one; only the ledger differs. `--dry-run` writes no ledger
+and prints `would alert:` in both cases.
 
 #### Rotate reading freshness and swap-back damping
 
@@ -5203,8 +5304,8 @@ changes `swapped_away` or any other part of the ledger. Like every direct
 read, a re-read may refresh a login's OAuth token when it is close to
 expiry, and Claude saves that token under its own `.oauth_refresh.lock`; a
 dry run did this before re-reads existed, and it writes nothing else.
-[Revalidation](#rotate-revalidation) under the lock never reads: a stale
-target there counts as unknown.
+[Usage revalidation](#rotate-revalidation) under the lock never measures
+usage: a stale target there counts as unknown.
 
 For example, live `ryan-ryansweet`
 is past `--week-at`, and `ggrant` has a stored reading from before it was
@@ -5742,55 +5843,182 @@ rotator [blocks](#overflow-spend-limit-block) the profile and moves away from
 it as described above. Ending the Claude sessions that run on the login also
 stops spending, but a new launch uses it again.
 
+### Rotation login identity
+
+Automatic rotation and manual `profile switch` share credential-bound
+ownership checks. The checks cover live identification, candidate
+identity, duplicate claims, adoption, measurement snapshots, locked
+revalidation, swap completion and interrupted-swap recovery.
+
+| Evidence | Role |
+|----------|------|
+| OAuth account returned by the existing bounded credential identity reader | Identifies the login used for that reading, including its organization. |
+| Positively identified platform login | Uses the existing API-key rules; an unreadable OAuth login does not become a platform login. |
+| Expected-account record | States which account a profile is meant to own. See [Recorded account](#recorded-account). |
+| Rotate ledger and swap journal | Track placement and transaction state, with sanitized full-account provenance from authorized trusted readings. A legacy account key or an inode alone cannot prove ownership. |
+| `.claude.json` and its `oauthAccount` | Display state. Cannot establish ownership, authorize movement, backfill a record or choose the ledger account. |
+
+Trusted readings are bound to validated non-secret metadata for the login
+file and its directory. The reader rejects symlinks and unsafe files,
+and validates the binding before and after the read. It does not hash
+credential contents or use access times. Replacement or refresh
+invalidates an earlier binding. Continuation requires fresh evidence
+that identifies the current login and satisfies the same full-account
+comparison; a legitimate token refresh alone is not an account change.
+
+Account comparisons preserve [account identity](#account-identity),
+including organization, and the existing legacy expected-record rules.
+Comparing the account key alone is insufficient. Missing fields make
+evidence insufficient only when the applicable ownership check needs
+them; supported legacy email identities do not acquire a UUID requirement.
+
+Ownership scans distinguish claimed, unclaimed and uncertain logins.
+An unclaimed result requires a complete scan of the relevant logins and
+records. A failed duplicate read, unusable record, changed dependency or
+exhausted budget cannot prove absence. Missing records may follow the
+existing adoption/backfill rules only with trusted evidence. Existing
+unusable records block the affected authorization.
+
+Immediately before exchange, both logins must still identify the full
+accounts in the accepted measurement snapshot. Logins and material ownership
+dependencies are validated under the state and refresh locks. Required
+missing, insufficient, stale or contradictory evidence causes an
+actionable refusal on each manual attempt and an ALERT on each affected
+rotation cycle, with no login movement or ledger relabeling. Reasons are redacted and name validated
+profiles only. Unrelated alert deduplication is unchanged.
+
+Refresh-lock ownership is journalled in the `checking` preflight phase
+before final identity requests. Recovery of that phase releases only the
+recorded locks and moves no login. Before exchange, the journal retains
+the authorized incoming and outgoing full identities. Recovery compares
+fresh credential evidence with them, including after S4 replaced the
+ledger. A different unrecorded incoming account cannot replace the
+authorized one. Legacy journals without sufficient expected-account
+evidence refuse conservatively.
+
+The ledger's optional `login_identity` is written only by authorized swap
+completion or confirmed credential-based recovery. Missing-record
+backfill and [cycle seeding](#seeding-a-record) require that full provenance;
+backfill also accepts the full outgoing authorization
+in a pending journal. A UUID-only legacy ledger cannot establish an
+organization. A normal observation does not upgrade it into ownership proof.
+Only a definite filesystem `NotFound` proves that another login is absent;
+permission and other metadata errors make scans and revalidation uncertain.
+
+The reader reuses the existing OAuth profile endpoint, endpoint validation,
+response limits, redirect prohibition and five-second timeout. Reads share
+one bounded identity-work budget, excluding time spent measuring usage;
+identity checks do not refresh
+tokens, start Claude, use usage/reset-time guesses or add another service.
+There are no new flags, configuration files or identity databases. The
+existing `AMPLIHACK_PROFILE_USAGE_API_BASE` endpoint setting and its safety
+checks apply. Usage measurement keeps its existing refresh behavior.
+
+A successful swap writes `ledger.account` from the validated incoming
+account and repairs display fields from trusted identity while preserving
+unrelated JSON keys and file modes. A later session rewrite cannot change
+ownership or ledger identity, during or after recovery grace.
+
+These rules apply to the rotation/switch paths listed above. Standalone
+`profile login`, general display warnings and other auto-switch callers
+retain their separately documented behavior.
+
+#### Login directory rule
+
+An identity read and a [token refresh](#token-refresh) use a login only when
+its directory is a real directory owned by you that no other user can write.
+The one rule governs every identity read, through `stamp()` in
+`rotate/login_identity.rs` (the rotate cycle and its swap, recovery and
+revalidation, the dry run, `profile seed-record` and `profile usage`), and
+every refresh made by a direct usage read, through `dir_private()` in
+`usage_direct.rs` (rotate measurement and `profile usage`). Issue #1962 widened it for all of
+these callers, not only for seeding: before, any group write bit was refused.
+This is a change to which credential directories are trusted. The reason is
+[the cause on candide](#cause-on-candide-issue-1962).
+
+| Directory | Result |
+|-----------|--------|
+| No group or other write bit, such as mode `700` or `755` | Accepted |
+| World-writable | Refused |
+| Group-writable, in your own private group (your primary group, named like your user, with no listed members), with no POSIX access ACL. This is the mode `775` that a umask of `002` leaves | Accepted |
+| Group-writable, in a shared group, or the group lookup failed | Refused |
+| Group-writable with an access ACL, or the ACL cannot be checked | Refused |
+
+The ACL is checked only when the group write bit is set: an ACL mask that lets
+anyone write always sets that bit. A filesystem with no ACL support counts as
+having no ACL.
+
+A refused directory gives an identity read the cause
+[`directory not private`](#identity-read-causes), and a refresh the reason
+`refresh refused`. Changing the directory's group or mode after a reading
+invalidates that reading.
+
+The private-group check sees only a group's listed members. It does not notice
+another user whose primary group is the same group. If your system has one, run
+`chmod 700 ~/.claude`.
+
+This rule applies to the directory only. A login file stays refused when group
+or others can write it, whatever its group. The
+[swap's](#rotate-swap) `~/.claude` check and the
+[shared session](#shared-session-directories) checks do not read ACLs.
+
+#### Cause on candide (issue #1962)
+
+1.2.99 refused every rotate cycle on candide with `~/.claude could not be
+read` and the identity alert. The cause was the directory mode, not an
+expired token, a 401 or a 429.
+
+- On candide the umask is `002`. `~/.claude` is mode `775`, owned by
+  `ryan:ryan`, where `ryan` is the user's own private group (gid 1000, no
+  listed members) and the directory has no access ACL.
+- 1.2.99 refused any login directory with `mode & 0o022 != 0`. The identity
+  read stopped in `stamp()` before any request was sent. A live refresh would
+  have been refused by `dir_private()` in the same way.
+- That matches the candide log: the refusal and the alert, with no refresh,
+  401, 429 or expiry line. With an expired token, 1.2.99 also logs
+  `refresh: expired login in ~/.claude not refreshed (refresh refused)`.
+  Candide's log has no such line, so the token was still valid and the
+  directory check alone explains the refusal. `profile verify` and 1.2.97 do
+  not apply this check, which is why they read the same login.
+
+The reproduction is `crates/amplihack-cli/tests/issue_1962_candide_cause.rs`.
+It uses fake logins and a loopback endpoint, with `~/.claude` set to candide's
+mode. Run against the 1.2.99 release binary (`AMPLIHACK_TEST_BINARY`), the two
+`775` tests fail with candide's lines, and the fake endpoint sees requests for
+the other profiles only, none for the live login. The `700` control passes.
+Against this build all three pass.
+
+The fix is the private-group case of the [rule above](#login-directory-rule).
+`chmod 700 ~/.claude` also clears the refusal on 1.2.99.
+
+The acceptance dry run on candide (#1962 item 5) is tracked in issue #1988.
+Candide stays on 1.2.97 until that run names the live login with no identity
+alert.
+
 ### Rotate live profile
 
-The live profile is the one whose login is in `~/.claude`. Accounts are
-compared by the [account identity rule](#account-identity) (user and
-organization), read from `$HOME/.claude.json` and from each
-`<root>/<name>/.claude.json`. The rotate ledger's `account` field is still
-the user only (or the e-mail address when there is no uuid), so the
-`hand-change` check does not notice a new login to the same user in
-another organization. No credentials file is read. An account value
-over 320 bytes or containing control characters counts as missing. Account
-values are never logged or printed.
+The live profile is the one whose login is in `~/.claude`. The ledger may
+name it, but authorization to return that login to a profile requires
+[trusted identity](#rotation-login-identity) and the applicable ownership
+checks. `~/.claude.json` cannot confirm or contradict the owner.
 
-| Evidence, checked in order | Result |
-|----------------------------|--------|
-| `~/.claude/.credentials.json` is missing or not a regular file | ALERT `no-login`. No swap. A login is never moved into an empty `~/.claude`. |
-| The rotate ledger exists and its `account` matches `~/.claude.json` | Its `live` profile. |
-| The rotate ledger exists, and `~/.claude.json` has no account that can be read | ALERT `home-unreadable`: `ALERT: the account in ~/.claude.json cannot be read (live=<L>); no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace <L>'s login`. Nothing is recovered, moved or swapped, and no `fix` line is written. Claude rewrites `~/.claude.json` often, so one failed read is not taken as a hand change: if the ledger is right, the login in `~/.claude` is `<L>`'s, and a `/login` there would leave `<L>` with no login anywhere. This holds only for the first 5 minutes: once the file has had no readable account for 5 minutes or more, the cycle writes the [stuck `~/.claude.json` guidance](#stuck-claudejson) instead, with the file's problem and `fix` lines. |
-| The rotate ledger exists and its `account` does not match | [Hand-change recovery](#rotate-hand-change-recovery) decides. It runs before this table in every cycle, `--dry-run` included, and either records a matching ledger or stops the cycle, so this row is never reached. |
-| No rotate ledger; the prototype ledger `<root>/.rotator/ledger.json` is trusted (the trust rules in [Logins in `~/.claude`](#logins-in-claude)), names a profile that has nothing at `<root>/<name>/.credentials.json`, and that profile's `.claude.json` either has no account or has the account in `~/.claude.json` | That profile. |
-| No rotate ledger; the prototype ledger exists but fails the row above | The prototype ledger is ignored and logged as `skip: prototype ledger ignored (<reason>)`; the next two rows decide. |
-| No usable ledger; exactly one profile with no login matches the account in `~/.claude.json` | That profile. |
-| No usable ledger; more than one profile with no login matches | ALERT `ambiguous`. No swap. |
-| None of the above | *Adopt*: the login has no profile. |
+| Evidence | Result |
+|----------|--------|
+| The live login is missing or unsafe | No swap; report the login/file-safety failure. Never fill an empty `~/.claude`. |
+| A pending journal or hand-change suspicion is unresolved | Finish authorized recovery or report the refusal; no new swap. |
+| A usable ledger names a live profile | Retain that placement label and validate the login against applicable expected ownership evidence before movement. |
+| No usable ledger; trusted evidence establishes a unique login-less owner | Use that profile, subject to the same ownership and structural checks. |
+| No usable ledger; a prototype ledger names a profile | Accept only with the existing prototype trust/placement checks and trusted ownership evidence. Its name alone cannot establish identity. |
+| More than one owner, or required evidence is uncertain or conflicting | Alert and move nothing; do not relabel the ledger. |
+| A complete trusted scan establishes no owner | Adopt only as part of an authorized swap. |
 
-The prototype ledger has no account field, so these checks are what stop an
-old prototype ledger from naming the wrong profile. That can happen when
-someone ran `/login` in `~/.claude` and then deleted the rotate ledger, as
-the [hand-change steps](../howto/claude-profile-rotation.md#swap-refused)
-direct: once the named profile has been logged in again, it has a login and
-the prototype ledger is ignored. The `<reason>` is `profile has a login`,
-`account does not match`, `untrusted` or `invalid name`.
-
-When the live login is to be adopted, the swap first creates a profile with
-`profile add` under the first free name of `default-original`,
-`default-original-2`, `default-original-3` and so on, and writes the
-`oauthAccount` block from `~/.claude.json` into its `.claude.json`. `add`
-copies no credentials file. Both steps run under the lock, after the
-pre-swap checks and before `j0`; the outgoing login is then moved into that
-profile by the swap. Adoption happens only as part of a swap, never on a
-cycle that stays.
-
-The profile is created before `j0`, so creating it is not journalled; a journal that recovery rolls back removes an adopted profile that still holds no login. If the process stops after `add` but before the
-`oauthAccount` block is written, the new profile exists with no login and no
-account. Nothing has moved, so no recovery is needed, but the account match
-cannot find that profile, and the next swap adopts again under the next free
-name, such as `default-original-2`. Remove the empty profile with
-`amplihack profile remove default-original --yes`. If the process stops
-after the block is written, the profile has no login and the right account,
-so the account match finds it and the next swap uses it.
+Adoption creates `default-original`, `default-original-2` and so on under
+the existing lock. Its display data and ownership record come from the
+trusted outgoing identity; a session block cannot claim an empty profile.
+No credentials are copied. Failure before exchange leaves the login in
+place. An unfinished empty adoption is not evidence of ownership; retry
+must establish ownership again. Existing profile creation, journal and
+cleanup rules still apply.
 
 ### Rotate candidates
 
@@ -5808,7 +6036,7 @@ set of skipped profiles changes, and by the one-shot command on every run.
 | `leased` | Its login is on loan to another profile's session in the auto-switch ledger. |
 | `hosting` | Its directory hosts another account's login in the auto-switch ledger. |
 | `parked` | `<root>/.auto-switch.d/parked/<name>` exists. |
-| `no account` | Its `.claude.json` has no usable `oauthAccount`, so `~/.claude.json` could not be updated after a swap. |
+| `no account` | Its login has no usable trusted account evidence for the required ownership check. Session display data cannot supply it. The cycle also writes `ALERT: trusted login identity unavailable for profile <name>: <cause>`, with the [cause](#identity-read-causes). |
 
 ### Rotate swap
 
@@ -5821,29 +6049,25 @@ fails with `RotateRefused` and nothing changes:
 
 - the profile root is private (as for auto-switch state writes); `$HOME` is
   absolute, a directory rather than a symlink, and owned by you; `~/.claude` is owned by you and
-  not writable by group or others; both profile directories pass the usual
+  not writable by others (group write is accepted only for your own private
+  group, as in the [login directory rule](#login-directory-rule)); both profile directories pass the usual
   directory check;
 - `L` and `T` are regular files owned by you, with no group or other mode
-  bits and exactly one link (checked
-  with `lstat`, never opened);
+  bits and exactly one link (metadata checked with `lstat`; trusted
+  identity is read separately by the bounded reader);
 - `S` does not exist;
-- when `<from>` is a profile (not an adopted login), `<from>` has a
-  [recorded account](#recorded-account) and `$HOME/.claude.json` has an
-  account, that account matches the record. Otherwise the swap is refused
-  with `the login in ~/.claude is not the account recorded for profile <from>`,
-  because moving that login into `<from>` would save another account's
-  login there. A profile with no record, and a `$HOME/.claude.json` with no
-  account, are not checked here. This check only reads;
-- when `<from>`'s record names the account in `$HOME/.claude.json` but
-  `<root>/<from>/.claude.json` does not name that account, its
-  `oauthAccount` block is replaced with the one from `$HOME/.claude.json`,
-  keeping every other key and the file's mode (a missing file is created,
-  mode `0600`). This follows a `/login` in `~/.claude` to the recorded
-  account, after which the profile's file still names the account before;
-  without it the next swap into `<from>` would put that account back in
-  `$HOME/.claude.json`. It is the only write before `j0`. If the file is
-  not a JSON object or cannot be written, the swap is refused with
-  `the recorded account could not be written to the .claude.json of profile <from>: <reason>`;
+- trusted outgoing and incoming identities are bound to the logins being
+  exchanged; their full accounts satisfy applicable expected records,
+  duplicate claims and placement checks;
+- required ownership scans are complete. An unreadable expected record or
+  duplicate login is uncertainty and blocks movement; missing records can
+  follow the existing trusted adoption/backfill rules;
+- these bindings and material dependencies are revalidated under the swap
+  locks immediately before exchange. Refresh requires fresh matching
+  evidence; an earlier inode or account key is insufficient;
+- display repairs use the trusted account, preserving unrelated fields
+  and file modes. A display file that cannot be safely updated refuses
+  before login movement. Its existing account never authorizes a move;
 - `~/.claude` and the profile root are on the same device;
 - the platform has an atomic exchange. Only Linux
   (`renameat2(RENAME_EXCHANGE)`) qualifies. macOS has `renamex_np`, but Claude
@@ -5857,18 +6081,19 @@ journal.
 
 | Step | Action |
 |------|--------|
-| `j0` | Write `journal.json` with `from`, `to`, `adopt`, the inode numbers of `L` (`live_ino`) and `T` (`target_ino`), and `$HOME`. Then take Claude's refresh lock (`.oauth_refresh.lock`, a directory made with `mkdir`, as auto-switch does) in `~/.claude`, and in `<root>/<to>` when it is free, and rewrite the journal with each lock's inode (`home_lock_ino`, `to_lock_ino`) as soon as it is taken. A lock held by someone else is never broken. |
+| `j0` | Write `journal.json` with `from`, `to`, `adopt`, the inode numbers of `L` (`live_ino`) and `T` (`target_ino`), and `$HOME`. Then take Claude's refresh locks (`.oauth_refresh.lock`, directories made with `mkdir`, as auto-switch does) in `~/.claude` and `<root>/<to>`, recording each acquired inode (`home_lock_ino`, `to_lock_ino`). A lock held by someone else is never broken. Before `s1`, validate fresh bound identities and material ownership dependencies under these locks; uncertainty prevents the exchange. |
 | `s1` | Atomically exchange `T` and `L`. `~/.claude` now holds the incoming login; `<root>/<to>` holds the outgoing one. |
 | `s2` | Rename the outgoing login from `<root>/<to>` to `S`, refusing to replace an existing file. Release the refresh locks: each is removed with `rmdir` only if its inode is the one recorded. |
-| `s3` | Replace the `oauthAccount` block in `$HOME/.claude.json` with the one from `<root>/<to>/.claude.json`, keeping every other key and the file's mode. |
-| `s4` | Write the ledger: `live=<to>`, `previous=<from>`, `account`, `since` and `swapped_at`. Clear any ALERT key. |
+| `s3` | Replace the `oauthAccount` display block in `$HOME/.claude.json` from the validated incoming identity, keeping every other key and the file's mode. |
+| `s4` | Write the ledger: `live=<to>`, `previous=<from>`, `account` from the validated incoming account key, `since` and `swapped_at`. Clear any ALERT key. |
 | | Delete `journal.json`. |
-| | Write the [recorded account](#recorded-account), if one is due: for an adopted login, the outgoing account for the new `default-original[-N]` profile, only when no other profile holds that account and organization or has it recorded (otherwise a record left under that name is deleted); for `<from>` with no record, the outgoing account, only when the ledger read before `j0` named `<from>` as live and its `account` matched the outgoing account. For `<from>`, the record is read again first, and a usable one is never overwritten. Nothing is recorded for `<to>`. A failure prints `warning: the recorded account for profile '<name>' was not saved: <reason>` and the swap still succeeds. |
+| | Write the [recorded account](#recorded-account), if one is due: for an adopted login, the outgoing account for the new `default-original[-N]` profile, only when no other profile holds that account and organization or has it recorded (otherwise a record left under that name is deleted); for `<from>` with no record, the trusted outgoing account, only when the existing ledger/provenance and compatibility checks establish ownership and a complete trusted scan finds no other claim. Session JSON cannot supply missing ownership proof. For `<from>`, the record is read again first, and a usable one is never overwritten. Nothing is recorded for `<to>`. A failure prints `warning: the recorded account for profile '<name>' was not saved: <reason>` and the swap still succeeds. |
 
 A swap that [recovery](#rotate-recovery) finishes writes no record.
 
-Credentials files are touched only by `lstat`, the exchange and the rename,
-and each parent directory is synced after each rename. At every point each
+The identity reader uses the logins for bounded identity requests; movement
+uses only the exchange and rename, never copy-and-delete. Each parent
+directory is synced after each rename. At every point each
 login is in exactly one place, and `~/.claude` always has a login.
 
 If the exchange fails with `EXDEV`, `EINVAL` or `ENOSYS`, the swap fails with
@@ -5882,11 +6107,15 @@ fallback.
 
 Recovery runs under the lock at the start of every non-dry-run `rotate`,
 `start` and cycle, before anything else is decided. `--dry-run` never runs
-it. Recovery uses the journal and file metadata only, and only renames
-logins: it never deletes, overwrites or opens a credentials file.
+it. Recovery keeps the existing journal schema and inode-placement rules,
+and reconstructs fresh login-bound identity and applicable expected-record
+evidence before any further movement or ledger settlement. It never
+deletes or overwrites a login.
 
-Recovery decides by where the recorded inodes are, found with `lstat`. The
-journal's `phase` is a hint for the log and for `status`; it never decides.
+Recovery selects the transaction action by where the recorded inodes are,
+found with `lstat`. Every action that moves a login or settles ledger
+identity also requires fresh trusted authorization. The journal's `phase`
+is a hint for the log and for `status`; it never decides.
 This matters most for the commonest crash point, just after the exchange and
 before the journal is rewritten as `s1`, where the journal still says `j0`
 but the logins have already moved.
@@ -5894,7 +6123,8 @@ but the logins have already moved.
 `L` and `T` are not tested in `~/.claude`. Claude may refresh the token in
 `~/.claude` at any time, which replaces the file there with a new inode, so
 neither recorded inode can be expected in `~/.claude` after the exchange.
-`~/.claude/.credentials.json` need only be a regular file.
+A regular file alone is insufficient: fresh bound identity must establish
+the account currently there, including after a token refresh.
 
 | Where the logins are (any phase) | Action | Log line |
 |----------------------------------|--------|----------|
@@ -5902,7 +6132,10 @@ neither recorded inode can be expected in `~/.claude` after the exchange.
 | `target_ino` is at `<root>/<to>/.credentials.json`, `S` does not exist, and `~/.claude/.credentials.json` is a regular file | The exchange did not happen. Roll back: release the recorded refresh locks, then delete the journal. | `recovery: rolled back an interrupted swap work->spare` |
 | `live_ino` is at `<root>/<to>/.credentials.json`, `S` does not exist, and `~/.claude/.credentials.json` is a regular file | The exchange happened; `s2` did not. Roll forward: run `s2`, `s3` and `s4`, then delete the journal. | `recovery: finished an interrupted swap work->spare` |
 | `live_ino` is at `S`, nothing is at `<root>/<to>/.credentials.json`, and `~/.claude/.credentials.json` is a regular file | `s2` happened. Roll forward: release the recorded refresh locks, run `s3` and `s4`, then delete the journal. `s3` and `s4` are safe to repeat. | `recovery: finished an interrupted swap work->spare` |
-| Anything else, a `home` that differs from `$HOME`, an invalid name, or an unknown version | Mark the journal `inconsistent`. The refresh locks are left in place. | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` |
+| Required trusted evidence is unavailable, insufficient, changed or conflicting | Retain the unresolved journal, leave login placement and ledger identity unchanged, and safely release operation-owned refresh locks. Retry requires fresh evidence; report the identity refusal on each affected attempt. | Actionable identity ALERT; no swap. |
+| Inconsistent login placement or a failed directory check, with a valid journal for the current `$HOME` | Safely release the recorded operation-owned refresh locks, then mark the journal `inconsistent`. | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` |
+| A `home` that differs from `$HOME` | Leave the journal, logins and refresh locks untouched for a run with the correct `$HOME`. | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` |
+| An unreadable or invalid journal, including an invalid name or unknown version | Refuse recovery without acting on the untrusted journal; leave it and the refresh locks for resolution. | Journal error; no swap. |
 
 Releasing a refresh lock means removing `<dir>/.oauth_refresh.lock` with
 `rmdir` only when its inode equals the recorded `home_lock_ino` or
@@ -5927,82 +6160,305 @@ only compared with `lstat` results; neither is ever used as a path.
 
 A manual `/login` in `~/.claude` replaces whatever login was there; the
 profile that login belonged to is left with no login. The rotate ledger then
-names a profile `L` whose account is no longer the one in `~/.claude.json`.
+names a profile `L` whose login is no longer the one in `~/.claude`.
 
 Hand-change recovery runs under the lock in every non-dry-run `rotate`,
 `start` and cycle, after [rotate recovery](#rotate-recovery) and before the
-live profile is identified. It acts only when the ledger's `account` does not
-match the account read from `~/.claude.json`; when no account can be read
-there, it does nothing and the cycle ends with the `home-unreadable` ALERT
-from [Rotate live profile](#rotate-live-profile), until that has lasted 5
-minutes; from then on it writes the
-[stuck `~/.claude.json` guidance](#stuck-claudejson). `profile switch` does not
-run it: a switch refuses a hand-changed login (see
-[Rotate switch](#rotate-switch)) and leaves recovery to the next cycle. It reads `.claude.json` files and file metadata only,
-and moves at most one login, by rename. It never opens, copies or deletes a
-credentials file.
+live profile is identified. `profile switch` does not run it: a switch
+refuses while a suspicion is open (see [Rotate switch](#rotate-switch)) and
+leaves recovery to the next cycle.
 
-Recovery only records which profile is live; it decides no move. When the
-recorded profile `M` is an [overflow](#rotate-overflow) profile, the same
-cycle measures and applies the overflow policy as for any cycle that starts
-on credits: with a plan login that has capacity it moves off `M`, and `M`'s
-login (the one from the manual `/login`) goes back to `<root>/<M>/`, so `M`
-is never added to `lost_login`.
+Recovery identifies a login by what its credential returns, never by
+`.claude.json`. Running Claude sessions rewrite `~/.claude.json` from the
+account they hold in memory, so for some minutes after a swap that file can
+still name the previous account
+([#1886](https://github.com/rysweet/amplihack-rs/issues/1886)). No
+`.claude.json` file is read for any recovery decision; the ledger's
+`account` field and the `oauthAccount` blocks are used for display only.
 
-#### The live profile's own record
+Recovery moves at most one login, by rename, and only after two matching
+readings on separate cycles. It never moves a login that is a profile's only
+login, and it never opens, copies or deletes a credentials file itself.
 
-Before the holders are looked at, when `~/.claude/.credentials.json` is a
-regular file and `L` has a usable [recorded account](#recorded-account) that
-names the account in `~/.claude.json`, the `/login` put back the account `L`
-is meant for. After the same checks as before recording (below), `L` stays
-live: the ledger's `account` becomes that account, nothing moves, no
-profile is added to `lost_login`, and the log line is
-`recovered: ~/.claude holds the account recorded for <L>; kept <L> as live`.
-`<root>/<L>/.claude.json` still names the account before the `/login`; the
-next [swap](#rotate-swap) away from `L` writes the new one there before it
-moves the login. This is the fix for the
-`the login in ~/.claude is not the account recorded for profile <L>`
-refusal.
+#### Credential identity
 
-#### Holders
+A login's *identity reading* is one `GET /api/oauth/profile` to Anthropic's
+OAuth profile endpoint, the endpoint Claude Code's `/status` reads, made
+with that login's own OAuth token. The server answers with the account and
+organization the token belongs to; the rotator keeps `account.uuid`,
+`account.email` (lower-cased) and `organization.uuid`, each at most 320
+bytes and free of control characters. An answer with neither a uuid nor an
+e-mail cannot be used and gives the cause `unparseable`.
 
-The account in `~/.claude.json` is compared, by the
-[account identity rule](#account-identity), with every profile that passes
-the usual directory check, whether or not it has its own login. Checked in
-this order, the first that holds decides:
+Two readings are one account when they report the same account uuid in the
+same organization (by e-mail only when neither reports a uuid): one user in
+two organizations is two accounts. `~/.claude.json` is not compared with the ledger; its account block is display state. The identity of a login is therefore
+what the server says about its token, not what any local file says.
 
-| Holders | Condition |
-|---------|-----------|
-| `home-no-login` | `~/.claude/.credentials.json` is missing or not a regular file. |
-| `home-unreadable` | `~/.claude.json` has no usable account. Reached only when the file was read with a different account and then, a moment later, with none (Claude rewrote it in between). |
-| `unreadable` | At least one profile with its own login has no usable account. A profile with no login and no account is skipped. |
-| `none` | No profile has the account. |
-| `one` | Exactly one profile `M` has it. `own login` is whether `<root>/<M>/.credentials.json` exists (by `lstat`). |
-| `many` | Two or more profiles have it. |
+Recovery does not use any of these to identify a login, as the owner
+decided on [#1886](https://github.com/rysweet/amplihack-rs/issues/1886) on
+3 November:
 
-`M` may be `L` itself, when the ledger's `account` was out of date. The same
-rules apply, without the lost-login line.
+- `.claude.json`, which running sessions rewrite from memory;
+- `claude auth status`, which reads the config folder's `.claude.json` and
+  answers even with the network blocked;
+- usage reset times. Earlier builds of this fix compared the reset times of
+  the usage windows, but accounts created together share them: on
+  3 November `nnorth` and `mmorrison` both reset at 14:40Z (session) and
+  2026-11-06T05:00Z (week). Two such accounts read as one, and every swap
+  onto one of them ended in the [only-login ALERT](#only-login-alert).
 
-#### Actions
+Identity reads differ from the reads `profile usage` makes:
 
-| Holders | Action | Log line |
-|---------|--------|----------|
-| `one`, no own login | Record `M` as live. Nothing moves. | `recovered: ~/.claude holds <M>'s login (ledger named <L>); recorded <M> as live` |
-| `one`, own login, every check passes | Move `<root>/<M>/.credentials.json` to the backup, then record `M` as live. | `recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <backup>/.credentials.json; recorded <M> as live` |
-| `one`, a check fails | Nothing moves. Guidance. | The refused ALERT from [Guidance](#guidance) and its `fix` line |
-| Anything else | Nothing moves. Guidance. | The ALERT for those holders from [Guidance](#guidance) and its `fix` lines |
+- token refresh is off, so an identity read never writes a credentials file
+  and never takes `.oauth_refresh.lock`; a token at or past its `expiresAt`
+  is not sent and gives the cause `token expired`;
+- each read has a 5-second timeout, and all reads in one cycle share a
+  30-second identity-work limit, excluding usage measurement; reads not
+  started when the limit runs out are not made.
+  A read started just before the limit may still take its full 5 seconds,
+  so that assessment ends within 35 seconds. Rotation ownership checks
+  share the existing bounded assessment budget rather than starting
+  unbounded duplicate scans. Final rechecks retain their existing limits
+  (see [Checks before the move](#checks-before-the-move));
+- the endpoint base comes from the same setting as the direct read
+  (`AMPLIHACK_PROFILE_USAGE_API_BASE`); an endpoint that fails the direct
+  read's checks means no request is sent;
+- [passive readings](#passive-readings), the usage endpoint and the
+  `claude -p /usage` [fallback](#fallback-probe) are never used, and no
+  child process is started.
 
-Recording `M` sets the ledger's `live` to `M`, `account` to `M`'s account,
-`since` to the cycle's time, and clears `alert` and `guidance`, in one atomic
-write. If `L` is not `M` and `L` has no login file, `L` is added to
-`lost_login`. After a recovery the cycle continues from step 3 with the new
-ledger: `L` is skipped as `no login`, and the same cycle may swap to a
-candidate with capacity or raise `no-capacity`.
+Raw identity responses and file bindings remain in memory. Only sanitized
+account fields are retained in the existing ledger/journal; no token or
+raw response is stored. Swap completion
+uses the validated incoming account for the existing ledger key and
+sanitized display fields; authorized adoption/backfill uses the trusted
+outgoing identity for the outgoing profile's ownership record. Routine
+logs print no account identifiers or e-mails. Only
+[`profile verify`](#profile-verify) prints an e-mail, on request. The token
+goes only in the request's `Authorization` header.
 
-Checks before recording, in both `one` cases: the profile root is private, no
-swap journal is pending or inconsistent, and `HOME` and `~/.claude` pass the
-[swap's](#rotate-swap) home checks. Extra checks before the move, each with
-its `<reason>`:
+##### Identity read causes
+
+A failed identity read has one fixed cause. The rotate log and the dry run print
+it, and so does `profile switch` when the read of the login in `~/.claude` fails.
+A cause never holds a token, an account or server text.
+
+| Cause | When |
+|-------|------|
+| `token expired` | The token is at or past its `expiresAt`, and no refresh replaced it. |
+| `http 401`, `http 403`, `http 429` | The endpoint answered with that status. |
+| `http 3xx`, `http 4xx`, `http 5xx` | Any other status of that class. |
+| `timeout` | No answer within the 5-second timeout. |
+| `transport` | The connection or TLS failed, the server closed it, or the endpoint setting is unusable, so nothing was sent. |
+| `unparseable` | The body is too large, is not a JSON object, or names no account. |
+| `no oauth token` | The login file has no usable token. |
+| `directory not private` | The directory fails the [login directory rule](#login-directory-rule). |
+| `login file not trusted` | The login file is missing where a login is required, is a symlink or not a regular file, belongs to another owner, can be written by group or others, has more than one link, or is on a different device from its directory. A [seeding scan](#seeding-a-record) treats a definitely missing login in another profile as no login, not as this cause. |
+| `login changed during read` | The file or directory changed between the checks before and after the read. |
+| `identity read budget used up` | The cycle's 30-second identity limit ran out before this read started. |
+
+The ALERT for the live login is:
+
+```
+ALERT: trusted login identity unavailable: <cause>
+```
+
+This ALERT is written on every cycle it applies to, with the cause that cycle
+found, whether or not the cause changed. So is the candidate form,
+`ALERT: trusted login identity unavailable for profile <name>: <cause>`, the
+[unreadable-ledger ALERT](#unreadable-ledger-stop) and the
+[same-account ALERT](#seeding-a-record).
+
+`profile switch` refuses with the same text when the read of the login in
+`~/.claude` fails. Swap authorization does too, in `profile switch` and after
+`ALERT: swap refused: ` in a cycle, when a read of either login or a read in its
+scan of other profiles fails. Other identity refusals have no cause and keep their
+fixed text. These are a profile root that cannot be listed, a login or record that
+changed before the exchange, and a refresh lock that recovery does not recognize:
+
+```
+trusted login identity unavailable or changed; retry after checking profile verify
+```
+
+Swap authorization's specific refusals also stay as they are, except that
+`trusted login identity: outgoing ownership is not established; run: amplihack profile seed-record <name>`
+now names the command.
+
+##### An expired live login
+
+Because an identity read never refreshes, a login in `~/.claude` whose token
+is at or past its `expiresAt` could not otherwise be identified, and with no
+running Claude session to refresh it every cycle would raise the
+trusted-identity ALERT and move nothing. So each rotate cycle and
+`profile switch NAME`, after swap recovery and before hand-change recovery or
+any identity read, refreshes that login once when its token has expired, as
+the [direct read](#token-refresh) refreshes a profile's login, under
+`~/.claude/.oauth_refresh.lock`.
+
+The refresh does not depend on the rotate ledger or the lease view, so an
+unreadable ledger or a lease view that bars the live profile does not stop it.
+That exception covers `~/.claude` only: a profile folder the lease view bars is
+never refreshed. These still refuse the refresh:
+
+| Refusal | Reason in the log |
+|---------|-------------------|
+| A swap journal exists | `refresh busy` |
+| Another process holds the refresh lock | `refresh busy` |
+| The directory fails the [login directory rule](#login-directory-rule) | `refresh refused` |
+
+A token that has not expired is left alone, and nothing is logged for it;
+Claude refreshes it. The log says
+`refresh: expired login in ~/.claude refreshed; identity read again`, or
+`refresh: expired login in ~/.claude not refreshed (<reason>)` with one of the
+direct read's reasons.
+
+The refresh is not identity evidence. The cycle reads the identity of the
+refreshed credential afresh, and only that reading can let a login move. A
+refresh that fails, or a refreshed login whose identity cannot be read or
+conflicts with its record, still gives the ALERT and moves nothing.
+
+`--dry-run` never refreshes. For an expired live login it prints
+`would refresh: expired login in ~/.claude` and then reports the cause
+`token expired`, which a real cycle's refresh might have cleared.
+
+A refresh replaces the login's token on disk. A running session may still hold
+the old refresh token in memory.
+
+##### Unreadable-ledger stop
+
+When the rotate ledger exists but cannot be read, the cycle still refreshes an
+expired live login and reads its identity, then stops:
+
+```
+ALERT: rotate ledger unreadable; live identity: <readable|cause>; nothing moved, no record written
+```
+
+The cycle ends as `alerted`, seeds no record, moves no login and leaves the
+ledger file unchanged. With no ledger to hold an ALERT key, the line is written on
+every cycle while the ledger stays unreadable. `--dry-run` prints the same text after `would alert: `,
+and `profile switch` refuses with it.
+
+#### When recovery reads
+
+Let `L` be the profile the ledger names as live. Recovery returns at once,
+makes no request and writes no line, unless all of these hold:
+
+1. the ledger names a live profile `L`;
+2. no swap journal is pending;
+3. the last swap is at least `SWAP_GRACE` (600 seconds) old, measured from
+   the ledger's `swapped_at`, or the ledger has no `swapped_at`;
+4. `~/.claude/.credentials.json` is a regular file holding an OAuth login.
+
+`SWAP_GRACE` covers the minutes after a swap during which running sessions
+can still write the previous account into `~/.claude.json` and refresh the
+token they hold. With the recommended `--interval 120`, it spans five cycles.
+A `swapped_at` more than `SWAP_GRACE` later than the cycle's time (the clock
+went back) also turns recovery off; the cycle writes the
+`the last swap time is later than now` note described under
+[Notes](#hand-change-notes).
+
+When it reads, recovery reads `~/.claude` first. When that account is the
+one [recorded](#recorded-account) for `L`, the finding is Clear and no
+profile is read. Otherwise it reads the profiles: each profile that passes
+the usual directory check and has its own OAuth `.credentials.json`, in name
+order. `L` is read too when its directory still holds a copy. A cycle
+therefore makes one request when `~/.claude` cannot be read or holds `L`'s
+recorded account, and at most one more for each profile with its own
+login.
+
+#### Findings
+
+The `~/.claude` account is compared with `L`'s [recorded
+account](#recorded-account) and with each profile's reading. The first row
+that holds decides:
+
+| Readings | Finding | What happens |
+|----------|---------|--------------|
+| The `~/.claude` read failed | Cannot tell | A [note](#hand-change-notes) with the [cause](#identity-read-causes). Nothing moves; the ledger is not relabelled. |
+| The account recorded for `L` | Clear | Nothing. No line. No profile is read. |
+| Same account as more than one profile | Cannot tell | A note naming those profiles. |
+| Same account as `L`'s own copy | Clear | Nothing. No line. |
+| Same account as exactly one other profile `M`, and `M` has a record naming another account | Cannot tell | A note: `M`'s own folder holds a login that is not `M`'s; run [`profile verify`](#profile-verify). |
+| Same account as exactly one other profile `M` | Suspect `M` | See [Two readings](#two-readings). |
+| Same as none, and one or more profile reads failed, or the limit ran out | Cannot tell | A note naming those profiles and each one's cause. |
+| Same as none, and `L` has a record naming another account | Cannot tell | A note pointing at [`profile verify`](#profile-verify). |
+| Same as none, and `L` has no record | Clear | No recovery action. This proves no duplicate was found, not that `L` owns the live login. A later swap still requires trusted authorization, and [seeding](#seeding-a-record) decides whether `L` gets a record. |
+
+A profile with no login of its own is never compared, so recovery never
+records a login-less profile as live. Such a profile's login can only be in
+`~/.claude`, and nothing the credential returns says whose it is. The cycle
+keeps the ledger's `L`. Earlier releases recorded that profile from
+`~/.claude.json`, or kept `L` because its [recorded account](#recorded-account)
+matched; neither happens now.
+
+A Clear finding that no profile holds a duplicate does not establish the
+live login's owner. Any later swap still requires trusted identity and
+applicable ownership checks. A recorded-account conflict refuses movement
+regardless of session JSON; missing records use the existing trusted
+adoption/backfill rules or [seeding](#seeding-a-record). An uncertain scan cannot authorize movement or
+ledger relabeling. See [Rotation login identity](#rotation-login-identity).
+
+#### Two readings
+
+The first "Suspect `M`" writes the ledger's `hand_suspect` (`M` and the
+cycle's time as `first_seen`) and the suspicion note. It never moves a
+login or relabels the ledger. A later cycle confirms the suspicion only when
+all of these hold:
+
+- its finding is "Suspect `M`" for the same `M`;
+- at least one rotation interval (`--interval`, at least 1 second) has
+  passed since `first_seen`;
+- `first_seen` is not earlier than `swapped_at` and not later than the
+  cycle's time.
+
+A finding of "Suspect" for a different profile replaces the record and
+starts again. Any other finding clears it. A `first_seen` later than the
+cycle's time resets the record to the cycle's time.
+
+While a suspicion is open, the live login counts as hand-changed: the cycle
+writes the note, then the `hand-change` ALERT from
+[Rotate live profile](#rotate-live-profile), measures nothing, does not swap,
+and ends as `alerted`. `profile switch` refuses in the same way. A rotator
+that has stopped leaves the suspicion in the ledger, and switching stays
+refused until a cycle runs; `amplihack profile rotate` with no subcommand
+runs one.
+
+#### Only-login rule
+
+A confirmed suspicion means the server reported the same account, twice,
+for `~/.claude` and for `<root>/<M>/.credentials.json`: they are two logins
+of one account. Recovery may move `M`'s copy aside and
+record `M` as live only if every profile that had a login before the cycle
+still has one after it. `L` had the login in `~/.claude`; once `M` is live,
+`L` keeps a login only if `<root>/<L>/.credentials.json` holds one: a
+regular file owned by you, opened without following a symlink, not writable
+by group or others, and holding a JSON object (an OAuth login or an API-key
+profile's file). A symlink, another file type, another owner, or an empty,
+unparsable or unreadable file counts as no login.
+
+| `L` after the move | Action |
+|--------------------|--------|
+| Has its own login | The checks below run. If they pass, `M`'s copy is moved and `M` is recorded as live. |
+| Would have no login anywhere | Refused. The [only-login ALERT](#only-login-alert) is written; both logins stay where they are, the ledger still names `L`, and the suspicion stays open, so the cycle does not swap. |
+
+A manual `/login` in `~/.claude` over a login the rotator swapped in
+therefore ends in the only-login ALERT, not in an automatic recovery: the
+`/login` already replaced `L`'s only login, and recording `M` would hide
+that.
+
+Because identity is the server's account, two different accounts never
+reach this rule, however their usage windows line up. A swap onto one of a
+pair of accounts that reset at the same times goes ahead with no note and
+no ALERT. The rule is reached only when `~/.claude` and `M` hold one
+account: a `/login` over `L`'s login, or `L` and `M` set up as two profiles
+of one account with no record for `L`.
+
+#### Checks before the move
+
+Checks before recording, with the `<reason>` each gives when it fails: the
+profile root is private, no swap journal is pending or inconsistent, and
+`HOME` and `~/.claude` pass the [swap's](#rotate-swap) home checks. Then:
 
 | Check | `<reason>` when it fails |
 |-------|--------------------------|
@@ -6011,10 +6467,11 @@ its `<reason>`:
 | `M`'s login is not leased and `M` does not host another login in the auto-switch ledger; an unreadable auto-switch ledger fails this check. | `<M>'s login is lent out or it hosts another login` |
 | `<root>/<M>/.credentials.json` is a private regular file with one link, owned by you. | `a login file is not a private regular file with one link` |
 | `~/.claude`, `<root>/<M>` and the root are on one device. | `~/.claude and the profile root are on different devices` |
+| `~/.claude` and `M` are read again and the server reports one account for both, and `<root>/<M>` passes the directory check again. The two re-reads have their own limit of 10 seconds. | `~/.claude changed during recovery` |
 | `.rejected-logins/` and the backup directory can be created. | `cannot create the backup directory: <error>` |
 | `.rejected-logins/` and the backup directory are real directories owned by you with no group or other bits. | `backup directory is not private: <path>` |
 | A free backup name exists. | `no free backup name` |
-| `~/.claude.json` still has `M`'s account after the backup directory is created. | `~/.claude changed during recovery` |
+| After the backup directory is created, just before the rename: the device, inode and change time of both login files are those seen at the start of the cycle. The new, empty backup directory is removed again when this check or the rename fails. | `~/.claude changed during recovery` |
 
 The backup is `<root>/.rejected-logins/rotate-<M>-<YYYYMMDDTHHMMSSZ>/`, where
 the time is the cycle's start in UTC. If that name exists, `-2` to `-99` is
@@ -6024,63 +6481,356 @@ exists must be a real directory owned by you with no group or other bits, as
 never through a symlink, and must then be a directory owned by you with no
 group or other bits; one that is not is removed again (it is new and empty)
 and the move is refused. Its parent is synced. The login is moved into it
-with `renameat2(RENAME_NOREPLACE)`.
-Nothing else is moved, and `<root>/<M>/.claude.json` is not changed.
+with `renameat2(RENAME_NOREPLACE)`. Nothing else is moved, and
+`<root>/<M>/.claude.json` is not changed.
 
-The steps run in this order: checks, create the backup directory, re-check
-`~/.claude.json`, move the login, write the ledger. There is no journal.
-Every interrupted state is safe:
+On success the log line is:
+
+```
+recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <backup>/.credentials.json; recorded <M> as live
+```
+
+Recording `M` sets the ledger's `live` to `M` and `since` to the cycle's
+time, records the trusted credential account, and clears `alert`, `guidance` and `hand_suspect`, in one
+atomic write. The cycle then carries on with the new ledger and may swap in
+the same cycle. When `M` is an [overflow](#rotate-overflow) profile, the
+same cycle measures and applies the overflow policy as for any cycle that
+starts on credits.
+
+The steps run in this order: checks, re-read and re-check the directory,
+create the backup directory, check the inodes, move the login, write the
+ledger. A refusal therefore leaves no new directory under
+`.rejected-logins/`. There is no journal. Every
+interrupted state is safe:
 
 | Stopped after | State | Next cycle |
 |---------------|-------|------------|
 | Creating the backup directory | An empty `rotate-<M>-<time>/`. | Uses the next free name. The empty directory is left. |
-| Moving the login | `M` has no login; the ledger still names `L`. | Holders `one`, no own login: records `M`. |
+| Moving the login | `M` has no login; the ledger still names `L` and holds the suspicion. | `M` is no longer compared, so the finding is Clear and the suspicion is cleared. The ledger keeps `L`. Because `<root>/<L>/.credentials.json` exists, a [swap](#rotate-swap) away from `L` is refused, so no login is saved under the wrong profile. Remove `<ledger>` to set it right; the next cycle then finds the live profile afresh. |
 
-If a session on `M` writes a new login there after the move, the next cycle
-finds `one` with own login again and makes a new backup.
+If a session on `M` writes a new login there after the move, later cycles
+compare it again from the start.
+
+#### Hand-change notes
+
+A note says that recovery could not tell, or has one reading and waits for a
+second. It never moves anything. At most one note is written per cycle, and
+a note identical to the previous cycle's is not written again, so an expired
+token in `~/.claude` writes one line, not one per cycle. The note is kept in
+the ledger's `guidance` until the finding changes, and
+[`rotate status`](#rotate-status) prints it as a `note:` line. The one-shot
+command prints it on every run.
+
+Suspicion, first reading or before the interval has passed:
+
+```
+note: ~/.claude holds the same account as profile <M> (ledger names <L>); nothing moved, the next cycle reads again
+```
+
+Cannot tell:
+
+```
+note: cannot tell whose login is in ~/.claude (live=<L>): <why>; nothing moved
+```
+
+| Cause | `<why>` |
+|-------|---------|
+| The `~/.claude` read failed | `~/.claude identity read failed: <cause>`, with its [cause](#identity-read-causes), such as `http 429` or `token expired` |
+| Same account as more than one profile | `it holds the same account as more than one profile (<M1>, <M2>)` |
+| One or more profile reads failed | `profile <P1> not read (<cause>), <P2> not read (<cause>)` |
+| The profile root could not be listed | `the profile root could not be listed` |
+| The 30-second limit ran out | `the reads ran out of time` |
+| `swapped_at` is more than `SWAP_GRACE` later than the cycle's time | `the last swap time is later than now` |
+| Same account as one profile `M` whose record names another account | `it holds the same account as profile <M>, which is not the account recorded for <M>; run amplihack profile verify` |
+| Same as none, and `L`'s record names another account | `it holds an account other than the one recorded for <L>; run amplihack profile verify` |
+
+Profile lists are sorted by name and joined with `, `. Notes hold profile
+names and fixed text only. A note longer than the ledger's 1024-byte `guidance`
+limit is cut at a character boundary before it is saved, so a long list of
+profiles cannot make the ledger unreadable.
+
+#### Only-login ALERT
+
+```
+ALERT: ~/.claude holds the same account as profile <M> on two readings (ledger names <L>), but <L> has no login of its own, so recording <M> would leave <L> with no login anywhere; nothing moved, no swap
+fix 1: if a /login in ~/.claude replaced <L>'s login: close every claude session that uses ~/.claude, then run: mkdir -m 700 <dir> && mv -n <root>/<M>/.credentials.json <dir>/ && rm <ledger>; then run: amplihack profile login <L>
+fix 2: if <L> and <M> are profiles of one account, run amplihack profile verify to see the account each folder holds, then remove one of the two profiles
+```
+
+The ALERT and its `fix` lines are written on every cycle while the suspicion
+stays confirmed, and kept in the ledger's `guidance`. `fix 1` sets `M`'s copy
+aside, so the login in `~/.claude` is `M`'s only login, and removes the
+ledger; with no ledger, the next cycle finds the live profile as
+[Rotate live profile](#rotate-live-profile) describes.
+
+`profile login <L>` can run at once; there is no need to run a rotate
+cycle first. Standalone `profile login` keeps its existing
+[account match](#logins-in-claude): with no ledger, it treats `L` as live
+only when `L` has no login and its `.claude.json` names the account in
+`~/.claude.json`. If stale session data still names `L`, that standalone
+check can refuse with `profile '<L>' is the rotator's live profile`.
+After closing the sessions, run plain `claude` with no `CLAUDE_CONFIG_DIR`
+and without `/login`, then quit so it updates its display account before
+retrying `profile login <L>`.
+
+Rotation and `profile switch` use trusted login-bound evidence instead.
+With no ledger, a cycle can identify `M` as live only through the
+[trusted ownership checks](#rotate-live-profile); it cannot identify `L`
+or write a new ledger from stale session JSON. Missing, uncertain or
+conflicting required evidence prevents movement and ledger relabeling.
+
+#### profile verify
+
+`amplihack profile verify [--fix]` audits which account each folder holds,
+by the same [identity reading](#credential-identity) recovery uses: one
+`GET /api/oauth/profile` per login with its own token, no refresh, no
+`.claude.json`, no reset times. It was added for
+[#1886](https://github.com/rysweet/amplihack-rs/issues/1886), to be run
+once after the fix to find and undo profile names crossed by the
+3 November misfires, and can be run at any time.
+
+It prints one line for `~/.claude`, then one for each profile in name
+order:
+
+```
+~/.claude (live ffarmer) -> ffarmer@mistt.com: ok
+ffarmer -> no login
+mmorrison -> no login
+nnorth -> mmorrison@mistt.com: MISMATCH, recorded for mmorrison
+```
+
+The account is the e-mail the server reports, or its uuid when it reports
+no e-mail. `~/.claude` is compared with the record of the profile the rotate
+ledger names as live. The statuses are:
+
+| Status | Meaning |
+|--------|---------|
+| `ok` | The folder holds the account recorded for it. |
+| `MISMATCH, recorded for <names>` | The folder holds another account, recorded for those profiles (`recorded for no profile` when none). |
+| `no record, recorded for <names>` | The profile has no record. [`profile seed-record`](#profile-seed-record) can add one. |
+| `no live profile, recorded for <names>` | `~/.claude` when the ledger names no live profile. |
+| `no login` | No `.credentials.json`; for the live profile this is normal after a swap. |
+| `not an OAuth login` | An API-key file, or a file that is not private or cannot be parsed. |
+| `not read (<reason>)` | The server did not answer for the token: one of the fixed [direct-read](#direct-read) reasons, such as `token expired` or `http 401`, or `folder refused` for a folder that fails the directory check. |
+
+Without `--fix` nothing is written. The command exits non-zero when any
+folder holds an account other than its recorded one and is still there at
+the end.
+
+Do not run `--fix` until
+[#1960](https://github.com/rysweet/amplihack-rs/issues/1960) is closed. It
+writes no records, so it never fixes `no record`; use
+[`profile seed-record`](#profile-seed-record) for that. The rest of this section
+describes what the flag does.
+
+With `--fix`, under the rotate lock (refused when another process holds it
+for 2 seconds) and never while a swap journal exists, it moves a profile
+folder's own login `P` into the folder of profile `T` only when all of
+these hold:
+
+- `P`'s record names another account, and exactly one other profile `T`
+  has a record naming the account `P` holds;
+- `T` is not the profile the ledger names as live (its login is in
+  `~/.claude`);
+- `T`'s folder holds no `.credentials.json` at all. A target that holds a
+  different account, the same account, or a login that could not be read is
+  refused: two copies of one login share a refresh token, so one of them
+  must be chosen by hand;
+- no other move in the same run goes to `T`.
+
+Each other mismatch prints `<P>: not moved: <why>`. `~/.claude` is never
+moved; a mismatch there prints `~/.claude: not moved by --fix; use amplihack
+profile switch`. A move goes from one folder to an empty one, so a pair of
+folders that hold each other's accounts is reported, not swapped; fix such a
+pair by hand.
+
+Before the first move, `--fix` writes
+`<root>/.rejected-logins/verify-<YYYYMMDDTHHMMSSZ>/moves` (directory `0700`,
+file `0600`, created fresh, never through a symlink). It lists each move as a
+`# <P> -> <T>` comment followed by the `mv -n` command that undoes it. This
+list is the backup. No login is copied, because a copy of a login is a
+second holder of its refresh token. Just before each move, `P` is read
+again and must still report the account surveyed, and `T` must still hold
+no login file. The move itself is `renameat2(RENAME_NOREPLACE)`, so it never
+replaces a file. The ledger and the records are not changed. The command
+prints `moved <P>'s login to <T>` for each move.
+
+Nothing printed holds a token. The e-mail addresses are printed because the
+command is asked to show them; the rotator itself never prints or logs an
+account.
+
+#### Seeding a record
+
+Swapping away from a profile needs a [record](#recorded-account) or other
+ownership evidence. A live profile with no record gets one in one of two ways.
+Both use one fresh [identity reading](#credential-identity) per profile. Neither
+moves a login or writes a credentials file, and neither goes through
+`profile verify --fix`.
+
+| Path | Requires | Outcome |
+|------|----------|---------|
+| A rotate cycle, live profile only | The ledger's `login_identity` matches the reading in full, plus the shared rules below | Records the account and logs `seeded: recorded account for live profile <L>`. Rotation goes on. |
+| A rotate cycle whose ledger has no `login_identity` | Cannot seed: an older key alone does not prove ownership | No record and no swap. Measuring goes on, and the note below names the command. |
+| [`profile seed-record <name>`](#profile-seed-record) | The operator names the profile, plus the shared rules below | Shows the account. Writes the record only with `--write`. |
+
+[`profile switch`](#rotate-switch) never seeds. Run `profile seed-record` first if
+a switch is refused because the live profile has no record.
+
+The shared rules are:
+
+- The reading is trusted and has both an account uuid and an organization. An
+  account with no organization is never seeded.
+- The account and organization are printable values. A value with control
+  characters or terminal escape sequences stops the seed.
+- No swap journal exists, whether the rotate or the auto-switch one, and no
+  hand-change suspicion is open. A journal that cannot be read counts as present.
+- The profile has no record. A usable record is never overwritten, and an
+  unusable one stops the seed until you repair it.
+- A complete scan finds no other profile claiming that uuid and organization.
+- `~/.claude` is compared too. For the live profile it is the reading itself. For
+  any other profile it is read once and must hold a different account; the seed
+  stops if it holds the same uuid and organization or if that read fails. A
+  definitely missing login or an API-key login in `~/.claude` holds no account to
+  compare.
+- Just before the write, under the lock, the reading still matches the login
+  and the scan's claims still hold. A preview made before the lock cannot justify
+  a write.
+
+**How the scan counts each other profile.** Seeding does not refresh tokens, so
+one expired spare login must not block every seed. Swap authorization keeps its
+stricter scan, which refuses on any failed read.
+
+| Other profile | Seeding counts it as |
+|---------------|----------------------|
+| Has a usable record | A claim on its recorded account, whatever the rows below find. |
+| Has an unusable record | Blocks the seed, naming the profile. |
+| Its login file is definitely missing | No read and no claim from the login. Any other failure to check the file, such as permission denied, is not proof that it is missing and blocks the seed as `login file not trusted`. |
+| Holds an API-key login | No read and no claim from the login. |
+| Read succeeds | A claim on the account it holds. |
+| Has a usable record, and the read failed with `token expired`, `http 401`, `http 429`, `timeout`, `transport` or `identity read budget used up` | Its record stands in for the read. |
+| Has a usable record, and the read failed with any other cause, including `no oauth token`, any other `http` status and `unparseable` | Blocks the seed, naming the profile and cause. |
+| Has no record, and the read failed with any cause | Blocks the seed, naming the profile and cause. |
+
+**Two profiles with one e-mail.** Accounts are compared by uuid and
+organization, never e-mail alone. `ryan-mistt-personal` and `ryan-mistt-org` can
+share `you@example.com` and still be told apart when their organizations differ.
+When they cannot be told apart, the cycle alerts and names them all, sorted:
+
+```
+ALERT: cannot tell profiles <L>, <M> apart: both claim the account in ~/.claude; no record written, nothing moved
+```
+
+This line is written on every cycle it applies to. It describes the live profile,
+so only a cycle writes it; [`profile seed-record`](#profile-seed-record) has its
+own refusal text.
+
+**When a cycle cannot seed.** It logs this line once per process, and a real
+cycle goes on to measure. A swap away from the profile is then refused with
+`ALERT: swap refused: trusted login identity: outgoing ownership is not established; run: amplihack profile seed-record <L>`.
+The note says why the seed stopped:
+
+```
+note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>
+```
+
+| `<reason>` | Meaning |
+|------------|---------|
+| `the ledger has no login identity` | The ledger is from before login identities were kept, so it cannot prove ownership. |
+| `identity read failed: <cause>` | The live login's [identity read](#identity-read-causes) failed. |
+| `the reading has no account uuid or organization` | The server's answer cannot identify one account in one organization. |
+| `the account cannot be printed safely` | A value holds control characters or terminal escape sequences. |
+| `a swap journal is pending or unreadable` | Finish [recovery](#rotate-recovery) first. |
+| `a hand-change suspicion is open` | Only `profile seed-record` reports this; a cycle writes the hand-change ALERT instead. See [Two readings](#two-readings). |
+| `profile <P> not read (<cause>)` | The scan is blocked by that profile's failed read. |
+| `profile <P> has an unusable record; repair it first` | That profile's record, or the live profile's own, stops the seed. |
+| `the profile root could not be listed` | The scan cannot be complete. |
+| `the ledger does not match the reading` | The ledger's identity names another account. |
+
+`--dry-run` prints `would seed: record for live profile <L> from a fresh reading`
+when a real cycle would seed, and otherwise the same note after `would note: `.
+A dry-run `live=<L>` token comes from the ledger. It names the login for
+reporting and authorizes nothing, so read the `would` line beside it to see
+whether the rotator can swap away from `<L>`.
+
+A record is a trust anchor: with one, swap authorization skips the strict
+outgoing scan. That is why every doubt above stops the seed.
+
+#### profile seed-record
+
+```
+amplihack profile seed-record <name> [--write]
+```
+
+`<name>` must be a valid profile name; the command takes no folder argument. It
+reads `~/.claude` for the profile the ledger names as live, and
+`<root>/<name>/.credentials.json` for any other profile. It never refreshes a
+token, starts `claude`, moves a login or writes a credentials file.
+
+Without `--write` it writes nothing:
+
+```
+$ amplihack profile seed-record ryan-mistt-personal
+ryan-mistt-personal -> you@example.com, organization 00000000-0000-0000-0000-000000000000: no record; nothing written; run with --write to record it
+
+$ amplihack profile seed-record ryan-mistt-personal --write
+ryan-mistt-personal -> you@example.com, organization 00000000-0000-0000-0000-000000000000: recorded
+```
+
+With `--write` it takes the rotate lock first and makes every check under it.
+A busy lock fails with `rotate: lock busy`, and the log gets
+`seed-record: recorded account for profile <name>`, with no account in it.
+
+The [shared rules](#seeding-a-record) apply, together with these:
+
+| Situation | Result |
+|-----------|--------|
+| A usable record exists | `<name>: a usable record exists; nothing written`, exit 0. Also the result when another process writes one first. |
+| `<name>`'s record is unusable | Refused: `profile <name> has an unusable record; repair it first` |
+| The ledger exists but cannot be read | Refused, with or without `--write`: `the rotate ledger is unreadable` |
+| `<name>` is not the ledger's live profile, or there is no ledger, and `~/.claude` holds the account the reading shows | Refused: `~/.claude holds this account, so the login may be live under another name` |
+| The same, and the read of `~/.claude` failed | Refused: `~/.claude identity read failed: <cause>` |
+| Another profile claims the account | Refused, with names sorted: `another profile claims this account: <P1>, <P2>` |
+| `<name>` is the ledger's live profile, the ledger has a full `login_identity`, and the reading differs | Refused: `the ledger does not match the reading` |
+| `<name>` is the ledger's live profile, the ledger has only an older key, and it is not the reading's uuid | Refused: `the ledger's older key does not match the reading` |
+| `<name>` is the ledger's live profile, and the older key is an e-mail | Refused: `the ledger's older key is an e-mail, which cannot prove ownership` |
+| `<name>` is not the ledger's live profile, and no rule refuses | Allowed. The folder name is the only evidence tying the profile to its login, so read the account shown before using `--write`. |
+| An account value is unsafe to print: empty, over 320 bytes, or holding a control or bidirectional-override character (U+202A–U+202E, U+2066–U+2069) | It prints `<unprintable>`, and `--write` is refused: `the account cannot be printed safely` |
+| The token has expired | Refused: `identity read failed: token expired`. Run [`profile usage <name>`](#usage-command) to refresh a non-live profile. The next rotator cycle refreshes the live login. |
+
+A refusal prints `seed-record <name>: refused: <reason>; nothing written` and exits
+1. It writes no ALERT. Other `<reason>` values, such as a pending journal or a
+blocked scan, are those in the [cycle's table](#seeding-a-record), except
+`the ledger has no login identity`, which only a cycle reports.
+
+The e-mail and organization go to stdout only, never to the rotate log, the
+ledger or an alert.
+
+The record is created without replacing anything: a private temporary file
+(`0600`, no symlink followed) is linked to the final name, so a record that
+already exists stays as it was. A filesystem that refuses hard links gives a
+named error and no record; the command does not fall back to a rename.
+
+Once the record is linked, it counts as written. If removing the temporary name
+or syncing the directory then fails, that is logged as a warning. If the audit
+line cannot be written, stderr gets
+`seed-record <name>: recorded, but the audit log could not be written: <error>`,
+and the command still reports the record and exits 0.
+
+**A wrong record.** Seeding a non-live profile whose folder holds another
+account's login, when nothing else claims that account, records the wrong
+account. To remove it, run `rm <root>/.auto-switch.d/expected/<name>.json`.
+An accepted [`profile login <name>`](#login-check) also replaces it.
 
 #### Guidance
 
-When nothing can move, the cycle writes an ALERT line and numbered `fix`
-lines, ends as `alerted` and does not swap. Every ALERT starts with
-`ALERT: the account in ~/.claude is not the one the ledger names (live=<L>);`
-then has one of these middles, then ` no swap`:
-
-| Holders | Middle of the ALERT |
-|---------|---------------------|
-| `many` | `it matches more than one profile (<M1>, <M2>);` |
-| `none` | `no profile has that account;` |
-| `unreadable` | `the account of profile <P1>, <P2> cannot be read, so the match is uncertain;` |
-| `home-unreadable` | `the account in ~/.claude.json cannot be read;` |
-| `home-no-login` | `~/.claude has no login;` |
-| `one`, no own login, a check failed | `profile <M> holds the same account; recovery refused: <reason>;` |
-| `one`, own login, a check failed | `profile <M> holds the same account and has its own login; recovery refused: <reason>;` |
-
-Profile lists are sorted by name and joined with `, `.
-
-For example, with no profile holding the account:
+When a confirmed move fails a check, nothing moves, the cycle writes an
+ALERT line and one `fix` line, ends as `alerted` and does not swap:
 
 ```
-ALERT: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); no profile has that account; no swap
+ALERT: the account in ~/.claude is not the one the ledger names (live=<L>); profile <M> holds the same account and has its own login; recovery refused: <reason>; no swap
 ```
 
-The `fix` lines follow. `fix 1: amplihack profile login <L>` comes first,
-and only when `L` has no login file; the lines below are numbered after it.
-Each is written exactly as shown, after `fix <n>: `:
-
-| Holders | `fix` lines, in order |
-|---------|-----------------------|
-| `many` | `keep this account in one of <M1>, <M2>: log the others in to another account or remove them; the next cycle then recovers` |
-| `none` | `rm <ledger> (the next swap keeps the login in ~/.claude as profile default-original)`<br>`or, to set that login aside instead: close every claude session that uses ~/.claude, then run: mkdir -m 700 <dir> && mv -n <home>/.claude/.credentials.json <dir>/ && rm <ledger>; then run claude with no CLAUDE_CONFIG_DIR and /login` |
-| `unreadable` | `amplihack profile login <P>; the next cycle then recovers`, one line per profile `P` in the ALERT |
-| `home-unreadable` | `none needed; the next cycle reads ~/.claude.json again` (never `/login`: one failed read does not show whose login `~/.claude` holds) |
-| `home-no-login` | `run claude with no CLAUDE_CONFIG_DIR and /login` |
-| refused | One line, by `<reason>`; see the next table. |
-
-`unreadable` lists only profiles with a login file, so `L` never appears both
-in `fix 1` and in an `unreadable` line.
-
-The refusal `fix` line for each `<reason>`:
+The `fix` line for each `<reason>`:
 
 | `<reason>` | `fix` line |
 |------------|------------|
@@ -6094,10 +6844,6 @@ The refusal `fix` line for each `<reason>`:
 | `<M>'s login is lent out or it hosts another login` | `wait for the auto-switch session to end; the next cycle retries` |
 | `a login file is not a private regular file with one link`, `~/.claude and the profile root are on different devices`, `cannot create the backup directory: <error>`, `backup directory is not private: <path>`, `no free backup name` | `move <M>'s copy by hand: mkdir -m 700 <dir> && mv -n <root>/<M>/.credentials.json <dir>/` |
 | `~/.claude changed during recovery` | `none needed; the next cycle retries` |
-
-The first four reasons come from the checks before recording, so they can
-appear with or without an own login; the rest come from the checks before
-the move and appear only with one.
 
 `<ledger>` is `<root>/.auto-switch.d/rotate/ledger.json`, `<home>` is the
 real `HOME` path (never `~`), `<root>` is the profile root, and `<dir>` is
@@ -6113,50 +6859,41 @@ a path are cut to 1024 bytes.
 
 #### Stuck `~/.claude.json`
 
-A `~/.claude.json` with no readable account while a login is in `~/.claude`
-and the ledger names a live profile `<L>` starts a *spell*. The first cycle
-that sees it records the time in the ledger's `home_unreadable_since`; the
-first cycle that reads an account there again, or finds no login in
-`~/.claude`, clears it. A time later than the cycle's (the clock went back)
-counts as the cycle's time.
+`oauthAccount` is display state. A missing, incomplete or stale account
+block does not authorize movement, invalidate trusted identity or start
+hand-change recovery. The swap builds display details from trusted
+identity and preserves unrelated JSON fields and file modes.
 
-While the spell is under 5 minutes old (`HOME_UNREADABLE_GRACE`, 300
-seconds), the cycle writes only the `home-unreadable` ALERT from
-[Rotate live profile](#rotate-live-profile). A cycle never escalates on its
-own first read, so with the default 600-second interval the second cycle in
-a row is the first that can. From 5 minutes on, every cycle, `--dry-run`
-included, writes this ALERT and these `fix` lines to the log and the
-ledger's `guidance`, so `rotate status` shows them, and ends `alerted`
-without a swap. Nothing moves.
+Safe file handling still applies. A symlink, unsafe permissions,
+unreadable or malformed JSON, or a non-object can prevent a safe display
+update and refuse the swap before movement. Resolve that reported file
+problem; do not move a login or run `/login` merely because the display
+account is stale. The serialized ledger remains compatible with existing
+`home_unreadable_since` fields; such a timestamp is not ownership evidence.
 
-```
+
+Some recovery diagnostics retain their earlier display-file wording. These
+messages describe file safety or older retained guidance; they never make
+session account values proof of login ownership. A stale or missing
+`oauthAccount` alone does not trigger recovery. Resolve the actual reported
+file problem and trusted-identity refusal before following recovery guidance.
+The retained message grammar is:
+
+```text
+ALERT: the account in ~/.claude.json cannot be read (live=<L>); no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace <L>'s login
 ALERT: ~/.claude.json has had no account that can be read for 5 minutes or more (live=<L>): <problem>; no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace <L>'s login
 fix 1: run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if <home>/.claude.json then holds an account, the next cycle goes on
 fix 2: or give <L> its login back and start over: close every claude session that uses ~/.claude, then run: test ! -e <root>/<L>/.credentials.json && mv -n <home>/.claude/.credentials.json <root>/<L>/ && rm <ledger>; then run claude with no CLAUDE_CONFIG_DIR and /login
 ```
 
-`<problem>` is the first that holds:
+Older guidance can include `it has no oauthAccount block`. That display
+condition cannot establish which account the moving credential belongs to.
 
-| State of `<home>/.claude.json` | `<problem>` |
-|--------------------------------|-------------|
-| Missing | `it does not exist` |
-| A symlink, not a regular file, over 32 MiB, or not readable | `it cannot be read (a symlink, not a regular file, over 32 MiB or not readable)` |
-| Empty or not JSON | `it is not valid JSON (empty or cut short)` |
-| JSON, but not an object | `it is not a JSON object` |
-| No `oauthAccount` key, or `null` | `it has no oauthAccount block` |
-| An `oauthAccount` with no `accountUuid` or `emailAddress` that passes the [account value rules](#rotate-live-profile) | `its oauthAccount block has no usable accountUuid or emailAddress` |
-
-Both fixes keep `<L>`'s login. `fix 1` lets Claude write the file again
-from the login it already has. `fix 2` renames that login back into
-`<L>`'s profile directory, where it came from, before any `/login`: the
-`test` stops the line when `<L>` already has a login file, so nothing is
-replaced, and `mv` fails when `<root>/<L>` is not a directory. With the
-ledger gone, the next cycle identifies the new login as usual. The
-`fix 1: amplihack profile login <L>` line of the hand-change guidance is not
-written here, because `<L>`'s login is the one in `~/.claude`.
-`amplihack profile switch` is not offered: a switch refuses while the live
-login is `home-unreadable` (see [Rotate switch](#rotate-switch)). Paths are
-printed by the rules above.
+The retained file-problem labels are `it does not exist`,
+`it cannot be read (a symlink, not a regular file, over 32 MiB or not readable)`,
+`it is not valid JSON (empty or cut short)`, `it is not a JSON object`, and
+`its oauthAccount block has no usable accountUuid or emailAddress`.
+These labels describe display metadata and never replace trusted identity.
 
 Separately, every cycle writes, for each profile in the ledger's
 `lost_login`:
@@ -6165,34 +6902,48 @@ Separately, every cycle writes, for each profile in the ledger's
 ALERT: profile <L> has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login <L>
 ```
 
-A profile leaves `lost_login` when `<root>/<L>/.credentials.json` exists again
-or `<root>/<L>` is no longer a real directory (it was removed, or replaced by
-a symlink). In a cycle whose guidance already has
-`fix 1: amplihack profile login <L>`, the lost-login line for `L` is left out.
-
-`lost_login` holds at most 64 profiles, which keeps the ledger a bounded size.
-A profile that would be added to a full list is not added; instead, once, at
-that recovery:
+Recovery no longer adds profiles to `lost_login`: the
+[only-login rule](#only-login-rule) refuses any move that would leave a
+profile with no login. Entries written by an earlier release are still
+reported. A profile leaves `lost_login` when
+`<root>/<L>/.credentials.json` exists again or `<root>/<L>` is no longer a
+real directory (it was removed, or replaced by a symlink). `lost_login` holds at most 64 profiles; the line
 
 ```
 ALERT: profile <L> has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login <L>
 ```
 
-Guidance and lost-login lines are written on every cycle while their
-condition holds, at most once each per cycle, without the
-[ALERT key](#rotate-log). The one-shot command also prints them. The
-ledger's `guidance` holds the current guidance lines and is cleared when the
-ledger's account matches `~/.claude.json` again; [`status`](#rotate-status)
-prints both lists.
+is written once for a profile an earlier release could not add.
 
-`--dry-run` runs the same holder check without the lock and writes nothing.
-It prints `would recover: <recovered line>` and stops before measuring, or
-`would alert: <ALERT line>` followed by the `fix` lines, and then stops with
-outcome `alerted`. `<recovered line>` and `<ALERT line>` are the log text
-without its `recovered: ` or `ALERT: ` prefix, as in the other `would alert:`
-lines. It does not go on to the
-[live profile](#rotate-live-profile) table, so it never prints a second
-`would alert:` line for the same mismatch.
+ALERT, `fix` and lost-login lines are written on every cycle while their
+condition holds, at most once each per cycle, without the
+[ALERT key](#rotate-log). Notes are written once until they change. The
+one-shot command prints all of them on every run. The ledger's `guidance`
+holds the current note or ALERT and `fix` lines and is cleared when the
+finding is Clear; [`status`](#rotate-status) prints them.
+
+`--dry-run` makes the same identity reads, without the lock and without
+[refreshing](#an-expired-live-login), and applies the
+same rules to the ledger's `hand_suspect` as it stands. It writes nothing,
+so it never starts or confirms a suspicion:
+
+| Ledger and readings | Dry-run line |
+|---------------------|--------------|
+| `hand_suspect` names `M`, its interval has passed, the reading is "Suspect `M`", and the checks pass | `would recover: <recovered line>`; then it stops before measuring |
+| The same, but the only-login rule or a check refuses | `would alert: <ALERT line>`, followed by its `fix` lines; then it stops with outcome `alerted` |
+| A suspicion or cannot-tell finding | `would note: <note>`, without the `note: ` prefix; a suspicion then stops with outcome `alerted`, a cannot-tell finding goes on to measure |
+| Within `SWAP_GRACE`, or any other gate in [When recovery reads](#when-recovery-reads) | Nothing; no request is made |
+| The live login has expired | `would refresh: expired login in ~/.claude`, before any other line of this table |
+| The live profile has no record | `would seed: ...` or `would note: no record for live profile ...`; see [Seeding a record](#seeding-a-record) |
+| The ledger exists but cannot be read | `would alert: rotate ledger unreadable; ...`; see [Unreadable-ledger stop](#unreadable-ledger-stop) |
+
+`<recovered line>` and `<ALERT line>` are the log text without its
+`recovered: ` or `ALERT: ` prefix. A dry run does not go on to the
+[live profile](#rotate-live-profile) table after a `would alert:` line, so it
+never prints a second `would alert:` line for the same finding. These
+recovery identity reads send each login's token to the OAuth profile
+endpoint (`GET /api/oauth/profile`), as the real cycle does. Usage
+measurement is a separate read.
 
 ### Rotate switch
 
@@ -6269,7 +7020,7 @@ changes nothing but `.default`.
    | `leased` | `auto-switch has lent its login to another profile's session` |
    | `hosting` | `its directory holds another account's login for auto-switch` |
    | `parked` | `auto-switch has parked its own login` |
-   | `no account` | `its .claude.json has no usable oauthAccount` |
+   | `no account` | Its login has no usable trusted identity for the required ownership check. The message includes the [cause](#identity-read-causes). |
 
    `excluded` and `parked` refuse too. The exclude list keeps a profile out
    of rotation, and a switch is a rotation done by hand; to switch to an
@@ -6292,9 +7043,10 @@ changes nothing but `.default`.
     the profile swapped out. Problems there are warnings on stderr only.
 
 `switch` reads none of the `AMPLIHACK_ROTATE_*` [settings](#rotate-settings)
-and never runs `claude`: it measures nothing, so it makes no usage or OAuth
-calls. It does not look for a `claude` binary either, so it works with no
-`claude` on `PATH`. A login with no capacity left is still moved: `switch`
+and never runs `claude`. It makes no usage measurement, but it does make
+the bounded credential identity reads needed by the shared swap guards.
+It does not look for a `claude` binary either, so it works with no `claude`
+on `PATH`. A login with no capacity left is still moved: `switch`
 does what you asked, and the usage checks that stop a rotate swap do not
 apply to it.
 
@@ -6433,9 +7185,9 @@ login that has changed: an ALERT about the live login is still written, but
 nothing is swapped. `watch` writes the `skip: pin names missing profile`
 line only when it changes.
 
-A held cycle clears the stored ALERT key, as a cycle that stays does, so
-the same ALERT is written again if it is still true after the pin is
-released.
+A held cycle clears the stored ALERT key (`alert` and `advisory_alert`),
+as a `stayed` cycle does, so the same ALERT is written again if it is still
+true after the pin is released. A `stayed-unread` cycle does not clear it.
 
 A held cycle measures nothing. When the last cycle is the `switched` record
 that `profile switch` writes, a held cycle leaves it in place: it still
@@ -6486,8 +7238,8 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 
 | Path | Contents |
 |------|----------|
-| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when it started measuring usage, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally `home_unreadable_since`, the epoch seconds when a [stuck `~/.claude.json`](#stuck-claudejson) spell started. Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since` and `swapped_away` are left out so that rotator can read the file. |
-| `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at` and `pid`. |
+| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`, of a hard ALERT), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when it started measuring usage, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away` and `advisory_alert` are left out so that rotator can read the file. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. |
+| `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`checking`, `j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at`, `pid`, and optional `identity` containing sanitized full incoming/outgoing accounts authorized before exchange. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `gate.json` | Written by `rotate watch` when it starts: `version`, `pid`, and the [overflow](#rotate-overflow) gate it resolved from its flags (`overflow_wait`, `overflow_unknown_reset`, `session_at`, `week_at`). [Auto-switch](#auto-switch-and-overflow-profiles) uses it only while the rotator with that pid runs. If it cannot be written, the log says `overflow: gate not recorded, auto-switch will not use overflow (<error>)` and auto-switch uses no overflow profile. |
 | `rotate.log` | The log. |
@@ -6506,7 +7258,7 @@ directory:
 
 | Path | Contents |
 |------|----------|
-| `<root>/.rejected-logins/rotate-<name>-<YYYYMMDDTHHMMSSZ>[-<n>]/` | `0700`. The `.credentials.json` moved out of profile `<name>` because `~/.claude` held the same account. Never deleted by amplihack. An empty one is left by a recovery that stopped before the move. |
+| `<root>/.rejected-logins/rotate-<name>-<YYYYMMDDTHHMMSSZ>[-<n>]/` | `0700`. The `.credentials.json` moved out of profile `<name>` because `~/.claude` and `<name>` answered as the same account on two readings. Never deleted by amplihack. An empty one is left by a recovery that stopped before the move. |
 
 Example ledger, with the account value replaced:
 
@@ -6603,23 +7355,32 @@ run and prints their `reread:` lines; see
 | `damp: <name> later reading shows room; swap-back allowed` | A reading of `<name>` taken after the rotator swapped away from it shows room, so its `swapped_away` entry was removed. Written in the [record step](#rotate-cycle), after the cycle's `swap`, stay or ALERT line, and never by `--dry-run`. |
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` / `ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)` | A threshold is reached and no candidate meets the margin. The suffix is added only when `F + E > 0`: `F` candidates had a failed probe and `E` were exhausted, whatever figures each exhausted candidate read. When every candidate failed, the probes are at fault rather than the accounts. The suffix holds no profile names, and the ALERT key stays `no-capacity`, so a change in the counts does not repeat the ALERT. `--dry-run` prints it as `would alert: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`, without the `ALERT: ` prefix, and with the same rule for the suffix. |
 | `ALERT: no login in ~/.claude; no swap` | `~/.claude/.credentials.json` is missing or not a regular file. |
-| `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); <finding>; no swap` | Hand change that [hand-change recovery](#rotate-hand-change-recovery) could not resolve. Followed by its `fix <n>: <command>` lines. Written every cycle. |
+| `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); no swap` | ALERT `hand-change`: a [hand-change suspicion](#two-readings) is open, or recovery refused a confirmed one. Written on each affected cycle while the identity refusal persists. |
+| `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); profile <M> holds the same account and has its own login; recovery refused: <reason>; no swap` | A confirmed hand change whose move failed a [check](#checks-before-the-move). Followed by its `fix 1:` line. Written every cycle. |
+| `ALERT: ~/.claude holds the same account as profile <M> on two readings (ledger names <L>), but <L> has no login of its own, so recording <M> would leave <L> with no login anywhere; nothing moved, no swap` | The [only-login ALERT](#only-login-alert). Followed by its two `fix` lines. Written every cycle. |
 | `fix <n>: <command>` | A step of the guidance above, in order. |
-| `recovered: ~/.claude holds the account recorded for <L>; kept <L> as live` | Hand-change recovery kept the live profile, whose [recorded account](#recorded-account) is the new login in `~/.claude`. |
-| `recovered: ~/.claude holds <M>'s login (ledger named <L>); recorded <M> as live` | Hand-change recovery recorded the profile whose login is in `~/.claude`. |
-| `recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <path>; recorded <M> as live` | Hand-change recovery moved `M`'s duplicate login to a backup. |
+| `note: ~/.claude holds the same account as profile <M> (ledger names <L>); nothing moved, the next cycle reads again` | The first of the [two readings](#two-readings). Written once until it changes. |
+| `note: cannot tell whose login is in ~/.claude (live=<L>): <why>; nothing moved` | Recovery could not tell; see [Hand-change notes](#hand-change-notes) for each `<why>`. Written once until it changes. |
+| `recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <path>; recorded <M> as live` | Hand-change recovery confirmed on two readings that `~/.claude` and `M` are the same account, and moved `M`'s copy to a backup. |
 | `ALERT: profile <L> has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login <L>` | `L` is in the ledger's `lost_login`. Written every cycle. |
-| `ALERT: profile <L> has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login <L>` | `L` lost its login but `lost_login` already holds 64 profiles. Written once. |
-| `ALERT: more than one profile matches the account in ~/.claude; no swap` | Two or more login-less profiles have the account in `~/.claude.json`. |
-| `ALERT: swap refused: <reason>` | A [pre-swap check](#rotate-swap) failed; written once per reason. The one-shot command also prints it and exits with `RotateRefused`. |
-| `ALERT: swap refused: the login in ~/.claude is not the account recorded for profile <from>` | The login in `~/.claude` is not the [recorded account](#recorded-account) of the live profile `<from>`, so it was not moved back there. Written once per profile (ALERT key `account_mismatch:<from>`), not on every cycle, although every cycle refuses until it is fixed. Names the profile only, never an account. `profile login <from>` is refused while `<from>` is the live profile, so fix it in `~/.claude`: run plain `claude` and `/login` to the account `<from>` is meant for. The next cycle's [hand-change recovery](#rotate-hand-change-recovery) then keeps `<from>` live because its record names the new login, and the swap goes ahead after writing that account into `<root>/<from>/.claude.json`. If the record itself is out of date, delete `<root>/.auto-switch.d/expected/<from>.json` instead; the next cycle swaps as before, and that swap records the account `<from>` then holds, unless another profile holds that account or has it recorded, in which case nothing is recorded for `<from>`. See [Recorded account](#recorded-account). |
+| `ALERT: profile <L> has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login <L>` | `L` lost its login under an earlier release but `lost_login` already held 64 profiles. Written once. |
+| `ALERT: more than one profile matches the account in ~/.claude; no swap` | Trusted ownership evidence cannot select a unique login-less profile. |
+| `ALERT: trusted login identity unavailable: <cause>` | The live login has no usable identity reading, and the [cause](#identity-read-causes) says why. Nothing moves. |
+| `ALERT: trusted login identity unavailable for profile <name>: <cause>` | A candidate is skipped as `no account`, for that [cause](#identity-read-causes). Written on every cycle it applies to. |
+| `ALERT: rotate ledger unreadable; live identity: <readable\|cause>; nothing moved, no record written` | Written on every cycle it applies to. See [Unreadable-ledger stop](#unreadable-ledger-stop). |
+| `ALERT: cannot tell profiles <L>, <M> apart: both claim the account in ~/.claude; no record written, nothing moved` | Written on every cycle it applies to. See [Seeding a record](#seeding-a-record). |
+| `seeded: recorded account for live profile <L>` | A cycle [seeded](#seeding-a-record) the live profile's record. |
+| `note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>` | A cycle could not seed. Written once per process. |
+| `seed-record: recorded account for profile <name>` | [`profile seed-record --write`](#profile-seed-record) wrote a record. |
+| `ALERT: swap refused: <reason>` | A [pre-swap check](#rotate-swap) failed. Missing, uncertain or conflicting required trusted identity produces an ALERT on every affected cycle; other refusals are written once per reason. The one-shot command also prints it and exits with `RotateRefused`. |
+| `ALERT: swap refused: the login in ~/.claude is not the account recorded for profile <from>` | The trusted live login conflicts with `<from>`'s recorded account. Nothing moves or relabels. Reported on every affected cycle and manual attempt until resolved. The persisted alert key is `account_mismatch:<from>`. Session JSON cannot cause or clear this refusal. See [Recorded account](#recorded-account) and [Rotation login identity](#rotation-login-identity). |
 | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` | See [Rotate recovery](#rotate-recovery). |
 | `ALERT: auto-switch recovery is inconsistent; no swap` | Auto-switch state needs `auto-switch repair`. |
 | `recovery: rolled back an interrupted swap <from>-><to>` / `recovery: finished an interrupted swap <from>-><to>` | Recovery acted. |
 | `skip: state lock busy` / `skip: <name> (<reason>)` / `skip: cannot see running sessions; no candidates` | The cycle or a candidate was skipped. |
 | `skip: state changed during measurement (<labels>)` | Step 6 found a change that affects the decision; see [Rotate revalidation](#rotate-revalidation). `<labels>` lists one or more of `journal`, `live`, `pin`, `overflow`, `target eligibility: <reason>` and `target identity`, separated by `, `. The labels are fixed text and [skip reasons](#rotate-candidates) only. Older readers that match the prefix `skip: state changed during measurement` still match. |
-| `revalidate: ~/.claude.json held no account; read again` | Step 6 found no account in `~/.claude.json`, which held one in step 3, and read the state once more after 500 milliseconds; see [Rotate revalidation](#rotate-revalidation). The next line comes from the second comparison. |
 | `revalidate: target <name> no longer eligible (<reason>); reconsidered` | The swap target became ineligible, or its account changed, while the cycle measured, and the cycle decided again under the lock. `<reason>` is the target's bare [skip reason](#rotate-candidates), such as `session running`, `gone`, or `account changed`; it never begins with `target eligibility: `. The next line is the new `swap` line, or `ALERT: swap refused: <reason>` when a [pre-swap check](#rotate-swap) refuses the new target. |
+| `revalidate: ~/.claude.json held no account; read again` | Retained diagnostic wording for the bounded retry of trusted credential identity. Session JSON supplies no identity evidence. |
 | `skip: the external rotator is running` / `skip: <error>` | `watch` only: the cycle failed with that error and the rotator carries on. |
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
@@ -6635,18 +7396,22 @@ run and prints their `reread:` lines; see
 | `sessions archive: cannot read sessions.daily_archive (<why>); not run` | The user config file cannot be used to decide whether the daily run is on, so it does not run; see [turning the daily run off](#turning-the-daily-run-off). |
 | `sessions archive: cannot read <key> (<why>); not run` | `<key>` is `sessions.archive_days` or `sessions.archive_dest`, and the user config file cannot give it a value, so the run does not fall back to the default; see [`sessions` configuration](./sessions-command.md#configuration). |
 | `sessions archive: <error>` | The daily session archive did not run, or stopped; `<error>` is one of the [`sessions` messages](./sessions-command.md#messages) or the lock line. |
-| `switch <from>-><to>` | A swap made by [`profile switch`](#rotate-switch). It has no readings, because `switch` measures nothing, and it does not start with `swap `, so a search for rotator swaps does not match it. |
+| `switch <from>-><to>` | A swap made by [`profile switch`](#rotate-switch). It has no usage readings, because `switch` measures no usage, and it does not start with `swap `, so a search for rotator swaps does not match it. |
 | `skip: <name> is already the live login; nothing moved` | `profile switch` found `<name>` already live. |
-| `would swap ...` / `would block <name> (spend limit) until <time>` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would stay (held by switch to <name>)` / `would stay (pin unreadable)` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` / `would recover: <recovered line>` / `would_refuse <name>: <reason>` | `--dry-run` only. `would_refuse` is printed in place of `would swap` when the target is an API-key profile that fails its [login check](#api-key-login-check). |
+| `would refresh: expired login in ~/.claude` / `would seed: record for live profile <L> from a fresh reading` / `would note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>` / `would swap ...` / `would block <name> (spend limit) until <time>` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would stay (held by switch to <name>)` / `would stay (pin unreadable)` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` / `would recover: <recovered line>` / `would_refuse <name>: <reason>` | `--dry-run` only. `would_refuse` is printed in place of `would swap` when the target is an API-key profile that fails its [login check](#api-key-login-check). |
 
-An ALERT is written only when its key (`no-capacity`, `no-login`,
+Identity refusals write an ALERT on every affected rotation cycle;
+manual switches report the refusal on every attempt. Other ALERTs are
+written only when their key (`no-capacity`, `no-login`,
 `hand-change`, `home-unreadable`, `ambiguous`, `inconsistent`, `auto-switch` or `refused <reason>`
 for a swap refused under [Swap](#rotate-swap), plus the live
 profile) differs from the key
 stored in the ledger. The key is cleared when a cycle stays without alerting
 or a swap succeeds, so the same ALERT can be written again later. The
 one-shot `rotate` still prints a repeated ALERT to stdout on every run; only
-the log line is written once. The hand-change guidance and lost-login ALERTs
+the unrelated log line is written once. Hand-change notes have no key
+either; each is written once
+until its text changes. The hand-change guidance and lost-login ALERTs
 have no key: they are written on every cycle while their condition holds,
 and so has the [exhausted-while-off](#exhausted-while-off) ALERT.
 
@@ -6881,7 +7646,7 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `owner` | The [rotation owner](#rotate-owner): `none`; `<unit> pid <n> (running); autostart defers to it`; `<unit> pid <n> (not running); autostart defers to it; run 'amplihack profile rotate owner clear' to release`; `unreadable; autostart defers to it; run 'amplihack profile rotate owner clear' to release`; or `not read (root is not private)`. Unix only. |
 | `pid` | The pid, or `-`. |
 | `live` | The ledger's `live` profile, or `-`. |
-| `last cycle` | The time and outcome (`swapped`, `stayed`, `switched`, `alerted`, `skipped`, `idle` or `held`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; `switched` by [`profile switch`](#rotate-switch), and kept by the held cycles after it; `held` when the [pin](#rotate-pin) held rotation with no switch record; a cycle that could not take the lock records nothing. An [overflow](#rotate-overflow) cycle adds ` overflow=in`, ` overflow=out` or ` overflow=on`. |
+| `last cycle` | The time and outcome (`swapped`, `stayed`, `stayed-unread`, `switched`, `alerted`, `skipped`, `idle` or `held`) of the last cycle, or `-`. `stayed-unread` is a stay that is not capacity: the live probe did not give a [qualifying reading](#rotate-stays-and-capacity), and it was not an overflow stay read in that cycle. `skipped` is recorded when the state changed during measurement; `switched` by [`profile switch`](#rotate-switch), and kept by the held cycles after it; `held` when the [pin](#rotate-pin) held rotation with no switch record; a cycle that could not take the lock records nothing. An [overflow](#rotate-overflow) cycle adds ` overflow=in`, ` overflow=out` or ` overflow=on`. |
 | `capacity` | The [capacity summary](#capacity-summary) of the newest [usage history](#usage-history) entry. See [Capacity line](#capacity-line). |
 | `hold` | Only while something is at the [pin](#rotate-pin) path: `hold: <name>`, `hold: <name> (profile missing; ignored)` or `hold: unreadable`. |
 | `overflow` | The marked overflow profiles in list order, separated by `, `, each followed by ` (blocked until <time>)` when it has an active [spend block](#overflow-spend-limit-block); `-` when none is marked or `.auto-switch` is corrupt. When the ledger cannot be read, the list ends with ` (blocks unknown)`. |
@@ -6890,7 +7655,8 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `no session window` | Printed only when the list is not empty: the profiles whose current auto-switch [reading](#readings) has `seven_day` and no `five_hour`, sorted by name and separated by `, `. These profiles are ranked on their week. The line does not say `no session limit`: a stored reading also loses its `five_hour` when a session window was not recorded (see the known limitations under [No session limit](#no-session-limit)). Only profiles that exist now are listed. The line comes after `on overflow` and after the `~/.claude is on API key profile ...` line when that is printed, and before `default` and `hold`. It is read from `usage.json` without a lock; if the file is missing, unreadable or unsafe, the line is left out and nothing is printed to stderr. |
 | `default` | Printed only when the [default pointer](#clearing-the-default) names an overflow profile: `<name> (overflow; launches use it directly)`. |
 | `log` | The log path. |
-| `alert` | Zero or more. A current [hand-change](#rotate-hand-change-recovery) guidance line. |
+| `note` | Zero or one. The current [hand-change note](#hand-change-notes), without its `note: ` prefix. |
+| `alert` | Zero or more. A current [hand-change](#rotate-hand-change-recovery) ALERT or `fix` line. |
 | `warning` | Zero or more. A profile that lost its login to a manual `/login` in `~/.claude`. |
 | `alert` (exhausted) | `alert: auto-switch is off while the live login is exhausted (<profile>: <reason>)`, printed after the ledger's `alert:` and `warning:` lines when the [exhausted-while-off](#exhausted-while-off) condition holds; or `alert: unavailable (<error>)` when auto-switch is off and a ledger or `usage.json` cannot be read, so the condition cannot be checked. |
 
@@ -6955,7 +7721,7 @@ profiles only` or `profile usage: all logins`. An entry written before the
 writer was recorded names none. When the entry lists logins its writer could
 not read, `, M unknown` follows the usable count; they are in no figure. A
 rotator entry lists there the logins it skipped as busy, those with no
-usable `oauthAccount` and those whose probe failed, so `M` says how many
+usable trusted identity and those whose probe failed, so `M` says how many
 logins the line leaves out.
 When a profile in that entry has a weight other than `1.0`, the line adds
 `   [weighted: X' of T]` after `(P%)`, as in the summary.
@@ -7020,8 +7786,9 @@ alert: auto-switch is off while the live login is exhausted (spare: 100% used, t
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
-After `last cycle:` and `capacity:`, `status` prints one `alert: <line>` for each line of the
-ledger's `guidance`, then one `warning: <line>` for each profile in its
+After `last cycle:` and `capacity:`, `status` prints each line of the
+ledger's `guidance`: a hand-change note as `note: <text>`, any other line as
+`alert: <line>`. Then it prints one `warning: <line>` for each profile in its
 `lost_login`. It does not compare accounts itself; it shows what the last
 cycle decided. Lines are cleaned of control characters again before
 printing:
@@ -7029,14 +7796,22 @@ printing:
 ```
 live: ryan-ryansweet
 last cycle: 2026-10-27T03:17:05Z alerted
-alert: the account in ~/.claude is not the one the ledger names (live=ryan-ryansweet); it matches more than one profile (mistt-spare, ryan-mistt-org); no swap
-alert: fix 1: amplihack profile login ryan-ryansweet
-alert: fix 2: keep this account in one of mistt-spare, ryan-mistt-org: log the others in to another account or remove them; the next cycle then recovers
+note: ~/.claude holds the same account as profile ryan-mistt-org (ledger names ryan-ryansweet); nothing moved, the next cycle reads again
 ```
 
-There is no `warning:` line yet: `lost_login` is filled only when a profile
-is recorded in `L`'s place. Once the extra profile is fixed and a cycle
-recovers, `guidance` is empty and the lost login is shown instead:
+A confirmed suspicion that the [only-login rule](#only-login-rule) refuses
+shows the ALERT and its `fix` lines instead:
+
+```
+live: ryan-ryansweet
+last cycle: 2026-10-27T03:19:05Z alerted
+alert: ~/.claude holds the same account as profile ryan-mistt-org on two readings (ledger names ryan-ryansweet), but ryan-ryansweet has no login of its own, so recording ryan-mistt-org would leave ryan-ryansweet with no login anywhere; nothing moved, no swap
+alert: fix 1: if a /login in ~/.claude replaced ryan-ryansweet's login: close every claude session that uses ~/.claude, then run: mkdir -m 700 <dir> && mv -n <root>/ryan-mistt-org/.credentials.json <dir>/ && rm <ledger>; then run: amplihack profile login ryan-ryansweet
+alert: fix 2: if ryan-ryansweet and ryan-mistt-org are profiles of one account, run amplihack profile verify to see the account each folder holds, then remove one of the two profiles
+```
+
+Recovery no longer adds profiles to `lost_login`; a `warning:` line appears
+only for an entry an earlier release wrote:
 
 ```
 live: ryan-mistt-org
@@ -7588,6 +8363,22 @@ The hook reads `<root>/.auto-switch.d/rotate/ledger.json` (see
   time of the switch);
 - `alert` is not set.
 
+The rotator writes these outcomes so that capacity means one of:
+
+- a fresh, successful reading of the live login below 100% on both windows
+  (`stayed`); a stay on an [overflow](#rotate-overflow) profile read in this
+  cycle with no active spend block, at any figures, and a stay on a platform-tier login also record
+  `stayed` (see [Stays and capacity](#rotate-stays-and-capacity));
+- a swap to a login with room (`swapped`);
+- a [`profile switch`](#rotate-switch) to a login (`switched`).
+
+A stay on a failed, carried or unknown live probe records `stayed-unread`,
+which is not in the list above, so it is not capacity. A `no-capacity` ALERT
+written while the live login reads below 100% on both windows is
+[advisory](#rotate-advisory-alert): it is stored in `advisory_alert`, not
+`alert`, and the cycle records `stayed`, so it does not block a resume. The
+hook does not read `advisory_alert`.
+
 `last_cycle.at` is set when the cycle ends, so a cycle that was already
 measuring when the limit hit can be recorded after the hook starts with
 readings taken before the limit; `measured_at` rules it out whatever the
@@ -7619,16 +8410,25 @@ de-duplication key, so the first cycle may swap or alert once more. If an
 older rotator is already running and logging failures, the same three steps,
 with `rotate stop` run by either binary, recover it.
 
-A cycle that moved onto or stayed on an [overflow](#rotate-overflow)
-profile records `swapped` or `stayed` with no `alert`, so it counts as
-capacity and the hook resumes the session, which then runs on credits.
-`last_cycle.overflow` does not change the verdict; the hook ignores
-`overflow_blocked`. A spend block with nowhere to move ends the cycle on the
+A cycle that moved onto an [overflow](#rotate-overflow) profile records
+`swapped`, and one that stayed on an overflow profile whose probe read the
+login in this cycle, with no active spend block on it, records `stayed` at
+any figures, even with its plan windows at 100% (see [Stays and capacity](#rotate-stays-and-capacity)). Both
+have no `alert`, so they count as capacity and the hook resumes the session,
+which then runs on credits. A stay on an overflow profile whose live probe
+failed, was carried, was unknown or hit a spend limit, or whose login has
+an unexpired entry in `overflow_blocked`, records `stayed-unread` and is
+not capacity.
+`last_cycle.overflow` does not change the verdict; the hook does not read
+`overflow_blocked` itself, because the rotator has already applied it to the
+outcome it records. A spend block with nowhere to move ends the cycle on the
 no-capacity ALERT, which is not capacity.
 
 Any outcome other than `swapped`, `stayed` or `switched` (`alerted`,
-`skipped`, `idle`, `held`, or one the hook does not know), a missing ledger, or a ledger that is not
-trusted means no capacity yet. The hook does not apply the
+`stayed-unread`, `skipped`, `idle`, `held`, or one the hook does not know), a missing ledger, or a ledger that is not
+trusted means no capacity yet. A hook from before
+[#1907](https://github.com/rysweet/amplihack-rs/issues/1907) reads
+`stayed-unread` as an outcome it does not know, so it also waits. The hook does not apply the
 rotator's thresholds itself.
 
 The hook reads the ledger more loosely than the rotator does: it ignores
@@ -7913,15 +8713,17 @@ listed.
 | `capacity expired` | capacity | the `max_wait` deadline passed with no login showing capacity | no; [closing line](#closing-line) |
 | `step timeout` | both | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no; [closing line](#closing-line) |
 | `login changed` | both | two probes in a row, 30 s apart, agree on a fingerprint that differs from the baseline | yes |
-| `rotator capacity` | both | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle with capacity (`swapped`, `stayed` or `switched`, no alert) whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
+| `rotator capacity` | both | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle with capacity (`swapped`, `stayed` or `switched`, no alert; `stayed-unread` is not capacity) whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
 | `login capacity` | capacity | the step runs under an inherited profile with auto-switch on, and a [reading](#readings) taken after the wait began shows that another stored profile has capacity (see [Capacity for a profile step](#capacity-for-a-profile-step)) | yes, under that profile |
 
 `rotator capacity` uses the rule the [limit-resume hook](#capacity-for-a-resume)
 uses (`CycleStatus::fresh_capacity` in `amplihack_utils::rotator_status`), so
 the two never disagree. It is checked with the fingerprint every 30 s. A
 cycle that moved onto a [credit-backed overflow profile](#rotate-overflow)
-(`swapped`, `overflow=in`) or stayed on one (`stayed`, `overflow=on`) counts
-as capacity, so the step runs again on credits.
+(`swapped`, `overflow=in`) or stayed on one whose probe read it in this
+cycle with no active spend block, at any figures (`stayed`, `overflow=on`),
+counts as capacity, so the step runs again on
+credits.
 
 The **login fingerprint** watches the directory the retry will use:
 `<root>/<inherited profile>`, else `$CLAUDE_CONFIG_DIR`, else
@@ -8332,10 +9134,11 @@ check and `exec`; it is not atomic. This is defense in depth: anyone who can
 write the profile store already has the user's privileges.
 
 Auto-switch moves `.credentials.json` files and does nothing else with
-them: it never opens, reads, parses, copies or refreshes them. The only
-other code that touches them is the [direct read](#direct-read), described
-below. The only operations
-on them are `renameat2(RENAME_NOREPLACE)` between two directories under the
+them: it never opens, reads, parses, copies or refreshes them. The
+[direct usage read](#direct-read) and [credential identity
+reader](#credential-identity) read credentials for their respective bounded
+requests. Rotation/switch ownership checks reuse the identity reader.
+Auto-switch's file operations are `renameat2(RENAME_NOREPLACE)` between two directories under the
 root, `utimensat` (without following symlinks) to set the modification time,
 metadata checks, and syncing the directories that contain them. Each account's
 login is in exactly one place at any moment. `.claude.json` and
@@ -8346,9 +9149,10 @@ only the `oauthAccount` key is copied out of `.claude.json`, rewrites of
 column only.
 State directories are `0700` and state files `0600`, and symlinks are
 refused, as for the profile store. Auto-switch
-makes no network calls; the direct read is the only network call amplihack
-makes for profiles. The status-line wrapper runs the original command
-with `sh -c`, which is what Claude itself does with it; the supervisor for
+makes no network calls. Profile usage uses the direct usage reader;
+rotation, switching, recovery and verification use the bounded credential
+identity reader when they need account evidence. The status-line wrapper
+runs the original command with `sh -c`, which is what Claude itself does with it; the supervisor for
 reruns starts amplihack directly with no shell.
 
 Autostart reads only the auto-switch setting, its own setting file and
@@ -8466,7 +9270,8 @@ in [Accounts, organizations and duplicate logins](../howto/claude-profiles.md#ac
 
 ### Account identity
 
-An account is read from the `oauthAccount` object of a `.claude.json`:
+For session/display callers, an account is read from the `oauthAccount`
+object of a `.claude.json`:
 `accountUuid` (the user), `organizationUuid` (the organization) and
 `emailAddress`. A value that is not a string, is over 320 bytes or contains
 control characters counts as missing. Only these fields are read.
@@ -8481,19 +9286,19 @@ control characters counts as missing. Only these fields are read.
 | uuid on one side only | (any) | no |
 | no uuid on either side | — | the e-mail addresses match, ignoring case |
 
-Every account-to-account comparison uses this rule: the `login` check, the
-[duplicate-login warning](#duplicate-login-warning), the
-[rotate live profile](#rotate-live-profile) match, the
-[hand-change recovery](#rotate-hand-change-recovery) holder check, auto-switch's account
-checks and the rotator's candidate checks. Two profiles with the same uuid
-and different organizations are two accounts, so they do not make the live
-profile `ambiguous`.
+Rotation and manual switching apply the same full-account comparison to
+[trusted login evidence](#rotation-login-identity), rather than to session
+JSON. Organization changes remain identity changes. Expected records
+retain the legacy compatibility rules below. Standalone `login`, display
+warnings and other auto-switch callers retain their separate behavior.
 
-The rotate ledger and auto-switch state files are unchanged. They still
-record the user only, and checks against them (the rotate ledger match,
-swap verification and auto-switch's observed-account check) still compare
-the user only. Where a full account is needed, the organization is read
-from the profile's `.claude.json`.
+The rotate ledger retains its existing fields and adds optional
+`login_identity`, populated from authorized trusted evidence. Its
+`account` remains a display key; the key alone is insufficient for a
+full-account ownership or recovery decision. Older ledger readers ignore
+the new field after #1659; the existing compatibility projection omits it
+when a strict older rotator is detected. Older binaries reject new journal fields/phases, so finish
+a pending transaction with the binary that understands its journal.
 
 ### Recorded account
 
@@ -8517,15 +9322,19 @@ file holds nothing else: no token or display name. It is written
 atomically, mode `0600`, owned by you and never through a symlink. It has
 no `version` field.
 
-A record is written in three cases only:
+A record is written in five cases only:
 
 | When | What is recorded |
 |------|------------------|
 | [`profile login <name>`](#login-check) is accepted | The account in the profile's new `.claude.json`. A later accepted login overwrites it. Nothing is recorded when that file has no account (for example a macOS Keychain login with no `oauthAccount` block). |
-| A [swap](#rotate-swap) adopts the login in `~/.claude` as `default-original[-N]` | The account in `~/.claude.json`, for the new profile, only when no existing profile holds the same account and organization or has it recorded. Otherwise nothing is recorded for the new profile, and a record left under its name by a removed profile is deleted. |
-| A [swap](#rotate-swap) completes from a profile that has no record | The outgoing account, for the `from` profile, only when the [rotate ledger](#rotate-live-profile) names `from` as live, the outgoing account matches the ledger's `account`, and no other profile holds the same account and organization or has it recorded. |
+| A [swap](#rotate-swap) adopts the login in `~/.claude` as `default-original[-N]` | The trusted outgoing account, only after a complete ownership check establishes the new profile may own it. A session block cannot supply identity; unreadable claims prevent adoption. |
+| A [swap](#rotate-swap) completes from a profile that has no record | The trusted outgoing account, only when existing ledger/provenance and compatibility checks establish ownership and a complete trusted scan finds no other profile claiming it. Session JSON cannot backfill missing evidence. Existing restrictions after hand-change recovery still apply. |
+| A rotate cycle [seeds](#seeding-a-record) a live profile with no record | The account from one fresh trusted reading, only with full ledger ownership and no other claim. |
+| [`profile seed-record <name> --write`](#profile-seed-record) | The account from one fresh trusted reading of the profile you named, only when the [seeding rules](#seeding-a-record) hold. |
 
-Nothing else writes a record. A swap never records the incoming (`to`)
+Nothing else writes a record, and `profile verify --fix` never does. Both seeding
+paths require an account uuid and an organization, and never replace an existing
+record. A swap never records the incoming (`to`)
 profile and never overwrites a usable record of the outgoing one. An
 adopted login replaces any record left under the new `default-original[-N]`
 name by a removed profile, or deletes it when the adopted login is not
@@ -8539,15 +9348,15 @@ prints a warning and does not fail the login or the swap:
 warning: the recorded account for profile 'work' was not saved: <reason>
 ```
 
-A record that is missing, unreadable, not `0600`, not owned by you, a
-symlink, over 64 KiB, not valid JSON, or whose `account` is not a usable
-string, or whose `org` is missing or neither `null` nor such a string,
-counts as no record, and no command fails because of it. A swap from that
-profile is not checked and prints one line to stderr:
-
-```
-warning: the recorded account for profile 'work' could not be read; the swap was not checked against it
-```
+For rotation/switch authorization, missing and unusable records are
+separate states. A missing record may follow the existing adoption or
+backfill rules with trusted evidence. An existing unreadable record,
+unsafe mode/owner, symlink, file over 64 KiB, invalid JSON, unusable
+`account`, or missing/invalid `org` makes ownership uncertain and refuses
+the affected operation. A warning cannot substitute for the check. No
+login moves and no ledger identity changes while that required evidence
+is unusable. Standalone login and display callers retain their existing
+record-reading behavior.
 
 A record whose `account` is the login's uuid matches only when `org`
 equals the login's `organizationUuid`, both being absent counting as equal:
@@ -8564,7 +9373,7 @@ holds the outgoing account or has it recorded. A profile folder can already
 hold another account's login, written by a Claude session started with
 `CLAUDE_CONFIG_DIR` on that folder; recording it would make the guard
 protect the wrong account. Such a profile stays unrecorded until its next
-accepted `profile login`.
+accepted `profile login` or a [seed](#seeding-a-record) that passes.
 
 Three things read the record:
 
@@ -8583,10 +9392,11 @@ Three things read the record:
 - the [rotate swap](#rotate-swap), which refuses to move the login in
   `~/.claude` into a profile whose record names another account.
 
-A profile with no record gets none of these: its duplicate pairs use the
-cannot-tell form and its swaps are not checked. Profiles created before this
-release have no record until their next accepted `profile login`, or a swap
-that records them.
+A profile with no record has no expected account to compare. Its display
+warnings may use the cannot-tell form; rotation/switch still require
+trusted ownership authorization. Records are created by an accepted
+`profile login`, an authorized adoption/backfill or
+[seeding](#seeding-a-record), as described above.
 
 `profile remove` leaves the record in place. If the name is reused, the old
 record can refuse one swap; an accepted `profile login <name>` replaces it.
@@ -9437,7 +10247,8 @@ the last tier, so nothing is left to try. The ALERT is keyed by the profile,
 so a rotator running every 120 seconds writes it once, not every cycle. It is
 written again only when the stored ALERT key changes or is cleared: after a
 different ALERT has been written in between, or after a cycle that swaps or
-stays without an ALERT, since such a cycle clears the key. Other failure reasons are `settings.json is a symlink`,
+records `stayed`, since such a cycle clears the key. A `stayed-unread` cycle
+leaves the key in place. Other failure reasons are `settings.json is a symlink`,
 `settings.json is writable by group or others`,
 `settings.json is not owned by you`, `settings.json is too large`,
 `settings.json cannot be parsed`, and the same for `.claude.json`. Each

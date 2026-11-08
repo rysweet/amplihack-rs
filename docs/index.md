@@ -92,7 +92,7 @@ Centralized plugin system that works across all your projects:
 - [Quick Start](../README.md) - Basic usage and first commands
 - [Stale Wrapper Repair Tutorial](tutorials/repair-install-update-path-conflicts.md) - Learn how install/update keeps the Rust binary first and refreshes stale assets
 - [Repair Stale Wrappers and PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Quarantine stale Python/uvx wrappers and make `~/.local/bin/amplihack` resolve first
-- [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets from the current Rust distribution
+- [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets, and what to do when install refuses a source
 - [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in separate `CLAUDE_CONFIG_DIR` profiles that share one session store ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
 - [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset and run once more ([reference](reference/profile-command.md#usage-limit-wait))
 
@@ -165,8 +165,10 @@ amplihack copilot
 - [Bring Agent Sessions Back After a Terminal Loss](howto/supervise-agent-sessions.md) - Register long-lived Claude sessions with `amplihack agent` and let a supervisor service resume them from their saved conversation
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
 - [Keep Tests out of the Real Profile Root](howto/keep-tests-out-of-the-real-profile-root.md) - How tests avoid writing real profiles' `settings.json`, and the guard that fails the run when one changes
+- [Give Test Logins a Fake Account Identity](howto/give-test-logins-a-fake-account-identity.md) - How profile tests give fake logins a server identity, re-issue a credential when its account changes, and test the no-record case
 - [Keep Tests from Changing PATH and HOME](howto/keep-tests-from-changing-path-and-home.md) - How tests give a child process its `PATH` and `HOME` without changing the test process, and how to test a timeout so that host load cannot fail it
 - [Keep Tests from Prompting for Git Credentials](howto/keep-tests-from-prompting-for-git.md) - Why git under plain `timeout` stops on `SIGTTIN`, the settings that stop test and amplihack git from prompting, and how to run long commands safely
+- [Keep Tests Passing Under Host Load](howto/keep-tests-passing-under-host-load.md) - Wait on conditions under one 10-minute ceiling, use the debug-only identity knobs, and prove a fix with all-core CPU load
 - [Wait Without Leaving Orphan Processes](howto/wait-without-orphan-processes.md) - Wait with `amplihack wait --seconds N` or `wait $pid`, use uutils `timeout` safely, and what the tail-follow guard in the `pre-tool-use` hook denies
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
 - [Capacity Governor](reference/capacity-governor.md) - How recipe runs and agent launches are admitted, made to wait or refused (exit 80) from session and weekly budgets, and `amplihack governor status`
@@ -174,6 +176,7 @@ amplihack copilot
 - [`amplihack agent` Reference](reference/agent-command.md) - Register flags, `amplihack claude --supervise`, the supervisor pass, result texts, status formats, the registry and the systemd unit
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
+- [Framework Source Selection](reference/framework-source-selection.md) - Which source install, update and self-heal stage the bundle from, the release tag fetch, the manifest check and file modes
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
 - [External LiteLLM Gateway](features/README.md#external-litellm-gateway) - Route supported local agents through an operator-managed gateway
 - [External LiteLLM Gateway Tutorial](tutorials/external-litellm-gateway.md) - Configure a protected route to an existing gateway
@@ -310,7 +313,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Structured Verdict & Intent Parsing Reference](reference/structured-verdict-parsing.md) - `normalise-verdict` helper, `session-tree register --json`, and the `verdict`/`no_merge`/`goal_status`/`status` fields that replace brittle agent-prose scraping
 - [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the build → crusty-review → merge-ready loops, how the autodrive recipes read step outputs through `RECIPE_VAR_<output>`, how the `LOOP_HEALTH:` line is read, the no-progress stop and per-run usage budget (`autodrive_budget_*`), and the evidence-gated merge
 - [Loop-Health Evaluator Reference](reference/loop-health-evaluator.md) - the reusable `CONTINUE`/`DONE`/`STUCK` agentic loop-health contract, `normalise-loop-verdict`, and why the loop terminator is absence of progress rather than an iteration cap
-- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the three phases, how the merge round applies the merge-ready criteria (gadugi scenarios run one per process, the crusty loop as criterion 3), the `AUTODRIVE_QA_*` variables, `.amplihack/qa.toml` and how the QA command is chosen and scoped to the changed paths, the evidence-gated merge, and why rounds commit only in the pull request's worktree
+- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the three phases, how the merge round applies the merge-ready criteria (gadugi scenarios run one per process, the crusty loop as criterion 3), the `AUTODRIVE_QA_*` variables, `.amplihack/qa.toml` and how the QA command is chosen and scoped to the changed paths, the evidence-gated merge, and why rounds commit only in the pull request's worktree, and how minor-only crusty verdicts end the crusty loop with a follow-up issue per finding (#1979)
 - [Session-Tree Recursion Control](reference/session-tree-recursion-control.md) - where tree state lives, how the depth ceiling is sealed, the `BLOCKED_TERMINAL` exit-79 contract, `session-tree gc` retention, and mixed-version fleets
 - [Read Agent Verdicts with orch helper](howto/parse-agent-verdicts-with-orch-helper.md) - Migrate grep/awk/jq gates to `orch helper extract-json | extract-field | normalise-verdict` and structured `parse_json` conditions
 - [Pass Large Recipe Context and Agent Text](howto/pass-large-recipe-context.md) - `--context-file`, `--context-from-file`, `--body-file` and `git commit -F` for values that would exceed the argument limit
@@ -795,6 +798,7 @@ Testing strategies, quality assurance, and validation patterns.
 - [CS Validator](cs-validator/README.md) - Code style validation
 - [Testing Plan](testing/TEST_PLAN.md) - Testing strategy and execution checklist
 - [Skill Frontmatter Type Guard](testing/SKILL_FRONTMATTER_TYPE_GUARD.md) - Regression test catching Copilot CLI frontmatter string-scalar TYPE bugs
+- [Load-Independent Deadline Tests for the Direct Usage Read](bugfixes/bugfix-1962-usage-direct-deadline-tests.md) - How the `tests_usage_direct` deadline tests derive their delays from `REFRESH_BUDGET` and `MAX_STEP` so that a loaded host cannot change their outcome
 - [Keep the Pre-commit Hooks Portable to macOS](howto/keep-pre-commit-hooks-portable-to-macos.md) - POSIX sed, bash 3.2, Linux-only clippy allows, and libc type aliases
 
 ### Code Review

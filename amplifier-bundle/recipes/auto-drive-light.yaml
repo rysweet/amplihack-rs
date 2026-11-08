@@ -100,7 +100,7 @@ steps:
       command -v jq >/dev/null 2>&1 || die "jq is not on PATH; auto-drive-light needs it"
       case "${AMPLIHACK_HOME:-}" in /*) ;; *) die "AMPLIHACK_HOME must be an absolute path; tools are loaded only from it" ;; esac
       T="${AMPLIHACK_HOME}/amplifier-bundle/tools"
-      for f in autodrive_light_eligibility.sh autodrive_light_round.sh autodrive_light_steps.sh autodrive_state.sh autodrive_trust.sh quick_change_common.sh; do
+      for f in autodrive_light_eligibility.sh autodrive_light_round.sh autodrive_finding_rules.sh autodrive_light_steps.sh autodrive_state.sh autodrive_trust.sh quick_change_common.sh; do
         [ -f "$T/$f" ] || die "$f not found under AMPLIHACK_HOME"
       done
       cd "${RECIPE_VAR_repo_path:-.}" 2>/dev/null || die "cannot enter repo_path"

@@ -6,10 +6,10 @@
 #![cfg(target_os = "linux")]
 
 use crate::support::profile_rotate::*;
+use crate::support::wait::{output_within, wait_until as wait_for};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Output;
-use std::time::{Duration, Instant};
 
 const ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
 
@@ -22,7 +22,7 @@ fn other_root(f: &Fixture) -> PathBuf {
 }
 
 fn ok_no_env(f: &Fixture, args: &[&str]) -> Output {
-    let out = f.cmd_no_root_env(args).output().unwrap();
+    let out = output_within("`amplihack profile ...`", &mut f.cmd_no_root_env(args));
     assert_no_secrets(&out);
     assert!(out.status.success(), "{args:?}: {}", text(&out.stderr));
     out
@@ -50,17 +50,6 @@ impl Drop for Guard {
             // SAFETY: plain kill(2) of a process this test started.
             unsafe { libc::kill(self.pid, libc::SIGTERM) };
         }
-    }
-}
-
-fn wait_for(what: &str, mut cond: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !cond() {
-        assert!(
-            start.elapsed() < Duration::from_secs(10),
-            "timed out waiting for {what}"
-        );
-        std::thread::sleep(Duration::from_millis(100));
     }
 }
 
@@ -120,7 +109,7 @@ fn the_rotator_keeps_its_start_root_and_status_finds_it() {
         f.cmd(&["profile", "rotate", "status"]),
     ] {
         cmd.env(ROOT_ENV, "");
-        let out = cmd.output().unwrap();
+        let out = output_within("`profile rotate status`", &mut cmd);
         let s = text(&out.stdout);
         assert!(
             s.starts_with(&format!("root: {r} (pinned by running rotator)\n")),
@@ -132,9 +121,11 @@ fn the_rotator_keeps_its_start_root_and_status_finds_it() {
         );
     }
 
-    let out = ok_no_env(&f, &["profile", "rotate", "stop"]);
-    assert!(text(&out.stdout).contains(&format!("rotate: stopped (pid {pid})")));
-    assert!(!pid_file(&f).exists());
+    // From the shell whose root moved: `stop` finds the rotator through the
+    // record, retried while the rotator outlives stop's own 10 s wait.
+    let (out, refused) =
+        f.stop_until_gone_by(pid, || f.cmd_no_root_env(&["profile", "rotate", "stop"]));
+    f.assert_stopped(&out, refused, pid);
     assert!(
         rotate_record(&f).exists(),
         "stop leaves the record in place"

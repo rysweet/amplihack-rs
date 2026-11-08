@@ -30,9 +30,7 @@ use super::pin::{self, Gate, PinState};
 use super::settings;
 use super::swap::{DOCUMENTED, Source, swap};
 use super::switch::{Switched, release, switch_live};
-use super::tests_swap::{
-    CREDS, Env, LOCK, NOW, env, hold_state_lock, ino_at, json, login, n, private,
-};
+use super::tests_swap::{CREDS, Env, LOCK, NOW, env, hold_state_lock, ino_at, json, login, n};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::State;
 use crate::commands::profile::name::ProfileName;
@@ -240,6 +238,7 @@ fn a_switch_logs_a_switch_line_not_a_swap_line() {
 #[test]
 fn a_switch_adopts_a_login_no_profile_owns() {
     let e = env();
+    fs::remove_file(&e.rs.ledger).unwrap();
     fs::remove_file(e.root.join("work/.claude.json")).unwrap();
     assert_eq!(
         switch(&e, "spare").unwrap(),
@@ -363,20 +362,19 @@ fn an_inconsistent_journal_is_refused() {
 
 #[test]
 fn a_hand_changed_login_is_refused_without_an_alert() {
+    // Issue #1886: an open suspicion from the credential readings, not a
+    // `.claude.json` that names another account, makes the login hand-changed.
     let e = env();
     e.rs.save_ledger(&RotateLedger {
         live: Some("work".into()),
         account: Some("u-work".into()),
+        hand_suspect: Some(super::hand_fields::HandSuspect {
+            profile: "spare".into(),
+            first_seen: 1,
+        }),
         ..RotateLedger::default()
     })
     .unwrap();
-    private(
-        &e.home.join(".claude.json"),
-        &serde_json::json!({
-            "oauthAccount": {"accountUuid": "u-other", "emailAddress": "other@example.com"}
-        })
-        .to_string(),
-    );
     assert_refused(&e, "spare", "is not the one the ledger names (live=work)");
 }
 
@@ -390,6 +388,7 @@ fn no_login_in_home_is_refused() {
 #[test]
 fn an_ambiguous_login_is_refused() {
     let e = env();
+    fs::remove_file(&e.rs.ledger).unwrap();
     // A second login-less profile with work's account: two profiles match.
     e.store.add(&n("twin")).unwrap();
     fs::copy(
@@ -397,6 +396,14 @@ fn an_ambiguous_login_is_refused() {
         e.root.join("twin/.claude.json"),
     )
     .unwrap();
+    let state = State::new(&e.root).unwrap();
+    let a = super::tests::tests_fixture_identity::read(&e.home.join(".claude")).unwrap();
+    for name in ["work", "twin"] {
+        if !e.root.join(name).exists() {
+            e.store.add(&n(name)).unwrap();
+        }
+        crate::commands::profile::expected::record(&state, &n(name), &a).unwrap();
+    }
     assert_refused(&e, "spare", "more than one profile matches");
 }
 

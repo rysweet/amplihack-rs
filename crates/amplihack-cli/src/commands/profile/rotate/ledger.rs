@@ -5,8 +5,8 @@
 
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    check_root_private, ensure_private_dir, euid, fsync_dir, now, read_bounded_nofollow,
-    writable_by_others, write_private_atomic,
+    check_root_private, ensure_private_dir, euid, fsync_dir, now, parse_position as position,
+    read_bounded_nofollow, writable_by_others, write_private_atomic,
 };
 use crate::commands::profile::name::ProfileName;
 use serde::{Deserialize, Serialize};
@@ -14,10 +14,9 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-pub use super::hand_fields::{
-    HOME_UNREADABLE_GRACE, MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES, MAX_LOST_LOGIN, unprintable,
-};
-use super::hand_fields::{valid_guidance, valid_lost_login};
+use super::alert::valid_alerts;
+pub use super::hand_fields::{HandSuspect, MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES, unprintable};
+use super::hand_fields::{valid_guidance, valid_hand_suspect, valid_lost_login, valid_name};
 pub use super::older_readers::for_older_readers;
 use super::plan_room::no_room::{self, NoRoom};
 #[cfg(test)]
@@ -110,6 +109,9 @@ pub struct RotateLedger {
     /// That login's account (`accountUuid`, else `emailAddress`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account: Option<String>,
+    /// Full credential-bound identity; a legacy key alone cannot prove ownership.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_identity: Option<super::login_identity::Identity>,
     /// When `live` last changed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub since: Option<i64>,
@@ -121,20 +123,24 @@ pub struct RotateLedger {
     /// The ALERT de-duplication key, `<kind>:<live or ->`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alert: Option<String>,
+    /// Issue #1907: a no-capacity ALERT's key while the live login still
+    /// read below 100%, so it does not block a resume; never with `alert`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub advisory_alert: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_cycle: Option<LastCycle>,
     /// Overflow profiles blocked by a spend limit, by profile name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overflow_blocked: BTreeMap<String, OverflowBlock>,
-    /// The current hand-change ALERT and `fix` lines (issue #1693), written
-    /// every cycle while `~/.claude` holds another account than `account`.
+    /// The current hand-change note, or ALERT and `fix` lines (#1693, #1886).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guidance: Option<Vec<String>>,
-    /// When a cycle first found `~/.claude.json` with no account that can be
-    /// read, while a login is in `~/.claude` and the ledger names a live
-    /// profile; cleared by the first cycle that reads an account there (or
-    /// finds no login). Once it is [`HOME_UNREADABLE_GRACE`] old the
-    /// `home-unreadable` ALERT gets real `fix` lines (#1702 review).
+    /// The open hand-change suspicion (issue #1886); no reading, no account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hand_suspect: Option<HandSuspect>,
+    /// When `~/.claude.json` was first found with no readable account under a
+    /// ledger-named live profile; after [`HOME_UNREADABLE_GRACE`] the
+    /// `home-unreadable` ALERT gets `fix` lines (#1702 review).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_unreadable_since: Option<i64>,
     /// Profiles recorded as live that lost their login to a manual `/login`.
@@ -164,13 +170,16 @@ impl Default for RotateLedger {
             version: VERSION,
             live: None,
             account: None,
+            login_identity: None,
             since: None,
             swapped_at: None,
             previous: None,
             alert: None,
+            advisory_alert: None,
             last_cycle: None,
             overflow_blocked: BTreeMap::new(),
             guidance: None,
+            hand_suspect: None,
             home_unreadable_since: None,
             lost_login: Vec::new(),
             live_kind: None,
@@ -181,52 +190,9 @@ impl Default for RotateLedger {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Phase {
-    J0,
-    S1,
-    S2,
-    S3,
-    S4,
-    Inconsistent,
-}
-
-impl Phase {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::J0 => "j0",
-            Self::S1 => "s1",
-            Self::S2 => "s2",
-            Self::S3 => "s3",
-            Self::S4 => "s4",
-            Self::Inconsistent => "inconsistent",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RotateJournal {
-    pub version: u32,
-    pub from: String,
-    pub to: String,
-    /// `from` was created by adopting the login in `~/.claude`.
-    pub adopt: bool,
-    pub phase: Phase,
-    /// `$HOME` when the swap started. Only ever compared, never a path.
-    pub home: String,
-    /// Inode of the outgoing login (`~/.claude/.credentials.json`).
-    pub live_ino: u64,
-    /// Inode of the incoming login (`<root>/<to>/.credentials.json`).
-    pub target_ino: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub home_lock_ino: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub to_lock_ino: Option<u64>,
-    pub started_at: i64,
-    pub pid: u32,
-}
+#[path = "swap_journal.rs"]
+mod journal;
+pub use journal::{Phase, RotateJournal};
 
 /// Paths of the rotate state.
 #[derive(Debug, Clone)]
@@ -256,13 +222,9 @@ fn inconsistent(msg: impl Into<String>) -> ProfileError {
 }
 
 /// An account value amplihack may store: non-empty, at most 320 bytes, no
-/// control characters.
+/// control or bidirectional-override characters ([`unprintable`]).
 pub fn safe_account(v: &str) -> bool {
-    !v.is_empty() && v.len() <= MAX_ACCOUNT && !v.chars().any(char::is_control)
-}
-
-fn valid_name(v: Option<&str>) -> bool {
-    v.is_none_or(|n| ProfileName::parse(n).is_ok())
+    !v.is_empty() && v.len() <= MAX_ACCOUNT && !v.chars().any(unprintable)
 }
 
 impl RotateState {
@@ -322,9 +284,7 @@ impl RotateState {
         if !valid_name(l.live.as_deref()) || !valid_name(l.previous.as_deref()) {
             return Err(inconsistent(format!("{WHAT}: invalid profile name")));
         }
-        if l.account.as_deref().is_some_and(|a| !safe_account(a))
-            || l.alert.as_deref().is_some_and(|a| !safe_account(a))
-        {
+        if l.account.as_deref().is_some_and(|a| !safe_account(a)) || !valid_alerts(&l) {
             return Err(inconsistent(format!("{WHAT}: invalid account or alert")));
         }
         if !valid_overflow(&l) {
@@ -333,10 +293,11 @@ impl RotateState {
         if !no_room::valid(l.no_room.as_ref()) {
             return Err(inconsistent(format!("{WHAT}: invalid no_room")));
         }
-        if !valid_guidance(l.guidance.as_deref()) || !valid_lost_login(&l.lost_login) {
-            return Err(inconsistent(format!(
-                "{WHAT}: invalid guidance or lost_login"
-            )));
+        if !valid_guidance(l.guidance.as_deref())
+            || !valid_lost_login(&l.lost_login)
+            || !valid_hand_suspect(l.hand_suspect.as_ref())
+        {
+            return Err(inconsistent(format!("{WHAT}: invalid hand-change field")));
         }
         l.swapped_away = super::swap_back::valid(std::mem::take(&mut l.swapped_away), now());
         Ok(Some(l))
@@ -391,9 +352,4 @@ impl RotateState {
             Err(e) => Err(e.into()),
         }
     }
-}
-
-/// Line and column only: a serde message can quote input.
-fn position(e: &serde_json::Error) -> String {
-    format!("invalid JSON at line {} column {}", e.line(), e.column())
 }

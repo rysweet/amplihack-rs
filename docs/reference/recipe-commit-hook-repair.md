@@ -340,14 +340,22 @@ bounded however long the loop runs; the full history is kept in
 ## Evidence
 
 The first attempt creates nothing under `TMPDIR`. Its combined output is
-written to a `hook-repair-attempt.XXXXXX` file in the git directory
-(`git rev-parse --absolute-git-dir`, created mode 600), which a commit or push
-must be able to write anyway, and is redacted there. A first-try success, or
-a failure that is not a hook rejection, removes that file and returns; it
+written as `attempt.out` in a `hook-repair-attempt.XXXXXX` directory in the git
+directory (`git rev-parse --absolute-git-dir`; the directory is mode 700), which
+a commit or push must be able to write anyway, and is redacted there. A
+first-try success, or a failure that is not a hook rejection, removes that
+directory and returns; it
 does not matter where `TMPDIR` points or whether it is writable. If the git
-directory cannot hold the file, the command still runs, its combined output
+directory cannot hold the directory, the command still runs, its combined output
 is redacted on its way to stderr and to the `--output` file, and a failure is
 returned as `not_hook`, so step-15 reports `push-failed: <redacted output>`.
+If `git rev-parse --absolute-git-dir` prints nothing, or something that is not an
+existing absolute directory, the driver does not run the command at all: it
+returns status `usage` (rc 2). Once a hook has rejected the operation, `TMPDIR`
+(or `/tmp` when it is unset) must name an existing absolute directory, or the
+driver also returns `usage` (rc 2). `stage_workflow_changes` likewise creates
+its private path lists in the git directory, before `git add -u`, and returns 2
+when that directory is empty or relative.
 
 Only once a hook rejection has been identified does the driver create a
 private directory, `HR_DIR`, move the first attempt's output into it, and

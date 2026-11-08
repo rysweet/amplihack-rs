@@ -507,6 +507,48 @@ fn direct_probe(session: f64, week: f64) -> Probe {
     }
 }
 
+#[test]
+fn identity_trust_changes_join_the_original_read_without_reclassifying_it() {
+    use super::measure::{Key, Reads, join_pending};
+    for (started, next) in [
+        (
+            Key::UnboundCandidate(name("spare")),
+            Key::Candidate(name("spare")),
+        ),
+        (
+            Key::Candidate(name("spare")),
+            Key::UnboundCandidate(name("spare")),
+        ),
+    ] {
+        let mut reads = Reads::with_cancel(
+            Duration::from_secs(30),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        let (send, recv) = std::sync::mpsc::channel();
+        reads.start_all(
+            vec![(
+                started.clone(),
+                Box::new(move || {
+                    recv.recv().unwrap();
+                    direct_probe(10.0, 20.0)
+                }),
+            )],
+            1,
+        );
+        let mut keys = [next];
+        join_pending(&reads, &mut keys);
+        assert_eq!(keys[0], started);
+        send.send(()).unwrap();
+        let results = gather(
+            &mut reads,
+            &keys,
+            |_| panic!("no duplicate read"),
+            Wait::Full,
+        );
+        assert_eq!(results[0].0, started);
+    }
+}
+
 /// Issue #1856 (D6): the rotator runs no spend probe, so a credits-on
 /// direct row reaches it with spend `NotProbed` and a shape. It is judged
 /// by its windows exactly as a credits-off row is, and is never unknown.

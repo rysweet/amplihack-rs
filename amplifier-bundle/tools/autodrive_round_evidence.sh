@@ -169,7 +169,7 @@ crusty_evidence() {
     token="${out:-crusty-other}"
   fi
   case "$token" in
-    '') status="DONE_CLEAN" ;;
+    '') status="DONE_CLEAN" ;; # a CLEAN or MINOR_ONLY final record (#1979)
     crusty-loop-not-done) status="ABSENT" ;;
     crusty-not-clean) status="NOT_CLEAN" ;;
     crusty-manifest-missing|crusty-record-missing|crusty-record-modified|crusty-head-sha-empty) status="UNTRUSTED" ;;

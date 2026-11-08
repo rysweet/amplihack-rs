@@ -46,6 +46,10 @@ Added a `force_refresh: bool` parameter to `run_install()`. When
 entirely and goes directly to `download_and_extract_framework_repo()` to fetch
 a fresh bundle from `REPO_ARCHIVE_URL` (the `main.tar.gz` archive).
 
+Issue #1955 later replaced this download: `--force-refresh` now uses a
+same-version `AMPLIHACK_HOME` or the release tag, never `main`. See
+[Framework source selection](../reference/framework-source-selection.md).
+
 **Call sites:**
 
 | Caller | `force_refresh` | Behavior |
@@ -71,7 +75,10 @@ before the bundled-root check).
 
 ## Verification
 
-After the fix, `amplihack update` produces:
+After the fix, `amplihack update` produced the output below. Since #1955 the
+second line is instead the source line (`📦 Using framework source …`) or, when
+no same-version `AMPLIHACK_HOME` exists, `📥 Fetching the framework bundle from
+release tag v… because --force-refresh was given.`
 
 ```
 ✓ Updated amplihack to v0.9.61

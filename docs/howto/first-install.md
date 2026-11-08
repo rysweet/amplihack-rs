@@ -7,7 +7,7 @@ This guide walks through running `amplihack install` on a machine that has never
 | Requirement | Minimum version | Why |
 |-------------|----------------|-----|
 | Rust toolchain | 1.88 (2024 edition) | Build from source |
-| Internet access | — | Default install clones from GitHub (skip with `--local`) |
+| Internet access | — | Default install fetches the binary's release tag from GitHub unless a same-version local source exists (skip with `--local`) |
 | Node.js + npm (optional) | 18+ | Only needed when using the npm/npx wrapper path |
 
 ### macOS SIP Note {#macos-sip-note}
@@ -70,7 +70,7 @@ The installer performs these phases in order:
 
 | Phase | What happens |
 |-------|-------------|
-| **Obtain framework** | Downloads and extracts the GitHub repository archive, or uses `--local` when requested. |
+| **Obtain framework** | Uses a local source with the binary's version, or fetches the matching release tag, or uses `--local` when requested. See [Framework source selection](../reference/framework-source-selection.md). |
 | **Deploy binaries** | Copies `amplihack` and `amplihack-hooks` to `~/.local/bin` with `0o755` permissions. |
 | **Stage assets** | Copies framework files (agents, commands, tools, skills, etc.) to `~/.amplihack/.claude/`. |
 | **Create runtime dirs** | Creates `~/.amplihack/.claude/runtime/` subdirectories with `0o755` permissions. |
