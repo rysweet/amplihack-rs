@@ -12,8 +12,15 @@ version in `Cargo.lock`, and every build links that copy instead.
 
 ## Use it
 
-The pre-push and pre-commit cargo runner, `scripts/git-hook-cargo.sh`, uses it
-automatically. For your own builds:
+Build the shared copy once on each host:
+
+```sh
+scripts/lbug-prebuilt.sh build
+```
+
+After that, the pre-push and pre-commit cargo runner, `scripts/git-hook-cargo.sh`,
+uses it automatically. It never starts the build itself, so a hook stays fast
+and tests that run it under a throwaway home build nothing. For your own builds:
 
 ```sh
 eval "$(scripts/lbug-prebuilt.sh env | sed 's/^/export /')"

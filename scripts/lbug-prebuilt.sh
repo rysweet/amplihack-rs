@@ -17,6 +17,8 @@
 #   scripts/lbug-prebuilt.sh env     ensure the cache, then print
 #                                    `LBUG_LIBRARY_DIR=...` and `LBUG_INCLUDE_DIR=...`
 #   scripts/lbug-prebuilt.sh build   ensure the cache only
+#   scripts/lbug-prebuilt.sh ready   print the two variables only if the cache
+#                                    is already built; never build (for hooks)
 #   scripts/lbug-prebuilt.sh path    print the cache directory; build nothing
 #
 # The version comes from this checkout's Cargo.lock, so a checkout on a newer
@@ -147,5 +149,6 @@ EOF
 case "$mode" in
   build) build ;;
   env) build && print_env ;;
-  *) echo "usage: scripts/lbug-prebuilt.sh [env|build|path]" >&2; exit 2 ;;
+  ready) if ready; then print_env; fi ;;
+  *) echo "usage: scripts/lbug-prebuilt.sh [env|build|ready|path]" >&2; exit 2 ;;
 esac

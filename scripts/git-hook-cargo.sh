@@ -558,14 +558,16 @@ fi
 #
 # Each checkout has its own target directory (section 2), so the lbug crate's
 # build script would compile its ~2,000 C++ files again in every checkout. Use
-# the host's shared prebuilt copy for this checkout's lbug version instead. If
-# the script fails or prints nothing, lbug builds the normal way.
+# the host's shared prebuilt copy for this checkout's lbug version when it is
+# already built (`ready` never starts a build: a hook must not start a long C++
+# build, and tests run this script under throwaway homes). Otherwise lbug
+# builds the normal way. Build the copy once with scripts/lbug-prebuilt.sh.
 if [ -z "${LBUG_LIBRARY_DIR:-}" ] && [ -x "$(dirname "${BASH_SOURCE[0]}")/lbug-prebuilt.sh" ]; then
     while IFS='=' read -r _lbug_key _lbug_value; do
         case "$_lbug_key" in
             LBUG_LIBRARY_DIR|LBUG_INCLUDE_DIR) export "$_lbug_key=$_lbug_value" ;;
         esac
-    done < <("$(dirname "${BASH_SOURCE[0]}")/lbug-prebuilt.sh" env 2>/dev/null || true)
+    done < <("$(dirname "${BASH_SOURCE[0]}")/lbug-prebuilt.sh" ready 2>/dev/null || true)
     if [ -z "${LBUG_LIBRARY_DIR:-}" ] || [ -z "${LBUG_INCLUDE_DIR:-}" ]; then
         unset LBUG_LIBRARY_DIR LBUG_INCLUDE_DIR
     fi
