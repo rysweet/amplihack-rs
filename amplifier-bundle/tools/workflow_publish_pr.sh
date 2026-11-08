@@ -215,8 +215,9 @@ sanitize_provider_stderr() {
 # with LC_ALL=C, so input that is not valid UTF-8 cannot abort it.
 
 # normalise_pr_title_text <text>: one line, no control characters, credentials
-# redacted, single spaces, trimmed. Order: bound the input to 8 KiB, strip
-# control characters (so they cannot split a token), redact, collapse spaces.
+# redacted, single spaces, trimmed, no trailing full stops (so "..." is no
+# title at all). Order: bound the input to 8 KiB, strip control characters (so
+# they cannot split a token), redact, collapse spaces.
 # The length of the result is bounded by cap_pr_title. Bytes >= 0x80 pass.
 normalise_pr_title_text() {
   # A here-string, not a pipe from printf: head cannot SIGPIPE a producer.
@@ -224,7 +225,7 @@ normalise_pr_title_text() {
     | LC_ALL=C tr '\r\n\t' '   ' \
     | LC_ALL=C tr -d '\000-\037\177' \
     | redact_credentials \
-    | LC_ALL=C sed -E 's/  +/ /g; s/^ //; s/ $//'
+    | LC_ALL=C sed -E 's/  +/ /g; s/^ //; s/[. ]+$//'
 }
 
 # conventional_pr_title <text>: prefixes "<type>: ". A leading verb decides
@@ -386,9 +387,11 @@ lookup_issue_title() {
     return 0
   fi
   [ -n "$raw" ] || return 0
-  printf '%s\n' "$raw" \
-    | jq -r 'if type == "object" then ((.title // "") | tostring) else "" end' 2>/dev/null \
-    || true
+  # jq's stderr would echo the untrusted input, so only its status is reported.
+  rc=0
+  jq -r 'if type == "object" then ((.title // "") | tostring) else "" end' \
+    <<<"$raw" 2>/dev/null || rc=$?
+  [ "$rc" -eq 0 ] || echo "NOTE: gh issue view output for #${num} is not JSON (jq exited ${rc}) (#1968)" >&2
   return 0
 }
 

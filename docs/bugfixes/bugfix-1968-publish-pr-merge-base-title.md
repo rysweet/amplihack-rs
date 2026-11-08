@@ -81,8 +81,9 @@ the title text. Every title ends with ` (#<issue>)`.
   scope, the `## Risk` section and the `Closes`/`Refs` choice. Only the body's
   display list stops at 40, followed by `- ... and <N-40> more`.
 - **Normalisation.** Keep the first 8 KiB, turn CR, LF and TAB into spaces,
-  delete other C0 bytes and DEL, redact credentials, collapse spaces. Control
-  bytes go before redaction so they cannot split a token. All `sed` and `tr`
+  delete other C0 bytes and DEL, redact credentials, collapse spaces, drop
+  trailing full stops. A title of only full stops is therefore no title, and the
+  next source is tried. Control bytes go before redaction so they cannot split a token. All `sed` and `tr`
   calls run with `LC_ALL=C` so bytes that are not valid UTF-8 cannot stop BSD
   `sed`.
 - **Redaction.** One function, `redact_credentials`, shared with provider
@@ -112,7 +113,8 @@ the title text. Every title ends with ` (#<issue>)`.
 - **Lookup.** `timeout 30 gh issue view N --repo <owner/repo> --json title`,
   standard input `/dev/null`, stderr discarded, one attempt and no retry. With
   no repository identity no call is made. A non-zero exit is reported only as
-  `NOTE: gh issue view for #N exited <status> (#1968)`.
+  `NOTE: gh issue view for #N exited <status> (#1968)`, and output that jq
+  cannot parse only as `... is not JSON (jq exited <status>)`.
 - **Azure DevOps.** Uses the shared list, stat and body format. Its title stays
   `Update <branch> (AB#<work-item>)`.
 - **Recipe.** `workflow-publish.yaml` declares `task_description: ""` so a

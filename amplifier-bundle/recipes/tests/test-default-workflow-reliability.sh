@@ -1731,6 +1731,8 @@ ROWS
         eq "normalise: UTF-8 passes through" "caf$(printf '\303\251')" \
             "$(normalise_pr_title_text "caf$(printf '\303\251')")"
         eq "normalise: empty input" "" "$(normalise_pr_title_text "")"
+        eq "normalise: a title of only full stops is no title" "" "$(normalise_pr_title_text " . .. ")"
+        eq "normalise: trailing full stops dropped" "Fix the parser" "$(normalise_pr_title_text "Fix the parser.. ")"
         eq "normalise: input bounded to 8 KiB" "8192" "$(bytes "$(normalise_pr_title_text "$(rep a 10000)")")"
         eq "normalise: a control character cannot split a token past redaction" "REDACTED_TOKEN" \
             "$(normalise_pr_title_text $'ghp_ABCDEFGH\x01IJKLMNOPQRSTUVWX')"
@@ -1829,8 +1831,11 @@ ROWS
         for mode in fail empty nulltitle array notjson; do
             want=""
             [ "${mode}" != "fail" ] || want="NOTE: gh issue view for #1968 exited 1 (#1968)"
+            # jq's parse-error status differs by version (2 on 1.6, 5 later).
+            [ "${mode}" != "notjson" ] || want="NOTE: gh issue view output for #1968 is not JSON (jq exited N) (#1968)"
             rc=0
             got="$(PUBLISH_1968_ISSUE_MODE="${mode}" lookup_issue_title 1968 example/repo 2>&1)" || rc=$?
+            got="$(printf '%s\n' "${got}" | sed -E 's/\(jq exited [0-9]+\)/(jq exited N)/')"
             eq "lookup_issue_title ${mode}: output (stdout and stderr)" "${want}" "${got}"
             eq "lookup_issue_title ${mode}: status" "0" "${rc}"
         done
