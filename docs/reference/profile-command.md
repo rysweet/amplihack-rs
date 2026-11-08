@@ -5897,7 +5897,9 @@ authorized one. Legacy journals without sufficient expected-account
 evidence refuse conservatively.
 
 The ledger's optional `login_identity` is written only by authorized swap
-completion or confirmed credential-based recovery. Missing-record
+completion or confirmed credential-based recovery. A block that fails the
+load-time rule in [the ledger fields](#account-identity) stops the rotator;
+it is never repaired silently. Missing-record
 backfill and [cycle seeding](#seeding-a-record) require that full provenance;
 backfill also accepts the full outgoing authorization
 in a pending journal. A UUID-only legacy ledger cannot establish an
@@ -6338,6 +6340,9 @@ The cycle ends as `alerted`, seeds no record, moves no login and leaves the
 ledger file unchanged. With no ledger to hold an ALERT key, the line is written on
 every cycle while the ledger stays unreadable. `--dry-run` prints the same text after `would alert: `,
 and `profile switch` refuses with it.
+
+A ledger whose `login_identity` fails the load-time rule under
+[Account identity](#account-identity) is one case of this stop.
 
 #### When recovery reads
 
@@ -9299,6 +9304,39 @@ full-account ownership or recovery decision. Older ledger readers ignore
 the new field after #1659; the existing compatibility projection omits it
 when a strict older rotator is detected. Older binaries reject new journal fields/phases, so finish
 a pending transaction with the binary that understands its journal.
+
+When the rotator loads the ledger, a present `login_identity` must meet
+the rule below. This is stricter than the session reading above: there, an
+unsafe value counts as missing, whereas in the ledger it stops the rotator.
+
+- it is a JSON object;
+- each of `accountUuid`, `organizationUuid` and `emailAddress`, where
+  present, is a string that is not empty, is at most 320 bytes and contains
+  no control characters (C0, DEL or C1) and no bidirectional override or
+  isolate characters (U+202A to U+202E and U+2066 to U+2069); a key set to
+  `null`, a number or any other non-string fails;
+- `emailAddress`, where present, contains exactly one `@`, has text on both
+  sides of it and contains no whitespace;
+- at least one of `accountUuid` and `emailAddress` is present, so `{}` and a
+  block holding only `organizationUuid` fail.
+
+Other keys inside the object are ignored, and letter case is not checked.
+The rotator rejects a ledger that breaks the rule as `RotateInconsistent`,
+with the message `rotate ledger: invalid login_identity`, without echoing
+the value or naming the key that failed. An absent `login_identity`, or a
+top-level `"login_identity": null`, still loads. The error is reported and
+the file is never overwritten: the cycle ends with the
+[unreadable-ledger stop](#unreadable-ledger-stop), `profile switch` refuses
+with the same line, and no login moves. The block is never repaired, dropped
+or replaced silently.
+
+To recover, stop the rotator with `amplihack profile rotate stop`. In
+`<root>/.auto-switch.d/rotate/ledger.json`, remove the `login_identity` key
+or set it to `null`, and keep the file at mode `0600`. Then start the
+rotator again with `amplihack profile rotate start`. The block is written
+again only by authorised swap completion or confirmed credential-based
+recovery. Until then, ownership decisions refuse conservatively, as they do
+for a legacy ledger that holds only a UUID.
 
 ### Recorded account
 

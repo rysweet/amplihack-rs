@@ -299,6 +299,9 @@ impl RotateState {
         {
             return Err(inconsistent(format!("{WHAT}: invalid hand-change field")));
         }
+        if l.login_identity.as_ref().is_some_and(|i| !i.valid()) {
+            return Err(inconsistent(format!("{WHAT}: invalid login_identity")));
+        }
         l.swapped_away = super::swap_back::valid(std::mem::take(&mut l.swapped_away), now());
         Ok(Some(l))
     }

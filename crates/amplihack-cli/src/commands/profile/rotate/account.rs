@@ -56,6 +56,30 @@ impl Account {
         (a.uuid.is_some() || a.email.is_some()).then_some(a)
     }
 
+    /// Issue #1947: whether a stored block is a well-formed identity. The block
+    /// is a JSON object; each of `accountUuid`, `organizationUuid` and
+    /// `emailAddress` is absent or a string that passes [`safe_account`]; an
+    /// e-mail has exactly one `@` with text on both sides and no whitespace;
+    /// and an account ID or an e-mail is present. Other keys are ignored.
+    pub fn block_is_valid(block: &serde_json::Value) -> bool {
+        let Some(block) = block.as_object() else {
+            return false;
+        };
+        let field = |key: &str| match block.get(key) {
+            None => Some(None),
+            Some(serde_json::Value::String(v)) if safe_account(v) => Some(Some(v.as_str())),
+            Some(_) => None,
+        };
+        let (Some(uuid), Some(_), Some(email)) = (
+            field("accountUuid"),
+            field("organizationUuid"),
+            field("emailAddress"),
+        ) else {
+            return false;
+        };
+        email.is_none_or(email_shape) && (uuid.is_some() || email.is_some())
+    }
+
     /// From an answer of the OAuth profile endpoint (issue #1886):
     /// `account.uuid`, `account.email` and `organization.uuid`, with the
     /// same limits as [`Self::from_block`]. The server reports these for the
@@ -171,4 +195,12 @@ impl Account {
 /// login is in `~/.claude` (#1886).
 pub fn home_readable(home: &Path) -> bool {
     Account::of_dir(home).is_some()
+}
+
+/// Exactly one `@` with text on both sides, and no whitespace.
+fn email_shape(v: &str) -> bool {
+    !v.chars().any(char::is_whitespace)
+        && v.split_once('@').is_some_and(|(local, domain)| {
+            !local.is_empty() && !domain.is_empty() && !domain.contains('@')
+        })
 }
