@@ -221,8 +221,24 @@ fn posts(fake: &FakeHttp) -> usize {
 
 /// Usage answers 200 to the new token and 401 to anything else; the token
 /// endpoint answers with `refresh`.
-fn refreshing(refresh: Reply) -> FakeHttp {
-    FakeHttp::start(move |s, _| {
+/// A fake server for a test that starts a token refresh. It holds
+/// [`crate::test_support::refresh_count_lock`] while it lives, so no other
+/// refresh runs beside a test that checks the process-wide refresh count.
+struct Refreshing {
+    fake: FakeHttp,
+    _serial: std::sync::MutexGuard<'static, ()>,
+}
+
+impl std::ops::Deref for Refreshing {
+    type Target = FakeHttp;
+    fn deref(&self) -> &FakeHttp {
+        &self.fake
+    }
+}
+
+fn refreshing(refresh: Reply) -> Refreshing {
+    let serial = crate::test_support::refresh_count_lock();
+    let fake = FakeHttp::start(move |s, _| {
         if s.path == TOKEN_PATH {
             return refresh.clone();
         }
@@ -231,7 +247,11 @@ fn refreshing(refresh: Reply) -> FakeHttp {
         } else {
             Reply::json(401, &json!({"error": "expired"}))
         }
-    })
+    });
+    Refreshing {
+        fake,
+        _serial: serial,
+    }
 }
 
 fn token_answer() -> Value {
@@ -760,8 +780,9 @@ fn a_stalled_server_is_a_timeout_within_the_deadline() {
 /// Answers with a delay for each path: `old` for the 401 to the old token,
 /// `token` for the token answer to the refresh and `retry` for the 200 to
 /// the new token.
-fn refreshing_after(old: Duration, token: Duration, retry: Duration) -> FakeHttp {
-    FakeHttp::start(move |s, _| {
+fn refreshing_after(old: Duration, token: Duration, retry: Duration) -> Refreshing {
+    let serial = crate::test_support::refresh_count_lock();
+    let fake = FakeHttp::start(move |s, _| {
         if s.path == TOKEN_PATH {
             Reply::json(200, &token_answer()).after(token)
         } else if bearer(s) == Some(&format!("Bearer {NEW_ACCESS}")) {
@@ -769,7 +790,11 @@ fn refreshing_after(old: Duration, token: Duration, retry: Duration) -> FakeHttp
         } else {
             Reply::json(401, &json!({"error": "expired"})).after(old)
         }
-    })
+    });
+    Refreshing {
+        fake,
+        _serial: serial,
+    }
 }
 
 /// The deadline covers the whole read, not each request. With `T` =
