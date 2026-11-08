@@ -396,14 +396,20 @@ pub(crate) fn sessions_key(home: &Path, name: &str) -> Result<Option<Value>, Str
     Ok(effective.file_value(name).cloned())
 }
 
-/// Save `value` for a user-only or user-scoped key in the user file.
+/// Save `value` for `node.heap_consent` in the user file, without syncing it
+/// to disk. Only the launch-path consent save calls this; see the module
+/// comment of [`edit`] (issue #1992) for why the sync is skipped.
 pub(crate) fn set_user_value(name: &str, value: &Value) -> Result<PathBuf, ConfigError> {
+    debug_assert_eq!(
+        name, "node.heap_consent",
+        "set_user_value does not sync, so it is only for node.heap_consent"
+    );
     let def = schema::known_key(name)?;
     let home = home_dir().ok_or_else(|| {
         ConfigError::Runtime(format!("{}; cannot find the user file", home_unavailable()))
     })?;
     let path = files::user_file(&home);
-    edit::set_value(&path, def, value)?;
+    edit::set_value_nosync(&path, def, value)?;
     edit::tighten_owned_dir(&home.join(".amplihack"));
     Ok(path)
 }
