@@ -186,15 +186,20 @@ gh_pr_create_with_retry() {
   return "$status"
 }
 
-# stdin -> stdout: masks URL userinfo and GitHub tokens. The one copy of these
-# patterns, shared by provider stderr and derived PR title text (#1968).
+# stdin -> stdout: masks URL userinfo, GitHub tokens, Anthropic and OpenAI
+# keys (sk-, sk-ant-, sk-proj-) and AWS access key IDs. The one copy of these
+# patterns, shared by provider stderr and derived PR title text (#1968). The sk-
+# and AWS patterns need a boundary, so "disk-usage-..." is not a key. Azure
+# DevOps PATs have no distinctive prefix and are not matched.
 # LC_ALL=C: every pattern is ASCII, and BSD sed in a UTF-8 locale aborts on
 # bytes that are not valid UTF-8, which pipefail would turn into a failed run.
 redact_credentials() {
   LC_ALL=C sed -E \
     -e 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' \
     -e 's#gh[pousr]_[A-Za-z0-9]{16,}#REDACTED_TOKEN#g' \
-    -e 's#github_pat_[A-Za-z0-9_]{16,}#REDACTED_TOKEN#g'
+    -e 's#github_pat_[A-Za-z0-9_]{16,}#REDACTED_TOKEN#g' \
+    -e 's#(^|[^A-Za-z0-9_-])sk-[A-Za-z0-9_-]{20,}#\1REDACTED_TOKEN#g' \
+    -e 's#(^|[^A-Za-z0-9])(AKIA|ASIA)[0-9A-Z]{16}([^0-9A-Za-z]|$)#\1REDACTED_TOKEN\3#g'
 }
 
 sanitize_provider_stderr() {
@@ -210,33 +215,51 @@ sanitize_provider_stderr() {
 # with LC_ALL=C, so input that is not valid UTF-8 cannot abort it.
 
 # normalise_pr_title_text <text>: one line, no control characters, credentials
-# redacted, single spaces, trimmed, at most 1024 bytes. Order: bound the input
-# to 8 KiB, strip control characters (so they cannot split a token), redact,
-# collapse spaces, and only then cut to 1024 bytes (so the cut cannot leave a
-# token fragment too short to match). Bytes >= 0x80 pass.
+# redacted, single spaces, trimmed. Order: bound the input to 8 KiB, strip
+# control characters (so they cannot split a token), redact, collapse spaces.
+# The length of the result is bounded by cap_pr_title. Bytes >= 0x80 pass.
 normalise_pr_title_text() {
-  local s
-  # Here-strings, not pipes from printf: neither head can SIGPIPE a producer.
-  s="$(head -c 8192 <<<"${1:-}" \
+  # A here-string, not a pipe from printf: head cannot SIGPIPE a producer.
+  head -c 8192 <<<"${1:-}" \
     | LC_ALL=C tr '\r\n\t' '   ' \
     | LC_ALL=C tr -d '\000-\037\177' \
     | redact_credentials \
-    | LC_ALL=C sed -E 's/  +/ /g; s/^ //; s/ $//')"
-  head -c 1024 <<<"$s"
+    | LC_ALL=C sed -E 's/  +/ /g; s/^ //; s/ $//'
 }
 
-# conventional_pr_title <text>: prefixes "<type>: " from whole-word keywords,
-# checked in the order fix, docs, test, refactor, feat. Text that already has a
-# conventional prefix, or matches no keyword, is returned unchanged. No scope is
-# ever invented.
+# conventional_pr_title <text>: prefixes "<type>: ". A leading verb decides
+# the type (fix, add, document, test, refactor and their forms); otherwise the
+# first whole-word keyword group to match, in the order fix, docs, test,
+# refactor, feat. Text that already has a conventional prefix is returned
+# unchanged, except that a scope made only of an issue reference is dropped:
+# "fix(#5): x" becomes "fix: x". Text that matches nothing is returned
+# unchanged. No scope is ever invented.
 conventional_pr_title() {
-  local text="$1" lower rule re
+  local text="$1" lower first rule re
   local existing_prefix_re='^[a-z]+(\([^)]*\))?!?: '
+  local issue_scope_re='^([a-z]+)\((#[0-9]+|[Gg][Hh]-[0-9]+)\)(!?): (.*)$'
+  if [[ "$text" =~ $issue_scope_re ]]; then
+    printf '%s%s: %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
+    return 0
+  fi
   if [[ "$text" =~ $existing_prefix_re ]]; then
     printf '%s\n' "$text"
     return 0
   fi
   lower="$(printf '%s' "$text" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  first="${lower%% *}"
+  case "$first" in
+    fix | fixes | fixed) rule="fix" ;;
+    add | adds | implement | implements | support | supports | introduce | introduces) rule="feat" ;;
+    document | documents | docs) rule="docs" ;;
+    test | tests) rule="test" ;;
+    refactor | refactors) rule="refactor" ;;
+    *) rule="" ;;
+  esac
+  if [ -n "$rule" ]; then
+    printf '%s: %s\n' "$rule" "$text"
+    return 0
+  fi
   for rule in \
     'fix:fix|fixes|fixed|bug|bugs|regression|broken|wrong|wrongly|incorrect|incorrectly|crash|crashes|fails|failing' \
     'docs:docs|documentation|document' \
@@ -253,43 +276,65 @@ conventional_pr_title() {
   printf '%s\n' "$text"
 }
 
-# defuse_issue_refs <text>: stops derived text from claiming or closing issues.
-# 1. "(#M)" becomes "#M", repeated until nothing changes, so "((#M))" cannot
-#    leave a "(#M)" behind: workflow_issue_claim_check.sh treats "(#M)" in a
-#    PR title as a claim on #M.
-# 2. "issue " goes before any reference that follows a closing keyword: the
-#    keyword at the start or after a non-alphanumeric character, optionally
-#    wrapped in markdown emphasis (*, _, ~), an optional ":", any whitespace,
-#    then #M, GH-M, owner/repo#M or an issues URL. GitHub would otherwise close
-#    #M on merge. The leading boundary is deliberately wider than the claim
-#    check's pattern: defusing too much display text is harmless.
-# Rule 1 runs first because it can create a reference: "Closes (#7)".
-# Case-insensitive through bracket classes; BSD sed has no I flag. The ":a"
-# label and the "ta" branch are separate -e arguments, as BSD sed requires.
-# The rule 2 delimiter is "," because "~" appears in the emphasis class.
+# defuse_issue_refs <text>: rewrites every issue reference in derived text,
+# so it can neither claim nor close an issue. The PR's own " (#N)" suffix is
+# added afterwards by cap_pr_title and is the only reference the title keeps.
+#   https://.../issues/M  -> issue M
+#   issue #M              -> issue M
+#   GH-M                  -> issue M     (at a word start)
+#   owner/repo#M, x#M     -> ... issue M (a space goes before "issue")
+#   #M, (#M), **#M**      -> issue M, (issue M), **issue M**
+# No "#<digits>" is left, so a closing keyword has nothing to close however it
+# is written (emphasis, code span, link text, a non-breaking space), and
+# workflow_issue_claim_check.sh never sees a "(#M)" claim. Case-insensitive
+# through bracket classes; BSD sed has no I flag.
 defuse_issue_refs() {
-  local kw='([Cc][Ll][Oo][Ss][Ee][SsDd]?|[Ff][Ii][Xx]([Ee][SsDd])?|[Rr][Ee][Ss][Oo][Ll][Vv][Ee][SsDd]?)'
-  local ref='(#[0-9]+|[Gg][Hh]-[0-9]+|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+#[0-9]+|https?://[^[:space:]]+/issues/[0-9]+)'
   printf '%s\n' "$1" | LC_ALL=C sed -E \
-    -e ':a' -e 's/\(#([0-9]+)\)/#\1/g' -e 'ta' \
-    -e "s,(^|[^A-Za-z0-9])([*_~]*)${kw}([*_~]*)(:?)([*_~]*)[[:space:]]*${ref},\\1\\2\\3\\5\\6\\7 issue \\8,g"
+    -e 's,https?://[^[:space:]]+/issues/([0-9]+),issue \1,g' \
+    -e 's,([Ii][Ss][Ss][Uu][Ee])[[:space:]]*#([0-9]+),\1 \2,g' \
+    -e 's,(^|[^A-Za-z0-9_])[Gg][Hh]-([0-9]+),\1issue \2,g' \
+    -e 's,([A-Za-z0-9_])#([0-9]+),\1 issue \2,g' \
+    -e 's,#([0-9]+),issue \1,g'
+}
+
+# defuse_mentions <text>: wraps each @name or @org/team outside a code span in
+# backticks, so the PR body does not notify the people an issue title names.
+# GitHub sends no notification for a mention inside a code span. A mention
+# already inside a code span, or preceded by a word character (an e-mail
+# address), is left alone. Titles do not notify, so only the body uses this.
+defuse_mentions() {
+  printf '%s\n' "$1" | LC_ALL=C awk '{
+    s = $0; out = ""; code = 0; prev = ""
+    while (s != "") {
+      c = substr(s, 1, 1)
+      if (c == "`") code = !code
+      if (c == "@" && !code && prev !~ /[A-Za-z0-9_]/ \
+          && match(s, /^@[A-Za-z0-9][A-Za-z0-9-]*(\/[A-Za-z0-9_.-]+)?(@[A-Za-z0-9_.-]+)*/)) {
+        out = out "`" substr(s, 1, RLENGTH) "`"
+        prev = substr(s, RLENGTH, 1); s = substr(s, RLENGTH + 1)
+        continue
+      }
+      out = out c; prev = c; s = substr(s, 2)
+    }
+    print out
+  }'
 }
 
 # cap_pr_title <base> <issue-number>: base cut so that "<base> (#N)" fits in
-# 200 bytes, never inside a UTF-8 sequence, trailing spaces dropped. The
-# " (#N)" suffix is always kept: the claim check's title signal relies on it.
+# 200 bytes, never inside a UTF-8 sequence, trailing spaces and full stops
+# dropped. The " (#N)" suffix is always kept: the claim check's title signal
+# relies on it.
 cap_pr_title() {
   local base="$1" suffix=" (#$2)" limit
   limit=$((200 - ${#suffix}))
   base="$(head -c "$limit" <<<"$base")"
-  # Drop an incomplete trailing multibyte sequence left by the byte cut (or by
-  # the 1024-byte input bound): a lead byte followed by fewer continuation
-  # bytes than it announces.
+  # Drop an incomplete trailing multibyte sequence left by the byte cut: a lead
+  # byte followed by fewer continuation bytes than it announces.
   base="$(printf '%s\n' "$base" | LC_ALL=C sed -E \
     -e $'s/[\300-\337]$//' \
     -e $'s/[\340-\357][\200-\277]?$//' \
     -e $'s/[\360-\367][\200-\277]{0,2}$//')"
-  base="${base%"${base##*[! ]}"}"
+  base="${base%"${base##*[!. ]}"}"
   printf '%s%s\n' "$base" "$suffix"
 }
 
@@ -535,6 +580,19 @@ else
   echo "WARNING: no merge base between ${BASE_REF} and HEAD (shallow clone?); listing changed files with the two-dot range ${BASE_REF}..HEAD, which may include base-branch changes (#1968)" >&2
   DIFF_RANGE="${BASE_REF}..HEAD"
 fi
+# The full list feeds the count, scope, risk and closing-keyword decisions;
+# only the body's display list is cut at 40. Both providers use these.
+if ! CHANGED_FILES_ALL=$(git diff --name-only "$DIFF_RANGE" 2>/dev/null); then
+  echo "WARNING: git diff --name-only ${DIFF_RANGE} failed; changed-file list is empty (#1968)" >&2
+  CHANGED_FILES_ALL=""
+fi
+if ! DIFF_STAT=$(git diff --stat "$DIFF_RANGE" 2>/dev/null); then
+  echo "WARNING: git diff --stat ${DIFF_RANGE} failed; the PR body has no diff stat (#1968)" >&2
+  DIFF_STAT=""
+fi
+DIFF_STAT=$(printf '%s\n' "$DIFF_STAT" | tail -20)
+DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
+CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES_ALL" | format_changed_files_body)
 
 if [ "$HOST_TYPE" = "azdo" ]; then
   if [ "$BRANCH_DIFF_STATUS" = "no-diff" ]; then
@@ -556,13 +614,6 @@ if [ "$HOST_TYPE" = "azdo" ]; then
     finish_publish "EXISTING_OPEN_PR" "existing-open-pr" "success" "existing active AzDO PR found for branch"
   fi
 
-  if ! CHANGED_FILES_ALL=$(git diff --name-only "$DIFF_RANGE" 2>/dev/null); then
-    echo "WARNING: git diff --name-only ${DIFF_RANGE} failed; changed-file list is empty (#1968)" >&2
-    CHANGED_FILES_ALL=""
-  fi
-  CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES_ALL" | format_changed_files_body)
-  DIFF_STAT=$(git diff --stat "$DIFF_RANGE" 2>/dev/null | tail -20 || true)
-  DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
   PR_TITLE="Update ${CURRENT_BRANCH} (AB#${ISSUE_NUM})"
   PR_TITLE="${PR_TITLE:0:200}"
   PR_BODY=$(printf '## Summary\nWorkflow-generated Azure DevOps PR for AB#%s.\n\n## Changed files\n%s\n\n## Diff stat\n```text\n%s\n```\n' "$ISSUE_NUM" "$CHANGED_FILES_BODY" "$DIFF_STAT_BODY")
@@ -640,14 +691,7 @@ else
   echo "WARNING: workflow_issue_claim_check.sh not found at ${CLAIM_CHECK_HELPER} — creating this PR without a duplicate-claim check (#1361)" >&2
 fi
 
-# Issue #1968: the full merge-base list feeds the count, scope, risk and
-# closing-keyword decisions; only the body's display list is cut at 40.
-if ! CHANGED_FILES_ALL=$(git diff --name-only "$DIFF_RANGE" 2>/dev/null); then
-  echo "WARNING: git diff --name-only ${DIFF_RANGE} failed; changed-file list is empty (#1968)" >&2
-  CHANGED_FILES_ALL=""
-fi
 CHANGED_COUNT=$(printf '%s\n' "$CHANGED_FILES_ALL" | awk '$0 != "" {n++} END {print n + 0}')
-DIFF_STAT=$(git diff --stat "$DIFF_RANGE" 2>/dev/null | tail -20 || true)
 RECENT_COMMITS=$(git log --oneline --no-decorate "${BASE_REF}..HEAD" -6 2>/dev/null || true)
 # Issue #929: derive the PR-title scope from the first *substantive* changed
 # file, ignoring generated/lockfiles. The lockfile-sync step (#915) commits
@@ -699,20 +743,19 @@ else
 fi
 PR_TITLE="$(cap_pr_title "$PR_TITLE_BASE" "$ISSUE_NUM")"
 # The body summary repeats the capped title, so it is bounded and trimmed the
-# same way. The pattern is quoted so "(" and "#" match literally under extglob.
+# same way, with @mentions put in code spans. The pattern is quoted so "(" and
+# "#" match literally under extglob.
 if [ "$PR_TITLE_SOURCE" != "template" ]; then
-  PR_SUMMARY="Workflow-generated PR for #${ISSUE_NUM}: ${PR_TITLE%" (#${ISSUE_NUM})"}."
+  PR_SUMMARY="Workflow-generated PR for #${ISSUE_NUM}: $(defuse_mentions "${PR_TITLE%" (#${ISSUE_NUM})"}")."
 fi
 # The source only: the title itself may be untrusted text.
 echo "PR title source: ${PR_TITLE_SOURCE}" >&2
-CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES_ALL" | format_changed_files_body)
 # Both outputs are parse_json objects, which the runner never exports under a
 # bare name, so only RECIPE_VAR_<key> holds this run's evidence (#1684).
 VALIDATION_SOURCE="${RECIPE_VAR_local_testing_gate:-${RECIPE_VAR_precommit_results:-}}"
 if [ -n "$VALIDATION_SOURCE" ]; then VALIDATION_BODY=$(printf '%s\n' "$VALIDATION_SOURCE" | sed -n '1,12p'); else VALIDATION_BODY="step-13 local testing gate is expected before ready-for-review; no structured step-13 output was available to step-16."; fi
 if [ -n "$RECENT_COMMITS" ]; then BEHAVIOR_BODY=$(printf 'Implemented behavior through these branch commits:\n%s' "$RECENT_COMMITS"); else BEHAVIOR_BODY="Branch is ${COMMITS_AHEAD} commit(s) ahead of ${BASE_BRANCH}; behavior impact is represented by the changed files and diff stat."; fi
 case "$CHANGED_FILES_ALL" in *amplifier-bundle/recipes/*) RISK_BODY="Workflow behavior changed; review recipe gates and regression coverage carefully." ;; *crates/amplihack-cli/*) RISK_BODY="CLI behavior changed; verify command help, exit codes, and JSON/table output contracts." ;; *) RISK_BODY="No high-risk subsystem pattern detected from changed paths." ;; esac
-DIFF_STAT_BODY="${DIFF_STAT:-No diff stat available}"
 # The closing keyword is EARNED BY THE DIFF (#1361). PR #1283's body said
 # `Closes #1277` while its whole change was one added planning document; had it
 # merged, a genuine bug report would have been auto-closed by an artifact

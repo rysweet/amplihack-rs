@@ -208,7 +208,7 @@ description both yield nothing. When the issue title cannot be read, the task
 above now produces:
 
 ```text
-feat: Add a --json flag to `amplihack status`. (#0)
+feat: Add a --json flag to `amplihack status` (#0)
 ```
 
 When the issue title is readable, the prefixed issue title is used instead. See

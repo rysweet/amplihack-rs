@@ -1612,8 +1612,8 @@ assert_publish_1968_helpers() {
 
         local fn missing=""
         for fn in redact_credentials normalise_pr_title_text conventional_pr_title \
-            defuse_issue_refs cap_pr_title format_changed_files_body first_task_line \
-            lookup_issue_title; do
+            defuse_issue_refs defuse_mentions cap_pr_title format_changed_files_body \
+            first_task_line lookup_issue_title; do
             declare -F "${fn}" >/dev/null || missing="${missing} ${fn}"
         done
         [ -z "${missing}" ] || fail "issue #1968: workflow_publish_pr.sh does not define helper(s):${missing}"
@@ -1631,8 +1631,9 @@ assert_publish_1968_helpers() {
             printf '%s' "${s}"
         }
 
-        # conventional_pr_title: keyword groups in the order fix, docs, test,
-        # refactor, feat; whole words only; existing prefixes kept.
+        # conventional_pr_title: a leading verb decides; otherwise keyword
+        # groups in the order fix, docs, test, refactor, feat; whole words
+        # only; existing prefixes kept, an issue-reference scope dropped.
         local input want
         while IFS='|' read -r input want; do
             eq "conventional_pr_title '${input}'" "${want}" "$(conventional_pr_title "${input}")"
@@ -1640,7 +1641,11 @@ assert_publish_1968_helpers() {
 workflow_publish_pr.sh titles PRs wrongly from a two-dot diff|fix: workflow_publish_pr.sh titles PRs wrongly from a two-dot diff
 Add merge-base diff to publish|feat: Add merge-base diff to publish
 Fix issue 929|fix: Fix issue 929
-Add regression test for broken X|fix: Add regression test for broken X
+Add regression test for broken X|feat: Add regression test for broken X
+Add tests for the broken parser|feat: Add tests for the broken parser
+Document why the build fails on macOS|docs: Document why the build fails on macOS
+Tests for the crash on start|test: Tests for the crash on start
+Fixed docs for the parser|fix: Fixed docs for the parser
 Update documentation for the tests|docs: Update documentation for the tests
 Expand tests for the parser|test: Expand tests for the parser
 Testing-only change|test: Testing-only change
@@ -1652,41 +1657,65 @@ Rename the publish step|Rename the publish step
 feat(publish): already prefixed|feat(publish): already prefixed
 fix!: breaking publish change|fix!: breaking publish change
 docs: tidy the index|docs: tidy the index
-fix(#5): x|fix(#5): x
+fix(#5): x|fix: x
+feat(GH-3)!: y|feat!: y
+fix(publish): keep a real scope|fix(publish): keep a real scope
 ROWS
 
-        # defuse_issue_refs: "(#M)" -> "#M" until nothing changes, then
-        # "issue " before any reference that follows a closing keyword, with
-        # or without markdown emphasis round the keyword.
+        # defuse_issue_refs: every issue reference becomes "issue M", however
+        # a closing keyword round it is written; no "#<digits>" survives.
         while IFS='|' read -r input want; do
             eq "defuse_issue_refs '${input}'" "${want}" "$(defuse_issue_refs "${input}")"
         done <<'ROWS'
-x (#5) y|x #5 y
-fix: #9 bad|fix: issue #9 bad
-Closes owner/repo#3|Closes issue owner/repo#3
-Fixes#7|Fixes issue #7
-fixes:#7|fixes: issue #7
-Closes (#7)|Closes issue #7
-fix(#5): x|fix issue #5: x
-CLOSES #4|CLOSES issue #4
-Fixes #7 (#999)|Fixes issue #7 #999
-Resolves: https://github.com/o/r/issues/12|Resolves: issue https://github.com/o/r/issues/12
-Closes issue #7|Closes issue #7
-prefix#7|prefix#7
-prefixes #8|prefixes #8
-Refs #12|Refs #12
+x (#5) y|x (issue 5) y
+fix: #9 bad|fix: issue 9 bad
+Closes owner/repo#3|Closes owner/repo issue 3
+Fixes#7|Fixes issue 7
+fixes:#7|fixes:issue 7
+CLOSES #4|CLOSES issue 4
+Fixes #7 (#999)|Fixes issue 7 (issue 999)
+Resolves: https://github.com/o/r/issues/12|Resolves: issue 12
+Closes issue #7|Closes issue 7
+prefix#7|prefix issue 7
+Refs #12|Refs issue 12
 No references in this title|No references in this title
-Tidy ((#999)) handling|Tidy #999 handling
-(((#7)))|#7
-Closes ((#7))|Closes issue #7
-_Fixes #7_|_Fixes issue #7_
-**Fixes** #7|**Fixes** issue #7
-Fixes GH-7|Fixes issue GH-7
+Tidy ((#999)) handling|Tidy ((issue 999)) handling
+Closes ((#7))|Closes ((issue 7))
+_Fixes #7_|_Fixes issue 7_
+**Fixes** #7|**Fixes** issue 7
+Fixes **#7**|Fixes **issue 7**
+Fixes `#7`|Fixes `issue 7`
+Fix [#7](https://x/issues/7)|Fix [issue 7](issue 7)
+Fixes GH-7|Fixes issue 7
+Fixes gh-7|Fixes issue 7
+SIGH-7 stays|SIGH-7 stays
+Issue #7 is closed|Issue 7 is closed
 ROWS
-        eq "defuse_issue_refs is idempotent" "Fixes issue #7 #999" \
+        eq "defuse_issue_refs: a non-breaking space before #7" "Fixes"$'\302\240'"issue 7" \
+            "$(defuse_issue_refs "Fixes"$'\302\240'"#7")"
+        eq "defuse_issue_refs is idempotent" "Fixes issue 7 (issue 999)" \
             "$(defuse_issue_refs "$(defuse_issue_refs 'Fixes #7 (#999)')")"
-        eq "prefix then defuse a leading #M" "fix: issue #9 crashes on start" \
+        eq "prefix then defuse a leading #M" "fix: issue 9 crashes on start" \
             "$(defuse_issue_refs "$(conventional_pr_title '#9 crashes on start')")"
+        local hostile_refs
+        # shellcheck disable=SC2016 # literal backticks are the expected data
+        hostile_refs='Fixes **#7** `#8` [#9](https://x/issues/9) ((#10)) GH-11 a/b#12 #13'
+        case "$(cap_pr_title "$(defuse_issue_refs "$(conventional_pr_title "${hostile_refs}")")" 1968)" in
+            *'#'[0-9]*' (#1968)') fail "issue #1968 helper: a '#<digits>' reference survived before the (#N) suffix" ;;
+            *' (#1968)') ;;
+            *) fail "issue #1968 helper: the (#N) suffix is missing" ;;
+        esac
+
+        # defuse_mentions: body-only; code spans and e-mail addresses left alone.
+        while IFS='|' read -r input want; do
+            eq "defuse_mentions '${input}'" "${want}" "$(defuse_mentions "${input}")"
+        done <<'ROWS'
+ping @someone and @org/team|ping `@someone` and `@org/team`
+mail a@b.com|mail a@b.com
+`code @x` then @y|`code @x` then `@y`
+@a@b|`@a@b`
+no mentions here|no mentions here
+ROWS
 
         # normalise_pr_title_text
         eq "normalise: CR/LF/TAB become spaces, runs collapse, ends trimmed" "a b c d" \
@@ -1702,11 +1731,11 @@ ROWS
         eq "normalise: UTF-8 passes through" "caf$(printf '\303\251')" \
             "$(normalise_pr_title_text "caf$(printf '\303\251')")"
         eq "normalise: empty input" "" "$(normalise_pr_title_text "")"
-        eq "normalise: input bounded to 1024 bytes" "1024" "$(bytes "$(normalise_pr_title_text "$(rep a 2000)")")"
+        eq "normalise: input bounded to 8 KiB" "8192" "$(bytes "$(normalise_pr_title_text "$(rep a 10000)")")"
         eq "normalise: a control character cannot split a token past redaction" "REDACTED_TOKEN" \
             "$(normalise_pr_title_text $'ghp_ABCDEFGH\x01IJKLMNOPQRSTUVWX')"
         case "$(normalise_pr_title_text "$(rep 'x ' 506)ghp_ABCDEFGHIJKLMNOPQRSTUV")" in
-            *ghp_*) fail "issue #1968 helper: normalise left a token fragment at the 1024-byte cut" ;;
+            *ghp_*) fail "issue #1968 helper: normalise left a token fragment past byte 1012" ;;
         esac
         normalise_pr_title_text "ab$(printf '\377')cd" >/dev/null \
             || fail "issue #1968 helper: normalise must not fail on bytes that are not valid UTF-8"
@@ -1714,6 +1743,17 @@ ROWS
         # redact_credentials (shared with sanitize_provider_stderr)
         eq "redact_credentials" "https://REDACTED@h/x REDACTED_TOKEN and REDACTED_TOKEN" \
             "$(printf '%s\n' 'https://u:p@h/x ghs_ABCDEFGHIJKLMNOP1234 and github_pat_ABCDEFGHIJKLMNOP_1234' | redact_credentials)"
+        while IFS='|' read -r input want; do
+            eq "redact_credentials '${input}'" "${want}" "$(printf '%s\n' "${input}" | redact_credentials)"
+        done <<'ROWS'
+key sk-ant-api03-ABCDEFGHIJKLMNOPQRST end|key REDACTED_TOKEN end
+key sk-proj-ABCDEFGHIJKLMNOPQRSTUV end|key REDACTED_TOKEN end
+key sk-ABCDEFGHIJKLMNOPQRSTUVWX end|key REDACTED_TOKEN end
+id AKIAABCDEFGHIJKLMNOP end|id REDACTED_TOKEN end
+id ASIAABCDEFGHIJKLMNOP|id REDACTED_TOKEN
+disk-usage-monitoring-for-the-cluster|disk-usage-monitoring-for-the-cluster
+ASIAPACIFICREGIONSERVICESX|ASIAPACIFICREGIONSERVICESX
+ROWS
 
         # cap_pr_title: <= 200 bytes, suffix kept, trailing spaces dropped,
         # never splits a UTF-8 sequence.
@@ -1723,6 +1763,8 @@ ROWS
         capped="$(cap_pr_title "$(rep a 300)" 1968)"
         eq "cap_pr_title long ASCII is 200 bytes" "200" "$(bytes "${capped}")"
         [[ "${capped}" == *" (#1968)" ]] || fail "issue #1968 helper: cap_pr_title dropped the (#N) suffix"
+        eq "cap_pr_title drops trailing full stops" "Fix the parser (#5)" \
+            "$(cap_pr_title "Fix the parser..." 5)"
         eq "cap_pr_title strips a trailing space at the cut" \
             "$(rep a 191) (#1968)" \
             "$(cap_pr_title "$(rep a 191) bbbb" 1968)"
@@ -1885,7 +1927,7 @@ assert_pr_title_from_issue_on_moved_base() {
     done
 
     # Case 3b: a task line longer than the title cap. The Summary must be the
-    # capped title text, not the 1024-byte normalised line.
+    # capped title text, not the whole normalised line.
     tag="task-long"; repo="${WORK}/publish-1968-${tag}"
     setup_publish_1968_repo "${repo}" 3
     rc=0; run_publish_1968_case "${repo}" "${tag}" empty "Add $(printf 'word %.0s' $(seq 1 100))" || rc=$?
@@ -1919,7 +1961,7 @@ assert_pr_title_from_issue_on_moved_base() {
     title="$(head -n1 "${WORK}/publish-1968-${tag}.title")"
     body="${WORK}/publish-1968-${tag}.body"
     # shellcheck disable=SC2016 # literal shell text is the expected data
-    [ "${title}" = 'fix: Fixes issue #7 #999 $(touch PWNED) `id` %s %n [31m @someone (#1968)' ] \
+    [ "${title}" = 'fix: Fixes issue 7 ((issue 999)) $(touch PWNED) `id` %s %n [31m @someone (#1968)' ] \
         || publish_1968_fail "${tag}" "issue #1968 case 6: unexpected title for the hostile issue: ${title}"
     local subject
     for subject in "title" "body"; do
@@ -1933,7 +1975,13 @@ assert_pr_title_from_issue_on_moved_base() {
             publish_1968_fail "${tag}" "issue #1968 case 6: ${subject} contains an ESC byte"
         fi
     done
-    grep -qF 'issue #7' "${body}" || publish_1968_fail "${tag}" "issue #1968 case 6: body Summary must carry the defused 'issue #7'"
+    grep -qF 'issue 7' "${body}" || publish_1968_fail "${tag}" "issue #1968 case 6: body Summary must carry the defused 'issue 7'"
+    case "${title% (#1968)}" in
+        *'#'[0-9]*) publish_1968_fail "${tag}" "issue #1968 case 6: a '#<digits>' reference survived in the title before its suffix" ;;
+    esac
+    # shellcheck disable=SC2016 # literal backticks are the expected data
+    grep -qF ' `@someone`.' "${body}" \
+        || publish_1968_fail "${tag}" "issue #1968 case 6: the body Summary must put @someone in a code span"
     # shellcheck disable=SC2016 # literal shell text is the expected data
     grep -qF '$(touch PWNED) `id` %s %n' "${body}" \
         || publish_1968_fail "${tag}" "issue #1968 case 6: shell and printf fragments must reach the body literally"
