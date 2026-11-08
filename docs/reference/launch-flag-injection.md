@@ -343,8 +343,8 @@ is safe to keep in CI logs.
 No line is written when:
 
 - the caller chose a sandbox, in any of the forms listed above. The hook-trust
-  flag is still added in that case, without a line; issue #2009 tracks the
-  hook-trust behaviour;
+  flag is still added in that case, without a line. Issue #2048 tracks
+  reporting it; issue #2009 is limited to whether the flag is added at all;
 - the argv has no `exec`/`e` subcommand, including an empty argv,
   `resume --last`, `-c exec` and `-- exec`.
 

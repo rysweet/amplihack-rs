@@ -5,12 +5,13 @@
 //!
 //! The launch reuses the #1985 helper: a fake Codex in an isolated temporary
 //! home, built through `isolated_amplihack::isolated(..)`, that records its
-//! argv and prints nothing.
+//! argv, prints nothing, and writes a fixed message to the
+//! `--output-last-message` path so the test can check the file is unchanged.
 #![cfg(unix)]
 
 use std::fs;
 
-use crate::issue_1985_codex_agent_step_flags::{Launch, launch};
+use crate::issue_1985_codex_agent_step_flags::{FAKE_FINAL_MESSAGE, Launch, launch};
 
 const PREFIX: &str = "amplihack: codex exec:";
 const NOTICE_ALL: &str = "amplihack: codex exec: added --sandbox workspace-write, \
@@ -57,12 +58,14 @@ fn exec_launch_prints_one_notice_on_stderr_only() {
         "notice leaked to stdout:\n{}",
         stdout(&launch)
     );
-    if let Ok(written) = fs::read_to_string(&final_message) {
-        assert!(
-            !written.contains(PREFIX),
-            "notice leaked to --output-last-message:\n{written}"
-        );
-    }
+    // The fake Codex writes a known message to this path. amplihack must not
+    // append to it or replace it, so the file holds exactly that message.
+    let written = fs::read_to_string(&final_message)
+        .expect("fake codex writes the --output-last-message file");
+    assert_eq!(
+        written, FAKE_FINAL_MESSAGE,
+        "--output-last-message file was altered"
+    );
 
     // The line describes the argv Codex actually received.
     let at = |token: &str| launch.argv.iter().position(|a| a == token);
@@ -83,7 +86,8 @@ fn exec_launch_prints_one_notice_on_stderr_only() {
 }
 
 /// (b) No line when the caller chose a sandbox (hook trust is still added,
-/// silently; #2009), when the argv is empty, or when there is no `exec`.
+/// silently; #2048 tracks reporting it), when the argv is empty, or when
+/// there is no `exec`.
 #[test]
 fn no_notice_when_caller_chose_sandbox_or_nothing_injected() {
     let chose = launch(&["exec", "--sandbox", "read-only", "-"], b"prompt\n");

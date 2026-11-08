@@ -5,7 +5,9 @@
 //! added.
 //!
 //! The Codex here is a fake `sh` script in a temporary home. It records the
-//! argv of the launch and nothing else, and discards stdin. The real
+//! argv of the launch, writes [`FAKE_FINAL_MESSAGE`] to the path after
+//! `--output-last-message` (as a real Codex writes its final message there),
+//! and discards stdin. The real
 //! `~/.codex`, `~/.claude`, `auth.json` and `config.toml` are never read:
 //! `HOME`, `CODEX_HOME` and `AMPLIHACK_HOME` all point into the temp dir.
 #![cfg(unix)]
@@ -24,7 +26,12 @@ const APPROVALS_BYPASS: &str = "--dangerously-bypass-approvals-and-sandbox";
 /// it byte for byte as it was (S5).
 const HOST_CONFIG: &str = "sandbox_mode = \"danger-full-access\"\n";
 
-/// Answers the launcher's probes; records the argv of anything else.
+/// What [`FAKE_CODEX`] writes to the `--output-last-message` path. Keep the two
+/// in step: the #2010 test asserts the file holds exactly this text.
+pub(crate) const FAKE_FINAL_MESSAGE: &str = "fake codex final message\n";
+
+/// Answers the launcher's probes; records the argv of anything else, and
+/// writes [`FAKE_FINAL_MESSAGE`] to the `--output-last-message` path.
 const FAKE_CODEX: &str = r#"#!/bin/sh
 printf '%s\n' "$*" >> "$HOME/calls.log"
 case "$1" in
@@ -37,7 +44,14 @@ case "$1" in
     exit 0;;
 esac
 : > "$HOME/argv.txt"
-for arg in "$@"; do printf '%s\n' "$arg" >> "$HOME/argv.txt"; done
+prev=
+for arg in "$@"; do
+  printf '%s\n' "$arg" >> "$HOME/argv.txt"
+  if [ "$prev" = "--output-last-message" ]; then
+    printf 'fake codex final message\n' > "$arg"
+  fi
+  prev=$arg
+done
 cat > /dev/null
 exit 0
 "#;

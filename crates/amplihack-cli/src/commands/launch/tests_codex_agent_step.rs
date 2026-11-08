@@ -629,7 +629,8 @@ fn notice_names_sandbox_only_when_caller_set_network_and_hook_trust() {
 }
 
 /// D1: a caller that chose a sandbox gets no line, even though the
-/// hook-trust flag is still spliced into the argv (#2009 tracks that case).
+/// hook-trust flag is still spliced into the argv (#2048 tracks reporting
+/// that case).
 #[test]
 fn notice_is_none_when_caller_chose_sandbox() {
     for argv in [

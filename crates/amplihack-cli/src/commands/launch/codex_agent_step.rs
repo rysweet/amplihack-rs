@@ -206,7 +206,8 @@ pub(super) fn codex_agent_step_args(args: &[String]) -> Vec<String> {
 ///
 /// Returns `None` unless `--sandbox workspace-write` is added. When the caller
 /// chose a sandbox, the hook-trust bypass may still be added but no line is
-/// returned; that gap is tracked in issue #2009.
+/// returned; issue #2048 tracks reporting that case. Issue #2009 covers
+/// whether the bypass is added at all, not whether it is reported.
 ///
 /// Pure. The text is built only from fixed constants, never from caller argv,
 /// so paths, `-c` values, profile names and prompt text cannot reach stderr.
