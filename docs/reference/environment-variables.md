@@ -1086,7 +1086,12 @@ is killed. Unset, the watchdog never kills a child for being quiet; it
 still reaps the child and stops it when the run is stopped. It is read with
 the same rules as
 [`AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS`](#amplihack_recipe_runner_timeout_secs):
-`0`, empty or unparseable means no limit.
+`0`, empty or unparseable means no limit. An unparseable value, such as
+`300s`, also prints this warning once per process, without the value:
+
+```text
+warning: ignored AMPLIHACK_IDLE_TIMEOUT_SECS (not a whole number of seconds above 0); no idle limit applies
+```
 
 ```sh
 # Kill an agent subprocess after 15 minutes with no output

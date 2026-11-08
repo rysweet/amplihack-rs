@@ -74,9 +74,22 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 /// The caller holds the shared environment lock through restoration.
-fn fixture_environment() -> crate::test_support::EnvGuard {
-    let saved = crate::test_support::EnvGuard::capture(&["AMPLIHACK_AGENT_BINARY", "HOME"]);
-    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+///
+/// The run's work root is pointed at `work_root`, a folder inside the test's
+/// temp dir. Otherwise the end-of-run cleanup sweeps the host's real work root
+/// (`git` and `gh` calls for every run folder there), which can take minutes.
+fn fixture_environment(work_root: &std::path::Path) -> crate::test_support::EnvGuard {
+    let saved = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_AGENT_BINARY",
+        "HOME",
+        "AMPLIHACK_WORK_ROOT",
+        "AMPLIHACK_WORK_ROOT_EXPLICIT",
+    ]);
+    unsafe {
+        std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude");
+        std::env::set_var("AMPLIHACK_WORK_ROOT", work_root);
+        std::env::remove_var("AMPLIHACK_WORK_ROOT_EXPLICIT");
+    }
     saved
 }
 
@@ -265,8 +278,8 @@ fn write_stub(path: &std::path::Path, body: &str) {
 #[test]
 fn ac3_with_the_variable_unset_a_slow_runner_is_not_timed_out() {
     let _guard = lock();
-    let _fixture = fixture_environment();
     let temp = tempfile::tempdir().expect("tempdir");
+    let _fixture = fixture_environment(&temp.path().join("work"));
     let runner = temp.path().join("recipe-runner-rs");
     write_stub(
         &runner,
@@ -297,8 +310,8 @@ fn ac3_with_the_variable_unset_a_slow_runner_is_not_timed_out() {
 #[test]
 fn ac3_zero_and_garbage_values_also_mean_no_limit() {
     let _guard = lock();
-    let _fixture = fixture_environment();
     let temp = tempfile::tempdir().expect("tempdir");
+    let _fixture = fixture_environment(&temp.path().join("work"));
     let runner = temp.path().join("recipe-runner-rs");
     write_stub(
         &runner,
@@ -329,8 +342,8 @@ fn ac3_zero_and_garbage_values_also_mean_no_limit() {
 #[test]
 fn ac4_an_explicit_limit_times_out_with_the_existing_message() {
     let _guard = lock();
-    let _fixture = fixture_environment();
     let temp = tempfile::tempdir().expect("tempdir");
+    let _fixture = fixture_environment(&temp.path().join("work"));
     let runner = temp.path().join("recipe-runner-rs");
     write_stub(&runner, "#!/bin/sh\n/bin/sleep 30\n");
     let recipe = temp.path().join("recipe.yaml");

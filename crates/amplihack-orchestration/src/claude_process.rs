@@ -479,12 +479,9 @@ async fn run_delivered_command(
     drop(delivery_handle);
     let duration = start.elapsed();
 
-    if outcome.killed_for_idle {
+    if let (true, Some(limit)) = (outcome.killed_for_idle, cfg.idle_timeout) {
         return ProcessResult::err(
-            format!(
-                "Idle: no output for {:?}",
-                cfg.idle_timeout.unwrap_or_default()
-            ),
+            format!("Idle: no output for {limit:?}"),
             process_id,
             duration,
         );

@@ -1,9 +1,8 @@
 //! Issue #2022, AC1: no default time limit on work remains in the source.
 //!
-//! - The removed constants do not appear anywhere under `crates/` or
-//!   `amplifier-bundle/`: `RECIPE_RUNNER_DEFAULT_TIMEOUT`,
-//!   `CAPACITY_DEFAULT_MAX`, `DEFAULT_CLI_TIMEOUT`,
-//!   `DEFAULT_IDLE_TIMEOUT_SECS` and the six-hour product `6 * 60 * 60`.
+//! - The removed default-limit constants (the recipe-runner, capacity-wait,
+//!   Copilot and idle-watchdog defaults, and the six-hour product) do not
+//!   appear anywhere under `crates/` or `amplifier-bundle/`.
 //! - `21600` / `21_600` appear only as explicit values in test files.
 //! - The other work limits named in D7 are gone: `QUERY_TIMEOUT`,
 //!   `DOCKER_BUILD_TIMEOUT`, `DOCKER_RUN_TIMEOUT`, `RUST_TRIAL_TIMEOUT`,

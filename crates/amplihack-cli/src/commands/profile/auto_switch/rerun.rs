@@ -353,7 +353,10 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 Some(r) => {
                     let wait_now = waiter.now();
                     let reset = wait_now.saturating_add(r.saturating_sub(fsx::now()));
-                    let wait = plan::from_reading(Harness::Claude, reset, wait_now);
+                    let wait = WaitFor::Reset {
+                        harness: Harness::Claude,
+                        reset,
+                    };
                     let seen = Some((Harness::Claude, Some(reset)));
                     inherited_wait =
                         Some(plan::upgrade(wait, seen, wait_now, || takeover(&waiter)));

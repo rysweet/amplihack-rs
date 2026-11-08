@@ -191,7 +191,7 @@ child only when it returns `true`.
 
 | Variable                      | Default  | Applies To                | Meaning                                                   |
 | ----------------------------- | -------- | ------------------------- | --------------------------------------------------------- |
-| `AMPLIHACK_IDLE_TIMEOUT_SECS` | unset: no idle limit | all watchdog entry points | When set above 0, kill a child after this many seconds with no output. |
+| `AMPLIHACK_IDLE_TIMEOUT_SECS` | unset: no idle limit | all watchdog entry points | When set above 0, kill a child after this many seconds with no output. A malformed value warns once and applies no limit. |
 | `AMPLIHACK_IDLE_POLL_MS`      | `1000`   | async + sync waits        | How often the supervising loop checks progress/exit (ms). |
 
 Notes:

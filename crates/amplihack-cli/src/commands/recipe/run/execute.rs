@@ -1463,15 +1463,9 @@ pub(super) fn parse_runner_timeout(raw: Option<&str>) -> Option<Duration> {
 
 /// True when `raw` is a non-empty value other than `0` that does not parse,
 /// which is the only case that earns [`RUNNER_TIMEOUT_WARNING`].
+/// Shares its rule with `AMPLIHACK_IDLE_TIMEOUT_SECS`.
 pub(super) fn runner_timeout_warns(raw: Option<&str>) -> bool {
-    let Some(value) = raw.map(str::trim) else {
-        return false;
-    };
-    if value.is_empty() || parse_runner_timeout(Some(value)).is_some() {
-        return false;
-    }
-    // Any spelling of zero ("0", "000") is a deliberate "no limit".
-    !(value.bytes().all(|b| b == b'0'))
+    amplihack_utils::idle_watchdog::positive_secs_is_malformed(raw)
 }
 
 /// The opt-in overall limit on a recipe-runner attempt. `None` (the default)

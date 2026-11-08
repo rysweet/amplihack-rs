@@ -1,4 +1,4 @@
-//! `from_reading` (issues #1618, #2022): when a step was moved off its
+//! Reading-based waits (issues #1618, #2022): when a step was moved off its
 //! inherited profile before the first attempt, the inherited account's limit
 //! comes from the readings. Since #2022 every future reset is waited for,
 //! however far away; `FAR_RESET_THRESHOLD` only decides whether [`upgrade`]
@@ -6,7 +6,7 @@
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_plan_reading;`.
 
-use super::plan::{FAR_RESET_THRESHOLD, NoWait, WaitFor, from_reading, upgrade};
+use super::plan::{FAR_RESET_THRESHOLD, NoWait, WaitFor, upgrade};
 use crate::commands::recipe::run::limit_patterns::Harness;
 
 /// 2026-10-18 08:00:00 -07:00.
@@ -24,19 +24,6 @@ fn the_far_reset_threshold_is_five_hours() {
     assert_eq!(FAR_RESET_THRESHOLD, 5 * 3600);
 }
 
-#[test]
-fn a_reading_reset_is_waited_for_however_far_away() {
-    for at in [
-        NOW + 60,
-        NOW + FAR_RESET_THRESHOLD,
-        NOW + FAR_RESET_THRESHOLD + 1,
-        NOW + 7 * 86_400,
-        i64::MAX,
-    ] {
-        assert_eq!(from_reading(Harness::Claude, at, NOW), reset(at), "{at}");
-    }
-}
-
 // The four combinations of near/far and takeover/no takeover, for a reading.
 #[test]
 fn a_far_reading_becomes_a_capacity_wait_only_when_a_login_could_take_over() {
@@ -45,12 +32,7 @@ fn a_far_reading_becomes_a_capacity_wait_only_when_a_login_could_take_over() {
     let seen = |at| Some((Harness::Claude, Some(at)));
 
     assert_eq!(
-        upgrade(
-            from_reading(Harness::Claude, far, NOW),
-            seen(far),
-            NOW,
-            || true
-        ),
+        upgrade(reset(far), seen(far), NOW, || true),
         WaitFor::Capacity {
             harness: Harness::Claude,
             reset: Some(far)
@@ -58,32 +40,17 @@ fn a_far_reading_becomes_a_capacity_wait_only_when_a_login_could_take_over() {
         "far, takeover"
     );
     assert_eq!(
-        upgrade(
-            from_reading(Harness::Claude, far, NOW),
-            seen(far),
-            NOW,
-            || false
-        ),
+        upgrade(reset(far), seen(far), NOW, || false),
         reset(far),
         "far, no takeover: a reset wait on the same login"
     );
     assert_eq!(
-        upgrade(
-            from_reading(Harness::Claude, near, NOW),
-            seen(near),
-            NOW,
-            || true
-        ),
+        upgrade(reset(near), seen(near), NOW, || true),
         reset(near),
         "near, takeover"
     );
     assert_eq!(
-        upgrade(
-            from_reading(Harness::Claude, near, NOW),
-            seen(near),
-            NOW,
-            || false
-        ),
+        upgrade(reset(near), seen(near), NOW, || false),
         reset(near),
         "near, no takeover"
     );
@@ -93,10 +60,7 @@ fn a_far_reading_becomes_a_capacity_wait_only_when_a_login_could_take_over() {
 #[test]
 fn a_far_spend_limit_reading_stays_a_reset_wait() {
     let far = NOW + 3 * 86_400;
-    assert_eq!(
-        upgrade(from_reading(Harness::Claude, far, NOW), None, NOW, || true),
-        reset(far)
-    );
+    assert_eq!(upgrade(reset(far), None, NOW, || true), reset(far));
     assert_eq!(
         upgrade(WaitFor::Skip(NoWait::SpendLimit), None, NOW, || true),
         WaitFor::Skip(NoWait::SpendLimit)

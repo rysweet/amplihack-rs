@@ -201,9 +201,7 @@ impl Executor {
         written?;
         let duration = start.elapsed().as_secs_f64();
 
-        if outcome.killed_for_idle {
-            // Only reachable with an idle window set.
-            let idle_secs = self.timeout_seconds.unwrap_or_default();
+        if let (true, Some(idle_secs)) = (outcome.killed_for_idle, self.timeout_seconds) {
             warn!(idle_secs, "remote run idle-reaped");
             return Ok(ExecutionResult {
                 exit_code: -1,

@@ -64,9 +64,9 @@ pub(crate) enum WaitFor {
     Skip(NoWait),
 }
 
-/// What the attempt's parsed limit message allows at `now`. Any stated reset
+/// What the attempt's parsed limit message allows. Any stated reset
 /// is waited for, however far away (issue #2022).
-pub(crate) fn wait_for_message(message: Option<LimitMessage>, _now: i64) -> WaitFor {
+pub(crate) fn wait_for_message(message: Option<LimitMessage>) -> WaitFor {
     let Some(m) = message else {
         return WaitFor::Skip(NoWait::NoLimitMessage);
     };
@@ -80,14 +80,6 @@ pub(crate) fn wait_for_message(message: Option<LimitMessage>, _now: i64) -> Wait
             reset,
         },
     }
-}
-
-/// The wait for a limit read from the auto-switch readings rather than an
-/// attempt's output: the inherited account was already exhausted, so the
-/// step never ran under it. `reset` is when its exhausted window resets; it
-/// is waited for however far away (issue #2022).
-pub(crate) fn from_reading(harness: Harness, reset: i64, _now: i64) -> WaitFor {
-    WaitFor::Reset { harness, reset }
 }
 
 /// `w`, made a capacity wait when it is an unreadable reset, or a reset more

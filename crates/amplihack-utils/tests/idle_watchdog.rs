@@ -21,8 +21,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use amplihack_utils::idle_watchdog::{
-    DEFAULT_POLL_MS, ENV_IDLE_POLL_MS, ENV_IDLE_TIMEOUT_SECS, IdleConfig, file_idle_since,
-    parse_positive_secs, wait_with_idle_watchdog, wait_with_idle_watchdog_sync,
+    DEFAULT_POLL_MS, ENV_IDLE_POLL_MS, ENV_IDLE_TIMEOUT_SECS, IDLE_TIMEOUT_WARNING, IdleConfig,
+    file_idle_since, parse_positive_secs, positive_secs_is_malformed, wait_with_idle_watchdog,
+    wait_with_idle_watchdog_sync,
 };
 
 /// Serializes tests that read or mutate the process environment. Behavioural
@@ -99,7 +100,15 @@ fn config_from_env_zero_empty_and_garbage_mean_no_idle_limit() {
 
 #[test]
 fn config_none_has_no_idle_limit_and_the_default_poll() {
+    // `none()` reads the poll interval from the environment.
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let saved = (
+        std::env::var_os(ENV_IDLE_TIMEOUT_SECS),
+        std::env::var_os(ENV_IDLE_POLL_MS),
+    );
+    unsafe { std::env::remove_var(ENV_IDLE_POLL_MS) };
     let c = IdleConfig::none();
+    restore(saved);
     assert_eq!(c.idle_timeout, None);
     assert_eq!(c.poll, Duration::from_millis(DEFAULT_POLL_MS));
 }
@@ -141,6 +150,52 @@ fn parse_positive_secs_rejects_everything_but_a_positive_whole_number() {
     ] {
         assert_eq!(parse_positive_secs(raw), None, "{raw:?}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// positive_secs_is_malformed: when a limit variable warns (issue #2022, S5)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn malformed_limit_values_warn() {
+    for raw in [
+        "300s",
+        "+7",
+        "0x10",
+        "-5",
+        "7.0",
+        "abc",
+        "99999999999999999999",
+    ] {
+        assert!(positive_secs_is_malformed(Some(raw)), "{raw:?} must warn");
+    }
+}
+
+#[test]
+fn unset_empty_zero_and_valid_limit_values_do_not_warn() {
+    for raw in [
+        None,
+        Some(""),
+        Some("  "),
+        Some("0"),
+        Some("000"),
+        Some("30"),
+        Some(" 30 "),
+    ] {
+        assert!(!positive_secs_is_malformed(raw), "{raw:?} must not warn");
+    }
+}
+
+#[test]
+fn idle_timeout_warning_names_the_variable_and_no_value() {
+    assert!(IDLE_TIMEOUT_WARNING.contains(ENV_IDLE_TIMEOUT_SECS));
+    // The only digit is the "0" of "above 0": the message is a fixed string
+    // and never echoes the rejected value.
+    let without_rule = IDLE_TIMEOUT_WARNING.replacen("above 0", "", 1);
+    assert!(
+        !without_rule.bytes().any(|b| b.is_ascii_digit()),
+        "the warning must not echo any value"
+    );
 }
 
 #[test]

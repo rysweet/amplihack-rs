@@ -33,7 +33,7 @@ fn weekly_reset() -> i64 {
 }
 
 fn wait_for(stderr: &[u8], stdout: &[u8], now: i64) -> WaitFor {
-    wait_for_message(limit_patterns::limit_message(stderr, stdout, now), now)
+    wait_for_message(limit_patterns::limit_message(stderr, stdout, now))
 }
 
 fn p(reset: i64, max: Option<u64>, step: Option<(i64, u64)>) -> Plan {
