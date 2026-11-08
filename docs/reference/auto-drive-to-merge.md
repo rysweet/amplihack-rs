@@ -2508,14 +2508,14 @@ autodrive step, so it is outside the checked output set and adds no row;
 `autodrive-build.yaml` only declares it `""` in `context:`. The #1979 inputs
 `plan_task_id` and `task_description` are recipe context, not step outputs, so
 they add no row; `autodrive-merge-loop.yaml` step-02b's read of
-`merge_loop_preflight` does. There are 37 in all:
+`merge_loop_preflight` does. There are 36 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
 | `auto-drive-to-merge.yaml` | 5 |
 | `autodrive-build.yaml` | 1 |
 | `autodrive-crusty-loop.yaml` | 7 |
-| `autodrive-crusty-round.yaml` | 9 |
+| `autodrive-crusty-round.yaml` | 8 |
 | `autodrive-merge-loop.yaml` | 7 |
 | `autodrive-merge-round.yaml` | 8 |
 
