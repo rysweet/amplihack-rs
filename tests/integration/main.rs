@@ -73,6 +73,11 @@ mod test_harness_binary_path_contract;
 #[path = "skip_update_check_flag_test.rs"]
 mod skip_update_check_flag;
 
+// Issue #1971: pins the AMPLIHACK_SKIP_AUTO_INSTALL bypass and --skip-update-check
+// by recording stub git/npm/curl, with no timing assertion.
+#[path = "issue_1971_skip_guard_test.rs"]
+mod issue_1971_skip_guard;
+
 // WS3: Recipe runner E2E integration tests
 // These tests verify the full recipe delegation chain:
 // amplihack recipe list / validate / run --dry-run

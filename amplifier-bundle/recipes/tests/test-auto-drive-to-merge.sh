@@ -314,6 +314,7 @@ LOOP_DIR=""; LOOP_LOGS=""; LOOP_OUT=""
 # The optional positionals pick the loop (issue #1597 runs the merge-ready
 # loop too); they default to the crusty loop. RUN_LOOP_TIMEOUT, when set,
 # runs the loop under `timeout`, so a loop that never stops fails with 124.
+# RUN_LOOP_ALSO_CLEAN, when set, is passed as --also-clean-token (#1979).
 run_loop() { # run_loop <state-dir-suffix> [loop-name] [round-recipe] [clean-token] [verdict-field]
   LOOP_DIR="${WORK}/loop-$1"; LOOP_LOGS="${WORK}/loop-$1.logs"
   mkdir -p "${LOOP_DIR}" "${LOOP_LOGS}"
@@ -323,7 +324,7 @@ run_loop() { # run_loop <state-dir-suffix> [loop-name] [round-recipe] [clean-tok
   [ -z "${RUN_LOOP_TIMEOUT:-}" ] || wrap=(timeout "${RUN_LOOP_TIMEOUT}")
   PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     ${wrap[@]+"${wrap[@]}"} bash "${LOOP}" --loop-name "${2:-crusty}" --round-recipe "${3:-autodrive-crusty-round}" \
-      --clean-token "${4-CLEAN}" --verdict-field "${5:-crusty_verdict}" \
+      --clean-token "${4-CLEAN}" ${RUN_LOOP_ALSO_CLEAN:+--also-clean-token "${RUN_LOOP_ALSO_CLEAN}"} --verdict-field "${5:-crusty_verdict}" \
       --repo "${LOOP_WT}" --review-dir "${LOOP_MAIN}" --state-dir "${LOOP_DIR}" --task-file "${LOOP_LOGS}/task.txt" \
       >"${LOOP_LOGS}/out" 2>"${LOOP_LOGS}/err"
   local rc=$?
@@ -419,6 +420,55 @@ if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"DONE"
 else
   fail "PASSTHRU" "a converging loop was not allowed to finish (rc=${rc}): ${LOOP_OUT}"
 fi
+
+# Issue #1979: with --also-clean-token MINOR_ONLY, a minor-only round ends the
+# crusty loop on DONE, and the result keeps the round's real verdict.
+set_stub '{"crusty_verdict":"MINOR_ONLY","concern_count":2}' 0 "$H_DONE"
+RUN_LOOP_ALSO_CLEAN=MINOR_ONLY run_loop minor-ends; rc=$?
+if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"DONE"' \
+   && [ "$(grep -c '^autodrive-crusty-round$' "${LOOP_LOGS}/calls" 2>/dev/null)" = "1" ]; then
+  pass "1979-minor-only-ends-loop" "a MINOR_ONLY round plus DONE ends the loop after one round"
+else
+  fail "1979-minor-only-ends-loop" "a MINOR_ONLY round did not end the loop (rc=${rc}): ${LOOP_OUT}; $(tail -n3 "${LOOP_LOGS}/err")"
+fi
+if printf '%s' "${LOOP_OUT}" | grep -qF 'MINOR_ONLY'; then
+  pass "1979-minor-only-verdict-kept" "the loop result reports the real verdict MINOR_ONLY, not CLEAN"
+else
+  fail "1979-minor-only-verdict-kept" "the loop result hides the MINOR_ONLY verdict: ${LOOP_OUT}"
+fi
+# The history the evaluator reads keeps MINOR_ONLY too; only loop_round_verdict,
+# which its DONE rule compares with loop_clean_token, carries the clean token.
+EVAL_ARGV="$(grep -F 'loop-health-evaluator.yaml' "${LOOP_LOGS}/calls.argv" 2>/dev/null | head -n 1)"
+if printf '%s' "$EVAL_ARGV" | grep -qE 'loop_history=.*crusty_verdict=MINOR_ONLY ' \
+   && ! printf '%s' "$EVAL_ARGV" | grep -qE 'loop_history=.*crusty_verdict=CLEAN ' \
+   && printf '%s' "$EVAL_ARGV" | grep -qE '(^| )loop_round_verdict=CLEAN( |$)' \
+   && printf '%s' "$EVAL_ARGV" | grep -qE '(^| )loop_clean_token=CLEAN( |$)'; then
+  pass "1979-minor-only-history-kept" "the evaluator's history records MINOR_ONLY; loop_round_verdict is the clean token"
+else
+  fail "1979-minor-only-history-kept" "the history or loop_round_verdict is wrong for a MINOR_ONLY round: ${EVAL_ARGV}"
+fi
+# Without the second token (the merge-ready loop), MINOR_ONLY is not clean.
+fu_two_rounds() { # fu_two_rounds <label> <round-1 verdict> <also-clean token|""> <why>
+  set_stub '' 0 "$H_DONE"
+  export STUB_ROUND_BODY="case \"\$AUTODRIVE_ROUND_LABEL\" in
+  round-1) printf '%s' '{\"crusty_verdict\":\"$2\"}' > \"\$AUTODRIVE_ROUND_RECORD\"; printf 'naming-1\\n' > \"\${AUTODRIVE_ROUND_RECORD}.findings\" ;;
+  *) printf '%s' '{\"crusty_verdict\":\"CLEAN\"}' > \"\$AUTODRIVE_ROUND_RECORD\"; : > \"\${AUTODRIVE_ROUND_RECORD}.findings\" ;;
+esac"
+  RUN_LOOP_ALSO_CLEAN="$3" RUN_LOOP_TIMEOUT=120 run_loop "$1"; local rc=$?
+  unset STUB_ROUND_BODY
+  if [ "$rc" -eq 0 ] && [ "$(grep -c '^loop-health-evaluator$' "${LOOP_LOGS}/calls" 2>/dev/null)" = "2" ] \
+     && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-2"'; then
+    pass "$1" "$4"
+  else
+    fail "$1" "$4 (rc=${rc}): ${LOOP_OUT}; $(tail -n3 "${LOOP_LOGS}/err")"
+  fi
+}
+fu_two_rounds "1979-minor-only-needs-token" MINOR_ONLY "" \
+  "without --also-clean-token a MINOR_ONLY round does not end the loop; a clean round 2 is needed"
+# A [minor, major] or [minor, blocking] round is CONCERNS from step-03, so the
+# second token never applies to it: the loop continues.
+fu_two_rounds "1979-mixed-continues" CONCERNS MINOR_ONLY \
+  "a CONCERNS round ([minor, major]) does not end the loop even with --also-clean-token MINOR_ONLY"
 
 # ---------------------------------------------------------------------------
 # 2b. Dependency preflight — a missing terminator costs ZERO rounds.
@@ -1348,12 +1398,13 @@ loop_writes_round() { # loop_writes_round <dir> <label> <record-text>: what auto
   printf '%s\t%s\t%s\n' "$2" "${f}" "$(git hash-object --no-filters --stdin < "$1/${f}")" >> "$1/crusty-records.tsv"
   chmod 0644 "$1/${f}" "$1/crusty-latest.json"; chmod 0600 "$1/crusty-records.tsv"
 }
-seed_crusty() { # seed_crusty <dir> <clean|concerns|none|legacy-clean|usage-limit>
+seed_crusty() { # seed_crusty <dir> <clean|concerns|minor|none|legacy-clean|usage-limit>
   mkdir -p "$1"; chmod 0755 "$1"
   case "$2" in
-    clean|concerns)
+    clean|concerns|minor)
       printf 'crusty-loop\t2026-10-03T00:00:00Z\n' > "$1/phases.tsv"; chmod 0644 "$1/phases.tsv"
       if [ "$2" = "clean" ]; then loop_writes_round "$1" round-1 "$(crusty_record CLEAN "$CR_SHA")"
+      elif [ "$2" = "minor" ]; then loop_writes_round "$1" round-1 "$(crusty_record MINOR_ONLY "$CR_SHA")"
       else loop_writes_round "$1" round-1 "$(crusty_record CONCERNS "$CR_SHA")"; fi
       ;;
     legacy-clean) # a state dir written before #1517: marker and a CLEAN latest file, no manifest
@@ -1426,6 +1477,19 @@ crusty_mutate() { # crusty_mutate <dir> <mutation>: what an agent, or a broken l
       old_row="$(tail -n 1 "$d/crusty-records.tsv")"
       loop_writes_round "$d" round-1 "$(crusty_record CONCERNS "$CR_SHA2" round-1)"
       printf '%s\n' "${old_row}" >> "$d/crusty-records.tsv" ;;
+    # #1979: the follow-up set and what `file` recorded for it (PR 42).
+    followups-unfiled)
+      printf '{"id":"naming-1","summary":"Rename","evidence":"e"}\n' > "$d/followups.jsonl"; chmod 0600 "$d/followups.jsonl" ;;
+    followups-filed)
+      crusty_mutate "$d" followups-uncommented
+      printf '1979:2017,\n' > "$d/followups.parent"; chmod 0600 "$d/followups.parent" ;;
+    # The issues are filed, but no comment on the task issue lists them.
+    followups-uncommented)
+      printf '{"id":"naming-1","summary":"Rename","evidence":"e"}\n' > "$d/followups.jsonl"
+      printf 'naming-1\t2017\t#1979\t42\n' > "$d/followups.tsv"; chmod 0600 "$d/followups.jsonl" "$d/followups.tsv" ;;
+    followups-error)
+      crusty_mutate "$d" followups-filed
+      printf 'followup-create-failed\n' > "$d/followups.error"; chmod 0600 "$d/followups.error" ;;
     *) echo "HARNESS-ERROR: unknown crusty mutation '$2'" >&2; exit 2 ;;
   esac
 }
@@ -1779,7 +1843,8 @@ if [ -x "${GUARD_1551}/gh" ]; then
   # A copy of the gate with every helper beside it passes every check and then
   # has its merge refused: only the bundle's own gate may merge.
   COPY_1551="${WORK_PHYS}/gate-copy-1551"; mkdir -p "${COPY_1551}"
-  cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" "${COPY_1551}/"
+  cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" \
+     "${TOOLS}/autodrive_followups.sh" "${TOOLS}/autodrive_followups_check.sh" "${TOOLS}/autodrive_finding_rules.sh" "${COPY_1551}/"
   GATE_PRIV=1 GATE_SCRIPT="${COPY_1551}/autodrive_merge_gate.sh" GATE_PATH_PREFIX="${GUARD_1551}" \
     gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
   if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
@@ -1883,6 +1948,39 @@ if [ "$rc" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_
 else
   fail "GATE-full-evidence" "a PR with every piece of evidence was blocked (rc=${rc}): $(grep -F 'BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
 fi
+
+# Issue #1979: a crusty loop that ended MINOR_ONLY merges only once every
+# minor finding has a follow-up issue; the gate checks followups.tsv itself.
+fu_gate() { # fu_gate <label> <want: merges|blocks> <crusty seed> <mutation> <why>
+  GATE_CRUSTY="$3" GATE_CRUSTY_MUT="$4" gate_run green --round-record "$REC" --qa-evidence "$QA" --dry-run; local rc=$?
+  local merged=no; grep -q '^pr merge' "${GATE_DIR}/gh-calls" 2>/dev/null && merged=yes
+  if [ "$2" = merges ] && [ "$rc" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"DRY_RUN"'; then
+    pass "$1" "$5"
+  elif [ "$2" = blocks ] && [ "$rc" -ne 0 ] && [ "$merged" = no ] \
+       && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
+       && grep -qF 'ERROR: followups-unfiled' "${GATE_DIR}/err"; then
+    pass "$1" "$5"
+  else
+    fail "$1" "$5 (rc=${rc}, merged=${merged}): ${GATE_OUT} | $(grep -E 'ERROR|BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+  fi
+}
+fu_gate "1979-gate-minor-filed" merges minor followups-filed \
+  "a MINOR_ONLY crusty end with every follow-up filed meets criterion 3 and merges"
+if grep -qF 'evidence: followups-ok 1 naming-1=#2017' "${GATE_DIR}/err"; then
+  pass "1979-gate-evidence-names-issue" "the gate's evidence line names each finding and its follow-up issue"
+else
+  fail "1979-gate-evidence-names-issue" "no follow-up evidence line: $(grep -F 'followups' "${GATE_DIR}/err" | tr '\n' ' ')"
+fi
+fu_gate "1979-gate-minor-unfiled" blocks minor followups-unfiled \
+  "a MINOR_ONLY crusty end with an unfiled finding prints ERROR: followups-unfiled and never merges"
+fu_gate "1979-gate-minor-no-set" blocks minor "" \
+  "a MINOR_ONLY crusty end with no follow-up set never merges"
+fu_gate "1979-gate-parent-uncommented" blocks minor followups-uncommented \
+  "follow-ups filed but not listed on the task issue, which the merge closes, never merge"
+fu_gate "1979-gate-error-recorded" blocks minor followups-error \
+  "a recorded filing error blocks the merge even when rows exist"
+fu_gate "1979-gate-clean-no-followups" merges clean "" \
+  "a CLEAN crusty end needs no follow-up and still merges"
 
 for st in RUN_FAILED VALIDATE_FAILED NO_SCENARIOS NOT_INSTALLED; do
   f="${WORK}/qa-gadugi-${st}.json"; qa_fixture "${GATE_HEAD}" "$st" 3 > "$f"
@@ -2425,6 +2523,24 @@ if [ "$v" = "CLEAN" ]; then
 else
   fail "CRUSTY-review-object" "a JSON-only review, exported as RECIPE_VAR_crusty_review alone, became '${v}'"
 fi
+
+# Issue #1979: crusty writes `concerns` as a string holding two arrays, a minor
+# one and then a blocking one. step-03 merges them into one array, so the
+# blocking finding is kept in .findings and the round stays CONCERNS; it must
+# never be hidden behind the minor one and classed MINOR_ONLY.
+FU_TWO_DIR="$(mktemp -d "${WORK}/fu-two.XXXXXX")"; chmod 700 "${FU_TWO_DIR}"
+FU_TWO_REVIEW='{"crusty_verdict":"CONCERNS","concerns":"[{\"id\":\"naming-1\",\"severity\":\"minor\",\"summary\":\"Rename x\",\"evidence\":\"a.rs\"}] [{\"id\":\"bug-2\",\"severity\":\"blocking\",\"summary\":\"Crash on start\",\"evidence\":\"b.rs\"}]"}'
+v="$(PATH="${STUB_BIN}:${PATH}" RECIPE_VAR_crusty_review="${FU_TWO_REVIEW}" AUTODRIVE_ROUND_RECORD="${FU_TWO_DIR}/crusty-round-1.json" \
+  AUTODRIVE_ROUND_LABEL="r" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}" bash -c "$CRUSTY_BODY" 2>/dev/null \
+  | "$REAL_AMPLIHACK" orch helper extract-json \
+  | "$REAL_AMPLIHACK" orch helper extract-field --field crusty_verdict --default MISSING)"
+if [ "$v" = "CONCERNS" ] && grep -qx 'bug-2' "${FU_TWO_DIR}/crusty-round-1.json.findings" 2>/dev/null \
+   && [ ! -e "${FU_TWO_DIR}/crusty-round-1.json.minor" ]; then
+  pass "1979-two-arrays-stay-concerns" "a concerns string of a minor and a blocking array stays CONCERNS with the blocking id in .findings"
+else
+  fail "1979-two-arrays-stay-concerns" "verdict '${v}', .findings: $(tr '\n' ' ' < "${FU_TWO_DIR}/crusty-round-1.json.findings" 2>/dev/null)"
+fi
+rm -rf -- "${FU_TWO_DIR}"; unset FU_TWO_DIR FU_TWO_REVIEW
 
 # THE fail-open path this gate had. `extract-json` without `--require-field`
 # returns the FIRST parseable object and PREFERS a ```json fence over raw

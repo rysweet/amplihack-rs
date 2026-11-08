@@ -358,6 +358,9 @@ mod issue_1844 {
 
     #[test]
     fn stopping_during_a_stalled_refresh_leaves_no_refresh_lock() {
+        // The stop waits for the process-wide refresh count; no other test's
+        // refresh may run beside this one (issue #2036).
+        let _serial = crate::test_support::refresh_count_lock();
         let now = chrono::Utc::now().timestamp();
         let iso = |t: i64| {
             chrono::DateTime::from_timestamp(t, 0)

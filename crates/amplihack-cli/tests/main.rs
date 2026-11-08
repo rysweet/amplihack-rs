@@ -288,10 +288,16 @@ mod issue_1818_no_session_limit;
 mod issue_1846_exhausted_reading;
 #[path = "issue_1870_reread_probe_mode.rs"]
 mod issue_1870_reread_probe_mode;
+#[path = "issue_1955_install_cli.rs"]
+mod issue_1955_install_cli;
 #[path = "issue_1973_rotate_fixture.rs"]
 mod issue_1973_rotate_fixture;
 #[path = "issue_1973_wait_helpers.rs"]
 mod issue_1973_wait_helpers;
+#[path = "issue_1979_crusty_minor_followups.rs"]
+mod issue_1979_crusty_minor_followups;
+#[path = "issue_1985_codex_agent_step_flags.rs"]
+mod issue_1985_codex_agent_step_flags;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
