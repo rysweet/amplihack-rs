@@ -252,8 +252,12 @@ reads only `/proc/<pid>/stat`, which stays readable, and takes its start
   that `exec` would have made it dumpable again.
 
 If the start time cannot be read, the result is unknown and every candidate
-is kept. A candidate whose creation time cannot be read is kept for every
-non-dumpable process. Install then prints:
+is kept. A candidate's creation time is its birth time (`statx`
+`STATX_BTIME`) only. On a filesystem that does not record one, such as NFS
+or some FUSE and ecryptfs mounts, the creation time is unknown and the
+candidate is kept for every non-dumpable process. The modification time is
+never used instead: a write into a release after it was committed moves it
+later, which would make an old release look newer than a process inside it. Install then prints:
 
 ```
 ℹ Old amplihack releases kept: a running process of this user could not be inspected, so no release was removed (~/.amplihack/releases)
@@ -597,10 +601,22 @@ These checks accept a link into a release and still reject anything else:
 
 - A non-dumpable process of your user, such as `ssh-agent` or
   `systemd --user`, keeps every release that existed when it started until
-  it exits. The systemd user manager starts at login, so releases from before
-  the current login are kept until you log out of every session. Releases
-  installed since then are removed once unused.
-  Each such release is about 640 MB, most of it `amplihack-asset-resolver`.
+  it exits. For the systemd user manager this means the releases on disk
+  when it started are never removed by install or `uninstall`:
+  - With lingering on (`loginctl show-user "$USER" -p Linger` prints
+    `Linger=yes`), the manager starts at boot and runs until shutdown.
+    Logging out does not stop it.
+  - With lingering off, it starts at your first login and stops when your
+    last session ends. The next login starts a new manager, which is again
+    later than every release on disk, so those releases are kept again.
+
+  Either way, each reboot (or each fresh login without lingering) adds the
+  releases present at that moment, including the one in use at shutdown, to
+  the set that is kept for good. Releases installed after the manager started
+  are removed once unused. Each kept release is about 640 MB, most of it
+  `amplihack-asset-resolver`. Remove them by hand, using the check in
+  [Inspecting an install](#inspecting-an-install). Issue #2185 tracks replacing this
+  rule with a lease that recipe runs hold on the release they use.
 - Only the merge guard is pinned to one release per run. A recipe step that
   reads `$AMPLIHACK_HOME/amplifier-bundle/<file>` by path after a switch reads
   the new release's file. That file is complete, but may differ from what an
@@ -644,8 +660,18 @@ for p in /proc/[0-9]*; do
 done
 ```
 
-A release is safe to remove by hand when no link points into it and the loop
-above for that release prints nothing.
+A release is safe to remove by hand when no link points into it and the
+first loop above prints nothing for it. A process listed by the second loop
+may still use any release that existed when it started. The systemd user
+manager (`systemd`) and its `(sd-pam)` helper are started by the system
+manager from `user@.service`, not from a shell or a recipe step, so they
+cannot have inherited a path into a release; any other process in that list
+must exit first. To remove a
+release (here 1.2.107) once those checks pass:
+
+```bash
+rm -rf ~/.amplihack/releases/1.2.107
+```
 
 ## Tests
 

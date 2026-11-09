@@ -854,7 +854,7 @@ fn unsupported_scan_has_its_own_notice() {
 
 #[cfg(target_os = "linux")]
 mod opaque_process {
-    use super::release_layout::{may_predate, proc_scan, scan_with};
+    use super::release_layout::{birth_time, may_predate, proc_scan, scan_with};
     use super::{Fixture, cleanup_unused_with};
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -888,6 +888,34 @@ mod opaque_process {
         ));
         assert!(may_predate(Some(started), started), "a tie is kept");
         assert!(may_predate(None, started), "an unknown time is kept");
+    }
+
+    #[test]
+    fn creation_time_never_falls_back_to_a_later_mtime() {
+        // A write into a release after commit moves its mtime forward. If
+        // that time stood in for a missing birth time, the release would look
+        // newer than an opaque process inside it and be removed. The birth
+        // time is either the real one (not the moved mtime) or unknown.
+        let fx = Fixture::new();
+        let release = fx.release("0.9.40");
+        let before = std::time::SystemTime::now();
+        let future = before + Duration::from_secs(10 * 365 * 24 * 3600);
+        std::fs::File::open(&release)
+            .unwrap()
+            .set_modified(future)
+            .unwrap();
+        assert_eq!(
+            std::fs::symlink_metadata(&release)
+                .unwrap()
+                .modified()
+                .unwrap(),
+            future
+        );
+        match birth_time(&release) {
+            None => {}
+            Some(born) => assert!(born <= before, "birth time {born:?} is the moved mtime"),
+        }
+        assert_eq!(birth_time(&fx.amp.join("no-such-release")), None);
     }
 
     #[test]

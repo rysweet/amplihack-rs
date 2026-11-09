@@ -1205,16 +1205,8 @@ pub fn scan_pids(candidates: &[PathBuf], pids: &[u32]) -> InUse {
                 (c.clone(), forms)
             })
             .collect();
-        // When each candidate came into being: its birth time, else its
-        // modification time, which is never earlier than its birth.
-        let created: Vec<Option<std::time::SystemTime>> = candidates
-            .iter()
-            .map(|c| {
-                fs::symlink_metadata(c)
-                    .ok()
-                    .and_then(|m| m.created().or_else(|_| m.modified()).ok())
-            })
-            .collect();
+        let created: Vec<Option<std::time::SystemTime>> =
+            candidates.iter().map(|c| birth_time(c)).collect();
         scan_with(candidates, &created, pids, |pid| {
             proc_scan::scan_pid(pid, &forms).map_err(|proc_scan::Unreadable { entry, error }| {
                 tracing::debug!(
@@ -1229,6 +1221,20 @@ pub fn scan_pids(candidates: &[PathBuf], pids: &[u32]) -> InUse {
         let _ = (candidates, pids);
         InUse::Unsupported
     }
+}
+
+/// When `path` came into being, from its birth time (`statx` `STATX_BTIME`)
+/// only, or `None` when the filesystem does not record one (NFS, some FUSE
+/// or ecryptfs mounts).
+///
+/// There is deliberately no fallback to the modification time. A write into
+/// a release after it was committed moves its mtime later than its birth;
+/// [`may_predate`] would then read an old release as created after an
+/// opaque process started and remove it from under that process (#1954).
+/// `None` makes every opaque process keep the release instead.
+#[cfg(target_os = "linux")]
+pub(crate) fn birth_time(path: &Path) -> Option<std::time::SystemTime> {
+    fs::symlink_metadata(path).ok()?.created().ok()
 }
 
 /// The decision part of [`scan_pids`], with the process lookup injected so
