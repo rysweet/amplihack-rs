@@ -138,7 +138,8 @@ The hook system integrates with Claude Code's lifecycle events to provide sessio
 
 ```rust
 // Automatically triggered after each tool use
-// Metrics saved to .claude/runtime/metrics/
+// Metrics saved to ${AMPLIHACK_HOME:-~/.amplihack}/runtime/sessions/<session_key>/metrics/
+// Nothing is written into the session's working directory
 ```
 
 #### `pre_compact`

@@ -1181,9 +1181,10 @@ mod tests {
     }
 
     #[cfg(unix)]
+    /// Written through `test_support::write_executable`, so no concurrent
+    /// fork can hold a write descriptor to the script when it is spawned
+    /// (`ETXTBSY`, issue #1973).
     fn fake_git(dir: &Path, body: &str) -> PathBuf {
-        // Through the shared writer, so a fork in a parallel test cannot hold
-        // a write descriptor to the stub and fail the exec with ETXTBSY (#1973).
         let path = dir.join("git");
         crate::test_support::write_executable(&path, &format!("#!/bin/sh\n{body}\n"));
         path

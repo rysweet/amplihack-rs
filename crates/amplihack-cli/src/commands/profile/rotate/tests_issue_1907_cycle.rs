@@ -30,6 +30,7 @@ use super::super::tests_swap::{Env, env, ino_at};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::now;
 use amplihack_utils::rotator_status::{CycleStatus, parse_cycle};
+use std::cell::Cell;
 use std::fs;
 
 // --- Helpers ---------------------------------------------------------------
@@ -303,10 +304,29 @@ fn e3_a_live_reading_at_exactly_100_keeps_the_alert_hard() {
 /// taken first, the limit is hit next, and the cycle runs after both.
 const READING_AGE: i64 = 30;
 
+thread_local! {
+    /// The time `measure_old_passive_stay` measured at, for this test's
+    /// thread. `MeasureFn` is a plain `fn`, so the stub publishes its own
+    /// timestamp here and the test derives its limits from that same value
+    /// instead of sampling the clock a second time.
+    static MEASURED_AT: Cell<Option<i64>> = const { Cell::new(None) };
+}
+
+/// The time the stub measured at in this test's `run()`. Consumes the slot,
+/// so a test never reads a value left by another test on the same thread,
+/// and panics if the stub did not run.
+fn measured_at() -> i64 {
+    MEASURED_AT
+        .with(Cell::take)
+        .expect("measure_old_passive_stay ran on this thread")
+}
+
 /// `work`'s passive reading below 100% was taken `READING_AGE` seconds
 /// before the cycle measured; `spare` reads the same, so the cycle stays.
+/// The measurement time is shared with the test through `MEASURED_AT`.
 fn measure_old_passive_stay(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     let at = now();
+    MEASURED_AT.with(|m| m.set(Some(at)));
     let read = Some(at - READING_AGE);
     let probes = probes_for(snap, &[("spare", rd(40.0, 30.0, read))]);
     decide_measured(ctx, snap, rd(40.0, 30.0, read), probes, at)
@@ -315,23 +335,27 @@ fn measure_old_passive_stay(ctx: &Ctx, snap: &Snap) -> Result<Measurement, Profi
 /// `observed_at < limit start < measured_at`: the reading shows room, but it
 /// was taken before the limit, so it says nothing about the login after it.
 /// The cycle records the time of the reading, not the time of the cycle, and
-/// the hook does not resume a session stopped after the reading.
+/// the hook does not resume a session stopped after the reading. The reading
+/// time and both limits come from the stub's own measurement time, so the
+/// result does not depend on how long the cycle or the test takes.
 #[test]
 fn f_a_passive_reading_taken_before_the_limit_is_not_fresh_capacity() {
     let e = env();
-    let before = now();
     let got = run(&e, measure_old_passive_stay);
     assert_eq!(got, CycleOutcome::Stayed, "{}", log_of(&e));
-    let read = before - READING_AGE;
-    let limit_start = read + READING_AGE / 2;
+    let read = measured_at() - READING_AGE;
     let v = hook_view(&e);
-    assert!(v.measured_at.is_some_and(|m| m <= read + 1), "{v:?}");
+    assert_eq!(
+        v.measured_at,
+        Some(read),
+        "a stay records when its passive reading was taken: {v:?}"
+    );
     assert!(
-        !v.fresh_capacity(limit_start),
+        !v.fresh_capacity(read + READING_AGE / 2),
         "a reading older than the limit is no capacity after it: {v:?}"
     );
     assert!(
-        v.fresh_capacity(read - READING_AGE),
+        v.fresh_capacity(read - 1),
         "a limit hit before the reading is answered by it: {v:?}"
     );
 }
@@ -340,11 +364,11 @@ fn f_a_passive_reading_taken_before_the_limit_is_not_fresh_capacity() {
 #[test]
 fn f2_a_passive_reading_taken_after_the_limit_is_fresh_capacity() {
     let e = env();
-    let limit_start = now() - READING_AGE - 5;
     run(&e, measure_old_passive_stay);
+    let read = measured_at() - READING_AGE;
     let v = hook_view(&e);
     assert_eq!(v.outcome.as_deref(), Some("stayed"), "{v:?}");
-    assert!(v.fresh_capacity(limit_start), "{v:?}");
+    assert!(v.fresh_capacity(read - 1), "{v:?}");
 }
 
 // --- (g) A live credit login with an active spend block --------------------

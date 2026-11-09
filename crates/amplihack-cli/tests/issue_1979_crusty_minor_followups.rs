@@ -632,20 +632,44 @@ fn classify_keeps_ids_that_only_contain_keyword_letters_minor() {
 }
 
 #[test]
-fn light_mode_keeps_its_substring_id_rule() {
-    // auto-drive-light (#1802) keeps the stricter substring id pattern; only
-    // the crusty loop reads ids as words.
-    let light = read("amplifier-bundle/tools/autodrive_light_round.sh");
+fn light_mode_uses_the_whole_word_id_rule() {
+    // Issue #1982: auto-drive-light has no id rule, and no round tool, of its
+    // own. Its rounds are classified by `classify`, which reads ids as whole
+    // words, so an id such as `section-1` is minor in light mode as it is in
+    // the crusty loop.
     assert!(
-        light.contains(r#"--arg kw "$KEYWORDS""#),
-        "light mode passes KEYWORDS"
+        !std::path::Path::new(&format!(
+            "{}/../../amplifier-bundle/tools/autodrive_light_round.sh",
+            env!("CARGO_MANIFEST_DIR")
+        ))
+        .exists(),
+        "the light round tool is gone; classify decides"
+    );
+    let rules = read(&format!("amplifier-bundle/tools/{RULES}"));
+    assert!(
+        !rules
+            .lines()
+            .any(|l| l.trim_start().starts_with("KEYWORDS=")),
+        "{RULES} no longer defines the substring KEYWORDS list"
     );
     let followups = read(&format!("amplifier-bundle/tools/{TOOL}"));
     assert!(
-        !followups.contains(r#"--arg kw "$KEYWORDS""#)
-            && followups.contains(r#"--arg kw "$ID_KEYWORDS""#),
-        "{TOOL} passes ID_KEYWORDS, never the substring KEYWORDS"
+        followups.contains(r#"--arg kw "$ID_KEYWORDS""#),
+        "{TOOL} passes ID_KEYWORDS"
     );
+    if skip() {
+        return;
+    }
+    for id in ["section-1", "pr-body-testing-section"] {
+        let d = Drive::new();
+        let o = d.classify(1, &json!([concern(id, "minor", "Rename x")]).to_string());
+        assert_eq!(
+            stdout(&o).trim(),
+            "MINOR_ONLY",
+            "id {id:?} is minor under the one id rule\n{}",
+            show(&o)
+        );
+    }
 }
 
 #[test]
@@ -2065,18 +2089,21 @@ fn new_files_exist_and_the_tool_is_executable() {
 }
 
 #[test]
-fn finding_rules_are_defined_once_and_sourced_by_both_rules() {
+fn finding_rules_are_defined_once_and_sourced_by_the_followups_tool() {
     let rules = read(&format!("amplifier-bundle/tools/{RULES}"));
-    for def in [
-        "KEYWORDS=",
-        "ID_KEYWORDS=",
-        "TEXT_KEYWORDS=",
-        "ZW=",
-        "cell()",
-    ] {
+    for def in ["ID_KEYWORDS=", "TEXT_KEYWORDS=", "ZW=", "cell()"] {
         assert!(rules.contains(def), "{RULES} defines {def}");
     }
-    for user in ["autodrive_light_round.sh", TOOL] {
+    assert!(
+        !rules
+            .lines()
+            .any(|l| l.trim_start().starts_with("KEYWORDS=")),
+        "{RULES} must not define the retired KEYWORDS list (#1982)"
+    );
+    // Only autodrive_followups.sh uses the rules; light mode handles no
+    // finding text since #1982 and has no round tool.
+    {
+        let user = TOOL;
         let body = read(&format!("amplifier-bundle/tools/{user}"));
         assert!(body.contains(RULES), "{user} sources {RULES}");
         assert!(
@@ -2212,17 +2239,48 @@ fn verdict_allow_lists_admit_minor_only() {
 }
 
 #[test]
-fn round_step03_classifies_after_the_light_rule() {
+fn round_step03_classifies_with_no_light_hook_before_it() {
     let s03 = step_command(ROUND, "step-03-extract-crusty-verdict");
-    let light = s03.find("autodrive_light_steps.sh").expect("light line");
-    let cls = s03.find("autodrive_followups.sh").expect("classify line");
     assert!(
-        cls > light,
-        "light mode keeps priority: classify runs after the light line"
+        s03.contains("autodrive_followups.sh"),
+        "step-03 runs classify"
+    );
+    assert!(
+        !s03.contains("autodrive_light") && !s03.contains("light-mode"),
+        "#1982: no light hook runs before classify"
     );
     assert!(
         s03.contains("AUTODRIVE_LAUNCH_TOOLS"),
         "loaded from the launch tools root"
+    );
+}
+
+#[test]
+fn docs_no_longer_give_light_mode_priority() {
+    // Issue #1982: light mode has no rule that runs before classify, so the
+    // #1979 section no longer says it keeps priority or compares ids as
+    // substrings.
+    let doc = read("docs/reference/auto-drive-to-merge.md");
+    assert!(
+        !doc.contains("Light mode keeps priority"),
+        "auto-drive-to-merge.md still says light mode keeps priority"
+    );
+    assert!(
+        !doc.contains("auto-drive-light.md#the-minor-only-rule"),
+        "auto-drive-to-merge.md still links the retired light rule"
+    );
+    assert!(
+        doc.contains("#### Cell sanitising"),
+        "the cell-sanitising text moved into auto-drive-to-merge.md"
+    );
+    let rules = read(&format!("amplifier-bundle/tools/{RULES}"));
+    assert!(
+        rules.contains("docs/reference/auto-drive-to-merge.md#cell-sanitising"),
+        "{RULES} links the moved cell-sanitising anchor"
+    );
+    assert!(
+        !rules.contains("auto-drive-light.md#cell-sanitising"),
+        "{RULES} must not link the retired light anchor"
     );
 }
 

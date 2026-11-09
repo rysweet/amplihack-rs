@@ -241,7 +241,17 @@ fn run_golden_tests_for_hook(hook_type: &str) {
         .iter()
         .map(|key| EnvVarGuard::unset(key))
         .collect();
-    let _cwd = TempCwd::new(hook_type);
+    let cwd = TempCwd::new(hook_type);
+    // Since #1963 the hooks write their state under `$AMPLIHACK_HOME`, else
+    // `$HOME/.amplihack`, rather than the cwd. Point both at the temp tree so
+    // golden runs never write into the real `~/.amplihack`.
+    let golden_home = cwd.path.join("home");
+    fs::create_dir_all(&golden_home).expect("golden temp home");
+    let _home = EnvVarGuard::set(
+        "HOME",
+        golden_home.to_str().expect("golden temp home is UTF-8"),
+    );
+    let _amplihack_home = EnvVarGuard::unset("AMPLIHACK_HOME");
 
     let golden_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
