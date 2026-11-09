@@ -20,27 +20,11 @@ use crate::test_support::with_env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::os::unix::ffi::OsStrExt;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 const DELEGATE: &str = "amplihack copilot";
-
-/// Launcher iterations the main thread runs beside the mutator.
-const ITERATIONS: usize = 20;
-
-/// Upper bound on the number of locked windows in which the mutator holds the
-/// invalid value, so that a stalled main thread cannot keep it running.
-const MAX_WINDOWS: usize = 500;
-
-/// How long the main thread waits for the mutator's first window.
-const START_DEADLINE: Duration = Duration::from_secs(10);
-
-/// How long the main thread keeps building launchers, after `ITERATIONS`, while
-/// it waits for the mutator to open another window.
-const OVERLAP_DEADLINE: Duration = Duration::from_secs(30);
 
 fn non_utf8_root() -> &'static OsStr {
     OsStr::from_bytes(b"/\xff")
@@ -170,17 +154,19 @@ fn injected_profile_reaches_the_written_run_scripts() {
     }
 }
 
-/// Stops the mutator thread and joins it, including when the test panics.
+/// Holds the mutator's window open until it is dropped or finished. Dropping
+/// `done` makes the mutator's `recv()` return, so its `with_env` window closes
+/// and the join completes, also when the test panics.
 struct StopGuard {
-    stop: Arc<AtomicBool>,
+    done: Option<Sender<()>>,
     handle: Option<JoinHandle<()>>,
 }
 
 impl StopGuard {
-    /// Stops and joins the mutator. If the mutator panicked, re-raises its
-    /// panic so the test shows the original message.
+    /// Closes the window and joins the mutator. If the mutator panicked,
+    /// re-raises its panic so the test shows the original message.
     fn finish(mut self) {
-        self.stop.store(true, Ordering::SeqCst);
+        drop(self.done.take());
         let handle = self.handle.take().expect("mutator already joined");
         if let Err(payload) = handle.join() {
             std::panic::resume_unwind(payload);
@@ -190,76 +176,64 @@ impl StopGuard {
 
 impl Drop for StopGuard {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::SeqCst);
+        drop(self.done.take());
         if let Some(handle) = self.handle.take() {
-            // Only reached on panic paths; `finish()` asserts the join on the
+            // Only reached on panic paths; `finish()` checks the join on the
             // normal path. A second panic inside Drop would abort the process.
             let _ = handle.join();
         }
     }
 }
 
-/// Starts a thread that repeatedly sets the root to invalid UTF-8 through
-/// `with_env`. It holds the env lock only while the value is invalid, and
-/// `with_env` restores the previous value at the end of each window.
-fn spawn_mutator(windows: Arc<AtomicUsize>) -> StopGuard {
-    let stop = Arc::new(AtomicBool::new(false));
-    let thread_stop = Arc::clone(&stop);
+/// Starts a thread that opens one `with_env` window with the root set to
+/// invalid UTF-8, sends on `ready` once the value is in the process, and
+/// keeps the window open until `done` is sent or dropped. `with_env` restores
+/// the previous value when the window closes.
+fn spawn_mutator() -> (StopGuard, Receiver<()>) {
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel::<()>();
     let handle = std::thread::spawn(move || {
-        while !thread_stop.load(Ordering::SeqCst) && windows.load(Ordering::SeqCst) < MAX_WINDOWS {
-            with_env(&[(ROOT_ENV, Some(non_utf8_root()))], || {
-                windows.fetch_add(1, Ordering::SeqCst);
-                std::thread::yield_now();
-            });
-            // Lets other tests that wait for the env lock take it.
-            std::thread::sleep(Duration::from_millis(1));
-        }
+        with_env(&[(ROOT_ENV, Some(non_utf8_root()))], || {
+            ready_tx
+                .send(())
+                .expect("main thread stopped waiting for the mutator");
+            // Returns on send or when the guard drops the sender.
+            let _ = done_rx.recv();
+        });
     });
-    StopGuard {
-        stop,
+    let guard = StopGuard {
+        done: Some(done_tx),
         handle: Some(handle),
-    }
+    };
+    (guard, ready_rx)
 }
 
 /// The regression test for #2014. A parallel thread sets the root to invalid
-/// UTF-8 while the main thread runs the launcher checks without the env lock.
-/// The checks must still pass.
+/// UTF-8 and holds it there while the main thread runs the launcher checks
+/// without the env lock. The checks must still pass.
+///
+/// The overlap is guaranteed by the channel handshake, not by timing: the
+/// checks run only after the mutator reports that the invalid value is set,
+/// and the mutator restores the value only after the checks finish.
 #[test]
 fn launcher_tests_pass_while_another_thread_sets_a_non_utf8_root() {
-    let windows = Arc::new(AtomicUsize::new(0));
-    let guard = spawn_mutator(Arc::clone(&windows));
+    let (guard, ready) = spawn_mutator();
+    ready
+        .recv()
+        .expect("mutator exited before it set the invalid root");
 
-    // Start barrier: the mutator must be running before the checks begin.
-    let started = Instant::now();
-    while windows.load(Ordering::SeqCst) == 0 {
-        assert!(
-            started.elapsed() < START_DEADLINE,
-            "mutator opened no window within {START_DEADLINE:?}"
-        );
-        std::thread::sleep(Duration::from_millis(1));
-    }
-    let at_barrier = windows.load(Ordering::SeqCst);
+    // The invalid value is in the process for the whole of the checks. The
+    // mutator holds the env lock, so nothing else can change it meanwhile.
+    assert_eq!(
+        std::env::var_os(ROOT_ENV).as_deref(),
+        Some(non_utf8_root()),
+        "the mutator's window must be open while the checks run"
+    );
 
-    // Runs at least ITERATIONS rounds, and goes on until the mutator has
-    // opened another window, so the checks and the mutation overlap.
-    let overlap_started = Instant::now();
-    let mut iteration = 0;
-    loop {
-        let (_rb, _rs, recipe) = fresh_workstream();
-        build_and_check_recipe(&recipe);
-        let (_cb, _cs, classic) = fresh_workstream();
-        build_and_check_classic(&classic);
-        iteration += 1;
-
-        if iteration >= ITERATIONS && windows.load(Ordering::SeqCst) > at_barrier {
-            break;
-        }
-        assert!(
-            overlap_started.elapsed() < OVERLAP_DEADLINE,
-            "mutator opened no window after the barrier within {OVERLAP_DEADLINE:?} \
-             ({iteration} iterations, {at_barrier} windows)"
-        );
-    }
+    let (_rb, _rs, recipe) = fresh_workstream();
+    build_and_check_recipe(&recipe);
+    let (_cb, _cs, classic) = fresh_workstream();
+    build_and_check_classic(&classic);
 
     guard.finish();
 }

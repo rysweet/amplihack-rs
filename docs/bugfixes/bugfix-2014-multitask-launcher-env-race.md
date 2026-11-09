@@ -201,24 +201,28 @@ seam passes the injected values through instead of dropping them.
 This test reproduces the race from the issue and checks that the seam is
 immune to it.
 
-1. A mutator thread sets `AMPLIHACK_CLAUDE_PROFILE_ROOT` to `/\xff` through
-   `with_env` only, yields inside each window, and sleeps 1 ms between
-   windows so that other tests waiting for `env_lock()` are not starved. It
-   stops when a stop flag is set or after 500 windows.
-2. The main thread waits until the mutator has opened at least one window,
-   with a 10 s limit, and panics if it has not.
-3. Without taking the lock, the main thread runs at least 20 iterations.
-   Each one builds the recipe and classic launchers in fresh temporary
-   directories through the `_with` functions, then checks `launcher.sh` and
-   `run.sh` for LF-only content and with `bash -n`. It continues past 20, for
-   up to 30 s, until the mutator has opened another window after the start
-   barrier, which shows that the two threads overlapped.
-4. The test stops the mutator and joins it.
+1. A mutator thread opens one `with_env` window that sets
+   `AMPLIHACK_CLAUDE_PROFILE_ROOT` to `/\xff`. Inside the window it sends on
+   a `ready` channel, then blocks on a `done` channel.
+2. The main thread blocks on `ready`. When it returns, the invalid value is
+   in the process, and the test asserts that it is.
+3. Without taking the lock, the main thread builds the recipe and classic
+   launchers in fresh temporary directories through the `_with` functions,
+   then checks `launcher.sh` and `run.sh` for LF-only content and with
+   `bash -n`.
+4. The main thread closes `done` and joins the mutator. `with_env` restores
+   the previous value when the window closes.
 
-A `StopGuard` sets the stop flag and joins the thread in `Drop`, so a panic
-in the main loop does not leave the mutator running. If the main loop is
-pointed at `write_recipe_launcher` and `write_classic_launcher` instead, the
-test fails with the UTF-8 error from [Cause](#cause).
+The overlap comes from the handshake, not from timing. The test has no
+sleeps, deadlines or polling loops, and the invalid root is in the process
+for one window only. Other tests that need `env_lock()` wait only for the
+time the checks take.
+
+A `StopGuard` drops the `done` sender and joins the thread in `Drop`, so a
+panic in the main thread closes the window and does not leave the mutator
+running. If the checks are pointed at `write_recipe_launcher` and
+`write_classic_launcher` instead, the test fails with the UTF-8 error from
+[Cause](#cause).
 
 ## Running the tests
 
@@ -240,7 +244,7 @@ done
 
 ## Limits
 
-- The mutator holds an invalid root for short windows while the regression
+- The mutator holds an invalid root for one window while the regression
   test runs. A test elsewhere in the binary that reads
   `AMPLIHACK_CLAUDE_PROFILE_ROOT` through production code, for example
   `root_config::store_from_env`, without `env_lock()` would see that value
