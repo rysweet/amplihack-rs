@@ -1189,6 +1189,12 @@ pub fn in_use_paths(candidates: &[PathBuf]) -> InUse {
 ///   not exec'd a release binary since either, because that exec would have
 ///   made it dumpable again. That release can be removed.
 ///
+/// The one exception is the systemd user manager and its `(sd-pam)` helper,
+/// recognised by their cgroup (see [`proc_scan::is_user_manager_cgroup`]).
+/// They run from `/` and the system's own binaries, never from a release, so
+/// they keep nothing. Without this, every release on disk when the manager
+/// started (at boot with lingering on) would be kept for good.
+///
 /// When the start time cannot be read, the result is [`InUse::Unknown`].
 pub fn scan_pids(candidates: &[PathBuf], pids: &[u32]) -> InUse {
     #[cfg(target_os = "linux")]
@@ -1259,6 +1265,11 @@ pub(crate) fn scan_with(
                 }
             }
             Err(proc_scan::Opaque::Gone) => {}
+            Err(proc_scan::Opaque::UserManager) => {
+                tracing::debug!(
+                    "release cleanup: pid {pid} is the systemd user manager; it uses no release"
+                );
+            }
             Err(proc_scan::Opaque::StartedAt(started)) => {
                 tracing::debug!(
                     "release cleanup: pid {pid} cannot be inspected; keeping releases that \
@@ -1283,6 +1294,15 @@ pub(crate) fn scan_with(
 }
 
 /// Clock slack for [`may_predate`]: the kernel's boot time is whole seconds.
+///
+/// It covers rounding only, not a wall-clock step. The process start time is
+/// `btime` plus ticks since boot, and `btime` is recomputed from the current
+/// wall clock on every read; the release side is a wall-clock birth time. A
+/// backward step of more than this slack plus the gap between creating a
+/// release and starting the process makes that process read as older than
+/// the release, and the release can be removed from under it. A forward step
+/// errs toward keeping. This limit is documented under "Known limits" in
+/// `docs/concepts/versioned-install-layout.md`; the lease in #2185 removes it.
 #[cfg(target_os = "linux")]
 const START_TIME_SLACK: std::time::Duration = std::time::Duration::from_secs(2);
 
@@ -1421,6 +1441,9 @@ pub(crate) mod proc_scan {
     pub(crate) enum Opaque {
         /// It exited meanwhile.
         Gone,
+        /// It is the systemd user manager or its `(sd-pam)` helper, which use
+        /// no release.
+        UserManager,
         /// It started at this time.
         StartedAt(std::time::SystemTime),
         /// Its start time could not be read.
@@ -1429,6 +1452,12 @@ pub(crate) mod proc_scan {
 
     pub(crate) fn classify_opaque(pid: u32) -> Opaque {
         let dir = PathBuf::from(format!("/proc/{pid}"));
+        // `cgroup` is mode 0444, readable when `cwd` and `fd` are not.
+        if let Ok(cgroup) = fs::read_to_string(dir.join("cgroup"))
+            && is_user_manager_cgroup(&cgroup, super::euid())
+        {
+            return Opaque::UserManager;
+        }
         let stat = match fs::read_to_string(dir.join("stat")) {
             Ok(stat) => stat,
             Err(e) if gone(&e) => return Opaque::Gone,
@@ -1450,6 +1479,24 @@ pub(crate) mod proc_scan {
             }
             _ => Opaque::Unknown,
         }
+    }
+
+    /// Whether `/proc/<pid>/cgroup` content is exactly the cgroup v2 path of
+    /// the systemd user manager of `uid`:
+    /// `0::/user.slice/user-<uid>.slice/user@<uid>.service/init.scope`.
+    ///
+    /// Only the manager and `(sd-pam)` live there; the services and scopes it
+    /// starts (recipe runs, tmux, terminals) are in `app.slice`, session
+    /// scopes or other units below `user@<uid>.service`, and are inspected as
+    /// usual. A nested manager (a container's `systemd`) has a longer path,
+    /// and a cgroup v1 or hybrid host lists several lines: neither matches,
+    /// so those processes stay under the start-time rule. A same-user process
+    /// could move itself into `init.scope` on purpose, but such a process can
+    /// delete the releases directly anyway.
+    pub(crate) fn is_user_manager_cgroup(cgroup: &str, uid: u32) -> bool {
+        let expected = format!("0::/user.slice/user-{uid}.slice/user@{uid}.service/init.scope");
+        let mut lines = cgroup.lines().filter(|l| !l.trim().is_empty());
+        lines.next().map(str::trim) == Some(expected.as_str()) && lines.next().is_none()
     }
 
     /// Field 22 of `/proc/<pid>/stat`: start time in clock ticks after boot.

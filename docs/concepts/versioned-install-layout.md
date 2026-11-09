@@ -238,8 +238,12 @@ calling `prctl(PR_SET_DUMPABLE, 0)`, as `ssh-agent` and `gpg-agent` do, or by
 running a set-user-ID, set-group-ID or file-capability program, such as the
 systemd user manager (`systemd --user`), its `(sd-pam)` helper, or `ping` on
 distributions that give it `cap_net_raw`. For such a process the installer
-reads only `/proc/<pid>/stat`, which stays readable, and takes its start
-(fork) time from it:
+first reads `/proc/<pid>/cgroup`, which stays readable. If it is exactly
+`0::/user.slice/user-<uid>.slice/user@<uid>.service/init.scope`, the process
+is the user manager or `(sd-pam)`, which run from `/` and system binaries,
+and it keeps no candidate (see [Known limits](#known-limits)). Otherwise the
+installer reads `/proc/<pid>/stat`, which also stays readable, and takes its
+start (fork) time from it:
 
 - Every candidate that existed when it started is kept (with 2 seconds of
   slack for the kernel's whole-second boot time). The process may have
@@ -599,24 +603,32 @@ These checks accept a link into a release and still reject anything else:
 
 ## Known limits
 
-- A non-dumpable process of your user, such as `ssh-agent` or
-  `systemd --user`, keeps every release that existed when it started until
-  it exits. For the systemd user manager this means the releases on disk
-  when it started are never removed by install or `uninstall`:
-  - With lingering on (`loginctl show-user "$USER" -p Linger` prints
-    `Linger=yes`), the manager starts at boot and runs until shutdown.
-    Logging out does not stop it.
-  - With lingering off, it starts at your first login and stops when your
-    last session ends. The next login starts a new manager, which is again
-    later than every release on disk, so those releases are kept again.
-
-  Either way, each reboot (or each fresh login without lingering) adds the
-  releases present at that moment, including the one in use at shutdown, to
-  the set that is kept for good. Releases installed after the manager started
-  are removed once unused. Each kept release is about 640 MB, most of it
-  `amplihack-asset-resolver`. Remove them by hand, using the check in
-  [Inspecting an install](#inspecting-an-install). Issue #2185 tracks replacing this
-  rule with a lease that recipe runs hold on the release they use.
+- A non-dumpable process of your user, such as `ssh-agent` or a setgid or
+  file-capability program, keeps every release that existed when it started
+  until it exits. A long-lived one started before an install (an
+  `ssh-agent` from login) therefore keeps the releases on disk at that
+  moment until it exits. Remove such releases by hand once it has, using the
+  check in [Inspecting an install](#inspecting-an-install).
+- The systemd user manager (`systemd --user`) and its `(sd-pam)` helper are
+  the exception. They are recognised by `/proc/<pid>/cgroup`, which stays
+  readable, being exactly
+  `0::/user.slice/user-<uid>.slice/user@<uid>.service/init.scope`, and they
+  keep no release: they run from `/` and system binaries. The units they start
+  live elsewhere in the cgroup tree and are inspected as usual. A container's
+  `systemd` nested below the manager, or any process on a cgroup v1 or hybrid
+  host, does not match and falls under the rule above. On such a host the
+  manager still keeps the releases present when it started (at boot with
+  lingering on, at first login without), about 640 MB each.
+- The start-time rule compares two wall-clock readings: the process start
+  (`btime` in `/proc/stat`, which the kernel recomputes from the current wall
+  clock, plus the ticks since boot) and the release's birth time. If the wall
+  clock steps backward by more than about 2 s plus the gap between creating a
+  release and starting a non-dumpable process (an NTP step, or a VM or WSL
+  clock resync that overshoots), that process reads as older than the
+  release, and the release can be removed while the process still holds a
+  path into it. A forward step only keeps more. Issue #2185 tracks replacing
+  the start-time rule with a lease that recipe runs hold on the release they
+  use, which removes both limits.
 - Only the merge guard is pinned to one release per run. A recipe step that
   reads `$AMPLIHACK_HOME/amplifier-bundle/<file>` by path after a switch reads
   the new release's file. That file is complete, but may differ from what an

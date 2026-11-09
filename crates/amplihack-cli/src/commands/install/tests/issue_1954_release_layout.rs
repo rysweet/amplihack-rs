@@ -953,6 +953,57 @@ mod opaque_process {
     }
 
     #[test]
+    fn the_user_manager_keeps_no_release() {
+        // systemd --user (linger on) started at boot, before both releases.
+        // It is non-dumpable, but its cgroup marks it as the manager, which
+        // runs from `/` and system binaries: it must not pin either release.
+        let fx = Fixture::new();
+        let r0 = fx.release("0.9.40");
+        let r1 = fx.release("0.9.41");
+        let boot = UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let report = cleanup_unused_with(&fx.amp, &[], |candidates| {
+            let created = vec![Some(boot + Duration::from_secs(3600)); candidates.len()];
+            scan_with(candidates, &created, &[3363], |_| {
+                Err(proc_scan::Opaque::UserManager)
+            })
+        })
+        .unwrap();
+        assert!(!r0.exists());
+        assert!(!r1.exists());
+        assert!(report.kept_in_use.is_empty());
+        assert!(!report.unknown);
+    }
+
+    #[test]
+    fn only_the_exact_user_manager_cgroup_is_exempt() {
+        let manager = "0::/user.slice/user-1000.slice/user@1000.service/init.scope\n";
+        assert!(proc_scan::is_user_manager_cgroup(manager, 1000));
+        // Another user's manager.
+        assert!(!proc_scan::is_user_manager_cgroup(manager, 1001));
+        // What the manager starts: recipe runs, tmux, terminals.
+        assert!(!proc_scan::is_user_manager_cgroup(
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/tmux-spawn-1.scope\n",
+            1000
+        ));
+        assert!(!proc_scan::is_user_manager_cgroup(
+            "0::/user.slice/user-1000.slice/session-3.scope\n",
+            1000
+        ));
+        // A container's systemd nested below the user manager.
+        assert!(!proc_scan::is_user_manager_cgroup(
+            "0::/user.slice/user-1000.slice/user@1000.service/app.slice/docker-1.scope/init.scope\n",
+            1000
+        ));
+        // cgroup v1 / hybrid: several hierarchies, not exempt.
+        assert!(!proc_scan::is_user_manager_cgroup(
+            "1:name=systemd:/user.slice/user-1000.slice/user@1000.service/init.scope\n\
+             0::/user.slice/user-1000.slice/user@1000.service/init.scope\n",
+            1000
+        ));
+        assert!(!proc_scan::is_user_manager_cgroup("", 1000));
+    }
+
+    #[test]
     fn an_opaque_process_with_no_start_time_keeps_every_release() {
         let fx = Fixture::new();
         let r0 = fx.release("0.9.40");
