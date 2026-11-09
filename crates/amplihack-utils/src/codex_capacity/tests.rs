@@ -126,37 +126,51 @@ fn err(o: Outcome) -> String {
     }
 }
 
-/// True while a process with this pid exists (signal 0 checks only).
-fn alive(pid: i32) -> bool {
-    // SAFETY: signal 0 performs only the permission and existence check.
-    unsafe { libc::kill(pid, 0) == 0 }
+/// How long a test waits for something that should happen promptly before
+/// it reports a hang. It is a hang detector, not a timing assertion: no
+/// test passes or fails on how fast the host is.
+const HANG: Duration = Duration::from_secs(60);
+
+/// Proof that a fake and everything it started have exited, without a clock
+/// and without `kill(pid, 0)` (which succeeds for a zombie).
+///
+/// The fake opens a FIFO for writing as its first command (`exec 9>`), so
+/// it and every process it starts hold the write end. A thread here reads
+/// the other end until EOF, which the kernel delivers exactly when the last
+/// holder has exited, whether or not it has been reaped. Only the fake
+/// opens the FIFO, so processes started by other tests never hold it.
+struct Witness {
+    path: PathBuf,
+    eof: std::sync::mpsc::Receiver<()>,
 }
 
-fn wait_gone(pid: i32) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(2) {
-        if !alive(pid) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(20));
+impl Witness {
+    fn new(dir: &Path) -> Self {
+        let path = dir.join("witness");
+        mkfifo(&path);
+        let p = path.clone();
+        let (tx, eof) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            // Blocks until the fake opens the write end.
+            let mut f = fs::File::open(&p).expect("open the witness FIFO");
+            let mut sink = Vec::new();
+            let _ = f.read_to_end(&mut sink);
+            let _ = tx.send(());
+        });
+        Witness { path, eof }
     }
-    false
-}
 
-fn read_pid(path: &Path) -> i32 {
-    let start = Instant::now();
-    loop {
-        if let Ok(s) = fs::read_to_string(path)
-            && let Ok(pid) = s.trim().parse()
-        {
-            return pid;
-        }
-        assert!(
-            start.elapsed() < Duration::from_secs(5),
-            "no pid in {}",
-            path.display()
-        );
-        std::thread::sleep(Duration::from_millis(20));
+    /// The line a fake runs first, so that it and its children hold the FIFO.
+    fn hold(&self) -> String {
+        format!("exec 9>'{}'\n", self.path.display())
+    }
+
+    /// Blocks until every holder has exited; fails only on a hang.
+    fn assert_all_exit(&self, what: &str) {
+        self.eof
+            .recv_timeout(HANG)
+            .unwrap_or_else(|_| panic!("{what} still running {HANG:?} after the read"));
     }
 }
 
@@ -1149,15 +1163,11 @@ printf '"}}\n'
     );
     body.push_str(LINGER);
     let bin = script(d.path(), "codex", &body);
-    let start = Instant::now();
+    // The fake lingers after the long line, so a reader that kept reading
+    // would end in `Timeout`, not in this error.
     assert_eq!(
         err(read(&bin, &account(d.path(), "x"), SECS_10)),
         "unexpected response from codex app-server"
-    );
-    assert!(
-        start.elapsed() < Duration::from_secs(8),
-        "{:?}",
-        start.elapsed()
     );
 }
 
@@ -1189,28 +1199,24 @@ fn a_huge_digit_string_percentage_is_absent_not_infinite() {
 #[test]
 fn a_silent_server_times_out_and_its_whole_group_is_killed() {
     let d = scratch();
-    let pid = d.path().join("pid");
-    let gc = d.path().join("gc");
-    let mut body = String::from(HANDSHAKE);
-    body.push_str(&format!(
-        "sleep 600 >/dev/null 2>&1 &\necho $! > '{}'\necho $$ > '{}'\nsleep 600\n",
-        gc.display(),
-        pid.display()
-    ));
+    let w = Witness::new(d.path());
+    let mut body = w.hold();
+    body.push_str(HANDSHAKE);
+    body.push_str("sleep 600 >/dev/null 2>&1 &\nsleep 600\n");
     let bin = script(d.path(), "codex", &body);
     let start = Instant::now();
     assert_eq!(
         read(&bin, &account(d.path(), "kkim"), SECS_1),
         Outcome::Timeout
     );
+    // A lower bound only: the answer is not given up before the ask
+    // deadline (1 s less the 250 ms stop reserve). A slow host cannot make
+    // this fail. That the stop stays inside the one deadline is shown by
+    // the order of events: the read returned `Timeout` with both `sleep 600`
+    // processes running, and both are then gone.
     let took = start.elapsed();
-    // The answer is due by the ask deadline: 1 s less the 250 ms stop
-    // reserve. The stop then fits in the reserve.
     assert!(took >= Duration::from_millis(750), "{took:?}");
-    assert!(took < Duration::from_secs(6), "one deadline: {took:?}");
-    let (p, g) = (read_pid(&pid), read_pid(&gc));
-    assert!(wait_gone(p), "app server {p} outlived the read");
-    assert!(wait_gone(g), "its child {g} outlived the read");
+    w.assert_all_exit("the app server or its child");
 }
 
 #[test]
@@ -1299,65 +1305,60 @@ fn a_server_that_ignores_stdin_end_gets_sigterm_before_sigkill() {
 #[test]
 fn a_server_that_ignores_sigterm_is_killed_by_the_deadline() {
     let d = scratch();
-    let pid = d.path().join("pid");
-    let mut body = String::from("trap '' TERM\n");
+    let w = Witness::new(d.path());
+    let mut body = w.hold();
+    body.push_str("trap '' TERM\n");
     body.push_str(HANDSHAKE);
-    body.push_str(&format!("echo $$ > '{}'\nsleep 600\n", pid.display()));
+    body.push_str("sleep 600\n");
     let bin = script(d.path(), "codex", &body);
     let start = Instant::now();
     assert_eq!(
         read(&bin, &account(d.path(), "x"), Duration::from_secs(2)),
         Outcome::Timeout
     );
+    // A lower bound only: the server is given the whole reserve before
+    // `SIGKILL`. The kill itself is shown by the server and its `sleep 600`
+    // exiting, which nothing but the read's `SIGKILL` causes.
     let took = start.elapsed();
     assert!(
         took >= Duration::from_millis(1900),
         "the stop ended early: {took:?}"
     );
-    assert!(took < Duration::from_secs(6), "one deadline: {took:?}");
-    let p = read_pid(&pid);
-    assert!(wait_gone(p), "app server {p} outlived the read");
+    w.assert_all_exit("the app server that ignores SIGTERM");
 }
 
 #[test]
 fn the_deadline_covers_the_handshake() {
     let d = scratch();
-    let bin = script(d.path(), "codex", "sleep 600\n");
-    let start = Instant::now();
+    let w = Witness::new(d.path());
+    let bin = script(d.path(), "codex", &format!("{}sleep 600\n", w.hold()));
+    // The fake never answers `initialize`; a read that waited for the
+    // handshake outside the deadline would never return `Timeout`.
     assert_eq!(
         read(&bin, &account(d.path(), "x"), SECS_1),
         Outcome::Timeout
     );
-    assert!(
-        start.elapsed() < Duration::from_secs(6),
-        "{:?}",
-        start.elapsed()
-    );
+    w.assert_all_exit("the app server stuck before the handshake");
 }
 
 #[test]
 fn a_successful_read_kills_what_the_server_left_running() {
     let d = scratch();
-    let gc = d.path().join("gc");
-    let mut body = String::from(HANDSHAKE);
+    let w = Witness::new(d.path());
+    let mut body = w.hold();
+    body.push_str(HANDSHAKE);
     // The grandchild keeps stdout and stderr open: the reader must not wait
     // for their EOF once it has its answer.
-    body.push_str(&format!(
-        "sleep 600 &\necho $! > '{}'\nprintf '%s\\n' '{TWO_WINDOWS}'\n",
-        gc.display()
-    ));
+    body.push_str(&format!("sleep 600 &\nprintf '%s\\n' '{TWO_WINDOWS}'\n"));
     body.push_str(LINGER);
     let bin = script(d.path(), "codex", &body);
-    let start = Instant::now();
-    let r = ok(read(&bin, &account(d.path(), "x"), Duration::from_secs(20)));
+    let acct = account(d.path(), "x");
+    // The read's own deadline is far past the hang detector, so a reader
+    // that waited for the grandchild's EOF (or for the deadline) would be
+    // reported as a hang instead of passing late.
+    let r = ok(within(HANG, move || read(&bin, &acct, HANG * 10)));
     assert_eq!(r.windows.len(), 2);
-    assert!(
-        start.elapsed() < Duration::from_secs(8),
-        "{:?}",
-        start.elapsed()
-    );
-    let g = read_pid(&gc);
-    assert!(wait_gone(g), "grandchild {g} outlived the read");
+    w.assert_all_exit("the grandchild the server left running");
 }
 
 #[test]

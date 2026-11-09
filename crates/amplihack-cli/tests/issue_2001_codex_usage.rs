@@ -17,13 +17,21 @@ use crate::support::exec_stub::write_executable;
 use crate::support::profile_rotate::{Fixture, PROFILES, assert_no_secrets, text};
 use std::fs;
 use std::io::Read;
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::sync::mpsc;
+use std::time::Duration;
 
+/// A hang detector, not a timing assertion: a command that has not finished
+/// by then is reported as hung (a FIFO read, or a process left running).
 const DEADLINE: Duration = Duration::from_secs(60);
+
+/// The descriptor number the command under test inherits the witness on.
+const WITNESS_FD: i32 = 9;
 const OPENAI_SENTINEL: &str = "sk-test-should-be-removed";
 const CODEX_KEY_SENTINEL: &str = "codex-api-key-SENTINEL-2001";
 const TIMEOUT_WARNING: &str = "warning: AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS=\"0\" is not a whole number from 1 to 300; using 20";
@@ -167,12 +175,50 @@ impl Codex {
     }
 }
 
-/// Runs `c` to completion or fails the test after [`DEADLINE`], killing it.
+/// A pipe made with `O_CLOEXEC` on both ends, so no process started by
+/// another test inherits it.
+fn cloexec_pipe() -> (OwnedFd, OwnedFd) {
+    let mut fds = [0; 2];
+    // SAFETY: `fds` is a valid two-element array.
+    let rc = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+    assert_eq!(rc, 0, "pipe2: {}", std::io::Error::last_os_error());
+    // SAFETY: both descriptors are new and owned only here.
+    unsafe {
+        (
+            std::os::fd::FromRawFd::from_raw_fd(fds[0]),
+            std::os::fd::FromRawFd::from_raw_fd(fds[1]),
+        )
+    }
+}
+
+/// Runs `c` until it and every process it started have exited, and fails
+/// the test if that has not happened after [`DEADLINE`].
+///
+/// The command gets the write end of a pipe as descriptor 9 without
+/// `FD_CLOEXEC`, so every Codex app server it starts, and anything those
+/// start, holds it too. The read end reaches EOF exactly when the last of
+/// them has exited, reaped or not, so no pid is probed with `kill(pid, 0)`
+/// (which succeeds for a zombie) and nothing is polled. The write end in
+/// this process is closed right after the spawn; only the child's copy
+/// remains.
 fn run(mut c: Command) -> Output {
     c.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    let (witness_r, witness_w) = cloexec_pipe();
+    let w = witness_w.as_raw_fd();
+    // SAFETY: `dup2` is async-signal-safe; it installs the write end as
+    // descriptor 9, which `dup2` leaves without `FD_CLOEXEC`.
+    unsafe {
+        c.pre_exec(move || {
+            if libc::dup2(w, WITNESS_FD) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
     let mut child = c.spawn().expect("start amplihack");
+    drop(witness_w);
     let mut out = child.stdout.take().unwrap();
     let mut err = child.stderr.take().unwrap();
     let o = std::thread::spawn(move || {
@@ -185,18 +231,31 @@ fn run(mut c: Command) -> Output {
         let _ = err.read_to_end(&mut b);
         b
     });
-    let start = Instant::now();
-    let status = loop {
-        if let Some(s) = child.try_wait().unwrap() {
-            break s;
-        }
-        if start.elapsed() > DEADLINE {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("profile usage did not finish within {DEADLINE:?} (a FIFO read?)");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    };
+    // The thread waits for the exit event without reaping (`WNOWAIT`), so
+    // the pid stays this command's and `child` can still kill it below.
+    let pid = child.id() as libc::id_t;
+    let (tx, done) = mpsc::channel();
+    std::thread::spawn(move || {
+        // SAFETY: a zeroed `siginfo_t` is a valid out-parameter.
+        let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+        // SAFETY: waits for this test's own unreaped child; reaps nothing.
+        let rc =
+            unsafe { libc::waitid(libc::P_PID, pid, &mut info, libc::WEXITED | libc::WNOWAIT) };
+        assert_eq!(rc, 0, "waitid: {}", std::io::Error::last_os_error());
+        let mut witness = fs::File::from(witness_r);
+        let mut sink = Vec::new();
+        let _ = witness.read_to_end(&mut sink);
+        let _ = tx.send(());
+    });
+    if done.recv_timeout(DEADLINE).is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!(
+            "profile usage or a process it started was still running after {DEADLINE:?} \
+             (a FIFO read, or a Codex app server left behind)"
+        );
+    }
+    let status = child.wait().expect("reap amplihack");
     Output {
         status,
         stdout: o.join().unwrap(),
@@ -230,22 +289,6 @@ fn field<'a>(rows: &'a [serde_json::Value], key: &str) -> Vec<&'a str> {
     rows.iter()
         .map(|r| r[key].as_str().unwrap_or("-"))
         .collect()
-}
-
-fn alive(pid: i32) -> bool {
-    // SAFETY: signal 0 performs only the permission and existence check.
-    unsafe { libc::kill(pid, 0) == 0 }
-}
-
-fn wait_gone(pid: i32) -> bool {
-    let start = Instant::now();
-    while start.elapsed() < Duration::from_secs(5) {
-        if !alive(pid) {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    false
 }
 
 /// The Codex block of a text run: from its header to the end of stdout.
@@ -476,12 +519,12 @@ fn no_login_file_is_opened_and_no_api_key_reaches_codex() {
 #[test]
 fn no_codex_process_outlives_the_command() {
     let c = Codex::new();
+    // `run` returns only once the command and every process it started,
+    // including `kkim`'s app server and its background `sleep 600`, have
+    // exited (see its witness pipe). The pid files show the fakes ran.
     ok(c.cmd(&["--summary-json"]));
     let pids = c.pids();
-    assert!(pids.len() >= ACCOUNTS.len(), "{pids:?}");
-    for pid in pids {
-        assert!(wait_gone(pid), "codex process {pid} outlived the command");
-    }
+    assert!(pids.len() > ACCOUNTS.len(), "{pids:?}");
 }
 
 #[test]
