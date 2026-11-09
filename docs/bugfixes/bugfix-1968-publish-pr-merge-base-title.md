@@ -60,7 +60,7 @@ On the GitHub path the title comes from the first source that yields text:
 | Order | Source | Prefixed and defused |
 | --- | --- | --- |
 | 1 | The issue title, from `gh issue view` | yes |
-| 2 | The first non-blank line of `RECIPE_VAR_task_description` | yes |
+| 2 | The first non-blank line of `RECIPE_VAR_task_description`, without a leading Markdown heading marker (`# `, `## `) | yes |
 | 3 | The #929 template with the true count | no |
 
 Stderr names the source only (`PR title source: issue|task|template`), never
@@ -95,9 +95,17 @@ the title text. Every title ends with ` (#<issue>)`.
 - **Type prefix.** A leading verb decides (`fix` forms to `fix`; `add`,
   `implement`, `support`, `introduce` to `feat`; `document`, `docs` to `docs`;
   `test`, `tests` to `test`; `refactor` to `refactor`). Otherwise the first
-  whole-word group to match, in the order fix, docs, test, refactor, feat. An
-  existing conventional prefix is kept, but a scope made only of an issue
-  reference is dropped: `fix(#5): x` becomes `fix: x`.
+  whole-word group to match, in the order fix, docs, test, refactor, feat.
+  Only the Conventional Commits types `feat`, `fix`, `docs`, `test`,
+  `refactor`, `chore`, `perf`, `ci`, `build`, `style`, `revert` and `security`
+  count as an existing prefix. Such a prefix is kept, but a scope made only of
+  an issue reference is dropped: `fix(#5): x` becomes `fix: x`. Any other
+  lowercase `word:` prefix is a component, as in many of this repository's
+  issue titles (`release:`, `profile:`, `recipes:`). The type is inferred from
+  the rest of the title and the component becomes its scope:
+  `release: artifacts are built from the wrong SHA` becomes
+  `fix(release): artifacts are built from the wrong SHA`. If no type can be
+  inferred, the title is left as it is.
 - **Issue references.** Every reference in derived text becomes `issue M`:
   `#M`, `(#M)`, `issue #M`, `GH-M`, `owner/repo#M` and issues URLs. No
   `#<digits>` survives, so a closing keyword has nothing to act on however it is
@@ -141,11 +149,23 @@ never executed, and the body Summary shows `` `@someone` ``.
 
 ## Interaction with the PR scope lookup
 
-`scoped_pr_lookup` passes `--expected-pr-title-prefix Update` to
+`scoped_pr_lookup` passes no `--expected-pr-title-prefix` to
 `workflow_pr_scope.sh` unless `EXPECTED_PR_TITLE_PREFIX` or
-`PR_EXPECTED_TITLE_PREFIX` is set. Derived titles usually do not start with
-`Update`. The prefix only breaks ties between open PRs with the same head and
-base, and the lookup then falls back to its primary key, as before.
+`PR_EXPECTED_TITLE_PREFIX` is set, as `workflow_final_status.sh` and
+`workflow_pr_ready.sh` already did. Until this change it passed `Update` by
+default.
+
+`workflow_pr_scope.sh` uses the prefix, with the head sha and the issue token,
+only to break a tie between several PRs, open or closed, that share the head
+and base. If exactly one candidate survives, it is chosen whatever its state;
+only when none survive does the lookup fall back to its primary key and prefer
+the open PR. Because the issue lookup is advisory, one branch can now carry
+both title styles: a run whose lookup failed opens `Update ...`, a later run
+`fix: ...`. With `Update` as the default, a closed `Update ...` PR beside an
+open `fix: ...` PR at the same head left one candidate, the closed PR, and the
+publish failed with `FAILED_CLOSED_UNMERGED`. With no default, both candidates
+survive and the open PR is adopted as `existing-open-pr`. Case 9 below covers
+this.
 
 ## Test matrix
 
@@ -164,11 +184,12 @@ bare origin and a clone; the branch commits N files, then a second clone pushes
 | 3 | Lookup fails, empty, or not JSON; task set | Title from the task; Summary equals the title without suffix; `exited 1` on stderr, not gh's message |
 | 3b | Task line of about 500 bytes | Title at most 200 bytes; Summary equals the capped title |
 | 4 | No issue title, no task, bare decoys set | Template with the true count; decoys ignored |
-| 5 | Helpers sourced through `WORKFLOW_PUBLISH_PR_LIB_ONLY` | Prefix rows, including the verb rule and issue-scope removal; defusal rows for emphasis, code spans, link text, a non-breaking space, nested parentheses, `GH-M`, `owner/repo#M` and URLs; no `#<digits>` before the suffix; mention rows; redaction rows for each pattern and the boundary cases; 8 KiB bound; cap on UTF-8 and trailing full stops; body list at 0, 1, 40, 41 and 45 under `pipefail` |
+| 5 | Helpers sourced through `WORKFLOW_PUBLISH_PR_LIB_ONLY` | Prefix rows, including the verb rule, issue-scope removal and component prefixes (`release: ... wrong ...` gives `fix(release): ...`); task-line rows for Markdown heading markers; defusal rows for emphasis, code spans, link text, a non-breaking space, nested parentheses, `GH-M`, `owner/repo#M` and URLs; no `#<digits>` before the suffix; mention rows; redaction rows for each pattern and the boundary cases; 8 KiB bound; cap on UTF-8 and trailing full stops; body list at 0, 1, 40, 41 and 45 under `pipefail` |
 | 6 | Hostile issue title | Exit 0; no `(#999)`; no closing keyword before `#7` or `#999`; no `#<digits>` before the suffix; no ESC; shell text literal; `` `@someone` `` in the body; no `PWNED` file |
 | 7a | `lookup_issue_title 1968 ""` | No output, status 0, no `gh` call |
 | 7b | Origin rejected by `parse_github_repo_identity` | `FAILED_PR_IDENTITY`; no `issue view` and no `pr create` |
 | 8 | Orphan branch, no merge base with `origin/main` | Exit 0; the no-merge-base warning on stderr; the count is that of the two-dot range |
+| 9 | `pr list` returns a closed `Update ...` PR and an open `fix: ...` PR at the same head, both with the issue token | Exit 0; `existing-open-pr` for the open PR; no `pr create` |
 | Static | Script text | No `git diff --name-only` or `--stat` with a two-dot `${BASE_REF}..HEAD`; exactly one of each from `"$DIFF_RANGE"`, shared by both providers |
 
 Run it with:
@@ -176,6 +197,10 @@ Run it with:
 ```sh
 env -u RECIPE_VAR_task_description bash amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh
 ```
+
+CI runs the same suite in the `Lint & Format` job, in the step
+`Recipes — default workflow reliability contracts (issues #929, #1968)`,
+with `HOME` set to a fresh directory. It takes about 70 seconds.
 
 ## Known risks
 

@@ -1423,7 +1423,8 @@ assert_pr_title_ignores_lockfiles() {
 PUBLISH_1968_ISSUE_TITLE="workflow_publish_pr.sh titles PRs wrongly from a two-dot diff"
 
 install_publish_1968_fake_gh() {
-    # Answers auth, pr list ([]), issue view --json title and pr create. Every
+    # Answers auth, pr list ([], or the file named by PUBLISH_1968_PR_LIST),
+    # issue view --json title and pr create. Every
     # call's argv is appended to PUBLISH_1968_GH_LOG; pr create records its
     # --title and the contents of its --body-file (or --body). The issue view
     # answer is chosen by PUBLISH_1968_ISSUE_MODE. Anything else exits 99.
@@ -1439,7 +1440,7 @@ if [[ "${1:-}" == "auth" ]]; then
 fi
 
 if [[ "${1:-}" == "pr" && "${2:-}" == "list" ]]; then
-    printf '[]\n'
+    if [ -n "${PUBLISH_1968_PR_LIST:-}" ]; then cat -- "${PUBLISH_1968_PR_LIST}"; else printf '[]\n'; fi
     exit 0
 fi
 
@@ -1553,7 +1554,9 @@ run_publish_1968_case() {
         cd "${repo}"
         unset GH_TOKEN GITHUB_TOKEN GH_REPO GH_HOST GH_ENTERPRISE_TOKEN \
             TASK_DESCRIPTION RECIPE_VAR_task_description ISSUE_TITLE \
-            RECIPE_VAR_local_testing_gate RECIPE_VAR_precommit_results
+            RECIPE_VAR_local_testing_gate RECIPE_VAR_precommit_results \
+            WORKFLOW_STARTED_AT RECIPE_STARTED_AT TASK_STARTED_AT \
+            EXPECTED_PR_TITLE_PREFIX PR_EXPECTED_TITLE_PREFIX
         export HOME="${WORK}/home-1968"
         export PATH="${WORK}/publish-1968-bin:${PATH}"
         export PUBLISH_1968_GH_LOG="${prefix}.gh"
@@ -1633,7 +1636,9 @@ assert_publish_1968_helpers() {
 
         # conventional_pr_title: a leading verb decides; otherwise keyword
         # groups in the order fix, docs, test, refactor, feat; whole words
-        # only; existing prefixes kept, an issue-reference scope dropped.
+        # only; Conventional Commits prefixes kept, an issue-reference scope
+        # dropped; any other "word:" prefix is a component, which becomes the
+        # scope of the inferred type, or is left alone if no type is inferred.
         local input want
         while IFS='|' read -r input want; do
             eq "conventional_pr_title '${input}'" "${want}" "$(conventional_pr_title "${input}")"
@@ -1660,6 +1665,12 @@ docs: tidy the index|docs: tidy the index
 fix(#5): x|fix: x
 feat(GH-3)!: y|feat!: y
 fix(publish): keep a real scope|fix(publish): keep a real scope
+chore: bump the lockfile|chore: bump the lockfile
+release: artifacts are built from the wrong SHA|fix(release): artifacts are built from the wrong SHA
+profile: add rotation support|feat(profile): add rotation support
+tests: crashes on start|fix(tests): crashes on start
+rotate: rename the session|rotate: rename the session
+release(#5): wrong artifacts|fix: release(#5): wrong artifacts
 ROWS
 
         # defuse_issue_refs: every issue reference becomes "issue M", however
@@ -1815,6 +1826,18 @@ ROWS
         # first_task_line reads RECIPE_VAR_task_description only.
         export RECIPE_VAR_task_description=$'\n   \nAdd merge-base diff to publish\r\nSecond line'
         eq "first_task_line skips blank lines and strips CR" "Add merge-base diff to publish" "$(first_task_line)"
+        # A Markdown heading marker is not title text; "#9" is not a heading.
+        local task want_line
+        while IFS='|' read -r task want_line; do
+            RECIPE_VAR_task_description="$(printf '%b' "${task}")"
+            eq "first_task_line '${task}'" "${want_line}" "$(first_task_line)"
+        done <<'ROWS'
+# rysweet/amplihack-rs issue 1968: workflow_publish_pr.sh titles PRs\nbody|rysweet/amplihack-rs issue 1968: workflow_publish_pr.sh titles PRs
+\n## Fix the publish step\nbody|Fix the publish step
+#\n###   \n  ## Real title|Real title
+#9 crashes on start|#9 crashes on start
+###no space is not a heading|###no space is not a heading
+ROWS
         unset RECIPE_VAR_task_description
         export TASK_DESCRIPTION="bare alias" ISSUE_TITLE="bare issue title"
         eq "first_task_line ignores bare TASK_DESCRIPTION and ISSUE_TITLE" "" "$(first_task_line)"
@@ -2035,6 +2058,31 @@ assert_pr_title_from_issue_on_moved_base() {
     [ "$(publish_1968_changed_files_section "${WORK}/publish-1968-${tag}.body" | head -n1)" = "${expected} files changed" ] \
         || publish_1968_fail "${tag}" "issue #1968 case 8: Changed files must count the two-dot range (${expected})"
 
+    # Case 9: one head holds a closed PR with the template title (a run whose
+    # issue lookup failed) and an open PR with a derived title. Both carry
+    # the head sha and the issue token, so only a title prefix could split
+    # them. With no default prefix the tie goes to the open PR; a default of
+    # "Update" picked the closed one and failed with FAILED_CLOSED_UNMERGED.
+    tag="mixedtitles"; repo="${WORK}/publish-1968-${tag}"
+    setup_publish_1968_repo "${repo}" 3
+    jq -nc --arg sha "$(git -C "${repo}" rev-parse HEAD)" '
+      def pr($n; $title; $state):
+        {url: "https://github.com/example/repo/pull/\($n)", number: $n, title: $title,
+         body: "Fixes #1968", state: $state, createdAt: "2026-11-08T10:00:00Z",
+         mergedAt: null, headRefName: "feat/issue-1968-title", baseRefName: "main",
+         headRefOid: $sha, headRepositoryOwner: {login: "example"},
+         headRepository: {name: "repo"}, isCrossRepository: false};
+      [pr(10; "Update workflow recipes with 3 changed files (#1968)"; "CLOSED"),
+       pr(11; "fix: workflow_publish_pr.sh titles PRs wrongly from a two-dot diff (#1968)"; "OPEN")]' \
+        > "${WORK}/publish-1968-${tag}.prs"
+    rc=0; PUBLISH_1968_PR_LIST="${WORK}/publish-1968-${tag}.prs" run_publish_1968_case "${repo}" "${tag}" answer "" || rc=$?
+    [ "${rc}" -eq 0 ] || publish_1968_fail "${tag}" "issue #1968 case 9: a closed template-titled PR beside an open derived-title PR must not fail the publish (exit ${rc})"
+    grep -qF '"existing-open-pr"' "${WORK}/publish-1968-${tag}.out" \
+        || publish_1968_fail "${tag}" "issue #1968 case 9: the open PR must be adopted as existing-open-pr"
+    grep -qF 'https://github.com/example/repo/pull/11' "${WORK}/publish-1968-${tag}.out" \
+        || publish_1968_fail "${tag}" "issue #1968 case 9: the adopted PR must be the open one, #11"
+    if grep -q '^pr create' "${WORK}/publish-1968-${tag}.gh"; then publish_1968_fail "${tag}" "issue #1968 case 9: gh pr create ran although an open PR exists"; fi
+
     # Static guard: the changed-file list and diff stat are computed once,
     # from DIFF_RANGE, for both providers. A two-dot literal reintroduced on
     # either path (the AzDO path has no moved-base case above) fails here.
@@ -2046,7 +2094,7 @@ assert_pr_title_from_issue_on_moved_base() {
     [ "$(grep -cE 'git diff --(name-only|stat) "\$DIFF_RANGE"' "${PUBLISH_HELPER}")" -eq 2 ] \
         || fail "issue #1968: expected exactly one --name-only and one --stat computation from \"\$DIFF_RANGE\", shared by both providers"
 
-    echo "  PASS[1968]: merge-base diff, true count, issue/task/template title order, hostile-title defusal, identity guard and no-merge-base fallback"
+    echo "  PASS[1968]: merge-base diff, true count, issue/task/template title order, hostile-title defusal, identity guard, no-merge-base fallback and mixed-title tie"
 }
 
 setup_nomerge_probe_repo() {

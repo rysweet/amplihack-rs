@@ -244,17 +244,24 @@ normalise_pr_title_text() {
     | LC_ALL=C sed -E 's/  +/ /g; s/^ //; s/[. ]+$//'
 }
 
-# conventional_pr_title <text>: prefixes "<type>: ". A leading verb decides
-# the type (fix, add, document, test, refactor and their forms); otherwise the
-# first whole-word keyword group to match, in the order fix, docs, test,
-# refactor, feat. Text that already has a conventional prefix is returned
-# unchanged, except that a scope made only of an issue reference is dropped:
-# "fix(#5): x" becomes "fix: x". Text that matches nothing is returned
-# unchanged. No scope is ever invented.
+# conventional_pr_title <text>: prefixes "<type>: ". Only the Conventional
+# Commits types in pr_title_types count as an existing prefix; such text is
+# returned unchanged, except that a scope made only of an issue reference is
+# dropped: "fix(#5): x" becomes "fix: x". Any other lowercase "word: rest"
+# (a component, as in "release: ..." or "profile: ...") is not a type: the
+# type is inferred from the rest and the word becomes the scope, so
+# "release: built from the wrong SHA" becomes "fix(release): built from the
+# wrong SHA". The scope is the title's own word; none is invented.
+# Inference: a leading verb decides the type (fix, add, document, test,
+# refactor and their forms); otherwise the first whole-word keyword group to
+# match, in the order fix, docs, test, refactor, feat. Text from which no type
+# can be inferred is returned unchanged.
+pr_title_types='feat|fix|docs|test|refactor|chore|perf|ci|build|style|revert|security'
 conventional_pr_title() {
-  local text="$1" lower first rule re
-  local existing_prefix_re='^[a-z]+(\([^)]*\))?!?: '
-  local issue_scope_re='^([a-z]+)\((#[0-9]+|[Gg][Hh]-[0-9]+)\)(!?): (.*)$'
+  local text="$1" scope="" rest lower first rule group re
+  local issue_scope_re="^(${pr_title_types})\((#[0-9]+|[Gg][Hh]-[0-9]+)\)(!?): (.*)\$"
+  local existing_prefix_re="^(${pr_title_types})(\([^)]*\))?!?: "
+  local component_re='^([a-z][a-z0-9_-]*): (.*[^ ].*)$'
   if [[ "$text" =~ $issue_scope_re ]]; then
     printf '%s%s: %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}" "${BASH_REMATCH[4]}"
     return 0
@@ -263,7 +270,12 @@ conventional_pr_title() {
     printf '%s\n' "$text"
     return 0
   fi
-  lower="$(printf '%s' "$text" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+  rest="$text"
+  if [[ "$text" =~ $component_re ]]; then
+    scope="${BASH_REMATCH[1]}"
+    rest="${BASH_REMATCH[2]}"
+  fi
+  lower="$(printf '%s' "$rest" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
   first="${lower%% *}"
   case "$first" in
     fix | fixes | fixed) rule="fix" ;;
@@ -273,24 +285,27 @@ conventional_pr_title() {
     refactor | refactors) rule="refactor" ;;
     *) rule="" ;;
   esac
-  if [ -n "$rule" ]; then
-    printf '%s: %s\n' "$rule" "$text"
-    return 0
+  if [ -z "$rule" ]; then
+    for group in \
+      'fix:fix|fixes|fixed|bug|bugs|regression|broken|wrong|wrongly|incorrect|incorrectly|crash|crashes|fails|failing' \
+      'docs:docs|documentation|document' \
+      'test:test|tests|testing' \
+      'refactor:refactor|refactors|refactoring' \
+      'feat:add|adds|implement|implements|support|introduce|introduces'; do
+      rule="${group%%:*}"
+      # [^[:alnum:]_] rather than \b: bash 3.2 and BSD regex have no \b.
+      re="(^|[^[:alnum:]_])(${group#*:})([^[:alnum:]_]|\$)"
+      [[ "$lower" =~ $re ]] && break
+      rule=""
+    done
   fi
-  for rule in \
-    'fix:fix|fixes|fixed|bug|bugs|regression|broken|wrong|wrongly|incorrect|incorrectly|crash|crashes|fails|failing' \
-    'docs:docs|documentation|document' \
-    'test:test|tests|testing' \
-    'refactor:refactor|refactors|refactoring' \
-    'feat:add|adds|implement|implements|support|introduce|introduces'; do
-    # [^[:alnum:]_] rather than \b: bash 3.2 and BSD regex have no \b.
-    re="(^|[^[:alnum:]_])(${rule#*:})([^[:alnum:]_]|\$)"
-    if [[ "$lower" =~ $re ]]; then
-      printf '%s: %s\n' "${rule%%:*}" "$text"
-      return 0
-    fi
-  done
-  printf '%s\n' "$text"
+  if [ -z "$rule" ]; then
+    printf '%s\n' "$text"
+  elif [ -n "$scope" ]; then
+    printf '%s(%s): %s\n' "$rule" "$scope" "$rest"
+  else
+    printf '%s: %s\n' "$rule" "$text"
+  fi
 }
 
 # defuse_issue_refs <text>: rewrites every issue reference in derived text,
@@ -370,13 +385,17 @@ format_changed_files_body() {
     }'
 }
 
-# First non-blank line of this run's task description. Reads only
-# RECIPE_VAR_task_description: the bare TASK_DESCRIPTION alias may be inherited
-# from another run and is dropped by the runner for large values (#1684).
+# First non-blank line of this run's task description, without a leading
+# Markdown heading marker: "# Title" and "## Title" give "Title", and a line
+# that is only a marker is skipped. "#9 crashes" is not a heading and is kept.
+# Reads only RECIPE_VAR_task_description: the bare TASK_DESCRIPTION alias may
+# be inherited from another run and is dropped by the runner for large values
+# (#1684).
 first_task_line() {
-  local line
+  local line heading_re='^[[:space:]]*#+([[:space:]]+(.*))?$'
   while IFS= read -r line || [ -n "$line" ]; do
     line="${line%$'\r'}"
+    [[ "$line" =~ $heading_re ]] && line="${BASH_REMATCH[2]}"
     case "$line" in
       *[![:space:]]*) printf '%s\n' "$line"; return 0 ;;
     esac
@@ -537,16 +556,21 @@ scoped_pr_lookup() {
   local scope_output reason created_after expected_pr_title_prefix
   [ -x "$PR_SCOPE_HELPER" ] || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "workflow_pr_scope.sh is missing or not executable at $PR_SCOPE_HELPER" 1
   created_after="${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}"
-  expected_pr_title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-Update}}"
+  # No default title prefix (#1968), as in workflow_final_status.sh and
+  # workflow_pr_ready.sh. One branch can now hold PRs with both title styles
+  # ("Update ..." after a failed issue lookup, "fix: ..." otherwise); a default
+  # of "Update" would let a closed template-titled PR win a tie over the open
+  # one and fail the publish with FAILED_CLOSED_UNMERGED.
+  expected_pr_title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-}}"
   scope_args=(
     --repo "$REPO_IDENTITY"
     --head "$CURRENT_BRANCH"
     --base "$BASE_BRANCH"
     --issue "$ISSUE_NUM"
     --work-item "$ISSUE_NUM"
-    --expected-pr-title-prefix "$expected_pr_title_prefix"
     --head-sha "$LOCAL_HEAD"
   )
+  [ -n "$expected_pr_title_prefix" ] && scope_args+=(--expected-pr-title-prefix "$expected_pr_title_prefix")
   [ -n "$created_after" ] && scope_args+=(--created-after "$created_after")
   if scope_output="$("$PR_SCOPE_HELPER" "${scope_args[@]}")"; then
     printf '%s\n' "$scope_output"
