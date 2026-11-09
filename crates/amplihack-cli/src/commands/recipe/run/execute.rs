@@ -619,6 +619,15 @@ pub(super) fn execute_recipe_via_rust(
         // still override the pinned value until the runner refuses that
         // namespace too (rysweet/amplihack-recipe-runner#146).
         let mut command = Command::new(&binary);
+        // Issue #2006: `bounded_env` keeps only `AMPLIHACK_*` variables, so a
+        // pinned `CODEX_HOME` or raw `CLAUDE_CONFIG_DIR` is passed on under
+        // its alias, which each step's `amplihack codex` or `claude` restores.
+        #[cfg(unix)]
+        for (alias, value) in
+            crate::commands::account::launch::recipe_aliases(&|k| std::env::var_os(k))
+        {
+            command.env(alias, value);
+        }
         command
             .arg(recipe_path)
             .arg("--output-format")

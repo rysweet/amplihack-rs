@@ -40,6 +40,10 @@ pub enum Commands {
     /// Manage Claude Code login profiles
     #[command(subcommand)]
     Profile(crate::commands::profile::ProfileCommands),
+    /// Pick the Claude or Codex account with the most headroom (issue #2006)
+    #[cfg(unix)]
+    #[command(subcommand)]
+    Account(crate::commands::account::AccountCommands),
     /// Remove or archive what recipe runs leave behind (issue #1808)
     Cleanup(crate::commands::cleanup::CleanupArgs),
     /// Archive old Claude Code sessions, or restore one

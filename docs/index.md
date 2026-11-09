@@ -162,6 +162,7 @@ amplihack copilot
 - [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
 - [Claude Profiles How-To](howto/claude-profiles.md) - Separate Claude logins per profile, shared sessions, and what a new profile inherits
 - [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`, and resume sessions stopped by a usage limit
+- [Spread Launches Across Accounts](howto/account-pick.md) - Let `amplihack codex`, `amplihack claude` and recipe steps pick the Codex or Claude account with the most headroom after running jobs, pin one, or turn picking off
 - [Bring Agent Sessions Back After a Terminal Loss](howto/supervise-agent-sessions.md) - Register long-lived Claude sessions with `amplihack agent` and let a supervisor service resume them from their saved conversation
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
 - [Keep Tests out of the Real Profile Root](howto/keep-tests-out-of-the-real-profile-root.md) - How tests avoid writing real profiles' `settings.json`, and the guard that fails the run when one changes
@@ -171,6 +172,7 @@ amplihack copilot
 - [Keep Tests Passing Under Host Load](howto/keep-tests-passing-under-host-load.md) - Wait on conditions under one 10-minute ceiling, use the debug-only identity knobs, and prove a fix with all-core CPU load
 - [Wait Without Leaving Orphan Processes](howto/wait-without-orphan-processes.md) - Wait with `amplihack wait --seconds N` or `wait $pid`, use uutils `timeout` safely, and what the tail-follow guard in the `pre-tool-use` hook denies
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
+- [`amplihack account pick` Reference](reference/account-pick.md) - Output, exit codes, ranking, job counting, leases, pins and the `codex-pick` wrapper
 - [Capacity Governor](reference/capacity-governor.md) - How recipe runs and agent launches are admitted, made to wait or refused (exit 80) from session and weekly budgets, and `amplihack governor status`
 - [`amplihack sessions` Reference](reference/sessions-command.md) - Archive old Claude Code session logs out of `~/.claude/projects`, restore one, and the rotator's daily run
 - [`amplihack agent` Reference](reference/agent-command.md) - Register flags, `amplihack claude --supervise`, the supervisor pass, result texts, status formats, the registry and the systemd unit

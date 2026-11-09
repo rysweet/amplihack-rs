@@ -293,6 +293,18 @@ mod issue_1973_wait_helpers;
 mod issue_1979_crusty_minor_followups;
 #[path = "issue_1985_codex_agent_step_flags.rs"]
 mod issue_1985_codex_agent_step_flags;
+#[path = "issue_2001_codex_usage.rs"]
+mod issue_2001_codex_usage;
+#[path = "issue_2006_account_pick_claude.rs"]
+mod issue_2006_account_pick_claude;
+#[path = "issue_2006_account_pick_cli.rs"]
+mod issue_2006_account_pick_cli;
+#[path = "issue_2006_account_pick_launch.rs"]
+mod issue_2006_account_pick_launch;
+#[path = "issue_2006_codex_pick_wrapper.rs"]
+mod issue_2006_codex_pick_wrapper;
+#[path = "issue_2006_account_pick/fixture.rs"]
+mod issue_2006_fixture;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
 #[path = "issue_439_no_per_step_timeout.rs"]

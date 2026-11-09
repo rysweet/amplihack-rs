@@ -567,6 +567,12 @@ fn args_should_skip(args: &[OsString]) -> bool {
     if matches!(positionals.as_slice(), ["profile", "statusline", ..]) {
         return true;
     }
+    // `account pick` (issue #2006) prints one home that callers capture, as
+    // in `CODEX_HOME=$(codex-pick)`; an install banner on stdout would
+    // become the home, so it never triggers auto-install.
+    if matches!(positionals.as_slice(), ["account", "pick", ..]) {
+        return true;
+    }
 
     // First non-flag positional is the subcommand candidate.
     for arg in args.iter().skip(1) {
@@ -1225,6 +1231,24 @@ steps:
                 "--owner",
                 "work",
             ]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+        assert_eq!(calls.get(), 0);
+        assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+    }
+
+    #[test]
+    fn account_pick_skips_startup_self_heal() {
+        // Issue #2006: callers capture the printed home, so stdout must hold
+        // nothing else.
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "account", "pick", "--cli", "codex"]),
             &mut buf,
             counting_installer(&calls, crate::VERSION),
         )

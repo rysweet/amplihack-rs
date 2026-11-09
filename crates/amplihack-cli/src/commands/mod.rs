@@ -1,5 +1,7 @@
 //! Command dispatch for all CLI subcommands.
 
+#[cfg(unix)]
+pub mod account;
 pub mod agent;
 pub mod agent_binary;
 pub mod append;
@@ -124,6 +126,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
         Commands::Uninstall => install::run_uninstall(),
         Commands::Profile(cmd) => profile::run_profile(cmd),
         #[cfg(unix)]
+        Commands::Account(cmd) => account::run(cmd),
+        #[cfg(unix)]
         Commands::Sessions(cmd) => sessions::run_sessions(cmd),
         Commands::Usage(cmd) => usage::run(cmd),
         Commands::Cleanup(args) => cleanup::run(args),
@@ -173,7 +177,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     None,
                 );
             }
-            launch::run_launch_profiled(
+            let result = launch::run_launch_profiled(
                 "claude",
                 "launch",
                 docker,
@@ -191,7 +195,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 OverrideOrigin::User,
                 Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
                 claude_config_dir,
-            )
+            );
+            // Issue #2006: the picked profile's lease ends with the launch.
+            #[cfg(unix)]
+            account::launch::release();
+            result
         }
         Commands::Claude {
             no_reflection,
@@ -242,7 +250,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     );
                 }
                 // Always inject --dangerously-skip-permissions to match Python launcher parity.
-                launch::run_launch_profiled(
+                let result = launch::run_launch_profiled(
                     "claude",
                     "claude",
                     docker,
@@ -260,7 +268,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     OverrideOrigin::User,
                     Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
                     claude_config_dir,
-                )
+                );
+                // Issue #2006: the picked profile's lease ends with the launch.
+                #[cfg(unix)]
+                account::launch::release();
+                result
             };
             match supervise {
                 Some(name) => agent::run_wrapped(
@@ -380,23 +392,22 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     prompt_file,
                 );
             }
-            launch::run_launch(
-                "codex",
-                "codex",
+            // Issue #2006: a pinned home passes through; otherwise an account
+            // is picked and its lease is held until Codex exits.
+            #[cfg(unix)]
+            let (codex_home, _lease) = account::launch::codex_home_for_launch(docker, auto);
+            #[cfg(not(unix))]
+            let codex_home: Option<std::path::PathBuf> = None;
+            launch::run_launch_codex(
                 docker,
-                false,
-                false,
-                true,
-                false,
                 no_reflection,
                 subprocess_safe,
-                None,
                 args,
                 // Issue #1276: not the rustyclawd path — nothing has set an override
                 // on amplihack's behalf, so any override in the environment is the
                 // user's instruction.
                 OverrideOrigin::User,
-                None,
+                codex_home,
             )
         }
         Commands::Amplifier {

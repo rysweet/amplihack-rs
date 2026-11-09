@@ -211,6 +211,38 @@ pub fn run_launch_profiled(
         override_origin,
         proxy_target,
         claude_config_dir,
+        None,
+        amplihack_utils::root_sandbox::detect,
+    )
+}
+
+/// `amplihack codex` (issue #2006): [`run_launch`] for Codex with the home
+/// the launch runs on, exported to Codex as `CODEX_HOME` and to nested
+/// launches as `AMPLIHACK_CODEX_HOME`. `None` leaves both as they are.
+pub fn run_launch_codex(
+    docker: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    extra_args: Vec<String>,
+    override_origin: OverrideOrigin,
+    codex_home: Option<PathBuf>,
+) -> Result<()> {
+    run_launch_core(
+        "codex",
+        "codex",
+        docker,
+        false,
+        false,
+        true,
+        false,
+        no_reflection,
+        subprocess_safe,
+        None,
+        extra_args,
+        override_origin,
+        None,
+        None,
+        codex_home,
         amplihack_utils::root_sandbox::detect,
     )
 }
@@ -250,6 +282,7 @@ pub(crate) fn run_launch_with(
         override_origin,
         proxy_target,
         None,
+        None,
         root_sandbox_decision,
     )
 }
@@ -270,6 +303,7 @@ fn run_launch_core(
     override_origin: OverrideOrigin,
     proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
     claude_config_dir: Option<PathBuf>,
+    codex_home: Option<PathBuf>,
     root_sandbox_decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
@@ -364,7 +398,7 @@ fn run_launch_core(
                 .map(|p| &p.binary)
                 .or(codex_binary.as_ref())
                 .context("resolved Codex executable missing")?;
-            bootstrap::prepare_codex_launcher(&selected.path)?;
+            bootstrap::prepare_codex_launcher(&selected.path, codex_home.as_deref())?;
         } else {
             bootstrap::prepare_launcher(tool)?;
         }
@@ -500,6 +534,16 @@ fn run_launch_core(
         )?;
         // Issue #1569: only the supervising amplihack sees this marker.
         cmd.env_remove(crate::commands::profile::AUTO_SWITCH_SUPERVISED_ENV);
+        // Issue #2006: the home Codex runs on, and the same value for nested
+        // launches, whose environment the recipe runner filters to
+        // `AMPLIHACK_*` variables. Child-only; amplihack's own environment
+        // is never changed.
+        if tool == "codex"
+            && let Some(home) = codex_home.as_deref()
+        {
+            cmd.env("CODEX_HOME", home)
+                .env("AMPLIHACK_CODEX_HOME", home);
+        }
 
         // Spawn child in its own process group.
         //

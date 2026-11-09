@@ -27,6 +27,8 @@ mod limit_wait;
 mod login_check;
 mod name;
 mod overflow;
+#[cfg(unix)]
+pub(crate) mod pick_bridge;
 mod pointer;
 mod probe_limits;
 mod root_cmd;
@@ -41,6 +43,7 @@ mod shared_dirs;
 mod store;
 mod supervise_gate;
 mod usage_cmd;
+mod usage_codex;
 #[cfg(unix)]
 mod usage_direct;
 mod usage_history;
@@ -99,6 +102,8 @@ mod tests_shared_dirs;
 mod tests_store;
 #[cfg(test)]
 mod tests_usage_cmd;
+#[cfg(test)]
+mod tests_usage_codex;
 #[cfg(all(test, unix))]
 mod tests_usage_direct;
 #[cfg(all(test, unix))]
@@ -436,7 +441,8 @@ pub enum ProfileCommands {
         args: Vec<String>,
     },
     /// Show each profile's weekly and session usage as a bar view, in the
-    /// order the rotator ranks headroom
+    /// order the rotator ranks headroom, then each Codex account's live
+    /// rate limits
     ///
     /// Rate: the capacity summary's rate covers the last 6 h. It starts at
     /// the oldest history entry in that window written by `profile usage`
@@ -449,9 +455,9 @@ pub enum ProfileCommands {
     /// smaller fall adds nothing and the rate is never negative. Each
     /// login's use is weighted by its capacity weight.
     Usage {
-        /// Profiles to probe (default: all)
+        /// Profiles to probe (default: all, and the Codex accounts)
         names: Vec<String>,
-        /// Print a JSON array instead of the bar view
+        /// Print the profile rows as one JSON array (Claude only; the Codex rows are in --summary-json)
         #[arg(long)]
         json: bool,
         /// Print the previous 7-column table instead of the bar view
@@ -460,7 +466,8 @@ pub enum ProfileCommands {
         /// Show reset times in UTC instead of local time (bar view only)
         #[arg(long, conflicts_with_all = ["json", "table", "summary_json"])]
         utc: bool,
-        /// Print one JSON object: the --json rows and the capacity summary.
+        /// Print one JSON object: the --json Claude rows, the capacity summary
+        /// and the Codex rows.
         /// Its rate covers the last 6 h, starts at the oldest entry in that
         /// window from `profile usage` or from a rotator cycle holding every
         /// login read now, needs that entry to be at least 4.5 h old, and is
@@ -887,7 +894,17 @@ pub(crate) fn resume_profile_dir(
 pub fn launch_profile_dir(flag: Option<&str>, docker: bool, auto: bool) -> Result<Option<PathBuf>> {
     let docker_env = !docker && docker_env_active();
     let inherited = std::env::var_os(PROFILE_ENV);
-    launch_profile_dir_with(
+    let pick = || {
+        #[cfg(unix)]
+        {
+            crate::commands::account::launch::claude_pick()
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
+    };
+    launch_profile_dir_picking(
         flag,
         inherited.as_deref(),
         docker,
@@ -895,13 +912,13 @@ pub fn launch_profile_dir(flag: Option<&str>, docker: bool, auto: bool) -> Resul
         auto,
         usage_cmd::home_dir().as_deref(),
         ProfileStore::from_env,
+        pick,
     )
     .map_err(with_hint)
 }
 
-/// `launch_profile_dir` with the environment passed in, so tests do not depend
-/// on the caller's environment. `open_store` is only called when a profile may
-/// be applied. `home` is `$HOME`, for finding the rotator's live profile.
+/// [`launch_profile_dir_picking`] with no account pick.
+#[cfg(test)]
 fn launch_profile_dir_with(
     flag: Option<&str>,
     inherited: Option<&OsStr>,
@@ -910,6 +927,38 @@ fn launch_profile_dir_with(
     auto: bool,
     home: Option<&std::path::Path>,
     open_store: impl FnOnce() -> Result<ProfileStore, ProfileError>,
+) -> Result<Option<PathBuf>, ProfileError> {
+    launch_profile_dir_picking(
+        flag,
+        inherited,
+        docker,
+        docker_env,
+        auto,
+        home,
+        open_store,
+        || None,
+    )
+}
+
+/// `launch_profile_dir` with the environment passed in, so tests do not depend
+/// on the caller's environment. `open_store` is only called when a profile may
+/// be applied. `home` is `$HOME`, for finding the rotator's live profile.
+///
+/// Issue #2006: `pick` is called only when nothing else resolved a profile
+/// (no flag, inherited value or pointer), outside Docker and `--auto`. The
+/// name it returns goes through the same resolution and guards as a
+/// `--profile` flag; if those refuse it, the launch warns and runs with no
+/// profile, so the picker never blocks a launch.
+#[allow(clippy::too_many_arguments)]
+fn launch_profile_dir_picking(
+    flag: Option<&str>,
+    inherited: Option<&OsStr>,
+    docker: bool,
+    docker_env: bool,
+    auto: bool,
+    home: Option<&std::path::Path>,
+    open_store: impl FnOnce() -> Result<ProfileStore, ProfileError>,
+    pick: impl FnOnce() -> Option<String>,
 ) -> Result<Option<PathBuf>, ProfileError> {
     validate_launch_flags(flag, docker, docker_env, auto)?;
     // An explicit flag never reads the inherited value.
@@ -940,15 +989,59 @@ fn launch_profile_dir_with(
         return Ok(None);
     }
     let Some((name, dir)) = resolved else {
-        return Ok(None);
+        if docker_env {
+            return Ok(None);
+        }
+        let Some(picked) = pick() else {
+            return Ok(None);
+        };
+        return match apply_picked(&store, &picked, home) {
+            Ok(Some(dir)) => Ok(Some(dir)),
+            Ok(None) => {
+                #[cfg(unix)]
+                crate::commands::account::launch::release();
+                Ok(None)
+            }
+            Err(e) => {
+                #[cfg(unix)]
+                crate::commands::account::launch::claude_pick_refused(&e);
+                #[cfg(not(unix))]
+                let _ = e;
+                Ok(None)
+            }
+        };
     };
+    apply_resolved(&store, flag, inherited, home, name, dir)
+}
+
+/// A picked profile name, resolved and guarded as a `--profile` flag is.
+fn apply_picked(
+    store: &ProfileStore,
+    picked: &str,
+    home: Option<&std::path::Path>,
+) -> Result<Option<PathBuf>, ProfileError> {
+    match resolve_launch_profile(store, Some(picked), None)? {
+        Some((name, dir)) => apply_resolved(store, Some(picked), None, home, name, dir),
+        None => Ok(None),
+    }
+}
+
+/// The checks every resolved launch profile passes before it is used.
+fn apply_resolved(
+    store: &ProfileStore,
+    flag: Option<&str>,
+    inherited: Option<&str>,
+    home: Option<&std::path::Path>,
+    name: ProfileName,
+    dir: PathBuf,
+) -> Result<Option<PathBuf>, ProfileError> {
     // The rotator's live profile has its login in `~/.claude`, not in its
     // directory: launch with no profile, as Claude then uses `~/.claude`.
     // Only a directory without its own login can be live, so one lstat
     // skips reading the ledgers and every profile's `.claude.json` on the
     // usual launch.
-    if default_live::could_be_live(&store, &name) {
-        let (live, warning) = default_live::detect(&store, home);
+    if default_live::could_be_live(store, &name) {
+        let (live, warning) = default_live::detect(store, home);
         if let Some(w) = warning {
             eprintln!("{w}");
         }
@@ -960,17 +1053,17 @@ fn launch_profile_dir_with(
     // Auto-switch (#1569): only an inherited profile is ever redirected or
     // allowed to join a hosted session; a flag or the pointer never is.
     let is_inherited = flag.is_none() && inherited.is_some();
-    if is_inherited && let Some(c) = auto_switch::substitute_nested(&store, &name) {
+    if is_inherited && let Some(c) = auto_switch::substitute_nested(store, &name) {
         let dir = store.resolve(&c)?;
-        auto_switch::guard(&store, &c, auto_switch::Action::Launch { join: false })?;
+        auto_switch::guard(store, &c, auto_switch::Action::Launch { join: false })?;
         return Ok(Some(dir));
     }
     // Issue #1700: a subscription profile with no login of its own would
     // run on the Claude Platform API key.
     #[cfg(unix)]
-    kind_guard(&store, &name, home, false)?;
+    kind_guard(store, &name, home, false)?;
     let join = is_inherited && auto_switch::inside_session(&dir);
     LAUNCH_MAY_JOIN.store(is_inherited, std::sync::atomic::Ordering::Relaxed);
-    auto_switch::guard(&store, &name, auto_switch::Action::Launch { join })?;
+    auto_switch::guard(store, &name, auto_switch::Action::Launch { join })?;
     Ok(Some(dir))
 }
