@@ -17,9 +17,10 @@
 
 #![allow(dead_code)]
 
-use crate::isolated_amplihack::isolated;
+use crate::isolated_amplihack::{PROC_ROOT_ENV, isolated};
 use crate::support::amplihack_bin::amplihack_bin;
 use crate::support::exec_stub::write_executable;
+use crate::support::fake_proc::FakeProc;
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -109,6 +110,11 @@ pub struct Fx {
     pub records: PathBuf,
     pub recipe: PathBuf,
     children: Vec<Child>,
+    /// The process table every `amplihack` child reads (issue #2042). It
+    /// lies inside `tmp`, the children's `TMPDIR`, because the seam accepts
+    /// only a tree inside the child's temp dir. It holds only the processes
+    /// [`Fx::live_process`] starts, so `cleanup` never scans the host.
+    pub proc: FakeProc,
     /// Files whose `flock` the test holds; see [`Fx::hold_flock`].
     held_locks: Vec<fs::File>,
 }
@@ -148,6 +154,8 @@ impl Fx {
     pub fn new() -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
+        mkdir_0700(&root.join("tmp"));
+        let proc = FakeProc::new_in(root.join("tmp"));
         let fx = Self {
             // Inside TMPDIR: the test home guard only accepts a HOME under
             // the child's temp dir.
@@ -164,6 +172,7 @@ impl Fx {
             _tmp: tmp,
             children: Vec::new(),
             held_locks: Vec::new(),
+            proc,
         };
         for d in [&fx.tmp, &fx.home, &fx.work, &fx.bin, &fx.gh, &fx.records] {
             mkdir_0700(d);
@@ -236,6 +245,7 @@ impl Fx {
         c.current_dir(&self.root)
             .env("HOME", &self.home)
             .env("TMPDIR", &self.tmp)
+            .env(PROC_ROOT_ENV, self.proc.path())
             .env("PATH", &self.bin)
             .env("FAKE_GH_DIR", &self.gh)
             .env("RECORD_DIR", &self.records)
@@ -456,6 +466,7 @@ impl Fx {
             .spawn()
             .unwrap();
         let pid = child.id();
+        self.proc.link_own(pid);
         self.children.push(child);
         pid
     }

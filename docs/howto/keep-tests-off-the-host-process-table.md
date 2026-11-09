@@ -17,8 +17,8 @@ scanned the real host's process table. On a busy host that meant hundreds of
 test children each reading every other process's `cmdline` and `environ`, and
 a test result that depended on whatever else was running.
 
-Now every `amplihack profile` command a test starts reads a fake process table
-that the test owns. This guide shows how to write such a test, how to add fake
+Now every `amplihack profile`, `sessions` and `cleanup` command a test starts
+reads a fake process table that the test owns. This guide shows how to write such a test, how to add fake
 processes, and what the guard test checks. It is for contributors who write
 tests in `crates/amplihack-cli/tests/`.
 
@@ -30,6 +30,7 @@ tests in `crates/amplihack-cli/tests/`.
 - [Add fake processes with `FakeProc`](#add-fake-processes-with-fakeproc)
 - [Show a process the test started](#show-a-process-the-test-started)
 - [What the guard test checks](#what-the-guard-test-checks)
+- [The strace check](#the-strace-check)
 - [What still reads the real `/proc`](#what-still-reads-the-real-proc)
 - [Troubleshooting](#troubleshooting)
 
@@ -322,8 +323,9 @@ A pid can only be linked after the test learns it, so a race between two
 `rotate start`s with no rotator yet cannot be shown through the binary: the
 second `start` checks the tree before the test can link the first daemon.
 `tests_autostart::sixteen_concurrent_launches_start_exactly_one_rotator`
-covers that race in a unit test; the integration test checks two concurrent
-starts beside a running, linked rotator.
+covers that race in a unit test. The integration test
+`issue_1592_daemon::starts_beside_a_running_rotator_refuse` checks only that
+two concurrent starts beside a running, linked rotator both refuse.
 
 ## What the guard test checks
 
@@ -333,8 +335,8 @@ has seven tests; the scanner itself is `tests/support/proc_root_scan.rs`:
 | Test | Checks |
 |------|--------|
 | 1 | `isolated(..)` sets `AMPLIHACK_TEST_PROC_ROOT` to a path that is not `/proc`, lies under the temp dir, is a 0700 directory owned by the effective user, and holds only `self/environ`. |
-| 2 | `procfs/root.rs` reads the variable under the name `AMPLIHACK_TEST_PROC_ROOT`, and its doc comment names the exceptions (`/proc/loadavg`, `util.rs`, `rotator_down`, `running_on_host`). No other file under `src/` names the variable, apart from the resolver's unit tests. |
-| 3 | The routed production files in the table above contain no hard-coded `"/proc"`. `util.rs` is not checked; see [the exceptions](#what-still-reads-the-real-proc). |
+| 2 | `procfs/root.rs` reads the variable under the name `AMPLIHACK_TEST_PROC_ROOT`, and its doc comment names the exceptions (`/proc/loadavg`, `/proc/self`, `util.rs`, `rotator_down`, `running_on_host`, `recipe/process_tree.rs`). No other file under `src/` names the variable, apart from the resolver's unit tests. |
+| 3 | No non-test file under `src/commands/profile/` or `src/commands/sessions/`, and not `src/commands/cleanup/procs.rs`, has a string literal that starts with `/proc` (`"/proc"`, `"/proc/{pid}/cmdline"` inside `format!`, and so on), apart from `"/proc/self/..."` and `"/proc/loadavg"`. Files whose name starts with `tests` are unit tests and are skipped. Each routed file must call `proc_root()`. A sample test pins what the matcher flags. `util.rs` is not checked; see [the exceptions](#what-still-reads-the-real-proc). |
 | 4 | Scans every `crates/amplihack-cli/tests/**/*.rs`, including `support/`, with the rules below and prints each finding as `file:line rule`. |
 | 5 | Runs the same scanner over in-memory samples: each bad sample gives exactly its own rule, and the good sample gives none. |
 | 6 | The scanner recognises each form of function declaration listed below, and nothing else. |
@@ -376,6 +378,27 @@ and another with the empty tree. It asserts only on output and exit status.
 and checks that a refused tree gives the stderr line above and an accepted
 one does not.
 
+## The strace check
+
+The guard above reads source text, so it misses a path built some other way.
+`crates/amplihack-cli/tests/issue_2042_host_proc_strace.rs` checks what the
+kernel sees instead. It runs real fixture commands (`profile auto-switch
+status`, `profile rotate status`, `profile switch`, `profile rotate
+--dry-run`, `sessions archive` and `cleanup`) under `strace -f -e
+trace=%file`, and fails when any traced process opens `/proc` itself or names
+`/proc/<pid>/...` for a pid outside the traced tree. Each test also checks
+that the command read its fake tree, so an empty trace cannot pass.
+
+Without `strace` the tests print a skip line and pass. CI installs `strace`
+and sets `AMPLIHACK_TEST_REQUIRE_STRACE=1`, so there a missing `strace` fails
+the run. To run it locally:
+
+```bash
+AMPLIHACK_TEST_REQUIRE_STRACE=1 cargo test -p amplihack-cli --test cli_integration issue_2042_host_proc_strace
+```
+
+When you route a new command through `proc_root()`, add it to this file.
+
 ## What still reads the real `/proc`
 
 | Reader | Why it stays |
@@ -385,10 +408,16 @@ one does not.
 | `proc_children` and `proc_stat_ppid` in `crates/amplihack-cli/src/util.rs` | They find the binary's own descendants to send `SIGTERM` and `SIGKILL` after a timeout. With a fake root, real descendants would be left running and fake pids would be signalled on the host. |
 | `amplihack-utils::rotator_down` | Outside the CLI crate; unchanged. |
 | `amplihack-utils::running_on_host`, called by `rotate stop` just before it signals | The pid it confirms is signalled, so a fake tree must not choose it. Discovery and `rotate status` still read the fake tree. |
-| Governor, cleanup, recipe and launch scans | Not reached by `profile` tests. If one is, that call site alone moves to `proc_root()`. |
+| `recipe/process_tree.rs`, used by `recipe stop` and `recipe run`'s teardown | Every pid it finds may be signalled, so a fake tree must not choose one. Tests of `recipe stop` (`issue_1606_detach`) therefore still read the `environ` of this user's processes on the host. #2175 tracks finding a run's processes without that scan. |
+| A recorded run's `/proc/<pid>/stat` in `cleanup/run_dir.rs` and `eligibility.rs` | One named pid's start time, not a scan and not its `cmdline` or `environ`. |
+| Governor and launch scans | Not reached by these tests. If one is, that call site alone moves to `proc_root()`. |
 
 Agent code is not in this table: `agent/pass.rs`, `register.rs` and
 `wrapper.rs` already read through `proc_root()`, routed for #1760.
+`amplihack cleanup`'s scan of working folders, open files and `TMPDIR`
+values (`cleanup/procs.rs`) reads through `proc_root()` too. It signals
+nothing; the `issue_1808_run_cleanup` fixture writes its fake tree inside the
+child's `TMPDIR` and links each process `live_process` starts.
 
 ## Troubleshooting
 

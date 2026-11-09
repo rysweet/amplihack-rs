@@ -13,7 +13,7 @@
 #[path = "issue_1808_run_cleanup/command.rs"]
 mod command;
 #[path = "issue_1808_run_cleanup/fixture.rs"]
-mod fixture;
+pub(crate) mod fixture;
 #[path = "issue_1808_run_cleanup/logs.rs"]
 mod logs;
 #[path = "issue_1808_run_cleanup/runner.rs"]

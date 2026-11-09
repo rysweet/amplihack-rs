@@ -339,7 +339,7 @@ fn stop_and_status_without_a_state_directory() {
 /// `tests_autostart::sixteen_concurrent_launches_start_exactly_one_rotator`
 /// covers that race with a spawner that records its process under the lock.
 #[test]
-fn two_starts_at_once_leave_one_rotator() {
+fn starts_beside_a_running_rotator_refuse() {
     let f = Fixture::new();
     f.usage("work", 10, 10);
     let (_reaper, pid) = start(&f, &[]);

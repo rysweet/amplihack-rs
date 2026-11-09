@@ -8,8 +8,11 @@
 //! write, so whoever can meet those conditions already acts as this user.
 //!
 //! Some readers stay on the real `/proc` on purpose: `/proc/loadavg`, the
-//! process-tree kill in `util.rs`, `rotator_down`, and `running_on_host`,
-//! the check `rotate stop` makes just before it signals (see the guide).
+//! process's own `/proc/self/*`, the process-tree kill in `util.rs`,
+//! `rotator_down`, `running_on_host` (the check `rotate stop` makes just
+//! before it signals), and `recipe/process_tree.rs`, which `recipe stop` and
+//! `recipe run`'s teardown use to find the processes they then signal (see
+//! the guide). A fake tree must never choose a pid that is signalled.
 //!
 //! A refused variable falls back to `/proc`. Debug builds, which every test
 //! runs, print one stderr line naming the reason, so a child that reads the

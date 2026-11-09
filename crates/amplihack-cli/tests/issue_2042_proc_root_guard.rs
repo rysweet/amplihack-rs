@@ -97,9 +97,11 @@ fn procfs_reads_the_variable_by_this_name_and_names_its_exceptions() {
     );
     for exception in [
         "/proc/loadavg",
+        "/proc/self",
         "util.rs",
         "rotator_down",
         "running_on_host",
+        "recipe/process_tree.rs",
     ] {
         assert!(
             src.contains(exception),
@@ -122,7 +124,8 @@ fn procfs_reads_the_variable_by_this_name_and_names_its_exceptions() {
     assert_eq!(naming, expected);
 }
 
-const ROUTED: [&str; 9] = [
+/// Files that read the process table and must do it through `proc_root()`.
+const ROUTED: [&str; 10] = [
     "src/commands/profile/auto_switch/liveness.rs",
     "src/commands/profile/rotate/control.rs",
     "src/commands/profile/rotate/owner.rs",
@@ -132,23 +135,106 @@ const ROUTED: [&str; 9] = [
     "src/commands/profile/rotate/ledger.rs",
     "src/commands/profile/rotate/mod.rs",
     "src/commands/sessions/live.rs",
+    "src/commands/cleanup/procs.rs",
 ];
+
+/// Trees in which no non-test file may name a `/proc` path, apart from
+/// [`HOST_PROC_ALLOWED`]. A whole directory, not a file list, so a reader
+/// added in a new file is caught too.
+const GUARDED_TREES: [&str; 2] = ["src/commands/profile", "src/commands/sessions"];
+
+/// `/proc` paths that may stay on the host table, each documented in
+/// `procfs/root.rs`: the process's own entries and the load average.
+const HOST_PROC_ALLOWED: [&str; 2] = ["\"/proc/self/", "\"/proc/loadavg\""];
+
+/// Every line of `src` that starts a string literal with `/proc` (for
+/// example `"/proc"`, `"/proc/{pid}/cmdline"` inside `format!`) and is not a
+/// comment or an allowed host path.
+fn host_proc_literals(src: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    for (i, line) in src.lines().enumerate() {
+        let code = line.trim_start();
+        if code.starts_with("//") {
+            continue;
+        }
+        let mut rest = line;
+        while let Some(at) = rest.find("\"/proc") {
+            let tail = &rest[at..];
+            let next = tail.as_bytes().get(6).copied();
+            let is_proc_path = matches!(next, Some(b'"') | Some(b'/'));
+            if is_proc_path && !HOST_PROC_ALLOWED.iter().any(|ok| tail.starts_with(ok)) {
+                found.push((i + 1, line.trim().to_string()));
+                break;
+            }
+            rest = &tail[1..];
+        }
+    }
+    found
+}
+
+fn is_unit_test_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|n| n.starts_with("tests"))
+}
 
 #[test]
 fn routed_files_read_through_the_seam() {
     let mut bad = Vec::new();
+    let mut files: Vec<PathBuf> = ROUTED.iter().map(|f| manifest().join(f)).collect();
+    for tree in GUARDED_TREES {
+        rust_files(&manifest().join(tree), &mut files);
+    }
+    files.sort();
+    files.dedup();
+    for path in files.iter().filter(|p| !is_unit_test_file(p)) {
+        let src = std::fs::read_to_string(path).unwrap();
+        let rel = path.strip_prefix(manifest()).unwrap().display().to_string();
+        for (line, text) in host_proc_literals(&src) {
+            bad.push(format!("{rel}:{line}: {text}"));
+        }
+    }
     for file in ROUTED {
         let src = std::fs::read_to_string(manifest().join(file)).unwrap();
-        for (i, line) in src.lines().enumerate() {
-            if !line.trim_start().starts_with("//") && line.contains("\"/proc\"") {
-                bad.push(format!("{file}:{}: {}", i + 1, line.trim()));
-            }
-        }
         if !src.contains("proc_root()") {
             bad.push(format!("{file}: never calls proc_root()"));
         }
     }
-    assert!(bad.is_empty(), "hard-coded /proc:\n{}", bad.join("\n"));
+    assert!(
+        bad.is_empty(),
+        "host /proc paths outside procfs::proc_root() (see \
+         docs/howto/keep-tests-off-the-host-process-table.md):\n{}",
+        bad.join("\n")
+    );
+}
+
+#[test]
+fn the_host_proc_matcher_catches_every_spelling_of_a_proc_path() {
+    let bad = [
+        "let d = fs::read_dir(\"/proc\");",
+        "let p = format!(\"/proc/{pid}/cmdline\");",
+        "let e = format!(\"/proc/{}/environ\", pid);",
+        "let r = PathBuf::from(\"/proc/\");",
+        "x(\"/proc/self\".to_string(), \"/proc/1/stat\")",
+    ];
+    for sample in bad {
+        assert_eq!(host_proc_literals(sample).len(), 1, "missed: {sample}");
+    }
+    let good = [
+        "// fs::read_dir(\"/proc\")",
+        "let f = File::open(\"/proc/loadavg\");",
+        "let f = File::open(\"/proc/self/fd/0\");",
+        "let r = proc_root().join(pid.to_string());",
+        "let s = \"/process\";",
+    ];
+    for sample in good {
+        assert!(
+            host_proc_literals(sample).is_empty(),
+            "false finding: {sample}"
+        );
+    }
+    assert!(is_unit_test_file(Path::new("a/tests_live.rs")));
+    assert!(!is_unit_test_file(Path::new("a/live.rs")));
 }
 
 // --- 4 and 5: the test side -------------------------------------------------
