@@ -23,7 +23,7 @@
 mod exec_stub;
 
 use super::parse;
-use super::rpc::group_target;
+use super::rpc::{STOP_RESERVE, group_target, stop_reserve};
 use super::*;
 use serde_json::json;
 use std::ffi::{OsStr, OsString};
@@ -75,8 +75,8 @@ case "$req" in *'"method":"account/rateLimits/read"'*) ;; *) echo "third line: $
 case "$req" in *'"id":2'*) ;; *) echo "request id: $req" >&2; exit 67;; esac
 "#;
 
-/// Keeps the fake alive after it has answered, as a real app server would,
-/// so only the reader's kill ends it.
+/// Keeps the fake alive after it has answered until its stdin ends, as a
+/// real app server does (codex-cli 0.166.0 exits when stdin closes).
 const LINGER: &str = "\nexec cat >/dev/null\n";
 
 const TWO_WINDOWS: &str = r#"{"id":2,"result":{"rateLimits":{"primary":{"usedPercent":12,"windowDurationMins":300,"resetsAt":1794001200},"secondary":{"usedPercent":41,"windowDurationMins":10080,"resetsAt":1794470400},"credits":null,"planType":"plus","rateLimitReachedType":null,"ordinaryUsageAllowed":true}}}"#;
@@ -1204,11 +1204,119 @@ fn a_silent_server_times_out_and_its_whole_group_is_killed() {
         Outcome::Timeout
     );
     let took = start.elapsed();
-    assert!(took >= Duration::from_millis(900), "{took:?}");
+    // The answer is due by the ask deadline: 1 s less the 250 ms stop
+    // reserve. The stop then fits in the reserve.
+    assert!(took >= Duration::from_millis(750), "{took:?}");
     assert!(took < Duration::from_secs(6), "one deadline: {took:?}");
     let (p, g) = (read_pid(&pid), read_pid(&gc));
     assert!(wait_gone(p), "app server {p} outlived the read");
     assert!(wait_gone(g), "its child {g} outlived the read");
+}
+
+#[test]
+fn the_stop_reserve_is_3_seconds_or_a_quarter_of_the_deadline() {
+    assert_eq!(STOP_RESERVE, Duration::from_secs(3));
+    assert_eq!(
+        stop_reserve(Duration::from_secs(20)),
+        Duration::from_secs(3)
+    );
+    assert_eq!(
+        stop_reserve(Duration::from_secs(12)),
+        Duration::from_secs(3)
+    );
+    assert_eq!(stop_reserve(Duration::from_secs(8)), Duration::from_secs(2));
+    assert_eq!(stop_reserve(SECS_1), Duration::from_millis(250));
+}
+
+/// A fake that records a `SIGTERM` in `term` and then exits.
+fn trap_term(term: &Path) -> String {
+    format!("trap 'echo term > \"{}\"; exit 143' TERM\n", term.display())
+}
+
+#[test]
+fn a_server_that_exits_when_stdin_ends_gets_no_signal_after_its_answer() {
+    let d = scratch();
+    let (term, done) = (d.path().join("term"), d.path().join("done"));
+    let mut body = trap_term(&term);
+    body.push_str(HANDSHAKE);
+    body.push_str(&format!(
+        "printf '%s\\n' '{TWO_WINDOWS}'\ncat >/dev/null\necho done > '{}'\n",
+        done.display()
+    ));
+    let bin = script(d.path(), "codex", &body);
+    let r = ok(read(&bin, &account(d.path(), "x"), Duration::from_secs(20)));
+    assert_eq!(r.windows.len(), 2);
+    assert!(done.exists(), "the server did not finish on its own");
+    assert!(
+        !term.exists(),
+        "a server that exits on stdin EOF was signalled"
+    );
+}
+
+#[test]
+fn a_timed_out_server_that_exits_when_stdin_ends_finishes_its_write() {
+    // The renewal case: the server is still working when the answer is
+    // due. Its stdin is closed first, and the work it does before exiting
+    // (here, a write into the account) completes before anything is
+    // signalled.
+    let d = scratch();
+    let acct = account(d.path(), "renewing");
+    let (term, wrote) = (d.path().join("term"), acct.join("auth-written"));
+    let mut body = trap_term(&term);
+    body.push_str(HANDSHAKE);
+    body.push_str(&format!(
+        "cat >/dev/null\necho new-token > '{}'\n",
+        wrote.display()
+    ));
+    let bin = script(d.path(), "codex", &body);
+    assert_eq!(read(&bin, &acct, Duration::from_secs(4)), Outcome::Timeout);
+    assert!(wrote.exists(), "the server's write was cut short");
+    assert!(
+        !term.exists(),
+        "a server that exits on stdin EOF was signalled"
+    );
+}
+
+#[test]
+fn a_server_that_ignores_stdin_end_gets_sigterm_before_sigkill() {
+    let d = scratch();
+    let term = d.path().join("term");
+    let mut body = trap_term(&term);
+    body.push_str(HANDSHAKE);
+    // `sleep` does not read stdin, so its end is not seen.
+    body.push_str("sleep 600\n");
+    let bin = script(d.path(), "codex", &body);
+    assert_eq!(
+        read(&bin, &account(d.path(), "x"), Duration::from_secs(4)),
+        Outcome::Timeout
+    );
+    assert!(
+        term.exists(),
+        "SIGTERM was not sent before the group was killed"
+    );
+}
+
+#[test]
+fn a_server_that_ignores_sigterm_is_killed_by_the_deadline() {
+    let d = scratch();
+    let pid = d.path().join("pid");
+    let mut body = String::from("trap '' TERM\n");
+    body.push_str(HANDSHAKE);
+    body.push_str(&format!("echo $$ > '{}'\nsleep 600\n", pid.display()));
+    let bin = script(d.path(), "codex", &body);
+    let start = Instant::now();
+    assert_eq!(
+        read(&bin, &account(d.path(), "x"), Duration::from_secs(2)),
+        Outcome::Timeout
+    );
+    let took = start.elapsed();
+    assert!(
+        took >= Duration::from_millis(1900),
+        "the stop ended early: {took:?}"
+    );
+    assert!(took < Duration::from_secs(6), "one deadline: {took:?}");
+    let p = read_pid(&pid);
+    assert!(wait_gone(p), "app server {p} outlived the read");
 }
 
 #[test]
