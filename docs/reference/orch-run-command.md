@@ -132,6 +132,7 @@ An empty array is accepted; the engine logs `No workstreams defined in
 | `recipe`          | string          | no       | Per-workstream recipe selected by the upstream workstream generator. `Development` workstreams are deterministically normalized to `default-workflow`; see [Dev-Orchestrator Routing Contract](./dev-orchestrator-routing.md) |
 | `max_runtime`     | integer (secs)  | no       | Per-workstream runtime budget override                                       |
 | `timeout_policy`  | string          | no       | `interrupt-preserve` or `continue-preserve`                                  |
+| `is_critical_code` | string        | no       | Required input for a `consensus-workflow` workstream: exactly `true` or `false`. Must be a JSON string (`"true"`, not `true`); a Boolean or any other type makes the file fail to parse. Copied unchanged into `context.json`; validated by the recipe. See [Consensus Criticality Contract](./consensus-criticality-contract.md#workstreams-field) |
 
 See [`docs/reference/multitask-command.md`](./multitask-command.md) for the
 full multitask schema and engine-level details.

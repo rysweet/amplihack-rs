@@ -100,6 +100,14 @@ with a large task description cannot fail with `Argument list too long`, and
 values containing spaces or quotes are passed unchanged. The recipe name is
 validated before it is quoted into the script.
 
+When a workstream entry has an `is_critical_code` field, its value is written
+to `context.json` byte for byte under the same key. The launcher does not
+trim, case-fold, validate or default it; `consensus-workflow` does the
+validation. The field must be a JSON string: `"is_critical_code": true` makes the whole
+workstreams file fail to parse, and no workstream starts. An entry without
+the field writes no `is_critical_code` key. See
+the [Consensus Criticality Contract](./consensus-criticality-contract.md#workstreams-field).
+
 ## Related
 
 - [recipe Command](./recipe-command.md) — Recipes executed by multitask in recipe mode
