@@ -246,6 +246,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_TEST_NONEXISTENT_456` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_789` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_GET_ERR` | test-only |  | `EnvVar` unit test name. |
+| `AMPLIHACK_TEST_ROTATOR_LIFETIME_FD` | test-only |  | Set only by the `profile_rotate` test fixture to the fd number of the read end of a pipe whose write end the test process holds. A rotator watcher reads it only when `AMPLIHACK_TEST_HOME_GUARD` is `1`, the value, read without trimming, is an integer of at least 3, and the fd is an inherited FIFO with `FD_CLOEXEC` clear; on EOF it stops as on SIGTERM. Otherwise it is ignored silently. See [How a Test's Rotator Ends with Its Test](../concepts/test-rotator-lifetime.md). |
 | `AMPLIHACK_TEST_ROOT_SANDBOX_PROBE` | test-only |  | Root-sandbox spawn test probe. |
 | `AMPLIHACK_TEST_SECURITY_MODE` | test-only |  | Hook protocol test mode. |
 | `AMPLIHACK_TEST_SECURITY_TRANSPORT` | test-only |  | Hook protocol test transport. |

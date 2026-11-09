@@ -1,8 +1,8 @@
 ---
 title: Keep Tests from Leaking Rotator Daemons
 type: howto
-updated: 2026-10-26
-related: issue #1690, issue #1656, issue #1592
+updated: 2026-11-09
+related: issue #2095, issue #1690, issue #1656, issue #1592
 ---
 
 # Keep Tests from Leaking Rotator Daemons
@@ -27,6 +27,7 @@ contributors who write tests. Users' autostart is unchanged; see
 - [Run the leak check](#run-the-leak-check)
 - [When the leak check fails](#when-the-leak-check-fails)
 - [Test a real daemon on purpose](#test-a-real-daemon-on-purpose)
+- [Tie a started rotator to the test](#tie-a-started-rotator-to-the-test)
 - [Limits](#limits)
 
 ## The three stops
@@ -219,12 +220,67 @@ Do not use `pkill -f 'rotate watch'`. It also matches your real rotator.
 The explicit `amplihack profile rotate start` path has no test stop. Stop B
 covers autostart only. The `issue_1592_daemon` tests need a real daemon: they
 start it with `--interval 1` and stop it themselves. If such a test fails
-before it stops its daemon, the leak check reports it. That is intended.
+before it stops its daemon, the fixture's lifetime pipe stops it; see the
+next section. If the daemon still outlives the run, the leak check reports
+it. That is intended.
 
 A test that needs a real autostart must remove both stops on purpose, with
 `cmd.env_remove("AMPLIHACK_TEST_HOME_GUARD")` and
 `cmd.env_remove("AMPLIHACK_ROTATE_AUTOSTART")` (removing only the guard still
 leaves autostart off through stop A), and must stop the daemon it starts. No test does this today.
+
+## Tie a started rotator to the test
+
+A rotator started with `profile rotate start` from the `profile_rotate`
+fixture ends when the test process ends, even if the test is killed with
+SIGKILL or `cargo test` is cancelled. The fixture does this for you; the
+mechanism is described in
+[How a Test's Rotator Ends with Its Test](../concepts/test-rotator-lifetime.md).
+
+Use `Fixture::new()` and build commands with `cmd(..)` or
+`cmd_no_root_env(..)`. Both go through the private `base(..)`, which arms
+every command:
+
+```rust
+use crate::support::profile_rotate::Fixture;
+
+let fx = Fixture::new();
+let out = fx
+    .cmd(&["profile", "rotate", "start", "--interval", "1", "--hold", "0"])
+    .output()
+    .unwrap();
+assert!(out.status.success());
+// Stop the rotator here as existing tests do. If the test is killed
+// before it can, the closed pipe stops the watcher instead.
+```
+
+Existing tests still stop the rotator themselves; the pipe is the backstop
+for a test that is killed. Do not rely on `Drop` for routine cleanup: if
+arming breaks, `Drop` waits on the pidfd with `poll(-1)` and the test hangs.
+Dropping the fixture after a stop finds no pid file and returns at once.
+
+A test that needs the rotator to outlive the test process uses an unarmed
+fixture, and must stop the rotator itself:
+
+```rust
+let fx = Fixture::unarmed();
+```
+
+Keep these rules when you change the fixture or write your own command:
+
+- Keep `AMPLIHACK_TEST_HOME_GUARD=1`. Without it the watcher ignores the
+  pipe.
+- Do not rename `AMPLIHACK_TEST_ROTATOR_LIFETIME_FD` to an
+  `AMPLIHACK_ROTATE*` name. `daemon::spawn` removes those, and a source-scan
+  test fails.
+- Do not pass the write end to a child, duplicate it or clear its
+  `FD_CLOEXEC`. A child holding it keeps the watcher alive after the test.
+- Do not clear `FD_CLOEXEC` on the read end in the test process. Clear it
+  only in the child's `pre_exec`, as `base(..)` does.
+
+`Drop` waits with no timeout. If a test hangs in `Fixture::drop`, the watcher
+did not exit when the pipe closed: check that `watch()` still calls
+`lifetime::arm` and that the child received both variables.
 
 ## Limits
 
@@ -232,6 +288,9 @@ leaves autostart off through stop A), and must stop the daemon it starts. No tes
   stops A and B. Only the leak check catches it.
 - Only an empty or unset guard lets autostart run. Any other value, even
   one that is not valid UTF-8, skips it. The harness always sets `1`.
+- The lifetime pipe covers only commands built by the `profile_rotate`
+  fixture's `cmd(..)` and `cmd_no_root_env(..)`. A rotator started any other way, or from
+  `Fixture::unarmed()`, can still leak if the test is killed.
 - The leak check misses a daemon whose `HOME` is outside `$TMPDIR` and
   `/tmp`. Test homes are always `tempfile` directories.
 - On a developer machine the leak check can report a daemon from another
@@ -239,6 +298,7 @@ leaves autostart off through stop A), and must stop the daemon it starts. No tes
 
 ## Related
 
+- [How a Test's Rotator Ends with Its Test](../concepts/test-rotator-lifetime.md) - The lifetime pipe, its arming rules and why other options were rejected
 - [Rotate Claude Logins](./claude-profile-rotation.md) - What the rotator does and when a launch starts it
 - [`amplihack profile` reference](../reference/profile-command.md) - `rotate start`, `rotate watch` and `rotate autostart`
 - [AMPLIHACK_* environment variables](../reference/amplihack-env-vars.md) - `AMPLIHACK_TEST_HOME_GUARD` and `AMPLIHACK_ROTATE_AUTOSTART`

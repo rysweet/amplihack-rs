@@ -295,6 +295,8 @@ mod issue_1979_crusty_minor_followups;
 mod issue_1985_codex_agent_step_flags;
 #[path = "issue_2010_codex_exec_notice.rs"]
 mod issue_2010_codex_exec_notice;
+#[path = "issue_2095_test_rotator_lifetime.rs"]
+mod issue_2095_test_rotator_lifetime;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

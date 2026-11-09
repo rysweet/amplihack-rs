@@ -24,6 +24,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+#[path = "lifetime.rs"]
+mod lifetime;
+
 const MAX_PID_FILE: usize = 32;
 
 pub use amplihack_utils::rotator_status::DaemonState;
@@ -256,6 +260,8 @@ pub fn watch(
     for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
         signal_hook::flag::register(sig, stop.clone())?;
     }
+    #[cfg(unix)]
+    lifetime::arm(&stop);
     if !spawned {
         rs.ensure()?;
         // As in `start`: checked and written under the lock.
