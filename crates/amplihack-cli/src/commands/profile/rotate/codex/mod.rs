@@ -147,6 +147,21 @@ pub(super) fn find_codex_bin() -> Option<PathBuf> {
         .find(|p| is_executable(p))
 }
 
+/// Whether the Codex program `bin` lies where a swap, or the account a
+/// resume runs in, could change it (EXEC-1): `bin` as given or made
+/// canonical is under the default home link, the canonical profiles root
+/// `root_c`, or `live`, the link's current target, when given. A program
+/// that cannot be made canonical counts as inside, so the check fails
+/// closed.
+pub(super) fn bin_in_home(bin: &Path, root_c: &Path, link: &Path, live: Option<&Path>) -> bool {
+    let Ok(bin_c) = std::fs::canonicalize(bin) else {
+        return true;
+    };
+    [bin, bin_c.as_path()].iter().any(|b| {
+        b.starts_with(link) || b.starts_with(root_c) || live.is_some_and(|t| b.starts_with(t))
+    })
+}
+
 fn is_executable(p: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(p).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)

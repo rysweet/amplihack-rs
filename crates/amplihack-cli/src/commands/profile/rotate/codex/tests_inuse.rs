@@ -271,3 +271,91 @@ fn a_vanished_process_is_skipped() {
         InUse::Free
     );
 }
+
+/// The link as the rotator sees it, `<tmp>/real/.codex -> <tmp>/acct`, with
+/// `<tmp>/alias -> <tmp>/real`.
+fn aliased() -> T {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(tmp.path()).unwrap();
+    let proc_root = base.join("proc");
+    fs::create_dir_all(&proc_root).unwrap();
+    fs::create_dir_all(base.join("real")).unwrap();
+    fs::create_dir_all(base.join("acct")).unwrap();
+    let link = base.join("real").join(".codex");
+    symlink(base.join("acct"), &link).unwrap();
+    symlink(base.join("real"), base.join("alias")).unwrap();
+    T {
+        proc_root,
+        link,
+        tmp,
+    }
+}
+
+fn one_codex(t: &T, pid: u32, home: &Path) -> InUse {
+    let env = format!("CODEX_HOME={}", home.display());
+    proc_entry(
+        &t.proc_root,
+        pid,
+        "codex",
+        "/usr/bin/codex",
+        &["codex"],
+        &[&env],
+        t.tmp.path(),
+    );
+    default_home_in_use(&t.proc_root, &t.link, uid())
+}
+
+fn base(t: &T) -> PathBuf {
+    fs::canonicalize(t.tmp.path()).unwrap()
+}
+
+#[test]
+fn a_codex_home_through_a_symlinked_parent_is_the_link() {
+    // S1: `$HOME` reached by another path names the same link.
+    let t = aliased();
+    let home = base(&t).join("alias").join(".codex");
+    assert_eq!(one_codex(&t, 30, &home), InUse::Pid(30));
+}
+
+#[test]
+fn a_codex_home_that_is_a_symlink_to_the_link_is_the_link() {
+    let t = aliased();
+    let alias = base(&t).join("codex-alias");
+    symlink(&t.link, &alias).unwrap();
+    assert_eq!(one_codex(&t, 31, &alias), InUse::Pid(31));
+
+    // A relative alias, two hops away.
+    let t = aliased();
+    let b = base(&t);
+    symlink("real/.codex", b.join("hop1")).unwrap();
+    symlink("hop1", b.join("hop2")).unwrap();
+    assert_eq!(one_codex(&t, 32, &b.join("hop2")), InUse::Pid(32));
+}
+
+#[test]
+fn a_codex_home_that_is_the_account_itself_is_free() {
+    // The link's target is not the link: a swap does not move it.
+    let t = aliased();
+    let acct = base(&t).join("acct");
+    assert_eq!(one_codex(&t, 33, &acct), InUse::Free);
+}
+
+#[test]
+fn a_symlink_loop_counts_as_in_use() {
+    let t = aliased();
+    let b = base(&t);
+    symlink("loop2", b.join("loop1")).unwrap();
+    symlink("loop1", b.join("loop2")).unwrap();
+    assert_eq!(one_codex(&t, 34, &b.join("loop1")), InUse::Pid(34));
+}
+
+#[test]
+fn the_link_by_its_own_text_is_still_matched() {
+    // Regression: the plain text match is kept.
+    let t = aliased();
+    let home = PathBuf::from(format!(
+        "{}/./../real/.codex",
+        t.link.parent().unwrap().display()
+    ));
+    assert_eq!(one_codex(&t, 35, &home), InUse::Pid(35));
+}

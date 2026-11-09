@@ -8,7 +8,7 @@ use super::super::log::Sink;
 use super::super::settings::Settings;
 use super::decide::{DecideInput, Decision, NoneReason, decide};
 use super::link::{LinkState, inspect};
-use super::state::{CodexState, load};
+use super::state::load;
 use super::swap::{Refusal, RefuseCode, link_refusal};
 use super::{Hooks, find_codex_bin, lines, recover, swap};
 use crate::commands::profile::ProfileError;
@@ -40,8 +40,6 @@ pub(super) struct Env {
     pub root_c: PathBuf,
     /// The Codex program found.
     pub bin: PathBuf,
-    /// `codex-state.json` as this cycle loaded it.
-    pub state: std::io::Result<CodexState>,
 }
 
 /// Runs one Codex cycle; an error is written as one `skip:` line.
@@ -74,6 +72,8 @@ fn cycle(ctx: &CodexCtx<'_>, out: &mut Sink) -> Result<(), ProfileError> {
         out.emit(now(), &lines::skip("no-codex-bin"));
         return Ok(());
     };
+    // The root was just listed, so this resolves; if it has since gone, the
+    // raw path matches no link target and every link rule refuses.
     let root_c = std::fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
     let link_state = inspect(ctx.link, &root_c);
     let live = match &link_state {
@@ -111,13 +111,14 @@ fn cycle(ctx: &CodexCtx<'_>, out: &mut Sink) -> Result<(), ProfileError> {
         now(),
         &lines::cycle(live.as_deref(), &rows, floor, now(), &decision.text()),
     );
-    // An unreadable state file is reported every cycle; no swap or
-    // recovery runs until it is fixed.
+    // An unreadable state file is reported every cycle; no swap, recovery
+    // or other refusal runs until it is fixed.
     if state.is_err() {
         Refusal::with(RefuseCode::JournalMismatch, "state-unreadable").emit(out, now());
+        return Ok(());
     }
     let journal = st.and_then(|s| s.journal.clone());
-    let env = Env { root_c, bin, state };
+    let env = Env { root_c, bin };
     match decision {
         Decision::Swap { from, to } => swap::run(ctx, out, &env, &from, &to)?,
         Decision::None(NoneReason::NoLive) => {

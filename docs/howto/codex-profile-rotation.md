@@ -85,8 +85,8 @@ readlink -f "$(command -v codex)"
 ```
 
 If the path is inside `~/.codex-profiles/` or `~/.codex/`, a swap would also
-change which `codex` program runs, and the rotator refuses with
-`codex-bin-in-home`. Reinstall Codex outside the account directories, for
+change which `codex` program runs, so the rotator and `codex-resume` refuse
+with `codex-bin-in-home`. Reinstall Codex outside the account directories, for
 example with `npm install -g @openai/codex`, or move the installed package
 out and put its new location on `PATH`.
 
@@ -174,7 +174,7 @@ A refusal changes nothing and is tried again on the next cycle.
 | `default-home-in-use` | A `codex` running without `CODEX_HOME` uses `~/.codex`. The rotator tries again each cycle and swaps once it has exited. |
 | `proc-unreadable` | The rotator cannot list processes: there is no `/proc` (macOS, other Unix) or `/proc` is mounted with `hidepid`. Swaps stay off on that host; readings and `codex-resume` still work. |
 | `lock-busy` | Another rotator action held the lock. Nothing to do. |
-| `codex-bin-in-home` | Install `codex` outside the account directories; see [Make `~/.codex` a link](#make-codex-a-link). |
+| `codex-bin-in-home` | `codex` is under the profiles root or `~/.codex`. Install it outside them; see [Make `~/.codex` a link](#make-codex-a-link). |
 
 Details of each check are in
 [Codex refusals](../reference/profile-command.md#codex-refusals).

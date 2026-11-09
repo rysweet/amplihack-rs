@@ -9,7 +9,7 @@ use super::clock::Clock;
 use super::limit::limit_hit_reading;
 use super::session::{ensure_rollout, read_events, valid_session_id};
 use super::state::{CodexState, ResumeRecord, load, save, try_lock};
-use super::{Hooks, account_of, find_codex_bin, lines};
+use super::{Hooks, account_of, bin_in_home, find_codex_bin, lines};
 use amplihack_utils::codex_capacity::{
     AccountResult, Outcome, list_accounts, next_choice, profiles_root, timeout_from_env,
 };
@@ -23,6 +23,10 @@ const EXIT_FAILED: i32 = 1;
 const EXIT_USAGE: i32 = 2;
 const EXIT_CAPPED: i32 = 3;
 const EXIT_NO_ROOM: i32 = 4;
+
+/// The refusal when the Codex program is inside the profiles root or
+/// under the link.
+const BIN_IN_HOME: &str = "codex-bin-in-home";
 
 /// The longest the one wait for a reset may last: 7 days, the length of
 /// the weekly window. A later reset time is cut to this.
@@ -227,6 +231,14 @@ fn resume(
     rs.ensure()
         .map_err(|e| Fail::Other(format!("codex-resume: {e}")))?;
     let mut log = ResumeLog(open_or_warn(&rs.log, &rs.log1));
+    // EXEC-1: a program inside an account or under the link would be
+    // chosen by the account, not by the user.
+    if bin_in_home(&bin, &root_c, link, link_target.as_deref()) {
+        log.line(clock.now(), &lines::resume_none(BIN_IN_HOME, &id));
+        return Err(Fail::Usage(format!(
+            "codex-resume: refused reason={BIN_IN_HOME}"
+        )));
+    }
     let (secs, warning) = timeout_from_env();
     if let Some(w) = warning {
         eprintln!("{w}");

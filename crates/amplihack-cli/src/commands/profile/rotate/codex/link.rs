@@ -36,13 +36,8 @@ pub(super) fn inspect(link: &Path, root: &Path) -> LinkState {
         Ok(m) if !m.file_type().is_symlink() => return LinkState::NotLink,
         Ok(_) => {}
     }
-    let Ok(raw) = std::fs::read_link(link) else {
+    let Ok(abs) = target_of(link) else {
         return LinkState::NotLink;
-    };
-    let abs = if raw.is_absolute() {
-        raw
-    } else {
-        link.parent().unwrap_or(Path::new("/")).join(raw)
     };
     if std::fs::metadata(&abs).is_err() {
         return LinkState::Dangling;
@@ -61,6 +56,16 @@ pub(super) fn inspect(link: &Path, root: &Path) -> LinkState {
         },
         None => LinkState::OutsideRoot,
     }
+}
+
+/// The symlink's target, made absolute against the link's parent.
+fn target_of(link: &Path) -> io::Result<PathBuf> {
+    let raw = std::fs::read_link(link)?;
+    Ok(if raw.is_absolute() {
+        raw
+    } else {
+        link.parent().unwrap_or(Path::new("/")).join(raw)
+    })
 }
 
 /// `<link>.amplihack-swap`, beside the link.
@@ -126,19 +131,8 @@ pub(super) fn relink_checked(
 /// `None` when the link and both accounts still match `expect`, or the
 /// reason they do not.
 fn recheck(link: &Path, expect: &Expect<'_>, new_target: &Path) -> Option<&'static str> {
-    match std::fs::symlink_metadata(link) {
-        Ok(m) if m.file_type().is_symlink() => {}
-        _ => return Some("link-changed"),
-    }
-    let Ok(raw) = std::fs::read_link(link) else {
-        return Some("link-changed");
-    };
-    let abs = if raw.is_absolute() {
-        raw
-    } else {
-        link.parent().unwrap_or(Path::new("/")).join(raw)
-    };
-    match std::fs::canonicalize(&abs) {
+    // `read_link` fails on anything that is not a symlink.
+    match target_of(link).and_then(std::fs::canonicalize) {
         Ok(t) if t == expect.old_target => {}
         _ => return Some("link-changed"),
     }

@@ -191,3 +191,74 @@ fn a_reset_beyond_seven_days_is_cut_to_seven_days() {
         "a huge reset must not overflow"
     );
 }
+
+// EXEC-1 / S3: `bin_in_home(bin, root_c, link, live)`.
+
+mod bin_in_home {
+    use super::super::bin_in_home;
+    use std::fs;
+    use std::os::unix::fs::symlink;
+
+    struct B {
+        _tmp: tempfile::TempDir,
+        root: std::path::PathBuf,
+        link: std::path::PathBuf,
+        live: std::path::PathBuf,
+        base: std::path::PathBuf,
+    }
+
+    fn setup() -> B {
+        let tmp = tempfile::tempdir().unwrap();
+        let base = fs::canonicalize(tmp.path()).unwrap();
+        let root = base.join("root");
+        let live = root.join("acct");
+        fs::create_dir_all(&live).unwrap();
+        let link = base.join(".codex");
+        symlink(&live, &link).unwrap();
+        B {
+            _tmp: tmp,
+            root,
+            link,
+            live,
+            base,
+        }
+    }
+
+    fn bin(at: &std::path::Path) -> std::path::PathBuf {
+        let p = at.join("bin").join("codex");
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fs::write(&p, "").unwrap();
+        p
+    }
+
+    #[test]
+    fn a_program_under_the_root_is_in_home() {
+        let b = setup();
+        let other = b.root.join("other");
+        let p = bin(&other);
+        assert!(bin_in_home(&p, &b.root, &b.link, None));
+        assert!(bin_in_home(&p, &b.root, &b.link, Some(&b.live)));
+    }
+
+    #[test]
+    fn a_program_under_the_link_is_in_home() {
+        let b = setup();
+        bin(&b.live);
+        let p = b.link.join("bin").join("codex");
+        assert!(bin_in_home(&p, &b.root, &b.link, None));
+    }
+
+    #[test]
+    fn a_program_elsewhere_is_not() {
+        let b = setup();
+        let p = bin(&b.base.join("usr"));
+        assert!(!bin_in_home(&p, &b.root, &b.link, Some(&b.live)));
+    }
+
+    #[test]
+    fn a_program_that_cannot_be_resolved_fails_closed() {
+        let b = setup();
+        let p = b.base.join("usr").join("missing-codex");
+        assert!(bin_in_home(&p, &b.root, &b.link, None));
+    }
+}

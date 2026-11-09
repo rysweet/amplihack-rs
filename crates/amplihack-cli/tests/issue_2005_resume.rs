@@ -548,3 +548,59 @@ fn the_link_and_the_rotate_state_are_unchanged_by_a_resume() {
     );
     assert!(!Path::new("/nonexistent-2005").exists());
 }
+
+#[test]
+fn a_codex_program_under_the_profiles_root_is_refused_with_status_2() {
+    // EXEC-1 / S3: the program would be chosen by an account.
+    let (c, _) = setup();
+    let inside = c.root.join("tools").join("codex");
+    fs::create_dir_all(inside.parent().unwrap()).unwrap();
+    crate::support::exec_stub::copy_executable(&c.bin, &inside);
+    let mut cmd = c.cmd(&[
+        "profile",
+        "codex-resume",
+        "--session",
+        SESSION,
+        "--from-home",
+    ]);
+    cmd.arg(c.account("ffarmer")).env("CODEX_BIN", &inside);
+    let out = c.run_cmd("codex-resume with codex under the root", cmd);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stderr).contains("codex-resume: refused reason=codex-bin-in-home"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert!(c.resumes().is_empty(), "the child never ran");
+    assert!(c.reads().is_empty(), "no account was read");
+    let lines = resume_lines(&c);
+    assert_eq!(
+        lines,
+        [format!(
+            "codex resume none reason=codex-bin-in-home session={SESSION}"
+        )]
+    );
+    for l in &lines {
+        assert_log_grammar(l, false);
+    }
+}
+
+#[test]
+fn a_rollout_that_is_a_planted_symlink_is_not_resumed() {
+    // FS-6 / S2: `x-<id>.jsonl -> ../../auth.json` is not a rollout.
+    let c = CodexFixture::with(&["ffarmer", "ggrant"]);
+    c.limited("ffarmer", PAST_RESET);
+    c.reading("ggrant", 10, 10);
+    c.link_to("ffarmer");
+    let sessions = c.account("ffarmer").join("sessions");
+    fs::create_dir_all(&sessions).unwrap();
+    std::os::unix::fs::symlink("../auth.json", sessions.join(format!("x-{SESSION}.jsonl")))
+        .unwrap();
+    let out = c.resume(&["--session", SESSION, "--from-home", &from(&c, "ffarmer")]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    assert!(c.resumes().is_empty());
+    let planted = c
+        .account("ggrant")
+        .join(format!("sessions/x-{SESSION}.jsonl"));
+    assert!(fs::symlink_metadata(planted).is_err(), "nothing linked");
+}

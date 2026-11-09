@@ -9085,7 +9085,7 @@ The rotator swaps only a link that meets all of these rules. Each check uses
 | Its target, made canonical, is a direct child of the canonical profiles root. Paths are compared by component, so `/home/you/.codex-profiles-evil/a` is not under `/home/you/.codex-profiles`, and a nested target such as `<root>/a/b` is refused too. | `link-outside-root` |
 | The link's parent directory and the profiles root are owned by you and are not group- or world-writable. | `link-outside-root` with `detail=parent-not-private` or `detail=root-not-private` |
 | `<link>.amplihack-swap` does not exist, or is a symlink left by an interrupted swap. | `home-not-link` with `detail=swap-path-not-link` |
-| The Codex program, made canonical, is not inside the current account directory or under the link. | `codex-bin-in-home` |
+| The Codex program, as found and made canonical, is not under the profiles root, the current account directory or the link. A program that cannot be made canonical is refused too. | `codex-bin-in-home` |
 
 The account the link points at is the *live* Codex account. Its label is the
 name of the directory under the root, so `~/.codex -> ~/.codex-profiles/ggrant`
@@ -9262,7 +9262,7 @@ codex refuse reason=<code>[ detail=<word>]
 | `default-home-in-use` | A Codex process of yours uses the default home; see [Codex default home in use](#codex-default-home-in-use). |
 | `proc-unreadable` | The process list could not be read, so the rotator cannot tell whether the default home is in use: `/proc` is missing (every platform but Linux), cannot be listed, or is mounted with `hidepid`. The swap is deferred. |
 | `lock-busy` | The Codex lock (`.auto-switch.d/rotate/lock`) was held. |
-| `codex-bin-in-home` | The Codex program is inside the current account directory or under the link; see [Adopting an existing `~/.codex`](#adopting-an-existing-codex). |
+| `codex-bin-in-home` | The Codex program is under the profiles root or the link; see [Adopting an existing `~/.codex`](#adopting-an-existing-codex). `codex-resume` refuses with the same code. |
 
 A refusal is tried again on the next cycle. The codes are fixed; scripts may
 match them.
@@ -9280,9 +9280,22 @@ swap the rotator looks for such a process:
   argument is `codex` or `codex.js`.
 - For a Codex process, `environ` is read (at most 256 KiB) and only the
   `CODEX_HOME` value is kept. Nothing else from it is stored or logged.
-- The process uses the default home when `CODEX_HOME` is absent, or equals
-  the link once both are made absolute without following the link. A
-  relative `CODEX_HOME` is resolved against that process's `/proc/<pid>/cwd`.
+- The process uses the default home when `CODEX_HOME` is absent, or names
+  the link. A relative `CODEX_HOME` is resolved against that process's
+  `/proc/<pid>/cwd`. It names the link when it equals the link once both are
+  made absolute without following the link, or when its parent directory,
+  made canonical, is the link's canonical parent and its last part is the
+  link's name. So `CODEX_HOME=/d0/you/.codex` names `/home/you/.codex` when
+  `/home/you` is a symlink to `/d0/you`. If `CODEX_HOME` is itself a symlink,
+  it is followed, at most 40 times, and each step is checked the same way,
+  so an alias such as `~/codex-alias -> ~/.codex` counts too. The link itself
+  is never followed: a process whose `CODEX_HOME` is the account directory
+  the link points at does not use the link, and a swap does not change what
+  it uses. A `CODEX_HOME` that does not exist names nothing. A symlink loop
+  or any other error counts as in use. Paths are resolved as the rotator
+  sees them, not in the process's own mount namespace.
+- When the link's own parent directory cannot be made canonical, the scan
+  refuses with `proc-unreadable`.
 - A process that exits during the scan is skipped. A Codex process whose
   `environ` or `cwd` cannot be read (`EACCES`) counts as in use.
 - `/proc/<pid>/environ` and `cmdline` are the only files read, each with a
@@ -9405,9 +9418,11 @@ and no swap or recovery runs, and `codex-resume` fails with status 1.
   `<chosen account>/sessions/`, creating any missing directories on that
   path with `mkdir` (mode `0700`). It never follows a symlinked directory on
   that path, whether it found or created it, never overwrites an existing
-  entry, and its source must resolve
-  inside `<from-home>/sessions` with a name ending in `-<id>.jsonl` for the
-  validated id.
+  entry, and its source must be an entry inside `<from-home>/sessions` that
+  is not a symlink, with a name ending in `-<id>.jsonl` for the validated
+  id, or the symlink an earlier resume made there, which must resolve to a
+  file with such a name inside the `sessions` folder of an account under the
+  profiles root. Any other symlink with a rollout's name is skipped.
 - `codex app-server`, started by the reader, reads its own `auth.json` and
   may refresh the account's tokens. That is the user's own `codex` acting
   with the user's authority, as any `codex` run does; amplihack never sees
@@ -9511,7 +9526,11 @@ lives in one function with fixture tests.
    both pass a count of 2. The lock is never held while reading or waiting.
 5. If the chosen account is not the one the session used, link the session's
    rollout into it: find the file whose name ends in `-<id>.jsonl` under
-   `<from-home>/sessions` by listing directories only, and, unless a file
+   `<from-home>/sessions` by listing directories only. It must not be a
+   symlink, unless it is the symlink an earlier resume made, resolving to a
+   file with such a name in the `sessions` folder of an account under the root;
+   any other symlink, such as `x-<id>.jsonl -> ../../auth.json`, is skipped.
+   Unless a file
    with such a name already exists under the chosen account's `sessions`,
    create a symlink at the same relative path there (parents created with
    mode `0700`). A folder on that path that is a symlink is an error, never
@@ -9537,8 +9556,14 @@ Each line is appended to `rotate.log` and printed on stderr:
 
 ```
 codex resume session=<id> <from>-><to> reason=room|after-reset args=<n>
-codex resume none reason=capped|no-reset-known|no-room-after-reset|lock-busy session=<id>
+codex resume none reason=capped|no-reset-known|no-room-after-reset|lock-busy|codex-bin-in-home session=<id>
 ```
+
+`codex-bin-in-home` is written when the Codex program, as found and made
+canonical, is under the profiles root or the link, or cannot be made
+canonical. It is checked before any account is read, and the command exits
+with status 2 and prints `codex-resume: refused reason=codex-bin-in-home`.
+Nothing is started.
 
 #### Codex resume exit status
 
@@ -9546,7 +9571,7 @@ codex resume none reason=capped|no-reset-known|no-room-after-reset|lock-busy ses
 |--------|------|
 | The child's status | `codex resume` ran. A child killed by a signal gives `1`. |
 | `1` | `lock-busy`, no rollout found, an unreadable `codex-state.json`, or another error. |
-| `2` | A usage or configuration error: no id, an invalid id, a refused events file, an events file with no id or no usage limit, a `--from-home` that is not an account under the root. |
+| `2` | A usage or configuration error: no id, an invalid id, a refused events file, an events file with no id or no usage limit, a `--from-home` that is not an account under the root, or `codex-bin-in-home`. |
 | `3` | `capped`: 3 resumes of this session in 24 hours. |
 | `4` | `no-reset-known` or `no-room-after-reset`. |
 

@@ -162,3 +162,53 @@ fn ensure_rollout_matches_the_id_suffix_exactly() {
         "`x<id>` is not `-<id>`"
     );
 }
+
+#[test]
+fn a_source_rollout_that_is_a_planted_symlink_is_not_found() {
+    // FS-6 / S2: `x-<id>.jsonl -> ../../auth.json` is never linked.
+    let d = tempfile::tempdir().unwrap();
+    let (src, dst) = (d.path().join("a"), d.path().join("b"));
+    write(&src.join("auth.json"), "{}");
+    fs::create_dir_all(src.join("sessions")).unwrap();
+    std::os::unix::fs::symlink("../auth.json", src.join(format!("sessions/x-{ID}.jsonl"))).unwrap();
+    std::os::unix::fs::symlink("../nowhere", src.join(format!("sessions/y-{ID}.jsonl"))).unwrap();
+    fs::create_dir_all(&dst).unwrap();
+    assert_eq!(
+        ensure_rollout(&src, &dst, ID).unwrap_err().kind(),
+        std::io::ErrorKind::NotFound
+    );
+    assert!(!dst.join("sessions").exists(), "nothing created");
+}
+
+#[test]
+fn a_real_rollout_beside_a_planted_symlink_is_still_found() {
+    let d = tempfile::tempdir().unwrap();
+    let (src, dst) = (d.path().join("a"), d.path().join("b"));
+    write(&src.join("auth.json"), "{}");
+    fs::create_dir_all(src.join("sessions")).unwrap();
+    // Sorts before the real one, so it is seen first and skipped.
+    std::os::unix::fs::symlink("../auth.json", src.join(format!("sessions/a-{ID}.jsonl"))).unwrap();
+    write(&src.join(rel()), "");
+    fs::create_dir_all(&dst).unwrap();
+    assert_eq!(
+        ensure_rollout(&src, &dst, ID).unwrap(),
+        Rollout::Linked(rel())
+    );
+}
+
+#[test]
+fn a_rollout_linked_by_an_earlier_resume_can_be_resumed_again() {
+    // a -> b -> c: b's rollout is the symlink the first resume made, and it
+    // resolves inside another account's `sessions`.
+    let d = tempfile::tempdir().unwrap();
+    let (a, b, c) = (d.path().join("a"), d.path().join("b"), d.path().join("c"));
+    write(&a.join(rel()), "");
+    fs::create_dir_all(&b).unwrap();
+    fs::create_dir_all(&c).unwrap();
+    assert_eq!(ensure_rollout(&a, &b, ID).unwrap(), Rollout::Linked(rel()));
+    assert_eq!(ensure_rollout(&b, &c, ID).unwrap(), Rollout::Linked(rel()));
+    assert_eq!(
+        fs::canonicalize(c.join(rel())).unwrap(),
+        fs::canonicalize(a.join(rel())).unwrap()
+    );
+}

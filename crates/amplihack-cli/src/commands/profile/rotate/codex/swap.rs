@@ -7,7 +7,7 @@ use super::cycle::{CodexCtx, Env};
 use super::inuse::{InUse, default_home_in_use};
 use super::link::{Expect, LinkState, inspect, mismatch_detail, relink_checked, swap_tmp};
 use super::state::{CodexJournal, CodexPhase, load, save, try_lock};
-use super::{FaultPoint, account_of, fault_stop, lines};
+use super::{FaultPoint, account_of, bin_in_home, fault_stop, lines};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::euid;
 use std::os::unix::fs::MetadataExt;
@@ -100,7 +100,7 @@ fn private_dir(p: &Path) -> bool {
 
 /// The link rules beyond the link itself: the parent and the root are
 /// private, the temp path is absent or a symlink, and the Codex program is
-/// neither inside the live account nor under the link.
+/// not inside the live account, the profiles root or the link.
 fn rule_refusal(ctx: &CodexCtx<'_>, env: &Env, old_target: &Path) -> Option<Refusal> {
     let parent = ctx.link.parent().unwrap_or(Path::new("/"));
     if !private_dir(parent) {
@@ -120,9 +120,7 @@ fn rule_refusal(ctx: &CodexCtx<'_>, env: &Env, old_target: &Path) -> Option<Refu
     {
         return Some(Refusal::with(RefuseCode::HomeNotLink, "swap-path-not-link"));
     }
-    let bin_c = std::fs::canonicalize(&env.bin).unwrap_or_else(|_| env.bin.clone());
-    if bin_c.starts_with(old_target) || env.bin.starts_with(ctx.link) || bin_c.starts_with(ctx.link)
-    {
+    if bin_in_home(&env.bin, &env.root_c, ctx.link, Some(old_target)) {
         return Some(Refusal::bare(RefuseCode::CodexBinInHome));
     }
     match default_home_in_use(&ctx.hooks.proc_root, ctx.link, euid()) {
@@ -147,10 +145,6 @@ pub(super) fn run(
     to: &str,
 ) -> Result<(), ProfileError> {
     let now = (ctx.hooks.now)();
-    // The cycle has already written the `state-unreadable` refusal.
-    if env.state.is_err() {
-        return Ok(());
-    }
     let _lock = if ctx.read_only {
         None
     } else {

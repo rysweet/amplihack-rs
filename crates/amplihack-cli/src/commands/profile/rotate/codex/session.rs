@@ -4,10 +4,11 @@
 
 use super::limit::{limit_hit_event, limit_hit_text};
 use crate::commands::profile::ProfileError;
+use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, symlink};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// The most of an events file read.
 const MAX_EVENTS_BYTES: u64 = 16 * 1024 * 1024;
@@ -79,6 +80,8 @@ pub(super) fn read_events(
         return Err(refused(path, "a file named auth.json is never read"));
     }
     for dir in refused_under {
+        // The callers pass paths already made canonical; the raw path only
+        // stands in when one has since gone, and then nothing is under it.
         let dir_c = fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
         if canon.starts_with(&dir_c) {
             return Err(refused(
@@ -134,10 +137,45 @@ pub(super) enum Rollout {
     Present,
 }
 
-/// The first file under `home/sessions` whose name ends in `-<id>.jsonl`,
-/// relative to `home`. Directories are listed only; symlinked directories
-/// are not entered and no file is opened.
-fn find_rollout(home: &Path, id: &str) -> io::Result<Option<PathBuf>> {
+/// Where [`find_rollout`] looks, and what it accepts.
+#[derive(Clone, Copy)]
+enum Look<'a> {
+    /// The destination: any entry with the name counts as present,
+    /// including the symlink an earlier resume made.
+    Present,
+    /// The source, its account directly under this root: an entry that is
+    /// not a symlink, or a symlink an earlier resume made, which must
+    /// resolve to a file (not a folder) with the same name ending inside the
+    /// `sessions` folder of an account under the root. Any other symlink,
+    /// dangling or not, is skipped (FS-6), so `x-<id>.jsonl ->
+    /// ../../auth.json` is never used.
+    Source(&'a Path),
+}
+
+/// A source symlink's canonical target is a file, not a folder, named
+/// `*<suffix>` under `<root>/<account>/sessions/`. Resolving it stats the
+/// path; nothing is opened.
+fn resume_link(full: &Path, root: &Path, suffix: &str) -> bool {
+    let (Ok(target), Ok(root)) = (fs::canonicalize(full), fs::canonicalize(root)) else {
+        return false;
+    };
+    let named = target
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|n| n.ends_with(suffix));
+    let in_sessions = target.strip_prefix(&root).is_ok_and(|rel| {
+        let mut c = rel.components();
+        matches!(c.next(), Some(Component::Normal(_)))
+            && c.next() == Some(Component::Normal(OsStr::new("sessions")))
+    });
+    named && in_sessions && fs::symlink_metadata(&target).is_ok_and(|m| !m.is_dir())
+}
+
+/// The first entry under `home/sessions` whose name ends in `-<id>.jsonl`
+/// and that `look` accepts, relative to `home`. Directories are listed
+/// only; symlinked directories are not entered and no file is opened.
+/// `file_type` does not follow symlinks.
+fn find_rollout(home: &Path, id: &str, look: Look<'_>) -> io::Result<Option<PathBuf>> {
     let suffix = format!("-{id}.jsonl");
     let mut stack = vec![(PathBuf::from("sessions"), 0usize)];
     while let Some((rel, depth)) = stack.pop() {
@@ -157,8 +195,21 @@ fn find_rollout(home: &Path, id: &str) -> io::Result<Option<PathBuf>> {
                 if depth < MAX_DEPTH {
                     stack.push((rel.join(&name), depth + 1));
                 }
-            } else if name.to_str().is_some_and(|n| n.ends_with(&suffix)) {
-                return Ok(Some(rel.join(name)));
+                continue;
+            }
+            if !name.to_str().is_some_and(|n| n.ends_with(&suffix)) {
+                continue;
+            }
+            let rel = rel.join(name);
+            let accepted = match look {
+                Look::Present => true,
+                Look::Source(root) if kind.is_symlink() => {
+                    resume_link(&home.join(&rel), root, &suffix)
+                }
+                Look::Source(_) => true,
+            };
+            if accepted {
+                return Ok(Some(rel));
             }
         }
     }
@@ -171,10 +222,12 @@ fn find_rollout(home: &Path, id: &str) -> io::Result<Option<PathBuf>> {
 /// on that path is an error, never followed. No rollout under
 /// `src_home` is `NotFound`, and nothing is created.
 pub(super) fn ensure_rollout(src_home: &Path, dst_home: &Path, id: &str) -> io::Result<Rollout> {
-    if find_rollout(dst_home, id)?.is_some() {
+    if find_rollout(dst_home, id, Look::Present)?.is_some() {
         return Ok(Rollout::Present);
     }
-    let Some(rel) = find_rollout(src_home, id)? else {
+    // The accounts' root: `src_home` is an account directory made canonical.
+    let root = src_home.parent().unwrap_or(src_home);
+    let Some(rel) = find_rollout(src_home, id, Look::Source(root))? else {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
             "no rollout for the session under the account it used",

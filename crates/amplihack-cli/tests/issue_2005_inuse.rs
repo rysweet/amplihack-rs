@@ -219,3 +219,62 @@ fn an_oversized_environ_is_capped_and_still_judged() {
     );
     assert!(swapped(&c), "{:?}", c.codex_log());
 }
+
+#[test]
+fn a_codex_home_naming_the_link_through_a_symlinked_parent_is_in_use() {
+    // S1: `CODEX_HOME=<alias>/.codex` with `<alias> -> $HOME` is the link,
+    // although the text differs.
+    let c = CodexFixture::standard();
+    let alias = c.base.join("home-alias");
+    std::os::unix::fs::symlink(&c.f.home, &alias).unwrap();
+    fake_proc(
+        &c.proc_root,
+        520,
+        "codex",
+        "/usr/bin/codex",
+        &["codex"],
+        &[&format!("CODEX_HOME={}", alias.join(".codex").display())],
+        &cwd(&c),
+    );
+    assert!(!swapped(&c));
+    assert_eq!(
+        last(&c),
+        "codex refuse reason=default-home-in-use detail=pid-520"
+    );
+}
+
+#[test]
+fn a_codex_home_that_is_a_symlink_to_the_link_is_in_use() {
+    let c = CodexFixture::standard();
+    let alias = c.base.join("codex-alias");
+    std::os::unix::fs::symlink(&c.link, &alias).unwrap();
+    fake_proc(
+        &c.proc_root,
+        521,
+        "codex",
+        "/usr/bin/codex",
+        &["codex"],
+        &[&format!("CODEX_HOME={}", alias.display())],
+        &cwd(&c),
+    );
+    assert!(!swapped(&c));
+    assert_eq!(
+        last(&c),
+        "codex refuse reason=default-home-in-use detail=pid-521"
+    );
+}
+
+#[test]
+fn a_codex_home_that_is_the_live_account_itself_allows_the_swap() {
+    let c = CodexFixture::standard();
+    fake_proc(
+        &c.proc_root,
+        522,
+        "codex",
+        "/usr/bin/codex",
+        &["codex"],
+        &[&format!("CODEX_HOME={}", c.account("ffarmer").display())],
+        &cwd(&c),
+    );
+    assert!(swapped(&c), "{:?}", c.codex_log());
+}
