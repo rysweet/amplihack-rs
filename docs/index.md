@@ -376,6 +376,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Rust Runner Execution Architecture](concepts/rust-runner-execution-architecture.md) - CLI/runner responsibility split, stream ownership, progress events, and additive JSON preservation
 - [Recipe Runner Logging Reference](reference/recipe-runner-logging.md) - stderr progress, heartbeats, bounded snippets, JSONL events, and additive result fields
 - [Recipe Run Correlation Reference](reference/recipe-run-correlation.md) - Stable run IDs, `AMPLIHACK_RECIPE_RUN_ID`, pointer event schema, and final result fields
+- [Recipe Step Records and Lifetime](reference/recipe-step-records.md) - How headless agent steps stop when their runner or launcher exits (Linux), the per-step record under `~/.amplihack/runtime/recipe-steps`, and `amplihack recipe steps --orphans`
 - [Observe Recipe Progress Tutorial](tutorials/recipe-progress-transparency.md) - Watch live workflow progress, capture JSON, and debug failed steps
 - [Trace Recipe Run Correlation Tutorial](tutorials/recipe-run-correlation.md) - Follow one run across stderr pointers, final JSON, child PID, and JSONL logs
 - [Scoped Workflow Closure](concepts/scoped-workflow-closure.md) - Explicit persisted PR and process ownership model for default-workflow closure

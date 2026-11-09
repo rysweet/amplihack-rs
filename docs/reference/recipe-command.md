@@ -13,6 +13,7 @@ inspects, validates, and runs YAML recipe files.
   - [recipe run](#recipe-run)
   - [Detached runs](#detached-runs)
   - [recipe stop](#recipe-stop)
+  - [recipe steps](#recipe-steps)
 - [Output formats](#output-formats)
 - [Progress and stream contract](#progress-and-stream-contract)
 - [Recipe file format](#recipe-file-format)
@@ -313,8 +314,15 @@ runner is started in its own session, so before this the signal ended only
 `recipe run` and left the runner and its agents running.
 
 SIGKILL cannot be caught. If `recipe run` is killed that way, on Linux the
-kernel sends the runner SIGTERM (`PR_SET_PDEATHSIG`); agents the runner started
-can outlive it. Use `amplihack recipe stop <run_id>` to end them.
+kernel sends the runner SIGTERM (`PR_SET_PDEATHSIG`). Each headless agent step
+is bound to the runner in the same way, so its launcher and agent stop when the
+runner exits, and each running step leaves a record that `amplihack recipe
+steps` lists. Processes the agents started themselves can still outlive the
+run; use `amplihack recipe stop <run_id>` to end them (#2074 tracks ending
+them automatically). Once its runner has exited, `recipe run` removes the
+`stale` records its steps left behind, for example after an agent-step
+timeout, in which the runner kills the step's launcher with SIGKILL. See
+[Recipe Step Records and Lifetime](./recipe-step-records.md).
 
 ### Detached runs
 
@@ -381,12 +389,46 @@ signalled only while its start time still matches, so a reused pid is never
 hit. `recipe stop` never signals itself or its own ancestors. It prints
 `stopped <what> (<n> processes)` and exits 0, or exits 1 when nothing matches.
 
+### recipe steps
+
+```
+amplihack recipe steps [--orphans] [-f, --format <table|json>]
+```
+
+Lists the record of every headless agent step under
+`~/.amplihack/runtime/recipe-steps`, across all runs, as `live`, `orphan`,
+`stale` or `unreadable`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--orphans` | false | Show only `orphan` and `unreadable` entries |
+| `-f`, `--format <FORMAT>` | `table` | `table` or `json`; `yaml` is a usage error |
+
+```sh
+# Steps whose runner or launcher has gone
+amplihack recipe steps --orphans
+
+# The same, as JSON for a script
+amplihack recipe steps --orphans --format json
+```
+
+It only reads: it never signals a process or removes a file. Stale records
+are removed by `recipe run` (see
+[Who removes stale records](./recipe-step-records.md#who-removes-stale-records)).
+It exits 0 when
+the listing completes, whether or not orphans were found, and 1 when `HOME` is
+unset or `~/.amplihack/runtime/recipe-steps` is a symlink, not a directory or
+owned by another user. See
+[Recipe Step Records and Lifetime](./recipe-step-records.md#recipe-steps) for
+the record format, the classification rules and the output columns.
+
 ---
 
 ## Output formats
 
 All `recipe` subcommands support `--format table` (default), `--format json`,
-and `--format yaml`.
+and `--format yaml`, except `recipe steps`, which accepts `table` and `json`
+only.
 
 | Format | Use case |
 |--------|----------|
@@ -698,6 +740,7 @@ For general troubleshooting, see [Troubleshoot Recipe Execution Failures](../how
 - [Capacity Governor](./capacity-governor.md): When `recipe run` may start, waits or exits with 80
 - [Environment Variables](./environment-variables.md) — `AMPLIHACK_CONTEXT_*`, `AMPLIHACK_TASK_DESCRIPTION`, `RECIPE_RUNNER_RS_PATH`
 - [Recipe Runner Logging](./recipe-runner-logging.md) — stderr progress, heartbeats, snippets, and JSONL logs
+- [Recipe Step Records and Lifetime](./recipe-step-records.md): How headless steps stop with their runner, and the records `recipe steps` reads
 - [Parity Test Scenarios](./parity-test-scenarios.md) — `tier4-recipe-run.yaml` test cases
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — How `AMPLIHACK_AGENT_BINARY` affects recipe step execution
 - [Recipe Runner Architecture](../concepts/recipe-runner-architecture.md) — Why the runner is an external binary

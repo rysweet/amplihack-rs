@@ -61,6 +61,11 @@ pub(crate) mod session_log;
 pub mod session_tracker;
 pub mod settings_manager;
 pub mod signals;
+/// Issue #2018: a headless recipe step stops when its parent exits.
+pub mod step_lifetime;
+/// Issue #2018: where a headless recipe step records itself.
+#[cfg(unix)]
+pub mod step_record;
 #[cfg(test)]
 pub mod test_support;
 pub mod tool_update_check;

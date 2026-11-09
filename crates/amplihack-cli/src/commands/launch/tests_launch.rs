@@ -788,7 +788,7 @@ fn test_wait_for_child_returns_zero_on_normal_success() {
     let mut child = ManagedChild::spawn(cmd).expect("failed to spawn 'true'");
     let shutdown = Arc::new(AtomicBool::new(false));
 
-    let exit_code = wait_for_child_or_signal(&mut child, &shutdown)
+    let exit_code = wait_for_child_or_signal(&mut child, &shutdown, None)
         .expect("wait_for_child_or_signal failed unexpectedly");
 
     assert_eq!(
@@ -813,7 +813,7 @@ fn test_wait_for_child_returns_nonzero_on_normal_failure() {
     let mut child = ManagedChild::spawn(cmd).expect("failed to spawn 'false'");
     let shutdown = Arc::new(AtomicBool::new(false));
 
-    let exit_code = wait_for_child_or_signal(&mut child, &shutdown)
+    let exit_code = wait_for_child_or_signal(&mut child, &shutdown, None)
         .expect("wait_for_child_or_signal failed unexpectedly");
 
     assert_eq!(
@@ -893,7 +893,7 @@ fn test_wait_for_child_returns_zero_when_killed_by_sigint() {
     let mut child = ManagedChild::spawn(cmd).expect("failed to spawn sh");
     let shutdown = Arc::new(AtomicBool::new(false));
 
-    let exit_code = wait_for_child_or_signal(&mut child, &shutdown)
+    let exit_code = wait_for_child_or_signal(&mut child, &shutdown, None)
         .expect("wait_for_child_or_signal returned an error");
 
     // Python: sys.exit(0) on SIGINT → exit code 0. unwrap_or(0) matches this.
@@ -928,14 +928,42 @@ fn test_wait_for_child_returns_zero_when_shutdown_flag_set() {
     let shutdown = Arc::new(AtomicBool::new(true));
     shutdown.store(true, Ordering::Relaxed);
 
-    let exit_code =
-        wait_for_child_or_signal(&mut child, &shutdown).expect("wait_for_child_or_signal failed");
+    let exit_code = wait_for_child_or_signal(&mut child, &shutdown, None)
+        .expect("wait_for_child_or_signal failed");
 
     assert_eq!(
         exit_code, 0,
         "Shutdown-flag path must return exit code 0 (matching Python sys.exit(0)). \
          Got: {exit_code}"
     );
+}
+
+/// Issue #2018 (D1): the same shutdown in a headless recipe step returns
+/// `128 + N` for the first signal recorded, and 143 when none was recorded.
+#[test]
+fn headless_shutdown_returns_128_plus_the_first_signal() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicI32};
+
+    for (first, want) in [(libc::SIGHUP, 129), (libc::SIGINT, 130), (0, 143)] {
+        let mut cmd = Command::new("sleep");
+        cmd.args(["60"]);
+        let mut child = ManagedChild::spawn(cmd).expect("failed to spawn sleep");
+        let shutdown = Arc::new(AtomicBool::new(true));
+        let recorded = AtomicI32::new(first);
+
+        let exit_code = wait_for_child_or_signal(&mut child, &shutdown, Some(&recorded))
+            .expect("wait_for_child_or_signal failed");
+
+        assert_eq!(exit_code, want, "first signal {first}");
+        assert!(
+            child.try_wait().unwrap().is_some(),
+            "the child must have been ended"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -960,7 +988,7 @@ fn test_wait_for_child_reports_a_sigabrt_death_instead_of_success() {
     let mut child = ManagedChild::spawn(cmd).expect("failed to spawn sh");
     let shutdown = Arc::new(AtomicBool::new(false));
 
-    let exit_code = wait_for_child_or_signal(&mut child, &shutdown)
+    let exit_code = wait_for_child_or_signal(&mut child, &shutdown, None)
         .expect("wait_for_child_or_signal returned an error");
 
     assert_eq!(

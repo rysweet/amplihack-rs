@@ -10,6 +10,8 @@ mod codex_agent_step;
 mod command;
 mod context;
 mod power_steering;
+/// Issue #2018: the record a headless recipe step leaves.
+mod step_record_hook;
 /// Issue #1265 Option 3 — `--append-system-prompt` delivery of amplihack's
 /// routing contract.
 mod system_prompt_append;
@@ -272,6 +274,10 @@ fn run_launch_core(
     claude_config_dir: Option<PathBuf>,
     root_sandbox_decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
 ) -> Result<()> {
+    // Issue #2018: first, before any guard, lock or child exists, because a
+    // parent that has already gone ends this process here. A no-op when a
+    // dispatch arm has already made the call.
+    let step = crate::step_lifetime::bind_launcher_if_headless();
     validate_launch_prompt_delivery(tool)?;
     let proxy_config = amplihack_utils::litellm_proxy::ProxyConfig::from_env()
         .context("invalid external LiteLLM proxy configuration")?;
@@ -467,7 +473,7 @@ fn run_launch_core(
 
         // Register before the final executable check so revalidation, command
         // construction, credential projection, and spawn remain adjacent.
-        let shutdown = signals::register_handlers()?;
+        let (shutdown, first_signal) = signals::register_handlers_with_signal()?;
 
         if let (Some(identity), Some(target)) = (&preflight_identity, proxy_target) {
             revalidate_proxy_binary(tool, override_origin, target, &binary, identity)?;
@@ -514,7 +520,15 @@ fn run_launch_core(
             .as_deref()
             .map(crate::commands::profile::verify_launch_profile_dir)
             .transpose()?;
-        let spawned = ManagedChild::spawn(cmd);
+        // Issue #2018: declared before `child`, so it is dropped after the
+        // agent has been ended, on every return path below.
+        let _step_record: Option<step_record_hook::Guard>;
+        // Issue #2018: a headless step's agent is bound to this launcher.
+        let spawned = if step.headless {
+            ManagedChild::spawn_bound_to_parent(cmd)
+        } else {
+            ManagedChild::spawn(cmd)
+        };
         drop(launch_hold);
         let mut child = match spawned {
             Ok(child) => child,
@@ -538,8 +552,15 @@ fn run_launch_core(
             }
         };
 
-        // Wait for child or signal
-        let exit_code = wait_for_child_or_signal(&mut child, &shutdown);
+        _step_record = step_record_hook::write_step_record(&step, tool, child.id());
+
+        // Wait for child or signal. Issue #2018 (D1): a headless launch
+        // stopped by a signal exits 128 + N; an interactive one still 0.
+        let exit_code = wait_for_child_or_signal(
+            &mut child,
+            &shutdown,
+            step.headless.then_some(first_signal.as_ref()),
+        );
         // Issue #1569: hand back logins the session borrowed, on success and
         // on error, before this process exits.
         if let Some(dir) = claude_config_dir.as_deref() {
@@ -909,16 +930,32 @@ fn render_session_argv(
     argv
 }
 
+/// Waits for `child`, or ends it on SIGINT, SIGTERM or SIGHUP.
+///
+/// `headless_first_signal` is `Some` for a headless recipe step (issue
+/// #2018, D1): it holds the first stop signal received, and a signalled
+/// headless launch returns `128 + N` so a runner that is still alive sees
+/// the step fail. An interactive launch returns 0 on a signal (#1424,
+/// parity with Python).
 fn wait_for_child_or_signal(
     child: &mut ManagedChild,
     shutdown: &Arc<std::sync::atomic::AtomicBool>,
+    headless_first_signal: Option<&std::sync::atomic::AtomicI32>,
 ) -> Result<i32> {
     loop {
         // Check if we received a shutdown signal
         if shutdown.load(Ordering::Relaxed) {
             tracing::info!("shutdown signal received, terminating child process");
             child.terminate();
-            return Ok(0); // match Python behavior: exit 0 on SIGINT
+            return Ok(match headless_first_signal {
+                Some(first) => crate::step_lifetime::headless_signal_exit_code(
+                    match first.load(Ordering::SeqCst) {
+                        0 => None,
+                        sig => Some(sig),
+                    },
+                ),
+                None => 0, // match Python behavior: exit 0 on SIGINT
+            });
         }
 
         // Check if child has exited

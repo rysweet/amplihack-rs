@@ -64,6 +64,8 @@ mod tests_status_hold;
 mod tests_store;
 
 pub use guard::{Denied, SlotGuard};
+/// Issue #2018: the step lifetime and step records key on the same run id.
+pub(crate) use identity::RECIPE_RUN_ID_ENV;
 pub use model::Class;
 
 use admit::AdmitContext;

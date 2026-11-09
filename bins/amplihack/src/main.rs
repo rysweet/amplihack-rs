@@ -9,6 +9,11 @@ use amplihack_cli::commands;
 use amplihack_cli::update;
 
 fn main() {
+    // Issue #2018: read the expected parent before anything that can take
+    // time (update notice, self-heal, asset repair). A headless recipe step
+    // binds to its parent later, in dispatch, and compares against this
+    // reading, so a runner that dies in between is not missed.
+    amplihack_cli::step_lifetime::note_startup_parent();
     let args: Vec<std::ffi::OsString> = std::env::args_os().collect();
     if args.get(1).is_some_and(|arg| arg == "internal") {
         let cli = Cli::parse_from(&args);
@@ -69,6 +74,8 @@ fn main() {
         eprintln!("amplihack: self-heal failed: {e:#}");
         std::process::exit(1);
     }
+
+    amplihack_cli::step_lifetime::startup_test_gate();
 
     if let Err(e) = commands::dispatch(cli.command) {
         if let Some(code) = command_error::exit_code(&e) {

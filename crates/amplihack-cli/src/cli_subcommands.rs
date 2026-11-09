@@ -608,6 +608,16 @@ pub enum RecipeCommands {
         /// tmux session name or run id
         target: String,
     },
+    /// List the records headless recipe steps leave, with each step's state
+    /// (live, orphan, stale or unreadable). Read-only.
+    Steps {
+        /// Show only orphan and unreadable entries
+        #[arg(long)]
+        orphans: bool,
+        /// Output format
+        #[arg(short, long, default_value = "table", value_parser = ["table", "json"])]
+        format: String,
+    },
     /// Internal: the process `recipe run --detach` starts in its tmux pane.
     #[command(name = "detached-child", hide = true)]
     DetachedChild {

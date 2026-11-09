@@ -132,33 +132,9 @@ fn every_amplihack_command_in_a_fenced_doc_example_exists() {
         "could not parse `amplihack recipe`'s subcommands; got {recipe_subs:?}"
     );
 
-    let doc = root.join("docs/recipes/README.md");
-    let body = std::fs::read_to_string(&doc).expect("read docs/recipes/README.md");
-
     let mut findings = Vec::new();
-    for (line, invocation) in fenced_invocations(&body) {
-        let mut words = invocation.split_whitespace();
-        let Some(first) = words.next() else { continue };
-        if first.starts_with('-') {
-            continue; // a bare flag, e.g. `amplihack --version`
-        }
-        if !top.contains(first) {
-            findings.push(format!(
-                "  docs/recipes/README.md:{line}  `amplihack {first}` is not a subcommand"
-            ));
-            continue;
-        }
-        if first == "recipe"
-            && let Some(sub) = words.next()
-            && !sub.starts_with('-')
-            && !recipe_subs.contains(sub)
-        {
-            findings.push(format!(
-                "  docs/recipes/README.md:{line}  `amplihack recipe {sub}` does not exist \
-                 (have: {})",
-                recipe_subs.iter().cloned().collect::<Vec<_>>().join(", ")
-            ));
-        }
+    for doc in DOCS {
+        check_doc(&root, doc, &top, &recipe_subs, &mut findings);
     }
 
     assert!(
@@ -169,4 +145,52 @@ fn every_amplihack_command_in_a_fenced_doc_example_exists() {
          (issue #1348).",
         findings.join("\n")
     );
+}
+
+/// The documents whose fenced examples are checked. Issue #2018 added the two
+/// reference pages that document `amplihack recipe steps`.
+const DOCS: [&str; 3] = [
+    "docs/recipes/README.md",
+    "docs/reference/recipe-command.md",
+    "docs/reference/recipe-step-records.md",
+];
+
+/// A usage synopsis's placeholder, such as `<SUBCOMMAND>` or `[OPTIONS]`.
+fn is_placeholder(word: &str) -> bool {
+    word.starts_with('<') || word.starts_with('[')
+}
+
+fn check_doc(
+    root: &Path,
+    doc: &str,
+    top: &BTreeSet<String>,
+    recipe_subs: &BTreeSet<String>,
+    findings: &mut Vec<String>,
+) {
+    let body =
+        std::fs::read_to_string(root.join(doc)).unwrap_or_else(|e| panic!("read {doc}: {e}"));
+    for (line, invocation) in fenced_invocations(&body) {
+        let mut words = invocation.split_whitespace();
+        let Some(first) = words.next() else { continue };
+        if first.starts_with('-') || is_placeholder(first) {
+            continue; // a bare flag, e.g. `amplihack --version`, or a synopsis
+        }
+        if !top.contains(first) {
+            findings.push(format!(
+                "  {doc}:{line}  `amplihack {first}` is not a subcommand"
+            ));
+            continue;
+        }
+        if first == "recipe"
+            && let Some(sub) = words.next()
+            && !sub.starts_with('-')
+            && !is_placeholder(sub)
+            && !recipe_subs.contains(sub)
+        {
+            findings.push(format!(
+                "  {doc}:{line}  `amplihack recipe {sub}` does not exist (have: {})",
+                recipe_subs.iter().cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
+    }
 }
