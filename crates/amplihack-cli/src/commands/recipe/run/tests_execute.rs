@@ -3393,6 +3393,7 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
     let saved = crate::test_support::EnvGuard::capture(&[
         "AMPLIHACK_AGENT_BINARY",
         "AMPLIHACK_ASSET_RESOLVER",
+        "AMPLIHACK_CLEANUP_ON_EXIT",
         "AMPLIHACK_GRAPH_DB_PATH",
         "AMPLIHACK_HOME",
         "AMPLIHACK_KUZU_DB_PATH",
@@ -3413,6 +3414,11 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
     ]);
     // These assertions exercise generic runner/Claude staging, without a Codex stub.
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    // Issue #2067: without this, every recipe run in these tests ends with
+    // the end-of-run sweep over the real work root, which takes tens of
+    // seconds on a loaded host and breaks the tests' wall-clock bounds.
+    // No test here asserts on the sweep.
+    unsafe { std::env::set_var("AMPLIHACK_CLEANUP_ON_EXIT", "0") };
     saved
 }
 
