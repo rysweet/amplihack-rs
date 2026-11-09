@@ -161,7 +161,9 @@ release. See
   `AMPLIHACK_HOME` unset. To stage the changed tree on purpose, run the
   `amplihack install --local <PATH>` command the message prints.
 - **The fetched tree doesn't match:** the message says this is not a network
-  failure. Nothing was staged. Retrying won't help; report it at
+  failure. It appears only when the tag tarball differs from the release, not
+  just the git checkout, so your git config isn't the cause. Nothing was
+  staged. Retrying won't help; report it at
   <https://github.com/rysweet/amplihack-rs/issues>. Until a fixed release is
   out, `amplihack install --local` with a clean checkout of the tag stages a
   bundle.

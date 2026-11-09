@@ -1,8 +1,10 @@
 //! Issue #1972 D8, D9: `release.yml` generates the bundle manifest once,
 //! embeds the same bytes in every build leg and attaches them to the release.
 //!
-//! Text-based, like the issue_1356 and issue_1358 guards, so a failure names
-//! the line to edit and no YAML dependency is needed.
+//! The workflow checks are text-based, like the issue_1356 and issue_1358
+//! guards, so a failure names the line to edit and no YAML dependency is
+//! needed. The post-build embed check is a script, run here against fixture
+//! bytes and against this test binary's own rustc output.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -104,6 +106,128 @@ fn issue_1972_every_build_leg_embeds_the_verified_manifest_before_cargo_build() 
     let copy = position(&build, &format!("\"${{MANIFEST}}\" {PLACEHOLDER}"));
     let cargo = position(&build, "cargo build --release");
     assert!(download < copy && digest < copy && format < copy && copy < cargo);
+}
+
+#[test]
+fn issue_1972_every_build_leg_checks_its_binary_carries_the_manifest_before_packaging() {
+    let body = workflow("release.yml");
+    let build = job(&body, "build");
+    let cargo = position(&build, "cargo build --release");
+    let check = position(&build, "bash scripts/check-embedded-bundle-manifest.sh");
+    let package = position(&build, "name: Package");
+    assert!(cargo < check && check < package, "{build}");
+    assert!(
+        build
+            .contains("MANIFEST: ${{ runner.temp }}/bundle-manifest/amplifier-bundle-manifest.txt")
+    );
+    assert!(build.contains("BINARY: target/${{ matrix.target }}/release/amplihack"));
+}
+
+// ── scripts/check-embedded-bundle-manifest.sh ──
+
+const CHECK_SCRIPT: &str = "scripts/check-embedded-bundle-manifest.sh";
+
+/// Three manifest lines in the generator's format.
+const MANIFEST: &str = "\
+0000000000000000000000000000000000000000000000000000000000000001  agents/a.md
+0000000000000000000000000000000000000000000000000000000000000002  recipes/b.yaml
+0000000000000000000000000000000000000000000000000000000000000003  tools/c.sh
+";
+
+/// Compiled into this test binary the way `include_str!` compiles the release
+/// manifest into `amplihack`: as one `&'static str`. Distinct from `MANIFEST`,
+/// so a match can only come from this constant.
+const COMPILED_IN: &str = "\
+abababababababababababababababababababababababababababababababab01  agents/compiled.md
+abababababababababababababababababababababababababababababababab02  tools/compiled.sh
+";
+
+fn run_check(manifest: &[u8], binary: &[u8]) -> std::process::Output {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest_path = temp.path().join("manifest.txt");
+    let binary_path = temp.path().join("amplihack");
+    fs::write(&manifest_path, manifest).unwrap();
+    fs::write(&binary_path, binary).unwrap();
+    run_check_paths(&manifest_path, &binary_path)
+}
+
+fn run_check_paths(manifest: &Path, binary: &Path) -> std::process::Output {
+    std::process::Command::new("bash")
+        .arg(repo_root().join(CHECK_SCRIPT))
+        .arg(manifest)
+        .arg(binary)
+        .output()
+        .unwrap()
+}
+
+/// Bytes on both sides, as a linker leaves them around a string constant.
+fn embedded(text: &str) -> Vec<u8> {
+    let mut bytes = vec![0u8, 0x7f, b'E', b'L', b'F', 0xff, 0x10];
+    bytes.extend_from_slice(text.as_bytes());
+    bytes.extend_from_slice(&[0u8, 0xfe, 0x01]);
+    bytes
+}
+
+#[cfg(unix)]
+#[test]
+fn issue_1972_the_embed_check_accepts_a_binary_with_every_line() {
+    let output = run_check(MANIFEST.as_bytes(), &embedded(MANIFEST));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn issue_1972_the_embed_check_rejects_a_dev_build_with_the_empty_placeholder() {
+    let output = run_check(MANIFEST.as_bytes(), &embedded(""));
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("carries 0 of the 3 manifest lines"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn issue_1972_the_embed_check_rejects_a_stale_or_partial_embed() {
+    let stale = MANIFEST.replace("tools/c.sh", "tools/old.sh");
+    let output = run_check(MANIFEST.as_bytes(), &embedded(&stale));
+    assert_eq!(output.status.code(), Some(1));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("carries 2 of the 3"), "{stderr}");
+    assert!(stderr.contains("first missing: 0000"), "{stderr}");
+    assert!(stderr.contains("tools/c.sh"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn issue_1972_the_embed_check_rejects_an_empty_or_blank_line_manifest() {
+    // A blank pattern would match every binary.
+    for manifest in ["", "\n", "0000  agents/a.md\n\n"] {
+        let output = run_check(manifest.as_bytes(), &embedded(MANIFEST));
+        assert_eq!(output.status.code(), Some(1), "{manifest:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn issue_1972_the_embed_check_finds_a_constant_rustc_compiled_into_a_real_binary() {
+    // The check rests on a `&'static str` reaching the binary byte for byte.
+    // This test binary is real rustc output, built in the same way.
+    assert!(!std::hint::black_box(COMPILED_IN).is_empty());
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = temp.path().join("manifest.txt");
+    fs::write(&manifest, COMPILED_IN).unwrap();
+    let output = run_check_paths(&manifest, &std::env::current_exe().unwrap());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]

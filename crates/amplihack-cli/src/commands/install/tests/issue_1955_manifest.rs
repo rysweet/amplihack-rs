@@ -322,7 +322,7 @@ fn staging_with_installed_bundle() -> Staging {
     fs::create_dir_all(&claude_dir).unwrap();
     let target = temp.path().join(".amplihack/amplifier-bundle");
     let staging = temp.path().join(".amplihack/amplifier-bundle.staging");
-    copy_amplifier_bundle(&repo, &claude_dir).unwrap();
+    copy_amplifier_bundle(&repo, &claude_dir, None).unwrap();
     fs::write(target.join("previous-install-sentinel"), "keep me\n").unwrap();
     Staging {
         _temp: temp,
@@ -340,7 +340,7 @@ fn assert_tampering_fails(tamper: impl FnMut(&Path) + 'static, expected_path: &s
     let before = snapshot(&fixture.target);
 
     let result = with_staging_hook(tamper, || {
-        copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir)
+        copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir, None)
     });
 
     let err = result.expect_err("a staged bundle that differs from its source must fail");
@@ -414,7 +414,7 @@ fn the_check_covers_files_outside_recipes() {
 fn a_clean_copy_is_swapped_in_and_leaves_no_staging() {
     let fixture = staging_with_installed_bundle();
 
-    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
+    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir, None).unwrap();
 
     assert!(
         !fixture.target.join("previous-install-sentinel").exists(),
@@ -441,7 +441,7 @@ fn symlinks_in_the_source_are_not_staged_and_do_not_fail_the_check() {
     fs::create_dir_all(bundle.join("tools/__pycache__")).unwrap();
     fs::write(bundle.join("tools/__pycache__/x.pyc"), "x").unwrap();
 
-    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
+    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir, None).unwrap();
 
     assert!(fs::symlink_metadata(fixture.target.join("agents/link")).is_err());
     assert!(fs::symlink_metadata(fixture.target.join("dirlink")).is_err());
@@ -460,7 +460,7 @@ fn a_leftover_staging_directory_is_removed_first() {
     fs::create_dir_all(&fixture.staging).unwrap();
     fs::write(fixture.staging.join("leftover"), "x").unwrap();
 
-    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
+    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir, None).unwrap();
 
     assert!(!fixture.target.join("leftover").exists());
     assert!(
@@ -483,7 +483,7 @@ fn a_symlinked_bundle_root_fails_and_creates_no_staging() {
     let claude_dir = temp.path().join(".amplihack/.claude");
     fs::create_dir_all(&claude_dir).unwrap();
 
-    let err = copy_amplifier_bundle(&repo, &claude_dir).expect_err("must fail");
+    let err = copy_amplifier_bundle(&repo, &claude_dir, None).expect_err("must fail");
 
     assert!(format!("{err:#}").contains("symlink"), "{err:#}");
     assert!(

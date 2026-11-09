@@ -151,29 +151,6 @@ fn run_install_scoped(
     )
 }
 
-/// [`run_install_with_manifest`] for a binary with no release manifest.
-#[cfg(test)]
-fn run_install_with_fetcher(
-    local: Option<PathBuf>,
-    interactive: bool,
-    force_refresh: bool,
-    reconcile_codex: bool,
-    mode: InstallMode,
-    binary: &framework_source::BinaryIdentity,
-    fetcher: &dyn tag_fetch::TagFetcher,
-) -> Result<()> {
-    run_install_with_manifest(
-        local,
-        interactive,
-        force_refresh,
-        reconcile_codex,
-        mode,
-        binary,
-        None,
-        fetcher,
-    )
-}
-
 /// The source is settled first (issue #1955): a refusal or a failed fetch comes
 /// before the wizard asks anything and before any binary is deployed, so it
 /// changes nothing on disk.
@@ -213,7 +190,7 @@ fn run_install_with_manifest(
             .and_then(|stamp| stamp.parent().map(fetch_backoff::marker_path)),
     };
     // Lives until the install returns, because a fetched tree is deleted with it.
-    let source = framework_source::acquire_framework_source_with_manifest(
+    let source = framework_source::acquire_framework_source(
         &policy,
         &FrameworkRootQuery::from_environment(),
         binary,
@@ -240,7 +217,7 @@ fn run_install_with_manifest(
     // Issue #1972 R11: the staged copy is checked for every origin except
     // `--local`. This is the only place `--local` is excluded.
     let expected = release.filter(|_| source.origin != framework_source::SourceOrigin::Local);
-    local_install_scoped_with_manifest(
+    local_install_scoped(
         &source.root,
         wizard_config.as_ref(),
         reconcile_codex,
@@ -689,22 +666,12 @@ fn local_install(
     repo_root: &Path,
     wizard_config: Option<&interactive::InteractiveConfig>,
 ) -> Result<()> {
-    local_install_scoped(repo_root, wizard_config, true, InstallMode::Explicit)
-}
-
-#[cfg(test)]
-fn local_install_scoped(
-    repo_root: &Path,
-    wizard_config: Option<&interactive::InteractiveConfig>,
-    reconcile_codex: bool,
-    mode: InstallMode,
-) -> Result<()> {
-    local_install_scoped_with_manifest(repo_root, wizard_config, reconcile_codex, mode, None)
+    local_install_scoped(repo_root, wizard_config, true, InstallMode::Explicit, None)
 }
 
 /// Stage from `repo_root`. `expected` is the release manifest the staged
 /// bundle copy must match (issue #1972 R11), `None` for `--local`.
-fn local_install_scoped_with_manifest(
+fn local_install_scoped(
     repo_root: &Path,
     wizard_config: Option<&interactive::InteractiveConfig>,
     reconcile_codex: bool,
@@ -831,7 +798,7 @@ fn local_install_scoped_with_manifest(
 
     println!();
     println!("📦 Staging amplifier-bundle (recipes, modules, tools):");
-    copy_amplifier_bundle_with_manifest(repo_root, &claude_dir, expected)?;
+    copy_amplifier_bundle(repo_root, &claude_dir, expected)?;
 
     println!();
     println!("📝 Initializing PROJECT.md:");

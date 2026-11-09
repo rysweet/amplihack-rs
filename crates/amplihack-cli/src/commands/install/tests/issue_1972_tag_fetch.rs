@@ -34,7 +34,7 @@ fn acquire(
     release: &ReleaseManifest,
     fetcher: &FakeFetcher,
 ) -> anyhow::Result<AcquiredSource> {
-    acquire_framework_source_with_manifest(
+    acquire_framework_source(
         policy,
         &FrameworkRootQuery::default(),
         &release_binary(),
@@ -122,7 +122,7 @@ fn issue_1972_the_version_check_comes_before_the_manifest_check() {
 fn issue_1972_the_manifest_check_comes_before_validation() {
     let written = Rc::new(RefCell::new(None));
     let fetcher = tampered_fetcher(BINARY, written);
-    let err = acquire_framework_source_with_manifest(
+    let err = acquire_framework_source(
         &policy(InstallMode::Explicit, None),
         &FrameworkRootQuery::default(),
         &release_binary(),
@@ -180,7 +180,7 @@ fn issue_1972_a_hashing_error_on_the_fetched_tree_is_a_hard_failure() {
 fn issue_1972_without_a_manifest_a_changed_tag_tree_is_staged_as_before() {
     let written = Rc::new(RefCell::new(None));
     let fetcher = tampered_fetcher(BINARY, written);
-    let source = acquire_framework_source_with_manifest(
+    let source = acquire_framework_source(
         &policy(InstallMode::Explicit, None),
         &FrameworkRootQuery::default(),
         &release_binary(),
@@ -266,7 +266,7 @@ fn issue_1972_the_launch_bootstrap_path_refuses_a_changed_tag_in_implicit_mode()
     let written = Rc::new(RefCell::new(None));
     let fetcher = tampered_fetcher(BINARY, written);
 
-    let err = acquire_framework_source_with_manifest(
+    let err = acquire_framework_source(
         &policy(InstallMode::Implicit, Some(marker.clone())),
         &query,
         &release_binary(),

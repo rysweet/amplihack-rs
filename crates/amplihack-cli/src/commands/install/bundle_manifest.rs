@@ -33,6 +33,16 @@ impl ManifestDiff {
     pub(super) fn is_clean(&self) -> bool {
         self.missing.is_empty() && self.extra.is_empty() && self.changed.is_empty()
     }
+
+    /// `2 missing, 0 extra, 1 changed`.
+    pub(super) fn summary(&self) -> String {
+        format!(
+            "{} missing, {} extra, {} changed",
+            self.missing.len(),
+            self.extra.len(),
+            self.changed.len()
+        )
+    }
 }
 
 /// Files the copy would take from a source bundle (`WalkScope::CopySet`).
@@ -138,10 +148,8 @@ pub(super) fn render_mismatch(source: &Path, diff: &ManifestDiff) -> String {
 pub(super) fn render_release_mismatch(subject: &str, version: &str, diff: &ManifestDiff) -> String {
     let mut text = format!(
         "{subject} does not match the release v{version} manifest embedded in this binary \
-         ({} missing, {} extra, {} changed):",
-        diff.missing.len(),
-        diff.extra.len(),
-        diff.changed.len()
+         ({}):",
+        diff.summary()
     );
     write_path_lists(&mut text, diff);
     text

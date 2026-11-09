@@ -126,6 +126,8 @@ make no network request and tell you to use `amplihack install --local`.
    No remote is configured, and the URL is fixed in the binary.
 2. If git fails or isn't installed, download
    `https://github.com/rysweet/amplihack-rs/archive/refs/tags/v<version>.tar.gz`.
+   In a release binary, the tarball is also tried when the git tree doesn't
+   match the [release manifest](#release-manifest-check).
 
 **Time limits**, shared across both routes:
 
@@ -153,9 +155,25 @@ Exceeding a limit counts as a failed fetch and leaves the bundle unchanged.
 - The fetched tree's version must equal the binary's. A mismatch or an unknown
   version is a hard failure, and no older tree is tried.
 - In a release binary, the fetched tree's `amplifier-bundle/` must then match
-  the [release manifest](#release-manifest-check) embedded in the binary. A
-  mismatch is a hard failure, the fetched tree is deleted and no backoff marker
-  is written. Only after this check does the compatibility check read the tree.
+  the [release manifest](#release-manifest-check) embedded in the binary. Only
+  after this check does the compatibility check read the tree. What a mismatch
+  does depends on the route:
+
+  | Git tree | Tarball tree | Result |
+  |---|---|---|
+  | Matches | Not fetched | Staged |
+  | Differs | Matches | The tarball tree is staged. The git tree is deleted first. |
+  | Differs | Download fails | A failed fetch, as for a network failure: self-heal may keep a compatible bundle and the [fetch backoff](#fetch-backoff) applies. The reason starts `git: the checked-out tree differs from the release manifest`. |
+  | Differs, or git failed | Differs | **Hard failure.** The tag's own bytes differ from the release. The tree is deleted, no backoff marker is written and the error asks you to report it. |
+
+  A git tree at another version is a hard failure at once, because the tarball
+  holds the same tag.
+- Git writes the committed bytes. Every git call runs with
+  `core.autocrlf=false`, `core.eol=lf`, `core.attributesFile=/dev/null` and, on
+  Unix, `core.symlinks=true`, so a user setting that rewrites files on checkout,
+  such as `core.autocrlf=true`, doesn't change the tree. The repository's own
+  `.gitattributes`, if it ever has one, applies here as it does in the release
+  job that generates the manifest.
 - Git runs with inherited `GIT_*` location variables, `GIT_SSH_COMMAND`,
   `GIT_PROXY_COMMAND`, `GIT_ASKPASS`, `SSH_ASKPASS` and `GIT_TEMPLATE_DIR`
   removed. It also runs with hooks and `core.fsmonitor` turned off, no credential
@@ -269,7 +287,7 @@ the manifest check.
 | Any local source, self-heal or launch bootstrap | Its version matches | Print a note, then try the next source |
 | Executable walk-up or compile-time root | Its version matches | Print a note, then try the next source |
 | `~/.amplihack` | Its stamp equals the binary's version | Print a note, then fetch the release tag |
-| Release tag fetch | Always, after the version check | **Hard failure.** Not a network failure, so self-heal exits 1 instead of keeping the installed bundle, and no backoff marker is written. |
+| Release tag fetch | Always, after the version check | A git tree that differs is replaced by the tag tarball. **Hard failure** only when the tarball tree differs too: not a network failure, so self-heal exits 1 instead of keeping the installed bundle, and no backoff marker is written. See [Release tag fetch](#release-tag-fetch). |
 | `--local <PATH>` | Its version matches | Print a warning and stage it anyway |
 | `--local <PATH>` | Its version differs or is unknown | Not checked |
 | The staged copy | Every source except `--local` | Install fails before the swap; the installed bundle is unchanged |
@@ -317,8 +335,11 @@ On macOS, use `shasum -a 256 -c`. `sha256sum -c` doesn't report extra files.
 amplifier-bundle` once, at the version-bump commit, checks the result with
 `sha256sum -c` and records its SHA-256. Every build leg checks that digest and
 copies the file over `crates/amplihack-cli/release/amplifier-bundle-manifest.txt`
-before `cargo build`. The release job checks the digest again and attaches the
-file. The stamp commit may only change `Cargo.toml`, `Cargo.lock` and
+before `cargo build`. After the build, each leg runs
+`scripts/check-embedded-bundle-manifest.sh`, which fails the release unless
+every manifest line is in the built `amplihack` binary, so an empty or stale
+embed can't ship as a release that silently checks nothing. The release job
+checks the digest again and attaches the file. The stamp commit may only change `Cargo.toml`, `Cargo.lock` and
 `package.json`, so the tag's `amplifier-bundle/` is the tree that was hashed.
 
 ## File modes
@@ -585,10 +606,11 @@ Install never prints `Bundled framework source not found`.
 - **Consistency, not authenticity:** the check shows that a bundle matches the
   release this binary was built with. Anyone who can replace the binary can
   replace the manifest in it.
-- **Line endings on the git route:** the tag tree is compared byte for byte. A
-  user-level git setting that rewrites files on checkout, such as
-  `core.autocrlf`, would make every fetch fail the check. The repository has no
-  `.gitattributes` and the tarball route applies no filters.
+- **Git settings install doesn't override:** the git route turns off the
+  checkout conversions listed under [Release tag fetch](#release-tag-fetch). A
+  setting outside that list that still changes the checked-out bytes makes the
+  git tree fail the check; the fetch then uses the tarball, or, with the
+  tarball out of reach, fails as a network failure would.
 - **Hashing cost:** each local source at the binary's version, and each fetched
   tree, is hashed in full (about 820 files and 13 MB today) before staging,
   on top of the copy-against-source check. The Codex reconcile and the
@@ -598,8 +620,8 @@ Install never prints `Bundled framework source not found`.
   is deleted and nothing is swapped in.
 - **A malformed manifest blocks `--local` too:** see
   [Release manifest check](#release-manifest-check).
-- **A defective release fails every fetch:** a fetched-tree mismatch writes no
-  backoff marker, so self-heal on such a release fetches and exits 1 on each
+- **A defective release fails every fetch:** a tarball tree that differs from
+  the manifest writes no backoff marker, so self-heal on such a release fetches and exits 1 on each
   launch until a fixed release is installed.
 - **The stamp commit:** the tag's bundle matches only because the release's
   stamp commit leaves `amplifier-bundle/` alone. The release workflow enforces
@@ -616,20 +638,21 @@ All paths are under `crates/amplihack-cli/src/`.
 | `SourcePolicy` | `commands/install/framework_source.rs` | Which rules apply: local override, force refresh, explicit or implicit. |
 | `SourceVersion` | `commands/install/framework_source.rs` | `Known` is built only from a successful semver parse; otherwise unknown. |
 | `read_source_version` | `commands/install/framework_source.rs` | Reads a source's version as described above. |
-| `acquire_framework_source_with_manifest`, `AcquiredSource` | `commands/install/framework_source.rs` | Decides the source. All inputs are parameters, including the release manifest. `acquire_framework_source` is a test-only wrapper with no manifest. |
+| `acquire_framework_source`, `AcquiredSource` | `commands/install/framework_source.rs` | Decides the source. All inputs are parameters, including the release manifest (`None` for a binary with none). |
 | `Refusal`, `ReleaseManifestRefused` | `commands/install/framework_source.rs` | Why resolution stopped. `Refusal` converts to `SourceRefused` or `ReleaseManifestRefused`. |
 | `ReleaseManifest`, `ManifestFinding`, `MalformedReleaseManifest` | `commands/install/release_manifest.rs` | The manifest compiled into the binary, whether it is active, and the comparison with a tree. |
 | `parse`, `render_release_mismatch` | `commands/install/bundle_manifest.rs` | Reads the [release manifest format](#release-manifest-check) and renders a mismatch. |
 | `FetchedManifestMismatch` | `commands/install/tag_fetch.rs` | A fetched tree that doesn't match. Never a `SourceFetchFailed`. |
-| `copy_amplifier_bundle_with_manifest` | `commands/install/directories.rs` | Stages the bundle and checks the staged copy against the release manifest. |
+| `copy_amplifier_bundle` | `commands/install/directories.rs` | Stages the bundle and checks the staged copy against the release manifest, when one is passed. |
 | `generate-bundle-manifest.sh` | `scripts/` (repository root) | Writes the release manifest at release time. A parity test keeps it in step with `of_source`. |
-| `TagFetcher` | `commands/install/tag_fetch.rs` | Fetches one exact release tag. Injected in tests, with no production env var. |
+| `check-embedded-bundle-manifest.sh` | `scripts/` (repository root) | Fails a release build leg whose binary doesn't carry every manifest line. |
+| `TagFetcher` | `commands/install/tag_fetch.rs` | Fetches one exact release tag. `fetch_verified` checks the tree, and the production fetcher falls back to the tarball when a git tree fails the release manifest. Injected in tests, with no production env var. |
 | `SourceFetchFailed` | `commands/install/tag_fetch.rs` | The only error self-heal may continue past, and only with a compatible bundle. |
 | `recent_failure`, `record_failure`, `clear` | `commands/install/fetch_backoff.rs` | The [fetch backoff](#fetch-backoff) marker. |
 | `of_source`, `of_staged`, `compare` | `commands/install/bundle_manifest.rs` | Builds and compares manifests. `compare` is pure. |
 | `walk_tree`, `WalkScope`, `WalkEntry` | `commands/install/filesystem.rs` | The one walker used by the copy and the manifest. |
 | `normalize_bundle_modes` | `commands/install/directories.rs` | Applies [the mode rule](#file-modes). Returns an error on a symlink. |
-| `run_install_with_manifest` | `commands/install/mod.rs` | The install entry point with every input passed in. `run_install_scoped` reads the embedded manifest and calls it; `run_install_with_fetcher` is a test-only wrapper with no manifest. |
+| `run_install_with_manifest` | `commands/install/mod.rs` | The install entry point with every input passed in. `run_install_scoped` reads the embedded manifest and calls it. |
 | `http_get_bounded` | `update/network.rs` | HTTPS download with an overall time limit and a final-URL check. |
 
 Focused tests:

@@ -208,7 +208,7 @@ fn normalize_reaches_a_directory_with_no_search_permission() {
 fn a_loose_source_is_staged_with_no_group_or_other_write() {
     let fixture = loose_fixture();
 
-    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
+    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir, None).unwrap();
 
     assert_no_group_or_other_write(&fixture.target);
 }
@@ -217,7 +217,7 @@ fn a_loose_source_is_staged_with_no_group_or_other_write() {
 fn execute_bits_are_kept_both_ways() {
     let fixture = loose_fixture();
 
-    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
+    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir, None).unwrap();
 
     let tools = fixture.target.join("tools");
     assert_eq!(mode_of(&tools.join("run-me.sh")), 0o755, "stays executable");
@@ -234,7 +234,7 @@ fn the_source_tree_is_not_changed_by_staging() {
     let fixture = loose_fixture();
     let script = fixture.repo.join("amplifier-bundle/tools/run-me.sh");
 
-    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
+    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir, None).unwrap();
 
     assert_eq!(mode_of(&script), 0o775, "only the copy gets the mode rule");
 }
@@ -244,7 +244,7 @@ fn the_merge_guard_accepts_the_tree_with_no_further_chmod() {
     // #1551's own check, run on what staging produced.
     let fixture = loose_fixture();
 
-    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
+    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir, None).unwrap();
 
     let amplihack_home = fixture.claude_dir.parent().unwrap();
     locate_guard_dir(amplihack_home).unwrap_or_else(|e| panic!("{e:#}"));
@@ -266,7 +266,7 @@ fn a_non_executable_merge_guard_shim_still_ends_up_executable() {
         0o664,
     );
 
-    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
+    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir, None).unwrap();
 
     assert_eq!(
         mode_of(&fixture.target.join("tools/gh-merge-guard/gh")),
@@ -286,7 +286,7 @@ fn staging_stays_private_until_the_copy_has_been_checked() {
         move |staging| {
             *record.lock().unwrap() = Some(mode_of(staging));
         },
-        || copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir),
+        || copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir, None),
     )
     .unwrap();
 
@@ -297,10 +297,10 @@ fn staging_stays_private_until_the_copy_has_been_checked() {
 fn a_loose_previous_bundle_is_replaced_by_a_clean_one() {
     // The hosts that motivated this: bundles already staged at 775/664.
     let fixture = loose_fixture();
-    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
+    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir, None).unwrap();
     set_loose_modes(&fixture.target, &[]);
 
-    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir).unwrap();
+    copy_amplifier_bundle(&fixture.repo, &fixture.claude_dir, None).unwrap();
 
     assert_no_group_or_other_write(&fixture.target);
 }
@@ -325,7 +325,7 @@ fn a_tar_extracted_source_is_staged_clean() {
     extract_tag_tarball(&archive, extracted.path(), &TARBALL_LIMITS).unwrap();
 
     let repo = extracted.path().join("amplihack-rs-1.2.99");
-    copy_amplifier_bundle(&repo, &fixture.claude_dir).unwrap();
+    copy_amplifier_bundle(&repo, &fixture.claude_dir, None).unwrap();
     assert_no_group_or_other_write(&fixture.target);
     assert_eq!(mode_of(&fixture.target.join("tools/run-me.sh")), 0o755);
     assert_eq!(mode_of(&fixture.target.join("tools/read-me.md")), 0o644);
@@ -374,7 +374,7 @@ fn stage_under_current_umask() {
     let claude_dir = temp.path().join(".amplihack/.claude");
     fs::create_dir_all(&claude_dir).unwrap();
 
-    copy_amplifier_bundle(&repo, &claude_dir).unwrap();
+    copy_amplifier_bundle(&repo, &claude_dir, None).unwrap();
 
     let target = temp.path().join(".amplihack/amplifier-bundle");
     assert_no_group_or_other_write(&target);

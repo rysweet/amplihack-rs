@@ -76,12 +76,12 @@ fn acquire(
     query: &FrameworkRootQuery,
     fetcher: &FakeFetcher,
 ) -> anyhow::Result<AcquiredSource> {
-    acquire_framework_source(policy, query, &binary(), fetcher, &accept_all)
+    acquire_framework_source(policy, query, &binary(), None, fetcher, &accept_all)
 }
 
 /// The notes `acquire` prints for this policy and query, as text.
 fn notes(policy: &SourcePolicy, query: &FrameworkRootQuery) -> Vec<String> {
-    resolve_for_policy(policy, query, BINARY, &accept_all)
+    resolve_for_policy(policy, query, BINARY, None, &accept_all)
         .notes
         .iter()
         .map(ToString::to_string)
@@ -219,6 +219,7 @@ fn an_incompatible_source_is_skipped_before_its_version_is_considered() {
         &explicit(),
         &query,
         &binary(),
+        None,
         &FakeFetcher::serving(BINARY),
         &validate,
     )
@@ -670,7 +671,7 @@ fn a_build_that_may_not_fetch_makes_no_request_and_names_the_local_route() {
         may_fetch: false,
     };
 
-    let err = acquire_framework_source(&explicit(), &query, &build, &fetcher, &accept_all)
+    let err = acquire_framework_source(&explicit(), &query, &build, None, &fetcher, &accept_all)
         .expect_err("no source and no fetch must fail");
 
     assert_eq!(fetcher.call_count(), 0, "this build must make no request");
@@ -702,6 +703,7 @@ fn build_metadata_is_ignored_when_versions_are_compared() {
         &explicit(),
         &home_query(&tree),
         &build,
+        None,
         &FakeFetcher::failing("must not be called"),
         &accept_all,
     )

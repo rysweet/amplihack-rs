@@ -58,7 +58,7 @@ fn acquire(
     release: Option<&ReleaseManifest>,
     fetcher: &FakeFetcher,
 ) -> anyhow::Result<AcquiredSource> {
-    acquire_framework_source_with_manifest(
+    acquire_framework_source(
         policy,
         query,
         &release_binary(),
@@ -73,7 +73,7 @@ fn notes(
     query: &FrameworkRootQuery,
     release: &ReleaseManifest,
 ) -> Vec<String> {
-    resolve_for_policy_with_manifest(policy, query, BINARY, Some(release), &accept_all)
+    resolve_for_policy(policy, query, BINARY, Some(release), &accept_all)
         .notes
         .iter()
         .map(ToString::to_string)
@@ -234,7 +234,7 @@ fn issue_1972_the_refusal_travels_through_resolution_as_a_refusal() {
     let fx = fixture();
     change_file(&fx.tree, LISTED);
 
-    let resolution = resolve_for_policy_with_manifest(
+    let resolution = resolve_for_policy(
         &explicit(),
         &home_query(&fx.tree),
         BINARY,
@@ -349,7 +349,7 @@ fn issue_1972_force_refresh_skips_a_changed_amplihack_home() {
     let fx = fixture();
     change_file(&fx.tree, LISTED);
 
-    let resolution = resolve_for_policy_with_manifest(
+    let resolution = resolve_for_policy(
         &force_refresh(),
         &home_query(&fx.tree),
         BINARY,

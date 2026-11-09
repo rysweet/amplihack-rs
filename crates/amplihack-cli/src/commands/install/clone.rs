@@ -106,6 +106,33 @@ const GIT_HOOKS_OFF: &str = "core.hooksPath=/dev/null";
 #[cfg(windows)]
 const GIT_HOOKS_OFF: &str = "core.hooksPath=NUL";
 
+/// Issue #1972: git must write the committed bytes, because the tag fetch
+/// compares the tree it checks out with the release manifest. The user's own
+/// config could otherwise rewrite files on checkout: `core.autocrlf=true` (common
+/// in a gitconfig shared with Windows) turns LF into CRLF on any OS, `core.eol`
+/// does the same for `text` files, a global attributes file can mark every file
+/// `text eol=crlf` or give it a filter, and `core.symlinks=false` writes symlinks
+/// as plain files. The repository's own `.gitattributes` still applies, as it
+/// does in the release job that generated the manifest. Set on every call, so
+/// no caller can leave them out; none of them changes what a read-only call
+/// such as `git describe` reports.
+#[cfg(not(windows))]
+const GIT_EXACT_CHECKOUT: [&str; 4] = [
+    "core.autocrlf=false",
+    "core.eol=lf",
+    "core.attributesFile=/dev/null",
+    "core.symlinks=true",
+];
+/// Git for Windows needs a privilege to create symlinks, so `core.symlinks` is
+/// left alone there. A tree it writes them into as plain files fails the
+/// manifest, and the fetch then falls back to the tarball.
+#[cfg(windows)]
+const GIT_EXACT_CHECKOUT: [&str; 3] = [
+    "core.autocrlf=false",
+    "core.eol=lf",
+    "core.attributesFile=NUL",
+];
+
 /// Workspace-member path that identifies an amplihack-rs `Cargo.toml`.
 pub(super) const AMPLIHACK_WORKSPACE_MARKER: &str = "crates/amplihack-cli";
 
@@ -664,8 +691,8 @@ impl GitOutput {
 }
 
 /// The one way install runs git: scrubbed environment, hooks and credential
-/// helpers off, no stdin, its own session, and killed with its children at
-/// `timeout` (SEC-2, SEC-6).
+/// helpers off, checkout conversions off ([`GIT_EXACT_CHECKOUT`]), no stdin,
+/// its own session, and killed with its children at `timeout` (SEC-2, SEC-6).
 pub(super) fn run_bounded_git(
     git: &Path,
     args: &[&str],
@@ -703,6 +730,11 @@ pub(super) fn run_bounded_git_with(
             "-c",
             "credential.helper=",
         ])
+        .args(
+            GIT_EXACT_CHECKOUT
+                .iter()
+                .flat_map(|setting| ["-c", *setting]),
+        )
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::null())

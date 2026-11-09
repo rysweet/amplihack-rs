@@ -304,6 +304,16 @@ jobs:
             -p amplihack -p amplihack-hooks-bin \
             --features amplihack-hooks-bin/signal
 
+      - name: Check the binary carries the release bundle manifest
+        # Issue #1972: an empty or stale embed turns the install check off with
+        # no error, and the binary would pass for a dev build. Every manifest
+        # line must be in the built binary's bytes, or the release stops here.
+        shell: bash
+        env:
+          MANIFEST: ${{ runner.temp }}/bundle-manifest/amplifier-bundle-manifest.txt
+          BINARY: target/${{ matrix.target }}/release/amplihack
+        run: bash scripts/check-embedded-bundle-manifest.sh "${MANIFEST}" "${BINARY}"
+
       - name: Save sccache disk cache
         if: always() && github.ref == 'refs/heads/main'
         uses: ./.github/actions/sccache-save

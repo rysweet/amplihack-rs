@@ -400,16 +400,11 @@ fn backup_path(target: &Path) -> PathBuf {
 /// The source `amplifier-bundle/` root must be a real directory; symlinked
 /// roots are rejected to prevent a malicious local repo from copying an
 /// arbitrary readable directory into the user's staging area.
-#[cfg(test)]
-pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Result<bool> {
-    copy_amplifier_bundle_with_manifest(repo_root, claude_dir, None)
-}
-
-/// [`copy_amplifier_bundle`], and in a release build the staged copy is also
-/// compared with the release manifest embedded in the binary before the swap
-/// (issue #1972 R11). `expected` is `None` for `--local` and for a binary with
-/// no manifest.
-pub(super) fn copy_amplifier_bundle_with_manifest(
+///
+/// In a release build the staged copy is also compared with the release
+/// manifest embedded in the binary before the swap (issue #1972 R11).
+/// `expected` is `None` for `--local` and for a binary with no manifest.
+pub(super) fn copy_amplifier_bundle(
     repo_root: &Path,
     claude_dir: &Path,
     expected: Option<&ReleaseManifest>,

@@ -2,9 +2,7 @@
 //! staging layer and through a real install.
 
 use super::super::InstallMode;
-use super::super::directories::{
-    copy_amplifier_bundle_with_manifest, staging_hook::with_staging_hook,
-};
+use super::super::directories::{copy_amplifier_bundle, staging_hook::with_staging_hook};
 use super::super::framework_source::{BinaryIdentity, ReleaseManifestRefused};
 use super::super::release_manifest::ReleaseManifest;
 use super::super::run_install_with_manifest;
@@ -42,7 +40,7 @@ fn staging() -> Staging {
     fs::create_dir_all(&claude_dir).unwrap();
     let target = temp.path().join(".amplihack/amplifier-bundle");
     let staging = temp.path().join(".amplihack/amplifier-bundle.staging");
-    copy_amplifier_bundle_with_manifest(&repo, &claude_dir, Some(&release)).unwrap();
+    copy_amplifier_bundle(&repo, &claude_dir, Some(&release)).unwrap();
     fs::write(target.join("previous-install-sentinel"), "keep me\n").unwrap();
     Staging {
         _temp: temp,
@@ -57,7 +55,7 @@ fn staging() -> Staging {
 #[test]
 fn issue_1972_a_matching_copy_is_swapped_in() {
     let fx = staging();
-    copy_amplifier_bundle_with_manifest(&fx.repo, &fx.claude_dir, Some(&fx.release)).unwrap();
+    copy_amplifier_bundle(&fx.repo, &fx.claude_dir, Some(&fx.release)).unwrap();
     assert!(!fx.target.join("previous-install-sentinel").exists());
     assert!(!fx.staging.exists());
 }
@@ -75,7 +73,7 @@ fn issue_1972_a_source_changed_after_the_gate_is_caught_before_the_swap() {
     };
 
     let err = with_staging_hook(tamper, || {
-        copy_amplifier_bundle_with_manifest(&fx.repo, &fx.claude_dir, Some(&fx.release))
+        copy_amplifier_bundle(&fx.repo, &fx.claude_dir, Some(&fx.release))
     })
     .expect_err("R11 must catch it");
 
@@ -98,7 +96,7 @@ fn issue_1972_the_copy_against_source_message_comes_first() {
     let tamper = |staging: &Path| fs::write(staging.join("tools/smuggled.sh"), "x").unwrap();
 
     let err = with_staging_hook(tamper, || {
-        copy_amplifier_bundle_with_manifest(&fx.repo, &fx.claude_dir, Some(&fx.release))
+        copy_amplifier_bundle(&fx.repo, &fx.claude_dir, Some(&fx.release))
     })
     .unwrap_err();
 
@@ -117,7 +115,7 @@ fn issue_1972_an_excluded_name_in_staging_counts_as_extra() {
         fs::write(staging.join("tools/__pycache__/x.pyc"), "x").unwrap();
     };
     let err = with_staging_hook(tamper, || {
-        copy_amplifier_bundle_with_manifest(&fx.repo, &fx.claude_dir, Some(&fx.release))
+        copy_amplifier_bundle(&fx.repo, &fx.claude_dir, Some(&fx.release))
     })
     .unwrap_err();
     assert!(
@@ -130,7 +128,7 @@ fn issue_1972_an_excluded_name_in_staging_counts_as_extra() {
 fn issue_1972_no_expected_manifest_means_no_release_check() {
     let fx = staging();
     change_file(&fx.repo, LISTED);
-    copy_amplifier_bundle_with_manifest(&fx.repo, &fx.claude_dir, None).unwrap();
+    copy_amplifier_bundle(&fx.repo, &fx.claude_dir, None).unwrap();
     assert_eq!(
         fs::read_to_string(fx.target.join(LISTED)).unwrap(),
         "changed after release\n"

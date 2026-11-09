@@ -32,6 +32,7 @@ mod issue_1955_support;
 mod issue_1955_tag_fetch;
 #[cfg(unix)]
 mod issue_1972_generator;
+mod issue_1972_git_route;
 mod issue_1972_manifest_format;
 mod issue_1972_source_gate;
 mod issue_1972_staging;

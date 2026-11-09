@@ -361,10 +361,12 @@ These always exit `1`:
 - A fetched release tree has the wrong or an unknown version.
 - The [manifest check](../reference/framework-source-selection.md#manifest-check)
   failed.
-- A fetched release tree does not match the
+- The tag tarball's tree does not match the
   [release manifest](../reference/framework-source-selection.md#release-manifest-check)
   embedded in the binary. This is not a failed fetch, so no bundle is kept and
-  no backoff marker is written.
+  no backoff marker is written. A git checkout that doesn't match is replaced by
+  the tarball first; if the tarball can't be downloaded, that is a failed fetch
+  (below).
 - The staged copy does not match the release manifest.
 - The release manifest embedded in the binary is malformed.
 

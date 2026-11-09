@@ -415,22 +415,9 @@ pub(super) fn resolve_gated(
     clone::resolve_framework_root_gated(&query.without_staged_home(), validate, &gate)
 }
 
-/// [`acquire_framework_source_with_manifest`] for a binary with no release
-/// manifest.
-#[cfg(test)]
-pub(super) fn acquire_framework_source(
-    policy: &SourcePolicy,
-    query: &FrameworkRootQuery,
-    binary: &BinaryIdentity,
-    fetcher: &dyn TagFetcher,
-    validate: &dyn Fn(&Path) -> Result<(), String>,
-) -> Result<AcquiredSource> {
-    acquire_framework_source_with_manifest(policy, query, binary, None, fetcher, validate)
-}
-
 /// Decide the source. Every input is a parameter, including the release
 /// manifest (`None`: this binary carries none).
-pub(super) fn acquire_framework_source_with_manifest(
+pub(super) fn acquire_framework_source(
     policy: &SourcePolicy,
     query: &FrameworkRootQuery,
     binary: &BinaryIdentity,
@@ -458,8 +445,7 @@ pub(super) fn acquire_framework_source_with_manifest(
         });
     }
 
-    let resolution =
-        resolve_for_policy_with_manifest(policy, query, &binary.version, release, validate);
+    let resolution = resolve_for_policy(policy, query, &binary.version, release, validate);
     for note in &resolution.notes {
         eprintln!("{note}");
     }
@@ -479,20 +465,9 @@ pub(super) fn acquire_framework_source_with_manifest(
     fetch_release_tag(policy, binary, release, fetcher, validate)
 }
 
-/// [`resolve_for_policy_with_manifest`] for a binary with no release manifest.
-#[cfg(test)]
-pub(super) fn resolve_for_policy(
-    policy: &SourcePolicy,
-    query: &FrameworkRootQuery,
-    binary_version: &str,
-    validate: &dyn Fn(&Path) -> Result<(), String>,
-) -> FrameworkRootResolution {
-    resolve_for_policy_with_manifest(policy, query, binary_version, None, validate)
-}
-
 /// Resolve the local candidates a policy without `--local` consults, with the
 /// mismatch rule that policy implies. The notes are returned, not printed.
-pub(super) fn resolve_for_policy_with_manifest(
+pub(super) fn resolve_for_policy(
     policy: &SourcePolicy,
     query: &FrameworkRootQuery,
     binary_version: &str,
@@ -564,35 +539,22 @@ fn fetch_release_tag(
     // Stderr, because a launch on an offline host repeats this and its stdout
     // may be going somewhere that parses it.
     eprintln!("{}", fetch_reason(&version, policy.force_refresh));
-    let fetched = fetcher.fetch(&version, fetched_dir.path(), budget);
-    if let Some(marker) = &policy.fetch_backoff {
-        match &fetched {
-            Ok(_) => fetch_backoff::clear(marker),
-            Err(error)
-                if matches!(
-                    error.downcast_ref::<SourceFetchFailed>(),
-                    Some(SourceFetchFailed::Failed { .. })
-                ) =>
-            {
-                fetch_backoff::record_failure(marker, &binary.version, SystemTime::now());
+    // Issue #1972 D12: the manifest is compared before validation, so nothing
+    // in a mismatched tree is read beyond its hashes. Inside the fetcher, so a
+    // git checkout that fails it is replaced by the tag tarball before the
+    // mismatch counts against the release (see `ReleaseTagFetcher`).
+    let verify = |root: &Path| -> Result<()> {
+        let found = read_fetched_tree_version(root);
+        if !found.matches(&binary.version) {
+            return Err(FetchedWrongVersion {
+                expected: binary.version.clone(),
+                found,
             }
-            Err(_) => {}
+            .into());
         }
-    }
-    let root = fetched?;
-
-    let found = read_fetched_tree_version(&root);
-    if !found.matches(&binary.version) {
-        return Err(FetchedWrongVersion {
-            expected: binary.version.clone(),
-            found,
-        }
-        .into());
-    }
-    // Issue #1972 D12: before validation, so nothing in a mismatched tree is
-    // read beyond its hashes. Returning drops `fetched_dir`, which deletes the
-    // tree, and no backoff marker is written: this is not a network failure.
-    if let Some(release) = release {
+        let Some(release) = release else {
+            return Ok(());
+        };
         let actual =
             bundle_manifest::of_source(&root.join("amplifier-bundle")).with_context(|| {
                 format!(
@@ -600,14 +562,33 @@ fn fetch_release_tag(
                      with the release manifest embedded in this binary; nothing was staged"
                 )
             })?;
-        if let Some(diff) = release.check(&actual) {
-            return Err(FetchedManifestMismatch {
+        match release.check(&actual) {
+            Some(diff) => Err(FetchedManifestMismatch {
                 version: binary.version.clone(),
                 diff,
             }
-            .into());
+            .into()),
+            None => Ok(()),
+        }
+    };
+    let fetched = fetcher.fetch_verified(&version, fetched_dir.path(), budget, &verify);
+    if let Some(marker) = &policy.fetch_backoff {
+        match &fetched {
+            Err(error) => match error.downcast_ref::<SourceFetchFailed>() {
+                Some(SourceFetchFailed::Failed { .. }) => {
+                    fetch_backoff::record_failure(marker, &binary.version, SystemTime::now());
+                }
+                Some(SourceFetchFailed::NotAllowed { .. }) => {}
+                // The tag was reached and its tree rejected: not a network
+                // failure, so it neither starts nor extends a backoff.
+                None => fetch_backoff::clear(marker),
+            },
+            Ok(_) => fetch_backoff::clear(marker),
         }
     }
+    // A rejected tree is deleted here, when `fetched_dir` drops.
+    let root = fetched?;
+    let found = read_fetched_tree_version(&root);
     validate(&root).map_err(|error| {
         anyhow::anyhow!("the framework bundle from release tag v{version} is incompatible: {error}")
     })?;
