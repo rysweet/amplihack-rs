@@ -1,8 +1,9 @@
 //! Issue #1947: a rotate ledger whose `login_identity` is malformed is
 //! refused when it is loaded. The cycle and `profile switch` stop with the
-//! unreadable-ledger line, nothing moves, no record is written, the file is
-//! kept byte for byte on the same inode, and the value never reaches the log
-//! or the output. Runs under `World`, which is isolated from the real
+//! unreadable-ledger line, which names the refused field, as do `--dry-run`
+//! and `profile rotate status`. Nothing moves, no record is written, the file
+//! is kept byte for byte on the same inode, and the value never reaches the
+//! log or the output. Runs under `World`, which is isolated from the real
 //! `~/.claude`, `~/.amplihack` and profile root.
 
 #![cfg(unix)]
@@ -13,8 +14,10 @@ use std::fs;
 
 const SENTINEL: &str = "S1947SENTINEL";
 
+/// The unreadable-ledger stop, naming the refused field (issue #1962 item 3:
+/// a cause the code knows is reported as itself).
 fn stop_line() -> String {
-    "rotate ledger unreadable; live identity: readable; nothing moved, no record written".into()
+    "rotate ledger unreadable (invalid login_identity); live identity: readable; nothing moved, no record written".into()
 }
 
 /// The ledger `World::new` writes, except that the e-mail has no `@`.
@@ -90,4 +93,34 @@ fn every_cycle_reports_the_stop() {
         let _ = w.cycle();
         assert_eq!(w.f.log().matches(&line).count(), cycle, "{}", w.f.log());
     }
+}
+
+#[test]
+fn dry_run_names_the_refused_field() {
+    let w = malformed();
+    let before = ledger_stamp(&w);
+    let out = w.dry();
+
+    let all = printed(&out);
+    assert!(
+        all.contains(&format!("would alert: {}", stop_line())),
+        "{all}"
+    );
+    assert!(!all.contains(SENTINEL), "the value reached the output");
+    assert!(ledger_stamp(&w) == before, "the ledger was rewritten");
+}
+
+#[test]
+fn status_names_the_refused_field() {
+    let w = malformed();
+    let before = ledger_stamp(&w);
+    let out = w.status();
+
+    let all = printed(&out);
+    assert!(
+        all.contains("live: - (ledger unreadable: invalid login_identity)"),
+        "{all}"
+    );
+    assert!(!all.contains(SENTINEL), "the value reached the output");
+    assert!(ledger_stamp(&w) == before, "the ledger was rewritten");
 }

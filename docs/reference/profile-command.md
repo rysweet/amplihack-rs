@@ -6333,8 +6333,15 @@ When the rotate ledger exists but cannot be read, the cycle still refreshes an
 expired live login and reads its identity, then stops:
 
 ```
-ALERT: rotate ledger unreadable; live identity: <readable|cause>; nothing moved, no record written
+ALERT: rotate ledger unreadable[ (<field>)]; live identity: <readable|cause>; nothing moved, no record written
 ```
+
+`(<field>)` appears when the ledger was read and parsed but a field was
+refused. It is one of these fixed texts, and never a value from the file:
+`unknown version`, `invalid profile name`, `invalid account or alert`,
+`invalid overflow field`, `invalid no_room`, `invalid hand-change field` or
+`invalid login_identity`. A ledger that cannot be read, is not a private
+file or is not valid JSON gives the line without it.
 
 The cycle ends as `alerted`, seeds no record, moves no login and leaves the
 ledger file unchanged. With no ledger to hold an ALERT key, the line is written on
@@ -6342,7 +6349,8 @@ every cycle while the ledger stays unreadable. `--dry-run` prints the same text 
 and `profile switch` refuses with it.
 
 A ledger whose `login_identity` fails the load-time rule under
-[Account identity](#account-identity) is one case of this stop.
+[Account identity](#account-identity) is one case of this stop, written as
+`rotate ledger unreadable (invalid login_identity); live identity: ...`.
 
 #### When recovery reads
 
@@ -7372,7 +7380,7 @@ run and prints their `reread:` lines; see
 | `ALERT: more than one profile matches the account in ~/.claude; no swap` | Trusted ownership evidence cannot select a unique login-less profile. |
 | `ALERT: trusted login identity unavailable: <cause>` | The live login has no usable identity reading, and the [cause](#identity-read-causes) says why. Nothing moves. |
 | `ALERT: trusted login identity unavailable for profile <name>: <cause>` | A candidate is skipped as `no account`, for that [cause](#identity-read-causes). Written on every cycle it applies to. |
-| `ALERT: rotate ledger unreadable; live identity: <readable\|cause>; nothing moved, no record written` | Written on every cycle it applies to. See [Unreadable-ledger stop](#unreadable-ledger-stop). |
+| `ALERT: rotate ledger unreadable[ (<field>)]; live identity: <readable\|cause>; nothing moved, no record written` | Written on every cycle it applies to. See [Unreadable-ledger stop](#unreadable-ledger-stop). |
 | `ALERT: cannot tell profiles <L>, <M> apart: both claim the account in ~/.claude; no record written, nothing moved` | Written on every cycle it applies to. See [Seeding a record](#seeding-a-record). |
 | `seeded: recorded account for live profile <L>` | A cycle [seeded](#seeding-a-record) the live profile's record. |
 | `note: no record for live profile <L>: <reason>; nothing moved; run: amplihack profile seed-record <L>` | A cycle could not seed. Written once per process. |
@@ -7739,7 +7747,9 @@ When a profile in that entry has a weight other than `1.0`, the line adds
 
 A pending or inconsistent journal adds a line `journal: pending (phase <phase>)`
 or `journal: inconsistent`, and one that cannot be read `journal: damaged`. A
-ledger that cannot be read shows `live: - (ledger unreadable)`.
+ledger that cannot be read shows `live: - (ledger unreadable)`, or
+`live: - (ledger unreadable: <field>)` when a field was refused, with the
+same fixed text as the [unreadable-ledger stop](#unreadable-ledger-stop).
 
 Under a systemd unit that owns rotation, `status` shows the owner and the
 deferral:
@@ -9286,6 +9296,15 @@ The profile endpoint's answer (`account.uuid`, `organization.uuid` and
 `account.email`), which rotation and `profile verify` read, follows the same
 rules. Only these fields are read.
 
+Every caller that reads an account through these rules sees the e-mail rule,
+not only rotation: auto-switch's swap, the login checks, the duplicate-login
+check, the `.default` resolution, the limit-wait fingerprint, the direct
+usage read, and the check that stops a swap while Claude rewrites
+`~/.claude.json` (#1702). For each of them, a login with no account UUID
+and a malformed e-mail is no account, and a record keyed by a malformed
+e-mail matches no login. The swap stop treats such a `~/.claude.json` as
+unreadable, so the cycle stops as `home-unreadable` and nothing moves.
+
 | Left | Right | Same account |
 |------|-------|--------------|
 | uuid `u`, org `o1` | uuid `u`, org `o1` | yes |
@@ -9332,11 +9351,14 @@ again. Only a hand edit or a foreign writer can produce a block that fails.
 Other keys inside the object are ignored, and letter case is not checked.
 The rotator rejects a ledger that breaks the rule as `RotateInconsistent`,
 with the message `rotate ledger: invalid login_identity`, without echoing
-the value or naming the key that failed. An absent `login_identity`, or a
-top-level `"login_identity": null`, still loads. The error is reported and
-the file is never overwritten: the cycle ends with the
-[unreadable-ledger stop](#unreadable-ledger-stop), `profile switch` refuses
-with the same line, and no login moves. The block is never repaired, dropped
+the value or naming the key inside the block that failed. An absent
+`login_identity`, or a top-level `"login_identity": null`, still loads. The
+error is reported and the file is never overwritten: the cycle ends with the
+[unreadable-ledger stop](#unreadable-ledger-stop), which reads
+`rotate ledger unreadable (invalid login_identity); ...`, `profile switch`
+refuses with the same line, `--dry-run` prints it after `would alert: `, and
+no login moves. `profile rotate status` shows
+`live: - (ledger unreadable: invalid login_identity)`. The block is never repaired, dropped
 or replaced silently.
 
 Other readers of the rotate ledger treat a refused ledger as absent, as they

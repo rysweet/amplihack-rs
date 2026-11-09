@@ -328,3 +328,73 @@ fn a_swap_finish_style_save_of_any_reader_account_loads_again() {
         assert!(r.rs.load_ledger().is_ok(), "case {i}: own write refused");
     }
 }
+
+// --- The reason reaches the operator -----------------------------------------
+
+/// The refused field is named on the stop line and in `status`; other load
+/// failures, whose text may hold a path or a position, are not.
+#[test]
+fn refused_field_names_only_a_refused_field() {
+    use super::ledger::refused_field;
+    let r = root();
+    write_raw(
+        &r,
+        &body(json!({"emailAddress": format!("{SENTINEL}-no-at")})).to_string(),
+    );
+    let e = r.rs.load_ledger().unwrap_err();
+    assert_eq!(refused_field(&e), Some("invalid login_identity"));
+
+    write_raw(&r, &json!({"version": 99}).to_string());
+    let e = r.rs.load_ledger().unwrap_err();
+    assert_eq!(refused_field(&e), Some("unknown version"));
+
+    write_raw(&r, "{not json");
+    assert_eq!(refused_field(&r.rs.load_ledger().unwrap_err()), None);
+
+    fs::set_permissions(&r.rs.ledger, fs::Permissions::from_mode(0o666)).unwrap();
+    assert_eq!(refused_field(&r.rs.load_ledger().unwrap_err()), None);
+
+    let other = ProfileError::RotateInconsistent("rotate journal: unknown version".into());
+    assert_eq!(refused_field(&other), None);
+}
+
+#[test]
+fn the_stop_line_names_the_field_and_keeps_the_1962_text_otherwise() {
+    use super::handfix_msg::ledger_unreadable;
+    assert_eq!(
+        ledger_unreadable(Some("invalid login_identity"), "readable"),
+        "rotate ledger unreadable (invalid login_identity); live identity: readable; nothing moved, no record written"
+    );
+    assert_eq!(
+        ledger_unreadable(None, "token expired"),
+        "rotate ledger unreadable; live identity: token expired; nothing moved, no record written"
+    );
+}
+
+/// The readers are shared beyond rotate (auto-switch, login checks,
+/// duplicates, `.default`, the limit-wait fingerprint, the direct usage
+/// read). They all reach a malformed e-mail through `Account`, so these pin
+/// what each sees: a record keyed by that e-mail matches nothing, an
+/// e-mail-only login is no account, and the #1702 swap stop treats such a
+/// `~/.claude.json` as unreadable, which stops the swap.
+#[test]
+fn shared_readers_treat_a_malformed_email_as_missing() {
+    use super::account::home_readable;
+    let with_uuid = Account::from_block(&claude_block(Some("uuid-work"), "no-at")).unwrap();
+    assert!(with_uuid.matches_key("uuid-work"));
+    assert!(!with_uuid.matches_key("no-at"));
+    assert!(Account::from_block(&claude_block(None, "no-at")).is_none());
+
+    let home = tempfile::tempdir().unwrap();
+    let write = |block: Value| {
+        fs::write(
+            home.path().join(".claude.json"),
+            json!({"oauthAccount": block}).to_string(),
+        )
+        .unwrap();
+    };
+    write(claude_block(None, "no-at"));
+    assert!(!home_readable(home.path()));
+    write(claude_block(None, "work@example.com"));
+    assert!(home_readable(home.path()));
+}
