@@ -904,6 +904,7 @@ Quick references, guides, and additional resources.
 ### Contributing
 
 - [File Organization](contributing/file-organization.md) - Where different file types belong in the repository
+- [Branch Protection on main](contributing/branch-protection.md) - The 7 required CI checks, why strict is off, and the rule for changing CI jobs
 - [Discoveries](discoveries.md) - Patterns and insights discovered during development
 
 ### Investigations
