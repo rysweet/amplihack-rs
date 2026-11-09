@@ -93,7 +93,7 @@ mkdir -p "$WORK/bin"
 cat > "$WORK/bin/stub" <<'STUB'
 #!/bin/sh
 case "${1-}" in
-  --version|-v|version) echo "2.1.247 (Claude Code)"; exit 0 ;;
+  --version|-v|version) echo "2.1.319 (Claude Code)"; exit 0 ;;
 esac
 exit 0
 STUB

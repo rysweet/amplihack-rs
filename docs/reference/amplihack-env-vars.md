@@ -62,6 +62,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_CLI_INTEGRATION_QUIET_CHILD` | test-only |  | Test-support child-process switch. |
 | `AMPLIHACK_CODEX_BINARY_PATH` | test-only |  | Set only by install tests; the lookup itself is `AMPLIHACK_<TOOL>_BINARY_PATH`. |
 | `AMPLIHACK_CODEX_TERMINAL_TEST_FIXTURE` | test-only |  | Launcher test fixture switch. |
+| `AMPLIHACK_CODEX_USAGE_TIMEOUT_SECS` | user preference |  | Seconds each Codex account's live rate-limit read may take in `amplihack profile usage`, `1` to `300`; default `20`. Any other value warns once and uses the default. See [Codex read deadline](profile-command.md#codex-read-deadline). |
 | `AMPLIHACK_CONTEXT` | internal |  | Prefix of the `AMPLIHACK_CONTEXT_<KEY>` variables `recipe run` exports for context values. |
 | `AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES` | user preference |  | Size budget for context values exported as env vars. |
 | `AMPLIHACK_CONTEXT_FILE` | internal |  | Path of the context file `recipe run` hands to the runner. |
@@ -142,7 +143,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_NOT_SET_1551` | test-only |  | Not an env var: a name an env-builder unit test checks is absent. |
 | `AMPLIHACK_NO_FRESHNESS_CHECK` | user preference |  | Skips the binary freshness check. |
 | `AMPLIHACK_NO_RUST_BOOTSTRAP` | user preference |  | Skips the Rust toolchain bootstrap. |
-| `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND` | user preference |  | Skips the system-prompt append. |
+| `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND` | user preference |  | `1` skips the operating contract, its file under `<home>/private/` and the Claude Code 2.1.319 version check. See [Agent Prompt Channels](agent-prompt-channels.md#environment-variables). |
 | `AMPLIHACK_NO_UPDATE_CHECK` | user preference |  | Skips the startup update check. |
 | `AMPLIHACK_NPM_VERSION` | test-only |  | Not an env var: placeholder in the plugin-manifest test. |
 | `AMPLIHACK_ORCHESTRATION_BOOTSTRAP` | test-only |  | Codex front-door contract fixture. |
@@ -164,7 +165,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT` | user preference |  | Session percentage below which a login counts as usable now in the capacity summary of `amplihack profile usage` and the `capacity:` line of `amplihack profile rotate status`, `1` to `100`; default `95`. `--usable-session-pct` overrides it. Does not change any rotation or auto-switch threshold. See [Usable now](profile-command.md#usable-now). |
 | `AMPLIHACK_PROJECT_ID` | user preference |  | Memory learning project id. |
 | `AMPLIHACK_PROJECT_ROOT` | internal |  | Project root exported by the uvx manager. |
-| `AMPLIHACK_PROMPT_DELIVERY` | user preference |  | Prompt delivery mode for agent subprocesses. |
+| `AMPLIHACK_PROMPT_DELIVERY` | user preference |  | Prompt delivery mode for agent subprocesses: `auto` (default), `stdin` or `tempfile`. No value puts the prompt in argv: any other value, including `argv`, logs a warning and is treated as `auto`. Never set it in recipes or bundle config. See [Agent Prompt Channels](agent-prompt-channels.md#automatic-prompt-delivery-never-selects-argv). |
 | `AMPLIHACK_QUEUE_PATH` | test-only |  | Fleet test fixture. |
 | `AMPLIHACK_RECIPE_LOG_JSONL` | user preference |  | Path for structured runner events. |
 | `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` | user preference |  | Whole-run wall-clock limit for the recipe runner. |
@@ -283,6 +284,18 @@ set and non-empty, and the last component of the process's
 a rotator of their own. A `change:` line in the rotate log records it as
 `invocation=<id>`. `rotate start` and launches that start the rotator remove
 it from the rotator's environment. Do not set it by hand.
+
+`amplihack profile usage` also reads two Codex variables:
+
+| Name | Category | Note |
+|------|----------|------|
+| `CODEX_PROFILES_ROOT` | user preference | Directory whose subdirectories are the Codex accounts listed by `amplihack profile usage`; default `$HOME/.codex-profiles`. The same variable `codex-pick` reads. See [Codex accounts](profile-command.md#codex-accounts). |
+| `CODEX_BIN` | user preference | The Codex program `amplihack profile usage` runs as `<bin> app-server` for each account; default `codex`, found through `PATH`. Like `PATH`, it decides which program runs, so set it only to a program you trust. See [Live read](profile-command.md#live-read). |
+
+amplihack sets `CODEX_HOME` only in the environment of the Codex app server
+it starts, to the account directory, and removes `OPENAI_API_KEY`,
+`CODEX_API_KEY` and `RUST_LOG` from that child's environment. Its own
+environment is not changed.
 
 ## Related
 
