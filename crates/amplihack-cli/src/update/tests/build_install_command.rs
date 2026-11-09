@@ -258,3 +258,79 @@ fn records_an_empty_original_path_when_the_parent_has_none() {
         "an unset parent PATH must be recorded as empty, got {original_path:?}"
     );
 }
+
+// ============================================================================
+// Issue #1954: the hand-off an installed 1.2.107 makes
+// ============================================================================
+
+/// Issue #1954 (R6): pins the hand-off that decides which binary re-stages
+/// the bundle during `amplihack update`. The old installed binary only
+/// renames the new binary over `~/.local/bin/amplihack` and then runs this
+/// command; the NEW binary's install code does all the staging. The
+/// first-install test (`tests/issue_1954_first_install_restager.rs`) uses a
+/// stub "old" binary with exactly this argv and these variables, so a drift
+/// here must be reflected there.
+///
+/// Quoted from `v1.2.107:crates/amplihack-cli/src/update/check.rs:361-397`:
+///
+/// ```text
+/// pub(super) fn build_install_command_with_path(
+///     installed_exe: &Path,
+///     parent_path: Option<std::ffi::OsString>,
+/// ) -> std::process::Command {
+///     let parent_path = parent_path.unwrap_or_default();
+///     let mut cmd = std::process::Command::new(installed_exe);
+///     cmd.arg("install")
+///         .arg("--force-refresh")
+///         .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
+///         .env("AMPLIHACK_NONINTERACTIVE", "1")
+///         .env("AMPLIHACK_POST_UPDATE_INSTALL", "1")
+///         .env("AMPLIHACK_REPAIR_ORIGINAL_PATH", &parent_path)
+///         .stdin(std::process::Stdio::inherit())
+///         .stdout(std::process::Stdio::inherit())
+///         .stderr(std::process::Stdio::inherit());
+///     if let Some(path) = repair_subprocess_path(installed_exe, &parent_path) {
+///         cmd.env("PATH", path);
+///     }
+///     cmd
+/// }
+/// ```
+///
+/// `AMPLIHACK_REPAIR_ORIGINAL_PATH` and `PATH` are not part of this check;
+/// other tests in this file cover them.
+#[test]
+fn exact_handoff_contract_matches_v1_2_107() {
+    let installed = PathBuf::from("/home/u/.local/bin/amplihack");
+    let cmd = build_install_command(&installed);
+
+    assert_eq!(cmd.get_program(), installed.as_os_str());
+    let args: Vec<String> = cmd
+        .get_args()
+        .map(|a| a.to_string_lossy().to_string())
+        .collect();
+    assert_eq!(
+        args,
+        ["install", "--force-refresh"],
+        "the argv a v1.2.107 binary passes to the new one must not drift"
+    );
+
+    let envs: Vec<(String, Option<String>)> = cmd
+        .get_envs()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().to_string(),
+                v.map(|v| v.to_string_lossy().to_string()),
+            )
+        })
+        .collect();
+    for name in [
+        "AMPLIHACK_NO_UPDATE_CHECK",
+        "AMPLIHACK_NONINTERACTIVE",
+        "AMPLIHACK_POST_UPDATE_INSTALL",
+    ] {
+        assert!(
+            envs.contains(&(name.to_string(), Some("1".to_string()))),
+            "the hand-off must set {name}=1, got envs: {envs:?}"
+        );
+    }
+}

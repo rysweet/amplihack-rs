@@ -283,6 +283,8 @@ mod issue_1818_no_session_limit;
 mod issue_1846_exhausted_reading;
 #[path = "issue_1870_reread_probe_mode.rs"]
 mod issue_1870_reread_probe_mode;
+#[path = "issue_1954_first_install_restager.rs"]
+mod issue_1954_first_install_restager;
 #[path = "issue_1954_install_leaves_live_runs_alone.rs"]
 mod issue_1954_install_leaves_live_runs_alone;
 #[path = "issue_1954_no_foreign_signals.rs"]

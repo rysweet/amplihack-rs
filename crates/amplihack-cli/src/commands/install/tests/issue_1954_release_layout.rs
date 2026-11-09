@@ -38,18 +38,19 @@
 
 use super::super::bundle_compat::validate_framework_bundle_compatibility;
 use super::super::release_layout::{
-    self, COMPLETE_MARKER, CleanupReport, Exchange, InUse, RETIRED_DIR, ReleaseTxn, Retired,
-    cleanup_unused_with, exchange_dirs, exchange_dirs_with, format_kept_in_use, is_release_path,
-    keep_set, kept_in_use_warning, make_tree_writable, releases_dir, retire, retire_with,
-    scan_pids, switch_link, validate_version,
+    self, COMPLETE_MARKER, CleanupReport, Exchange, INSTALLED_BY, InUse, InstalledBy, RETIRED_DIR,
+    ReleaseTxn, Retired, cleanup_unused_with, exchange_dirs, exchange_dirs_with,
+    format_installed_by, format_kept_in_use, is_release_path, keep_set, kept_in_use_warning,
+    make_tree_writable, read_installed_by, releases_dir, retire, retire_with, scan_pids,
+    switch_link, validate_version, write_installed_by,
 };
 use super::helpers::create_source_repo;
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::{BufRead, BufReader};
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Child, Command, Stdio};
 
 // ---------------------------------------------------------------- fixtures
 
@@ -130,19 +131,48 @@ fn known(entries: &[(&Path, u32)]) -> InUse {
     InUse::Known(map)
 }
 
-/// Our own child, killed and reaped on drop. Tests may stop what they start.
-struct OwnChild(std::process::Child);
+/// A child this test started that holds a working directory and fd 3 open
+/// until it is released. It says `ready` on stdout once both are held (and
+/// after `exec`, so `/proc/<pid>/environ` is its own); the test blocks on
+/// that line, no timer. Dropping it closes the child's stdin, which ends its
+/// `read`, then reaps it with `wait()`. No signal is sent.
+struct Holder(Child);
 
-impl OwnChild {
-    fn spawn(command: &mut Command) -> Self {
-        Self(
-            command
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .unwrap(),
-        )
+impl Holder {
+    /// Holds `dir` as cwd and `file` open on fd 3. Paths reach `sh` only as
+    /// positional arguments (S-V7).
+    fn spawn(dir: &Path, file: &Path, env: &[(&str, &str)]) -> Self {
+        let mut command = Command::new("/bin/sh");
+        command
+            .args([
+                "-c",
+                "cd \"$1\" || exit 1; exec 3<\"$2\" || exit 1; echo ready; read _",
+                "sh",
+            ])
+            .arg(dir)
+            .arg(file);
+        for (key, value) in env {
+            command.env(key, value);
+        }
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        BufReader::new(child.stdout.as_mut().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        let holder = Self(child);
+        assert_eq!(
+            line,
+            "ready\n",
+            "the holder must say ready after taking {} and {}",
+            dir.display(),
+            file.display()
+        );
+        holder
     }
 
     fn pid(&self) -> u32 {
@@ -150,39 +180,12 @@ impl OwnChild {
     }
 }
 
-impl Drop for OwnChild {
+impl Drop for Holder {
     fn drop(&mut self) {
-        let _ = self.0.kill();
+        // Closing stdin ends the child's `read`; it then exits by itself.
+        drop(self.0.stdin.take());
         let _ = self.0.wait();
     }
-}
-
-/// Waits until `/proc/<pid>/<entry>` names something under `under`.
-fn wait_for_proc_link(pid: u32, entry: &str, under: &Path) {
-    let end = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < end {
-        if fs::read_link(format!("/proc/{pid}/{entry}")).is_ok_and(|p| p.starts_with(under)) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("pid {pid} never had {entry} under {}", under.display());
-}
-
-/// Waits until `pid` has called `exec`. Between `fork` and `exec` the child
-/// already has its new working directory, but `/proc/<pid>/environ` still
-/// shows the parent's environment, so a scan in that window misses the
-/// child's own variables. Before `exec`, `exe` is this test binary.
-fn wait_for_exec(pid: u32) {
-    let me = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
-    let end = Instant::now() + Duration::from_secs(10);
-    while Instant::now() < end {
-        if fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|exe| exe != me) {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    panic!("pid {pid} never called exec");
 }
 
 // ------------------------------------------------------- naming (D1, S6)
@@ -923,12 +926,7 @@ fn make_writable_does_not_follow_symlinks() {
 fn the_scan_finds_a_child_whose_cwd_is_in_a_release() {
     let fx = Fixture::new();
     let r0 = fx.release("0.9.40");
-    let child = OwnChild::spawn(
-        Command::new("sleep")
-            .arg("30")
-            .current_dir(r0.join("amplifier-bundle")),
-    );
-    wait_for_proc_link(child.pid(), "cwd", &r0);
+    let child = Holder::spawn(&r0.join("amplifier-bundle"), Path::new("/dev/null"), &[]);
 
     match scan_pids(std::slice::from_ref(&r0), &[child.pid()]) {
         InUse::Known(map) => assert_eq!(map.get(&r0), Some(&vec![child.pid()])),
@@ -946,13 +944,7 @@ fn the_scan_finds_a_child_with_an_open_fd_in_a_release() {
     let fx = Fixture::new();
     let r0 = fx.release("0.9.40");
     let file = r0.join("amplifier-bundle/recipes/r.yaml");
-    let child = OwnChild::spawn(
-        Command::new("/bin/sh")
-            .args(["-c", "exec 3< \"$1\"; exec sleep 30", "sh"])
-            .arg(&file)
-            .current_dir(&fx.home),
-    );
-    wait_for_proc_link(child.pid(), "fd/3", &r0);
+    let child = Holder::spawn(&fx.home, &file, &[]);
 
     let InUse::Known(map) = scan_pids(std::slice::from_ref(&r0), &[child.pid()]) else {
         panic!("known")
@@ -969,14 +961,12 @@ fn in_use_scan_never_returns_env_values() {
         "{}/secret-token-1954",
         r0.join("amplifier-bundle").display()
     );
-    let child = OwnChild::spawn(
-        Command::new("sleep")
-            .arg("30")
-            .env("ISSUE_1954_SECRET", &secret)
-            .current_dir(&fx.home),
+    // `ready` comes after exec, so the scan sees the child's own environment.
+    let child = Holder::spawn(
+        &fx.home,
+        Path::new("/dev/null"),
+        &[("ISSUE_1954_SECRET", secret.as_str())],
     );
-    wait_for_proc_link(child.pid(), "cwd", &fx.home);
-    wait_for_exec(child.pid());
 
     let result = scan_pids(std::slice::from_ref(&r0), &[child.pid()]);
 
@@ -991,6 +981,25 @@ fn in_use_scan_never_returns_env_values() {
     let shown = format!("{result:?}");
     assert!(!shown.contains("secret-token-1954"), "{shown}");
     assert!(!shown.contains("ISSUE_1954_SECRET"), "{shown}");
+}
+
+/// A released holder exits by itself (its `read` sees end of file), and the
+/// scan no longer counts it: the release is removable afterwards.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_released_holder_no_longer_keeps_its_release() {
+    let fx = Fixture::new();
+    let r0 = fx.release("0.9.40");
+    let child = Holder::spawn(&r0.join("amplifier-bundle"), Path::new("/dev/null"), &[]);
+    let pid = child.pid();
+    drop(child);
+
+    let report = cleanup_unused_with(&fx.amp, &[], |c| scan_pids(c, &[pid])).unwrap();
+    assert!(
+        !r0.exists(),
+        "nothing uses the release once the holder exited"
+    );
+    assert_eq!(report.removed, vec![r0]);
 }
 
 #[cfg(target_os = "linux")]
@@ -1165,4 +1174,322 @@ fn resolve_bundle_link_rejects_a_group_writable_releases_dir() {
     symlink(root.join("amplifier-bundle"), &link).unwrap();
     set_mode(&fx.releases(), 0o770);
     assert_eq!(release_layout::resolve_bundle_link(&link), None);
+}
+
+// ------------------------------------------- provenance record (R6, C6)
+//
+// Contract:
+//
+// ```text
+// const INSTALLED_BY = ".installed-by";
+// struct InstalledBy { version: String, exe: Option<PathBuf>, pid: u32, post_update: bool }
+// fn read_installed_by(release_root) -> Option<InstalledBy>
+// fn format_installed_by(&InstalledBy) -> String     (the exact file text)
+// fn write_installed_by(release_root, version) -> anyhow::Result<()>
+// ReleaseTxn::commit writes it before `.complete`.
+// ```
+//
+// The record is evidence of which process committed a release (which binary
+// re-stages on the first update). It is not a trust input: production code
+// never reads it.
+
+fn record(version: &str, exe: Option<&str>, pid: u32, post_update: bool) -> InstalledBy {
+    InstalledBy {
+        version: version.to_string(),
+        exe: exe.map(PathBuf::from),
+        pid,
+        post_update,
+    }
+}
+
+#[test]
+fn installed_by_text_is_exact() {
+    assert_eq!(INSTALLED_BY, ".installed-by");
+    assert_eq!(
+        format_installed_by(&record(
+            "1.2.108",
+            Some("/h/.local/bin/amplihack"),
+            4242,
+            true
+        )),
+        "format=1\nversion=1.2.108\nexe=/h/.local/bin/amplihack\npid=4242\npost_update=1\n"
+    );
+    assert_eq!(
+        format_installed_by(&record("1.2.108", None, 7, false)),
+        "format=1\nversion=1.2.108\nexe=\npid=7\npost_update=0\n"
+    );
+}
+
+/// S-V1/S-V2: an exe path that could forge a line is written empty.
+#[test]
+fn installed_by_drops_an_exe_that_could_forge_a_line() {
+    for bad in [
+        "/h/bin/amp\nversion=9.9.9",
+        "/h/bin/amp\rpid=1",
+        "/h/bin/amp\0x",
+    ] {
+        let text = format_installed_by(&record("1.2.108", Some(bad), 5, false));
+        assert!(
+            text.contains("\nexe=\n"),
+            "{bad:?} must be written as an empty exe: {text:?}"
+        );
+        assert!(!text.contains("9.9.9"), "{text:?}");
+        assert_eq!(text.lines().count(), 5, "{text:?}");
+    }
+}
+
+#[test]
+fn installed_by_round_trips() {
+    let fx = Fixture::new();
+    let root = fx.release("1.2.108");
+    let rec = record("1.2.108", Some("/h/.local/bin/amplihack"), 4242, true);
+    fs::write(root.join(INSTALLED_BY), format_installed_by(&rec)).unwrap();
+    assert_eq!(read_installed_by(&root), Some(rec));
+
+    let rec = record("1.2.108", None, 7, false);
+    fs::write(root.join(INSTALLED_BY), format_installed_by(&rec)).unwrap();
+    assert_eq!(
+        read_installed_by(&root),
+        Some(rec),
+        "an empty exe reads as None"
+    );
+}
+
+/// S-V5/S-V6: the reader never panics and accepts only a sane regular file.
+#[test]
+fn read_installed_by_rejects_bad_input() {
+    let fx = Fixture::new();
+    let root = fx.release("1.2.108");
+    let path = root.join(INSTALLED_BY);
+
+    assert_eq!(read_installed_by(&root), None, "missing");
+
+    for garbage in [
+        "",
+        "\0\0\0",
+        "not a record",
+        "format=1\nversion=\npid=1\n",
+        "format=1\nversion=1.2.108\npid=not-a-number\n",
+        "format=1\nversion=1.2.108\n",
+    ] {
+        fs::write(&path, garbage).unwrap();
+        assert_eq!(read_installed_by(&root), None, "{garbage:?}");
+    }
+
+    let mut big = String::from("format=1\nversion=1.2.108\npid=1\n");
+    big.push_str(&"x".repeat(8 * 1024));
+    fs::write(&path, &big).unwrap();
+    assert_eq!(read_installed_by(&root), None, "larger than 4 KiB");
+
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert_eq!(read_installed_by(&root), None, "a directory");
+    fs::remove_dir(&path).unwrap();
+
+    let elsewhere = fx.home.join("planted");
+    fs::write(
+        &elsewhere,
+        "format=1\nversion=1.2.108\nexe=/x\npid=1\npost_update=1\n",
+    )
+    .unwrap();
+    symlink(&elsewhere, &path).unwrap();
+    assert_eq!(read_installed_by(&root), None, "a symlink is not followed");
+}
+
+#[test]
+fn read_installed_by_keeps_the_first_key_and_ignores_unknown_ones() {
+    let fx = Fixture::new();
+    let root = fx.release("1.2.108");
+    fs::write(
+        root.join(INSTALLED_BY),
+        "format=1\nversion=1.2.108\nfuture=x=y\nversion=6.6.6\nexe=/a\npid=9\npid=10\n\
+         post_update=1\n",
+    )
+    .unwrap();
+    assert_eq!(
+        read_installed_by(&root),
+        Some(record("1.2.108", Some("/a"), 9, true))
+    );
+}
+
+/// S-V3: a symlink planted at the temporary name is removed, not followed,
+/// and the record is written.
+#[test]
+fn write_installed_by_never_follows_a_planted_tmp_symlink() {
+    let fx = Fixture::new();
+    let root = fx.releases().join("1.2.108");
+    fs::create_dir_all(&root).unwrap();
+    let victim = fx.home.join("victim");
+    fs::write(&victim, "keep").unwrap();
+    symlink(&victim, root.join(".installed-by.tmp")).unwrap();
+
+    write_installed_by(&root, "1.2.108").unwrap();
+
+    assert_eq!(fs::read_to_string(&victim).unwrap(), "keep");
+    assert!(fs::symlink_metadata(root.join(".installed-by.tmp")).is_err());
+    let rec = read_installed_by(&root).expect("a record");
+    assert_eq!(rec.version, "1.2.108");
+    assert_eq!(rec.pid, std::process::id());
+}
+
+/// A stale regular-file temp from a crash is replaced; a directory there is
+/// never removed and the write fails.
+#[test]
+fn write_installed_by_replaces_a_stale_tmp_file_but_never_removes_a_dir() {
+    let fx = Fixture::new();
+    let root = fx.releases().join("1.2.108");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(root.join(".installed-by.tmp"), "stale").unwrap();
+    write_installed_by(&root, "1.2.108").unwrap();
+    assert!(read_installed_by(&root).is_some());
+
+    let other = fx.releases().join("1.2.109");
+    fs::create_dir_all(other.join(".installed-by.tmp/inner")).unwrap();
+    assert!(write_installed_by(&other, "1.2.109").is_err());
+    assert!(
+        other.join(".installed-by.tmp/inner").is_dir(),
+        "a directory at the temp name is left alone"
+    );
+    assert!(read_installed_by(&other).is_none());
+}
+
+#[test]
+fn write_installed_by_records_this_process() {
+    let fx = Fixture::new();
+    let root = fx.releases().join("1.2.108");
+    fs::create_dir_all(&root).unwrap();
+    write_installed_by(&root, "1.2.108").unwrap();
+    let rec = read_installed_by(&root).expect("a record");
+    assert_eq!(rec.pid, std::process::id());
+    let me = fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+    assert_eq!(rec.exe.as_deref(), Some(me.as_path()));
+    assert_eq!(mode(&root.join(INSTALLED_BY)) & 0o777, 0o644);
+}
+
+/// `post_update` records `AMPLIHACK_POST_UPDATE_INSTALL == "1"` and nothing
+/// else (S-A5).
+#[test]
+fn write_installed_by_records_the_post_update_hand_off() {
+    let fx = Fixture::new();
+    let mut env = super::issue_1526_implicit_downgrade::IsolatedHome::new(&fx.home);
+    for (value, expected) in [(Some("1"), true), (Some("yes"), false), (None, false)] {
+        match value {
+            Some(v) => env.set("AMPLIHACK_POST_UPDATE_INSTALL", v),
+            None => env.unset("AMPLIHACK_POST_UPDATE_INSTALL"),
+        }
+        let root = fx
+            .releases()
+            .join(format!("1.2.108-case-{}", value.unwrap_or("unset")));
+        fs::create_dir_all(&root).unwrap();
+        write_installed_by(&root, "1.2.108").unwrap();
+        assert_eq!(
+            read_installed_by(&root).map(|r| r.post_update),
+            Some(expected),
+            "AMPLIHACK_POST_UPDATE_INSTALL={value:?}"
+        );
+    }
+}
+
+/// A committed release carries the record, written before `.complete` and
+/// made read-only with the rest of the tree.
+#[test]
+fn a_committed_release_carries_its_provenance_record() {
+    let fx = Fixture::new();
+    let mut txn = ReleaseTxn::allocate(&fx.amp, "1.2.108").unwrap();
+    fs::create_dir_all(txn.bundle_dir()).unwrap();
+    fs::write(txn.bundle_dir().join("r.yaml"), "r").unwrap();
+    let link = fx.amp.join("amplifier-bundle");
+    let bundle = txn.bundle_dir();
+    txn.plan_link(&link, &bundle).unwrap();
+    let root = txn.root().to_path_buf();
+    txn.commit().unwrap();
+
+    let text = fs::read_to_string(root.join(INSTALLED_BY)).unwrap();
+    assert!(text.starts_with("format=1\nversion=1.2.108\n"), "{text:?}");
+    let rec = read_installed_by(&root).expect("a record");
+    assert_eq!(rec.version, "1.2.108");
+    assert_eq!(rec.pid, std::process::id());
+    assert_eq!(mode(&root.join(INSTALLED_BY)) & 0o777, 0o444);
+    assert!(root.join(COMPLETE_MARKER).is_file());
+}
+
+/// A failed record write fails the commit before `.complete` and before any
+/// link switch, and the unpublished release is removed on drop.
+#[test]
+fn a_failed_record_write_rolls_the_release_back() {
+    let fx = Fixture::new();
+    let mut txn = ReleaseTxn::allocate(&fx.amp, "1.2.108").unwrap();
+    fs::create_dir_all(txn.bundle_dir()).unwrap();
+    // A directory at the temp name makes the write fail (it is never removed).
+    fs::create_dir_all(txn.root().join(".installed-by.tmp")).unwrap();
+    let link = fx.amp.join("amplifier-bundle");
+    let bundle = txn.bundle_dir();
+    txn.plan_link(&link, &bundle).unwrap();
+    let root = txn.root().to_path_buf();
+
+    assert!(txn.commit().is_err(), "the commit must fail");
+    assert!(!root.exists(), "the never-published release is removed");
+    assert!(
+        fs::symlink_metadata(&link).is_err(),
+        "no link was switched to a release without a record"
+    );
+}
+
+// --------------------------------------- old binaries after the update (A4)
+
+/// A4: an older binary still running after the update (for example a 1.2.107
+/// process that started before it) must not re-stage over the newer
+/// release. This pins this release's #1526 guard against the release
+/// layout: the guard refuses before the installer runs, so `releases/`, the
+/// bundle link and `.retired/` are unchanged. The installer passed here
+/// would make a release and switch the link, so any call shows up below.
+#[test]
+fn self_heal_from_older_binary_leaves_newer_release_alone() {
+    use super::issue_1526_implicit_downgrade::{
+        IsolatedHome, args, assert_home_is, changes, newer_version, snapshot,
+    };
+    use crate::self_heal::ensure_assets_match_binary_version_with;
+
+    let fx = Fixture::new();
+    let _env = IsolatedHome::new(&fx.home);
+    let newer = newer_version();
+    let release = fx.release(&newer);
+    let link = fx.amp.join("amplifier-bundle");
+    symlink(release.join("amplifier-bundle"), &link).unwrap();
+    super::super::version_stamp::write_installed_version(&newer).unwrap();
+    let before = snapshot(&fx.home);
+
+    let calls = std::cell::Cell::new(0u32);
+    let mut notice = Vec::new();
+    assert_home_is(&fx.home);
+    let result = ensure_assets_match_binary_version_with(
+        &args(&["amplihack", "recipe", "run", "x"]),
+        &mut notice,
+        || {
+            calls.set(calls.get() + 1);
+            let mut txn = ReleaseTxn::allocate(&fx.amp, crate::VERSION)?;
+            fs::create_dir_all(txn.bundle_dir())?;
+            let bundle = txn.bundle_dir();
+            txn.plan_link(&link, &bundle)?;
+            txn.commit()?;
+            Ok(())
+        },
+    );
+
+    result.expect("a refusal is not a failure");
+    assert_eq!(
+        calls.get(),
+        0,
+        "v{} over a v{newer} stamp must not re-stage; notice:\n{}",
+        crate::VERSION,
+        String::from_utf8_lossy(&notice)
+    );
+    assert_eq!(
+        fs::read_link(&link).unwrap(),
+        release.join("amplifier-bundle"),
+        "the bundle link still names the newer release"
+    );
+    assert_eq!(names(&fx.releases()), vec![newer.clone()]);
+    assert!(!fx.releases().join(RETIRED_DIR).exists());
+    assert_eq!(changes(&before, &snapshot(&fx.home)), Vec::<String>::new());
 }

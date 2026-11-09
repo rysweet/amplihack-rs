@@ -23,6 +23,7 @@ This page explains the layout and why it works this way (issue
 - [The install lock](#the-install-lock)
 - [No signals](#no-signals)
 - [Self-heal and update](#self-heal-and-update)
+- [The first update to this release](#the-first-update-to-this-release)
 - [One-time migration from the old layout](#one-time-migration-from-the-old-layout)
 - [Uninstall](#uninstall)
 - [Security rules](#security-rules)
@@ -45,10 +46,27 @@ Before this layout, an install deleted and replaced files in place:
   lock.
 
 On 5 Nov at 22:00:27Z a binary and bundle swap of this kind ended two
-long-running recipe drives within seconds. In the runs examined, the `SIGTERM`
-that ended step `bb:0` came from the run's own teardown after a step failed
-(`stop_signal.rs`, runner tree teardown). The failure itself came from files
-removed under the run. No other process sent the signal.
+long-running recipe drives within seconds. The reproduction in
+`tests/issue_1954_install_leaves_live_runs_alone.rs` shows the cause on the
+code before this layout:
+
+- **What broke the run was a file change, not a signal from another
+  process.** The install renamed `amplifier-bundle` to `amplifier-bundle.old`
+  and deleted it. The run's working directory went with it, and the next
+  read failed:
+
+  ```
+  ls: cannot access './recipes': No such file or directory
+  cwd: $HOME/.amplihack/amplifier-bundle.old (deleted)
+  ```
+
+- **No other process sent a signal.** A sentinel process with `TERM`, `HUP`
+  and `INT` traps, started beside the run, recorded no signal across the
+  install.
+
+Where the `SIGTERM` seen in the 5 Nov drive logs came from has not been
+reproduced. It may have come from the run's own teardown after a step failed,
+but this is not proven, and the fix does not depend on it.
 
 The versioned layout removes the cause: published files are never changed or
 deleted while in use.
@@ -67,15 +85,16 @@ deleted while in use.
 ├── .installed-version
 ├── .claude/                  (mapped framework assets; see below)
 └── releases/                 (mode 0700, owned by you)
-    ├── 0.9.41/
+    ├── 1.2.107/
     │   ├── .complete
+    │   ├── .installed-by
     │   ├── bin/
     │   │   ├── amplihack
     │   │   ├── amplihack-hooks
     │   │   └── amplihack-asset-resolver
     │   └── amplifier-bundle/
-    ├── 0.9.42/
-    ├── 0.9.42-20261105T220027Z-48113/
+    ├── 1.2.108/
+    ├── 1.2.108-20261105T220027Z-48113/
     └── .retired/             (mode 0700; old trees waiting for cleanup)
         └── 20261105T220027Z-48113-skills/
 ```
@@ -95,6 +114,9 @@ to `releases/.retired/<ts>-<pid>-<label>/`.
 - `<version>` must match `^[0-9A-Za-z][0-9A-Za-z._+-]{0,63}$`. Names such as
   `.`, `..` and `.retired` are rejected. An invalid version stops
   the install with an error. It is never silently rewritten.
+- `.installed-by` is written just before `.complete`. It records which
+  process committed the release; see
+  [The `.installed-by` record](#the-installed-by-record).
 - `.complete` is written last, before any link switches. A release without
   `.complete` is never a link target.
 - After `.complete` is written, the release root is mode `0755` and no file in
@@ -115,7 +137,9 @@ The install builds the whole release first, then switches the links:
    [framework source selection](../reference/framework-source-selection.md):
    version match, manifest check, `normalize_bundle_modes` and the merge-guard
    check. Then rename the staging directory to `amplifier-bundle/`.
-3. Write `.complete` and fix modes.
+3. Write `.installed-by`, then `.complete`, and fix modes. If writing
+   `.installed-by` fails, the install stops and the unpublished release is
+   removed.
 4. Switch the links this install planned, in this order: `amplihack-hooks`,
    `amplihack-asset-resolver`, `amplihack`, `amplifier-bundle`.
 
@@ -289,7 +313,7 @@ Rules:
   exact line is printed once:
 
   ```
-  ⏳ waiting for another amplihack install to finish (lock: /home/ryan/.amplihack/.install.lock)
+  ⏳ waiting for another amplihack install to finish (lock: $HOME/.amplihack/.install.lock)
   ```
 
 - The lock is re-entrant on the thread that holds it, so self-heal calling
@@ -343,6 +367,112 @@ release). The free-space check is made on `releases/`, for the full size of
 both binaries. A binary installed under a system prefix that is not a link is
 updated as before.
 
+## The first update to this release
+
+The first `amplihack update` from an installed 1.2.107 to this release
+**does not need a window with no recipe runs.** The newly downloaded binary
+does all the re-staging, not the old installed one.
+
+What each binary does during that update:
+
+| Step | Binary | Effect on live runs |
+|------|--------|---------------------|
+| Download, checksum, replace `~/.local/bin/amplihack` and `amplihack-hooks` | Old (1.2.107) | Copy to a temporary name, then `rename(2)` over the file. Running processes keep the old inode. Safe. |
+| Start `amplihack install --force-refresh` with `AMPLIHACK_POST_UPDATE_INSTALL=1` | Old | Runs the path it just installed, as a child process. |
+| Build `releases/<version>/`, switch links, migrate the old real-directory bundle, clean up | New | Follows this page. Nothing is rewritten or deleted in place. |
+
+The hand-off in 1.2.107 is `build_install_command_with_path` in
+`crates/amplihack-cli/src/update/check.rs`:
+
+```rust
+let mut cmd = std::process::Command::new(installed_exe);
+cmd.arg("install")
+    .arg("--force-refresh")
+    .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
+    .env("AMPLIHACK_NONINTERACTIVE", "1")
+    .env("AMPLIHACK_POST_UPDATE_INSTALL", "1")
+    .env("AMPLIHACK_REPAIR_ORIGINAL_PATH", &parent_path)
+    .stdin(std::process::Stdio::inherit())
+    .stdout(std::process::Stdio::inherit())
+    .stderr(std::process::Stdio::inherit());
+if let Some(path) = repair_subprocess_path(installed_exe, &parent_path) {
+    cmd.env("PATH", path);
+}
+```
+
+`tests/issue_1954_first_install_restager.rs` shows it. A stub "old" binary
+does only what 1.2.107 does: it renames the new binary over
+`~/.local/bin/amplihack` and runs it with argv exactly
+`install --force-refresh` and `AMPLIHACK_NO_UPDATE_CHECK=1`,
+`AMPLIHACK_NONINTERACTIVE=1` and `AMPLIHACK_POST_UPDATE_INSTALL=1` set. The
+test then reads `.installed-by` in the new release and checks that the pid
+is not the stub's, the version is the new one, `post_update=1`, and `exe` is
+`$HOME/.local/bin/amplihack`. On the first update that is the path of the
+new binary: the regular file 1.2.107 renamed into place, not a path under
+`releases/`. It also
+checks that the stub wrote nothing under `~/.amplihack`, and that a run parked
+in the old real-directory bundle finishes normally.
+
+An old 1.2.107 process still running after the update runs 1.2.107's own
+self-heal code, not this release's. That code already has the #1526
+downgrade guard (in `self_heal.rs` in 1.2.106 and 1.2.107): when the installed
+version stamp is newer than the running binary, it does nothing. So an old
+process does not re-stage over the new release. This release keeps the same
+guard in its own self-heal, pinned by
+`self_heal_from_older_binary_leaves_newer_release_alone` in
+`commands/install/tests/issue_1954_release_layout.rs`. That test covers this
+release's code only; the guard in 1.2.107 is not tested here.
+
+**Earlier releases.** The same hand-off to the new binary has been in
+`amplihack update` since 0.9.69 (#690, which closed #683), and
+`AMPLIHACK_POST_UPDATE_INSTALL=1` since 0.9.71. Releases from 0.9.69 to
+1.2.106 should behave as 1.2.107 does, but only the 1.2.107 hand-off is
+tested. From 0.9.69 or 0.9.70 the new binary still does the work, but
+`.installed-by` records `post_update=0`.
+
+**Installs older than 0.9.69** run the install in the old process with the
+old code (`run_install` in-process), which re-stages the bundle in place.
+Before updating such an install, stop all recipe runs, or install this
+release by hand into an idle host.
+
+### The `.installed-by` record
+
+Each committed release holds `.installed-by`, a text file of `key=value`
+lines, mode `0444`:
+
+```
+format=1
+version=<version>
+exe=$HOME/.local/bin/amplihack
+pid=<pid>
+post_update=1
+```
+
+| Key | Value |
+|-----|-------|
+| `format` | Always `1`. |
+| `version` | The version of the binary that committed the release. |
+| `exe` | Canonical path of that binary (`/proc/self/exe`). After the first update from 1.2.107 this is `$HOME/.local/bin/amplihack`, the regular file the old binary renamed into place. Empty if it cannot be resolved, is not UTF-8, or contains a newline, carriage return or NUL. |
+| `pid` | Process id of that binary. |
+| `post_update` | `1` when the install ran with `AMPLIHACK_POST_UPDATE_INSTALL=1` (started by `amplihack update`), else `0`. |
+
+The file is written to `.installed-by.tmp` with `O_EXCL` and renamed into
+place. A leftover `.installed-by.tmp` is removed only if it is a regular file
+or symlink; a symlink there is never followed.
+
+The record is evidence for debugging and tests only. No production code reads
+it, and nothing is gated on it, signals the recorded pid or runs the recorded
+path. `release_layout::read_installed_by(release_dir)` returns
+`Option<InstalledBy>`; it opens the file with `O_NOFOLLOW`, accepts only a
+regular file, reads at most 4 KiB, ignores unknown keys, and returns `None`
+for a missing version or an unparsable pid.
+
+To see which binary built the current release:
+
+```bash
+cat "$(readlink -f ~/.amplihack/amplifier-bundle)/../.installed-by"
+```
+
 ## One-time migration from the old layout
 
 The first install with this layout finds real files and directories where
@@ -371,11 +501,11 @@ new release.
    format:
 
 ```
-  🗑️  Removed amplifier-bundle at /home/ryan/.amplihack/amplifier-bundle
-  🗑️  Removed binary /home/ryan/.local/bin/amplihack
-  🗑️  Removed /home/ryan/.amplihack/releases/0.9.42
+  🗑️  Removed amplifier-bundle at $HOME/.amplihack/amplifier-bundle
+  🗑️  Removed binary $HOME/.local/bin/amplihack
+  🗑️  Removed $HOME/.amplihack/releases/1.2.108
 ℹ Kept 1 release in use by running processes:
-    ~/.amplihack/releases/0.9.41 (pid 48113)
+    ~/.amplihack/releases/1.2.107 (pid 48113)
   Run `amplihack uninstall` again after those processes exit to remove it.
 ```
 
@@ -444,21 +574,21 @@ These checks accept a link into a release and still reject anything else:
 
 ```bash
 readlink ~/.local/bin/amplihack ~/.amplihack/amplifier-bundle
-# /home/ryan/.amplihack/releases/0.9.42/bin/amplihack
-# /home/ryan/.amplihack/releases/0.9.42/amplifier-bundle
+# $HOME/.amplihack/releases/1.2.108/bin/amplihack
+# $HOME/.amplihack/releases/1.2.108/amplifier-bundle
 
 ls ~/.amplihack/releases ~/.amplihack/releases/.retired
-# /home/ryan/.amplihack/releases:
-# 0.9.41  0.9.42
+# $HOME/.amplihack/releases:
+# 1.2.107  1.2.108
 #
-# /home/ryan/.amplihack/releases/.retired:
+# $HOME/.amplihack/releases/.retired:
 ```
 
 To find which process keeps an old release (Linux):
 
 ```bash
 for p in /proc/[0-9]*; do
-  ls -l "$p/cwd" "$p/exe" 2>/dev/null | grep -q releases/0.9.41 && echo "${p#/proc/}"
+  ls -l "$p/cwd" "$p/exe" 2>/dev/null | grep -q releases/1.2.107 && echo "${p#/proc/}"
 done
 ```
 
@@ -469,13 +599,25 @@ Do not delete release directories by hand while runs are alive. Running
 
 | Test | Covers |
 |------|--------|
-| `tests/issue_1954_install_leaves_live_runs_alone.rs` | A long bash run with its working directory in the bundle, a signal sentinel and a link sampler stay alive and correct across two `--force-refresh` installs and a self-heal. The run finishes normally, no signal arrives, and each link always names a complete release. |
+| `tests/issue_1954_install_leaves_live_runs_alone.rs` | A bash run with its working directory and an open file in the bundle, and a signal sentinel, stay alive across two `--force-refresh` installs and a self-heal. The run reports ready through a FIFO and blocks on a "go" FIFO that the test writes only after the installs finish; the test then joins it with `wait()`. The run finishes normally, the sentinel records no signal, and each link read before, between and after the installs names its old target or a complete release. Fails on the code before this layout. |
+| `tests/issue_1954_first_install_restager.rs` | The first update from 1.2.107: a stub old binary hands off as 1.2.107 does, and `.installed-by` shows the new binary (not the stub) built and switched the release. A run parked in the old real-directory bundle finishes. |
 | `tests/issue_1954_no_foreign_signals.rs` | Source scan: no `kill`, `killpg`, `Signal::` or `kill`/`pkill`/`killall` command in install, update, self-heal, lock, layout or uninstall code, except `util.rs` and `Child::kill`. |
-| `commands/install/tests/issue_1954_release_layout.rs` | Release naming, atomic switch over a file, link or directory, switching only planned links, a partial switch report with the per-link keep set, exchange fallback, `EXDEV` retire, in-use cleanup, the exact message text and the security rules above. |
-| `commands/install/tests/issue_1954_install_lock.rs` | Lock re-entrancy on one thread, a second thread or process waiting, no lock passed to a child, a symlinked lock path refused, no truncation, mode 0600 and the exact wait message. |
+| `commands/install/tests/issue_1954_release_layout.rs` | Release naming, atomic switch over a file, link or directory, switching only planned links, a partial switch report with the per-link keep set, exchange fallback, `EXDEV` retire, in-use cleanup (holders signal readiness on stdout and are released by closing stdin), the exact message text and the security rules above. Also the `.installed-by` record (fields, sanitised `exe`, planted symlink not followed, garbage or oversized file reads as `None`) and this release's #1526 downgrade guard (`self_heal_from_older_binary_leaves_newer_release_alone`): self-heal from an older binary leaves a newer release alone. |
+| `commands/install/tests/issue_1954_install_lock.rs` | Lock re-entrancy on one thread, a second thread or process waiting (ordering checked through a channel, not a timer), no lock passed to a child, a symlinked lock path refused, no truncation, mode 0600 and the exact wait message. |
+| `update/tests/build_install_command.rs` (`exact_handoff_contract_matches_v1_2_107`) | The update hand-off has argv exactly `["install", "--force-refresh"]` and `AMPLIHACK_NO_UPDATE_CHECK=1`, `AMPLIHACK_NONINTERACTIVE=1` and `AMPLIHACK_POST_UPDATE_INSTALL=1` set, as in 1.2.107. Other variables (`AMPLIHACK_REPAIR_ORIGINAL_PATH`, `PATH`) are not part of the check. |
 | `commands/recipe/run/tests_merge_guard_pin.rs` | Pinning rejects a link outside `releases/`, a group-writable release or bundle directory, and never reads `AMPLIHACK_BUNDLE_DIR`. |
 | `commands/install/command_staging/tests.rs` | The previous slash-command set is retired under `releases/.retired/`, not deleted. |
 | `commands/install/tests/deploy_binary_tests.rs` (`stage_binary`) | The #302, #524 and #885 rules on the production path: a deleted source with an installed binary is left alone, a missing source and destination is an error, and re-staging the installed binary copies it without touching the previous release. |
+
+These tests wait on events only: a FIFO or pipe read, `Child::wait`, a
+channel or the lock itself. None uses a sleep, a deadline or a polling loop.
+Each child process gets a cleared environment with `HOME` inside the test's
+temporary directory, so the tests never touch the host's real `~/.amplihack`.
+
+The host-level test reads each link at fixed points rather than sampling it
+continuously. That a link never names a missing target during a switch
+follows from `rename(2)` and is checked at the syscall level in
+`issue_1954_release_layout.rs`.
 
 ## See also
 

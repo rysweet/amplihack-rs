@@ -2,45 +2,52 @@
 //! run alone.
 //!
 //! The test drives the real `amplihack` binary in a temp HOME. After a first
-//! install, three processes start:
+//! install, two processes start:
 //!
-//! - **A**, the "run": a bash loop under `set -euo pipefail` whose working
+//! - **A**, the "run": a bash script under `set -euo pipefail` whose working
 //!   directory is the installed bundle. Each pass re-reads bundle files by
 //!   relative and absolute path, sources a bundle file both ways and execs
 //!   `amplihack --version` and `amplihack-hooks`. It keeps fd 3 open on a
-//!   bundle file for its whole life.
-//! - **S**, a sentinel that only records `TERM`, `HUP` and `INT`.
-//! - **L**, a link sampler that records every moment a published path is
-//!   missing and every target the links name.
+//!   bundle file for its whole life. It does three passes, says it is
+//!   ready, blocks until the test says go, then does three more passes.
+//! - **S**, a sentinel that only records `TERM`, `HUP` and `INT` and blocks
+//!   until the test says go.
 //!
-//! While they run: two `install --force-refresh` (the second one concurrent
-//! with a self-heal trigger, so the install lock is exercised) re-stage the
-//! same version. `update` takes the same stage-and-switch path for its
-//! post-update install, and cannot download offline, so this is the offline
-//! stand-in for it (D12).
+//! While they are parked: two `install --force-refresh` (the second one
+//! concurrent with a self-heal trigger, so the install lock is exercised)
+//! re-stage the same version. `update` takes the same stage-and-switch path
+//! for its post-update install, and cannot download offline, so this is the
+//! offline stand-in for it (D12).
+//!
+//! No timers: every wait is a FIFO read or a `Child::wait` (see
+//! `support/events.rs`). The published links are read before install 1,
+//! between the installs and after install 2; that they are never missing in
+//! between follows from `rename(2)` and is tested at the syscall level in
+//! `src/commands/install/tests/issue_1954_release_layout.rs`.
 //!
 //! Acceptance checks (issue #1954):
 //! - AC1: A finishes normally.
 //! - AC2: no signal reaches S, and S finishes normally.
-//! - AC3: the published paths never go missing; at the end each is a symlink
-//!   into `~/.amplihack/releases/<version>…/` with `.complete`.
+//! - AC3: each published path is, at every read, a symlink into
+//!   `~/.amplihack/releases/<version>…/` with `.complete`.
 //! - AC4: A's working directory and open file were never deleted under it.
 //! - AC5: once A exits, a later install removes the release it used.
 //! - AC6: concurrent install and self-heal both succeed, the stamp is current
 //!   and no staging leftovers remain.
 //!
-//! Every check is collected and reported together, so the failure on
-//! `origin/main` names every acceptance criterion that does not hold.
+//! Every check is collected and reported together, so the failure on the
+//! pre-fix code (6b32c7e69's parent) names every acceptance criterion that
+//! does not hold.
 
 use crate::support::amplihack_bin::amplihack_bin;
+use crate::support::events::{SCRIPT_PREAMBLE, await_line, mkfifo, release};
 use crate::support::exec_stub::write_executable;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 
-const BUNDLE_REL: &str = ".amplihack/amplifier-bundle";
-const PROBE_REL: &str = "context/issue-1954-probe.sh";
+pub(crate) const BUNDLE_REL: &str = ".amplihack/amplifier-bundle";
+pub(crate) const PROBE_REL: &str = "context/issue-1954-probe.sh";
 const RECIPE_REL: &str = "recipes/smart-orchestrator.yaml";
 
 fn workspace_root() -> PathBuf {
@@ -51,7 +58,7 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn copy_tree(from: &Path, to: &Path) {
+pub(crate) fn copy_tree(from: &Path, to: &Path) {
     fs::create_dir_all(to).unwrap();
     for entry in fs::read_dir(from).unwrap() {
         let entry = entry.unwrap();
@@ -88,16 +95,59 @@ fn source_tree(root: &Path, version: &str) {
     .unwrap();
 }
 
-struct Host {
-    temp: tempfile::TempDir,
-    home: PathBuf,
-    stubs: PathBuf,
-    tree: PathBuf,
-    work: PathBuf,
+/// A child this test started. Dropped without [`Parked::finish`] (a panic),
+/// it is killed through its own `Child` handle and reaped: the only signal a
+/// test may send, and only to its own child.
+pub(crate) struct Parked {
+    child: Option<Child>,
+    pub(crate) go: PathBuf,
+    /// The ready line: `ready <pid> <cwd>`.
+    pub(crate) ready: String,
+}
+
+impl Parked {
+    pub(crate) fn pid(&self) -> String {
+        self.ready
+            .split_whitespace()
+            .nth(1)
+            .expect("ready <pid> <cwd>")
+            .to_string()
+    }
+
+    pub(crate) fn cwd(&self) -> String {
+        self.ready
+            .splitn(3, ' ')
+            .nth(2)
+            .expect("ready <pid> <cwd>")
+            .to_string()
+    }
+
+    /// Says go, then waits for the child to exit.
+    pub(crate) fn finish(mut self) -> ExitStatus {
+        release(&self.go, "go");
+        self.child.take().unwrap().wait().unwrap()
+    }
+}
+
+impl Drop for Parked {
+    fn drop(&mut self) {
+        if let Some(mut child) = self.child.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+pub(crate) struct Host {
+    pub(crate) temp: tempfile::TempDir,
+    pub(crate) home: PathBuf,
+    pub(crate) stubs: PathBuf,
+    pub(crate) tree: PathBuf,
+    pub(crate) work: PathBuf,
 }
 
 impl Host {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("home");
         fs::create_dir_all(&home).unwrap();
@@ -123,84 +173,143 @@ impl Host {
         write_executable(&stubs.join("git"), "#!/bin/sh\nexit 1\n", 0o755);
         let tree = temp.path().join("tag-worktree");
         source_tree(&tree, amplihack_cli::VERSION);
-        Self {
+        let host = Self {
             temp,
             home,
             stubs,
             tree,
             work,
+        };
+        host.assert_contained();
+        host
+    }
+
+    /// S-D1: every path a child may write is inside this test's temp dir,
+    /// so nothing reaches the real `~/.amplihack` or a live run on the host.
+    pub(crate) fn assert_contained(&self) {
+        let root = self.temp.path();
+        for path in [&self.home, &self.stubs, &self.tree, &self.work] {
+            assert!(
+                path.starts_with(root),
+                "{} is outside the test's temp dir {}",
+                path.display(),
+                root.display()
+            );
+        }
+        if let Some(real) = std::env::var_os("HOME") {
+            assert_ne!(Path::new(&real), self.home.as_path());
         }
     }
 
-    fn bundle(&self) -> PathBuf {
+    pub(crate) fn bundle(&self) -> PathBuf {
         self.home.join(BUNDLE_REL)
     }
 
-    fn releases(&self) -> PathBuf {
+    pub(crate) fn releases(&self) -> PathBuf {
         self.home.join(".amplihack/releases")
     }
 
-    fn amplihack(&self, args: &[&str]) -> Command {
+    /// The environment every `amplihack` the test starts gets, directly or
+    /// through a script, besides `HOME`.
+    pub(crate) fn install_env(&self) -> Vec<(&'static str, std::ffi::OsString)> {
+        vec![
+            ("AMPLIHACK_HOME", self.tree.clone().into_os_string()),
+            (
+                "PATH",
+                format!("{}:/usr/local/bin:/usr/bin:/bin", self.stubs.display()).into(),
+            ),
+            (
+                "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
+                self.stubs.join("amplihack-hooks").into_os_string(),
+            ),
+            (
+                "RECIPE_RUNNER_RS_PATH",
+                self.stubs.join("recipe-runner-rs").into_os_string(),
+            ),
+            ("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1".into()),
+            ("AMPLIHACK_SKIP_MMDC", "1".into()),
+            ("AMPLIHACK_NO_UPDATE_CHECK", "1".into()),
+            ("AMPLIHACK_NONINTERACTIVE", "1".into()),
+            ("AMPLIHACK_AGENT_BINARY", "claude".into()),
+        ]
+    }
+
+    pub(crate) fn amplihack(&self, args: &[&str]) -> Command {
         let mut command = crate::isolated_amplihack::isolated(amplihack_bin());
         command
             .args(args)
             .current_dir(self.temp.path())
             .env("HOME", &self.home)
-            .env("AMPLIHACK_HOME", &self.tree)
-            .env(
-                "PATH",
-                format!("{}:/usr/local/bin:/usr/bin:/bin", self.stubs.display()),
-            )
-            .env(
-                "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
-                self.stubs.join("amplihack-hooks"),
-            )
-            .env("RECIPE_RUNNER_RS_PATH", self.stubs.join("recipe-runner-rs"))
-            .env("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1")
-            .env("AMPLIHACK_SKIP_MMDC", "1")
-            .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
-            .env("AMPLIHACK_NONINTERACTIVE", "1")
-            .env("AMPLIHACK_AGENT_BINARY", "claude")
+            .envs(self.install_env())
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         command
     }
 
-    fn install(&self, args: &[&str]) -> Output {
+    pub(crate) fn install(&self, args: &[&str]) -> Output {
         let mut all = vec!["install"];
         all.extend_from_slice(args);
         self.amplihack(&all).output().unwrap()
     }
 
-    /// Starts a bash script from `work/` with this host's HOME and a minimal
-    /// environment. Its stdout and stderr go to `work/<name>.out|err`.
-    fn spawn_script(&self, name: &str, body: &str) -> Child {
+    /// Starts `body` (after [`SCRIPT_PREAMBLE`]) under bash from `work/`
+    /// with this host's HOME and a minimal environment, and blocks until it
+    /// writes its ready line. Its stdout and stderr go to
+    /// `work/<name>.out|err`; `extra_env` is added to the environment.
+    pub(crate) fn park_script(
+        &self,
+        name: &str,
+        body: &str,
+        extra_env: &[(&str, &std::ffi::OsStr)],
+    ) -> Parked {
+        self.assert_contained();
         let script = self.work.join(format!("{name}.sh"));
-        fs::write(&script, body).unwrap();
+        fs::write(&script, format!("{SCRIPT_PREAMBLE}{body}")).unwrap();
+        let ready = self.work.join(format!("{name}.ready"));
+        let go = self.work.join(format!("{name}.go"));
+        mkfifo(&ready);
+        mkfifo(&go);
         let out = fs::File::create(self.work.join(format!("{name}.out"))).unwrap();
-        let err = fs::File::create(self.work.join(format!("{name}.err"))).unwrap();
-        Command::new("/bin/bash")
+        let err_path = self.work.join(format!("{name}.err"));
+        let err = fs::File::create(&err_path).unwrap();
+        let mut command = Command::new("/bin/bash");
+        command
             .arg(&script)
             .arg(&self.work)
+            .arg(&ready)
+            .arg(&go)
             .env_clear()
             .env("HOME", &self.home)
+            .env("TMPDIR", self.temp.path())
             .env("PATH", format!("{}:/usr/bin:/bin", self.stubs.display()))
-            .env("LC_ALL", "C")
+            .env("LC_ALL", "C");
+        for (key, value) in extra_env {
+            command.env(key, value);
+        }
+        let child = command
             .current_dir(&self.work)
             .stdin(Stdio::null())
             .stdout(out)
             .stderr(err)
             .spawn()
-            .unwrap()
+            .unwrap();
+        let mut parked = Parked {
+            child: Some(child),
+            go,
+            ready: String::new(),
+        };
+        // A panic here drops `parked`, which kills and reaps the child.
+        parked.ready = await_line(&ready, &err_path);
+        parked
     }
 
-    fn work_file(&self, name: &str) -> String {
+    pub(crate) fn work_file(&self, name: &str) -> String {
         fs::read_to_string(self.work.join(name)).unwrap_or_default()
     }
 }
 
-fn text(output: &Output) -> String {
+pub(crate) fn text(output: &Output) -> String {
     format!(
         "status: {:?}\n--- stdout\n{}\n--- stderr\n{}",
         output.status,
@@ -209,46 +318,13 @@ fn text(output: &Output) -> String {
     )
 }
 
-/// Waits for `condition` with a deadline, never a fixed sleep of the length
-/// being waited for.
-fn wait_until(deadline: Duration, mut condition: impl FnMut() -> bool) -> bool {
-    let end = Instant::now() + deadline;
-    while Instant::now() < end {
-        if condition() {
-            return true;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    condition()
-}
-
-/// Waits for `child` to exit, up to `deadline`. A child still running at the
-/// deadline is reported, then reaped by `Drop` of the temp dir's processes.
-fn wait_child(child: &mut Child, deadline: Duration) -> Option<std::process::ExitStatus> {
-    let end = Instant::now() + deadline;
-    loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            return Some(status);
-        }
-        if Instant::now() >= end {
-            return None;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-}
-
-/// The run (A). See the module docs.
-const RUN_SCRIPT: &str = r#"set -euo pipefail
-work="$1"
+/// The run (A). See the module docs. Follows [`SCRIPT_PREAMBLE`].
+pub(crate) const RUN_SCRIPT: &str = r#"set -euo pipefail
 trap 'echo "run failed at line $LINENO (pass ${i:-0}): $BASH_COMMAND; cwd $(readlink /proc/$$/cwd)" >&2' ERR
 bundle="$HOME/.amplihack/amplifier-bundle"
 cd "$bundle"
-pwd -P > "$work/a.cwd"
 exec 3< ./recipes/smart-orchestrator.yaml
-echo $$ > "$work/a.pid"
-i=0
-while :; do
-  i=$((i + 1))
+pass() {
   test -d .
   test -f ./recipes/smart-orchestrator.yaml
   cat ./recipes/smart-orchestrator.yaml > /dev/null
@@ -262,55 +338,28 @@ while :; do
   cat "$bundle/recipes/smart-orchestrator.yaml" > /dev/null
   "$HOME/.local/bin/amplihack" --version > /dev/null
   "$HOME/.local/bin/amplihack-hooks" > /dev/null
-  echo "$i" > "$work/a.iter"
-  if [ -e "$work/stop" ] && [ "$i" -ge 5 ]; then
-    break
-  fi
-  sleep 0.05
-done
+}
+for i in 1 2 3; do pass; done
+echo "ready $$ $(pwd -P)" >&9
+read -r _ <&8
+for i in 4 5 6; do pass; done
 cat <&3 > /dev/null
 echo "DONE $i" > "$work/a.done"
 "#;
 
-/// The signal sentinel (S).
-const SENTINEL_SCRIPT: &str = r#"work="$1"
-trap 'echo TERM >> "$work/sig.log"' TERM
-trap 'echo HUP >> "$work/sig.log"' HUP
-trap 'echo INT >> "$work/sig.log"' INT
+/// The signal sentinel (S). Follows [`SCRIPT_PREAMBLE`]. A trapped signal
+/// interrupts `read`, so it reads again until the test says go.
+const SENTINEL_SCRIPT: &str = r#"trap 'echo "SIGNAL TERM" >> "$work/sentinel.log"' TERM
+trap 'echo "SIGNAL HUP" >> "$work/sentinel.log"' HUP
+trap 'echo "SIGNAL INT" >> "$work/sentinel.log"' INT
 cd "$HOME/.amplihack/amplifier-bundle"
-echo $$ > "$work/s.pid"
-while [ ! -e "$work/stop" ]; do
-  sleep 0.05
-done
+echo "ready $$ $(pwd -P)" >&9
+until read -r _ <&8; do :; done
 echo OK > "$work/s.done"
 "#;
 
-/// The link sampler (L). Writes a line to `l.bad` whenever a published path
-/// is missing and each distinct `readlink` result to `l.targets`.
-const SAMPLER_SCRIPT: &str = r#"work="$1"
-b="$HOME/.amplihack/amplifier-bundle"
-a="$HOME/.local/bin/amplihack"
-h="$HOME/.local/bin/amplihack-hooks"
-last=
-n=0
-while [ ! -e "$work/stop" ]; do
-  for p in "$b" "$a" "$h"; do
-    [ -e "$p" ] || echo "missing $p" >> "$work/l.bad"
-  done
-  [ -f "$b/recipes/smart-orchestrator.yaml" ] || echo "no recipe under $b" >> "$work/l.bad"
-  t="$(readlink "$b" || echo REAL-DIR)|$(readlink "$a" || echo REAL-FILE)|$(readlink "$h" || echo REAL-FILE)"
-  if [ "$t" != "$last" ]; then
-    echo "$t" >> "$work/l.targets"
-    last="$t"
-  fi
-  n=$((n + 1))
-  sleep 0.01
-done
-echo "$n" > "$work/l.count"
-"#;
-
 /// Whether `target` names `<releases>/<version…>/<rel>`, by component.
-fn names_release(releases: &Path, target: &Path, rel: &str) -> Result<PathBuf, String> {
+pub(crate) fn names_release(releases: &Path, target: &Path, rel: &str) -> Result<PathBuf, String> {
     let Ok(suffix) = target.strip_prefix(releases) else {
         return Err(format!(
             "{} is not under {}",
@@ -336,7 +385,7 @@ fn names_release(releases: &Path, target: &Path, rel: &str) -> Result<PathBuf, S
 }
 
 /// The release a published link points to, checked for AC3.
-fn published_release(host: &Host, link: &Path, rel: &str) -> Result<PathBuf, String> {
+pub(crate) fn published_release(host: &Host, link: &Path, rel: &str) -> Result<PathBuf, String> {
     let meta = fs::symlink_metadata(link).map_err(|e| format!("{}: {e}", link.display()))?;
     if !meta.file_type().is_symlink() {
         return Err(format!(
@@ -359,7 +408,7 @@ fn published_release(host: &Host, link: &Path, rel: &str) -> Result<PathBuf, Str
 }
 
 #[cfg(target_os = "linux")]
-fn proc_link(pid: &str, entry: &str) -> String {
+pub(crate) fn proc_link(pid: &str, entry: &str) -> String {
     fs::read_link(format!("/proc/{pid}/{entry}"))
         .map(|p| p.display().to_string())
         .unwrap_or_else(|e| format!("<unreadable: {e}>"))
@@ -390,35 +439,45 @@ fn unreadable_same_uid_process() -> Option<String> {
     None
 }
 
+/// One read of the three published paths, for AC3: each must be a symlink
+/// into a complete release. `label` names the moment of the read.
+fn check_links(host: &Host, label: &str, failures: &mut Vec<String>) -> String {
+    let local_bin = host.home.join(".local/bin");
+    let mut seen = Vec::new();
+    for (link, rel) in [
+        (host.bundle(), "amplifier-bundle"),
+        (local_bin.join("amplihack"), "bin/amplihack"),
+        (local_bin.join("amplihack-hooks"), "bin/amplihack-hooks"),
+    ] {
+        match published_release(host, &link, rel) {
+            Ok(release) => seen.push(release.display().to_string()),
+            Err(e) => {
+                seen.push(format!("<{e}>"));
+                failures.push(format!("AC3 ({label}): {e}"));
+            }
+        }
+    }
+    format!("{label}: {}", seen.join(" | "))
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn install_and_self_heal_leave_a_live_run_alone() {
     let host = Host::new();
     let mut failures: Vec<String> = Vec::new();
+    let mut targets: Vec<String> = Vec::new();
 
     let first = host.install(&[]);
     assert!(first.status.success(), "first install: {}", text(&first));
     assert!(host.bundle().join(PROBE_REL).is_file(), "{}", text(&first));
 
-    let mut run = host.spawn_script("a", RUN_SCRIPT);
-    let mut sentinel = host.spawn_script("s", SENTINEL_SCRIPT);
-    let mut sampler = host.spawn_script("l", SAMPLER_SCRIPT);
+    // Each blocks until its child has written `ready`: no timer.
+    let run = host.park_script("a", RUN_SCRIPT, &[]);
+    let sentinel = host.park_script("s", SENTINEL_SCRIPT, &[]);
+    let a_pid = run.pid();
+    let a_cwd = run.cwd();
 
-    let started = wait_until(Duration::from_secs(60), || {
-        host.work_file("a.iter").trim().parse::<u32>().unwrap_or(0) >= 3
-            && !host.work_file("s.pid").is_empty()
-            && !host.work_file("l.targets").is_empty()
-    });
-    assert!(
-        started,
-        "the run, sentinel and sampler must start before any install\n\
-         a.err: {}\ns.err: {}\nl.err: {}",
-        host.work_file("a.err"),
-        host.work_file("s.err"),
-        host.work_file("l.err")
-    );
-    let a_pid = host.work_file("a.pid").trim().to_string();
-    let a_cwd = host.work_file("a.cwd").trim().to_string();
+    targets.push(check_links(&host, "before install 1", &mut failures));
 
     // Install 1: a same-version re-stage while the run is alive.
     let second = host.install(&["--force-refresh"]);
@@ -428,6 +487,7 @@ fn install_and_self_heal_leave_a_live_run_alone() {
             text(&second)
         ));
     }
+    targets.push(check_links(&host, "between the installs", &mut failures));
 
     // Install 2 concurrent with a self-heal: the stamp is made stale, so the
     // next ordinary command re-stages under the install lock.
@@ -451,104 +511,55 @@ fn install_and_self_heal_leave_a_live_run_alone() {
             text(&self_heal)
         ));
     }
+    targets.push(check_links(&host, "after install 2", &mut failures));
 
-    // AC4 while the run is still alive: nothing it holds was deleted.
+    // AC4 while the run is still parked: nothing it holds was deleted.
     let cwd_now = proc_link(&a_pid, "cwd");
     let fd_now = proc_link(&a_pid, "fd/3");
-    if !cwd_now.starts_with('<') {
-        if cwd_now.ends_with(" (deleted)") {
-            failures.push(format!(
-                "AC4: the run's working directory was deleted: {cwd_now}"
-            ));
-        }
-        if fd_now.ends_with(" (deleted)") {
-            failures.push(format!(
-                "AC4: the run's open bundle file was deleted: {fd_now}"
-            ));
-        }
-        if let Err(e) = names_release(&host.releases(), Path::new(&a_cwd), "amplifier-bundle") {
-            failures.push(format!(
-                "AC4: the run's working directory is not inside a release: {e}"
-            ));
-        } else if !Path::new(&a_cwd).join(RECIPE_REL).is_file() {
-            failures.push(format!(
-                "AC4: the release the run uses was removed while it was alive: {a_cwd}"
-            ));
-        }
+    if cwd_now.ends_with(" (deleted)") {
+        failures.push(format!(
+            "AC4: the run's working directory was deleted: {cwd_now}"
+        ));
+    }
+    if fd_now.ends_with(" (deleted)") {
+        failures.push(format!(
+            "AC4: the run's open bundle file was deleted: {fd_now}"
+        ));
+    }
+    if let Err(e) = names_release(&host.releases(), Path::new(&a_cwd), "amplifier-bundle") {
+        failures.push(format!(
+            "AC4: the run's working directory is not inside a release: {e}"
+        ));
+    } else if !Path::new(&a_cwd).join(RECIPE_REL).is_file() {
+        failures.push(format!(
+            "AC4: the release the run uses was removed while it was alive: {a_cwd}"
+        ));
     }
 
-    fs::write(host.work.join("stop"), "").unwrap();
-    let run_status = wait_child(&mut run, Duration::from_secs(60));
-    let sentinel_status = wait_child(&mut sentinel, Duration::from_secs(30));
-    let sampler_status = wait_child(&mut sampler, Duration::from_secs(30));
-    for (name, child, status) in [
-        ("run", &mut run, run_status),
-        ("sentinel", &mut sentinel, sentinel_status),
-        ("sampler", &mut sampler, sampler_status),
-    ] {
-        if status.is_none() {
-            failures.push(format!("{name} did not exit within its deadline"));
-            // Our own child, started by this test: the only signal allowed.
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
+    // Release both, then join them.
+    let run_status = run.finish();
+    let sentinel_status = sentinel.finish();
 
     // AC1: the run finished normally.
     let a_done = host.work_file("a.done");
-    if !(run_status.is_some_and(|s| s.success()) && a_done.starts_with("DONE ")) {
+    if !(run_status.success() && a_done.starts_with("DONE ")) {
         failures.push(format!(
-            "AC1: the run did not finish normally (status {:?}, last pass {}, done {:?})\n\
+            "AC1: the run did not finish normally (status {run_status:?}, done {:?})\n\
              a.err:\n{}",
-            run_status,
-            host.work_file("a.iter").trim(),
             a_done.trim(),
             host.work_file("a.err")
         ));
     }
 
     // AC2: no signal reached the sentinel.
-    let signals = host.work_file("sig.log");
+    let signals = host.work_file("sentinel.log");
     if !signals.is_empty() {
         failures.push(format!("AC2: the sentinel received signals: {signals}"));
     }
-    if !(sentinel_status.is_some_and(|s| s.success()) && host.work_file("s.done").contains("OK")) {
+    if !(sentinel_status.success() && host.work_file("s.done").contains("OK")) {
         failures.push(format!(
             "AC2: the sentinel did not finish normally (status {sentinel_status:?})"
         ));
-    }
-
-    // AC3: never missing, and each link ends on a complete release.
-    let bad = host.work_file("l.bad");
-    if !bad.is_empty() {
-        let first_lines: Vec<&str> = bad.lines().take(10).collect();
-        failures.push(format!(
-            "AC3: a published path went missing ({} samples):\n{}",
-            bad.lines().count(),
-            first_lines.join("\n")
-        ));
-    }
-    let targets = host.work_file("l.targets");
-    for line in targets.lines() {
-        if line.contains("REAL-") {
-            failures.push(format!(
-                "AC3: a published path was a real file or directory, not a link: {line}"
-            ));
-            break;
-        }
-    }
-    let local_bin = host.home.join(".local/bin");
-    for (link, rel) in [
-        (host.bundle(), "amplifier-bundle".to_string()),
-        (local_bin.join("amplihack"), "bin/amplihack".to_string()),
-        (
-            local_bin.join("amplihack-hooks"),
-            "bin/amplihack-hooks".to_string(),
-        ),
-    ] {
-        if let Err(e) = published_release(&host, &link, &rel) {
-            failures.push(format!("AC3: {e}"));
-        }
     }
 
     // AC6: the stamp is current and no staging leftovers remain.
@@ -609,10 +620,10 @@ fn install_and_self_heal_leave_a_live_run_alone() {
 
     assert!(
         failures.is_empty(),
-        "issue #1954: {} acceptance failure(s):\n\n{}\n\nlink targets seen:\n{}",
+        "issue #1954: {} acceptance failure(s):\n\n{}\n\nlinks read:\n{}",
         failures.len(),
         failures.join("\n\n"),
-        targets
+        targets.join("\n")
     );
 }
 
@@ -645,13 +656,9 @@ fn a_restage_never_changes_or_removes_the_previous_release() {
     assert!(before.join(PROBE_REL).is_file());
 }
 
-/// A legacy layout (real bundle directory, regular-file binaries) migrates to
-/// links in one install, and a run whose cwd is in the legacy tree survives.
-#[cfg(target_os = "linux")]
-#[test]
-fn migration_from_a_real_bundle_dir_keeps_a_live_run_alive() {
-    let host = Host::new();
-    // Legacy: a real bundle directory and a regular-file binary.
+/// Writes the pre-#1954 layout: a real bundle directory copied from the tag
+/// tree and regular-file binaries in `~/.local/bin`.
+pub(crate) fn plant_legacy_layout(host: &Host) {
     copy_tree(&host.tree.join("amplifier-bundle"), &host.bundle());
     let local_bin = host.home.join(".local/bin");
     fs::create_dir_all(&local_bin).unwrap();
@@ -665,25 +672,23 @@ fn migration_from_a_real_bundle_dir_keeps_a_live_run_alive() {
         "#!/bin/sh\nexit 0\n",
         0o755,
     );
+}
 
-    let mut run = host.spawn_script("a", RUN_SCRIPT);
-    assert!(
-        wait_until(Duration::from_secs(60), || {
-            host.work_file("a.iter").trim().parse::<u32>().unwrap_or(0) >= 2
-        }),
-        "a.err: {}",
-        host.work_file("a.err")
-    );
-    let a_pid = host.work_file("a.pid").trim().to_string();
+/// A legacy layout (real bundle directory, regular-file binaries) migrates to
+/// links in one install, and a run whose cwd is in the legacy tree survives.
+#[cfg(target_os = "linux")]
+#[test]
+fn migration_from_a_real_bundle_dir_keeps_a_live_run_alive() {
+    let host = Host::new();
+    plant_legacy_layout(&host);
+    let local_bin = host.home.join(".local/bin");
+
+    let run = host.park_script("a", RUN_SCRIPT, &[]);
+    let a_pid = run.pid();
 
     let install = host.install(&[]);
     let cwd_now = proc_link(&a_pid, "cwd");
-    fs::write(host.work.join("stop"), "").unwrap();
-    let status = wait_child(&mut run, Duration::from_secs(60));
-    if status.is_none() {
-        let _ = run.kill();
-        let _ = run.wait();
-    }
+    let status = run.finish();
 
     let mut failures = Vec::new();
     if !install.status.success() {
@@ -697,7 +702,7 @@ fn migration_from_a_real_bundle_dir_keeps_a_live_run_alive() {
             "the legacy tree under the run was deleted: {cwd_now}"
         ));
     }
-    if !status.is_some_and(|s| s.success()) {
+    if !(status.success() && host.work_file("a.done").starts_with("DONE ")) {
         failures.push(format!(
             "the run did not finish normally ({status:?}):\n{}",
             host.work_file("a.err")

@@ -75,6 +75,10 @@ amplihack update
               -> args: ["install", "--force-refresh"]
               -> env: AMPLIHACK_NO_UPDATE_CHECK=1
               -> env: AMPLIHACK_NONINTERACTIVE=1
+              -> env: AMPLIHACK_POST_UPDATE_INSTALL=1
+              -> env: AMPLIHACK_REPAIR_ORIGINAL_PATH=<parent PATH>
+              -> env: PATH=<repaired PATH>, only when repair_subprocess_path
+                 returns one
             cmd.status()?
               -> spawns NEW binary as subprocess
               -> inherits stdin/stdout/stderr
@@ -127,6 +131,36 @@ amplihack update
    with that source, sets its modes, validates it, then activates it as the
    installed bundle. It does not merge source files over the old installed
    bundle.
+
+### Which binary re-stages the bundle
+
+The new binary does. The old binary only replaces the two files in
+`~/.local/bin` by rename, which leaves running processes on their old inode,
+and then starts the new binary as a child. All bundle staging, link switching
+and cleanup run in that child.
+
+So the first update from 1.2.107 to a release with the
+[versioned install layout](../concepts/versioned-install-layout.md#the-first-update-to-this-release)
+is safe for live recipe runs and needs no quiet window. The same hand-off has
+been in `amplihack update` since 0.9.69 (#690), so updates from 0.9.69 to
+1.2.106 should behave the same way, but only the 1.2.107 hand-off is tested.
+Installs older than 0.9.69 run the install in-process with their own code
+and re-stage the bundle in place; stop recipe runs before updating them.
+
+Each release records the process that committed it in `.installed-by`
+(`version`, `exe`, `pid`, `post_update`). After an update, `post_update=1`
+and the new version show that the new binary did the work. On the first
+update `exe` is `$HOME/.local/bin/amplihack`, the regular file the old
+binary renamed into place:
+
+```bash
+amplihack update
+grep -E '^(version|exe|post_update)=' \
+  "$(readlink -f ~/.amplihack/amplifier-bundle)/../.installed-by"
+# version=<version>
+# exe=$HOME/.local/bin/amplihack
+# post_update=1
+```
 
 ### `--skip-install` bypass
 
@@ -257,6 +291,8 @@ No new crate dependencies introduced.
 | `build_install_command_includes_install_and_force_refresh_args` | `update/tests/build_install_command.rs` | Args are `["install", "--force-refresh"]` in order |
 | `build_install_command_sets_no_update_check_env` | `update/tests/build_install_command.rs` | `AMPLIHACK_NO_UPDATE_CHECK=1` is set |
 | `build_install_command_sets_noninteractive_env` | `update/tests/build_install_command.rs` | `AMPLIHACK_NONINTERACTIVE=1` is set |
+| `exact_handoff_contract_matches_v1_2_107` | `update/tests/build_install_command.rs` | Argv is exactly `["install", "--force-refresh"]` and `AMPLIHACK_NO_UPDATE_CHECK`, `AMPLIHACK_NONINTERACTIVE` and `AMPLIHACK_POST_UPDATE_INSTALL` are set to `1`, as in 1.2.107 |
+| First update from 1.2.107 | `tests/issue_1954_first_install_restager.rs` | A stub old binary hands off as 1.2.107 does; `.installed-by` shows the new binary built and switched the release, and a live run finishes |
 | `update_check_source_includes_framework_restage` | `tests/bugfix_install_tests.rs` | Source-level assertion that `run_update` uses `build_install_command` (not `run_install` in-process) |
 | Existing `run_post_update_install` tests | `update/post_install.rs` | Skip-install intentional bypass, closure invocation, error propagation — all still pass unchanged |
 | PATH conflict resolver tests | `path_conflicts.rs` | User-bin first, candidate classification, unknown conflict reporting, inaccessible path handling, and manual repair decisions |

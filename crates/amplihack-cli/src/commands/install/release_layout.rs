@@ -7,6 +7,7 @@
 //! ~/.amplihack/releases/<version>[-<UTC yyyymmddTHHMMSSZ>-<pid>[-<n>]]/
 //!     bin/{amplihack,amplihack-hooks,amplihack-asset-resolver}
 //!     amplifier-bundle/
+//!     .installed-by
 //!     .complete
 //! ```
 //!
@@ -36,6 +37,15 @@ pub const RELEASES_DIR: &str = "releases";
 pub const RETIRED_DIR: &str = ".retired";
 /// Marker written into a release once it is complete, before any switch.
 pub const COMPLETE_MARKER: &str = ".complete";
+/// Provenance record written into a release before [`COMPLETE_MARKER`].
+pub const INSTALLED_BY: &str = ".installed-by";
+/// Temporary name the provenance record is written under, then renamed.
+const INSTALLED_BY_TMP: &str = ".installed-by.tmp";
+/// The largest provenance record the reader accepts (S-V6).
+// Production code never reads the record (it is not a trust input); only
+// tests read it back.
+#[cfg_attr(not(test), allow(dead_code))]
+const INSTALLED_BY_MAX_BYTES: u64 = 4 * 1024;
 
 /// The longest accepted version string (S6).
 const MAX_VERSION_LEN: usize = 64;
@@ -273,6 +283,7 @@ impl SwitchReport {
 pub struct ReleaseTxn {
     amplihack_dir: PathBuf,
     root: PathBuf,
+    version: String,
     links: Vec<(PathBuf, PathBuf)>,
     committed: bool,
 }
@@ -304,6 +315,7 @@ impl ReleaseTxn {
                     return Ok(Self {
                         amplihack_dir: amplihack_dir.to_path_buf(),
                         root,
+                        version: version.to_string(),
                         links: Vec::new(),
                         committed: false,
                     });
@@ -354,13 +366,17 @@ impl ReleaseTxn {
         Ok(())
     }
 
-    /// Marks the release complete, fixes its modes and switches every planned
-    /// link. A failed switch stops there; it is reported, not rolled back.
+    /// Writes the provenance record, marks the release complete, fixes its
+    /// modes and switches every planned link. A failure before the switches
+    /// returns `Err` and the release, which no link names yet, is removed on
+    /// drop. A failed switch stops there; it is reported, not rolled back.
     pub fn commit(mut self) -> Result<SwitchReport> {
+        write_installed_by(&self.root, &self.version)?;
         let marker = self.root.join(COMPLETE_MARKER);
         fs::write(&marker, format!("{}\n", utc_stamp()))
             .with_context(|| format!("failed to write {}", marker.display()))?;
         normalize_release_modes(&self.root)?;
+        seal_installed_by(&self.root)?;
         // From here the release may be named by a link: never remove it on drop.
         self.committed = true;
 
@@ -405,6 +421,209 @@ impl Drop for ReleaseTxn {
             );
         }
     }
+}
+
+// ------------------------------------------- provenance record (C6)
+
+/// Which process committed a release, read from [`INSTALLED_BY`].
+///
+/// This record is evidence for people debugging an install (for example,
+/// which binary re-staged on the first update). It is **not a trust input**:
+/// production code never reads it, never signals the recorded pid and never
+/// runs the recorded exe.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InstalledBy {
+    pub version: String,
+    /// The canonical path of the committing executable, if it was known and
+    /// safe to write on one line.
+    pub exe: Option<PathBuf>,
+    pub pid: u32,
+    /// Whether `AMPLIHACK_POST_UPDATE_INSTALL` was exactly `1`.
+    pub post_update: bool,
+}
+
+/// The exact file text for `record`. An exe path that is not UTF-8 or holds
+/// `\n`, `\r` or `\0` is written empty, so it can never forge a line.
+pub fn format_installed_by(record: &InstalledBy) -> String {
+    let exe = record
+        .exe
+        .as_deref()
+        .and_then(Path::to_str)
+        .filter(|s| !s.contains(['\n', '\r', '\0']))
+        .unwrap_or("");
+    format!(
+        "format=1\nversion={}\nexe={exe}\npid={}\npost_update={}\n",
+        record.version,
+        record.pid,
+        if record.post_update { 1 } else { 0 }
+    )
+}
+
+/// Writes [`INSTALLED_BY`] into `release_root` for this process.
+///
+/// The text goes to a temporary file created with `O_EXCL`, which is then
+/// renamed over the record. A stale temporary file or symlink is removed
+/// first, never followed; a directory there is never removed and fails the
+/// write.
+pub fn write_installed_by(release_root: &Path, version: &str) -> Result<()> {
+    validate_version(version)?;
+    let exe = std::env::current_exe()
+        .and_then(fs::canonicalize)
+        .map_err(|e| {
+            tracing::debug!("release: exe for {INSTALLED_BY} unknown: {e}");
+            e
+        })
+        .ok();
+    let record = InstalledBy {
+        version: version.to_string(),
+        exe,
+        pid: std::process::id(),
+        post_update: std::env::var("AMPLIHACK_POST_UPDATE_INSTALL").as_deref() == Ok("1"),
+    };
+    let text = format_installed_by(&record);
+
+    let tmp = release_root.join(INSTALLED_BY_TMP);
+    match fs::symlink_metadata(&tmp) {
+        Ok(meta) if meta.is_file() || meta.file_type().is_symlink() => {
+            fs::remove_file(&tmp)
+                .with_context(|| format!("failed to remove stale {}", tmp.display()))?;
+        }
+        Ok(_) => bail!(
+            "refusing to write {}: {} exists and is not a regular file or symlink",
+            INSTALLED_BY,
+            tmp.display()
+        ),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to inspect {}", tmp.display()));
+        }
+    }
+    write_new_file_0644(&tmp, text.as_bytes())
+        .with_context(|| format!("failed to write {}", tmp.display()))?;
+    let dest = release_root.join(INSTALLED_BY);
+    fs::rename(&tmp, &dest)
+        .with_context(|| format!("failed to rename {} to {}", tmp.display(), dest.display()))?;
+    tracing::debug!(
+        "release: wrote {} (pid {}, post_update {})",
+        dest.display(),
+        record.pid,
+        record.post_update
+    );
+    Ok(())
+}
+
+/// Makes the committed record read-only (0444), so nothing rewrites it in
+/// place.
+#[cfg(unix)]
+fn seal_installed_by(release_root: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let path = release_root.join(INSTALLED_BY);
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o444))
+        .with_context(|| format!("failed to set mode 444 on {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn seal_installed_by(_release_root: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn write_new_file_0644(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o644)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    file.write_all(bytes)?;
+    // The umask may have narrowed the mode; the record is world-readable.
+    file.set_permissions(fs::Permissions::from_mode(0o644))?;
+    file.sync_all()
+}
+
+#[cfg(not(unix))]
+fn write_new_file_0644(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    use std::io::Write;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()
+}
+
+/// Reads [`INSTALLED_BY`] from `release_root`.
+///
+/// Returns `None` unless it is a regular file (a symlink is not followed) of
+/// at most 4 KiB of UTF-8 with a non-empty `version` and a numeric `pid`.
+/// The first occurrence of each key wins; unknown keys are ignored. Never
+/// panics. Not a trust input: see [`InstalledBy`].
+// Production code never reads the record (it is not a trust input); only
+// tests read it back.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn read_installed_by(release_root: &Path) -> Option<InstalledBy> {
+    use std::io::Read;
+    let path = release_root.join(INSTALLED_BY);
+    let file = open_no_follow(&path).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    file.take(INSTALLED_BY_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > INSTALLED_BY_MAX_BYTES {
+        return None;
+    }
+    let text = String::from_utf8(bytes).ok()?;
+
+    let mut fields: BTreeMap<&str, &str> = BTreeMap::new();
+    for line in text.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            fields.entry(key).or_insert(value);
+        }
+    }
+    let version = fields.get("version").copied().unwrap_or("");
+    if version.is_empty() {
+        return None;
+    }
+    let pid = fields.get("pid")?.parse::<u32>().ok()?;
+    let exe = fields
+        .get("exe")
+        .filter(|e| !e.is_empty())
+        .map(PathBuf::from);
+    let post_update = fields.get("post_update").copied() == Some("1");
+    Some(InstalledBy {
+        version: version.to_string(),
+        exe,
+        pid,
+        post_update,
+    })
+}
+
+// Production code never reads the record (it is not a trust input); only
+// tests read it back.
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(unix)]
+fn open_no_follow(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+}
+
+// Production code never reads the record (it is not a trust input); only
+// tests read it back.
+#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(not(unix))]
+fn open_no_follow(path: &Path) -> io::Result<fs::File> {
+    if fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(io::Error::other("refusing to follow a symlink"));
+    }
+    fs::File::open(path)
 }
 
 fn switch_rank(link: &Path) -> usize {

@@ -20,9 +20,7 @@ use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use std::sync::mpsc::{self, TryRecvError};
 
 struct Fixture {
     _temp: tempfile::TempDir,
@@ -96,34 +94,57 @@ fn lock_file_is_0600() {
     drop(guard);
 }
 
+/// What the contending thread reports, in order. No timers: the order is
+/// read from the channel (S19: the lock is per thread, not per process).
+#[derive(Debug, PartialEq, Eq)]
+enum LockEvent {
+    Attempting,
+    Acquired,
+}
+
 #[test]
 fn lock_second_thread_blocks() {
     let fx = Fixture::new();
     let path = lock_file(&fx);
     let guard = install_lock::acquire_at(&path).unwrap();
-    let acquired = Arc::new(AtomicBool::new(false));
+    let (tx, rx) = mpsc::channel();
     let thread = {
-        let acquired = acquired.clone();
         let path = path.clone();
         std::thread::spawn(move || {
+            tx.send(LockEvent::Attempting).unwrap();
             let g = install_lock::acquire_at(&path).unwrap();
             assert!(install_lock::held_by_current_thread());
-            acquired.store(true, Ordering::SeqCst);
+            tx.send(LockEvent::Acquired).unwrap();
             drop(g);
         })
     };
-    std::thread::sleep(Duration::from_millis(300));
-    assert!(
-        !acquired.load(Ordering::SeqCst),
-        "another thread of the same process must wait (S19: per thread, not per process)"
+
+    // The thread is about to block on the lock.
+    assert_eq!(rx.recv().unwrap(), LockEvent::Attempting);
+    // While this thread holds it, no other process can take it either, and
+    // the contending thread has not reported `Acquired`.
+    if have_flock() {
+        let other = Command::new("flock")
+            .arg("-n")
+            .arg(&path)
+            .arg("true")
+            .status()
+            .unwrap();
+        assert!(!other.success(), "the lock is held");
+    }
+    assert_eq!(
+        rx.try_recv(),
+        Err(TryRecvError::Empty),
+        "another thread of the same process must wait while the lock is held"
     );
     assert!(install_lock::held_by_current_thread());
+
     drop(guard);
-    let end = Instant::now() + Duration::from_secs(30);
-    while !acquired.load(Ordering::SeqCst) && Instant::now() < end {
-        std::thread::sleep(Duration::from_millis(10));
-    }
-    assert!(acquired.load(Ordering::SeqCst), "it acquires once released");
+    assert_eq!(
+        rx.recv().unwrap(),
+        LockEvent::Acquired,
+        "it acquires once released"
+    );
     thread.join().unwrap();
 }
 
