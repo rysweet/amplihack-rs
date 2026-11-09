@@ -163,8 +163,8 @@ pub fn build_tool_command_from_env(
 /// Root option values are consumed before classifying the native command.
 ///
 /// Issue #2030: `exec` reads the prompt on stdin through a trailing `-`;
-/// interactive Codex gets the file-reference pointer, so the prompt is never
-/// in argv unless the user asked for `argv` by name.
+/// interactive Codex gets the file-reference pointer. The prompt is never in
+/// argv: a request for `argv` is treated like `auto`.
 fn finish_codex_delivery(
     mut command: Command,
     args: &[String],

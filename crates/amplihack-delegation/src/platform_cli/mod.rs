@@ -258,28 +258,26 @@ impl PlatformCli for CopilotCli {
 
     fn build_spawn_config(
         &self,
-        goal: &str,
-        persona: &str,
+        _goal: &str,
+        _persona: &str,
         working_dir: &str,
-        environment: &HashMap<String, String>,
+        _environment: &HashMap<String, String>,
         extra_args: &[String],
-        context: &str,
+        _context: &str,
     ) -> Result<SpawnConfig> {
         validate_working_dir(working_dir)?;
         validate_extra_args(extra_args)?;
-        let prompt = self.format_prompt(goal, persona, context);
-        // Issue #2030: the pointer sentence, never the prompt, in argv.
-        let (pointer, guard) = pointer_to_private_file(&prompt)?;
-        let mut cmd = vec!["gh".into(), "copilot".into(), "suggest".into()];
-        cmd.extend(extra_args.iter().cloned());
-        cmd.push(pointer);
-        Ok(SpawnConfig {
-            command: cmd,
-            working_dir: working_dir.into(),
-            environment: environment.clone(),
-            stdin: None,
-            prompt_guard: Some(guard),
-        })
+        // Issue #2030: `gh copilot suggest` takes its request only as an
+        // argument and only turns it into a shell command. It reads no stdin
+        // and no files, so it has no channel for the prompt other than argv,
+        // where any local user can read it. Refuse rather than send it a
+        // "read this file" sentence it cannot act on.
+        Err(DelegationError::Validation(
+            "no safe channel for the delegation prompt: `gh copilot suggest` accepts it only \
+             on the command line, where other local users can read it (issue #2030). \
+             Delegate to claude-code or amplifier instead."
+                .into(),
+        ))
     }
 
     fn parse_output(&self, output: &str) -> HashMap<String, String> {

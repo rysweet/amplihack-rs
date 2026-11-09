@@ -82,7 +82,8 @@ of `pkill -f`.
 | `llm_client` (unknown launcher) | argv | error: `NoSafeChannel` |
 | `claude_process` (orchestration) | stdin above 4096 bytes | stdin |
 | `platform_cli` Claude delegate | `claude -p <prompt>` | `claude -p`, prompt on stdin |
-| `platform_cli` `amplifier run`, `gh copilot suggest` | prompt in argv | pointer sentence |
+| `platform_cli` `amplifier run` | prompt in argv | pointer sentence |
+| `platform_cli` `gh copilot suggest` | prompt in argv | error: no safe channel (it reads neither stdin nor files) |
 | `copilot_strategy` (`gh copilot --prompt`) | prompt in argv | pointer sentence with `--add-dir <private dir>` |
 | `amplihack-turn` Copilot turn (`build_turn_argv`, Signal chat) | `-p <message>` | `-p <pointer sentence>` with `--add-dir <private dir>`; the file is removed after the turn |
 | `quality-loop.yaml` (three `amplihack copilot -p` calls) | `-p "$PROMPT"` | pointer sentence to a 0600 file, removed by an `EXIT` trap |
@@ -422,7 +423,7 @@ remove the file before the agent reads it.
 | --- | --- | --- |
 | `amplihack-cli` | `auto_mode/helpers.rs` | stdin (Claude, `codex exec -`), pointer sentence (Copilot) |
 | `amplihack-orchestration` | `claude_process.rs` | stdin |
-| `amplihack-delegation` | `platform_cli` | stdin (Claude), pointer sentence (Amplifier, `gh copilot`) |
+| `amplihack-delegation` | `platform_cli` | stdin (Claude), pointer sentence (Amplifier); `gh copilot suggest` is refused |
 | `amplihack-turn` | `turn.rs` | pointer sentence |
 | `amplihack-signal` | `chat/turn.rs` | through `amplihack-turn` |
 | `amplihack-hooks` | `strategies/copilot_strategy.rs` (power-steer) | pointer sentence |
@@ -502,6 +503,13 @@ runs its own version gate against the CLI in the container. The host's version
 gate is skipped for Docker, because the host's `claude` version says nothing
 about the container's.
 
+The hand-off itself passes the launch arguments to `docker` as they were given,
+before the passthrough rewrite, because the rewrite's per-session files are
+host paths the container cannot see. A `-p <text>` given to a Docker launch is
+therefore in the host `docker` process's argv while it runs. It is the same
+text, already in the `amplihack` process's own argv; see
+[What argv still contains](#what-argv-still-contains).
+
 ## Environment variables
 
 | Variable | Effect |
@@ -559,11 +567,12 @@ per-session files, and the fixed pointer sentence that Copilot and interactive
 Codex receive. The pointer sentence is a constant plus a path; the tests check
 that it holds no sentinel phrase and no `tail -f /dev/null`.
 
-Two cases keep text in a process's argv and are documented exceptions:
+Three cases keep text in a process's argv and are documented exceptions:
 
 | Case | Why | Tracking |
 | --- | --- | --- |
 | The `amplihack claude` wrapper started by a recipe agent step | The recipe runner puts the brief in the wrapper's argv. The agent CLI child below it is clean. The runner change gives Claude a bare `-p` with stdin and `--system-prompt-file`; the wrapper is clean once `RECIPE_RUNNER_REV` is updated to include it | Follow-up issue for the wrapper argv and the pin update |
+| A Docker launch, `amplihack claude --docker -p '<text>'` | The host `docker` process receives the arguments before the rewrite, because the per-session files are host paths the container cannot see. The text is already in the caller's own `amplihack` argv | Accepted risk; a fix needs the private file mounted into the container |
 | `amplihack claude -- '<prompt>'` (interactive first prompt) | The text is in the wrapper's own argv, which the caller supplied, and interactive Claude cannot read its first prompt from stdin | Follow-up issue for an interactive `--prompt-file` option |
 
 To start an interactive or auto-mode session without prompt text in any argv,

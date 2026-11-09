@@ -924,8 +924,8 @@ see [Security properties](../concepts/large-payload-delivery.md#security-propert
 
 None. Since issue #2030 every site that hands a prompt to an agent CLI uses
 stdin, a `*-file` flag or a file reference: `platform_cli` sends Claude prompts
-on stdin and `amplifier run` and `gh copilot suggest` prompts as a file
-reference, and `copilot_strategy` and the `amplihack-turn` Copilot turn use a
+on stdin and `amplifier run` prompts as a file reference and refuses
+`gh copilot suggest`, which has no channel but argv, and `copilot_strategy` and the `amplihack-turn` Copilot turn use a
 file reference with `--add-dir`. The
 full list, with the before and after for each path, is in
 [Agent Prompt Channels Reference](./agent-prompt-channels.md#channels-by-launch-path).

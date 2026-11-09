@@ -1,7 +1,8 @@
 //! Issue #2030 (red phase): delegation spawn configs never put the prompt in
-//! argv. Claude gets `claude -p` with the prompt on stdin; `amplifier run` and
-//! `gh copilot suggest` get the file-reference pointer to a 0600 file in a 0700
-//! directory held by `prompt_guard` until the child is waited on.
+//! argv. Claude gets `claude -p` with the prompt on stdin; `amplifier run` gets
+//! the file-reference pointer to a 0600 file in a 0700 directory held by
+//! `prompt_guard` until the child is waited on. `gh copilot suggest` cannot read
+//! a file or stdin, so building its spawn config fails.
 //!
 //! API pinned: `SpawnConfig { .., stdin: Option<String>,
 //! prompt_guard: Option<Arc<TempDir>> }`, `impl Default`, and a `Debug` that
@@ -62,8 +63,28 @@ fn claude_delegate_uses_bare_print_and_stdin() {
 }
 
 #[test]
-fn amplifier_and_copilot_delegates_use_the_pointer() {
-    let clis: [&dyn PlatformCli; 2] = [&AmplifierCli, &CopilotCli];
+fn copilot_delegate_refuses_without_a_safe_channel() {
+    let err = CopilotCli
+        .build_spawn_config(
+            SENTINEL,
+            "guide",
+            env!("CARGO_MANIFEST_DIR"),
+            &HashMap::new(),
+            &[],
+            "",
+        )
+        .expect_err("gh copilot suggest has no safe prompt channel");
+    let msg = err.to_string();
+    assert!(msg.contains("no safe channel"), "{msg}");
+    assert!(
+        !msg.contains(SENTINEL),
+        "the error must not echo the prompt: {msg}"
+    );
+}
+
+#[test]
+fn amplifier_delegate_uses_the_pointer() {
+    let clis: [&dyn PlatformCli; 1] = [&AmplifierCli];
     for cli in clis {
         let cfg = spawn(cli);
         assert_no_prompt(&cfg);
