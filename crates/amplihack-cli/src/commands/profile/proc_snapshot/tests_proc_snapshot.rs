@@ -449,6 +449,22 @@ fn the_snapshot_lock_is_released_after_a_refresh() {
     assert!(f.lock_is_free());
 }
 
+/// A forked child keeps a copy of the lock's descriptor until it execs. The
+/// copy shares the open file, so dropping the holder must unlock it, not
+/// only close its own descriptor.
+#[test]
+fn dropping_the_snapshot_lock_frees_it_while_a_shared_descriptor_stays_open() {
+    let f = fx();
+    let st = store::Store::open(&f.rt, f.key()).unwrap();
+    let store::Lock::Held(held) = st.try_lock().unwrap() else {
+        panic!("a free lock was busy");
+    };
+    let child_copy = held.share();
+    drop(held);
+    assert!(f.lock_is_free(), "the shared descriptor kept the lock");
+    drop(child_copy);
+}
+
 // --- Confirmed reads --------------------------------------------------------
 
 fn x_not_live(l: &Liveness) -> bool {

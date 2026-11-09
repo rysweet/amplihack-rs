@@ -16,9 +16,18 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 /// The most of the file read for the holder's pid.
 const MAX_PID_BYTES: u64 = 32;
 
-/// The run lock, held until dropped.
+/// The run lock, held until dropped. Dropping it unlocks the file before
+/// closing it, so a child forked by another thread that has not yet run
+/// `exec` does not keep the lock held through its copy of the descriptor.
 pub struct RunLock {
-    _file: File,
+    file: File,
+}
+
+impl Drop for RunLock {
+    fn drop(&mut self) {
+        // Closing the file releases the lock anyway once every copy is closed.
+        let _ = FileExt::unlock(&self.file);
+    }
 }
 
 pub enum Taken {
@@ -58,7 +67,7 @@ pub fn take(rs: &RotateState) -> Result<Taken, ProfileError> {
     match FileExt::try_lock_exclusive(&file) {
         Ok(()) => {
             write_pid(&mut file).map_err(ProfileError::Io)?;
-            Ok(Taken::Held(RunLock { _file: file }))
+            Ok(Taken::Held(RunLock { file }))
         }
         Err(e) if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
             Ok(Taken::Busy(read_pid(&mut file)))

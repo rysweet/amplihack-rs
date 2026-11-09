@@ -4242,7 +4242,8 @@ the order is the one given in [Rotate run lock](#rotate-lock-order): the
 run lock, then the global state lock, then Claude's refresh locks, then the
 snapshot lock. Both lock files are opened with
 `O_CLOEXEC`, so a `claude` or other child process started while a lock is
-held does not keep it.
+held does not keep it. Each lock is unlocked explicitly when it is released,
+so a child forked just before then does not hold it until that child execs.
 
 #### Commands that read afresh
 
@@ -4256,6 +4257,7 @@ move a login or migrate a directory. Display and dry-run paths never do.
 | [Session end and recovery](#session-end-and-recovery), run by launches before `claude` starts, `profile login`, `auto-switch repair` and the status-line wrapper | Confirmed: forced only when a hosted directory looks not live, before its login is returned. |
 | The [in-session swap](#in-session-swap) check of the status-line wrapper | Confirmed: forced only when the cached answer would allow the swap, and the swap goes ahead only if the forced answer allows it too. |
 | [Shared session directories](#shared-session-directories), run by `profile switch`, `profile login` and launches | Confirmed: forced only when the cached answer is `Migrate`. |
+| [Rotate switch](#rotate-switch) (`profile switch NAME`), just before NAME's login is moved | Forced, when the cached answer let NAME through as a candidate. A session in NAME refuses the switch as `session running`; if the snapshot lock is held, the switch is refused as `session running` with `running sessions cannot be seen here, so its login may be in use`. |
 | The held-cycle and hand-change checks of a rotate cycle that is not a dry run | Confirmed: forced only when the cached answer would permit the action. |
 | Rotate step 3 (candidates), `rotate --dry-run`, `auto-switch status`, the status line's display | Cached. |
 | `rotate status`, `start`, `stop` and the other control actions | No reading. |
@@ -4264,7 +4266,7 @@ move a login or migrate a directory. Display and dry-run paths never do.
 
 For each numbered entry in `/proc`, the scan reads, in this order:
 
-1. `status`, for the uid, state and parent pid. A process with another uid
+1. `status`, for the uid and state. A process with another uid
    is skipped and nothing more is read.
 2. The `exe` link, to decide whether the process is a candidate.
 3. `environ`, only for candidates.
@@ -7231,6 +7233,11 @@ changes nothing but `.default`.
    lock in step 6. A profile with any skip reason is refused, the same
    profiles the rotator never swaps to, so a switch never moves a login out
    from under a running session, an auto-switch lease or a hosted login.
+   That list's running sessions may come from the cached
+   [running-session snapshot](#running-session-snapshot), so when it lets
+   `<name>` through, `/proc` is read afresh before the swap; a session in
+   `<name>`, or a held snapshot lock, refuses the switch as
+   `session running` (see [Commands that read afresh](#commands-that-read-afresh)).
    The refusal is [default only](#default-only): `<name>` still becomes the
    default for new launches.
    The refusal is

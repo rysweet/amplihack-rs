@@ -99,8 +99,28 @@ pub enum Found {
 
 /// The result of one non-blocking attempt on the snapshot lock.
 pub enum Lock {
-    Held(File),
+    Held(Held),
     Busy,
+}
+
+/// The held snapshot lock. Dropping it unlocks the file before closing it:
+/// a child forked by another thread holds a copy of the descriptor until it
+/// execs, and `flock` would otherwise stay held until that copy closes too.
+pub struct Held(File);
+
+#[cfg(test)]
+impl Held {
+    /// A second descriptor on the same open file, as a forked child has.
+    pub fn share(&self) -> File {
+        self.0.try_clone().unwrap()
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        // Closing the file releases the lock anyway once every copy is closed.
+        let _ = FileExt::unlock(&self.0);
+    }
 }
 
 impl Store {
@@ -178,7 +198,7 @@ impl Store {
             })?;
         check_private_file(&file.metadata()?)?;
         match FileExt::try_lock_exclusive(&file) {
-            Ok(()) => Ok(Lock::Held(file)),
+            Ok(()) => Ok(Lock::Held(Held(file))),
             Err(e) if e.raw_os_error() == fs2::lock_contended_error().raw_os_error() => {
                 Ok(Lock::Busy)
             }

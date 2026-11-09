@@ -24,10 +24,11 @@ use super::settings;
 use super::swap::{self, LOGIN_NOT_MOVABLE, NO_STORED_LOGIN_HINT, Source};
 use super::{Released, TuneFlags};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{CREDS, State, exists, now};
+use crate::commands::profile::auto_switch::kit::{CREDS, Liveness, State, exists, now};
 use crate::commands::profile::kind::{self, Kind};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::pointer;
+use crate::commands::profile::proc_snapshot::Fresh;
 use crate::commands::profile::shared_dirs;
 use crate::commands::profile::store::ProfileStore;
 use std::path::Path;
@@ -101,7 +102,7 @@ pub fn switch_live(
     switch_in(Ctx::new(store.clone(), home.to_path_buf(), s), name)
 }
 
-/// [`switch_live`] on a context the caller built; tests set `ctx.scan`.
+/// [`switch_live`] on a context the caller built; tests set `ctx.procs`.
 pub(super) fn switch_in(
     mut ctx: Ctx,
     name: &ProfileName,
@@ -155,7 +156,10 @@ pub(super) fn switch_in(
             Switched::AlreadyLive(name.clone())
         }
         Some(source) => {
-            if let Some(reason) = not_a_candidate(store, &first, name) {
+            // Issue #2040: `first` may be a cached, older answer; the swap
+            // takes NAME's login from its directory, so read `/proc` afresh.
+            let refused = not_a_candidate(store, &first, name).or_else(|| running_now(&ctx, name));
+            if let Some(reason) = refused {
                 return default_only(&ctx.rs, store, name, reason);
             }
             let from = match swap::swap_with(
@@ -237,6 +241,25 @@ fn default_only(
     Ok(Ok(Switched::DefaultOnly { reason, held }))
 }
 
+/// The detail of a `session running` refusal.
+fn running_detail(sees_sessions: bool) -> &'static str {
+    if sees_sessions {
+        "a running process has CLAUDE_CONFIG_DIR set to it; end that session first"
+    } else {
+        "running sessions cannot be seen here, so its login may be in use"
+    }
+}
+
+/// The `session running` refusal for `name` from a forced read of `/proc`
+/// (issue #2040); a busy snapshot lock counts every profile as running.
+fn running_now(ctx: &Ctx, name: &ProfileName) -> Option<String> {
+    let live = ctx.procs.liveness(ctx.store.root(), Fresh::Forced);
+    let detail = running_detail(matches!(live, Liveness::Known(_)));
+    let why = Skip::SessionRunning.as_str();
+    live.is_live(name)
+        .then(|| format!("profile {name} is not a rotate candidate ({why}): {detail}"))
+}
+
 /// Why the rotator would not swap to `name`, if it would not: the reason
 /// `identify::candidates` recorded for it in the prelude's snapshot, taken
 /// under the lock just before the swap. "Whatever the rotator refuses, the
@@ -269,12 +292,7 @@ pub(super) fn not_a_candidate(
         }
         Skip::NoLogin => LOGIN_NOT_MOVABLE.to_string(),
         Skip::NotOAuth => "its login file holds no subscription login".to_string(),
-        Skip::SessionRunning if !snap.sees_sessions => {
-            "running sessions cannot be seen here, so its login may be in use".to_string()
-        }
-        Skip::SessionRunning => {
-            "a running process has CLAUDE_CONFIG_DIR set to it; end that session first".to_string()
-        }
+        Skip::SessionRunning => running_detail(snap.sees_sessions).to_string(),
         Skip::Excluded => "it is in the auto-switch exclude list; set the list \
                            without it with `amplihack profile auto-switch exclude` first"
             .to_string(),

@@ -194,6 +194,20 @@ fn take_writes_the_holders_pid_and_a_second_take_is_busy_until_it_is_dropped() {
     assert!(matches!(run_lock::take(&e.rs).unwrap(), Taken::Held(_)));
 }
 
+/// A child forked by another thread keeps a copy of the descriptor until it
+/// execs; dropping the run lock must still free it.
+#[test]
+fn dropping_the_run_lock_frees_it_while_a_shared_descriptor_stays_open() {
+    let e = env();
+    let Taken::Held(held) = run_lock::take(&e.rs).unwrap() else {
+        panic!("a free run lock was not taken");
+    };
+    let child_copy = held.file.try_clone().unwrap();
+    drop(held);
+    assert!(matches!(run_lock::take(&e.rs).unwrap(), Taken::Held(_)));
+    drop(child_copy);
+}
+
 #[test]
 fn a_previous_holders_longer_pid_is_replaced_not_appended_to() {
     let e = env();

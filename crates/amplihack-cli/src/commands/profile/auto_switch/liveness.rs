@@ -96,7 +96,7 @@ pub fn derive(collected: &Collected, reader_pid: u32) -> Liveness {
 
 /// Every process of `uid` under `proc_root`, the caller included. `root`
 /// must be canonical. For each process the reads are, in order: `status`
-/// (skipped unless it is the user's), `stat`, the `exe` link, `cmdline`
+/// (skipped unless it is the user's), the `exe` link, `cmdline`
 /// only for an interpreter or an unreadable `exe`, and `environ` only for a
 /// [`candidate`] (R7, D9).
 pub fn collect(proc_root: &Path, root: &Path, uid: u32) -> Collected {

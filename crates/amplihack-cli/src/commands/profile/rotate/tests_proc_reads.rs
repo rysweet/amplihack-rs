@@ -20,10 +20,11 @@ use super::cycle::{Ctx, CycleOutcome, Mode, run_cycle};
 use super::observe::{Measurement, Read, Snap, decide_measured, snapshot};
 use super::tests_revalidate_cause::{ctx_with, env3, log_of, ok, probes_for, spent};
 use super::tests_swap::{Env, env, ino_at};
+use super::tests_switch::assert_refused_seeing;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, now};
 use crate::commands::profile::proc_snapshot::{
-    Collected, ProcRecord, ProcSource, SourceDeps, store,
+    Collected, ProcRecord, ProcSource, SourceDeps, record::Snapshot, store,
 };
 use amplihack_utils::secure_files::euid;
 use fs2::FileExt;
@@ -57,6 +58,8 @@ struct Reads {
     scans: Arc<AtomicUsize>,
     rt: PathBuf,
     proc_root: PathBuf,
+    /// The fixed clock.
+    t: i64,
 }
 
 /// Points `ctx.procs` at a counted synthetic scan whose `i`th answer is
@@ -87,6 +90,7 @@ fn counted(e: &Env, ctx: &mut Ctx, answers: Vec<Collected>) -> Reads {
         scans,
         rt,
         proc_root,
+        t,
     }
 }
 
@@ -95,14 +99,28 @@ impl Reads {
         self.scans.load(Ordering::SeqCst)
     }
 
-    fn lock_path(&self, root: &Path) -> PathBuf {
-        let key = store::key(
+    fn key(&self, root: &Path) -> String {
+        store::key(
             &self.proc_root.canonicalize().unwrap(),
             &root.canonicalize().unwrap(),
-        );
+        )
+    }
+
+    fn lock_path(&self, root: &Path) -> PathBuf {
+        let key = self.key(root);
         self.rt
             .join("amplihack")
             .join(format!("proc-snapshot-{key}.lock"))
+    }
+
+    /// Replaces the snapshot with a fresh one holding `collected`.
+    fn plant(&self, root: &Path, collected: &Collected) {
+        let key = self.key(root);
+        let snap = Snapshot::from_collected(collected, euid(), &key, self.t, OTHER);
+        store::Store::open(&self.rt, key)
+            .unwrap()
+            .write(&snap)
+            .unwrap();
     }
 }
 
@@ -252,4 +270,123 @@ fn ac4_revalidation_with_the_snapshot_lock_held_counts_every_profile_as_running(
     assert_eq!(r.scans(), 1, "step 6 found the lock held and did not scan");
     assert_eq!(ino_at(&e.live()), Some(e.l));
     assert_eq!(ino_at(&e.slot("spare2")), Some(s2));
+}
+
+// --- profile switch reads afresh before it moves a login ----------------------
+
+/// A switch context whose running sessions come from [`counted`].
+fn switch_reads(e: &Env, answers: Vec<Collected>) -> (ProcSource, Reads) {
+    let s = super::settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
+    let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
+    let r = counted(e, &mut ctx, answers);
+    (ctx.procs.clone(), r)
+}
+
+/// The prelude's cached read says no session runs in `spare`; one starts
+/// before the swap. The forced read sees it and the switch refuses.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_switch_reads_afresh_before_taking_a_login_the_cache_called_free() {
+    let e = env();
+    let (procs, r) = switch_reads(&e, vec![on(&[]), on(&["spare"])]);
+    assert_refused_seeing(
+        &e,
+        "spare",
+        "profile spare is not a rotate candidate (session running): \
+         a running process has CLAUDE_CONFIG_DIR set to it",
+        Some(&procs),
+    );
+    assert_eq!(r.scans(), 2, "one cached refresh, one forced read");
+}
+
+/// A fresh snapshot says no session runs; the snapshot lock is held when
+/// the switch would move the login, so the forced read fails closed.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_switch_with_the_snapshot_lock_held_refuses_without_scanning() {
+    let e = env();
+    let (procs, r) = switch_reads(&e, vec![on(&[])]);
+    let state = State::new(&e.root).unwrap();
+    let mut ctx = ctx_with(&e, never);
+    ctx.procs = procs.clone();
+    // Writes the fresh "no session" snapshot the prelude will be served.
+    assert!(snapshot(&ctx, &state, Read::Cached).unwrap().sees_sessions);
+    assert_eq!(r.scans(), 1);
+    let _held = hold(&r.lock_path(&e.root));
+    assert_refused_seeing(
+        &e,
+        "spare",
+        "profile spare is not a rotate candidate (session running): \
+         running sessions cannot be seen here, so its login may be in use",
+        Some(&procs),
+    );
+    assert_eq!(r.scans(), 1, "neither read scanned behind the held lock");
+}
+
+/// With no session before or after, the switch moves the login and the
+/// forced read is the second and last scan.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_switch_with_no_session_moves_after_one_forced_read() {
+    let e = env();
+    let (procs, r) = switch_reads(&e, vec![on(&[])]);
+    super::tests_switch::switch_seeing(&e, "spare", Some(&procs)).unwrap();
+    assert_eq!(r.scans(), 2, "one cached refresh, one forced read");
+}
+
+// --- AC4: forced, not merely confirmed --------------------------------------
+
+thread_local! {
+    static PLANT: RefCell<Option<(Reads, PathBuf)>> = const { RefCell::new(None) };
+}
+
+/// Another Claude-like process whose environment cannot be read.
+fn unreadable_claude() -> Collected {
+    Collected::Procs(vec![ProcRecord {
+        pid: OTHER,
+        zombie: false,
+        claude_like: true,
+        profile: None,
+        environ_unreadable: true,
+    }])
+}
+
+/// As [`spare2_has_room`], and replaces the snapshot with a fresh one whose
+/// answer is `Everything`, which permits nothing. A confirmed read would be
+/// served that answer without scanning; only a forced read scans.
+fn spare2_has_room_snapshot_says_everything(
+    ctx: &Ctx,
+    snap: &Snap,
+) -> Result<Measurement, ProfileError> {
+    PLANT.with(|p| {
+        let p = p.borrow();
+        let (r, root) = p.as_ref().expect("plant set");
+        r.plant(root, &unreadable_claude());
+    });
+    spare2_has_room(ctx, snap)
+}
+
+/// AC4 says step 6 always reads afresh. A fresh snapshot that permits
+/// nothing would stop a confirmed read from scanning, so the second scan
+/// shows the read is forced.
+#[cfg(target_os = "linux")]
+#[test]
+fn ac4_revalidation_scans_even_when_the_cached_answer_permits_nothing() {
+    let (e, _, _) = env3();
+    let mut ctx = ctx_with(&e, spare2_has_room_snapshot_says_everything);
+    let r = counted(&e, &mut ctx, vec![on(&[])]);
+    let scans = Arc::clone(&r.scans);
+    PLANT.with(|p| *p.borrow_mut() = Some((r, e.root.clone())));
+    run_cycle(&mut ctx, Mode::Watch).unwrap();
+    PLANT.with(|p| p.borrow_mut().take());
+    let log = log_of(&e);
+    assert_eq!(
+        scans.load(Ordering::SeqCst),
+        2,
+        "step 3 refreshed, step 6 forced:\n{log}"
+    );
+    assert!(
+        !log.contains("target eligibility: session running"),
+        "the forced read saw no session:\n{log}"
+    );
 }
