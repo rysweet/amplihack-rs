@@ -11,12 +11,17 @@ description: |
                       before the agent ran (autodrive_light_eligibility.sh).
                       Over any limit, the same PR and state directory are
                       handed to auto-drive-to-merge, and nothing below runs.
-    3. LIGHT PATH   - a light-mode marker is written, then the unchanged
-                      autodrive-crusty-loop, the #1551 unmerged check and the
-                      unchanged autodrive-merge-loop run on the PR. In light
-                      mode a crusty round that raises only minor concerns
-                      defers them to a follow-up issue (autodrive-crusty-round
-                      step-03 and step-06, autodrive_light_round.sh).
+    3. LIGHT PATH   - the unchanged autodrive-crusty-loop, the #1551
+                      unmerged check and the unchanged autodrive-merge-loop
+                      run on the PR. Light mode adds nothing inside the
+                      loops: minor findings are classified, filed and gated
+                      by autodrive_followups.sh exactly as in
+                      auto-drive-to-merge (#1979, #1982), and the change is
+                      measured only here, before the loops, where the result
+                      decides what runs. The effective task id (plan_task_id,
+                      else #issue_number, through autodrive_followups.sh
+                      resolve-task) is forwarded to every child as
+                      plan_task_id.
 
   The merge criteria and the merge gate are those of auto-drive-to-merge,
   unchanged. Contract: docs/reference/auto-drive-light.md
@@ -47,6 +52,9 @@ context:
   task_description: ""
   repo_path: "."
   issue_number: ""
+  # The plan task follow-up issues name (#1982): #N, N, or 1 to 64 characters
+  # from A-Za-z0-9._:/-. Empty: #<issue_number>, else the PR body and task text.
+  plan_task_id: ""
   # Either names an open PR to drive; the build steps are then skipped.
   existing_branch: ""
   pr_number: ""
@@ -66,15 +74,13 @@ context:
   # Filled as the steps run.
   light_prereqs: ""
   autodrive_pr_input: ""
+  light_task_id: ""
   worktree_setup: ""
   light_base: ""
   # Read by quick_change_common.sh (qc_base, qc_checks_summary); each build
   # step sets quick_change_base from light_base before it calls qc_base.
   quick_change_base: ""
   quick_change_checks: ""
-  # Read by autodrive_light_steps.sh, which light-prereqs checks for; the
-  # crusty round sets it before its step-03 and step-06 load that file.
-  crusty_round_context: ""
   light_implementation: ""
   light_checks: ""
   light_precommit_result: ""
@@ -83,7 +89,6 @@ context:
   build_result: ""
   light_eligibility: ""
   light_escalation_result: ""
-  light_marker: ""
   crusty_loop_result: ""
   autodrive_unmerged_check: ""
   merge_gate_result: ""
@@ -100,7 +105,9 @@ steps:
       command -v jq >/dev/null 2>&1 || die "jq is not on PATH; auto-drive-light needs it"
       case "${AMPLIHACK_HOME:-}" in /*) ;; *) die "AMPLIHACK_HOME must be an absolute path; tools are loaded only from it" ;; esac
       T="${AMPLIHACK_HOME}/amplifier-bundle/tools"
-      for f in autodrive_light_eligibility.sh autodrive_light_round.sh autodrive_finding_rules.sh autodrive_light_steps.sh autodrive_state.sh autodrive_trust.sh quick_change_common.sh; do
+      for f in autodrive_light_eligibility.sh autodrive_finding_rules.sh \
+               autodrive_followups.sh autodrive_followups_check.sh workflow_issue_tracking.sh \
+               autodrive_state.sh autodrive_trust.sh quick_change_common.sh; do
         [ -f "$T/$f" ] || die "$f not found under AMPLIHACK_HOME"
       done
       cd "${RECIPE_VAR_repo_path:-.}" 2>/dev/null || die "cannot enter repo_path"
@@ -141,6 +148,28 @@ steps:
     command: |
       printf '%s' "${RECIPE_VAR_pr_number:-}"
     output: "autodrive_pr_input"
+
+  # #1982: the task id the follow-up issues name, checked and normalised once,
+  # before any work, by the rule `file` itself uses (autodrive_followups.sh
+  # resolve-task; no copy of it lives here), and passed to light-escalate,
+  # light-crusty-loop and light-merge-loop as plan_task_id: plan_task_id (an
+  # invalid one stops the run, exit 2), else #<issue_number>, else empty (file
+  # then reads the PR body and the task text). The value is never logged.
+  - id: "light-task-id"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      case "${AMPLIHACK_HOME:-}" in /*) ;; *) echo "ERROR: auto-drive-light/light-task-id: AMPLIHACK_HOME must be an absolute path" >&2; exit 1 ;; esac
+      FU="${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_followups.sh"
+      [ -f "$FU" ] || { echo "ERROR: auto-drive-light/light-task-id: autodrive_followups.sh not found under AMPLIHACK_HOME" >&2; exit 1; }
+      P="${RECIPE_VAR_plan_task_id:-}"; ISS="${RECIPE_VAR_issue_number:-}"
+      if [ -n "$P" ]; then
+        bash "$FU" resolve-task --task-id "$P" 2>/dev/null \
+          || { echo "ERROR: auto-drive-light: plan_task_id must be #N or 1 to 64 characters from A-Za-z0-9._:/-" >&2; exit 2; }
+      elif [[ "$ISS" =~ ^[0-9]+$ ]]; then
+        bash "$FU" resolve-task --task-id "$ISS" 2>/dev/null || true
+      fi
+    output: "light_task_id"
 
   # Build, steps 3 to 9: only for a new change.
   - id: "light-worktree"
@@ -401,7 +430,8 @@ steps:
 
   # The eligibility decision for the PR head. A recorded decision is reused
   # only at the same head and limits; an earlier escalation is permanent.
-  # On escalate the light-mode marker is removed and escalation.json written.
+  # On escalate escalation.json is written. This is the only measurement:
+  # nothing inside the loops measures the change again (#1982).
   - id: "light-eligibility"
     type: "bash"
     parse_json: true
@@ -455,12 +485,9 @@ steps:
         || die "the eligibility measurement could not be read"
       printf '%s\n' "$J" | put light-eligibility.json || die "light-eligibility.json could not be written"
       DECISION="$(printf '%s' "$J" | jq -r .decision)"; REASON="$(printf '%s' "$J" | jq -r .reason)"
-      if [ "$DECISION" = "escalate" ]; then
-        rm -f -- "$DIR/light-mode"
-        if [ ! -e "$ESC" ] && [ ! -L "$ESC" ]; then
-          printf '%s' "$J" | jq -c --arg b "$BASE_SHA" --arg h "$HEAD_SHA" '{reason: .reason, measurements: ., base_sha: $b, head_sha: $h}' \
-            | put escalation.json || die "escalation.json could not be written"
-        fi
+      if [ "$DECISION" = "escalate" ] && [ ! -e "$ESC" ] && [ ! -L "$ESC" ]; then
+        printf '%s' "$J" | jq -c --arg b "$BASE_SHA" --arg h "$HEAD_SHA" '{reason: .reason, measurements: ., base_sha: $b, head_sha: $h}' \
+          | put escalation.json || die "escalation.json could not be written"
       fi
       echo "AUTODRIVE_LIGHT_ELIGIBILITY=${DECISION} reason=${REASON}" >&2
       printf '%s\n' "$J"
@@ -480,29 +507,8 @@ steps:
       autodrive_state_dir: "{{build_result.state_dir}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
       no_merge: "{{no_merge}}"
+      plan_task_id: "{{light_task_id}}"
     output: "light_escalation_result"
-
-  # The light-mode marker: one line, the measured head. Written atomically,
-  # only after a light decision.
-  - id: "light-mode-marker"
-    type: "bash"
-    condition: "light_eligibility.decision == 'light'"
-    command: |
-      set -uo pipefail
-      die() { echo "ERROR: auto-drive-light/light-mode-marker: $1" >&2; exit 1; }
-      DIR="$(printf '%s' "${RECIPE_VAR_build_result:-}" | jq -r '.state_dir // ""' 2>/dev/null)"
-      HEAD_SHA="$(printf '%s' "${RECIPE_VAR_light_eligibility:-}" | jq -r 'select(.decision == "light") | .head // ""' 2>/dev/null)"
-      [ "$HEAD_SHA" = "$(printf '%s' "${RECIPE_VAR_build_result:-}" | jq -r '.head_sha // ""' 2>/dev/null)" ] || die "the light decision is not for the PR head"
-      [[ "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || die "no measured head"
-      case "$DIR" in /*) ;; *) die "no absolute state directory" ;; esac
-      [ -d "$DIR" ] && [ ! -L "$DIR" ] || die "the state directory is missing or a symlink"
-      [ ! -e "$DIR/escalation.json" ] && [ ! -L "$DIR/escalation.json" ] || die "escalation.json exists; light mode is not entered"
-      umask 077
-      TMP="$(mktemp "$DIR/.light-mode.XXXXXX")" || die "mktemp failed"
-      printf '%s\n' "$HEAD_SHA" > "$TMP" && mv -f -- "$TMP" "$DIR/light-mode" || { rm -f -- "$TMP"; die "the marker could not be written"; }
-      echo "INFO: light-mode marker written for ${HEAD_SHA}" >&2
-      printf '%s' "$HEAD_SHA"
-    output: "light_marker"
 
   - id: "light-crusty-loop"
     type: "recipe"
@@ -516,6 +522,7 @@ steps:
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
+      plan_task_id: "{{light_task_id}}"
 
   # Issue #1551, as autodrive-check-unmerged in auto-drive-to-merge: a PR
   # merged outside the gate during the crusty loop stops the run.
@@ -558,10 +565,12 @@ steps:
       task_description: "{{task_description}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
       autodrive_dry_run: "{{autodrive_dry_run}}"
+      plan_task_id: "{{light_task_id}}"
 
-  # Which path ran (light, escalate, or light-escalated when a crusty round
-  # escalated inside the loop), the reason, the follow-up issue and the merge
-  # gate's result. Only plain tokens and digits reach the report.
+  # Which path ran (light or escalate, decided once by light-eligibility), the
+  # reason, the follow-up issues filed by autodrive_followups.sh (column 2 of
+  # followups.tsv, #1982) and the merge gate's result. Only plain tokens and
+  # digits reach the report.
   - id: "light-report"
     type: "bash"
     parse_json: true
@@ -573,26 +582,23 @@ steps:
       DIR="$(j "${RECIPE_VAR_build_result:-}" state_dir)"
       DECISION="$(tok "$(j "${RECIPE_VAR_light_eligibility:-}" decision)")"
       REASON="$(tok "$(j "${RECIPE_VAR_light_eligibility:-}" reason)")"
-      PATH_TAKEN="light"
-      if [ "$DECISION" = "escalate" ]; then
-        PATH_TAKEN="escalate"
-      elif [ -n "$DIR" ] && [ -f "$DIR/escalation.json" ] && [ ! -L "$DIR/escalation.json" ]; then
-        PATH_TAKEN="light-escalated"
-        REASON="$(tok "$(jq -r '.reason // "" | tostring' "$DIR/escalation.json" 2>/dev/null)")"
+      PATH_TAKEN="light"; [ "$DECISION" != "escalate" ] || PATH_TAKEN="escalate"
+      # followups.tsv only when it is a regular file owned by this user and not a symlink;
+      # column 2 is the issue number, kept only as 1 to 10 digits, each once, in row order.
+      ISSUES=""; TSV="$DIR/followups.tsv"
+      if [ -n "$DIR" ] && [ -f "$TSV" ] && [ ! -L "$TSV" ] && [ -O "$TSV" ]; then
+        ISSUES="$(cut -f2 -- "$TSV" | LC_ALL=C grep -E '^[0-9]{1,10}$' | awk '!seen[$0]++ { printf "%s#%s", (n++ ? "," : ""), $0 }')"
       fi
-      ISSUE=""
-      if [ -n "$DIR" ] && [ -f "$DIR/follow-up-issue" ] && [ ! -L "$DIR/follow-up-issue" ]; then
-        ISSUE="$(cat "$DIR/follow-up-issue")"; [[ "$ISSUE" =~ ^[0-9]{1,10}$ ]] || ISSUE=""
-      fi
+      ISSUES="${ISSUES:-none}"
       MERGE="$(tok "$(j "${RECIPE_VAR_merge_gate_result:-}" merge_result)")"; MERGE="${MERGE:-NOT_MERGED}"
       case "$MERGE" in
         MERGED|ALREADY_MERGED) OUTCOME="MERGED" ;;
         DRY_RUN) OUTCOME="DRY_RUN" ;;
         *) OUTCOME="NOT_MERGED" ;;
       esac
-      echo "AUTO_DRIVE_LIGHT: ${OUTCOME} - PR #${PR:-<none>} (path: ${PATH_TAKEN}, reason: ${REASON:-none}, follow-up issue: ${ISSUE:-none}, merge gate: ${MERGE})" >&2
-      jq -nc --arg o "$OUTCOME" --arg pr "$PR" --arg p "$PATH_TAKEN" --arg r "$REASON" --arg i "$ISSUE" --arg m "$MERGE" \
-        '{outcome: $o, pr: $pr, path: $p, reason: $r, follow_up_issue: $i, merge_result: $m}'
+      echo "AUTO_DRIVE_LIGHT: ${OUTCOME} - PR #${PR:-<none>} (path: ${PATH_TAKEN}, reason: ${REASON:-none}, follow-up issues: ${ISSUES}, merge gate: ${MERGE})" >&2
+      jq -nc --arg o "$OUTCOME" --arg pr "$PR" --arg p "$PATH_TAKEN" --arg r "$REASON" --arg i "$ISSUES" --arg m "$MERGE" \
+        '{outcome: $o, pr: $pr, path: $p, reason: $r, follow_up_issues: $i, merge_result: $m}'
     output: "light_summary"
 
 output:
@@ -606,5 +612,5 @@ output:
     | --- | --- |
     | Path | {{light_summary.path}} |
     | Reason | {{light_summary.reason}} |
-    | Follow-up issue | {{light_summary.follow_up_issue}} |
+    | Follow-up issues | {{light_summary.follow_up_issues}} |
     | Merge gate | {{light_summary.merge_result}} |
