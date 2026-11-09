@@ -276,8 +276,11 @@ Without a payload, the child inherits amplihack's stdin as before.
 Under auto-switch or usage-limit supervision, each attempt receives the same
 rewritten payload on stdin and the same per-session files; the payload is held
 in memory until amplihack exits and is never written to the rerun buffer.
-Input piped to amplihack is read once, so only the first attempt receives it,
-as when the agent read the pipe directly before #2030.
+The caller's own stdin follows the payload as described above. A regular
+file on stdin is rewound for each attempt, so every attempt receives the same
+bytes; a pipe's contents go to the first attempt only, and later attempts get
+`/dev/null` and so the payload alone, as when the agent read the pipe
+directly before #2030.
 
 `Rewritten` implements `Debug` by hand. It prints `stdin_payload: Some(<n bytes>)`
 and never the text.
