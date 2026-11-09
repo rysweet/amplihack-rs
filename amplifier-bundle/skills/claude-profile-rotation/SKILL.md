@@ -413,7 +413,7 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 | `resumed-keys` | Esc, Ctrl+U, `continue` and Enter were typed into the session's pane. |
 | `resumed` | The session had no verified pane, so the hook exited `2` and the session was told to continue. |
 | `resume-keys-failed` | A key failed or the session exited part way (`keys_sent=` says how many went). The user finishes by hand: Esc, Ctrl+U, `continue`, Enter. |
-| `swap-no-room` / `swap-stale` | A swap record was at 100% or older than the stop; the hook kept waiting. |
+| `swap-no-room` / `swap-stale` | A swap record was at 100% or swapped before the stop; the hook kept waiting. |
 | `watch-lost` | The hook could not watch for swaps (not Linux, old kernel, unsafe or deleted directory; see `detail=`). It never resumes. |
 | `no-capacity-timeout` | No swap to a login with room within 7 days. |
 | `rotator-down` | The rotator was not running (or its ledger was unreadable) when the limit hit; start it. |

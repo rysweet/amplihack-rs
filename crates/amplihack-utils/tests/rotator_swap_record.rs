@@ -319,19 +319,33 @@ fn a_replayed_older_record_is_stale() {
 }
 
 #[test]
-fn a_record_swapped_or_measured_at_or_before_the_stop_is_stale() {
+fn a_record_swapped_at_or_before_the_stop_is_stale() {
     // D5: a record from before the stop never resumes.
     for (swapped_at, measured_at) in [
         (START, START + 30),
         (START - 1, START + 30),
-        (START + 60, START),
-        (START + 60, START - 1),
+        (START, START - 30),
     ] {
         let r = record(2, swapped_at, measured_at, 5, 5);
         assert_eq!(
             judge(None, &r, START),
             Judgement::Stale,
             "swapped_at={swapped_at} measured_at={measured_at}"
+        );
+    }
+}
+
+#[test]
+fn a_stop_between_measurement_and_swap_resumes() {
+    // The rotator measures, then swaps tens of seconds later. A session that
+    // stops in that gap stopped on the login swapped away from, so the swap
+    // resumes it; otherwise it would wait for a swap that never comes.
+    for measured_at in [START, START - 1, START - 40] {
+        let r = record(2, START + 1, measured_at, 5, 5);
+        assert_eq!(
+            judge(None, &r, START),
+            Judgement::Resume,
+            "measured_at={measured_at}"
         );
     }
 }

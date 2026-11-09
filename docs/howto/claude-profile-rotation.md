@@ -1236,8 +1236,12 @@ either, so a missing figure is never recorded as 0%. The rotator logs
 A waiting hook resumes on a record only when all of these hold:
 
 - it differs from the record the hook noted when it started;
-- `swapped_at` and `reading.measured_at` are both after the stop;
+- `swapped_at` is after the stop;
 - `reading.session` and `reading.week` are both below 100.
+
+`reading.measured_at` may be before the stop. The rotator measures before it
+swaps, so a session that stops between the two stopped on the login being
+swapped away from, and the swap resumes it.
 
 A record written before the stop never resumes a session. So a session that
 stops on the login the rotator has just swapped to waits for the **next**

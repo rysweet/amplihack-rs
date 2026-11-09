@@ -13,8 +13,7 @@
 //! [`record_prompt`], called by the `UserPromptSubmit` hook), the session
 //! exits, a watch is lost or `MAX_WAIT` passes. It never polls and never
 //! sleeps. A record resumes only when
-//! [`judge`] says so: different from the snapshot, swapped and measured
-//! after the stop, onto a login below 100% on both windows.
+//! [`judge`] says so: different from the snapshot, swapped after the stop, onto a login below 100% on both windows.
 //!
 //! On a resume the hook re-checks the toggle and moved-on, looks for a
 //! verified tmux pane, records the resume with [`guard::GuardStore::commit`]

@@ -8385,7 +8385,7 @@ record it reads afterwards is judged in this order:
 | Order | Check | Result when it holds |
 |-------|-------|----------------------|
 | 1 | The file is missing or unreadable, or the record equals the noted one in every field. | Nothing logged; keep waiting. |
-| 2 | `swapped_at` or `reading.measured_at` is at or before the hook's start. | Log `swap-stale`; keep waiting. |
+| 2 | `swapped_at` is at or before the hook's start. `reading.measured_at` is not checked: the rotator measures before it swaps, so a session that stops between the two stopped on the login being swapped away from. | Log `swap-stale`; keep waiting. |
 | 3 | `reading.session` or `reading.week` is 100 or more. | Log `swap-no-room`; keep waiting. |
 | 4 | — | Resume (step 9 of [Resume decision](#resume-decision)). |
 
@@ -8679,7 +8679,7 @@ outcome.
 | `resumed-keys` | `0` | A swap record with room arrived, the resume was recorded, and all four keys were sent to the session's pane. |
 | `resumed` | `2` | The same, for a session with no verified pane: the hook exited `2` and the session was told to continue. |
 | `resume-keys-failed` | `0` | The resume was recorded, but a key failed or the session exited part way; `keys_sent` says how many went. No exit `2` follows. |
-| `swap-stale` | — | A new swap record was swapped or measured at or before the stop. The hook keeps waiting. Never the final outcome. |
+| `swap-stale` | — | A new swap record was swapped at or before the stop. The hook keeps waiting. Never the final outcome. |
 | `swap-no-room` | — | A new swap record shows the new login at 100% on a window. The hook keeps waiting. Never the final outcome. |
 | `watch-lost` | `0` | The [event wait](#event-wait) could not be set up, or a watch was lost. Never resumes. |
 | `no-capacity-timeout` | `0` | No swap record with room within 7 days. |

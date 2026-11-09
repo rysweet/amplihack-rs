@@ -55,7 +55,9 @@ pub struct SwapRecord {
 pub enum Judgement {
     /// The record is the one seen when the hook started: no new swap.
     Same,
-    /// The swap, or its measurement, is not later than the stop (D5).
+    /// The swap is not later than the stop (D5). The measurement may be:
+    /// the rotator measures before it swaps, and a session that stops in
+    /// between stopped on the login swapped away from.
     Stale,
     /// The login swapped to has a window at or above 100%.
     NoRoom,
@@ -115,7 +117,7 @@ pub fn read_swap(_root: &Path, _now: i64) -> Option<SwapRecord> {
 pub fn judge(snapshot: Option<&SwapRecord>, record: &SwapRecord, start: i64) -> Judgement {
     if snapshot == Some(record) {
         Judgement::Same
-    } else if record.swapped_at <= start || record.reading.measured_at <= start {
+    } else if record.swapped_at <= start {
         Judgement::Stale
     } else if record.reading.session >= 100 || record.reading.week >= 100 {
         Judgement::NoRoom

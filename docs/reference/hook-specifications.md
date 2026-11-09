@@ -1007,7 +1007,7 @@ Full rules: [Rotate session resume](profile-command.md#rotate-session-resume).
 a rotator is running, the hook waits up to 7 days for the rotator to write a
 [swap record](profile-command.md#swap-record),
 `<root>/.auto-switch.d/rotate/swap.json`, that differs from the one present
-at the stop, was swapped and measured after the stop, and shows the new
+at the stop, was swapped after the stop, and shows the new
 login below 100% on both windows. Only a swap writes that file; a stay, an
 ALERT and `profile switch` do not. It does not wait at all when no rotator is
 running.

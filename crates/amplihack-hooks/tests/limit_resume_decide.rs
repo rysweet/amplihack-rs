@@ -760,13 +760,15 @@ fn b_a_new_record_swapped_before_the_stop_is_stale_and_logged() {
 }
 
 #[test]
-fn b_a_record_measured_at_the_stop_is_stale() {
+fn b_a_stop_between_measurement_and_swap_is_resumed() {
+    // The rotator measured before the stop and swapped after it: the session
+    // stopped on the login swapped away from, so the swap resumes it.
     let mut r = fresh(2);
-    r.reading.measured_at = START;
+    r.reading.measured_at = START - 30;
     let mut d = Fake::new().then(Act::Swap(r));
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
-    assert_eq!(out, Outcome::NoCapacityTimeout);
-    assert_eq!(d.outcomes()[0], Outcome::SwapStale);
+    assert_eq!(out, Outcome::Resumed);
+    assert!(!d.outcomes().contains(&Outcome::SwapStale));
 }
 
 #[test]
