@@ -28,6 +28,9 @@ fn pre_compact_returns_success_and_exports_transcript() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
+    let sessions = home.path().join(".amplihack/runtime/sessions");
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let transcript = dir.path().join("input.jsonl");
@@ -56,9 +59,14 @@ fn pre_compact_returns_success_and_exports_transcript() {
     assert_eq!(output["metadata"]["event"], "pre_compact");
     let exported = PathBuf::from(output["transcript_path"].as_str().unwrap());
     assert!(exported.exists());
+    assert_eq!(
+        exported,
+        sessions.join("test-session/logs/transcript_pre_compact.jsonl")
+    );
+    assert!(!dir.path().join(".claude").exists());
     assert!(
-        dir.path()
-            .join(".claude/runtime/logs/test-session/compaction_metadata.jsonl")
+        sessions
+            .join("test-session/logs/compaction_metadata.jsonl")
             .exists()
     );
     assert_eq!(output["metadata"]["original_request_preserved"], false);
@@ -70,6 +78,9 @@ fn pre_compact_preserves_original_request_from_conversation_payload() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
+    let sessions = home.path().join(".amplihack/runtime/sessions");
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = PreCompactHook;
@@ -97,13 +108,13 @@ fn pre_compact_preserves_original_request_from_conversation_payload() {
     assert_eq!(output["metadata"]["original_request_preserved"], true);
     assert_eq!(output["metadata"]["compaction_trigger"], "token_limit");
     assert!(
-        dir.path()
-            .join(".claude/runtime/logs/compact-session/ORIGINAL_REQUEST.md")
+        sessions
+            .join("compact-session/logs/ORIGINAL_REQUEST.md")
             .exists()
     );
     assert!(
-        dir.path()
-            .join(".claude/runtime/logs/compact-session/original_request.json")
+        sessions
+            .join("compact-session/logs/original_request.json")
             .exists()
     );
 }
@@ -114,6 +125,9 @@ fn pre_compact_preserves_original_request_from_transcript_jsonl() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let _state = crate::test_support::isolate_state_home(home.path());
+    let sessions = home.path().join(".amplihack/runtime/sessions");
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let transcript = dir.path().join("copilot-events.jsonl");
@@ -142,8 +156,8 @@ fn pre_compact_preserves_original_request_from_transcript_jsonl() {
     assert_eq!(output["status"], "success");
     assert_eq!(output["metadata"]["original_request_preserved"], true);
     assert!(
-        dir.path()
-            .join(".claude/runtime/logs/compact-transcript/ORIGINAL_REQUEST.md")
+        sessions
+            .join("compact-transcript/logs/ORIGINAL_REQUEST.md")
             .exists()
     );
 }

@@ -171,7 +171,8 @@ fn docs_list_every_last_rule_value() {
     ] {
         assert!(docs.contains(&format!("`{rule}`")), "docs omit `{rule}`");
     }
-    assert!(docs.contains(".claude/runtime/classification_state/"));
+    assert!(docs.contains("<state root>/runtime/sessions/<session key>/classification_state.json"));
+    assert!(!docs.contains("<project>/.claude/runtime/classification_state/"));
 }
 
 /// Review round 7 of PR #1752: the follow-up check matches substrings, and

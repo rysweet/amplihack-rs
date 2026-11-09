@@ -2049,7 +2049,7 @@ unknown              2 profiles (no valid reading; excluded from all figures)
 | `weekly headroom` | The weekly capacity left across all logins with a [valid reading](#valid-and-unknown-readings), in login-weeks: one login-week is one login's whole weekly allowance. `X login-weeks of N (P%)`, where `N` is the number of valid readings, `X` is the sum of `(100 − week%) / 100` over them, and `P` is `X / N` as a percentage. Followed by `   [weighted: X' of T]` only when some login with a valid reading has a [weight](#capacity-weights) other than `1.0`; a weight for a profile that is not among them, such as a deleted one, does not count. With no valid reading: `unknown (no valid readings)`. |
 | `usable now` | `U of N logins (session < S% and weekly < 100%)`: how many logins with a valid reading can take work now, and the session threshold `S` in force. See [Usable now](#usable-now). |
 | `next session reset` | The earliest session reset among logins stopped only by their session limit, and every such login whose reset falls within 60 seconds of it: `<time>  (<names>: +K usable)`, where `K` is the number of names. `none` when there is no such login. See [Next session reset](#next-session-reset). |
-| `runway` | How long the weekly headroom lasts at the rate it was used over the last six hours: `~H h at the last 6 h rate (R login-weeks/h)`, or `unknown`. The `6 h` is fixed text; the rate is per hour whatever the length of history used. See [Rate and runway](#rate-and-runway). |
+| `runway` | How long the weekly headroom lasts at the rate it was used over the last six hours: `~H h at the last 6 h rate (R login-weeks/h)`, or `unknown`. The `6 h` is fixed text; the rate is per hour whatever the length of history used, needs at least 4.5 h of history, and is weighted. See [Rate and runway](#rate-and-runway). |
 | `resets in next 24 h` | Weekly resets due in the next 24 hours, each `<time> <name> +<login-weeks restored>`, soonest first, separated by `; `. `none` when there are none. |
 | `unknown` | `M profiles (no valid reading; excluded from all figures)`: the number of subscription profiles without a valid reading, `1 profile (…)` for one and `0 profiles (…)` for none. Their names are in the table and in [`summary.unknown`](#summary-json). They are left out of every other line. |
 
@@ -2155,19 +2155,59 @@ It is read from the [usage history](#usage-history):
    usage` could not read at the start, or one that is unknown now, is left
    out. Rotator entries between the two ends are used for the logins they
    read; a login missing from one of them only skips that step.
-4. For each login, the use is its week percentage now minus its week
-   percentage at the start. Between each pair of consecutive entries in which
-   the login appears, a weekly reset is detected when the earlier entry's
-   `w_reset` is at or before the later entry's time, or when the week
-   percentage fell. The earlier entry's percentage is then added back, since
-   that much was used before the reset.
+4. For each login, the use is its net rise in week percentage over the
+   window. Its readings are taken in time order: the start, each later
+   entry that read it, and this run. They are split into weeks at each
+   weekly reset. A reset lies between two consecutive readings when the
+   earlier reading's `w_reset` is at or before the later reading's time, or
+   when the week percentage fell by more than 10 points. A fall of 10 points
+   or less is not a reset: within a week the figure only rises, so such a
+   fall comes from a [stale reading](#stale-readings) and adds nothing. A
+   fall of more than 10 points is a reset even while `w_reset` is still in
+   the future, because a week can reset early. In each week the use is the
+   highest percentage read in that week minus the percentage the week
+   started at, or zero if that is negative. The first week starts at the
+   login's percentage at the start and each later week starts at `0`. The
+   login's use is the sum over its weeks. A reading whose own `w_reset` is
+   at or before the time it was taken belongs to a week that has ended and
+   is not used, and neither is this run's reading of a login when it is a
+   stale passive reading by the rule under [Stale readings](#stale-readings).
 5. The rate is the sum of each login's use times its [weight](#capacity-weights),
-   divided by 100 and by the hours between the two ends.
+   divided by 100 and by the hours between the two ends. It is weighted;
+   when every weight is `1.0` it equals the unweighted rate. It is never
+   negative.
+
+For example, on 5 November 2026 one login read 34% at 16:52 and 50% at
+18:55. In between, a stale status-line figure of 38% reappeared five times
+between rising ones (40, 38, 40, 41, 38, 42, and so on), and once 46
+appeared between 48 and 49. Each fall is 5 points or less, so none is a
+reset, and the login's use over those two hours is 50 − 34 = 16 points.
+Release 1.2.97 counted every fall as a reset and each fall's whole lower
+figure as use: 269 points. Had the login read 90% at the start, reached
+100%, reset to 0% and then read 12% now, its use would be
+(100 − 90) + 12 = 22 points.
+
+On the same day, `profile usage` at 16:52 reported a rate of `0.483` and a
+runway of `7.5` hours. The start was a rotator entry at 10:53:20 that held
+every login read at 16:52. Under the rule above, three logins used 59
+points over those 5.99 hours, a rate of `0.099` and a runway of `36.5`
+hours. Release 1.2.97 counted 289 points; most came from falls of 1 to 3
+points counted as resets.
 
 The runway is the weighted headroom of this run divided by the rate. When the
-rate is zero or below, nothing was used over the window and the runway is
-`unknown`; JSON still gives the rate. Weights are `1.0` unless set, in which
-case the weighted and unweighted figures are the same.
+rate is zero, nothing was used over the window and the runway is `unknown`;
+JSON still gives the rate. Weights are `1.0` unless set, in which case the
+weighted and unweighted figures are the same.
+
+History written before stale readings were filtered (see
+[Stale readings](#stale-readings)) may still hold them, and they affect the
+rate until they are more than six hours old. A fall of 10 points or less
+has no effect. A stale reading at the start shifts that login's use by the
+difference between the stale and the true figure, and a stale fall of more
+than 10 points counts as a reset.
+
+`amplihack profile usage --help` states the six-hour window, the
+four-and-a-half-hour minimum and the weighting.
 
 ##### Capacity weights
 
@@ -2274,8 +2314,8 @@ above, with only the first of the six rows shown:
 | `summary.valid_readings` | integer | `N`, the logins with a [valid reading](#valid-and-unknown-readings). |
 | `summary.unknown` | array of strings | Subscription profiles without a valid reading, by name. |
 | `summary.next_session_reset` | object or `null` | `{"at": <time>, "profiles": [<names>]}`, as on the [text line](#next-session-reset); `null` for `none`. |
-| `summary.rate_login_weeks_per_hour` | number or `null` | Weighted [rate](#rate-and-runway), three decimal places; `null` with too little history. Can be `0.0` or below. |
-| `summary.runway_hours` | number or `null` | Hours of weighted headroom at that rate, one decimal place; `null` when the rate is `null`, zero or below. |
+| `summary.rate_login_weeks_per_hour` | number or `null` | Weighted [rate](#rate-and-runway), three decimal places: the net rise of each login's week percentage over the last 6 h, counted from the oldest entry in that window that covers every login valid now (step 1), times its weight, divided by 100 and by the hours covered. `null` when that entry is less than 4.5 h old, when there is none, or when no login has a valid reading at both ends. `0.0` or above. Unweighted when every weight is `1.0`. |
+| `summary.runway_hours` | number or `null` | Hours of weighted headroom at that rate, one decimal place; `null` when the rate is `null` or zero. |
 | `summary.weekly_resets_next_24h` | array | Valid logins whose weekly reset is after now and no more than 24 hours away, and whose weighted `restores` (`weight × week% / 100`, two decimal places) is above `0`, soonest first, then by name. Each is `{"at", "profile", "restores"}`. |
 
 Numbers are rounded half away from zero only when printed; a value that is
@@ -2315,7 +2355,7 @@ one line per measured cycle to `<root>/.auto-switch.d/usage-history.jsonl`
 | `session_limit` | Written only as `false`, beside `"s":null`, when the reading showed no session window (see [Usable now](#usable-now)). Absent otherwise. A missing key, `null`, or `false` beside a session figure, reads as "not read". |
 | `w` | All-models week percentage, a whole number `0`–`100`. `weekly_exhausted` is written as `100`. |
 | `w_reset` | When the week resets, UTC, or `null` when not known. |
-| `unknown` | Names of the logins the writer tried and could not read, sorted. Absent when there are none. Never counted in a figure; a name that also has a reading is ignored on read. |
+| `unknown` | Names of the logins the writer tried and could not read, or whose reading was a [stale reading](#stale-readings), sorted. Absent when there are none. Never counted in a figure; a name that also has a reading is ignored on read. |
 
 ##### Reading times in the history
 
@@ -2447,6 +2487,53 @@ To clear the history, delete `usage-history.jsonl` and `usage-history.lock`.
 Nothing else reads them, and both are created again on the next recorded
 cycle. Until the history is four and a half hours old again, the runway is
 `unknown`.
+
+##### Stale readings
+
+A [passive reading](#passive-readings), from `profile usage` or the
+rotator, is the figure Claude's status line stored, and it can lag behind
+the account. A cached figure that reappears after a higher one would show
+the week falling and rising again. So before a line is written, under the
+writers' lock, each passive reading in it is compared with that login's
+newest reading in the history, and is stale when any of these holds:
+
+| Rule | Example |
+|------|---------|
+| Its `w_reset` is at or before the line's `at`, so its week has ended. This applies even when the history holds no reading of the login. | Line at `2026-11-05T18:02:00Z`, passive `w_reset` `2026-11-05T18:00:00Z`. |
+| Its `w_reset` and the recorded one are both known and within one hour of each other, so it is the same week, and its `w` is lower than the recorded `w`. | Recorded `w` 50, passive `w` 38, both resetting at `2026-11-10T09:00:00Z`. |
+| Its `w_reset` is more than one hour earlier than the recorded one, so it belongs to an earlier week. | Recorded `w_reset` `2026-11-10T09:00:00Z`, passive `w_reset` `2026-11-03T09:00:00Z`. |
+
+A stale reading is not written. In its place the line holds that login's
+newest recorded reading (its `s`, `w` and `w_reset`), so the login stays in
+the line. Passive readings come from Claude's status line, so a stale one
+belongs to a login in use, and leaving it out would hide the login being
+used up: a `profile usage` line that is the start of the
+[rate](#rate-and-runway) would leave it out of the rate, and
+[`rotate status`](#rotate-status) would say the rotator cycle left a login
+out and leave its headroom out of the `capacity:` line. The recorded figure
+adds nothing to the rate, since the week has not risen above it, and the
+true figure is at least that high, because within a week it only rises.
+
+The recorded reading is used only while its own week has not ended at the
+line's `at`. When it has, or when the history holds no reading of the
+login, nothing known is left to write: the login is listed under `unknown`,
+as for a reading that failed. This happens only under the first rule.
+
+A passive reading equal to or higher than the recorded one in the same week
+is written. A reading taken during the run, directly or by `claude`, is
+never treated as stale, and nor is a passive reading whose own `w_reset`
+is unknown. When only the recorded `w_reset` is unknown, or the history
+holds no reading of the login, only the first rule applies. The reset rule
+of the rate covers the rest.
+
+The newest reading of each login is looked for in the last 256 KiB of the
+history only. When that part cannot be read, the line is not written and the
+`write failed` warning above is given; the reading is never written
+unchecked. The filter changes what is recorded. In the same run, the table,
+the headroom and usable count of the summary, and the auto-switch readings
+still use the reading; the rate does not (step 4 of
+[Rate and runway](#rate-and-runway)). No message is given when a reading is
+replaced or left out. Lines already in the history are not rewritten.
 
 #### Refreshing auto-switch readings
 
@@ -7238,7 +7325,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 
 | Path | Contents |
 |------|----------|
-| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`, of a hard ALERT), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when it started measuring usage, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away` and `advisory_alert` are left out so that rotator can read the file. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. |
+| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`, of a hard ALERT), `advisory_alert` (the same key for an [advisory ALERT](#rotate-advisory-alert); never set together with `alert`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when the usage it relied on was read, which for `stayed` is when the live reading was taken (see [Stays and capacity](#rotate-stays-and-capacity)) and for every other rotate outcome is when the cycle started measuring, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). `account` is the validated incoming account key after a swap. It is display only for recovery: no recovery decision treats that key alone as identity proof, and a hand-change recovery records its independently verified account. Optionally `hand_suspect`, an open [hand-change suspicion](#two-readings): `profile` (a valid profile name) and `first_seen` (epoch seconds, greater than 0). It holds no account data, is omitted when there is none, and a ledger without it loads as before; one that breaks these rules is `RotateInconsistent`. Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) note, or ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally the legacy `home_unreadable_since` timestamp; retained for format compatibility, never as ownership evidence (see [Stuck `~/.claude.json`](#stuck-claudejson)). Optionally `swapped_away`, the logins the rotator left while they were full, each mapped to the epoch seconds of that swap; see [Swap-back damping](#swap-back-damping). While a rotator from an older amplihack binary runs, `measured_at`, `overflow`, `overflow_blocked`, `guidance`, `lost_login`, `home_unreadable_since`, `hand_suspect`, `swapped_away` and `advisory_alert` are left out so that rotator can read the file. A ledger whose `alert` or `advisory_alert` is not a valid key, or that sets both, is `RotateInconsistent`. |
 | `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`checking`, `j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at`, `pid`, and optional `identity` containing sanitized full incoming/outgoing accounts authorized before exchange. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `gate.json` | Written by `rotate watch` when it starts: `version`, `pid`, and the [overflow](#rotate-overflow) gate it resolved from its flags (`overflow_wait`, `overflow_unknown_reset`, `session_at`, `week_at`). [Auto-switch](#auto-switch-and-overflow-profiles) uses it only while the rotator with that pid runs. If it cannot be written, the log says `overflow: gate not recorded, auto-switch will not use overflow (<error>)` and auto-switch uses no overflow profile. |
@@ -8356,8 +8443,8 @@ The hook reads `<root>/.auto-switch.d/rotate/ledger.json` (see
 [Rotate state directory](#rotate-state-directory)) and uses only `live`,
 `alert` and `last_cycle`. There is capacity when all of these hold:
 
-- `last_cycle.measured_at` is after the time the hook started, so the cycle's
-  usage probes began after the limit hit;
+- `last_cycle.measured_at` is after the time the hook started, so the
+  measurement, or the reading behind it, was taken after the limit hit;
 - `last_cycle.outcome` is `swapped`, `stayed` or `switched` (written by
   [`profile switch`](#sessions-stopped-by-a-limit), with `measured_at` the
   time of the switch);
