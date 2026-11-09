@@ -75,8 +75,8 @@ of `pkill -f`.
 | Auto-mode turn, Copilot | file reference above 4096 bytes, argv below | pointer sentence at every size, with `--add-dir <private dir>` |
 | Fleet and remote launches | `--prompt-file`, prompt on stdin (#1570) | unchanged; the remote file is created under `umask 077` and the started auto-mode child follows the auto-mode rows above |
 | `amplihack copilot -- -p <text>` (also `--prompt`, `-i`, `--interactive`) | passed through | the flag and the pointer sentence, with `--add-dir <private dir>` (no `--add-dir` under the external LiteLLM gateway); see [Passthrough rewrite for `amplihack codex` and `amplihack copilot`](#passthrough-rewrite-for-amplihack-codex-and-amplihack-copilot) |
-| `amplihack codex -- exec <text>` (also `exec review`, `exec resume`, `exec fork`) | passed through | `-` in place of `<text>`, prompt on stdin |
-| `amplihack codex -- '<prompt>'` (interactive first prompt) | positional argv | unchanged; documented exception (see [What argv still contains](#what-argv-still-contains)) |
+| `amplihack codex -- exec <text>` (also `exec review`, `exec resume`, `exec fork`, top-level `review`) | passed through | `-` in place of `<text>`, prompt on stdin |
+| `amplihack codex -- '<prompt>'` (interactive first prompt), `amplihack codex -- resume <session> <text>`, `amplihack codex -- fork <session> <text>` | positional argv | unchanged; documented exception (see [What argv still contains](#what-argv-still-contains)) |
 | Auto-mode turn, Amplifier (`amplifier run`) | argv below 4096 bytes | pointer sentence |
 | `amplihack amplifier -- run <prompt>` | passed through | unchanged; documented exception (see [What argv still contains](#what-argv-still-contains)) |
 | `llm_client` (Claude) | argv below 4096 bytes | stdin |
@@ -306,19 +306,23 @@ Codex (`rewrite_codex_passthrough`):
 | `exec fork <session> <text>` | `-` in place of `<text>`; `<text>` on stdin |
 | `exec review --commit <sha>`, `exec review --base <branch>` | unchanged; the values are not prompts |
 | `exec review --base <branch> <text>` | `exec review --base <branch> -`; `<text>` on stdin |
+| top-level `review <text>`, `review --base <branch> <text>` | `-` in place of `<text>`; `<text>` on stdin |
+| top-level `review --commit <sha>`, `review --uncommitted` | unchanged; no prompt |
 | `exec fork <session> -i <file> <text>` (also `exec resume`) | `-` in place of `<text>`; `<text>` on stdin |
 | `exec -`, or `exec` with no prompt | unchanged |
 | `exec -i <a> <b> ...` (one `--image` with several values) and no prompt | error; one of the values may be the prompt |
 | `exec` with an option amplihack does not know, written without `=` and followed by a word | error; that word may be the prompt |
 | `exec help ...` | unchanged |
-| interactive `codex <text>`, or any other subcommand | unchanged; documented exception |
+| interactive `codex <text>`, top-level `resume <session> <text>`, top-level `fork <session> <text>` | unchanged; documented exception (interactive starts, see [What argv still contains](#what-argv-still-contains)) |
+| any other subcommand (`login`, `mcp`, ...) | unchanged; takes no prompt |
 
 Which Codex options take a value depends on the subcommand: `--base`,
-`--commit` and `--title` exist only under `exec review`, and `-i/--image`
+`--commit` and `--title` exist only under `exec review` and top-level
+`review` (which has no `-m`), and `-i/--image`
 takes every following word under plain `exec` but exactly one under
 `exec resume` and `exec fork`. So the rewrite reads the command line with one
-option table per scope (`codex_exec_args.rs`): before `exec`, `exec`,
-`exec review`, `exec resume` and `exec fork`. Each table is a copy of
+option table per scope (`codex_exec_args.rs`): before the subcommand, `exec`,
+`exec review`, `exec resume`, `exec fork` and top-level `review`. Each table is a copy of
 codex-cli 0.166.0's help for that scope, saved under
 `crates/amplihack-cli/src/commands/launch/fixtures/codex-*-help-0.166.0.txt`,
 and `tables_match_the_codex_0_166_0_help_text` fails when a table and its help
@@ -329,8 +333,8 @@ The reading follows clap as Codex uses it: `--opt=value` and `-ovalue` carry
 their value; a variadic `--image` stops at the next token that starts with
 `-`, a lone `-` included; an attached value closes the occurrence. A prompt
 after `--` is rewritten too: `exec -- <text>` becomes `exec -- -`. Codex reads
-`-` as "read the prompt from stdin" for `exec`, `exec review`, `exec resume`
-and `exec fork` (codex-cli 0.166.0).
+`-` as "read the prompt from stdin" for `exec`, `exec review`, `exec resume`,
+`exec fork` and top-level `review` (codex-cli 0.166.0).
 
 Where amplihack cannot tell which word is the prompt it refuses to launch
 rather than pass the arguments through, because passing them through would
@@ -659,14 +663,15 @@ per-session files, and the fixed pointer sentence that Copilot and interactive
 Codex receive. The pointer sentence is a constant plus a path; the tests check
 that it holds no sentinel phrase and no `tail -f /dev/null`.
 
-Five cases keep text in a process's argv and are documented exceptions:
+Six cases keep text in a process's argv and are documented exceptions:
 
 | Case | Why | Tracking |
 | --- | --- | --- |
 | The `amplihack claude` wrapper started by a recipe agent step | The recipe runner puts the brief in the wrapper's argv. The agent CLI child below it is clean. The runner change gives Claude a bare `-p` with stdin and `--system-prompt-file`; the wrapper is clean once `RECIPE_RUNNER_REV` is updated to include it | Follow-up issue for the wrapper argv and the pin update |
 | A Docker launch, `amplihack claude --docker -p '<text>'` | The host `docker` process receives the arguments before the rewrite, because the per-session files are host paths the container cannot see. The text is already in the caller's own `amplihack` argv | Accepted risk; a fix needs the private file mounted into the container |
 | `amplihack claude -- '<prompt>'` (interactive first prompt) | The text is in the wrapper's own argv, which the caller supplied, and interactive Claude cannot read its first prompt from stdin | Follow-up issue for an interactive `--prompt-file` option |
-| `amplihack codex -- '<prompt>'` (interactive first prompt) | The text is in the wrapper's own argv, which the caller supplied. The first positional of a bare `codex` may be a subcommand, and that list changes between Codex releases, so the rewrite cannot tell a prompt from a subcommand. `amplihack codex -- exec <text>` is rewritten | Same follow-up as the interactive Claude prompt |
+| `amplihack codex -- '<prompt>'` (interactive first prompt) | The text is in the wrapper's own argv, which the caller supplied. The first positional of a bare `codex` may be a subcommand, and that list changes between Codex releases, so the rewrite cannot tell a prompt from a subcommand. `amplihack codex -- exec <text>` and `amplihack codex -- review <text>` are rewritten | Same follow-up as the interactive Claude prompt |
+| `amplihack codex -- resume <session> '<prompt>'` and `amplihack codex -- fork <session> '<prompt>'` (top-level, interactive) | The text is in the wrapper's own argv, which the caller supplied. Both start an interactive Codex session whose terminal UI owns stdin, and their help (codex-cli 0.166.0) offers no `-` or stdin form for the prompt, so there is no other channel. The non-interactive `exec resume` and `exec fork` are rewritten | Same follow-up as the interactive Claude prompt |
 | `amplihack amplifier -- run <prompt>` | The text is in the wrapper's own argv, which the caller supplied. Upstream documents only `amplifier run [OPTIONS] [PROMPT]`, with no option arity table, so the rewrite cannot find the prompt safely. No bundled recipe uses this form; amplihack's own Amplifier launches (auto mode, `platform_cli`) use the pointer sentence | Accepted; use `--auto --prompt-file` |
 
 To start an interactive or auto-mode session without prompt text in any argv,
@@ -681,8 +686,8 @@ use `--prompt-file` with `--auto`; see
 | `crates/amplihack-cli/tests/issue_2030_guards.rs` | Fails CI if any production code calls a `select_mode(` other than `try_select_mode(` (the old selector that answered `Argv` is removed), if any code under `crates/` builds `--append-system-prompt` followed by text, if any bundled recipe passes inline text to `-p` or `exec`, if a bundle file sets `AMPLIHACK_PROMPT_DELIVERY`, or if a `quality-loop.yaml` Copilot call lacks its private directory and `EXIT` trap |
 | `crates/amplihack-cli/src/commands/launch/tests_issue_2030_contract.rs` | A 0644 contract file is repaired to 0600; a symlink is replaced and its target left unchanged; a foreign-owned `private/` is refused; two concurrent first launches both end with one complete file |
 | `crates/amplihack-cli/src/commands/launch/tests_passthrough_rewrite.rs` | Every row of the rewrite table; repeated flags are errors; `format!("{:?}", rewritten)` does not contain the sentinel |
-| `crates/amplihack-cli/src/commands/launch/tests_codex_exec_args.rs` | Each Codex option table equals the options listed in the saved codex-cli 0.166.0 help for its scope (root, `exec`, `exec review`, `exec resume`, `exec fork`), with arity; `--image` is variadic only under plain `exec`; clap's attached-value, lone-`-` and `--` rules; unknown options followed by a word and missing values are refused without echoing the word |
-| `crates/amplihack-cli/src/commands/launch/tests_codex_copilot_rewrite.rs` | Every row of the Codex and Copilot passthrough tables: `exec <text>` and its `review`, `resume`, `fork` and `--` forms put `-` in place of the text and the text in the payload; option values are not prompts, including `exec review --base/--commit/--title`, `--cyber-access-program`, and the single `-i` value under `exec fork` and `exec resume`; an ambiguous variadic `--image` or unknown option is an error that names no text; on a terminal `--allow-all-tools` gives no path access and a gateway `-p` launch is refused; `exec -`, interactive Codex and other subcommands are unchanged; two prompts are an error that names no text; Copilot pointer files are 0600 in a 0700 directory named by `--add-dir`, removed on drop |
+| `crates/amplihack-cli/src/commands/launch/tests_codex_exec_args.rs` | Each Codex option table equals the options listed in the saved codex-cli 0.166.0 help for its scope (root, `exec`, `exec review`, `exec resume`, `exec fork`, top-level `review`), with arity; `--image` is variadic only under plain `exec`; clap's attached-value, lone-`-` and `--` rules; unknown options followed by a word and missing values are refused without echoing the word |
+| `crates/amplihack-cli/src/commands/launch/tests_codex_copilot_rewrite.rs` | Every row of the Codex and Copilot passthrough tables: `exec <text>`, its `review`, `resume`, `fork` and `--` forms, and top-level `review <text>` put `-` in place of the text and the text in the payload; option values are not prompts, including `exec review --base/--commit/--title`, `--cyber-access-program`, and the single `-i` value under `exec fork` and `exec resume`; an ambiguous variadic `--image` or unknown option is an error that names no text; on a terminal `--allow-all-tools` gives no path access and a gateway `-p` launch is refused; `exec -`, interactive Codex, top-level `resume` and `fork`, and other subcommands are unchanged; two prompts are an error that names no text; Copilot pointer files are 0600 in a 0700 directory named by `--add-dir`, removed on drop |
 | `crates/amplihack-cli/src/commands/agent/tests_cmdline_issue_2030.rs` | The `/proc` argv parser recognises bare `-p` with `*-file` flags as print mode |
 | `crates/amplihack-utils/tests/prompt_delivery_issue_2030.rs` | `Auto` never returns `Argv` at any size; `AMPLIHACK_PROMPT_DELIVERY=argv` maps to `auto` and the prompt is not in argv; `NoSafeChannel` text is stable |
 | `crates/amplihack-launcher/tests/prompt_delivery_issue_2030.rs` | `codex exec -` gets stdin; interactive Codex, Copilot and Amplifier get the pointer sentence and `--add-dir` for the private directory only. The old 96 KiB and "requires terminal stdin" tests are rewritten as pointer-delivery tests |

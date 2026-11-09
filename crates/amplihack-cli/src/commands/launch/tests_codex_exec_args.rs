@@ -2,7 +2,7 @@
 //! saved codex-cli 0.166.0 help text, scope by scope.
 
 use super::codex_exec_args::{
-    Arity, EXEC, ExecLine, FORK, Opt, RESUME, REVIEW, ROOT, Scope, parse_exec_line,
+    Arity, EXEC, ExecLine, FORK, Opt, RESUME, REVIEW, ROOT, Scope, TOP_REVIEW, parse_exec_line,
 };
 use std::collections::BTreeSet;
 
@@ -63,6 +63,11 @@ fn tables_match_the_codex_0_166_0_help_text() {
             include_str!("fixtures/codex-exec-review-help-0.166.0.txt"),
         ),
         (
+            "review",
+            TOP_REVIEW,
+            include_str!("fixtures/codex-review-help-0.166.0.txt"),
+        ),
+        (
             "exec resume",
             RESUME,
             include_str!("fixtures/codex-exec-resume-help-0.166.0.txt"),
@@ -74,7 +79,7 @@ fn tables_match_the_codex_0_166_0_help_text() {
         ),
     ] {
         let from_help = options_in_help(help);
-        assert!(from_help.len() > 10, "{name}: help text not parsed");
+        assert!(from_help.len() > 8, "{name}: help text not parsed");
         let from_table = listed(table);
         assert_eq!(
             from_table.difference(&from_help).collect::<Vec<_>>(),
@@ -124,6 +129,12 @@ fn scopes_and_positionals() {
     assert!(parse(&["exec", "help", "review"]).is_none());
     assert!(parse(&["--", "exec"]).is_none());
     assert!(parse(&["login"]).is_none());
+    let line = parse(&["--profile", "p", "review", "--base", "main", "focus"]).unwrap();
+    assert_eq!((line.scope, line.positionals), (Scope::TopReview, vec![5]));
+    // Top-level `resume` and `fork` are interactive: not parsed.
+    assert!(parse(&["resume", "id", "task"]).is_none());
+    assert!(parse(&["fork", "id", "task"]).is_none());
+    assert!(parse(&["--", "review"]).is_none());
     // An unknown root option with no `exec` after it: not exec.
     assert!(parse(&["--new-root-flag", "hello"]).is_none());
 }
@@ -135,6 +146,7 @@ fn unknown_option_followed_by_a_word_is_refused_without_the_word() {
         vec!["exec", "review", "--sandbox", "SECRET-WORD"],
         vec!["exec", "-Z", "SECRET-WORD"],
         vec!["--new-root-flag", "v", "exec", "SECRET-WORD"],
+        vec!["--new-root-flag", "v", "review", "SECRET-WORD"],
     ] {
         let args: Vec<String> = items.iter().map(|a| (*a).to_string()).collect();
         let err = parse_exec_line(&args).expect_err("refused");

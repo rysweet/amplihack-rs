@@ -1,4 +1,6 @@
-//! Issue #2030: find the prompt positional of a `codex exec` command line.
+//! Issue #2030: find the prompt positional of a non-interactive Codex
+//! command line: `codex exec` (and its `review`, `resume` and `fork`
+//! subcommands) or the top-level `codex review`.
 //!
 //! Codex options do not follow one rule. Whether an option takes a value,
 //! and how many, depends on the subcommand: `--commit <SHA>` exists only
@@ -8,7 +10,8 @@
 //!
 //! | Scope | Help text |
 //! | --- | --- |
-//! | before `exec` | `fixtures/codex-root-help-0.166.0.txt` |
+//! | before `exec` or `review` | `fixtures/codex-root-help-0.166.0.txt` |
+//! | top-level `review` | `fixtures/codex-review-help-0.166.0.txt` |
 //! | `exec` | `fixtures/codex-exec-help-0.166.0.txt` |
 //! | `exec review` | `fixtures/codex-exec-review-help-0.166.0.txt` |
 //! | `exec resume` | `fixtures/codex-exec-resume-help-0.166.0.txt` |
@@ -22,6 +25,12 @@
 //! `--opt=value` and `-ovalue` carry their value; a variadic option stops at
 //! the next token that starts with `-`, including a lone `-`; an attached
 //! value closes the occurrence; after `--` every token is positional.
+//!
+//! At the top level only the fixed subcommand names `exec`, `e` and `review`
+//! are recognised. Every other first positional (a prompt for interactive
+//! Codex, `resume`, `fork`, `login`, ...) ends the parse with `Ok(None)`:
+//! those start interactive sessions or take no prompt, and are listed as
+//! exceptions in `docs/reference/agent-prompt-channels.md`.
 //!
 //! An option missing from the table, written without `=` and followed by a
 //! word, is refused: amplihack cannot tell whether that word is the option's
@@ -144,6 +153,20 @@ pub(crate) const REVIEW: &[Opt] = &[
     ("yolo", None, Flag, true),
 ];
 
+/// Top-level `codex review`, a non-interactive review that reads `-` from
+/// stdin like `exec review`, but with a shorter option list.
+pub(crate) const TOP_REVIEW: &[Opt] = &[
+    ("config", Some('c'), One, false),
+    ("strict-config", None, Flag, false),
+    ("enable", None, One, false),
+    ("uncommitted", None, Flag, false),
+    ("base", None, One, false),
+    ("disable", None, One, false),
+    ("commit", None, One, false),
+    ("title", None, One, false),
+    ("help", Some('h'), Flag, false),
+];
+
 pub(crate) const RESUME: &[Opt] = &[
     ("config", Some('c'), One, false),
     ("last", None, Flag, false),
@@ -207,6 +230,8 @@ pub(crate) enum Scope {
     Root,
     Exec,
     Review,
+    /// Top-level `codex review`.
+    TopReview,
     Resume,
     Fork,
 }
@@ -217,13 +242,15 @@ impl Scope {
             Scope::Root => ROOT,
             Scope::Exec => EXEC,
             Scope::Review => REVIEW,
+            Scope::TopReview => TOP_REVIEW,
             Scope::Resume => RESUME,
             Scope::Fork => FORK,
         }
     }
 }
 
-/// A `codex exec` command line, read the way Codex reads it.
+/// A `codex exec` or top-level `codex review` command line, read the way
+/// Codex reads it.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ExecLine {
     pub(crate) scope: Scope,
@@ -235,8 +262,9 @@ pub(crate) struct ExecLine {
     pub(crate) widest_image: usize,
 }
 
-/// Read `args` (what follows `codex`). `Ok(None)`: not `codex exec`, or
-/// `codex exec help`, so there is no prompt to move.
+/// Read `args` (what follows `codex`). `Ok(None)`: neither `codex exec` nor
+/// top-level `codex review`, or `codex exec help`, so there is no prompt to
+/// move.
 ///
 /// # Errors
 ///
@@ -255,12 +283,17 @@ pub(crate) fn parse_exec_line(args: &[String]) -> Result<Option<ExecLine>> {
         let arg = args[i].as_str();
         if after_delimiter || arg == "-" || !arg.starts_with('-') {
             match line.scope {
-                // A first root positional other than `exec` is interactive
-                // Codex or another subcommand: a documented exception.
-                Scope::Root if after_delimiter || !matches!(arg, "exec" | "e") => {
-                    return Ok(None);
+                // A first root positional other than `exec` or `review` is
+                // interactive Codex or another subcommand: a documented
+                // exception.
+                Scope::Root if after_delimiter => return Ok(None),
+                Scope::Root => {
+                    line.scope = match arg {
+                        "exec" | "e" => Scope::Exec,
+                        "review" => Scope::TopReview,
+                        _ => return Ok(None),
+                    };
                 }
-                Scope::Root => line.scope = Scope::Exec,
                 Scope::Exec if !after_delimiter && line.positionals.is_empty() => {
                     line.scope = match arg {
                         "review" => Scope::Review,
@@ -344,13 +377,13 @@ pub(crate) fn parse_exec_line(args: &[String]) -> Result<Option<ExecLine>> {
             None => {
                 let ambiguous =
                     !attached && args.get(i + 1).is_some_and(|next| !next.starts_with('-'));
-                // Before `exec`, a word after an unknown option matters only
-                // when an `exec` could follow it.
+                // Before the subcommand, a word after an unknown option
+                // matters only when `exec` or `review` could follow it.
                 if ambiguous
                     && line.scope == Scope::Root
                     && !args[i + 1..]
                         .iter()
-                        .any(|a| matches!(a.as_str(), "exec" | "e"))
+                        .any(|a| matches!(a.as_str(), "exec" | "e" | "review"))
                 {
                     return Ok(None);
                 }

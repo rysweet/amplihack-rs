@@ -34,6 +34,18 @@ fn codex_exec_positional_goes_to_stdin() {
             vec!["exec", "review", SENTINEL],
             vec!["exec", "review", "-"],
         ),
+        // Crusty round 3: top-level `codex review` is non-interactive and
+        // reads `-` from stdin, like `exec review`.
+        (vec!["review", SENTINEL], vec!["review", "-"]),
+        (
+            vec!["review", "--base", "main", SENTINEL],
+            vec!["review", "--base", "main", "-"],
+        ),
+        (
+            vec!["-c", "model=o3", "review", "--commit", "abc123", SENTINEL],
+            vec!["-c", "model=o3", "review", "--commit", "abc123", "-"],
+        ),
+        (vec!["review", "--", SENTINEL], vec!["review", "--", "-"]),
         (
             vec!["exec", "resume", "abc-123", SENTINEL],
             vec!["exec", "resume", "abc-123", "-"],
@@ -119,8 +131,13 @@ fn codex_cases_left_unchanged() {
         vec!["exec", "-i", "a.png"],
         vec!["exec", "-i", "a.png", "-i", "b.png"],
         vec!["--model", "gpt-5"],
+        vec!["review", "--uncommitted"],
+        vec!["review", "--commit", "abc123", "--title", "t"],
+        vec!["review", "-"],
         // Interactive Codex and other subcommands: documented exception.
         vec![SENTINEL],
+        vec!["resume", "abc-123", SENTINEL],
+        vec!["fork", "abc-123", SENTINEL],
         vec!["login"],
         vec![],
     ] {
@@ -136,6 +153,7 @@ fn codex_two_prompts_is_an_error_without_the_text() {
         vec!["exec", SENTINEL, "again"],
         vec!["exec", SENTINEL, "--", "again"],
         vec!["exec", "resume", "--last", SENTINEL, "again"],
+        vec!["review", SENTINEL, "again"],
     ] {
         let err = rewrite_codex_passthrough(&s(&input)).expect_err("two prompts");
         let message = format!("{err:#}");
@@ -165,6 +183,9 @@ fn codex_ambiguous_commands_are_refused_without_the_text() {
             vec!["exec", "--option-from-a-later-codex", SENTINEL],
             "does not know whether",
         ),
+        // `-m` is a root and `exec review` option, not a top-level
+        // `review` one, so after `review` it is unknown.
+        (vec!["review", "-m", SENTINEL], "does not know whether"),
     ] {
         let err = rewrite_codex_passthrough(&s(&input)).expect_err("refused");
         let message = format!("{err:#}");

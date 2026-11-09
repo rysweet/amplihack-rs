@@ -8,6 +8,7 @@
 //! | Caller passes | Child receives |
 //! | --- | --- |
 //! | `exec <text>` (also `e`, `exec review <text>`) | `exec -`, text on stdin |
+//! | top-level `review <text>`, `review --base main <text>` | `review -`, `review --base main -`, text on stdin |
 //! | `exec resume <session> <text>`, `exec resume --last <text>` | the same with `-`, text on stdin |
 //! | `exec fork <session> <text>` | `exec fork <session> -`, text on stdin |
 //! | `exec -`, or `exec` with no prompt | unchanged |
@@ -15,21 +16,25 @@
 //! | `exec --image a b` (several values in one `--image`) and no prompt | error; one value may be the prompt |
 //! | `exec` with an option amplihack does not know, followed by a word | error; that word may be the prompt |
 //! | `exec help ...` | unchanged |
+//! | interactive `codex <text>`, top-level `resume <session> <text>`, top-level `fork <session> <text>`, any other subcommand | unchanged (documented exception) |
 //!
 //! Option values are never read as the prompt: `exec review --commit <sha>`
 //! is unchanged, and `exec review --base main <text>` becomes
 //! `exec review --base main -`. Which options take a value differs by
 //! subcommand, so [`super::codex_exec_args`] keeps one table per subcommand,
 //! checked against the saved Codex help text.
-//! | interactive `codex <text>`, any other subcommand | unchanged (documented exception) |
 //!
 //! The `-` takes the place of the text, so the argument order is otherwise
 //! unchanged. Codex reads `-` as "read the prompt from stdin" for `exec`,
-//! `exec resume`, `exec fork` and `exec review` (codex-cli 0.166.0 help).
+//! `exec resume`, `exec fork`, `exec review` and top-level `review`
+//! (codex-cli 0.166.0 help).
 //!
 //! Interactive Codex is left alone: the first positional of a bare `codex`
 //! is either a prompt or one of Codex's subcommands, and that list changes
 //! between releases, so reading it as a prompt could break a subcommand.
+//! Top-level `codex resume` and `codex fork` start interactive sessions with
+//! a terminal UI that owns stdin, so they have no stdin prompt channel and
+//! keep their prompt on argv as well.
 //!
 //! ## Copilot
 //!
@@ -61,7 +66,7 @@ use tempfile::TempDir;
 ///
 /// # Errors
 ///
-/// - `exec` was given more than one positional prompt;
+/// - `exec` or top-level `review` was given more than one positional prompt;
 /// - a variadic `exec --image` took more than one value and no prompt was
 ///   found, so one of those values may be the prompt;
 /// - [`parse_exec_line`] refused the command line.
@@ -90,7 +95,7 @@ pub(crate) fn rewrite_codex_passthrough(args: &[String]) -> Result<Rewritten> {
             Ok(Rewritten::from_parts(out, Some(text), None))
         }
         _ => bail!(
-            "codex exec was given more than one positional prompt; pass one, or pass `-` and send the prompt on stdin"
+            "codex exec or codex review was given more than one positional prompt; pass one, or pass `-` and send the prompt on stdin"
         ),
     }
 }
