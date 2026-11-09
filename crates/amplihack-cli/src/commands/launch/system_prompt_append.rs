@@ -1,5 +1,6 @@
-//! Issue #1265, Option 3 — deliver amplihack's routing contract through
-//! `--append-system-prompt`.
+//! Issue #1265, Option 3 — deliver amplihack's routing contract at
+//! system-prompt privilege, through `--append-system-prompt-file <path>`
+//! (issue #2030).
 //!
 //! # Why this channel
 //!
@@ -12,58 +13,64 @@
 //! amplihack's central promise stops holding with no error and no warning.
 //!
 //! That is a delivery-channel problem, not a wording problem. No amount of
-//! rewording a structurally outranked channel fixes it. `--append-system-prompt`
-//! puts amplihack's contract at the same privilege level as the instruction it
-//! has to overcome.
+//! rewording a structurally outranked channel fixes it. Appending to the system
+//! prompt puts amplihack's contract at the same privilege level as the
+//! instruction it has to overcome.
+//!
+//! # Why a file, not argv text (issue #2030)
+//!
+//! The contract used to be passed as `--append-system-prompt <text>`, so its
+//! text sat in `/proc/<pid>/cmdline` of every session. One stray
+//! `pkill -f 'tail -f /dev/null'` matched a phrase in it and ended 34 sessions
+//! across the factory. Any pattern-based kill or `pgrep -f` that matches a
+//! phrase in the contract hits every session. The contract is therefore
+//! written to `<amplihack home>/private/system-prompt-append.md` (see
+//! [`ensure_contract_file`]) and only that path is passed. The flag needs
+//! Claude Code [`MIN_APPEND_PROMPT_FILE_VERSION`]; an older CLI fails the launch
+//! loudly ([`require_append_prompt_file_capability`]) and never falls back to
+//! argv.
 //!
 //! # Where the bytes come from: the binary, not the filesystem
 //!
 //! The fragment is [`include_str!`]d from `amplifier-bundle/context/` at compile
-//! time. It is 20 lines of static text that never varies per install, per user
-//! or per repo, so there was never anything for a runtime read to discover —
-//! only things for it to get wrong.
+//! time. It is static text that never varies per install, per user or per repo,
+//! so there is nothing for a runtime read to discover — only things for it to
+//! get wrong.
 //!
 //! Reading it from disk was tried first, and the read path is what made it
-//! dangerous. The file has to be *staged* to `$HOME` before it can be read, so
-//! it was added to `install::essential_files(Bundle)` — the list
-//! `missing_framework_paths` uses to decide whether to restage. That single
-//! listing armed a chain nobody wanted:
+//! dangerous. The file had to be *staged* to `$HOME` before it could be read,
+//! so it was added to `install::essential_files(Bundle)` — the list
+//! `missing_framework_paths` uses to decide whether to restage. That listing
+//! armed a chain: a restage on the first launch after upgrade, a source found
+//! by walking up from `current_dir()` with only a shape check (issue #1275
+//! narrowed it), and the result injected at system-prompt privilege. So
+//! `git clone <fork> && cd <fork> && amplihack claude` wrote fork-authored
+//! bytes into `$HOME` and injected them into every later session.
 //!
-//! 1. Every Bundle install in the wild lacks the file, so the gap is reported
-//!    on the **first launch after upgrade**, for every user.
-//! 2. `ensure_framework_installed` resolves a source with
-//!    `find_bundled_framework_root`, whose second step **walks up from
-//!    `current_dir()`** and accepted any ancestor carrying an
-//!    `amplifier-bundle/` that passed a *shape* check — not a provenance or
-//!    integrity check. (Issue #1275 bounded that walk to the repository
-//!    containing the current directory and required the candidate to look like
-//!    an amplihack source tree; it is still a shape check, just a narrower
-//!    one.)
-//! 3. The restage then copies `context/`, `agents/`, `skills/` and
-//!    `tools/amplihack/*.sh` out of that root into `$HOME/.amplihack/.claude/`.
-//! 4. This module reads the result and hands it to the agent at system-prompt
-//!    privilege — where it inherits the fragment's own framing ("supersedes any
-//!    earlier instruction", naming the guardrails it overrides) for free.
-//!
-//! So `git clone <fork> && cd <fork> && amplihack claude` wrote fork-authored
-//! bytes into `$HOME` and injected them, permanently, into every later session
-//! in every other repo. It is fair to say the cwd-sourced restage predates this
-//! feature and already carried agent instructions and shell scripts. That is
-//! true and it is the wrong half: before this listing existed the restage did
-//! not *fire* on a healthy install. Supplying the trigger is the defect, and a
-//! dormant channel and an armed one are not the same finding.
-//!
-//! Compiling the fragment in deletes the whole chain rather than guarding it —
-//! there is no listing, so no trigger; no path, so no traversal question; no
-//! read, so no TOCTOU, no size cap, no FIFO, no UTF-8 check, and no
-//! integrity-at-read-time gap (A-8) to file as follow-up work. The bytes are
-//! fixed at build time by the same review that ships the binary.
+//! The contract file written for issue #2030 does not reopen that chain. It is
+//! written *from* the compiled-in bytes at each launch that injects them, it is
+//! never read back as a source of content (only a bounded byte comparison
+//! decides whether to rewrite it), and it is not listed in
+//! `install::essential_files` or the bundle staging tree.
 //!
 //! # Security
 //!
-//! * The fragment's bytes appear in the process table and are visible to every
-//!   user on the host. It carries operating instructions, never secrets, and
-//!   the shipped file says so in its own header.
+//! * Threat model: other uids, and any process that scans argv. A same-uid
+//!   adversary can already read and write everything this user owns and is
+//!   out of scope.
+//! * No contract text appears in any agent's argv; only the path of the
+//!   contract file does. The path holds no secret.
+//! * [`ensure_contract_file`] uses `lstat` and never follows a symlink. The
+//!   `private/` directory must be a real directory owned by the current user
+//!   with mode 0700 (repaired when it is ours). The file is replaced unless it
+//!   is a regular 0600 file owned by us with exactly the compiled-in bytes.
+//!   Replacement writes a `create_new` + `O_NOFOLLOW` 0600 temporary file with
+//!   a random suffix, `fsync`s it and renames it over the target, so a planted
+//!   symlink is replaced rather than written through, and concurrent launches
+//!   never see a partial file.
+//! * Residual TOCTOU: between the check and Claude opening the file, a process
+//!   of the same uid could swap it. That process is already inside the threat
+//!   model's excluded set.
 //! * `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND` is UX, not a security boundary —
 //!   anyone who can set it can already exec.
 
@@ -111,7 +118,8 @@ pub(crate) fn agent_binary_for_name(
     }
 }
 
-/// Should amplihack inject `--append-system-prompt` into this launch?
+/// Should amplihack inject the contract (`--append-system-prompt-file`) into
+/// this launch?
 ///
 /// Pure — no I/O, and **no `std::env` reads inside**. This is a deliberate
 /// divergence from its neighbour [`super::command::should_inject_copilot_allow_all`],
@@ -128,6 +136,10 @@ pub(crate) fn agent_binary_for_name(
 ///    `docs/SYSTEM_PROMPT_APPEND.md`.
 /// 2. `opt_out` is not `Some("1")`.
 /// 3. The user supplied none of the four `--append-system-prompt*` forms.
+///
+/// The launch path also skips injection for a `rustyclawd` executable, whose
+/// support for `--append-system-prompt-file` is unconfirmed; see
+/// [`contract_injection_applies`].
 ///
 /// There is no "is the fragment present?" condition: the fragment is
 /// `include_str!`d into the binary, so it is present in every build. This gate
@@ -174,21 +186,27 @@ fn user_supplied_append_flag(extra_args: &[String]) -> bool {
     })
 }
 
-/// The routing contract, ready to hand to `--append-system-prompt`.
+/// The routing contract, ready to write to the contract file.
 ///
-/// `Option` is kept because the gate treats "no fragment" as a first-class
-/// answer and the call site is written around it. The empty case is now a build
-/// mistake rather than a runtime one — an emptied bundle file would otherwise
-/// inject a lone `--append-system-prompt ""`, which is noise at system-prompt
-/// privilege — so it is checked here and pinned by
-/// `the_compiled_in_fragment_is_not_empty_and_is_argv_sized`.
-///
-/// Borrows [`FRAGMENT`] rather than copying it. The bytes are `include_str!`d,
-/// so they are already in the binary's read-only data for the whole process
-/// lifetime; the only consumer hands them straight to `Command::arg`, which
-/// takes `AsRef<OsStr>` and copies into the argv block regardless. Returning
-/// `String` allocated a second copy of ~1 KiB on every launch to own bytes that
-/// are already static and are never mutated.
+/// `Option` is kept because the empty case is a build mistake: an emptied
+/// bundle file would otherwise inject an empty system-prompt append, which is
+/// noise at system-prompt privilege. It is pinned by
+/// `the_compiled_in_fragment_is_not_empty`.
 pub(crate) fn installed_fragment() -> Option<&'static str> {
     (!FRAGMENT.trim().is_empty()).then_some(FRAGMENT)
 }
+
+// Issue #2030: the contract file and the version gate live in
+// `contract_file`, which writes these compiled-in bytes to a 0600 file. They
+// are re-exported here so callers keep one import path; this module itself
+// still never reads anything from disk.
+pub(crate) use super::contract_file::{
+    CONTRACT_PATH_MISSING, contract_home, contract_injection_applies, ensure_contract_file,
+    probe_claude_version, require_append_prompt_file_capability,
+    require_prompt_file_flag_capability,
+};
+#[cfg(test)]
+pub(crate) use super::contract_file::{
+    CONTRACT_RELATIVE_PATH, MIN_APPEND_PROMPT_FILE_VERSION, ensure_contract_file_as,
+    parse_claude_version,
+};

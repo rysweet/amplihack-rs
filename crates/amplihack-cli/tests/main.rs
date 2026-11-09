@@ -32,6 +32,8 @@ mod issue_1753_expired_live;
 mod issue_1753_login_identity;
 #[path = "issue_1753_refusal_named_once.rs"]
 mod issue_1753_refusal_named_once;
+#[path = "issue_1947_login_identity.rs"]
+mod issue_1947_login_identity;
 #[path = "issue_1962_candide_cause.rs"]
 mod issue_1962_candide_cause;
 #[path = "issue_1962_causes.rs"]
@@ -50,6 +52,10 @@ mod issue_1962_seed_cmd;
 mod issue_1962_seed_output;
 #[path = "issue_1962_seed_scan.rs"]
 mod issue_1962_seed_scan;
+#[path = "issue_2030_guards.rs"]
+mod issue_2030_guards;
+#[path = "issue_2030_no_prompt_in_argv.rs"]
+mod issue_2030_no_prompt_in_argv;
 
 #[path = "active_agent_binary_default_test.rs"]
 mod active_agent_binary_default;

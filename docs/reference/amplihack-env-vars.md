@@ -143,7 +143,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_NOT_SET_1551` | test-only |  | Not an env var: a name an env-builder unit test checks is absent. |
 | `AMPLIHACK_NO_FRESHNESS_CHECK` | user preference |  | Skips the binary freshness check. |
 | `AMPLIHACK_NO_RUST_BOOTSTRAP` | user preference |  | Skips the Rust toolchain bootstrap. |
-| `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND` | user preference |  | Skips the system-prompt append. |
+| `AMPLIHACK_NO_SYSTEM_PROMPT_APPEND` | user preference |  | `1` skips the operating contract, its file under `<home>/private/` and the Claude Code 2.1.319 version check. See [Agent Prompt Channels](agent-prompt-channels.md#environment-variables). |
 | `AMPLIHACK_NO_UPDATE_CHECK` | user preference |  | Skips the startup update check. |
 | `AMPLIHACK_NPM_VERSION` | test-only |  | Not an env var: placeholder in the plugin-manifest test. |
 | `AMPLIHACK_ORCHESTRATION_BOOTSTRAP` | test-only |  | Codex front-door contract fixture. |
@@ -165,7 +165,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_PROFILE_USAGE_USABLE_SESSION_PCT` | user preference |  | Session percentage below which a login counts as usable now in the capacity summary of `amplihack profile usage` and the `capacity:` line of `amplihack profile rotate status`, `1` to `100`; default `95`. `--usable-session-pct` overrides it. Does not change any rotation or auto-switch threshold. See [Usable now](profile-command.md#usable-now). |
 | `AMPLIHACK_PROJECT_ID` | user preference |  | Memory learning project id. |
 | `AMPLIHACK_PROJECT_ROOT` | internal |  | Project root exported by the uvx manager. |
-| `AMPLIHACK_PROMPT_DELIVERY` | user preference |  | Prompt delivery mode for agent subprocesses. |
+| `AMPLIHACK_PROMPT_DELIVERY` | user preference |  | Prompt delivery mode for agent subprocesses: `auto` (default), `stdin` or `tempfile`. No value puts the prompt in argv: any other value, including `argv`, logs a warning and is treated as `auto`. Never set it in recipes or bundle config. See [Agent Prompt Channels](agent-prompt-channels.md#automatic-prompt-delivery-never-selects-argv). |
 | `AMPLIHACK_QUEUE_PATH` | test-only |  | Fleet test fixture. |
 | `AMPLIHACK_RECIPE_LOG_JSONL` | user preference |  | Path for structured runner events. |
 | `AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS` | user preference |  | Whole-run wall-clock limit for the recipe runner. |

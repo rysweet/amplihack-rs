@@ -22,9 +22,9 @@
 mod checks;
 
 use amplihack_launcher::flag_matrix::{
-    delivery_mode_name, prompt_delivery_name, prompt_delivery_report_for,
+    effective_mode_name, prompt_delivery_name, prompt_delivery_report_for,
 };
-use amplihack_utils::prompt_delivery::{AUTO_TEMPFILE_THRESHOLD_BYTES, PromptDelivery, from_env};
+use amplihack_utils::prompt_delivery::{PromptDelivery, from_env};
 use anyhow::{Result, bail};
 use std::path::PathBuf;
 
@@ -105,21 +105,18 @@ pub fn print_summary(results: &[(bool, String)]) -> (usize, usize) {
 
 pub struct PromptDeliveryDoctorOptions {
     pub requested: PromptDelivery,
-    pub diagnostic_prompt_size: usize,
 }
 
 pub fn render_prompt_delivery_diagnostics(options: PromptDeliveryDoctorOptions) -> String {
-    let report = prompt_delivery_report_for(options.requested, options.diagnostic_prompt_size);
+    let report = prompt_delivery_report_for(options.requested);
     let mut output = String::new();
     output.push_str("Prompt delivery\n");
     output.push_str(&format!(
         "  requested: {}\n",
         prompt_delivery_name(report.requested)
     ));
-    output.push_str(&format!(
-        "  auto threshold: {} bytes\n",
-        AUTO_TEMPFILE_THRESHOLD_BYTES
-    ));
+    // Issue #2030: auto never selects argv, whatever the prompt size.
+    output.push_str("  auto: stdin, then file-reference, then tempfile; never argv\n");
     output.push('\n');
     for entry in report.entries {
         output.push_str(&format!("  {}\n", entry.binary));
@@ -131,8 +128,8 @@ pub fn render_prompt_delivery_diagnostics(options: PromptDeliveryDoctorOptions) 
             output.push_str(&format!("    note: {}\n", entry.note));
         }
         output.push_str(&format!(
-            "    effective for long prompt: {}\n",
-            delivery_mode_name(entry.effective_mode)
+            "    effective: {}\n",
+            effective_mode_name(entry.effective_mode)
         ));
         if !entry.warning.is_empty() {
             output.push_str(&format!("    warning: {}\n", entry.warning));
@@ -165,7 +162,7 @@ pub fn render_doctor_help() -> String {
 Usage:\n  amplihack doctor\n  amplihack doctor node [--ensure]\n  amplihack doctor copilot [--ensure-node]\n\n\
 Commands:\n  node       Diagnose Node.js >=24.0.0 for Copilot CLI\n  copilot    Diagnose Copilot CLI prerequisites\n\n\
 Options:\n  --ensure        Print remediation and use safe auto-remediation only when available\n  --ensure-node   Run the Node.js ensure flow before Copilot checks\n\n\
-Prompt delivery:\n  AMPLIHACK_PROMPT_DELIVERY=auto|argv|tempfile|stdin selects the requested subprocess prompt delivery mode.\n"
+Prompt delivery:\n  AMPLIHACK_PROMPT_DELIVERY=auto|tempfile|stdin selects the requested subprocess prompt delivery mode.\n"
         .to_string()
 }
 
@@ -211,7 +208,6 @@ fn run_all_checks() -> Result<()> {
     let r5 = check_amplihack_version();
     let prompt_delivery = render_prompt_delivery_diagnostics(PromptDeliveryDoctorOptions {
         requested: from_env(),
-        diagnostic_prompt_size: 64 * 1024,
     });
 
     // Collect results in canonical display order (1–5), waiting for threads.
