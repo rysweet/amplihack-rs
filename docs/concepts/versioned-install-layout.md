@@ -234,12 +234,16 @@ skipped. When the result is unknown, install prints:
 ℹ Old amplihack releases kept: a running process of this user could not be inspected, so no release was removed (~/.amplihack/releases)
 ```
 
-Processes that make themselves non-dumpable, such as `ssh-agent` or
-`gnome-keyring-daemon`, have `/proc` entries their own user cannot read. While
-one runs, no release is removed. This is deliberate: deleting a tree a process
+Processes that make themselves non-dumpable have `/proc` entries their own
+user cannot read. The systemd user manager (`systemd --user` and its
+`(sd-pam)` helper) is one of them, and it runs for as long as the user has a
+login session, so on most systemd hosts automatic cleanup does not run at all.
+`ssh-agent`, `gpg-agent` and `gnome-keyring-daemon` have the same effect.
+While any such process runs, no release is removed. This is deliberate: deleting a tree a process
 might use is the failure this layout exists to prevent. To reclaim the space,
-stop that process and run `amplihack install` again, or remove releases by
-hand once no run uses them (see [Inspecting an install](#inspecting-an-install)).
+remove releases by hand once no run uses them. Stopping the process and
+running `amplihack install` again also works, but not for the systemd user
+manager (see [Inspecting an install](#inspecting-an-install)).
 
 Anything kept is checked again on the next install. When more than 5 releases
 are kept because they are in use, install prints this warning:
@@ -564,7 +568,10 @@ These checks accept a link into a release and still reject anything else:
 ## Known limits
 
 - Cleanup never runs while a process of your user has `/proc` entries you
-  cannot read (`ssh-agent`, `gpg-agent`, `gnome-keyring-daemon`). On such a
+  cannot read (`systemd --user`, `(sd-pam)`, `ssh-agent`, `gpg-agent`,
+  `gnome-keyring-daemon`). The systemd user manager runs for every login
+  session, so on most systemd hosts old releases are never removed
+  automatically. On such a
   host every install, `--force-refresh` and self-heal adds a release of about
   640 MB, most of it `amplihack-asset-resolver`. Remove old releases by hand
   as described in [Inspecting an install](#inspecting-an-install).
@@ -600,7 +607,19 @@ done
 ```
 
 Do not delete release directories by hand while runs are alive. Running
-`amplihack install` again removes those that are no longer used.
+`amplihack install` again removes those that are no longer used, unless a
+non-dumpable process of your user is running (see
+[Cleanup of old releases](#cleanup-of-old-releases)). To list processes whose
+`/proc` entries cannot be read:
+
+```bash
+for p in /proc/[0-9]*; do
+  [ -O "$p" ] && ! readlink "$p/cwd" >/dev/null 2>&1 && echo "${p#/proc/} $(cat "$p/comm" 2>/dev/null)"
+done
+```
+
+A release is safe to remove by hand when no link points into it and the loop
+above for that release prints nothing.
 
 ## Tests
 
