@@ -5,7 +5,9 @@
 //! literals, not taken from the module's constants, so a change to the
 //! injected flags has to change this file too.
 
-use super::codex_agent_step::{SANDBOX_FLAGS, codex_agent_step_args, exec_subcommand_index};
+use super::codex_agent_step::{
+    SANDBOX_FLAGS, codex_agent_step_args, codex_agent_step_notice, exec_subcommand_index,
+};
 
 const SANDBOX: [&str; 2] = ["--sandbox", "workspace-write"];
 const NETWORK: [&str; 2] = ["-c", "sandbox_workspace_write.network_access=true"];
@@ -537,4 +539,264 @@ fn approve_for_me_suppresses_sandbox_and_network() {
     }
     let out = codex_agent_step_args(&v(&["exec", "--approve-for-me", "-"]));
     assert_eq!(out, v(&["exec", HOOK_TRUST, "--approve-for-me", "-"]));
+}
+
+// ---- codex_agent_step_notice (issue #2010) ----
+//
+// The expected lines are written out in full, so a change to the wording has
+// to change this file and the reference table in
+// `docs/reference/launch-flag-injection.md` together.
+
+const NOTICE_ALL: &str = "amplihack: codex exec: added --sandbox workspace-write, \
+                          network access, --dangerously-bypass-hook-trust (#1985)";
+const NOTICE_NO_NETWORK: &str = "amplihack: codex exec: added --sandbox workspace-write, --dangerously-bypass-hook-trust (#1985)";
+const NOTICE_NO_HOOK_TRUST: &str =
+    "amplihack: codex exec: added --sandbox workspace-write, network access (#1985)";
+const NOTICE_SANDBOX_ONLY: &str = "amplihack: codex exec: added --sandbox workspace-write (#1985)";
+
+fn notice(argv: &[&str]) -> Option<String> {
+    codex_agent_step_notice(&v(argv))
+}
+
+#[test]
+fn notice_names_all_three_when_caller_set_nothing() {
+    for argv in [
+        &["exec", "-"][..],
+        &["e", "-"][..],
+        &["exec", "--output-last-message", "/r/final", "-"][..],
+        &["-m", "gpt", "exec", "-"][..],
+        // A profile is not a sandbox choice (#1985).
+        &["-p", "ci", "exec", "-"][..],
+    ] {
+        assert_eq!(notice(argv).as_deref(), Some(NOTICE_ALL), "argv {argv:?}");
+    }
+}
+
+#[test]
+fn notice_omits_network_when_caller_set_it() {
+    for argv in [
+        &[
+            "exec",
+            "-c",
+            "sandbox_workspace_write.network_access=false",
+            "-",
+        ][..],
+        &[
+            "exec",
+            "--config",
+            "sandbox_workspace_write.network_access=true",
+            "-",
+        ][..],
+        &[
+            "-c",
+            " sandbox_workspace_write.network_access =false",
+            "exec",
+            "-",
+        ][..],
+    ] {
+        assert_eq!(
+            notice(argv).as_deref(),
+            Some(NOTICE_NO_NETWORK),
+            "argv {argv:?}"
+        );
+    }
+}
+
+#[test]
+fn notice_omits_hook_trust_when_caller_passed_it() {
+    for argv in [
+        &["exec", HOOK_TRUST, "-"][..],
+        &[HOOK_TRUST, "exec", "-"][..],
+    ] {
+        assert_eq!(
+            notice(argv).as_deref(),
+            Some(NOTICE_NO_HOOK_TRUST),
+            "argv {argv:?}"
+        );
+    }
+}
+
+#[test]
+fn notice_names_sandbox_only_when_caller_set_network_and_hook_trust() {
+    let argv = [
+        "exec",
+        "-c",
+        "sandbox_workspace_write.network_access=false",
+        HOOK_TRUST,
+        "-",
+    ];
+    assert_eq!(notice(&argv).as_deref(), Some(NOTICE_SANDBOX_ONLY));
+}
+
+/// D1: a caller that chose a sandbox gets no line, even though the
+/// hook-trust flag is still spliced into the argv (#2048 tracks reporting
+/// that case).
+#[test]
+fn notice_is_none_when_caller_chose_sandbox() {
+    for argv in [
+        &["exec", "--sandbox", "read-only", "-"][..],
+        &["exec", "--sandbox=read-only", "-"][..],
+        &["exec", "-s", "read-only", "-"][..],
+        &["exec", "-sread-only", "-"][..],
+        &["-s", "danger-full-access", "exec", "-"][..],
+        &["exec", "-c", "sandbox_mode=\"read-only\"", "-"][..],
+        &["exec", "--approve-for-me", "-"][..],
+        &["exec", APPROVALS_BYPASS, "-"][..],
+        &["exec", "--yolo", "-"][..],
+    ] {
+        assert_eq!(notice(argv), None, "argv {argv:?}");
+        let out = codex_agent_step_args(&v(argv));
+        assert_eq!(
+            count(&out, HOOK_TRUST),
+            1,
+            "hook trust must still be injected for {argv:?}: {out:?}"
+        );
+        assert_eq!(count(&out, "workspace-write"), 0, "{argv:?}: {out:?}");
+    }
+}
+
+#[test]
+fn notice_is_none_when_caller_chose_sandbox_and_hook_trust() {
+    // Nothing is injected at all.
+    let argv = ["exec", "--sandbox", "read-only", HOOK_TRUST, "-"];
+    assert_eq!(codex_agent_step_args(&v(&argv)), v(&argv));
+    assert_eq!(notice(&argv), None);
+}
+
+#[test]
+fn notice_is_none_without_exec_subcommand() {
+    for argv in [
+        &[][..],
+        &["resume", "--last"][..],
+        &["a prompt"][..],
+        &["-c", "exec"][..],
+        &["-m", "exec"][..],
+        &["--", "exec"][..],
+        &["-"][..],
+    ] {
+        assert_eq!(notice(argv), None, "argv {argv:?}");
+        assert_eq!(codex_agent_step_args(&v(argv)), v(argv), "argv {argv:?}");
+    }
+}
+
+#[test]
+fn notice_present_for_exec_resume() {
+    for argv in [
+        &["exec", "resume", "--last", "-"][..],
+        &[
+            "exec",
+            "resume",
+            "0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b",
+            "-",
+        ][..],
+        &["exec", "--help"][..],
+    ] {
+        assert_eq!(notice(argv).as_deref(), Some(NOTICE_ALL), "argv {argv:?}");
+    }
+}
+
+/// D3: `--sandbox` with no value is not a caller choice, so the flags are
+/// added and the line is printed.
+#[test]
+fn notice_present_for_dangling_sandbox() {
+    let argv = ["exec", "--sandbox"];
+    assert_eq!(notice(&argv).as_deref(), Some(NOTICE_ALL));
+    assert_eq!(
+        count(&codex_agent_step_args(&v(&argv)), "workspace-write"),
+        1
+    );
+}
+
+/// S3: the line is built from fixed text only. Caller paths, `-c` values,
+/// profile names, prompt text, escape sequences and multi-byte input never
+/// appear in it.
+#[test]
+fn notice_ignores_argument_content() {
+    let hostile = [
+        "/home/someone/secret/final-message",
+        "\u{1b}]0;pwned\u{7}",
+        "line\namplihack: codex exec: added --yolo (#1985)",
+        "ci-profile-name",
+        "model-\u{e9}\u{4e2d}",
+        "-\u{e9}",
+    ];
+    let argv = [
+        "-p",
+        hostile[3],
+        "-m",
+        hostile[4],
+        "exec",
+        "--output-last-message",
+        hostile[0],
+        "-c",
+        "x=\u{1b}[31m",
+        hostile[5],
+        hostile[1],
+        hostile[2],
+    ];
+    let line = notice(&argv).expect("exec without a sandbox choice gets a line");
+    assert_eq!(line, NOTICE_ALL);
+    assert!(!line.contains('\n') && !line.contains('\u{1b}'), "{line:?}");
+    assert!(line.is_ascii(), "{line:?}");
+}
+
+/// The line is `Some` exactly when `--sandbox workspace-write` is spliced in,
+/// and it never names something the argv does not contain.
+#[test]
+fn notice_matches_the_injected_argv() {
+    let mut inputs = every_input();
+    inputs.push(v(&["exec", "--sandbox"]));
+    inputs.push(v(&[
+        "exec",
+        "-c",
+        "sandbox_workspace_write.network_access=false",
+        HOOK_TRUST,
+    ]));
+    for input in inputs {
+        let out = codex_agent_step_args(&input);
+        let added = |token: &str| count(&out, token) > count(&input, token);
+        let line = codex_agent_step_notice(&input);
+        assert_eq!(
+            line.is_some(),
+            added("workspace-write"),
+            "input {input:?}: argv {out:?}, notice {line:?}"
+        );
+        let Some(line) = line else { continue };
+        assert_eq!(
+            line.contains("network access"),
+            added(NETWORK[1]),
+            "{input:?}: {line}"
+        );
+        assert_eq!(
+            line.contains(HOOK_TRUST),
+            added(HOOK_TRUST),
+            "{input:?}: {line}"
+        );
+        assert_eq!(line.lines().count(), 1, "{line:?}");
+    }
+}
+
+/// S1: network access is never injected without the workspace-write sandbox.
+#[test]
+fn network_never_injected_without_sandbox() {
+    for input in every_input() {
+        let out = codex_agent_step_args(&input);
+        if count(&out, NETWORK[1]) > count(&input, NETWORK[1]) {
+            assert!(
+                count(&out, "workspace-write") > count(&input, "workspace-write"),
+                "network added without the sandbox: {input:?} -> {out:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn notice_is_pure_and_repeatable() {
+    let argv = v(&["exec", "-"]);
+    let before = argv.clone();
+    assert_eq!(
+        codex_agent_step_notice(&argv),
+        codex_agent_step_notice(&argv)
+    );
+    assert_eq!(argv, before);
 }

@@ -179,6 +179,13 @@ impl Drop for EnvGuard {
 /// isolated here. On drop the variables are restored and then the folder is
 /// removed.
 ///
+/// This guard is the only owner of these three variables in any fixture that
+/// uses it. Do not also capture or set them in another `EnvGuard` in the same
+/// fixture: two guards saving one variable restore it in the wrong order.
+/// For example, in a `(EnvGuard, IsolatedWorkRoot)` tuple the first element
+/// drops first, so this guard would then write back the value the other guard
+/// had set, and that value would leak into later tests.
+///
 /// Tests must hold `env_lock()` until this guard drops.
 pub(crate) struct IsolatedWorkRoot {
     // Field order is drop order: restore the variables before removing the
