@@ -366,8 +366,9 @@ Claude Console. Full guide: "Use an API key as the last resort" in
 `amplihack install` registers the `amplihack-hooks limit-resume` hook on
 Claude Code's `StopFailure` event (matcher `rate_limit`, `asyncRewake: true`).
 When a turn ends on a usage limit and auto-switch is on, it waits up to 7
-days for a rotator cycle that started measuring after the limit and
-ended `swapped` or `stayed` with no ALERT, then exits `2` with a continue
+days for a rotator cycle whose measurement, or the reading behind it, was
+taken after the limit hit and that ended `swapped` or `stayed` with no ALERT,
+then exits `2` with a continue
 message, which wakes the session. That wake, and Claude Code running
 `StopFailure` instead of `Stop` on a limit, were verified live on Claude Code
 2.1.306 and 2.1.307; if a session does not wake, read `resume.log` first.

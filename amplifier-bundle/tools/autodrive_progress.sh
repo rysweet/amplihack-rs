@@ -13,8 +13,7 @@
 #       the last row is 0 (not clean and not failed), both SHAs are non-empty and equal, the open
 #       items are equal (by the sha256 of the full set; by the cut text for a
 #       row with no hash), the CI signals are equal and neither says pending
-#       (CI still running is not a stop), and neither round has a
-#       <record>.light.json side file. Every other case exits 0, so the evaluator decides; an
+#       (CI still running is not a stop). Every other case exits 0, so the evaluator decides; an
 #       untrusted progress file is not read (WARNING, exit 0: fails open).
 #   last <state> <loop>
 #       prints the label of the last row, or nothing; exit 3 when the
@@ -125,10 +124,6 @@ P_HASH="$(safe_sha "$(printf '%s' "$ROW" | cut -s -f6)")"
 # empty findings file does not describe its open concerns.
 [ "$P_CLEAN" = "0" ] || exit 0
 [ -n "$SHA" ] && [ "$SHA" = "$(safe_sha "$P_SHA")" ] || exit 0
-# A light round's findings file does not describe its open concerns (#1802).
-for L in "$LABEL" "$P_LABEL"; do
-  [ -e "${STATE}/${LOOP}-${L}.json.light.json" ] && exit 0
-done
 ALL="$(full_items "$5")"; CUR="$(items "$ALL")"; HASH="$(items_hash "$ALL")"
 # The hash compares the full set; the cut text is only for display.
 if [ -n "$P_HASH" ] && [ -n "$HASH" ]; then [ "$HASH" = "$P_HASH" ] || exit 0

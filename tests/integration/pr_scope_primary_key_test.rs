@@ -108,7 +108,8 @@ fn adopts_own_unique_branch_pr_despite_stale_issue_head_sha_and_title_prefix() {
     let bin_dir = tmp.path().join("bin");
 
     // The #1015 shape: OPEN, unique by (head,base), title does NOT start with
-    // the default "Update" prefix, body references only the UPSTREAM issue
+    // the "Update" prefix passed below (the publish step's default until
+    // #1968, which dropped it), body references only the UPSTREAM issue
     // (#4610), and headRefOid differs from the recipe's captured --head-sha.
     let list = tmp.path().join("candidates.json");
     fs::write(
