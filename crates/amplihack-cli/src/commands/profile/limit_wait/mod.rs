@@ -71,6 +71,7 @@ struct RealDeps<'a> {
     signals: &'a Signals,
     parent: libc::pid_t,
     probe: &'a dyn Fn(i64, i64) -> bool,
+    rotating: &'a dyn Fn() -> bool,
 }
 
 impl WaitDeps for RealDeps<'_> {
@@ -106,6 +107,10 @@ impl WaitDeps for RealDeps<'_> {
         (self.probe)(start, self.clock.now())
     }
 
+    fn rotator_running(&mut self) -> bool {
+        (self.rotating)()
+    }
+
     fn log(&mut self, line: &str) {
         eprintln!("{line}");
     }
@@ -130,6 +135,10 @@ pub(crate) struct Waiter {
     /// (#1801), called only when a limit is seen. Always false for a step
     /// with an explicit login or an inherited profile.
     home_takeover: Box<dyn Fn() -> bool>,
+    /// Whether a rotator is still running for this `$HOME/.claude` step,
+    /// asked during an unbounded capacity wait. Defaults to true, so a path
+    /// that never sets it keeps waiting rather than failing early.
+    home_rotating: Box<dyn Fn() -> bool>,
     /// When this step's wait began, on the wait's clock, if a capacity wait.
     capacity_start: Option<i64>,
 }
@@ -162,8 +171,15 @@ impl Waiter {
             blocked: None,
             prompt_in_args,
             home_takeover,
+            home_rotating: Box::new(|| true),
             capacity_start: None,
         }
+    }
+
+    /// Sets the rotator check for a `$HOME/.claude` step (issue #2022).
+    pub(crate) fn with_home_rotating(mut self, check: Box<dyn Fn() -> bool>) -> Self {
+        self.home_rotating = check;
+        self
     }
 
     /// Whether this step may wait (checks 4 and 5 of the gate).
@@ -221,12 +237,16 @@ impl Waiter {
     /// profile, so other profiles' limits do not time or cancel the wait.
     /// `probe(start, now)`, both on the wait's clock, ends a capacity wait:
     /// a reading taken after `start` shows another login has capacity.
+    /// `rotating` says whether a rotator still rotates logins for this step;
+    /// `None` uses the `$HOME/.claude` check. An unbounded capacity wait ends
+    /// when it stays false (issue #2022).
     pub(crate) fn after_limit(
         &mut self,
         inherited: WaitFor,
         n: u32,
         signals: &Signals,
         probe: &dyn Fn(i64, i64) -> bool,
+        rotating: Option<&dyn Fn() -> bool>,
     ) -> AfterLimit {
         let Some(settings) = self.settings else {
             return AfterLimit::Finish(None);
@@ -274,6 +294,7 @@ impl Waiter {
             signals,
             parent: self.parent,
             probe,
+            rotating: rotating.unwrap_or(&*self.home_rotating),
         };
         let waited_from = std::time::Instant::now();
         let end = wait::wait(&p, &mut deps);
@@ -290,7 +311,9 @@ impl Waiter {
                 log(&Event::Failed(FailReason::StepTimeout));
                 AfterLimit::Finish(None)
             }
-            End::CapacityExpired => {
+            // The `failed` reason stays `capacity_expired`, which the
+            // evaluator and auto-drive already class as a usage limit.
+            End::CapacityExpired | End::RotatorStopped => {
                 log(&Event::Failed(FailReason::CapacityExpired));
                 AfterLimit::Finish(None)
             }
@@ -335,10 +358,12 @@ pub(crate) fn supervise_unprofiled(
     let watch = Watch::new(store, default, config_dir.as_deref(), home.as_deref());
     // Only `$HOME/.claude` can get another login: an explicit directory or a
     // `.default` profile is the login the launch chose (#1801).
-    let home_takeover =
-        super::auto_switch::takeover::home_check(store.filter(|_| watch.is_home()).cloned());
+    let home_store = store.filter(|_| watch.is_home()).cloned();
+    let home_takeover = super::auto_switch::takeover::home_check(home_store.clone());
+    let home_rotating = super::auto_switch::takeover::home_rotating(home_store);
     super::auto_switch::rerun::run(
         None,
-        Waiter::new(Some(settings), watch, prompt_in_args, home_takeover),
+        Waiter::new(Some(settings), watch, prompt_in_args, home_takeover)
+            .with_home_rotating(home_rotating),
     )
 }

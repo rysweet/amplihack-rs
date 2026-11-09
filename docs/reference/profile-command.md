@@ -8702,7 +8702,8 @@ After an attempt hits a usage limit, in this order:
 7. otherwise `start`, the wait, and `end`. After `end reason=signal` the
    step exits with `128` plus the signal; after `session ended`, or after
    `step timeout` on a reset wait, the failed attempt's result is passed up;
-   after `capacity expired`, or `step timeout` on a capacity wait, the
+   after `capacity expired` or `rotator stopped`, or `step timeout` on a
+   capacity wait, the
    [closing line](#closing-line) is written and the failed attempt's result
    is passed up; after any other reason `resume` is written and the step
    runs once more.
@@ -8804,6 +8805,7 @@ listed.
 | `reset reached` | both | the `reset+margin` deadline passed; on a capacity wait this is the failed login's own reset | yes |
 | `max reached` | reset | the `max_wait` deadline passed | yes |
 | `capacity expired` | capacity | the `max_wait` deadline passed with no login showing capacity; an unbounded wait never ends this way | no; [closing line](#closing-line) |
+| `rotator stopped` | capacity | an unbounded capacity wait (no readable reset, no `max_wait`) found no rotator process running at two 30 s polls in a row (turning auto-switch off only pauses the rotator and does not end the wait), so nothing could record capacity or swap the login; the `failed` line keeps `reason=capacity_expired` | no; [closing line](#closing-line) |
 | `step timeout` | both | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no; [closing line](#closing-line) |
 | `login changed` | both | two probes in a row, 30 s apart, agree on a fingerprint that differs from the baseline | yes |
 | `rotator capacity` | both | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle with capacity (`swapped`, `stayed` or `switched`, no alert; `stayed-unread` is not capacity) whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
@@ -9121,8 +9123,8 @@ reported by the config loader, by the variable's name only, and ignored.
 The maximum is an opt-in ceiling. Unset, no limit applies: a reset wait
 lasts until its reset plus 120 s, however far away, and a capacity wait
 lasts until the failed login's reset plus 120 s, or, with no readable
-reset, until a login has capacity again, a signal arrives or the session
-ends. When set, it shortens any wait that would last longer. When the user
+reset, until a login has capacity again, a signal arrives, the session
+ends or the rotator stops (`end reason=rotator stopped`). When set, it shortens any wait that would last longer. When the user
 `config.toml` or the variable sets a maximum, a project `config.toml` may
 only lower it, so a repository cannot make your runs wait longer than you
 allow; when neither sets one, a project value applies as written.

@@ -53,12 +53,31 @@ pub(crate) fn home_check(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
     })
 }
 
+/// Whether a rotator process is still alive for a `$HOME/.claude` step.
+/// An unbounded capacity wait ends once it stays false (issue #2022). Only
+/// the process counts: auto-switch turned off for a while pauses the rotator
+/// but must not end an hours-long wait, since turning it back on resumes it,
+/// and an install that replaces the binary must not either
+/// ([`rotate::daemon::alive`]).
+pub(crate) fn home_rotating(store: Option<ProfileStore>) -> Box<dyn Fn() -> bool> {
+    Box::new(move || {
+        store
+            .as_ref()
+            .is_some_and(|s| rotate::daemon::alive(s.root()))
+    })
+}
+
+/// [`home_rotating`] for a step on `store`.
+pub(crate) fn store_rotating(store: &ProfileStore) -> bool {
+    rotate::daemon::alive(store.root())
+}
+
 /// The takeover check for a step that inherited profile `own`. No `/usage`
 /// probe is made, so that step's wait ends only on a fresh reading, a rotator
 /// cycle, a login change in its own directory or its own reset. In an
 /// unattended recipe run no rotator starts and a `claude -p` step has no
 /// status line, so without a running rotator nothing may record a reading and
-/// the wait would run to its maximum. The check therefore holds only while a
+/// the wait could not end. The check therefore holds only while a
 /// rotator is running with auto-switch on, as [`home_check`] does; otherwise a
 /// far reset stays a reset wait on the same login (issue #2022).
 pub(crate) fn profile_check(store: &ProfileStore, own: &str) -> bool {

@@ -213,3 +213,53 @@ fn an_unbounded_wait_logs_progress_without_remaining() {
         assert!(!l.contains("remaining="), "{l}");
     }
 }
+
+// A capacity wait with no deadline needs the rotator to end: once no rotator
+// is running at two polls in a row, nothing could record capacity or swap
+// the login, so the wait ends (issue #2022). Fake clock; no real time passes.
+#[test]
+fn an_unbounded_capacity_wait_ends_when_the_rotator_stays_stopped() {
+    let mut f = Fake::new();
+    f.rotator_gone = Some((7 * 3600, i64::MAX));
+    assert_eq!(wait(&unbounded(), &mut f), End::RotatorStopped);
+    let misses: Vec<i64> = f
+        .rotator_checks
+        .iter()
+        .copied()
+        .filter(|&t| t >= 7 * 3600)
+        .collect();
+    assert_eq!(
+        misses.len(),
+        2,
+        "ends at the second miss in a row: {misses:?}"
+    );
+}
+
+#[test]
+fn one_missed_rotator_poll_does_not_end_the_wait() {
+    let mut f = Fake::new();
+    // Gone for one poll only, as during a rotator restart.
+    f.rotator_gone = Some((3600, 3600 + 30));
+    f.other_from = Some(2 * 3600);
+    assert_eq!(wait(&unbounded(), &mut f), End::OtherCapacity);
+    assert!(
+        f.rotator_checks.contains(&3600),
+        "the miss was polled: {:?}",
+        f.rotator_checks
+    );
+}
+
+#[test]
+fn a_bounded_or_reset_wait_never_asks_for_the_rotator() {
+    let mut f = Fake::new();
+    f.rotator_gone = Some((0, i64::MAX));
+    assert_eq!(wait(&plan_in(600, Bound::MaxWait), &mut f), End::MaxReached);
+    assert!(f.rotator_checks.is_empty(), "{:?}", f.rotator_checks);
+
+    let mut f = Fake::new();
+    f.rotator_gone = Some((0, i64::MAX));
+    let mut capacity = plan_in(600, Bound::MaxWait);
+    capacity.kind = PlanKind::Capacity;
+    assert_eq!(wait(&capacity, &mut f), End::CapacityExpired);
+    assert!(f.rotator_checks.is_empty(), "{:?}", f.rotator_checks);
+}

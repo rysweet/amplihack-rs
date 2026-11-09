@@ -14,7 +14,7 @@ use super::fsx;
 use super::overflow_inputs::OverflowInputs;
 use super::per_token;
 use super::state::{Ledger, State};
-use super::takeover::{capacity_candidate, profile_check};
+use super::takeover::{capacity_candidate, profile_check, store_rotating};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{
     Limited, Signals, note_key_error, run_attempt, usage_limited,
@@ -484,7 +484,9 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         let Some(wait) = inherited_wait.or_else(|| waiter.blocked_skip()) else {
             return attempt.finish(None);
         };
-        match waiter.after_limit(wait, n, &signals, &probe) {
+        let profile_rotating = switch.as_ref().map(|sw| move || store_rotating(sw.store));
+        let rotating = profile_rotating.as_ref().map(|f| f as &dyn Fn() -> bool);
+        match waiter.after_limit(wait, n, &signals, &probe, rotating) {
             AfterLimit::Finish(code) => return attempt.finish(code),
             AfterLimit::Retry => {
                 attempt.discard();

@@ -34,6 +34,10 @@ pub(super) struct Fake {
     pub(super) capacity_from: Option<i64>,
     /// Virtual second from which another stored login reports capacity.
     pub(super) other_from: Option<i64>,
+    /// Virtual seconds from which the rotator is gone, until it is back.
+    pub(super) rotator_gone: Option<(i64, i64)>,
+    /// Virtual seconds at which the rotator check was asked.
+    pub(super) rotator_checks: Vec<i64>,
 }
 
 impl Fake {
@@ -50,6 +54,8 @@ impl Fake {
             parent_gone_from: None,
             capacity_from: None,
             other_from: None,
+            rotator_gone: None,
+            rotator_checks: Vec::new(),
         }
     }
 
@@ -119,6 +125,14 @@ impl WaitDeps for Fake {
     fn other_capacity(&mut self, start: i64) -> bool {
         assert_eq!(start, T0, "capacity is judged from the wait's start");
         self.other_from.is_some_and(|t| self.elapsed() >= t)
+    }
+
+    fn rotator_running(&mut self) -> bool {
+        let t = self.elapsed();
+        self.rotator_checks.push(t);
+        !self
+            .rotator_gone
+            .is_some_and(|(from, back)| t >= from && t < back)
     }
 
     fn log(&mut self, line: &str) {
