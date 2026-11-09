@@ -805,10 +805,13 @@ fn masking_matcher_allows_the_honest_forms() {
 #[test]
 fn no_recipe_masks_check_exit_status() {
     let mut offenders = Vec::new();
-    let mut entries: Vec<_> = std::fs::read_dir(recipes_dir())
-        .unwrap()
-        .filter_map(Result::ok)
-        .map(|e| e.path())
+    let dir = recipes_dir();
+    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap_or_else(|err| panic!("reading {}: {err}", dir.display()))
+        .map(|e| {
+            e.unwrap_or_else(|err| panic!("reading {}: {err}", dir.display()))
+                .path()
+        })
         .filter(|p| p.extension().is_some_and(|x| x == "yaml" || x == "yml"))
         .collect();
     entries.sort();
