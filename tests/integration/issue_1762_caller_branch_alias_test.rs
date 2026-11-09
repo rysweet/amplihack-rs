@@ -20,6 +20,8 @@
 //!
 //! - `issue_1969_step04.rs`: #1969 caller-branch continuation, the up-front
 //!   refusal, and the cases that keep a fresh branch.
+//! - `issue_1969_alias_caller.rs`: #1969 runs started from inside a #1762
+//!   alias worktree stop before creating anything and never push the alias.
 //! - `issue_1969_publish.rs`: #1969 step 15 first push, explicit refspec and
 //!   ancestry against origin/<TARGET>, never `@{u}`.
 //! - `issue_1969_backstop.rs`: #1969 step 15 default-branch backstop, the
@@ -34,6 +36,8 @@
 mod consumers;
 #[path = "issue_1762_caller_branch_alias/fixture.rs"]
 mod fixture;
+#[path = "issue_1762_caller_branch_alias/issue_1969_alias_caller.rs"]
+mod issue_1969_alias_caller;
 #[path = "issue_1762_caller_branch_alias/issue_1969_backstop.rs"]
 mod issue_1969_backstop;
 #[path = "issue_1762_caller_branch_alias/issue_1969_helpers.rs"]

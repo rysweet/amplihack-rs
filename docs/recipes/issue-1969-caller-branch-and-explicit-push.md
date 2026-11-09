@@ -35,6 +35,7 @@ checkout outside `<main>/worktrees/`).
   - [What reaches the task worktree](#what-reaches-the-task-worktree)
   - [When continuation stops](#when-continuation-stops)
   - [Why the stop hint does not suggest existing_branch](#why-the-stop-hint-does-not-suggest-existing_branch)
+  - [Runs from an alias worktree](#runs-from-an-alias-worktree)
   - [Starting a new branch instead](#starting-a-new-branch-instead)
 - [Run depth](#run-depth)
 - [New branches have no upstream until pushed](#new-branches-have-no-upstream-until-pushed)
@@ -150,6 +151,9 @@ All of the following must hold:
    [`workflow_default_branch.sh`](#the-default-branch-rule-workflow_default_branchsh)
    decides.
 5. The run is a top-level run. See [Run depth](#run-depth).
+6. The branch does not have the #1762 alias form `<B>--wt-<n>`. A top-level
+   run from an alias worktree stops instead; see
+   [Runs from an alias worktree](#runs-from-an-alias-worktree).
 
 In every other case step 4 behaves as before:
 
@@ -160,6 +164,7 @@ In every other case step 4 behaves as before:
 | `repo_path` is a linked worktree on the default branch | A new branch from the base. |
 | `repo_path` is a linked worktree with a detached HEAD | A new branch from the base. |
 | Nested run (depth 2 or more) | A new branch from the base, and the nested-run `INFO` line. |
+| Top-level run in a #1762 alias worktree (`<B>--wt-<n>`) | Step 4 stops before creating anything. See [Runs from an alias worktree](#runs-from-an-alias-worktree). |
 
 ### What reaches the task worktree
 
@@ -209,7 +214,7 @@ The two routes the hint offers are both safe to follow as printed:
   are not touched.
 
 Step 4 also exits 1 before creating anything when the detection helper itself
-fails (exit 2 or more), for example on a branch name that
+fails (exit 2, or 4 or more), for example on a branch name that
 `git check-ref-format --branch` does not print back unchanged:
 
 ```text
@@ -237,6 +242,54 @@ outside `<main>/worktrees/` is tracked in
 step 4 stop hint does not offer the route, and the
 `existing_branch_from_main_clone_reuses_the_caller_worktree_in_place` test
 records why.
+
+### Runs from an alias worktree
+
+#1762 keeps alias worktrees at `<main>/worktrees/<B>--wt-<n>`, on local
+branch `<B>--wt-<n>` tracking `origin/<B>`. An alias publishes to
+`origin/<B>` and is never pushed as a branch of its own. A user who `cd`s into
+a kept alias task worktree and starts a run there is in a linked worktree on
+a feature branch, so rules 1 to 5 would continue `<B>--wt-<n>` as a separate
+branch. The planner would then ask for `origin/<B>--wt-<n>` and print a hint
+to push the alias, and following it would put a second branch, and later a
+second PR, on origin for the same work.
+
+Continuing `<B>` from inside the alias is not done either. The planner's
+reuse pass would pick this same alias worktree as the task worktree, which is
+the #858 hazard: the run would edit and commit in the checkout it was started
+from.
+
+So a top-level run whose branch has the alias form stops before creating
+anything. The form is the one
+[`workflow_remote_branch.sh`](issue-1762-caller-branch-worktree-alias.md)
+maps back to `<B>`: the last `--wt-`, then a number matching
+`^[1-9][0-9]*$`, after a non-empty `<B>`. The upstream configuration is not
+needed, so an alias whose upstream was removed stops too. Names such as
+`feat/x--wt-0`, `feat/x--wt-01` or `feat/x--wt-x` are ordinary branches and
+are continued. Step 4 prints, for an alias of a branch checked out in another
+linked worktree:
+
+```text
+ERROR: repo_path is a #1762 alias worktree: branch 'feat/x--wt-1' is the alias form <branch>--wt-<n> of 'feat/x'. An alias worktree publishes to origin/feat/x and is never pushed or continued as a branch of its own, so step 4 is not continuing it and creates nothing (#1969).
+ERROR: To continue 'feat/x', re-run from '/repo/worktrees/feat/x', which has 'feat/x' checked out. To start a new branch, re-run with -c repo_path='/repo'. Commits made here that are not on origin/feat/x belong there: "git push origin 'HEAD:refs/heads/feat/x'" (#1969, #1762).
+```
+
+The route to continuing `<B>` depends on where `<B>` is checked out:
+
+| `<B>` is checked out in | The hint says | Why it is safe |
+|---|---|---|
+| Another linked worktree | `re-run from '<path>', which has '<B>' checked out` | That worktree is then the caller, so detection continues `<B>` through the planner's checks, which reuse or create an alias. |
+| The main clone | `re-run from the main clone with -c repo_path='<main>' -c existing_branch='<B>'` | The main clone is then the caller and is on `<B>`, so Gate B sends the run to the planner. This is #1762's own route; Gate B reuses a worktree in place only when it is not the caller's. |
+| No worktree | `check '<B>' out in a linked worktree and re-run from there` | As the first row. |
+
+No line names the alias as something to push. Unpushed commits made in the
+alias are published to `origin/<B>` with the printed
+`git push origin 'HEAD:refs/heads/<B>'`; until then the planner's reuse
+check refuses to reuse the alias, so they are not lost. Branch names and
+paths in both lines are single-quoted for the shell.
+
+The stop comes after the depth check. A nested run started in a parent's
+alias task worktree keeps the #1134 behaviour and starts a new branch.
 
 ### Starting a new branch instead
 
@@ -422,6 +475,7 @@ single-quotes the branch name, so it can be pasted into a shell as it stands.
 | Continuing the caller's branch | `INFO: repo_path is a linked worktree on branch '<X>'; continuing caller branch '<X>' (#1969). The task worktree starts from origin/<X>, so only commits pushed there are carried into it. To start a new branch instead, run from the main clone or name a branch with a 'Branch:' line.` |
 | Nested run, branch not continued | `INFO: nested run (depth <N>); not continuing caller branch '<X>' (#1969, #1134). Pass -c existing_branch='<X>' to continue it.` |
 | Continuation stopped before creating anything | `ERROR: step 4 was continuing the caller's branch '<X>' (#1969) and stopped before creating a branch or worktree. Fix the cause above in that worktree and re-run from it, or start a new branch by re-running with -c repo_path=<main clone>. Do not name the branch with -c existing_branch instead: that reuses the caller's worktree as it stands, and step 15 commits and pushes whatever is in it (#858).` |
+| `repo_path` is a #1762 alias worktree | `ERROR: repo_path is a #1762 alias worktree: branch '<B>--wt-<n>' is the alias form <branch>--wt-<n> of '<B>'. ...`, then `ERROR: To continue '<B>', <route>. To start a new branch, re-run with -c repo_path='<main clone>'. Commits made here that are not on origin/<B> belong there: "git push origin 'HEAD:refs/heads/<B>'" (#1969, #1762).` See [Runs from an alias worktree](#runs-from-an-alias-worktree). |
 | The detection helper failed | `ERROR: caller-branch detection failed (workflow_caller_branch.sh exit <rc>; see above) (#1969).` |
 | The detection helper is missing | `WARNING: workflow_caller_branch.sh not found; caller-branch continuation (#1969) disabled. Pass -c existing_branch=<branch> to continue a caller branch.` |
 | The default-branch rule cannot decide | `ERROR: cannot decide whether '<X>' is the default branch (workflow_default_branch.sh exit <rc>) (#1969).`, then the `caller-branch detection failed` line |
@@ -454,7 +508,8 @@ It runs these checks in order and stops at the first that decides:
 | 3 | `git check-ref-format --branch <X>` does not print `<X>` back unchanged | Exit 2 |
 | 4 | `<X>` is a default branch (`workflow_default_branch.sh` exits 0) | Exit 1; the rule helper failing or missing is exit 2 |
 | 5 | `AMPLIHACK_SESSION_DEPTH` is a whole number and is 2 or more | Exit 1, with the nested-run `INFO` line |
-| 6 | Otherwise | Exit 0, `<X>` alone on stdout, the continuation `INFO` line on stderr |
+| 6 | `<X>` has the #1762 alias form `<B>--wt-<n>` | Exit 3, with the two [alias stop](#runs-from-an-alias-worktree) `ERROR` lines and nothing on stdout |
+| 7 | Otherwise | Exit 0, `<X>` alone on stdout, the continuation `INFO` line on stderr |
 
 Step 4 acts on the exit status:
 
@@ -462,7 +517,8 @@ Step 4 acts on the exit status:
 |---|---|
 | 0 | Sets `EXISTING_BRANCH=<X>`, arms the [stop hint](#when-continuation-stops), and continues on the existing-branch path |
 | 1 | Carries on as before: a new branch from the base |
-| 2 or more | Prints the `caller-branch detection failed` line and exits 1 before creating anything |
+| 3 | Exits 1 before creating anything; the helper has already said why and what to run |
+| 2, or 4 or more | Prints the `caller-branch detection failed` line and exits 1 before creating anything |
 
 Example, from the worktree in the [continuation example](#example):
 
@@ -476,8 +532,9 @@ bash "$C" /repo
 # (no output, exit 1: the main clone)
 ```
 
-The helper only reads. It uses `git rev-parse`, `git symbolic-ref` and
-`git check-ref-format`, and the rule helper, and never runs `git status`, so a
+The helper only reads. It uses `git rev-parse`, `git symbolic-ref`,
+`git check-ref-format`, `git worktree list` (for the alias stop's hint), and
+the rule helper, and never runs `git status`, so a
 `core.fsmonitor` hook in the caller's repository is not started. Like the
 other helpers, it starts with `set -euo pipefail`, unsets `GIT_DIR`,
 `GIT_WORK_TREE` and `GIT_INDEX_FILE`, is run with `bash` rather than sourced,
@@ -499,7 +556,13 @@ These still run a bare `git push` when `@{u}` is set, and are not changed by
   `step-20b-push-cleanup` (`workflow-finalize.yaml`). Step 15's `-u` sets the
   correct upstream, `origin/<TARGET>`, earlier in the same run, including on a
   branch created before #1969 whose upstream was `origin/<base>`.
-- `consensus-publish.yaml` and `consensus-pr-feedback.yaml`.
+- `consensus-publish.yaml` and `consensus-pr-feedback.yaml`. These cannot
+  recover from a failed setup push: consensus step 3 now creates branches with
+  `--no-track`, so when its `git push -u` fails or is skipped, the branch has
+  no upstream and the later bare `git pull --rebase && git push` fails too.
+  Before #1969 the same retry failed on the name mismatch with `origin/<base>`.
+  Moving these to an explicit refspec is tracked in
+  [#2075](https://github.com/rysweet/amplihack-rs/issues/2075).
 
 ---
 

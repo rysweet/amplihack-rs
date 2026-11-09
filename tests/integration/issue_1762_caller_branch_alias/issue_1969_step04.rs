@@ -334,36 +334,42 @@ fn refuses_unusable_caller_branch_up_front() {
     }
 }
 
-/// R7, D2: a detection helper that fails (exit 2 or more) stops step 4
-/// before anything is created; so does one whose answer is not a valid
-/// branch name.
+/// R7, D2: a detection helper that fails (exit 2, or 4 or more) stops step 4
+/// before anything is created, with the `detection failed` line; exit 3 (the
+/// alias-worktree stop, whose helper has already printed the reason) stops
+/// the same way without it. So does an answer that is not a valid branch name.
 #[test]
 fn failing_detection_helper_stops_before_anything() {
     let fx = Fx::new();
     let wt = caller_worktree(&fx, true);
-    let home = fx.bundle_with(
-        DETECT,
-        "#!/usr/bin/env bash\necho 'stub: detection failed' >&2\nexit 3\n",
-    );
     let before = snapshot(&fx);
+    for rc in ["2", "4", "3"] {
+        let home = fx.bundle_with(
+            DETECT,
+            &format!("#!/usr/bin/env bash\necho 'stub: detection stopped' >&2\nexit {rc}\n"),
+        );
 
-    let run = step4_from(&fx, &wt, Some("1"), &[], Some(&home));
+        let run = step4_from(&fx, &wt, Some("1"), &[], Some(&home));
 
-    assert_eq!(run.code, Some(1), "{}", run.describe());
-    assert!(
-        run.stderr_line_with(&[
-            "ERROR:",
-            "caller-branch detection failed",
-            "workflow_caller_branch.sh exit 3",
-            "(#1969)"
-        ])
-        .is_some(),
-        "{}",
-        run.describe()
-    );
-    assert!(!run.stdout.contains('{'), "{}", run.describe());
-    assert_eq!(snapshot(&fx), before, "nothing created");
-    assert!(!fx.caller.join("worktrees/feat").exists());
+        assert_eq!(run.code, Some(1), "exit {rc}\n{}", run.describe());
+        let failed = run
+            .stderr_line_with(&[
+                "ERROR:",
+                "caller-branch detection failed",
+                &format!("workflow_caller_branch.sh exit {rc}"),
+                "(#1969)",
+            ])
+            .is_some();
+        assert_eq!(
+            failed,
+            rc != "3",
+            "exit {rc}: the `detection failed` line is for errors, not the alias stop\n{}",
+            run.describe()
+        );
+        assert!(!run.stdout.contains('{'), "exit {rc}\n{}", run.describe());
+        assert_eq!(snapshot(&fx), before, "exit {rc}: nothing created");
+        assert!(!fx.caller.join("worktrees/feat").exists(), "exit {rc}");
+    }
 
     let home = fx.bundle_with(DETECT, "#!/usr/bin/env bash\necho '-oops'\nexit 0\n");
     let run = step4_from(&fx, &wt, Some("1"), &[], Some(&home));

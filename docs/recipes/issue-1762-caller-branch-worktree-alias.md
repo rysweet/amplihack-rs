@@ -258,7 +258,7 @@ Nothing on `origin` is overwritten.
 
 ## Caller-branch continuation and new branches (#1969)
 
-Two #1969 changes touch this path. Each is described in one place, on the
+Three #1969 changes touch this path. Each is described in one place, on the
 #1969 page:
 
 - [Caller-branch continuation](issue-1969-caller-branch-and-explicit-push.md#caller-branch-continuation):
@@ -266,6 +266,11 @@ Two #1969 changes touch this path. Each is described in one place, on the
   takes the alias path above as if `-c existing_branch=<X>` had been given.
   The page covers when it applies, run depth, what reaches the task worktree,
   the stop hint, and why that hint does not suggest `existing_branch`.
+- [Runs from an alias worktree](issue-1969-caller-branch-and-explicit-push.md#runs-from-an-alias-worktree):
+  a top-level run started inside a kept alias worktree `<B>--wt-<n>` stops
+  before creating anything. The alias is never continued or pushed as a
+  branch of its own, and the message names `<B>` and the checkout to re-run
+  from.
 - [New branches have no upstream until pushed](issue-1969-caller-branch-and-explicit-push.md#new-branches-have-no-upstream-until-pushed):
   step 4's create mode uses `--no-track`. Alias branches keep `--track`,
   because their upstream is how the resolver maps them back to `<B>`.

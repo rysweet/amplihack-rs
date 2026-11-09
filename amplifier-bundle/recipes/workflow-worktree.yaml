@@ -150,6 +150,7 @@ steps:
                  || { echo "ERROR: caller-branch detection returned an invalid branch name (#1969)." >&2; exit 1; }
                EXISTING_BRANCH="$CALLER_BRANCH"; trap caller_stop EXIT ;;
             1) CALLER_BRANCH="" ;;
+            3) exit 1 ;;  # repo_path is a #1762 alias worktree; the helper said why and what to run
             *) echo "ERROR: caller-branch detection failed (workflow_caller_branch.sh exit $CALLER_RC; see above) (#1969)." >&2; exit 1 ;;
           esac
         fi

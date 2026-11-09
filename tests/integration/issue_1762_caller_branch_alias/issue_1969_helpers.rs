@@ -4,7 +4,8 @@
 //!   stdout for a top-level run in a linked worktree on a non-default branch;
 //!   exit 1 for the main clone, a detached HEAD, a default branch or a nested
 //!   run (depth >= 2, with the D1 INFO line); exit 2 for a usage error or a
-//!   branch name that `check-ref-format --branch` does not print back.
+//!   branch name that `check-ref-format --branch` does not print back; exit 3
+//!   for a #1762 alias worktree (`issue_1969_alias_caller.rs`).
 //! - `workflow_push_plan.sh <target>` (D5): one classification line against
 //!   `refs/remotes/origin/<target>`, never against `@{u}`, with fully
 //!   qualified refs so that a tag or local branch called `origin/<target>`
