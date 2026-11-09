@@ -4,8 +4,8 @@ description: >-
   restore), and after a miss either saves the binary that Setup sccache
   downloaded or turns RUSTC_WRAPPER off with one warning (phase finish), so no
   job depends on the download (issue #2105). The logic and the pinned hashes
-  are in .github/scripts/sccache-bin.sh; see the "sccache binary" notes in
-  .github/workflows/ci.yml.
+  are in .github/scripts/sccache-bin.sh; see "sccache binary" in
+  docs/reference/ci-pipeline.md.
 inputs:
   phase:
     description: restore (before Setup sccache) or finish (after it).

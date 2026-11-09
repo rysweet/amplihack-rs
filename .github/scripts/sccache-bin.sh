@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Get the sccache binary from the Actions cache, or build without it
-# (issue #2105). Called by .github/actions/sccache-bin; see the "sccache
-# binary" notes in .github/workflows/ci.yml and docs/reference/ci-pipeline.md.
+# (issue #2105). Called by .github/actions/sccache-bin; see "sccache binary"
+# in docs/reference/ci-pipeline.md.
 #
 #   sccache-bin.sh restore   check a restored cache entry; output hit=true|false
 #   sccache-bin.sh finish    after a miss: keep a downloaded binary (save=true)

@@ -191,7 +191,7 @@ jobs:
       # is set job-wide above, so any cargo running before this step dies with
       # "could not execute process `sccache`". That defect turned Lint & Format
       # red on main and blocked every PR until #1341.
-      # sccache binary: cache first, one download on a miss, else no wrapper (#2105); see the "sccache binary" notes in ci.yml.
+      # sccache binary: cache first, one download on a miss, else no wrapper (#2105); see "sccache binary" in docs/reference/ci-pipeline.md.
       - name: Restore sccache binary
         id: sccache-bin
         uses: ./.github/actions/sccache-bin

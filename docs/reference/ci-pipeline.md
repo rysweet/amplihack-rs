@@ -389,10 +389,10 @@ Jobs that set `RUSTC_WRAPPER: sccache` get the binary from the Actions cache
 usable binary the job writes `RUSTC_WRAPPER=`, skips the disk-cache steps and
 `sccache --show-stats`, prints
 `::warning::sccache binary unavailable (cache miss and download failed); building without RUSTC_WRAPPER`
-and builds uncached. There is no retry, sleep or timeout (issue #2105). Test
-the fallback with
-`gh workflow run ci.yml --ref <branch> -f simulate_sccache_missing=true`.
-Details are in the "sccache binary" notes at the top of `.github/workflows/ci.yml`.
+and builds uncached. There is no retry, sleep or timeout: a failed download is
+handled by building uncached, not by waiting (issue #2105). Test the fallback
+with `gh workflow run ci.yml --ref <branch> -f simulate_sccache_missing=true`;
+the dispatch input is declared in `.github/workflows/ci.yml`.
 
 ## Recipe runner pin ancestry
 
