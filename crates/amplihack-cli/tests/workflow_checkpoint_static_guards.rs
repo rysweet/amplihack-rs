@@ -721,6 +721,49 @@ fn mapping_table_covers_every_python_method_with_one_existing_rust_test() {
     );
 }
 
+// C-g: reinstated from the PR #2020 work list with the change that makes them
+// pass. The pinned copy is committed in two parts (500 KB hook limit).
+const PINNED_INVENTORY_PARTS: [&str; 2] = [
+    "crates/amplihack-cli/tests/fixtures/workflow_checkpoint/inventory.json.part-1",
+    "crates/amplihack-cli/tests/fixtures/workflow_checkpoint/inventory.json.part-2",
+];
+const CC_INVENTORY_SHA256: &str =
+    "0c3e19b0c72c92a3bd2a140acedcf03f311cb11e9b2c336abf8d3797cc6c788f";
+
+#[test]
+fn pinned_inventory_is_committed_with_cc_s_hash() {
+    use sha2::{Digest, Sha256};
+    let mut bytes = Vec::new();
+    for part in PINNED_INVENTORY_PARTS {
+        bytes.extend(
+            fs::read(root().join(part)).unwrap_or_else(|e| panic!("{part} must be committed: {e}")),
+        );
+    }
+    let hex: String = Sha256::digest(&bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    assert_eq!(hex, CC_INVENTORY_SHA256);
+    let doc: serde_json::Value = serde_json::from_slice(&bytes).expect("inventory parses");
+    assert!(doc.is_object(), "inventory.json is a JSON object");
+}
+
+/// The validator reads only the pinned copy: no absolute host path and
+/// no "when readable" skip branch.
+#[test]
+fn the_validator_reads_the_pinned_copy_and_never_a_host_path() {
+    let src = read("crates/amplihack-cli/tests/workflow_checkpoint_inventory.rs");
+    assert!(
+        !src.contains("\"/d0/"),
+        "absolute /d0 path in the validator"
+    );
+    assert!(src.contains("inventory.json"));
+    assert!(
+        !src.contains("when_readable"),
+        "the cross-check may not skip when the file is missing"
+    );
+}
+
 #[test]
 fn the_five_controls_are_no_longer_ignored_and_every_ignore_has_a_reason() {
     let ck = read("crates/amplihack-workflows/tests/canonical_staging_checkpoint_test.rs");

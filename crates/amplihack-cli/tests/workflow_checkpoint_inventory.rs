@@ -2,7 +2,7 @@
 //!
 //! Three stores, all read-only:
 //!
-//! * `inventory_ids.json`: derived from cc's
+//! * `inventory_ids.json`: derived from the pinned copy of cc's
 //!   `pr2020-rust-reference-inventory-918c/inventory.json` (sha256
 //!   0c3e19b0…6c788f). IDs, summary counts and cc's sha256 only.
 //! * `inventory_map.toml`: one row per reference ID, each resolving to
@@ -11,8 +11,10 @@
 //! * the Rust sources, scanned structurally. Execution is proved by the real
 //!   `cargo test` run, not here.
 //!
-//! The validator always runs against the committed IDs. When cc's file is
-//! readable it is also cross-checked; no path skips.
+//! The validator always runs against the committed IDs, and those IDs are
+//! cross-checked against the pinned copy of cc's inventory
+//! (`inventory.json.part-1` + `part-2`). A missing pinned file fails; no path
+//! skips.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -21,7 +23,11 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256};
 
 const DIR: &str = "crates/amplihack-cli/tests/fixtures/workflow_checkpoint";
-const CC_INVENTORY: &str = "/d0/ryan/cc-staging1554-parent-20261105/control/pr2020-rust-reference-inventory-918c/inventory.json";
+/// cc's inventory, pinned in the repository. It is committed in two parts,
+/// split at a line boundary, because it exceeds the 500 KB
+/// check-added-large-files limit; the concatenation is checked against
+/// `CC_SHA256`.
+const PINNED_INVENTORY_PARTS: [&str; 2] = ["inventory.json.part-1", "inventory.json.part-2"];
 const CC_SHA256: &str = "0c3e19b0c72c92a3bd2a140acedcf03f311cb11e9b2c336abf8d3797cc6c788f";
 const DOC: &str = "docs/reference/workflow-checkpoint-cli.md";
 
@@ -639,19 +645,44 @@ fn inventory_ids_json_is_derived_from_cc_and_has_the_declared_counts() {
     assert!(ids.procedural.iter().all(|p| p.contains("@L")));
 }
 
+/// The pinned copy of cc's inventory, reassembled. Panics (fails the test)
+/// when a part is missing; there is no skip.
+fn pinned_inventory() -> Vec<u8> {
+    let mut raw = Vec::new();
+    for part in PINNED_INVENTORY_PARTS {
+        let path = root().join(DIR).join(part);
+        raw.extend(fs::read(&path).unwrap_or_else(|e| {
+            panic!("pinned inventory {} must be committed: {e}", path.display())
+        }));
+    }
+    raw
+}
+
 #[test]
-fn inventory_ids_json_matches_cc_inventory_when_readable() {
+fn pinned_inventory_parts_reassemble_to_cc_s_sha256() {
+    assert_eq!(
+        sha256(&pinned_inventory()),
+        CC_SHA256,
+        "pinned inventory changed"
+    );
+    for part in PINNED_INVENTORY_PARTS {
+        let bytes = fs::read(root().join(DIR).join(part)).unwrap();
+        assert!(
+            bytes.len() < 500 * 1024,
+            "{part} exceeds check-added-large-files"
+        );
+        assert_eq!(bytes.last(), Some(&b'\n'), "{part} ends at a line boundary");
+    }
+}
+
+#[test]
+fn inventory_ids_json_matches_the_pinned_cc_inventory() {
     let ids = load_ids(
         &fs::read_to_string(root().join(DIR).join("inventory_ids.json"))
             .expect("commit the derived inventory_ids.json"),
     );
-    // cc's file is local-only (0400, outside the repository). In CI the
-    // committed sha256 pin above is the check; here it is the same check
-    // plus an exact ID comparison.
-    let Ok(raw) = fs::read(CC_INVENTORY) else {
-        assert_eq!(ids.source_sha256, CC_SHA256);
-        return;
-    };
+    assert_eq!(ids.source_sha256, CC_SHA256);
+    let raw = pinned_inventory();
     assert_eq!(sha256(&raw), CC_SHA256, "cc's inventory changed");
     let cc: serde_json::Value = serde_json::from_slice(&raw).unwrap();
     let tests: BTreeSet<String> = cc["python_assets"]
