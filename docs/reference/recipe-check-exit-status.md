@@ -22,7 +22,7 @@ what to do from the exit code.
 - [consensus-merge-finalize: step14-check-ci](#consensus-merge-finalize-step14-check-ci)
 - [autodrive-merge-evidence: CI read](#autodrive-merge-evidence-ci-read)
 - [Value conventions](#value-conventions)
-- [The guard test](#the-guard-test)
+- [The tests](#the-tests)
 - [Writing a new check step](#writing-a-new-check-step)
 - [Related](#related)
 
@@ -191,12 +191,11 @@ or garbled field routes to the fix or diagnosis step instead of skipping it.
 The JSON is built with `printf` from exit codes, fixed literals and the
 validated log path. Check output and `gh` output never go into it.
 
-## The guard test
+## The tests
 
+The tests in
 `crates/amplihack-cli/tests/issue_2190_recipe_steps_report_real_exit_status.rs`
-holds two kinds of test.
-
-**Behaviour tests** take the real step command from the YAML, run it under
+take the real step command from the YAML, run it under
 `env_clear()` with stub tools first on `PATH` in a temporary directory, and
 check the JSON and stderr:
 
@@ -218,21 +217,10 @@ never runs. `HOME` is a temporary directory and git runs with
 `GIT_CONFIG_NOSYSTEM=1` and `GIT_TERMINAL_PROMPT=0`. No case sleeps or uses
 the network.
 
-**Scan test** `no_recipe_masks_check_exit_status` reads every
-`amplifier-bundle/recipes/*.yaml` file. On each line that runs a check
-command — `cargo test`, `cargo clippy`, `cargo fmt --check`, `npm test`,
-`pytest`, `pre-commit run`, `gh pr checks` — it skips comments, cuts the line
-at the first single `|` after the command, and fails if the rest contains
-`2>/dev/null`, `&>/dev/null`, `|| echo`, `|| true` or `|| :`. It reports
-every offending `file:line` at once. `>&2`, `2>&1` and `>>"$LOG"` are
-allowed.
-
-The scan does not catch `>/dev/null 2>&1` or masking split across lines.
-
 Run the tests with:
 
 ```bash
-cargo test -p amplihack-cli --test issue_2190_recipe_steps_report_real_exit_status
+cargo test -p amplihack-cli --test cli_integration issue_2190_recipe_steps_report_real_exit_status::
 ```
 
 ## Writing a new check step
