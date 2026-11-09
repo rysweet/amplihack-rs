@@ -144,6 +144,7 @@ fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     let spare = Probed {
         reading: Reading::Measured {
@@ -156,6 +157,7 @@ fn work_out_spare_free(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErr
         still_running: false,
         observed_at: None,
         carried: false,
+        passive: false,
     };
     decide_measured(ctx, snap, work, vec![(n("spare"), spare)], now())
 }

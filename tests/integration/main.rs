@@ -506,3 +506,11 @@ mod issue_1764_git_never_prompts;
 // `cargo test --workspace` covers the shell change as well as CI's lint job.
 #[path = "issue_1771_precommit_symlinked_caches_test.rs"]
 mod issue_1771_precommit_symlinked_caches;
+
+// Issue #1966: is_critical_code is a required caller input. consensus-workflow
+// step 0 and consensus-tdd-impl reject a missing or malformed value before any
+// route, and the route gate fails unless exactly one route completed. Static
+// checks, helper unit tests in bash, and the real recipes through
+// recipe-runner-rs with agent steps stubbed, all under isolated(..).
+#[path = "issue_1966_consensus_criticality.rs"]
+mod issue_1966_consensus_criticality;
