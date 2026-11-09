@@ -83,6 +83,7 @@ fn p(s: Option<u8>, w: u8, w_reset: Option<i64>) -> Point {
         w_reset,
         s_reset: None,
         no_session_limit: false,
+        passive: false,
     }
 }
 
@@ -1233,4 +1234,528 @@ fn a_row_whose_direct_read_failed_is_unknown_and_in_no_figure() {
         v["unknown"],
         serde_json::json!(["expired", "slow", "unsaved"])
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1970: a stale passive reading is never written as new history
+// ---------------------------------------------------------------------------
+//
+// A passive reading is the figure Claude's status line stored. A cached
+// figure that reappears after a higher one made the week look as if it fell
+// and rose again, and each fall was counted as a reset. Before a line is
+// written, each passive reading is compared with that login's newest
+// reading in the history. It is stale when (1) its week has ended
+// (`w_reset` at or before the line's `at`), (2) it is the same week within
+// `SAME_WEEK_SLACK` and its `w` is lower, or (3) its week is more than
+// `SAME_WEEK_SLACK` earlier than the recorded one. A stale reading is
+// replaced by the newest recorded reading while that one's week has not
+// ended, so the login, which is one in use, stays in the line; otherwise
+// its login is listed as unknown.
+
+use super::usage_history::{SAME_WEEK_SLACK, stale};
+
+/// The recorded week in these tests resets on 2026-11-04T16:15:00Z.
+const WEEK: i64 = T + 5 * DAY;
+
+fn pp(w: u8, w_reset: Option<i64>) -> Point {
+    Point {
+        passive: true,
+        ..p(Some(10), w, w_reset)
+    }
+}
+
+#[test]
+fn the_same_week_slack_is_one_hour() {
+    // Pinned: the reference says "within one hour of each other".
+    assert_eq!(SAME_WEEK_SLACK, 3600);
+}
+
+#[test]
+fn a_passive_reading_whose_week_has_ended_is_stale_even_with_no_history() {
+    assert!(stale(None, &pp(40, Some(T)), T), "w_reset at the line's at");
+    assert!(stale(None, &pp(40, Some(T - 120)), T));
+    assert!(!stale(None, &pp(40, Some(T + 1)), T));
+    let prev = p(Some(1), 10, Some(T - 60));
+    assert!(stale(Some(&prev), &pp(90, Some(T - 60)), T));
+}
+
+#[test]
+fn a_lower_passive_reading_in_the_same_week_is_stale() {
+    let prev = p(Some(1), 50, Some(WEEK));
+    assert!(stale(Some(&prev), &pp(38, Some(WEEK)), T));
+    assert!(stale(Some(&prev), &pp(49, Some(WEEK)), T));
+}
+
+#[test]
+fn an_equal_or_higher_passive_reading_in_the_same_week_is_not_stale() {
+    let prev = p(Some(1), 50, Some(WEEK));
+    assert!(!stale(Some(&prev), &pp(50, Some(WEEK)), T));
+    assert!(!stale(Some(&prev), &pp(52, Some(WEEK)), T));
+}
+
+#[test]
+fn reset_times_up_to_the_slack_apart_are_the_same_week() {
+    let prev = p(Some(1), 50, Some(WEEK));
+    for d in [SAME_WEEK_SLACK, -SAME_WEEK_SLACK, 1, -1] {
+        assert!(stale(Some(&prev), &pp(38, Some(WEEK + d)), T), "{d}");
+        assert!(!stale(Some(&prev), &pp(55, Some(WEEK + d)), T), "{d}");
+    }
+}
+
+#[test]
+fn a_passive_reading_from_an_earlier_week_is_stale_whatever_its_figure() {
+    let prev = p(Some(1), 5, Some(WEEK));
+    let earlier = WEEK - SAME_WEEK_SLACK - 1;
+    assert!(stale(Some(&prev), &pp(90, Some(earlier)), T));
+    assert!(stale(Some(&prev), &pp(3, Some(WEEK - 7 * DAY)), T));
+}
+
+#[test]
+fn a_passive_reading_from_a_later_week_is_not_stale() {
+    // The week reset since the recorded reading: a lower figure is the new
+    // week's, not a stale one.
+    let prev = p(Some(1), 90, Some(WEEK));
+    assert!(!stale(
+        Some(&prev),
+        &pp(4, Some(WEEK + SAME_WEEK_SLACK + 1)),
+        T
+    ));
+    assert!(!stale(Some(&prev), &pp(4, Some(WEEK + 7 * DAY)), T));
+}
+
+#[test]
+fn an_unknown_reset_on_either_side_is_never_stale_unless_the_week_ended() {
+    // The passive reading's week has not ended, so rule 1 does not apply.
+    let known = p(Some(1), 50, Some(WEEK));
+    let unknown = p(Some(1), 50, None);
+    assert!(!stale(Some(&known), &pp(38, None), T), "own reset unknown");
+    assert!(!stale(Some(&unknown), &pp(38, None), T), "both unknown");
+    assert!(
+        !stale(Some(&unknown), &pp(38, Some(WEEK)), T),
+        "recorded reset unknown: only rule 1"
+    );
+    assert!(!stale(None, &pp(38, None), T), "no history, reset unknown");
+    // Rule 1 still applies when only the recorded reset is unknown.
+    assert!(stale(Some(&unknown), &pp(38, Some(T - 1)), T));
+}
+
+#[test]
+fn stale_does_not_panic_on_extreme_resets() {
+    let extremes = [i64::MIN, i64::MIN + 1, -1, 0, 1, i64::MAX - 1, i64::MAX];
+    for &a in &extremes {
+        for &b in &extremes {
+            for &at in &extremes {
+                let prev = p(Some(1), 50, Some(a));
+                let _ = stale(Some(&prev), &pp(38, Some(b)), at);
+                let _ = stale(Some(&prev), &pp(38, None), at);
+                let _ = stale(None, &pp(38, Some(b)), at);
+                let _ = stale(Some(&p(Some(1), 50, None)), &pp(38, Some(b)), at);
+            }
+        }
+    }
+}
+
+#[test]
+fn from_rows_marks_passive_readings_and_only_those() {
+    let rows = vec![
+        passive("cached", 10.0, 20.0, 30),
+        row("direct", report(UsageState::Ok, Some(12.0), Some(22.0))),
+    ];
+    let s = from_rows(T, T, &rows, None).unwrap();
+    assert!(s.points["cached"].passive);
+    assert!(!s.points["direct"].passive);
+}
+
+#[test]
+fn passive_is_never_written_and_parses_false() {
+    let direct = entry(T, &[("a", p(Some(3), 40, Some(WEEK)))]);
+    let cached = entry(T, &[("a", pp(40, Some(WEEK)))]);
+    let mut cached_s3 = cached.clone();
+    cached_s3.profiles.get_mut("a").unwrap().s = Some(3);
+    assert_eq!(to_line(&cached_s3), to_line(&direct), "byte-identical");
+    assert!(!to_line(&cached_s3).contains("passive"));
+    let back = parse_line(&to_line(&cached_s3), T).unwrap();
+    assert!(!back.profiles["a"].passive);
+    assert_eq!(back, direct);
+}
+
+#[test]
+fn a_history_line_cannot_mark_a_point_passive() {
+    let e = parse_line(
+        r#"{"at":"2026-10-30T16:15:00Z","profiles":{"a":{"s":1,"w":4,"w_reset":null,"passive":true}},"passive":true}"#,
+        T,
+    )
+    .unwrap();
+    assert!(!e.profiles["a"].passive);
+    assert_eq!(e.profiles["a"].w, 4);
+}
+
+#[test]
+fn an_older_line_still_parses_unchanged() {
+    let line = r#"{"at":"2026-10-30T16:15:00Z","profiles":{"a":{"s":5,"w":10,"w_reset":"2026-11-04T16:15:00Z"}}}"#;
+    let e = parse_line(line, T).unwrap();
+    assert_eq!(e.profiles["a"], p(Some(5), 10, Some(T + 5 * DAY)));
+    assert_eq!(to_line(&e), line);
+}
+
+#[cfg(unix)]
+mod stale_file {
+    use super::super::usage_history::{
+        Entry, FILE, Point, STALE_LOOKBACK, Writer, append_with, parse_line, read_all, to_line,
+    };
+    use super::{DAY, HOUR, T, WEEK, entry, p, pp};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+
+    struct Root {
+        _t: tempfile::TempDir,
+        root: PathBuf,
+        state: PathBuf,
+    }
+
+    impl Root {
+        fn new() -> Self {
+            let t = tempfile::tempdir().unwrap();
+            let root = t.path().to_path_buf();
+            let state = root.join(".auto-switch.d");
+            fs::create_dir(&state).unwrap();
+            fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
+            Self { _t: t, root, state }
+        }
+
+        fn history(&self) -> PathBuf {
+            self.state.join(FILE)
+        }
+
+        fn lines(&self) -> Vec<String> {
+            fs::read_to_string(self.history())
+                .unwrap_or_default()
+                .lines()
+                .map(str::to_string)
+                .collect()
+        }
+
+        fn seed(&self, body: &str) {
+            fs::write(self.history(), body).unwrap();
+            fs::set_permissions(self.history(), fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        /// Appends with no credential variable, whatever the test's own
+        /// environment holds.
+        fn append(&self, e: &Entry, now: i64) {
+            append_with(&self.root, e, now, None).unwrap();
+        }
+
+        /// The last line, read back.
+        fn last(&self, now: i64) -> Entry {
+            read_all(&self.root, now).0.pop().expect("a line")
+        }
+    }
+
+    fn by(w: Writer, at: i64, points: &[(&str, Point)], unknown: &[&str]) -> Entry {
+        Entry {
+            by: Some(w),
+            unknown: unknown.iter().map(|n| n.to_string()).collect(),
+            ..entry(at, points)
+        }
+    }
+
+    #[test]
+    fn a_stale_passive_reading_is_replaced_by_the_recorded_one() {
+        let r = Root::new();
+        r.append(
+            &by(
+                Writer::Usage,
+                T - HOUR,
+                &[("work", p(Some(1), 50, Some(WEEK)))],
+                &[],
+            ),
+            T - HOUR,
+        );
+
+        // A cached 38 for the same week: the recorded reading, session
+        // figure and reset included, is written in its place, and the login
+        // is not unknown. The other login's passive reading is kept.
+        r.append(
+            &by(
+                Writer::Rotate,
+                T,
+                &[("work", pp(38, Some(WEEK))), ("home", pp(20, Some(WEEK)))],
+                &[],
+            ),
+            T,
+        );
+        let e = r.last(T);
+        assert_eq!(e.at, T);
+        assert_eq!(e.profiles["work"], p(Some(1), 50, Some(WEEK)));
+        assert_eq!(e.profiles["home"].w, 20);
+        assert!(e.unknown.is_empty(), "{:?}", e.unknown);
+        assert!(!r.lines().last().unwrap().contains(r#""w":38"#));
+
+        // A passive 52 for the same week is written.
+        r.append(
+            &by(Writer::Rotate, T + 60, &[("work", pp(52, Some(WEEK)))], &[]),
+            T + 60,
+        );
+        let e = r.last(T + 60);
+        assert_eq!(e.profiles["work"].w, 52);
+        assert!(e.unknown.is_empty());
+
+        // A reading taken during the run is never filtered, even lower.
+        r.append(
+            &by(
+                Writer::Usage,
+                T + 120,
+                &[("work", p(Some(1), 38, Some(WEEK)))],
+                &[],
+            ),
+            T + 120,
+        );
+        assert_eq!(r.last(T + 120).profiles["work"].w, 38);
+        assert_eq!(r.lines().len(), 4);
+    }
+
+    #[test]
+    fn the_unknown_list_stays_sorted_without_duplicates() {
+        let r = Root::new();
+        r.append(
+            &entry(T - HOUR, &[("mid", p(Some(1), 50, Some(T - 120)))]),
+            T - HOUR,
+        );
+        // `mid`'s passive reading is from a week that ended, and the
+        // recorded one is too: nothing known is left, so it is unknown.
+        r.append(
+            &by(
+                Writer::Rotate,
+                T,
+                &[("mid", pp(38, Some(T - 60)))],
+                &["zed", "alpha"],
+            ),
+            T,
+        );
+        let e = r.last(T);
+        assert!(e.profiles.is_empty());
+        assert_eq!(e.unknown, ["alpha", "mid", "zed"]);
+    }
+
+    #[test]
+    fn a_passive_reading_with_no_history_is_kept_unless_its_week_has_ended() {
+        let r = Root::new();
+        r.append(&entry(T, &[("work", pp(20, Some(T + DAY)))]), T);
+        assert_eq!(r.last(T).profiles["work"].w, 20);
+
+        let r = Root::new();
+        r.append(&entry(T, &[("work", pp(20, Some(T - 60)))]), T);
+        let e = r.last(T);
+        assert!(e.profiles.is_empty());
+        assert_eq!(e.unknown, ["work"]);
+
+        // A recorded reading with no reset time: only the first rule
+        // applies, so a lower passive reading is written.
+        let r = Root::new();
+        r.append(
+            &entry(T - HOUR, &[("work", p(Some(1), 50, None))]),
+            T - HOUR,
+        );
+        r.append(&entry(T, &[("work", pp(38, Some(WEEK)))]), T);
+        assert_eq!(r.last(T).profiles["work"].w, 38);
+    }
+
+    #[test]
+    fn the_newest_recorded_reading_is_the_one_compared() {
+        // 30, then 40 in the same week: a passive 35 is below the newest
+        // reading, so it is stale, though it is above the older one.
+        let r = Root::new();
+        r.append(
+            &entry(T - 3 * HOUR, &[("work", p(Some(1), 30, Some(WEEK)))]),
+            T - 3 * HOUR,
+        );
+        r.append(
+            &entry(T - HOUR, &[("work", p(Some(1), 40, Some(WEEK)))]),
+            T - HOUR,
+        );
+        r.append(&entry(T, &[("work", pp(35, Some(WEEK)))]), T);
+        let e = r.last(T);
+        assert_eq!(e.profiles["work"].w, 40, "the newest, not the older 30");
+        assert!(e.unknown.is_empty());
+
+        // An older 60 from the last week, then 30 in this one: a passive
+        // 35 is above the newest reading and is written.
+        let r = Root::new();
+        r.append(
+            &entry(
+                T - 3 * HOUR,
+                &[("work", p(Some(1), 60, Some(WEEK - 7 * DAY)))],
+            ),
+            T - 3 * HOUR,
+        );
+        r.append(
+            &entry(T - HOUR, &[("work", p(Some(1), 30, Some(WEEK)))]),
+            T - HOUR,
+        );
+        r.append(&entry(T, &[("work", pp(35, Some(WEEK)))]), T);
+        assert_eq!(r.last(T).profiles["work"].w, 35);
+    }
+
+    #[test]
+    fn a_stale_passive_reading_is_filtered_when_the_history_is_rewritten() {
+        let r = Root::new();
+        let old = to_line(&entry(T - 9 * DAY, &[("work", p(Some(1), 5, None))]));
+        let kept = to_line(&entry(T - HOUR, &[("work", p(Some(1), 50, Some(WEEK)))]));
+        r.seed(&format!("{old}\n{kept}\n"));
+        r.append(
+            &by(Writer::Rotate, T, &[("work", pp(38, Some(WEEK)))], &[]),
+            T,
+        );
+        let lines = r.lines();
+        assert_eq!(lines.len(), 2, "the over-age line was trimmed: {lines:?}");
+        assert_eq!(lines[0], kept);
+        let e = parse_line(&lines[1], T).unwrap();
+        assert_eq!(e.profiles["work"].w, 50);
+        assert!(e.unknown.is_empty());
+    }
+
+    /// A line of about 1 KiB holding 20 other logins.
+    fn padding(at: i64) -> String {
+        let names: Vec<String> = (0..20).map(|i| format!("padding-number-{i:02}")).collect();
+        let points: Vec<(&str, Point)> = names
+            .iter()
+            .map(|n| (n.as_str(), p(Some(1), 1, Some(WEEK))))
+            .collect();
+        to_line(&entry(at, &points))
+    }
+
+    #[test]
+    fn the_lookback_is_256_kib() {
+        assert_eq!(STALE_LOOKBACK, 256 * 1024);
+    }
+
+    #[test]
+    fn the_filter_reads_only_the_lookback() {
+        let work = to_line(&entry(
+            T - 2 * HOUR,
+            &[("work", p(Some(1), 50, Some(WEEK)))],
+        ));
+        let pad_len = padding(T).len() + 1;
+        let n = usize::try_from(STALE_LOOKBACK).unwrap() / pad_len + 8;
+
+        // The recorded 50 is further back than the lookback: the passive 38
+        // is compared with nothing and is written.
+        let r = Root::new();
+        let mut body = format!("{work}\n");
+        for i in 0..n {
+            body.push_str(&padding(T - 2 * HOUR + 1 + i as i64));
+            body.push('\n');
+        }
+        r.seed(&body);
+        r.append(&entry(T, &[("work", pp(38, Some(WEEK)))]), T);
+        assert_eq!(r.last(T).profiles["work"].w, 38);
+
+        // Within the lookback it is found and the 38 is replaced by it.
+        let r = Root::new();
+        let mut body = String::new();
+        for i in 0..8 {
+            body.push_str(&padding(T - 3 * HOUR + i));
+            body.push('\n');
+        }
+        body.push_str(&format!("{work}\n"));
+        r.seed(&body);
+        r.append(&entry(T, &[("work", pp(38, Some(WEEK)))]), T);
+        let e = r.last(T);
+        assert_eq!(e.profiles["work"].w, 50);
+        assert!(e.unknown.is_empty());
+    }
+
+    #[test]
+    fn an_unreadable_recorded_line_is_not_compared() {
+        // A recorded figure out of range is dropped by the parser and gives
+        // no reading to compare with.
+        let r = Root::new();
+        r.seed(&format!(
+            "{}\n{{\"at\":\"2026-10-30T15:15:00Z\",\"profiles\":{{\"work\":{{\"w\":500}}}}}}\n",
+            to_line(&entry(T - 2 * HOUR, &[("other", p(Some(1), 1, None))]))
+        ));
+        r.append(&entry(T, &[("work", pp(38, Some(WEEK)))]), T);
+        assert_eq!(r.last(T).profiles["work"].w, 38);
+    }
+
+    #[test]
+    fn a_passive_reading_from_an_ended_or_earlier_week_takes_the_recorded_figure() {
+        // Rule 1: the passive reading's week ended at T - 60, but the
+        // recorded 50 is of the week now running, so it is written.
+        let r = Root::new();
+        r.append(
+            &entry(T - HOUR, &[("work", p(Some(1), 50, Some(WEEK)))]),
+            T - HOUR,
+        );
+        r.append(&entry(T, &[("work", pp(90, Some(T - 60)))]), T);
+        assert_eq!(r.last(T).profiles["work"], p(Some(1), 50, Some(WEEK)));
+
+        // Rule 3: a figure from the week before, however high, is replaced.
+        let r = Root::new();
+        r.append(
+            &entry(T - HOUR, &[("work", p(Some(1), 5, Some(WEEK)))]),
+            T - HOUR,
+        );
+        r.append(&entry(T, &[("work", pp(90, Some(WEEK - 7 * DAY)))]), T);
+        assert_eq!(r.last(T).profiles["work"].w, 5);
+
+        // Rule 1 with a recorded reading whose week has ended too: nothing
+        // known is left, so the login is unknown.
+        let r = Root::new();
+        r.append(
+            &entry(T - HOUR, &[("work", p(Some(1), 50, Some(T - 120)))]),
+            T - HOUR,
+        );
+        r.append(&entry(T, &[("work", pp(90, Some(T - 60)))]), T);
+        let e = r.last(T);
+        assert!(e.profiles.is_empty());
+        assert_eq!(e.unknown, ["work"]);
+    }
+
+    #[test]
+    fn rotate_status_keeps_a_login_whose_passive_reading_was_stale() {
+        use super::super::capacity_summary::status_line;
+        use super::super::capacity_weight::Weights;
+        // `profile usage` read both logins 5 h and 1 h ago. Then a rotator
+        // cycle got a cached 38 for `work`, which is in use and at 50.
+        let r = Root::new();
+        let both = |w| {
+            [
+                ("work", p(Some(1), w, Some(WEEK))),
+                ("home", p(Some(1), 20, Some(WEEK))),
+            ]
+        };
+        r.append(
+            &by(Writer::Usage, T - 5 * HOUR, &both(40), &[]),
+            T - 5 * HOUR,
+        );
+        r.append(&by(Writer::Usage, T - HOUR, &both(50), &[]), T - HOUR);
+        r.append(
+            &by(
+                Writer::Rotate,
+                T,
+                &[("work", pp(38, Some(WEEK))), ("home", pp(20, Some(WEEK)))],
+                &[],
+            ),
+            T,
+        );
+        let (all, warning) = read_all(&r.root, T + 60);
+        assert_eq!(warning, None);
+        let (newest, earlier) = all.split_last().unwrap();
+        assert_eq!(newest.by, Some(Writer::Rotate));
+        let line = status_line(newest, earlier, &Weights::default(), 95, T + 60);
+
+        // The cycle read every login, so the line says none was left out
+        // and none is unknown. Headroom counts `work` at its recorded 50,
+        // not the cached 38: (50 + 80) points of 2 logins. Its runway is
+        // its own: 10 points used over 5 h, 0.02 login-weeks an hour, and
+        // 1.30 login-weeks of headroom last about 65 h.
+        assert_eq!(
+            line,
+            "capacity: headroom 1.30 login-weeks of 2 (65%), usable 2 of 2 logins, \
+             runway ~65 h (as of 2026-10-30T16:15:00Z, 1m ago, rotate cycle: probed profiles only)"
+        );
+    }
 }

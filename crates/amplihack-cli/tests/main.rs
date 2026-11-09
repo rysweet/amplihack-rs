@@ -293,6 +293,8 @@ mod issue_1973_wait_helpers;
 mod issue_1979_crusty_minor_followups;
 #[path = "issue_1985_codex_agent_step_flags.rs"]
 mod issue_1985_codex_agent_step_flags;
+#[path = "issue_2010_codex_exec_notice.rs"]
+mod issue_2010_codex_exec_notice;
 #[path = "issue_2022_far_reset_wait.rs"]
 mod issue_2022_far_reset_wait;
 #[path = "issue_2022_no_default_time_limits.rs"]
