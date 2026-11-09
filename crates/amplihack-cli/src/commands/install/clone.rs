@@ -1181,12 +1181,12 @@ mod tests {
     }
 
     #[cfg(unix)]
+    /// Written through `test_support::write_executable`, so no concurrent
+    /// fork can hold a write descriptor to the script when it is spawned
+    /// (`ETXTBSY`, issue #1973).
     fn fake_git(dir: &Path, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-
         let path = dir.join("git");
-        fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::test_support::write_executable(&path, &format!("#!/bin/sh\n{body}\n"));
         path
     }
 

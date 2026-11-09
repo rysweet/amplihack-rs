@@ -265,10 +265,8 @@ fn load_user_preference() -> Option<SavedPreference> {
 }
 
 fn save_user_preference(consent: bool) {
-    if let Err(error) = crate::user_config::set_user_value(
-        "node.heap_consent",
-        &crate::user_config::Value::Bool(consent),
-    ) {
+    // Not synced to disk: see user_config::edit (issue #1992).
+    if let Err(error) = crate::user_config::save_heap_consent_nosync(consent) {
         tracing::warn!("failed to save the NODE_OPTIONS consent: {error}");
     }
 }
@@ -323,6 +321,104 @@ mod tests {
         assert_eq!(config.user_consent, Some(true));
         assert!(config.node_options.contains("--max-old-space-size="));
         assert!(config.node_options.contains("--trace-warnings"));
+    }
+
+    /// Restores HOME when dropped, so a panicking test cannot leave HOME
+    /// pointing at a deleted temporary directory.
+    struct HomeRestore(Option<std::ffi::OsString>);
+
+    impl Drop for HomeRestore {
+        fn drop(&mut self) {
+            restore_home(self.0.take());
+        }
+    }
+
+    // Issue #1992: the first-launch consent save writes a private file under
+    // a fresh HOME without an fsync on the launch path.
+    #[cfg(unix)]
+    #[test]
+    fn save_user_preference_writes_private_config_without_syncing() {
+        use std::os::unix::fs::PermissionsExt;
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let restore = HomeRestore(set_home(home.path()));
+        let before = crate::user_config::edit::sync_count();
+
+        save_user_preference(true);
+
+        let syncs = crate::user_config::edit::sync_count() - before;
+        drop(restore);
+        let dir = home.path().join(".amplihack");
+        let file = dir.join("config.toml");
+        let parsed: toml::Value = toml::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(parsed["node"]["heap_consent"].as_bool(), Some(true));
+        assert_eq!(
+            fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(
+            fs::metadata(&dir).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        let leftovers: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".amplihack-config.")
+            })
+            .collect();
+        assert!(leftovers.is_empty(), "temporary file left behind");
+        assert_eq!(syncs, 0, "the launch-path consent save must not fsync");
+    }
+
+    #[test]
+    fn save_user_preference_keeps_other_keys_and_comments() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let restore = HomeRestore(set_home(home.path()));
+        let dir = home.path().join(".amplihack");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("config.toml"),
+            "# mine\n[recipe]\nverbose = true\n",
+        )
+        .unwrap();
+        let before = crate::user_config::edit::sync_count();
+
+        save_user_preference(false);
+
+        let syncs = crate::user_config::edit::sync_count() - before;
+        drop(restore);
+        let body = fs::read_to_string(dir.join("config.toml")).unwrap();
+        assert!(body.contains("# mine"), "{body}");
+        let parsed: toml::Value = toml::from_str(&body).unwrap();
+        assert_eq!(parsed["recipe"]["verbose"].as_bool(), Some(true));
+        assert_eq!(parsed["node"]["heap_consent"].as_bool(), Some(false));
+        assert_eq!(syncs, 0);
+    }
+
+    #[test]
+    fn save_user_preference_does_not_panic_on_an_unreadable_file() {
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let home = tempfile::tempdir().unwrap();
+        let restore = HomeRestore(set_home(home.path()));
+        let dir = home.path().join(".amplihack");
+        fs::create_dir_all(&dir).unwrap();
+        // What a crash on a mount without auto_da_alloc can leave behind.
+        fs::write(dir.join("config.toml"), b"\0\0\0\0").unwrap();
+
+        save_user_preference(true);
+
+        drop(restore);
+        assert_eq!(fs::read(dir.join("config.toml")).unwrap(), b"\0\0\0\0");
     }
 
     #[test]

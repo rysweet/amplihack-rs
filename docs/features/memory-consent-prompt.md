@@ -35,6 +35,8 @@ amplihack config set node.heap_consent true
 amplihack config set node.max_old_space_mb 16384
 ```
 
+The launcher saves your answer before claude starts, without waiting for it to be flushed to disk. A synced write took 9.76 s on a busy host. If the machine crashes soon after the first launch, the answer may be lost and the next launch asks again. If the crash leaves the file unreadable, every launch asks until you repair it with `amplihack config edit`. `amplihack config set` always syncs. See [Config Write Durability](../concepts/config-write-durability.md).
+
 A consent saved by an older version in `~/.amplihack/config` is migrated on first read. See [User Configuration](../reference/user-config.md#nodeheap_consent-and-nodemax_old_space_mb).
 
 ## How It Works
@@ -513,6 +515,7 @@ def get_default_consent(config):
 - [Configuration Guide](../howto/integrate-agent-memory.md) - Step-by-step configuration
 - Launcher Architecture - How the launcher works
 - [Environment Variables](../reference/environment-variables.md) - All configuration options
+- [Config Write Durability](../concepts/config-write-durability.md) - Why the consent save does not sync
 
 ---
 

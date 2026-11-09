@@ -30,6 +30,11 @@ impl Identity {
     pub fn names(&self, account: &Account) -> bool {
         Account::from_block(&self.0).is_some_and(|prior| prior.same(account))
     }
+    /// Issue #1947: the load-time rule for a stored block, kept with the other
+    /// readers of these keys in [`Account::block_is_valid`].
+    pub fn valid(&self) -> bool {
+        Account::block_is_valid(&self.0)
+    }
 }
 
 /// The full identities authorized before an exchange; no token is stored.
