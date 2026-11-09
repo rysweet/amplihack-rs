@@ -512,3 +512,8 @@ mod issue_1771_precommit_symlinked_caches;
 // without treating an API unused by one target as abandoned implementation.
 #[path = "canonical_staging_checkpoint_fixture.rs"]
 pub mod canonical_staging_checkpoint_fixture;
+
+// Test-only Rust port of PhaseProjection (#1554). The #1671 bridge re-enters
+// this binary through `issue_1671_hook_rejection_repair::phase_projection_reentry`.
+#[path = "checkpoint_projection.rs"]
+pub mod checkpoint_projection;

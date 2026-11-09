@@ -2,9 +2,10 @@
 //! The phase projection replaces only finite model scope judgement. It provides
 //! no native runner, model review or delivery acceptance evidence.
 
+use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 
 pub fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -163,23 +164,38 @@ impl Owner {
                     "base_ref": "refs/remotes/origin/main"},
                 "version_bump": {"change_classification": "PATCH"}}
         });
-        let mut projection = Command::new("python3");
-        projection
-            .env_clear()
-            .env("PYTHONDONTWRITEBYTECODE", "1")
-            .env("HOME", evidence.path())
-            .env("AMPLIHACK_TEST_HOME_GUARD", "1")
-            .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_ALLOW_PROTOCOL", "file")
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .stdin(Stdio::null());
-        // Preserve explicit negative selectors. Isolated fixtures supply their
-        // own environment; this utility never removes an explicit selector.
+        // The request travels as JSON, as it did to the reference driver, so
+        // the context keeps the key order the reference parsed.
+        let request = crate::checkpoint_projection::py_json_loads(request.to_string().as_bytes())
+            .expect("the projection request is JSON");
+        let request = crate::checkpoint_projection::ProjectionRequest {
+            root: root(),
+            asset: asset.to_owned(),
+            owner_paths: self.paths.iter().map(|p| p.as_bytes().to_vec()).collect(),
+            context: request
+                .get("context")
+                .cloned()
+                .expect("the request has a context"),
+        };
+        // The projection's environment, which stands for the reference
+        // driver's `os.environ`: a fixed isolated base, every value the
+        // fixture set on `command` (explicit negative selectors included; this
+        // utility never removes one), then the engine and the task values.
+        let mut env: std::collections::BTreeMap<OsString, OsString> = [
+            ("HOME", evidence.path().as_os_str()),
+            ("AMPLIHACK_TEST_HOME_GUARD", OsStr::new("1")),
+            ("AMPLIHACK_ROTATE_AUTOSTART", OsStr::new("0")),
+            ("GIT_CONFIG_NOSYSTEM", OsStr::new("1")),
+            ("GIT_CONFIG_GLOBAL", OsStr::new("/dev/null")),
+            ("GIT_ALLOW_PROTOCOL", OsStr::new("file")),
+            ("GIT_TERMINAL_PROMPT", OsStr::new("0")),
+        ]
+        .into_iter()
+        .map(|(k, v)| (OsString::from(k), v.to_owned()))
+        .collect();
         for (key, value) in command.get_envs() {
             if let Some(value) = value {
-                projection.env(key, value);
+                env.insert(key.to_owned(), value.to_owned());
             }
         }
         // The checkpoint engine is the real binary under test, whatever
@@ -188,54 +204,16 @@ impl Owner {
         if let Some(engine) = option_env!("CARGO_BIN_EXE_amplihack")
             && !command.get_envs().any(|(key, _)| key == "AMPLIHACK_BIN")
         {
-            projection.env("AMPLIHACK_BIN", engine);
+            env.insert("AMPLIHACK_BIN".into(), engine.into());
         }
-        projection
-            .env("TASK_DESCRIPTION", self.task)
-            .env("TMPDIR", evidence.path())
-            .arg("-I")
-            .arg("-B")
-            .arg("-c")
-            .arg(PROJECTION)
-            .arg(request.to_string())
-            .output()
-            .expect("run bounded test-only phase projection")
+        env.insert("TASK_DESCRIPTION".into(), self.task.into());
+        env.insert("TMPDIR".into(), evidence.path().into());
+        let env: Vec<(OsString, Option<OsString>)> =
+            env.into_iter().map(|(k, v)| (k, Some(v))).collect();
+        let env = crate::checkpoint_projection::with_python_locale_coercion(&env);
+        crate::checkpoint_projection::project(&request, &env).into()
     }
 }
-
-const PROJECTION: &str = r#"
-import importlib.util, json, os, pathlib, subprocess, sys, unittest
-request = json.loads(sys.argv[1])
-path = pathlib.Path(request['root']) / 'amplifier-bundle/recipes/tests/test-checkpoint-scope.py'
-spec = importlib.util.spec_from_file_location('checkpoint_contract', path)
-contract = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(contract)
-class Fixture:
-    case = unittest.TestCase()
-    def __init__(self):
-        self.context = request['context']
-        self.task = pathlib.Path(self.context['worktree_setup']['worktree_path'])
-        self.branch = self.context['worktree_setup']['local_branch']
-        self.owner = self.context['task_description']
-        self.allowed = {os.fsencode(p) for p in request['fixture_owner_paths']}
-        self.env = dict(os.environ)
-        self.sync_context()
-    def sync_context(self):
-        for k, v in self.context.items():
-            self.env['RECIPE_VAR_' + k] = json.dumps(v) if isinstance(v, (dict, list, bool)) else str(v)
-    def git(self, repo, *args):
-        r = subprocess.run(['git', '-C', str(repo), *args], env=self.env, capture_output=True)
-        self.case.assertEqual(r.returncode, 0, r.stderr)
-        return r.stdout
-    def shell(self, body):
-        return subprocess.run(['bash', '-c', body], cwd=self.task, env=self.env, capture_output=True)
-f = Fixture()
-phase = next(p for p in contract.PHASES if p[0] == request['asset'])
-r = contract.PhaseProjection(f, phase).run()
-sys.stdout.buffer.write(r.stdout)
-sys.stderr.buffer.write(r.stderr)
-sys.exit(r.returncode)
-"#;
 
 /// Execute the actual redaction function without running its publication phase.
 /// Failure messages deliberately contain no disposable URI userinfo or output.

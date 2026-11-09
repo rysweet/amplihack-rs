@@ -331,6 +331,23 @@ fn shell_test_is_wired_into_ci() {
     );
 }
 
+/// Re-entry point for the #1671 projection shim. It returns at once in an
+/// ordinary run and is not an inventory target. There is no [[bin]] or
+/// [[test]] helper because the manifests are frozen for #1554 and
+/// crates/amplihack-cli has `autotests = false`; the shim re-runs this test
+/// binary instead, with `AMPLIHACK_PROJECTION_REQUEST` naming its request.
+#[test]
+fn phase_projection_reentry() {
+    use crate::checkpoint_projection as projection;
+    // `REENTRY_TEST` names this function; a rename breaks the bridge.
+    assert!(projection::REENTRY_TEST.ends_with("::phase_projection_reentry"));
+    // Without AMPLIHACK_PROJECTION_REQUEST this is an ordinary run: return.
+    if std::env::var_os(projection::PROJECTION_REQUEST_ENV).is_none() {
+        return;
+    }
+    projection::reentry_main();
+}
+
 #[test]
 fn hook_rejection_repair_shell_contract_passes() {
     let root = workspace_root();
@@ -359,12 +376,32 @@ fn hook_rejection_repair_shell_contract_passes() {
     let before = names(fixture.path());
     let (bash, bash_version) = gnu_bash();
     eprintln!("#1671 bridge runs {} ({bash_version})", bash.display());
+    // The Rust PhaseProjection shim lives in its own directory, outside the
+    // fixture whose entries the #1937 leftover check compares.
+    let shim_dir = tempfile::Builder::new()
+        .prefix("issue-1554-projection-shim-")
+        .tempdir()
+        .expect("create the projection shim directory");
+    let exe = std::env::current_exe().expect("test binary path");
+    let shim = crate::checkpoint_projection::write_projection_shim(
+        shim_dir.path(),
+        &bash,
+        &exe,
+        crate::checkpoint_projection::REENTRY_TEST,
+    );
+    eprintln!(
+        "#1671 projection shim {} re-enters {}",
+        shim.display(),
+        crate::checkpoint_projection::REENTRY_TEST
+    );
     let out = Command::new(&bash)
         .arg(&script)
         .current_dir(fixture.path().join("cwd"))
         // Keep all real user configuration and harness overrides out. Then
         // deliberately inject owned repository selectors the harness must drop.
         .env_clear()
+        .env_remove("BASH_ENV")
+        .env_remove("ENV")
         .env("PATH", std::env::var_os("PATH").expect("host tool PATH"))
         .env("HOME", fixture.path().join("home"))
         .env("XDG_CONFIG_HOME", fixture.path().join("home/.config"))
@@ -373,6 +410,7 @@ fn hook_rejection_repair_shell_contract_passes() {
         // real engine under test (#1554).
         .env("AMPLIHACK_REAL_BIN", env!("CARGO_BIN_EXE_amplihack"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("PROJECTION_SHIM", &shim)
         .env("GIT_DIR", fixture.path().join(".git"))
         .env("GIT_COMMON_DIR", &common)
         .output()

@@ -30,6 +30,9 @@ mod support;
 // visibility keeps its other test-only entry points available to consumers.
 #[path = "../../../tests/integration/canonical_staging_checkpoint_fixture.rs"]
 pub mod canonical_staging_checkpoint_fixture;
+// Test-only Rust port of PhaseProjection (#1554, PR #2020).
+#[path = "../../../tests/integration/checkpoint_projection.rs"]
+pub mod checkpoint_projection;
 
 #[path = "issue_1753_expired_live.rs"]
 mod issue_1753_expired_live;
@@ -68,6 +71,8 @@ mod bugfix_341_install_freshness;
 mod bugfix_install_tests;
 #[path = "cargo_cxx_pin_test.rs"]
 mod cargo_cxx_pin;
+#[path = "checkpoint_projection_unit.rs"]
+mod checkpoint_projection_unit;
 #[path = "claude_code_plugin_manifest.rs"]
 mod claude_code_plugin_manifest;
 #[path = "claude_install_contract.rs"]
