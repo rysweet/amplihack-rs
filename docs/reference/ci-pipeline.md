@@ -385,7 +385,9 @@ Jobs that set `RUSTC_WRAPPER: sccache` get the binary from the Actions cache
 (key `sccache-bin-v0.19.0-${{ runner.os }}-${{ runner.arch }}`, via
 `.github/actions/sccache-bin`) and check it against the sha256 pinned in
 `.github/scripts/sccache-bin.sh` and against `--version`. Only on a miss does
-`Setup sccache` download it, once; a binary that passes is saved. With no
+`Setup sccache` download it, once; a binary that passes is saved. A cached
+binary that fails the checks produces a warning naming the cache entry to
+delete, because the key is immutable and a later save cannot replace it. With no
 usable binary the job writes `RUSTC_WRAPPER=`, skips the disk-cache steps and
 `sccache --show-stats`, prints
 `::warning::sccache binary unavailable (cache miss and download failed); building without RUSTC_WRAPPER`

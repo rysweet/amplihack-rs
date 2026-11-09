@@ -18,8 +18,11 @@
 #   restore : writes exactly one hit=true|false to GITHUB_OUTPUT; on hit it
 #             adds $RUNNER_TEMP/sccache-verified to GITHUB_PATH and writes
 #             SCCACHE_PATH=$RUNNER_TEMP/sccache-verified/sccache to GITHUB_ENV
-#   finish  : writes exactly one save=true|false; on false it writes
-#             RUSTC_WRAPPER= to GITHUB_ENV and prints the fallback line once
+#   finish  : writes exactly one save=true|false; with no usable binary it
+#             writes RUSTC_WRAPPER= to GITHUB_ENV and prints the fallback line
+#             once; a usable binary that cannot be staged gives save=false and
+#             leaves the wrapper on
+#   restore : a cached file that fails verification prints one ::warning::
 #   a binary is never executed before its sha256 matches the pinned value
 set -uo pipefail
 
@@ -236,6 +239,8 @@ make_fake "$CASE_DIR/runner-temp/sccache-bin/sccache" "$marker"
 run_script restore
 why=$(expect_restore_miss)
 [ ! -e "$marker" ] || why+=" tampered binary was executed;"
+[ "$(grep -c '^::warning::cached sccache binary failed verification' "$CASE_DIR/stdout")" = 1 ] \
+  || why+=" no verification-failure warning;"
 verdict "$why"
 
 new_case "restore: tampered binary on an unknown runner type is a miss, not executed"
@@ -394,6 +399,19 @@ if [ -n "$REAL" ]; then
   run_script finish KEY_OSARCH=Windows-X64 SCCACHE_PATH="$CASE_DIR/download/sccache"
   verdict "$(expect_fallback)"
 
+  new_case "finish: genuine binary that cannot be staged keeps the wrapper, save=false"
+  mkdir -p "$CASE_DIR/download"
+  cp "$REAL" "$CASE_DIR/download/sccache"
+  : >"$CASE_DIR/blocker"
+  run_script finish SCCACHE_PATH="$CASE_DIR/download/sccache" BIN_DIR="$CASE_DIR/blocker/sccache-bin"
+  why=""
+  [ "$RC" = 0 ] || why+=" exit=$RC;"
+  [ "$(count_prefix "$CASE_DIR/output" 'save=')" = 1 ] || why+=" save= lines != 1;"
+  [ "$(count_lines "$CASE_DIR/output" 'save=false')" = 1 ] || why+=" no save=false;"
+  grep -q '^RUSTC_WRAPPER=' "$CASE_DIR/env" && why+=" wrapper turned off;"
+  grep -q '::warning::' "$CASE_DIR/stdout" && why+=" printed the fallback warning;"
+  verdict "$why"
+
   new_case "finish: symlinked SCCACHE_PATH falls back"
   mkdir -p "$CASE_DIR/download"
   ln -s "$REAL" "$CASE_DIR/download/sccache"
@@ -404,6 +422,7 @@ else
     "finish: genuine sccache found by command -v" \
     "finish: SIMULATE=true with a genuine sccache on PATH" \
     "finish: genuine binary on a runner type with no pinned hash" \
+    "finish: genuine binary that cannot be staged" \
     "finish: symlinked SCCACHE_PATH"; do
     CURRENT=$name
     skip "no genuine v0.19.0 binary for $HOST_OSARCH"

@@ -4,8 +4,9 @@
 # in docs/reference/ci-pipeline.md.
 #
 #   sccache-bin.sh restore   check a restored cache entry; output hit=true|false
-#   sccache-bin.sh finish    after a miss: keep a downloaded binary (save=true)
-#                            or turn RUSTC_WRAPPER off (save=false + warning)
+#   sccache-bin.sh finish    after a miss: keep a downloaded binary (save=true;
+#                            save=false if it cannot be staged) or turn
+#                            RUSTC_WRAPPER off (save=false + warning)
 #
 # Environment (set by the composite action through env:, never inlined):
 #   BIN_DIR       cache directory, ${{ runner.temp }}/sccache-bin
@@ -87,7 +88,9 @@ do_restore() {
     printf '%s\n' "SCCACHE_PATH=$verified/sccache" >>"$GITHUB_ENV"
     out hit=true
   else
-    echo "Restored sccache binary failed verification; treating it as a cache miss."
+    # The key is immutable, so a bad entry is never replaced by a later save:
+    # every run would download again until someone deletes the entry.
+    printf '%s\n' "::warning::cached sccache binary failed verification; delete the Actions cache entry sccache-bin-v0.19.0-${KEY_OSARCH:-} so a verified binary can be saved"
     rm -rf -- "$verified"
     out hit=false
   fi
@@ -107,8 +110,11 @@ do_finish() {
       out save=true
       return 0
     fi
-    echo "Could not stage the downloaded sccache binary for the cache."
-    rm -rf -- "$BIN_DIR"
+    # The binary works, so keep the wrapper on; only the save is skipped.
+    echo "Could not stage the downloaded sccache binary for the cache; not saving it."
+    rm -rf -- "$BIN_DIR" 2>/dev/null
+    out save=false
+    return 0
   fi
   printf '%s\n' "RUSTC_WRAPPER=" >>"$GITHUB_ENV"
   out save=false
