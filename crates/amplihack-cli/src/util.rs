@@ -394,27 +394,27 @@ fn spawn_subprocess(cmd: &mut Command) -> io::Result<Child> {
     }
 }
 
-/// Polls `child` until it exits. Returns `Ok(None)` only when `timeout` is
-/// `Some` and has elapsed; with `None` it waits until the child exits.
+/// Waits for `child` to exit. Returns `Ok(None)` only when `timeout` is
+/// `Some` and has elapsed. With `None` there is no limit, so it blocks in
+/// `wait()` until the child exits instead of polling.
 fn wait_for_child_exit(
     child: &mut Child,
     timeout: Option<Duration>,
 ) -> io::Result<Option<ExitStatus>> {
+    let Some(timeout) = timeout else {
+        return child.wait().map(Some);
+    };
     let started = Instant::now();
     let mut poll_interval = CHILD_WAIT_INITIAL_POLL_INTERVAL;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        let mut sleep_for = poll_interval;
-        if let Some(timeout) = timeout {
-            let elapsed = started.elapsed();
-            if elapsed >= timeout {
-                return Ok(None);
-            }
-            sleep_for = sleep_for.min(timeout.saturating_sub(elapsed));
+        let elapsed = started.elapsed();
+        if elapsed >= timeout {
+            return Ok(None);
         }
-        thread::sleep(sleep_for);
+        thread::sleep(poll_interval.min(timeout.saturating_sub(elapsed)));
         poll_interval = (poll_interval + poll_interval).min(CHILD_WAIT_MAX_POLL_INTERVAL);
     }
 }
@@ -942,20 +942,32 @@ mod tests {
         assert_eq!(text.trim(), "200000");
     }
 
-    /// No limit: a child that runs past what a short limit would allow is
-    /// waited for, and its exit status is returned.
+    /// No limit: the wait lasts until the child exits, and the child exits
+    /// only after the test releases it over stdin.
     #[cfg(unix)]
     #[test]
     fn run_untimed_waits_for_the_child_and_returns_its_status() {
+        use std::io::Write as _;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
         let _guard = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
+        let (reader, mut writer) = std::io::pipe().unwrap();
         let mut cmd = std::process::Command::new("/bin/sh");
-        cmd.args(["-c", "sleep 2; exit 5"]);
-        let started = std::time::Instant::now();
+        cmd.args(["-c", "read -r _; exit 5"]).stdin(reader);
+        let released = Arc::new(AtomicBool::new(false));
+        let release = {
+            let released = Arc::clone(&released);
+            std::thread::spawn(move || {
+                released.store(true, Ordering::SeqCst);
+                writer.write_all(b"go\n").unwrap();
+            })
+        };
         let status = run_untimed(cmd).unwrap();
+        release.join().unwrap();
+        assert!(released.load(Ordering::SeqCst));
         assert_eq!(status.code(), Some(5));
-        assert!(started.elapsed() >= Duration::from_millis(1900));
     }
 
     #[test]

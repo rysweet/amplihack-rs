@@ -108,9 +108,12 @@ impl SdkAdapter for CopilotAdapter {
 
     fn create_agent(&mut self) -> Result<()> {
         self.system_prompt = self.build_system_prompt();
+        let timeout = self
+            .timeout
+            .map_or_else(|| "none".to_string(), |t| format!("{t}s"));
         info!(
             name = %self.config.name,
-            timeout = ?self.timeout,
+            timeout = %timeout,
             cli_path = ?self.cli_path,
             "Copilot adapter agent created"
         );

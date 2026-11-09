@@ -67,26 +67,26 @@ fn spawn_subprocess(cmd: &mut Command) -> Result<std::process::Child> {
     }
 }
 
-/// Returns `Ok(None)` only when `timeout` is `Some` and has elapsed.
+/// Returns `Ok(None)` only when `timeout` is `Some` and has elapsed. With
+/// `None` (or a limit too large to represent) it blocks in `wait()` until
+/// the child exits instead of polling.
 fn wait_for_child_exit(
     child: &mut std::process::Child,
     timeout: Option<Duration>,
 ) -> Result<Option<std::process::ExitStatus>> {
-    let deadline = timeout.and_then(|t| Instant::now().checked_add(t));
+    let Some(deadline) = timeout.and_then(|t| Instant::now().checked_add(t)) else {
+        return Ok(Some(child.wait()?));
+    };
     let mut interval = CHILD_WAIT_INITIAL_POLL_INTERVAL;
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok(Some(status));
         }
-        let mut sleep_for = interval;
-        if let Some(deadline) = deadline {
-            let now = Instant::now();
-            if now >= deadline {
-                return Ok(None);
-            }
-            sleep_for = sleep_for.min(deadline.saturating_duration_since(now));
+        let now = Instant::now();
+        if now >= deadline {
+            return Ok(None);
         }
-        thread::sleep(sleep_for);
+        thread::sleep(interval.min(deadline.saturating_duration_since(now)));
         interval = (interval * 2).min(CHILD_WAIT_MAX_POLL_INTERVAL);
     }
 }
@@ -118,16 +118,30 @@ mod tests {
         assert_eq!(output.stderr.len(), 70_000);
     }
 
+    /// No limit: the wait lasts until the child exits, and the child exits
+    /// only after the test releases it over stdin.
     #[cfg(unix)]
     #[test]
-    fn run_output_untimed_waits_past_a_short_window() {
+    fn run_output_untimed_waits_until_the_child_is_released() {
+        use std::io::Write as _;
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (reader, mut writer) = std::io::pipe().unwrap();
         let mut cmd = Command::new("/bin/sh");
-        cmd.args(["-c", "sleep 2; echo indexed"]);
-        let started = Instant::now();
+        cmd.args(["-c", "read -r _; echo indexed"]).stdin(reader);
+        let released = Arc::new(AtomicBool::new(false));
+        let release = {
+            let released = Arc::clone(&released);
+            thread::spawn(move || {
+                released.store(true, Ordering::SeqCst);
+                writer.write_all(b"go\n").unwrap();
+            })
+        };
         let output = run_output_untimed(cmd).unwrap();
+        release.join().unwrap();
+        assert!(released.load(Ordering::SeqCst));
         assert!(output.status.success());
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "indexed");
-        assert!(started.elapsed() >= Duration::from_millis(1900));
     }
 
     #[test]
