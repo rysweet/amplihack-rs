@@ -7,6 +7,8 @@
 //! once per test process. A symlink would not do: the kernel's
 //! `/proc/<pid>/exe` names the resolved file.
 
+#![cfg(unix)]
+
 use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
