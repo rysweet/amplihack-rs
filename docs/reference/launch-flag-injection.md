@@ -321,6 +321,56 @@ on the list because codex-cli 0.140.0 to 0.166.0 reject it.
 | (none), `resume --last`, `"Explain this repository"` | nothing; interactive argv is unchanged |
 | `-c exec`, `-m exec`, `-- exec` | nothing; `exec` here is a value or a positional, not the subcommand |
 
+**Notice (issue #2010).** When amplihack adds `--sandbox workspace-write`, it
+writes one line to stderr before Codex starts. The line lists what was added,
+in the order it appears in the argv; `network access` stands for
+`-c sandbox_workspace_write.network_access=true`. The four possible lines are:
+
+| Caller already set | Line written to stderr |
+|---|---|
+| nothing | `amplihack: codex exec: added --sandbox workspace-write, network access, --dangerously-bypass-hook-trust (#1985)` |
+| the network override | `amplihack: codex exec: added --sandbox workspace-write, --dangerously-bypass-hook-trust (#1985)` |
+| `--dangerously-bypass-hook-trust` | `amplihack: codex exec: added --sandbox workspace-write, network access (#1985)` |
+| both | `amplihack: codex exec: added --sandbox workspace-write (#1985)` |
+
+The line is written once per launch, and only to stderr, so a step's stdout
+and its `--output-last-message` file are unchanged. The line is built from
+fixed text only: it never contains the caller's arguments, paths, profile
+names, prompt text or anything read from `config.toml`, so it is safe to keep
+in CI logs.
+
+**Where the line is seen.** The line is reliably seen only when a person runs
+`amplihack codex -- exec` directly, or when a caller captures that process's
+stderr itself. In a recipe run it usually is not seen. Under the recipe runner
+pinned in `claude-plugin/recipe-runner.rev` (recipe-runner-rs `4d5187e`,
+`src/adapters/cli_subprocess.rs`), an agent step's stderr is not streamed to
+the recipe log:
+
+- the runner writes it to a file under `/tmp/amplihack-agent-stderr/`;
+- when the step succeeds, the runner deletes that file, so the line is gone;
+- when the step fails, the error quotes only the last 4000 bytes of the file.
+  The notice is the first line written to stderr, so after a long Codex run it
+  is usually not in that excerpt. The file is kept, and its path is printed
+  after `--- stderr-log:`, so the line can still be found there;
+- when a failed attempt is retried because of a rate limit, its file is deleted
+  before the retry.
+
+Issue #2066 tracks keeping or surfacing `amplihack:` lines from agent steps.
+Until it is fixed, finding no line in a recipe log does not mean no flags were
+added; the table above is the record of what an agent step receives.
+
+No line is written when:
+
+- the caller chose a sandbox, in any of the forms listed above. The hook-trust
+  flag is still added in that case, without a line. Issue #2048 tracks
+  reporting it; issue #2009 is limited to whether the flag is added at all;
+- the argv has no `exec`/`e` subcommand, including an empty argv,
+  `resume --last`, `-c exec` and `-- exec`.
+
+There is no option or environment variable to turn the line off. It is
+informational: the spawned argv remains the authoritative record of what Codex
+received, and nothing in amplihack reads or acts on the line.
+
 amplihack never adds `--dangerously-bypass-approvals-and-sandbox` or `--yolo`,
 and never writes any of these settings to `config.toml`. There is no
 environment variable to turn the injection off; pass your own sandbox to change
@@ -379,7 +429,9 @@ assembles the final command line. The assembly order is:
 6. All `extra_args` in the order they were passed on the command line. For
    `codex`, `codex_agent_step_args()` first inserts the
    [Codex agent-step flags](#codex-agent-step-flags) after an `exec`/`e`
-   subcommand, if there is one
+   subcommand, if there is one. When the sandbox is among them,
+   `codex_agent_step_notice()` supplies the one stderr line described under
+   [Codex agent-step flags](#codex-agent-step-flags)
 
 The following examples show the full assembled command for each launch
 subcommand with no extra args:
